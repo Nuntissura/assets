@@ -32,13 +32,21 @@
 //!   that stays in the file is silent only when a kept page DRAWS it ("Certain" below); a source that
 //!   stays without that is reported (`RedactedOutput::painted_sources_kept`, `NotProven::PaintedSourceKept`)
 //!   and `region_flattened` reads false: some content's usage cannot be determined, or a kept object only
-//!   REFERENCES it (R14-P1, R16: a catalog `/AF`, a `/Names` or `/Dests` name tree, the entries of a kept
-//!   page's `/Resources` outside the five gated categories such as `/Properties` and `/ColorSpace`, a plain
-//!   key of an object a kept page draws such as an image's `/Alternates` or a form's `/PieceInfo`, any
-//!   other plain reference). Such a source is not pruned (the kept structure is not edited). Tests
+//!   REFERENCES it or places it where a viewer draws nothing from it (R14-P1, R16, R17: a catalog `/AF`, a
+//!   `/Names` or `/Dests` name tree, the entries of a kept page's `/Resources` outside the five gated
+//!   categories such as `/Properties` and `/ColorSpace`, a plain key of an object a kept page draws such as an
+//!   image's `/Alternates` or a form's `/PieceInfo`, an object used as a `/Resources` value, as a gated
+//!   sub-dictionary (`/XObject 10 0 R`) or as an appearance state, a name an operator uses for an object of another
+//!   kind, an entry a nearer entry of the same name shadows, any other plain reference). Such a source is not
+//!   pruned (the kept structure is not edited). Tests
 //!   `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
 //!   `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
-//!   `painted_source_referenced_by_a_key_of_a_drawn_object_is_reported`.
+//!   `painted_source_referenced_by_a_key_of_a_drawn_object_is_reported`,
+//!   `painted_source_placed_as_a_resources_value_is_reported`,
+//!   `painted_source_placed_as_a_gated_sub_dictionary_is_reported`,
+//!   `painted_source_placed_as_an_appearance_state_is_reported`,
+//!   `painted_source_named_where_it_is_not_drawn_is_reported`,
+//!   `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -49,16 +57,22 @@
 //! reference (reached, not certain). Content that cannot be decoded or parsed makes every entry of its
 //! scope used (kept, uncertain).
 //!
-//! Certain (= drawn), R16: an object is certain only when a scope that a kept page draws names it with
-//! `Do`, `sh`, `scn`/`SCN`, `gs` or `Tf`, or it is an appearance stream (`/AP` `/N` `/R` `/D`, the streams of a
-//! state dictionary included; annotation flags are not read) of an annotation a kept page lists in its own
-//! `/Annots`, or it is rendered along with such an object: the `/SMask` and `/Mask` of a drawn image, the
-//! `/Shading` of a drawn shading pattern, the `/SMask` `/G` group of a drawn graphics state; the scopes of
-//! those (and of the forms, patterns and Type 3 fonts so drawn) draw in turn. Everything else only
-//! references, even from a kept page or a drawn object, and whatever is reached from the trailer roots by plain
-//! references alone is reached, not certain (R14-P1). Tests `painted_sources_under_a_region_do_not_survive`,
+//! Certain (= drawn), R16, R17: an object is certain only when a scope that a kept page draws names it with
+//! `Do`, `sh`, `scn`/`SCN`, `gs` or `Tf` (the content of a kept page, and in turn of the forms, tiling patterns,
+//! soft-mask groups and Type 3 glyph procedures so drawn), the name resolves to it (the nearest entry of its
+//! category in the scope's resource chain; an entry a nearer one shadows is reached only) and it is the kind
+//! that operator draws (`Do` an image or form stream, `sh` a shading, `scn`/`SCN` a pattern, `gs` and `Tf` a
+//! plain dictionary), or it is a form XObject that is an appearance stream (`/AP` `/N` `/R` `/D`, the streams of a
+//! state dictionary included; annotation flags and the `/AS` state selection are not read) of an annotation a
+//! kept page lists in its own `/Annots`, or it is rendered along with such an object: the `/SMask` and `/Mask`
+//! image of a drawn image, the `/Shading` of a drawn shading pattern, the `/SMask` `/G` form of a drawn graphics
+//! state. Everything else only references, even from a kept page or a drawn object: a position is not a draw (an
+//! image placed as a kept page's `/Resources` value, as a gated sub-dictionary such as `/XObject 10 0 R`, as an
+//! appearance state or under a category its operator does not draw is reached, not certain), and whatever is
+//! reached from the trailer roots by plain references alone is reached, not certain (R14-P1). Tests
+//! `painted_sources_under_a_region_do_not_survive`,
 //! `painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported`,
-//! `painted_sources_rendered_with_a_drawn_object_are_not_reported`.
+//! `painted_sources_rendered_with_a_drawn_object_are_not_reported`, and the R17 tests listed above.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_strict;
 use crate::error::{Limits, PressError, Result};
@@ -513,7 +527,7 @@ struct Usage<'a> {
     scopes: Vec<Scope<'a>>,
     scoped: BTreeSet<(u32, bool)>,
     /// Resource dictionaries whose plain (not gated) entries were followed.
-    plain_done: BTreeSet<(usize, bool)>,
+    plain_done: BTreeSet<usize>,
     budget: usize,
     steps: usize,
     incomplete: bool,
@@ -528,17 +542,71 @@ fn smask_group(objs: &Objs, gs: &Dict) -> Option<u32> {
     gs.get("SMask").map(|m| res(objs, m)).and_then(Object::as_dict).and_then(|m| m.get("G")).and_then(Object::as_ref).map(|g| g.num)
 }
 
+/// What a viewer draws an object as, read from the object and not from the place a document lists it (R17): a
+/// position is not a draw, so a draw makes an object certain only when the object is the kind that draw needs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// An image XObject stream (`/Subtype /Image`).
+    Image,
+    /// A form XObject stream (`/Subtype /Form`): also what an appearance stream and a soft-mask group are.
+    Form,
+    /// A pattern (`/PatternType`).
+    Pattern,
+    /// A shading (`/ShadingType`).
+    Shading,
+    /// A dictionary that is none of those (a graphics state, a font).
+    Plain,
+    /// Anything else: not a dictionary, an XObject subtype on a non-stream, a stream of no drawable kind.
+    Other,
+}
+
+fn kind_of(objs: &Objs, o: &Object) -> Kind {
+    let o = res(objs, o);
+    let Some(d) = o.as_dict() else { return Kind::Other };
+    let stream = matches!(o, Object::Stream(_));
+    let subtype = |s: &str| d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name(s));
+    if subtype("Image") || subtype("Form") {
+        return match (stream, subtype("Image")) {
+            (true, true) => Kind::Image,
+            (true, false) => Kind::Form,
+            _ => Kind::Other,
+        };
+    }
+    if d.get("PatternType").is_some() {
+        Kind::Pattern
+    } else if d.get("ShadingType").is_some() {
+        Kind::Shading
+    } else if stream {
+        Kind::Other
+    } else {
+        Kind::Plain
+    }
+}
+
+/// The kind of object the operator that names an entry of resource category `cat` draws (`Do` an image or form
+/// stream, `sh` a shading, `scn`/`SCN` a pattern, `gs` and `Tf` a plain dictionary).
+fn draws(cat: &str, kind: Kind) -> bool {
+    match cat {
+        "XObject" => matches!(kind, Kind::Image | Kind::Form),
+        "Pattern" => kind == Kind::Pattern,
+        "Shading" => kind == Kind::Shading,
+        _ => kind == Kind::Plain,
+    }
+}
+
 /// What a viewer renders along with `d`, the object a kept scope's `Do` (image), `scn`/`SCN` (pattern) or `gs` names
 /// (category `cat`), and so what a kept page draws through it (module docs, certain): the `/SMask` and `/Mask`
-/// of an image, the `/Shading` of a shading pattern (`/PatternType 2`), the `/SMask` `/G` group of a graphics state.
-/// Every other key of `d` (an image's `/Alternates`, a form's `/PieceInfo`, ...) only references.
+/// image of an image, the `/Shading` of a shading pattern (`/PatternType 2`), the `/SMask` `/G` form of a graphics
+/// state, each only when it is that kind of object (R17). Every other key of `d` (an image's `/Alternates`, a
+/// form's `/PieceInfo`, ...) only references.
 fn rendered_with(objs: &Objs, cat: &str, d: &Dict) -> Vec<u32> {
     let image = d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Image"));
     let shading_pattern = d.get("PatternType").map(|t| res(objs, t)).and_then(Object::as_int) == Some(2);
+    let of = |kind: Kind, o: Option<&Object>| o.filter(|o| kind_of(objs, o) == kind).and_then(Object::as_ref).map(|r| r.num);
     match cat {
-        "XObject" if image => ["SMask", "Mask"].into_iter().filter_map(|k| d.get(k)).filter_map(Object::as_ref).map(|r| r.num).collect(),
-        "Pattern" if shading_pattern => d.get("Shading").and_then(Object::as_ref).map(|r| vec![r.num]).unwrap_or_default(),
-        "ExtGState" => smask_group(objs, d).into_iter().collect(),
+        "XObject" if image => ["SMask", "Mask"].into_iter().filter_map(|k| of(Kind::Image, d.get(k))).collect(),
+        "Pattern" if shading_pattern => of(Kind::Shading, d.get("Shading")).into_iter().collect(),
+        "ExtGState" => smask_group(objs, d).filter(|g| objs.get(g).is_some_and(|e| kind_of(objs, &e.obj) == Kind::Form)).into_iter().collect(),
         _ => Vec::new(),
     }
 }
@@ -576,18 +644,20 @@ impl<'a> Usage<'a> {
     }
 
     /// A resource dictionary of a scope: marks it (and its gated sub-dictionaries) reached and follows
-    /// its plain entries (`/Properties`, `/ColorSpace`, ...) as plain references, NOT certain even in a scope a
-    /// kept page draws (R16: a kept page's resource entry it does not draw only references).
-    fn resources(&mut self, holder_value: &'a Object, certain: bool) -> Option<&'a Dict> {
+    /// its plain entries (`/Properties`, `/ColorSpace`, ...) as plain references. Nothing here is certain, in a
+    /// scope a kept page draws too: a resource dictionary and a gated sub-dictionary are reached by position, not
+    /// drawn, whatever object a document places there (R16: an entry of a kept page it does not draw only
+    /// references; R17: an image as a `/Resources` value or as `/XObject 10 0 R`).
+    fn resources(&mut self, holder_value: &'a Object) -> Option<&'a Dict> {
         if let Some(r) = holder_value.as_ref() {
-            self.mark(r.num, certain);
+            self.mark(r.num, false);
         }
         let d = res(self.objs, holder_value).as_dict()?;
-        if self.plain_done.insert((ptr(d), certain)) {
+        if self.plain_done.insert(ptr(d)) {
             for (k, v) in &d.entries {
                 if GATED.iter().any(|g| g.as_bytes() == k.as_slice()) {
                     if let Some(r) = v.as_ref() {
-                        self.mark(r.num, certain);
+                        self.mark(r.num, false);
                     }
                 } else {
                     self.follow(v);
@@ -621,7 +691,7 @@ impl<'a> Usage<'a> {
             self.follow(v);
         }
         if own_scope && let Some(rv) = d.get("Resources") {
-            let Some(rd) = self.resources(rv, certain) else { return };
+            let Some(rd) = self.resources(rv) else { return };
             let streams: Vec<u32> = if type3 {
                 d.get("CharProcs").map(|c| res(objs, c)).and_then(Object::as_dict).map(|p| p.entries.iter().filter_map(|(_, v)| v.as_ref()).map(|r| r.num).collect()).unwrap_or_default()
             } else {
@@ -646,7 +716,8 @@ impl<'a> Usage<'a> {
         }
     }
 
-    /// The entry `name` of category `cat` in the scope's dictionaries (nearest first).
+    /// The entries `name` of category `cat` in the scope's dictionaries, nearest first: the first one is what a
+    /// viewer resolves the name to, the others are shadowed by it (R17: reached, not drawn).
     fn lookup(&self, chain: &[&'a Dict], cat: &str, name: &[u8]) -> Vec<&'a Object> {
         chain.iter().filter_map(|d| d.get(cat).map(|s| res(self.objs, s)).and_then(Object::as_dict).and_then(|s| s.get_key(name))).collect()
     }
@@ -681,16 +752,19 @@ impl<'a> Usage<'a> {
                     _ => continue,
                 };
                 let Some(name) = name.and_then(Object::as_name) else { continue };
-                for target in self.lookup(chain, cat, name) {
-                    // R16: a DRAW makes the named object certain (and what drawing it renders, below); every other
-                    // reference inside it is a plain one. In a scope no kept page draws, nothing is certain.
+                for (nearest, target) in self.lookup(chain, cat, name).into_iter().enumerate() {
+                    // R16, R17: a DRAW makes the named object certain (and what drawing it renders, below); every
+                    // other reference inside it is a plain one. A draw is the entry the name resolves to (the nearest;
+                    // an entry it shadows is only reached) and an object of the kind the operator draws (an image
+                    // listed under /Font is no font). In a scope no kept page draws, nothing is certain.
+                    let drawn = certain && nearest == 0 && draws(cat, kind_of(objs, target));
                     match target.as_ref() {
-                        Some(r) if certain => self.push(r.num, true),
+                        Some(r) if drawn => self.push(r.num, true),
                         _ => self.follow(target),
                     }
                     // Drawn in this scope: what has no resources of its own names in this scope.
                     let Some(d) = res(objs, target).as_dict() else { continue };
-                    if certain {
+                    if drawn {
                         for n in rendered_with(objs, cat, d) {
                             self.push(n, true);
                         }
@@ -715,7 +789,7 @@ impl<'a> Usage<'a> {
                         .filter(|n| matches!(objs.get(n).map(|e| &e.obj), Some(Object::Stream(s)) if !s.dict.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Image"))))
                         .collect();
                     if !inner.is_empty() {
-                        self.read_scope(&inner, chain, certain, depth.saturating_add(1), seen)?;
+                        self.read_scope(&inner, chain, drawn, depth.saturating_add(1), seen)?;
                     }
                 }
             }
@@ -744,16 +818,19 @@ impl<'a> Usage<'a> {
 
 /// Object numbers of the appearance streams (`/AP` `/N`, `/R`, `/D`; the streams of a state dictionary) of the
 /// annotations `page` lists in its own `/Annots`: besides its content, the one thing a viewer renders from a page.
-fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<u32> {
+/// Each comes with whether it is drawn: only a form XObject is (R17: an image or any other object placed there is
+/// reached, not drawn).
+fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<(u32, bool)> {
     let Some(annots) = page.get("Annots").map(|a| res(objs, a)).and_then(Object::as_array) else { return Vec::new() };
     let mut out = Vec::new();
+    let form = |o: &Object| kind_of(objs, o) == Kind::Form;
     for annot in annots {
         let Some(ap) = res(objs, annot).as_dict().and_then(|d| d.get("AP")).map(|a| res(objs, a)).and_then(Object::as_dict) else { continue };
         for key in ["N", "R", "D"] {
             let Some(entry) = ap.get(key) else { continue };
             match res(objs, entry) {
-                Object::Stream(_) => out.extend(entry.as_ref().map(|r| r.num)),
-                Object::Dict(states) => out.extend(states.entries.iter().filter_map(|(_, v)| v.as_ref()).map(|r| r.num)),
+                Object::Stream(_) => out.extend(entry.as_ref().map(|r| (r.num, form(entry)))),
+                Object::Dict(states) => out.extend(states.entries.iter().filter_map(|(_, v)| v.as_ref().map(|r| (r.num, form(v))))),
                 _ => {}
             }
         }
@@ -763,7 +840,8 @@ fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<u32> {
 
 /// Drops the flattened pages' sources no kept content draws (module docs). Returns the painted sources
 /// (images, forms, patterns, shadings) that stay in the file without a kept page or annotation appearance drawing
-/// them (certain, module docs): some usage is not determined, or a kept object only references them (R14-P1, R16).
+/// them (certain, module docs): some usage is not determined, or a kept object only references them or places them
+/// where a viewer draws nothing from them (R14-P1, R16, R17).
 pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &CancellationToken) -> Result<Vec<u32>> {
     let sources: BTreeSet<u32> = flats.iter().flat_map(|f| f.sources.iter().copied()).collect();
     if sources.is_empty() {
@@ -809,16 +887,17 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         // /Resources outside the gated categories are plain references (`Usage::resources`), not certain.
         for p in &doc.pages {
             let Some(pd) = objs.get(p).and_then(|e| e.obj.as_dict()) else { continue };
-            // A viewer also renders the appearance streams of the annotations the page lists: they draw (certain).
-            for ap in appearance_streams(objs, pd) {
-                u.push(ap, true);
+            // A viewer also renders the appearance streams of the annotations the page lists: a form XObject there
+            // draws (certain); any other object placed there is only reached (R17).
+            for (ap, form) in appearance_streams(objs, pd) {
+                u.push(ap, form);
             }
             let mut chain: Vec<&Dict> = Vec::new();
             let mut node = Some(pd);
             for _ in 0..=doc.limits.depth_cap() {
                 let Some(d) = node else { break };
                 if let Some(rv) = d.get("Resources")
-                    && let Some(rd) = u.resources(rv, true)
+                    && let Some(rd) = u.resources(rv)
                 {
                     chain.push(rd);
                 }

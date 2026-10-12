@@ -708,6 +708,233 @@ fn painted_sources_rendered_with_a_drawn_object_are_not_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
+/// R17: [`reported_kept_image`] for the documents in which the misplaced image makes the kept file unprovable in another
+/// way too (page two's text finds no font, an appearance or soft-mask group holds an image): the image is the one
+/// painted source reported kept, `NotProven::PaintedSourceKept` is among the reasons, `region_flattened` reads false,
+/// the image bytes stay, the form nothing references is gone.
+fn reported_kept_image_too(what: &str, pdf: &[u8], red: &mut Vec<String>) {
+    let mut doc = PdfDoc::open(pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if out.painted_sources_kept != [10] {
+        red.push(format!("{what}: painted_sources_kept {:?}, expected [10] (the image)", out.painted_sources_kept));
+    }
+    if !out.not_proven_reasons().contains(&hsk_studio_press::NotProven::PaintedSourceKept) {
+        red.push(format!("{what}: not-proven reasons {:?} lack PaintedSourceKept", out.not_proven_reasons()));
+    }
+    if out.region_flattened() {
+        red.push(format!("{what}: region_flattened true with a kept, undrawn source"));
+    }
+    if gone(&out.bytes, "SCAN-PIXELS-SECRET") {
+        red.push(format!("{what}: the image was dropped (the kept reference would dangle)"));
+    }
+    if !gone(&out.bytes, "VECTOR-FORM-SECRET") {
+        red.push(format!("{what}: the form nothing references survives"));
+    }
+}
+
+/// R17: the image (object 10) stays in the file and nothing is reported, because a kept page DRAWS it.
+fn silent_drawn_image(what: &str, pdf: &[u8], red: &mut Vec<String>) {
+    let mut doc = PdfDoc::open(pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if !out.painted_sources_kept.is_empty() {
+        red.push(format!("{what}: reported kept {:?} although a kept page draws it", out.painted_sources_kept));
+    }
+    if !out.region_flattened() {
+        red.push(format!("{what}: region_flattened false (residual {}, not proven {:?})", out.residual_in_region, out.not_proven_reasons()));
+    }
+    if gone(&out.bytes, "SCAN-PIXELS-SECRET") {
+        red.push(format!("{what}: a drawn image was dropped"));
+    }
+}
+
+/// R17: kept page two takes the extra entries `keys` (no `/Annots`), the extra objects `more` and runs `content` before
+/// its text; `annots` are the numbers of the annotations in `more` that it lists. The image (object 10) is placed or
+/// named where a viewer does not draw it (or does not draw it as an image): it stays and is reported. The same
+/// document in which a kept page also DRAWS the image keeps it silently: a draw, not a position, is what makes a
+/// source certain. The draw is the appearance form (object 34) of one more annotation (33) page two lists: it names
+/// the image in its own `/Resources`, so it does not depend on the page's resources the case replaces.
+fn reported_unless_drawn(what: &str, keys: &str, content: &str, more: Vec<(u32, Vec<u8>)>, annots: &[u32], red: &mut Vec<String>) {
+    let text = format!("{content} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+    let list = |extra: &[u32]| {
+        let all: Vec<String> = annots.iter().chain(extra).map(|n| format!("{n} 0 R")).collect();
+        if all.is_empty() { String::new() } else { format!("/Annots [{}]", all.join(" ")) }
+    };
+    reported_kept_image_too(what, &painted_doc_with("inherited", &text, "", &format!("{keys} {}", list(&[])), more.clone()), red);
+    let stamp = b"<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R /AP << /N 34 0 R >> >>".to_vec();
+    let appearance = stream_body(
+        "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 10 0 R >> >>",
+        b"q 100 0 0 100 0 0 cm /Im1 Do Q",
+    );
+    let mut drawn = more;
+    drawn.extend([(33, stamp), (34, appearance)]);
+    silent_drawn_image(
+        &format!("{what}, and an annotation appearance page two lists draws it"),
+        &painted_doc_with("inherited", &text, "", &format!("{keys} {}", list(&[33])), drawn),
+        red,
+    );
+}
+
+/// R17 (P1): the image is a kept page's `/Resources` value, or a drawn form's. A resource dictionary is reached by
+/// position, not drawn: the image stays and is reported (a viewer draws nothing from it).
+#[test]
+fn painted_source_placed_as_a_resources_value_is_reported() {
+    let mut red: Vec<String> = Vec::new();
+    reported_unless_drawn("the image is page two's /Resources value", "/Resources 10 0 R", "", Vec::new(), &[], &mut red);
+    let form = stream_body("/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources 10 0 R", b"0 g 0 0 10 10 re f");
+    reported_unless_drawn(
+        "the image is the /Resources value of a form page two draws",
+        "/Resources << /Font << /F1 6 0 R >> /XObject << /Fx 40 0 R >> >>",
+        "q /Fx Do Q",
+        vec![(40, form)],
+        &[],
+        &mut red,
+    );
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R17 (P1): the image is the value of a gated key of a kept page's `/Resources` (`/XObject 10 0 R`, `/ExtGState 10 0 R`)
+/// where a sub-dictionary of names belongs: reached by position, no name selects it, no draw.
+#[test]
+fn painted_source_placed_as_a_gated_sub_dictionary_is_reported() {
+    let mut red: Vec<String> = Vec::new();
+    for (what, keys) in [
+        ("the image is page two's /XObject value", "/Resources << /Font << /F1 6 0 R >> /XObject 10 0 R >>"),
+        ("the image is page two's /ExtGState value", "/Resources << /Font << /F1 6 0 R >> /ExtGState 10 0 R >>"),
+    ] {
+        reported_unless_drawn(what, keys, "", Vec::new(), &[], &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R17 (P1): the image is an appearance state (or the appearance stream itself) of an annotation a kept page lists.
+/// An appearance is drawn only as a form XObject: an image there is no draw, so it stays and is reported.
+#[test]
+fn painted_source_placed_as_an_appearance_state_is_reported() {
+    let annot = |ap: &str| format!("<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R /AP << {ap} >> >>").into_bytes();
+    let mut red: Vec<String> = Vec::new();
+    for (what, ap) in [
+        ("the image is an /AP /N state value", "/N << /x 10 0 R >>"),
+        ("the image is the /AP /N stream", "/N 10 0 R"),
+        ("the image is an /AP /D state value", "/D << /x 10 0 R >>"),
+    ] {
+        reported_unless_drawn(what, "", "", vec![(30, annot(ap))], &[30], &mut red);
+    }
+    // Not an image either, but no form: a shading (object 13, a painted source because page one draws it with `sh`) as the
+    // appearance state of an annotation page two lists is not drawn as an appearance.
+    let shading = b"<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>";
+    let pdf = build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 612 792] >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Shading << /Sh1 13 0 R >> /Font << /F1 6 0 R >> >> >>".to_vec()),
+        (4, stream_body("", format!("q /Sh1 sh Q BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
+        (5, b"<< /Type /Page /Parent 2 0 R /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [30 0 R] >>".to_vec()),
+        (6, HELVETICA.to_vec()),
+        (7, stream_body("", b"BT /F1 12 Tf 72 700 Td (Page two) Tj ET")),
+        (13, shading.to_vec()),
+        (30, annot("/N << /x 13 0 R >>")),
+    ]);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if out.painted_sources_kept != [13] || out.region_flattened() {
+        red.push(format!("a shading as an /AP /N state value: painted_sources_kept {:?}, region_flattened {}, expected [13] and false", out.painted_sources_kept, out.region_flattened()));
+    }
+    if !out.not_proven_reasons().contains(&hsk_studio_press::NotProven::PaintedSourceKept) {
+        red.push(format!("a shading as an /AP /N state value: not-proven reasons {:?} lack PaintedSourceKept", out.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R17 (P1, same class): a draw makes an object certain only when it is the kind that draw needs. An operator that
+/// names the image (or an object of the wrong kind) through a resource category it does not belong to, or an
+/// object a drawn object points at as its mask, shading or soft-mask group but that is not an image, shading or
+/// form, draws nothing: the source stays and is reported.
+#[test]
+fn painted_source_named_where_it_is_not_drawn_is_reported() {
+    let font = "/Font << /F1 6 0 R /F9 10 0 R >>";
+    let mut red: Vec<String> = Vec::new();
+    for (what, keys, content, more) in [
+        ("Tf selects the image listed under /Font", format!("/Resources << {font} >>"), "BT /F9 12 Tf ET", Vec::new()),
+        ("gs names the image listed under /ExtGState", "/Resources << /Font << /F1 6 0 R >> /ExtGState << /G9 10 0 R >> >>".to_string(), "/G9 gs", Vec::new()),
+        ("sh names the image listed under /Shading", "/Resources << /Font << /F1 6 0 R >> /Shading << /S9 10 0 R >> >>".to_string(), "/S9 sh", Vec::new()),
+        (
+            "scn names the image listed under /Pattern",
+            "/Resources << /Font << /F1 6 0 R >> /Pattern << /P9 10 0 R >> >>".to_string(),
+            "/Pattern cs /P9 scn 100 100 50 50 re f",
+            Vec::new(),
+        ),
+        (
+            "the /SMask /G group of a drawn graphics state is the image",
+            "/Resources << /Font << /F1 6 0 R >> /ExtGState << /G1 41 0 R >> >>".to_string(),
+            "/G1 gs",
+            vec![(41, b"<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G 10 0 R >> >>".to_vec())],
+        ),
+        (
+            "the /Shading of a drawn shading pattern is the image",
+            "/Resources << /Font << /F1 6 0 R >> /Pattern << /P1 42 0 R >> >>".to_string(),
+            "/Pattern cs /P1 scn 100 100 50 50 re f",
+            vec![(42, b"<< /PatternType 2 /Shading 10 0 R >>".to_vec())],
+        ),
+    ] {
+        reported_unless_drawn(what, &keys, content, more, &[], &mut red);
+    }
+    // The /SMask of a drawn image is the vector form (object 11): not an image, so not rendered with it.
+    let drawn_image = stream_body("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 11 0 R", &[0u8]);
+    let pdf = painted_doc_with(
+        "inherited",
+        "q 10 0 0 10 400 100 cm /Ix Do Q BT /F1 12 Tf 72 700 Td (Page two) Tj ET",
+        "",
+        "/Resources << /Font << /F1 6 0 R >> /XObject << /Ix 43 0 R >> >>",
+        vec![(43, drawn_image)],
+    );
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if out.painted_sources_kept != [11] {
+        red.push(format!("the /SMask of a drawn image is a form: painted_sources_kept {:?}, expected [11]", out.painted_sources_kept));
+    }
+    if out.not_proven_reasons() != [hsk_studio_press::NotProven::PaintedSourceKept] || out.region_flattened() {
+        red.push(format!("the /SMask of a drawn image is a form: reasons {:?}, region_flattened {}", out.not_proven_reasons(), out.region_flattened()));
+    }
+    if gone(&out.bytes, "VECTOR-FORM-SECRET") {
+        red.push("the /SMask of a drawn image is a form: the form was dropped (the kept reference would dangle)".into());
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R17 (V-1): a name resolves to ONE resource entry, the nearest in the chain of the scope (own `/Resources` before an
+/// ancestor node's, as a viewer that merges them reads it). The page tree has two branches: the flattened page one
+/// under node 20, page two under node 21 whose `/Resources` (object 9, shared with page one) lists `/Im1` as the region
+/// image (object 10); the flatten step strips the resources of page one's ancestors, not of node 21. Page two lists its
+/// own `/Im1` (object 40, a different image) and draws `/Im1`: the draw resolves to 40, so the shadowed ancestor entry
+/// (10) is reached, not drawn: it stays and is reported. The control lists the region image under a name nothing
+/// shadows (`/Ib`) and draws that name: silent.
+#[test]
+fn painted_source_shadowed_by_a_nearer_resource_entry_is_reported() {
+    let other_image = stream_body("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", &[0u8]);
+    let two_branches = |own_xobjects: &str, draw: &str| {
+        build(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [20 0 R 21 0 R] /Count 2 /MediaBox [0 0 612 792] >>".to_vec()),
+            (20, b"<< /Type /Pages /Parent 2 0 R /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (21, b"<< /Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 /Resources 9 0 R >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 20 0 R /Contents 4 0 R /Resources 9 0 R >>".to_vec()),
+            (4, stream_body("", format!("q 612 0 0 792 0 0 cm /Im1 Do Q q /Fm9 Do Q BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
+            (5, format!("<< /Type /Page /Parent 21 0 R /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> /XObject << {own_xobjects} >> >> >>").into_bytes()),
+            (6, HELVETICA.to_vec()),
+            (7, stream_body("", format!("{draw} BT /F1 12 Tf 72 700 Td (Page two) Tj ET").as_bytes())),
+            (9, b"<< /XObject << /Im1 10 0 R /Fm9 11 0 R >> /Font << /F1 6 0 R >> >>".to_vec()),
+            (10, stream_body("/Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"SCAN-PIXELS-SECRET")),
+            (11, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /HskMarker (VECTOR-FORM-SECRET)", b"0 g 100 690 50 20 re f")),
+            (40, other_image.clone()),
+        ])
+    };
+    let mut red: Vec<String> = Vec::new();
+    let shadowed = two_branches("/Im1 40 0 R", "q 10 0 0 10 400 100 cm /Im1 Do Q");
+    reported_kept_image("node 21's /Im1 (the region image) is shadowed by page two's own /Im1", &shadowed, &mut red);
+    let unshadowed = two_branches("/Im1 40 0 R /Ib 10 0 R", "q 10 0 0 10 400 100 cm /Ib Do Q");
+    silent_drawn_image("page two draws the region image under a name nothing shadows", &unshadowed, &mut red);
+    assert!(red.is_empty(), "{red:#?}");
+}
+
 /// R14-P1, R16 (V4-07): the DESCRIPTOR sentence about what happens to a painted source names the kept-by-reference
 /// cases and cites tests that exist.
 #[test]
@@ -716,12 +943,22 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
     for needle in [
         "R14-P1",
         "R16",
+        "R17",
         "unless a kept page, or an annotation appearance a kept page lists, draws them",
-        "a kept object only references it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, any plain reference)",
+        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, an object used as a /Resources value, as a gated sub-dictionary or as an appearance state, a name an operator uses for an object of another kind, any plain reference)",
+        "the Do, sh, scn/SCN, gs and Tf targets of its content and of the content of what it draws in turn (forms, patterns, soft-mask groups, Type 3 glyph procedures), each of the kind its operator draws (Do an image or form stream, sh a shading, scn/SCN a pattern, gs and Tf a plain dictionary)",
+        "the form XObject appearance streams of the annotations it lists (/AP /N /R /D, state dictionaries included; annotation flags and /AS are not read)",
         "painted_source_referenced_by_a_kept_catalog_structure_is_reported",
         "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
         "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
         "painted_sources_rendered_with_a_drawn_object_are_not_reported",
+        "painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported",
+        "painted_source_placed_as_a_resources_value_is_reported",
+        "painted_source_placed_as_a_gated_sub_dictionary_is_reported",
+        "painted_source_placed_as_an_appearance_state_is_reported",
+        "painted_source_named_where_it_is_not_drawn_is_reported",
+        "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
+        "a name resolves to the nearest entry of its category in the resource chain, an entry a nearer entry of the same name shadows is reached, not drawn",
     ] {
         assert!(hsk_studio_press::DESCRIPTOR.contains(needle), "DESCRIPTOR lacks {needle:?}");
     }
@@ -730,6 +967,12 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
         "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
         "painted_sources_rendered_with_a_drawn_object_are_not_reported",
+        "painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported",
+        "painted_source_placed_as_a_resources_value_is_reported",
+        "painted_source_placed_as_a_gated_sub_dictionary_is_reported",
+        "painted_source_placed_as_an_appearance_state_is_reported",
+        "painted_source_named_where_it_is_not_drawn_is_reported",
+        "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
     ] {
         assert!(source.contains(&format!("fn {cited}()")), "the cited test {cited} does not exist");
     }
