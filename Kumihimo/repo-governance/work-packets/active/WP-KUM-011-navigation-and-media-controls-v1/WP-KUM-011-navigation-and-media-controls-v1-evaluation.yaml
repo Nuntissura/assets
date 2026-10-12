@@ -7,17 +7,16 @@ verdict: PASS_SCOPED_RUNTIME
 cases_frozen: true
 report_frozen_for_publication: true
 baseline_revision: 451f7c13cb7527b9f831c4f16854ce4638d75a04
-spec_revision: 14
+spec_revision: 15
 scope: Complete original WP011 four-mode navigation/transient drag/rail-thumb/provider media/reduced-work
   stub preserved; twelve frozen headless cases cover NAVIGATION6/BACKGROUNDS4/INPUT4 and CHROME004/005
   settings anchors. Complete host GUI/decoder/input/accessibility/physical/platform requirement acceptance
   remains open.
-authority_limit: Published full WP011 contract and Spec14 DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2 select
-  the implementation boundary. Existing twelve frozen cases add no product authority or acceptance gate.
-  Independent runtime evaluation is PASS_SCOPED_RUNTIME on551ea5731931611f5a5a24f5c422684247edbdfb with
-  F01 resolved; prior preparation verdict is historical. Lead owns final outcome/current views/status
-  publication and independent origin containment before WP done. Actual GUI/engines/physical/platform
-  acceptance remains open.
+authority_limit: Published full WP011 contract and accepted self-contained spec select the implementation
+  boundary; all twelve frozen cases remain unchanged. Independent runtimePASS_SCOPED_RUNTIME on551ea5731931611f5a5a24f5c422684247edbdfb/F01resolved;
+  independent scoped outcomecontainmentPASS on0871701e19f3bb44ff60c19fd98d3b84b65227ca. Preparation verdict/binding
+  historical. Leadowns publicationof thisupdatedreport and finalstate/DONE. ActualGUI/engines/physical/platform/fullrequirement
+  acceptanceopen.
 inspected_sources:
 - repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
 - repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
@@ -587,9 +586,8 @@ reuse_plan:
 coordination:
   coder_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
   dependencies_thread: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
-  status: Original12frozencases reconciled on exact551ea57. Lead/coder03/diagnostics coordinatedF01; natural005RED→GREEN
-    and existing009regressions inspected, F01resolved. Reportfrozenforpublication; leadownsfinaloutcome/currentviews
-    and scopedorigincontainment.
+  status: Original12frozencases/F01resolved/current551runtimePASS and exact0871701outcomecontainment verified.
+    Updatedreportfrozenforleadpublication/finalsettlement; no extraCargo/gate/product/state/spec mutation.
 INDEPENDENT_FINDINGS:
 - finding_id: EVAL-KUM-011-F01
   priority: P1
@@ -630,11 +628,11 @@ INDEPENDENT_FINDINGS:
   green_log: .local/kumihimo-controls/proof/f01-551ea5731931.log
   green_log_sha256: dbc5e3edf7f300e79ab084059feb24a60d80fc890b116f60c9f09889e3287888
 RESIDUAL_UNCERTAINTY:
-- Lead finaloutcome/currentviews/status/origincontainment stillpending; runtimePASS doesnotprove finalWPdone.
-- ActualGUI/readability/accessibility/nativeinput/focus/capture/decoders/poster/audio/physicalresources/performance/unobservedplatforms
-  remain hostadapterproof.
-next_action: Holdfinalscopedruntime report bytes/hash forleadpublication; independentlyinspectexactpublishedoutcome/currentviews/containedreport
-  whenleadsupplies them. No furtherCargo absentchangedinputs/findings.
+- Updatedcontainmentreport publication and finalWPstate settlement remain leadowned; thisreport doesnotmarkDONE.
+- ActualGUI/readability/accessibility/nativeinput/focus/capture/decoders/poster/audio/physicalresources/performance/unobservedplatforms/fullrequirement
+  acceptance remain hostadapterproof.
+next_action: Holdupdatedcontainmentreport bytes/hash; leadpublish exactreport and finalstate. No furtherinspection/Cargo
+  absentchangedinputs or concretefailure.
 architecture_alignment:
   status: selected_by_lead_full_contract_and_self_contained_spec
   package_direction: '[WP011-R002] Advance unreleased kumihimo-content to0.2 with independent Cargo features
@@ -727,7 +725,7 @@ non_case_contract_coverage:
     inspection; four selected compile configurations, one all-feature owning-target batch and quiet example;
     full99/stub/six-file archive comparison and final state/board/source containment. These are existing
     contract obligations, not additional case IDs or gates.
-  status: PASS_SCOPED_RUNTIME_A013; FINAL_OUTCOME_A014_PENDING_PUBLICATION
+  status: PASS_SCOPED_RUNTIME_A013_AND_OUTCOME_CONTAINMENT_A014; FINAL_LEAD_SETTLEMENT_PENDING
 boundary_decisions:
 - decision_id: EVAL-KUM-011-D01
   status: selected_by_published_lead_contract
@@ -839,7 +837,7 @@ proof_plan:
   - python repo-governance/repo-scripts/sync.py --check
   - git diff --check -- Kumihimo
   - git ls-remote origin refs/heads/codex/handpick
-  runtime_status: PASS_SCOPED_RUNTIME; FINAL_OUTCOME_PUBLICATION_PENDING
+  runtime_status: PASS_SCOPED_RUNTIME_AND_OUTCOME_CONTAINMENT; FINAL_REPORT_PUBLICATION_PENDING
 risk_tier: HIGH
 runtime_binding:
   source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
@@ -875,8 +873,8 @@ runtime_binding:
     does not affect proof.
   dependency_inputs: 29protected Core/JSON/workspace files unchanged vs734c9fc;14lock entries, only content0.1→0.2
     changed, other13records exact. No external dependency.
-  outcome_containment: Lead finaloutcome/currentviews publication and independent scoped containment pending;
-    PASS is headless runtime evaluation, not WPdone or completeGUI/engine acceptance.
+  outcome_containment: PASS scoped publishedoutcome0871701 verified; exactprevious052630ac runtime report
+    contained. Updatedcontainmentreport publication/finalleadstate pending.
 DIFF_ATTACK_SURFACES:
 - Protocol2/public0.2 typed-target and independently gated producer/consumer migration.
 - Canonical real transition to relevant gesture/geometry invalidation.
@@ -898,6 +896,10 @@ INDEPENDENT_CHECKS_RUN:
   observed: Onlyrouting9b55f61a changed betweenREDceab0b9 andGREEN551ea57; same005consumer, all46otherproductinputs
     exact. Current47blobs/fence and8actualRED/currentlogs checked. Existing009 geometry proof distinguishes
     unchangedcanonicalordinal from changedretainedpacking.
+- check: Requested scoped finaloutcome containment only
+  observed: Freshorigin0871701/22canonicalblobs exact;99fullorderedrecords/6rawSpec14archivefiles preserved;23R14A/12frozen
+    definitions/DECv2selectedprefix exact;46runtimeproductinputs551 unchanged, onlymanualdelta. CurrentSpec15/master15/roadmap14/matrix6/topology/derivedviews
+    honestheadlessscope.
 COUNTERFACTUAL_CHECKS:
 - If navigation_move used expanded map origin instead of captured press/travel, expansion/drag anchor
   would jump; current delta gives630request with620actual kept separate.
@@ -927,12 +929,13 @@ NEGATIVE_PATH_CHECKS:
   preserved; exposedoldgeometryACK rejects whilebusy/reservationheld. Currentpublicassertions/logs inspected.'
 conclusions:
   tests: PASS:owning005RED→GREEN,fourfreshfeaturechecks,24publictests,quietexample at551ea57.
-  requirement_alignment: PASS for selectedheadless23R/14A scope; original12cases/16specrefs preserved,F01resolved.
-    Finaloutcome/status/origincontainment obligations remain pendingleadpublication.
+  requirement_alignment: PASS selectedheadless23R/14A scope;12frozen cases/99fullrecords preserved,F01resolved
+    and scopedSpec15/outcome0871701 containment verified. ActualGUI/provider/fullrequirement acceptanceopen.
   code_quality: Oneboundedcontroller, typedactual/Unknown, retainedcopyadmission/sharedMIN/cleanup checked;
     narrowmovementfix no newpostcommiterrors. No unresolvedindependentfinding in evaluatedscope.
   environment: ObservedWindowsx64headless; actualGUI/engines/physicalresources/otherplatform acceptanceopen.
-  final: PASS_SCOPED_RUNTIME; does notmarkWPdonebefore publishedoutcomecontainment.
+  final: PASS_SCOPED_RUNTIME plus PASS_SCOPED_OUTCOME_CONTAINMENT; leadowns finalreportpublication and
+    WPstate/DONE.
 prior_runtime_observation:
   source_revision: 9e69ab98feb1609fe9df169efc0e64b158ebfc68
   runtime_state_revision: 22871602d72f355b391ca6eda46d78cf928a9229
@@ -964,3 +967,71 @@ prior_runtime_observation:
   dependency_inputs: 29protected Core/JSON/workspace files unchanged vs734c9fc;14lock entries, only content0.1→0.2
     changed, other13records exact. No external dependency.
   outcome_containment: Pending lead final outcome/current views publication.
+runtime_contract_spec_revision: 14
+outcome_containment:
+  outcome_revision: 0871701e19f3bb44ff60c19fd98d3b84b65227ca
+  origin_ref: refs/heads/codex/handpick
+  origin_observation: Fresh git ls-remote exact0871701e19f3bb44ff60c19fd98d3b84b65227ca matched local
+    HEAD; all22changed canonical Git blobs independently reread equal raw local files before thisownedreport
+    update.
+  previous_runtime_report_contained_sha256: 052630ac206f1a8fbd1ab646f6d2bd01ca5c69887c66b2f0767449fc34eadec1
+  canonical_blob_sha256:
+    Kumihimo/product/README.md: 127433eac5906e170d966985d207133a7191dea76c43952954401dbcaabaf917
+    Kumihimo/repo-governance/codex/build-rules/current/build-rules.yaml: 4089be3440d1f9a415a19df7e88e096d5246f7a99c9fc0c747486bcf20cbb663
+    Kumihimo/repo-governance/registry/ids.yaml: f5ad67b525139c6e556f14e50915a6dee81fdc73a134a423ad4c023efa3d352f
+    Kumihimo/repo-governance/registry/work-packets.yaml: 632de4b7e9a27ad40e809303c65a9ca82095beeb1c768a13163f66598ec8883f
+    Kumihimo/repo-governance/sessions/current.yaml: 168fff262d0ceaa2d2509e682e435a51bfa63c1d095632e94edd9e9abf0a70a1
+    Kumihimo/repo-governance/specification/current/INDEX.json: 1c07224fdd41e1f563353069cd970a456d65f293b2dcfa6ec4ac91f7dbc3f4c3
+    Kumihimo/repo-governance/specification/current/primitive-feature-mix-matrix.json: bb4097710f6afccd6cbdcc232cc4fc81ee11a6d3d0e3dc3e59a82e2f8daaa236
+    Kumihimo/repo-governance/specification/current/primitive-list.json: d852d8e3c238c702c45daf172517a8f08bbae6f7938facd5efe5efc04dc1ca83
+    Kumihimo/repo-governance/specification/current/spec-modules/master-spec.md: 37f0c284a7dc50f843f17c81ceae7bad514e5372b51cbc58c081d948faf7a6be
+    Kumihimo/repo-governance/specification/current/spec-modules/roadmap.md: 1318085652e4320e86f7579f50884d8a31939cce6a774a308c5685f542b8815e
+    Kumihimo/repo-governance/specification/current/specification.yaml: 9b3adc5faf50bc7d5b023d8900c16ccef1271c20c3ab1d13afd16ccf6430adc9
+    Kumihimo/repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de/INDEX.json: 9c3f5237c8b376fed5b2fbb94f0f8594660fafbedac6d9471653338c570529ff
+    ? Kumihimo/repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de/primitive-feature-mix-matrix.json
+    : a4aad553ffb86d3f20bb8d6cfedb2c8bd4641a803443da97a8e89bbaaddc4813
+    Kumihimo/repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de/primitive-list.json: d59655f3b6fdead724eaaa976656be551e14c1fda2f189ab41909b5cf618664f
+    Kumihimo/repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de/spec-modules/master-spec.md: 960a3ee9c3558a70809d611b0a28e51f67fbe2bf18d506276eb662009c77ae3b
+    Kumihimo/repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de/spec-modules/roadmap.md: 65a79a568394fdf982ffd9c9c70e1c2667dd04cbefd3e3c71dbf1c04cf5801d5
+    Kumihimo/repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de/specification.yaml: 6fe410c654faf5a801f7c6bcfffa1ff6d353cee0d1a65075140390c8f80e278a
+    Kumihimo/repo-governance/taskboard/taskboard.yaml: b1854d7f954d74f6a8a22ba7a3a1f446aaedccb2bb5fd26fb5d497e170ceabfa
+    Kumihimo/repo-governance/topology/links.yaml: 6902566279126ca8f24ce852c539281b5a6645f44c5588103c8b01251a353614
+    Kumihimo/repo-governance/topology/product.yaml: be5e1ea6e14f4382caf54ef20cd5b0eaf560fd858639b4c7ea1ebe8cb9a0611c
+    ? Kumihimo/repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-evaluation.yaml
+    : 052630ac206f1a8fbd1ab646f6d2bd01ca5c69887c66b2f0767449fc34eadec1
+    ? Kumihimo/repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
+    : d7e9a2b1c448ef1dc1b47080d642063df4f5b8b342f8d4470b54cc6ea5187421
+  spec_revision: 15
+  master_revision: 15
+  roadmap_revision: 14
+  matrix_revision: 6
+  matrix_entry_count: 5
+  archive_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de
+  archive_verification: Exactlysixrawfiles equal corresponding currentSpec14 Gitblobs at449dfd41f3de5f3999cda74787407a706cf84cfa;
+    all99fullordered requirementrecords unchanged. Original23R/14A contract rawSHA10e9e087 and all12frozen
+    case definition/control/ref fields exact734c9fc. DECv2 retains entireprior14decision as exactprefix,
+    allR002-R022 exact and otherfields unchanged; onlyappended observed551headless attestation matches
+    inspectedruntimeproof/limits.
+  archive_sha256:
+    INDEX.json: 9c3f5237c8b376fed5b2fbb94f0f8594660fafbedac6d9471653338c570529ff
+    primitive-feature-mix-matrix.json: a4aad553ffb86d3f20bb8d6cfedb2c8bd4641a803443da97a8e89bbaaddc4813
+    primitive-list.json: d59655f3b6fdead724eaaa976656be551e14c1fda2f189ab41909b5cf618664f
+    spec-modules/master-spec.md: 960a3ee9c3558a70809d611b0a28e51f67fbe2bf18d506276eb662009c77ae3b
+    spec-modules/roadmap.md: 65a79a568394fdf982ffd9c9c70e1c2667dd04cbefd3e3c71dbf1c04cf5801d5
+    specification.yaml: 6fe410c654faf5a801f7c6bcfffa1ff6d353cee0d1a65075140390c8f80e278a
+  runtime_product_containment: Only productREADME differs from551ea57; other46rawruntime inputs exactGitblobs/currentfiles.
+    Manualdelta onlyadds observedscopedproof and hostboundaries; validruntimeproof reused, no freshCargo
+    required.
+  runtime_46_inputs_sha256: 936cb3e5bc62ad74c2ed0cb224e473952d2d24ed37542543d2a4ac57267f5fb4
+  outcome_product_47_sha256: 4789b7ba619687b675bd03590332920157cbb62935e62ce0d9805353fb510ce3
+  digest_encoding: Case-preserving Git-root-relative POSIX path:raw-byte SHA256 rows, Python lexical sorted(files.items()),
+    LF join without trailing newline, UTF8 SHA256.
+  current_views: Spec15/master15/roadmap14/indexdigests and derivedprimitive projections revision15 inspected.
+    Roadmap18features:15partial/3planned; fullacceptance open; affectedCHROME/CONTENT/NAVIGATION/BACKGROUNDS/INPUT
+    scoped551proof. Matrixrevision6 preservesfourpriorentries exactly and adds551navigation-media entry,
+    totalfive. Onecontroller/newmodules/24consumers/quietexample topologylinks/manual inspected; originalrecordingexample
+    runtime correctlyhistoricalba2d618/currentprotocol2compile551. Taskboard/registry matchactiveWPstate
+    awaiting evaluatorcontainment/finalleadsettlement, no prematureDONE.
+  finding_status: F01RESOLVED; no newfinding in scopedoutcome bundle.
+  final_report_settlement: Updatedcontainmentreport frozenforleadpublication; leadowns finalstate/DONE.
+    Thisobservation doesnotselfprove publicationofitsownnewbytes.
