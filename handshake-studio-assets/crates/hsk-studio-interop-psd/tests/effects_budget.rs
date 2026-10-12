@@ -2,8 +2,10 @@
 //! import because of its effect count, under any code. Pigment owns the effect limits (`MAX_EFFECTS_PER_LAYER` = 64,
 //! `MAX_EFFECTS_PER_PLAN` = 4096). A render plan counts only the ENABLED instances of an ENABLED stack on a layer
 //! that is VISIBLE with all its groups (composite `convert_effects` and `lower_inner`, pigment
-//! `PlanExtensions::validate`; the evidence is at the top of `src/effects.rs`), and the importer counts the same
-//! way. A stack that does not fit is not mapped (its `lfx2` block stays byte-exact) and the layer reports a typed
+//! `PlanExtensions::validate`; the evidence is at the top of `src/effects.rs`), and the importer counts by the same
+//! visibility rule, which over-counts a visible layer with no pixels and a visible clipped layer whose base is hidden
+//! or empty (test `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases`; nested
+//! groups: `nested_hidden_groups_hide_every_descendant_until_the_outermost_closes`). A stack that does not fit is not mapped (its `lfx2` block stays byte-exact) and the layer reports a typed
 //! loss: `effects_over_budget` (per layer, or past Folio's own per-stack ceiling),
 //! `effects_over_document_budget` (counted instances past the plan limit: the crossing stack and every later
 //! stack that has counted instances) or `effects_unrendered_over_document_budget` (the kept instances no plan counts
@@ -210,12 +212,14 @@ fn doc_with_effect_counts(counts: &[usize]) -> Vec<u8> {
 
 // ---- stacks with switches, layers and groups in PANEL order (top-most first) ------------------
 
-/// One effect stack: the enable switch of each instance, the stack's master switch, the layer's visibility.
+/// One effect stack: the enable switch of each instance, the stack's master switch, the layer's visibility and whether
+/// the layer is clipped to the layer below it.
 #[derive(Clone)]
 struct Fx {
     enabled: Vec<bool>,
     master: bool,
     hidden: bool,
+    clipped: bool,
 }
 impl Fx {
     /// `n` enabled instances in an enabled stack on a visible layer.
@@ -230,6 +234,7 @@ impl Fx {
             enabled,
             master: true,
             hidden: false,
+            clipped: false,
         }
     }
     /// `n` switched-off instances.
@@ -242,6 +247,11 @@ impl Fx {
     }
     fn master_off(mut self) -> Self {
         self.master = false;
+        self
+    }
+    /// Clipped to the layer below it in the panel (its clip base).
+    fn clipped(mut self) -> Self {
+        self.clipped = true;
         self
     }
     fn lfx2(&self) -> Vec<u8> {
@@ -262,7 +272,15 @@ impl Fx {
 }
 enum Node {
     Layer(Fx),
-    Group { hidden: bool, children: Vec<Fx> },
+    Group {
+        hidden: bool,
+        children: Vec<Fx>,
+    },
+    /// A group whose children are nodes themselves, so groups nest (panel order, top-most first).
+    Nested {
+        hidden: bool,
+        children: Vec<Node>,
+    },
 }
 /// The name of the `n`th stack layer of a [`build`] document, counting in panel order.
 fn name_of(n: usize) -> String {
@@ -289,31 +307,43 @@ fn folder(hidden: bool) -> TLayer {
     }
     l
 }
-/// The document of `nodes` given in panel order (top-most first); the stack layers are named `L0`, `L1`, ... in
-/// that order, a group's children continuing the numbering.
-fn build(nodes: &[Node]) -> Vec<u8> {
-    let mut next = 0usize;
-    let mut stack_layer = |fx: &Fx| {
-        let layer = effects_layer(leaked(name_of(next)), fx.hidden, fx.lfx2());
-        next += 1;
-        layer
-    };
+/// The stack layer of `fx`, named after `next` (which it advances).
+fn stack_layer(fx: &Fx, next: &mut usize) -> TLayer {
+    let mut layer = effects_layer(leaked(name_of(*next)), fx.hidden, fx.lfx2());
+    if fx.clipped {
+        layer.clipping = 1;
+    }
+    *next += 1;
+    layer
+}
+/// The layers of `nodes` (panel order, top-most first) in FILE order (bottom to top); groups nest.
+fn file_layers(nodes: &[Node], next: &mut usize) -> Vec<TLayer> {
     let mut panel: Vec<Vec<TLayer>> = Vec::new();
     for node in nodes {
         panel.push(match node {
-            Node::Layer(fx) => vec![stack_layer(fx)],
+            Node::Layer(fx) => vec![stack_layer(fx, next)],
             Node::Group { hidden, children } => {
-                let kids: Vec<TLayer> = children.iter().map(&mut stack_layer).collect();
+                let kids: Vec<TLayer> = children.iter().map(|fx| stack_layer(fx, next)).collect();
                 // file order of one group: bounding divider, children bottom to top, folder
                 let mut file = vec![divider()];
                 file.extend(kids.into_iter().rev());
                 file.push(folder(*hidden));
                 file
             }
+            Node::Nested { hidden, children } => {
+                let mut file = vec![divider()];
+                file.extend(file_layers(children, next));
+                file.push(folder(*hidden));
+                file
+            }
         });
     }
-    let file: Vec<TLayer> = panel.into_iter().rev().flatten().collect();
-    doc_of(&file)
+    panel.into_iter().rev().flatten().collect()
+}
+/// The document of `nodes` given in panel order (top-most first); the stack layers are named `L0`, `L1`, ... in
+/// that order, a group's children continuing the numbering.
+fn build(nodes: &[Node]) -> Vec<u8> {
+    doc_of(&file_layers(nodes, &mut 0))
 }
 fn layers_of(fxs: impl IntoIterator<Item = Fx>) -> Vec<Node> {
     fxs.into_iter().map(Node::Layer).collect()
@@ -952,6 +982,7 @@ fn the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_
                 enabled: vec![false, true, false, true, true],
                 master: true,
                 hidden: false,
+                clipped: false,
             };
             let mut panel = layers_of(hidden());
             panel.extend(layers_of([
@@ -1066,6 +1097,154 @@ fn the_counted_bound_never_costs_a_stack_without_counted_instances_its_record() 
             );
             assert_record_need_is_exact(&p);
         },
+    );
+}
+
+/// PLR-065 (R11 pre-review): groups nest, and a layer is uncounted while ANY group around it is hidden. The importer
+/// keeps a depth count of the hidden groups it is inside (a boolean would be cleared by the first group that closes).
+/// With the counted total at the plan limit: everything inside a hidden group stays uncounted (so it is kept) after an
+/// inner hidden group closes, and inside a visible group nested in a hidden one; the first layer after the outermost
+/// hidden group closes counts again and crosses the cap. The second document is the other order: a hidden group inside
+/// a visible one hides only its own children.
+#[test]
+fn nested_hidden_groups_hide_every_descendant_until_the_outermost_closes() {
+    bounded_case(
+        "nested_hidden_groups_hide_every_descendant_until_the_outermost_closes",
+        || {
+            let full = || layers_of(repeated(MAX_EFFECTS_PLAN_LAYERS, Fx::live(MAX_EFFECTS_PER_LAYER)));
+            let first = MAX_EFFECTS_PLAN_LAYERS;
+            let live = || Fx::live(MAX_EFFECTS_PER_LAYER);
+            let kept = Fate::Kept(MAX_EFFECTS_PER_LAYER);
+
+            // hidden outer { hidden inner { L }, L, visible mid { L } }, then a visible layer
+            let mut panel = full();
+            panel.push(Node::Nested {
+                hidden: true,
+                children: vec![
+                    Node::Nested {
+                        hidden: true,
+                        children: vec![Node::Layer(live())],
+                    },
+                    Node::Layer(live()),
+                    Node::Nested {
+                        hidden: false,
+                        children: vec![Node::Layer(live())],
+                    },
+                ],
+            });
+            panel.push(Node::Layer(Fx::live(1)));
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert_fates(
+                &p,
+                &[
+                    (first - 1, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                    (first, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                    (first + 1, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                    (first + 2, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                    (first + 3, Fate::Lost(OVER_DOCUMENT)),
+                ],
+            );
+            assert_eq!(
+                kept_total(&p),
+                MAX_EFFECTS_PER_PLAN + 3 * MAX_EFFECTS_PER_LAYER,
+                "4096 counted + the three layers inside the hidden outer group"
+            );
+            assert_record_need_is_exact(&p);
+
+            // visible outer { hidden inner { L }, L }: the layer after the inner group counts
+            let mut panel = full();
+            panel.push(Node::Nested {
+                hidden: false,
+                children: vec![
+                    Node::Nested {
+                        hidden: true,
+                        children: vec![Node::Layer(live())],
+                    },
+                    Node::Layer(live()),
+                ],
+            });
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert_fates(&p, &[(first, kept), (first + 1, Fate::Lost(OVER_DOCUMENT))]);
+            assert_eq!(
+                kept_total(&p),
+                MAX_EFFECTS_PER_PLAN + MAX_EFFECTS_PER_LAYER,
+                "4096 counted + the layer inside the hidden inner group"
+            );
+        },
+    );
+}
+
+/// PLR-064 (R11 pre-review): the importer counts by visibility alone, so it counts two kinds of layer that no render plan
+/// counts: a visible layer with no pixels (composite builds no node for it) and a visible clipped layer whose clip base
+/// is hidden or empty (composite drops it with its base). This is the documented over-count (`effects.rs`,
+/// `ProposalConfig::budget`, DESCRIPTOR `effect_limits`). Every layer here has no tiles (asserted), so with the counted
+/// total at the plan limit a plan would count 0; the importer's stacks are lost as for any visible layer, per document
+/// and per layer, and the clipped layers on a hidden base and on an empty (visible, no-pixel) base are counted too.
+#[test]
+fn the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases() {
+    bounded_case(
+        "the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases",
+        || {
+            let first = MAX_EFFECTS_PLAN_LAYERS;
+            let full = || layers_of(repeated(first, Fx::live(MAX_EFFECTS_PER_LAYER)));
+
+            // (a) visible layers with no pixels: 64 x 64 count, the next layer crosses the cap, a 65-instance layer is
+            // over the per-layer limit
+            let mut panel = full();
+            panel.extend(layers_of([Fx::live(1)]));
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert!(p.tiles.is_empty(), "no layer of this document has pixels");
+            assert_fates(&p, &[(first - 1, Fate::Kept(MAX_EFFECTS_PER_LAYER)), (first, Fate::Lost(OVER_DOCUMENT))]);
+            let (_, p) = import(&build(&layers_of([Fx::live(MAX_EFFECTS_PER_LAYER + 1)]))).expect("imports");
+            assert!(p.tiles.is_empty());
+            assert_fates(&p, &[(0, Fate::Lost(OVER_LAYER))]);
+
+            // (b) a clipped layer above a hidden base, and above an empty visible base (switched-off instances only):
+            // the clipped layer is counted although the plan drops it with its base
+            for (what, base) in [("hidden base", Fx::disabled(1).hidden()), ("empty base", Fx::disabled(1))] {
+                let mut panel = full();
+                panel.extend(layers_of([Fx::live(1).clipped(), base.clone()]));
+                let (_, p) = import(&build(&panel)).expect("imports");
+                assert!(p.tiles.is_empty(), "{what}: no layer has pixels");
+                assert_fates(&p, &[(first, Fate::Lost(OVER_DOCUMENT)), (first + 1, Fate::Kept(1))]);
+
+                let panel = layers_of([Fx::live(MAX_EFFECTS_PER_LAYER + 1).clipped(), base]);
+                let (_, p) = import(&build(&panel)).expect("imports");
+                assert_fates(&p, &[(0, Fate::Lost(OVER_LAYER)), (1, Fate::Kept(1))]);
+            }
+
+            // the clip flag is what matters for the base rule: the same clipped layer with no base below it is still
+            // a visible layer with counted instances
+            let mut panel = full();
+            panel.extend(layers_of([Fx::live(1).clipped()]));
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert_fates(&p, &[(first, Fate::Lost(OVER_DOCUMENT))]);
+        },
+    );
+}
+
+/// PLR-064 (V4-07): the shipped DESCRIPTOR (`effect_limits`) states both over-counts and cites the test that pins them,
+/// and the test it cites exists in this file.
+#[test]
+fn descriptor_states_the_importers_over_counts() {
+    let effect_limits = DESCRIPTOR
+        .split("\"effect_limits\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the DESCRIPTOR has an effect_limits entry");
+    let cited = "the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases";
+    for needle in [
+        "the_importer_counts_by_visibility_alone",
+        "over_counts_a_visible_layer_with_no_pixels",
+        "a_visible_clipped_layer_whose_base_is_hidden_or_empty",
+        "which_no_plan_counts",
+        cited,
+    ] {
+        assert!(effect_limits.contains(needle), "effect_limits does not state {needle}");
+    }
+    assert!(
+        include_str!("effects_budget.rs").contains(&format!("fn {cited}()")),
+        "the cited test does not exist"
     );
 }
 

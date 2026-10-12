@@ -137,6 +137,11 @@ pub struct ProposalConfig<'a> {
     /// `the_counted_bound_never_costs_a_stack_without_counted_instances_its_record`.
     /// A host that validates `ImportProposal::raster_records` again with its own budget needs `nodes` of at least
     /// `raster_records.layers.len()` plus the effect instances they hold.
+    /// The counted instances are counted by visibility alone (the layer and all its groups), not by what a render plan
+    /// would lower: a visible layer with no pixels and a visible clipped layer on a hidden or empty base are counted
+    /// although a plan has no node for the first and drops the second, so a document whose plan count fits 4096 can
+    /// still lose a counted stack when more than 4096 such apparent instances come first (test
+    /// `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases`).
     pub budget: Budget,
     pub resolver: &'a dyn Resolver,
     /// Interpretation of 16-bit samples (UNVERIFIED which one Photoshop uses; default full range).
@@ -500,7 +505,10 @@ impl Builder<'_, '_, '_> {
     ///
     /// Effect limits are pigment's (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`) applied to the instances a
     /// render plan counts (enabled instances of an enabled stack on a layer that is visible with all its groups:
-    /// rule and evidence at the top of `effects.rs`). A stack that does not fit is not mapped, its `lfx2` block
+    /// rule and evidence at the top of `effects.rs`). The rule is visibility alone, so it over-counts a visible layer
+    /// with no pixels and a visible clipped layer whose base is hidden or empty, neither of which a plan counts (test
+    /// `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases`; evidence at the top of
+    /// `effects.rs`). A stack that does not fit is not mapped, its `lfx2` block
     /// stays in the document, and the layer reports a typed loss whose path names the layer id:
     /// `effects_over_budget` (per layer), `effects_over_document_budget` (counted instances past the per-plan
     /// limit; this stack and every later stack that has counted instances) or

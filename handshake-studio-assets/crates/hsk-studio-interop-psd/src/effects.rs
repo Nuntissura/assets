@@ -45,6 +45,15 @@ use crate::adjust::{Mapped, Note, Reason};
 // its groups are visible, and as 0 otherwise. Counted instances are limited per layer and per document by pigment's
 // numbers. Every kept instance, counted or not, is still held in memory and charged by Folio's record validation, so
 // the kept instances no plan counts are bounded too (`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`, this crate's own bound).
+// The importer decides by visibility alone, so it OVER-COUNTS against a plan in two cases (the counted total is at least
+// the plan's for them): (a) a visible layer with no pixels, for which composite builds no node (`lower_render_plan.rs`,
+// the tile nodes of a source: no tile, no node, an empty slot, no effects), and (b) a visible clipped layer whose clip
+// base is hidden or empty, which composite drops together with its base (`lower_render_plan.rs`, phase 1: reachability
+// through a live base). Both use up counted instances that no plan counts, so a counted stack can be lost whole
+// (`effects_over_document_budget`, or `effects_over_budget` for one layer) although the plan's own count fits; that takes
+// more than 4096 apparent counted instances, which an ordinary document does not have. Test
+// `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases` (every fixture of
+// `tests/effects_budget.rs` is a layer without pixels, so all of them count under (a)).
 // Each bound cuts only what it bounds (R10): the counted bounds decide the fate of counted instances, the
 // uncounted bound decides the fate of uncounted instances, and passing one never costs a stack the other category.
 // A stack that does not fit is not mapped (its `lfx2` block stays byte-exact in the document) and is reported as a
@@ -81,8 +90,9 @@ pub(crate) fn is_budget_reason(reason: Reason) -> bool {
     matches!(reason, EFFECTS_OVER_BUDGET | EFFECTS_OVER_DOCUMENT_BUDGET | EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET)
 }
 
-/// What one mapped stack adds to the document: `counted` instances a plan counts and `uncounted` kept instances it
-/// does not (together the instances Folio charges one node each).
+/// What one mapped stack adds to the document: `counted` instances (those a plan counts, by the importer's visibility
+/// rule, which over-counts two kinds of layer: see the top of this file) and `uncounted` kept instances (together the
+/// instances Folio charges one node each).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StackShape {
     counted: usize,
