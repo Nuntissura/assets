@@ -277,22 +277,28 @@ struct Forward<'a> {
     declared: (u32, u32),
     format: Option<VideoFormat>,
     delivered: u64,
-    /// The latest end (`pts + duration`, ticks) of a picture handed to the sink; `None` before the first.
-    /// A shortfall receipt ends here, not at the end of the packets (PLR-077).
-    delivered_end: Option<u64>,
+    /// `(earliest pts, latest pts + duration)` in ticks over the pictures handed to the sink, whatever
+    /// order the decoder released them in; `None` before the first. A shortfall receipt spans exactly
+    /// this, not the span of the packets (PLR-077, PLR-085).
+    delivered_span: Option<(u64, u64)>,
     packed: Vec<u8>,
 }
 
-/// End of a delivered picture (`pts + duration` of its packet) in ticks, checked: an overflow is
-/// `tick-range`, an end before presentation zero the same refusal the packet receipt gives.
-fn picture_end(pts: i64, duration: Ticks) -> Result<u64, ReelError> {
+/// `(start, end)` of a delivered picture (`pts`, `pts + duration` of its packet) in ticks, checked: an
+/// overflow is `tick-range`, a start or an end before presentation zero the same refusal the packet
+/// receipt gives.
+fn picture_span(pts: i64, duration: Ticks) -> Result<(u64, u64), ReelError> {
     let end = i64::try_from(duration.value())
         .ok()
         .and_then(|duration| pts.checked_add(duration))
         .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
-    u64::try_from(end).map_err(|_| ReelError::Unsupported {
+    let negative = |_| ReelError::Unsupported {
         what: "negative-presentation-time",
-    })
+    };
+    Ok((
+        u64::try_from(pts).map_err(negative)?,
+        u64::try_from(end).map_err(negative)?,
+    ))
 }
 
 /// True when the picture has the plane count its format implies and every plane has exactly
@@ -381,8 +387,10 @@ impl PictureSink for Forward<'_> {
         self.delivered = self.delivered.saturating_add(1);
         // After the sink took the picture, as the packet loop does for the same packet, so the error
         // order is unchanged: the packet receipt refuses the same `pts + duration` right after.
-        let end = picture_end(meta.pts, meta.duration)?;
-        self.delivered_end = Some(self.delivered_end.map_or(end, |latest| latest.max(end)));
+        let (start, end) = picture_span(meta.pts, meta.duration)?;
+        self.delivered_span = Some(self.delivered_span.map_or((start, end), |(first, last)| {
+            (first.min(start), last.max(end))
+        }));
         Ok(())
     }
 }
@@ -508,7 +516,7 @@ pub(crate) fn decode_video_track_with(
             declared: (video.width, video.height),
             format: None,
             delivered: 0,
-            delivered_end: None,
+            delivered_span: None,
             packed: Vec::new(),
         },
         cancel,
@@ -549,14 +557,18 @@ pub(crate) fn decode_video_track_with(
         }
         receipt.disposition = Disposition::Partial;
         receipt.complete = false;
-        // The packet receipt ends where the PACKETS end; a dropped picture leaves the span shorter: it
-        // ends where the last delivered picture ends, and no picture means an empty span at its start
-        // (the packet loop's own convention). Never before the start (PLR-077).
-        let start = receipt.actual.start_pts;
-        receipt.actual.end_pts = pump
-            .fwd
-            .delivered_end
-            .map_or(start, |end| Ticks::new(end.max(start.value())));
+        // The packet receipt spans the PACKETS (its start is the first requested packet, its end where the
+        // packets end); a dropped picture leaves the span shorter at either side: it runs from the start
+        // of the earliest delivered picture to the end of the picture that ends latest, and no picture
+        // means an empty span at the packet start (the packet loop's own convention). The earliest start
+        // is never after the latest end, so the span is never reversed (PLR-077, PLR-085).
+        match pump.fwd.delivered_span {
+            Some((first, last)) => {
+                receipt.actual.start_pts = Ticks::new(first);
+                receipt.actual.end_pts = Ticks::new(last);
+            }
+            None => receipt.actual.end_pts = receipt.actual.start_pts,
+        }
     }
     Ok(receipt)
 }

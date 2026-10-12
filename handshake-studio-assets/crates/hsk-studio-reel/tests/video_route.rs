@@ -1178,14 +1178,19 @@ fn picture_spans(registry: &Registry, bytes: &[u8], container: &str) -> Vec<(u64
         .collect()
 }
 
-/// PLR-077 (failure class: a receipt end taken from the packets instead of from the delivered pictures):
-/// a preview whose decoder dropped a picture is `Partial`, and its actual span ends where the LAST
-/// DELIVERED PICTURE ends, not where the packets end; with no picture delivered the span is empty at its
-/// start. Read from the container's own timing, for a drop at the end of the packets (the case that
-/// differs from the packet end), in the middle, at the start, of the whole tail, and of everything, over a
-/// request that starts at a pre-roll offset.
+/// One row of the fixture table: (plan, first frame, count, delivered tags, expected (start, end) of the
+/// actual span).
+type SpanCase = (Plan, usize, u64, &'static [u64], (u64, u64));
+
+/// PLR-077 and PLR-085 (failure class: a receipt span taken from the packets instead of from the delivered
+/// pictures): a preview whose decoder dropped a picture is `Partial`, and its actual span runs from the
+/// start of the EARLIEST DELIVERED PICTURE to the end of the LAST DELIVERED PICTURE, not from the first
+/// packet to the end of the packets; with no picture delivered the span is empty at the packet start. Read
+/// from the container's own timing, for a drop at the end of the packets, in the middle, at the start (the
+/// first picture, the first two), of the whole tail, and of everything, over a request that starts at a
+/// pre-roll offset (with and without the first requested picture dropped).
 #[test]
-fn partial_video_receipt_ends_at_the_last_delivered_picture() {
+fn partial_video_receipt_spans_the_delivered_pictures() {
     for (name, bytes, container, pts) in [
         ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
         ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
@@ -1206,18 +1211,25 @@ fn partial_video_receipt_ends_at_the_last_delivered_picture() {
         }
         let ends: Vec<u64> = spans.iter().map(|s| s.1).collect();
         assert!(ends[0] < ends[1] && ends[1] < ends[2], "{name}");
-        // (plan, first frame, count, delivered tags, expected end of the actual span)
-        let cases: [(Plan, usize, u64, &[u64], u64); 7] = [
-            (Plan::DropPicture(2), 0, 3, &[0, 1], ends[1]),
-            (Plan::DropPicture(1), 0, 3, &[0, 2], ends[2]),
-            (Plan::DropPicture(0), 0, 3, &[1, 2], ends[2]),
-            (Plan::DropFrom(1), 0, 3, &[0], ends[0]),
-            (Plan::DropFrom(0), 0, 3, &[], pts[0]),
+        // (plan, first frame, count, delivered tags, expected (start, end) of the actual span)
+        let cases: [SpanCase; 9] = [
+            (Plan::DropPicture(2), 0, 3, &[0, 1], (pts[0], ends[1])),
+            (Plan::DropPicture(1), 0, 3, &[0, 2], (pts[0], ends[2])),
+            // The first picture is dropped: the span starts at the first DELIVERED picture.
+            (Plan::DropPicture(0), 0, 3, &[1, 2], (pts[1], ends[2])),
+            (Plan::DropFrom(1), 0, 3, &[0], (pts[0], ends[0])),
+            (Plan::DropFrom(0), 0, 3, &[], (pts[0], pts[0])),
             // Pre-roll: frame 0 is fed to the decoder only to reach frame 1.
-            (Plan::DropPicture(2), 1, 2, &[1], ends[1]),
-            (Plan::DropFrom(1), 1, 2, &[], pts[1]),
+            (Plan::DropPicture(2), 1, 2, &[1], (pts[1], ends[1])),
+            (Plan::DropFrom(1), 1, 2, &[], (pts[1], pts[1])),
+            // Pre-roll, and the first requested picture (frame 1) is dropped.
+            (Plan::DropPicture(1), 1, 2, &[2], (pts[2], ends[2])),
+            // Pre-roll, and the only requested picture is dropped: an empty span at the packet start.
+            (Plan::DropPicture(1), 1, 1, &[], (pts[1], pts[1])),
         ];
-        for (n, (plan, first, count, delivered, want_end)) in cases.into_iter().enumerate() {
+        for (n, (plan, first, count, delivered, (want_start, want_end))) in
+            cases.into_iter().enumerate()
+        {
             let (fake, _) = Fake::new(plan);
             let registry = Registry::standard().with_video_decoder(Arc::new(fake));
             let range = (pts[first], count);
@@ -1236,7 +1248,7 @@ fn partial_video_receipt_ends_at_the_last_delivered_picture() {
             assert!(!receipt.complete, "{label}");
             assert_eq!(receipt.requested.units, count, "{label}");
             assert_eq!(receipt.actual.units, delivered.len() as u64, "{label}");
-            assert_eq!(receipt.actual.start_pts.value(), pts[first], "{label}");
+            assert_eq!(receipt.actual.start_pts.value(), want_start, "{label}");
             assert_eq!(receipt.actual.end_pts.value(), want_end, "{label}");
             assert!(
                 receipt.actual.end_pts >= receipt.actual.start_pts,
@@ -1245,41 +1257,56 @@ fn partial_video_receipt_ends_at_the_last_delivered_picture() {
             // The request still names its own end, which is where the packets end.
             let packets = packet_receipt(&probe, (bytes, container), range);
             assert_eq!(receipt.requested, packets.requested, "{label}");
-            assert_eq!(packets.actual.end_pts.value(), ends[2], "{label}");
+            assert_eq!(packets.actual.start_pts.value(), pts[first], "{label}");
+            assert_eq!(
+                packets.actual.end_pts.value(),
+                ends[first + count as usize - 1],
+                "{label}"
+            );
         }
     }
 }
 
-/// PLR-077: nothing changes when every picture is delivered. The receipt of a complete video decode ends
-/// where the packet receipt of the same request ends (whole clip, a range that needs pre-roll, an
-/// export), and a preview that is `Partial` because the packets themselves fall short (an edit list that
-/// presents one media sample twice) ends where the delivered packets end, or at the last delivered
-/// picture when the decoder also dropped one.
-#[test]
-fn fully_delivered_video_receipt_end_is_the_packet_end() {
-    let unit = 423_360_000u64; // ticks per 1/600 s
-    let repeating = mp4_bytes(&Mp4Spec {
+/// Ticks per 1/600 s: the unit of the synthetic clips below (media and movie timescale 600).
+const UNIT: u64 = 423_360_000;
+
+/// A 600 Hz av01 clip of 16x16 samples of 20 units each, in decode order (`offsets` = their composition
+/// offsets, only the first sample is sync), with this edit list `(segment duration, media time)`.
+fn av01_clip(offsets: &[i32], edits: Vec<(u64, i64)>) -> Vec<u8> {
+    mp4_bytes(&Mp4Spec {
         movie_timescale: 600,
         media_timescale: 600,
         codec: *b"av01",
         width: 16,
         height: 16,
-        samples: (0..4)
-            .map(|k| Mp4Sample {
+        samples: offsets
+            .iter()
+            .enumerate()
+            .map(|(k, &cts_offset)| Mp4Sample {
                 duration: 20,
-                cts_offset: 0,
+                cts_offset,
                 size: 16,
                 sync: k == 0,
             })
             .collect(),
-        edits: Some(vec![(40, 0), (40, 0)]),
+        edits: Some(edits),
         samples_per_chunk: 2,
         co64: false,
         ctts_version: 0,
         moov_first: true,
         colr_nclx: None,
         pasp: None,
-    });
+    })
+}
+
+/// PLR-077 and PLR-085: nothing changes when the decoder delivers every picture the packets offered. The
+/// receipt of such a video decode equals the packet receipt of the same request (actual span, requested
+/// span, disposition): the whole clip, a range that needs pre-roll, an export, and a preview that is
+/// `Partial` because the packets themselves fall short (an edit list that presents one media sample twice:
+/// two units, ending at 40 units).
+#[test]
+fn fully_delivered_video_receipt_end_is_the_packet_end() {
+    let repeating = av01_clip(&[0, 0, 0, 0], vec![(40, 0), (40, 0)]);
     for (name, bytes, container, pts) in [
         ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
         ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
@@ -1315,10 +1342,40 @@ fn fully_delivered_video_receipt_end_is_the_packet_end() {
     }
 
     let source = (&repeating[..], ISOBMFF_PROVIDER_ID);
-    for (plan, delivered, want_end) in [
-        (Plan::Works, 2, 40 * unit),
-        (Plan::DropPicture(1), 1, 20 * unit),
-    ] {
+    let (fake, _) = Fake::new(Plan::Works);
+    let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+    let (result, sink) = run_video(
+        &registry,
+        source,
+        (0, 4),
+        Purpose::Preview,
+        OutputMode::Decoded,
+    );
+    let receipt = result.unwrap();
+    assert_eq!(receipt.disposition, Disposition::Partial);
+    assert_eq!((sink.chunks.len(), receipt.actual.units), (2, 2));
+    assert_eq!(receipt.actual.end_pts.value(), 40 * UNIT);
+    // The requested span is the end of the presented range (four samples of 20 units), unchanged.
+    assert_eq!(receipt.requested.end_pts.value(), 80 * UNIT);
+    let packets = packet_receipt(&registry, source, (0, 4));
+    assert_eq!(receipt.actual, packets.actual);
+}
+
+/// PLR-077 and PLR-085, split out of `fully_delivered_video_receipt_end_is_the_packet_end`: the packets of
+/// the range already fall short (a repeating edit list delivers samples 0 and 1 once each, 40 units) and
+/// the decoder also drops a picture: the span is the span of the pictures that were delivered, from the
+/// start of the earliest to the end of the latest, and an empty span at the packet start when none was.
+#[test]
+fn partial_video_receipt_over_a_packet_short_range_follows_the_delivered_pictures() {
+    let repeating = av01_clip(&[0, 0, 0, 0], vec![(40, 0), (40, 0)]);
+    let source = (&repeating[..], ISOBMFF_PROVIDER_ID);
+    // (plan, delivered tags, expected (start, end) of the actual span in units)
+    let cases: [(Plan, &[u64], (u64, u64)); 3] = [
+        (Plan::DropPicture(1), &[0], (0, 20)),
+        (Plan::DropPicture(0), &[1], (20, 40)),
+        (Plan::DropFrom(0), &[], (0, 0)),
+    ];
+    for (plan, delivered, (want_start, want_end)) in cases {
         let (fake, _) = Fake::new(plan);
         let registry = Registry::standard().with_video_decoder(Arc::new(fake));
         let (result, sink) = run_video(
@@ -1329,16 +1386,90 @@ fn fully_delivered_video_receipt_end_is_the_packet_end() {
             OutputMode::Decoded,
         );
         let receipt = result.unwrap();
-        let label = format!("repeating, {delivered} picture(s) delivered");
+        let label = format!("repeating, tags {delivered:?} delivered");
+        let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+        assert_eq!(tags, delivered, "{label}");
         assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
-        assert_eq!(sink.chunks.len(), delivered, "{label}");
-        assert_eq!(receipt.actual.units, delivered as u64, "{label}");
-        assert_eq!(receipt.actual.end_pts.value(), want_end, "{label}");
+        assert!(!receipt.complete, "{label}");
+        assert_eq!(receipt.actual.units, delivered.len() as u64, "{label}");
+        assert_eq!(
+            receipt.actual.start_pts.value(),
+            want_start * UNIT,
+            "{label}"
+        );
+        assert_eq!(receipt.actual.end_pts.value(), want_end * UNIT, "{label}");
         // The requested span is the end of the presented range (four samples of 20 units), unchanged.
-        assert_eq!(receipt.requested.end_pts.value(), 80 * unit, "{label}");
+        assert_eq!(receipt.requested.end_pts.value(), 80 * UNIT, "{label}");
+    }
+}
+
+/// One row of the out-of-order table: (plan, delivered tags in arrival order, their presentation times in
+/// units, expected (start, end) of the actual span in units).
+type OutOfOrderCase = (Plan, &'static [u64], &'static [u64], (u64, u64));
+
+/// PLR-085 and PLR-088: pictures released out of presentation order. The clip is B-frame style: decode order
+/// I P B (tags 0, 1, 2), presentation order I B P, so the picture that ENDS LATEST (P, tag 1) is not the one
+/// that ARRIVES last (B, tag 2), and the one that STARTS EARLIEST of two delivered pictures (B) is not the one
+/// that arrives first (P). The span of a `Partial` receipt is the earliest start and the latest end over what
+/// was delivered, whatever the arrival order: taking the last arrival for the end, or the first arrival for
+/// the start, fails the row that drops the first picture.
+#[test]
+fn partial_video_receipt_follows_pictures_released_out_of_order() {
+    // pts = dts + offset: I 0 + 40, P 20 + 60, B 40 + 20; the edit (60, 40) starts the clip at media time
+    // 40, so the units on the presentation line are I 0, B 20, P 40.
+    let clip = av01_clip(&[40, 60, 20], vec![(60, 40)]);
+    let source = (&clip[..], ISOBMFF_PROVIDER_ID);
+    // (plan, delivered tags in arrival order, their presentation times in units, expected (start, end))
+    let cases: [OutOfOrderCase; 5] = [
+        (Plan::Works, &[0, 1, 2], &[0, 40, 20], (0, 60)),
+        // The first picture is dropped: P arrives first and B last, but B starts earliest and P ends latest.
+        (Plan::DropPicture(0), &[1, 2], &[40, 20], (20, 60)),
+        // P is dropped: the span ends where B ends, before the packets end.
+        (Plan::DropPicture(1), &[0, 2], &[0, 20], (0, 40)),
+        (Plan::DropPicture(2), &[0, 1], &[0, 40], (0, 60)),
+        (Plan::DropFrom(1), &[0], &[0], (0, 20)),
+    ];
+    let probe = Registry::standard();
+    let packets = packet_receipt(&probe, source, (0, 3));
+    assert_eq!(
+        (
+            packets.actual.start_pts.value(),
+            packets.actual.end_pts.value()
+        ),
+        (0, 60 * UNIT)
+    );
+    for (n, (plan, delivered, at, (want_start, want_end))) in cases.into_iter().enumerate() {
+        let (fake, _) = Fake::new(plan);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (result, sink) = run_video(
+            &registry,
+            source,
+            (0, 3),
+            Purpose::Preview,
+            OutputMode::Decoded,
+        );
+        let receipt = result.unwrap();
+        let label = format!("out of order case {n}");
+        // The fixture really is out of order: the arrival order and presentation times are pinned.
+        let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+        assert_eq!(tags, delivered, "{label}");
+        let times: Vec<u64> = sink.chunks.iter().map(|c| c.1 as u64 / UNIT).collect();
+        assert_eq!(times, at, "{label}");
+        assert_eq!(receipt.requested, packets.requested, "{label}");
+        assert_eq!(receipt.actual.units, delivered.len() as u64, "{label}");
+        assert_eq!(
+            receipt.actual.start_pts.value(),
+            want_start * UNIT,
+            "{label}"
+        );
+        assert_eq!(receipt.actual.end_pts.value(), want_end * UNIT, "{label}");
         if matches!(plan, Plan::Works) {
-            let packets = packet_receipt(&registry, source, (0, 4));
+            assert!(receipt.complete, "{label}");
             assert_eq!(receipt.actual, packets.actual, "{label}");
+            assert_eq!(receipt.disposition, packets.disposition, "{label}");
+        } else {
+            assert!(!receipt.complete, "{label}");
+            assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
         }
     }
 }
