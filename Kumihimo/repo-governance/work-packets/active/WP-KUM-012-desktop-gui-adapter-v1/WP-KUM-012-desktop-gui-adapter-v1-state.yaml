@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 19
+generation: 20
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -188,5 +188,15 @@ proof:
     ID with bounded eight fresh hover/bounds reacquisitions and exact fresh Swap recipient receipt; actual
     nonnoop MoveLast with pinned/currentindex preconditions, unchanged membership and exact Pinned rejection
     after fresh pass. Original29/prefix14 preserved; no product/Core/menu policy guess; runtime pending.'
+- kind: actual_owning28_and_distinct_canonical_swap_fixture
+  baseline_revision: 2621f84dddbbebf72ab7a49680094a07b912f116
+  source_fence17_raw_sha256: e4cd3c2e9da51d85234b92e324c142cfbf0bf7af4838908499e383c45867cac2
+  source_fence17_lf_sha256: f75fd7184fde4028f42a0c8ec7700d80dd2dac757d47342e5037f0979b670b91
+  observed: Actual owning29 compile10.42s/run4.92s:28 PASS; actual nonnoop pinned reorder denial passed. Swap
+    fresh actual-recipient assertions passed but canonical workspace.frames[1] selected source4 after redock
+    reordered frame vector, so actual4/4 command correctly unchanged. Held suffix chooses a distinct current
+    supported frame and asserts distinctness before real pointer click; original changed-layout assertion,
+    all29 and original14 prefix preserved. No product/Core changes; fresh owning pending.
 blockers: []
-next_action: Run one affected owning29 target on stable intended destination and actual forbidden reorder fixture
+next_action: Run one affected owning29 target with distinct current canonical Swap recipient; then affected
+  compile and actual captures

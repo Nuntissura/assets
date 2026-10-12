@@ -1478,8 +1478,32 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Equalize workspace");
-    let second = h.state().demo.controller.snapshot().workspaces[&h.state().demo.root].frames[1];
-    let before = h.state().demo.controller.snapshot().layouts.clone();
+    let snapshot = h.state().demo.controller.snapshot();
+    let root = h.state().demo.root;
+    let second = snapshot.workspaces[&root]
+        .frames
+        .iter()
+        .copied()
+        .find(|candidate| {
+            *candidate != frame
+                && !snapshot.floats.contains_key(candidate)
+                && snapshot.layouts[&root].nodes.values().any(|node| {
+                    *node == core::LayoutNode::Leaf(core::LayoutItem::Frame(*candidate))
+                })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "distinct docked swap destination; trace: {:?}",
+                h.state().trace
+            )
+        });
+    assert_ne!(
+        second,
+        frame,
+        "distinct swap fixture; trace: {:?}",
+        h.state().trace
+    );
+    let before = snapshot.layouts.clone();
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Swap with\u{2026}");
     let swap_after_pass = h.ctx.cumulative_pass_nr();
