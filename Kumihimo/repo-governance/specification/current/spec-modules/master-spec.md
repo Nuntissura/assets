@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 15
+revision: 16
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -3556,6 +3556,9 @@ WP010 implements the independent std-only kumihimo-content companion described c
 
 WP011 selects optional navigation and backgrounds features within content0.2. The same content controller owns typed requests, shared resources and recovery; frame/workspace backgrounds use real targets without dummy tabs. Protocol2.0 deliberately changes the content Scope API, while Core0.3 and saved layouts stay unchanged. Hosts choose all four navigation modes. A grabbed thumb can become a temporary minimap viewport without a press-time jump or document-layout change; cancelling the local gesture cannot undo a dispatched provider action. Background brightness/transparency and actual media work are separate settings. The complete selected contract follows; no WP011 runtime, GUI, decoder or resource-saving proof is implied.
 
+
+WP012 selects an optional egui0.33.3 adapter with independently enabled navigation, backgrounds, raster capture and native winit/Painter integration. Existing Core and host Controller remain the only canonical owners. Native moves wait for an actual correlated destination render, with bounded empty-root reuse and semantic return locations. Automation uses hidden inactive windows; toolkit callbacks and semantic tests cannot establish OS graphics, accessibility or physical input. This is the complete selected implementation contract, not runtime proof.
+
 ```
 
 ```yaml
@@ -3875,4 +3878,154 @@ decisions:
   - https://doc.rust-lang.org/cargo/reference/features.html
   supersedes:
   - DEC-KUM-CONTENT-PROTOCOL-v1
+- decision_id: DEC-KUM-DESKTOP-EGUI-v1
+  anchor_refs:
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-CHROME
+  - TOPIC-KUM-INPUT
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-PERFORMANCE
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-POPOUTS
+  - TOPIC-KUM-LAYOUT
+  - TOPIC-KUM-TABS
+  - TOPIC-KUM-CONTENT
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-BACKGROUNDS
+  - TOPIC-KUM-RECOVERY
+  - TOPIC-KUM-MODEL
+  - TOPIC-KUM-BOUNDARIES
+  decision: 'Selected WP012 complete bounded desktop boundary; full accepted future requirements remain preserved/open.
+    [WP012-R002] Add independently selected kumihimo-egui0.1, Rust1.91, default features empty. Required GUI dependencies:
+    exact egui0.33.3 default-features=false with accesskit/default_fonts, local Core0.3/content0.2 default-features=false.
+    Independent navigation/backgrounds features forward content features. Optional capture selects egui-wgpu0.33.3
+    default-features=false, wgpu27.0.1 default-features=false with std/dx12/wgsl, pollster0.4.0, image0.25.9 default-features=false/png
+    and optional serde_json1.0.151 for bounded redacted structured capture/native output. Optional native includes
+    capture and egui-wgpu/winit, egui-winit0.33.3 default-features=false/accesskit, winit0.30.13 default-features=false/rwh_06,
+    raw-window-handle0.6.2 and Windows-only windows-sys0.61.2 limited Foundation/Threading/WindowsAndMessaging.
+    Dev local kumihimo-layout-json0.1 supplies existing bounded SavedLayout/schema1 codec roundtrip proof; default
+    DesktopSession is a typed DTO with host-owned serialization/storage. Dev egui_kittest0.33.3 default-features=false
+    uses semantic queries without wgpu/snapshot/open features. Do not depend on eframe or a separate docking framework.
+    Keep original three workspace packages as default-members and preserve their package sources, versions, Snapshot3
+    and saved JSON schema1. Lead owns manifest scaffolding/workspace/lock; dependency agent independently reconciles
+    resolved graph before coder admission. Reassess a missing compatible cached dependency with evidence; no silent
+    feature/version substitution. [WP012-R003] Use small cohesive modules in this one GUI package; native and raster
+    dependencies are independently selectable feature boundaries. Reusable adapter borrows the host-owned Controller
+    and host dispatcher per surface/draw. Host allocates actor/Envelope operation identity and serial canonical
+    commands; no mutable Core extraction, duplicate Controller, private canonical tree or alternate sequence allocator.
+    Native sample may own the single shared Controller/dispatcher for every surface. Public adapter version/capabilities
+    describe implemented versus observed platform behavior and explicit unsupported/unknown states. [WP012-R004]
+    Project workspace/frame/tab/group/tool geometry from current canonical Snapshot/Core geometry and stable IDs.
+    Traverse nested owners iteratively top-down, deriving each child context from its owner frame_content only when
+    measurements change, through host-dispatched SetGeometryContext. Intersect all ancestor clips; suppress hidden/maximized
+    descendants while retaining their identities and an accessible reveal/restore route. Convert finite global logical
+    DIP to physical pixels once per surface, validate scale/size/arithmetic and surface epoch. Host-configurable
+    projection/control/page budgets limit live work, not saved counts or conceptual nesting. Rejection/undersized
+    overflow is visible with a reachable pane/tab list; never silently drop content. [WP012-R005] Paint configurable
+    full/compact/contextual/hidden frame controls, tab selection/group labels and color indicators, virtualized
+    overflow lists, pin/unsaved/disabled status and stable control identifiers. Native titlebars remain supported
+    system chrome, separate from pane headers and host toolbars. Hidden controls retain labelled keyboard/touch
+    reveal and restore. Group meaning is visible in text, not color only. Host defaults/workspace/surface overrides
+    and capability/policy constraints resolve explicitly, settings version1 validates finite ranges and exposes
+    recreation-needed changes rather than secretly restarting. [WP012-R006] Present Core split/grid geometry, resize
+    handles, eligible snap targets/previews, dock/float/redock, equalize/swap/maximize/restore, tab/group reorder/move/collapse
+    and close/reopen via canonical envelopes. Preview is generation-bound and nonmutating; Escape/cancel/lost capture
+    restores unchanged precommit arrangement, while a committed move is not rolled back by a later render failure.
+    Overlapping floats use declared host z-order/hit precedence: unobstructed portions of underlying panes remain
+    usable. Resize commits only valid Core proportions/context and rejects impossible constraints visibly. No fixed
+    stock pane/tab count; sample supports host-provided counts and includes nested frames, grids and floating overlap.
+    [WP012-R007] Toolbars/panels render their actual Core placement and ToolPresentation, with independent editing
+    target, origin, host owner, focus and visibility. Drag handles can dock eligible tools at tab/frame/root edges
+    or cells through preview/commit; host policy supplies destinations/minima/orientation/space reservation. Focusing
+    a toolbar or another pane never silently retargets it. Pinned-target default hides unavailable tools, preserves
+    the target, labels rejection and never auto-opens an editor. Actual sample tool action must reach the exact
+    bound provider/view/resource through existing scoped ToolAction and ACK; UI projection alone is insufficient.
+    [WP012-R008] Frame input is consumed only by its exact hit regions/gesture owner; ordinary text, wheel and editor
+    shortcuts stay with host content unless an explicit frame command owns them. Keep pointer ID/source, press anchor,
+    generation/surface epoch and capture/settlement explicit. Mouse drag, touch long-press versus scrolling, host-labelled
+    pen and cancellation/lost-focus paths use appropriate configurable hit sizes and keyboard alternatives. Native
+    winit Touch does not establish stylus classification; expose ambiguous/unsupported native source honestly rather
+    than infer Pen from pressure. Feed global DIP through existing content Geometry.clip admission, then map once
+    into provider-local coordinates. Tests label injected adapter/native messages separately from physical hardware.
+    AccessKit names/roles/selected/value/action/focus metadata use stable target IDs, with native event-loop accessibility
+    action forwarding and an independent Windows UI Automation query of the owned HWND when observing OS support;
+    semantic kittest trees cannot replace OS evidence. [WP012-R009] When navigation is selected paint all four existing
+    WP011 modes using existing resolved settings/geometry/model/overview. Enlarge the thumb and independent hit
+    area without losing full range/endpoints; keyboard/page/Home/End use existing navigation authority. In transient
+    mode the same stationary grab expands the host-fed map beside the unchanged document, holds its viewport rectangle
+    continuously, and release/cancel restores configured idle controls. Send existing typed navigation intents;
+    provider-observed actual position/Unknown remains distinct from requested offset. Demonstrate actual raster
+    and pointer mapping for the same shared interactive/capture path; never rescan host documents or invent minimap
+    data. [WP012-R010] Host render/content slots receive exact canonical target, global bounds/clip, local mapping,
+    physical size/scale, visibility/focus and surface epoch. Offer ordinary egui drawing and capability-checked
+    compatible GPU texture/PaintCallback handoff only under capture/native features; native child surfaces and incompatible
+    graphics devices reject explicitly. The sample supplies two real small host-owned renderers (editable text/demo
+    document and generated image/canvas preview), labelled as demos rather than Notes/Studio/terminal/Servo engines.
+    Actual provider interaction/typed ACK proves recipient, not engine integration. If backgrounds are selected
+    demonstrate a host-provided still texture behind content with brightness/opacity/fit/legibility; video/decoder/audio
+    remain unsupported unless an actual provider is supplied, no mock decoder or physical-saving claim. [WP012-R011]
+    Implement a thin optional native winit ApplicationHandler runner using public egui-winit State and egui-wgpu::winit::Painter,
+    reusing field implementations and preserving their license/provenance where code is adapted. Use Painter set_window
+    Result and actual correlated screenshots; never eframe first-frame auto-show or an immediate callback as graphics
+    readiness. Root and child automation windows are created hidden, inactive and absent from taskbar, never activated/shown/focused
+    by automation. Interactive showing is an explicit user-run opt-in command. OS handles, surface epoch, physical
+    dimensions/scale, backend, screenshot nonce and image bytes are observed; independent foreground/visibility/owned-PID
+    reads prove quiet behavior. Cleanup only owned windows/resources; no unowned process effects. [WP012-R012] Native
+    popouts use one shared Controller with a canonical root workspace per native destination. Prepare bounded reusable
+    empty root/carrier-frame slots and actual hidden destination; preparation changes generation and is recorded,
+    not claimed atomic rollback. Final single MoveFrame, MoveView or MoveGroup occurs only after private runner-produced
+    Ready receipt matching pending nonce/viewport/owned window/surface epoch/positive actual size/scale/successful
+    set_window/correlated captured pixels and current Core identity/generation/source/eligibility. Callback, caller
+    assertion, kittest or HWND existence alone cannot supply Ready. Before readiness/commit, failure/timeout/cancel
+    leaves source ownership unchanged; prepared slots are tracked/reused within host limits, since Core has no DeleteWorkspace/DeleteFrame/Batch.
+    Reject occupied/owned/invalid/maximized slots; no implicit unmaximize. Re-read canonical recipient and capture
+    populated content after commit; preflight empty-surface pixels do not prove postcommit content. Later loss remains
+    committed recovery, never fictitious original-location rollback. [WP012-R013] Preserve native return location
+    as semantic allowed DockLocation/neighbor/entity anchors, not plan-local NodeId-only ownership or old-index
+    custom-slot claims. Return Frame through freshly validated Core dock; View/Group through exact MoveView/MoveGroup
+    into eligible existing/origin carrier. Missing or invalid return anchor uses explicitly labelled host-approved
+    reachable fallback; no eligible fallback/rejection keeps the native window and content recoverable. Host-selected
+    return-on-close versus close-content honors pin/unsaved/provider close veto and per-view results; no atomic
+    batch-close or deletion fiction. Keep successfully closed versus remaining/vetoed content separate and retain
+    a window for remaining content. Native window, in-app float and temporary menu/dialog are distinct; menus/drag/accessibility/focus
+    surfaces belong to their target window. Modal/reveal behavior is explicit and never steals operator focus in
+    automation. [WP012-R014] Store versioned DesktopSession metadata beside/wrapping unchanged SavedLayout/schema1
+    via the host, including native root/carrier/return bindings and host capacity policies. Validate duplicate/foreign/stale
+    IDs, lineage/current restored incarnation, frame-to-root associations and destination eligibility before opening
+    windows; restore never silently trusts stale native handles or texture IDs. Hosts supply durable storage/atomic
+    replacement and fresh incarnation; the adapter does not claim actual filesystem safety from in-memory roundtrip.
+    Preserve layout/content identity across surface teardown/recreation; use checked epochs and reject stale inputs/texture/callback/readiness.
+    Bounded unavailable/lost/recreating/ready/failed states have visible placeholders/retry and fresh provider handoff.
+    Prove actual owned surface teardown/recreation and fresh pixels plus injected external loss semantics; do not
+    equate either with a physical GPU fault or all provider-device recovery. [WP012-R015] Coalesce redraw/invalidation
+    while preserving host animation deadlines. Native event loop sleeps/waits when idle, keeps OS occlusion/minimized/visible/active-tab/focus
+    distinct and unknown OS observations honest. No unconditional repaint loop or blocking provider work on frame
+    interaction. Bound projected regions, pending UI/native operations, captures/bytes, retained slots/textures
+    and retry work under configurable host policies; report measured render/backend/capture facts separately from
+    requested budgets/estimates. Publish no speed, idle CPU or memory-release claim absent exact scenario evidence.
+    [WP012-R016] Ship bounded redacted diagnostics/state/receipts with stable control IDs, canonical target/generation,
+    surface epoch, current capabilities, cause/rejected/pending/Unknown states and replay/reproduction commands;
+    no host secret/document dumps by default. Shared interactive/offscreen/native drawing path produces actual pixels
+    and structured control/picking projections; kittest semantic queries complement independently opened image and
+    native OS observations. Provide a no-context manual for package selection, optional features, exact run/capture/structured
+    action routes, inputs/outputs/navigation, common failures and recovery. Product diagnostics/helpers remain separate
+    from repo governance. [WP012-R017] Execute frozen focused adapter cases once in their owning targets, independent
+    evaluator observes exact affected sources/output. Lead alone runs manifest-bound offline lock resolution, baseline/all-feature
+    affected compile checks, focused adapter consumer batch, bounded quiet offscreen/native probe and independent
+    UIA observer using stable target/cache and serial j2 lane. Inspect generated pixels at standard/nested/compact
+    or undersized/scale/transient states for readable text, discoverable controls, no overlap/clipping errors and
+    reachable content. Real owned native resize and current DPI observation are distinct from injected scale; physical
+    touch/pen, assistive-technology hardware, real external device faults, ARM/web/other OS/full engine support
+    remain specifically labelled open. A concrete failure is diagnosed/repaired within its original case; no unrelated
+    broad Core/JSON/content suite when inputs remain unchanged.'
+  rationale: An optional GUI dependency and public proven painter preserve portable Core/host ownership, share actual
+    render/input paths, and expose authentic native readiness without forced foreground startup.
+  research_source_refs:
+  - https://github.com/emilk/egui/tree/0.33.3/crates/egui
+  - https://github.com/emilk/egui/blob/0.33.3/crates/egui-wgpu/src/winit.rs
+  - https://github.com/emilk/egui/blob/0.33.3/crates/egui_kittest/src/lib.rs
+  - https://github.com/emilk/egui/blob/0.33.3/crates/eframe/src/native/epi_integration.rs
+  - https://github.com/rust-windowing/winit/tree/v0.30.13
+  - https://learn.microsoft.com/en-us/windows/win32/winauto/inspect-objects
+  supersedes: []
 ```

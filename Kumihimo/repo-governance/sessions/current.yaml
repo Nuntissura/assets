@@ -13,27 +13,38 @@ operator_scope:
   scope_expansion_authorized_this_session: true
   operator_afk: true
   future_sessions_require_current_scope_reconciliation: true
+  remaining_work_packets_authorized:
+  - WP-KUM-012-desktop-gui-adapter-v1
+  - WP-KUM-013-web-adapter-portal-pilot-v1
+  - WP-KUM-014-servo-and-heavy-rendering-v1
+  commit_push_after_each_completed_packet: true
+  parallel_coding_and_team_expansion_authorized: true
+  live_authorization:
+  - 'Operator directly instructed this lead chat: finish all WPs, commit/push after each, team-deliberate causal
+    blockers; session scope expansion approved; no massive tests/checks/reviews for small blockers; strategize expensive
+    Cargo and value time'
+  - 'Operator directly instructed this lead chat: use parallel coders when useful, bundle Cargo tests/reuse artifacts,
+    ask coding team leader to expand team as needed'
 roles:
   dependencies:
     role_id: ROLE-KUM-DEPENDENCIES
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: WP011 complete; WP012 field/dependency readiness preparation next, no Cargo
+    assignment: WP012 full18R13A directdependency/MSRV/cache fit binding; exactgraph pending lead manifest-only
+      offline resolution
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: F01 actual routing constraints inspected; focusedGREEN/affectedproof passed; standby actual findings
-      only
+    assignment: WP012 native quiet/readiness constraints inspected; standby exact failures and causal team diagnosis
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP011 runtime and outcome independently PASS, final report published; prepare focused WP012 cases
-      after lead draft
+    assignment: WP012 original13 focused cases fit/freeze against fullcontract/Spec16; no runtime verdict
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -42,8 +53,8 @@ roles:
     completed_implementation_wps:
     - WP-KUM-011-navigation-and-media-controls-v1
     rotate_after: 2
-    assignment: WP011 done count1/2; same coder03 selected for WP012, no source admission before published full
-      contract/readiness/eval
+    assignment: WP011 done count1/2; WP012 API/native producer design read-only complete; await published fullcontract/frozeneval/resolved
+      dependency readiness
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -56,20 +67,20 @@ build_lane:
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
-  gameplan_relative_git_root: .local/kumihimo-controls/gameplan.yaml
+  gameplan_relative_git_root: .local/kumihimo-desktop/gameplan.yaml
   last_resource_observation:
-    observed_utc: '2026-10-12T01:57:40.9717681Z'
-    cpu_percent: 63
-    available_memory_gib: 63.9
-    free_disk_gib: 3063.7
+    observed_utc: '2026-10-12T02:32:06.2111657Z'
+    cpu_percent: 8
+    available_memory_gib: 64.8
+    free_disk_gib: 3063.6
     rust_processes: []
-    scope: Fresh before sole serial F01Green/affectedfeature/test/example lane, now completed
+    scope: WP012 preparation; no compilation lane granted; refresh before metadata/build
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Promote WP012 desktop GUI adapter; research exact current primary implementations/API/MSRV/cache and
-  honest quiet rendered proof before full contract/admission
+next_action: Freeze and publish full WP012/Spec16 directdependency/evaluation prep; leadmanifest-only scaffold/offline
+  graph, independent dependency closure before coder03 source admission
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

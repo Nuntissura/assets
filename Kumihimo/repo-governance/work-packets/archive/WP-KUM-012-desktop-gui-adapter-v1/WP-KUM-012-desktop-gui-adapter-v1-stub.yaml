@@ -1,0 +1,33 @@
+schema_version: kumihimo.wp-contract.v1
+kind: work_packet_stub
+wp_id: WP-KUM-012-desktop-gui-adapter-v1
+title: Prove a replaceable desktop adapter
+scope:
+- Choose toolkit through current source/sample evidence; present existing core controls, touch/pen/keyboard/accessibility,
+  rendering handoff and separately supported native popouts
+files:
+- product/
+- repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/
+- repo-governance/specification/current/
+- repo-governance/topology/
+dependencies:
+- WP-KUM-011-navigation-and-media-controls-v1
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+- TOPIC-KUM-CHROME
+- TOPIC-KUM-INPUT
+- TOPIC-KUM-RENDER
+- TOPIC-KUM-PERFORMANCE
+- TOPIC-KUM-PLATFORMS
+- TOPIC-KUM-POPOUTS
+requirements:
+- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+  eval before coding
+- Reuse existing core and verified cache; no parallel Cargo or long default suites
+- Preserve host ownership and existing accepted scope; explicit exact platform proof
+acceptance:
+- Actual rendered controlled sample, nested mixed-provider views, docked pinned toolbar visibility, keyboard/touch
+  target coherence, resize/scale/device recovery; exact platform labels
+proof:
+- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+status_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml

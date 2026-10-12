@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 14
+revision: 15
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -32,6 +32,8 @@ WP009 proves the headless tab/group/pin/list, bounded schema1 JSON/semantic reco
 WP010 proves the independent std-only content companion at ba2d6189704ced50c621dab18e6140e301aab136: scoped typed requests/ACKs, distinct mount/instance reservations, protected cleanup, asset/tool routing and honest diagnostics. The affected all-target check, all twelve public consumers and quiet example passed with independent scoped evaluation. Queued expiry is enforced before exposure; a confirmed instance stays reserved after its last mount detaches until explicit cleanup. Real host engines, GUI, text/asset behavior, physical resources and performance remain open.
 
 WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
+
+WP012 selects a separately enabled egui0.33.3 desktop adapter and thin native winit/Painter host. Canonical nested geometry, host content, actual raster/correlated native readiness, independent OS accessibility and bounded recovery receive focused proof. No adapter implementation or runtime support is yet proven; all full requirements remain open.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 

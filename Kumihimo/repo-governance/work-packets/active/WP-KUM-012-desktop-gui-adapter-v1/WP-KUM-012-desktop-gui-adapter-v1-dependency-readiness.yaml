@@ -1,0 +1,286 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-012-desktop-gui-adapter-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-12'
+scope: Toolkit and dependency readiness for WP012 desktop GUI adapter; no implementation or runtime proof.
+verdict: ready_for_manifest_resolution
+coding_admission:
+  status: not_admitted
+  owner: dev_lead
+  gate: Corrected full contract/Spec16 and frozen evaluator are bound below; coding remains held until the lead publishes exact manifest/lock inputs and dependency readiness independently verifies the resolved graph before coder03 admission. WP011 predecessor is done.
+baseline:
+  contract:
+    ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
+    kind: work_packet
+    requirements: 18
+    acceptance_criteria: 13
+    sha256: 3424d6b7bf6e98bc6b32c03f57e99865feba7482cf9e694724796537da76b223
+    publication_status: local_full_contract_present; lead_publication_and_exact_origin_readback_pending
+    decision_id: DEC-KUM-DESKTOP-EGUI-v1
+  state:
+    ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
+    generation: 2
+    phase: active
+    owner: ROLE-KUM-DEV-LEAD
+    sha256: 8cc2ddec35524bc05a267b78e684fa4a4916dadc1eca853dac94dfb4b74bff1d
+  predecessor:
+    wp_id: WP-KUM-011-navigation-and-media-controls-v1
+    dependency_report_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-dependency-readiness.yaml
+    state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
+    observed_phase: done
+    observed_generation: 16
+    predecessor_publication_proof_recorded: true
+  specification:
+    ref: repo-governance/specification/current/spec-modules/master-spec.md
+    manifest_ref: repo-governance/specification/current/specification.yaml
+    version: 16
+    revision: 16
+    sha256: f77fa818a361f92c65cfa682167eb06f823a6341994d2548567a424f34df8c15
+    manifest_sha256: 4eaff6be3787f1c4e4f86262e0d34ae25da1ddefe928af7e8de4bfefea262c74
+    roadmap_ref: repo-governance/specification/current/spec-modules/roadmap.md
+    roadmap_revision: 15
+    roadmap_sha256: 357639e438617c14bc168e7971348d58041d6b7ee4904b82dc5635e3e916a16d
+    topics:
+    - TOPIC-KUM-WORKSPACE
+    - TOPIC-KUM-CHROME
+    - TOPIC-KUM-INPUT
+    - TOPIC-KUM-RENDER
+    - TOPIC-KUM-PERFORMANCE
+    - TOPIC-KUM-PLATFORMS
+    - TOPIC-KUM-POPOUTS
+    - TOPIC-KUM-LAYOUT
+    - TOPIC-KUM-TABS
+    - TOPIC-KUM-CONTENT
+    - TOPIC-KUM-NAVIGATION
+    - TOPIC-KUM-BACKGROUNDS
+    - TOPIC-KUM-RECOVERY
+    - TOPIC-KUM-MODEL
+    - TOPIC-KUM-BOUNDARIES
+    decision_id: DEC-KUM-DESKTOP-EGUI-v1
+    contract_spec_requirement_refs: 85
+  evaluator:
+    ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-evaluation.yaml
+    sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
+    prepared_cases: 13
+    phase: preparation_complete_runtime_not_evaluated
+    verdict: READY_FOR_PREPARATION_PUBLICATION
+    cases_frozen: true
+    report_frozen_for_publication: true
+    observed_spec_revision: 16
+    next_action: Lead publication/readback, dependency graph reconciliation and coding admission remain pending; no runtime verdict.
+product_baseline:
+  workspace:
+    ref: product/Cargo.toml
+    sha256: a1abff421b117d3f26a08aef2da50fa3ea708f1f46d8787f5d12e66425cc68b0
+    members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
+  lockfile:
+    ref: product/Cargo.lock
+    sha256: 441507446b89f8619cb540ae4e4e1c1184e07e277478ff17790f061cfc7565a0
+    format_version: 4
+    package_records: 14
+    observed: 3 workspace packages and 11 registry packages; no GUI toolkit package or resolved GUI dependency graph.
+  core:
+    package: kumihimo-core
+    version: 0.3.0
+    rust_version: '1.91'
+    manifest_ref: product/kumihimo-core/Cargo.toml
+    manifest_sha256: 5c6baf61ddb7b3aeb76f6cfca669d1822757a7e77a431d337187bd50ee1aea1a
+    observed_source_refs:
+    - path: product/kumihimo-core/src/core.rs
+      sha256: e5f11e943167ac92bb85a1eac65dcf484deda98cdef4f352f8297940b786a7ad
+    - path: product/kumihimo-core/src/solver.rs
+      sha256: 534e5c10b5190036d535c40871d1726880b7b1d999a80d6c2dda174c6b484985
+    - path: product/kumihimo-core/src/docking.rs
+      sha256: 2726a0ea92beCD02e51ca26d856e9280d005f1d51d9ac4d5c4c0335f2c9e5c28
+    observed_api:
+    - Core exposes immutable Snapshot inspection and canonical mutations through Core::execute.
+    - Snapshot::geometry is the pure layout projection; the adapter must not keep a second placement model.
+    - SurfaceKind currently contains only InAppFloat; this cannot stand in for an OS native popout.
+  content:
+    package: kumihimo-content
+    version: 0.2.0
+    rust_version: '1.91'
+    manifest_ref: product/kumihimo-content/Cargo.toml
+    manifest_sha256: adc6d9bc9f513ece1828f29f2f02d5532ea5ad30548065a03249b2a1954a3539
+    observed_source_ref: product/kumihimo-content/src/routing.rs
+    observed_api:
+    - Controller::core and Controller::snapshot expose read-only canonical state.
+    - Controller::execute routes canonical mutations; hosts retain effect and provider ownership.
+    - Adapter UI actions must become canonical commands through the owning host/controller; no mutable Core escape is exposed.
+research:
+  reviewed_primary_sources:
+  - id: egui-wgpu-0.33.3-winit-painter
+    url: https://docs.rs/egui-wgpu/0.33.3/egui_wgpu/winit/struct.Painter.html
+    supporting_source: https://github.com/emilk/egui/blob/0.33.3/crates/egui-wgpu/src/winit.rs
+    observed: The public winit Painter associates per-viewport Windows and surfaces; set_window returns WgpuError; paint_and_update_textures acquires/renders/submits/presents and accepts correlated capture data, with screenshot events returned after GPU readback.
+    use: Use as the small public native renderer boundary; surface/setup failures and captures stay explicit and attributed to the exact viewport.
+  - id: egui-winit-0.33.3
+    url: https://docs.rs/egui-winit/0.33.3/egui_winit/struct.State.html
+    supporting_source: https://github.com/emilk/egui/blob/0.33.3/crates/egui-winit/src/lib.rs
+    observed: State translates winit events and supports optional AccessKit integration through init_accesskit, event processing and platform-output handling.
+    use: Reuse native input/accessibility translation while the adapter owns the event loop, hidden-window policy and error receipts.
+  - id: eframe-0.33.3-native-bootstrap
+    url: https://github.com/emilk/egui/blob/0.33.3/crates/eframe/src/native/epi_integration.rs
+    observed: Its first post-render hook calls Window::set_visible(true); this conflicts with the required controlled quiet hidden-window path.
+    use: Reject eframe's native bootstrap for this adapter; retain egui UI and renderer crates through the public winit integration.
+  - id: egui-0.33.3-viewports
+    url: https://docs.rs/egui/0.33.3/egui/viewport/index.html
+    observed: egui supports multiple native-window viewport descriptions; upstream native eframe implements them, while web does not. Deferred viewports repaint independently; immediate viewports can multiply repaint work. Embedded fallback is not an OS window.
+    use: The custom runner must implement viewport creation/event routing and prove it before claiming native popout support; bind viewport identity to canonical Core targets and keep popout return/docking ownership outside egui.
+  - id: egui-kittest-0.33.3
+    url: https://docs.rs/egui_kittest/0.33.3/egui_kittest/
+    observed: AccessKit-based UI queries support semantic interaction and the optional wgpu+snapshot features render UI pixels into saved image snapshots. Documentation warns screenshots vary with GPU/backend and high tolerances can hide defects.
+    use: Focused rendered-sample/accessibility evidence; not proof of OS presentation, touch/pen hardware, native accessibility behavior, or real device-loss recovery.
+  - id: egui-current-release
+    url: https://github.com/emilk/egui/blob/main/Cargo.toml
+    observed: Current egui 0.36.2 declares Rust 1.95, above the project's Rust 1.91 floor.
+    use: Reject current egui for this package candidate under the existing MSRV; R002 selects egui 0.33.3 and excludes eframe.
+  - id: eframe-0.36-changes
+    url: https://github.com/emilk/egui/blob/main/crates/eframe/CHANGELOG.md
+    observed: eframe 0.34 changed app callbacks from one update method to separate logic and UI; wgpu became the default renderer. 0.34.3 added winit access to Frame and CreationContext.
+    use: Historical eframe API evolution only; R002 excludes eframe, so these callbacks and renderer defaults do not shape the selected adapter.
+  - id: iced-0.14
+    url: https://docs.rs/crate/iced/0.14.0/source/Cargo.toml
+    observed: Iced 0.14.0 has Rust 1.88 minimum and feature-selectable wgpu/software rendering; its package directly composes multiple iced subcrates.
+    use: Viable alternative, but its source/build closure is not cached here; the selected egui 0.33.3 path has a cached, contract-matched native renderer boundary.
+  - id: slint-1.19
+    url: https://github.com/slint-ui/slint/blob/master/Cargo.toml
+    observed: Current Slint 1.19.0 declares Rust 1.95 and defaults include software/femtovg renderers and accessibility.
+    use: Reject current release for the Rust 1.91 package floor; reassess only with an explicit toolchain/MSRV decision.
+  - id: gpui
+    url: https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md
+    observed: GPUI is pre-1.0 and its project documentation asks for latest stable Rust.
+    use: Reject for this bounded WP because the exact stable API/MSRV and cached dependency closure are not established.
+  current_choice:
+    toolkit: egui 0.33.3
+    package: product/kumihimo-egui
+    package_version: 0.1.0
+    package_rust_version: '1.91'
+    package_defaults: []
+    workspace_default_members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
+    local_dependencies:
+    - kumihimo-core 0.3.0 with default-features=false
+    - kumihimo-content 0.2.0 with default-features=false
+    optional_adapter_features:
+    - navigation forwards to kumihimo-content/navigation
+    - backgrounds forwards to kumihimo-content/backgrounds
+    runtime_feature_selection:
+    - Required egui 0.33.3 default-features=false with accesskit/default_fonts.
+    - Local kumihimo-core 0.3.0 and kumihimo-content 0.2.0, both default-features=false.
+    - Independent navigation/backgrounds features forward the matching content features.
+    - Optional capture selects egui-wgpu 0.33.3 default-features=false, wgpu 27.0.1 default-features=false with std/dx12/wgsl, pollster 0.4.0, image 0.25.9 default-features=false with png, and serde_json 1.0.151 for bounded redacted structured capture/native output.
+    - Optional native includes capture and egui-wgpu/winit, egui-winit 0.33.3 default-features=false/accesskit, winit 0.30.13 default-features=false/rwh_06, raw-window-handle 0.6.2, and target-Windows windows-sys 0.61.2 limited to Foundation/Threading/WindowsAndMessaging.
+    - Dev dependencies include kumihimo-layout-json 0.1 for the existing SavedLayout/schema1 codec roundtrip and egui_kittest 0.33.3 default-features=false for semantic queries only; do not enable wgpu/snapshot/open features.
+    excluded_features: [wgpu Vulkan, GLES, Metal, WebGPU; winit X11/Wayland; egui-winit clipboard/links; eframe; docking framework]
+    contract_feature_reconciliation:
+      status: resolved_in_current_contract_before_lock_resolution
+      refs: [WP012-R002, WP012-R011]
+      observed: Current WP012-R002 explicitly includes egui-wgpu/winit in the optional native feature closure, exposing the public Painter module required by R011.
+      gap: None in the current full contract; exact manifest and resolved graph are still pending.
+      resolution: R002 and R011 are aligned; preserve egui-wgpu/winit in the manifest-bound feature graph without substitutions.
+    render_handoff: Use egui-wgpu 0.33.3 public winit::Painter; surface setup returns an error, rendered capture carries per-viewport user data and arrives only after actual GPU readback/present. Keep provider effects and surface lifecycle in the host boundary; report unsupported or incompatible GPU sharing explicitly.
+    accessibility: egui-winit/accesskit initializes the native AccessKit adapter; egui_kittest provides semantic tree assertions. AccessKit runtime packages are present in the cache at compatible 0.29.2, satisfying egui-winit's ^0.29.1 requirement.
+    popout_boundary: The adapter owns winit OS windows and maps egui viewport IDs to canonical Core targets. The custom runner must implement egui's viewport output/event loop integration; it is not supplied by upstream egui-wgpu. Claim native popout capability only where the custom runner creates and renders an actual native window. Preserve Core SurfaceKind::InAppFloat semantics; destination readiness precedes canonical move and source teardown. Do not advertise web viewport support as native popout capability.
+    ui_state_boundary: Map Snapshot identity/generation/geometry to stable widget IDs and clipped per-target rectangles; route gestures and keyboard actions into Core envelopes via the host. Do not let widget-local placement become canonical layout state.
+    sample_proof_route: Use egui_kittest 0.33.3 without wgpu/snapshot/open for semantic queries; optional capture/native feature renders the same shared UI path through egui-wgpu and inspects correlated PNG/native screenshots. Offscreen pixels, injected input and toolkit AccessKit metadata do not substitute for native window, physical device or Windows UI Automation evidence.
+    cache_and_toolchain_evidence:
+      package_source_cache:
+      - egui-0.33.3
+      - egui-wgpu-0.33.3
+      - egui-winit-0.33.3
+      - egui_kittest-0.33.3
+      - wgpu-27.0.1
+      - winit-0.30.13
+      - accesskit_winit-0.29.2
+      - accesskit_windows-0.29.2
+      - pollster-0.4.0
+      - accesskit-0.21.1
+      - image-0.25.9
+      - raw-window-handle-0.6.2
+      - windows-sys-0.61.2
+      source_and_archive_present_for_all_listed: true
+      candidate_package_msrv: '1.91'
+      component_msrv_observed_in_cached_manifests:
+        egui_egui_wgpu_egui_winit_egui_kittest: '1.88'
+        wgpu: '1.88'
+        winit: '1.70.0'
+        image: '1.85.0'
+        raw_window_handle: '1.64'
+        windows_sys: '1.71'
+        accesskit: '1.77.2'
+      installed_rustc_versions: ['1.90.0', '1.91.1', '1.97.1']
+      active_rustc: 1.91.1
+      host_target: x86_64-pc-windows-msvc
+      local_lock_contains_candidate: false
+      resolved_transitive_closure: pending_adapter_manifest_and_lead_owned_offline_lock_resolution
+      predicted_download_delta: unresolved_without_exact_feature_and_target_resolution
+      cached_listed_archive_bytes: 4315392
+      cached_listed_archive_scope: Thirteen selected and relevant top-level or accessibility package archives; not the full transitive closure.
+      listed_archive_download_delta: 0 bytes for these thirteen package archives; transitive cache/download delta unresolved.
+      cargo_downloads_or_installations_run: false
+      cargo_commands_run: false
+alternatives:
+- option: egui 0.36.2 current release
+  decision: reject_for_current_candidate
+  reason: Current declared Rust 1.95 floor exceeds this project's Rust 1.91 package/toolchain floor; required native viewport and wgpu/accessibility path already exists in cached 0.33.3.
+- option: eframe 0.33.3 native bootstrap
+  decision: reject_for_quiet_native_proof
+  reason: Inspected source unconditionally makes the native root window visible after its first post-render; the adapter needs explicit hidden-window policy and observable surface errors.
+- option: egui_kittest wgpu+snapshot features for rendered pixels
+  decision: reject_as_default_test_feature_set
+  reason: WP012-R002 selects semantic queries only; use the contract's optional capture/native path for actual raster pixels, without adding broad test renderer backends.
+- option: Iced 0.14.0
+  decision: reject_for_this_contract_candidate
+  reason: MSRV fits, but no Iced source/archive is cached and inspected evidence does not show a better fit than the contract-selected egui draw path plus owned winit/Painter runner for this Windows native proof.
+- option: Slint 1.19.0
+  decision: reject_for_current_candidate
+  reason: Current source declares Rust 1.95 and brings a declarative UI/compiler and renderer surface not justified by the existing immediate-mode Core geometry mapping.
+- option: GPUI
+  decision: reject_for_this_contract_candidate
+  reason: Pre-1.0 API and latest-stable-Rust requirement with no local cache or exact bounded Windows proof path.
+- option: Native UI owned by Core
+  decision: reject
+  reason: Would couple portable canonical state to platform windows, GUI input and renderer dependencies, violating the accepted Core/adapter/host ownership boundaries.
+risks_and_mitigations:
+- risk: Toolkit or test-harness interaction is mistaken for native Windows/touch/pen/accessibility proof.
+  mitigation: Separate unit/harness rendered-pixel and AccessKit assertions from native x64 window, OS input, accessibility tree, resize/scale and device-recovery cases; report unsupported coverage by exact platform label.
+- risk: A Core InAppFloat is mislabeled as a native OS popout or a widget viewport becomes a second layout authority.
+  mitigation: Keep distinct IDs for canonical target and adapter OS window; move only after destination readiness; preserve origin/return location, close behavior and capability result in the adapter protocol.
+- risk: Nested geometry, hit targets, clipping or DPI conversion diverges from Core output.
+  mitigation: Drive every rectangle from Snapshot::geometry; define logical/physical scale conversion once per surface; clip content explicitly; assert input hit target and rendered target share the same canonical identity and revision.
+- risk: Immediate viewport repaint coupling or default feature activation increases idle CPU and compile/download closure.
+  mitigation: Prefer deferred native viewports, keep egui/winit defaults disabled, inspect invalidation/visibility behavior, and freeze target-specific features before lead lock resolution.
+- risk: Provider renderer cannot share the adapter's wgpu device/queue or surface.
+  mitigation: Advertise renderer-sharing capability per host/provider; use an explicit supported handoff or host-owned image/native child surface; never promise cross-device sharing or infer success from a rendered egui snapshot.
+- risk: GPU/backend/driver differences make image snapshots flaky or tolerance hides a regression.
+  mitigation: Pin renderer features and deterministic fixture inputs; use exact low-resolution snapshots and narrow tolerance; retain semantic/accessibility assertions and inspect failure images.
+- risk: The selected Painter capture path cannot read back the negotiated surface format.
+  mitigation: Its screenshot helper supports Rgba8Unorm/Bgra8Unorm; have the runner select a compatible supported surface format or return an explicit unsupported/capture failure, never a Ready receipt.
+- risk: Existing eframe bootstrap unexpectedly displays a hidden proof window or hides a renderer setup failure behind a window handle.
+  mitigation: Exclude eframe bootstrap; own winit creation and visibility, require Painter::set_window success, and bind readback to the current viewport/window epoch before reporting readiness.
+- risk: Cached direct archives are mistaken for a fully cached resolved dependency graph.
+  mitigation: Keep the graph/download delta marked unresolved until the actual adapter manifest and target/features are frozen and the lead publishes offline resolution; no network fallback during proof.
+reuse_opportunities:
+- Existing Core immutable Snapshot, IDs, pure geometry and canonical command route.
+- Existing content-controller host boundary, request/acknowledgment ownership, provider leases and renderer effect separation.
+- Cached egui 0.33.3 ecosystem and existing Rust 1.91 package floor; no change to Core or content dependency features.
+focused_proof_plan:
+  required_after_contract_freeze:
+  - Resolve and compile the new adapter for the exact declared Windows x64 target with the frozen feature set and exact workspace lock closure; offline status must be established by the lead before runtime proof.
+  - Render a deterministic fixture with nested views from at least two providers, selected/pinned state and docked toolbar; assert offscreen image output and semantic/widget target identity, then separately prove correlated native-surface readback.
+  - Exercise keyboard commands and native touch/pen/mouse paths with target/scale coherence; distinguish injected events from OS/hardware evidence.
+  - Verify adapter-owned native popout creation, readiness-before-move, return/redock, close and capability fallback on each claimed platform; web remains separately labeled.
+  - Exercise resize, DPI/scale transitions, occlusion/minimize, surface loss/recreation and bounded recovery; separate injected loss from actual device loss.
+  - Inspect egui_kittest AccessKit semantic data separately from the native AccessKit event-loop bridge and independent Windows UI Automation tree/action query bound to the owned HWND; report unproven platforms explicitly.
+  - Confirm default Core/content builds remain GUI-free and adapter features are selected only by the optional package/feature.
+  run_boundary: Prep only. No Cargo, build, tests, install, dependency download, product/spec/contract/state edit, or Git mutation was run. Read-only Git status/revision and source inspection only. Exact transitive dependency closure and download delta are unresolved until the lead performs the manifest-bound lock resolution.
+handoff:
+  next_action: Lead publishes exact adapter/workspace manifest and lock inputs and resolves the offline graph; dependency role independently verifies the resolved graph before coder03 admission.
+  messages_sent:
+  - recipient: Kumihimo-coder-03
+    result: Sent selected dependency boundary, eframe visibility blocker, Core ownership and unresolved full closure.
+  - recipient: Kumihimo evaluation
+    result: Sent semantic/offscreen/native proof split and eframe visibility blocker.
+  - recipient: Kumihimo lead
+    result: Sent readiness report location, manifest-bound offline closure requirement and the R002/R011 feature mismatch; corrected contract now includes egui-wgpu/winit and report is ready for manifest resolution.

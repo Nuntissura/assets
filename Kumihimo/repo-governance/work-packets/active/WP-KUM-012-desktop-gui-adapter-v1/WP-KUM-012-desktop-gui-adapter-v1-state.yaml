@@ -1,9 +1,18 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 1
-phase: planned
-owner: unassigned
-changed_files: []
-proof: []
+generation: 2
+phase: active
+owner: ROLE-KUM-DEV-LEAD
+changed_files:
+- repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
+- repo-governance/specification/
+- repo-governance/work-packets/archive/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-stub.yaml
+proof:
+- kind: local_full_contract_preparation
+  source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
+  observed: Full18R/13A bounded GUI/native contract, priorstub and6fileSpec15 preserved, all99full orderedrecords
+    unchanged. Primarycachedsource/team deliberation resolved authenticnativeGraphicsReady and hiddenstartup defects.
+    No sourcecoding/runtime admission; dependency/frozenmatching evaluation/publication/manifest graph pending.
 blockers: []
-next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+next_action: Dependencies/evaluator reconcile fullcontract/Spec16 and exactoptionalmanifest feature choices; leadpublish
+  before manifest-only resolution and independent closure readiness, then coder03 admission

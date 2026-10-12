@@ -85,11 +85,12 @@ work_packets:
     frozen evaluation before coding
   blockers: []
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
-  title: Prove a replaceable desktop adapter
-  phase: planned
+  title: Implement a replaceable egui desktop adapter and quiet native workspace sample
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Dependencies/evaluator reconcile fullcontract/Spec16 and exactoptionalmanifest feature choices; leadpublish
+    before manifest-only resolution and independent closure readiness, then coder03 admission
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
   title: Prove web arrangement with Portal-style frames
