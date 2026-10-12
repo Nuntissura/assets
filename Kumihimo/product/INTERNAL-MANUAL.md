@@ -1,0 +1,214 @@
+---
+file_id: KUM-INTERNAL-USER-MANUAL-v1
+file_kind: internal-user-manual
+updated_at: '2026-10-12'
+---
+
+<topic id="start-here">
+
+# Kumihimo internal user manual
+
+**Agents and new consumers: start here.** This is the plain-language guide to what the downloaded asset can currently do. It is a documentation file, not a panel shown in the default interface. For API details and reproduction procedures, continue to the [technical reference](README.md). For maintenance instructions, use the [repository entry point](../AGENTS.md).
+
+Kumihimo supplies the arrangement system for an application: nested frames, tabs, grids, docking, tools and saved layouts. Your application supplies the things shown inside those frames. In this guide, that application is the **host**.
+
+This download contains Rust libraries, source and example hosts. It is not a finished standalone editor, browser or desktop window manager. The packages currently use Cargo path dependencies and are marked `publish = false`; downloading the source does not install an executable. The examples let you inspect selected behavior before integrating it into your own application.
+
+The core has no GUI or content engine. Optional desktop and web adapters provide usable presentations. Their existence does not mean every feature works identically on every platform.
+
+</topic>
+
+<topic id="workspace-vocabulary">
+
+## A few useful names
+
+| Name | Meaning |
+| --- | --- |
+| Workspace | An area that arranges frames. It can be an application root or belong to another frame. |
+| Frame | A container placed in a workspace. It can hold tabs and its own child workspace. An internal frame is not automatically an operating-system window. |
+| View / tab | One placement of host content inside a frame. Moving it changes its placement, not the underlying document. |
+| Resource | A host-owned document, task, scene or other item referenced by one or more permitted views. |
+| Provider | The host integration that knows how to display and operate that resource. |
+| Tool surface | A toolbar or panel with a placement and an explicit editing target. Its placement and its target are separate. |
+| Native popout | A separate operating-system window created for Kumihimo content by a supporting adapter. |
+
+A frame may contain a child workspace, whose frames can contain more workspaces. There is no stock pane count. The host can choose its number of frames, tabs and nesting levels, subject to configured admission limits and available resources. “Twenty frames with thirty tabs each” is an example, not a preset or guarantee of practical performance.
+
+</topic>
+
+<topic id="current-capabilities">
+
+## What is available today
+
+The following are existing building blocks. A host or adapter decides which controls to expose.
+
+| Area | Current capability | Boundary |
+| --- | --- | --- |
+| Arrangement | Nested ownership; weighted splits and grids; empty grid cells; resizing inputs; docking previews; in-app floating and redocking; equalize, swap, maximize and restore. | The host supplies current bounds, minimum sizes and eligible destinations. |
+| Tabs | Selection, labels, pins, groups with colors, ordering, moves, approved closing, retained closed views and reopening. Canonical queries can search and page tab metadata. | Group membership is local to a frame. Pin and close policies may reject an action. |
+| Tools | Edge or eligible grid-cell placement, reserved space and separately bound editing targets. | The host implements the actual tool action and reports whether its target is usable. |
+| Saved layouts | Validated semantic save/restore, including unavailable-provider placeholders. | Documents, files, live engine state and durable storage belong to the host. |
+| Navigation | Optional scrollbar, always-visible minimap, both, or a temporary minimap while scrubbing. Comfortable visible and hit sizes are configurable. | The host supplies document measurements, overview data and confirmed scroll positions. |
+| Backgrounds | Optional visual settings and typed media-policy requests; still backgrounds in the desktop sample. | Working video/audio playback and decoder integration are not demonstrated. |
+| Resource coordination | Bounded requests, capability negotiation, lifecycle observations, scheduling and declared cache reservations. | A request or hidden tab is not proof that CPU/GPU work stopped or memory was released. |
+
+The Windows x64 desktop adapter has scoped native-window, rendering and accessibility observations. The Rust/WASM plain-DOM pilot has scoped Chrome observations. The optional rendering experiment has combined real Servo-produced pixels, a 2D provider and depth-tested 3D geometry. These are bounded demonstrations, not blanket compatibility or performance guarantees.
+
+The desktop adapter supplies navigation controls and still-background presentation when those features are selected. The current web pilot supplies arrangement and host task editing; it does not enable the optional navigation or background modules.
+
+Physical pen/touch and assistive hardware, ARM execution, other desktop platforms and other browsers remain unproven. Full Handshake Notes, Studio, Atelier, production Servo browsing and arbitrary external applications are not supplied by these examples. The specification also contains future acceptance targets; a completed work packet does not imply all those targets are complete.
+
+</topic>
+
+<topic id="everyday-workflows">
+
+## Arrange your work
+
+1. **Open or select content.** The host supplies a resource and provider; Kumihimo keeps the view in its frame. A second view of the same resource requires the provider's declared sharing support.
+2. **Move a tab or frame.** A tab move relocates that view. A frame move preserves its contained tabs and child workspace. Moving a tab to another frame clears its old frame-local group.
+3. **Dock or float.** Eligible edges and cells come from host policy. A preview shows a possible placement; committing applies it. Cancelling a preview leaves the arrangement unchanged. A stale preview must be recreated from current state.
+4. **Resize or reorganize.** Split/grid weights divide available space after minimum sizes and tool strips. Equalize preserves structure; swap exchanges two docked frame placements. Maximize temporarily presents one frame while retaining the underlying arrangement for restoration.
+5. **Close or reopen.** The host can veto closing, for example to protect unsaved work. Retained closed views can reopen with their original identity and resource reference. Closing a view does not itself dispose the host's document or engine.
+
+A floating frame can cover part of another frame. The model reports its placement and clipping; content interaction, focus and the controls for working around the obstruction come from the adapter and host. Grid holes and floats are available, but the snap helper offers only currently eligible destinations. It does not invent an unlimited snap grid or permit every overlap automatically.
+
+Each displayed child workspace needs bounds updated from its parent's allocated content area. Kumihimo can calculate the arrangement once those inputs are supplied; the host decides how the root relates to its application window or screen.
+
+### Place tools without losing their target
+
+A tool can sit on a frame, view or workspace edge, or an eligible grid cell. Moving it outward does not silently change which document it edits. Default pinned tools hide when their target is not visible and usable, releasing their reserved space. A host can choose a visible-but-disabled policy instead. Focusing the toolbar does not select a different editing target.
+
+This is useful when a Studio toolbar sits beside Notes or a terminal: the host must explicitly choose a compatible Studio target before its commands can operate. Kumihimo does not open an editor merely because somebody clicked an unrelated tool.
+
+### Navigate a large document
+
+The four navigation modes are host settings. In temporary-minimap mode, grabbing the scrollbar thumb begins the gesture and expands a map beside the document. You drag the viewport rectangle over that miniature document; releasing returns to the idle scrollbar controls. If overview information is unavailable, the projection reports a fallback or disabled reason.
+
+The map is supplied by the content provider. Kumihimo does not parse your document to discover its text, images or semantic landmarks, and it does not perform document reflow.
+
+</topic>
+
+<topic id="host-responsibilities">
+
+## What your application supplies
+
+Kumihimo owns arrangement records and validates arrangement commands. The host owns content meaning and effects:
+
+- Files and folders, document edits, text layout, asset import, undo and synchronization.
+- Editor/browser/media/graphics engines and the actual rendering of their content.
+- Permissions, close approvals, sharing declarations and compatible tool targets.
+- Current geometry, scale and content observations; actual input delivery and focus.
+- Storage and atomic publication of saved layouts alongside the host's own data.
+- Policy for live instances, suspension, unloading, memory and CPU/GPU budgets.
+
+**File dragging:** moving an existing tab or frame is available. Typed host asset-action requests are also available, with linked-edit, independent-copy and domain-change modes. The current adapters do not implement a general file-drop pipeline. Dragging a disk file into a frame, dropping a browser file object, or transferring an asset between applications still needs host/platform integration. No arrangement action moves or copies a physical file.
+
+**Other applications:** current native popouts contain Kumihimo-owned surfaces. There is no implemented facility to tile arbitrary desktop apps or wrap a running Blender window inside a frame. Those are separate possible integrations, not capabilities of the download.
+
+**Rendering speed:** the content and rendering bridge can bound and coalesce requested work and carry lifecycle information. Actual performance improvements and physical resource release require host implementation and measurement. Keeping many logical tabs does not require keeping all their engines alive, but the host must implement that policy.
+
+</topic>
+
+<topic id="choose-modules">
+
+## Choose only the parts you need
+
+| Package | Use it for |
+| --- | --- |
+| [kumihimo-core](kumihimo-core/Cargo.toml) | Arrangement state and commands. Default features use only the Rust standard library. |
+| [kumihimo-layout-json](kumihimo-layout-json/Cargo.toml) | Bounded JSON encoding/decoding of saved semantic layouts. |
+| [kumihimo-content](kumihimo-content/Cargo.toml) | A controller owning Core plus typed host-content coordination. `navigation` and `backgrounds` are optional features. |
+| [kumihimo-egui](kumihimo-egui/Cargo.toml) | Replaceable desktop controls. Optional `native` adds the sample native runner; `capture` adds raster capture. |
+| [kumihimo-web](kumihimo-web/Cargo.toml) | Rust browser adapter and Portal-style pilot. Optional `wasm` exports its browser bindings. |
+| [kumihimo-render-bridge](kumihimo-render-bridge/Cargo.toml) | Bounded pixel/identity/lifecycle contracts and the optional `desktop` composition experiment. |
+
+Add the selected package as a Cargo path dependency relative to your host's manifest. Keep the package's sibling dependencies with it. Use one canonical arrangement owner: when using the content Controller, adapters borrow that Controller instead of maintaining a second arrangement.
+
+The desktop workspace includes a local `accesskit_windows` patch for quiet native accessibility actions. Cargo patches do not propagate through a path dependency. A consuming desktop host requiring that behavior must retain the patched source and apply the workspace-root patch described in the [desktop reference](README.md); without it, quiet native UIA invocation is unsupported.
+
+The core and content packages do not require Servo or WGPU. Choose the graphics experiment separately rather than pulling browser/graphics infrastructure into every host.
+
+</topic>
+
+<topic id="try-the-examples" ingestable="true">
+
+## Try the examples
+
+Run these commands from the **Kumihimo project folder**, which contains `product/` and this repository's README. They require Rust/Cargo 1.91 or newer, the target's linker and the selected dependencies. `--offline` assumes those dependencies are already cached. These commands are documented entry points, not a claim that your machine has been prepared or that generated binaries are included in the download.
+
+For models maintaining this repository, follow its session-start and build preparation rules before compilation, and keep the single Cargo lane and reusable target. Consumers arrange their own build environment. Do not start every example merely to inspect the documentation.
+
+### Quiet arrangement example
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-core --example workspace --target-dir .local/cargo-target --locked --offline -j 2
+```
+
+This prints arrangement identities, generation and geometry. It opens no GUI. The source is [workspace.rs](kumihimo-core/examples/workspace.rs).
+
+### Visible desktop sample
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --example desktop_host --target-dir .local/cargo-target --locked --offline -j 2 -- --interactive --frames 3 --tabs 3
+```
+
+`--interactive` explicitly requests a visible window. The two counts are adjustable sample inputs. This example uses sample providers, not your installed editors. For quiet capture or native diagnostics, use the separately documented `capture_host` and `native_probe` paths in the [technical reference](README.md). Models must not substitute visible interaction for those quiet automation paths.
+
+### Browser workspace pilot
+
+Prerequisites include the Rust `wasm32-unknown-unknown` target, cached dependencies, Python, PowerShell and a verified **wasm-bindgen CLI exactly 0.2.128** configured through `KUMIHIMO_WASM_BINDGEN`.
+
+```powershell
+& product/kumihimo-web/tools/build-web.ps1 -CargoTargetDir .local/cargo-target -WasmBindgen $env:KUMIHIMO_WASM_BINDGEN
+python product/kumihimo-web/tools/serve.py --pkg .local/web/pkg --port 0
+```
+
+The first script builds WASM and generates matching JS/WASM under `.local/web/pkg`. The server prints its owned loopback URL; open that printed URL. If you already have a matching selected WASM build, the script's `-SkipBuild` option reuses it. Do not use that option to disguise a missing or stale build.
+
+The pilot has Cards, Details, Depth and live-record-budget inputs. Drag frame headers, select tabs, and use the labelled arrangement controls to float, redock, resize, maximize or move a tab into another frame. Escape cancels an uncommitted preview. The separate host task editor changes task meaning. **Save layout + tasks** and **Restore saved** use separate selected browser-storage keys. Native-style browser popup migration is unsupported.
+
+### Browser and graphics experiment
+
+The optional bridge has demonstrated two Linux x64 Servo processes under WSL supplying copied pixels to Windows x64 DX12 composition, beside 2D and 3D content. This is an experiment with a host-owned process and capture protocol, not a ready embedded browser. Native Windows Servo, zero-copy sharing, video/YouTube/audio and raw engine-context popout transfer are unproven or unsupported.
+
+Its launch, network isolation, receipt and cleanup requirements are substantial; use the [exact experiment procedure](README.md#optional-browser-and-graphics-experiment). Do not start Servo from this overview or interpret hiding a view as suspending it.
+
+</topic>
+
+<topic id="save-and-recover">
+
+## Save, inspect and recover
+
+A saved layout records semantic arrangement and host resource references, not native window handles, texture handles or document contents. Restore validates a detached candidate before replacing the live arrangement. Missing providers remain identifiable placeholders. The host decides where bytes live and how its documents and layout are saved together.
+
+| What happened | What to inspect / do |
+| --- | --- |
+| A move or preview is rejected | Read the reported reason, current generation, destination eligibility, minimum sizes and pin/target policy. Generate new intent from current state. |
+| A provider is unavailable | Preserve the placeholder and saved reference; make the provider available through the host, then reconcile its binding. |
+| Saved data is malformed or newer than supported | Keep the current valid state. Inspect the candidate/schema error; do not overwrite good storage with a failed restore. |
+| Browser storage refuses a save | Continue using the current workspace. Inspect the storage error and retry only after resolving its cause. |
+| A native popout loses its return destination | Inspect native bindings and the semantic return/recovery result. The host may need a new eligible destination; do not discard surviving content. |
+| A host effect times out or reports `Unknown` | Inspect its exact pending request and host state. Reconcile that old operation before issuing a conflicting or destructive request. |
+| WASM startup fails | Inspect the build manifest, exact binding version, served package and constructor/route error. Compilation alone does not prove browser startup. |
+
+Resource reservations describe declared obligations. They do not measure physical memory. “Requested unload,” “confirmed unload,” “hidden” and “unknown” have different meanings. Keep outstanding cleanup obligations until the host confirms the exact effect; do not blindly resend requests or stop unrelated processes.
+
+Diagnostics exclude opaque input/asset payloads in the content controller. They still need appropriate host handling. Native sample captures and manifests, browser events and storage observations, and rendering-bridge receipts provide different evidence; use the one belonging to the failing layer.
+
+</topic>
+
+<topic id="agents-without-context">
+
+## For an agent with no prior context
+
+1. Start with this manual and identify whether you are using a host application, trying an example, or maintaining the asset. Repository maintenance follows [AGENTS.md](../AGENTS.md); consuming the asset does not require understanding its work-packet history.
+2. Inspect the selected adapter's actual capabilities. A core API or requested effect is not proof of GUI behavior, successful content IO or platform compatibility.
+3. Read canonical state before new intent. In Rust, use `Core::snapshot()` or the owning Controller. Mutations use identity, actor, operation ID and expected generation; the host serializes arrangement changes and allocates operations.
+4. In the running web pilot, `window.kumihimo` exposes readiness, `snapshot()`, `hostSnapshot()`, `route(request)`, bounded events and selected storage. Route names include `snapshot`, `host_snapshot`, `preview`, `cancel_preview`, `command`, `host_command`, `input`, `save` and `load`. IDs, operations and generations use decimal strings. Consult the [web reference](README.md#browser-adapter-and-portal-style-pilot) for request shapes.
+5. Use stable control IDs and structured observations where available. In the desktop adapter, `ControlRecord` and `FrameReport` identify controls, bounds, rejections and post-action generation. Open captured images when judging visible layout; records alone do not establish readability.
+6. Retry an uncertain command with its **exact original envelope** to reconcile a retained receipt. Corrected intent needs a new operation and current generation. A fresh incarnation does not erase old host cleanup obligations, and replay is not guaranteed across restarts.
+7. Keep automation quiet and bounded. Visible desktop startup is an explicit opt-in. Never kill another application's process to make an example or recovery appear successful.
+
+For detailed data types, examples and error semantics, use [product/README.md](README.md). For accepted future direction and current coverage, use the [master specification](../repo-governance/specification/current/spec-modules/master-spec.md) and [roadmap](../repo-governance/specification/current/spec-modules/roadmap.md). Treat those future targets separately from the inspected implementation.
+
+</topic>

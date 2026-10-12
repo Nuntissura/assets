@@ -8,6 +8,8 @@ updated_at: '2026-10-12'
 
 # Kumihimo
 
+> **NEW USERS AND AGENTS: [START WITH THE INTERNAL USER MANUAL](product/INTERNAL-MANUAL.md).** It explains what you can use today, what the host supplies, how to try the examples and how to recover. It ships as documentation and is not shown in the default GUI.
+
 A reusable Rust window/frame asset for desktop and web apps: grids, tabs, grouped tabs, docking, popouts and configurable surrounding controls. Hosts provide the actual editors, browsers, media and graphics.
 
 The Rust ownership and layout core passed its Windows x64 all-targets check, 22 focused tests and console example. It manages nested frames, tabs/groups, split/grid geometry, pinned tool docking, previews, in-app floats, host resource references, admission and bounded command replay. The optional Rust/WASM browser adapter has passed its six scoped cases with actual rendered output. The optional desktop adapter has passed all thirteen scoped cases with actual Windows x64 raster, native popout/recovery and accessibility observations. The optional render bridge has proved two real isolated Servo processes beside 2D/3D GPU content, including resize/input, bounded dirty work, owned unload/page reload and renderer replacement. Native Windows Servo and media remain future integrations. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.

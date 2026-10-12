@@ -8,6 +8,8 @@ updated_at: '2026-10-12'
 
 # Portable ownership core
 
+> **NEW USERS AND AGENTS: [START WITH THE INTERNAL USER MANUAL](INTERNAL-MANUAL.md).** This file is the detailed API and integration reference. The internal manual explains current capabilities, host responsibilities, examples and recovery without requiring the spec. Neither document opens a default GUI panel.
+
 `kumihimo-core` 0.3 is independently usable with std-only default features. It owns root workspaces, frames, frame-owned child workspaces, ordered open and retained closed views, groups, host resource references, tool surfaces and flat split/grid packing. Geometry is a pure projection of canonical inputs. Flat records avoid recursively owned trees. Optional `serde` supports the schema-1 saved DTO; independent `kumihimo-layout-json` 0.1 provides bounded JSON encoding and decoding.
 
 The host owns actual content, provider engines, synchronization, file IO and resource policy. Registering or restoring a provider/resource creates a lightweight identity record; it neither starts an engine nor duplicates its data. Independently selectable std-only `kumihimo-content` 0.2 privately owns Core and coordinates host-executed content effects. The portable Core contains no GUI, renderer or engine. Optional desktop and browser adapters supply presentation; their packet state records actual runtime proof. Whole-state recovery validates detached saved data before replacing the arrangement. Adapters consume the same core commands; they must not maintain a competing canonical arrangement.

@@ -1,0 +1,48 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-016-internal-user-manual-v1
+title: Discoverable internal user manual and external-app discussion
+scope:
+- Write a product-local internal user manual for consumers and models without prior repository context
+- Independently reconcile capability claims against code, specification and existing runtime evidence
+- Add prominent documentation/model-entry discovery without default GUI exposure
+- Research and discuss file drops, external-app tiling and embedding as proposals only
+files:
+- product/INTERNAL-MANUAL.md
+- product/README.md
+- README.md
+- AGENTS.md
+- CLAUDE.md
+- CODEX.md
+- repo-governance/topology/product.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+- repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/
+dependencies:
+- WP-KUM-015-spec-status-update-v1
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+- TOPIC-KUM-ROADMAP
+requirements:
+- Explain current purpose, core workflows, startup, inputs/outputs, navigation, host ownership, failure/recovery and agent operation in digestible language
+- Distinguish implemented API contracts, scoped demonstrations, unproven integrations and future proposals
+- Do not claim file-transfer IO, arbitrary external-app embedding, resource release or cross-platform proof that has not been built and observed
+- Keep manual out of default product GUI; provide obvious links for models and consumers
+- Use two disjoint subagents: manual writer and code/spec capability evaluator
+- Preserve accepted specification meaning and runtime source; no Cargo or runtime UI changes
+acceptance:
+- Manual exists with frontmatter and flat addressable topics; all current capability claims have inspected source/evidence support
+- Root/product README and identical provider entry points prominently link the manual
+- Focused independent evaluation records discrepancies and their resolution; relative local links resolve
+- File-drop, tiling and embedding answers separate current behavior from researched proposals and host/platform responsibilities
+- Generated projections pass sync --check; owned diff has no whitespace errors; authorized publication reaches origin
+proof:
+- Code/spec capability inspection and independent final manual cross-check
+- Focused document topic/link validation
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- Exact remote revision after authorized commit/push
+taskboard_ref: repo-governance/taskboard/taskboard.yaml
+operator_request: Two subagents write and verify a hidden-by-default internal manual; then brainstorm file dragging, app tiling and embedding Blender inside Handshake
+research_basis: Existing current code/spec and published WP012-014 scoped evidence for the manual; current primary platform and field sources for the discussion, without feature implementation

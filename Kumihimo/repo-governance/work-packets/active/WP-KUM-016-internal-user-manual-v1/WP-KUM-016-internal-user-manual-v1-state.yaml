@@ -1,0 +1,37 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-016-internal-user-manual-v1
+generation: 2
+phase: active
+owner: dev_lead
+changed_files:
+- product/INTERNAL-MANUAL.md
+- repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
+- repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-state.yaml
+- AGENTS.md
+- CLAUDE.md
+- CODEX.md
+- README.md
+- product/README.md
+- repo-governance/registry/ids.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/topology/product.yaml
+proof:
+- kind: independent_documentation_evaluation
+  evaluation_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-evaluation.yaml
+  evaluation_sha256: 93c6a81b91af7761243c411096b538fe34afd8edb4f998d22c4868ab92c85ca9
+  observed: PASS_SCOPED_DOCUMENTATION; six focused cases, three clarifications resolved; all inspected document/source
+    hashes match final bytes
+- kind: focused_document_structure
+  observed: Nine manual topics and17 relative links resolve; provider routers identical; runtime source and accepted
+    specification unchanged; sync --check and git diff --check passed
+- kind: primary_source_discussion
+  research_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
+  observed: Current platform documentation and real Rust/Godot/Blender sources inspected; file-drop, external tiling/hosting
+    and capture recorded as discussion-only proposals; Blender not tested
+blockers: []
+next_action: Publish evaluated manual/discovery changes; close packet after exact origin containment

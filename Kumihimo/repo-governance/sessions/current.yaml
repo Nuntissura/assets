@@ -1,22 +1,20 @@
 schema_version: kumihimo.session.v1
 session_id: SESSION-KUM-2026-10-11-v1
-phase: done
+phase: active
 dev_lead: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
 git:
   workspace_relative_root: ..
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: null
+active_wp: WP-KUM-016-internal-user-manual-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
-  operator_afk: true
+  operator_afk: false
   future_sessions_require_current_scope_reconciliation: true
   remaining_work_packets_authorized:
-  - WP-KUM-012-desktop-gui-adapter-v1
-  - WP-KUM-013-web-adapter-portal-pilot-v1
-  - WP-KUM-014-servo-and-heavy-rendering-v1
+  - WP-KUM-016-internal-user-manual-v1
   commit_push_after_each_completed_packet: true
   parallel_coding_and_team_expansion_authorized: true
   live_authorization:
@@ -25,6 +23,8 @@ operator_scope:
     Cargo and value time'
   - 'Operator directly instructed this lead chat: use parallel coders when useful, bundle Cargo tests/reuse artifacts,
     ask coding team leader to expand team as needed'
+  - Operator requests two subagents for a hidden-by-default internal user manual and code/spec verification, followed
+    by brainstorming file drops, app tiling and external-app embedding; no new runtime feature implementation
 roles:
   dependencies:
     role_id: ROLE-KUM-DEPENDENCIES
@@ -92,6 +92,18 @@ roles:
     status: retired
     retired_reason: Two completed implementation packets; operator rotation required
     retired_after_outcome: 8acc5bd5ba64f428077765323684bd97f91573dc
+  manual_writer:
+    role_id: ROLE-KUM-MANUAL-WRITER-016
+    agent_path: /root/manual_writer
+    assignment: WP016 product/INTERNAL-MANUAL.md only; documentation author
+    status: completed_held
+    source_ownership_released: true
+  manual_verifier:
+    role_id: ROLE-KUM-MANUAL-VERIFIER-016
+    agent_path: /root/manual_verifier
+    assignment: WP016 code/spec capability inspection and focused independent documentation evaluation
+    status: completed_held
+    source_ownership_released: true
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -122,8 +134,7 @@ tick:
   operator_request: remove the tick
   observed_result: automation_update delete returned deleteStatus=deleted for kumihimo-dev-lead-tick
   automatic_restart_authorized: false
-next_action: All15 current work packets complete and published, including the documentation status update. No active
-  assignment; automatic tick deleted; future implementation requires current operator scope reconciliation
+next_action: Publish completed WP016 documentation and research discussion; automatic tick remains deleted
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

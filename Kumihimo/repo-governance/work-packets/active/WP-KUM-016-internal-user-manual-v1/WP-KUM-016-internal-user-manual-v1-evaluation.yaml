@@ -1,0 +1,129 @@
+schema_version: kumihimo.evaluation.v1
+evaluation_id: EVAL-KUM-016-v1
+wp_id: WP-KUM-016-internal-user-manual-v1
+evaluator: manual_verifier
+updated_at: '2026-10-12'
+phase: documentation_evaluated_pending_lead_publication
+verdict: PASS_SCOPED_DOCUMENTATION
+scope: Bounded independent manual/source/specification comparison; no new runtime execution, feature acceptance or external-app integration claim.
+inspected_refs:
+- path: product/INTERNAL-MANUAL.md
+  sha256: db0f687d2058ea1df6309708eb88a2824e12f834e79b88a6af3627ab5d9568e7
+- path: product/README.md
+  sha256: d6b1fa0dcefa080ed9a3fbb7a7f23b2ea57833218741f9ad58ecc96e30660eef
+- path: README.md
+  sha256: c21f8334d693220bdaea64ea53a9dd8b5b9317d45e3a18bfe58a70ea64d0cd95
+- path: AGENTS.md
+  sha256: 6c8a622726aceceb52e22f344085e31f5f2fbb60558ebb88c6bfb50273239b68
+- path: CLAUDE.md
+  sha256: 6c8a622726aceceb52e22f344085e31f5f2fbb60558ebb88c6bfb50273239b68
+- path: CODEX.md
+  sha256: 6c8a622726aceceb52e22f344085e31f5f2fbb60558ebb88c6bfb50273239b68
+- path: repo-governance/topology/product.yaml
+  sha256: ef4909340d98cfc35473b3ecf0fd31cd7bccaf16f866c9be7d42bee111c30b65
+- path: repo-governance/specification/current/spec-modules/roadmap.md
+  sha256: 633f8206f63692ccef25a842714bac503593d5d5567105a091dd4bba8c8db708
+- path: repo-governance/specification/current/spec-modules/master-spec.md
+  sha256: 765d62bb03d110ddb1fda4c91361810a7daba243dc148feed041d41c5170b187
+source_anchors:
+- path: product/kumihimo-core/src/model.rs
+  lines: '5-49'
+  sha256: b06ed23fd81fdbdf05d86ab8d5a7840f05154992125b50eab94fd546e566a0d9
+  supports: Configurable admission, recursive frame/workspace records; no fixed pane or tab count.
+- path: product/kumihimo-core/src/command.rs
+  lines: '6-129'
+  sha256: cfbbccce0dad2119917b5a00db95a90730add6c6fe6d9d4a344336680b5045d7
+  supports: Arrangement, view/group metadata, movement, approval, retained reopen, layout and recovery commands.
+- path: product/kumihimo-content/src/protocol.rs
+  lines: '330-440'
+  sha256: 8c225e54ae0b489adfd81537fb1ddfcebbf1e72321aea82469e2de6977363534
+  supports: Host asset references and typed requests; input/lifecycle/geometry do not execute file IO or engines.
+- path: product/kumihimo-content/src/navigation.rs
+  lines: '56-61,935-1039'
+  sha256: a2556d3aaf320a4420edc191611a56af03651eae192b9ce6164010df5ef06242
+  supports: Four navigation modes; transient gesture begins inside the scrollbar thumb.
+- path: product/kumihimo-egui/src/content.rs
+  lines: '121-133'
+  sha256: 2b183863c6367536d609488beb1d5374f38af2455854a192ff19d52194b1fdc9
+  supports: Native child content surfaces and incompatible device handoffs explicitly unsupported.
+- path: product/kumihimo-egui/src/native.rs
+  lines: '437-458'
+  sha256: 5e3ba638d0b93f5df1aa3b5b3563255adac0497cd0e71bb0933d0bcc3e966631
+  supports: Creates adapter-owned winit windows; no arbitrary external application embedding facility.
+- path: product/kumihimo-egui/examples/desktop_host.rs
+  sha256: 9934f991c8a24c88c5354bef9fdd91cdeda9b0479ad706fd5f4aff8b0cf9a76a
+  supports: Native feature, explicit visible --interactive opt-in and configurable --frames/--tabs sample inputs.
+- path: product/kumihimo-web/Cargo.toml
+  sha256: fb67bed460aba0b7345b46613d5debdda4ed13f172e7982c7e5a8679bf3b5c6b
+  supports: Optional WASM bindings; current pilot does not select content navigation/background features.
+- path: product/kumihimo-web/src/host.rs
+  lines: '99-145,956-1009'
+  sha256: 5fe9061f940521bedab2120a91b5f81298d0610e1401c1325a72b7210c8516fb
+  supports: Host-owned scoped task edits through AssetAction, not physical file transfer.
+- path: product/kumihimo-web/web/pilot.mjs
+  lines: '65-87'
+  sha256: a69fe6d414439b8f5ee51d07364f860d66920a9ac26c3735f0703b467801876a
+  supports: Structured window.kumihimo readiness, routes, snapshots, events and storage.
+- path: product/kumihimo-web/tools/build-web.ps1
+  sha256: b9ecc6e52f556f6983c672cfe93682de98bc595d998e23ef3d6e8a6a5f406981
+  supports: Exact wasm-bindgen 0.2.128, selected stable target and generated package paths.
+- path: product/kumihimo-web/tools/serve.py
+  sha256: 3d4b6e373f8326ed0dace3021288e5eeb0c3a9993d58ffc3423ecf45e4f06610
+  supports: Selected generated JS/WASM required; prints owned loopback URL.
+- path: product/kumihimo-render-bridge/src/lib.rs
+  sha256: 4d2152fa6ef055101ab0d147b6412d2e291b914f77dba7e8b7dedf9223dad3b4
+  supports: Default std-only contracts; optional desktop CPU-pixel composition; external engines, no linked Servo.
+checks:
+- id: EVAL-KUM-016-C01
+  result: PASS
+  target: Internal manual current capabilities, workflows and host responsibilities.
+  method: Direct manual inspection against public commands, admission, docking/tools, retained tabs, persistence, content protocol/navigation/backgrounds and adapter sources.
+  observed: Existing API contracts and scoped presentation are distinguished from host content/file IO. Tab moves preserve resource identity; tools preserve explicit target; hiding/requests/reservations are not claimed as physical release. No arbitrary file-drop, external-app tiling or Blender embedding capability is claimed.
+- id: EVAL-KUM-016-C02
+  result: PASS
+  target: Documented module selection and example startup paths.
+  method: Inspect Cargo manifests, desktop_host argument parser, build-web.ps1 and serve.py; no command execution.
+  observed: Source/path-dependency distribution and publish=false are explicit; documented features/arguments/relative output paths match source. Offline cache, linker, wasm target and exact matching binding prerequisites are named. Complex Servo launch gates remain in the technical reference.
+- id: EVAL-KUM-016-C03
+  result: PASS
+  target: Scoped desktop, web and graphics demonstrations and future boundaries.
+  method: Compare prose with published WP012, WP013 and WP014 evaluation/state sections and current roadmap.
+  observed: Windows x64 desktop, scoped Chrome/WASM and external Linux x64 Servo copied pixels into Windows DX12 are distinguished. No ARM, physical pen/touch, other-platform, native Windows Servo, zero-copy, media or broad performance proof is invented. Current web pilot does not enable optional navigation/background modules. All 99 full specification requirements remain open.
+- id: EVAL-KUM-016-C04
+  result: PASS
+  target: Manual discovery and hidden-by-default boundary.
+  method: Directly read root/product README, three provider routers and product topology; compare tracked product changes against cf57bdadde7c3b01317ca3eedd54993340a490a1.
+  observed: Prominent start-here manual links present; AGENTS/CLAUDE/CODEX routers identical. Product topology locates the manual. Only tracked product README changes plus new INTERNAL-MANUAL.md; runtime source and GUI have no changes.
+- id: EVAL-KUM-016-C05
+  result: PASS
+  target: Manual document structure and navigation.
+  method: Independent UTF-8 parse of frontmatter, topic boundaries and relative Markdown links/fragments.
+  observed: Required frontmatter, nine unique flat topics with blank-line boundaries; all 17 relative file links and supplied fragments resolve. No hardcoded machine paths or persistent demo port.
+- id: EVAL-KUM-016-C06
+  result: PASS
+  target: Failure recovery and no-context model operation.
+  method: Compare manual recovery table and agent route/envelope guidance with owning Core, Controller, diagnostics and web pilot routes.
+  observed: Stale/new intent distinguished from exact retained replay; Unknown obligations require reconciliation; save failure retains valid state; native semantic return failure preserves content. Structured model paths, quiet operation and scoped evidence are described without requiring spec history.
+resolved_findings:
+- id: EVAL-KUM-016-F001
+  correction: Replaced broad pressing-the-scrollbar wording with grabbing-the-scrollbar-thumb; source rejects press outside thumb.
+  status: RESOLVED
+- id: EVAL-KUM-016-F002
+  correction: Explicitly limited current navigation and still-background GUI controls to selected desktop features; current web pilot lacks those modules.
+  status: RESOLVED
+- id: EVAL-KUM-016-F003
+  correction: Desktop technical reference links use the existing file without relying on a raw topic-only fragment.
+  status: RESOLVED
+findings: []
+runtime_evidence_refs:
+- wp: WP-KUM-012-desktop-gui-adapter-v1
+  section: desktop_runtime_evaluation_7d9268ab90d5
+- wp: WP-KUM-013-web-adapter-portal-pilot-v1
+  section: browser_runtime_evaluation_e6b48fd83a3e
+- wp: WP-KUM-014-servo-and-heavy-rendering-v1
+  section: servo_runtime_evaluation_b49929b4_publication
+residual_limits:
+- Documentation verdict only; prior scoped runtime evidence reused without expansion, no new Cargo or GUI run.
+- External-app/file-drop research discussion, generated sync check, whitespace check, exact remote publication and packet closure remain lead-owned.
+- Full 99 requirement acceptances remain open; discovered integrations remain proposals until explicitly adopted.
+next_action: Lead validates generated projections and publishes the admitted manual/discovery artifacts; evaluator holds after this report.

@@ -1,5 +1,13 @@
 kind: topology_links
 edges:
+- id: KUM-LINK-WP016-MANUAL
+  from: WP-KUM-016-internal-user-manual-v1
+  to: KUM-INTERNAL-USER-MANUAL-v1
+  relation: authors_and_verifies
+- id: KUM-LINK-INTERNAL-TECHNICAL-MANUAL
+  from: KUM-INTERNAL-USER-MANUAL-v1
+  to: KUM-PRODUCT-MANUAL
+  relation: introduces_and_links_reference
 - id: KUM-LINK-SPEC-PRODUCT
   from: KUM-GOV-SPEC
   to: KUM-PRODUCT

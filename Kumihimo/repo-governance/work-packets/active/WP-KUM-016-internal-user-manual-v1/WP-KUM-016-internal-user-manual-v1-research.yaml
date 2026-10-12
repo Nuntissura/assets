@@ -1,0 +1,81 @@
+schema_version: kumihimo.research-discussion.v1
+research_id: RESEARCH-KUM-016-v1
+wp_id: WP-KUM-016-internal-user-manual-v1
+observed_on: '2026-10-12'
+status: discussion_only_not_adopted
+scope: File drop responsibilities, external-app tiling and external-app window hosting; no implementation or accepted-spec changes
+current_source_findings:
+- source: product/kumihimo-content/src/protocol.rs
+  observed: HostAssetReference and AssetAction route identity/revision and linked-edit, independent-copy or domain-change intent; they do not read or move files
+- source: product/kumihimo-egui/src/content.rs
+  observed: GpuBinding.validate explicitly rejects native child content surfaces
+- source: product/kumihimo-egui/src/native.rs
+  observed: Native runner creates Kumihimo-owned windows; this is not arbitrary external-app hosting
+- source: product/kumihimo-web/web/adapter.mjs
+  observed: Arrangement drag gestures exist; no DataTransfer/files external-file drop path in the inspected product
+sources:
+- id: SRC-KUM016-DROP-WIN
+  url: https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idroptarget-dragenter
+  pattern: Native target negotiates supported data formats and drop effects before accepting a drop
+- id: SRC-KUM016-DROP-WEB
+  url: https://developer.mozilla.org/en-US/docs/Web/API/HTML_Drag_and_Drop_API
+  pattern: Browser transfer data is serialized text or File data; arbitrary JavaScript objects are not a cross-application interchange
+- id: SRC-KUM016-KOMOREBI
+  url: https://github.com/LGUG2Z/komorebi/blob/master/komorebi/src/window.rs
+  pattern: Rust window manager uses HWND identity and OS position, visibility and focus operations; set_position skips unchanged geometry
+- id: SRC-KUM016-FANCYZONES
+  url: https://learn.microsoft.com/en-us/windows/powertoys/fancyzones
+  pattern: Custom desktop grid/canvas zones resize and reposition application windows
+- id: SRC-KUM016-SETPARENT
+  url: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent
+  pattern: Reparenting requires explicit window-style handling; cross-process DPI mismatch can reset the child process DPI awareness
+- id: SRC-KUM016-QT
+  url: https://doc.qt.io/qt-6/qwidget.html#createWindowContainer
+  pattern: Native-window containers have documented stacking, rendering, focus and many-container performance limitations
+- id: SRC-KUM016-GODOT
+  url: https://docs.godotengine.org/en/latest/tutorials/editor/game_embedding.html
+  pattern: Editor embeds a separately running game process; fullscreen window mode changes are unsupported while embedded
+- id: SRC-KUM016-GODOT-SOURCE
+  url: https://github.com/godotengine/godot/blob/master/editor/run/embedded_process.cpp
+  pattern: Capability check, retry until window readiness with timeout, visibility/size updates and explicit embedding failure
+- id: SRC-KUM016-CAPTURE
+  url: https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture
+  pattern: Capture yields Direct3D frames; resizing/device-loss recreates the frame pool; capture alone is a display path
+- id: SRC-KUM016-BLENDER-SOURCE
+  url: https://github.com/blender/blender/blob/main/source/creator/creator_args.cc
+  pattern: Official Blender source exposes startup window geometry and Python script options; these do not prove embedding compatibility
+proposals:
+- id: IDEA-KUM016-DROP
+  scope: Optional shared drop coordination; host retains file/content semantics and IO
+  reuse: Canonical frame/view targets, hit geometry, permission revisions, asset identities and request/ACK routing
+  value: Consistent drop previews and explicit open/link/import/copy choices across Notes, Studio and Portal without duplicate UI plumbing
+  risks: Ambiguous destination/action, stale targets, reading huge payloads during hover, partial host import
+  controls: Host advertises allowed actions; metadata-only hover; validate target generation on drop; commit via one host operation with result and recovery
+  proof_needed: Real native/browser file drop, unsupported formats, cancel/stale target, large payload and host failure; no file move from a layout-only drag
+- id: IDEA-KUM016-TILING
+  scope: Independently selectable desktop window-control adapter or integration with an existing manager
+  reuse: Core layout geometry and optional existing manager API
+  value: Place Handshake notes and a separate Blender application together without changing Blender window parentage
+  risks: Wrong window identity, app minimum sizes, multiple windows, changed monitor scale, unwanted app disruption
+  controls: Explicit selected-app opt-in, live window identity, compatible sizing and original-placement recovery; no automatic close/suspend
+  proof_needed: Selected windows only, resize/monitor changes, app restart and detach/restore; no browser-only OS tiling claim
+- id: IDEA-KUM016-HOSTING
+  scope: Experimental platform adapter for one supported application at a time, with cooperative embedding preferred
+  reuse: Content mount/lifecycle contracts and proven readiness/timeout patterns from Godot
+  value: A Blender tab next to Notes while preserving Blender as its own process
+  risks: DPI/focus/keyboard conflicts, dialogs outside frame, native stacking above host overlays, fullscreen, process/window loss
+  controls: Per-app capability checks; explicit input ownership; tab hiding only hides presentation; detach back to desktop; crash placeholder; leave document saving and process lifetime with application/host
+  proof_needed: Real Blender keyboard/mouse, resize/scale, menus/save dialogs, tab switching, host recovery and detach; no compatibility claim until observed
+- id: IDEA-KUM016-CAPTURE
+  scope: Read-only live external-app preview as a separate alternative
+  reuse: Render bridge copied-pixel/surface lifecycle concepts
+  value: Reference views beside notes or moodboards without forcing native window embedding
+  risks: Extra capture/composition work, stale images and mistaken expectation of interactivity
+  controls: Explicit preview status, bounded update rate and visibility-driven capture; input requires a separate proven bridge
+  proof_needed: Actual capture/resize/device loss and measured overhead; no claim capture makes an application controllable
+not_selected:
+- Put Win32 process/window control in the portable ownership core
+- Treat arbitrary Blender embedding as already supported or universal
+- Treat dropped files as physical move operations without host intent
+- Treat hidden external-app tabs as stopped engines or released memory
+blender_status: Not tested or embedded during this documentation packet

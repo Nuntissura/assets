@@ -37,6 +37,9 @@ nodes:
 - id: KUM-PRODUCT-MANUAL
   path: product/README.md
   responsibility: No-context API use, diagnostics and recovery
+- id: KUM-INTERNAL-USER-MANUAL-v1
+  path: product/INTERNAL-MANUAL.md
+  responsibility: Consumer and model introduction to current capabilities, host boundaries, examples and recovery; documentation only, no default GUI exposure
 - id: KUM-LAYOUT-CONTRACTS
   path: product/kumihimo-core/tests/layout_contracts.rs
   responsibility: Executed public consumer packing, geometry, tool docking, preview, float and admission assertions

@@ -4,6 +4,7 @@ project_id: KUMIHIMO
 source: WP contracts and state
 counts:
   done: 15
+  active: 1
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -116,4 +117,11 @@ work_packets:
   contract_ref: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-state.yaml
   next_action: Documentation update complete; future product changes require an operator-authorized packet
+  blockers: []
+- wp_id: WP-KUM-016-internal-user-manual-v1
+  title: Discoverable internal user manual and external-app discussion
+  phase: active
+  contract_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-state.yaml
+  next_action: Publish evaluated manual/discovery changes; close packet after exact origin containment
   blockers: []
