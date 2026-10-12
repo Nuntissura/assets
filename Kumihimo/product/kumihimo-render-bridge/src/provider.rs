@@ -1209,6 +1209,21 @@ pub fn compose_batch(manifest_path: &Path, output_root: &Path, now_ms: u64) -> R
         composition
             .host
             .prepare_gpu(&mut renderer, surface, false)?;
+        // Finish egui Area's initial fade before comparing consecutive static frames.
+        let settle_time = renderer
+            .context
+            .input(|input| input.time + f64::from(input.predicted_dt))
+            + f64::from(renderer.context.style().animation_time);
+        renderer.capture(
+            &mut adapter,
+            &mut composition.controller,
+            surface,
+            &mut composition.host,
+            egui::RawInput {
+                time: Some(settle_time),
+                ..Default::default()
+            },
+        )?;
         let composed = draw(&mut renderer, &mut adapter, &mut composition, surface)?;
         let scene_pixel = sample_slot(
             &composed.image,
@@ -1231,7 +1246,21 @@ pub fn compose_batch(manifest_path: &Path, output_root: &Path, now_ms: u64) -> R
             || composition.host.scene_render_count() != scene_before
             || static_frame.image != composed.image
         {
-            return Err(AdapterError::Invalid("static duplicate work/pixels"));
+            static_frame.write(
+                &output_root.join(format!("{}-static-failure", case.name)),
+                64 * 1024 * 1024,
+            )?;
+            let first_difference = static_frame
+                .image
+                .enumerate_pixels()
+                .find(|(x, y, pixel)| composed.image.get_pixel(*x, *y) != *pixel)
+                .map(|(x, y, pixel)| (x, y, composed.image.get_pixel(x, y).0, pixel.0));
+            return Err(host_error(format!(
+                "static duplicate work/pixels: case={}, uploads={before}->{}, scene_renders={scene_before}->{}, first_pixel_difference={first_difference:?}",
+                case.name,
+                composition.host.texture_uploads,
+                composition.host.scene_render_count(),
+            )));
         }
         let mut pixels = vec![];
         for view in &composition.views {
@@ -1244,7 +1273,7 @@ pub fn compose_batch(manifest_path: &Path, output_root: &Path, now_ms: u64) -> R
                 pixels.push(serde_json::json!({"view":view.raw(),"point":[x,y],"rgba":composed.image.get_pixel(x,y).0}));
             }
         }
-        diagnostics.push(serde_json::json!({"case":case.name,"provenance":provenance,"texture_uploads":before,"static_uploads_added":composition.host.texture_uploads-before,"scene_depth_renders":scene_before,"pixel_readback":pixels,"slots":kumihimo_egui::diagnostics::report_json(&composed.report)}));
+        diagnostics.push(serde_json::json!({"case":case.name,"provenance":provenance,"texture_uploads":before,"static_uploads_added":composition.host.texture_uploads-before,"scene_depth_renders":scene_before,"ui_settling":{"draws":1,"input_time":settle_time},"pixel_readback":pixels,"slots":kumihimo_egui::diagnostics::report_json(&composed.report)}));
     }
     // Route scene input through exactly the current canonical slot and existing host dispatcher.
     let case = CASES[3];
