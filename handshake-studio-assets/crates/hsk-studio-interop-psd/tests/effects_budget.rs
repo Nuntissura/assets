@@ -859,7 +859,8 @@ fn a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import() {
 /// switched-off instances dropped for the ceiling were never kept, so they cost the document's bound on the
 /// instances no plan counts nothing: five such stacks (5 x 1024 dropped) leave the whole 4096 to hidden stacks.
 #[test]
-fn folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances() {
+fn folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances()
+{
     bounded_case(
         "folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances",
         || {
@@ -964,9 +965,15 @@ fn a_counted_instance_after_more_switched_off_ones_than_the_ceiling_is_still_kep
             let (doc, p, minted) = import_counting(&bytes).expect("imports");
             assert_fates(
                 &p,
-                &[(0, Fate::CountedOnlyStack(3)), (1, Fate::CountedOnlyStack(2))],
+                &[
+                    (0, Fate::CountedOnlyStack(3)),
+                    (1, Fate::CountedOnlyStack(2)),
+                ],
             );
-            assert_eq!(ordinals(&interleaved), vec![0, MAX_EFFECTS + 77, MAX_EFFECTS + 88]);
+            assert_eq!(
+                ordinals(&interleaved),
+                vec![0, MAX_EFFECTS + 77, MAX_EFFECTS + 88]
+            );
             assert_eq!(kept_ordinals(&p, "L0"), ordinals(&interleaved));
             assert_eq!(ordinals(&trailing), vec![MAX_EFFECTS + 5, MAX_EFFECTS + 6]);
             assert_eq!(kept_ordinals(&p, "L1"), ordinals(&trailing));
@@ -1435,8 +1442,7 @@ fn descriptor_states_the_folio_ceiling_rule() {
         .nth(1)
         .and_then(|rest| rest.split('"').next())
         .expect("the DESCRIPTOR has an effect_limits entry");
-    let cited =
-        "folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances";
+    let cited = "folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances";
     for needle in [
         "with_no_counted_instances_and_over_folios_per_stack_ceiling_of_1024_is_not_mapped_loss_effects_over_budget",
         "folios_per_stack_ceiling_of_1024_holds_counted_and_switched_off_instances_together_and_cuts_only_the_switched_off_ones",
