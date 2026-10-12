@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 18
+revision: 19
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -23,6 +23,8 @@ content_blocks:
 ```
 
 ```markdown
+
+WP014 selects a separately selectable Rust render bridge: two pinned external Linux software Servo contexts supply copied pixels to Windows DX12 alongside real 2D/3D providers. Independent resize/input, affected dirty scheduling, renderer replacement, protected owned unload/page reload and measured resource observations receive seven focused cases. Public-bind WebDriver requires independently proven private loopback namespace. Runtime remains unproven at admission; Windows Servo, zero-copy, media, physical input/ARM and performance claims remain open.
 # Planned
 
 Fifteen feature areas now have partial headless implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.

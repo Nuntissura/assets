@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 20
-  revision: 20
+  version: 21
+  revision: 21
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 20
-    digest: sha256:26d171c5ec149d8cc63c93b831f252c331fd7b0a3e1d6e6a53de0636a3521fbd
+    revision: 21
+    digest: sha256:792e3af99fef25a24ee096da5bf85c109404ac5d7a30c81479290af9ec060dae
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -348,10 +348,11 @@ storage:
     - DEC-KUM-DESKTOP-EGUI-v1
     - DEC-KUM-WEB-DOM-v1
     - DEC-KUM-WINDOWS-QUIET-UIA-v1
+    - DEC-KUM-SERVO-RENDER-BRIDGE-v1
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 18
-    digest: sha256:c48578d5954e443a1efd0e3aaa2b6f0c5fb72aac69f89cac429954b2727aaa90
+    revision: 19
+    digest: sha256:92536b2d79846e48dc2ea7352be13100534d85e3c8c878e539f6d9fc4364927e
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:
@@ -633,6 +634,13 @@ change_history:
   refinement_enrichment_ref: null
   receipt_ref: null
   archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v19-r19-7d9268ab90d5
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 21
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v20-r20-e5ba20ef16f5
   changed_anchor_ids:
   - TOPIC-KUM-CHOICES
   - TOPIC-KUM-ROADMAP

@@ -100,8 +100,9 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
   title: Prove browser and graphics integration boundaries
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Publish full contract/Spec21; freeze seven evaluation cases; acquire verified runtime and inspect
+    prerequisites/namespace; dependency readiness before coder04 admission
   blockers: []

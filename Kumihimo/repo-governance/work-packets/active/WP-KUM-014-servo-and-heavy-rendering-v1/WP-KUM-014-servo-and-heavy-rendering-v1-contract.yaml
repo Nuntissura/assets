@@ -1,16 +1,39 @@
 schema_version: kumihimo.wp-contract.v1
-kind: work_packet_stub
+kind: work_packet
 wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
 title: Prove browser and graphics integration boundaries
-scope:
+scope: &id002
 - Pinned Servo/2D/3D composition experiments, independently-sized content views, engine thread ownership, browser
   resource management signals; no universal compatibility promises
 files:
-- product/
+- product/kumihimo-render-bridge/src/
+- product/kumihimo-render-bridge/tests/
+- product/kumihimo-render-bridge/examples/
+- product/kumihimo-render-bridge/tools/
+- product/kumihimo-render-bridge/fixtures/
+- product/kumihimo-render-bridge/Cargo.toml
+- product/Cargo.toml
+- product/Cargo.lock
+- product/README.md
 - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/
-- repo-governance/specification/current/
+- repo-governance/specification/
 - repo-governance/topology/
-dependencies:
+- repo-governance/codex/build-rules/current/
+file_ownership:
+  coder04:
+  - product/kumihimo-render-bridge/src/
+  - product/kumihimo-render-bridge/tests/
+  - product/kumihimo-render-bridge/examples/
+  - product/kumihimo-render-bridge/tools/
+  - product/kumihimo-render-bridge/fixtures/
+  lead:
+  - all manifests/lock
+  - spec/topology/matrix/manual/WP state/session/taskboard/Git/runtime acquisition and independent namespace proof
+  dependencies:
+  - WP-KUM-014-servo-and-heavy-rendering-v1-dependency-readiness.yaml
+  evaluation:
+  - WP-KUM-014-servo-and-heavy-rendering-v1-evaluation.yaml
+dependencies: &id003
 - WP-KUM-012-desktop-gui-adapter-v1
 spec_refs:
 - TOPIC-KUM-SERVO
@@ -18,14 +41,261 @@ spec_refs:
 - TOPIC-KUM-PERFORMANCE
 - TOPIC-KUM-LIFECYCLE
 - TOPIC-KUM-PLATFORMS
+- TOPIC-KUM-MODEL
+- DEC-KUM-SERVO-RENDER-BRIDGE-v1
 requirements:
-- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
-  eval before coding
-- Reuse existing core and verified cache; no parallel Cargo or long default suites
-- Preserve host ownership and existing accepted scope; explicit exact platform proof
+- requirement_id: WP014-R001
+  statement: 'Preserve the full original stub scope as a bounded real-engine experiment, not a browser product rewrite.
+    Add one separately selectable small Rust kumihimo-render-bridge package: default std-only geometry/identity-bound
+    pixel, dirty scheduling and lifecycle contracts; optional desktop integration reuses existing egui0.33.3/wgpu27/image0.25.9/serde_json1.0.151/bytemuck1.25.2
+    if needed. Preserve all three default-members, existing public APIs/versions, Snapshot3/schema1, all old external
+    lock records and desktop/web evidence. Core/content shall neither build nor link Servo. The demo may show four
+    representative providers; the reusable library shall have host-configurable counts and bounded live work, with
+    no fixed conceptual frame/tab limit.'
+  spec_refs: &id001
+  - TOPIC-KUM-SERVO
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-PERFORMANCE
+  - TOPIC-KUM-LIFECYCLE
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-MODEL
+- requirement_id: WP014-R002
+  statement: Use exact Servo v0.6.0 external Linux x86_64 release at c78d2c206f80a1c8b67eefa97f773bba513205d3; expected
+    GNU archive49202383bytes/SHA256 ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0. Lead acquires
+    and verifies ignored runtime only after this published contract; inspect ELF actual shared-library prerequisites
+    and actual --help/version before launching. Do not cold-build Servo or install its Rust1.97.1 toolchain. Linux
+    headless SoftwareRenderingContext is the chosen proof path; Windows x64 host consumes copied PNG/RGBA through
+    the optional WGPU adapter. This does not establish embedded libservo, native Windows Servo, direct GL/WGPU handle
+    sharing, zero-copy, video/YouTube/audio or ARM compatibility.
+  spec_refs: *id001
+- requirement_id: WP014-R003
+  statement: Pinned WebDriver binds0.0.0.0. No engine/WebDriver may start before a dev-lead-owned independent kernel
+    inspection proves a new private Linux network namespace containing only loopback, distinct namespace ID from
+    host, no non-loopback interfaces/routes, no port forwarding/publishing and no inherited shared network. Host-owned
+    controller and both engines run inside that namespace; Windows talks only through owned stdio/files. Independently
+    inspect namespace interfaces/routes/socket ownership again after listeners and prove listeners inaccessible
+    from the outside host namespace. The worker cannot be its sole isolation proof producer. No public server, WSL
+    shutdown, unowned process stop, firewall weakening or global environment mutation. Default product launcher
+    fails closed without the independent namespace admission receipt bound to unchanged owned worker PID/starttime/namespace
+    ID. Revalidate the independent namespace admission before every owned engine launch, including unload/reload
+    and recovery; unchanged worker PID/starttime/kernel namespace identity are mandatory.
+  spec_refs: *id001
+- requirement_id: WP014-R004
+  statement: Each browser view owns a separate genuine Servo process/software context; contexts and engine-affine
+    handles never cross process or Rust GUI threads. Bounded versioned stdio messages identify view/resource/incarnation/epoch/request,
+    expected physical dimensions, sequence and host deadline; validate unknown/stale/wrong-view/oversized responses
+    before replacing last good pixels. At most one pending capture per view; coalesce dirty requests, cap live engines2
+    and host frames4 by configurable policy; default message4MiB, encoded PNG16MiB and raw RGBA16MiB, maximum side2048,
+    checked arithmetic. Runtime capture requires actual engine screenshot and DOM measurements, not generated lookalike
+    browser images. A browser mutation/resize marks host-observed dirty; direct engine frame-ready/animation notification
+    is unsupported by this screenshot bridge and must be stated. Wire pixels are top-left-origin, straight-alpha
+    sRGB RGBA8 with explicit row_stride=width*4 and checked exact raw length; PNG decoding is bounded before allocation.
+    Bind complete current content Scope (identity/session/provider/resource/target/connection/instance/mount), canonical
+    geometry revision, separate engine incarnation/sequence and renderer SurfaceBinding epoch; content Geometry
+    alone has no renderer epoch. Resize/reload/recreation invalidates superseded responses. The actual Linux screenshot
+    bytes, independently hashed at engine receipt, must be the same bytes consumed by the Rust desktop composition;
+    unrelated engine and GPU screenshots cannot count as integration.
+  spec_refs: *id001
+- requirement_id: WP014-R005
+  statement: 'Project two differently sized browser views plus a real 2D provider and real WGPU 3D geometry provider
+    into existing DesktopAdapter RenderSlots. Reuse canonical Controller, host dispatcher, ancestor clips, current
+    SurfaceBinding and actual GpuBinding; host owns scenes, documents and provider policy. Render real depth/perspective
+    or equivalent 3D transformation through callback/texture, with known projected points and actual pixel readback.
+    Independently resize A and re-read A/B actual DOM dimensions and screenshots, retaining B exact dimensions and
+    content. Scale/local input mapping occurs once: a real WebDriver pointer/keyboard action reaches only the addressed
+    engine, and 2D/3D input changes only the addressed scene. Clipping/background/unsupported compositing remain
+    explicit; no duplicate placement owner or native child surface assumption.'
+  spec_refs: *id001
+- requirement_id: WP014-R006
+  statement: Implement host-requested bounded dirty scheduling with distinguishable static, dirty, hidden and unloaded
+    states; no perpetual capture/repaint. Prove unchanged static views produce no duplicate engine capture or texture
+    upload, A dirty does not recapture B, and input/layout changes schedule only affected work. Retain layout/resource
+    IDs while actual OffscreenRenderer/device replacement invalidates old epoch/device bindings; stale responses/old
+    textures reject, reload CPU pixels into the new owned device and render recovered content. Engine/raw GPU context
+    transfer to native popout is explicitly unsupported before destructive commit; command-level rejection preserves
+    source content and explains the capability. Existing WP012 native-window proof is reused only for unchanged
+    window machinery, not asserted as engine-popout proof.
+  spec_refs: *id001
+- requirement_id: WP014-R007
+  statement: Use actual owned engine process CPU ticks/RSS/elapsed observations before/after visible/hidden/dirty
+    states and unloading one reloadable engine. Hidden or stopped capture does not imply suspension or released
+    memory. Unsupported throttle/freeze requests report Unsupported or Unknown and retain valid content. Only eligible
+    clean/reloadable host references unload; keep-alive/dirty protection blocks destructive unload. Confirm unloaded
+    only after independent /proc PID/starttime absence and no live descendants; preserve logical tab/view/resource
+    records and reachable placeholder. Restore starts a fresh owned process/context, reloads the declared page reference,
+    shows real pixels and explicitly advertises page-reload restoration rather than arbitrary JavaScript/media-state
+    restoration. One bounded lifecycle failure/unknown outcome is reconciled before retry. Measurements are observations,
+    not universal ceilings or performance improvement claims.
+  spec_refs: *id001
+- requirement_id: WP014-R008
+  statement: 'Keep failure handling observable and bounded: per-engine startup30s, WebDriver/screenshot request15s,
+    owned graceful shutdown10s then only exactly owned starttime-validated children may be terminated; retries at
+    most3 after changed relevant input or evidence-backed cause. Default real-engine scenario deadline240s, declared
+    with product operation timers, never an outer Cargo timeout wrapper. Missing runtime/library, failed namespace
+    admission, unavailable provider, stale frame, resize failure, lost engine and unsupported context transfer preserve
+    last valid state or a visible recoverable placeholder. Model diagnostics expose redacted identities, current
+    capabilities, actual renderer/engine versions, dirty/capture/upload counts, PID/starttime/namespace ownership
+    and causal results. No foreground windows or operator input; no unrelated massive tests/reviews.'
+  spec_refs: *id001
+- requirement_id: WP014-R009
+  statement: Ship a no-context product manual and deterministic launcher/probe for configured runtime/output roots,
+    namespace admission, inputs/outputs, expected geometry/input/lifecycle behavior, model routes, failure/recovery
+    and precise support limits. Freeze seven focused independent evaluation cases before coding. Lead alone owns
+    manifest/lock resolution, Git, spec/state/taskboard and one serial Cargo lane with existing cache/target; coder04
+    may expand disjoint Rust renderer/provider versus Python worker teams. Bundle affected default/desktop checks,
+    one owning contract test target and one actual engine/GPU batch; inspect actual resulting images and independent
+    engine/kernel/resource reads. Reuse unchanged core/content/JSON/desktop/web proof. Commit/push completed packet
+    and independently reread canonical origin before DONE.
+  spec_refs: *id001
 acceptance:
-- Independent view resize and dirty-frame scheduling; surface recreation/popout context constraints; measured resource
-  scenarios and exact backend/platform/version proof
+- acceptance_id: WP014-A001
+  requirement_refs:
+  - WP014-R001
+  - WP014-R002
+  - WP014-R003
+  - WP014-R004
+  - WP014-R009
+  method: Inspect resolved graph/default build, independently verify pinned binary and namespace admission before
+    and after real listeners; challenge missing/stale admission and wrong/stale/oversized frame messages.
+  expected: Existing default members/external records unchanged; no Servo linkage; fail-closed namespace/payload
+    guards; actual listener isolation and scoped runtime metadata.
+  case_title: Independent optional package and bounded authenticated local bridge
+- acceptance_id: WP014-A002
+  requirement_refs:
+  - WP014-R004
+  - WP014-R005
+  method: Capture A/B with different DOM dimensions, resize A, independently read both DOM states/images; send genuine
+    pointer and keyboard to each addressed view using current slot mapping.
+  expected: A changes intended size/content, B dimensions and pixels remain unchanged until targeted; real engine
+    receipts agree with canonical recipients and local coordinates.
+  case_title: Two real Servo contexts resize and accept input independently
+- acceptance_id: WP014-A003
+  requirement_refs:
+  - WP014-R005
+  method: Render all four providers through DesktopAdapter and actual WGPU; inspect PNG/slot geometry and known
+    2D/3D points at normal/narrow/injected scale1.5; move/resize one pane.
+  expected: All actual content appears in correct clipped slots; 3D transform/depth is real GPU work; known point/pick
+    recipients agree without double scaling.
+  case_title: Actual browser, 2D and 3D clipped composition
+- acceptance_id: WP014-A004
+  requirement_refs:
+  - WP014-R004
+  - WP014-R006
+  - WP014-R007
+  method: Independently count engine screenshot requests/texture uploads across static, A mutation, B unchanged,
+    hidden and explicit unsupported freeze/throttle; capture CPU/RSS ticks at actual times.
+  expected: Static/coalesced work bounded; A schedules only A; hidden retains engine and makes no suspension/release
+    claim; unsupported states remain visible and do not mutate confirmed state.
+  case_title: Affected dirty work and honest hidden lifecycle
+- acceptance_id: WP014-A005
+  requirement_refs:
+  - WP014-R005
+  - WP014-R006
+  - WP014-R008
+  method: Replace actual renderer/device while retaining canonical IDs, challenge old device/epoch/frame bindings,
+    reupload real engine pixels and inspect recovery image; request unsupported raw-context native popout.
+  expected: Old binding rejected, recovered pixels current and clipped, source ownership retained on explained unsupported
+    context transfer; no real GPU-fault or engine-popout claim.
+  case_title: Renderer replacement and explicit popout context limits
+- acceptance_id: WP014-A006
+  requirement_refs:
+  - WP014-R007
+  - WP014-R008
+  method: Request protected unload then eligible reloadable unload; independently observe exact PID/starttime/descendant
+    absence, logical tab retention and placeholder; restore fresh engine/page pixels and reconcile one failed/unknown
+    lifecycle response.
+  expected: Protected engine remains; eligible owned process ends before confirmed unload; only page reload strength
+    claimed; bounded failure stays recoverable and unaffected engine remains live.
+  case_title: Actual owned unload/reload, protection and reconciliation
+- acceptance_id: WP014-A007
+  requirement_refs:
+  - WP014-R001
+  - WP014-R002
+  - WP014-R003
+  - WP014-R004
+  - WP014-R008
+  - WP014-R009
+  method: Run shipped actual engine/GPU batch with independent namespace/process checks, inspect all PNG/diagnostics,
+    verify cleanup only owned processes, manual/topology/matrix/state and canonical origin.
+  expected: Original six prior methods plus this case retained; exact source/engine/backend/version and artifact
+    fence recorded; no orphan owned engine/listener, no foreground input, honest unavailable/unsupported outcomes
+    and exact pushed closure.
+  case_title: Recoverable quiet shipped boundary and exact publication
 proof:
-- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+- Affected render-bridge default and desktop all-target checks; one owning contract consumer target
+- Actual pinned two-engine batch inside independently admitted namespace; independently read kernel/DOM/PNG/PID/starttime/resource
+  data
+- Actual Windows x64 DX12 composition and renderer replacement, all resulting images directly inspected
+- Reuse unchanged existing selected proof; structural sync/check and exact canonical origin reread
+preserved_stub_scope:
+  schema_version: kumihimo.wp-contract.v1
+  kind: work_packet_stub
+  wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
+  title: Prove browser and graphics integration boundaries
+  scope: *id002
+  files:
+  - product/
+  - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/
+  - repo-governance/specification/current/
+  - repo-governance/topology/
+  dependencies: *id003
+  spec_refs:
+  - TOPIC-KUM-SERVO
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-PERFORMANCE
+  - TOPIC-KUM-LIFECYCLE
+  - TOPIC-KUM-PLATFORMS
+  requirements:
+  - Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+    eval before coding
+  - Reuse existing core and verified cache; no parallel Cargo or long default suites
+  - Preserve host ownership and existing accepted scope; explicit exact platform proof
+  acceptance:
+  - Independent view resize and dirty-frame scheduling; surface recreation/popout context constraints; measured
+    resource scenarios and exact backend/platform/version proof
+  proof:
+  - Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+  status_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml
+non_goals:
+- Full future Servo/media/YouTube/native Windows/ARM/zero-copy/browser rewrite compatibility; all full spec acceptances
+  remain open
+- Core/content public changes, shared raw engine handles, physical input/GPU faults, freezing claims or universal
+  resource/performance gains
+- Global WSL shutdown, unowned process/cache mutation, broad default cold builds/suites
+research_basis:
+  checked_at: '2026-10-12'
+  sources:
+  - url: https://github.com/servo/servo/releases/tag/v0.6.0
+    pattern: Pinned LTS release and exact external artifact, avoid cold engine/toolchain build.
+  - url: https://github.com/servo/servo/blob/v0.6.0/rust-toolchain.toml
+    pattern: 1.97.1 separate from current1.91 host.
+  - url: https://github.com/servo/servo/blob/v0.6.0/components/shared/paint/rendering_context.rs
+    pattern: GL/GLES software context and CPU image readback, not WGPU zero-copy.
+  - url: https://github.com/servo/servo/blob/v0.6.0/ports/servoshell/desktop/headless_window.rs
+    pattern: Real headless software renderer/context, owned resize.
+  - url: https://github.com/servo/servo/blob/v0.6.0/components/servo/webview.rs
+    pattern: Shared context resize affects all views; Rc/thread ownership, frame-ready and throttling differ from
+      unload.
+  - url: https://github.com/servo/servo/blob/v0.6.0/components/webdriver_server/lib.rs
+    pattern: 0.0.0.0 bind, actual rectangle/input/PNG screenshot routes; isolated namespace required.
+  - url: https://github.com/servo/servo/blob/v0.6.0/ports/servoshell/prefs.rs
+    pattern: Headless GL video disabled; do not claim YouTube/media.
+  - url: https://github.com/emilk/egui/blob/0.33.3/crates/egui_demo_app/src/apps/custom3d_wgpu.rs
+    pattern: Owning-device callback resources, prepare/paint separation and viewport-aware custom GPU rendering.
+  - url: product/kumihimo-egui/src/content.rs
+    pattern: Actual reusable RenderSlot/GpuBinding/texture/callback guards; no engine handles in Core.
+  - url: product/kumihimo-egui/src/capture.rs
+    pattern: Existing quiet DX12 capture/device/resources/readback, shared adapter; warm compiled dependencies.
+  selected: Separate external software engine per browser view, bounded CPU pixel bridge into existing optional
+    WGPU adapter, host-owned dirty/lifecycle policy and true 3D provider. Namespace isolation independently verified
+    before public-bind WebDriver.
+  reuse: Existing Controller/content lifecycle and geometry, RenderSlot/GpuBinding/OffscreenRenderer, current warm
+    dependency graph and separate role chats.
+  rejected: Direct libservo/current Rust1.91 linking, shared-context differently sized views, zero-copy promise,
+    public Windows WebDriver launch without denial proof, screenshot polling represented as engine notification/freeze.
+  risks_and_mitigations: Public WebDriver→kernel-isolated private loopback namespace with independent proof; wrong/stale
+    images→exactidentity/epoch/dimensions/sequence; hidden falsely unloaded→PID/starttime independent absence; lossy
+    restore→page reload label; slow cold engine→verified binary/cache; GUI/device mismatch→actualbinding guards
+    and recoverable CPU reupload.
+  validation: Seven frozen affected cases above; one engine/GPU boundary batch, no broad repeated prior suites.
 status_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml

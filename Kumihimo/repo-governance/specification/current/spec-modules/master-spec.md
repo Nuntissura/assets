@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 20
+revision: 21
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -4170,5 +4170,102 @@ decisions:
   research_source_refs:
   - https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-setfocus
   - https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/ne-uiautomationcore-provideroptions
+  supersedes: []
+- decision_id: DEC-KUM-SERVO-RENDER-BRIDGE-v1
+  anchor_refs:
+  - TOPIC-KUM-SERVO
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-PERFORMANCE
+  - TOPIC-KUM-LIFECYCLE
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-MODEL
+  decision: 'Selected bounded WP014 experiment; no runtime success implied; all accepted future requirements preserved
+    open. Preserve the full original stub scope as a bounded real-engine experiment, not a browser product rewrite.
+    Add one separately selectable small Rust kumihimo-render-bridge package: default std-only geometry/identity-bound
+    pixel, dirty scheduling and lifecycle contracts; optional desktop integration reuses existing egui0.33.3/wgpu27/image0.25.9/serde_json1.0.151/bytemuck1.25.2
+    if needed. Preserve all three default-members, existing public APIs/versions, Snapshot3/schema1, all old external
+    lock records and desktop/web evidence. Core/content shall neither build nor link Servo. The demo may show four
+    representative providers; the reusable library shall have host-configurable counts and bounded live work, with
+    no fixed conceptual frame/tab limit. Use exact Servo v0.6.0 external Linux x86_64 release at c78d2c206f80a1c8b67eefa97f773bba513205d3;
+    expected GNU archive49202383bytes/SHA256 ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0. Lead
+    acquires and verifies ignored runtime only after this published contract; inspect ELF actual shared-library
+    prerequisites and actual --help/version before launching. Do not cold-build Servo or install its Rust1.97.1
+    toolchain. Linux headless SoftwareRenderingContext is the chosen proof path; Windows x64 host consumes copied
+    PNG/RGBA through the optional WGPU adapter. This does not establish embedded libservo, native Windows Servo,
+    direct GL/WGPU handle sharing, zero-copy, video/YouTube/audio or ARM compatibility. Pinned WebDriver binds0.0.0.0.
+    No engine/WebDriver may start before a dev-lead-owned independent kernel inspection proves a new private Linux
+    network namespace containing only loopback, distinct namespace ID from host, no non-loopback interfaces/routes,
+    no port forwarding/publishing and no inherited shared network. Host-owned controller and both engines run inside
+    that namespace; Windows talks only through owned stdio/files. Independently inspect namespace interfaces/routes/socket
+    ownership again after listeners and prove listeners inaccessible from the outside host namespace. The worker
+    cannot be its sole isolation proof producer. No public server, WSL shutdown, unowned process stop, firewall
+    weakening or global environment mutation. Default product launcher fails closed without the independent namespace
+    admission receipt bound to unchanged owned worker PID/starttime/namespace ID. Revalidate the independent namespace
+    admission before every owned engine launch, including unload/reload and recovery; unchanged worker PID/starttime/kernel
+    namespace identity are mandatory. Each browser view owns a separate genuine Servo process/software context;
+    contexts and engine-affine handles never cross process or Rust GUI threads. Bounded versioned stdio messages
+    identify view/resource/incarnation/epoch/request, expected physical dimensions, sequence and host deadline;
+    validate unknown/stale/wrong-view/oversized responses before replacing last good pixels. At most one pending
+    capture per view; coalesce dirty requests, cap live engines2 and host frames4 by configurable policy; default
+    message4MiB, encoded PNG16MiB and raw RGBA16MiB, maximum side2048, checked arithmetic. Runtime capture requires
+    actual engine screenshot and DOM measurements, not generated lookalike browser images. A browser mutation/resize
+    marks host-observed dirty; direct engine frame-ready/animation notification is unsupported by this screenshot
+    bridge and must be stated. Wire pixels are top-left-origin, straight-alpha sRGB RGBA8 with explicit row_stride=width*4
+    and checked exact raw length; PNG decoding is bounded before allocation. Bind complete current content Scope
+    (identity/session/provider/resource/target/connection/instance/mount), canonical geometry revision, separate
+    engine incarnation/sequence and renderer SurfaceBinding epoch; content Geometry alone has no renderer epoch.
+    Resize/reload/recreation invalidates superseded responses. The actual Linux screenshot bytes, independently
+    hashed at engine receipt, must be the same bytes consumed by the Rust desktop composition; unrelated engine
+    and GPU screenshots cannot count as integration. Project two differently sized browser views plus a real 2D
+    provider and real WGPU 3D geometry provider into existing DesktopAdapter RenderSlots. Reuse canonical Controller,
+    host dispatcher, ancestor clips, current SurfaceBinding and actual GpuBinding; host owns scenes, documents and
+    provider policy. Render real depth/perspective or equivalent 3D transformation through callback/texture, with
+    known projected points and actual pixel readback. Independently resize A and re-read A/B actual DOM dimensions
+    and screenshots, retaining B exact dimensions and content. Scale/local input mapping occurs once: a real WebDriver
+    pointer/keyboard action reaches only the addressed engine, and 2D/3D input changes only the addressed scene.
+    Clipping/background/unsupported compositing remain explicit; no duplicate placement owner or native child surface
+    assumption. Implement host-requested bounded dirty scheduling with distinguishable static, dirty, hidden and
+    unloaded states; no perpetual capture/repaint. Prove unchanged static views produce no duplicate engine capture
+    or texture upload, A dirty does not recapture B, and input/layout changes schedule only affected work. Retain
+    layout/resource IDs while actual OffscreenRenderer/device replacement invalidates old epoch/device bindings;
+    stale responses/old textures reject, reload CPU pixels into the new owned device and render recovered content.
+    Engine/raw GPU context transfer to native popout is explicitly unsupported before destructive commit; command-level
+    rejection preserves source content and explains the capability. Existing WP012 native-window proof is reused
+    only for unchanged window machinery, not asserted as engine-popout proof. Use actual owned engine process CPU
+    ticks/RSS/elapsed observations before/after visible/hidden/dirty states and unloading one reloadable engine.
+    Hidden or stopped capture does not imply suspension or released memory. Unsupported throttle/freeze requests
+    report Unsupported or Unknown and retain valid content. Only eligible clean/reloadable host references unload;
+    keep-alive/dirty protection blocks destructive unload. Confirm unloaded only after independent /proc PID/starttime
+    absence and no live descendants; preserve logical tab/view/resource records and reachable placeholder. Restore
+    starts a fresh owned process/context, reloads the declared page reference, shows real pixels and explicitly
+    advertises page-reload restoration rather than arbitrary JavaScript/media-state restoration. One bounded lifecycle
+    failure/unknown outcome is reconciled before retry. Measurements are observations, not universal ceilings or
+    performance improvement claims. Keep failure handling observable and bounded: per-engine startup30s, WebDriver/screenshot
+    request15s, owned graceful shutdown10s then only exactly owned starttime-validated children may be terminated;
+    retries at most3 after changed relevant input or evidence-backed cause. Default real-engine scenario deadline240s,
+    declared with product operation timers, never an outer Cargo timeout wrapper. Missing runtime/library, failed
+    namespace admission, unavailable provider, stale frame, resize failure, lost engine and unsupported context
+    transfer preserve last valid state or a visible recoverable placeholder. Model diagnostics expose redacted identities,
+    current capabilities, actual renderer/engine versions, dirty/capture/upload counts, PID/starttime/namespace
+    ownership and causal results. No foreground windows or operator input; no unrelated massive tests/reviews. Ship
+    a no-context product manual and deterministic launcher/probe for configured runtime/output roots, namespace
+    admission, inputs/outputs, expected geometry/input/lifecycle behavior, model routes, failure/recovery and precise
+    support limits. Freeze seven focused independent evaluation cases before coding. Lead alone owns manifest/lock
+    resolution, Git, spec/state/taskboard and one serial Cargo lane with existing cache/target; coder04 may expand
+    disjoint Rust renderer/provider versus Python worker teams. Bundle affected default/desktop checks, one owning
+    contract test target and one actual engine/GPU batch; inspect actual resulting images and independent engine/kernel/resource
+    reads. Reuse unchanged core/content/JSON/desktop/web proof. Commit/push completed packet and independently reread
+    canonical origin before DONE.'
+  rationale: Separate optional bridge proves real integration while avoiding engine/toolchain coupling and unsafe
+    public automation surfaces.
+  research_source_refs:
+  - https://github.com/servo/servo/releases/tag/v0.6.0
+  - https://github.com/servo/servo/blob/v0.6.0/rust-toolchain.toml
+  - https://github.com/servo/servo/blob/v0.6.0/components/shared/paint/rendering_context.rs
+  - https://github.com/servo/servo/blob/v0.6.0/ports/servoshell/desktop/headless_window.rs
+  - https://github.com/servo/servo/blob/v0.6.0/components/servo/webview.rs
+  - https://github.com/servo/servo/blob/v0.6.0/components/webdriver_server/lib.rs
+  - https://github.com/servo/servo/blob/v0.6.0/ports/servoshell/prefs.rs
+  - https://github.com/emilk/egui/blob/0.33.3/crates/egui_demo_app/src/apps/custom3d_wgpu.rs
   supersedes: []
 ```
