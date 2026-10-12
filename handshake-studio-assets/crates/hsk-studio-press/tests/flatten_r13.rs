@@ -945,7 +945,7 @@ fn painted_source_under_optional_content_is_reported() {
         ("a form with an /OC drawn by Do (it draws the image)", doc("", "/OC 45 0 R", &[hidden("/Fx Do")], None)),
         ("Do inside BDC /OC", doc("", "", &[hidden(&format!("/OC /MC0 BDC {draw} EMC"))], None)),
         ("Do inside BDC with the tag written /O#43", doc("", "", &[hidden(&format!("/O#43 /MC0 BDC {draw} EMC"))], None)),
-        ("Do inside other marked content nested in BDC /OC", doc("", "", &[hidden(&format!("/OC /MC0 BDC /Span BMC {draw} EMC EMC"))], None)),
+        ("Do inside BDC /OC after other marked content nested in it was closed", doc("", "", &[hidden(&format!("/OC /MC0 BDC /Span BMC EMC {draw} EMC"))], None)),
         ("BDC /OC in the first content stream, Do in the second", doc("", "", &["/OC /MC0 BDC".to_string(), hidden(&format!("{draw} EMC"))], None)),
         ("a form drawn inside BDC /OC", doc("", "", &[hidden("/OC /MC0 BDC /Fx Do EMC")], None)),
     ] {
