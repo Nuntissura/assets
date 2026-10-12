@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 16
+revision: 17
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -4027,5 +4027,94 @@ decisions:
   - https://github.com/emilk/egui/blob/0.33.3/crates/eframe/src/native/epi_integration.rs
   - https://github.com/rust-windowing/winit/tree/v0.30.13
   - https://learn.microsoft.com/en-us/windows/win32/winauto/inspect-objects
+  supersedes: []
+- decision_id: DEC-KUM-WEB-DOM-v1
+  anchor_refs:
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-LAYOUT
+  - TOPIC-KUM-CONTENT
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-MODEL
+  - TOPIC-KUM-TABS
+  - TOPIC-KUM-RECOVERY
+  - TOPIC-KUM-INPUT
+  - TOPIC-KUM-BOUNDARIES
+  decision: Selected complete bounded web pilot meaning; runtime proof pending, accepted future scope remains open.
+    [WP013-R001] Preserve complete original Portal pilot scope and all accepted variable-count recursive workspace
+    requirements. Implement a reusable optional browser adapter and genuine Rust/WASM Portal-style sample with movable
+    expandable cards, nested detail frames, tabs and split/grid/docking. Host owns task IDs, kanban columns/status/domain
+    commands and editor data; arrangement never silently changes task meaning. No sibling Portal edits or fixed
+    pane/tab/depth ceiling. Host-configurable live work budgets are distinct from saved conceptual counts. [WP013-R002]
+    Add one small cohesive kumihimo-web0.1 package, Rust1.91, default features empty, rlib/cdylib, local Core0.3/content0.2
+    default-features=false and layout-json0.1; reuse exact serde1.0.229/serde_json1.0.151. Optional wasm feature
+    selects wasm32-only wasm-bindgen=0.2.128 default-features=false/std. Plain DOM/ES modules consume --target web
+    generated bindings, no GUI framework/bundler/Node build or egui coupling. Preserve original three default-members,
+    Core/content APIs/versions/Snapshot3/schema1 and desktop selected dependency semantics. Lead alone scaffolds
+    manifests/resolves lock, obtains matching prebuilt CLI and wasm target on existing stable toolchain, verifies
+    hash/version/cache/closure before dependency agent readiness and coding admission. No named uninstalled toolchain
+    selection or Cargo-install cold build. [WP013-R003] Reusable adapter borrows one host-owned content Controller
+    and dispatcher; sample PilotHost may own its sole Controller and serial operation allocator. Every canonical
+    mutation uses Controller::execute, never mutable Core extraction or JavaScript placement tree. Strict bounded
+    versioned JSON DTOs explicitly encode decimal u64 IDs/actor/op/expected generation and Core identity without
+    JS number truncation. Read-only snapshot/geometry, preview, commands, host snapshot and save/load routes are
+    deterministic and inspectable. Preserve exact envelope on retry; reject stale identity/generation, conflicting
+    actors and same operation ID/different intent, distinguish rejected watermark advancement, replayed receipt
+    from current canonical snapshot and postcommit rendering failure. Validate unknown fields, sizes, finite coordinates
+    and scoped targets; redacted diagnostics do not dump task text. These are local host routes, not server authentication.
+    [WP013-R004] Project current canonical Rust geometry iteratively top-down with stable IDs, child geometry contexts
+    derived from parent usable content and intersected ancestor clips. Browser ResizeObserver/client bounds become
+    host-dispatched SetGeometryContext only when changed. Reserve headers explicitly, map client/global DIP to provider
+    local coordinates once, validate surface incarnation/epoch and scale. DOM cannot override canonical layout.
+    Narrow/undersized/hidden states retain reachable reveal/overflow controls; tabs/groups and expandable detail
+    frames preserve membership. Pointer and keyboard selection/move/dock/resize use the same generation-bound preview/command
+    routes; lost capture/blur/Escape cancels uncommitted previews. Host text selection, wheel and ordinary editor
+    shortcuts stay with content. Actual browser event and pixels/DOM bounds must agree with fresh Rust state. [WP013-R005]
+    Host task model and provider references remain independently owned and observable before/after arrangement.
+    Separate explicit task-domain action can change column/status; docking, parent changes, tab movement, expansion
+    or viewport resizing cannot. Exact resource/view/provider recipient is checked; missing provider uses reachable
+    placeholder, stale or vetoed command preserves valid canonical ownership. Pilot edits real host task text/fields
+    and demonstrates domain action separately, without claiming actual Handshake/Notes/Studio/Portal integration.
+    [WP013-R006] Use versioned browser-session wrapper around unchanged SavedLayout/schema1 codec, host-selected
+    localStorage key/policy and separate host task store. Save after actual UI mutation, independently read actual
+    persisted bytes, reload into a fresh Rust/WASM incarnation and restore nested layout proportions, IDs/membership
+    and provider references. Validate a fully constructed candidate before replacing current valid state; malformed/oversized/newer
+    schema/storage refusal/missing provider retain valid state or explicit reachable recovery. Never persist DOM
+    handles or silently trust stale incarnation. LocalStorage synchronous acceptance is not cross-process atomic
+    filesystem or exactly-once proof. [WP013-R007] Expose precise browser/WASM/storage/input/popup capabilities
+    and failures. Full native-style browser popup migration is explicitly unsupported in this bounded pilot, with
+    original future popout requirements retained open. Include a real restricted iframe fixture sandboxed with allow-scripts/allow-same-origin
+    and without allow-popups; the actual user-event popup request reports browser null/exception denial and independently
+    re-read Rust source membership remains unchanged. No mocked window factory, injected denial or empty about:blank
+    success as content-ready proof. No automated permitted popup/foreground or global input; normal browser host
+    embedding/permissions remain host-owned. [WP013-R008] Provide actual readable browser controls, labelled keyboard
+    alternatives, DOM accessibility roles/selected/expanded/value state and stable IDs. Coalesce measure/redraw
+    work and bound route payloads/queued inputs/projection/capture output; no perpetual repaint or engine/resource
+    saving claim. Ship a no-context manual for optional build/generated module/static HTTP startup, inputs/outputs,
+    routes, navigation, known limitations and recovery. Quiet product-owned headless browser proof may reuse existing
+    private-profile/loopback/owned-process cleanup patterns; never stop unowned browser/processes or edit sibling
+    tooling. Screenshots and fresh canonical Rust/host reads accompany actual events, storage and DOM accessibility
+    observations; component tests alone cannot substitute. [WP013-R009] Execute six frozen focused cases in one
+    owning native consumer target plus affected default/WASM builds, exact-version CLI generation and one real browser
+    batch. Lead exclusively owns serial j2 Cargo stable target and verified sccache; source teams may work in parallel
+    with disjoint files. Inspect exact browser pixels/resize/interaction/storage/route/restricted-popup outputs,
+    bind source/generated-WASM hashes and browser/tool versions. Diagnose concrete failure with team and repair
+    original case; do not repeat green unaffected Core/JSON/content suites. Physical touchscreen/pen, other browsers/platforms,
+    native popup migration, real editor/browser engines and performance acceptance remain unproven. [WP013-R010]
+    Preserve exact six-file previous specification and raw/parsed original stub and all99 ordered full requirement
+    records. Store complete selected meaning in current specification before deriving implementation, independent
+    dependency readiness and frozen matching cases before coding. Update bounded manual/topology/matrix/state/taskboard
+    from observed evidence only; commit/push this completed packet then independent canonical origin read before
+    DONE. No enrichment phase, heavy audit chain or research sidecar as product authority.
+  rationale: Same Rust owner and lightweight DOM projection keep arrangement reusable while host task meaning remains
+    independent; real browser proof prevents headless-only compatibility claims.
+  research_source_refs:
+  - https://wasm-bindgen.github.io/wasm-bindgen/examples/without-a-bundler.html
+  - https://wasm-bindgen.github.io/wasm-bindgen/examples/dom.html
+  - https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html
+  - https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver
+  - https://developer.mozilla.org/en-US/docs/Web/API/Pointer_events
+  - https://developer.mozilla.org/en-US/docs/Web/API/Window/open
+  - https://github.com/wasm-bindgen/wasm-bindgen/releases/tag/0.2.128
+  - https://github.com/Nuntissura/assets
   supersedes: []
 ```

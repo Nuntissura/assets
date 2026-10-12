@@ -4,8 +4,8 @@ project_id: KUMIHIMO
 source: WP contracts and state
 counts:
   done: 11
-  active: 1
-  planned: 2
+  active: 2
+  planned: 1
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -99,11 +99,12 @@ work_packets:
     stable affected proof through one Cargo lane
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-  title: Prove web arrangement with Portal-style frames
-  phase: planned
+  title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Publish full contract/Spec17, freeze matching six evaluation cases, lead scaffold/acquire exact WASM
+    tooling/resolve graph; dependency readiness before coder04 source admission
   blockers: []
 - wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
   title: Prove browser and graphics integration boundaries

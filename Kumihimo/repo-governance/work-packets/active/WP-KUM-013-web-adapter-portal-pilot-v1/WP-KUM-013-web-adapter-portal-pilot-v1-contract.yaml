@@ -1,16 +1,60 @@
 schema_version: kumihimo.wp-contract.v1
-kind: work_packet_stub
+kind: work_packet
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-title: Prove web arrangement with Portal-style frames
-scope:
+title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot
+scope: &id001
 - Prove browser adapter with expandable movable mock cards/detail subframes and same semantic core where feasible;
   host owns kanban columns/domain commands; no unrelated Portal repo edits without packet expansion
 files:
-- product/
+- product/kumihimo-web/src/lib.rs
+- product/kumihimo-web/src/wire.rs
+- product/kumihimo-web/src/projection.rs
+- product/kumihimo-web/src/host.rs
+- product/kumihimo-web/src/wasm.rs
+- product/kumihimo-web/tests/web_contracts.rs
+- product/kumihimo-web/web/adapter.mjs
+- product/kumihimo-web/web/pilot.mjs
+- product/kumihimo-web/web/index.html
+- product/kumihimo-web/web/workspace.css
+- product/kumihimo-web/web/restricted.html
+- product/kumihimo-web/tools/browser-proof.py
+- product/kumihimo-web/tools/serve.py
+- product/kumihimo-web/tools/build-web.ps1
+- product/kumihimo-web/Cargo.toml
+- product/Cargo.toml
+- product/Cargo.lock
+- product/README.md
 - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/
-- repo-governance/specification/current/
+- repo-governance/specification/
 - repo-governance/topology/
-dependencies:
+- repo-governance/codex/build-rules/current/
+file_ownership:
+  coder04:
+  - product/kumihimo-web/src/lib.rs
+  - product/kumihimo-web/src/wire.rs
+  - product/kumihimo-web/src/projection.rs
+  - product/kumihimo-web/src/host.rs
+  - product/kumihimo-web/src/wasm.rs
+  - product/kumihimo-web/tests/web_contracts.rs
+  - product/kumihimo-web/web/adapter.mjs
+  - product/kumihimo-web/web/pilot.mjs
+  - product/kumihimo-web/web/index.html
+  - product/kumihimo-web/web/workspace.css
+  - product/kumihimo-web/web/restricted.html
+  - product/kumihimo-web/tools/browser-proof.py
+  - product/kumihimo-web/tools/serve.py
+  - product/kumihimo-web/tools/build-web.ps1
+  lead:
+  - product/kumihimo-web/Cargo.toml
+  - product/Cargo.toml
+  - product/Cargo.lock
+  - product/README.md
+  - spec/topology/matrix/WP/session/taskboard/Git
+  dependencies:
+  - WP-KUM-013-web-adapter-portal-pilot-v1-dependency-readiness.yaml
+  evaluation:
+  - WP-KUM-013-web-adapter-portal-pilot-v1-evaluation.yaml
+dependencies: &id002
 - WP-KUM-011-navigation-and-media-controls-v1
 spec_refs:
 - TOPIC-KUM-WORKSPACE
@@ -18,14 +62,237 @@ spec_refs:
 - TOPIC-KUM-CONTENT
 - TOPIC-KUM-PLATFORMS
 - TOPIC-KUM-MODEL
+- TOPIC-KUM-TABS
+- TOPIC-KUM-RECOVERY
+- TOPIC-KUM-INPUT
+- TOPIC-KUM-BOUNDARIES
+- DEC-KUM-WEB-DOM-v1
+spec_requirement_refs:
+- REQ-KUM-WORKSPACE-001
+- REQ-KUM-WORKSPACE-002
+- REQ-KUM-WORKSPACE-003
+- REQ-KUM-WORKSPACE-004
+- REQ-KUM-WORKSPACE-005
+- REQ-KUM-WORKSPACE-006
+- REQ-KUM-BOUNDARIES-001
+- REQ-KUM-BOUNDARIES-002
+- REQ-KUM-BOUNDARIES-003
+- REQ-KUM-BOUNDARIES-004
+- REQ-KUM-BOUNDARIES-005
+- REQ-KUM-BOUNDARIES-006
+- REQ-KUM-BOUNDARIES-007
+- REQ-KUM-LAYOUT-001
+- REQ-KUM-LAYOUT-002
+- REQ-KUM-LAYOUT-003
+- REQ-KUM-LAYOUT-004
+- REQ-KUM-LAYOUT-005
+- REQ-KUM-LAYOUT-006
+- REQ-KUM-LAYOUT-007
+- REQ-KUM-TABS-001
+- REQ-KUM-TABS-002
+- REQ-KUM-TABS-003
+- REQ-KUM-TABS-004
+- REQ-KUM-TABS-005
+- REQ-KUM-TABS-006
+- REQ-KUM-CONTENT-001
+- REQ-KUM-CONTENT-002
+- REQ-KUM-CONTENT-003
+- REQ-KUM-CONTENT-004
+- REQ-KUM-CONTENT-005
+- REQ-KUM-CONTENT-006
+- REQ-KUM-CONTENT-007
+- REQ-KUM-RECOVERY-001
+- REQ-KUM-RECOVERY-002
+- REQ-KUM-RECOVERY-003
+- REQ-KUM-RECOVERY-004
+- REQ-KUM-RECOVERY-005
+- REQ-KUM-INPUT-001
+- REQ-KUM-INPUT-002
+- REQ-KUM-INPUT-003
+- REQ-KUM-INPUT-004
+- REQ-KUM-MODEL-001
+- REQ-KUM-MODEL-002
+- REQ-KUM-MODEL-003
+- REQ-KUM-MODEL-004
+- REQ-KUM-MODEL-005
+- REQ-KUM-PLATFORMS-001
+- REQ-KUM-PLATFORMS-002
+- REQ-KUM-PLATFORMS-003
+- REQ-KUM-PLATFORMS-004
 requirements:
-- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
-  eval before coding
-- Reuse existing core and verified cache; no parallel Cargo or long default suites
-- Preserve host ownership and existing accepted scope; explicit exact platform proof
+- '[WP013-R001] Preserve complete original Portal pilot scope and all accepted variable-count recursive workspace
+  requirements. Implement a reusable optional browser adapter and genuine Rust/WASM Portal-style sample with movable
+  expandable cards, nested detail frames, tabs and split/grid/docking. Host owns task IDs, kanban columns/status/domain
+  commands and editor data; arrangement never silently changes task meaning. No sibling Portal edits or fixed pane/tab/depth
+  ceiling. Host-configurable live work budgets are distinct from saved conceptual counts.'
+- '[WP013-R002] Add one small cohesive kumihimo-web0.1 package, Rust1.91, default features empty, rlib/cdylib, local
+  Core0.3/content0.2 default-features=false and layout-json0.1; reuse exact serde1.0.229/serde_json1.0.151. Optional
+  wasm feature selects wasm32-only wasm-bindgen=0.2.128 default-features=false/std. Plain DOM/ES modules consume
+  --target web generated bindings, no GUI framework/bundler/Node build or egui coupling. Preserve original three
+  default-members, Core/content APIs/versions/Snapshot3/schema1 and desktop selected dependency semantics. Lead
+  alone scaffolds manifests/resolves lock, obtains matching prebuilt CLI and wasm target on existing stable toolchain,
+  verifies hash/version/cache/closure before dependency agent readiness and coding admission. No named uninstalled
+  toolchain selection or Cargo-install cold build.'
+- '[WP013-R003] Reusable adapter borrows one host-owned content Controller and dispatcher; sample PilotHost may
+  own its sole Controller and serial operation allocator. Every canonical mutation uses Controller::execute, never
+  mutable Core extraction or JavaScript placement tree. Strict bounded versioned JSON DTOs explicitly encode decimal
+  u64 IDs/actor/op/expected generation and Core identity without JS number truncation. Read-only snapshot/geometry,
+  preview, commands, host snapshot and save/load routes are deterministic and inspectable. Preserve exact envelope
+  on retry; reject stale identity/generation, conflicting actors and same operation ID/different intent, distinguish
+  rejected watermark advancement, replayed receipt from current canonical snapshot and postcommit rendering failure.
+  Validate unknown fields, sizes, finite coordinates and scoped targets; redacted diagnostics do not dump task text.
+  These are local host routes, not server authentication.'
+- '[WP013-R004] Project current canonical Rust geometry iteratively top-down with stable IDs, child geometry contexts
+  derived from parent usable content and intersected ancestor clips. Browser ResizeObserver/client bounds become
+  host-dispatched SetGeometryContext only when changed. Reserve headers explicitly, map client/global DIP to provider
+  local coordinates once, validate surface incarnation/epoch and scale. DOM cannot override canonical layout. Narrow/undersized/hidden
+  states retain reachable reveal/overflow controls; tabs/groups and expandable detail frames preserve membership.
+  Pointer and keyboard selection/move/dock/resize use the same generation-bound preview/command routes; lost capture/blur/Escape
+  cancels uncommitted previews. Host text selection, wheel and ordinary editor shortcuts stay with content. Actual
+  browser event and pixels/DOM bounds must agree with fresh Rust state.'
+- '[WP013-R005] Host task model and provider references remain independently owned and observable before/after arrangement.
+  Separate explicit task-domain action can change column/status; docking, parent changes, tab movement, expansion
+  or viewport resizing cannot. Exact resource/view/provider recipient is checked; missing provider uses reachable
+  placeholder, stale or vetoed command preserves valid canonical ownership. Pilot edits real host task text/fields
+  and demonstrates domain action separately, without claiming actual Handshake/Notes/Studio/Portal integration.'
+- '[WP013-R006] Use versioned browser-session wrapper around unchanged SavedLayout/schema1 codec, host-selected
+  localStorage key/policy and separate host task store. Save after actual UI mutation, independently read actual
+  persisted bytes, reload into a fresh Rust/WASM incarnation and restore nested layout proportions, IDs/membership
+  and provider references. Validate a fully constructed candidate before replacing current valid state; malformed/oversized/newer
+  schema/storage refusal/missing provider retain valid state or explicit reachable recovery. Never persist DOM handles
+  or silently trust stale incarnation. LocalStorage synchronous acceptance is not cross-process atomic filesystem
+  or exactly-once proof.'
+- '[WP013-R007] Expose precise browser/WASM/storage/input/popup capabilities and failures. Full native-style browser
+  popup migration is explicitly unsupported in this bounded pilot, with original future popout requirements retained
+  open. Include a real restricted iframe fixture sandboxed with allow-scripts/allow-same-origin and without allow-popups;
+  the actual user-event popup request reports browser null/exception denial and independently re-read Rust source
+  membership remains unchanged. No mocked window factory, injected denial or empty about:blank success as content-ready
+  proof. No automated permitted popup/foreground or global input; normal browser host embedding/permissions remain
+  host-owned.'
+- '[WP013-R008] Provide actual readable browser controls, labelled keyboard alternatives, DOM accessibility roles/selected/expanded/value
+  state and stable IDs. Coalesce measure/redraw work and bound route payloads/queued inputs/projection/capture output;
+  no perpetual repaint or engine/resource saving claim. Ship a no-context manual for optional build/generated module/static
+  HTTP startup, inputs/outputs, routes, navigation, known limitations and recovery. Quiet product-owned headless
+  browser proof may reuse existing private-profile/loopback/owned-process cleanup patterns; never stop unowned browser/processes
+  or edit sibling tooling. Screenshots and fresh canonical Rust/host reads accompany actual events, storage and
+  DOM accessibility observations; component tests alone cannot substitute.'
+- '[WP013-R009] Execute six frozen focused cases in one owning native consumer target plus affected default/WASM
+  builds, exact-version CLI generation and one real browser batch. Lead exclusively owns serial j2 Cargo stable
+  target and verified sccache; source teams may work in parallel with disjoint files. Inspect exact browser pixels/resize/interaction/storage/route/restricted-popup
+  outputs, bind source/generated-WASM hashes and browser/tool versions. Diagnose concrete failure with team and
+  repair original case; do not repeat green unaffected Core/JSON/content suites. Physical touchscreen/pen, other
+  browsers/platforms, native popup migration, real editor/browser engines and performance acceptance remain unproven.'
+- '[WP013-R010] Preserve exact six-file previous specification and raw/parsed original stub and all99 ordered full
+  requirement records. Store complete selected meaning in current specification before deriving implementation,
+  independent dependency readiness and frozen matching cases before coding. Update bounded manual/topology/matrix/state/taskboard
+  from observed evidence only; commit/push this completed packet then independent canonical origin read before DONE.
+  No enrichment phase, heavy audit chain or research sidecar as product authority.'
 acceptance:
-- Real browser interaction, resize/nesting/docking/persistence/model routes; arrangement moves do not silently change
-  task meaning; capability/failure scope explicit
+- '[WP013-A001] Real Rust/WASM composition renders variable nested cards/detail frames/tabs/split/grid, narrow and
+  normal resize with canonical IDs/geometry and reachable overflow; actual opened browser image and DOM bounds agree.'
+- '[WP013-A002] Actual browser pointer/keyboard move/dock/resize/select and preview cancel use canonical routes;
+  nonzero origin, stale generation and content input precedence preserve valid state.'
+- '[WP013-A003] Actual host task IDs/column/status/domain revision remain unchanged by arrangement; separate explicit
+  domain action edits meaning; exact recipient, missing provider/stale/veto behavior observed.'
+- '[WP013-A004] Actual localStorage publication and fresh-WASM reload restore valid layout/membership/proportions/provider
+  references; malformed/oversized/newer/refusal/missing-provider recovery verified with independent bytes/canonical
+  reads.'
+- '[WP013-A005] Versioned bounded decimal-ID model routes, replay/conflicting actors/stale identity/generation/same-ID-different-intent
+  and redacted failure agree with GUI/fresh canonical snapshot; manual lets a no-context model reproduce.'
+- '[WP013-A006] Exact toolchain/generated-WASM/browser capabilities and actual restricted-popup denial preserve
+  source ownership; real readable controls/DOM accessibility and quiet owned browser proof, scoped focused checks,
+  unchanged prior inputs/spec preservation/published independent evaluation and origin verified.'
 proof:
-- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+- Lead-owned exact manifest/locked graph and cached closure inspection; verify matching CLI archive hash/version
+  and installed wasm target before coding readiness
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-web --all-targets --locked --offline -j 2
+- cargo test --manifest-path product/Cargo.toml -p kumihimo-web --test web_contracts --locked --offline -j 2
+- cargo build --manifest-path product/Cargo.toml -p kumihimo-web --features wasm --target wasm32-unknown-unknown
+  --locked --offline -j 2
+- Matching wasm-bindgen0.2.128 --target web generation from exact built WASM into ignored configurable output; product
+  build-web.ps1 records actual hashes/versions
+- Product tools/serve.py and browser-proof.py real quiet browser batch with exact generated module; no fixture-only/runtime-success
+  substitution
+- Open real browser screenshots and independent Rust/host/storage/DOM/accessibility/restricted-popup observations
+  against frozen six cases
+- Reuse prior Core/JSON/content proof only where source/config/resolved dependency/asserted behavior unchanged
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- git ls-remote origin refs/heads/codex/handpick
+non_goals:
+- Native/browser popup migration, real Notes/Studio/Servo engines, physical hardware, other browser/platform and
+  performance proof; preserved future acceptance remains open
+- Core/content API/version/Snapshot3/schema1 changes, JavaScript canonical placement, GUI framework/bundler, sibling
+  edits or global cache/process changes
+preserved_stub_scope:
+  schema_version: kumihimo.wp-contract.v1
+  kind: work_packet_stub
+  wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
+  title: Prove web arrangement with Portal-style frames
+  scope: *id001
+  files:
+  - product/
+  - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/
+  - repo-governance/specification/current/
+  - repo-governance/topology/
+  dependencies: *id002
+  spec_refs:
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-LAYOUT
+  - TOPIC-KUM-CONTENT
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-MODEL
+  requirements:
+  - Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+    eval before coding
+  - Reuse existing core and verified cache; no parallel Cargo or long default suites
+  - Preserve host ownership and existing accepted scope; explicit exact platform proof
+  acceptance:
+  - Real browser interaction, resize/nesting/docking/persistence/model routes; arrangement moves do not silently
+    change task meaning; capability/failure scope explicit
+  proof:
+  - Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+  status_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml
+research_basis:
+  sources:
+  - url: https://wasm-bindgen.github.io/wasm-bindgen/examples/without-a-bundler.html
+    checked: '2026-10-12'
+    finding: Generated --target web ES modules, explicit async initialization and static HTTP; no framework/bundler
+      required.
+  - url: https://wasm-bindgen.github.io/wasm-bindgen/examples/dom.html
+    checked: '2026-10-12'
+    finding: Rust/WASM browser boundary and explicit safe DOM text; plain JS projection can keep browser APIs outside
+      portable Rust.
+  - url: https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html
+    checked: '2026-10-12'
+    finding: Separate std target required, no native OS services; existing Rust logic portable only after actual
+      WASM compile/runtime.
+  - url: https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver
+    checked: '2026-10-12'
+    finding: Asynchronous element measurements support nested responsive host geometry; avoid redundant measure
+      loops.
+  - url: https://developer.mozilla.org/en-US/docs/Web/API/Pointer_events
+    checked: '2026-10-12'
+    finding: Pointer capture/event coordinates and cancellation keep drag lifecycle explicit.
+  - url: https://developer.mozilla.org/en-US/docs/Web/API/Window/open
+    checked: '2026-10-12'
+    finding: Blocked opens return null or throw under restrictions; successful handle alone does not prove rendered
+      moved content.
+  - url: https://github.com/wasm-bindgen/wasm-bindgen/releases/tag/0.2.128
+    checked: '2026-10-12'
+    finding: Matching CLI0.2.128 prebuilt Windows asset/hash inspected; cached crate MSRV1.77 fits native1.91.1.
+  - url: https://github.com/Nuntissura/assets
+    checked: '2026-10-12'
+    finding: Actual local handpick bounded decimal JSON bridge and buurtman-balie private-profile headless Chrome/owned-process
+      browser proof source inspected; reuse patterns without sibling edits.
+  selected: Exact optional WASM JSON bridge with plain DOM projection and host PilotHost; real restricted-popup
+    failure probe
+  reuse: Canonical Controller/geometry/preview/commands/replay/SavedLayout and prior quiet owned-browser tooling
+    patterns
+  rejected: Duplicate JS placement owner, full web framework/cold bundler, separate docking library, simulated browser
+    proof, unconditional popup migration without actual rendered ownership readiness
+  risks_and_mitigations: JS number truncation→decimal DTO; stale preview/replay→identity/gen/exact envelope/current
+    read; domain meaning drift→separate host model; invalid restore→candidate validation; popup denial→source retained;
+    measure feedback→changed-only/coalesced; browser cleanup→owned PID/private profile
+  validation: Six focused frozen cases and genuine Rust/WASM/browser batch above
 status_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml

@@ -55,6 +55,15 @@ roles:
     rotate_after: 2
     assignment: WP012 coding team leader admitted17 product source paths; disjoint three gpt-6.1-sol high subagents
       authorized; no Cargo/Git/manifest/governance writes
+  coder04:
+    role_id: ROLE-KUM-CODER-04
+    thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
+    model: gpt-6.1-sol
+    reasoning: high
+    completed_implementation_wps: []
+    rotate_after: 2
+    assignment: WP013 read-only preparation until full spec, frozen cases, exact dependency readiness/publication
+      and lead source admission; no Cargo/Git/shared files
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
