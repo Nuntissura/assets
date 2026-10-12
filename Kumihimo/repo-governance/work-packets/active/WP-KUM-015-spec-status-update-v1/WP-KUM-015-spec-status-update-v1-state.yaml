@@ -1,0 +1,48 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-015-spec-status-update-v1
+generation: 3
+phase: active
+owner: dev_lead
+changed_files:
+- README.md
+- repo-governance/codex/CODEX.md
+- repo-governance/codex/current/codex-source.yaml
+- repo-governance/registry/ids.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/specification.yaml
+- repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-state.yaml
+proof:
+- kind: canonical_archive_preservation
+  observed: All six archived v22 files independently match git show de1ace1925dfc08644658dec006d1383df62e100 prior
+    current bundle byte-for-byte
+- kind: accepted_meaning_preservation
+  observed: All38 master YAML fences unchanged;99 requirement/99 acceptance/18 feature records identical; all18
+    roadmap rows unchanged except verification_summary, status partially_implemented and no implemented requirement
+    refs
+- kind: focused_structural_and_owned_scope
+  observed: sync --check PASS/no stale projections;99 requirements/18 features/20 topics; git diff --check PASS;
+    product diff empty; provider router twins identical
+- kind: operator_removed_automation
+  observed: automation_update delete returned automationId kumihimo-dev-lead-tick/deleteStatus deleted in this chat;
+    session and README now record deletion; rule requires renewed authorization before restart
+- kind: independent_document_evaluation
+  evaluation_ref: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-evaluation.yaml
+  evaluation_sha256: d6a6088750c46e4df2542fedfa902791176ca7801db21660258fff424daa998a
+  observed: PASS_SCOPED_DOCUMENTATION; six focused cases pass/no findings; no new runtime claims
+blockers: []
+next_action: Publish accepted documentation candidate, independently read exact origin revision, then settle DONE

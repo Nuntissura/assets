@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 22
+revision: 23
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -33,7 +33,9 @@ content_blocks:
 
 Kumihimo holds and arranges content supplied by a host app: editors, browsers, media, tools and graphics. It targets reusable Rust logic with separate desktop and web presentation adapters.
 
-The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. The following topics expand that behavior. The portable ownership and geometry/tool-docking core has passed focused Windows x64 compilation, 22 tests and a console example. That proof covers in-memory containment, views/groups, split/grid geometry, pinned tool reservations, docking previews, bounded in-app floats, validated moves, host admission and bounded operation replay; the complete feature areas remain partial or planned. It does not prove a working GUI, rendering speed or browser compatibility.
+The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. Implemented parts include the portable ownership/layout core, content/lifecycle contracts and optional desktop and web adapters. The Windows x64 desktop sample has demonstrated nested panes, tabs/groups, docking, tools, four navigation modes and supported native popouts. The Rust/WASM web pilot has demonstrated nested task frames, arrangement controls and layout/task save and restore in Chrome. The separate rendering experiment has demonstrated two real Linux Servo processes under WSL composed with 2D/3D content on Windows DX12. These are scoped sample providers and experiments; Notes, Studio, Atelier and the actual Portal are still intended consumers.
+
+Demonstrated means the stated scenario has recorded runtime evidence. Partially implemented means some behavior exists while the full feature acceptance is still open. Planned means the stated integration or capability has not been demonstrated. All 99 full requirements remain open and all 18 feature areas remain partially implemented; completed work packets do not certify the entire envisioned product. Physical touch/pen/display behavior, ARM execution, native Windows Servo/libservo, video/audio, full creative-module integration and performance improvements require their own proof. Hiding a view alone does not certify suspension or memory release.
 
 Read the explanation at the start of each topic for the plain-language intent. The structured block records the corresponding requirements and focused acceptance scenarios. Optional field-inspired ideas live in the research note and are not required features.
 

@@ -36,6 +36,6 @@ Build rules: `build-rules/current/build-rules.yaml`. Workflow: `workflows/reposi
 
 [KUM-CARGO-001] The dev lead grants one Kumihimo Cargo lane at a time; use the stable source/target roots and verified cache, bundle affected checks and reuse valid results. Other teams may delay builds while source work continues; never stop unowned processes or delete their caches.
 
-[KUM-TICK-001] Use the authorized 15-minute thread heartbeat to inspect WP/team progress, CPU, memory, disk and Rust process activity; recover blockers with evidence and notify only meaningful change or needed operator action.
+[KUM-TICK-001] Run the authorized 15-minute thread heartbeat only while operator authorization and its automation are active; inspect WP/team progress, CPU, available memory, disk and Rust process activity, recover blockers with evidence and notify only meaningful change or needed operator action. After operator removal, record deletion and do not recreate or resume automatic ticks without renewed operator authorization.
 
 [KUM-SCOPE-002] Session-specific expansion authority lives in the session record; do not carry AFK/expansion permission into another session without operator scope reconciliation. Stop or pause immediately on later operator instruction.

@@ -1,0 +1,49 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-015-spec-status-update-v1
+title: Reconcile demonstrated scope and removed heartbeat in documentation
+scope:
+- Update current master specification and roadmap summaries from existing WP012/WP013/WP014 evidence
+- Correct stale future-prototype and adapter-status wording; distinguish scoped proof from full future acceptance
+- Record operator-deleted heartbeat in session and canonical workflow guidance; preserve historical identity
+- Documentation/status only; no product code, dependency changes, Cargo or new runtime claims
+files:
+- README.md
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/
+- repo-governance/codex/current/codex-source.yaml
+- repo-governance/codex/CODEX.md
+- repo-governance/sessions/current.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+- repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/
+dependencies:
+- WP-KUM-012-desktop-gui-adapter-v1
+- WP-KUM-013-web-adapter-portal-pilot-v1
+- WP-KUM-014-servo-and-heavy-rendering-v1
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+- TOPIC-KUM-ROADMAP
+requirements:
+- Preserve all existing requirement/acceptance/feature IDs and full product meaning
+- Describe existing desktop/web demos and external Servo/2D/3D experiment with their proven boundaries and remaining
+  integration/platform limits
+- Keep all99 full future requirements open and all18 feature areas partially implemented
+- Archive the exact previous six-file specification bundle before versioned edits
+- Retain the deleted heartbeat identity as history; prohibit automatic restart without renewed operator authorization
+acceptance:
+- Current summaries no longer present demonstrated adapters/popouts as wholly future work
+- Spec v23 preserves99 requirement and acceptance records exactly; all18 full feature acceptances remain partial
+- Session tick is deleted and workflow/README agree; no scheduler mutation or restart
+- Prior v22 archive matches canonical de1ace bytes; owned product tree unchanged
+- Generated navigation and spec structure pass sync --check; owned diff has no whitespace errors
+proof:
+- Focused comparison of affected prose against existing published packet/matrix evidence
+- Canonical prior-spec archive and unchanged requirement/acceptance/feature record comparison
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- git diff --exit-code -- Kumihimo/product
+- Exact remote revision after authorized commit/push
+taskboard_ref: repo-governance/taskboard/taskboard.yaml
+operator_request: yes update the doc please; accepted preceding three-item cleanup proposal
+research_basis: Documentation remediation from inspected current spec/roadmap, published WP012-014 outcomes and
+  successful automation deletion in this chat; no new feature or external research needed

@@ -1,0 +1,91 @@
+schema_version: kumihimo.evaluation.v1
+evaluation_id: EVAL-KUM-015-v1
+wp_id: WP-KUM-015-spec-status-update-v1
+evaluator: ROLE-KUM-EVALUATION
+updated_at: '2026-10-12T18:10:57.507421+00:00'
+phase: documentation_evaluated_pending_lead_publication
+verdict: PASS_SCOPED_DOCUMENTATION
+scope: One bounded independent review of the released documentation candidate; historical runtime reports and full
+  acceptance boundaries unchanged.
+inspected_refs:
+- path: README.md
+  sha256: 682c94e8c971849db6c091b6142a6aeee22fd75a2a9a595f29762d071d47f960
+- path: repo-governance/specification/current/spec-modules/master-spec.md
+  sha256: 765d62bb03d110ddb1fda4c91361810a7daba243dc148feed041d41c5170b187
+- path: repo-governance/specification/current/spec-modules/roadmap.md
+  sha256: 633f8206f63692ccef25a842714bac503593d5d5567105a091dd4bba8c8db708
+- path: repo-governance/specification/current/specification.yaml
+  sha256: 5d19f9087858ced23ceb1c9ceaee5015521d4df8944f0244c50cc0bd6cdc8cb3
+- path: repo-governance/codex/current/codex-source.yaml
+  sha256: c47741f516e5a0d2b69c21be6c0025b19a198230177060d3224f1f6583b7636d
+- path: repo-governance/codex/CODEX.md
+  sha256: 782c47600f9cc71a7c6730eeedbb4faa155fd946ab63cca6df1f93cfa4d43651
+- path: repo-governance/sessions/current.yaml
+  sha256: 6383993c22f0ceae3c9c29ef4c7e49c478e691b2b4b42b5d55f4542109336d16
+- path: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-contract.yaml
+  sha256: 47cadcfe09feda8acc4021d818ceb2b308e2300a7ce3dbe7e28c86e09788691e
+checks:
+- id: EVAL-KUM-015-C01
+  result: PASS
+  target: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v22-r22-de1ace1925df/
+  reference: de1ace1925df:Kumihimo/repo-governance/specification/current/
+  method: Independent raw-byte comparison against git show for each of the six archived files.
+  observed: 'Six of six exact matches: INDEX.json, primitive-feature-mix-matrix.json, primitive-list.json, spec-modules/master-spec.md,
+    spec-modules/roadmap.md, specification.yaml.'
+- id: EVAL-KUM-015-C02
+  result: PASS
+  target: current master specification and roadmap
+  method: Normalized master fence comparison and parsed recursive record/roadmap-row comparison against archived
+    v22.
+  observed: All 38 master YAML fences identical; 99 requirement, 99 acceptance and 18 feature records exactly unchanged.
+    All 18 roadmap rows differ only in verification_summary; all partially_implemented with empty implemented_requirement_refs.
+- id: EVAL-KUM-015-C03
+  result: PASS
+  target: master workspace prose, roadmap overview and all 18 verification summaries
+  method: Direct prose inspection against already evaluated WP012 desktop, WP013 browser and WP014 Servo/rendering
+    sections.
+  observed: Existing desktop/web adapters, supported desktop popouts and external Linux Servo with Windows DX12
+    2D/3D composition are described as scoped demonstrations. Actual host integrations, unsupported browser popup
+    migration, native Windows Servo/libservo, physical input/display, ARM, media and performance acceptance remain
+    unproven. Hiding is not claimed as suspension or release; reload is not arbitrary page-state recovery.
+- id: EVAL-KUM-015-C04
+  result: PASS
+  target: README.md, session current.yaml and canonical/generated KUM-TICK-001
+  method: Direct comparison of session tick metadata and guidance.
+  observed: Historical automation_id kumihimo-dev-lead-tick retained, status deleted on 2026-10-12, automatic_restart_authorized
+    false. README records disabled automatic ticks; canonical and generated rule require renewed authorization before
+    recreation/resumption. No scheduler action performed by evaluator.
+- id: EVAL-KUM-015-C05
+  result: PASS
+  target: Kumihimo/product
+  method: git -C assets diff de1ace1925df --name-only -- Kumihimo/product; git -C assets ls-files --others --exclude-standard
+    -- Kumihimo/product
+  observed: Both outputs empty; no tracked product changes or nonignored untracked product files.
+- id: EVAL-KUM-015-C06
+  result: PASS
+  target: generated navigation/spec structure and owned whitespace
+  method: Inspected existing lead command outputs; no duplicate validator run.
+  observed: 'sync --check: exit 0, passed, changed_or_stale empty, 99 requirements/18 features/20 topics. Owned
+    git diff --check output contains no whitespace errors; product diff empty.'
+  lead_thread: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+  command_refs:
+  - exec-40b4e68b-9b71-47d0-8a88-72a6ea4b497d
+  - exec-296d32e3-fc84-44cb-9420-81c5a2c5ce62
+runtime_evidence_refs:
+- wp: WP-KUM-012-desktop-gui-adapter-v1
+  section: desktop_runtime_evaluation_7d9268ab90d5
+  verdict: PASS_SCOPED_RUNTIME
+- wp: WP-KUM-013-web-adapter-portal-pilot-v1
+  section: browser_runtime_evaluation_e6b48fd83a3e
+  verdict: PASS_SCOPED_RUNTIME
+- wp: WP-KUM-014-servo-and-heavy-rendering-v1
+  section: servo_runtime_evaluation_b49929b4_publication
+  verdict: PASS_SCOPED_RUNTIME
+findings: []
+residual_limits:
+- Documentation verdict only; no new runtime execution or expanded acceptance claim.
+- All 99 full requirements remain open and all 18 feature areas partially implemented.
+- Automation deletion is the recorded lead observation; evaluator did not query or mutate the scheduler.
+- Authorized commit/push, exact remote reread, final structural check after publication changes and packet/session
+  closure remain lead-owned.
+next_action: Lead may settle and publish the admitted documentation packet; evaluator holds after this report.

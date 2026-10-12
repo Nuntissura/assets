@@ -3,8 +3,8 @@ kind: codex_source
 identity:
   codex_source_id: CODEX-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 27
-  revision: 24
+  version: 28
+  revision: 25
   status: active_model_operated
 execution_modes:
   default: model_operated
@@ -146,8 +146,10 @@ rules:
     cache, bundle affected checks and reuse valid results. Other teams may delay builds while source work continues;
     never stop unowned processes or delete their caches.
 - rule_id: KUM-TICK-001
-  requirement: Use the authorized 15-minute thread heartbeat to inspect WP/team progress, CPU, memory, disk and
-    Rust process activity; recover blockers with evidence and notify only meaningful change or needed operator action.
+  requirement: Run the authorized 15-minute thread heartbeat only while operator authorization and its automation
+    are active; inspect WP/team progress, CPU, available memory, disk and Rust process activity, recover blockers
+    with evidence and notify only meaningful change or needed operator action. After operator removal, record deletion
+    and do not recreate or resume automatic ticks without renewed operator authorization.
 - rule_id: KUM-SCOPE-002
   requirement: Session-specific expansion authority lives in the session record; do not carry AFK/expansion permission
     into another session without operator scope reconciliation. Stop or pause immediately on later operator instruction.
