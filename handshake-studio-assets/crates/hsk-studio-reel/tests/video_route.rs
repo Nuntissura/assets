@@ -66,6 +66,9 @@ enum Plan {
     ShortPlane,
     /// The picture of the packet with this tag is never released (a decoder that drops a picture).
     DropPicture(u64),
+    /// The pictures of every packet with this tag or a higher one are never released (a decoder that
+    /// drops the tail of the segment; `DropFrom(0)` releases nothing).
+    DropFrom(u64),
     /// A picture of `width` x `height` whose planes are sized for 8-bit 4:2:0 at that size, whatever
     /// `bit_depth` the format claims (`bit_depth` other than 8 makes planes and format disagree).
     Picture {
@@ -148,7 +151,9 @@ impl VideoDecodeSession for FakeSession {
             }
             _ => {}
         }
-        if matches!(self.plan, Plan::DropPicture(at) if at == tag) {
+        if matches!(self.plan, Plan::DropPicture(at) if at == tag)
+            || matches!(self.plan, Plan::DropFrom(from) if tag >= from)
+        {
             return Ok(());
         }
         if let Plan::Picture {
@@ -1100,6 +1105,240 @@ fn export_range_is_checked_before_a_decoder_session_opens() {
             assert_eq!(receipt.disposition, Disposition::Exact, "{name}");
             assert!(receipt.complete && receipt.actual.units == 3, "{name}");
             assert_eq!((opens(), sink.chunks.len()), (2, 3), "{name}");
+        }
+    }
+}
+
+/// Presentation time and duration (ticks) of every chunk the container itself delivers: the ground truth
+/// for where a picture ends, taken from the demux and not from the video route.
+#[derive(Debug, Default)]
+struct Timing {
+    chunks: Vec<(i64, u64)>,
+}
+
+impl ChunkSink for Timing {
+    fn accept(&mut self, c: Chunk<'_>) -> Result<(), ReelError> {
+        self.chunks.push((c.pts, c.duration.value()));
+        Ok(())
+    }
+}
+
+fn run_video(
+    registry: &Registry,
+    (bytes, container): (&[u8], &str),
+    (start, count): (u64, u64),
+    purpose: Purpose,
+    output: OutputMode,
+) -> (Result<SegmentReceipt, ReelError>, Collect) {
+    let mut req = request(container, bytes, start, count, output);
+    req.purpose = purpose;
+    let mut sink = Collect::default();
+    let result = registry.decode_segment(
+        &mut Cursor::new(bytes.to_vec()),
+        None,
+        &req,
+        &Limits::default(),
+        &CancellationToken::default(),
+        &mut sink,
+    );
+    (result, sink)
+}
+
+/// The packet receipt of the same request (no decoder involved): what the video receipt used to end at.
+fn packet_receipt(registry: &Registry, source: (&[u8], &str), range: (u64, u64)) -> SegmentReceipt {
+    run_video(
+        registry,
+        source,
+        range,
+        Purpose::Preview,
+        OutputMode::Packets,
+    )
+    .0
+    .unwrap()
+}
+
+/// `(pts, pts + duration)` of the three frames of a fixture, from the demux.
+fn picture_spans(registry: &Registry, bytes: &[u8], container: &str) -> Vec<(u64, u64)> {
+    let mut timing = Timing::default();
+    registry
+        .decode_segment(
+            &mut Cursor::new(bytes.to_vec()),
+            None,
+            &request(container, bytes, 0, 3, OutputMode::Packets),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut timing,
+        )
+        .unwrap();
+    assert_eq!(timing.chunks.len(), 3);
+    timing
+        .chunks
+        .iter()
+        .map(|&(pts, duration)| (pts as u64, pts as u64 + duration))
+        .collect()
+}
+
+/// PLR-077 (failure class: a receipt end taken from the packets instead of from the delivered pictures):
+/// a preview whose decoder dropped a picture is `Partial`, and its actual span ends where the LAST
+/// DELIVERED PICTURE ends, not where the packets end; with no picture delivered the span is empty at its
+/// start. Read from the container's own timing, for a drop at the end of the packets (the case that
+/// differs from the packet end), in the middle, at the start, of the whole tail, and of everything, over a
+/// request that starts at a pre-roll offset.
+#[test]
+fn partial_video_receipt_ends_at_the_last_delivered_picture() {
+    for (name, bytes, container, pts) in [
+        ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
+        ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
+    ] {
+        let probe = Registry::standard();
+        let spans = picture_spans(&probe, bytes, container);
+        assert_eq!(spans.iter().map(|s| s.0).collect::<Vec<_>>(), pts, "{name}");
+        // Hand-computed ground truth for mp4: three frames of 1/24 s.
+        if name == "mp4" {
+            assert_eq!(
+                spans,
+                [
+                    (0, 10_584_000_000),
+                    (10_584_000_000, 21_168_000_000),
+                    (21_168_000_000, 31_752_000_000)
+                ]
+            );
+        }
+        let ends: Vec<u64> = spans.iter().map(|s| s.1).collect();
+        assert!(ends[0] < ends[1] && ends[1] < ends[2], "{name}");
+        // (plan, first frame, count, delivered tags, expected end of the actual span)
+        let cases: [(Plan, usize, u64, &[u64], u64); 7] = [
+            (Plan::DropPicture(2), 0, 3, &[0, 1], ends[1]),
+            (Plan::DropPicture(1), 0, 3, &[0, 2], ends[2]),
+            (Plan::DropPicture(0), 0, 3, &[1, 2], ends[2]),
+            (Plan::DropFrom(1), 0, 3, &[0], ends[0]),
+            (Plan::DropFrom(0), 0, 3, &[], pts[0]),
+            // Pre-roll: frame 0 is fed to the decoder only to reach frame 1.
+            (Plan::DropPicture(2), 1, 2, &[1], ends[1]),
+            (Plan::DropFrom(1), 1, 2, &[], pts[1]),
+        ];
+        for (n, (plan, first, count, delivered, want_end)) in cases.into_iter().enumerate() {
+            let (fake, _) = Fake::new(plan);
+            let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+            let range = (pts[first], count);
+            let (result, sink) = run_video(
+                &registry,
+                (bytes, container),
+                range,
+                Purpose::Preview,
+                OutputMode::Decoded,
+            );
+            let receipt = result.unwrap();
+            let label = format!("{name} case {n}");
+            let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+            assert_eq!(tags, delivered, "{label}");
+            assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
+            assert!(!receipt.complete, "{label}");
+            assert_eq!(receipt.requested.units, count, "{label}");
+            assert_eq!(receipt.actual.units, delivered.len() as u64, "{label}");
+            assert_eq!(receipt.actual.start_pts.value(), pts[first], "{label}");
+            assert_eq!(receipt.actual.end_pts.value(), want_end, "{label}");
+            assert!(
+                receipt.actual.end_pts >= receipt.actual.start_pts,
+                "{label}"
+            );
+            // The request still names its own end, which is where the packets end.
+            let packets = packet_receipt(&probe, (bytes, container), range);
+            assert_eq!(receipt.requested, packets.requested, "{label}");
+            assert_eq!(packets.actual.end_pts.value(), ends[2], "{label}");
+        }
+    }
+}
+
+/// PLR-077: nothing changes when every picture is delivered. The receipt of a complete video decode ends
+/// where the packet receipt of the same request ends (whole clip, a range that needs pre-roll, an
+/// export), and a preview that is `Partial` because the packets themselves fall short (an edit list that
+/// presents one media sample twice) ends where the delivered packets end, or at the last delivered
+/// picture when the decoder also dropped one.
+#[test]
+fn fully_delivered_video_receipt_end_is_the_packet_end() {
+    let unit = 423_360_000u64; // ticks per 1/600 s
+    let repeating = mp4_bytes(&Mp4Spec {
+        movie_timescale: 600,
+        media_timescale: 600,
+        codec: *b"av01",
+        width: 16,
+        height: 16,
+        samples: (0..4)
+            .map(|k| Mp4Sample {
+                duration: 20,
+                cts_offset: 0,
+                size: 16,
+                sync: k == 0,
+            })
+            .collect(),
+        edits: Some(vec![(40, 0), (40, 0)]),
+        samples_per_chunk: 2,
+        co64: false,
+        ctts_version: 0,
+        moov_first: true,
+        colr_nclx: None,
+        pasp: None,
+    });
+    for (name, bytes, container, pts) in [
+        ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
+        ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
+    ] {
+        let (fake, _) = Fake::new(Plan::Works);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let last_end = picture_spans(&registry, bytes, container)[2].1;
+        for (range, purpose) in [
+            ((0, 3), Purpose::Preview),
+            ((0, 3), Purpose::Export),
+            ((pts[1], 2), Purpose::Preview),
+            ((pts[2], 1), Purpose::Preview),
+            ((pts[2], 1), Purpose::Export),
+        ] {
+            let label = format!("{name} {range:?} {purpose:?}");
+            let (result, sink) = run_video(
+                &registry,
+                (bytes, container),
+                range,
+                purpose,
+                OutputMode::Decoded,
+            );
+            let receipt = result.unwrap();
+            assert!(receipt.complete, "{label}");
+            assert_eq!(receipt.actual.units, range.1, "{label}");
+            assert_eq!(sink.chunks.len() as u64, range.1, "{label}");
+            let packets = packet_receipt(&registry, (bytes, container), range);
+            assert_eq!(receipt.actual, packets.actual, "{label}");
+            assert_eq!(receipt.requested, packets.requested, "{label}");
+            assert_eq!(receipt.disposition, packets.disposition, "{label}");
+            assert_eq!(receipt.actual.end_pts.value(), last_end, "{label}");
+        }
+    }
+
+    let source = (&repeating[..], ISOBMFF_PROVIDER_ID);
+    for (plan, delivered, want_end) in [
+        (Plan::Works, 2, 40 * unit),
+        (Plan::DropPicture(1), 1, 20 * unit),
+    ] {
+        let (fake, _) = Fake::new(plan);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (result, sink) = run_video(
+            &registry,
+            source,
+            (0, 4),
+            Purpose::Preview,
+            OutputMode::Decoded,
+        );
+        let receipt = result.unwrap();
+        let label = format!("repeating, {delivered} picture(s) delivered");
+        assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
+        assert_eq!(sink.chunks.len(), delivered, "{label}");
+        assert_eq!(receipt.actual.units, delivered as u64, "{label}");
+        assert_eq!(receipt.actual.end_pts.value(), want_end, "{label}");
+        // The requested span is the end of the presented range (four samples of 20 units), unchanged.
+        assert_eq!(receipt.requested.end_pts.value(), 80 * unit, "{label}");
+        if matches!(plan, Plan::Works) {
+            let packets = packet_receipt(&registry, source, (0, 4));
+            assert_eq!(receipt.actual, packets.actual, "{label}");
         }
     }
 }

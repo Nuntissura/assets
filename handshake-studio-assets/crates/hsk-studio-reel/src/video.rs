@@ -277,7 +277,22 @@ struct Forward<'a> {
     declared: (u32, u32),
     format: Option<VideoFormat>,
     delivered: u64,
+    /// The latest end (`pts + duration`, ticks) of a picture handed to the sink; `None` before the first.
+    /// A shortfall receipt ends here, not at the end of the packets (PLR-077).
+    delivered_end: Option<u64>,
     packed: Vec<u8>,
+}
+
+/// End of a delivered picture (`pts + duration` of its packet) in ticks, checked: an overflow is
+/// `tick-range`, an end before presentation zero the same refusal the packet receipt gives.
+fn picture_end(pts: i64, duration: Ticks) -> Result<u64, ReelError> {
+    let end = i64::try_from(duration.value())
+        .ok()
+        .and_then(|duration| pts.checked_add(duration))
+        .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
+    u64::try_from(end).map_err(|_| ReelError::Unsupported {
+        what: "negative-presentation-time",
+    })
 }
 
 /// True when the picture has the plane count its format implies and every plane has exactly
@@ -364,6 +379,10 @@ impl PictureSink for Forward<'_> {
             bytes: &self.packed,
         })?;
         self.delivered = self.delivered.saturating_add(1);
+        // After the sink took the picture, as the packet loop does for the same packet, so the error
+        // order is unchanged: the packet receipt refuses the same `pts + duration` right after.
+        let end = picture_end(meta.pts, meta.duration)?;
+        self.delivered_end = Some(self.delivered_end.map_or(end, |latest| latest.max(end)));
         Ok(())
     }
 }
@@ -489,6 +508,7 @@ pub(crate) fn decode_video_track_with(
             declared: (video.width, video.height),
             format: None,
             delivered: 0,
+            delivered_end: None,
             packed: Vec::new(),
         },
         cancel,
@@ -529,6 +549,14 @@ pub(crate) fn decode_video_track_with(
         }
         receipt.disposition = Disposition::Partial;
         receipt.complete = false;
+        // The packet receipt ends where the PACKETS end; a dropped picture leaves the span shorter: it
+        // ends where the last delivered picture ends, and no picture means an empty span at its start
+        // (the packet loop's own convention). Never before the start (PLR-077).
+        let start = receipt.actual.start_pts;
+        receipt.actual.end_pts = pump
+            .fwd
+            .delivered_end
+            .map_or(start, |end| Ticks::new(end.max(start.value())));
     }
     Ok(receipt)
 }
