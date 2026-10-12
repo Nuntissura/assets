@@ -49,7 +49,7 @@ function Save-Checkpoint([string]$Phase, [object]$Details = $null, [string]$Exce
     $traceTempPath = "$tracePath.tmp"
     $traceStream = [System.IO.FileStream]::new($traceTempPath,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None)
     try { $traceStream.Write($traceBytes,0,$traceBytes.Length); $traceStream.Flush($true) } finally { $traceStream.Dispose() }
-    if ([System.IO.File]::Exists($tracePath)) { [System.IO.File]::Replace($traceTempPath,$tracePath,$null) }
+    if ([System.IO.File]::Exists($tracePath)) { [System.IO.File]::Replace($traceTempPath,$tracePath,[System.Management.Automation.Language.NullString]::Value) }
     else { [System.IO.File]::Move($traceTempPath,$tracePath) }
 }
 function Read-Patterns($node) {
