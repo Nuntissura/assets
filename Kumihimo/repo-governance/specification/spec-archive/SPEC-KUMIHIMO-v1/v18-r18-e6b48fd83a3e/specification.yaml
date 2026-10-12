@@ -1,0 +1,893 @@
+schema_version: handshake.technical-specification.v5
+kind: technical_specification
+identity:
+  specification_id: SPEC-KUMIHIMO-v1
+  project_id: KUMIHIMO
+  version: 18
+  revision: 18
+  status: accepted_direction_implementation_authorized
+authority:
+  canonical_product_truth: true
+  controller: authorized_model_maintainer
+  manual_projection_edits_allowed: false
+  accepted_direction_change_must_land_before_wp_derivation: true
+  wp_and_mt_may_not_override_product_truth: true
+  reusable_solution_binding_is_implementation_state_not_product_truth: true
+  every_change_requires_receipt: false
+  specification_is_never_suggestion: true
+  research_and_suggestions_owner: project_research_folder
+  research_has_product_truth: false
+  research_has_enforcement_authority: false
+  research_holds_final_product_decisions: false
+  adopted_decisions_and_complete_requirements_live_in_spec: true
+  product_meaning_changes_require_refinement_enrichment: false
+  verified_status_only_sync_requires_new_refinement: false
+  status_sync_must_preserve_accepted_meaning_and_bound_execution_scope: true
+storage:
+  mode: self_contained_specification_bundle
+  body_authority: specification_documents
+  manifest_role: generated_membership_revision_and_digest_navigation
+  document_format: frontmatter_and_machine_topic_headers_with_fenced_content
+  document_root: spec-modules/
+  documents:
+  - document_id: DOC-KUM-MASTER-v1
+    path: spec-modules/master-spec.md
+    revision: 18
+    digest: sha256:8c6981b10f096b4cca8c6e8907f3c35241221cac7edf44075ad2e3bdfdc6ce43
+    semantic_entity_refs:
+    - TOPIC-KUM-WORKSPACE
+    - REQ-KUM-WORKSPACE-001
+    - REQ-KUM-WORKSPACE-002
+    - REQ-KUM-WORKSPACE-003
+    - REQ-KUM-WORKSPACE-004
+    - REQ-KUM-WORKSPACE-005
+    - REQ-KUM-WORKSPACE-006
+    - ACC-KUM-WORKSPACE-001
+    - ACC-KUM-WORKSPACE-002
+    - ACC-KUM-WORKSPACE-003
+    - ACC-KUM-WORKSPACE-004
+    - ACC-KUM-WORKSPACE-005
+    - ACC-KUM-WORKSPACE-006
+    - FEAT-KUM-WORKSPACE
+    - PRIM-KUM-WORKSPACE
+    - REL-KUM-WORKSPACE
+    - GUI-KUM-WORKSPACE
+    - TOPIC-KUM-BOUNDARIES
+    - REQ-KUM-BOUNDARIES-001
+    - REQ-KUM-BOUNDARIES-002
+    - REQ-KUM-BOUNDARIES-003
+    - REQ-KUM-BOUNDARIES-004
+    - REQ-KUM-BOUNDARIES-005
+    - REQ-KUM-BOUNDARIES-006
+    - REQ-KUM-BOUNDARIES-007
+    - ACC-KUM-BOUNDARIES-001
+    - ACC-KUM-BOUNDARIES-002
+    - ACC-KUM-BOUNDARIES-003
+    - ACC-KUM-BOUNDARIES-004
+    - ACC-KUM-BOUNDARIES-005
+    - ACC-KUM-BOUNDARIES-006
+    - ACC-KUM-BOUNDARIES-007
+    - FEAT-KUM-BOUNDARIES
+    - PRIM-KUM-BOUNDARIES
+    - REL-KUM-BOUNDARIES
+    - GUI-KUM-BOUNDARIES
+    - DEC-KUM-BOUNDARIES
+    - TOPIC-KUM-LAYOUT
+    - REQ-KUM-LAYOUT-001
+    - REQ-KUM-LAYOUT-002
+    - REQ-KUM-LAYOUT-003
+    - REQ-KUM-LAYOUT-004
+    - REQ-KUM-LAYOUT-005
+    - REQ-KUM-LAYOUT-006
+    - REQ-KUM-LAYOUT-007
+    - ACC-KUM-LAYOUT-001
+    - ACC-KUM-LAYOUT-002
+    - ACC-KUM-LAYOUT-003
+    - ACC-KUM-LAYOUT-004
+    - ACC-KUM-LAYOUT-005
+    - ACC-KUM-LAYOUT-006
+    - ACC-KUM-LAYOUT-007
+    - FEAT-KUM-LAYOUT
+    - PRIM-KUM-LAYOUT
+    - REL-KUM-LAYOUT
+    - GUI-KUM-LAYOUT
+    - DEC-KUM-LAYOUT
+    - TOPIC-KUM-TABS
+    - REQ-KUM-TABS-001
+    - REQ-KUM-TABS-002
+    - REQ-KUM-TABS-003
+    - REQ-KUM-TABS-004
+    - REQ-KUM-TABS-005
+    - REQ-KUM-TABS-006
+    - ACC-KUM-TABS-001
+    - ACC-KUM-TABS-002
+    - ACC-KUM-TABS-003
+    - ACC-KUM-TABS-004
+    - ACC-KUM-TABS-005
+    - ACC-KUM-TABS-006
+    - FEAT-KUM-TABS
+    - PRIM-KUM-TABS
+    - REL-KUM-TABS
+    - GUI-KUM-TABS
+    - DEC-KUM-TABS
+    - TOPIC-KUM-POPOUTS
+    - REQ-KUM-POPOUTS-001
+    - REQ-KUM-POPOUTS-002
+    - REQ-KUM-POPOUTS-003
+    - REQ-KUM-POPOUTS-004
+    - REQ-KUM-POPOUTS-005
+    - ACC-KUM-POPOUTS-001
+    - ACC-KUM-POPOUTS-002
+    - ACC-KUM-POPOUTS-003
+    - ACC-KUM-POPOUTS-004
+    - ACC-KUM-POPOUTS-005
+    - FEAT-KUM-POPOUTS
+    - PRIM-KUM-POPOUTS
+    - REL-KUM-POPOUTS
+    - GUI-KUM-POPOUTS
+    - DEC-KUM-POPOUTS
+    - TOPIC-KUM-CHROME
+    - REQ-KUM-CHROME-001
+    - REQ-KUM-CHROME-002
+    - REQ-KUM-CHROME-003
+    - REQ-KUM-CHROME-004
+    - REQ-KUM-CHROME-005
+    - REQ-KUM-CHROME-006
+    - REQ-KUM-CHROME-007
+    - REQ-KUM-CHROME-008
+    - REQ-KUM-CHROME-009
+    - REQ-KUM-CHROME-010
+    - ACC-KUM-CHROME-001
+    - ACC-KUM-CHROME-002
+    - ACC-KUM-CHROME-003
+    - ACC-KUM-CHROME-004
+    - ACC-KUM-CHROME-005
+    - ACC-KUM-CHROME-006
+    - ACC-KUM-CHROME-007
+    - ACC-KUM-CHROME-008
+    - ACC-KUM-CHROME-009
+    - ACC-KUM-CHROME-010
+    - FEAT-KUM-CHROME
+    - PRIM-KUM-CHROME
+    - REL-KUM-CHROME
+    - GUI-KUM-CHROME
+    - DEC-KUM-CHROME
+    - TOPIC-KUM-CONTENT
+    - REQ-KUM-CONTENT-001
+    - REQ-KUM-CONTENT-002
+    - REQ-KUM-CONTENT-003
+    - REQ-KUM-CONTENT-004
+    - REQ-KUM-CONTENT-005
+    - REQ-KUM-CONTENT-006
+    - REQ-KUM-CONTENT-007
+    - ACC-KUM-CONTENT-001
+    - ACC-KUM-CONTENT-002
+    - ACC-KUM-CONTENT-003
+    - ACC-KUM-CONTENT-004
+    - ACC-KUM-CONTENT-005
+    - ACC-KUM-CONTENT-006
+    - ACC-KUM-CONTENT-007
+    - FEAT-KUM-CONTENT
+    - PRIM-KUM-CONTENT
+    - REL-KUM-CONTENT
+    - GUI-KUM-CONTENT
+    - DEC-KUM-CONTENT
+    - TOPIC-KUM-RENDER
+    - REQ-KUM-RENDER-001
+    - REQ-KUM-RENDER-002
+    - REQ-KUM-RENDER-003
+    - REQ-KUM-RENDER-004
+    - ACC-KUM-RENDER-001
+    - ACC-KUM-RENDER-002
+    - ACC-KUM-RENDER-003
+    - ACC-KUM-RENDER-004
+    - FEAT-KUM-RENDER
+    - PRIM-KUM-RENDER
+    - REL-KUM-RENDER
+    - GUI-KUM-RENDER
+    - DEC-KUM-RENDER
+    - TOPIC-KUM-PERFORMANCE
+    - REQ-KUM-PERFORMANCE-001
+    - REQ-KUM-PERFORMANCE-002
+    - REQ-KUM-PERFORMANCE-003
+    - REQ-KUM-PERFORMANCE-004
+    - REQ-KUM-PERFORMANCE-005
+    - ACC-KUM-PERFORMANCE-001
+    - ACC-KUM-PERFORMANCE-002
+    - ACC-KUM-PERFORMANCE-003
+    - ACC-KUM-PERFORMANCE-004
+    - ACC-KUM-PERFORMANCE-005
+    - FEAT-KUM-PERFORMANCE
+    - PRIM-KUM-PERFORMANCE
+    - REL-KUM-PERFORMANCE
+    - GUI-KUM-PERFORMANCE
+    - DEC-KUM-PERFORMANCE
+    - TOPIC-KUM-TEXT
+    - REQ-KUM-TEXT-001
+    - REQ-KUM-TEXT-002
+    - REQ-KUM-TEXT-003
+    - ACC-KUM-TEXT-001
+    - ACC-KUM-TEXT-002
+    - ACC-KUM-TEXT-003
+    - FEAT-KUM-TEXT
+    - PRIM-KUM-TEXT
+    - REL-KUM-TEXT
+    - GUI-KUM-TEXT
+    - DEC-KUM-TEXT
+    - TOPIC-KUM-NAVIGATION
+    - REQ-KUM-NAVIGATION-001
+    - REQ-KUM-NAVIGATION-002
+    - REQ-KUM-NAVIGATION-003
+    - REQ-KUM-NAVIGATION-004
+    - REQ-KUM-NAVIGATION-005
+    - REQ-KUM-NAVIGATION-006
+    - ACC-KUM-NAVIGATION-001
+    - ACC-KUM-NAVIGATION-002
+    - ACC-KUM-NAVIGATION-003
+    - ACC-KUM-NAVIGATION-004
+    - ACC-KUM-NAVIGATION-005
+    - ACC-KUM-NAVIGATION-006
+    - FEAT-KUM-NAVIGATION
+    - PRIM-KUM-NAVIGATION
+    - REL-KUM-NAVIGATION
+    - GUI-KUM-NAVIGATION
+    - DEC-KUM-NAVIGATION
+    - TOPIC-KUM-BACKGROUNDS
+    - REQ-KUM-BACKGROUNDS-001
+    - REQ-KUM-BACKGROUNDS-002
+    - REQ-KUM-BACKGROUNDS-003
+    - REQ-KUM-BACKGROUNDS-004
+    - ACC-KUM-BACKGROUNDS-001
+    - ACC-KUM-BACKGROUNDS-002
+    - ACC-KUM-BACKGROUNDS-003
+    - ACC-KUM-BACKGROUNDS-004
+    - FEAT-KUM-BACKGROUNDS
+    - PRIM-KUM-BACKGROUNDS
+    - REL-KUM-BACKGROUNDS
+    - GUI-KUM-BACKGROUNDS
+    - DEC-KUM-BACKGROUNDS
+    - TOPIC-KUM-LIFECYCLE
+    - REQ-KUM-LIFECYCLE-001
+    - REQ-KUM-LIFECYCLE-002
+    - REQ-KUM-LIFECYCLE-003
+    - REQ-KUM-LIFECYCLE-004
+    - REQ-KUM-LIFECYCLE-005
+    - REQ-KUM-LIFECYCLE-006
+    - ACC-KUM-LIFECYCLE-001
+    - ACC-KUM-LIFECYCLE-002
+    - ACC-KUM-LIFECYCLE-003
+    - ACC-KUM-LIFECYCLE-004
+    - ACC-KUM-LIFECYCLE-005
+    - ACC-KUM-LIFECYCLE-006
+    - FEAT-KUM-LIFECYCLE
+    - PRIM-KUM-LIFECYCLE
+    - REL-KUM-LIFECYCLE
+    - GUI-KUM-LIFECYCLE
+    - DEC-KUM-LIFECYCLE
+    - TOPIC-KUM-SERVO
+    - REQ-KUM-SERVO-001
+    - REQ-KUM-SERVO-002
+    - REQ-KUM-SERVO-003
+    - REQ-KUM-SERVO-004
+    - REQ-KUM-SERVO-005
+    - ACC-KUM-SERVO-001
+    - ACC-KUM-SERVO-002
+    - ACC-KUM-SERVO-003
+    - ACC-KUM-SERVO-004
+    - ACC-KUM-SERVO-005
+    - FEAT-KUM-SERVO
+    - PRIM-KUM-SERVO
+    - REL-KUM-SERVO
+    - GUI-KUM-SERVO
+    - DEC-KUM-SERVO
+    - TOPIC-KUM-RECOVERY
+    - REQ-KUM-RECOVERY-001
+    - REQ-KUM-RECOVERY-002
+    - REQ-KUM-RECOVERY-003
+    - REQ-KUM-RECOVERY-004
+    - REQ-KUM-RECOVERY-005
+    - ACC-KUM-RECOVERY-001
+    - ACC-KUM-RECOVERY-002
+    - ACC-KUM-RECOVERY-003
+    - ACC-KUM-RECOVERY-004
+    - ACC-KUM-RECOVERY-005
+    - FEAT-KUM-RECOVERY
+    - PRIM-KUM-RECOVERY
+    - REL-KUM-RECOVERY
+    - GUI-KUM-RECOVERY
+    - DEC-KUM-RECOVERY
+    - TOPIC-KUM-INPUT
+    - REQ-KUM-INPUT-001
+    - REQ-KUM-INPUT-002
+    - REQ-KUM-INPUT-003
+    - REQ-KUM-INPUT-004
+    - ACC-KUM-INPUT-001
+    - ACC-KUM-INPUT-002
+    - ACC-KUM-INPUT-003
+    - ACC-KUM-INPUT-004
+    - FEAT-KUM-INPUT
+    - PRIM-KUM-INPUT
+    - REL-KUM-INPUT
+    - GUI-KUM-INPUT
+    - DEC-KUM-INPUT
+    - TOPIC-KUM-MODEL
+    - REQ-KUM-MODEL-001
+    - REQ-KUM-MODEL-002
+    - REQ-KUM-MODEL-003
+    - REQ-KUM-MODEL-004
+    - REQ-KUM-MODEL-005
+    - ACC-KUM-MODEL-001
+    - ACC-KUM-MODEL-002
+    - ACC-KUM-MODEL-003
+    - ACC-KUM-MODEL-004
+    - ACC-KUM-MODEL-005
+    - FEAT-KUM-MODEL
+    - PRIM-KUM-MODEL
+    - REL-KUM-MODEL
+    - GUI-KUM-MODEL
+    - DEC-KUM-MODEL
+    - TOPIC-KUM-PLATFORMS
+    - REQ-KUM-PLATFORMS-001
+    - REQ-KUM-PLATFORMS-002
+    - REQ-KUM-PLATFORMS-003
+    - REQ-KUM-PLATFORMS-004
+    - ACC-KUM-PLATFORMS-001
+    - ACC-KUM-PLATFORMS-002
+    - ACC-KUM-PLATFORMS-003
+    - ACC-KUM-PLATFORMS-004
+    - FEAT-KUM-PLATFORMS
+    - PRIM-KUM-PLATFORMS
+    - REL-KUM-PLATFORMS
+    - GUI-KUM-PLATFORMS
+    - DEC-KUM-PLATFORMS
+    - TOPIC-KUM-CHOICES
+    - DEC-KUM-ARCHITECTURE
+    - DEC-KUM-OPTIONAL-IDEAS
+    - DEC-KUM-CONTENT-PROTOCOL-v1
+    - DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+    - DEC-KUM-DESKTOP-EGUI-v1
+    - DEC-KUM-WEB-DOM-v1
+    - DEC-KUM-WINDOWS-QUIET-UIA-v1
+  - document_id: DOC-KUM-ROADMAP-v1
+    path: spec-modules/roadmap.md
+    revision: 16
+    digest: sha256:fbf2a6de3b7880892a9b0ada660ac3663549041dd9813f4bd42b60f7c26a1d6a
+    semantic_entity_refs:
+    - TOPIC-KUM-ROADMAP
+  document_record_required_fields:
+  - document_id
+  - path
+  - revision
+  - digest
+  - semantic_entity_refs
+  content_missing_blocks_readiness: true
+  sidecars_required: false
+  external_content_dependencies_allowed: false
+  external_references_role: optional_provenance_or_downstream_links_not_required_product_meaning
+  all_required_meaning_and_internal_references_resolve_inside_spec: true
+  document_set_commits_consistently_before_activation: true
+derived_indexes:
+  module_index:
+    path: INDEX.json
+    source: storage.documents_and_document_metadata
+  primitive_list:
+    path: primitive-list.json
+    source: canonical_primitive_declarations_in_spec_documents
+  primitive_feature_mix_matrix:
+    path: primitive-feature-mix-matrix.json
+    source: canonical_primitive_feature_relations_in_spec_documents
+  policy:
+    controller: authorized_model_maintainer
+    manual_edits_allowed: false
+    exact_source_revisions_and_digests_required: true
+    indexes_do_not_override_document_meaning: true
+    required_to_understand_or_resolve_product_truth: false
+    missing_or_stale_view_action: rebuild_from_spec_documents
+    missing_view_does_not_invalidate_complete_spec: true
+    sidecar_authority_forbidden: true
+document_content_contract:
+  status: core_content_contract_defined
+  metadata: document_schema_in_this_template
+  product_fields:
+  - name
+  - purpose
+  - operator_outcomes
+  - supported_users_and_actors
+  - supported_platforms
+  anchor_fields:
+  - anchor_id
+  - topic
+  - statement
+  - status
+  - source_refs
+  - supersedes
+  requirement_fields:
+  - requirement_id
+  - anchor_refs
+  - statement
+  - rationale
+  - acceptance_refs
+  - conditions
+  - exceptions
+  - feature_refs
+  - primitive_refs
+  decision_fields:
+  - decision_id
+  - anchor_refs
+  - decision
+  - rationale
+  - research_source_refs
+  - supersedes
+  product_surface_kinds:
+  - capabilities
+  - gui_and_ux
+  - headless_interfaces
+  - model_interfaces
+  - reusable_semantic_requirements
+  - accounts_and_subprofiles
+  - internal_manual
+  - flight_recorder
+  - internal_diagnostics
+  - routing_and_interoperability
+  - persistence_and_recovery
+  - packaging_and_updates
+  architecture_direction_fields:
+  - topology_refs
+  - module_boundary_requirements
+  - data_flow_requirements
+  - concurrency_requirements
+  - compatibility_requirements
+  - constraints
+  primitive_declarations_required: true
+  feature_declarations_required: true
+  primitive_feature_relation_fields:
+  - relation_id
+  - primitive_ref
+  - feature_ref
+  - relationship
+  - constraint_refs
+  gui_design_fields:
+  - design_id
+  - applicability
+  - visual_design_refs
+  - interaction_contract_refs
+  - theme_and_component_refs
+  - surface_profile_refs
+  - acceptance_refs
+  gui_design_absence_for_headless_is_explicit: true
+  content_declarations_have_one_authoritative_document_owner: true
+  no_inline_manifest_copy_of_product_content: true
+  stable_semantic_ids: recommended_for_topics_requirements_features_primitives_and_acceptance
+  activated_requirement_refs_require_stable_ids: true
+  id_allocation: The authorized maintainer preserves existing IDs and allocates stable missing IDs during a bounded
+    specification or work-packet update; identity allocation never binds enforcement or requires enrichment.
+  accepted_future_behavior_is_product_truth_not_current_execution_scope: true
+  acceptance_fields:
+  - acceptance_id
+  - requirement_refs
+  - method
+  - expected_result
+  feature_fields:
+  - feature_id
+  - title
+  - requirement_refs
+  - primitive_refs
+  primitive_fields:
+  - primitive_id
+  - title
+  - contract
+  primitive_term: specification_primitive_identity_not_the_code_composition_layer_named_primitive
+  requirement_optional_fields:
+  - supersedes
+  - status
+update_protocol:
+  controller: authorized_model_maintainer
+  pre_update_snapshot:
+    rule_id: SPEC-UPDATE-001
+    location_ref: repository_structure.specification_archive.path_pattern
+    scope: complete_existing_current_spec_bundle_including_manifest_and_all_files
+    operation: copy_preserving_bytes_and_relative_paths_never_move_current
+    timing: before_any_current_content_or_version_mutation
+    verify_complete_membership_and_file_hashes_against_expected_base: true
+    snapshot_is_immutable_and_not_current_product_authority: true
+    same_revision_and_digest_retry_reuses_verified_snapshot: true
+    conflicting_archive_destination_blocks_update: true
+    first_creation_without_prior_current_spec_requires_no_archive: true
+  versioning:
+    rule_id: SPEC-UPDATE-002
+    every_committed_content_or_verified_status_change_increments_bundle_version_and_revision: true
+    archive_uses_prior_identity_version_revision_and_digest: true
+    changed_documents_increment_revision_and_refresh_manifest_digests: true
+    unchanged_document_revisions_and_semantic_ids_are_preserved: true
+    schema_version_changes_only_when_format_contract_changes: true
+    no_change_operation_does_not_bump_or_archive: true
+  publication:
+    rule_id: SPEC-UPDATE-003
+    stage_validate_then_recheck_expected_base_before_current_replacement: true
+    failed_or_interrupted_update_keeps_or_restores_complete_prior_current: true
+    active_spec_remains_self_contained_without_archive_dependencies: true
+    archive_result_recorded_in_existing_change_history_and_update_receipt: false
+  entrypoints:
+  - wp_stub_creation
+  - direct_wp_activation
+  - wp_rebase
+  - verified_implementation_completion
+  accepted_delta_applied_before_contract_compilation: true
+  unchanged_direction_does_not_force_content_rewrite: true
+  reextract_resolved_context_after_enrichment: false
+  regenerate_affected_indexes_and_primitive_feature_matrix: true
+  validate_cross_document_ids_refs_and_hashes_before_commit: true
+  ad_hoc_additions_follow_same_planning_transaction: true
+  stale_base_revision_requires_conflict_resolution: true
+  interruption_requires_recovery_without_partial_ready_contract: true
+  contract_enforcement_binding: direct_bounded_wp_activation_without_enrichment
+  stub_output: non_executable_proposed_scope_and_detailing
+  spec_ids_flow_into: activation_selected_build_matrix_wp_requirements_and_assigned_mt_obligations
+  future_feature_presence_does_not_authorize_implementation: true
+  research_adoption_copies_complete_accepted_meaning_into_spec: true
+  roadmap_completion_sync: Record verified implemented scope inside spec, reconcile ongoing build-rule/matrix coverage,
+    and expose it to subsequent scoped activation hydration.
+change_history:
+- revision: 1
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: null
+  changed_anchor_ids: []
+- revision: 2
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v1-r1-94fc463c9470
+  changed_anchor_ids:
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-BOUNDARIES
+  - TOPIC-KUM-LAYOUT
+  - TOPIC-KUM-TABS
+  - TOPIC-KUM-POPOUTS
+  - TOPIC-KUM-CHROME
+  - TOPIC-KUM-CONTENT
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-PERFORMANCE
+  - TOPIC-KUM-TEXT
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-BACKGROUNDS
+  - TOPIC-KUM-LIFECYCLE
+  - TOPIC-KUM-SERVO
+  - TOPIC-KUM-RECOVERY
+  - TOPIC-KUM-INPUT
+  - TOPIC-KUM-MODEL
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 3
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-LAYOUT
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-TABS
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-ROADMAP
+- revision: 4
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4
+  changed_anchor_ids:
+  - TOPIC-KUM-BOUNDARIES
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 10
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 11
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+- revision: 15
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de
+  changed_anchor_ids:
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-CHROME
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-BACKGROUNDS
+  - TOPIC-KUM-INPUT
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 16
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v15-r15-bdd19d6ca500
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 17
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v16-r16-63f7c40ec480
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 18
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v17-r17-df4b3b0ac861
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+design_status:
+  accepted: Fifteen feature areas partially implemented at the proven headless boundary; all full requirement acceptances
+    remain open.
+  pending: Concrete GUI/native/web adapters, host storage, lifecycle/engines, ARM/WASM and performance acceptance.
+topic_format_contract:
+  rule_refs:
+  - BR-SPEC-FORMAT-001
+  - BR-SPEC-SELF-001
+  every_topic_header_is_machine_readable: true
+  header_encoding: fenced_yaml
+  header_required_fields:
+  - kind
+  - topic_id
+  - title
+  - content_blocks
+  header_kind: specification_topic
+  topic_id_unique_within_spec: true
+  content_block_descriptor_fields:
+  - block_id
+  - kind
+  - language
+  - requirement_refs
+  content_block_kinds:
+  - prose
+  - code_example
+  - structured_contract
+  block_association: Header descriptors map in order to the following fenced blocks until the next specification_topic
+    header; counts and languages must match.
+  prose_encoding: fenced_markdown
+  code_example_encoding: fenced_code_with_explicit_language
+  structured_contract_encoding: fenced_yaml_or_json
+  all_topic_content_is_fenced: true
+  longer_fences_required_when_content_contains_fence_delimiters: true
+  plain_heading_is_not_sufficient_topic_header: true
+  heading_text_inside_prose_is_not_an_undeclared_topic: true
+  fences_do_not_demote_spec_authority: true
+  code_examples_cannot_override_explicit_behavioral_requirements: true
+  content_blocks_stored_inline_not_as_sidecars: true
+  all_product_requirement_and_acceptance_refs_resolve_inside_spec: true
+  downstream_build_rule_matrix_wp_mt_refs_are_links_not_imported_truth: true
+  recognition: Only a fenced YAML header with kind=specification_topic outside a content block starts a topic; consume
+    the declared block count in order before recognizing another header.
+  structured_contract_record_schema_ref: document_schema.structured_record_collections
+roadmap_contract:
+  rule_ref: BR-SPEC-ROADMAP-001
+  path: spec-modules/roadmap.md
+  role: specification_document_not_sidecar
+  document_format_ref: topic_format_contract
+  all_spec_product_items_represented_by_existing_semantic_ids: true
+  definitions_owner: original_spec_topics_requirements_features_primitives_and_interactions
+  roadmap_owns_implementation_status_not_duplicate_definitions: true
+  row_required_fields:
+  - item_ref
+  - source_topic_refs
+  - overview_summary
+  - implementation_status
+  - implemented_requirement_refs
+  - remaining_requirement_refs
+  - implementation_source_revision
+  - verification_summary
+  - matrix_entry_refs
+  implementation_statuses:
+  - planned
+  - in_progress
+  - partially_implemented
+  - implemented
+  - retired
+  planned_is_accepted_product_truth_not_suggestion: true
+  status_controller: authorized_model_maintainer
+  status_inputs: verified_wp_mt_completion_and_accepted_spec_changes
+  implemented_requires_verified_acceptance_for_entire_declared_item_scope: true
+  partial_completion_must_not_mark_whole_feature_implemented: true
+  completion_attestation_and_scope_are_recorded_inline: true
+  outside_receipts_are_optional_audit_links_not_missing_product_meaning: true
+  changed_requirement_reassesses_only_affected_implementation_status_and_proof: true
+  implemented_items_require_build_rule_matrix_coverage: true
+  shared_matrix_entry_may_cover_multiple_implemented_items: true
+  ongoing_obligations_apply_only_where_relevant_to_later_activated_work: true
+  completion_updates_spec_status_and_rule_matrix_in_recoverable_transaction: true
+  interruption_exposes_pending_sync_without_falsely_claiming_promotion: true
+  future_wp_mt_hydration_reads_current_baseline_at_activation: true
+  existing_active_contracts_do_not_receive_silent_new_enforcement: true
+  identity_allocation_is_separate_from_enforcement_binding: true
+  presentation: concise_product_overview_with_implemented_section
+  overview_rule_refs:
+  - BR-SPEC-ROADMAP-002
+  - BR-SPEC-ROADMAP-003
+  - BR-SPEC-ROADMAP-004
+  overview_fields:
+  - item_ref
+  - overview_summary
+  - implementation_status
+  - source_topic_refs
+  source_topic_refs_resolve_to_defining_topics_inside_spec: true
+  overview_summary_role: navigation_summary_not_a_second_behavior_definition
+  implemented_section:
+    title: Implemented
+    membership: verified_implemented_items
+    placement: move_existing_entry_without_copying_or_changing_identity
+    partial_items_remain_in_unfinished_overview: true
+    accepted_expansion_reopens_same_entry_until_remaining_scope_is_verified: true
+  stable_anchor_policy:
+    identity_source: existing_item_ref
+    independent_of_section_heading_status_and_position: true
+    links_survive_moves_to_and_from_implemented_section: true
+    one_roadmap_entry_per_item: true
+  completion_metadata_presentation: inline_machine_metadata_kept_separate_from_concise_overview_text_in_the_same_document
+  retirement:
+    placement: retain_same_entry_and_anchor_in_a_Retired_section
+    required_inline_context:
+    - retirement_reason
+    - replacement_refs
+    existing_implementation_history_preserved: true
+    retired_requirement_ids_never_reused: true
+    obligation_effect: Stop selecting retired behavior for new scope only after accepted spec change and matrix
+      reassessment; preserve data, compatibility and cleanup obligations still applicable. Do not mutate existing
+      contracts.
+document_schema:
+  schema_version: handshake.spec-document.v1
+  rule_refs:
+  - BR-SPEC-FORMAT-001
+  - BR-SPEC-SELF-001
+  frontmatter_required:
+    schema_version: handshake.spec-document.v1
+    specification_id: nonempty_string
+    document_id: stable_nonempty_string
+    revision: positive_integer
+    title: nonempty_string
+  frontmatter_optional:
+    updated_at: iso_date
+    supersedes: stable_id_array
+    provenance: optional_reference_array
+  body: one_or_more_ordered_topic_headers_and_their_inline_fenced_blocks
+  header_field_types:
+    kind: literal_specification_topic
+    topic_id: stable_nonempty_string
+    title: nonempty_string
+    content_blocks: nonempty_descriptor_array
+  descriptor_field_types:
+    block_id: nonempty_string_unique_in_topic
+    kind: content_block_kinds
+    language: nonempty_fence_language
+    requirement_refs: stable_requirement_id_array
+  structured_record_collections:
+    anchors: anchor_fields
+    requirements: requirement_fields
+    acceptance: acceptance_fields
+    features: feature_fields
+    primitives: primitive_fields
+    decisions: decision_fields
+    primitive_feature_relations: primitive_feature_relation_fields
+    gui_design: gui_design_fields
+    roadmap: roadmap_contract.row_required_fields
+    product: product_fields
+    architecture: architecture_direction_fields
+    project_field_definitions: document_schema.project_field_definition_fields
+  record_field_types:
+    identity_fields: nonempty_strings_preserved_when_present
+    reference_fields: arrays_of_stable_ids_except_singular_ref_fields
+    statement_rationale_decision_title_method_expected_result_contract: nonempty_strings
+    conditions_exceptions: arrays_of_complete_inline_clauses
+  empty_scope_arrays_allowed: true
+  requirement_identity: May be absent before selection; Handshake allocates it before any stable reference or activation
+    binding. All referenced declarations have IDs.
+  acceptance_granularity: One independently checkable result per acceptance record; each activation-bound requirement
+    references applicable acceptance.
+  declaration_ownership: Each stable semantic ID is declared once in the spec; subsequent occurrences are references,
+    including roadmap entries.
+  topic_ownership: A topic may own multiple related requirements; independently selected obligations have separate
+    requirement IDs. Files need not correspond one-to-one with features.
+  reference_resolution: Resolve product declarations and acceptance inside the spec; downstream/provenance references
+    never supply missing meaning.
+  versioning: Preserve IDs for the same meaning or moves; increment changed document revisions. Retain superseded
+    declarations and explicit supersedes links for replacement or split/merge, without reusing retired IDs.
+  migration: Convert in a staged document set, preserve meaning and map legacy anchors to stable IDs inline; unresolved
+    mappings block affected activation. Commit consistent documents and rebuild navigation from them.
+  unknown_fields: Reject unknown core fields; project-specific fields require an inline project field definition
+    in the spec, never an external schema sidecar.
+  prose_and_example_conflicts: Do not silently select a winner or derive new obligations from an example. Resolve
+    through a bounded specification update and applicable acceptance; parsing alone cannot prove semantic agreement.
+  collection_schema_resolution: Unqualified names resolve in document_content_contract; dotted names resolve from
+    this template root. Collection rows describe records, not additional declaration owners.
+  anchor_ref_targets:
+  - topic_id
+  - anchor_id
+  topic_headers_declare_valid_anchor_targets: true
+  project_field_definition_fields:
+  - field_name
+  - scope
+  - value_type
+  - meaning
+  roadmap_record_policy:
+    required_fields_ref: roadmap_contract.row_required_fields
+    retired_additional_fields_ref: roadmap_contract.retirement.required_inline_context
+    source_topic_refs_target: topic_id
+    item_ref_target: existing_spec_semantic_declaration
+    definition_copy_forbidden: true
+    planned_unverified_fields: implementation_source_revision may be null; implemented_requirement_refs and matrix_entry_refs
+      may be empty; verification_summary records not yet verified.
+    retirement_reason: nonempty_inline_string_when_retired
+    replacement_refs: existing_semantic_id_array_may_be_empty
+    retired_does_not_erase_prior_verified_scope: true
+format_example:
+  purpose: Illustrative encoding fixture only; do not instantiate its IDs or obligations in new projects.
+  frontmatter:
+    schema_version: handshake.spec-document.v1
+    specification_id: SPEC-EXAMPLE
+    document_id: DOC-IMAGE-EXAMPLE
+    revision: 1
+    title: Shared image actions
+  header:
+    kind: specification_topic
+    topic_id: TOPIC-IMAGE-EXAMPLE
+    title: Open the shared image
+    content_blocks:
+    - block_id: context
+      kind: prose
+      language: markdown
+      requirement_refs:
+      - REQ-IMAGE-OPEN-EXAMPLE
+    - block_id: contract
+      kind: structured_contract
+      language: yaml
+      requirement_refs:
+      - REQ-IMAGE-OPEN-EXAMPLE
+    - block_id: example
+      kind: code_example
+      language: json
+      requirement_refs:
+      - REQ-IMAGE-OPEN-EXAMPLE
+  blocks:
+  - language: markdown
+    content: Recent images and the library refer to the same image resource. Their displayed actions may differ.
+  - language: yaml
+    content:
+      requirements:
+      - requirement_id: REQ-IMAGE-OPEN-EXAMPLE
+        anchor_refs:
+        - TOPIC-IMAGE-EXAMPLE
+        statement: Opening an image from either surface resolves the same canonical image resource.
+        rationale: Different presentations must not create duplicate image ownership.
+        acceptance_refs:
+        - ACC-IMAGE-OPEN-EXAMPLE
+        conditions:
+        - The caller is allowed to open the image.
+        exceptions: []
+        feature_refs:
+        - FEAT-IMAGE-EXAMPLE
+        primitive_refs:
+        - PRIM-OPEN-EXAMPLE
+      acceptance:
+      - acceptance_id: ACC-IMAGE-OPEN-EXAMPLE
+        requirement_refs:
+        - REQ-IMAGE-OPEN-EXAMPLE
+        method: Open the same image from both surfaces and inspect canonical resource identity.
+        expected_result: Both operations resolve the same image resource and state owner.
+      features:
+      - feature_id: FEAT-IMAGE-EXAMPLE
+        title: Shared image surfaces
+        requirement_refs:
+        - REQ-IMAGE-OPEN-EXAMPLE
+        primitive_refs:
+        - PRIM-OPEN-EXAMPLE
+      primitives:
+      - primitive_id: PRIM-OPEN-EXAMPLE
+        title: open_original
+        contract: Resolve the authorized canonical image resource for opening.
+  - language: json
+    content: '{"operation": "open_original", "image_ref": "IMAGE-EXAMPLE"}'

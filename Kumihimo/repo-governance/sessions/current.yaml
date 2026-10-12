@@ -61,8 +61,8 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: Only browser-proof.py released for original002/003/004 browser variants; other13 files held; no
-      Cargo/Git
+    assignment: All original six browser cases passed; all source held, independent evaluation and origin closure
+      pending
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -88,8 +88,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Parallel minimum original desktop/browser acceptance variants; serial affected proof and per-packet
-  publish; Servo hard predecessor WP012 DONE remains required
+next_action: Publish and close WP013 after canonical origin reread; finish original desktop cases in parallel; Servo
+  starts only after WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

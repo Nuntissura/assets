@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 8
+generation: 9
 phase: active
-owner: ROLE-KUM-CODER-04
+owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
 - repo-governance/specification/
@@ -78,6 +78,23 @@ proof:
     Windows command-line limit. Owning script admitted for UTF8LF .cjs under existing owned temporary profile, same
     stdin config/quiet cleanup plus final cancelled-release and restored-input ACK observations. No browser/runtime
     result for this attempt.'
+- kind: independent_original_browser_runtime_and_outcome
+  source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
+  evaluation_sha256: 7117ce7b130f95ba9d8365b4aec6ecf38165b0f03ceb6bf6354171fbb7c918ee
+  browser_evidence_sha256: 7d8e2f96a72b3efa2687855674cfc3f280693c13dcf59af23f8a64dd4b17e786
+  observed: 'WP013 observed Rust/WASM and plain-DOM browser adapter at e6b48fd83a3e4a42d973247aad71d957ec66b82a:
+    optional kumihimo-web0.1 borrows one host content Controller; the Portal-style pilot keeps task meaning separately
+    owned. Six native consumers, affected default check and WASM build passed on unchanged Rust inputs at71b9acc630da.
+    The actual Chrome154 headless batch passed all six original cases and eight inspected images: variable nested
+    counts, mouse/keyboard arrangement, generation-bound previews and Escape/capture-loss/blur cancellation with
+    unchanged layout through release, browser-emulated DPR1.5 content mapping and restored DPR1, host edits/domain
+    commands, visible unavailable-provider recovery, independently read layout/task storage and fresh-incarnation
+    restore, persisted missing-provider-key fault/recovery, rejected malformed/newer/oversized candidates and injected
+    storage refusal, strict decimal model envelopes/replay and real restricted-popup denial retaining source ownership.
+    The private browser was closed. The same-origin local iframe is a denial fixture, not untrusted content isolation;
+    captured DOM roles are not a full accessibility-tree audit. Native popup migration is unsupported. Physical
+    input/display changes, other browsers/platforms, actual Portal/Notes/Studio/Servo engines, performance improvements
+    and physical resource release remain unproven. Full future requirement acceptance remains open. Exact canonical
+    origin containment pending before DONE.'
 blockers: []
-next_action: Publish frozen owning-script launcher and original terminal/ACK observations; reuse compiled WASM for
-  same actual browser batch, then independent evaluation/closure
+next_action: Publish scoped outcome/evaluation; independently reread exact canonical origin blobs, then DONE

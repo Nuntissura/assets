@@ -10,7 +10,7 @@ updated_at: '2026-10-12'
 
 A reusable Rust window/frame asset for desktop and web apps: grids, tabs, grouped tabs, docking, popouts and configurable surrounding controls. Hosts provide the actual editors, browsers, media and graphics.
 
-The Rust ownership and layout core passed its Windows x64 all-targets check, 22 focused tests and console example. It manages nested frames, tabs/groups, split/grid geometry, pinned tool docking, previews, in-app floats, host resource references, admission and bounded command replay. Working GUI adapters remain planned. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
+The Rust ownership and layout core passed its Windows x64 all-targets check, 22 focused tests and console example. It manages nested frames, tabs/groups, split/grid geometry, pinned tool docking, previews, in-app floats, host resource references, admission and bounded command replay. The optional Rust/WASM browser adapter has passed its six scoped cases with actual rendered output. The desktop adapter is completing its original acceptance cases. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
 
 </topic>
 

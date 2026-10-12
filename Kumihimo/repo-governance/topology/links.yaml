@@ -120,3 +120,31 @@ edges:
   from: KUM-CONTROLS-EXAMPLE
   to: KUM-CONTENT
   relation: consumes
+- id: KUM-LINK-WP013-WEB
+  from: WP-KUM-013-web-adapter-portal-pilot-v1
+  to: KUM-WEB
+  relation: implements
+- id: KUM-LINK-WEB-CONTENT
+  from: KUM-WEB
+  to: KUM-CONTENT
+  relation: borrows
+- id: KUM-LINK-WEB-CONTRACTS
+  from: KUM-WEB-CONTRACTS
+  to: KUM-WEB
+  relation: validates
+- id: KUM-LINK-WEB-PILOT
+  from: KUM-WEB-PILOT
+  to: KUM-WEB
+  relation: consumes
+- id: KUM-LINK-WEB-PROOF
+  from: KUM-WEB-PROOF
+  to: KUM-WEB-PILOT
+  relation: validates
+- id: KUM-LINK-EVAL013-WEB
+  from: EVAL-KUM-013-v1
+  to: KUM-WEB-PROOF
+  relation: evaluates
+- id: KUM-LINK-MANUAL-WEB
+  from: KUM-PRODUCT-MANUAL
+  to: KUM-WEB
+  relation: explains_operation

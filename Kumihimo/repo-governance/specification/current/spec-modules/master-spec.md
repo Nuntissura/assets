@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 18
+revision: 19
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -4039,7 +4039,7 @@ decisions:
   - TOPIC-KUM-RECOVERY
   - TOPIC-KUM-INPUT
   - TOPIC-KUM-BOUNDARIES
-  decision: Selected complete bounded web pilot meaning; runtime proof pending, accepted future scope remains open.
+  decision: 'Selected complete bounded web pilot meaning; runtime proof pending, accepted future scope remains open.
     [WP013-R001] Preserve complete original Portal pilot scope and all accepted variable-count recursive workspace
     requirements. Implement a reusable optional browser adapter and genuine Rust/WASM Portal-style sample with movable
     expandable cards, nested detail frames, tabs and split/grid/docking. Host owns task IDs, kanban columns/status/domain
@@ -4104,7 +4104,20 @@ decisions:
     records. Store complete selected meaning in current specification before deriving implementation, independent
     dependency readiness and frozen matching cases before coding. Update bounded manual/topology/matrix/state/taskboard
     from observed evidence only; commit/push this completed packet then independent canonical origin read before
-    DONE. No enrichment phase, heavy audit chain or research sidecar as product authority.
+    DONE. No enrichment phase, heavy audit chain or research sidecar as product authority. Observed scoped outcome:
+    WP013 observed Rust/WASM and plain-DOM browser adapter at e6b48fd83a3e4a42d973247aad71d957ec66b82a: optional
+    kumihimo-web0.1 borrows one host content Controller; the Portal-style pilot keeps task meaning separately owned.
+    Six native consumers, affected default check and WASM build passed on unchanged Rust inputs at71b9acc630da.
+    The actual Chrome154 headless batch passed all six original cases and eight inspected images: variable nested
+    counts, mouse/keyboard arrangement, generation-bound previews and Escape/capture-loss/blur cancellation with
+    unchanged layout through release, browser-emulated DPR1.5 content mapping and restored DPR1, host edits/domain
+    commands, visible unavailable-provider recovery, independently read layout/task storage and fresh-incarnation
+    restore, persisted missing-provider-key fault/recovery, rejected malformed/newer/oversized candidates and injected
+    storage refusal, strict decimal model envelopes/replay and real restricted-popup denial retaining source ownership.
+    The private browser was closed. The same-origin local iframe is a denial fixture, not untrusted content isolation;
+    captured DOM roles are not a full accessibility-tree audit. Native popup migration is unsupported. Physical
+    input/display changes, other browsers/platforms, actual Portal/Notes/Studio/Servo engines, performance improvements
+    and physical resource release remain unproven. Full future requirement acceptance remains open.'
   rationale: Same Rust owner and lightweight DOM projection keep arrangement reusable while host task meaning remains
     independent; real browser proof prevents headless-only compatibility claims.
   research_source_refs:

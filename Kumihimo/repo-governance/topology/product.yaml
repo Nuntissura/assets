@@ -1,9 +1,9 @@
 kind: product_topology
-implementation_status: ownership_layout_recovery_content_navigation_media_contract_packets_proven
+implementation_status: core_content_and_scoped_web_adapter_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
-  status: core_implemented_adapters_planned
+  status: core_content_web_implemented_desktop_active
 - id: KUM-CORE
   manifest_ref: product/kumihimo-core/Cargo.toml
   entrypoint: product/kumihimo-core/src/lib.rs
@@ -98,3 +98,24 @@ nodes:
   status: verified_headless_contract_scope
   responsibility: Quiet typed navigation and frame-background media recording-provider example, no GUI or engine
   verification_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+- id: KUM-WEB
+  manifest_ref: product/kumihimo-web/Cargo.toml
+  entrypoint: product/kumihimo-web/src/lib.rs
+  status: verified_scoped_web_adapter
+  responsibility: Borrowed canonical Rust controller, strict JSON/WASM routes and replaceable DOM projection
+  modules:
+  - product/kumihimo-web/src/host.rs
+  - product/kumihimo-web/src/projection.rs
+  - product/kumihimo-web/src/wire.rs
+  - product/kumihimo-web/src/wasm.rs
+  verification_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
+- id: KUM-WEB-CONTRACTS
+  path: product/kumihimo-web/tests/web_contracts.rs
+  responsibility: Six focused native bridge consumers
+- id: KUM-WEB-PILOT
+  path: product/kumihimo-web/web/pilot.mjs
+  responsibility: Browser workspace and independently owned task editor
+  adapter: product/kumihimo-web/web/adapter.mjs
+- id: KUM-WEB-PROOF
+  path: product/kumihimo-web/tools/browser-proof.py
+  responsibility: Quiet actual six-case browser, canonical storage/route and rendered image proof

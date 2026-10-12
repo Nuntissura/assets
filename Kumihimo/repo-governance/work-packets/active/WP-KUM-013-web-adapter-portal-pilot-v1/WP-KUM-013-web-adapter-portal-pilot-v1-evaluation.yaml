@@ -678,3 +678,161 @@ browser_runtime_evaluation_8c5be443046a:
   next_action: Lead/coder repair only original browser proof variants; lead runs same affected batch with reused
     unchanged WASM. Evaluator inspects fresh exact artifacts and records verdict before lead closure. No Cargo,
     launch, product or Git mutation by evaluator.
+
+browser_runtime_evaluation_e6b48fd83a3e:
+  evaluation_id: EVAL-KUM-013-BROWSER-e6b48fd83a3e-v1
+  updated_at: '2026-10-12T06:43:35.168286+00:00'
+  phase: runtime_evaluation_complete_pending_lead_publication
+  effective_verdict: PASS_SCOPED_RUNTIME
+  effective_scope: Original frozen six cases, including repaired original002/003/004 variants, Windows x64 Chrome154
+    headless local Rust/WASM pilot. This supersedes the historical8c5 incomplete runtime verdict only; all original
+    definitions, preparation and failure history remain unchanged.
+  candidate_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
+  prior_report_sha256: 565a9a1993b83059a985fe98e9aa10476bd9d296a111c81df71c496d5dca2b56
+  risk_tier: HIGH
+  report_frozen_for_publication: true
+  binding:
+    evidence_ref: .local/web/e6b48fd83a3e/proof/browser-batch/browser-evidence.json
+    evidence_sha256: 7d8e2f96a72b3efa2687855674cfc3f280693c13dcf59af23f8a64dd4b17e786
+    build_manifest_ref: .local/web/e6b48fd83a3e/build-manifest.json
+    build_manifest_sha256: 722c8ab085e7be2b94e8910fb12d40f58650bb3d2cbd3446acca658daaf43d01
+    source_files: 61
+    source_binding: All61 manifest raw source hashes equal published candidate Git bytes and current files at inspection;
+      embedded evidence build equals manifest. Exact proof source SHA a75a48a97a9a528cc875dec577b76149da6c6a48bcc6411c34144b347bf0e53f
+      independently checked.
+    browser: 154.0.8037.98
+    browser_executable_sha256: 6849d2982038de9f9489a7b3858f3b785b7fec06a842c93c517281d21995c8ca
+    node: v24.19.0
+    playwright: 1.62.1
+    generated:
+    - path: .local\web\711efe012ce8\pkg\kumihimo_web.js
+      sha256: 27c0ec45d6738953d2696fdbc4da41ba4e5a7e2f17bb1fc0419ae789125f98c5
+      bytes: 8706
+    - path: .local\web\711efe012ce8\pkg\kumihimo_web_bg.wasm
+      sha256: 85a3b4c54b32e2c6939d26641541e6b057a1550549fe38856d276943bb785b88
+      bytes: 6908624
+    build_executed: false
+    reuse: Rust web/Core/content/layout-json source/tests/manifests unchanged71b9->e6; independently selected23
+      WASM lock records unchanged. Reuse previously inspected default2.49s/six consumer compile6.21s run0.39s/WASM3.51s.
+      Raw generated JS/WASM sizes/hashes independently match reused711 artifacts; no new Cargo compile claimed.
+  cases:
+  - case_id: EVAL-KUM-013-001
+    runtime_status: PASS_SCOPED
+    observation: Actual variable4/1/2 normal/narrow nesting; independent12 DOM frames each width have zero canonical
+      rectangle delta, hidden flags/ancestor clips agree. Opened images show readable content and wrapped narrow
+      controls; narrow tab labels truncate while content remains reachable.
+  - case_id: EVAL-KUM-013-002
+    runtime_status: PASS_SCOPED
+    observation: Original arrangement actions/attributed parent-return receipts and stale preview retained. Actual
+      accepted resize previews8/9/10 cancel through trusted Escape/lostpointercapture/Windowblur; unique same-token
+      Rust cancel responses84/95/106. Independent full layouts, ownership and host tasks equal before/after/after
+      mouse-up; no cancelled-token commit/receipt. Blur native raw tokennull preserved, freshphase route105/event190/nativeindex5
+      -> nativeWindow route106/event192 correlates exact token10 cancellation/sourceblur, no fabricated event/token.
+      Actual Chromium CDP DPR1->1.5->1 with width1280->1281; trusted view13/resource4/provider2 click163,226 routes
+      once/ok with epoch1/scale1.5 and providerlocal117,225.5. Independent CSS-coordinate subtraction matches; no
+      physical scale claim.
+  - case_id: EVAL-KUM-013-003
+    runtime_status: PASS_SCOPED
+    observation: Actual isolated task edit/domain, wrong recipient/stale/veto retained. Opened recovery image now
+      visibly reads Provider unavailable/Select this frame/use Restore provider. Canonical unavailable selected
+      leaf retains IDs; actual provider UI restoration returns available mounts/clears placeholders without changing
+      membership/task meaning.
+  - case_id: EVAL-KUM-013-004
+    runtime_status: PASS_SCOPED
+    observation: Independent actualstored bytes/version1/schema1 and before/fresh8 projection arrays equal including
+      nested plans/weights/provider refs. Missing-provider probe changes ONLY storedproviderkey to unresolvedkey;
+      independently normalized rawcodec/wrapper equality confirms no other fault. Actual newWASM reports Missing
+      provider2, opened placeholder image readable; membership/plans/task meaning preserved. Real recovery UI and
+      trusted click produce unique actual Input responseok, exact view13/resource4/provider2/epoch2/local117,225.5.
+      Original storedpair restored exactly and another freshreload preserves valid arrangement/host. Original malformed/oversize/newer
+      candidate rejection and injectedQuotaExceeded savehandling retained.
+  - case_id: EVAL-KUM-013-005
+    runtime_status: PASS_SCOPED
+    observation: Actual decimal operation9007199254740993, accepted27/later34/oldreceipt replay27 vs current42;
+      actor/intent conflicts reject, stale generation advances rejectedwatermark9007199254741009 without arrangement
+      mutation, exact rejection retry replays. Unknown/oversize/staleincarnation reject; nonfinite strictroute boundary
+      reuses unchanged native consumer proof. Original envelopes retained; no serverauth/exactly-once claim.
+  - case_id: EVAL-KUM-013-006
+    runtime_status: PASS_SCOPED
+    observation: Actual trusted restrictediframe click under allow-scripts/allow-same-origin/no allow-popups gets
+      browsernull; independent freshsourceownership retained, no extra page. Opened image explicitly states unsupported
+      native-style popup migration. DOMroles/names/selection/expanded/value evidence retained; errors0/ownedcleanuptrue/headless/privateprofile/loopback.
+      No security-isolation or universal accessibility claim.
+  DIFF_ATTACK_SURFACES:
+  - Continuation of prior independent HIGH review; repair touches only proof phase attribution/actual cancellation/engine-DPR/storage-fault/recovery
+    evidence and Windows launcher transport, with unchanged Rust/product contracts.
+  INDEPENDENT_CHECKS_RUN:
+  - All8 exactPNG opened and rawhash reconciled; normal/narrow frame rectangles independently zero delta.
+  - Actual three cancellation records independently reconciled layouts/membership/host through pointer-up, unique
+    cancellation/no commit and rawnull blur phase attribution.
+  - 'Actual storednormal/missingcodec normalized: only providerkey differs; all8 saved/fresh projection collections
+    equal, recovered/valid-restored layoutplans/taskmeaning equal.'
+  - Exact trusted DPRinput rawCSS/global subtraction matches actualproviderlocal/recipient/ok; all61 source hashes/generatedbytes/selected23lockclosure
+    independently verified; modelreceipt/current/rejectedwatermark reconciled.
+  COUNTERFACTUAL_CHECKS:
+  - If browser-proof.cancelledPointerPreview reused historical nativeblur or copied expectedtoken into native observation,
+    actual4133 null-order failure could falsely pass; exact e6 source requires fresh pretriggerphase, realsame-tokencancel/sourceblur
+    and passive sequence correlation while retaining rawnull.
+  - If PilotHost::load replaced Controller before validating missing/invalid candidate, original schema/references
+    or validstate could be lost; unchanged candidate-before-replacement code plus actualstored/fresh/recovery/negative
+    observations retain those boundaries.
+  BOUNDARY_PROBES:
+  - Real trustedbrowser cancellation -> unique Rustcancel route -> independent unchanged canonical/host through
+    release.
+  - Actual browserdevice-metrics/DPR and CSS click -> Rustscale/epoch/input -> exactproviderlocal acceptedresponse.
+  - Actual localStorage provider-key fault bytes -> freshWASM Missing -> visibleplaceholder -> actualUIprovider/input
+    recovery.
+  NEGATIVE_PATH_CHECKS:
+  - Retained unknownfield/oversize/staleidentity/generation/actor-intent conflicts and invalidload rejection.
+  - Realbrowser popup denial remains null under selectedsandbox.
+  - QuotaExceeded refusal is explicitly injected Storage.setItem exception; providerkey fault explicitly injected
+    unresolvedreference. Neither is represented as naturally occurring quota failure or provider disappearance.
+  INDEPENDENT_FINDINGS:
+    unresolved_runtime_findings: []
+    resolved_historical_ids:
+    - EVAL-KUM-013-FROZEN-002-CANCEL-SCALE
+    - EVAL-KUM-013-FROZEN-003-RECOVERY-PIXELS
+    - EVAL-KUM-013-FROZEN-004-MISSING-PROVIDER
+    failure_resolution: 4133 phase gate incorrectly required nativeWindow token10 even after actualsuccessful cancellation
+      cleared it. Exact published diff inspected; e6 observes actualnull with freshphase attribution and preserves
+      all accepted-preview/full-state/no-commit assertions. Prior launcher WinError206 was prebrowser command transport,
+      resolved through bounded script-file launch; no product proof inferred from launch repair.
+  images:
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case001-normal.png
+    sha256: 58670f06700a316d56261418270a85c421d954a77b604687c2274685f0eacecb
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case001-narrow.png
+    sha256: 0423a584e111bbd3d63008d3a63967a648b29aa9fbd803ef12a6768b8a9d49d4
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case002-browser-scale.png
+    sha256: 5277d30ad76f9ffef19ab73a8e370b860a698f82ecea7e170472745a5f64f369
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case002-interactions.png
+    sha256: 5277d30ad76f9ffef19ab73a8e370b860a698f82ecea7e170472745a5f64f369
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case003-provider-recovery.png
+    sha256: 7ecbfabe054e6d8fc300428ee6da9c40a2787fc58ce99e72b90fa5d53c2abd79
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case004-missing-provider-reload.png
+    sha256: c0a49b7fa6c1a2cdbb0d2d8c89eea9d014f496bc210e7396b8e98a19f6178af5
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case004-fresh-reload.png
+    sha256: 0afb6e761bec310d39390f74cd932ee3706a7597e8d2fe304fd2a8eb0a750fbd
+    opened: true
+  - ref: .local/web/e6b48fd83a3e/proof/browser-batch/case006-restricted-popup.png
+    sha256: 8ea772987b5eb682f5a85df3a0b137fded8fd5e0231fff5e20b6d224fcde82f4
+    opened: true
+  RESIDUAL_UNCERTAINTY:
+  - Scale uses actual Chromium emulation, not physicalmonitor/touch/pen. Both scale/interactions images have identicalbytes
+    at capturedCSSviewport; they prove renderedreadability, while actualDPR/input proof comes from independent numeric/route
+    observations.
+  - Same-origin/script sandbox is a trusted local denialfixture, not an adversarial securityisolation boundary;
+    popupmigration remains unsupported.
+  - Actual localStorage publication is synchronous selectedstore proof, not atomicfilesystem/crossprocess/exactlyonce
+    persistence. Faultproviderkey and storageexception are explicitnegative probes.
+  - Otherbrowsers/platforms/Servo/heavyengines/realPortal sibling integration/full accessibilitytree or screenreader/performance
+    remain unproven.
+  - Lead manual/topology/matrix/state/publication/canonicalorigin gates remain lead-owned; runtimePASS does not
+    itself mark packetDONE.
+  next_action: Report HOLD after this exacthash; lead publishes evaluation and completes original closure bookkeeping/origin
+    proof. No product/source/Cargo/browser/Git mutation by evaluator.

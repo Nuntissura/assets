@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 16
+revision: 17
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -35,7 +35,7 @@ WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684
 
 WP012 selects a separately enabled egui0.33.3 desktop adapter and thin native winit/Painter host. Canonical nested geometry, host content, actual raster/correlated native readiness, independent OS accessibility and bounded recovery receive focused proof. No adapter implementation or runtime support is yet proven; all full requirements remain open.
 
-WP013 selects an optional Rust/WASM JSON bridge and plain DOM Portal-style pilot, preserving host task meaning while arranging nested cards. Actual browser interaction, storage reload, model routes and restricted-popup failure receive six focused cases. Preparation is not implementation proof; full web/popout/engine/performance requirements remain open.
+WP013 observed Rust/WASM and plain-DOM browser adapter at e6b48fd83a3e4a42d973247aad71d957ec66b82a: optional kumihimo-web0.1 borrows one host content Controller; the Portal-style pilot keeps task meaning separately owned. Six native consumers, affected default check and WASM build passed on unchanged Rust inputs at71b9acc630da. The actual Chrome154 headless batch passed all six original cases and eight inspected images: variable nested counts, mouse/keyboard arrangement, generation-bound previews and Escape/capture-loss/blur cancellation with unchanged layout through release, browser-emulated DPR1.5 content mapping and restored DPR1, host edits/domain commands, visible unavailable-provider recovery, independently read layout/task storage and fresh-incarnation restore, persisted missing-provider-key fault/recovery, rejected malformed/newer/oversized candidates and injected storage refusal, strict decimal model envelopes/replay and real restricted-popup denial retaining source ownership. The private browser was closed. The same-origin local iframe is a denial fixture, not untrusted content isolation; captured DOM roles are not a full accessibility-tree audit. Native popup migration is unsupported. Physical input/display changes, other browsers/platforms, actual Portal/Notes/Studio/Servo engines, performance improvements and physical resource release remain unproven. Full future requirement acceptance remains open.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 
@@ -67,12 +67,15 @@ roadmap:
   - REQ-KUM-WORKSPACE-004
   - REQ-KUM-WORKSPACE-005
   - REQ-KUM-WORKSPACE-006
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: nested ownership, packing/docking, in-app floats, tabs and semantic saved-layout
-    recovery proven; visible controls/native windows/lifecycle/adapters remain open.'
+    recovery proven; visible controls/native windows/lifecycle/adapters remain open. Scoped web adapter: Six original
+    browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
+    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-BOUNDARIES
   source_topic_refs:
   - TOPIC-KUM-BOUNDARIES
@@ -87,12 +90,16 @@ roadmap:
   - REQ-KUM-BOUNDARIES-005
   - REQ-KUM-BOUNDARIES-006
   - REQ-KUM-BOUNDARIES-007
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: default std-only core and independent optional JSON codec with host-owned engines/IO
-    proven at their headless boundary; concrete adapters/provider integration remain open.'
+    proven at their headless boundary; concrete adapters/provider integration remain open. Scoped web adapter: Six
+    original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input
+    cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains
+    open.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-LAYOUT
   source_topic_refs:
   - TOPIC-KUM-LAYOUT
@@ -107,12 +114,15 @@ roadmap:
   - REQ-KUM-LAYOUT-005
   - REQ-KUM-LAYOUT-006
   - REQ-KUM-LAYOUT-007
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: split/grid geometry, docking, floats, equalize/swap and reversible maximize/restore
-    proven; actual GUI interaction/adapter constraints remain open.'
+    proven; actual GUI interaction/adapter constraints remain open. Scoped web adapter: Six original browser cases
+    and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
+    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-TABS
   source_topic_refs:
   - TOPIC-KUM-TABS
@@ -126,12 +136,16 @@ roadmap:
   - REQ-KUM-TABS-004
   - REQ-KUM-TABS-005
   - REQ-KUM-TABS-006
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: groups/colors/collapse/pins, canonical membership/list paging, close-veto/retention/reopen
-    and atomic group movement proven; rendered overflow controls and input accessibility remain open.'
+    and atomic group movement proven; rendered overflow controls and input accessibility remain open. Scoped web
+    adapter: Six original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership,
+    input cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement acceptance
+    remains open.'
   matrix_entry_refs:
   - BM-KUM-CORE-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-POPOUTS
   source_topic_refs:
   - TOPIC-KUM-POPOUTS
@@ -190,14 +204,17 @@ roadmap:
   - REQ-KUM-CONTENT-005
   - REQ-KUM-CONTENT-006
   - REQ-KUM-CONTENT-007
-  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: typed capability negotiation, private Core routing/scoped ACKs, placeholders,
     pinned tools and opaque host asset/undo contracts proven; actual content engines/editors/asset store remain
     host integration. WP011 adds version2 layered settings/capability provenance and current content0.2/protocol2
-    typed targets; all24 public cases proved, actual GUI/host effects remain open.'
+    typed targets; all24 public cases proved, actual GUI/host effects remain open. Scoped web adapter: Six original
+    browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
+    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open.'
   matrix_entry_refs:
   - BM-KUM-CONTENT-WINX64-001
   - BM-KUM-NAVIGATION-MEDIA-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-RENDER
   source_topic_refs:
   - TOPIC-KUM-RENDER
@@ -327,11 +344,15 @@ roadmap:
   - REQ-KUM-RECOVERY-003
   - REQ-KUM-RECOVERY-004
   - REQ-KUM-RECOVERY-005
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: bounded schema1 wire, semantic live/fresh restore, identity/admission/placeholder
-    safety and save stamps proven; host atomic storage/interruption/native monitor/content recovery remain open.'
+    safety and save stamps proven; host atomic storage/interruption/native monitor/content recovery remain open.
+    Scoped web adapter: Six original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task
+    ownership, input cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement
+    acceptance remains open.'
   matrix_entry_refs:
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-INPUT
   source_topic_refs:
   - TOPIC-KUM-INPUT
@@ -343,12 +364,15 @@ roadmap:
   - REQ-KUM-INPUT-002
   - REQ-KUM-INPUT-003
   - REQ-KUM-INPUT-004
-  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: typed mouse/touch/pen gesture identity/settlement, keyboard navigation, accessibility
     range metadata and denied background input routes proved headlessly; native/browser input/capture/focus/assistive
-    technology remains open.'
+    technology remains open. Scoped web adapter: Six original browser cases and eight inspected images PASS at e6b48fd;
+    canonical arrangement/task ownership, input cancellation/scale, save/reload/provider recovery and restricted
+    popup denial. Full requirement acceptance remains open.'
   matrix_entry_refs:
   - BM-KUM-NAVIGATION-MEDIA-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-MODEL
   source_topic_refs:
   - TOPIC-KUM-MODEL
@@ -361,24 +385,31 @@ roadmap:
   - REQ-KUM-MODEL-003
   - REQ-KUM-MODEL-004
   - REQ-KUM-MODEL-005
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
   verification_summary: 'Partial: scoped attributable commands/replay, pure preview/restore, canonical paging/diagnostics/manual
-    proven; complete model and adapter operation surfaces remain open.'
+    proven; complete model and adapter operation surfaces remain open. Scoped web adapter: Six original browser
+    cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
+    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-WEB-WASM-001
 - item_ref: FEAT-KUM-PLATFORMS
   source_topic_refs:
   - TOPIC-KUM-PLATFORMS
   overview_summary: Desktop, web and ARM development
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-PLATFORMS-001
   - REQ-KUM-PLATFORMS-002
   - REQ-KUM-PLATFORMS-003
   - REQ-KUM-PLATFORMS-004
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: e6b48fd83a3e4a42d973247aad71d957ec66b82a
+  verification_summary: 'No Rust implementation, GUI adapter or runtime acceptance yet. Scoped web adapter: Six
+    original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input
+    cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains
+    open.'
+  matrix_entry_refs:
+  - BM-KUM-WEB-WASM-001
 ```
