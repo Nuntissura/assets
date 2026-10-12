@@ -1,0 +1,146 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-12'
+scope: Exact WP013 manifest, lock, cache, MSRV, feature and toolchain readiness; no source or runtime proof.
+verdict: ready_for_coding
+coding_admission:
+  status: not_admitted
+  owner: dev_lead
+  gate: This report records dependency readiness only. The lead owns report and lock publication and explicit source admission.
+baseline:
+  local_candidate:
+    commit: e40cf523efb522b75cf630e8a35ec726e6d365da
+    metadata_input_commit: 547e756471939d3b00c1da9a8c2a4ff740c593c5
+    metadata_inputs_unchanged_through_candidate: true
+    basis: Read-only Git comparison showed product/Cargo.toml, product/kumihimo-web/Cargo.toml and product/Cargo.lock unchanged between the metadata input commit and current candidate.
+  contract:
+    ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
+    kind: work_packet
+    requirements: 10
+    acceptance_criteria: 6
+    sha256: ad3fffc1eb14f3fd1d4071ef941f9ee81b63e95111b1c91342433d31046c467d
+    publication_status: Lead reports published; local bytes match the provided hash. Dependency role did not query origin.
+  specification:
+    manifest_ref: repo-governance/specification/current/specification.yaml
+    manifest_sha256: 8258253ed473032d6928b42e3e7834951bf96796b02eccbb2163d94d880b1227
+    master_spec_ref: repo-governance/specification/current/spec-modules/master-spec.md
+    master_spec_sha256: 88fef7ea0e6babd9721b7c4689b66acae79832e5800d67f912070923bafbb1c3
+    publication_status: Lead reports Spec17 published; local bytes match the provided hashes. Dependency role did not query origin.
+  evaluation:
+    ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-evaluation.yaml
+    sha256: 07c9bad1e6b7234a52924f812db396fab77afbd4a645baeaea1ef655fb197d50
+    frozen_cases: 6
+    runtime_status: NOT_EXECUTED
+  predecessor:
+    wp_id: WP-KUM-011-navigation-and-media-controls-v1
+    observed_phase: done
+    source: Current WP013 contract and lead session update.
+product_baseline:
+  workspace:
+    ref: product/Cargo.toml
+    sha256: 5ae460d6491d696c887e267b97e16d1d291b431fa97abdefed12437e74c7b40a
+    members: [kumihimo-core, kumihimo-layout-json, kumihimo-content, kumihimo-egui, kumihimo-web]
+    default_members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
+    prior_default_members_preserved: true
+  package:
+    ref: product/kumihimo-web/Cargo.toml
+    sha256: fb67bed460aba0b7345b46613d5debdda4ed13f172e7982c7e5a8679bf3b5c6b
+    name: kumihimo-web
+    version: 0.1.0
+    rust_version: '1.91'
+    crate_types: [rlib, cdylib]
+    default_features: []
+    wasm_feature: [dep:wasm-bindgen]
+    direct_dependencies:
+      kumihimo-core: {version: 0.3.0, default_features: false}
+      kumihimo-content: {version: 0.2.0, default_features: false}
+      kumihimo-layout-json: {version: 0.1.0}
+      serde: {version: '=1.0.229', features: [derive]}
+      serde_json: {version: '=1.0.151'}
+    target_dependencies:
+      wasm32:
+        wasm-bindgen: {version: '=0.2.128', optional: true, default_features: false, features: [std]}
+  lockfile:
+    ref: product/Cargo.lock
+    sha256: 7e6967e94c3f3a0367fe2e1004eb103289a8a402f5d4cedbe49b92d01c670bbe
+    format_version: 4
+    current_package_records: 318
+    prior_ref: product/Cargo.lock at dd61b1661e51c480248658473711f8c36ed0e9b2
+    prior_sha256: 69118e616f500289e80eb5df938303ca82e41b666779c88a9b67939ba95ce42e
+    prior_package_records: 317
+    reconciliation:
+      prior_records_preserved_semantically: 317
+      prior_records_changed: 0
+      prior_records_removed: 0
+      added_records:
+      - kumihimo-web 0.1.0 (workspace path package)
+      added_record_dependencies: [kumihimo-content, kumihimo-core, kumihimo-layout-json, serde, serde_json, wasm-bindgen]
+      evidence: Parsed both locks; the only diff is the 12-line kumihimo-web package record. Registry identities, checksums and dependency edges in all prior records are unchanged.
+resolved_graph:
+  metadata_command_owner: dev_lead
+  command: cargo metadata --manifest-path product/Cargo.toml --all-features --filter-platform <target> --format-version 1 --offline
+  command_result: Lead reports exit 0 for both target filters; corresponding stderr files are empty. Dependency role ran no Cargo command.
+  windows:
+    target: x86_64-pc-windows-msvc
+    ref: ../.local/kumihimo-web/metadata-x86_64-pc-windows-msvc.json
+    sha256: bebb7764c09653f04a9e9198010588b3627045d5a4dc4140b66b100ddfb9b2a6
+    package_records: 140
+    resolve_nodes: 140
+    kumihimo_web_closure_nodes: 15
+    registry_closure_packages: 11
+    cached_sources_and_archives: 11
+    archive_checksums_match_lock: true
+    wasm_bindgen_selected_for_web_node: false
+  wasm:
+    target: wasm32-unknown-unknown
+    ref: ../.local/kumihimo-web/metadata-wasm32-unknown-unknown.json
+    sha256: 309a830cd23c5fbd585d33f96c3ec6dc5267533a2fb931ad5d8a11ea7eb7983d
+    package_records: 124
+    resolve_nodes: 124
+    kumihimo_web_closure_nodes: 23
+    registry_closure_packages: 19
+    cached_sources_and_archives: 19
+    archive_checksums_match_lock: true
+    wasm_bindgen_selected_version: 0.2.128
+  cache_reconciliation:
+    method: Traverse kumihimo-web resolve-node edges in each saved target-filtered metadata JSON; for every registry package verify the unpacked registry source and cached .crate archive exist, then hash the archive against product/Cargo.lock checksum.
+    missing_sources_or_archives: 0
+    checksum_mismatches: 0
+    package_msrv_above_1_91: 0
+    packages_without_declared_msrv: 0
+  wp012_windows_graph:
+    prior_metadata_ref: ../.local/kumihimo-desktop/metadata.json
+    prior_metadata_sha256: c0fc8531d0f4665d92af3f021e169b2bf8675df88a603015400e3fe74460db4f
+    prior_resolve_nodes: 139
+    current_metadata_ref: ../.local/kumihimo-web/metadata-x86_64-pc-windows-msvc.json
+    current_resolve_nodes: 140
+    shared_node_feature_or_edge_changes: 0
+    only_added_node: kumihimo-web 0.1.0 (workspace path package)
+    result: Existing WP012 Windows dependency nodes and their feature unions are unchanged.
+toolchain:
+  rustc:
+    selected_toolchain: stable-x86_64-pc-windows-msvc
+    version: 1.91.1
+    web_package_msrv: '1.91'
+    wasm_std_present: true
+    target: wasm32-unknown-unknown
+  wasm_bindgen_cli:
+    version: 0.2.128
+    relative_executable: .local/kumihimo-web/tools/wasm-bindgen-0.2.128-x86_64-pc-windows-msvc/wasm-bindgen.exe
+    executable_sha256: 207b71832e4c2810f061b1d6a4571fe7c7e85ec052a2027ef43caafb00cfabb4
+    official_archive: https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.128/wasm-bindgen-0.2.128-x86_64-pc-windows-msvc.tar.gz
+    archive_bytes: 7802241
+    archive_sha256: 8fd8e2165da16b21ee3f5efd19e7f97d8d27cb7832f54edaef4b18e830283ec0
+    archive_sha256_matches_official_release_sidecar: true
+    archive_sha256_matches_local_archive: true
+proof_scope:
+  dependency_role_actions:
+  - Read exact current WP013 contract, evaluation cases, manifests and lock; independently checked local contract/spec/evaluation hashes against the lead-provided published identities.
+  - Parsed both lead-produced target-filtered Cargo metadata JSON files and independently reconciled web-specific graph edges, cache archives/sources, lock checksums, MSRVs, Windows node preservation, CLI identity and installed wasm std.
+  - No Cargo, network, install, rustup, manifest, lock, source or toolchain changes were made by the dependency role.
+  not_proven:
+  - Native compile, wasm compile, generated JavaScript/WASM, or browser/runtime behavior.
+  - Independent origin readback/publication proof; lead owns that publication gate.
+  next_gate: Lead publishes this report and the exact lock candidate, then independently grants or withholds coding admission. Required WP013 runtime proof remains unexecuted.

@@ -103,8 +103,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml
-  next_action: Publish full contract/Spec17, freeze matching six evaluation cases, lead scaffold/acquire exact WASM
-    tooling/resolve graph; dependency readiness before coder04 source admission
+  next_action: Coder04 four-person team implements14 admitted source paths in parallel with desktop team; root holds
+    shared manifests/lock/Git and serial Cargo/generated WASM/browser lane
   blockers: []
 - wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
   title: Prove browser and graphics integration boundaries

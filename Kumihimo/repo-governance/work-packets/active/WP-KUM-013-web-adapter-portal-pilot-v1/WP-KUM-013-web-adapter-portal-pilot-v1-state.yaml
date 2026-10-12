@@ -1,17 +1,32 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 2
+generation: 3
 phase: active
-owner: ROLE-KUM-DEV-LEAD
+owner: ROLE-KUM-CODER-04
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
 - repo-governance/specification/
 - repo-governance/work-packets/archive/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-stub.yaml
+- product/kumihimo-web/Cargo.toml
+- product/kumihimo-web/src/lib.rs
+- product/Cargo.toml
+- product/Cargo.lock
+- repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-dependency-readiness.yaml
+- repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-evaluation.yaml
 proof:
 - kind: local_full_contract_preparation
   source_revision: 63f7c40ec4804d09545f12cfb1e8f2d5968ad584
   observed: WP011 predecessor DONE; independent of active012. Full10R/6A, exact prior six-file Spec16/raw+parsed
     stub preserved; all99full requirement records unchanged. No source/runtime admission.
+- kind: published_preparation_and_dependency_closure
+  contract_sha256: ad3fffc1eb14f3fd1d4071ef941f9ee81b63e95111b1c91342433d31046c467d
+  evaluation_sha256: 07c9bad1e6b7234a52924f812db396fab77afbd4a645baeaea1ef655fb197d50
+  dependency_report_sha256: f7b508795dac28d92271a7a371595ea23cd948d6f9b1980616928561defc028e
+  source_revision: e40cf523efb522b75cf630e8a35ec726e6d365da
+  observed: FullSpec17/contract/sixcases published. Both offline metadata targets PASS; web closures15Windows/23WASM
+    nodes, cachedchecksum/MSRV/tooling verified; original317lockrecords and139Windowsnodes unchanged. MatchingCLI0.2.128
+    and existingstable1.91.1 wasmstd observed. Lead admits14disjoint source paths only after this publication and
+    independent origin canonical re-read; no runtime/WASM/browser proof yet.
 blockers: []
-next_action: Publish full contract/Spec17, freeze matching six evaluation cases, lead scaffold/acquire exact WASM
-  tooling/resolve graph; dependency readiness before coder04 source admission
+next_action: Coder04 four-person team implements14 admitted source paths in parallel with desktop team; root holds
+  shared manifests/lock/Git and serial Cargo/generated WASM/browser lane

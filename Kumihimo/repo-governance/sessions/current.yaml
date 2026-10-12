@@ -62,16 +62,16 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: WP013 read-only preparation until full spec, frozen cases, exact dependency readiness/publication
-      and lead source admission; no Cargo/Git/shared files
+    assignment: WP013 admitted14 source paths, four-person gpt-6.1-sol high team with disjoint ownership; no Cargo/Git/shared
+      manifest/generated bindings/launches
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
   file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
     dispatched reports
 build_lane:
-  owner: ROLE-KUM-DEV-LEAD
-  phase: WP012_combined_compile
+  owner: null
+  phase: idle_after_WP012_combined_compile_failure
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -89,8 +89,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Finish WP012 affected proof serially; admit independent WP013 source after dependency-ready publication,
-  separate files
+next_action: Coder04 web source parallel; coder03 exact two generic fixes then lead affected combinedcheck/focused/raster/native/UIA
+  serially
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
