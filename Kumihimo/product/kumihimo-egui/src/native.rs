@@ -1121,10 +1121,24 @@ impl<H: NativeHost> App<H> {
                         .iter()
                         .position(|f| *f == origin)
                         .ok_or(AdapterError::Invalid("origin pane position"))?;
-                    let storage = self.slots.prepare(
+                    let storage_bounds = self
+                        .controller
+                        .snapshot()
+                        .geometry(workspace)?
+                        .frames
+                        .get(&origin)
+                        .copied()
+                        .ok_or(AdapterError::Invalid("origin pane geometry"))?;
+                    let mut storage = self.slots.prepare(
                         &mut self.controller,
                         &mut self.host,
                         NativeContent::Frame(origin),
+                    )?;
+                    self.slots.arm(
+                        &mut storage,
+                        &mut self.controller,
+                        &mut self.host,
+                        storage_bounds,
                     )?;
                     self.host
                         .dispatch(

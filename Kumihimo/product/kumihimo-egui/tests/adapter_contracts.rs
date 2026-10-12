@@ -1413,6 +1413,82 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     );
 }
 
+fn assert_preview_controls_fit(h: &egui_kittest::Harness<'_, UiProof>) {
+    let report = &h.state().report;
+    let bounds = to_egui(h.state().binding.bounds);
+    let controls: Vec<_> = report
+        .controls
+        .iter()
+        .filter(|control| control.id.starts_with("workspace/preview/"))
+        .collect();
+    assert_eq!(controls.len(), 2, "both preview actions remain reachable");
+    for control in &controls {
+        let rect = to_egui(control.bounds);
+        assert!(
+            bounds.contains_rect(rect),
+            "preview action exceeds surface: {control:?}"
+        );
+        let winner = h.ctx.layer_id_at(rect.center()).expect("preview hit layer");
+        assert_eq!(
+            winner.order,
+            egui::Order::Foreground,
+            "preview is above pane content"
+        );
+        assert!(
+            h.ctx
+                .memory(|memory| memory.area_rect(winner.id))
+                .is_some_and(|area| area.contains_rect(rect)),
+            "actual preview area contains control"
+        );
+        for header in report.controls.iter().filter(|other| {
+            (other.id.starts_with("frame/")
+                && ["/drag", "/menu", "/tabs-menu"]
+                    .iter()
+                    .any(|suffix| other.id.ends_with(suffix)))
+                || other.id.ends_with("/tab")
+        }) {
+            assert!(
+                !rect.intersects(to_egui(header.bounds)),
+                "preview action overlaps pane header: {control:?} / {header:?}"
+            );
+        }
+    }
+    assert!(!to_egui(controls[0].bounds).intersects(to_egui(controls[1].bounds)));
+}
+
+fn assert_revealed_header_geometry(h: &egui_kittest::Harness<'_, UiProof>) {
+    let state = h.state();
+    for slot in &state.report.slots {
+        if !state.adapter.chrome.revealed.contains(&slot.frame) {
+            continue;
+        }
+        let (settings, _, _) = state
+            .adapter
+            .chrome
+            .resolve(
+                &state.demo.host.policy,
+                slot.workspace,
+                state.binding.viewport,
+            )
+            .unwrap();
+        let bottom = slot.canonical_bounds.y()
+            + f64::from(settings.header_height).min(slot.canonical_bounds.height());
+        assert!(
+            slot.bounds.y() >= bottom && slot.clip.y() >= bottom,
+            "revealed header must be outside provider bounds and clip: {slot:?}"
+        );
+        for control in state.report.controls.iter().filter(|control| {
+            control.id == format!("frame/{}/menu", slot.frame.raw())
+                || control.id == format!("frame/{}/tabs-menu", slot.frame.raw())
+        }) {
+            assert!(
+                !to_egui(control.bounds).intersects(to_egui(slot.clip)),
+                "revealed controls cannot be painted over by provider: {control:?} / {slot:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     let mut h = ui_proof(3, false);
@@ -1434,6 +1510,7 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
         "canonical/widget stage; trace: {:?}",
         h.state().trace
     );
+    assert_preview_controls_fit(&h);
     ui_click(&mut h, "Cancel preview (Escape)");
     assert!(
         h.state().adapter.chrome.preview.is_none(),
@@ -1447,6 +1524,7 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
         "float commit stage; trace: {:?}",
         h.state().trace
     );
+    assert_preview_controls_fit(&h);
     ui_click(&mut h, "Commit preview");
     assert!(
         h.state()
@@ -1465,6 +1543,7 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
         "redock commit stage; trace: {:?}",
         h.state().trace
     );
+    assert_preview_controls_fit(&h);
     ui_click(&mut h, "Commit preview");
     assert!(
         !h.state()
@@ -1694,6 +1773,7 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
                 .controls
                 .iter()
                 .any(|c| c.id == format!("frame/{}/drag", frame.raw())));
+            assert_revealed_header_geometry(&h);
         }
         if profile == ChromeProfile::Compact {
             assert!(h.query_by_label("\u{22ee}").is_some());
@@ -1768,6 +1848,7 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
             h.ctx.memory(|m| m.focused()),
             egui::Popup::is_any_open(&h.ctx), touch_trace, h.state().trace
         );
+        assert_revealed_header_geometry(&h);
         let state = h.state_mut();
         let p = workspace::project_with_chrome(
             &mut state.demo.controller,
@@ -1778,7 +1859,24 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
         .unwrap();
         assert!(p.frames.iter().all(|f| f.settings_source == "surface"
             && f.recreation_needed
+            && f.settings.profile == ChromeProfile::Hidden
             && f.settings.header_height == 46.0));
+        for frame in p
+            .frames
+            .iter()
+            .filter(|f| state.adapter.chrome.revealed.contains(&f.frame))
+        {
+            assert_eq!(
+                frame.usable.y() - frame.content.y(),
+                46.0_f64.min(frame.content.height())
+            );
+            if let Some(child) = frame.child {
+                assert_eq!(
+                    state.demo.controller.snapshot().contexts[&child].viewport,
+                    frame.usable
+                );
+            }
+        }
     }
 }
 
@@ -2442,10 +2540,48 @@ fn e008_actual_tab_enter_group_float_redock_and_close_routes() {
         .floats
         .contains_key(&frame));
     ui_tab_enter(&mut h, &format!("frame/{}/menu", frame.raw()));
+    let popup_control = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|control| control.id == format!("frame/{}/Equalize-workspace", frame.raw()))
+        .expect("floating menu actually projected");
+    let point = to_egui(popup_control.bounds).center();
+    assert!(
+        h.state()
+            .report
+            .slots
+            .iter()
+            .any(|slot| slot.frame == frame && to_egui(slot.clip).contains(point)),
+        "probe overlaps floating provider"
+    );
+    let winner = h.ctx.layer_id_at(point).expect("floating popup hit layer");
+    assert_eq!(
+        winner.order,
+        egui::Order::Foreground,
+        "menu wins over floating provider"
+    );
+    let state = h.state_mut();
+    let projection = workspace::project_with_chrome(
+        &mut state.demo.controller,
+        state.binding,
+        &mut state.demo.host,
+        &state.adapter.chrome,
+    )
+    .unwrap();
+    let pane = projection
+        .frames
+        .iter()
+        .find(|pane| pane.frame == frame)
+        .unwrap();
+    assert_eq!(pane.layer().order, egui::Order::Middle);
+    assert_ne!(winner, pane.layer());
     ui_tab_enter(
         &mut h,
         &format!("frame/{}/preview-float-redock", frame.raw()),
     );
+    assert_preview_controls_fit(&h);
     ui_tab_enter(&mut h, "workspace/preview/commit");
     assert!(!h
         .state()

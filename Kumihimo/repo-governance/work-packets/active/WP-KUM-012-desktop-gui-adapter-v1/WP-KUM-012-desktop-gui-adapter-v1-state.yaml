@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 21
+generation: 23
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -208,6 +208,31 @@ proof:
     and all29 tests/original14 prefix. Manifest/lock/Core unchanged. Default then combined compile and fresh
     actual raster/native captures pending; unchanged all-feature owning proof can be reused only after exact
     guarded-body equivalence inspection.
+- kind: actual_compilation_raster_and_native_geometry_failure
+  source_revision: 1b3f0678a8d138ca39682a84a44489eb82f556d9
+  owning_reused_revision: 06e6cbd7a77cf6a38afdc77da29cd6f0da2db7eb
+  log_sha256:
+    default: e8e99365cd10d37c4904f8d1b6e7a30c67cef9709efbc594643e9f9ef534266a
+    combined: 04894264956cb71679415289f80c87532adcff93bea86c0d9eb5f2cc340707c6
+    capture: 12228ae019108bba87f0c065e768b4b7bfc89cdc66a79a2654033838180911f7
+    native: 44428e97fb2a77cc01aa944f6e6c98105bf4528fb02319a7009f9924856612d4
+  observed: 'Default/all-feature all-target PASS12.26s/6.31s; all29 owning reused after exact canonical reverse11cfg-byte
+    equality and unchanged all-feature JSON graph. Actual DX12 capture terminal PASS80 PNG/JSON scenes; evaluator
+    opened all80 and identified preview/header overlap, revealed Hidden header under provider, floated keyboard
+    popup under provider, and capture pin MoveFirst no-op. Native terminal CoreGeometryMissingContext after9
+    captures/returned1/gen56: original frame4 moved to prepared storage31 without context before view10/tool
+    anchored return. Native-only existing arm with current canonical source bounds held; leader parallel children
+    own minimum geometry/capture repairs. Full acceptance pending.'
+- kind: held_consolidated_native_geometry_and_rendered_controls
+  baseline_revision: 1b3f0678a8d138ca39682a84a44489eb82f556d9
+  source_fence17_raw_sha256: 24871006aa3200e55c50cc964422492d14869fc9c6af072a84c67a0aa8b230cb
+  source_fence17_lf_sha256: d7b0598929985e8fabd27e0059cbe408b68b16082a2a9d73c88ec0b81dfbeb55
+  observed: Coding leader and two disjoint children consolidated minimum repairs for recorded native storage
+    context, revealed Hidden header reservation, bounded readable preview overlay, floating popup precedence,
+    and actual nonnoop capture pin denial. Root inspected exact candidate diffs and preserved original14 prefix/all29/frozen13
+    methods. All source owners HOLD; owning/default/combined/raster/native affected proof remains pending.
+    Existing provider/Core/JSON/content/lock proof unchanged; no guard weakening or Ready/HWND minted for temporary
+    storage.
 blockers: []
-next_action: Run affected default then combined compile on optional diagnostic guards; acquire actual fresh
-  raster/native bundle
+next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
+  original13 evaluation afterward

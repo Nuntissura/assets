@@ -53,7 +53,26 @@ roles:
     completed_implementation_wps:
     - WP-KUM-011-navigation-and-media-controls-v1
     rotate_after: 2
-    assignment: All admitted sources HOLD; lead runs one owning29 target before further affected proof
+    assignment: All original17 source owners HOLD after consolidated causal repairs; root owns serial affected
+      proof
+    subteam_ownership:
+    - agent: chrome_geometry_remediation
+      parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
+      files:
+      - product/kumihimo-egui/src/chrome.rs
+      - product/kumihimo-egui/src/workspace.rs
+      - product/kumihimo-egui/src/lib.rs
+      - product/kumihimo-egui/tests/adapter_contracts.rs suffix only
+      model: gpt-6.1-sol
+      reasoning: high
+      status: held
+    - agent: capture_pin_remediation
+      parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
+      files:
+      - product/kumihimo-egui/examples/capture_host.rs
+      model: gpt-6.1-sol
+      reasoning: high
+      status: held
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -71,7 +90,7 @@ communication:
     own dispatched reports
 build_lane:
   owner: ROLE-KUM-DEV-LEAD
-  phase: serial_desktop_owning_causal_repair
+  phase: serial_consolidated_gui_native_affected_proof
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -85,13 +104,13 @@ build_lane:
     free_disk_gib: 3055.7
     rust_processes: []
     scope: Fresh coordination tick; next proof runner refreshes before serial Cargo
-  candidate_revision: 06e6cbd7a77cf6a38afdc77da29cd6f0da2db7eb
+  candidate_revision: 1b3f0678a8d138ca39682a84a44489eb82f556d9
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Run affected default then combined compile on optional diagnostic guards; acquire actual fresh
-  raster/native bundle; WP014 remains gated by WP012 DONE
+next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
+  original13 evaluation afterward; WP014 remains gated by WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

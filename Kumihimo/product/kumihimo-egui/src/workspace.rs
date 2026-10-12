@@ -22,11 +22,8 @@ pub struct FrameProjection {
 impl FrameProjection {
     pub fn layer(&self) -> egui::LayerId {
         egui::LayerId::new(
-            if self.z_root.is_some() {
-                egui::Order::Foreground
-            } else {
-                egui::Order::Middle
-            },
+            // Pane floats are windows; Foreground is reserved for menus and overlays.
+            egui::Order::Middle,
             egui::Id::new((
                 "kumihimo-surface",
                 self.z_root.map(|f| f.raw()).unwrap_or(0),
@@ -222,7 +219,8 @@ pub fn project_with_chrome(
                 break;
             }
             let content = geometry.frame_content.get(&frame).copied().unwrap_or(rect);
-            let usable = usable_content(content, &settings)?;
+            let usable =
+                usable_content_with_reveal(content, &settings, chrome.revealed.contains(&frame))?;
             let clip = intersect(
                 geometry.clips.get(&frame).copied().unwrap_or(rect),
                 ancestor_clip,

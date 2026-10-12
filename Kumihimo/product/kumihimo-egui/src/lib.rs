@@ -383,14 +383,12 @@ impl DesktopAdapter {
             &mut self.input,
             &mut report,
         );
-        // Popups must retain precedence over the floating content that owns them.
-        if !egui::Popup::is_any_open(ctx) {
-            let mut raised = std::collections::BTreeSet::new();
-            for frame in &projection.frames {
-                if let Some(root) = frame.z_root {
-                    if raised.insert(root) {
-                        ctx.move_to_top(frame.layer());
-                    }
+        // Host-ordered pane floats remain below Foreground menus and overlays.
+        let mut raised = std::collections::BTreeSet::new();
+        for frame in &projection.frames {
+            if let Some(root) = frame.z_root {
+                if raised.insert(root) {
+                    ctx.move_to_top(frame.layer());
                 }
             }
         }
@@ -427,7 +425,14 @@ pub fn intersect(a: Rect, b: Rect) -> Result<Rect> {
     )?)
 }
 pub fn usable_content(rect: Rect, settings: &AdapterSettings) -> Result<Rect> {
-    let header = if settings.profile == ChromeProfile::Hidden {
+    usable_content_with_reveal(rect, settings, false)
+}
+pub(crate) fn usable_content_with_reveal(
+    rect: Rect,
+    settings: &AdapterSettings,
+    revealed: bool,
+) -> Result<Rect> {
+    let header = if settings.profile == ChromeProfile::Hidden && !revealed {
         0.0
     } else {
         settings.header_height as f64

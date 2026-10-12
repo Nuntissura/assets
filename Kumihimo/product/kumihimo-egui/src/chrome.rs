@@ -887,24 +887,54 @@ pub fn draw(
                         });
                 });
             }
-            if let Some(preview) = state.preview.clone() {
-                ui.horizontal(|ui| {
-                    ui.label("Nonmutating dock preview");
-                    if button(ui, "workspace/preview/commit", "Commit preview", report) {
-                        state.preview.take();
-                        command(controller, host, Command::CommitPreview(preview), report);
-                    }
-                    if button(
-                        ui,
-                        "workspace/preview/cancel",
-                        "Cancel preview (Escape)",
-                        report,
-                    ) {
-                        state.preview.take();
-                    }
-                });
-            }
         });
+    if let Some(preview) = state.preview.clone() {
+        let bounds = to_egui(surface.bounds);
+        let frame = egui::Frame::popup(&ctx.style());
+        let margin = frame.total_margin().sum();
+        let width = (bounds.width().min(240.0) - margin.x).max(0.0);
+        egui::Area::new(egui::Id::new((surface.viewport, "preview-controls")))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(bounds.max)
+            .constrain_to(bounds)
+            .default_width(width)
+            .show(ctx, |ui| {
+                frame.show(ui, |ui| {
+                    ui.set_width(width);
+                    egui::ScrollArea::vertical()
+                        .max_height((bounds.height() - margin.y).max(0.0))
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new("Nonmutating dock preview").wrap());
+                            for (key, label, commit) in [
+                                ("workspace/preview/commit", "Commit preview", true),
+                                ("workspace/preview/cancel", "Cancel preview (Escape)", false),
+                            ] {
+                                let response = ui
+                                    .push_id(key, |ui| {
+                                        ui.add_sized(
+                                            egui::vec2(width, 18.0),
+                                            egui::Button::new(label).wrap(),
+                                        )
+                                    })
+                                    .inner;
+                                record(report, &response, key.into(), label.into(), None);
+                                if response.clicked() {
+                                    state.preview.take();
+                                    if commit {
+                                        command(
+                                            controller,
+                                            host,
+                                            Command::CommitPreview(preview.clone()),
+                                            report,
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                });
+            });
+    }
     for frame in &projection.frames {
         let settings = &frame.settings;
         let source = frame.settings_source;
@@ -917,7 +947,13 @@ pub fn draw(
                     .hover_pos()
                     .is_some_and(|p| to_egui(frame.bounds).contains(p))
             });
-        if (settings.profile == ChromeProfile::Hidden && !revealed) || contextual {
+        let hidden_unreserved =
+            settings.profile == ChromeProfile::Hidden && frame.usable.y() == frame.content.y();
+        if hidden_unreserved && revealed && frame.content.height() > 0.0 {
+            // Reveal changes projection next pass; never paint over the old provider slot.
+            ctx.request_repaint();
+        }
+        if hidden_unreserved || contextual {
             let rect =
                 egui::Rect::from_min_size(to_egui(frame.content).min, egui::vec2(26.0, 24.0))
                     .intersect(to_egui(frame.content))

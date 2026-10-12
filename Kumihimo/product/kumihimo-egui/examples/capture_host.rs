@@ -1194,12 +1194,34 @@ fn tab_group_variants(
         deny_reorder: true,
         deny_cross_frame_move: true,
     }))?;
-    let before = s.demo.controller.snapshot().frames[&frame].views.clone();
-    s.tab_actions(original[1])?;
-    s.click("Move tab first")?;
-    if s.demo.controller.snapshot().frames[&frame].views != before {
-        return Err("forbidden pinned reorder mutated membership".into());
+    let before = s.demo.controller.snapshot().frames.clone();
+    let before_views = s.demo.controller.snapshot().views.clone();
+    if before[&frame].views.first() != Some(&original[1])
+        || before[&frame].views.len() < 2
+        || !before_views[&original[1]].pinned
+    {
+        return Err(
+            "pinned reorder fixture requires pinned first tab and distinct last index".into(),
+        );
     }
+    s.tab_actions(original[1])?;
+    let attempt_after_nonce = s.frame.nonce;
+    let point = s.point(&format!("view/{}/Move-tab-last", original[1].raw()))?;
+    s.input(
+        vec![egui::Event::PointerMoved(point)],
+        egui::Modifiers::NONE,
+    )?;
+    s.mouse(point, true)?;
+    s.mouse(point, false)?;
+    let pin_error = kumihimo_core::Error::Pinned(original[1]).to_string();
+    if s.frame.nonce <= attempt_after_nonce || s.frame.report.rejected != [pin_error] {
+        return Err("forbidden pinned reorder lacks fresh exact pinned rejection".into());
+    }
+    let snapshot = s.demo.controller.snapshot();
+    if snapshot.frames != before || snapshot.views != before_views {
+        return Err("forbidden pinned reorder mutated canonical membership".into());
+    }
+    // Retain the actual release report before idle frames clear its rejection.
     s.checkpoint("tabs-pinned-reorder-rejected")?;
     Ok(s.finish("002"))
 }
