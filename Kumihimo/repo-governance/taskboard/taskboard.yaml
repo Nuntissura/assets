@@ -95,8 +95,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
-  next_action: Lead completes bundled affected allfeature compile, focused consumers, actual raster/native/UIA;
-    team resolves exact failures; independent eval then published outcome
+  next_action: Hold coherent17fence after demo init/native source repair; lead retry13 failed consumers only, then
+    actual raster/native/UIA and independent eval; parallel013 source continues
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
   title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot

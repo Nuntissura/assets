@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 4
+generation: 5
 phase: active
 owner: ROLE-KUM-CODER-03
 changed_files:
@@ -47,6 +47,13 @@ proof:
     check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running soleleadlane;
     focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317 lock
     records unchanged.
+- kind: focused_consumer_failure
+  source_revision: acb2920256fa
+  observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes. Owning14consumer
+    batch compile3m46s/run0.04s: e006PASS, other13FAILED shared demo initialization CoreGeometryMissingContext.
+    Actual CreateTool preceded required root GeometryContext; existing configured context reordered before tool,
+    tests/Core unchanged. Native actual source idle Wait omitted hard probe deadline; minimal native-only cutoff/resize-freshness
+    repair in progress. No raster/native/UIA proof yet; reuse e006 pure mapping on unchanged inputs.'
 blockers: []
-next_action: Lead completes bundled affected allfeature compile, focused consumers, actual raster/native/UIA; team
-  resolves exact failures; independent eval then published outcome
+next_action: Hold coherent17fence after demo init/native source repair; lead retry13 failed consumers only, then
+  actual raster/native/UIA and independent eval; parallel013 source continues

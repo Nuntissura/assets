@@ -71,7 +71,7 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: idle_after_WP012_combined_compile_failure
+  phase: idle_after_WP012_consumer_failure
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -84,13 +84,13 @@ build_lane:
     free_disk_gib: 3062.6
     rust_processes: []
     scope: Before lead compilation; root-owned compile now active, no second Kumihimo Cargo lane
-  candidate_revision: 547e756471939d3b00c1da9a8c2a4ff740c593c5
+  candidate_revision: acb2920256fa
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Coder04 web source parallel; coder03 exact two generic fixes then lead affected combinedcheck/focused/raster/native/UIA
-  serially
+next_action: Coder03 exact demo context/native deadline repair then lead13consumer retry/raster/native/UIA; coder04
+  disjoint web sources continue
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
