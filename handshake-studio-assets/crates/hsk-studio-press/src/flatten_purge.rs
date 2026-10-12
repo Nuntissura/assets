@@ -37,8 +37,9 @@
 //!   categories such as `/Properties` and `/ColorSpace`, a plain key of an object a kept page draws such as an
 //!   image's `/Alternates` or a form's `/PieceInfo`, an object used as a `/Resources` value, as a gated
 //!   sub-dictionary (`/XObject 10 0 R`) or as an appearance state, an appearance state the annotation's `/AS` does
-//!   not select, the appearance of an Invisible, Hidden or NoView annotation, a name an operator uses for an object
-//!   of another kind, an entry a nearer entry of the same name shadows, any other plain reference). Such a source is not
+//!   not select, the appearance of an Invisible, Hidden or NoView annotation, an object or annotation with an `/OC`,
+//!   a draw inside `BDC /OC` marked content, a name an operator uses for an object of another kind, an entry a nearer
+//!   entry of the same name shadows, any other plain reference). Such a source is not
 //!   pruned (the kept structure is not edited). Tests
 //!   `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
 //!   `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
@@ -48,7 +49,8 @@
 //!   `painted_source_placed_as_an_appearance_state_is_reported`,
 //!   `painted_source_named_where_it_is_not_drawn_is_reported`,
 //!   `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`,
-//!   `painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported`.
+//!   `painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported`,
+//!   `painted_source_under_optional_content_is_reported`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -67,10 +69,13 @@
 //! plain dictionary), or it is a form XObject that is an appearance stream a viewer draws (`/AP` `/N` `/R` `/D`: the
 //! stream itself, or in a state dictionary only the state the annotation's `/AS` names, none when `/AS` is missing or
 //! names no state) of an annotation a kept page lists in its own `/Annots` and whose `/F` has none of the Invisible,
-//! Hidden and NoView flags (bits 1, 2 and 6; an annotation's optional-content `/OC` is not read), or it is rendered
-//! along with such an object: the `/SMask` and `/Mask`
+//! Hidden and NoView flags (bits 1, 2 and 6), or it is rendered along with such an object: the `/SMask` and `/Mask`
 //! image of a drawn image, the `/Shading` of a drawn shading pattern, the `/SMask` `/G` form of a drawn graphics
-//! state. Everything else only references, even from a kept page or a drawn object: a position is not a draw (an
+//! state. Optional content is not evaluated, it counts as possibly hidden: an object that has an `/OC` (an annotation,
+//! a drawn image, form, mask or shading) is not certain, and neither is a draw inside marked content opened by `BDC`
+//! with the tag `/OC` (whatever property list it names; from the `BDC` to its matching `EMC`, across the streams of a
+//! scope, with the nesting of `BMC`, `BDC` and `EMC` tracked per operator, the content of a form so drawn included).
+//! Everything else only references, even from a kept page or a drawn object: a position is not a draw (an
 //! image placed as a kept page's `/Resources` value, as a gated sub-dictionary such as `/XObject 10 0 R`, as an
 //! appearance state or under a category its operator does not draw is reached, not certain), and whatever is
 //! reached from the trailer roots by plain references alone is reached, not certain (R14-P1). Tests
@@ -560,13 +565,17 @@ enum Kind {
     Shading,
     /// A dictionary that is none of those (a graphics state, a font).
     Plain,
-    /// Anything else: not a dictionary, an XObject subtype on a non-stream, a stream of no drawable kind.
+    /// Anything else: not a dictionary, an XObject subtype on a non-stream, a stream of no drawable kind, an object
+    /// with an `/OC` (optional content is not evaluated: possibly hidden, so never a certain draw).
     Other,
 }
 
 fn kind_of(objs: &Objs, o: &Object) -> Kind {
     let o = res(objs, o);
     let Some(d) = o.as_dict() else { return Kind::Other };
+    if d.get("OC").is_some() {
+        return Kind::Other;
+    }
     let stream = matches!(o, Object::Stream(_));
     let subtype = |s: &str| d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name(s));
     if subtype("Image") || subtype("Form") {
@@ -733,6 +742,10 @@ impl<'a> Usage<'a> {
             return Err(());
         }
         let objs = self.objs;
+        // R17: the open marked-content sequences of this scope (BMC and BDC push, EMC pops), true for one opened by BDC
+        // with the tag /OC (optional content). It carries over from one stream of the scope to the next, as a viewer
+        // joins them.
+        let mut marked: Vec<bool> = Vec::new();
         for num in streams {
             if !seen.insert(*num) {
                 continue;
@@ -747,6 +760,14 @@ impl<'a> Usage<'a> {
             let cs = |n: &[u8]| chain.iter().find_map(|d| resource_components(objs, Some(*d), n));
             let parsed = parse_strict(&data, self.limits, &cs, &mut self.budget).map_err(|_| ())?;
             for op in &parsed.ops {
+                match op.name.as_slice() {
+                    b"BMC" => marked.push(false),
+                    b"BDC" => marked.push(op.operands.first().and_then(Object::as_name) == Some(b"OC".as_slice())),
+                    b"EMC" => {
+                        marked.pop();
+                    }
+                    _ => {}
+                }
                 let (cat, name) = match op.name.as_slice() {
                     b"Do" => ("XObject", op.operands.first()),
                     b"sh" => ("Shading", op.operands.first()),
@@ -760,8 +781,10 @@ impl<'a> Usage<'a> {
                     // R16, R17: a DRAW makes the named object certain (and what drawing it renders, below); every
                     // other reference inside it is a plain one. A draw is the entry the name resolves to (the nearest;
                     // an entry it shadows is only reached) and an object of the kind the operator draws (an image
-                    // listed under /Font is no font). In a scope no kept page draws, nothing is certain.
-                    let drawn = certain && nearest == 0 && draws(cat, kind_of(objs, target));
+                    // listed under /Font is no font) that is not optional content, inside no optional-content
+                    // marked content (not evaluated: possibly hidden). In a scope no kept page draws, nothing is
+                    // certain.
+                    let drawn = certain && nearest == 0 && !marked.contains(&true) && draws(cat, kind_of(objs, target));
                     match target.as_ref() {
                         Some(r) if drawn => self.push(r.num, true),
                         _ => self.follow(target),
@@ -825,7 +848,8 @@ impl<'a> Usage<'a> {
 /// Each comes with whether a viewer draws it (R17): only a form XObject is (an image or any other object placed there
 /// is reached, not drawn); an entry that is a stream itself is the drawn one, of an entry that is a state dictionary
 /// only the state the annotation's `/AS` names (none when `/AS` is missing or names no state); and an annotation whose
-/// `/F` has the Invisible (bit 1), Hidden (bit 2) or NoView (bit 6) flag draws nothing.
+/// `/F` has the Invisible (bit 1), Hidden (bit 2) or NoView (bit 6) flag draws nothing, as one with an `/OC` (optional
+/// content is not evaluated: possibly hidden).
 fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<(u32, bool)> {
     let Some(annots) = page.get("Annots").map(|a| res(objs, a)).and_then(Object::as_array) else { return Vec::new() };
     let mut out = Vec::new();
@@ -833,7 +857,7 @@ fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<(u32, bool)> {
     for annot in annots {
         let Some(ad) = res(objs, annot).as_dict() else { continue };
         let Some(ap) = ad.get("AP").map(|a| res(objs, a)).and_then(Object::as_dict) else { continue };
-        let shown = ad.get("F").map(|f| res(objs, f)).and_then(Object::as_int).is_none_or(|f| f & 0b10_0011 == 0);
+        let shown = ad.get("OC").is_none() && ad.get("F").map(|f| res(objs, f)).and_then(Object::as_int).is_none_or(|f| f & 0b10_0011 == 0);
         let state = ad.get("AS").map(|s| res(objs, s)).and_then(Object::as_name);
         for key in ["N", "R", "D"] {
             let Some(entry) = ap.get(key) else { continue };

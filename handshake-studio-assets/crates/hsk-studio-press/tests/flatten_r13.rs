@@ -891,6 +891,80 @@ fn painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
+/// R17c (lead decision): optional content is not evaluated, it counts as possibly hidden, so a draw is certain only when
+/// it is not optional content: an annotation with an `/OC`, a drawn image or form with an `/OC`, and a draw inside
+/// marked content opened by `BDC` with the tag `/OC` (from the `BDC` to its `EMC`, across the content streams of the
+/// page, the tag also written with a name escape, other marked content nested inside included, a form drawn there
+/// included) leave the region image kept and reported. A draw outside such marked content (none, before, after, a
+/// non-optional `BDC`) and objects without `/OC` keep it silently. Page two draws the image `/Im1` (object 10) or the
+/// form `/Fx` (40, which draws it), or lists the annotation 30 whose appearance form (31) draws it.
+#[test]
+fn painted_source_under_optional_content_is_reported() {
+    let text = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
+    let draw = "q 10 0 0 10 400 100 cm /Im1 Do Q";
+    let image = |keys: &str| {
+        stream_body(&format!("/Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {keys}"), b"SCAN-PIXELS-SECRET")
+    };
+    let form = |keys: &str| {
+        stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 10 0 R >> >> {keys}"), b"q 100 0 0 100 0 0 cm /Im1 Do Q")
+    };
+    let doc = |image_keys: &str, form_keys: &str, contents: &[String], annot: Option<&str>| -> Vec<u8> {
+        let numbered: Vec<(u32, &String)> = (70u32..).zip(contents.iter()).collect();
+        let refs: Vec<String> = numbered.iter().map(|(n, _)| format!("{n} 0 R")).collect();
+        let annots = if annot.is_some() { "/Annots [30 0 R]" } else { "" };
+        let mut objs: Vec<(u32, Vec<u8>)> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 612 792] >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Im1 10 0 R >> /Font << /F1 6 0 R >> >> >>".to_vec()),
+            (4, stream_body("", format!("q 612 0 0 792 0 0 cm /Im1 Do Q BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
+            (
+                5,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /Contents [{}] /Resources << /XObject << /Im1 10 0 R /Fx 40 0 R >> /Properties << /MC0 45 0 R >> /Font << /F1 6 0 R >> >> {annots} >>",
+                    refs.join(" ")
+                )
+                .into_bytes(),
+            ),
+            (6, HELVETICA.to_vec()),
+            (10, image(image_keys)),
+            (40, form(form_keys)),
+            (45, b"<< /Type /OCG /Name (Layer) >>".to_vec()),
+        ];
+        objs.extend(numbered.iter().map(|(n, c)| (*n, stream_body("", c.as_bytes()))));
+        if let Some(extra) = annot {
+            objs.push((30, format!("<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R {extra} /AP << /N 31 0 R >> >>").into_bytes()));
+            objs.push((31, form("")));
+        }
+        build(&objs)
+    };
+    let hidden = |s: &str| format!("{s} {text}");
+    let mut red: Vec<String> = Vec::new();
+    for (what, pdf) in [
+        ("an annotation with an /OC", doc("", "", &[text.to_string()], Some("/OC 45 0 R"))),
+        ("an image with an /OC drawn by Do", doc("/OC 45 0 R", "", &[hidden(draw)], None)),
+        ("a form with an /OC drawn by Do (it draws the image)", doc("", "/OC 45 0 R", &[hidden("/Fx Do")], None)),
+        ("Do inside BDC /OC", doc("", "", &[hidden(&format!("/OC /MC0 BDC {draw} EMC"))], None)),
+        ("Do inside BDC with the tag written /O#43", doc("", "", &[hidden(&format!("/O#43 /MC0 BDC {draw} EMC"))], None)),
+        ("Do inside other marked content nested in BDC /OC", doc("", "", &[hidden(&format!("/OC /MC0 BDC /Span BMC {draw} EMC EMC"))], None)),
+        ("BDC /OC in the first content stream, Do in the second", doc("", "", &["/OC /MC0 BDC".to_string(), hidden(&format!("{draw} EMC"))], None)),
+        ("a form drawn inside BDC /OC", doc("", "", &[hidden("/OC /MC0 BDC /Fx Do EMC")], None)),
+    ] {
+        reported_kept_image_too(what, &pdf, &mut red);
+    }
+    for (what, pdf) in [
+        ("a plain draw", doc("", "", &[hidden(draw)], None)),
+        ("a plain form drawn", doc("", "", &[hidden("/Fx Do")], None)),
+        ("an annotation without an /OC", doc("", "", &[text.to_string()], Some(""))),
+        ("Do after the BDC /OC sequence is closed", doc("", "", &[hidden(&format!("/OC /MC0 BDC EMC {draw}"))], None)),
+        ("Do before a BDC /OC sequence", doc("", "", &[hidden(&format!("{draw} /OC /MC0 BDC EMC"))], None)),
+        ("Do inside BDC with another tag", doc("", "", &[hidden(&format!("/Span << /ActualText (x) >> BDC {draw} EMC"))], None)),
+        ("BDC /OC closed by EMC in the next content stream, Do after it", doc("", "", &["/OC /MC0 BDC".to_string(), hidden(&format!("EMC {draw}"))], None)),
+    ] {
+        silent_drawn_image(what, &pdf, &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
 /// R17 (P1, same class): a draw makes an object certain only when it is the kind that draw needs. An operator that
 /// names the image (or an object of the wrong kind) through a resource category it does not belong to, or an
 /// object a drawn object points at as its mask, shading or soft-mask group but that is not an image, shading or
@@ -992,9 +1066,10 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "R16",
         "R17",
         "unless a kept page, or an annotation appearance a kept page lists, draws them",
-        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, an object used as a /Resources value, as a gated sub-dictionary or as an appearance state, an appearance state the annotation's /AS does not select, the appearance of an Invisible, Hidden or NoView annotation, a name an operator uses for an object of another kind, any plain reference)",
+        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, an object used as a /Resources value, as a gated sub-dictionary or as an appearance state, an appearance state the annotation's /AS does not select, the appearance of an Invisible, Hidden or NoView annotation, an object or annotation with an /OC, a draw inside BDC /OC marked content, a name an operator uses for an object of another kind, any plain reference)",
         "the Do, sh, scn/SCN, gs and Tf targets of its content and of the content of what it draws in turn (forms, patterns, soft-mask groups, Type 3 glyph procedures), each of the kind its operator draws (Do an image or form stream, sh a shading, scn/SCN a pattern, gs and Tf a plain dictionary)",
-        "the form XObject appearance streams of the annotations it lists that a viewer draws (/AP /N /R /D: the stream itself, or in a state dictionary only the state the annotation's /AS names, none without a matching /AS; none for an annotation whose /F has the Invisible, Hidden or NoView bit; an annotation's /OC is not read)",
+        "the form XObject appearance streams of the annotations it lists that a viewer draws (/AP /N /R /D: the stream itself, or in a state dictionary only the state the annotation's /AS names, none without a matching /AS; none for an annotation whose /F has the Invisible, Hidden or NoView bit or that has an /OC)",
+        "optional content is not evaluated and counts as possibly hidden: an object that has an /OC (an annotation, a drawn image, form, mask or shading) and a draw inside BDC /OC marked content (through its EMC, across the streams of a scope) are not drawn",
         "painted_source_referenced_by_a_kept_catalog_structure_is_reported",
         "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
         "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
@@ -1006,6 +1081,7 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "painted_source_named_where_it_is_not_drawn_is_reported",
         "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
         "painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported",
+        "painted_source_under_optional_content_is_reported",
         "a name resolves to the nearest entry of its category in the resource chain, an entry a nearer entry of the same name shadows is reached, not drawn",
     ] {
         assert!(hsk_studio_press::DESCRIPTOR.contains(needle), "DESCRIPTOR lacks {needle:?}");
@@ -1022,6 +1098,7 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "painted_source_named_where_it_is_not_drawn_is_reported",
         "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
         "painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported",
+        "painted_source_under_optional_content_is_reported",
     ] {
         assert!(source.contains(&format!("fn {cited}()")), "the cited test {cited} does not exist");
     }
