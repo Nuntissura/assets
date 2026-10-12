@@ -364,7 +364,7 @@ impl DemoHost {
                 .settings_revision
                 .checked_add(1)
                 .ok_or(AdapterError::Budget("settings revision"))?;
-            let mut layers = content::SettingsLayers::default();
+            let mut layers = content::SettingsLayers::<content::NavigationSettingsPatch>::default();
             layers.host_profile.mode = Some(mode);
             layers.host_profile.profile = Some(content::ControlProfile::Comfortable);
             controller.configure_navigation(&scope, revision, layers, Default::default())?;
@@ -1074,7 +1074,7 @@ pub fn with_policy_counts(
             host.pump(&mut controller, mount)?;
             host.backgrounds.insert(target, mount);
             let scope = controller.inspect().mounts[&mount].scope.clone();
-            let mut layers = content::SettingsLayers::default();
+            let mut layers = content::SettingsLayers::<content::BackgroundSettingsPatch>::default();
             layers.host_profile.brightness = Some(Scalar::new(0.7)?);
             layers.host_profile.opacity = Some(Scalar::new(0.8)?);
             layers.host_profile.overlay_opacity = Some(Scalar::new(0.35)?);

@@ -446,6 +446,7 @@ pub fn content_and_navigation_bounds(
     if !policy.navigation_width.is_finite() || policy.navigation_width < 0.0 {
         return Err(AdapterError::Invalid("navigation gutter"));
     }
+    #[cfg(not(feature = "navigation"))]
     let width = 0.0_f64;
     #[cfg(feature = "navigation")]
     let width = {
