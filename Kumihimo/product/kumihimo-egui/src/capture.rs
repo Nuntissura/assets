@@ -171,12 +171,18 @@ impl OffscreenRenderer {
             .entry(surface.viewport)
             .or_default()
             .native_pixels_per_point = Some(surface.pixels_per_point);
-        self.context.set_pixels_per_point(surface.pixels_per_point);
+        // Host DIP already defines logical coordinates; native scale is applied once.
+        self.context.set_zoom_factor(1.0);
         let mut report = None;
         let output = self.context.run(input, |ctx| {
             report = Some(adapter.show(ctx, controller, surface, host));
         });
         let report = report.ok_or(AdapterError::Invalid("egui draw missing"))??;
+        if output.pixels_per_point != surface.pixels_per_point {
+            return Err(AdapterError::Invalid(
+                "offscreen egui scale differs from host surface",
+            ));
+        }
         let jobs = self
             .context
             .tessellate(output.shapes, output.pixels_per_point);
