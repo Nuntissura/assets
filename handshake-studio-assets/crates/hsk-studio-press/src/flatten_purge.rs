@@ -29,16 +29,19 @@
 //!   states and fonts the old page reached are dropped from every resource dictionary that lists them
 //!   when nothing refers to them but a gated (`/XObject`, `/Pattern`, `/Shading`, `/ExtGState`, `/Font`)
 //!   entry no kept content names (usage analysis below). A painted source (image, form, pattern, shading)
-//!   that stays in the file is silent only under the minimal draw set ("Silent" below); every other source that
+//!   that stays in the file is silent only under the minimal draw set ("Silent" below); every other painted source that
 //!   stays is reported (`RedactedOutput::painted_sources_kept`, `NotProven::PaintedSourceKept`) and
-//!   `region_flattened` reads false (R14-P1, R16, R17, R18). That is a source some content's usage cannot be
-//!   determined for, one a kept object only REFERENCES (a catalog `/AF`, a `/Names` or `/Dests` name tree, the
-//!   entries of a kept page's `/Resources` outside the five gated categories such as `/Properties` and
-//!   `/ColorSpace`, a plain key of an object a kept page draws such as an image's `/Alternates`, an object used
-//!   as a `/Resources` value or as a gated sub-dictionary, any other plain reference), and one a viewer draws
-//!   through anything but a direct `Do` of the image by a kept page (a form, tiling pattern, Type 3 glyph
+//!   `region_flattened` reads false (R14-P1, R16, R17, R18). Only painted sources are reported: a font or a graphics
+//!   state that stays because a kept page names it is not one, is not reported and does not change `region_flattened`
+//!   (R19; test `a_font_or_graphics_state_that_stays_is_not_a_painted_source`). A painted source is reported when some
+//!   content's usage cannot be determined for it, when a kept object only REFERENCES it (a catalog `/AF`, a `/Names`
+//!   or `/Dests` name tree, the entries of a kept page's `/Resources` outside the five gated categories such as
+//!   `/Properties` and `/ColorSpace`, a plain key of an object a kept page draws such as an image's `/Alternates`, an
+//!   object used as a `/Resources` value or as a gated sub-dictionary, any other plain reference), and when a viewer
+//!   draws it through anything but a direct `Do` of the image by a kept page (a form, tiling pattern, Type 3 glyph
 //!   procedure, soft-mask group, mask, shading, annotation appearance, an image listed under another
-//!   category). Over-reporting is accepted. Such a source is not pruned (the kept structure is not edited). Tests
+//!   category, a page whose content streams are named elsewhere). Over-reporting is accepted. Such a source is not
+//!   pruned (the kept structure is not edited). Tests
 //!   `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
 //!   `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
 //!   `painted_source_referenced_by_a_key_of_a_drawn_object_is_reported`,
@@ -53,7 +56,8 @@
 //!   `painted_source_drawn_by_an_image_or_shading_stream_read_as_content_is_reported`,
 //!   `painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported`,
 //!   `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
-//!   `painted_sources_rendered_with_a_drawn_image_are_reported`.
+//!   `painted_sources_rendered_with_a_drawn_image_are_reported`,
+//!   `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -68,7 +72,11 @@
 //! Silent (R18, the minimal draw set; lead decision 2026-10-12T02:48:02Z): a painted source that stays in the file is
 //! silent only when it is an image XObject stream (`/Subtype /Image`, no `/OC`) that a kept page draws with `Do`
 //! directly in its own content stream(s): the `Do` is in the page's own `/Contents`, not in a form, tiling pattern,
-//! Type 3 glyph procedure, annotation appearance, soft-mask group, shading or any other stream read as content; it is
+//! Type 3 glyph procedure, annotation appearance, soft-mask group, shading or any other stream read as content, and
+//! each stream of that `/Contents` is named by exactly one reference of the whole file (R19, `named_once`: a stream
+//! the `/Contents` lists twice, or that anything else refers to, such as a form or another page, makes the page's
+//! content non-exclusive and nothing it draws is silent; the pages whose streams are named once are read exactly, in
+//! the order listed); it is
 //! outside optional content (inside no marked content opened by `BDC` with the tag `/OC`, from the `BDC` to its
 //! matching `EMC`, with the nesting of `BMC`, `BDC` and `EMC` tracked per operator across the streams of the page,
 //! and the image has no `/OC`: optional content is not evaluated, it counts as possibly hidden); and its name resolves
@@ -84,7 +92,7 @@
 use crate::content::parse_strict;
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
-use crate::flatten::Flat;
+use crate::flatten::{Flat, refs_in};
 use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
 use crate::redaction::{purge_list, res};
@@ -530,7 +538,9 @@ struct ResDict<'a> {
 struct Scope<'a> {
     streams: Vec<u32>,
     chain: Vec<ResDict<'a>>,
-    /// The own content of a kept page: the one scope in which a `Do` can be silent (module docs, Silent).
+    /// The own content of a kept page whose content streams no other reference of the file names (`named_once`, R19):
+    /// the one scope in which a `Do` can be silent (module docs, Silent). The content of any other kept page is read
+    /// (so what it names is reached) but with this flag false.
     page: bool,
 }
 
@@ -540,8 +550,10 @@ struct Usage<'a> {
     /// Pages and page-tree nodes: their `/Resources` is read by page scopes, not followed.
     page_holders: &'a BTreeSet<u32>,
     reached: BTreeSet<u32>,
-    /// The image XObjects a kept page's own content draws with `Do` directly (module docs, Silent): the only sources
-    /// that stay in the file without being reported.
+    /// The image XObjects a kept page's own content draws with `Do` directly (module docs, Silent): the only painted
+    /// sources (image, form, pattern, shading) that stay in the file without being reported. A font or a graphics
+    /// state that stays is not a painted source and is not reported at all (R19; test
+    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`).
     silent: BTreeSet<u32>,
     traversed: BTreeSet<u32>,
     work: Vec<u32>,
@@ -569,6 +581,33 @@ fn smask_group(objs: &Objs, gs: &Dict) -> Option<u32> {
 fn plain_image(objs: &Objs, n: u32) -> bool {
     let Some(Object::Stream(s)) = objs.get(&n).map(|e| &e.obj) else { return false };
     s.dict.get("OC").is_none() && s.dict.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Image"))
+}
+
+/// R19: the members of `wanted` (object numbers) that exactly one reference in the whole file names, counting every
+/// object (stream dictionaries and direct containers included) and the trailer. A kept page's own content is read for
+/// silence only when each of its content streams is one of these: a stream that its `/Contents` lists twice, or that
+/// anything else refers to (a form, a pattern, a soft-mask group, a Type 3 glyph procedure, another page), is read in
+/// more than one place, so the marked-content state `read_scope` carries from stream to stream of the page could be
+/// wrong (a stream already read in the scope is skipped there). Over-reporting is accepted: a stream two pages share is
+/// not exclusive either (test `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`).
+fn named_once(objs: &Objs, trailer: &Dict, wanted: &BTreeSet<u32>, cancel: &CancellationToken) -> Result<BTreeSet<u32>> {
+    if wanted.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut count: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut refs: Vec<u32> = Vec::new();
+    for (i, o) in objs.values().map(|e| &e.obj).chain(trailer.entries.iter().map(|(_, v)| v)).enumerate() {
+        if i & 1023 == 0 {
+            check_cancel(cancel)?;
+        }
+        refs.clear();
+        refs_in(o, &mut refs);
+        for n in refs.iter().filter(|n| wanted.contains(n)) {
+            let c = count.entry(*n).or_insert(0);
+            *c = c.saturating_add(1);
+        }
+    }
+    Ok(count.into_iter().filter(|(_, c)| *c == 1).map(|(n, _)| n).collect())
 }
 
 impl<'a> Usage<'a> {
@@ -700,6 +739,9 @@ impl<'a> Usage<'a> {
         // joins them.
         let mut marked: Vec<bool> = Vec::new();
         for num in streams {
+            // A stream already read in this scope is not read again. A page scope with `page` true never meets one:
+            // each of its streams is named by exactly one reference (`named_once`, R19), so it is listed once and no
+            // nested read can have consumed it first.
             if !seen.insert(*num) {
                 continue;
             }
@@ -797,8 +839,9 @@ impl<'a> Usage<'a> {
 }
 
 /// Drops the flattened pages' sources no kept content names (module docs). Returns the painted sources
-/// (images, forms, patterns, shadings) that stay in the file without being silent (module docs, Silent: an image a
-/// kept page's own content draws with `Do` directly): some usage is not determined, a kept object only references
+/// (images, forms, patterns, shadings; fonts and graphics states are not painted sources) that stay in the file without
+/// being silent (module docs, Silent: an image the own content of a kept page draws with `Do` directly, the page's
+/// content streams being named by one reference each): some usage is not determined, a kept object only references
 /// them or places them where a viewer draws nothing from them, or a viewer draws them through anything else than that
 /// direct `Do`: over-reporting is accepted (R14-P1, R16, R17, R18).
 pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &CancellationToken) -> Result<Vec<u32>> {
@@ -847,7 +890,12 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         // (`Usage::resources`). A chain element is `plain` when the page, every node up to it and its `/Resources` value
         // are dictionary objects (R18: a stream there is read, so its names are reached, but nothing found through it
         // is silent).
-        for p in &doc.pages {
+        // R19: a page's content is page content for silence only when each of its content streams is named by exactly one
+        // reference of the file (`named_once`); otherwise it is still read, but nothing it draws is silent.
+        let contents: Vec<Vec<u32>> = doc.pages.iter().map(|p| objs.get(p).and_then(|e| e.obj.as_dict()).and_then(|d| crate::show_text::content_streams_of(objs, d)).unwrap_or_default()).collect();
+        let wanted: BTreeSet<u32> = contents.iter().flatten().copied().collect();
+        let once = named_once(objs, &doc.trailer, &wanted, cancel)?;
+        for (p, streams) in doc.pages.iter().zip(contents) {
             let Some(pe) = objs.get(p) else { continue };
             let Some(pd) = pe.obj.as_dict() else { continue };
             let mut chain: Vec<ResDict> = Vec::new();
@@ -861,8 +909,8 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
                 }
                 node = d.get("Parent").map(|x| res(objs, x)).and_then(|x| x.as_dict().map(|d| (d, nodes_plain && matches!(x, Object::Dict(_)))));
             }
-            let streams = crate::show_text::content_streams_of(objs, pd).unwrap_or_default();
-            u.scopes.push(Scope { streams, chain, page: true });
+            let page = streams.iter().all(|n| once.contains(n));
+            u.scopes.push(Scope { streams, chain, page });
         }
         u.drain(cancel)?;
         (u.reached, u.silent, u.incomplete)

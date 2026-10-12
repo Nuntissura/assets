@@ -1333,7 +1333,127 @@ fn painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R14-P1, R16, R17, R18 (V4-07): the DESCRIPTOR sentences about what happens to a painted source state the minimal draw
+/// R19 (N1): a kept page's own content is exclusive, the one place a `Do` can be silent, only when each of its content
+/// streams is named by exactly one reference of the file. The marked-content state that guards the silence is carried
+/// from stream to stream of the page, and a stream already read in the scope is skipped, so a stream that the page's
+/// `/Contents` lists twice, or that a form read first also names, would not feed its `BDC /OC` to the page. Page two
+/// (object 5) draws the image `/Im1` (object 10) after such a stream, and has a trailing content stream the strict
+/// parser refuses (an unknown operator), so the canonical rewrite leaves its streams as written. Every document below
+/// is reported (the image stays, `NotProven::PaintedSourceKept`); each control, with the streams named once, is silent.
+/// The last case is the over-report accepted by the rule: a stream two kept pages share, and the balanced form.
+#[test]
+fn painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere() {
+    let draw = "q 10 0 0 10 400 100 cm /Im1 Do Q";
+    let bad = "1 2 3 frob";
+    let form = |data: &str| stream_body("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", data.as_bytes());
+    // Page two takes `contents` as its /Contents (a second kept page, object 12, takes the same when `third`), the extra
+    // names `xobjects` in its /XObject, the content streams `streams` and the extra objects `more`.
+    let doc = |contents: &str, third: bool, streams: &[(u32, String)], xobjects: &str, more: Vec<(u32, Vec<u8>)>| -> Vec<u8> {
+        let res = format!("<< /XObject << /Im1 10 0 R {xobjects} >> /Properties << /MC0 45 0 R >> /Font << /F1 6 0 R >> >>");
+        let kids = if third { "[3 0 R 5 0 R 12 0 R] /Count 3" } else { "[3 0 R 5 0 R] /Count 2" };
+        let mut objs: Vec<(u32, Vec<u8>)> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, format!("<< /Type /Pages /Kids {kids} /MediaBox [0 0 612 792] >>").into_bytes()),
+            (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Im1 10 0 R >> /Font << /F1 6 0 R >> >> >>".to_vec()),
+            (4, stream_body("", format!("q 612 0 0 792 0 0 cm /Im1 Do Q BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
+            (5, format!("<< /Type /Page /Parent 2 0 R /Contents {contents} /Resources {res} >>").into_bytes()),
+            (6, HELVETICA.to_vec()),
+            (10, stream_body("/Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"SCAN-PIXELS-SECRET")),
+            (45, b"<< /Type /OCG /Name (Layer) >>".to_vec()),
+        ];
+        if third {
+            objs.push((12, format!("<< /Type /Page /Parent 2 0 R /Contents {contents} /Resources {res} >>").into_bytes()));
+        }
+        objs.extend(streams.iter().map(|(n, c)| (*n, stream_body("", c.as_bytes()))));
+        objs.extend(more);
+        build(&objs)
+    };
+    let s = |n: u32, c: &str| (n, c.to_string());
+    let list = |nums: &[u32]| format!("[{}]", nums.iter().map(|n| format!("{n} 0 R")).collect::<Vec<_>>().join(" "));
+    let mut red: Vec<String> = Vec::new();
+    for (what, pdf) in [
+        (
+            "a stream the /Contents array lists twice (the first copy opens BDC /OC, the second is skipped as already read)",
+            doc(&list(&[70, 70, 71, 72]), false, &[s(70, "/OC /MC0 BDC"), s(71, &format!("EMC {draw}")), s(72, bad)], "", Vec::new()),
+        ),
+        (
+            "the same list as an indirect array object",
+            doc("8 0 R", false, &[s(70, "/OC /MC0 BDC"), s(71, &format!("EMC {draw}")), s(72, bad)], "", vec![(8, list(&[70, 70, 71, 72]).into_bytes())]),
+        ),
+        (
+            "a stream that is also a form the page draws before it (the form read first opens BDC /OC and does not close it)",
+            doc(&list(&[70, 71, 72, 73]), false, &[s(70, "/Fx Do"), s(72, draw), s(73, bad)], "/Fx 71 0 R", vec![(71, form("/OC /MC0 BDC"))]),
+        ),
+        (
+            "the same with a form that closes its sequence (over-reported: the stream is named twice)",
+            doc(&list(&[70, 71, 72, 73]), false, &[s(70, "/Fx Do"), s(72, draw), s(73, bad)], "/Fx 71 0 R", vec![(71, form("/OC /MC0 BDC EMC"))]),
+        ),
+        ("a single content stream that two kept pages list (over-reported)", doc("70 0 R", true, &[s(70, draw)], "", Vec::new())),
+    ] {
+        reported_kept_image_too(what, &pdf, &mut red);
+    }
+    for (what, pdf) in [
+        ("a plain page: one content stream, named once", doc("70 0 R", false, &[s(70, draw)], "", Vec::new())),
+        (
+            "BDC /OC closed by EMC in the next stream, no stream listed twice",
+            doc(&list(&[70, 71, 72]), false, &[s(70, "/OC /MC0 BDC"), s(71, &format!("EMC {draw}")), s(72, bad)], "", Vec::new()),
+        ),
+        (
+            "a form the page draws is a stream of its own, not a content stream",
+            doc(&list(&[70, 71, 72, 73]), false, &[s(70, "/Fx Do"), s(71, "/OC /MC0 BDC EMC"), s(72, draw), s(73, bad)], "/Fx 80 0 R", vec![(80, form("/OC /MC0 BDC"))]),
+        ),
+    ] {
+        silent_drawn_image(what, &pdf, &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R19 (N2): the report lists painted sources only (image, form, pattern, shading). A font or a graphics state of the
+/// flattened page that stays because a kept page names it (`Tf`, `gs`) is not one: nothing is reported and
+/// `region_flattened` stays true. Control: when page two names neither, both are dropped from the file with the rest of
+/// the old page's sources, so they are sources of the flattened page that are pruned when named by no kept page, and
+/// unreported when one does.
+#[test]
+fn a_font_or_graphics_state_that_stays_is_not_a_painted_source() {
+    let doc = |page_two: &str| -> Vec<u8> {
+        build(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 612 792] /Resources << /XObject << /Im1 10 0 R >> /Font << /F1 6 0 R >> /ExtGState << /G1 30 0 R >> >> >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>".to_vec()),
+            (4, stream_body("", format!("q 612 0 0 792 0 0 cm /Im1 Do Q /G1 gs BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
+            (5, b"<< /Type /Page /Parent 2 0 R /Contents 7 0 R >>".to_vec()),
+            (6, HELVETICA.to_vec()),
+            (7, stream_body("", page_two.as_bytes())),
+            (10, stream_body("/Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"SCAN-PIXELS-SECRET")),
+            (30, b"<< /Type /ExtGState /LW 2 /HskMarker (GSTATE-MARKER) >>".to_vec()),
+        ])
+    };
+    let mut red: Vec<String> = Vec::new();
+    let pdf = doc("/G1 gs BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+    let mut open = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut open, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if !out.painted_sources_kept.is_empty() || !out.region_flattened() {
+        red.push(format!("a font and a graphics state page two names: painted_sources_kept {:?}, region_flattened {}", out.painted_sources_kept, out.region_flattened()));
+    }
+    if out.not_proven_reasons().contains(&hsk_studio_press::NotProven::PaintedSourceKept) {
+        red.push("a font and a graphics state page two names: PaintedSourceKept".into());
+    }
+    if gone(&out.bytes, "GSTATE-MARKER") || gone(&out.bytes, "Helvetica") {
+        red.push("the font or the graphics state page two names was dropped".into());
+    }
+    if !gone(&out.bytes, "SCAN-PIXELS-SECRET") {
+        red.push("the image nobody draws survives".into());
+    }
+    let pdf = doc("0 g 10 10 20 20 re f");
+    let mut open = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut open, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if !gone(&out.bytes, "GSTATE-MARKER") || !gone(&out.bytes, "Helvetica") {
+        red.push("control: a font and a graphics state no kept page names survive".into());
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R14-P1, R16, R17, R18, R19 (V4-07): the DESCRIPTOR sentences about what happens to a painted source state the minimal draw
 /// set and the reported cases exactly, and cite tests that exist. No sentence of the earlier rules (an annotation
 /// appearance a viewer draws, the mask, shading or soft-mask group rendered with a drawn object, the draws of nested
 /// content) is left in it.
@@ -1358,23 +1478,29 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported",
         "painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported",
         "painted_sources_rendered_with_a_drawn_image_are_reported",
+        "painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere",
+        "a_font_or_graphics_state_that_stays_is_not_a_painted_source",
     ];
     for needle in [
         "R14-P1",
         "R16",
         "R17",
         "R18",
+        "R19",
         "the minimal draw set",
-        "a source that stays is silent only when a kept page draws it with Do directly in its own content",
+        "a painted source that stays is silent only when a kept page draws it with Do directly in its own content",
+        "a painted source (image, form, pattern, shading) that stays is silent only under the minimal draw set",
+        "each of them named by exactly one reference of the file (R19: a stream the /Contents lists twice, or that anything else refers to, such as a form or another page, makes the page's content non-exclusive and nothing it draws is silent)",
+        "a font or graphics state that stays because a kept page names it is not a painted source and is not reported",
         "an image XObject stream without an /OC that a kept page draws with Do directly in its own content stream(s)",
         "outside BDC /OC marked content (from the BDC to its matching EMC, the nesting of BMC, BDC and EMC tracked per operator across the streams of the page; optional content is not evaluated and counts as possibly hidden)",
         "resolved through the page's own nearest resource entry (the nearest entry of the name in /Resources /XObject of the page and of its ancestors; an entry a nearer entry of the same name shadows is reached, not drawn)",
         "with a dictionary object, not a stream, as the page, every ancestor node, the /Resources value and the /XObject value on the path",
-        "every other source that stays is not pruned and is reported",
-        "every other source that stays is reported",
+        "every other painted source that stays is not pruned and is reported",
+        "every other painted source that stays is reported",
         "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font, a plain key of an object a kept page draws, an object used as a /Resources value or as a gated sub-dictionary, a name an operator uses for an object of another kind, any plain reference)",
         "or a viewer draws it through a form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance",
-        "or because a viewer draws it through anything but that direct Do (R18: a form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance, a Tf, scn, SCN or gs that selects without painting, a name an operator uses for an object of another kind)",
+        "or because a viewer draws it through anything but that direct Do (R18, R19: a page whose content streams are named elsewhere, a form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance, a Tf, scn, SCN or gs that selects without painting, a name an operator uses for an object of another kind)",
         "over-reporting is accepted",
     ] {
         assert!(hsk_studio_press::DESCRIPTOR.contains(needle), "DESCRIPTOR lacks {needle:?}");
@@ -1391,6 +1517,8 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "Invisible, Hidden or NoView",
         "each of the kind its operator draws",
         "dropped from the file unless a kept page draws them (redaction.flatten.purge",
+        "a source that stays is silent only",
+        "every other source that stays",
     ] {
         assert!(!hsk_studio_press::DESCRIPTOR.contains(stale), "DESCRIPTOR still says {stale:?}");
     }

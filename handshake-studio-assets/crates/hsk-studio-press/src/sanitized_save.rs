@@ -185,16 +185,18 @@ pub enum NotProven {
     NonCanonicalContent,
     /// An image, form, pattern or shading a flattened page reached is still in the saved file and is not silent
     /// (R18, the minimal draw set: silent only when it is an image XObject stream without an `/OC` that a kept page
-    /// draws with `Do` directly in its own content stream(s), outside `BDC /OC` marked content, resolved through the
-    /// page's own nearest resource entry with a dictionary, not a stream, at every step): some content's usage
-    /// could not be determined, a kept object only references it or places it where a viewer draws nothing from it (a
+    /// draws with `Do` directly in its own content stream(s), each named by exactly one reference of the file (R19),
+    /// outside `BDC /OC` marked content, resolved through the page's own nearest resource entry with a dictionary, not a
+    /// stream, at every step): some content's usage could not be determined, a kept object only references it or
+    /// places it where a viewer draws nothing from it (a
     /// catalog `/AF`, a `/Names` or `/Dests` tree, an entry of a kept page's `/Resources` outside `/XObject`
     /// `/Pattern` `/Shading` `/ExtGState` `/Font`, a plain key of an object a kept page draws, an object used as a
     /// `/Resources` value or as a gated sub-dictionary, a name an operator uses for an object of another kind, an
     /// entry a nearer entry of the same name shadows, any other plain reference), or a viewer draws it through
     /// anything but that direct `Do` (a form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask,
-    /// shading or annotation appearance; over-reporting is accepted);
-    /// `RedactedOutput::painted_sources_kept`; R13-F6, R14-P1, R16, R17, R18; tests
+    /// shading or annotation appearance, a page whose content streams are named elsewhere, R19; over-reporting is
+    /// accepted); a font or graphics state is not a painted source and is not reported (R19);
+    /// `RedactedOutput::painted_sources_kept`; R13-F6, R14-P1, R16, R17, R18, R19; tests
     /// `painted_sources_under_a_region_do_not_survive`,
     /// `painted_source_drawn_directly_by_a_kept_page_is_not_reported`,
     /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
@@ -211,7 +213,9 @@ pub enum NotProven {
     /// `painted_source_drawn_by_an_image_or_shading_stream_read_as_content_is_reported`,
     /// `painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported`,
     /// `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
-    /// `painted_sources_rendered_with_a_drawn_image_are_reported`).
+    /// `painted_sources_rendered_with_a_drawn_image_are_reported`,
+    /// `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`,
+    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`).
     PaintedSourceKept,
 }
 
@@ -1326,16 +1330,18 @@ pub struct RedactedOutput {
     pub xfa_removed: bool,
     /// Images, forms, patterns and shadings (object numbers in `bytes`) a flattened page reached that
     /// stay in the saved file and are not silent (R18, the minimal draw set: silent only when the source is an image
-    /// XObject stream without an `/OC` that a kept page draws with `Do` directly in its own content stream(s), outside
-    /// `BDC /OC` marked content, resolved through the page's own nearest resource entry with a dictionary, not a
-    /// stream, at every step): some content's usage could not be determined, a kept object only references them or
+    /// XObject stream without an `/OC` that a kept page draws with `Do` directly in its own content stream(s), each
+    /// named by exactly one reference of the file (R19), outside `BDC /OC` marked content, resolved through the page's
+    /// own nearest resource entry with a dictionary, not a stream, at every step): some content's usage could not be
+    /// determined, a kept object only references them or
     /// places them where a viewer draws nothing from them (a catalog structure, a kept page's `/Resources` entry it
     /// does not draw, a plain key of an object a kept page draws, an object used as a `/Resources` value or as a
     /// gated sub-dictionary, a name an operator uses for an object of another kind, an entry a nearer entry of the
     /// same name shadows, any other plain reference), or a viewer draws them through anything but that direct `Do` (a
-    /// form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance;
-    /// over-reporting is accepted); not pruned, the kept structure is not edited; non-empty is
-    /// `NotProven::PaintedSourceKept` (R13-F6, R18; tests
+    /// form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance, a
+    /// page whose content streams are named elsewhere, R19; over-reporting is accepted); not pruned, the kept
+    /// structure is not edited; only painted sources are listed: a font or graphics state that stays is not one and is
+    /// not reported (R19); non-empty is `NotProven::PaintedSourceKept` (R13-F6, R18, R19; tests
     /// `painted_sources_under_a_region_do_not_survive`,
     /// `painted_source_drawn_directly_by_a_kept_page_is_not_reported`,
     /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
@@ -1352,7 +1358,9 @@ pub struct RedactedOutput {
     /// `painted_source_drawn_by_an_image_or_shading_stream_read_as_content_is_reported`,
     /// `painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported`,
     /// `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
-    /// `painted_sources_rendered_with_a_drawn_image_are_reported`).
+    /// `painted_sources_rendered_with_a_drawn_image_are_reported`,
+    /// `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`,
+    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`).
     pub painted_sources_kept: Vec<u32>,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
