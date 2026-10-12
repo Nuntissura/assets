@@ -662,6 +662,8 @@ fn frame_menu(
     let swap_menu = ui.menu_button("Swap with…", |ui| {
         if let Some(second) = destinations(ui, controller, state, "swap-destinations", size, report)
         {
+            let before_generation = controller.snapshot().generation;
+            let rejection_start = report.rejected.len();
             command(
                 controller,
                 host,
@@ -671,6 +673,11 @@ fn frame_menu(
                 },
                 report,
             );
+            let trace = serde_json::json!({"first":f.frame.raw(),"second":second.raw(),
+                "pass":ui.ctx().cumulative_pass_nr(),"before_generation":before_generation,
+                "after_generation":controller.snapshot().generation,
+                "dispatch_rejections":report.rejected.iter().skip(rejection_start).collect::<Vec<_>>()});
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("kumihimo-swap-result"), trace));
         }
     });
     record(

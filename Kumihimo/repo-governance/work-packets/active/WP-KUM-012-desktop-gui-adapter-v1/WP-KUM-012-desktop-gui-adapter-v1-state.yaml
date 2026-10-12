@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 17
+generation: 18
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -168,6 +168,15 @@ proof:
     popup; valid group fixture restores/projects child, then remaximizes and confirms hidden child before original
     move assertions; Compact checks actual shipped glyph/Tabs/enabled IDs. All29/original14 prefix exact; no
     cold-hidden-context product claim, Core guard/tool binding unchanged; runtime pending.
+- kind: actual_owning27_and_scoped_tab_helper_swap_receipt
+  baseline_revision: e2b9459646989b325e88f9fcab550640477ebb2e
+  source_fence17_raw_sha256: 21416a17f5472b67edde98bde6a0f5d8176dc1a5a83a30f73564ae03a5eedb03
+  source_fence17_lf_sha256: 9d3f89c3e8151b8bb268d326b4d91969279fd642dda2b879c449298bd6b11281
+  observed: Actual owning29 compile15.90s/run4.11s:27 PASS, all four profile/touch/keyboard/settings case passed.
+    Float/redock advanced to unchanged-layout Swap assertion; valid group move/full members passed, then helper
+    looked for hidden Demo.text_view menu instead of requested tab owner. Held chrome/tests candidate scopes
+    existing actual Tabs pointer to computed owner without tool retarget, adds bounded actual Swap dispatch
+    receipt and existing trace messages to remaining assertions. Original29/prefix14 exact, no guessed Swap/Core
+    change; runtime pending.
 blockers: []
-next_action: Run one affected owning29 target on held popup and actual valid-fixture repairs; captures/native
-  only after green
+next_action: Run one affected owning29 target on corrected tab owner and actual Swap receipt candidate

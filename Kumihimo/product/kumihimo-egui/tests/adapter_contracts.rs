@@ -1006,6 +1006,7 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
                         ,"pass":ctx.cumulative_pass_nr(),
                         "control_hit":ctx.data(|data|data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-control-hit"))),
                         "group_move_result":ctx.data(|data|data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-group-move-result"))),
+                        "swap_result":ctx.data(|data|data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-swap-result"))),
                         "focused_response":ctx.memory(|memory|memory.focused()).and_then(|id|ctx.read_response(id))
                             .map(|response|serde_json::json!({"actual_id":format!("{:?}",response.id),
                                 "rect":[response.rect.min.x,response.rect.min.y,response.rect.max.x,response.rect.max.y],
@@ -1044,7 +1045,7 @@ fn ui_click_id(h: &mut egui_kittest::Harness<'_, UiProof>, id: &str) {
             .controls
             .iter()
             .find(|c| c.id == id && c.enabled)
-            .unwrap_or_else(|| panic!("current pointer target {id}"))
+            .unwrap_or_else(|| panic!("current pointer target {id}; trace: {:?}", h.state().trace))
             .bounds,
     )
     .center();
@@ -1067,7 +1068,13 @@ fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
                 .controls
                 .iter()
                 .find(|c| c.id == format!("frame/{}/{suffix}", frame.raw()))
-                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "current frame {} menu {suffix}; trace: {:?}",
+                        frame.raw(),
+                        state.trace
+                    )
+                })
                 .bounds,
         )
         .center();
@@ -1145,8 +1152,9 @@ fn ui_tab_actions(h: &mut egui_kittest::Harness<'_, UiProof>, view: core::ViewId
         .chrome
         .pages
         .insert(format!("tabs/{}", frame.raw()), index);
+    h.key_press(egui::Key::Escape);
     h.run_steps(3);
-    ui_click(h, "Tabs / groups");
+    ui_click_id(h, &format!("frame/{}/tabs-menu", frame.raw()));
     ui_click_id(h, &format!("view/{}/actions-menu", view.raw()));
 }
 fn ui_pointer(
@@ -1183,9 +1191,16 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     ui_click(&mut h, "Move tab first");
     assert_eq!(
         h.state().demo.controller.snapshot().frames[&frame].views[0],
-        last
+        last,
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
     );
-    assert_eq!(h.state().report.canonical_views, 16);
+    assert_eq!(
+        h.state().report.canonical_views,
+        16,
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     let group = {
         let state = h.state_mut();
         let core::Change::Created(EntityId::Group(group)) = command(
@@ -1220,13 +1235,21 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     ui_click(&mut h, "Tabs / groups");
     ui_click(&mut h, "Group: Proof group");
     ui_click(&mut h, "Collapse group");
-    assert!(h.state().demo.controller.snapshot().groups[&group].collapsed);
+    assert!(
+        h.state().demo.controller.snapshot().groups[&group].collapsed,
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     ui_click(&mut h, "Tabs / groups");
     ui_click(&mut h, "Group: Proof group");
     ui_click(&mut h, "Expand group");
-    assert!(!h.state().demo.controller.snapshot().groups[&group].collapsed);
+    assert!(
+        !h.state().demo.controller.snapshot().groups[&group].collapsed,
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     // Derive the nested context through the actual restore route before hiding it again.
@@ -1234,21 +1257,27 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     ui_click(&mut h, "Restore workspace");
     let destination = h.state().demo.controller.snapshot().views[&h.state().demo.canvas_view].frame;
     let destination_workspace = h.state().demo.controller.snapshot().frames[&destination].workspace;
-    assert!(h
-        .state()
-        .demo
-        .controller
-        .snapshot()
-        .contexts
-        .contains_key(&destination_workspace));
+    assert!(
+        h.state()
+            .demo
+            .controller
+            .snapshot()
+            .contexts
+            .contains_key(&destination_workspace),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Maximize frame");
-    assert!(!h
-        .state()
-        .report
-        .controls
-        .iter()
-        .any(|control| control.id == format!("frame/{}/menu", destination.raw())));
+    assert!(
+        !h.state()
+            .report
+            .controls
+            .iter()
+            .any(|control| control.id == format!("frame/{}/menu", destination.raw())),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Tabs / groups");
     ui_click(&mut h, "Group: Proof group");
     ui_click(&mut h, "Move entire canonical group to\u{2026}");
@@ -1260,22 +1289,37 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
         "group destination stage; trace: {:?}",
         h.state().trace
     );
-    assert!(snapshot.frames[&destination].views.contains(&original[0]));
-    assert!(snapshot.frames[&destination].views.contains(&last));
+    assert!(
+        snapshot.frames[&destination].views.contains(&original[0]),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
+    assert!(
+        snapshot.frames[&destination].views.contains(&last),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     ui_tab_actions(&mut h, original[2]);
     ui_click(&mut h, "Close (host/provider approval)");
-    assert!(h.state().demo.controller.snapshot().views[&original[2]]
-        .closed
-        .is_none());
-    assert!(h
-        .state()
-        .demo
-        .host
-        .receipts
-        .iter()
-        .any(|r| r.view == original[2] && r.close_approved == Some(false)));
+    assert!(
+        h.state().demo.controller.snapshot().views[&original[2]]
+            .closed
+            .is_none(),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
+    assert!(
+        h.state()
+            .demo
+            .host
+            .receipts
+            .iter()
+            .any(|r| r.view == original[2] && r.close_approved == Some(false)),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     {
@@ -1296,9 +1340,15 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     ui_click(&mut h, "Move tab first");
     assert_eq!(
         h.state().demo.controller.snapshot().frames[&frame].views,
-        before
+        before,
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
     );
-    assert!(!h.state().report.rejected.is_empty());
+    assert!(
+        !h.state().report.rejected.is_empty(),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
 }
 
 #[test]
@@ -1307,16 +1357,27 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Preview in-app float");
-    assert!(h.state().adapter.chrome.preview.is_some());
-    assert!(!h
-        .state()
-        .demo
-        .controller
-        .snapshot()
-        .floats
-        .contains_key(&frame));
+    assert!(
+        h.state().adapter.chrome.preview.is_some(),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
+    assert!(
+        !h.state()
+            .demo
+            .controller
+            .snapshot()
+            .floats
+            .contains_key(&frame),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Cancel preview (Escape)");
-    assert!(h.state().adapter.chrome.preview.is_none());
+    assert!(
+        h.state().adapter.chrome.preview.is_none(),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Preview in-app float");
     assert!(
@@ -1325,13 +1386,16 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
         h.state().trace
     );
     ui_click(&mut h, "Commit preview");
-    assert!(h
-        .state()
-        .demo
-        .controller
-        .snapshot()
-        .floats
-        .contains_key(&frame));
+    assert!(
+        h.state()
+            .demo
+            .controller
+            .snapshot()
+            .floats
+            .contains_key(&frame),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Preview redock");
     assert!(
@@ -1340,13 +1404,16 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
         h.state().trace
     );
     ui_click(&mut h, "Commit preview");
-    assert!(!h
-        .state()
-        .demo
-        .controller
-        .snapshot()
-        .floats
-        .contains_key(&frame));
+    assert!(
+        !h.state()
+            .demo
+            .controller
+            .snapshot()
+            .floats
+            .contains_key(&frame),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Equalize workspace");
     let second = h.state().demo.controller.snapshot().workspaces[&h.state().demo.root].frames[1];
@@ -1354,13 +1421,26 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Swap with\u{2026}");
     ui_click(&mut h, &format!("Frame {}", second.raw()));
-    assert_ne!(h.state().demo.controller.snapshot().layouts, before);
+    assert_ne!(
+        h.state().demo.controller.snapshot().layouts,
+        before,
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Maximize frame");
-    assert!(!h.state().demo.controller.snapshot().maximized.is_empty());
+    assert!(
+        !h.state().demo.controller.snapshot().maximized.is_empty(),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Restore workspace");
-    assert!(h.state().demo.controller.snapshot().maximized.is_empty());
+    assert!(
+        h.state().demo.controller.snapshot().maximized.is_empty(),
+        "canonical/widget stage; trace: {:?}",
+        h.state().trace
+    );
 }
 
 #[test]
