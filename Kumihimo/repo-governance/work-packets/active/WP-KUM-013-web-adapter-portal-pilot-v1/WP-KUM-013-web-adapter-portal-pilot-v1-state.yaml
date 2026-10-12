@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 4
+generation: 5
 phase: active
 owner: ROLE-KUM-CODER-04
 changed_files:
@@ -38,14 +38,22 @@ proof:
   source_revision: e40cf523efb522b75cf630e8a35ec726e6d365da
   observed: FullSpec17/contract/sixcases published. Both offline metadata targets PASS; web closures15Windows/23WASM
     nodes, cachedchecksum/MSRV/tooling verified; original317lockrecords and139Windowsnodes unchanged. MatchingCLI0.2.128
-    and existingstable1.91.1 wasmstd observed. Lead admits14disjoint source paths only after this publication
-    and independent origin canonical re-read; no runtime/WASM/browser proof yet.
+    and existingstable1.91.1 wasmstd observed. Lead admits14disjoint source paths only after this publication and
+    independent origin canonical re-read; no runtime/WASM/browser proof yet.
 - kind: source_candidate_and_compile
   source_revision: 71d5b05bb9f7a6aaaca5d550bb73ed714626bda6
   proof_revision: a65d19e811e950206cde3466efce72b6b97c91a3
   observed: Four-person team14 source files published and held. Affected web default all-target check PASS1.58s;
-    six owning native consumers PASS compile11.53s/run0.41s, short external package-cache lock wait preserved.
-    WASM/browser unexecuted. Exact scoped immutable inputs permit disjoint012 repairs, shared manifests/lock held.
+    six owning native consumers PASS compile11.53s/run0.41s, short external package-cache lock wait preserved. WASM/browser
+    unexecuted. Exact scoped immutable inputs permit disjoint012 repairs, shared manifests/lock held.
+- kind: actual_wasm_browser_startup_and_causal_float_failure
+  rust_revision: 71b9acc630da
+  diagnostic_revision: df4b3b0ac861
+  observed: Defaultcheck2.49s/sixconsumercompile6.21s/run0.39s/WASM3.51s PASS. ExactmatchingCLI generated realmodule;
+    actualdefault3browserstartupPASS after strictprovider-localcliprounding repair, preservedfractionalcase. Fullbrowser
+    case001 normal/narrow count/geometry passed; case002 realFloat rejected invalid_geometry. Diagnostic retains
+    trustedclick, requestedx70/y238.5/w292.25/h560, queuedactualviewportx46/y-167.5/w1193/h560 and failurePNG; actualbrowsercleanuptrue.
+    OriginalDOMowner pilot.mjs minimalmeasurementflush/freshcanonicalparent-containedfloatcandidate held; nofullbrowserPASS.
 blockers: []
-next_action: Finish focused web consumers, serial WASM build/exact matching CLI generation and actual quiet browser
-  batch; source repairs only for exact failures
+next_action: Publish singleDOMfloatrepair, reuseunchangedcompiledWASM withfreshbindingmanifest; actualoriginalbrowsercases,
+  causalrepairifneeded, independenteval/publication

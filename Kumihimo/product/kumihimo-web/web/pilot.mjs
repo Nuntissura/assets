@@ -108,7 +108,24 @@ document.addEventListener('click', event => {
       break;
     case 'move-frame': if (workspace) adapter.command({ kind: 'move_frame', frame: frame.id, destination: workspace.id, index: 0 }); break;
     case 'move-view': if (view && destination) adapter.command({ kind: 'move_view', view: view.id, destination: destination.id, index: 0 }); break;
-    case 'float': previewCommit({ kind: 'float', frame: frame.id, rect: { ...frame.rect, x: frame.rect.x + 24, y: frame.rect.y + 24 } }); break;
+    case 'float': {
+      const owner = adapter;
+      const frameId = frame.id;
+      owner.queueMeasure();
+      owner.whenIdle().then(() => {
+        if (adapter !== owner || owner.disposed) return;
+        const current = owner.snapshot();
+        const target = list(current?.frames).find(item => item.id === frameId);
+        const viewport = list(current?.workspaces).find(item => item.id === target?.workspace)?.rect;
+        if (!target?.rect || !viewport) return;
+        const rect = { ...target.rect,
+          x: Math.max(viewport.x, Math.min(target.rect.x + 24, viewport.x + viewport.width - target.rect.width)),
+          y: Math.max(viewport.y, Math.min(target.rect.y + 24, viewport.y + viewport.height - target.rect.height)) };
+        const result = owner.preview({ kind: 'float', frame: frameId, rect });
+        if (result.ok) owner.commitPreview();
+      }).catch(() => owner.status('Float request failed. Current workspace retained.', 'error'));
+      break;
+    }
     case 'redock': adapter.command({ kind: 'redock', frame: frame.id }); break;
     case 'expand-selected': adapter.command({ kind: 'expand', frame: frame.id, expanded: !frame.expanded }); break;
     case 'maximize': adapter.command({ kind: 'maximize', frame: frame.id }); break;
