@@ -1076,6 +1076,29 @@ fn draw(
         egui::RawInput::default(),
     )
 }
+fn settle_ui(
+    renderer: &mut OffscreenRenderer,
+    adapter: &mut DesktopAdapter,
+    composition: &mut Composition,
+    surface: SurfaceBinding,
+) -> Result<f64> {
+    // Finish egui Area's initial fade with one bounded, monotonic UI draw.
+    let settle_time = renderer
+        .context
+        .input(|input| input.time + f64::from(input.predicted_dt))
+        + f64::from(renderer.context.style().animation_time);
+    renderer.capture(
+        adapter,
+        &mut composition.controller,
+        surface,
+        &mut composition.host,
+        egui::RawInput {
+            time: Some(settle_time),
+            ..Default::default()
+        },
+    )?;
+    Ok(settle_time)
+}
 pub fn plan_batch(path: &Path, now_ms: u64) -> Result<()> {
     let mut composition = new_composition()?;
     let mut renderer = OffscreenRenderer::new(64 * 1024 * 1024)?;
@@ -1209,21 +1232,7 @@ pub fn compose_batch(manifest_path: &Path, output_root: &Path, now_ms: u64) -> R
         composition
             .host
             .prepare_gpu(&mut renderer, surface, false)?;
-        // Finish egui Area's initial fade before comparing consecutive static frames.
-        let settle_time = renderer
-            .context
-            .input(|input| input.time + f64::from(input.predicted_dt))
-            + f64::from(renderer.context.style().animation_time);
-        renderer.capture(
-            &mut adapter,
-            &mut composition.controller,
-            surface,
-            &mut composition.host,
-            egui::RawInput {
-                time: Some(settle_time),
-                ..Default::default()
-            },
-        )?;
+        let settle_time = settle_ui(&mut renderer, &mut adapter, &mut composition, surface)?;
         let composed = draw(&mut renderer, &mut adapter, &mut composition, surface)?;
         let scene_pixel = sample_slot(
             &composed.image,
@@ -1408,6 +1417,12 @@ pub fn compose_batch(manifest_path: &Path, output_root: &Path, now_ms: u64) -> R
     composition
         .host
         .prepare_gpu(&mut renderer, replacement_surface, true)?;
+    let recovery_settle_time = settle_ui(
+        &mut renderer,
+        &mut adapter,
+        &mut composition,
+        replacement_surface,
+    )?;
     draw(
         &mut renderer,
         &mut adapter,
@@ -1429,6 +1444,6 @@ pub fn compose_batch(manifest_path: &Path, output_root: &Path, now_ms: u64) -> R
     }
     write_json(
         &output_root.join("composition-evidence.json"),
-        &serde_json::json!({"protocol":"kumihimo.composition-evidence.v1","cases":diagnostics,"input_receipts":composition.host.input_receipts,"renderer_replacement":{"old_binding_rejected":old_rejected,"retained_ids":true,"reupload_source":"original exact retained engine CPU RGBA; original capture request preserved"},"unsupported_popout":"raw engine/GPU context native popout unsupported before commit; source retained","limitations":["external process software PNG copy; no native Windows Servo/zero-copy","no animation frame-ready, freeze/throttle or arbitrary page-state restoration","headless owned WebDriver input external; 2D/3D host input injected","normal/narrow/injected-scale1.5; no physical display/input proof"]}),
+        &serde_json::json!({"protocol":"kumihimo.composition-evidence.v1","cases":diagnostics,"input_receipts":composition.host.input_receipts,"renderer_replacement":{"old_binding_rejected":old_rejected,"retained_ids":true,"ui_settling":{"draws":1,"input_time":recovery_settle_time},"reupload_source":"original exact retained engine CPU RGBA; original capture request preserved"},"unsupported_popout":"raw engine/GPU context native popout unsupported before commit; source retained","limitations":["external process software PNG copy; no native Windows Servo/zero-copy","no animation frame-ready, freeze/throttle or arbitrary page-state restoration","headless owned WebDriver input external; 2D/3D host input injected","normal/narrow/injected-scale1.5; no physical display/input proof"]}),
     )
 }

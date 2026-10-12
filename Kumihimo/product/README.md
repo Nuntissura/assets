@@ -69,6 +69,58 @@ If startup fails, inspect the structured constructor/route error and current pac
 
 </topic>
 
+<topic id="servo-and-graphics-bridge" ingestable="true">
+
+## Optional browser and graphics experiment
+
+`kumihimo-render-bridge` 0.1 is separately selectable. Its default uses only the Rust standard library: complete content identity, bounded RGBA frames, dirty scheduling, single-scale input mapping and lifecycle reconciliation. The optional `desktop` feature connects those contracts to the existing Controller/DesktopAdapter and WGPU. Core and content do not link Servo. Logical frame/tab counts remain a host policy; the sample uses four providers and bounds live engines to two.
+
+WP014 has observed two genuine Servo 0.6.0 Linux x64 software processes under WSL and Windows x64 DX12 composition of their copied pixels alongside a 2D provider and real transformed/depth-tested 3D geometry. Normal, narrow, injected scale1.5 and moved/resized scenes use the same canonical slots. Eleven actual engine PNGs retain independent request/timing/hash receipts; nine GPU PNGs cover composition, scene input, an unloaded placeholder, fresh page reload and renderer replacement. Static comparisons preserve full RGBA equality with no extra browser uploads or scene renders after one bounded GUI startup-fade settling draw. The packet's independent evaluation and publication state are the completion authority.
+
+This is an external-process CPU-copy experiment. Native Windows Servo, linked libservo, zero-copy sharing, video/YouTube/audio, physical input/displays, ARM and performance improvements are unproven. Freeze, throttle, direct engine animation/frame-ready notification and raw engine/GPU-context native popout transfer report Unsupported. Existing native-window machinery does not prove engine-context migration. Hidden means no host capture; it does not mean suspended or memory released. PageReload restores the declared page, not arbitrary JavaScript/media state.
+
+From the project root, retain the configured stable Cargo target/cache and use the project's preparation gate before builds:
+
+```powershell
+cargo check --manifest-path product/Cargo.toml -p kumihimo-render-bridge --all-targets --locked --offline -j 2
+cargo check --manifest-path product/Cargo.toml -p kumihimo-render-bridge --all-targets --features desktop --locked --offline -j 2
+cargo test --manifest-path product/Cargo.toml -p kumihimo-render-bridge --features desktop --test bridge_contracts --locked --offline -j 2
+New-Item -ItemType Directory -Force .local/render-bridge
+cargo run --manifest-path product/Cargo.toml -p kumihimo-render-bridge --features desktop --example compose --locked --offline -j 2 -- --plan-output .local/render-bridge/capture-plan.json
+```
+
+The plan is geometry/intention data with no running capture deadline. Configure an ignored JSON file with `runtime_executable`, `fixture_root`, `output_root`, optional `child_environment` and distinct `ports`. Paths are consumer-controlled; `fixture_root` contains the shipped `browser-a.html` and `browser-b.html`. Native library paths belong only in the child environment. The pinned GNU release is 49,202,383 bytes, archive SHA256 `ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0`; executable `servo/servoshell` SHA256 `cb9267dfdbd89d0678cb4859857708a2c3c50affff2c091770ff73341263b09d`, version `Servo 0.6.0-c78d2c206`. Verify the actual loader closure and CLI before rendering; do not build Servo or install its toolchain for this experiment.
+
+The shipped Linux entrypoints are:
+
+```text
+python3 product/kumihimo-render-bridge/tools/servo-worker.py --config CONFIG.json
+python3 product/kumihimo-render-bridge/tools/servo-batch.py --config CONFIG.json --plan CAPTURE-PLAN.json
+```
+
+Run them only through a host-owned controller inside a fresh private network namespace. Servo's WebDriver binds all interfaces. The controller must independently inspect the live worker's exact PID/starttime/netns from the outside kernel, only-loopback interfaces/routes, disabled forwarding and a distinct host namespace before EACH engine launch/reload. After LISTENER_READY, independently verify the actual engine owns the socket and that neither outside Linux nor Windows can connect. No public endpoint or self-issued worker receipt is allowed. Initialization emits PRELAUNCH and waits; it starts no engine without admission. The trusted private stdin is the authority boundary, not the literal issuer label.
+
+All JSON lines use `protocol: "kumihimo.servo-worker.v1"`. The deterministic batch emits challenges and expects these host replies:
+
+- PRELAUNCH: `op: "admit"`, fresh `receipt` binding worker, challenge request ID, unique receipt ID, observed/expires UTC times (maximum30s), pinned runtime hash, independent evidence path and the inspected namespace facts.
+- LISTENER_READY: `op: "listener_admit"`, `view_key`, equally fresh receipt additionally binding exact engine/port and actual listener ownership/outside denial.
+- CAPTURE_READY: `op: "capture"`, unchanged `view_key`, `case_name`, `capture_challenge`, and the complete immutable intent plus `deadline_ms = actual host issue UTC + 15000`. Bind all eight Scope fields, geometry revision, engine incarnation, renderer epoch, request/sequence and physical dimensions. Do not refresh or backdate an issued request.
+- UNLOAD_UNKNOWN: `op: "reconcile"`, `view_key`, fresh receipt binding the exact engine, worker, operation request ID and tracked descendant set. Independently prove exact PID/starttime absence and no live descendants before asserting unloaded. A permission failure is Unknown, not absence.
+
+`FRAME` records real DOM dimensions/input state, engine identity, request, PNG path/hash, raw bounds/format and completion times. Independently hash the received PNG and canonical UTF-8 request JSON (sorted keys, compact separators), record actual host issue/completion UTC, and add each manifest row's `host_receipt {issued_ms, received_ms, request_sha256, png_sha256, evidence_ref}`. Completion must precede its untouched deadline. For the first A incarnation's unload, add top-level `unload_receipt` using protocol `kumihimo.independent-engine-exit.v1`, original complete scope, engine incarnation1/exact process identity, matching `operation_request_id`, observed UTC, confirmed absence/no descendants and evidence reference. Keep `unload_request_id` unchanged. The provider's public DTOs and `confirm_engine_exit` define the exact shape; an unmodified worker manifest intentionally lacks these independent host facts.
+
+Consume those same accepted bytes on Windows:
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-render-bridge --features desktop --example compose --locked --offline -j 2 -- --input-manifest MANIFEST.json --output-root .local/render-bridge
+```
+
+PNG paths stay relative beneath the manifest directory. Do not use `--now-ms` to make stale data pass; normal operation uses actual UTC and original accepted receipt times. Outputs include PNG/JSON scenes and `composition-evidence.json` with engine PNG/RGBA provenance, canonical slots, mapped picks, upload/depth counts, recovery and support limits. Open every output image and compare it to its actual engine source before accepting rendering. A static mismatch writes the rejected frame and causal counter/first-pixel diagnostic.
+
+Default bounds are message4MiB, PNG/raw RGBA16MiB, side2048, one pending capture per view, coalesced dirty work and a240s scenario. Startup30s, request15s and graceful shutdown10s are product timers; no outer Cargo kill timer. On failure, inspect the named engine log, structured event and independent ownership record; retain good pixels or the logical placeholder. Resolve the exact cause before retry (maximum3), reconcile uncertain lifecycle outcomes, and stop only exact session-owned PID/starttime-validated processes. EOF does not certify cleanup. Preserve unrelated processes and caches. `inspect`, `visibility`, `policy`, `resize`, `input`, `mutate`, `capture`, `unload` and `reconcile` expose bounded model routes; actual CPU ticks/RSS are observations, not general savings promises.
+
+</topic>
+
 <topic id="startup" ingestable="true">
 
 ## Start and check
