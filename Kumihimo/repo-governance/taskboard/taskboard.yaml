@@ -95,16 +95,16 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
-  next_action: Hold coherent17fence after demo init/native source repair; lead retry13 failed consumers only, then
-    actual raster/native/UIA and independent eval; parallel013 source continues
+  next_action: Complete capture scale repair and causal UIA activation repair with team; publish coherent source;
+    retry only affected raster/native cases; independent eval then closure
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
   title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml
-  next_action: Coder04 four-person team implements14 admitted source paths in parallel with desktop team; root holds
-    shared manifests/lock/Git and serial Cargo/generated WASM/browser lane
+  next_action: Finish focused web consumers, serial WASM build/exact matching CLI generation and actual quiet browser
+    batch; source repairs only for exact failures
   blockers: []
 - wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
   title: Prove browser and graphics integration boundaries

@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 3
+generation: 4
 phase: active
 owner: ROLE-KUM-CODER-04
 changed_files:
@@ -13,6 +13,19 @@ changed_files:
 - product/Cargo.lock
 - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-dependency-readiness.yaml
 - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-evaluation.yaml
+- product/kumihimo-web/src/host.rs
+- product/kumihimo-web/src/projection.rs
+- product/kumihimo-web/src/wasm.rs
+- product/kumihimo-web/src/wire.rs
+- product/kumihimo-web/tests/web_contracts.rs
+- product/kumihimo-web/tools/browser-proof.py
+- product/kumihimo-web/tools/build-web.ps1
+- product/kumihimo-web/tools/serve.py
+- product/kumihimo-web/web/adapter.mjs
+- product/kumihimo-web/web/index.html
+- product/kumihimo-web/web/pilot.mjs
+- product/kumihimo-web/web/restricted.html
+- product/kumihimo-web/web/workspace.css
 proof:
 - kind: local_full_contract_preparation
   source_revision: 63f7c40ec4804d09545f12cfb1e8f2d5968ad584
@@ -25,8 +38,14 @@ proof:
   source_revision: e40cf523efb522b75cf630e8a35ec726e6d365da
   observed: FullSpec17/contract/sixcases published. Both offline metadata targets PASS; web closures15Windows/23WASM
     nodes, cachedchecksum/MSRV/tooling verified; original317lockrecords and139Windowsnodes unchanged. MatchingCLI0.2.128
-    and existingstable1.91.1 wasmstd observed. Lead admits14disjoint source paths only after this publication and
-    independent origin canonical re-read; no runtime/WASM/browser proof yet.
+    and existingstable1.91.1 wasmstd observed. Lead admits14disjoint source paths only after this publication
+    and independent origin canonical re-read; no runtime/WASM/browser proof yet.
+- kind: source_candidate_and_compile
+  source_revision: 71d5b05bb9f7a6aaaca5d550bb73ed714626bda6
+  proof_revision: a65d19e811e950206cde3466efce72b6b97c91a3
+  observed: Four-person team14 source files published and held. Affected web default all-target check PASS1.58s;
+    six owning native consumers PASS compile11.53s/run0.41s, short external package-cache lock wait preserved.
+    WASM/browser unexecuted. Exact scoped immutable inputs permit disjoint012 repairs, shared manifests/lock held.
 blockers: []
-next_action: Coder04 four-person team implements14 admitted source paths in parallel with desktop team; root holds
-  shared manifests/lock/Git and serial Cargo/generated WASM/browser lane
+next_action: Finish focused web consumers, serial WASM build/exact matching CLI generation and actual quiet browser
+  batch; source repairs only for exact failures

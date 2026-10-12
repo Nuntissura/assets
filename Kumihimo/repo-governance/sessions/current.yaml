@@ -21,8 +21,8 @@ operator_scope:
   parallel_coding_and_team_expansion_authorized: true
   live_authorization:
   - 'Operator directly instructed this lead chat: finish all WPs, commit/push after each, team-deliberate causal
-    blockers; session scope expansion approved; no massive tests/checks/reviews for small blockers; strategize expensive
-    Cargo and value time'
+    blockers; session scope expansion approved; no massive tests/checks/reviews for small blockers; strategize
+    expensive Cargo and value time'
   - 'Operator directly instructed this lead chat: use parallel coders when useful, bundle Cargo tests/reuse artifacts,
     ask coding team leader to expand team as needed'
 roles:
@@ -67,30 +67,34 @@ roles:
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
-  file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
-    dispatched reports
+  file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles
+    own dispatched reports
 build_lane:
   owner: null
-  phase: idle_after_WP012_consumer_failure
+  phase: idle_after_WP013_consumer_pass
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
-  other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
-  gameplan_relative_git_root: .local/kumihimo-desktop/gameplan.yaml
+  other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their
+    processes
+  gameplan_relative_git_root: .local/kumihimo-web/gameplan.yaml
   last_resource_observation:
-    observed_utc: '2026-10-12T03:59:15.4546029Z'
-    cpu_percent: 6
-    available_memory_gib: 64.6
-    free_disk_gib: 3062.6
-    rust_processes: []
-    scope: Before lead compilation; root-owned compile now active, no second Kumihimo Cargo lane
-  candidate_revision: acb2920256fa
+    observed_utc: '2026-10-12T04:45:54.1571397Z'
+    cpu_percent: 32
+    available_memory_gib: 63.2
+    free_disk_gib: 3059.8
+    rust_processes:
+    - pid: 377344
+      name: cargo.exe
+      ownership: other team; preserved
+    scope: Observed before sole Kumihimo web consumer lane; cache/target reused
+  candidate_revision: a65d19e811e950206cde3466efce72b6b97c91a3
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Coder03 exact demo context/native deadline repair then lead13consumer retry/raster/native/UIA; coder04
-  disjoint web sources continue
+next_action: Parallel012 capture/UIA exact repairs; root serial013 consumers/WASM/browser, then each packet independent
+  eval/publication
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 5
+generation: 6
 phase: active
 owner: ROLE-KUM-CODER-03
 changed_files:
@@ -38,15 +38,15 @@ proof:
   evaluation_sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
   observed: Exact origin revisions and canonical contract/spec/evaluation/manifests/lock re-read matched. Offline
     Windows x64 all-feature metadata completed exit0; independent dependency closure ready_for_coding. Original14
-    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only. Source
-    coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
+    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only.
+    Source coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
 - kind: focused_compile_milestone
   source_revision: 547e756471939d3b00c1da9a8c2a4ff740c593c5
   source_fence17: fd067a4d2bd5e921bf6b7606f6e4ca0de481dac2129df00b3b99e0190a7d39db
   observed: First default check8b09e4f E0277 input255; exact two-file repair published547e756. Default all-target
     check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running soleleadlane;
-    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317 lock
-    records unchanged.
+    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317
+    lock records unchanged.
 - kind: focused_consumer_failure
   source_revision: acb2920256fa
   observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes. Owning14consumer
@@ -54,6 +54,14 @@ proof:
     Actual CreateTool preceded required root GeometryContext; existing configured context reordered before tool,
     tests/Core unchanged. Native actual source idle Wait omitted hard probe deadline; minimal native-only cutoff/resize-freshness
     repair in progress. No raster/native/UIA proof yet; reuse e006 pure mapping on unchanged inputs.'
+- kind: actual_gui_milestone
+  source_revision: a65d19e811e950206cde3466efce72b6b97c91a3
+  observed: All14 owning consumers passed via focused reuse90ce26f plus new e010 narrow/nonfit extension PASS18.03s/0.04s.
+    Actual eleven-pair DX12 raster command completed5.03s; independent opened pixels found F012-SCALE injected1.5
+    output2.25 and return1 output0.666667, repair capture.rs in progress. Native hidden HWND first pixels/readback
+    actual; UIA forwarded1 then draw-before quiet assertion FAILED foreground_owned=true despite hidden/no-activate/toolwindow.
+    Exact native manifestation a65 output; causal diagnostic team read-only, no rerun until relevant source repair.
+    No whole-packet GUI/native PASS.
 blockers: []
-next_action: Hold coherent17fence after demo init/native source repair; lead retry13 failed consumers only, then
-  actual raster/native/UIA and independent eval; parallel013 source continues
+next_action: Complete capture scale repair and causal UIA activation repair with team; publish coherent source;
+  retry only affected raster/native cases; independent eval then closure
