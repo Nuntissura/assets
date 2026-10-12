@@ -1238,6 +1238,7 @@ fn descriptor_states_the_importers_over_counts() {
         "over_counts_a_visible_layer_with_no_pixels",
         "a_visible_clipped_layer_whose_base_is_hidden_or_empty",
         "which_no_plan_counts",
+        "both_caps_apply_the_document_cap_past_4096_apparent_counted_instances_and_the_per_layer_cap_past_64_on_one_such_layer",
         cited,
     ] {
         assert!(effect_limits.contains(needle), "effect_limits does not state {needle}");

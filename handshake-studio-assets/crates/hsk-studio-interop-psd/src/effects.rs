@@ -50,8 +50,9 @@ use crate::adjust::{Mapped, Note, Reason};
 // the tile nodes of a source: no tile, no node, an empty slot, no effects), and (b) a visible clipped layer whose clip
 // base is hidden or empty, which composite drops together with its base (`lower_render_plan.rs`, phase 1: reachability
 // through a live base). Both use up counted instances that no plan counts, so a counted stack can be lost whole
-// (`effects_over_document_budget`, or `effects_over_budget` for one layer) although the plan's own count fits; that takes
-// more than 4096 apparent counted instances, which an ordinary document does not have. Test
+// (`effects_over_document_budget`, or `effects_over_budget` for one layer) although the plan's own count fits; both caps
+// apply: the document cap takes more than 4096 apparent counted instances, the per-layer cap more than 64 on one such
+// layer alone (a layer the plan never renders), which an ordinary document does not have. Test
 // `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases` (every fixture of
 // `tests/effects_budget.rs` is a layer without pixels, so all of them count under (a)).
 // Each bound cuts only what it bounds (R10): the counted bounds decide the fate of counted instances, the
