@@ -1,13 +1,13 @@
 schema_version: kumihimo.session.v1
 session_id: SESSION-KUM-2026-10-11-v1
-phase: active
+phase: done
 dev_lead: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
 git:
   workspace_relative_root: ..
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-014-servo-and-heavy-rendering-v1
+active_wp: null
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -31,20 +31,19 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Optional SHA2 actual cached closure and local native loader/CLI verified; final append frozen; actual
-      worker launch requires fresh independent root gate
+    assignment: Completed scoped dependency/loader/CLI readiness; report held; no active assignment
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP014 exact native runtime/worker failures; direct coder/dependency consultation; no broad audit
+    assignment: Recorded causal blockers resolved by exact source/runtime proof; read-only standby; no active assignment
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Final seven original cases PASS_SCOPED_RUNTIME; exact report held for lead publication before DONE
+    assignment: All original packet evaluations complete and published; reports held; no active assignment
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -52,8 +51,9 @@ roles:
     reasoning: high
     completed_implementation_wps:
     - WP-KUM-013-web-adapter-portal-pilot-v1
+    - WP-KUM-014-servo-and-heavy-rendering-v1
     rotate_after: 2
-    assignment: All source held; second packet runtime complete; final evaluator/origin closure pending before rotation
+    assignment: Retired after WP013+WP014; all source ownership released; future coding requires a fresh coder
     subteam_ownership:
     - agent: bridge_contracts
       files:
@@ -63,7 +63,8 @@ roles:
       - product/kumihimo-render-bridge/tests/bridge_contracts.rs
       model: gpt-6.1-sol
       reasoning: high
-      status: active_source_only
+      status: released_held
+      source_ownership_released: true
     - agent: gpu_provider
       files:
       - product/kumihimo-render-bridge/src/gpu.rs
@@ -73,7 +74,8 @@ roles:
       - product/kumihimo-render-bridge/tests/support/desktop_cases.rs
       model: gpt-6.1-sol
       reasoning: high
-      status: active_source_only
+      status: released_held
+      source_ownership_released: true
     - agent: servo_worker
       files:
       - product/kumihimo-render-bridge/tools/servo-worker.py
@@ -82,10 +84,14 @@ roles:
       - product/kumihimo-render-bridge/fixtures/browser-b.html
       model: gpt-6.1-sol
       reasoning: high
-      status: active_source_only
+      status: released_held
+      source_ownership_released: true
     parent_owned_files:
     - product/kumihimo-render-bridge/src/lib.rs
     - product/kumihimo-render-bridge/src/mapping.rs
+    status: retired
+    retired_reason: Two completed implementation packets; operator rotation required
+    retired_after_outcome: 8acc5bd5ba64f428077765323684bd97f91573dc
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -93,7 +99,7 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: wp014_final_evaluation_publication
+  phase: idle
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -111,8 +117,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish exact final evaluation; independently reread canonical origin/report before DONE and second-packet
-  coder rotation
+next_action: All14 current work packets complete and published. No active assignment; future sessions reconcile
+  operator scope before new work
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

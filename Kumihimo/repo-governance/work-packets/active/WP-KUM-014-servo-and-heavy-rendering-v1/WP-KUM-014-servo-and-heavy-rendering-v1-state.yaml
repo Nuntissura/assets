@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
-generation: 9
-phase: active
+generation: 10
+phase: done
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
@@ -81,6 +81,20 @@ proof:
     canonical origin blobs and unchanged final source, exact20 images and existing independent engine/kernel/cleanup
     evidence. Full99 future requirements remain OPEN. Final report append must be published and independently reread
     before DONE.
+- kind: fresh_canonical_origin_containment
+  publication_revision: 8acc5bd5ba64f428077765323684bd97f91573dc
+  expected_revision: 8acc5bd5ba64f428077765323684bd97f91573dc
+  observed_revision: 8acc5bd5ba64f428077765323684bd97f91573dc
+  canonical_ref: refs/remotes/origin/codex/handpick
+  command: git fetch origin codex/handpick; git ls-remote origin refs/heads/codex/handpick; independent canonical
+    git cat-file blob reread
+  canonical_blob_count: 132
+  canonical_blob_fence_sha256: 45de8b58c1ec5966b2f9cc0da366be566607112a0dc4515f2d928cbd02888e34
+  evaluation_sha256: ee19481e40340e8efce9382c1006307a35e10b4f215b6527f98b6f407cb711e0
+  observed: Live origin/HEAD/fetched ref exactly equal published revision; all116 final product and16 governance
+    blobs independently reread, exact final76508-byte independent evaluation contained. All7 original cases PASS_SCOPED_RUNTIME,
+    F001 resolved/no open findings. Full99 future product acceptances remain OPEN. This DONE transition is final
+    publication settlement, with source/runtime unchanged.
 blockers: []
-next_action: Publish exact final evaluation; independently reread canonical origin/report before DONE and second-packet
-  coder rotation
+next_action: Complete; reuse exact scoped engine/GPU proof until its asserted inputs change; future integrations
+  need a new authorized packet
