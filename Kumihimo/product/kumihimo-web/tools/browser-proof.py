@@ -51,6 +51,9 @@ async function captureFailure() {
         selected_view:document.querySelector('#view-select')?.value,
         destination:document.querySelector('#destination-select')?.value,
         proof_routes:bridge?.proofRoutes?.slice(-40)??[],
+        proof_native:bridge?.proofNative?.slice(0,24)??[],
+        proof_native_overflow:bridge?.proofNativeOverflow??null,
+        proof_native_active:bridge?.proofNativeActive??null,
         adapter:adapter?{
           disposed:adapter.disposed,render_ticket:adapter.renderTicket,measure_ticket:adapter.measureTicket,
           preview:adapter.previewState,last_command:last?{
@@ -137,8 +140,12 @@ async function cancelledPointerPreview(source) {
   assert(JSON.stringify(tasks(after.host))===JSON.stringify(tasks(before.host)),'cancellation changed host task meaning');
   assert(!result.preview&&!result.drag&&!(await page.evaluate(()=>window.kumihimo.proofNativeOverflow)),'cancelled preview/token remains or native observation overflow');
   await page.mouse.up();await idle();
+  const released=await canonical();
+  assert(membership(released.rust)===membership(before.rust)&&JSON.stringify(released.rust.layouts)===JSON.stringify(before.rust.layouts)&&JSON.stringify(tasks(released.host))===JSON.stringify(tasks(before.host)),'pointer release altered cancelled canonical arrangement or host meaning');
+  const releasedRoutes=await page.evaluate(({mark,token})=>window.kumihimo.proofRoutes.filter(r=>r.sequence>mark&&(r.request_token===token||r.token===token)),{mark:cancelMark,token:pending.preview.token});
+  assert(!releasedRoutes.some(r=>r.action==='commit_preview'||r.receipt),'pointer release committed cancelled token or produced command receipt');
   await page.evaluate(()=>{window.kumihimo.proofNativeActive=false;});
-  return {source,before:observed(before),accepted,pointer_id:pending.drag.pointerId,token:pending.preview.token,result,after:observed(after)};
+  return {source,before:observed(before),accepted,pointer_id:pending.drag.pointerId,token:pending.preview.token,result,after:observed(after),released:observed(released),released_routes:releasedRoutes};
 }
 async function run() {
   context=await chromium.launchPersistentContext(config.profile,{executablePath:config.browser,headless:true,viewport:{width:1280,height:900},acceptDownloads:false,args:['--no-first-run','--no-default-browser-check','--disable-background-networking']});
@@ -408,14 +415,35 @@ async function run() {
   const recoveryRect=recoveredVisible.details.rect,recoveryClip=recoveredVisible.frame.clip;
   const recoveryLeft=Math.max(1,recoveryRect.x,recoveryClip.x),recoveryTop=Math.max(1,recoveryRect.y,recoveryClip.y),recoveryRight=Math.min(recoveredVisible.details.width-1,recoveryRect.right,recoveryClip.x+recoveryClip.width),recoveryBottom=Math.min(recoveredVisible.details.height-1,recoveryRect.bottom,recoveryClip.y+recoveryClip.height);
   assert(recoveryRight>recoveryLeft&&recoveryBottom>recoveryTop,'restored mount is not reachable');
-  await page.mouse.click((recoveryLeft+recoveryRight)/2,(recoveryTop+recoveryBottom)/2);await idle();
+  await page.evaluate(()=>{
+    const bridge=window.kumihimo,adapter=bridge.adapter,original=adapter.route;
+    bridge.recoveryInput={count:0,overflow:false,records:[]};
+    adapter.route=function(request){
+      const response=original.call(this,request);
+      if(request.route==='input'){
+        const capture=bridge.recoveryInput;capture.count++;
+        if(capture.records.length>=2)capture.overflow=true;
+        else capture.records.push(JSON.parse(JSON.stringify({request:{version:request.version,route:request.route,identity:request.identity,epoch:request.epoch,view:request.view,resource:request.resource,provider:request.provider,x:request.x,y:request.y,scale:request.scale},response:{version:response.version,route:response.route,ok:response.ok,error:response.error,result:response.result}})));
+      }
+      return response;
+    };
+    bridge.restoreRecoveryRoute=()=>{adapter.route=original;delete bridge.restoreRecoveryRoute;};
+  });
+  try {await page.mouse.click((recoveryLeft+recoveryRight)/2,(recoveryTop+recoveryBottom)/2);await idle();}
+  finally {await page.evaluate(()=>window.kumihimo.restoreRecoveryRoute());}
   const missingRecovered=await canonical(),recoveryClick=await page.evaluate(()=>window.kumihimo.recoveryClick);
+  const recoveryInput=await page.evaluate(()=>window.kumihimo.recoveryInput);
   const recoveryView=recoveredVisible.state.rust.views.find(v=>v.id===recoveredVisible.frame.selected_view),recoveryRecipient=missingRecovered.host.last_recipient;
   assert(recoveryClick?.trusted&&recoveryClick.view===recoveryView.id,'actual restored-content click absent');
+  assert(!recoveryInput.overflow&&recoveryInput.count===1&&recoveryInput.records.length===1,'restored input observation missing, duplicated or overflowed');
+  const recoveryRequest=recoveryInput.records[0].request,recoveryResponse=recoveryInput.records[0].response,recoveryBefore=recoveredVisible.state.rust;
+  assert(recoveryRequest.version===1&&recoveryRequest.route==='input'&&recoveryRequest.identity.lineage===recoveryBefore.identity.lineage&&recoveryRequest.identity.incarnation===recoveryBefore.identity.incarnation&&recoveryRequest.epoch===recoveryBefore.epoch&&recoveryRequest.view===recoveryView.id&&recoveryRequest.resource===recoveryView.resource&&recoveryRequest.provider===recoveryView.provider&&recoveryRequest.scale===recoveryBefore.scale&&recoveryRequest.x===recoveryClick.x&&recoveryRequest.y===recoveryClick.y,'restored input request differs from fresh canonical recipient or trusted click');
+  assert(recoveryResponse.version===1&&recoveryResponse.route==='input'&&recoveryResponse.ok===true&&recoveryResponse.result.epoch===recoveryBefore.epoch,'actual restored input response did not acknowledge current epoch');
+  assert(recoveryResponse.result.recipient.view===recoveryView.id&&recoveryResponse.result.recipient.resource===recoveryView.resource&&recoveryResponse.result.recipient.provider===recoveryView.provider&&Math.abs(recoveryResponse.result.local.x-(recoveryClick.x-recoveredVisible.frame.content.x))<1e-8&&Math.abs(recoveryResponse.result.local.y-(recoveryClick.y-recoveredVisible.frame.content.y))<1e-8,'actual restored input response recipient/local mismatch');
   assert(recoveryRecipient?.view===recoveryView.id&&recoveryRecipient.resource===recoveryView.resource&&recoveryRecipient.provider===recoveryView.provider,'restored provider did not acknowledge exact recipient');
   assert(Math.abs(recoveryRecipient.local.x-(recoveryClick.x-recoveredVisible.frame.content.x))<1e-8&&Math.abs(recoveryRecipient.local.y-(recoveryClick.y-recoveredVisible.frame.content.y))<1e-8,'restored provider local input mismatch');
   assert(JSON.stringify(tasks(missingRecovered.host))===JSON.stringify(tasks(savedState.host))&&missingRecovered.host.revision===savedState.host.revision,'recovery input changed host meaning');
-  const missingProvider={provenance:'injected unavailable-provider restore-reference fault: only persisted provider key changed',stored:{layout:missingStored.layout,layout_sha256:hash(missingStored.layout),layout_bytes:Buffer.byteLength(missingStored.layout),host_sha256:hash(missingStored.host),host_bytes:Buffer.byteLength(missingStored.host)},fresh:observed(missingFresh),visible_placeholder:{bounds:missingVisible.details,canonical:observed(missingVisible.state)},recovery_click:recoveryClick,recovered:observed(missingRecovered)};
+  const missingProvider={provenance:'injected unavailable-provider restore-reference fault: only persisted provider key changed',stored:{layout:missingStored.layout,layout_sha256:hash(missingStored.layout),layout_bytes:Buffer.byteLength(missingStored.layout),host_sha256:hash(missingStored.host),host_bytes:Buffer.byteLength(missingStored.host)},fresh:observed(missingFresh),visible_placeholder:{bounds:missingVisible.details,canonical:observed(missingVisible.state)},recovery_click:recoveryClick,recovery_input:recoveryInput,recovered:observed(missingRecovered)};
   await page.evaluate(pair=>{localStorage.setItem(window.kumihimo.storage.layoutKey,pair.layout);localStorage.setItem(window.kumihimo.storage.hostKey,pair.host);},stored);
   const restoredBytes=await page.evaluate(()=>({layout:localStorage.getItem(window.kumihimo.storage.layoutKey),host:localStorage.getItem(window.kumihimo.storage.hostKey)}));
   assert(restoredBytes.layout===stored.layout&&restoredBytes.host===stored.host,'original valid stored pair was not restored exactly');
@@ -540,7 +568,9 @@ def main() -> None:
     import tempfile
     with tempfile.TemporaryDirectory(prefix="browser-profile-", dir=out) as profile:
         config = {"url": args.url, "modules": str(args.node_modules.resolve()), "browser": str(args.browser.resolve()), "out": str(out), "build": str(build), "profile": profile}
-        result = subprocess.run([str(node), "-e", SCRIPT], input=json.dumps(config), text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+        script = Path(profile) / "browser-proof.cjs"
+        script.write_text(SCRIPT, encoding="utf-8", newline="\n")
+        result = subprocess.run([str(node), str(script)], input=json.dumps(config), text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
     raise SystemExit(result.returncode)
 
 

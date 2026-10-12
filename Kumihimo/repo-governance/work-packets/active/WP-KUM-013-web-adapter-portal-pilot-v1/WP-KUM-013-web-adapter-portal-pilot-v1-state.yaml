@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 7
+generation: 8
 phase: active
 owner: ROLE-KUM-CODER-04
 changed_files:
@@ -71,6 +71,13 @@ proof:
     Independent frozen-case evaluation INCOMPLETE_FROZEN_CASE_PROOF: original002 lostcapture/blur and changed scale,003
     visible unavailable recovery,004 missing-provider fresh-load variant absent. Only browser-proof.py released
     for same-batch actual variants; no Rust/Core/DOM/build change or full packet verdict.'
+- kind: owning_browser_launcher_failure
+  source_revision: 665595771e977d4bed8eaa576de67bd06b198ef9
+  observed: 'Matching CLI-only generation completed with unchanged compiled WASM/generated hashes; Node/browser
+    never launched. Exact Python CreateProcess WinError206: node -e SCRIPT command measured48248 UTF16 units, beyond
+    Windows command-line limit. Owning script admitted for UTF8LF .cjs under existing owned temporary profile, same
+    stdin config/quiet cleanup plus final cancelled-release and restored-input ACK observations. No browser/runtime
+    result for this attempt.'
 blockers: []
-next_action: Coder04 completes original002/003/004 variants in same browser script; publish held source, reuse compiled
-  WASM and run affected actual browser batch, then independent evaluation/closure
+next_action: Publish frozen owning-script launcher and original terminal/ACK observations; reuse compiled WASM for
+  same actual browser batch, then independent evaluation/closure
