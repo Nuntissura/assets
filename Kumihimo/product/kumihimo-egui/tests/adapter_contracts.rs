@@ -538,6 +538,14 @@ fn e012_session_codec_preserves_schema_and_requires_fresh_restored_identity() {
     }) else {
         panic!("workspace")
     };
+    // Prepare destination geometry before moving its view-anchored toolbar.
+    command(
+        &mut d,
+        Command::SetGeometryContext {
+            workspace: root,
+            context: core::GeometryContext::new(surface(root).bounds),
+        },
+    );
     command(
         &mut d,
         Command::MoveFrame {
