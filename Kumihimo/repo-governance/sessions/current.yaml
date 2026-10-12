@@ -21,10 +21,10 @@ operator_scope:
   parallel_coding_and_team_expansion_authorized: true
   live_authorization:
   - 'Operator directly instructed this lead chat: finish all WPs, commit/push after each, team-deliberate causal
-    blockers; session scope expansion approved; no massive tests/checks/reviews for small blockers; strategize
-    expensive Cargo and value time'
-  - 'Operator directly instructed this lead chat: use parallel coders when useful, bundle Cargo tests/reuse
-    artifacts, ask coding team leader to expand team as needed'
+    blockers; session scope expansion approved; no massive tests/checks/reviews for small blockers; strategize expensive
+    Cargo and value time'
+  - 'Operator directly instructed this lead chat: use parallel coders when useful, bundle Cargo tests/reuse artifacts,
+    ask coding team leader to expand team as needed'
 roles:
   dependencies:
     role_id: ROLE-KUM-DEPENDENCIES
@@ -37,14 +37,13 @@ roles:
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Exact redock/destination hit and dispatch evidence; direct coder consultation, no duplicate
-      audit
+    assignment: Exact redock/destination hit and dispatch evidence; direct coder consultation, no duplicate audit
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP013 original6 PASS and published; await final original13 desktop actual bundle
+    assignment: Final original13 desktop scoped PASS held; canonical publication pending
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -53,8 +52,8 @@ roles:
     completed_implementation_wps:
     - WP-KUM-011-navigation-and-media-controls-v1
     rotate_after: 2
-    assignment: All original17 source owners HOLD after consolidated causal repairs; root owns serial affected
-      proof
+    assignment: All original13 scoped desktop cases accepted; source held; canonical origin closure pending before
+      second-packet rotation
     subteam_ownership:
     - agent: chrome_geometry_remediation
       parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -86,16 +85,15 @@ roles:
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
-  file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles
-    own dispatched reports
+  file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
+    dispatched reports
 build_lane:
-  owner: ROLE-KUM-DEV-LEAD
-  phase: serial_consolidated_gui_native_affected_proof
+  owner: null
+  phase: idle_desktop_outcome_canonical_publication
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
-  other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their
-    processes
+  other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
   gameplan_relative_git_root: .local/kumihimo-desktop/gameplan.yaml
   last_resource_observation:
     observed_utc: '2026-10-12T08:01:38.1276722Z'
@@ -104,13 +102,12 @@ build_lane:
     free_disk_gib: 3055.7
     rust_processes: []
     scope: Fresh coordination tick; next proof runner refreshes before serial Cargo
-  candidate_revision: 849f005cc3681115032407037cac206b7cad688c
+  candidate_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
-  original13 evaluation afterward; WP014 remains gated by WP012 DONE
+next_action: Publish and close WP012 after exact canonical origin reread; WP014 admission only after WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

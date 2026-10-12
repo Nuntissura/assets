@@ -148,3 +148,35 @@ edges:
   from: KUM-PRODUCT-MANUAL
   to: KUM-WEB
   relation: explains_operation
+- id: KUM-LINK-WP012-EGUI
+  from: WP-KUM-012-desktop-gui-adapter-v1
+  to: KUM-EGUI
+  relation: implements
+- id: KUM-LINK-EGUI-CONTENT
+  from: KUM-EGUI
+  to: KUM-CONTENT
+  relation: borrows
+- id: KUM-LINK-EGUI-CONTRACTS
+  from: KUM-EGUI-CONTRACTS
+  to: KUM-EGUI
+  relation: validates
+- id: KUM-LINK-EVAL012-EGUI
+  from: EVAL-KUM-012-v1
+  to: KUM-EGUI-CONTRACTS
+  relation: evaluates
+- id: KUM-LINK-EGUI-NATIVE
+  from: KUM-EGUI-NATIVE
+  to: KUM-EGUI
+  relation: validates
+- id: KUM-LINK-EGUI-RASTER
+  from: KUM-EGUI-RASTER
+  to: KUM-EGUI
+  relation: validates
+- id: KUM-LINK-EGUI-UIA
+  from: KUM-EGUI-UIA
+  to: KUM-EGUI-NATIVE
+  relation: observes
+- id: KUM-LINK-EGUI-PROVIDER
+  from: KUM-EGUI
+  to: KUM-WINDOWS-PROVIDER
+  relation: native_dependency

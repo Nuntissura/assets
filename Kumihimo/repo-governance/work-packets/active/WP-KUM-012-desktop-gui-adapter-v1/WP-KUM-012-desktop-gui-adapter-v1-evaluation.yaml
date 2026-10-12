@@ -1836,3 +1836,1296 @@ native_runtime_evaluation_b7dec3f107cb:
   next_action: Coder03 owns minimum original13 source/proof additions, providerfiles held. Lead runs one affected
     default/allfeature/owning/capture/native batch after stable handoff. Evaluator receives fresh exact outputs
     before final scoped verdict; no source/Cargo/Git mutation by evaluator.
+desktop_runtime_evaluation_7d9268ab90d5:
+  evaluation_id: EVAL-KUM-012-DESKTOP-7d9268ab90d5-v1
+  updated_at: '2026-10-12T10:44:37.101371+00:00'
+  risk_tier: HIGH
+  phase: runtime_evaluated_pending_lead_publication
+  effective_verdict: PASS_SCOPED_RUNTIME
+  original_case_count: 13
+  case_assessments:
+  - case_id: EVAL-KUM-012-001
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: All standard/nested/compact/scale and weighted-hole/shrink/restore captures opened. Two actual
+      demo providers; 10 canonical views, three containment workspaces, two holes; painted5/4/5. Host still texture
+      brightness0.7/opacity0.8/overlay0.35/Cover preserved. Float headers now have opaque theme backing; provider
+      media alpha remains host selected.
+  - case_id: EVAL-KUM-012-002
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: All seven tab captures and current canonical variant records inspected. Sixteen canonical members
+      retained despite one-row pages; select23/gen66, reorder/collapse/expand/colors-off; whole group41 members23/9
+      moves to frame7/gen71 alongside its existing eight members. Dirty13 CloseVeto/gen71/nonce247 and real MoveLast
+      Pinned11/gen72/nonce270 retain complete membership.
+  - case_id: EVAL-KUM-012-003
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: Actual drag eligible/cancel31, snap commit33, forbidden34 unchanged, float preview35/commit37,
+      redock/equalize39, swap41, maximize42/restore43 and StalePreview43->44 checked against captures/current records
+      and owning cases. Preview controls are separately readable at bottom. Persistent float order preserved. Newly
+      floated tab captions are clipped at separate window regions, not overpainted; exact text-interior comparison
+      against unobstructed dock-maximized is558/558 equal.
+  - case_id: EVAL-KUM-012-004
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: All nine tool captures/current records and owning cases inspected. Toolbar remains pinned view9/resource8
+      while selected11 and focused15; actual tool ACK40/47 only9/8. Hidden retain reserves space; release does not;
+      restoration retains binding. Eligible Left rotation is Vertical. Closed9 is absent from members; unavailable/stale-mount
+      tool action rejects without substitute.
+  - case_id: EVAL-KUM-012-005
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: Four profiles and keyboard/contextual/hidden plus all four touch surface-override reveal images
+      directly opened. Effective workspace header38; surface Hidden override46/recreation-needed preserves identities.
+      Revealed provider starts74, chrome lies outside provider. Owning finite/invalid-range/settings version/provenance
+      checks pass; unsupported system control explains host capability.
+  - case_id: EVAL-KUM-012-006
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: 'Current owning actual mouse tab/resize/dock/wheel/capture/focus/Escape tests pass. All four navigation
+      modes directly opened with paired projections: rail and content wheel recipients distinguished; transient
+      stationary grab expands beside document, rectangle remains visible; moved/released readback position327 and
+      idle restoration attributable. Owning clip-first/local-once/stale-owner/epoch checks pass.'
+  - case_id: EVAL-KUM-012-007
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: Current owning semantic touch/pen scroll/tab/long-press/resize/cancel/second-pointer tests pass
+      through actual adapter; separate pointer-kind and native ambiguity handling retained. Touch profile reveal
+      captures opened. Physical touch/pen and cross-window physical dragging remain unproven; supported command
+      alternatives are visible.
+  - case_id: EVAL-KUM-012-008
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: 'Actual TextEdit typing under both policies observed: cursor162->188 and typing proof in exact
+      PNG. Conflict content-owned retains9/gen36; frame-owned selects11/gen37. Keyboard focus/resize/group/maximize/restore/float/redock/close
+      captures and owning routes pass. Clean15 closed and reopen menu exposed. Later arrangement shortcut policy
+      explicitly true; filename false does not imply every later frame retains false.'
+  - case_id: EVAL-KUM-012-009
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: All six independent Windows UIA results and current manifest canonical reads inspected against
+      native pixels. TabItem roles/selected state/enabled names match; four SelectionItem.Select actions false->true
+      target12/10/12/16, canonical10->12->10->12 and18->16 with generations44/62/64/71. Menu Invoke opens then dismisses,
+      announcement visible and OS-exposed; unique current-draw logical opener focus returns draw53->59/epoch1 with
+      matching bounds830,0,943.03125,18. Quiet OS HasKeyboardFocus remains false, not claimed true. Closed10 disappears
+      from postclose tab tree.
+  - case_id: EVAL-KUM-012-010
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: All provider mark observations reconcile DIP/local/physical/scale/clip with exact images. Pink240,40,210,255
+      and green30,240,70,255 picks; injected1.5 physical622,111/1317,111 with no double scale and outside-clip reject.
+      Actual three owned native resize1000x720->760x520/current DPI and subsequent epochs distinct from injected
+      scale/zero/unavailable recovery; no physical monitor transition claim.
+  - case_id: EVAL-KUM-012-011
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: Native resize/actual owned teardown/recreate images05/09/14/16 directly opened with fresh epochs3/8
+      and preserved canonical identity. Zero suspend injected0x0 after actual760x520, noReady/epoch4. Three injected
+      Painter recovery failures remain bounded3/3 and canonical unchanged. Exact native15 visibly reads failure
+      notice on healthy rootHWND77537876; recovered root31 HWND170992424 fresh image16 plus UIA17 false->true prove
+      recovery input. No physical GPU-fault or external provider-device recovery claim.
+  - case_id: EVAL-KUM-012-012
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: All22 native captures and correlation metadata inspected; three genuine preflight Ready captures
+      precede group/view/frame commits48/52/61 and populated48/53/61 observations; actual return3/bindings0. Wrong
+      window/epoch/nonce/extent/timeout and Ready generation/nonce/root challenges reject. Factory fail/interrupted
+      actual HWND/Painter retain source/bounded slots. Removed original frame uses canonical MoveFrame, fresh semantic
+      anchor returns view10; no Delete fiction. Partial close closed10 vs veto12/14 proven and held window retained;
+      maximized return rejects; custom weighted semantic anchor return68->69, no ordinal-restoration claim. DesktopSessionv1/SavedLayout
+      schema1 roundtrip/current binding negative tests pass; atomic storage remains host responsibility.
+  - case_id: EVAL-KUM-012-013
+    runtime_status: PASS_SCOPED
+    method_preserved: true
+    observation: 'Five current candidate-bound logs inspected: owning29 PASS; default and combined checks PASS;
+      actual80 raster and22 native outputs, UIA18 actions/3returns/bindings0. All102 PNGs directly opened, all80
+      paired JSON/readback dimensions/scales/nonces checked; 209 OS window checkpoints plus before/after/cleanup
+      hidden/NOACTIVATE/non-taskbar/external foreground unchanged. Static repaint settles to maximum delay by frame2;
+      animated actual marker moves with16.333ms demand. Delayed queued35/overload/cancel/recovered pixels pass;
+      minimized/visibility injected and occlusion Unknown. Exact17 LF inputs match published candidate; manifest/lock/default-members/manual
+      and dependency records reconciled; unchanged Core/JSON/content inputs and R019 vendor proof reused. Final
+      report publication/origin and state/board/matrix/topology closure remain lead-owned after this runtime verdict.'
+  authority_limit: Current original13 bounded methods are satisfied by actual shared-path raster, semantic adapter
+    inputs, hidden Windows x64 native surface readbacks and independent Windows UIA. This is scoped runtime acceptance;
+    lead still owns final publication/origin containment and WP DONE/state closure.
+  preservation:
+    exact_prefix_bytes: 123987
+    exact_prefix_sha256: 3eb65ee5216afc4004c6c329ad0be5f7c14a7e45faac286c59e3d39742a11739
+    original_cases_unchanged: true
+    preparation_history_unchanged: true
+    provider_r019_preparation_and_prior_native_history_unchanged: true
+    historical_top_level_verdict_not_rewritten: true
+  candidate:
+    revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
+    target: x86_64-pc-windows-msvc
+    backend: Dx12; NVIDIA GeForce RTX3090 offscreen renderer
+    source_files:
+    - file: product/kumihimo-egui/src/lib.rs
+      raw_sha256: fd9f3b5728d4d59e1e24cc4fdbf62f9e6a30c8c2bd730ba84187986238fda445
+      lf_sha256: fd9f3b5728d4d59e1e24cc4fdbf62f9e6a30c8c2bd730ba84187986238fda445
+    - file: product/kumihimo-egui/src/workspace.rs
+      raw_sha256: 665086df75bb89160ecfd3d267885a1e966e3b75e294c6a4f7818962f5181229
+      lf_sha256: 665086df75bb89160ecfd3d267885a1e966e3b75e294c6a4f7818962f5181229
+    - file: product/kumihimo-egui/src/chrome.rs
+      raw_sha256: cc9efb5befc9d104bc127ff2866343a83d669778a068f93c0deb0ada9e92b324
+      lf_sha256: cc9efb5befc9d104bc127ff2866343a83d669778a068f93c0deb0ada9e92b324
+    - file: product/kumihimo-egui/src/input.rs
+      raw_sha256: 4c57b1b27bea657c720348981fda19bde938026116956764442d680c2127b41b
+      lf_sha256: 4c57b1b27bea657c720348981fda19bde938026116956764442d680c2127b41b
+    - file: product/kumihimo-egui/src/content.rs
+      raw_sha256: 2b183863c6367536d609488beb1d5374f38af2455854a192ff19d52194b1fdc9
+      lf_sha256: 2b183863c6367536d609488beb1d5374f38af2455854a192ff19d52194b1fdc9
+    - file: product/kumihimo-egui/src/navigation.rs
+      raw_sha256: ea78996f53f307994aa59423e286576cd716c1288afe77a07723f236c44559b4
+      lf_sha256: ea78996f53f307994aa59423e286576cd716c1288afe77a07723f236c44559b4
+    - file: product/kumihimo-egui/src/native.rs
+      raw_sha256: 5e3ba638d0b93f5df1aa3b5b3563255adac0497cd0e71bb0933d0bcc3e966631
+      lf_sha256: 5e3ba638d0b93f5df1aa3b5b3563255adac0497cd0e71bb0933d0bcc3e966631
+    - file: product/kumihimo-egui/src/window_slots.rs
+      raw_sha256: 173119989a6f72befd68e6d814a2510e7e92f76513f5b6e8c01eb0e480639e3c
+      lf_sha256: 173119989a6f72befd68e6d814a2510e7e92f76513f5b6e8c01eb0e480639e3c
+    - file: product/kumihimo-egui/src/capture.rs
+      raw_sha256: bded9a4459d9ced3ebd4bdb90a081a7cd202b356191aa574689a271c4d75c433
+      lf_sha256: bded9a4459d9ced3ebd4bdb90a081a7cd202b356191aa574689a271c4d75c433
+    - file: product/kumihimo-egui/src/diagnostics.rs
+      raw_sha256: b59cdf36de29eba1f3b169d240f53817e0e399d1627f2f5a800cfb2c09baf0b9
+      lf_sha256: b59cdf36de29eba1f3b169d240f53817e0e399d1627f2f5a800cfb2c09baf0b9
+    - file: product/kumihimo-egui/src/persistence.rs
+      raw_sha256: f0e90465c3e18e32b645c747310382eaafefc563f50b9ad9da5b4c2654f7b921
+      lf_sha256: f0e90465c3e18e32b645c747310382eaafefc563f50b9ad9da5b4c2654f7b921
+    - file: product/kumihimo-egui/src/demo.rs
+      raw_sha256: 0de77cfe81c9c683b6568eb7b3d9761405d4c4fc726f409c3d99aa2d56bf0eb7
+      lf_sha256: affb735e0dbaf4c3b368ebc54d5a4799f9e61823097d0ca62eec7b6fc3f15cb6
+    - file: product/kumihimo-egui/examples/desktop_host.rs
+      raw_sha256: 9934f991c8a24c88c5354bef9fdd91cdeda9b0479ad706fd5f4aff8b0cf9a76a
+      lf_sha256: 9934f991c8a24c88c5354bef9fdd91cdeda9b0479ad706fd5f4aff8b0cf9a76a
+    - file: product/kumihimo-egui/examples/capture_host.rs
+      raw_sha256: 4eb004fd91471347733ff66a1a11113976b6838e754f0c0944cb8229cec140d8
+      lf_sha256: 4eb004fd91471347733ff66a1a11113976b6838e754f0c0944cb8229cec140d8
+    - file: product/kumihimo-egui/examples/native_probe.rs
+      raw_sha256: d6e88fb6454bf23eeb99e24702a47f44545c896cebdae13e73cab30ac6127726
+      lf_sha256: d6e88fb6454bf23eeb99e24702a47f44545c896cebdae13e73cab30ac6127726
+    - file: product/kumihimo-egui/tests/adapter_contracts.rs
+      raw_sha256: 61a8d344b76131d123749595cf58f4db10f8c8bb5b191d891fd3f6bca1f3de47
+      lf_sha256: 61a8d344b76131d123749595cf58f4db10f8c8bb5b191d891fd3f6bca1f3de47
+    - file: product/kumihimo-egui/tools/observe-uia.ps1
+      raw_sha256: 7a738733d0e7ab82abb12a8ce294dffbe320a246112d7c5222788d8047323df9
+      lf_sha256: 7a738733d0e7ab82abb12a8ce294dffbe320a246112d7c5222788d8047323df9
+    source_binding: Each17 current source/example/test/observer file independently LF-normalized and compared to
+      exact7d Git blob; zero mismatches. Only chrome/native differ from849 among17. No evaluator product/Git/Cargo
+      changes.
+  observed_runs:
+    test:
+      file: ../.local/kumihimo-desktop/proof/test-7d9268ab90d5.log
+      sha256: 0e44797ab1dc3fdac6ed0588630d477b5c3fcfe223372a8e88491cdbd2b4f2bb
+      compile_or_check_seconds: 14.79
+      result: PASS
+      run_seconds: 4.8
+      passed: 29
+      failed: 0
+      filtered: 0
+    default:
+      file: ../.local/kumihimo-desktop/proof/default-7d9268ab90d5.log
+      sha256: e187002c18930793acdd9f6a05a335413493dc2560de00fcbf24227aba63f7c9
+      compile_or_check_seconds: 6.46
+      result: PASS
+    combined:
+      file: ../.local/kumihimo-desktop/proof/combined-7d9268ab90d5.log
+      sha256: f9f189acfb675578320e0baa1dd564dca4f2ec0243bc0d593bacffefe3c03e06
+      compile_or_check_seconds: 4.5
+      result: PASS
+    capture:
+      file: ../.local/kumihimo-desktop/proof/capture-7d9268ab90d5.log
+      sha256: 5b1c3b1de8183f6a74e9bf1fc9b289dedc2e564f4cc20558f75fb7c1dbc214e0
+      compile_or_check_seconds: 5.92
+      result: PASS
+    native:
+      file: ../.local/kumihimo-desktop/proof/native-7d9268ab90d5.log
+      sha256: 837228e897547064a16ce4298d12c7f8976fdd907cd2772d710855678144d2c5
+      compile_or_check_seconds: 5.55
+      result: PASS
+  runtime_artifacts:
+    directory: .local/desktop-proof/7d9268ab90d5
+    file_count: 210
+    path_sha256_index_digest: dd078d6e4e6fec5d1c7517c6d02efcd0fac33d2bafe14ca437322cf017a15f69
+    digest_format: SHA256 of UTF8 sorted file-name + NUL + lowercase file SHA256 + LF for every regular file in
+      proof directory
+    native_manifest_sha256: a061b4ae691a55165422f742d977f990d2b43dcf10d9d86230df6a25dde414cf
+    coverage_observations_sha256: f5f9150975b1ff795df282f21878911627a3934f0050d648afdba0efebe8fa7d
+    provider_receipts_sha256: a0f83a2b3616fabbb7e4af08110b4dea614788b3eb81a35731bfe84dba362ac2
+    raster_count: 80
+    native_count: 22
+    directly_opened_count: 102
+    paired_json_count: 80
+    unique_raster_nonces: 80
+    all_dimensions_and_scales_match: true
+    raster_record_digest: 09e106f70997567ed03e4714a7d7be9b241bee4d152ebac19b72e982432048c3
+    native_record_digest: 4ef0ac71160321498228b6067f365bfb534089d81f9bbdfe36dcecc4c7a205a4
+    record_digest_format: SHA256 of compact JSON record list, sorted PNG filename, sorted object keys; ensure_ascii
+      default true
+    images:
+    - file: animated-demand-0.png
+      png_sha256: b01087754fcc23c8d8bc2850f60f77fe9675ad8098a539a2f89d7c0afeb498dd
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 34e3175a8b368c7da1ce6ac0b201f41657b1e9e7dfa7c2d21515d55fccb423e4
+      nonce: 23
+      scale: 1.0
+    - file: animated-demand-1.png
+      png_sha256: bcf77f5be0169de142d0fa959f3b33a1555b2d6be5dca37986f7f06aa392ceeb
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 71c72430593ab4476fddbeebbce3ea6863a23422194710218be48a037d6ac8af
+      nonce: 24
+      scale: 1.0
+    - file: animated-demand-2.png
+      png_sha256: a6d2875fb44b903a1b148d1b4f2a8ae687f3d26ae10adc6df5126c65f4819ecc
+      physical_size:
+      - 960
+      - 640
+      json_sha256: fd1a253fab03e45089bf81c71e2c721514eba9cb05139a98b10c88e3210e4292
+      nonce: 25
+      scale: 1.0
+    - file: animated-demand-3.png
+      png_sha256: dbf19514c6c997d7b590d203c0fde65e9355878e9563c4e432beb21592fc1dcb
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 98a8f0984e9119cb19e42fb22051518823ff22ebecfa9327a73a4439e6dace1a
+      nonce: 26
+      scale: 1.0
+    - file: availability-recovered.png
+      png_sha256: 82224c9a40bad85c680951ed02ae03d7403bbbd798433f1ef43292b37bce6db4
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 59a330cfc5f6077da12d9a5202a2317d89f296774ed724ae197ad2a7486d3efc
+      nonce: 28
+      scale: 1.0
+    - file: chrome-compact-touch-revealed-surface-override.png
+      png_sha256: 69f544fbe0bacc964de7d10bec4b243acc7c390205eefd80a48b42c3c78954c6
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 91571abaa7f10050d62ac8f164a09a1553d042a6e743b3870ddcd3d471bd86c3
+      nonce: 520
+      scale: 1.0
+    - file: chrome-contextual-keyboard-revealed.png
+      png_sha256: cb97f97a46a475465926b5b7321c0652fa7d93bad11acca44b4d5fd4083df9f3
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 9f6b4b13146817fbec64ebd2c3881d3fd029ac33f732efaf372026d60ae40d8a
+      nonce: 531
+      scale: 1.0
+    - file: chrome-contextual-touch-revealed-surface-override.png
+      png_sha256: 69f544fbe0bacc964de7d10bec4b243acc7c390205eefd80a48b42c3c78954c6
+      physical_size:
+      - 960
+      - 640
+      json_sha256: f3ee6d2fef885c069d1fee26d92fd0060a606cb8e303f18b18926096bd1db68f
+      nonce: 539
+      scale: 1.0
+    - file: chrome-full-touch-revealed-surface-override.png
+      png_sha256: 69f544fbe0bacc964de7d10bec4b243acc7c390205eefd80a48b42c3c78954c6
+      physical_size:
+      - 960
+      - 640
+      json_sha256: f7d77a9357ad47513f67da0d14cdcaf68df4f120769ad0bb4f0671ffe2ae96dc
+      nonce: 506
+      scale: 1.0
+    - file: chrome-hidden-keyboard-revealed.png
+      png_sha256: cb97f97a46a475465926b5b7321c0652fa7d93bad11acca44b4d5fd4083df9f3
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 3d50fd31cac0f1c9b026fe5cccbea39245c2b1a6369a9cb53b7a048ef708b252
+      nonce: 550
+      scale: 1.0
+    - file: chrome-hidden-touch-revealed-surface-override.png
+      png_sha256: 69f544fbe0bacc964de7d10bec4b243acc7c390205eefd80a48b42c3c78954c6
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 2dee402862a4acf1e05c8733fa1333f0010d9de0ffbda67589a736addc994362
+      nonce: 558
+      scale: 1.0
+    - file: chrome-profile-compact.png
+      png_sha256: a09b9ee66be2ee28e30b391b3fe9131596e2b67c178c43b5ffe0deca3f19767b
+      physical_size:
+      - 960
+      - 640
+      json_sha256: edccf57ece4606f25065a181d8eb584d080b3461eba3144aa12430d69d19b3e7
+      nonce: 512
+      scale: 1.0
+    - file: chrome-profile-contextual.png
+      png_sha256: 001eafd7ee2efb6e787b1ded5bee6510936fd9c57f6b9137366d1a416a12670c
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 940d58edf05942b8419089c6593771c4dcff61d287823c66782efe256fa1be79
+      nonce: 526
+      scale: 1.0
+    - file: chrome-profile-full.png
+      png_sha256: ee0f7a5aa34ccacc0d7189a11e1478494920ca10472121bef4048ec986557a87
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 89ab3483a30bb488b0c505e635964b2bef205f256cfc77f75dc4b47b37f04c00
+      nonce: 498
+      scale: 1.0
+    - file: chrome-profile-hidden.png
+      png_sha256: 8f7200a46cf20e1e1239a8802d6564bc795d64ddd3c8afc2789163b99b4387df
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 1a05c0d87e5b9cfe87e6ee3106efd54e6c8dd2f9166e4d6fd88a543f1ef2359b
+      nonce: 545
+      scale: 1.0
+    - file: compact-narrow.png
+      png_sha256: 3d73ddd17ce35cd007ef4ed175f14585728e464768b349d51ec758b8009df39b
+      physical_size:
+      - 460
+      - 420
+      json_sha256: d075906236ea63ab2cc2e4feb05d00d9d0807b8eea6ffeec0d1faf8a1bcebfbf
+      nonce: 4
+      scale: 1.0
+    - file: delayed-provider-overload.png
+      png_sha256: aadb06e9c73474886433fa62922fcb4dfce4389d56a002d16a7a2eaf32fa8621
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 3f161fc8f0fc033d19e7ec5a7da4992824a0c1a3a356a25616c867c74815ddf0
+      nonce: 29
+      scale: 1.0
+    - file: delayed-provider-recovered.png
+      png_sha256: f660e7392d3ce091f06d85c6575af85fd5961ecdd42d05ff727cc2b872797adb
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 7fe865a5e3e70753a1dc222431cbada4f8b299484e2bfe9c7c68563962eedd25
+      nonce: 30
+      scale: 1.0
+    - file: dock-cancelled-preview.png
+      png_sha256: a6f2dcbfd6ec35cf8df50c09a127af9a399f274f94d8aa28303a7f56439ec59d
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 323122e4680f8a67dff0b3c8dff8fd80608cd3eaf601f7d16e8d2c367433c90f
+      nonce: 283
+      scale: 1.0
+    - file: dock-command-swap.png
+      png_sha256: 839bcb3a52e0f04c04b999270ff51121a9e37feb9b4e2eacff2c9e190bd70363
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 0aff6a29a3a82e04d4939a47149c95e2976769f5921e5b86bcd4db5ac65020cb
+      nonce: 372
+      scale: 1.0
+    - file: dock-eligible-snap-preview.png
+      png_sha256: 44cd47eb5fefd22744723a03d92f6c955282109eca9ffc4d05f0970d8c801ff2
+      physical_size:
+      - 960
+      - 640
+      json_sha256: a4214269ddd7f99dd0d677e459066f965b38a714983fb5965e301f4531f66508
+      nonce: 277
+      scale: 1.0
+    - file: dock-float-menu-preview.png
+      png_sha256: e141e8c76a267318e8130436915b6fbcf5dedc36be65183d93bffde36f8401f5
+      physical_size:
+      - 960
+      - 640
+      json_sha256: deb56ca3b4e207d3c8f592d41e39d5fb87cdc4f259e804a508d6c3f61418783d
+      nonce: 318
+      scale: 1.0
+    - file: dock-forbidden-drag-preview.png
+      png_sha256: 0a42a8bba7f008b37d872174ecbd3308c7b1f26989f903e7f26d748cbe21e505
+      physical_size:
+      - 960
+      - 640
+      json_sha256: e828a364716a7bb04845b2ff6497c5cf66b7cb3d40974323104e1f3cd0458912
+      nonce: 294
+      scale: 1.0
+    - file: dock-in-app-float.png
+      png_sha256: 497071b99efcffeb605ae7dde04300d13cc01bccf71e69b91dd4ec5d8ed65605
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 16179f2e63297764966f7a89002f14dbd22e114ce11cbc6b8d0afb0d238f410e
+      nonce: 324
+      scale: 1.0
+    - file: dock-maximized.png
+      png_sha256: ed66f3146e50bdd9e0db7ff60d59e14ca2d2d2f744d5575bb2e543682082f562
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 30bf5a15a8f3ac249c695cb4d2e42a6b76d09a61c8b56c39638e589c7e61fac5
+      nonce: 389
+      scale: 1.0
+    - file: dock-redocked-equalized.png
+      png_sha256: a931d8259657923e671fb4d59dc91037c88832a6c035c68680277dfea2d03c2d
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 0c1710308bbe6542165d6cf39e0391478152ff2daaa0f8d39a701922ca0c646e
+      nonce: 364
+      scale: 1.0
+    - file: dock-restored.png
+      png_sha256: 839bcb3a52e0f04c04b999270ff51121a9e37feb9b4e2eacff2c9e190bd70363
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 60697b9632a0105c0f975fc4e6c3eca4d7047e2d1e4b858fdf85708add6ee374
+      nonce: 406
+      scale: 1.0
+    - file: dock-snap-committed.png
+      png_sha256: 90cef6c4e056bc4aed7b844b2c48405cbd03a016a95d0ed0394218041f998dab
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 7c2882487c13618f2770c538e4125a1369d30311e95f0d1789e6756dc0364d5d
+      nonce: 289
+      scale: 1.0
+    - file: editor-conflict-content-owned.png
+      png_sha256: 7ef73bd826d60a689c99b39e2043da3912acc099a51bdc2f0b841322bd68400a
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 4f94b817b2039086d39e3674efed4642382b797b0b5d2b76193bbbaf88bd10c7
+      nonce: 578
+      scale: 1.0
+    - file: editor-conflict-frame-owned.png
+      png_sha256: 5157b03aa1066e7b096b8456fda7a0e5b9c214e8c88fb923c92bf5f21d4a944d
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 1ac680361297c5423ef261a2f990c846eeba8884c6b5714532dad52760509696
+      nonce: 1132
+      scale: 1.0
+    - file: editor-typed-content-first.png
+      png_sha256: 736aa5c987a65cb7a331fc4cee1efb57e35f073128917349ce5fdd79cd1be749
+      physical_size:
+      - 960
+      - 640
+      json_sha256: b024688906e6ed80216fb1b5b6bd3cc0d224c31e2b57a9dbbaac7558f913c058
+      nonce: 573
+      scale: 1.0
+    - file: editor-typed-frame-first.png
+      png_sha256: 736aa5c987a65cb7a331fc4cee1efb57e35f073128917349ce5fdd79cd1be749
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 43ce735c8b988233fca3e471b92ff1a4d69fc4762f8a2721bcc0a1738fdd9149
+      nonce: 1127
+      scale: 1.0
+    - file: injected-scale-150.png
+      png_sha256: 609260f2c622b6097884dc24a1b494e38255c76f66aedd75749de2af6ec16348
+      physical_size:
+      - 1440
+      - 960
+      json_sha256: 55154f4d1d6e1a1d89815c0f5e4aa057d82f8968de7a4af8fea18ba1f9b0939c
+      nonce: 5
+      scale: 1.5
+    - file: injected-unavailable-minimized.png
+      png_sha256: b05b88fb7a87ce5908fa00e4914d9fdffad005a10c29b590ed2e9f3a82e7839f
+      physical_size:
+      - 960
+      - 640
+      json_sha256: c37b328677afbec3efca6917a4e910962008a7b7df5297c057c129b86dd0c7a2
+      nonce: 27
+      scale: 1.0
+    - file: keyboard-closed-clean-tab-policy-false.png
+      png_sha256: 8bd8bd26bf7acfb0ea2351d51af6274c5deb009f11d2debb5e1fb94b0a6dda16
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 0831531d8588f24e0594285c21d4851609e3cd904b5b203471705bd620872ecc
+      nonce: 1112
+      scale: 1.0
+    - file: keyboard-closed-clean-tab-policy-true.png
+      png_sha256: 8bd8bd26bf7acfb0ea2351d51af6274c5deb009f11d2debb5e1fb94b0a6dda16
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 22e76974db710d1d13b76979c2da14ec319dd67f3975111bbbfacb148289fc0b
+      nonce: 1666
+      scale: 1.0
+    - file: keyboard-floated-policy-false.png
+      png_sha256: 340d2304f49ef161a671b760e7d405ba16ebbb3245c80b305bd0c87657a92064
+      physical_size:
+      - 960
+      - 640
+      json_sha256: a82e55b0daaeb04d0cfae8909469ba39e170ada619d23ff0f29d12dce51e45c9
+      nonce: 950
+      scale: 1.0
+    - file: keyboard-floated-policy-true.png
+      png_sha256: 340d2304f49ef161a671b760e7d405ba16ebbb3245c80b305bd0c87657a92064
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 62bc3a5d76ac8e886e4ac8b5c75e9b5c96807efb06b45558c7f092d78eb5c9dc
+      nonce: 1504
+      scale: 1.0
+    - file: keyboard-group-collapsed-content-policy.png
+      png_sha256: 004cd0ff5bb7cc0e13169df2862d968e6ba3750788862ce07873699c9f381359
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 7187cfd0b52c7f67522d1164aaaf054113684d33c1a393dd56d4bdf31310457d
+      nonce: 791
+      scale: 1.0
+    - file: keyboard-group-collapsed-frame-policy.png
+      png_sha256: 004cd0ff5bb7cc0e13169df2862d968e6ba3750788862ce07873699c9f381359
+      physical_size:
+      - 960
+      - 640
+      json_sha256: f9dc12be52ad09eae680af9175049f0a2adeafe044166f6eb868bbdaf376d856
+      nonce: 1345
+      scale: 1.0
+    - file: keyboard-maximized-content-policy.png
+      png_sha256: 7ef73bd826d60a689c99b39e2043da3912acc099a51bdc2f0b841322bd68400a
+      physical_size:
+      - 960
+      - 640
+      json_sha256: d579c2c7aa25caf997fab3414bc7ed3c1ca9b4596b48063b262a5a9040e8661f
+      nonce: 737
+      scale: 1.0
+    - file: keyboard-maximized-frame-policy.png
+      png_sha256: 7ef73bd826d60a689c99b39e2043da3912acc099a51bdc2f0b841322bd68400a
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 67de930fb61f375dd8330811a3834618e648ea2998c22751baa864ea0344e372
+      nonce: 1291
+      scale: 1.0
+    - file: keyboard-redocked-policy-false.png
+      png_sha256: e7b703a92bdeeed9820b5a2765da12c994d8e44caaa09a32f35c63da69f842e8
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 108ee0a8e92134d22fb8fe067e7528897cb14cb970656964b6af46830d39e4b4
+      nonce: 1050
+      scale: 1.0
+    - file: keyboard-redocked-policy-true.png
+      png_sha256: e7b703a92bdeeed9820b5a2765da12c994d8e44caaa09a32f35c63da69f842e8
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 0710efd761b33fd316dc96b67d47b9a27e9514f9796ac1d0a81b750e562230c9
+      nonce: 1604
+      scale: 1.0
+    - file: keyboard-resize-focus-content-policy.png
+      png_sha256: 46d91be474ff6f47c2fab351e38ced413dc967be23095d512a21079e89ee67c3
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 56fed5af77d21e4443a1a49b0942a20d9e725329b4ff0e8cca24912f44d1950b
+      nonce: 727
+      scale: 1.0
+    - file: keyboard-resize-focus-frame-policy.png
+      png_sha256: 46d91be474ff6f47c2fab351e38ced413dc967be23095d512a21079e89ee67c3
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 8cfdcb9a16e74f17e8d6c33dbf2b7ea7c145c5dcb7f3ef169b27ec9d7aa1a5f5
+      nonce: 1281
+      scale: 1.0
+    - file: keyboard-restored-content-policy.png
+      png_sha256: 6dbd0a0a46103008d31fbee0d57811daf97dd79cca19737d556c389a0408cc3e
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 4b6f6c3c1b046cefea44f8e4d5aef44005eed85d98de73ae62fd19c6d8c33577
+      nonce: 637
+      scale: 1.0
+    - file: keyboard-restored-frame-policy.png
+      png_sha256: 6dbd0a0a46103008d31fbee0d57811daf97dd79cca19737d556c389a0408cc3e
+      physical_size:
+      - 960
+      - 640
+      json_sha256: cc4de3830566cfa033a33c99804ae30899faf56904340ab45091fc3874e6adcd
+      nonce: 1191
+      scale: 1.0
+    - file: minimap-always.png
+      png_sha256: 742166c8fedee34e7e7bbbfe8c25c61ad4df1285b2a5af0bb465753a30cac994
+      physical_size:
+      - 960
+      - 640
+      json_sha256: cd4fa660a62ff8d3a4081bea0e540dd2698eaa18e334b9db5fe9bcfa1c4b939e
+      nonce: 7
+      scale: 1.0
+    - file: native-01-root.png
+      png_sha256: 9d94f823455baa8be7f25edb7ca30465caa492b50c4eeb67bfa19cd2d447f0a9
+      physical_size:
+      - 1000
+      - 720
+      root: 1
+      hwnd: 77537876
+      epoch: 1
+      generation: 43
+      nonce: 1
+    - file: native-02-preflight.png
+      png_sha256: b89fa74c2b7bc43ba23f4d7ac626c18caeae82255e8685b6bf78c5317f6872b5
+      physical_size:
+      - 1000
+      - 720
+      root: 29
+      hwnd: 78848234
+      epoch: 1
+      generation: 47
+      nonce: 2
+    - file: native-03-populated.png
+      png_sha256: b0db900525aff4b0df50b93338144e7bf162b2817a7c587f460dc7e48d672253
+      physical_size:
+      - 1000
+      - 720
+      root: 29
+      hwnd: 78848234
+      epoch: 1
+      generation: 48
+      nonce: 3
+    - file: native-04-resized.png
+      png_sha256: 045c87a4c4bc4d0b449270443c1d587c4629cadf8acf8483a5bf455ded8c1ecf
+      physical_size:
+      - 760
+      - 520
+      root: 29
+      hwnd: 78848234
+      epoch: 2
+      generation: 49
+      nonce: 4
+    - file: native-05-recreated.png
+      png_sha256: 045c87a4c4bc4d0b449270443c1d587c4629cadf8acf8483a5bf455ded8c1ecf
+      physical_size:
+      - 760
+      - 520
+      root: 29
+      hwnd: 78848234
+      epoch: 3
+      generation: 49
+      nonce: 5
+    - file: native-06-preflight.png
+      png_sha256: b89fa74c2b7bc43ba23f4d7ac626c18caeae82255e8685b6bf78c5317f6872b5
+      physical_size:
+      - 1000
+      - 720
+      root: 29
+      hwnd: 256318304
+      epoch: 1
+      generation: 51
+      nonce: 6
+    - file: native-07-populated.png
+      png_sha256: 88874be0a8c009cc4cbe5ff3686377c8a7a7227d412593ec80161269f7729a35
+      physical_size:
+      - 1000
+      - 720
+      root: 29
+      hwnd: 256318304
+      epoch: 1
+      generation: 53
+      nonce: 7
+    - file: native-08-resized.png
+      png_sha256: b84203bca7f96a7e0e1bb936a7ddd3d3a96e3b4d35eb715882207a7148dc933b
+      physical_size:
+      - 760
+      - 520
+      root: 29
+      hwnd: 256318304
+      epoch: 2
+      generation: 54
+      nonce: 8
+    - file: native-09-recreated.png
+      png_sha256: b84203bca7f96a7e0e1bb936a7ddd3d3a96e3b4d35eb715882207a7148dc933b
+      physical_size:
+      - 760
+      - 520
+      root: 29
+      hwnd: 256318304
+      epoch: 3
+      generation: 54
+      nonce: 9
+    - file: native-10-preflight.png
+      png_sha256: 8762ff0dce8e0a58cdf11da88dc9a98fcd6927bda6e39e62eaf1751862c659ca
+      physical_size:
+      - 1000
+      - 720
+      root: 31
+      hwnd: 170992424
+      epoch: 1
+      generation: 60
+      nonce: 10
+    - file: native-11-populated.png
+      png_sha256: 7ee4bad0fa6471f471ba5b329d7bf66d019a1527c93bca0b108c9a60bcc0a733
+      physical_size:
+      - 1000
+      - 720
+      root: 31
+      hwnd: 170992424
+      epoch: 1
+      generation: 61
+      nonce: 11
+    - file: native-12-uia-after-popout.png
+      png_sha256: dd54078842a527740a29250a62559810867a42c86807b93f9dca87fa7d7c9237
+      physical_size:
+      - 1000
+      - 720
+      root: 31
+      hwnd: 170992424
+      epoch: 1
+      generation: 62
+      nonce: 12
+    - file: native-13-resized.png
+      png_sha256: 024c7b1d20f78ba2568530803e377b94ed2f5ab77f0d8bd3ef0b5521a60fc445
+      physical_size:
+      - 760
+      - 520
+      root: 31
+      hwnd: 170992424
+      epoch: 2
+      generation: 63
+      nonce: 13
+    - file: native-14-recreated.png
+      png_sha256: 024c7b1d20f78ba2568530803e377b94ed2f5ab77f0d8bd3ef0b5521a60fc445
+      physical_size:
+      - 760
+      - 520
+      root: 31
+      hwnd: 170992424
+      epoch: 3
+      generation: 63
+      nonce: 14
+    - file: native-15-injected-failed-recovery-visible-status.png
+      png_sha256: 546998d43d1db3709413f52fcbdd88dc70a63ac4eb422416512efbbed1151abb
+      physical_size:
+      - 1000
+      - 720
+      root: 1
+      hwnd: 77537876
+      epoch: 1
+      generation: 63
+      nonce: 15
+    - file: native-16-recovered-after-injected-failure.png
+      png_sha256: 5e53a37624a232b7ec596ace6313f1db9df681948eb4db0c7727c8442f5f6096
+      physical_size:
+      - 760
+      - 520
+      root: 31
+      hwnd: 170992424
+      epoch: 8
+      generation: 63
+      nonce: 16
+    - file: native-17-uia-after-recovery.png
+      png_sha256: 6bff46b2616fd83d20220495c466f28bb089c1e10bbd6b14ea992d8ff9979488
+      physical_size:
+      - 760
+      - 520
+      root: 31
+      hwnd: 170992424
+      epoch: 8
+      generation: 64
+      nonce: 17
+    - file: native-18-partial-close-survivors.png
+      png_sha256: 483e03e87ecbcacda729aa34a991d0ce457d1fd1b51f635c0c2974d88cfa0e6d
+      physical_size:
+      - 760
+      - 520
+      root: 31
+      hwnd: 170992424
+      epoch: 8
+      generation: 65
+      nonce: 18
+    - file: native-19-returned-docked.png
+      png_sha256: 192b77c9a8d1c64a73fd4d87fe3f85e6f20fb255357503db725ca9a8bcd73998
+      physical_size:
+      - 1000
+      - 720
+      root: 1
+      hwnd: 77537876
+      epoch: 1
+      generation: 70
+      nonce: 19
+    - file: native-20-uia-after-docking.png
+      png_sha256: 89d35079958376f05869a50e97d2622ae339b7a033896af25b48353be208fa0c
+      physical_size:
+      - 1000
+      - 720
+      root: 1
+      hwnd: 77537876
+      epoch: 1
+      generation: 71
+      nonce: 20
+    - file: native-21-uia-menu-open.png
+      png_sha256: 7cf818a607caa154c387d743502605a348da64ec2365a4c6b3e6f3920189b08e
+      physical_size:
+      - 1000
+      - 720
+      root: 1
+      hwnd: 77537876
+      epoch: 1
+      generation: 71
+      nonce: 21
+    - file: native-22-uia-menu-dismissed.png
+      png_sha256: 6dc8f67392b476c07ceafde8973d2305bd208a8df513ea17da09759d87ed41e0
+      physical_size:
+      - 1000
+      - 720
+      root: 1
+      hwnd: 77537876
+      epoch: 1
+      generation: 71
+      nonce: 22
+    - file: nested.png
+      png_sha256: dece502ffbf1c787e701191f6261f10729bdaf7706b745a3609b0d32190e2233
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 20d5d584c6d22cc9b9e38f2ffc03c88faa5c3b348ee5478c54fbab8b886959e3
+      nonce: 3
+      scale: 1.0
+    - file: scrollbar-and-minimap.png
+      png_sha256: 3e5b6ef7e58e1f81c24d6da69fecaa2b5ee56a67ecb9a5c50e4c27c77b8866e9
+      physical_size:
+      - 960
+      - 640
+      json_sha256: a0e63b2c2140dd7d3329c3462fa3103237f7bfae38c7888b2e549d43d226c605
+      nonce: 8
+      scale: 1.0
+    - file: scrollbar.png
+      png_sha256: a1c01aa63bd5c0228989c4eced2fa32bb7baea47318bf3ea6f0575a62615d7d4
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 37205046825ac7d9ecca2bd1530ce4b0a01232a220c67cc5d9d493f5f7c2f393
+      nonce: 6
+      scale: 1.0
+    - file: standard.png
+      png_sha256: e18a633f65fe46ec068920ef9b74ec9a2ee22444aa41370ee6391e2cfbfc6d8d
+      physical_size:
+      - 960
+      - 640
+      json_sha256: f417555c8cba77b5202a07af532cb329c12c02d021a8c5901c3c3899f281b7db
+      nonce: 2
+      scale: 1.0
+    - file: static-idle-0.png
+      png_sha256: 6ea1e112a4314e74491f07e76eb1f0433bbb3817e8dfc28b0fc633bd06f354db
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 6e0ced6646b99502f96ed28fb4f09b98e875e039039486cfb3331853d928e099
+      nonce: 19
+      scale: 1.0
+    - file: static-idle-1.png
+      png_sha256: 82224c9a40bad85c680951ed02ae03d7403bbbd798433f1ef43292b37bce6db4
+      physical_size:
+      - 960
+      - 640
+      json_sha256: c2074bc29995b444f87c6b8bc1b08b1826413678d94d31da65560847ec671017
+      nonce: 20
+      scale: 1.0
+    - file: static-idle-2.png
+      png_sha256: 82224c9a40bad85c680951ed02ae03d7403bbbd798433f1ef43292b37bce6db4
+      physical_size:
+      - 960
+      - 640
+      json_sha256: ef47d7dcf3267ebb0ac438f2d365a18831c4009159b16956081cc418b8d92fab
+      nonce: 21
+      scale: 1.0
+    - file: static-idle-3.png
+      png_sha256: 82224c9a40bad85c680951ed02ae03d7403bbbd798433f1ef43292b37bce6db4
+      physical_size:
+      - 960
+      - 640
+      json_sha256: fc1a7ffb5a95aa5af99f6ddb7d69077be6ba52a79e612f19ace86179e57ed58b
+      nonce: 22
+      scale: 1.0
+    - file: tabs-dirty-close-veto.png
+      png_sha256: 0fbfa851a58cf5c2be53ea78e3b439259b57ebeb73c7182cfd85cbdd82106674
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 32b4d0656bea932e966c1a583d6a7cb40b2113f92290cea22f6cf1dbbc8c1f76
+      nonce: 250
+      scale: 1.0
+    - file: tabs-entire-group-moved.png
+      png_sha256: 70bc142081cd083d3d050a4c2429011598f0d5670c2389d501ed9c84bbea4a85
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 1349b6680325b4a2b603385f65ab2d3d18eccbf64c7809be0a9d9f78d20abef4
+      nonce: 227
+      scale: 1.0
+    - file: tabs-group-collapsed-colors-disabled.png
+      png_sha256: 4aa4c30306707085f954a646baf72a169f4fad6368a1f2b32b740677aa7e5f0f
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 69ff25479a014d68e14c7551066a53f36bc5389a2e85d7654728cb9ef5a1263c
+      nonce: 140
+      scale: 1.0
+    - file: tabs-group-reordered-expanded.png
+      png_sha256: 6326f6a5bf1e8b26453f9148f63d892be2dcbb4e8654fffee0a6984c7c66ce82
+      physical_size:
+      - 960
+      - 640
+      json_sha256: f4bccefb904c4d00b2ae746896ce930b9adf05febdbf63ca8e38cd4bb618e412
+      nonce: 186
+      scale: 1.0
+    - file: tabs-groups-colored-small-page.png
+      png_sha256: 2ead61032b6ceb14d576193174bb16e3b11cdf34327b3852cc2ca335e56f6cbe
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 3271a336dcbcf95d455efc5c435d503b134a251b63956b6637ae9d1361f151a8
+      nonce: 35
+      scale: 1.0
+    - file: tabs-overflow-last-selected.png
+      png_sha256: dafba9a4e2eea43d6e2581f2fcd24f4b0989d050f597eb649a940089e94da212
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 687b7a190c46dbf75b8cd8653c45dffaf76f28d9a8f1d57f42bff5122781d6ab
+      nonce: 94
+      scale: 1.0
+    - file: tabs-pinned-reorder-rejected.png
+      png_sha256: 62fd35d241ba05da67590c3edb600e805f3285ea1827785916379742587507c5
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 68eb4d88439d08c39587779f1e452a4bf79c54c4a3b1e98308c931bb846082e4
+      nonce: 270
+      scale: 1.0
+    - file: tool-ancestor-beside-two-providers.png
+      png_sha256: 527d71e87f0c2dfe89877172d8459e33aeb30d16ada19087ec724de7fbe7a2bf
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 444cf559220f238a181b49f4c856aeaa167a88f28834750dbf76d1f721cf75c1
+      nonce: 426
+      scale: 1.0
+    - file: tool-closed-target-rejected.png
+      png_sha256: 5e243a40347e039a25ac7901a8d565a86dfe91e2a0ad8658c7583b35eb8d3253
+      physical_size:
+      - 960
+      - 640
+      json_sha256: e2fd792a1d0be391a5731e10c9e02302395a3a93d8a51f71ff3b345f222f94cb
+      nonce: 492
+      scale: 1.0
+    - file: tool-eligible-left-edge-rotation.png
+      png_sha256: 9af6974d2123f46c8ea3515285cb74596070b3e1b4113630af6fb9632e79efde
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 6f2461aaf6f93d6d5a80409c438c2a461d6744c768821f6a2156d1981a222823
+      nonce: 489
+      scale: 1.0
+    - file: tool-exact-pinned-recipient-other-file-selected.png
+      png_sha256: b7b2fcf9b3129a60a80b40274bd989ceb9d9f6f55a56aeac6f1468c0c1acda18
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 3e2a63f3dfeb56a59cf750376106c3c17aa557c9b847caeb339fb8bc001628a4
+      nonce: 438
+      scale: 1.0
+    - file: tool-hidden-target-release.png
+      png_sha256: 76c99e4cc3b3cfe3b836bc1f786fb6b348cdfe6374b96d1218c9ccb2c887cd86
+      physical_size:
+      - 960
+      - 640
+      json_sha256: c0f5f52939a85164000dc3d49da7d7a7db5f5eda409d5271e9274815f15210d8
+      nonce: 465
+      scale: 1.0
+    - file: tool-hidden-target-retain.png
+      png_sha256: 4ed694657adcc0f6afec4e3c884a0bbb1ea055ba945346434e63d6f7d3479b85
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 90e03a416a004da9e235d88c88a759ddfe5bb69f809324378b2fcdc15da24f4d
+      nonce: 456
+      scale: 1.0
+    - file: tool-neighbor-focus-pinned-recipient.png
+      png_sha256: 4e34aed67c63f0db07a4608d1a1ef20ecec8738e6a21d0dacf040e3561c6b499
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 5f454443dc690ce44bb46db93217c48961601245e239e1fd6c759aaceb86116e
+      nonce: 450
+      scale: 1.0
+    - file: tool-target-restored-release.png
+      png_sha256: 4e34aed67c63f0db07a4608d1a1ef20ecec8738e6a21d0dacf040e3561c6b499
+      physical_size:
+      - 960
+      - 640
+      json_sha256: ab2b5dd364c303132e2af8e4fe67757ca60eaa29fa6d8c5bcfa9572c426fc674
+      nonce: 468
+      scale: 1.0
+    - file: tool-target-restored-retain.png
+      png_sha256: 4e34aed67c63f0db07a4608d1a1ef20ecec8738e6a21d0dacf040e3561c6b499
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 0fc600558cba7f8d3e8dbe7c3517c11e097e30d2f196dcaa7d1625c01d98bff6
+      nonce: 459
+      scale: 1.0
+    - file: transient-idle.png
+      png_sha256: de2dccd38acd1606d5c35e34959c61c7755fc7c21a69307cf17fb203ab5a2dbc
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 7fa81997ba2f366de503b2f84ffb922cbdc6b34bddcc5963d389bee185cedec8
+      nonce: 9
+      scale: 1.0
+    - file: transient-moved.png
+      png_sha256: 7ffc888533928a43dab2d74fd3ed05043e6395075b725277562f18597affcb2d
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 41d6f59a21b2bab6ca2ff0100a6048226809bfc5672b463b2f8bb93717cb2528
+      nonce: 11
+      scale: 1.0
+    - file: transient-released.png
+      png_sha256: f29425234e1fb518352a5dd99b8b3c100cdcfcc79312634028c996520f1ff276
+      physical_size:
+      - 960
+      - 640
+      json_sha256: b409fb49a8f63575471f285bff0e80fc2f45af0c600aa0c20c91e07a5930cbb9
+      nonce: 12
+      scale: 1.0
+    - file: transient-stationary-grab.png
+      png_sha256: f6110e47679c81eb290331ebdb1f5a028c77fdac56b8daa2efe94edabb45e1e3
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 40e62f343a12fe97c9dfe602db420f81589a1055246812f7249f038af94baa2c
+      nonce: 10
+      scale: 1.0
+    - file: weighted-holes-deep.png
+      png_sha256: bb88408d1d35a6f20cbdaccf8a603081f1b75ddd63a61ec157e91fc5b2d3a21d
+      physical_size:
+      - 960
+      - 640
+      json_sha256: cc396719f0115ba70e31b1ca3ae0a2b205f0f44dfae44640748bf0690033284b
+      nonce: 14
+      scale: 1.0
+    - file: weighted-holes-restored.png
+      png_sha256: 63ceb54d7c4a9fecac9b03ea3eebd06a0d26095ab37fa27380909540b839779b
+      physical_size:
+      - 960
+      - 640
+      json_sha256: 0bfa682323be14e864a16237e4d9d0f9f38d4e8ce9de4b89e76c5f6e01b4dca2
+      nonce: 18
+      scale: 1.0
+    - file: weighted-holes-shrink.png
+      png_sha256: 9514291df6eda9d43d18079fab8ba6d0b642312ad22ef17a72a2d0c54b940685
+      physical_size:
+      - 520
+      - 440
+      json_sha256: 42e37e6c01eb50247478145e271534d0a7636e154d36abc4542789ac5d14c6fb
+      nonce: 16
+      scale: 1.0
+    independent_os_observers:
+    - file: native-uia.json
+      sha256: dcfeb996b6b5518c59576ee9945b9cb5b127949235e6db827e881d9004c1a748
+      stage: initial
+      hwnd: 77537876
+      action_pattern: SelectionItem.Select
+      invoked: 📌 Document 2
+      target_view: 12
+      action_before:
+        selected: false
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+      action_after:
+        selected: true
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+    - file: native-uia-after-popout.json
+      sha256: 13e92af17b179e008872ec45adf48a09323268d450459f25cdf7c2feedbe363c
+      stage: after-popout
+      hwnd: 170992424
+      action_pattern: SelectionItem.Select
+      invoked: Document 1
+      target_view: 10
+      action_before:
+        selected: false
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+      action_after:
+        selected: true
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+    - file: native-uia-after-recovery.json
+      sha256: d1195940a9b22e053cc58ba97b5bc55d25f7e64c63f96aaad29b79de41ed4f18
+      stage: after-recovery
+      hwnd: 170992424
+      action_pattern: SelectionItem.Select
+      invoked: 📌 Document 2
+      target_view: 12
+      action_before:
+        selected: false
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+      action_after:
+        selected: true
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+    - file: native-uia-after-docking.json
+      sha256: be24a83778ffd1956e57156c9e0ca16d71e8f3cb11db1f3cd99800ec18a886ca
+      stage: after-docking
+      hwnd: 77537876
+      action_pattern: SelectionItem.Select
+      invoked: '[Native group demonstration] Canvas 1'
+      target_view: 16
+      action_before:
+        selected: false
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+      action_after:
+        selected: true
+        value: null
+        actions:
+        - SelectionItemPatternIdentifiers.Pattern
+    - file: native-uia-menu-open.json
+      sha256: 2109077674af1d3daeec9e5e36becc1d7928666e7e7b7718e00df52f36fa3984
+      stage: menu-open
+      hwnd: 77537876
+      action_pattern: Invoke.Invoke
+      invoked: Panes / reveal (F6)
+      target_view: 0
+      action_before:
+        selected: null
+        value: null
+        actions:
+        - InvokePatternIdentifiers.Pattern
+      action_after:
+        overlay_present: true
+        return_focus: false
+        announcement_present: false
+    - file: native-uia-menu-dismiss.json
+      sha256: 5d7a1a1f297e288f68aca702f489706bfd73252cea4bd8ccbebf99f228aa5a55
+      stage: menu-dismiss
+      hwnd: 77537876
+      action_pattern: Invoke.Invoke
+      invoked: Dismiss pane list
+      target_view: 0
+      action_before:
+        selected: null
+        value: null
+        actions:
+        - InvokePatternIdentifiers.Pattern
+      action_after:
+        overlay_present: false
+        return_focus: false
+        announcement_present: true
+  quiet_native_observation:
+    pid: 351036
+    window_checkpoints: 209
+    during_event_records: 259
+    visible_owned_windows_observed: 0
+    foreground_owned_observed: 0
+    external_foreground: 14942936
+    external_foreground_pid: 329152
+    before_after_unchanged: true
+    cleanup_hidden_noactivate_toolwindow_nonappwindow: true
+    returned: 3
+    remaining_native_bindings: 0
+    accesskit_forwarded_actions: 18
+  provider_r019_assessment:
+    runtime_status: PASS_SCOPED_REUSED
+    baseline_revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
+    unchanged_vendor_files: 20
+    lf_path_digest: bf1c37ff5f0bcfa617381f80878c1b67270fa24e400a40d1a7bc90d3fddacb02
+    digest_format: sorted git ls-tree relative paths; SHA256 incremental path UTF8 + NUL + binary SHA256 of LF-normalized
+      content
+    owning_test_log: ../.local/kumihimo-desktop/proof/provider-b7dec3f107cb.log
+    owning_test_log_sha256: 05ae875b4bff7040fc50e79a177df8647ee36b8b13f94e275234a4637a86543f
+    observed: Exact20 vendor source/test/manifest/owning-lock files LF match proved baseline; hidden owning component1PASS
+      reused, no rerun. Fresh7d six-stage OS UIA/native quiet observation supplies current consumer-bound proof.
+  DIFF_ATTACK_SURFACES:
+  - Float header backing versus host media alpha, clip boundaries and persistent z-order.
+  - Tab AccessKit producer versus Windows SelectionItem consumer after popout/recovery/dock.
+  - Failed recovery notice first Area sizing pass versus correlated tagged actual readback.
+  - Dismissed-menu notice bounding/backing versus fresh logical focus and inactive OS window.
+  INDEPENDENT_CHECKS_RUN:
+  - Direct perception of all102 actual current PNGs, including unchanged scenes; no hashes/contact-sheet substitute.
+  - Cross-file reconciliation of80 paired records and22 native capture records with physical PNG dimensions/nonces/scales/epochs
+    and rendered recipients.
+  - Independent OS six-stage results versus canonical fresh selection/menu reads and postaction captures; selection
+    false->true required.
+  - 'Evaluator-defined exact pixel comparison: floating Document1 text interior x696..726/y28..45 equals unobstructed
+    dock-maximized shifted460,558/558 pixels; retract apparent overlap and classify separate clip-region occlusion.'
+  - Exact17 candidate Git blobs and20 R019 vendor inputs compared independently; owning/default/combined/capture/native
+    log terminals read.
+  COUNTERFACTUAL_CHECKS:
+  - If chrome.rs draw omitted opaque header backing, underlying provider prose/bars would again contaminate floated
+    header pixels in injected-scale150/weighted captures.
+  - If chrome.rs tab_button omitted Role::Tab/set_selected on the actual response, Windows tab selection would again
+    be null/Button and SelectionItem false->true would fail.
+  - If native.rs FailedStatus skipped the untagged sizing draw, native15 would again capture the invisible first
+    Area sizing pass instead of the failure notice.
+  BOUNDARY_PROBES:
+  - Actual AccessKit Windows UIA SelectionItem.Select crosses independent OS client -> native host -> shared controller;
+    four fresh target/generation/OS-state agreements.
+  - Actual native Ready correlation -> group/view/frame commit -> independently opened populated readback, owned
+    resize/recreation, and semantic return.
+  - Public provider mark picking/global clip -> one local mapping -> actual known RGBA physical pixel; standard/compact/injected1.5.
+  - DesktopSessionv1 -> existing SavedLayout schema1 roundtrip and fresh restored incarnation/carrier rejection,
+    without host atomic-storage assertion.
+  NEGATIVE_PATH_CHECKS:
+  - Current owning29 includes invalid settings/clip/stale ownership/Escape/capture loss/focus loss/second pointer/session
+    foreign duplicate stale occupied bindings.
+  - Current actual native wrong-window/epoch/nonce/extent/timeout and generation/root intent challenges reject,
+    factory/interruption noReady source retained.
+  - Three injected recovery failures bounded3/3, visible failure notice, fresh recovery readback/OS input; partial
+    close10/veto12,14 and maximized return holds recoverable window.
+  - Current raster real MoveLast Pinned11, dirty13 CloseVeto, forbidden/stale preview and unavailable/closed pinned
+    tool retain canonical identities and explain rejection.
+  INDEPENDENT_FINDINGS: []
+  resolved_findings:
+  - finding: Float header transparency
+    evidence: Opaque exact standard/compact/scale/weighted/nav/native headers directly opened; host media alpha
+      retained.
+  - finding: Dismiss announcement overpaint
+    evidence: Exact native22 opaque bounded announcement readable; native21 menu readable; independent OS polite
+      notice exposed.
+  - finding: Recovery failure invisible
+    evidence: Exact native15 visible failure notice, nonce15/root1/epoch1/gen63/currentHWND; recovered16/17 actual
+      pixels and OS selection.
+  - finding: OS selected-state missing
+    evidence: Four exact independent OS action_before false/action_after true SelectionItem.Select; tab roles TabItem
+      match pixels/canonical state.
+  - finding: Apparent newly-floated tab overlap
+    classification: RETRACTED_AFTER_INDEPENDENT_PIXEL_CLIP_CHECK
+    evidence: Header clip ends727; Document1 text558/558 equals unobstructed reference inside clip, underlying Canvas
+      fragment outside. Intentional partial occlusion, not same-pixel text overpaint; canonical pane/tab menus retain
+      reachability.
+  verdict_separation:
+    tests: PASS29/29 owning current candidate; default/combined checks pass.
+    requirement_alignment: PASS_SCOPED original13 methods; no case replaced by a test name or narrowed.
+    visual_and_os: PASS_SCOPED all102 actual captures plus six independent Windows UIA stages.
+    environment: Windows x64 hidden native/Dx12 and injected/semantic adapter inputs only.
+    final: PASS_SCOPED_RUNTIME; final publication/origin/state closure pending lead.
+  RESIDUAL_UNCERTAINTY:
+  - Physical touch/pen, physical cross-window gestures and actual display/monitor changes are not proven by semantic/injected
+    inputs.
+  - Hidden native correlated readbacks and OS UIA do not prove visible compositor display, all assistive hardware,
+    actual GPU fault or recovery of external provider devices.
+  - Demo editor/generated canvas/host still texture do not establish actual external browser/editor/Servo/video
+    decoder/audio engines; unsupported handoff/compositing remains explicit.
+  - No idle CPU/memory-release/performance gain, ARM64/WASM/other desktop OS or durable atomic host filesystem save/cross-restart
+    exactly-once claim.
+  - Final exact origin report/input containment, WP state/board/matrix/topology publication are pending dev lead;
+    this evaluator owns only this append-only report.
+  report_frozen_for_publication: true
+  publication_status: LOCAL_EVALUATION_PENDING_LEAD_PUBLICATION
+  next_action: Dev lead publishes this exact report with verified candidate inputs, independently reads origin containment
+    and closes required governance state; evaluator report/source HOLD.

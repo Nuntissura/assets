@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 19
+revision: 20
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -4017,7 +4017,22 @@ decisions:
     reachable content. Real owned native resize and current DPI observation are distinct from injected scale; physical
     touch/pen, assistive-technology hardware, real external device faults, ARM/web/other OS/full engine support
     remain specifically labelled open. A concrete failure is diagnosed/repaired within its original case; no unrelated
-    broad Core/JSON/content suite when inputs remain unchanged.'
+    broad Core/JSON/content suite when inputs remain unchanged. Observed scoped outcome: WP012 scoped Windows x64
+    MSVC/rustc1.91.1 desktop adapter at 7d9268ab90d5ed6e31d7af070cb73302765741cc: optional egui0.33.3 borrows the
+    host Controller and content dispatcher. All29 owning tests and default/all-feature all-target checks passed.
+    Eighty actual DX12 raster states cover nested variable counts, weighted holes/deep containment, groups/pins/veto,
+    drag/cancel/commit, float/redock/equalize/swap/maximize/restore, tools, four chrome profiles, four navigation
+    modes, mouse/keyboard and separately labelled semantic touch/host-pen input, still backgrounds and scale1/1.5/1.
+    Float ordering survives persistent hide/restore; theme-backed headers and notices remain readable. Twenty-two
+    actual hidden native captures prove correlated preflight, view/group/frame popouts, resize, teardown/recreation,
+    three returns, partial-close survivors, removed-origin semantic return, bounded injected recovery failure with
+    a visible healthy-root notice before recovery, and six Windows accessibility stages. Four genuine SelectionItem.Select
+    actions expose OS false-to-true selection matching canonical changes; Panes open/dismiss and logical focus return
+    passed, with18 forwarded actions total. Owned windows stayed hidden/nonforeground. The unchanged exact hidden-only
+    AccessKit provider test remains valid; downstream workspace roots must apply the recorded local patch. All13
+    frozen evaluation cases passed independently. Physical input/assistive hardware, physical display changes, ARM64/other
+    platforms, real Servo/video/editor engines, genuine GPU fault injection, performance gains and physical memory
+    release remain unproven. All full future requirement acceptances remain open.'
   rationale: An optional GUI dependency and public proven painter preserve portable Core/host ownership, share actual
     render/input paths, and expose authentic native readiness without forced foreground startup.
   research_source_refs:

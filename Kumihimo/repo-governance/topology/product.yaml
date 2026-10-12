@@ -1,9 +1,9 @@
 kind: product_topology
-implementation_status: core_content_and_scoped_web_adapter_proven
+implementation_status: core_content_and_scoped_desktop_web_adapters_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
-  status: core_content_web_implemented_desktop_active
+  status: core_content_desktop_web_implemented
 - id: KUM-CORE
   manifest_ref: product/kumihimo-core/Cargo.toml
   entrypoint: product/kumihimo-core/src/lib.rs
@@ -119,3 +119,37 @@ nodes:
 - id: KUM-WEB-PROOF
   path: product/kumihimo-web/tools/browser-proof.py
   responsibility: Quiet actual six-case browser, canonical storage/route and rendered image proof
+- id: KUM-EGUI
+  manifest_ref: product/kumihimo-egui/Cargo.toml
+  entrypoint: product/kumihimo-egui/src/lib.rs
+  status: verified_scoped_desktop_adapter
+  responsibility: Borrowed canonical controller presentation; optional navigation/background/native/capture boundaries
+  modules:
+  - product/kumihimo-egui/src/workspace.rs
+  - product/kumihimo-egui/src/chrome.rs
+  - product/kumihimo-egui/src/input.rs
+  - product/kumihimo-egui/src/content.rs
+  - product/kumihimo-egui/src/navigation.rs
+  - product/kumihimo-egui/src/diagnostics.rs
+  - product/kumihimo-egui/src/persistence.rs
+  - product/kumihimo-egui/src/native.rs
+  - product/kumihimo-egui/src/window_slots.rs
+  - product/kumihimo-egui/src/capture.rs
+  - product/kumihimo-egui/src/demo.rs
+  verification_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
+- id: KUM-EGUI-CONTRACTS
+  path: product/kumihimo-egui/tests/adapter_contracts.rs
+  responsibility: Twenty-nine focused owning consumers preserving original fourteen
+- id: KUM-EGUI-NATIVE
+  path: product/kumihimo-egui/examples/native_probe.rs
+  responsibility: Quiet actual UIA/correlated graphics/popout/recovery probe
+- id: KUM-EGUI-RASTER
+  path: product/kumihimo-egui/examples/capture_host.rs
+  responsibility: Actual shared DX12 GUI image and geometry capture
+- id: KUM-EGUI-UIA
+  path: product/kumihimo-egui/tools/observe-uia.ps1
+  responsibility: Independent owned-HWND Windows accessibility observer
+- id: KUM-WINDOWS-PROVIDER
+  manifest_ref: product/third-party/accesskit_windows-0.29.2/Cargo.toml
+  entrypoint: product/third-party/accesskit_windows-0.29.2/src/lib.rs
+  responsibility: Exact local quiet provider-options patch; downstream root patch required

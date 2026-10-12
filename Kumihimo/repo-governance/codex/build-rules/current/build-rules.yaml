@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 33
+  version: 34
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,8 +23,8 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: core_content_and_scoped_web_adapter_proven
-  gui_applicability: scoped_web_runtime_proven_desktop_active
+  implementation_status: core_content_and_scoped_desktop_web_adapters_proven
+  gui_applicability: scoped_desktop_and_web_runtime_proven
   test_entrypoint: product/Cargo.toml
   build_environment:
     working_directory: Kumihimo project root
@@ -41,10 +41,12 @@ canonical_commands:
     2
   rust_example: cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace
     -j 2
+  desktop_gui_check: cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --all-targets
+    --locked --offline -j 2
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 7
+  revision: 8
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -178,6 +180,36 @@ build_matrix:
     - Actual Portal/Notes/Studio/Servo engines
     - Untrusted iframe isolation or complete accessibility-tree coverage
     - Performance or physical resource release
+  - entry_id: BM-KUM-DESKTOP-WINX64-001
+    wp_ref: WP-KUM-012-desktop-gui-adapter-v1
+    source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
+    package_manifest: product/kumihimo-egui/Cargo.toml
+    package_version: 0.1.0
+    observed_target: x86_64-pc-windows-msvc
+    rustc_version: 1.91.1
+    proof:
+      default_check: PASS6.46s
+      all_feature_all_target: PASS4.50s
+      owning: 29 PASS compile14.79s/run4.80s; no ignored
+      raster: 80 current actual DX12 PNG/JSON scenes independently opened
+      native: 22 current captures/3 returns/18 UIA actions; four OS selection false-to-true stages; quiet guards
+        retained
+      native_manifest_sha256: a061b4ae691a55165422f742d977f990d2b43dcf10d9d86230df6a25dde414cf
+      provider_options: Unchanged b7dec3f exact hidden-only COM owning case PASS38.05s/0.22s; explicit downstream
+        root patch required
+      log_sha256:
+        test: 0e44797ab1dc3fdac6ed0588630d477b5c3fcfe223372a8e88491cdbd2b4f2bb
+        default: e187002c18930793acdd9f6a05a335413493dc2560de00fcbf24227aba63f7c9
+        combined: f9f189acfb675578320e0baa1dd564dca4f2ec0243bc0d593bacffefe3c03e06
+        capture: 5b1c3b1de8183f6a74e9bf1fc9b289dedc2e564f4cc20558f75fb7c1dbc214e0
+        native: 837228e897547064a16ce4298d12c7f8976fdd907cd2772d710855678144d2c5
+      independent_evaluation_sha256: d47f31692bd1856525bd6a5a006da4ac62501152d051144d5e969b690c92657c
+    not_proven:
+    - Physical input/display/assistive hardware
+    - ARM64/other platforms
+    - Real Servo/video/editor engines
+    - Genuine GPU fault injection
+    - Performance gains or physical memory release
   policy: Record only actual implemented feature proof; no mandatory pillar universe
 dependency_policy: {}
 rules:

@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 19
-  revision: 19
+  version: 20
+  revision: 20
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 19
-    digest: sha256:a5f43c5de9460ee877ad998dd26d2e177fb3d7f26b33abaaae247493581d16b3
+    revision: 20
+    digest: sha256:26d171c5ec149d8cc63c93b831f252c331fd7b0a3e1d6e6a53de0636a3521fbd
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -350,8 +350,8 @@ storage:
     - DEC-KUM-WINDOWS-QUIET-UIA-v1
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 17
-    digest: sha256:27833a4f1bb43fbdee12a079b6010ef925288d04f9908f95ad5a4f734da232be
+    revision: 18
+    digest: sha256:c48578d5954e443a1efd0e3aaa2b6f0c5fb72aac69f89cac429954b2727aaa90
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:
@@ -629,11 +629,17 @@ change_history:
   changed_anchor_ids:
   - TOPIC-KUM-CHOICES
   - TOPIC-KUM-ROADMAP
+- revision: 20
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v19-r19-7d9268ab90d5
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
 design_status:
-  accepted: Fifteen feature areas partially implemented at headless and scoped web boundaries; all full requirement
+  accepted: Headless core/content and scoped desktop/web boundaries partially implemented; all full requirement
     acceptances remain open.
-  pending: Desktop original acceptance completion, complete native/web/platform coverage, lifecycle/engines and
-    performance acceptance.
+  pending: Complete native/web/platform coverage, real engine integration, lifecycle and performance acceptance.
 topic_format_contract:
   rule_refs:
   - BR-SPEC-FORMAT-001

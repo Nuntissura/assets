@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 26
+generation: 27
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -30,9 +30,8 @@ proof:
 - kind: local_full_contract_preparation
   source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
   observed: Full18R/13A bounded GUI/native contract, priorstub and6fileSpec15 preserved, all99full orderedrecords
-    unchanged. Primarycachedsource/team deliberation resolved authenticnativeGraphicsReady and hiddenstartup
-    defects. No sourcecoding/runtime admission; dependency/frozenmatching evaluation/publication/manifest graph
-    pending.
+    unchanged. Primarycachedsource/team deliberation resolved authenticnativeGraphicsReady and hiddenstartup defects.
+    No sourcecoding/runtime admission; dependency/frozenmatching evaluation/publication/manifest graph pending.
 - kind: published_preparation_and_dependency_closure
   preparation_revision: 1f574dabfcf73ef889339c8247ee6420d33cfe2e
   manifest_revision: 6ed1d6f442131d165656878146da34b485b9d832
@@ -41,42 +40,39 @@ proof:
   evaluation_sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
   observed: Exact origin revisions and canonical contract/spec/evaluation/manifests/lock re-read matched. Offline
     Windows x64 all-feature metadata completed exit0; independent dependency closure ready_for_coding. Original14
-    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only.
-    Source coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof
-    yet.
+    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only. Source
+    coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
 - kind: focused_compile_milestone
   source_revision: 547e756471939d3b00c1da9a8c2a4ff740c593c5
   source_fence17: fd067a4d2bd5e921bf6b7606f6e4ca0de481dac2129df00b3b99e0190a7d39db
   observed: First default check8b09e4f E0277 input255; exact two-file repair published547e756. Default all-target
-    check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running
-    soleleadlane; focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only;
-    original317 lock records unchanged.
+    check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running soleleadlane;
+    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317 lock
+    records unchanged.
 - kind: focused_consumer_failure
   source_revision: acb2920256fa
-  observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes.
-    Owning14consumer batch compile3m46s/run0.04s: e006PASS, other13FAILED shared demo initialization CoreGeometryMissingContext.
-    Actual CreateTool preceded required root GeometryContext; existing configured context reordered before
-    tool, tests/Core unchanged. Native actual source idle Wait omitted hard probe deadline; minimal native-only
-    cutoff/resize-freshness repair in progress. No raster/native/UIA proof yet; reuse e006 pure mapping on
-    unchanged inputs.'
+  observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes. Owning14consumer
+    batch compile3m46s/run0.04s: e006PASS, other13FAILED shared demo initialization CoreGeometryMissingContext.
+    Actual CreateTool preceded required root GeometryContext; existing configured context reordered before tool,
+    tests/Core unchanged. Native actual source idle Wait omitted hard probe deadline; minimal native-only cutoff/resize-freshness
+    repair in progress. No raster/native/UIA proof yet; reuse e006 pure mapping on unchanged inputs.'
 - kind: actual_gui_milestone
   source_revision: a65d19e811e950206cde3466efce72b6b97c91a3
   observed: All14 owning consumers passed via focused reuse90ce26f plus new e010 narrow/nonfit extension PASS18.03s/0.04s.
     Actual eleven-pair DX12 raster command completed5.03s; independent opened pixels found F012-SCALE injected1.5
     output2.25 and return1 output0.666667, repair capture.rs in progress. Native hidden HWND first pixels/readback
     actual; UIA forwarded1 then draw-before quiet assertion FAILED foreground_owned=true despite hidden/no-activate/toolwindow.
-    Exact native manifestation a65 output; causal diagnostic team read-only, no rerun until relevant source
-    repair. No whole-packet GUI/native PASS.
+    Exact native manifestation a65 output; causal diagnostic team read-only, no rerun until relevant source repair.
+    No whole-packet GUI/native PASS.
 - kind: causal_native_boundary_and_resolved_scale
   raster_revision: e88c30580548
   native_revision: 9419ec7a7670
-  observed: "Corrected eleven-pair actual raster inspected independently: native scale1\u21921.5\u21921 agrees\
-    \ with slots; F012-SCALE resolved. Original quiet native run still FAIL: real Button.Invoke view12 beforeFGforeign,\
-    \ actual Action::Focus arrives51mslater with owned HWND alreadyforeground beforeeguiqueue. Typed-null Framework\
-    \ atomic trace replacement proven in owned cheapfileprobe. Strict quiet acceptance/actions retained. Exact\
-    \ upstream0.29.2 provider localpatch admitted in Spec18/R019; originalsource19files/licenses materialized,\
-    \ ONElockbindingchanged; independent readiness/onehiddencomponentappendix and publication pending. No native/popout\
-    \ wholepacketPASS."
+  observed: 'Corrected eleven-pair actual raster inspected independently: native scale1→1.5→1 agrees with slots;
+    F012-SCALE resolved. Original quiet native run still FAIL: real Button.Invoke view12 beforeFGforeign, actual
+    Action::Focus arrives51mslater with owned HWND alreadyforeground beforeeguiqueue. Typed-null Framework atomic
+    trace replacement proven in owned cheapfileprobe. Strict quiet acceptance/actions retained. Exact upstream0.29.2
+    provider localpatch admitted in Spec18/R019; originalsource19files/licenses materialized, ONElockbindingchanged;
+    independent readiness/onehiddencomponentappendix and publication pending. No native/popout wholepacketPASS.'
 - kind: actual_quiet_native_and_affected_runtime
   source_revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
   logs:
@@ -91,12 +87,11 @@ proof:
     test: f071da81995dde32648764652886082fc720766782ef05d71cada72f7489a61e
   native_manifest_sha256: 009bfb28b7aa191d16e711a8f91a15a4e32375b87fc1fc1fa115961bb147ecd0
   observed: One standalone hidden ProviderOptions test PASS38.05s/0.22s; native original strict probe PASS15.99s
-    compile,14actual captures/3returns/3forwardedUIAactions. Canonical selected10 to12/gen43 to44; external
-    foreground unchanged and all owned windows hidden. All-feature all-target check PASS4.10s, owning13 PASS4.39s/0.19s;
-    unchanged e006 reused. Evaluator opened all14 native images and reports original frozen-method variants
-    still unobserved (post-popout accessibility and temporary overlay dismissal); coder03 admitted original17
-    source only for minimum consolidated original13 proof completion. Provider source remains held, no full
-    packet verdict.
+    compile,14actual captures/3returns/3forwardedUIAactions. Canonical selected10 to12/gen43 to44; external foreground
+    unchanged and all owned windows hidden. All-feature all-target check PASS4.10s, owning13 PASS4.39s/0.19s; unchanged
+    e006 reused. Evaluator opened all14 native images and reports original frozen-method variants still unobserved
+    (post-popout accessibility and temporary overlay dismissal); coder03 admitted original17 source only for minimum
+    consolidated original13 proof completion. Provider source remains held, no full packet verdict.
 - kind: held_original_acceptance_completion_source
   baseline_revision: b63d90324f1c276d526e59eaf2f23b0e0fc56a3d
   source_fence_sha256: c8e754db0ca9e627d1e71c41ad18f4a2051407e245c626a08eba74cd080bb512
@@ -106,108 +101,105 @@ proof:
 - kind: causal_default_compile_remediation
   failed_revision: 9de99ce6c7c40b47a637aae72e3807a088fa6731
   observed: 'Default check E0618 chrome519: existing Group local record shadowed newly added helper call. Coder
-    and diagnostic inspected actual output/source; only group call explicitly qualified, all arguments/control
-    identity retained. No runtime proof yet.'
+    and diagnostic inspected actual output/source; only group call explicitly qualified, all arguments/control identity
+    retained. No runtime proof yet.'
   repair_source_sha256: e053a3908fb56490f5319cebe958dbd4ad3aa4bcd274c2da5df045230e4a8e6e
 - kind: actual_affected_compile_and_owning_failures
   source_revision: baff8133dc6b5d81edd2e46bb74b16ac3c7b98e9
   observed: Default all-target PASS1.88s; all-feature/all-target PASS5.10s including shared package-cache wait.
-    Owning29 compiled11.02s/executed1.52s:20PASS including all original14, nine additive failures. Actual log
-    headers identify missing Actions/Preview/tool label targets, reveal assertion, capture-lost versus release,
-    absent float and keyboard target. Current images/native unexecuted. Coder and diagnostics directly inspect
-    shared causal source; no assertion weakening or repeated failing command.
+    Owning29 compiled11.02s/executed1.52s:20PASS including all original14, nine additive failures. Actual log headers
+    identify missing Actions/Preview/tool label targets, reveal assertion, capture-lost versus release, absent float
+    and keyboard target. Current images/native unexecuted. Coder and diagnostics directly inspect shared causal
+    source; no assertion weakening or repeated failing command.
 - kind: held_causal_gui_remediation
   baseline_revision: baff8133dc6b5d81edd2e46bb74b16ac3c7b98e9
   source_fence17_raw_sha256: 0a25b17654c4df5296d91037c87d1ee34e72b19cdf6082887f6d76e6b9e04409
   source_fence17_lf_sha256: 9612ac4ce387fed7435221d3cc17a07ffee0946d82b9de0d6a67870e0d9377a0
   observed: 'Three source paths changed: recorded control IDs/actual menu labels and pointer events, same-frame
     typed touch fixture, bounded contained float fixture, and PointerGone cancellation only while capture exists.
-    Original fourteen test prefix exact; twenty-nine tests retained. All owners HOLD; runtime reveal/keyboard
-    outcomes unproven pending one fresh owning target.'
+    Original fourteen test prefix exact; twenty-nine tests retained. All owners HOLD; runtime reveal/keyboard outcomes
+    unproven pending one fresh owning target.'
 - kind: actual_owning26_and_held_pager_diagnostics
   baseline_revision: 04924d995d551609bc9ac0122dec44ae3ced8fc1
   source_fence17_raw_sha256: 4a52baf372db92abebce041cae8cc561a2769f5bdc8d16724a50dd34adcccfac
   source_fence17_lf_sha256: 2790eba87ef124ac31cbbbae6b464834f106714b88945652e4750816a76e3990
-  observed: 'Actual owning29 compiled19.18s/run2.74s:26 PASS including all original14, three additive failures
-    (reveal, preview confirmation, group destination paging). Minimum held chrome/tests candidate preserves29
-    and exact original14 prefix: Tabs/groups inherits existing CloseOnClickOutside for real paging, bounded
-    exact-stage preview and actual reveal hit observations added. Reveal winner and preview stage remain unproven;
-    no speculative placement/preview changes. All owners HOLD, no captures/native yet.'
+  observed: 'Actual owning29 compiled19.18s/run2.74s:26 PASS including all original14, three additive failures (reveal,
+    preview confirmation, group destination paging). Minimum held chrome/tests candidate preserves29 and exact original14
+    prefix: Tabs/groups inherits existing CloseOnClickOutside for real paging, bounded exact-stage preview and actual
+    reveal hit observations added. Reveal winner and preview stage remain unproven; no speculative placement/preview
+    changes. All owners HOLD, no captures/native yet.'
 - kind: causal_diagnostic_compile_receiver_repair
   baseline_revision: f73697526c8ec00e1e64cc0fd3cfdcb53b8a2d55
   source_fence17_raw_sha256: 9195ca7cdc4d833180e15496fe73d348f18633829bf006be094ad8408664024e
   source_fence17_lf_sha256: 7a8942d1806a1bac5a4f11218407735268ebd9f53f9aab8be4faaffa9f10046d
   observed: 'Owning f736975 stopped before tests with E0599 chrome926: area_rect belongs to pinned egui Memory,
     not Areas. Exact public cached API and compile output inspected; only that method receiver repaired. Original29
-    tests and fourteen prefix preserved; all owners HOLD. Pager runtime, reveal winner and preview stage still
-    unproven.'
+    tests and fourteen prefix preserved; all owners HOLD. Pager runtime, reveal winner and preview stage still unproven.'
 - kind: actual_owning26_precise_hit_and_action_failures
   source_revision: e0b684ecd144f6f30dfeb3a8f0fb2f87a947ad15
   observed: Owning29 compile9.92s/run2.61s:26 PASS, three additive failures. Exact Touch Start/End loses reveal
     Middle response to Foreground tool20, active capture Tool20; redock-before-Commit stage receives no pending
     preview or rejection after actual leaf click; group destination reached but canonical frame4 remains instead
     of7. Source ordering inspection shows float and popup share Foreground; actual redock/destination hit winner
-    still unproven. Coder owns minimum reveal correction and exact leaf diagnostics; no captures/native or
-    unchanged provider rerun.
+    still unproven. Coder owns minimum reveal correction and exact leaf diagnostics; no captures/native or unchanged
+    provider rerun.
 - kind: held_reveal_geometry_and_leaf_observations
   baseline_revision: e0b684ecd144f6f30dfeb3a8f0fb2f87a947ad15
   source_fence17_raw_sha256: 3d86704a396478bae76d61338a5add522cd0c7fa4e9bc51c112a572ea7badfec
   source_fence17_lf_sha256: 2f7b09a64aaab01a78d81556aa56514c5620c407214cc723468c46ddfaea6e74
-  observed: 'Minimum two-file source held: reveal rectangle starts at validated remaining content and clips
-    to content/ancestor, correcting actual tool-strip collision. Existing redock/destination leaf helpers retain
-    bounded actual hit/response and group dispatch receipts; actual focused response correlated without assigned
-    IDs. Original fourteen exact prefix and twenty-nine assertions retained. No floating ordering or command
-    logic guess; fresh owning outcome pending.'
+  observed: 'Minimum two-file source held: reveal rectangle starts at validated remaining content and clips to content/ancestor,
+    correcting actual tool-strip collision. Existing redock/destination leaf helpers retain bounded actual hit/response
+    and group dispatch receipts; actual focused response correlated without assigned IDs. Original fourteen exact
+    prefix and twenty-nine assertions retained. No floating ordering or command logic guess; fresh owning outcome
+    pending.'
 - kind: actual_gui_causes_and_held_popup_fixture_remediation
   baseline_revision: d97dbf81ea0e7ce5eda1b79ea3752651aa75af82
   source_fence17_raw_sha256: 3bdf1dd9366bf28576db62a2f8213bb5e7980fff3163f1b13ff2406dc4ced36b
   source_fence17_lf_sha256: 6bd29111c5f14f275c28129c85eb542cf3fc450cc14d1a96d05c2000dcf9e55c
-  observed: Actual d97 owning29 compile13.71s/run2.74s:26 PASS; Full profile typed-touch/precedence passed
-    before Compact nonexistent question-mark assertion. Exact redock leaf interaction loses to actual floating
-    TextEdit response; group leaf clicks and dispatch rejects Geometry(MissingContext), never-projected child
-    context needed by anchored tool. Held lib/tests repair skips unconditional float raise during existing
-    popup; valid group fixture restores/projects child, then remaximizes and confirms hidden child before original
-    move assertions; Compact checks actual shipped glyph/Tabs/enabled IDs. All29/original14 prefix exact; no
-    cold-hidden-context product claim, Core guard/tool binding unchanged; runtime pending.
+  observed: Actual d97 owning29 compile13.71s/run2.74s:26 PASS; Full profile typed-touch/precedence passed before
+    Compact nonexistent question-mark assertion. Exact redock leaf interaction loses to actual floating TextEdit
+    response; group leaf clicks and dispatch rejects Geometry(MissingContext), never-projected child context needed
+    by anchored tool. Held lib/tests repair skips unconditional float raise during existing popup; valid group fixture
+    restores/projects child, then remaximizes and confirms hidden child before original move assertions; Compact
+    checks actual shipped glyph/Tabs/enabled IDs. All29/original14 prefix exact; no cold-hidden-context product
+    claim, Core guard/tool binding unchanged; runtime pending.
 - kind: actual_owning27_and_scoped_tab_helper_swap_receipt
   baseline_revision: e2b9459646989b325e88f9fcab550640477ebb2e
   source_fence17_raw_sha256: 21416a17f5472b67edde98bde6a0f5d8176dc1a5a83a30f73564ae03a5eedb03
   source_fence17_lf_sha256: 9d3f89c3e8151b8bb268d326b4d91969279fd642dda2b879c449298bd6b11281
   observed: Actual owning29 compile15.90s/run4.11s:27 PASS, all four profile/touch/keyboard/settings case passed.
     Float/redock advanced to unchanged-layout Swap assertion; valid group move/full members passed, then helper
-    looked for hidden Demo.text_view menu instead of requested tab owner. Held chrome/tests candidate scopes
-    existing actual Tabs pointer to computed owner without tool retarget, adds bounded actual Swap dispatch
-    receipt and existing trace messages to remaining assertions. Original29/prefix14 exact, no guessed Swap/Core
-    change; runtime pending.
+    looked for hidden Demo.text_view menu instead of requested tab owner. Held chrome/tests candidate scopes existing
+    actual Tabs pointer to computed owner without tool retarget, adds bounded actual Swap dispatch receipt and existing
+    trace messages to remaining assertions. Original29/prefix14 exact, no guessed Swap/Core change; runtime pending.
 - kind: actual_owning27_and_nonnoop_stable_destination_fixture
   baseline_revision: fbffecdb8244acba5ecfcc7ac9a661c326fb94f1
   source_fence17_raw_sha256: 67cf1ebcd842743046b23d13877b9054f84d7cb6d6525bf54120e0d1fe14b0d1
   source_fence17_lf_sha256: 28f52fcb11564e86c9d20c5de2e77bdccb5cb69f1a427ffea4e521eee1b21828
   observed: 'Actual owning29 compile9.94s/run4.91s:27 PASS. Swap actual leaf selected destination4 and dispatched4/4
-    no-op without rejection; no paging occurred. Pin case requested MoveFirst while pinned view11 was already
-    first; Core returns unchanged before pin guard. Only test suffix now held: scoped requested destination
-    ID with bounded eight fresh hover/bounds reacquisitions and exact fresh Swap recipient receipt; actual
-    nonnoop MoveLast with pinned/currentindex preconditions, unchanged membership and exact Pinned rejection
-    after fresh pass. Original29/prefix14 preserved; no product/Core/menu policy guess; runtime pending.'
+    no-op without rejection; no paging occurred. Pin case requested MoveFirst while pinned view11 was already first;
+    Core returns unchanged before pin guard. Only test suffix now held: scoped requested destination ID with bounded
+    eight fresh hover/bounds reacquisitions and exact fresh Swap recipient receipt; actual nonnoop MoveLast with
+    pinned/currentindex preconditions, unchanged membership and exact Pinned rejection after fresh pass. Original29/prefix14
+    preserved; no product/Core/menu policy guess; runtime pending.'
 - kind: actual_owning28_and_distinct_canonical_swap_fixture
   baseline_revision: 2621f84dddbbebf72ab7a49680094a07b912f116
   source_fence17_raw_sha256: e4cd3c2e9da51d85234b92e324c142cfbf0bf7af4838908499e383c45867cac2
   source_fence17_lf_sha256: f75fd7184fde4028f42a0c8ec7700d80dd2dac757d47342e5037f0979b670b91
-  observed: Actual owning29 compile10.42s/run4.92s:28 PASS; actual nonnoop pinned reorder denial passed. Swap
-    fresh actual-recipient assertions passed but canonical workspace.frames[1] selected source4 after redock
-    reordered frame vector, so actual4/4 command correctly unchanged. Held suffix chooses a distinct current
-    supported frame and asserts distinctness before real pointer click; original changed-layout assertion,
-    all29 and original14 prefix preserved. No product/Core changes; fresh owning pending.
+  observed: Actual owning29 compile10.42s/run4.92s:28 PASS; actual nonnoop pinned reorder denial passed. Swap fresh
+    actual-recipient assertions passed but canonical workspace.frames[1] selected source4 after redock reordered
+    frame vector, so actual4/4 command correctly unchanged. Held suffix chooses a distinct current supported frame
+    and asserts distinctness before real pointer click; original changed-layout assertion, all29 and original14
+    prefix preserved. No product/Core changes; fresh owning pending.
 - kind: actual_owning29_and_default_optional_diagnostic_guard
   baseline_revision: 06e6cbd7a77cf6a38afdc77da29cd6f0da2db7eb
   source_fence17_raw_sha256: f6dba87e1805fc123b513305f603c85924db2c8ed25e97ee04143a90c76e4f3c
   source_fence17_lf_sha256: b0038e17282deddd48778179a2b346b02a005f42cc7b9fa502dbc83620b2d1ee
-  observed: Actual owning29 GREEN compile10.72s/run4.94s; no ignored cases. Fresh default all-target failed
-    E0433 at four new chrome diagnostic JSON sites because serde_json belongs to optional capture feature.
-    Held chrome-only guard repair preserves default command/UI execution, capture-feature diagnostic semantics
-    and all29 tests/original14 prefix. Manifest/lock/Core unchanged. Default then combined compile and fresh
-    actual raster/native captures pending; unchanged all-feature owning proof can be reused only after exact
-    guarded-body equivalence inspection.
+  observed: Actual owning29 GREEN compile10.72s/run4.94s; no ignored cases. Fresh default all-target failed E0433
+    at four new chrome diagnostic JSON sites because serde_json belongs to optional capture feature. Held chrome-only
+    guard repair preserves default command/UI execution, capture-feature diagnostic semantics and all29 tests/original14
+    prefix. Manifest/lock/Core unchanged. Default then combined compile and fresh actual raster/native captures
+    pending; unchanged all-feature owning proof can be reused only after exact guarded-body equivalence inspection.
 - kind: actual_compilation_raster_and_native_geometry_failure
   source_revision: 1b3f0678a8d138ca39682a84a44489eb82f556d9
   owning_reused_revision: 06e6cbd7a77cf6a38afdc77da29cd6f0da2db7eb
@@ -219,20 +211,19 @@ proof:
   observed: 'Default/all-feature all-target PASS12.26s/6.31s; all29 owning reused after exact canonical reverse11cfg-byte
     equality and unchanged all-feature JSON graph. Actual DX12 capture terminal PASS80 PNG/JSON scenes; evaluator
     opened all80 and identified preview/header overlap, revealed Hidden header under provider, floated keyboard
-    popup under provider, and capture pin MoveFirst no-op. Native terminal CoreGeometryMissingContext after9
-    captures/returned1/gen56: original frame4 moved to prepared storage31 without context before view10/tool
-    anchored return. Native-only existing arm with current canonical source bounds held; leader parallel children
-    own minimum geometry/capture repairs. Full acceptance pending.'
+    popup under provider, and capture pin MoveFirst no-op. Native terminal CoreGeometryMissingContext after9 captures/returned1/gen56:
+    original frame4 moved to prepared storage31 without context before view10/tool anchored return. Native-only
+    existing arm with current canonical source bounds held; leader parallel children own minimum geometry/capture
+    repairs. Full acceptance pending.'
 - kind: held_consolidated_native_geometry_and_rendered_controls
   baseline_revision: 1b3f0678a8d138ca39682a84a44489eb82f556d9
   source_fence17_raw_sha256: 24871006aa3200e55c50cc964422492d14869fc9c6af072a84c67a0aa8b230cb
   source_fence17_lf_sha256: d7b0598929985e8fabd27e0059cbe408b68b16082a2a9d73c88ec0b81dfbeb55
-  observed: Coding leader and two disjoint children consolidated minimum repairs for recorded native storage
-    context, revealed Hidden header reservation, bounded readable preview overlay, floating popup precedence,
-    and actual nonnoop capture pin denial. Root inspected exact candidate diffs and preserved original14 prefix/all29/frozen13
-    methods. All source owners HOLD; owning/default/combined/raster/native affected proof remains pending.
-    Existing provider/Core/JSON/content/lock proof unchanged; no guard weakening or Ready/HWND minted for temporary
-    storage.
+  observed: Coding leader and two disjoint children consolidated minimum repairs for recorded native storage context,
+    revealed Hidden header reservation, bounded readable preview overlay, floating popup precedence, and actual
+    nonnoop capture pin denial. Root inspected exact candidate diffs and preserved original14 prefix/all29/frozen13
+    methods. All source owners HOLD; owning/default/combined/raster/native affected proof remains pending. Existing
+    provider/Core/JSON/content/lock proof unchanged; no guard weakening or Ready/HWND minted for temporary storage.
 - kind: actual_owning29_and_rendered_float_native_target_failures
   source_revision: 7f439784e1088bcd2155e015a6646c5ee0abc1f6
   log_sha256:
@@ -244,19 +235,19 @@ proof:
   observed: 'Owning29 GREEN compile19.17s/run5.01s; default/combined all-target PASS1.54s/3.11s. Actual capture
     terminal PASS80 scenes but independent image inspection found floats painted below docked providers. Pinned
     egui GraphicsLayers::drain paints unregistered base after registered floats. Native advanced to19 captures/3
-    returns/gen70/UIA9 then needs projected unselected tab: helper restricted physical root, excluding mounted
-    nested view16 with unique full group label. Earlier preview/header/popup/pin findings repaired; full acceptance
-    remains pending.'
+    returns/gen70/UIA9 then needs projected unselected tab: helper restricted physical root, excluding mounted nested
+    view16 with unique full group label. Earlier preview/header/popup/pin findings repaired; full acceptance remains
+    pending.'
 - kind: held_registered_base_and_qualified_native_target
   baseline_revision: 7f439784e1088bcd2155e015a6646c5ee0abc1f6
   source_fence17_raw_sha256: 70d4711bf3a57cb49b55a7ac7441299950a9bcd291630fe2a14f22d3dee0d739
   source_fence17_lf_sha256: 158aefb371b37617a4378358dc5fdbdfc8ed848967b433b9c2d8f123cff54b8f
-  observed: 'Root inspected three-file candidate: register existing Middle base before floats, retain host
-    ordering and Foreground popup; add actual FullOutput.shapes paint-order assertion in existing E003. Native
-    helper qualifies current report epoch/generation, canonical membership/ancestor, mounted selected-provider
-    slot, visible reserved header/clip and unique enabled full label. Parent and diagnostic inspection complete;
-    all source owners HOLD. Original14 exact prefix, all29 tests and frozen13 methods preserved. Fresh affected
-    owning/default/combined/raster/native proof pending; unchanged provider/Core/JSON/content/lock proof reused.'
+  observed: 'Root inspected three-file candidate: register existing Middle base before floats, retain host ordering
+    and Foreground popup; add actual FullOutput.shapes paint-order assertion in existing E003. Native helper qualifies
+    current report epoch/generation, canonical membership/ancestor, mounted selected-provider slot, visible reserved
+    header/clip and unique enabled full label. Parent and diagnostic inspection complete; all source owners HOLD.
+    Original14 exact prefix, all29 tests and frozen13 methods preserved. Fresh affected owning/default/combined/raster/native
+    proof pending; unchanged provider/Core/JSON/content/lock proof reused.'
 - kind: actual_owning29_and_persistent_float_nested_predicate_failures
   source_revision: 8b92e5e49ef77522ec9ed890fb600b49659c2a10
   log_sha256:
@@ -266,21 +257,21 @@ proof:
     capture: 13e01186058796e70607da35a0dd79ba6ed1aabdabe86ea6bb0f91dbdff61726
     native: c14204f08599ab7109ca22e8af7fa833c80d15037f37403ee502141abc9aae12
   observed: 'Owning29 GREEN compile15.61s/run5.01s; default/combined all-target PASS3.43s/3.10s; capture terminal
-    PASS80 scenes compile5.53s. Evaluator opened all80: four earlier preview/header/popup/pin findings remain
-    repaired; floats still below base after actual maximize-hide/restore. Cold standard matches1b3 pixels,
-    five later scenes match failed7f; persistent Areas stable flag sort retains inversion. Native19 captures/3
-    returns compile5.23s fails validator despite actual selected18to16/gen70to71/actions9to12: direct workspace7==physicalroot1
-    rejects valid mounted nested target. No whole-packet PASS; source-supported minimum repairs held.'
+    PASS80 scenes compile5.53s. Evaluator opened all80: four earlier preview/header/popup/pin findings remain repaired;
+    floats still below base after actual maximize-hide/restore. Cold standard matches1b3 pixels, five later scenes
+    match failed7f; persistent Areas stable flag sort retains inversion. Native19 captures/3 returns compile5.23s
+    fails validator despite actual selected18to16/gen70to71/actions9to12: direct workspace7==physicalroot1 rejects
+    valid mounted nested target. No whole-packet PASS; source-supported minimum repairs held.'
 - kind: held_persistent_layer_relation_and_nested_selection_membership
   baseline_revision: 8b92e5e49ef77522ec9ed890fb600b49659c2a10
   source_fence17_raw_sha256: 8d72afc363183d90d94b841517e4596c5ba610b350bbc1a0ada93266f56cf648
   source_fence17_lf_sha256: 2d0ae4fbba841da31084934dea4668b361de3757e980ea853b217c47022f2411
-  observed: 'Root inspected three-file candidate: sameOrder one-level base-to-visible-float sublayer relation
-    in existing deduplicated loop; E003 uses actual persistent Context maximize-hide/restore before paint-order
-    assertions. Native predicate qualifies bounded fresh canonical ancestor and current visible mounted target
-    slot/epoch/fresh draw, preserving actual selection/open/generation/actions/readback checks. Original14
-    exact prefix/all29/frozen13 preserved; all source writers HOLD; fresh affected owning/default/combined/raster/native
-    pending. Existing provider/Core/JSON/content/lock proof reused.'
+  observed: 'Root inspected three-file candidate: sameOrder one-level base-to-visible-float sublayer relation in
+    existing deduplicated loop; E003 uses actual persistent Context maximize-hide/restore before paint-order assertions.
+    Native predicate qualifies bounded fresh canonical ancestor and current visible mounted target slot/epoch/fresh
+    draw, preserving actual selection/open/generation/actions/readback checks. Original14 exact prefix/all29/frozen13
+    preserved; all source writers HOLD; fresh affected owning/default/combined/raster/native pending. Existing provider/Core/JSON/content/lock
+    proof reused.'
 - kind: actual_all_programs_green_four_frozen_visual_semantic_gaps
   source_revision: 849f005cc3681115032407037cac206b7cad688c
   log_sha256:
@@ -291,22 +282,41 @@ proof:
     native: 716e4f14082b142235a37ea81311e835e4f393880ce9ce43ad6ce35ece603bda
   observed: 'Owning29 GREEN compile16.66s/run5.08s; default/combined all-target PASS2.07s/3.62s; capture terminal
     PASS80 scenes compile5.93s; native terminal PASS22 captures/3 returns/18 UIA actions compile10.68s/gen71/bindings0.
-    Evaluator opened all102 and reconciled original13: persistent float order and nested selection now pass.
-    Four remaining gaps: transparent floating header and dismissed notice text overlap; native15 captures invisible
-    first Area sizing pass before recovery label repaint; selectable button omits selected semantics, actual
-    OS selected null. Program success is not whole-packet acceptance. Existing provider/media alpha remains
-    host owned.'
+    Evaluator opened all102 and reconciled original13: persistent float order and nested selection now pass. Four
+    remaining gaps: transparent floating header and dismissed notice text overlap; native15 captures invisible first
+    Area sizing pass before recovery label repaint; selectable button omits selected semantics, actual OS selected
+    null. Program success is not whole-packet acceptance. Existing provider/media alpha remains host owned.'
 - kind: held_four_causal_visual_and_accessibility_repairs
   baseline_revision: 849f005cc3681115032407037cac206b7cad688c
   source_fence17_raw_sha256: b6a9ec0bd7cba5dec59297711bf50b0ed22817e5eb486e05e8f9e3d3930581c0
   source_fence17_lf_sha256: 16919f7c0d9827c520ba2e33213d42001b704d8146022b1d1522e1ed6f4537e3
   observed: 'Root inspected chrome/native-only candidate: bounded opaque theme header and notice backing; unchanged
-    failure notice gets one untagged healthy-root sizing draw before tagged capture, fade disabled and bounded
-    opaque panel; actual tab response declares RoleTab and canonical selected state. Observer remains byte
-    exact and genuinely selects supported SelectionItem; native requires actual OS beforefalse/aftertrue alongside
-    unchanged canonical, generation, action, mounted-slot and quiet checks. All29 tests byte exact/original14
-    prefix/frozen13 methods preserved; writers HOLD; one fresh affected batch pending. Existing dependency/provider/Core/JSON/content/lock
+    failure notice gets one untagged healthy-root sizing draw before tagged capture, fade disabled and bounded opaque
+    panel; actual tab response declares RoleTab and canonical selected state. Observer remains byte exact and genuinely
+    selects supported SelectionItem; native requires actual OS beforefalse/aftertrue alongside unchanged canonical,
+    generation, action, mounted-slot and quiet checks. All29 tests byte exact/original14 prefix/frozen13 methods
+    preserved; writers HOLD; one fresh affected batch pending. Existing dependency/provider/Core/JSON/content/lock
     proof reused.'
+- kind: independent_original13_runtime_and_scoped_outcome
+  source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
+  evaluation_sha256: d47f31692bd1856525bd6a5a006da4ac62501152d051144d5e969b690c92657c
+  native_manifest_sha256: a061b4ae691a55165422f742d977f990d2b43dcf10d9d86230df6a25dde414cf
+  observed: 'WP012 scoped Windows x64 MSVC/rustc1.91.1 desktop adapter at 7d9268ab90d5ed6e31d7af070cb73302765741cc:
+    optional egui0.33.3 borrows the host Controller and content dispatcher. All29 owning tests and default/all-feature
+    all-target checks passed. Eighty actual DX12 raster states cover nested variable counts, weighted holes/deep
+    containment, groups/pins/veto, drag/cancel/commit, float/redock/equalize/swap/maximize/restore, tools, four
+    chrome profiles, four navigation modes, mouse/keyboard and separately labelled semantic touch/host-pen input,
+    still backgrounds and scale1/1.5/1. Float ordering survives persistent hide/restore; theme-backed headers and
+    notices remain readable. Twenty-two actual hidden native captures prove correlated preflight, view/group/frame
+    popouts, resize, teardown/recreation, three returns, partial-close survivors, removed-origin semantic return,
+    bounded injected recovery failure with a visible healthy-root notice before recovery, and six Windows accessibility
+    stages. Four genuine SelectionItem.Select actions expose OS false-to-true selection matching canonical changes;
+    Panes open/dismiss and logical focus return passed, with18 forwarded actions total. Owned windows stayed hidden/nonforeground.
+    The unchanged exact hidden-only AccessKit provider test remains valid; downstream workspace roots must apply
+    the recorded local patch. All13 frozen evaluation cases passed independently. Physical input/assistive hardware,
+    physical display changes, ARM64/other platforms, real Servo/video/editor engines, genuine GPU fault injection,
+    performance gains and physical memory release remain unproven. All full future requirement acceptances remain
+    open. Fresh canonical origin containment required before DONE.'
 blockers: []
-next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
-  original13 evaluation afterward
+next_action: Publish independent evaluation and scoped outcome; fresh canonical origin reread, then DONE and coder
+  rotation
