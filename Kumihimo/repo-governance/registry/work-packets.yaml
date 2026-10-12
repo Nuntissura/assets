@@ -115,8 +115,9 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-016-internal-user-manual-v1
   title: Discoverable internal user manual and external-app discussion
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-state.yaml
-  next_action: Publish evaluated manual/discovery changes; close packet after exact origin containment
+  next_action: Manual and research discussion published; no external-app or file-drop implementation authorized
+    in this packet
   blockers: []

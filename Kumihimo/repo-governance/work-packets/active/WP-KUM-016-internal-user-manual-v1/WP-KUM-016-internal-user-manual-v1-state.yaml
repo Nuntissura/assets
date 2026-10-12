@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-016-internal-user-manual-v1
-generation: 2
-phase: active
+generation: 3
+phase: done
 owner: dev_lead
 changed_files:
 - product/INTERNAL-MANUAL.md
@@ -33,5 +33,10 @@ proof:
   research_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
   observed: Current platform documentation and real Rust/Godot/Blender sources inspected; file-drop, external tiling/hosting
     and capture recorded as discussion-only proposals; Blender not tested
+- kind: fresh_canonical_origin_publication
+  publication_revision: aff021018d1b995842150a5ea79ff34dee3f2d4d
+  observed: Live origin, HEAD and freshly fetched origin/codex/handpick match; all16 changed canonical blobs independently
+    reread and match working LF bytes; accepted spec unchanged
 blockers: []
-next_action: Publish evaluated manual/discovery changes; close packet after exact origin containment
+next_action: Manual and research discussion published; no external-app or file-drop implementation authorized in
+  this packet
