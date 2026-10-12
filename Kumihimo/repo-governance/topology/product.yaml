@@ -1,5 +1,5 @@
 kind: product_topology
-implementation_status: core_content_and_scoped_desktop_web_adapters_proven
+implementation_status: core_content_scoped_desktop_web_and_render_bridge_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
@@ -153,3 +153,21 @@ nodes:
   manifest_ref: product/third-party/accesskit_windows-0.29.2/Cargo.toml
   entrypoint: product/third-party/accesskit_windows-0.29.2/src/lib.rs
   responsibility: Exact local quiet provider-options patch; downstream root patch required
+- id: KUM-RENDER-BRIDGE
+  manifest_ref: product/kumihimo-render-bridge/Cargo.toml
+  entrypoint: product/kumihimo-render-bridge/src/lib.rs
+  status: scoped_real_engine_and_gpu_proven
+  responsibility: Default std-only complete scope/pixel/dirty/lifecycle contracts; optional desktop provider integration
+  verification_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
+- id: KUM-RENDER-BRIDGE-CONTRACTS
+  path: product/kumihimo-render-bridge/tests/bridge_contracts.rs
+  responsibility: Thirteen owning cases, desktop cases included once
+- id: KUM-SERVO-WORKER
+  path: product/kumihimo-render-bridge/tools/servo-worker.py
+  responsibility: Configured owned external engine stdio; independent host receipts mandatory
+- id: KUM-SERVO-BATCH
+  path: product/kumihimo-render-bridge/tools/servo-batch.py
+  responsibility: Deterministic two-engine resize/input/dirty/hidden/unload/reload scenario; no self admission
+- id: KUM-RENDER-COMPOSE
+  path: product/kumihimo-render-bridge/examples/compose.rs
+  responsibility: Canonical plan and actual accepted-engine-byte DX12 composition, picks and recovery

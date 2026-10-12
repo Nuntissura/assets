@@ -44,7 +44,7 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP014 exact seven cases frozen; await actual current engine/GPU bundle; no runtime verdict
+    assignment: Original seven final runtime evaluation; canonical scoped outcome and publication pending
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -53,8 +53,7 @@ roles:
     completed_implementation_wps:
     - WP-KUM-013-web-adapter-portal-pilot-v1
     rotate_after: 2
-    assignment: WP014 source admitted after canonical publication; expand disjoint teams as useful; second packet;
-      engine launch held
+    assignment: All source held; second packet runtime complete; final evaluator/origin closure pending before rotation
     subteam_ownership:
     - agent: bridge_contracts
       files:
@@ -94,26 +93,26 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: parallel_source_wp014_runtime_prerequisites
+  phase: wp014_runtime_pass_publication_pending
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
   gameplan_relative_git_root: .local/kumihimo-servo/gameplan.yaml
   last_resource_observation:
-    observed_utc: '2026-10-12T11:19:06.4311560Z'
-    cpu_percent: 16
-    available_memory_gib: 61.8
-    free_disk_gib: 3051.2
+    observed_utc: '2026-10-12T12:07:57.3937224Z'
+    cpu_percent: 14
+    available_memory_gib: 64.3
+    free_disk_gib: 3050.7
     rust_processes: []
-    scope: Fresh coordination observation; next Cargo runner refreshes before grant
-  candidate_revision: 43cfe4a39edb071f256087f3c6d92221d8dd56f3
+    scope: Before last actual Windows compose; next root Cargo refreshes
+  candidate_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Parallel coder04 source teams finish stable handoff; root prepares independent worker launch gates
-  and runs one serial affected cached Cargo/actual engine-GPU batch
+next_action: Publish scoped Spec22/matrix9/topology and independent original seven evaluation; exact canonical origin
+  reread before DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

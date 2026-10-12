@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
-generation: 4
+generation: 8
 phase: active
-owner: ROLE-KUM-CODER-04
+owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
 - repo-governance/specification/
@@ -12,6 +12,14 @@ changed_files:
 - product/kumihimo-render-bridge/Cargo.toml
 - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-dependency-readiness.yaml
 - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-evaluation.yaml
+- product/kumihimo-render-bridge/src/
+- product/kumihimo-render-bridge/tests/
+- product/kumihimo-render-bridge/tools/
+- product/kumihimo-render-bridge/examples/
+- product/kumihimo-render-bridge/fixtures/
+- product/README.md
+- repo-governance/topology/
+- repo-governance/codex/build-rules/current/build-rules.yaml
 proof:
 - kind: full_contract_preparation
   source_revision: e5ba20ef16f538eb70c8dc4cd49871cf2f9b8446
@@ -30,6 +38,40 @@ proof:
     std-only default retained. Actual17 local debs2863714bytes verified, seven missing SONAMEs now resolve, unchanged
     Servo0.6.0-c78d2c206 help/version pass inside independently inspected private namespace. Actual product worker/WebDriver/rendering
     remains unproven; fresh root kernel gate required before every launch/reload.
+- kind: published_source_and_affected_compile
+  source_revision: 07aaa72ad8a20459b9cacc58379cfdfdd7156bb8
+  observed: 15 source paths published; default43feab4 PASS5.70s remains valid; desktop07aaa72 PASS2.91s after isolated
+    SHA2 encoding repair. Original seven runtime methods pending.
+- kind: focused_contracts_and_actual_boundary_iteration
+  source_revision: 0f8b89d0b75a1bb149d550c405cc40335d080800
+  observed: Owning13 PASS17.05s/0.01s at07aaa72; exact plan PASS6.70s after host floatreturn admission. Actual missing/stale
+    namespace guards reject; two independently isolated engine/listeners and pointer proven. Actual keyboard lost
+    firstcharacter; exact session-owned failed-run processes independently absent after cleanup. No runtime acceptance
+    verdict.
+- kind: real_two_engine_frame_and_input_progress
+  source_revision: 832c8737c6e14c5723cde849fed2284a5615e658
+  observed: Ten real PNG receipts:8 canonical across normal/narrow/1.5/moved plus dirty/visible-after-hidden. GenuineA/B
+    full keyboard and pointer passed, static/hidden no capture and unsupported controls observed. Eligible unload
+    blocked by foreign root PID1 namespace PermissionError; exact owned failed-run engines/worker independently
+    absent after cleanup. Full lifecycle/compose/eval remain pending.
+- kind: actual_scoped_engine_and_gpu_outcome
+  source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
+  engine_source_revision: 35f141655e647c88203aa9c39c2980b54e0b32e6
+  composition_sha256: 91e97f740ef13d1a6199ddde334f813593c81f2b527e91b3c8af030791b54c42
+  observed: 'WP014 scoped external-engine experiment at 8cbea2746233a0987d0cf7556c59deeef744486b: independently
+    selectable std-only render-bridge with optional desktop integration. Two actual Servo0.6.0-c78d2c206 Linux x64
+    software processes under Ubuntu24.04/WSL produce eleven independently hashed/timed PNG captures consumed byte-for-byte
+    in nine actual Windows x64 DX12/NVIDIA RTX3090 GPU scenes with real2D and transformed/depth-tested3D providers.
+    Independent resize and genuine WebDriver pointer/full keyboard input pass at normal and injected scale1.5; canonical
+    normal/narrow/moved slots remain clipped. Fifty-five outside-kernel observations prove private loopback namespaces,
+    three owned listeners with outside-Linux denial, actual CPU/RSS observations, protected unloads, three confirmed
+    engine exits, fresh A page reload and final owned cleanup. Hidden retains its engine; unsupported freeze/throttle/frame-ready/context
+    transfer stay explicit. Static GPU comparisons retain full pixels and zero added uploads/depth renders after
+    one bounded GUI fade settlement. Actual renderer replacement rejects old bindings and safely reuploads accepted
+    CPU pixels. Thirteen owning cases passed; unchanged Core/content/JSON/desktop/web proof and warm Cargo/cache
+    were reused. Native Windows Servo/libservo/zero-copy/video/audio/ARM/physical input/real GPU faults and performance
+    gains remain unproven. Full99 future requirements remain OPEN; independent final evaluation/publication governs
+    WP closure.'
 blockers: []
-next_action: Parallel coder04 source teams finish stable handoff; root prepares independent worker launch gates
-  and runs one serial affected cached Cargo/actual engine-GPU batch
+next_action: Publish scoped Spec22/matrix9/topology and independent original seven evaluation; exact canonical origin
+  reread before DONE

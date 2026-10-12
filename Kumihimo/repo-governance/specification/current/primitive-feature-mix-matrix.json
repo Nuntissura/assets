@@ -1,6 +1,6 @@
 {
   "kind": "derived_primitive_feature_matrix",
-  "spec_revision": 21,
+  "spec_revision": 22,
   "relations": [
     {
       "relation_id": "REL-KUM-WORKSPACE",

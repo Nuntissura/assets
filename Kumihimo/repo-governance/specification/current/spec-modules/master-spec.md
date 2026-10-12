@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 21
+revision: 22
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -4255,7 +4255,20 @@ decisions:
     disjoint Rust renderer/provider versus Python worker teams. Bundle affected default/desktop checks, one owning
     contract test target and one actual engine/GPU batch; inspect actual resulting images and independent engine/kernel/resource
     reads. Reuse unchanged core/content/JSON/desktop/web proof. Commit/push completed packet and independently reread
-    canonical origin before DONE.'
+    canonical origin before DONE. Observed bounded outcome: WP014 scoped external-engine experiment at 8cbea2746233a0987d0cf7556c59deeef744486b:
+    independently selectable std-only render-bridge with optional desktop integration. Two actual Servo0.6.0-c78d2c206
+    Linux x64 software processes under Ubuntu24.04/WSL produce eleven independently hashed/timed PNG captures consumed
+    byte-for-byte in nine actual Windows x64 DX12/NVIDIA RTX3090 GPU scenes with real2D and transformed/depth-tested3D
+    providers. Independent resize and genuine WebDriver pointer/full keyboard input pass at normal and injected
+    scale1.5; canonical normal/narrow/moved slots remain clipped. Fifty-five outside-kernel observations prove private
+    loopback namespaces, three owned listeners with outside-Linux denial, actual CPU/RSS observations, protected
+    unloads, three confirmed engine exits, fresh A page reload and final owned cleanup. Hidden retains its engine;
+    unsupported freeze/throttle/frame-ready/context transfer stay explicit. Static GPU comparisons retain full pixels
+    and zero added uploads/depth renders after one bounded GUI fade settlement. Actual renderer replacement rejects
+    old bindings and safely reuploads accepted CPU pixels. Thirteen owning cases passed; unchanged Core/content/JSON/desktop/web
+    proof and warm Cargo/cache were reused. Native Windows Servo/libservo/zero-copy/video/audio/ARM/physical input/real
+    GPU faults and performance gains remain unproven. Full99 future requirements remain OPEN; independent final
+    evaluation/publication governs WP closure.'
   rationale: Separate optional bridge proves real integration while avoiding engine/toolchain coupling and unsafe
     public automation surfaces.
   research_source_refs:

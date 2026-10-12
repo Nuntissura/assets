@@ -299,3 +299,806 @@ not_proven:
 next_action: Lead publishes exact frozen evaluation, completes runtime/dependency/namespace admission prerequisites
   and owns coder04 admission. Evaluator remains report-only; runtime cases await exact real-engine/GPU outputs and
   independent kernel/DOM/process evidence.
+servo_runtime_assessment_f4295bb4199e:
+  assessment_id: EVAL-KUM-014-RUNTIME-f4295bb4199e-v1
+  phase: partial_runtime_assessment
+  verdict: RUNTIME_PROOF_ADVANCED_FINDING_OPEN
+  engine_candidate: 35f141655e647c88203aa9c39c2980b54e0b32e6
+  gpu_candidate: f4295bb4199eb39750a1189211386af0d2c398eb
+  updated_at: '2026-10-12'
+  preserved_prefix:
+    bytes: 20831
+    sha256: 63460e850220fe87d0e051c4d440e8e823e1adf154eecab1cb61300fb72d3ca3
+    all_seven_frozen_methods_and_expected_retained: true
+  cases:
+  - case_id: EVAL-KUM-014-001
+    method: Inspect resolved graph/default build, independently verify pinned binary and namespace admission before
+      and after real listeners; challenge missing/stale admission and wrong/stale/oversized frame messages.
+    expected: Existing default members/external records unchanged; no Servo linkage; fail-closed namespace/payload
+      guards; actual listener isolation and scoped runtime metadata.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: 'Pinned archive independently hashed: 49202383 bytes/ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0.
+      Loader missing=[]; CLI help/version exit0; Servo0.6.0-c78d2c206; metadata default members core/layout-json/content
+      and optional bridge desktop graph. Missing/stale admissions rejected with no engine launch. Default5.70s/desktop2.91s/owning13
+      tests17.05s+0.01s output inspected; reuse fence supplied by lead, final source/publication reconciliation
+      still pending.'
+    title: Independent optional package and bounded authenticated local bridge
+    contract_acceptance_refs:
+    - WP014-A001
+    contract_requirement_refs:
+    - WP014-R001
+    - WP014-R002
+    - WP014-R003
+    - WP014-R004
+    - WP014-R009
+    required_observations:
+    - 'Exact optional package/default std-only closure: original three default-members, public package versions/APIs,
+      Snapshot3/schema1 and old external lock records preserved; Core/content do not build/link Servo. Host-configurable
+      view/frame counts are not fixed to demo4.'
+    - Lead verifies actual acquired GNU release length49202383/SHA256ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0
+      and actual runtime version/prerequisites; contract-pinned v0.6.0/c78d2c206f80a1c8b67eefa97f773bba513205d3
+      is a target, not an observed binary until read.
+    - 'Before any engine/WebDriver launch: independent dev-lead kernel read of unchanged owned worker PID/starttime/private
+      namespaceID, different from host, loopback only/no non-loopback routes/interfaces/shared network or forwarding.
+      Controller and both engines inside; Windows communicates only through owned stdio/files.'
+    - Product launch fails closed with missing, stale or mismatched independent admission. Revalidate before EVERY
+      launch/reload/recovery against unchanged PID/starttime/kernel namespace. Worker-produced assertions alone
+      never qualify.
+    - 'After listeners: independent interfaces/routes/socket ownership read and outside-host namespace inaccessibility
+      proof. No public server, WSL shutdown, unowned stop, firewall weakening/global environment change.'
+    - Frame/message negatives cover unknown/stale/wrong-view/oversized/sequence/deadline responses, exact full content
+      Scope identity/session/provider/resource/target/connection/instance/mount, canonical geometry revision, engine
+      incarnation/sequence and separate renderer SurfaceBinding epoch; preserve last good pixels.
+    - 'Checked bounds: one pending capture/view, configurable engines2/host frames4, messages4MiB/PNG16MiB/rawRGBA16MiB/side2048
+      defaults. Top-left straight-alpha sRGB RGBA8, row_stride=width*4 and checked exact raw length; PNG dimensions/bytes
+      bounded before allocation.'
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  - case_id: EVAL-KUM-014-002
+    method: Capture A/B with different DOM dimensions, resize A, independently read both DOM states/images; send
+      genuine pointer and keyboard to each addressed view using current slot mapping.
+    expected: A changes intended size/content, B dimensions and pixels remain unchanged until targeted; real engine
+      receipts agree with canonical recipients and local coordinates.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: All11 engine PNG/UTF-8 receipts agree in every receipt field, exact PNG SHA256/dimensions and immutable
+      request hash/deadline. Two actual processes23285/214183556 and23426/214183981. Eight trusted pointer/keyboard
+      observations at normal/injected1.5 reach addressed DOM. Resize-A observations retain B prior dimensions/hash/capture
+      count before B is targeted.
+    title: Two real Servo contexts resize and accept input independently
+    contract_acceptance_refs:
+    - WP014-A002
+    contract_requirement_refs:
+    - WP014-R004
+    - WP014-R005
+    required_observations:
+    - Two separately owned genuine Servo processes/software contexts, with current PID/starttime/incarnation and
+      individual DOM measurements/screenshots; no cross-process/thread engine-affine handles.
+    - Capture actual differently sized A/B, independently read DOM width/height and content, hash actual engine-received
+      screenshot bytes. Resize A and reread both; B retains exact dimensions and image/content until addressed.
+    - Genuine WebDriver pointer AND keyboard actions address each view through current RenderSlot mapping. Local/global/physical/scale
+      route is single mapping and current canonical recipient; inspect actual DOM/content change in intended engine
+      and absence of change in the other.
+    - Host mutation/resize dirtiness is distinct from unsupported direct engine frame-ready/animation notifications.
+      Resize/reload invalidates old geometry/engine/renderer bindings; independent exact byte lineage continues
+      into desktop composition in003.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  - case_id: EVAL-KUM-014-003
+    method: Render all four providers through DesktopAdapter and actual WGPU; inspect PNG/slot geometry and known
+      2D/3D points at normal/narrow/injected scale1.5; move/resize one pane.
+    expected: All actual content appears in correct clipped slots; 3D transform/depth is real GPU work; known point/pick
+      recipients agree without double scaling.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: 'Normal/narrow/injected1.5/moved-resized GPU images directly inspected against actual engine files:
+      four correct clipped providers; A float moves independently. Shader perspective/depth implementation inspected;
+      near green triangle wins actual center readback. Separate vector/scene picks at normalized[0.5,0.5] change
+      only their scene colors. All9 browser provenance rows independently match same PNG and decoded RGBA bytes.'
+    title: Actual browser, 2D and 3D clipped composition
+    contract_acceptance_refs:
+    - WP014-A003
+    contract_requirement_refs:
+    - WP014-R005
+    required_observations:
+    - Actual Linux engine screenshot receipts and independently computed hashes must match the EXACT encoded PNG
+      or decoded RGBA data consumed by Rust GPU upload; record transformation/format/stride if decoded. Unrelated
+      browser and GPU screenshots never prove integration.
+    - Open all current engine source images and actual Windows x64 DX12 composed images; compare intended page content
+      against independently read DOM and current canonical DesktopAdapter RenderSlots, ancestor clips, SurfaceBinding/GpuBinding.
+    - Two actual browser providers plus real2D provider and actual WGPU3D geometry use one existing canonical Controller/host
+      dispatcher; no alternate placement owner or native-child assumption.
+    - Exercise normal/narrow/injected scale1.5, move/resize one pane; read actual slot geometry/clip/physical size
+      and inspect known2D/3D projected points and actual GPU pixel readback/pick.
+    - Real depth/perspective or equivalent3D transformation is performed by GPU callback/texture, not a canned image.
+      Addressed2D/3D input changes only that scene; unchanged browser/other-scene data remains attributable. Channel
+      order/top-left/straight-alpha/sRGB/rowstride agree.
+    - Unsupported/background/compositing and engine/context capabilities stay explicit; injected scale is not an
+      actual monitor transition/physical-input claim.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  - case_id: EVAL-KUM-014-004
+    method: Independently count engine screenshot requests/texture uploads across static, A mutation, B unchanged,
+      hidden and explicit unsupported freeze/throttle; capture CPU/RSS ticks at actual times.
+    expected: Static/coalesced work bounded; A schedules only A; hidden retains engine and makes no suspension/release
+      claim; unsupported states remain visible and do not mutate confirmed state.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: Visible static A/B NO_CAPTURE counts1/1; A-only dirty captures5 while B remains4 and same last-good
+      hash. Hidden A capture5 stays5 despite mutation; CPU212->216 ticks/RSS279080960 retained. Freeze/throttle/frame-ready/context-transfer
+      unsupported preserves hidden state. Four composed cases enforce full RGBA equality plus zero uploads/unchanged
+      depth-render count after one bounded UI settling draw; owning scheduler tests prove coalescing.
+    title: Affected dirty work and honest hidden lifecycle
+    contract_acceptance_refs:
+    - WP014-A004
+    contract_requirement_refs:
+    - WP014-R004
+    - WP014-R006
+    - WP014-R007
+    required_observations:
+    - Independently reconcile real per-engine screenshot requests and actual texture uploads over static, dirtyA/B-unchanged,
+      input/layout change and hidden states; baseline plus current counts/identities/deadlines distinguish requested
+      vs completed work.
+    - Static views produce no duplicate captures/uploads; coalesced A mutation schedules onlyA, notB. Hidden/unloaded/dirty/static
+      states and pending<=1/view are distinct; no perpetual capture/repaint.
+    - Read actual owned engine CPU ticks/RSS/elapsed at identified before/after times/PID/starttime, including visible/hidden/dirty.
+      Report scenario observations with units, never universal ceiling/performance improvement.
+    - Hidden/stopped capture does not prove engine suspension or released memory. Explicit freeze/throttle request
+      reports Unsupported/Unknown and preserves confirmed content/state; engine ownership stays observable.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  - case_id: EVAL-KUM-014-005
+    method: Replace actual renderer/device while retaining canonical IDs, challenge old device/epoch/frame bindings,
+      reupload real engine pixels and inspect recovery image; request unsupported raw-context native popout.
+    expected: Old binding rejected, recovered pixels current and clipped, source ownership retained on explained
+      unsupported context transfer; no real GPU-fault or engine-popout claim.
+    runtime_status: PENDING_CORRECTED_CAPTURE
+    observed: Actual replacement OffscreenRenderer/device creates epoch2 slots; old binding rejected, IDs retained,
+      original engine CPU pixels reuploaded. Recovered content correct; renderer-recovery header at x830..900/y0..18
+      visibly overlays browser-b and Panes/reveal text; paired controls occupy same region and repaint_after_ms=0.
+      Final readable settled recovery image pending. Unsupported popout checks snapshot unchanged before destructive
+      commit.
+    title: Renderer replacement and explicit popout context limits
+    contract_acceptance_refs:
+    - WP014-A005
+    contract_requirement_refs:
+    - WP014-R005
+    - WP014-R006
+    - WP014-R008
+    required_observations:
+    - Actually replace owned OffscreenRenderer/device, preserving canonical layout/view/resource IDs; fresh renderer
+      epoch/device and current GpuBinding must be observed, not a synthetic lost-state label alone.
+    - Challenge old device/SurfaceBinding epoch, superseded geometry, stale engine incarnation/sequence/full Scope
+      and old texture/frame bindings; reject before replacing/uploading last good content.
+    - Reload retained actual engine CPU pixels into new owned device, retain exact engine-byte linkage, inspect
+      fresh composed recovery PNG and known points/clips/input recipient.
+    - Request unsupported engine/rawGPU-context native popout before destructive canonical commit; explicit rejection/capability
+      reason retains source ownership/content. Unchanged WP012 window evidence may support only window machinery,
+      not real engine transfer/popout.
+    - No actual physical GPU-fault, zero-copy or cross-thread/context transfer claim from controlled device replacement.
+      Bounded failure leaves last valid content/recoverable placeholder.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  - case_id: EVAL-KUM-014-006
+    method: Request protected unload then eligible reloadable unload; independently observe exact PID/starttime/descendant
+      absence, logical tab retention and placeholder; restore fresh engine/page pixels and reconcile one failed/unknown
+      lifecycle response.
+    expected: Protected engine remains; eligible owned process ends before confirmed unload; only page reload strength
+      claimed; bounded failure stays recoverable and unaffected engine remains live.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: Keepalive B and dirty A protected. First A unload UNKNOWN is reconciled by independent kernel observation47
+      exact PID/starttime absence before confirmation; B remains live. Fresh A23790/214185196/incarnation2 obtains
+      new namespace admission and page pixels; old input/counters reset (PageReload only). Logical tab/placeholder
+      directly inspected. Final3 exact engine identities and worker independently absent; owning tests reject stale/false/no-descendant
+      receipt and repeated unknown retry.
+    title: Actual owned unload/reload, protection and reconciliation
+    contract_acceptance_refs:
+    - WP014-A006
+    contract_requirement_refs:
+    - WP014-R007
+    - WP014-R008
+    required_observations:
+    - 'Request protected keep-alive/dirty unload: exact owned engine remains live and logical content retained.
+      Only clean/reloadable host-reference eligibility admits destructive unload.'
+    - Eligible unload confirms only after INDEPENDENT /proc read proves exact owned PID/starttime absence and no
+      live descendants. Worker receipt/status/screenshot alone cannot prove termination. Observe unaffected engine
+      remains live with unchanged identity/content.
+    - Logical tab/view/resource/layout IDs remain present and placeholder reachable while unloaded; distinguish
+      hidden, requested shutdown, unknown outcome and confirmed unloaded.
+    - Restore revalidates independent namespace admission BEFORE launch, creates fresh owned process/software context/incarnation,
+      reloads declared page reference and shows actual engine pixels linked to fresh GPU composition.
+    - Advertise page-reload restoration only, not arbitrary JavaScript/media-state restoration. Reconcile one bounded
+      failed/unknown lifecycle response using independent canonical/kernel reads before changed-input/evidence-backed
+      retry.
+    - Startup30s/request15s/owned graceful shutdown10s/default scenario240s product timers and retries<=3 hold;
+      terminate only exactly owned starttime-validated children. No unowned stop/WSL/global side effects.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  - case_id: EVAL-KUM-014-007
+    method: Run shipped actual engine/GPU batch with independent namespace/process checks, inspect all PNG/diagnostics,
+      verify cleanup only owned processes, manual/topology/matrix/state and canonical origin.
+    expected: Original six prior methods plus this case retained; exact source/engine/backend/version and artifact
+      fence recorded; no orphan owned engine/listener, no foreground input, honest unavailable/unsupported outcomes
+      and exact pushed closure.
+    runtime_status: PENDING_PUBLICATION
+    observed: 'All20 images and paired data opened; independent kernel55 observations all private loopback-only,
+      distinct host namespace, loopback routes, forwarding0; admission observations4/8/49 precede respective launches.
+      All3 real listeners owned by exact engine and outside Linux IPv4/IPv6 connect111. Product README servo-and-graphics-bridge
+      topic inspected: setup/config/protocol/host-receipts/lifecycle/model routes/failure recovery/limits. Corrected
+      recovery capture, final manual/spec/topology/matrix/status and canonical origin proof remain pending.'
+    title: Recoverable quiet shipped boundary and exact publication
+    contract_acceptance_refs:
+    - WP014-A007
+    contract_requirement_refs:
+    - WP014-R001
+    - WP014-R002
+    - WP014-R003
+    - WP014-R004
+    - WP014-R008
+    - WP014-R009
+    required_observations:
+    - Lead runs shipped deterministic actual two-engine/GPU batch with product scenario deadline240s and current
+      independent namespace admission/ownership checks; no outer Cargo timeout or evaluator launch.
+    - Inspect ALL resulting actual engine/composed/recovery/placeholder PNGs directly, current redacted diagnostics
+      and independent engine/DOM/kernel/process/resource observations. Hash/version/metrics/log/name alone never
+      prove pixels or predecessor outcome.
+    - Validate missing-runtime/library/admission/provider, stale frame, resize failure/lost engine/unsupported transfer
+      causal recoverability and bounded timers/retries without replacing required real-engine acquisition with a
+      proxy.
+    - Verify cleanup only exactly owned PID/starttime descendants, no orphan engines/listeners, no visible foreground
+      windows/operator input; no public server/unowned mutation. Independent postcleanup kernel/process read required.
+    - Bind exact source/package/lock/runtime archive/executable/engine version/backend/platform and artifact digests;
+      reuse prior Core/content/JSON/desktop/web proof only after affected inputs checked unchanged.
+    - No-context product manual/launcher covers configured runtime/output roots, namespace admission, message/pixel/scope/geometry/epoch
+      routes, input/dirty/lifecycle/unsupported behavior and recovery; topology/matrix/state/board align with actual
+      scope.
+    - All original seven methods remain unchanged. Lead commits/pushes owned result and independently rereads canonical
+      origin input/report containment before WP DONE; evaluator report preparation is not coding/runtime/publication
+      approval.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+  artifacts_directly_opened:
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-1-1.png
+    png_sha256: f43c963db85e9848cfe41695166640cf6b7ac84f84d160d3e4506e60c38a7009
+    dimensions:
+    - 601
+    - 332
+    paired_json_sha256: dcd4a5e2f20b896531d269c5f14c6d44109ac6861764f6de689757fec2aeac3e
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-1-1000003.png
+    png_sha256: d45391f3f01371e886ab460545784aedb683c253b04238fb171807d7e350632a
+    dimensions:
+    - 460
+    - 272
+    paired_json_sha256: 2fc037b3d68b4d18df21adf9bb70ad4e4a4ffd4b4d047aa365bfdbce5f5d7184
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-1-1000006.png
+    png_sha256: 379de42673b82d3b52ac3b331db7dffa8df4695a49f03c4fa48eadc6ddb7f2ee
+    dimensions:
+    - 460
+    - 272
+    paired_json_sha256: 207f985d50f8a23c677690bfa0be38239522d5ef007cf843213866f5123a9339
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-1-2.png
+    png_sha256: 6ca0cb381c98c7ace42f4f5a32ca08e052091e41ce186b437276e1ecefd62978
+    dimensions:
+    - 421
+    - 292
+    paired_json_sha256: e2c62e397c612895d74e975f012e8fbbf09e3fda93ffefce5f648ec3d9aba0a2
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-1-3.png
+    png_sha256: 20fc4a4dcf7ab784b596f39856c46230ad15ea6ae041317e0bd32b9d71cb4401
+    dimensions:
+    - 901
+    - 498
+    paired_json_sha256: b06607e9861d03d909ba9d8658e5895bca84fa7e0bec8752a4bfcf08bb21dfe5
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-1-4.png
+    png_sha256: 35901f2c96ae467586f145c9a12c73b0269176c37ecff6a6692fd1728c1d70f5
+    dimensions:
+    - 460
+    - 272
+    paired_json_sha256: c8b5e6350ee9dcd250383c24ba8a5aebef5917d04d436390ddc98d17c027df1e
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-a-2-5.png
+    png_sha256: 4102d82534b78bf71f0bd4f06ee6680bc95ab1790e2f9bff9de8ce741d74441c
+    dimensions:
+    - 460
+    - 272
+    paired_json_sha256: dfafe63bc7ad8651c56a63a393b47191ae7b7526fc72a985dd8e5d662a4a5881
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-b-1-1.png
+    png_sha256: e37d412ab70a80f52ef0d5922bcdb46c09128967f16aec94088d821068a6ef97
+    dimensions:
+    - 400
+    - 332
+    paired_json_sha256: 533d6cd41f2bc32571c64eb45e91bb7b77eb31e726b52c2aa4e06d9735e66aa5
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-b-1-2.png
+    png_sha256: 77708d99c136e60ace23d77620731440cbecf2565357480444e9cc52be86a3c9
+    dimensions:
+    - 280
+    - 292
+    paired_json_sha256: fa58b7fa2a95848b418ea4bba704c4149d276e09fa08002da450a79a3466e6a3
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-b-1-3.png
+    png_sha256: c6c5c0c3f7919075808424f0a11e29fbec2d1e9b71e5e6d54f9e1b5fc3801cb6
+    dimensions:
+    - 600
+    - 498
+    paired_json_sha256: d442e71aaa7dfdee482000610ce3bda848f4057a39753c177e7d4cccc8f50df5
+    directly_opened: true
+  - kind: engine
+    path: .local/servo-proof/35f141655e64/engine/browser-b-1-4.png
+    png_sha256: db7b4a4dccd0f99f292a8751445264b1750be328890dea20744428afcac312a5
+    dimensions:
+    - 400
+    - 332
+    paired_json_sha256: a027033fdfec8984d387d720396f7775b81b45641864c75fe5a52805e2a05f24
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/engine-reloaded.png
+    png_sha256: b33f4f1f91d27a2ec9392291a65b27b2988b24303b81caa8613de1c27156a0a7
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: 2b61fec3179482e9eada2baf948c976d1aa52789905335bb070811927d46b9dd
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/moved-resized.png
+    png_sha256: d92e761f8eb736a5412b79e41711bc0c5e35ea04b3b5044186da8a730b43efd8
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: 38ffdbd1897f2c23eb5de3a718aaed6361ce10efb71318767ba68d15fbe74bd5
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/narrow.png
+    png_sha256: e61cf20e0a734f49c17770028a64c669b5acc231e717271f4c3e4d03c5d3c0ba
+    dimensions:
+    - 700
+    - 640
+    paired_json_sha256: 25ef7fd6c3e72a2b99d0b9aad464a2ccd6460da09bca8b2a5c066f505b29210c
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/normal.png
+    png_sha256: b8f90cb3f9381a01c8605838ae599cc10e42126e8595ccf1c2ce1e06f95b68f0
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: e83db80427319f05f858f4f70166288d658c8aeb7c7e90fafc2cb8380826787b
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/renderer-recovery.png
+    png_sha256: 5d04e84764ef9d4fc8556958553799530cad15e88a5c4ff4e66390075a3dc81d
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: fe039add6180416fc2bc68031ea93a3594ee6532dcc133403a67a7960356580e
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/scale-1-5.png
+    png_sha256: dccf3babef3a8aa46eae6c9be2b0ec967ca84a874562cbfe1aea2abeb649233f
+    dimensions:
+    - 1500
+    - 1080
+    paired_json_sha256: 5dfcd2260c7715c07abedf091986d71d52bf98e64d16bf8d0694eb5e8a246dd2
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/scene-input.png
+    png_sha256: 5d417f4b64b356d1a2c5b4fb1a56a9396cd72a5cc9386d68a2a576e6deb36424
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: 38c4f5a258d3b3f1b8971e7e25464378aabf1bb79cfe468aab8da1fa22a30603
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/unloaded-placeholder.png
+    png_sha256: 03f0500cdef01a87302298b2a8f440a172d0c33052bb2c19f8a255de030c1c2a
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: 60cf625bc104e3910a53527d2382ddbe4de7745c5df7a48115f5265c7a7b6ffb
+    directly_opened: true
+  - kind: gpu
+    path: .local/servo-proof/f4295bb4199e/vector-input.png
+    png_sha256: 3ecae0e218fde3100956e05cff8ebd11aaaaf0e876af3a64b7a763f102a015c0
+    dimensions:
+    - 1000
+    - 720
+    paired_json_sha256: 1139aa071f83731a0556af959a63b70516371ac44c7540d57c1fd791def27d23
+    directly_opened: true
+  evidence_fence:
+  - path: .local/servo-proof/35f141655e64/root-events.json
+    sha256: b090529497e069c6fb7397fb1b37973fd6e7a14c659c77ec8eb3daf361397ccb
+  - path: .local/servo-proof/35f141655e64/root-kernel.json
+    sha256: ef5bbe75515fe599b9638e69a746c6aa4e36df05a884c937f18f13e443182104
+  - path: .local/servo-proof/35f141655e64/root-cleanup.json
+    sha256: 1d520ff25b8266fa745810040eaf49dfb0175b7b66581dfa2b90b9c737c42b0c
+  - path: .local/servo-proof/35f141655e64/admission-negative.json
+    sha256: c46c3788b816d3c5965c326f2253898915c2e23dc7206f0fc5b9464b356a50da
+  - path: .local/servo-proof/35f141655e64/engine/root-enriched-manifest.json
+    sha256: 2d74be3ddc779ca2dfd9dbbfaf3d80a5d4904c15030528934349ae78d6f45522
+  - path: .local/servo-proof/f4295bb4199e/composition-evidence.json
+    sha256: 5512176b541e9c82403e713d3bf65ed798c5f9b6b1aecd36b60b231995cc6d0b
+  - path: product/README.md
+    sha256: 1e9a2d7d2aa819fddb37a5fd2f6d98c972c363a96a7cb46ac8d1964560d2a120
+  DIFF_ATTACK_SURFACES:
+  - Optional package/default-members isolation; complete frame scope and bounded decode.
+  - Independent namespace admission/listener ownership before actual engines.
+  - Canonical slots, real GPU composition, renderer ownership and input mapping.
+  - Dirty/hidden/unload/restore process truth and unchanged image/request lineage.
+  INDEPENDENT_CHECKS_RUN:
+  - Directly opened11 engine and9 GPU PNGs and compared their paired geometry/input/slot records.
+  - Independently hashed exact11 PNGs, decoded RGBA and canonical requests; reconciled all9 GPU provenance entries.
+  - Read55 external-root kernel observations plus cleanup/admission negatives; confirmed namespace/listeners/absence
+    chronology.
+  - Read existing owning13/all-target/compose proof outputs and no-context manual; did not execute product or Git
+    commands.
+  COUNTERFACTUAL_CHECKS:
+  - scenario: Different browser screenshot substituted for composition
+    result: All9 consumer provenance rows match exact independently decoded original engine PNG bytes; no unrelated
+      raster accepted.
+  - scenario: Hidden mislabeled suspended/released or unload confirmed from worker alone
+    result: Hidden captures stop while independently observed CPU/RSS persist; confirmation follows external exact
+      identity absence and B survives.
+  - scenario: New device reuses old handle or silently rewrites original capture epoch
+    result: Old GPU binding rejected; fresh slot epoch2 with original CPU capture provenance and canonical IDs retained.
+  BOUNDARY_PROBES:
+  - Actual two distinct Servo processes, independent A-only resize/readback, trusted addressed pointer/keyboard
+    at scale1/1.5.
+  - Normal/narrow/scale1.5/moved/resized four-provider composition; 2D/3D input changes and actual near-depth readback.
+  - Hidden mutation/no capture; protected unload; unknown unload external reconciliation; fresh page reload and
+    actual renderer replacement.
+  NEGATIVE_PATH_CHECKS:
+  - Missing/stale real launcher admission returns ERROR before engine.
+  - Owning13 output covers complete/nested identity, stale dimensions/deadline/epochs, exact RGBA/PNG bounds/hash,
+    duplicate/inflight/coalesced work, unsupported source-preserving popout and reconciliation limits.
+  - Actual unsupported freeze/throttle/frame-ready/context transfer retains confirmed hidden state; protected keepalive/dirty
+    engines survive.
+  INDEPENDENT_FINDINGS:
+  - finding_id: EVAL-KUM-014-F001
+    status: OPEN
+    case_ids:
+    - EVAL-KUM-014-005
+    - EVAL-KUM-014-007
+    artifact: .local/servo-proof/f4295bb4199e/renderer-recovery.png
+    evidence: Visible same-header overlay of browser-b and Panes/reveal at x830..900/y0..18; paired controls [830,0,113,18]
+      and [833.5,0,66.59375,18]; fresh-context repaint_after_ms=0. Content recovery correct.
+    minimum_remediation: Provide readable settled recovery capture through original renderer replacement path; retain
+      actual device/epoch/IDs/old-binding rejection and same engine bytes.
+  RESIDUAL_UNCERTAINTY:
+  - Final case005 awaits corrected recovery image; final case007 publication is not passed.
+  - Current source/dependency/governance/publication fence belongs to lead; existing test outputs reused only for
+    unchanged asserted inputs, independently published closure pending.
+  - No native Windows Servo/libservo/zero-copy/media/ARM/physical input/real GPU fault/arbitrary JS-media restoration/performance
+    gains claimed.
+  - Kernel outside-connect records prove outside Linux IPv4/IPv6 denial; no independent Windows connect record inspected.
+  - Quiet headless/offscreen invocation observed in released paths; no fresh external foreground observer claimed.
+  next_action: Review only corrected recovery output and lead-released final source/manual/governance/origin proof;
+    append follow-up without editing frozen prefix. No final packet PASS yet.
+servo_runtime_evaluation_8cbea2746233:
+  evaluation_id: EVAL-KUM-014-RUNTIME-8cbea2746233-v1
+  updated_at: '2026-10-12'
+  phase: runtime_proven_publication_pending
+  verdict: PASS_SCOPED_RUNTIME_PENDING_PUBLICATION
+  engine_candidate: 35f141655e647c88203aa9c39c2980b54e0b32e6
+  gpu_candidate: 8cbea2746233a0987d0cf7556c59deeef744486b
+  supersedes_runtime_verdict: servo_runtime_assessment_f4295bb4199e
+  preservation:
+    frozen_prefix_bytes: 20831
+    frozen_prefix_sha256: 63460e850220fe87d0e051c4d440e8e823e1adf154eecab1cb61300fb72d3ca3
+    prior_report_bytes: 52305
+    prior_report_sha256: c8f024084a7c6fbfee688f443bcf1012f8c9984ed107d92807d12967b363fa59
+    all_prior_bytes_retained: true
+    all_seven_exact_methods_and_expected_retained: true
+  cases:
+  - case_id: EVAL-KUM-014-001
+    title: Independent optional package and bounded authenticated local bridge
+    contract_acceptance_refs:
+    - WP014-A001
+    contract_requirement_refs:
+    - WP014-R001
+    - WP014-R002
+    - WP014-R003
+    - WP014-R004
+    - WP014-R009
+    method: Inspect resolved graph/default build, independently verify pinned binary and namespace admission before
+      and after real listeners; challenge missing/stale admission and wrong/stale/oversized frame messages.
+    expected: Existing default members/external records unchanged; no Servo linkage; fail-closed namespace/payload
+      guards; actual listener isolation and scoped runtime metadata.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: 'Pinned archive independently hashed: 49202383 bytes/ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0.
+      Loader missing=[]; CLI help/version exit0; Servo0.6.0-c78d2c206; metadata default members core/layout-json/content
+      and optional bridge desktop graph. Missing/stale admissions rejected with no engine launch. Default5.70s/desktop2.91s/owning13
+      tests17.05s+0.01s output inspected; reuse fence supplied by lead, final source/publication reconciliation
+      still pending.'
+  - case_id: EVAL-KUM-014-002
+    title: Two real Servo contexts resize and accept input independently
+    contract_acceptance_refs:
+    - WP014-A002
+    contract_requirement_refs:
+    - WP014-R004
+    - WP014-R005
+    method: Capture A/B with different DOM dimensions, resize A, independently read both DOM states/images; send
+      genuine pointer and keyboard to each addressed view using current slot mapping.
+    expected: A changes intended size/content, B dimensions and pixels remain unchanged until targeted; real engine
+      receipts agree with canonical recipients and local coordinates.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: All11 engine PNG/UTF-8 receipts agree in every receipt field, exact PNG SHA256/dimensions and immutable
+      request hash/deadline. Two actual processes23285/214183556 and23426/214183981. Eight trusted pointer/keyboard
+      observations at normal/injected1.5 reach addressed DOM. Resize-A observations retain B prior dimensions/hash/capture
+      count before B is targeted.
+  - case_id: EVAL-KUM-014-003
+    title: Actual browser, 2D and 3D clipped composition
+    contract_acceptance_refs:
+    - WP014-A003
+    contract_requirement_refs:
+    - WP014-R005
+    method: Render all four providers through DesktopAdapter and actual WGPU; inspect PNG/slot geometry and known
+      2D/3D points at normal/narrow/injected scale1.5; move/resize one pane.
+    expected: All actual content appears in correct clipped slots; 3D transform/depth is real GPU work; known point/pick
+      recipients agree without double scaling.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: 'Normal/narrow/injected1.5/moved-resized GPU images directly inspected against actual engine files:
+      four correct clipped providers; A float moves independently. Shader perspective/depth implementation inspected;
+      near green triangle wins actual center readback. Separate vector/scene picks at normalized[0.5,0.5] change
+      only their scene colors. All9 browser provenance rows independently match same PNG and decoded RGBA bytes.'
+  - case_id: EVAL-KUM-014-004
+    title: Affected dirty work and honest hidden lifecycle
+    contract_acceptance_refs:
+    - WP014-A004
+    contract_requirement_refs:
+    - WP014-R004
+    - WP014-R006
+    - WP014-R007
+    method: Independently count engine screenshot requests/texture uploads across static, A mutation, B unchanged,
+      hidden and explicit unsupported freeze/throttle; capture CPU/RSS ticks at actual times.
+    expected: Static/coalesced work bounded; A schedules only A; hidden retains engine and makes no suspension/release
+      claim; unsupported states remain visible and do not mutate confirmed state.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: Visible static A/B NO_CAPTURE counts1/1; A-only dirty captures5 while B remains4 and same last-good
+      hash. Hidden A capture5 stays5 despite mutation; CPU212->216 ticks/RSS279080960 retained. Freeze/throttle/frame-ready/context-transfer
+      unsupported preserves hidden state. Four composed cases enforce full RGBA equality plus zero uploads/unchanged
+      depth-render count after one bounded UI settling draw; owning scheduler tests prove coalescing.
+  - case_id: EVAL-KUM-014-005
+    title: Renderer replacement and explicit popout context limits
+    contract_acceptance_refs:
+    - WP014-A005
+    contract_requirement_refs:
+    - WP014-R005
+    - WP014-R006
+    - WP014-R008
+    method: Replace actual renderer/device while retaining canonical IDs, challenge old device/epoch/frame bindings,
+      reupload real engine pixels and inspect recovery image; request unsupported raw-context native popout.
+    expected: Old binding rejected, recovered pixels current and clipped, source ownership retained on explained
+      unsupported context transfer; no real GPU-fault or engine-popout claim.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: 'Actual new OffscreenRenderer/device retains canonical IDs; slot epoch2 rejects old GPU binding and
+      reuploads exact original engine CPU pixels without rewriting capture provenance. Final renderer-recovery.png
+      directly opened: readable Panes/reveal header; full PNG pixels exactly equal current scene-input.png from
+      epoch1. Recovery nonce3 and repaint_after_ms effectively infinite after one bounded monotonic UI settling
+      draw. Original F001 resolved. Unsupported popout returns before commit and preserves source snapshot.'
+  - case_id: EVAL-KUM-014-006
+    title: Actual owned unload/reload, protection and reconciliation
+    contract_acceptance_refs:
+    - WP014-A006
+    contract_requirement_refs:
+    - WP014-R007
+    - WP014-R008
+    method: Request protected unload then eligible reloadable unload; independently observe exact PID/starttime/descendant
+      absence, logical tab retention and placeholder; restore fresh engine/page pixels and reconcile one failed/unknown
+      lifecycle response.
+    expected: Protected engine remains; eligible owned process ends before confirmed unload; only page reload strength
+      claimed; bounded failure stays recoverable and unaffected engine remains live.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PASS_SCOPED_RUNTIME
+    observed: Keepalive B and dirty A protected. First A unload UNKNOWN is reconciled by independent kernel observation47
+      exact PID/starttime absence before confirmation; B remains live. Fresh A23790/214185196/incarnation2 obtains
+      new namespace admission and page pixels; old input/counters reset (PageReload only). Logical tab/placeholder
+      directly inspected. Final3 exact engine identities and worker independently absent; owning tests reject stale/false/no-descendant
+      receipt and repeated unknown retry.
+  - case_id: EVAL-KUM-014-007
+    title: Recoverable quiet shipped boundary and exact publication
+    contract_acceptance_refs:
+    - WP014-A007
+    contract_requirement_refs:
+    - WP014-R001
+    - WP014-R002
+    - WP014-R003
+    - WP014-R004
+    - WP014-R008
+    - WP014-R009
+    method: Run shipped actual engine/GPU batch with independent namespace/process checks, inspect all PNG/diagnostics,
+      verify cleanup only owned processes, manual/topology/matrix/state and canonical origin.
+    expected: Original six prior methods plus this case retained; exact source/engine/backend/version and artifact
+      fence recorded; no orphan owned engine/listener, no foreground input, honest unavailable/unsupported outcomes
+      and exact pushed closure.
+    evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+      complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+      composed pixels required here.
+    runtime_status: PENDING_PUBLICATION
+    observed: Original six runtime methods now PASS_SCOPED_RUNTIME. All11 engine images and all9 final GPU images
+      directly opened against exact sources/paired records, same engine manifest hash and immutable request/deadline
+      provenance. Final actual compose log8cbea PASS13.97s inspected. Recovery readability fixed; no orphan engines/worker
+      in independent kernel cleanup. Current operating manual already inspected, unchanged raw SHA1e9a2d7d2aa819fddb37a5fd2f6d98c972c363a96a7cb46ac8d1964560d2a120.
+      Final manual/spec/topology/matrix/status synchronization and independently reread canonical origin remain
+      a lead-owned hard publication predicate; no final case007 PASS yet.
+  final_gpu_artifacts:
+  - path: .local/servo-proof/8cbea2746233/engine-reloaded.png
+    png_sha256: b33f4f1f91d27a2ec9392291a65b27b2988b24303b81caa8613de1c27156a0a7
+    paired_json_sha256: 14161e7a976548cb44f3719724cd3e404f690b193d37be32d77bb2c61425df75
+    dimensions:
+    - 1000
+    - 720
+    nonce: 19
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/moved-resized.png
+    png_sha256: d92e761f8eb736a5412b79e41711bc0c5e35ea04b3b5044186da8a730b43efd8
+    paired_json_sha256: 386823b75afe674b8f5ab841e6746794f18372cf1f51cd734d0b6f49b1a76a65
+    dimensions:
+    - 1000
+    - 720
+    nonce: 15
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/narrow.png
+    png_sha256: e61cf20e0a734f49c17770028a64c669b5acc231e717271f4c3e4d03c5d3c0ba
+    paired_json_sha256: d49787baa24eea8b1db820e6a8caa88dc5432cd6f989376b58c5fb2febe85534
+    dimensions:
+    - 700
+    - 640
+    nonce: 7
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/normal.png
+    png_sha256: b8f90cb3f9381a01c8605838ae599cc10e42126e8595ccf1c2ce1e06f95b68f0
+    paired_json_sha256: 8e84d4d2bfceae15fc9e048925e976c1abfb6eb9bd432b4fb65bdfa1b498554b
+    dimensions:
+    - 1000
+    - 720
+    nonce: 3
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/renderer-recovery.png
+    png_sha256: 5d417f4b64b356d1a2c5b4fb1a56a9396cd72a5cc9386d68a2a576e6deb36424
+    paired_json_sha256: 17f7318fa81179ff9dfb970f3f292c7775c080abe3f1550b02c8c6105143d1a4
+    dimensions:
+    - 1000
+    - 720
+    nonce: 3
+    surface_epoch: '2'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/scale-1-5.png
+    png_sha256: dccf3babef3a8aa46eae6c9be2b0ec967ca84a874562cbfe1aea2abeb649233f
+    paired_json_sha256: 7e3bbb0e378f3ab0bcad9d81b426ef7d6945bb796fd67560921bb62e6931d169
+    dimensions:
+    - 1500
+    - 1080
+    nonce: 11
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/scene-input.png
+    png_sha256: 5d417f4b64b356d1a2c5b4fb1a56a9396cd72a5cc9386d68a2a576e6deb36424
+    paired_json_sha256: 9e082a74f083e2cbaf74ab455e564f22a827db5ea5dcbd93d4f5928fa53bcb5f
+    dimensions:
+    - 1000
+    - 720
+    nonce: 23
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/unloaded-placeholder.png
+    png_sha256: 03f0500cdef01a87302298b2a8f440a172d0c33052bb2c19f8a255de030c1c2a
+    paired_json_sha256: c59f4d85eb319d0654de5e631eb0cbb8cdd502d4439dbdcdf6228cbf36975688
+    dimensions:
+    - 1000
+    - 720
+    nonce: 17
+    surface_epoch: '1'
+    directly_opened: true
+  - path: .local/servo-proof/8cbea2746233/vector-input.png
+    png_sha256: 3ecae0e218fde3100956e05cff8ebd11aaaaf0e876af3a64b7a763f102a015c0
+    paired_json_sha256: 969815f1ac4d85f38e49ded7bd46f48cffce680cc71071b60c2b7f8ed17da2c3
+    dimensions:
+    - 1000
+    - 720
+    nonce: 21
+    surface_epoch: '1'
+    directly_opened: true
+  current_input_fence:
+  - path: .local/servo-proof/8cbea2746233/composition-evidence.json
+    sha256: 91e97f740ef13d1a6199ddde334f813593c81f2b527e91b3c8af030791b54c42
+  - path: ../.local/kumihimo-servo/proof/compose-8cbea2746233.log
+    sha256: a8aa08647e98e2a47f5276549952db7e44a36aed5839581c542e60eafba292a8
+  - path: .local/servo-proof/35f141655e64/engine/root-enriched-manifest.json
+    sha256: 2d74be3ddc779ca2dfd9dbbfaf3d80a5d4904c15030528934349ae78d6f45522
+  - path: product/kumihimo-render-bridge/src/provider.rs
+    sha256: 9885ba97f664efd8dd4038545e02dfeb4cb82c1fd1b41eaff927ee8f196727a5
+  - path: product/README.md
+    sha256: 1e9a2d7d2aa819fddb37a5fd2f6d98c972c363a96a7cb46ac8d1964560d2a120
+  reused_independent_engine_proof: 'servo_runtime_assessment_f4295bb4199e: exact11 PNG/receipts,55 kernel observations,admission
+    negatives,process/CPU/RSS/input/cleanup and5 owning/default/desktop/plan/compose logs; engine/root-enriched-manifest
+    SHA unchanged2d74be3ddc779ca2dfd9dbbfaf3d80a5d4904c15030528934349ae78d6f45522'
+  DIFF_ATTACK_SURFACES:
+  - Bounded UI settling helper reused in original actual renderer-replacement path only; no changed engine requests/times/identity/pixel
+    sources.
+  - Final9 GPU outputs paired with current nonce/geometry/epoch, original complete frame lineage and static full-image
+    guard.
+  INDEPENDENT_CHECKS_RUN:
+  - Directly opened all9 final GPU PNGs; compared corrected recovery header with prior failed recovery and actual
+    engine/reference scenes.
+  - Independent byte comparison:8 unchanged PNGs match prior accepted images; final recovery full PNG pixels equal
+    original scene-input image while paired surface epoch is2.
+  - Independently reconciled all9 browser consumer PNG/RGBA provenance hashes against original engine files; unchanged
+    manifest hash verified.
+  - Read final actual compose PASS13.97s log and current bounded helper/callsite; all4 full-RGBA static comparisons
+    retain zero extra uploads/depth renders.
+  COUNTERFACTUAL_CHECKS:
+  - scenario: Recovery labeled repaired while same overlapping header persists
+    result: Final original-resolution recovery image visibly readable; differs from prior failure; repaint settles
+      with nonce3.
+  - scenario: A cosmetically copied recovery scene masks lost renderer/device content
+    result: Actual replacement path/new device and old binding rejection retained; paired epoch2 with same canonical
+      IDs and exact original CPU-frame provenance; final full pixels equal pre-replacement scene.
+  BOUNDARY_PROBES:
+  - All original6 runtime methods carried forward without narrowing.
+  - Actual renderer replacement/readable recovery plus unsupported source-preserving context popout; original pinned
+    engine/namespace/process boundaries reused unchanged.
+  NEGATIVE_PATH_CHECKS:
+  - Old GPU binding rejected after actual replacement.
+  - Missing/stale admission, complete scope/PNG/frame guards and protected/unknown lifecycle negatives remain exactly
+    as prior inspected proof.
+  - Whole-image static equality/capture deadlines remain enforced; settling advances egui UI time only.
+  INDEPENDENT_FINDINGS:
+  - finding_id: EVAL-KUM-014-F001
+    status: RESOLVED
+    case_ids:
+    - EVAL-KUM-014-005
+    - EVAL-KUM-014-007
+    resolution: Final original-resolution renderer-recovery image has readable header; bounded fresh-context settling
+      precedes final draw; actual renderer/new-device identity checks retained.
+    proof_artifact: .local/servo-proof/8cbea2746233/renderer-recovery.png
+    png_sha256: 5d417f4b64b356d1a2c5b4fb1a56a9396cd72a5cc9386d68a2a576e6deb36424
+  RESIDUAL_UNCERTAINTY:
+  - Final canonical publication and manual/spec/topology/matrix/state closure remains unproven; case007 pending.
+  - No new Windows outside-connect or foreground observer inspected; headless/offscreen quiet invocation and external
+    Linux kernel listener denial scope only.
+  - No libservo/native Windows engine/zero-copy/media/ARM/physical input or display/real GPU fault/arbitrary JS-state
+    restore/performance gain claim.
+  publication_predicate:
+    status: PENDING
+    required: Lead publishes exact final report+product/manual/spec/matrix/topology/state, passes authoritative
+      structural checks, and independently rereads canonical origin and shipped source hashes. Evaluator reviews
+      released exact artifacts before case007/final packet PASS.

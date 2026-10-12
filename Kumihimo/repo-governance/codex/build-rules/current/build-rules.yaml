@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 34
+  version: 35
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: core_content_and_scoped_desktop_web_adapters_proven
+  implementation_status: core_content_scoped_desktop_web_and_render_bridge_proven
   gui_applicability: scoped_desktop_and_web_runtime_proven
   test_entrypoint: product/Cargo.toml
   build_environment:
@@ -46,7 +46,7 @@ canonical_commands:
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 8
+  revision: 9
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -210,6 +210,28 @@ build_matrix:
     - Real Servo/video/editor engines
     - Genuine GPU fault injection
     - Performance gains or physical memory release
+  - entry_id: BM-KUM-SERVO-RENDER-WINX64-001
+    wp_ref: WP-KUM-014-servo-and-heavy-rendering-v1
+    source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
+    engine_source_revision: 35f141655e647c88203aa9c39c2980b54e0b32e6
+    package_manifest: product/kumihimo-render-bridge/Cargo.toml
+    observed_target: Windows x64 MSVC/DX12 with isolated Linux x64 Servo under WSL
+    rustc_version: 1.91.1
+    proof:
+      default_check: PASS43feab4 5.70s; unchanged std-only asserted inputs
+      desktop_all_target: PASS07aaa72 2.91s; later changes confined to demo preparation/composition
+      owning: 13 PASS07aaa72 17.05s/0.01s; owning bodies/called behavior unchanged
+      actual_plan: PASS0f8b89d 6.70s; canonical context floatreturn admitted
+      actual_engine: 11 real PNG/55 independent kernel observations/three owned listener denials/three reconciled
+        exits/fresh A2/final cleanup
+      actual_gpu: Nine current actual DX12 PNG/JSON; compose8cbea27 PASS13.97s; full static equality/zero duplicate
+        upload/depth work
+      artifact_sha256: 91e97f740ef13d1a6199ddde334f813593c81f2b527e91b3c8af030791b54c42
+      independent_evaluation: Original seven cases; final canonical publication pending
+    not_proven:
+    - Native Windows Servo/embedded libservo/zero-copy/video/audio/ARM/other platform execution
+    - Physical input/display/GPU faults/performance gains/universal memory savings
+    - Arbitrary JavaScript/media state restoration, real freeze/throttle or context native-popout migration
   policy: Record only actual implemented feature proof; no mandatory pillar universe
 dependency_policy: {}
 rules:

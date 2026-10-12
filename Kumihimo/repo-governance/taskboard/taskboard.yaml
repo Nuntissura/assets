@@ -108,6 +108,6 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml
-  next_action: Parallel coder04 source teams finish stable handoff; root prepares independent worker launch gates
-    and runs one serial affected cached Cargo/actual engine-GPU batch
+  next_action: Publish scoped Spec22/matrix9/topology and independent original seven evaluation; exact canonical
+    origin reread before DONE
   blockers: []

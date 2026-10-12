@@ -180,3 +180,31 @@ edges:
   from: KUM-EGUI
   to: KUM-WINDOWS-PROVIDER
   relation: native_dependency
+- id: KUM-LINK-WP014-BRIDGE
+  from: WP-KUM-014-servo-and-heavy-rendering-v1
+  to: KUM-RENDER-BRIDGE
+  relation: implements
+- id: KUM-LINK-BRIDGE-CONTENT
+  from: KUM-RENDER-BRIDGE
+  to: KUM-CONTENT
+  relation: borrows
+- id: KUM-LINK-BRIDGE-EGUI
+  from: KUM-RENDER-BRIDGE
+  to: KUM-EGUI
+  relation: optional_presentation
+- id: KUM-LINK-BRIDGE-CONTRACTS
+  from: KUM-RENDER-BRIDGE-CONTRACTS
+  to: KUM-RENDER-BRIDGE
+  relation: validates
+- id: KUM-LINK-SERVO-BATCH-WORKER
+  from: KUM-SERVO-BATCH
+  to: KUM-SERVO-WORKER
+  relation: drives
+- id: KUM-LINK-COMPOSE-BRIDGE
+  from: KUM-RENDER-COMPOSE
+  to: KUM-RENDER-BRIDGE
+  relation: validates
+- id: KUM-LINK-EVAL014-BRIDGE
+  from: EVAL-KUM-014-v1
+  to: KUM-RENDER-BRIDGE
+  relation: evaluates
