@@ -31,8 +31,7 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: WP012 full18R13A directdependency/MSRV/cache fit binding; exactgraph pending lead manifest-only
-      offline resolution
+    assignment: WP012 exact offline Windows closure ready; standby dependency deviations; no Cargo
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
@@ -44,7 +43,8 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP012 original13 focused cases fit/freeze against fullcontract/Spec16; no runtime verdict
+    assignment: WP012 thirteen frozen acceptance cases; independently evaluate exact candidate/output after lead
+      proof, no Cargo
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -53,8 +53,8 @@ roles:
     completed_implementation_wps:
     - WP-KUM-011-navigation-and-media-controls-v1
     rotate_after: 2
-    assignment: WP011 done count1/2; WP012 API/native producer design read-only complete; await published fullcontract/frozeneval/resolved
-      dependency readiness
+    assignment: WP012 coding team leader admitted17 product source paths; disjoint three gpt-6.1-sol high subagents
+      authorized; no Cargo/Git/manifest/governance writes
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -69,18 +69,18 @@ build_lane:
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
   gameplan_relative_git_root: .local/kumihimo-desktop/gameplan.yaml
   last_resource_observation:
-    observed_utc: '2026-10-12T02:32:06.2111657Z'
-    cpu_percent: 8
-    available_memory_gib: 64.8
+    observed_utc: '2026-10-12T03:02:02.6612426Z'
+    cpu_percent: 23
+    available_memory_gib: 64.3
     free_disk_gib: 3063.6
     rust_processes: []
-    scope: WP012 preparation; no compilation lane granted; refresh before metadata/build
+    scope: Observed before sole lead metadata lane; metadata naturally complete; refresh before compilation
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Freeze and publish full WP012/Spec16 directdependency/evaluation prep; leadmanifest-only scaffold/offline
-  graph, independent dependency closure before coder03 source admission
+next_action: Coder03 team implements17 admitted source paths in parallel with one writer per file; lead bundles
+  stable affected proof through one Cargo lane
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

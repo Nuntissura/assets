@@ -4,19 +4,22 @@ wp_id: WP-KUM-012-desktop-gui-adapter-v1
 role_id: ROLE-KUM-DEPENDENCIES
 updated_at: '2026-10-12'
 scope: Toolkit and dependency readiness for WP012 desktop GUI adapter; no implementation or runtime proof.
-verdict: ready_for_manifest_resolution
+verdict: ready_for_coding
 coding_admission:
   status: not_admitted
   owner: dev_lead
-  gate: Corrected full contract/Spec16 and frozen evaluator are bound below; coding remains held until the lead publishes exact manifest/lock inputs and dependency readiness independently verifies the resolved graph before coder03 admission. WP011 predecessor is done.
+  gate: Dependency closure is ready; this report does not grant admission. The lead owns final manifest/lock publication and coder03 admission. WP011 predecessor is done.
 baseline:
+  origin:
+    commit: dd61b1661e51c480248658473711f8c36ed0e9b2
+    fresh_fetch_readback: Exact bound preparation and product input blobs matched origin at this commit, per lead readback.
   contract:
     ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
     kind: work_packet
     requirements: 18
     acceptance_criteria: 13
     sha256: 3424d6b7bf6e98bc6b32c03f57e99865feba7482cf9e694724796537da76b223
-    publication_status: local_full_contract_present; lead_publication_and_exact_origin_readback_pending
+    publication_status: published; exact origin readback matched at baseline.origin.commit
     decision_id: DEC-KUM-DESKTOP-EGUI-v1
   state:
     ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
@@ -68,18 +71,56 @@ baseline:
     cases_frozen: true
     report_frozen_for_publication: true
     observed_spec_revision: 16
-    next_action: Lead publication/readback, dependency graph reconciliation and coding admission remain pending; no runtime verdict.
+    next_action: Runtime evaluation remains unexecuted; dependency graph is independently reconciled; coding admission remains lead-owned.
 product_baseline:
   workspace:
     ref: product/Cargo.toml
-    sha256: a1abff421b117d3f26a08aef2da50fa3ea708f1f46d8787f5d12e66425cc68b0
+    sha256: 848f50294cc6e626fc6f755d0a451e90951119b4428b10a43dcec4da953303d2
     members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
+    default_members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
   lockfile:
     ref: product/Cargo.lock
-    sha256: 441507446b89f8619cb540ae4e4e1c1184e07e277478ff17790f061cfc7565a0
+    sha256: 69118e616f500289e80eb5df938303ca82e41b666779c88a9b67939ba95ce42e
     format_version: 4
-    package_records: 14
-    observed: 3 workspace packages and 11 registry packages; no GUI toolkit package or resolved GUI dependency graph.
+    package_records: 317
+    baseline_sha256: 441507446b89f8619cb540ae4e4e1c1184e07e277478ff17790f061cfc7565a0
+    baseline_package_records: 14
+    baseline_reconciliation: All 14 prior package identities/checksums and semantic dependency edges are preserved; 13 lock records are raw-identical. serde_derive 1.0.229 now spells its dependency as syn 3.0.8 because syn 2.0.119 is also present; the resolved package/checksum are unchanged.
+    observed: Published workspace includes the optional GUI package; lock contains the full graph. The x86_64 Windows target-filtered closure is bound below.
+  adapter:
+    manifest_ref: product/kumihimo-egui/Cargo.toml
+    manifest_sha256: 43e7808dd9f0d0ef27446a97d340e287b2e7d02b2cc2072319e776c46ed4fad5
+    package: kumihimo-egui
+    version: 0.1.0
+    rust_version: '1.91'
+    default_features: []
+    declared_features: [navigation, backgrounds, capture, native]
+    direct_dependencies: Exact versions/features below match current WP012-R002; package is not a workspace default member.
+  resolved_graph:
+    ref: ../.local/kumihimo-desktop/metadata.json
+    sha256: c0fc8531d0f4665d92af3f021e169b2bf8675df88a603015400e3fe74460db4f
+    command: cargo metadata --manifest-path product/Cargo.toml --all-features --filter-platform x86_64-pc-windows-msvc --format-version 1 --offline
+    target_filter: x86_64-pc-windows-msvc
+    resolved_packages: 139
+    registry_packages: 135
+    workspace_path_packages: 4
+    resolve_nodes: 139
+    declared_rust_versions_above_1_91: []
+    packages_without_declared_rust_version: 24
+    cache_reconciliation: All 135 selected registry crate archives and unpacked sources are present; archive hashes match Cargo.lock checksums.
+    offline_download_delta_bytes: 0
+    feature_observations:
+      adapter: [backgrounds, capture, default-empty, native, navigation]
+      egui: [accesskit, default_fonts]
+      egui_wgpu: [winit]
+      wgpu: [dx12, std, wgsl]
+      egui_winit: [accesskit]
+      egui_kittest: []
+      eframe_in_target_graph: false
+      winit_unified_node: x11/wayland feature names are active transitively through accesskit_winit defaults; x11rb, wayland-client, wayland-sys, xkbcommon, and sctk packages are absent from the Windows-filtered graph.
+      windows_sys_direct_request:
+        requested_features: [Win32_Foundation, Win32_System_Threading, Win32_UI_WindowsAndMessaging]
+        unified_node_note: Resolved feature union also contains upstream-selected Windows APIs.
   core:
     package: kumihimo-core
     version: 0.3.0
@@ -170,17 +211,17 @@ research:
     - Local kumihimo-core 0.3.0 and kumihimo-content 0.2.0, both default-features=false.
     - Independent navigation/backgrounds features forward the matching content features.
     - Optional capture selects egui-wgpu 0.33.3 default-features=false, wgpu 27.0.1 default-features=false with std/dx12/wgsl, pollster 0.4.0, image 0.25.9 default-features=false with png, and serde_json 1.0.151 for bounded redacted structured capture/native output.
-    - Optional native includes capture and egui-wgpu/winit, egui-winit 0.33.3 default-features=false/accesskit, winit 0.30.13 default-features=false/rwh_06, raw-window-handle 0.6.2, and target-Windows windows-sys 0.61.2 limited to Foundation/Threading/WindowsAndMessaging.
+    - Optional native includes capture and egui-wgpu/winit, egui-winit 0.33.3 default-features=false/accesskit, winit 0.30.13 default-features=false/rwh_06, raw-window-handle 0.6.2, and a target-Windows direct windows-sys 0.61.2 request limited to Foundation/Threading/WindowsAndMessaging; transitive dependencies add features in the unified node.
     - Dev dependencies include kumihimo-layout-json 0.1 for the existing SavedLayout/schema1 codec roundtrip and egui_kittest 0.33.3 default-features=false for semantic queries only; do not enable wgpu/snapshot/open features.
-    excluded_features: [wgpu Vulkan, GLES, Metal, WebGPU; winit X11/Wayland; egui-winit clipboard/links; eframe; docking framework]
+    excluded_features: [wgpu Vulkan, GLES, Metal, WebGPU; direct winit defaults; egui-winit clipboard/links; eframe; docking framework]
     contract_feature_reconciliation:
-      status: resolved_in_current_contract_before_lock_resolution
+      status: resolved_in_current_contract_and_manifest_graph
       refs: [WP012-R002, WP012-R011]
-      observed: Current WP012-R002 explicitly includes egui-wgpu/winit in the optional native feature closure, exposing the public Painter module required by R011.
-      gap: None in the current full contract; exact manifest and resolved graph are still pending.
-      resolution: R002 and R011 are aligned; preserve egui-wgpu/winit in the manifest-bound feature graph without substitutions.
+      observed: Current WP012-R002 and the exact adapter manifest include egui-wgpu/winit in the optional native feature closure; the resolved egui-wgpu node exposes winit as required by R011.
+      gap: None in the current full contract or Windows-filtered dependency graph.
+      resolution: R002 and R011 are aligned; the exact native feature is present in the published manifest and resolved graph.
     render_handoff: Use egui-wgpu 0.33.3 public winit::Painter; surface setup returns an error, rendered capture carries per-viewport user data and arrives only after actual GPU readback/present. Keep provider effects and surface lifecycle in the host boundary; report unsupported or incompatible GPU sharing explicitly.
-    accessibility: egui-winit/accesskit initializes the native AccessKit adapter; egui_kittest provides semantic tree assertions. AccessKit runtime packages are present in the cache at compatible 0.29.2, satisfying egui-winit's ^0.29.1 requirement.
+    accessibility: egui-winit/accesskit initializes the native AccessKit adapter; egui_kittest provides semantic tree assertions. AccessKit runtime packages are present in the cache at compatible 0.29.2, satisfying egui-winit's ^0.29.1 requirement. accesskit_winit defaults transitively activate winit x11/wayland feature names; their Unix backend packages are absent from the Windows-filtered closure.
     popout_boundary: The adapter owns winit OS windows and maps egui viewport IDs to canonical Core targets. The custom runner must implement egui's viewport output/event loop integration; it is not supplied by upstream egui-wgpu. Claim native popout capability only where the custom runner creates and renders an actual native window. Preserve Core SurfaceKind::InAppFloat semantics; destination readiness precedes canonical move and source teardown. Do not advertise web viewport support as native popout capability.
     ui_state_boundary: Map Snapshot identity/generation/geometry to stable widget IDs and clipped per-target rectangles; route gestures and keyboard actions into Core envelopes via the host. Do not let widget-local placement become canonical layout state.
     sample_proof_route: Use egui_kittest 0.33.3 without wgpu/snapshot/open for semantic queries; optional capture/native feature renders the same shared UI path through egui-wgpu and inspects correlated PNG/native screenshots. Offscreen pixels, injected input and toolkit AccessKit metadata do not substitute for native window, physical device or Windows UI Automation evidence.
@@ -212,14 +253,15 @@ research:
       installed_rustc_versions: ['1.90.0', '1.91.1', '1.97.1']
       active_rustc: 1.91.1
       host_target: x86_64-pc-windows-msvc
-      local_lock_contains_candidate: false
-      resolved_transitive_closure: pending_adapter_manifest_and_lead_owned_offline_lock_resolution
-      predicted_download_delta: unresolved_without_exact_feature_and_target_resolution
+      local_lock_contains_candidate: true
+      resolved_transitive_closure: verified; 139-node x86_64-pc-windows-msvc graph, with all 135 registry packages mapped to current lock identities.
+      predicted_download_delta: replaced_by_observed_offline_download_delta_bytes_0_for_the_full_selected_registry_closure
       cached_listed_archive_bytes: 4315392
       cached_listed_archive_scope: Thirteen selected and relevant top-level or accessibility package archives; not the full transitive closure.
-      listed_archive_download_delta: 0 bytes for these thirteen package archives; transitive cache/download delta unresolved.
+      listed_archive_download_delta: 0 bytes for these thirteen package archives; all 135 selected registry archives and sources are cached with matching checksums.
       cargo_downloads_or_installations_run: false
-      cargo_commands_run: false
+      lead_metadata_command_run: true
+      dependency_role_cargo_commands_run: false
 alternatives:
 - option: egui 0.36.2 current release
   decision: reject_for_current_candidate
@@ -260,27 +302,27 @@ risks_and_mitigations:
 - risk: Existing eframe bootstrap unexpectedly displays a hidden proof window or hides a renderer setup failure behind a window handle.
   mitigation: Exclude eframe bootstrap; own winit creation and visibility, require Painter::set_window success, and bind readback to the current viewport/window epoch before reporting readiness.
 - risk: Cached direct archives are mistaken for a fully cached resolved dependency graph.
-  mitigation: Keep the graph/download delta marked unresolved until the actual adapter manifest and target/features are frozen and the lead publishes offline resolution; no network fallback during proof.
+  mitigation: Bind cache readiness to the exact 139-node Windows-filtered graph; verify all 135 registry archives and source directories against lock checksums. This does not claim cache readiness for other target-filtered graphs.
 reuse_opportunities:
 - Existing Core immutable Snapshot, IDs, pure geometry and canonical command route.
 - Existing content-controller host boundary, request/acknowledgment ownership, provider leases and renderer effect separation.
 - Cached egui 0.33.3 ecosystem and existing Rust 1.91 package floor; no change to Core or content dependency features.
 focused_proof_plan:
   required_after_contract_freeze:
-  - Resolve and compile the new adapter for the exact declared Windows x64 target with the frozen feature set and exact workspace lock closure; offline status must be established by the lead before runtime proof.
+  - Compile the adapter for the exact declared Windows x64 target with the frozen feature set and exact workspace lock closure; lead offline resolution and independent dependency reconciliation are complete.
   - Render a deterministic fixture with nested views from at least two providers, selected/pinned state and docked toolbar; assert offscreen image output and semantic/widget target identity, then separately prove correlated native-surface readback.
   - Exercise keyboard commands and native touch/pen/mouse paths with target/scale coherence; distinguish injected events from OS/hardware evidence.
   - Verify adapter-owned native popout creation, readiness-before-move, return/redock, close and capability fallback on each claimed platform; web remains separately labeled.
   - Exercise resize, DPI/scale transitions, occlusion/minimize, surface loss/recreation and bounded recovery; separate injected loss from actual device loss.
   - Inspect egui_kittest AccessKit semantic data separately from the native AccessKit event-loop bridge and independent Windows UI Automation tree/action query bound to the owned HWND; report unproven platforms explicitly.
   - Confirm default Core/content builds remain GUI-free and adapter features are selected only by the optional package/feature.
-  run_boundary: Prep only. No Cargo, build, tests, install, dependency download, product/spec/contract/state edit, or Git mutation was run. Read-only Git status/revision and source inspection only. Exact transitive dependency closure and download delta are unresolved until the lead performs the manifest-bound lock resolution.
+  run_boundary: Lead ran cargo metadata with all features, x86_64-pc-windows-msvc filter and offline mode; dependency role independently parsed the resulting graph, lock, manifests, cache archives and cached sources. No build, tests, install or network download ran; offline download delta is 0 bytes. Dependency role made no product, manifest, state, spec or Git edits.
 handoff:
-  next_action: Lead publishes exact adapter/workspace manifest and lock inputs and resolves the offline graph; dependency role independently verifies the resolved graph before coder03 admission.
+  next_action: Dependency readiness is complete and frozen for lead publication; coding remains held until the lead acts on publication and grants admission.
   messages_sent:
   - recipient: Kumihimo-coder-03
     result: Sent selected dependency boundary, eframe visibility blocker, Core ownership and unresolved full closure.
   - recipient: Kumihimo evaluation
     result: Sent semantic/offscreen/native proof split and eframe visibility blocker.
   - recipient: Kumihimo lead
-    result: Sent readiness report location, manifest-bound offline closure requirement and the R002/R011 feature mismatch; corrected contract now includes egui-wgpu/winit and report is ready for manifest resolution.
+    result: Sent readiness report location, the R002/R011 correction, exact manifest-bound Windows graph/cache reconciliation and ready_for_coding verdict; publication and coder admission remain lead-owned.

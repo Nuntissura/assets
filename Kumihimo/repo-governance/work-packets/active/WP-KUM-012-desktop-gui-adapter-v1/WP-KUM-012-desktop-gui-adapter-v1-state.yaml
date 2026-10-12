@@ -1,18 +1,32 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 2
+generation: 3
 phase: active
-owner: ROLE-KUM-DEV-LEAD
+owner: ROLE-KUM-CODER-03
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
 - repo-governance/specification/
 - repo-governance/work-packets/archive/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-stub.yaml
+- product/Cargo.toml
+- product/Cargo.lock
+- product/kumihimo-egui/Cargo.toml
+- product/kumihimo-egui/src/lib.rs
 proof:
 - kind: local_full_contract_preparation
   source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
   observed: Full18R/13A bounded GUI/native contract, priorstub and6fileSpec15 preserved, all99full orderedrecords
     unchanged. Primarycachedsource/team deliberation resolved authenticnativeGraphicsReady and hiddenstartup defects.
     No sourcecoding/runtime admission; dependency/frozenmatching evaluation/publication/manifest graph pending.
+- kind: published_preparation_and_dependency_closure
+  preparation_revision: 1f574dabfcf73ef889339c8247ee6420d33cfe2e
+  manifest_revision: 6ed1d6f442131d165656878146da34b485b9d832
+  lock_revision: dd61b1661e51c480248658473711f8c36ed0e9b2
+  dependency_report_sha256: aac2b8ea2edb2e877af7748aaeba0ac41f32fd92324f8c397e80fa0564502ecd
+  evaluation_sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
+  observed: Exact origin revisions and canonical contract/spec/evaluation/manifests/lock re-read matched. Offline
+    Windows x64 all-feature metadata completed exit0; independent dependency closure ready_for_coding. Original14
+    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only. Source
+    coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
 blockers: []
-next_action: Dependencies/evaluator reconcile fullcontract/Spec16 and exactoptionalmanifest feature choices; leadpublish
-  before manifest-only resolution and independent closure readiness, then coder03 admission
+next_action: Coder03 team implements17 admitted source paths in parallel with one writer per file; lead bundles
+  stable affected proof through one Cargo lane
