@@ -1,0 +1,38 @@
+:root { color-scheme: dark; font-family: Inter, Segoe UI, sans-serif; color: #e2e6ec; background: #11151b; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select, textarea { font: inherit; color: inherit; background: #252d38; border: 1px solid #4c596a; border-radius: 5px; padding: 7px 9px; }
+button { cursor: pointer; white-space: nowrap; }
+button:hover { background: #354253; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid #8dc0ff; outline-offset: 2px; }
+button:disabled { opacity: .55; cursor: default; }
+label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+h1 { font-size: 23px; margin: 0; letter-spacing: .03em; } h2 { font-size: 16px; margin: 0 0 8px; }
+p { color: #aeb8c7; font-size: 13px; margin: 6px 0 12px; line-height: 1.5; }
+.page-header { display: flex; justify-content: space-between; gap: 20px; padding: 22px 28px 8px; border-bottom: 1px solid #2b3542; }
+.capabilities { font-size: 12px; color: #a2bdd8; max-width: 350px; }
+main { padding: 14px 28px 28px; }
+.topbar, .controls, .buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.topbar input { width: 64px; }.identity { font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
+#status { min-height: 22px; margin: 10px 0; } #status[data-state=error] { color: #ffc2b9; }
+.workspace-shell { margin: 0 12px 18px 17px; border: 1px solid #34404f; border-radius: 8px; background: #171e27; overflow: auto; }
+#workspace { position: relative; width: 100%; height: 560px; overflow: hidden; isolation: isolate; }
+.frame { position: absolute; border: 1px solid #536378; border-radius: 6px; background: #202936; overflow: hidden; min-width: 0; }
+.frame-header { height: 36px; display: flex; align-items: center; gap: 5px; padding: 3px 5px; background: #303c4d; border-bottom: 1px solid #536378; user-select: none; touch-action: none; cursor: grab; }
+.frame-title { font-size: 12px; font-weight: 600; max-width: 27%; flex-shrink: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.frame-header > button { padding: 1px 7px; font-size: 18px; }
+.tabs { display: flex; gap: 3px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
+.tabs button { padding: 4px 7px; border-radius: 4px; font-size: 11px; flex-shrink: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.tabs button[aria-selected=true] { background: #496786; border-color: #95bce5; }
+.frame-content { position: absolute; padding: 9px; white-space: pre-wrap; overflow: auto; color: #c6d0dd; font-size: 12px; line-height: 1.5; }
+.split-handle { position: absolute; z-index: 500; background: transparent; touch-action: none; }
+.split-handle:hover, .split-handle:focus-visible { background: #87baf0; }
+.split-handle[data-axis=horizontal] { cursor: col-resize; }.split-handle[data-axis=vertical] { cursor: row-resize; }
+.preview-frame { position: absolute; z-index: 1000; border: 2px dashed #acd5ff; background: #598ac322; pointer-events: none; border-radius: 6px; }
+.inspector { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; }
+.inspector > section { padding: 14px; background: #1b222c; border: 1px solid #34404f; border-radius: 7px; min-width: 0; }
+.inspector label { margin: 8px 0; }.inspector select { max-width: 220px; }.inspector input:not([type=range]), textarea { flex: 1; min-width: 0; width: 100%; }
+.buttons button { font-size: 12px; } .range input { width: 180px; }
+details { margin-top: 16px; padding: 12px; border: 1px solid #34404f; border-radius: 7px; } summary { cursor: pointer; font-size: 13px; }
+iframe { width: 100%; max-width: 450px; height: 90px; border: 1px solid #536378; border-radius: 5px; }
+@media (max-width: 760px) { main { padding: 12px; } .page-header { padding: 16px 12px; flex-direction: column; }.inspector { grid-template-columns: 1fr; }.workspace-shell { margin-left: 17px; margin-right: 3px; } #workspace { height: 440px; }.frame-title { display: none; }.tabs button { max-width: 110px; } }

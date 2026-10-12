@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Restricted popup probe</title><style>body{font:13px Segoe UI,sans-serif;background:#202936;color:#e2e6ec;margin:10px}button{background:#354253;color:inherit;border:1px solid #7e97b5;border-radius:4px;padding:7px}p{display:inline;margin-left:10px}</style></head><body>
+<button id="request-popup">Request restricted popup</button><p id="result" role="status">Not requested</p>
+<script>
+document.querySelector('#request-popup').addEventListener('click', event => {
+  let result;
+  try {
+    const popup = window.open('about:blank');
+    if (popup === null) result = { denied: true, outcome: 'null' };
+    else { popup.close(); result = { denied: false, outcome: 'unexpected-popup-closed' }; }
+  } catch (error) { result = { denied: true, outcome: 'exception', exception: error.name }; }
+  result.type = 'kumihimo-restricted-popup'; result.event = 'click'; result.trusted = event.isTrusted;
+  document.querySelector('#result').textContent = result.denied ? 'Browser denied popup' : 'Failure: unexpected popup';
+  parent.postMessage(result, location.origin);
+});
+</script></body></html>

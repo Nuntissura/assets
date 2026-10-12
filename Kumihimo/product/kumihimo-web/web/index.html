@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kumihimo · Portal-style demo</title><link rel="stylesheet" href="./workspace.css"></head>
+<body>
+<header class="page-header"><div><h1>Kumihimo</h1><p>Portal-style demo · Rust/WASM workspace arrangement</p></div><div id="capabilities" class="capabilities">Loading Rust module…</div></header>
+<main>
+<div class="topbar" role="toolbar" aria-label="Workspace actions">
+  <label>Cards <input id="task-count" type="number" min="1" value="3"></label>
+  <label>Details <input id="detail-count" type="number" min="0" value="2"></label>
+  <label>Depth <input id="nesting-depth" type="number" min="0" value="1"></label>
+  <label>Live record budget <input id="max-records" type="number" min="1" value="4096"></label>
+  <button id="new-workspace" data-action="new-workspace">New workspace</button>
+  <button data-action="save-layout">Save layout + tasks</button><button data-action="load-layout">Restore saved</button>
+  <span id="identity" class="identity"></span>
+</div>
+<p id="status" role="status" aria-live="polite">Loading…</p>
+<div class="workspace-shell"><section id="workspace" aria-label="Nested Rust workspace"></section></div>
+<aside class="inspector" aria-label="Layout and host task controls">
+<section><h2>Arrange selected frame</h2><p>These controls change placement. Task meaning stays with the host.</p>
+<div class="controls"><label>Frame <select id="frame-select"></select></label><label>Destination workspace <select id="destination-select"></select></label><label>View <select id="view-select"></select></label><label>Dock edge <select id="dock-edge"><option>Right</option><option>Left</option><option>Top</option><option>Bottom</option></select></label></div>
+<div class="buttons"><button data-action="dock">Dock beside destination</button><button data-action="dock-left">Dock left</button><button data-action="dock-right">Dock right</button><button data-action="move-frame">Move frame into destination</button><button data-action="move-view">Move tab to destination</button><button data-action="float">Float</button><button data-action="redock">Redock</button><button data-action="expand-selected">Expand / collapse</button><button data-action="maximize">Maximize</button><button data-action="restore-layout">Restore layout</button><button data-action="equalize">Equalize</button><button data-action="swap">Swap frames</button><button data-action="select-view">Select tab</button><button data-action="close">Close tab (request)</button></div>
+<label class="range">First split weight <input id="resize-weight" data-action="resize-weight" type="range" min="10" max="90" value="50" aria-label="First split weight"></label>
+<button data-action="grid-tracks">Equal grid tracks</button><button data-action="cancel-preview">Cancel preview (Escape)</button>
+</section>
+<section><h2>Host task editor</h2><p>Explicit edits and domain actions affect the selected task only.</p>
+<label>Title <input id="task-title"></label><label>Body <textarea id="task-body" rows="3"></textarea></label>
+<div class="controls"><label>Column <select id="task-column"><option>Backlog</option><option>Doing</option><option>Done</option><option>done</option></select></label><label>Status <select id="task-status"><option>open</option><option>active</option><option>done</option><option>complete</option></select></label></div>
+<div class="buttons"><button data-action="save-task">Save task text</button><button data-action="domain">Apply column / status</button><button data-action="veto">Toggle host veto</button><button data-action="provider-toggle">Restore / disable provider</button></div>
+<p id="host-state"></p>
+</section>
+</aside>
+<details><summary>Browser capability probe and recovery</summary><p>Native-style popup migration is unsupported in this pilot. The sandbox below requests a popup through a real click; browser denial leaves Rust source ownership intact.</p><iframe id="restricted-popup-frame" src="./restricted.html" title="Restricted popup denial probe" sandbox="allow-scripts allow-same-origin"></iframe><p id="popup-status" role="status">Probe has not run.</p><p>Restore rejects invalid saved candidates. If browser storage is unavailable, continue using the current workspace and retry Save. Host tasks and layout use separate selected storage keys.</p></details>
+</main>
+<script type="module" src="./pilot.mjs"></script>
+</body></html>
