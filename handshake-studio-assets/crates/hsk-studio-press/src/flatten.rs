@@ -17,9 +17,15 @@
 //! only some viewers inherit, included) is dropped. What described or drew the old page is then purged, by
 //! category (`flatten_purge.rs`): its annotations and widgets are dropped from the file even when a kept
 //! object references them, and those references are removed (AcroForm `/Fields` and `/CO` entries included);
-//! an annotation that a kept page lists in its own `/Annots` stays. The structure elements that point at it
-//! are not dropped: they stay in the structure tree with their text, their attributes and their content
-//! items on the page removed (test `flattened_page_annotations_leave_and_structure_elements_stay`). The
+//! an annotation that a kept page lists in its own `/Annots` stays. In a structure tree whose root is an
+//! indirect object, the structure elements that point at it are not dropped: they stay in the tree with their
+//! text, their attributes and their content items on the page removed (test
+//! `flattened_page_annotations_leave_and_structure_elements_stay`). A structure tree root written directly into
+//! the catalog (or reached through a chain of references) is not edited; every element of it that is not on a
+//! kept page is reported instead: it counts in `RedactedOutput::residual_in_region`, `region_flattened` reads
+//! false and `NotProven::ResidualInRegion` is reported (PLR-094; tests
+//! `direct_structure_tree_elements_off_the_kept_pages_are_reported`,
+//! `direct_structure_tree_on_kept_pages_stays_flattened`). The
 //! painted sources (images, forms, patterns, shadings) and the graphics states and fonts it reached are
 //! dropped from the file when no kept content names them and no kept object references them. A painted
 //! source that stays (a kept page draws it, or a kept object only references it) is not pruned and the kept

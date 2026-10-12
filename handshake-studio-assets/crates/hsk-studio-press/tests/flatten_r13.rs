@@ -1698,6 +1698,183 @@ fn descriptor_states_the_painted_source_condition_and_the_purge_categories() {
     }
 }
 
+/// PLR-094 fixture (lead decision 2026-10-12T07:26:27Z, FAIL CLOSED): the catalog holds its `/StructTreeRoot` as `tree`, in a
+/// spelling the purge does not edit (flatten_purge.rs `edited_structure_root`: only an indirect reference to a dictionary is
+/// edited). Page one (index 0, with the region) is flattened, page two is kept; `objects` are the structure objects (and any
+/// extra), `nums` the `/Nums` array of parent tree 83 (page one is `/StructParents 0`, page two `/StructParents 1`).
+fn direct_tree_output(tree: &str, objects: &[(u32, String)], nums: &str) -> hsk_studio_press::RedactedOutput {
+    let mut objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, format!("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot {tree} /MarkInfo << /Marked true >> >>").into_bytes()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 0 >>".to_vec()),
+        (4, stream_body("", format!("/Figure << /MCID 0 >> BDC 0 g 300 300 100 100 re f EMC {SECRET}").as_bytes())),
+        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 1 >>".to_vec()),
+        (6, HELVETICA.to_vec()),
+        (7, stream_body("", b"/P << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC")),
+        (83, format!("<< /Nums {nums} >>").into_bytes()),
+    ];
+    objs.extend(objects.iter().map(|(n, body)| (*n, body.clone().into_bytes())));
+    let pdf = build(&objs);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact")
+}
+
+const DIRECT_TEXTS: [&str; 3] = ["ALT-DIRECT-SECRET", "ACTUAL-DIRECT-SECRET", "EXPANSION-DIRECT-SECRET"];
+const DIRECT_TEXT_KEYS: &str = "/Alt (ALT-DIRECT-SECRET) /ActualText (ACTUAL-DIRECT-SECRET) /E (EXPANSION-DIRECT-SECRET)";
+
+/// PLR-094 (FAIL CLOSED; probe and fix): the catalog holds the structure tree root in a spelling the purge does not edit
+/// (a direct dictionary, or a chain of references) and an element of it carries `/Alt`, `/ActualText` and `/E` text but no
+/// kept page: the text stays in the file, so the save reports it (`residual_in_region`, `NotProven::ResidualInRegion`,
+/// `region_flattened` false). Before the fix 11 of the 12 cases read `region_flattened` true while the text survived (only the
+/// case that names the flattened page as `/Pg` was reported). Elements are placed by their own `/Pg`, else the nearest
+/// ancestor element's; they are reached from the root's `/K`, `/ParentTree` and `/IDTree`.
+#[test]
+fn direct_structure_tree_elements_off_the_kept_pages_are_reported() {
+    let tree = "<< /Type /StructTreeRoot /K [81 0 R] /ParentTree 83 0 R >>".to_string();
+    let element = |pg: &str| format!("<< /Type /StructElem /S /Figure {pg} {DIRECT_TEXT_KEYS} /K 0 >>");
+    let kept = "<< /Type /StructElem /S /P /Pg 5 0 R /ActualText (KEPT-DIRECT-TEXT) /K 1 >>".to_string();
+    let cases = vec![
+        ("an element without /Pg", tree.clone(), vec![(81, element(""))], "[0 [81 0 R]]"),
+        ("a /Pg that names no object", tree.clone(), vec![(81, element("/Pg 99 0 R"))], "[0 [81 0 R]]"),
+        ("a /Pg that names an object that is not a page", tree.clone(), vec![(81, element("/Pg 6 0 R"))], "[0 [81 0 R]]"),
+        ("a /Pg that names the flattened page", tree.clone(), vec![(81, element("/Pg 3 0 R"))], "[0 [81 0 R]]"),
+        // V4-08: the page is read from the parsed dictionary, not from raw text (comment decoy, key case, name escape).
+        ("a /Pg that only a comment names", tree.clone(), vec![(81, format!("<< /Type /StructElem /S /Figure % /Pg 5 0 R\n {DIRECT_TEXT_KEYS} /K 0 >>"))], "[0 [81 0 R]]"),
+        ("a /pg key in lower case", tree.clone(), vec![(81, element("/pg 5 0 R"))], "[0 [81 0 R]]"),
+        ("an element whose /S is spelled with a name escape", tree.clone(), vec![(81, format!("<< /Type /StructElem /#53 /Figure {DIRECT_TEXT_KEYS} /K 0 >>"))], "[0 [81 0 R]]"),
+        (
+            "an element only the parent tree reaches",
+            "<< /Type /StructTreeRoot /K [82 0 R] /ParentTree 83 0 R >>".to_string(),
+            vec![(81, element("")), (82, kept.clone())],
+            "[0 [81 0 R] 1 [82 0 R]]",
+        ),
+        (
+            "an element only the id tree reaches",
+            "<< /Type /StructTreeRoot /K [82 0 R] /IDTree << /Names [(a) 81 0 R] >> >>".to_string(),
+            vec![(81, element("")), (82, kept.clone())],
+            "[1 [82 0 R]]",
+        ),
+        (
+            "a direct dictionary in /K",
+            format!("<< /Type /StructTreeRoot /K [ << /Type /StructElem /S /Figure {DIRECT_TEXT_KEYS} /K 0 >> ] /ParentTree 83 0 R >>"),
+            vec![],
+            "[]",
+        ),
+        (
+            "a child whose own /Pg overrides its parent's",
+            "<< /Type /StructTreeRoot /K [82 0 R] /ParentTree 83 0 R >>".to_string(),
+            vec![(82, "<< /Type /StructElem /S /Document /Pg 5 0 R /K [81 0 R] >>".to_string()), (81, element("/Pg 99 0 R"))],
+            "[0 [81 0 R]]",
+        ),
+        (
+            "a root reached through a chain of references",
+            "80 0 R".to_string(),
+            vec![(80, "84 0 R".to_string()), (84, tree.clone()), (81, element(""))],
+            "[0 [81 0 R]]",
+        ),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, tree, objects, nums) in cases {
+        let out = direct_tree_output(&tree, &objects, nums);
+        let remaining = DIRECT_TEXTS.iter().filter(|t| !gone(&out.bytes, t)).count();
+        if remaining != DIRECT_TEXTS.len() {
+            red.push(format!("{name}: only {remaining} of {} texts remain (the case needs the tree unedited)", DIRECT_TEXTS.len()));
+        }
+        if out.region_flattened() {
+            red.push(format!("{name}: region_flattened true while the structure text survives (residual {})", out.residual_in_region));
+        }
+        let reasons = out.not_proven_reasons();
+        if reasons != [hsk_studio_press::NotProven::ResidualInRegion] {
+            red.push(format!("{name}: reasons {reasons:?}, expected only ResidualInRegion"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-094, the other side: a catalog-direct structure tree whose every element sits on the kept page (its own `/Pg`, or the
+/// nearest ancestor element's) is not reported: `region_flattened` reads true, no reason, and the unedited text stays.
+#[test]
+fn direct_structure_tree_on_kept_pages_stays_flattened() {
+    let objects = vec![
+        (82, "<< /Type /StructElem /S /Document /Pg 5 0 R /K [84 0 R 85 0 R 86 0 R] >>".to_string()),
+        // V4-08: the key is spelled with a name escape and the reference is spread over lines and a tab.
+        (86, "<< /Type /StructElem /S /P /P#67\n 5 \t 0\nR /ActualText (KEPT-ESCAPED-TEXT) /K 1 >>".to_string()),
+        (84, "<< /Type /StructElem /S /P /ActualText (KEPT-INHERITED-TEXT) /K 0 >>".to_string()),
+        (85, "<< /Type /StructElem /S /P /Pg 5 0 R /Alt (KEPT-OWN-TEXT) /K 1 >>".to_string()),
+    ];
+    let out = direct_tree_output("<< /Type /StructTreeRoot /K [82 0 R] /ParentTree 83 0 R >>", &objects, "[1 [84 0 R 85 0 R 86 0 R]]");
+    let mut red: Vec<String> = Vec::new();
+    for text in ["KEPT-INHERITED-TEXT", "KEPT-OWN-TEXT", "KEPT-ESCAPED-TEXT"] {
+        if gone(&out.bytes, text) {
+            red.push(format!("{text} was removed (the tree is not edited)"));
+        }
+    }
+    if out.structure_elements_neutralized != 0 {
+        red.push(format!("neutralized {}", out.structure_elements_neutralized));
+    }
+    if !out.region_flattened() || !out.not_proven_reasons().is_empty() {
+        red.push(format!("region_flattened {} reasons {:?} residual {}", out.region_flattened(), out.not_proven_reasons(), out.residual_in_region));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-091 (pin of the current behaviour): an annotation that a kept page lists in its own `/Annots` stays in the file, and
+/// when its `/P` names a flattened page the saved file is reported (`flatten_purge::check_document` counts it:
+/// `residual_in_region` 1, `NotProven::ResidualInRegion`, `region_flattened` false). Fail closed: the annotation is not removed
+/// and not read as cleared.
+#[test]
+fn kept_annotation_with_a_flattened_p_is_reported() {
+    let pdf = build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> >>".to_vec()),
+        (4, stream_body("", format!("0 g 300 300 100 100 re f {SECRET}").as_bytes())),
+        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [71 0 R] >>".to_vec()),
+        (6, HELVETICA.to_vec()),
+        (7, stream_body("", b"BT /F1 12 Tf 72 700 Td (Page two) Tj ET")),
+        (71, b"<< /Type /Annot /Subtype /FreeText /Rect [400 200 500 220] /P 3 0 R /AP << /N 73 0 R >> >>".to_vec()),
+        (73, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 6 0 R >> >>", b"BT /F1 10 Tf 2 5 Td (ANNOT-KEPT-TEXT) Tj ET")),
+    ]);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    let mut red: Vec<String> = Vec::new();
+    if gone(&out.bytes, "ANNOT-KEPT-TEXT") || out.flattened_annotations_removed != 0 {
+        red.push(format!("the annotation a kept page lists was removed (removed {})", out.flattened_annotations_removed));
+    }
+    if out.residual_in_region != 1 {
+        red.push(format!("residual_in_region {}, expected 1", out.residual_in_region));
+    }
+    if out.region_flattened() || out.not_proven_reasons() != [hsk_studio_press::NotProven::ResidualInRegion] {
+        red.push(format!("region_flattened {} reasons {:?}", out.region_flattened(), out.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-093, PLR-094 (V4-07): the DESCRIPTOR states the fail-closed rule for a structure tree root the purge does not edit, in
+/// `purge` (the residual) and in `region_clearing` (what `check_document` counts), instead of the old sentence that named
+/// only the `/Pg` detection; the rule sentence cites tests that exist and uses none of the words that need a citation.
+#[test]
+fn descriptor_states_the_unedited_structure_tree_rule() {
+    let descriptor = hsk_studio_press::DESCRIPTOR;
+    let rule_start = "a structure tree root that is not an indirect reference to a dictionary (written directly into the catalog";
+    let counted = "in a structure tree the purge did not edit, no element that is off the kept pages, PLR-094); each mismatch counts in residual_in_region";
+    for needle in [rule_start, counted] {
+        assert_eq!(descriptor.matches(needle).count(), 1, "DESCRIPTOR lacks {needle:?}");
+    }
+    let stale = "a structure tree root written directly into the catalog (not an indirect object) is not edited, so an element that still names";
+    assert!(!descriptor.contains(stale), "DESCRIPTOR still says the old residual");
+    let start = descriptor.find(rule_start).expect("rule sentence");
+    let end = start + descriptor[start..].find("; an object reference (OBJR)").expect("the residual that follows the rule");
+    let rule = &descriptor[start..end];
+    for word in ["never", "always", "guarantee", "proves"] {
+        assert!(!rule.contains(word), "the rule sentence says {word:?}");
+    }
+    for name in ["direct_structure_tree_elements_off_the_kept_pages_are_reported", "direct_structure_tree_on_kept_pages_stays_flattened"] {
+        assert!(rule.contains(name), "the rule sentence does not cite {name}");
+        assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
+    }
+}
+
 /// V4-02 aggregates (R13-V1: the bounds the docs cite): the streams isolated for the renderer are
 /// decoded against `Limits::max_decoded_total` (typed `InputLimit`), and image decoding inside the
 /// renderer is charged to the page's decode budget before each image is decoded (`FlattenNote::WorkBudget`
