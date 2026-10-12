@@ -120,14 +120,26 @@ async function cancelledPointerPreview(source) {
   const accepted=pending.routes.findLast(r=>r.sequence>mark.route&&r.route==='preview'&&r.action==='resize_split'&&r.ok&&r.token===pending.preview.token);
   assert(accepted,'actual accepted resize preview response absent before '+source);
   assert(JSON.stringify((await canonical()).rust.layouts)===JSON.stringify(before.rust.layouts),'preview mutated canonical layout');
-  const cancelMark=await page.evaluate(()=>window.kumihimo.proofSequence);
+  const cancelPhase=await page.evaluate(token=>{const b=window.kumihimo;return {route:b.proofSequence,event:b.adapter.eventSequence,native:b.proofNative.length,accepted_token:token};},pending.preview.token);
+  const cancelMark=cancelPhase.route;
   if(source==='lostpointercapture') {
     await page.evaluate(pointer=>document.querySelector('#workspace').releasePointerCapture(pointer),pending.drag.pointerId);
     await page.mouse.move(x+(target.axis==='horizontal'?9:0),y+(target.axis==='vertical'?9:0));
   } else if(source==='blur') {
     await page.evaluate(()=>document.querySelector('#restricted-popup-frame').contentDocument.querySelector('#request-popup').focus({preventScroll:true}));
   } else await page.keyboard.press('Escape');
-  await page.waitForFunction(({source,token,event})=>{const b=window.kumihimo;return !b.adapter.previewState&&!b.adapter.drag&&b.adapter.events.some(e=>e.sequence>event&&e.type==='cancel'&&e.source===source)&&b.proofNative.some(e=>(source==='Escape'?e.type==='keydown'&&e.key==='Escape':e.type===source)&&e.trusted&&e.token===token&&(source!=='blur'||e.window_target));},{source,token:pending.preview.token,event:pending.event_sequence});
+  await page.waitForFunction(({source,token,event,phase})=>{
+    const b=window.kumihimo;
+    if(b.adapter.previewState||b.adapter.drag||b.proofNativeOverflow)return false;
+    if(source==='blur'){
+      const cancellations=b.proofRoutes.filter(r=>r.sequence>phase.route&&r.route==='cancel_preview'&&r.request_token===token);
+      const phaseReasons=b.adapter.events.filter(e=>e.sequence>phase.event&&e.type==='cancel');
+      const reasons=phaseReasons.filter(e=>e.source==='blur');
+      const windows=b.proofNative.slice(phase.native).filter(e=>e.type==='blur'&&e.trusted&&e.window_target);
+      return phase.accepted_token===token&&cancellations.length===1&&cancellations[0].ok&&phaseReasons.length===1&&reasons.length===1&&windows.length===1&&(windows[0].token===token||(windows[0].token===null&&windows[0].route_sequence>=cancellations[0].sequence&&windows[0].adapter_event_sequence>=reasons[0].sequence));
+    }
+    return b.adapter.events.some(e=>e.sequence>event&&e.type==='cancel'&&e.source===source)&&b.proofNative.some(e=>(source==='Escape'?e.type==='keydown'&&e.key==='Escape':e.type===source)&&e.trusted&&e.token===token);
+  },{source,token:pending.preview.token,event:pending.event_sequence,phase:cancelPhase});
   await idle();
   const result=await page.evaluate(({mark,token,native})=>{const b=window.kumihimo;return {preview:b.adapter.previewState,drag:b.adapter.drag,native:b.proofNative.slice(native),routes:b.proofRoutes.filter(r=>r.sequence>mark&&(r.request_token===token||r.token===token)),events:b.adapter.events.slice(-20)};},{mark:cancelMark,token:pending.preview.token,native:mark.native});
   const cancellations=result.routes.filter(r=>r.route==='cancel_preview'&&r.request_token===pending.preview.token);
@@ -145,7 +157,7 @@ async function cancelledPointerPreview(source) {
   const releasedRoutes=await page.evaluate(({mark,token})=>window.kumihimo.proofRoutes.filter(r=>r.sequence>mark&&(r.request_token===token||r.token===token)),{mark:cancelMark,token:pending.preview.token});
   assert(!releasedRoutes.some(r=>r.action==='commit_preview'||r.receipt),'pointer release committed cancelled token or produced command receipt');
   await page.evaluate(()=>{window.kumihimo.proofNativeActive=false;});
-  return {source,before:observed(before),accepted,pointer_id:pending.drag.pointerId,token:pending.preview.token,result,after:observed(after),released:observed(released),released_routes:releasedRoutes};
+  return {source,before:observed(before),accepted,pointer_id:pending.drag.pointerId,token:pending.preview.token,cancellation_marker:cancelPhase,result,after:observed(after),released:observed(released),released_routes:releasedRoutes};
 }
 async function run() {
   context=await chromium.launchPersistentContext(config.profile,{executablePath:config.browser,headless:true,viewport:{width:1280,height:900},acceptDownloads:false,args:['--no-first-run','--no-default-browser-check','--disable-background-networking']});
@@ -215,7 +227,7 @@ async function run() {
     bridge.proofMoveOverflow=false;
     bridge.proofNative=[];
     bridge.proofNativeActive=false;bridge.proofNativeOverflow=false;
-    const observe=event=>{if(!bridge.proofNativeActive)return;if(bridge.proofNative.length>=24){bridge.proofNativeOverflow=true;return;}bridge.proofNative.push({type:event.type,key:event.key,trusted:event.isTrusted,window_target:event.target===window,pointer_id:event.pointerId,token:adapter.previewState?.token??null,view:event.target.closest?.('.frame-content')?.dataset.view,x:event.clientX,y:event.clientY});};
+    const observe=event=>{if(!bridge.proofNativeActive)return;if(bridge.proofNative.length>=24){bridge.proofNativeOverflow=true;return;}bridge.proofNative.push({type:event.type,key:event.key,trusted:event.isTrusted,window_target:event.target===window,pointer_id:event.pointerId,token:adapter.previewState?.token??null,route_sequence:bridge.proofSequence,adapter_event_sequence:adapter.eventSequence,view:event.target.closest?.('.frame-content')?.dataset.view,x:event.clientX,y:event.clientY});};
     document.querySelector('#workspace').addEventListener('lostpointercapture',observe,{capture:true});
     document.querySelector('#workspace').addEventListener('click',observe,{capture:true});
     window.addEventListener('blur',observe,{capture:true});
