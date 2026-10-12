@@ -1,4 +1,4 @@
 [workspace]
-members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content", "kumihimo-egui"]
+members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content", "kumihimo-egui", "kumihimo-web"]
 default-members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content"]
 resolver = "2"

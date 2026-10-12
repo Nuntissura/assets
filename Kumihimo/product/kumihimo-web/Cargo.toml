@@ -1,0 +1,24 @@
+[package]
+name = "kumihimo-web"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+description = "Reusable Rust WASM browser workspace adapter for Kumihimo"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features = false }
+kumihimo-content = { path = "../kumihimo-content", version = "0.2.0", default-features = false }
+kumihimo-layout-json = { path = "../kumihimo-layout-json", version = "0.1.0" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "=0.2.128", default-features = false, features = ["std"], optional = true }
