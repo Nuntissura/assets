@@ -157,7 +157,7 @@ pub enum NotProven {
     /// `RemoveImages`, a vector, a deep form).
     RegionIncomplete,
     /// The independent checks of the saved bytes found a mismatch (`RedactedOutput::residual_in_region`:
-    /// `flatten::check_flattened`, `flatten_purge::check_document`), a structure tree remaining in the saved document included.
+    /// `flatten::check_flattened`, `flatten_purge::check_document`), a structure tree or structure-element dictionary remaining in the saved document included.
     ResidualInRegion,
     /// The text-field report kept matches by policy or could not verify an appearance.
     TextFieldsKept,
@@ -1306,14 +1306,18 @@ pub struct RedactedOutput {
     /// `flatten::check_flattened` (page keys with `/Annots` empty, the `/Parent` chain holding nothing to
     /// inherit, the canonical raster content, the raster image dictionary and size, every region pixel
     /// the fill colour), and once for the document `flatten_purge::check_document` (no `/XFA`, no
-    /// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page, and no structure
-    /// tree: 1 when the catalog holds a `/StructTreeRoot`, directly or through a chain of references, or any dictionary of
-    /// the file holds a `/StructParents` or `/StructParent` entry, however many elements the tree has and whatever the
-    /// purge removed of it. R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN, lead decision 2026-10-12T08:41:40Z: the redaction
-    /// proof covers untagged documents, and for a tagged one the structure tree is neutralized best effort and reported;
-    /// tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+    /// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page, and, when the save
+    /// flattened at least one region (PLR-101), no structure tree: it adds 1, once, when the catalog holds a `/StructTreeRoot`,
+    /// directly or through a chain of references, or any dictionary of the file holds a `/StructParents` or `/StructParent`
+    /// entry, or any dictionary of the file, an object-stream member included, has the shape of a structure element or of an
+    /// outline item that names one (PLR-102), however many elements there are and whatever the purge removed of them.
+    /// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN, lead decision 2026-10-12T08:41:40Z: the redaction proof covers untagged
+    /// documents, and for a tagged one the structure tree is neutralized best effort and reported; tests
+    /// `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
     /// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
-    /// `structure_parents_left_in_the_file_are_reported`, `kept_annotation_with_a_flattened_p_is_reported`).
+    /// `structure_parents_left_in_the_file_are_reported`, `detached_structure_elements_are_reported`,
+    /// `structure_shape_is_read_from_the_parsed_dictionary`, `structure_rules_apply_only_when_a_region_is_flattened`,
+    /// `kept_annotation_with_a_flattened_p_is_reported`).
     pub residual_in_region: u32,
     /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
     /// text policy); `None` when it was not requested.
@@ -1428,8 +1432,9 @@ impl RedactedOutput {
 
     /// Every page carrying a region was flattened (Operator decision D27) and the SAVED bytes hold, for
     /// each, exactly the raster page with every pixel of every region the fill colour, nothing to inherit
-    /// on its `/Parent` chain, no annotation or structure item pointing at it, no structure tree (STRUCTURE TREE = NOT
-    /// PROVEN: a document that has one reads false, so this claim covers untagged documents) and no XFA
+    /// on its `/Parent` chain, no annotation or structure item pointing at it, no structure tree and no structure-element
+    /// shaped dictionary (STRUCTURE TREE = NOT PROVEN: a document that has one reads false, so this claim covers untagged
+    /// documents; a save with no region does not apply this rule, PLR-101) and no XFA
     /// (`residual_in_region == 0`: `flatten::check_flattened`, `flatten_purge::check_document`), no
     /// painted source of the old page kept that is not silent (`painted_sources_kept` empty), in a file with one
     /// xref section and no unreachable or unlisted objects. This is the by-construction claim; it does
@@ -1560,7 +1565,8 @@ pub fn redact_and_save_with(
         }
         let flat_objects: BTreeSet<u32> =
             flattened.iter().filter_map(|f| saved.pages.get(usize::try_from(f.page_index).unwrap_or(usize::MAX)).copied()).collect();
-        residual = residual.saturating_add(check_document(&saved, &flat_objects));
+        // The structure rules of check_document apply only when a region was flattened (PLR-101).
+        residual = residual.saturating_add(check_document(&saved, &flat_objects, !flattened.is_empty()));
         Ok(RedactedOutput {
             bytes,
             reports,

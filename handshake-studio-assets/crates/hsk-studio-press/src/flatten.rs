@@ -21,11 +21,13 @@
 //! indirect object, the structure elements that the purge reads and that point at it are not dropped: they stay in the tree
 //! with their text, their attributes and their content items on the page removed (best effort; test
 //! `flattened_page_annotations_leave_and_structure_elements_stay`). The structure tree is NOT PROVEN (lead decision
-//! 2026-10-12T08:41:40Z): when the saved document has one (a `/StructTreeRoot` in the catalog, directly or through a chain of
-//! references, or any `/StructParents` or `/StructParent` entry), it counts 1 in `RedactedOutput::residual_in_region`,
-//! `region_flattened` reads false and `NotProven::ResidualInRegion` is reported, so the redaction proof covers untagged
-//! documents (tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
-//! `untagged_documents_and_stripped_trees_still_read_flattened`). The
+//! 2026-10-12T08:41:40Z): when a save flattens at least one region and the saved document has one (a `/StructTreeRoot` in the
+//! catalog, directly or through a chain of references, any `/StructParents` or `/StructParent` entry, or a dictionary left in
+//! the file that has the shape of a structure element or of an outline item that names one, PLR-102), it adds 1 to
+//! `RedactedOutput::residual_in_region`, `region_flattened` reads false and `NotProven::ResidualInRegion` is reported, so the
+//! redaction proof covers untagged documents (tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+//! `untagged_documents_and_stripped_trees_still_read_flattened`, `detached_structure_elements_are_reported`,
+//! `structure_rules_apply_only_when_a_region_is_flattened`). The
 //! painted sources (images, forms, patterns, shadings) and the graphics states and fonts it reached are
 //! dropped from the file when no kept content names them and no kept object references them. A painted
 //! source that stays (a kept page draws it, or a kept object only references it) is not pruned and the kept

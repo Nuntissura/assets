@@ -1721,6 +1721,13 @@ fn tree_output_with(limits: &Limits, tree: &str, objects: &[(u32, String)], nums
 /// `catalog_extra`, `page_one_extra` and `page_two_extra` are appended to the catalog and the two page dictionaries (the structure
 /// keys of a tagged document, or none) and `objects` are further objects of the file.
 fn pages_output_with(limits: &Limits, catalog_extra: &str, page_one_extra: &str, page_two_extra: &str, objects: &[(u32, String)]) -> hsk_studio_press::RedactedOutput {
+    let pdf = pages_pdf(catalog_extra, page_one_extra, page_two_extra, objects);
+    let mut doc = PdfDoc::open(&pdf, limits, &token()).expect("open");
+    redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact")
+}
+
+/// The input file of `pages_output_with`, for a save with a different set of regions (PLR-101: none).
+fn pages_pdf(catalog_extra: &str, page_one_extra: &str, page_two_extra: &str, objects: &[(u32, String)]) -> Vec<u8> {
     let mut objs: Vec<(u32, Vec<u8>)> = vec![
         (1, format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>").into_bytes()),
         (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
@@ -1731,9 +1738,7 @@ fn pages_output_with(limits: &Limits, catalog_extra: &str, page_one_extra: &str,
         (7, stream_body("", b"/P << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC")),
     ];
     objs.extend(objects.iter().map(|(n, body)| (*n, body.clone().into_bytes())));
-    let pdf = build(&objs);
-    let mut doc = PdfDoc::open(&pdf, limits, &token()).expect("open");
-    redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact")
+    build(&objs)
 }
 
 const DIRECT_TEXTS: [&str; 3] = ["ALT-DIRECT-SECRET", "ACTUAL-DIRECT-SECRET", "EXPANSION-DIRECT-SECRET"];
@@ -2343,7 +2348,22 @@ fn structure_tree_keys_are_read_as_names_not_text() {
             tree.clone(),
             false,
         ),
-        ("the keys in another case", "/structtreeroot 80 0 R /STRUCTTREEROOT 80 0 R", "/structparents 1 /STRUCTPARENTS 1 /Structparents 1", tree.clone(), false),
+        (
+            "the keys in another case name no tree, and the objects they reach are plain dictionaries",
+            "/structtreeroot 80 0 R /STRUCTTREEROOT 80 0 R",
+            "/structparents 1 /STRUCTPARENTS 1 /Structparents 1",
+            vec![(80, "<< /HskPlain (x) >>".to_string())],
+            false,
+        ),
+        // PLR-102 (changed assertion: was `false` with these objects): the keys name no tree, but the objects they reach are a
+        // /StructTreeRoot and a /StructElem dictionary that the saved file still holds, which is the detached-element class.
+        (
+            "the keys in another case name no tree, but the objects they reach are a tree root and an element (PLR-102)",
+            "/structtreeroot 80 0 R /STRUCTTREEROOT 80 0 R",
+            "/structparents 1 /STRUCTPARENTS 1 /Structparents 1",
+            tree.clone(),
+            true,
+        ),
         ("a null /StructTreeRoot and a null /StructParents", "/StructTreeRoot null", "/StructParents null", tree.clone(), false),
         ("a /StructTreeRoot that names no object", "/StructTreeRoot 99 0 R", "", vec![], false),
         ("a /StructTreeRoot that names a null object", "/StructTreeRoot 80 0 R", "", vec![(80, "null".to_string())], false),
@@ -2368,8 +2388,8 @@ fn structure_tree_keys_are_read_as_names_not_text() {
 
 /// STRUCTURE TREE = NOT PROVEN: a `/StructParents` or `/StructParent` entry left in the file counts although the catalog names no
 /// tree: on a kept page, in a nested direct dictionary of a kept object, on an annotation a kept page lists. The same keys on the
-/// flattened page and on its annotation do not (the flatten drops the page's key, the purge removes the annotation). A file that is
-/// saved with no region at all is reported as well when it holds a tree (the rule reads the saved document, not the regions).
+/// flattened page and on its annotation do not (the flatten drops the page's key, the purge removes the annotation). A save with no
+/// region applies none of these rules (PLR-101, test `structure_rules_apply_only_when_a_region_is_flattened`).
 #[test]
 fn structure_parents_left_in_the_file_are_reported() {
     let annot = |n: u32, key: &str| (n, format!("<< /Type /Annot /Subtype /Text /Rect [10 10 20 20] /Contents (note) {key} >>"));
@@ -2389,31 +2409,272 @@ fn structure_parents_left_in_the_file_are_reported() {
             red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected flattened", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
         }
     }
-    let pdf = build(&[
-        (1, b"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 80 0 R >>".to_vec()),
-        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
-        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 0 >>".to_vec()),
-        (4, stream_body("", b"BT /F1 12 Tf 72 700 Td (Page one) Tj ET")),
-        (6, HELVETICA.to_vec()),
-        (80, b"<< /Type /StructTreeRoot /K [] >>".to_vec()),
-    ]);
-    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
-    let none = redact_and_save(&mut doc, &[], UnsupportedPolicy::Refuse, &token()).expect("redact with no region");
-    if !reported_for_the_tree(&none) {
-        red.push(format!("no region: region_flattened {} reasons {:?}, expected the tree reported", none.region_flattened(), none.not_proven_reasons()));
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// An object stream (`/Type /ObjStm`) that holds `members`, written as the uncompressed text or, with `hex`, ASCIIHex-encoded. No
+/// cross-reference entry names its members, so the input is an ordinary stream object that nothing expands.
+fn object_stream(members: &[(u32, &str)], hex: bool) -> String {
+    let (mut head, mut body) = (String::new(), String::new());
+    for (n, s) in members {
+        head.push_str(&format!("{n} {} ", body.len()));
+        body.push_str(s);
+        body.push(' ');
+    }
+    let first = head.len();
+    let data = format!("{head}{body}");
+    let (filter, data) = if hex { ("/Filter /ASCIIHexDecode ", data.bytes().map(|b| format!("{b:02X}")).collect::<String>() + ">") } else { ("", data) };
+    String::from_utf8(stream_body(&format!("{filter}/Type /ObjStm /N {} /First {first}", members.len()), data.as_bytes())).expect("ascii")
+}
+
+/// An outline (object 70) with one item (object 71, `item`), the catalog key `/Outlines 70 0 R` to add.
+fn outline_with(item: &str) -> Vec<(u32, String)> {
+    vec![
+        (70, "<< /Type /Outlines /First 71 0 R /Last 71 0 R /Count 1 >>".to_string()),
+        (71, item.to_string()),
+    ]
+}
+
+/// PLR-102 (lead decision R24-P2, FAIL CLOSED), the R24 pre-review inputs J1, J2a, J2b and K1: structure-element text survives in
+/// the saved file although the catalog names no structure tree and no `/StructParents` is left, so the structure-tree rule alone
+/// read them as flattened. A saved file that still holds a dictionary with the shape of a structure element (or of an outline item
+/// that names one) reads `region_flattened` false and `NotProven::ResidualInRegion` only, wherever the dictionary sits: J1 a
+/// `/StructTreeRoot` dictionary under a private catalog key, J2a and J2b a stripped tree whose element an outline item still names
+/// with `/SE` (J2a with the element's `/Pg` the flattened page, which the `/Pg` scan already counted), K1 an object stream the
+/// catalog references whose members no cross-reference entry names (plain and ASCIIHex-encoded). Cases that need the text to
+/// survive check that it does.
+#[test]
+fn detached_structure_elements_are_reported() {
+    let root = "<< /Type /StructTreeRoot /K [81 0 R] >>";
+    let element = |pg: &str| format!("<< /Type /StructElem /S /Figure /P 80 0 R {pg} {DIRECT_TEXT_KEYS} /K 0 >>");
+    let members: [(u32, &str); 3] = [
+        (60, "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 80 0 R >>"),
+        (80, root),
+        (81, "<< /Type /StructElem /S /Figure /P 80 0 R /Alt (ALT-DIRECT-SECRET) /ActualText (ACTUAL-DIRECT-SECRET) /E (EXPANSION-DIRECT-SECRET) /K 0 >>"),
+    ];
+    let item = |se: &str| format!("<< /Title (Figure) /Parent 70 0 R {se} /Dest [5 0 R /Fit] >>");
+    let with_outline = |item: String, more: Vec<(u32, String)>| -> Vec<(u32, String)> {
+        let mut v = outline_with(&item);
+        v.extend(more);
+        v
+    };
+    // (case, catalog extra, objects, the texts that must survive in the saved file: the case needs them to)
+    let all: &'static [&'static str] = &DIRECT_TEXTS;
+    type Case = (&'static str, &'static str, Vec<(u32, String)>, &'static [&'static str]);
+    let cases: Vec<Case> = vec![
+        ("J1: a /StructTreeRoot dictionary under a private catalog key, its element on the kept page", "/HskTree 80 0 R", vec![(80, root.to_string()), (81, element("/Pg 5 0 R"))], all),
+        (
+            "J2a: stripped tree, an outline item names an element whose /Pg is the flattened page",
+            "/Outlines 70 0 R",
+            with_outline(item("/SE 81 0 R"), vec![(80, root.to_string()), (81, element("/Pg 3 0 R"))]),
+            all,
+        ),
+        (
+            "J2b: stripped tree, an outline item names an element without /Pg",
+            "/Outlines 70 0 R",
+            with_outline(item("/SE 81 0 R"), vec![(80, root.to_string()), (81, element(""))]),
+            all,
+        ),
+        ("K1: an object stream the catalog references, its members (catalog, root, element) named by no xref entry", "/HskJunk 50 0 R", vec![(50, object_stream(&members, false))], all),
+        ("K1 with the object stream ASCIIHex-encoded", "/HskJunk 50 0 R", vec![(50, object_stream(&members, true))], &[]),
+        (
+            "an element with no /Type, /S and /P and text keys, under a private key",
+            "/HskNote 81 0 R",
+            vec![(81, format!("<< /S /Figure /P 80 0 R {DIRECT_TEXT_KEYS} >>"))],
+            all,
+        ),
+        (
+            "a structure tree root with /ClassMap text and no element under a private key",
+            "/HskTree 80 0 R",
+            vec![(80, "<< /Type /StructTreeRoot /ClassMap << /Cls1 << /O /UserProperties /P [<< /N (note) /V (CLASSMAP-DETACHED-SECRET) >>] >> >> >>".to_string())],
+            &["CLASSMAP-DETACHED-SECRET"],
+        ),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, objects, survive) in cases {
+        let out = pages_output_with(&quick(), catalog_extra, "", "", &objects);
+        for marker in survive {
+            if gone(&out.bytes, marker) {
+                red.push(format!("{name}: {marker} was removed (the case needs the text to survive)"));
+            }
+        }
+        if !reported_for_the_tree(&out) {
+            red.push(format!(
+                "{name}: region_flattened {} cleared {} residual {} reasons {:?}, expected only ResidualInRegion",
+                out.region_flattened(),
+                out.region_cleared(),
+                out.residual_in_region,
+                out.not_proven_reasons()
+            ));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") {
+            red.push(format!("{name}: SECRET-ALPHA survives (the region text is removed whatever the structure)"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-102, V4-08 (hostile text format): the shape is read from the PARSED dictionary, never matched in raw text. A name escape
+/// spells the key or the value, white space and line breaks separate them, a value that is a reference to a name is followed:
+/// these count. A comment, a string that holds the keys, the keys in another case, null values, and the dictionaries that only look
+/// like an element (an action and a border style that have `/S`, a page label with `/S` and `/P`) do not, and read flattened with
+/// the region text gone. The last non-reported row records the rule's boundary: `/S` with a text key but no `/P` and no
+/// `/Type` is not read as an element.
+#[test]
+fn structure_shape_is_read_from_the_parsed_dictionary() {
+    let e = DIRECT_TEXT_KEYS;
+    // (case, catalog extra, page two extra, objects, expected: true = reported)
+    type Case = (&'static str, String, &'static str, Vec<(u32, String)>, bool);
+    let note = "/HskNote 81 0 R".to_string();
+    let single = |body: String| vec![(81u32, body)];
+    let cases: Vec<Case> = vec![
+        ("control: /Type /StructElem", note.clone(), "", single(format!("<< /Type /StructElem /S /Figure {e} >>")), true),
+        ("a name escape in the value, /Struct#45lem", note.clone(), "", single(format!("<< /Type /Struct#45lem {e} >>")), true),
+        ("a name escape in the key, /#54ype", note.clone(), "", single("<< /#54ype /StructElem >>".to_string()), true),
+        ("/Type through a reference to a name", note.clone(), "", vec![(81, "<< /Type 82 0 R >>".to_string()), (82, "/StructElem".to_string())], true),
+        ("white space and line breaks between the key and the value", note.clone(), "", single("<<\t/Type\r\n\n/StructElem >>".to_string()), true),
+        ("a structure tree root alone, with /ClassMap text", note.clone(), "", single("<< /Type /StructTreeRoot /ClassMap << /C1 << /O /UserProperties >> >> >>".to_string()), true),
+        ("/S a name, /P and text keys, no /Type", note.clone(), "", single(format!("<< /S /Figure /P 80 0 R {e} >>")), true),
+        ("the same with the keys spelled /#53 and /#50", note.clone(), "", single("<< /#53 /Figure /#50 80 0 R /Alt (ALT-DIRECT-SECRET) >>".to_string()), true),
+        ("/S through a reference to a name", note.clone(), "", vec![(81, "<< /S 82 0 R /P 80 0 R /Lang (en) >>".to_string()), (82, "/Figure".to_string())], true),
+        (
+            "an outline item with /SE that names a plain dictionary",
+            "/Outlines 70 0 R".to_string(),
+            "",
+            vec![
+                (70, "<< /Type /Outlines /First 71 0 R /Last 71 0 R /Count 1 >>".to_string()),
+                (71, "<< /Title (Figure) /Parent 70 0 R /SE 81 0 R >>".to_string()),
+                (81, "<< /HskPlain (x) >>".to_string()),
+            ],
+            true,
+        ),
+        (
+            "an outline item with /SE spelled /S#45 and a line break before the value",
+            "/Outlines 70 0 R".to_string(),
+            "",
+            vec![
+                (70, "<< /Type /Outlines /First 71 0 R /Last 71 0 R /Count 1 >>".to_string()),
+                (71, "<< /Title (Figure) /Parent 70 0 R /S#45\n81 0 R >>".to_string()),
+                (81, "<< /HskPlain (x) >>".to_string()),
+            ],
+            true,
+        ),
+        ("an element in a nested direct dictionary and array of a private key", "/HskNote << /A << /B [ << /Type /StructElem >> ] >> >>".to_string(), "", vec![], true),
+        (
+            "an element in a member of an object stream the file keeps as a stream",
+            "/HskJunk 50 0 R".to_string(),
+            "",
+            vec![(50, object_stream(&[(60, "<< /Type /StructElem /S /Figure >>")], false))],
+            true,
+        ),
+        ("a comment holds the keys", note.clone(), "", single("<< /Hsk (note) % /Type /StructElem /SE 81 0 R /S /Figure /P 80 0 R /Alt (X)\n >>".to_string()), false),
+        (
+            "a string holds the keys",
+            "/HskNote (<< /Type /StructElem /S /Figure /P 80 0 R /Alt (X) >> /SE 81 0 R)".to_string(),
+            "",
+            vec![],
+            false,
+        ),
+        (
+            "the keys and the value in another case",
+            note.clone(),
+            "",
+            single("<< /type /structelem /Type /Structelem /se 81 0 R /Se 81 0 R /s /Figure /p 80 0 R /alt (X) >>".to_string()),
+            false,
+        ),
+        ("null values", note.clone(), "", single("<< /Type null /SE null /S /Figure /P 80 0 R /Alt null /Lang null >>".to_string()), false),
+        (
+            "an action and a border style that only have /S, on an annotation a kept page lists",
+            String::new(),
+            "/Annots [71 0 R]",
+            vec![(71, "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /BS << /W 1 /S /D /D [3 2] >> /A << /S /URI /URI (http://example.com) >> /T (note) /C [1 0 0] /P 5 0 R >>".to_string())],
+            false,
+        ),
+        ("a page label dictionary, /S and /P (a prefix string)", "/PageLabels << /Nums [0 << /S /D /P (A-) /St 1 >>] >>".to_string(), "", vec![], false),
+        ("boundary: /S and a text key, no /P and no /Type", note.clone(), "", single("<< /S /Figure /Alt (X) >>".to_string()), false),
+        (
+            "an object stream whose members hold no structure shape",
+            "/HskJunk 50 0 R".to_string(),
+            "",
+            vec![(50, object_stream(&[(60, "<< /Type /Catalog /Pages 2 0 R >>"), (61, "<< /S /URI /URI (http://example.com) >>")], false))],
+            false,
+        ),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, page_two_extra, objects, reported) in cases {
+        let out = pages_output_with(&quick(), &catalog_extra, "", page_two_extra, &objects);
+        if reported && !reported_for_the_tree(&out) {
+            red.push(format!("{name}: region_flattened {} reasons {:?}, expected reported", out.region_flattened(), out.not_proven_reasons()));
+        }
+        if !reported && !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected flattened", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") {
+            red.push(format!("{name}: SECRET-ALPHA survives"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-101 (scope): the structure rules (the tree, `/StructParents`, and the structure-element shape of PLR-102) apply when the
+/// save flattens at least one region. The same input read with the region is reported and read with no region at all is not:
+/// nothing is flattened, `residual_in_region` is 0 and no reason is reported. The inputs are a tagged document (catalog tree,
+/// `/StructParents`, an element) and the R24 detached inputs J1, J2b and K1.
+#[test]
+fn structure_rules_apply_only_when_a_region_is_flattened() {
+    let root = "<< /Type /StructTreeRoot /K [81 0 R] >>";
+    let element = "<< /Type /StructElem /S /Figure /P 80 0 R /Pg 5 0 R /Alt (ALT-DIRECT-SECRET) /K 1 >>";
+    let tagged = (
+        "a tagged document: catalog tree, /StructParents, an element",
+        "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>",
+        "/StructParents 0",
+        "/StructParents 1",
+        vec![(80, "<< /Type /StructTreeRoot /K [81 0 R] /ParentTree 83 0 R >>".to_string()), (81, element.to_string()), (83, "<< /Nums [1 [81 0 R]] >>".to_string())],
+    );
+    let j1 = ("J1", "/HskTree 80 0 R", "", "", vec![(80, root.to_string()), (81, element.to_string())]);
+    let mut j2b_objects = outline_with("<< /Title (Figure) /Parent 70 0 R /SE 81 0 R /Dest [5 0 R /Fit] >>");
+    j2b_objects.extend([(80, root.to_string()), (81, "<< /Type /StructElem /S /Figure /P 80 0 R /Alt (ALT-DIRECT-SECRET) /K 0 >>".to_string())]);
+    let j2b = ("J2b", "/Outlines 70 0 R", "", "", j2b_objects);
+    let k1 = ("K1", "/HskJunk 50 0 R", "", "", vec![(50, object_stream(&[(80, root), (81, element)], false))]);
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, page_one_extra, page_two_extra, objects) in [tagged, j1, j2b, k1] {
+        let with = pages_output_with(&quick(), catalog_extra, page_one_extra, page_two_extra, &objects);
+        if !reported_for_the_tree(&with) {
+            red.push(format!("{name}, with a region: region_flattened {} reasons {:?}, expected reported", with.region_flattened(), with.not_proven_reasons()));
+        }
+        let pdf = pages_pdf(catalog_extra, page_one_extra, page_two_extra, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let none = redact_and_save(&mut doc, &[], UnsupportedPolicy::Refuse, &token()).expect("redact with no region");
+        if !none.flattened.is_empty() || !read_as_flattened(&none) {
+            red.push(format!(
+                "{name}, no region: flattened pages {} region_flattened {} residual {} reasons {:?}, expected nothing counted",
+                none.flattened.len(),
+                none.region_flattened(),
+                none.residual_in_region,
+                none.not_proven_reasons()
+            ));
+        }
+        if gone(&none.bytes, "Page two") {
+            red.push(format!("{name}, no region: the kept page text is gone (a save with no region keeps the pages)"));
+        }
     }
     assert!(red.is_empty(), "{red:#?}");
 }
 
 /// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN (V4-07): the DESCRIPTOR states the narrowed claim in `purge` (the residual) and in
 /// `region_clearing` (what `check_document` counts), in place of the per-element sentences of 54c60f9 (the unedited-root rule and
-/// the unread-`/K`-array rule); the residual cites tests that exist and uses none of the words that need a citation.
+/// the unread-`/K`-array rule); the residual cites tests that exist and uses none of the words that need a citation. PLR-101 and
+/// PLR-102 (SMB-PRESS-STRUCT-ORPHANS): both rules are stated, the structure rules apply when a region is flattened, the shape that
+/// counts is spelled out, and the stale wording (the tree alone, every save) is gone.
 #[test]
 fn descriptor_states_the_structure_tree_rule() {
     let descriptor = hsk_studio_press::DESCRIPTOR;
     let rule_start = "residuals: STRUCTURE TREE = NOT PROVEN (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z): the redaction proof covers untagged documents;";
-    let counted = "and no structure tree: a /StructTreeRoot in the catalog or any /StructParents or /StructParent entry counts 1, so region_flattened is true only for an untagged document, or one whose caller stripped the tree before the save";
-    for needle in [rule_start, counted] {
+    let counted = "and, when the save flattened a region, no structure tree: a /StructTreeRoot in the catalog, any /StructParents or /StructParent entry, or any dictionary with the shape of a structure element or of an outline item that names one (PLR-102), adds 1 together, so region_flattened is true only for an untagged document, or one whose caller stripped the whole tree before the save";
+    let scope = "when a save flattens at least one region and the saved document has a structure tree, that is a /StructTreeRoot that the catalog holds";
+    let shape = "(PLR-102: /Type /StructElem or /StructTreeRoot, or /S as a name together with /P and any of /Alt /ActualText /E /T /Lang /A /C /ID /Ref /AF /Phoneme /PhoneticAlphabet, or an /SE entry as an outline item has), residual_in_region adds 1 for them together (one count, not one per element)";
+    let no_region = "a save with no region does not apply these rules (PLR-101)";
+    for needle in [rule_start, counted, scope, shape, no_region] {
         assert_eq!(descriptor.matches(needle).count(), 1, "DESCRIPTOR lacks {needle:?}");
     }
     for stale in [
@@ -2422,6 +2683,9 @@ fn descriptor_states_the_structure_tree_rule() {
         "below an unread /K array",
         "elements are reached from the root's /K, /ParentTree and /IDTree",
         "a structure tree root written directly into the catalog (not an indirect object) is not edited, so an element that still names",
+        "residual_in_region counts 1 for it (one count for the tree, not one per element)",
+        "and no structure tree: a /StructTreeRoot in the catalog or any /StructParents or /StructParent entry counts 1",
+        "or one whose caller stripped the tree before the save",
     ] {
         assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
     }
@@ -2440,6 +2704,9 @@ fn descriptor_states_the_structure_tree_rule() {
         "direct_structure_tree_on_kept_pages_is_reported_too",
         "indirect_array_k_elements_off_the_kept_pages_are_reported",
         "indirect_array_k_neutralization_controls",
+        "detached_structure_elements_are_reported",
+        "structure_shape_is_read_from_the_parsed_dictionary",
+        "structure_rules_apply_only_when_a_region_is_flattened",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");

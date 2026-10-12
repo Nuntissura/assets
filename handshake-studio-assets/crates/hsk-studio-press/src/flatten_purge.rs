@@ -5,7 +5,8 @@
 //! object references are dropped (one a kept object references stays and is reported), and, in a structure tree
 //! whose root is an indirect object, the structure elements that the purge reads and that point at it stay with their
 //! text removed (best effort). The structure tree itself is NOT PROVEN (lead decision 2026-10-12T08:41:40Z, R23 FIX_FIRST):
-//! when the saved document has one, `RedactedOutput::residual_in_region` counts it once, `region_flattened` reads false and
+//! when a save flattens at least one region and the saved document has one (or a dictionary with the shape of a structure
+//! element, PLR-102), `RedactedOutput::residual_in_region` adds 1, `region_flattened` reads false and
 //! `NotProven::ResidualInRegion` is reported, whatever the purge removed; the redaction proof covers untagged documents.
 //! So an image, form, annotation or widget value of a flattened page is not kept in the file by being merely listed
 //! (tests `painted_sources_under_a_region_do_not_survive`, `structure_and_widgets_of_flattened_pages_are_removed`,
@@ -37,13 +38,18 @@
 //!   `/IDTree` reaches, an element nested deeper than 64 levels, the `/IDTree` keys, the `/ClassMap`, or a grouping element
 //!   without `/Pg` whose children are on a flattened page: their text stays in the file. So the removal is not what the
 //!   save relies on. [`check_document`] reports the tree instead (R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN, lead decision
-//!   2026-10-12T08:41:40Z): when the saved document has a structure tree, a `/StructTreeRoot` that the catalog holds (directly
-//!   or through any chain of references) or any `/StructParents` or `/StructParent` entry left in the file, it counts 1 in
-//!   `RedactedOutput::residual_in_region` (one count for the tree, not one per element), `region_flattened` reads false and
-//!   `NotProven::ResidualInRegion` is reported. A document without one is not affected, and a caller who strips the tree
-//!   before the save gets `region_flattened` true again (tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
-//!   `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
-//!   `structure_parents_left_in_the_file_are_reported`).
+//!   2026-10-12T08:41:40Z): when a save flattens at least one region and the saved document has a structure tree, a
+//!   `/StructTreeRoot` that the catalog holds (directly or through any chain of references), any `/StructParents` or
+//!   `/StructParent` entry left in the file, or a dictionary left anywhere in the file that has the shape of a structure
+//!   element or of an outline item that names one (PLR-102: `/Type /StructElem` or `/StructTreeRoot`; `/S` as a name with
+//!   `/P` and any text key of the element; an `/SE` entry), it adds 1 in `RedactedOutput::residual_in_region` (one count
+//!   for all of them, not one per element), `region_flattened` reads false and `NotProven::ResidualInRegion` is reported.
+//!   A document without one is not affected, a save with no region does not apply these rules (PLR-101), and a caller who
+//!   strips the whole tree before the save gets `region_flattened` true again (tests
+//!   `tagged_documents_read_not_proven_whatever_the_tree_looks_like`, `untagged_documents_and_stripped_trees_still_read_flattened`,
+//!   `structure_tree_keys_are_read_as_names_not_text`, `structure_parents_left_in_the_file_are_reported`,
+//!   `detached_structure_elements_are_reported`, `structure_shape_is_read_from_the_parsed_dictionary`,
+//!   `structure_rules_apply_only_when_a_region_is_flattened`).
 //! - Painted sources ([`drop_painted_sources`], R13-F6): the images, forms, patterns, shadings, graphics
 //!   states and fonts the old page reached are dropped from every resource dictionary that lists them
 //!   when nothing refers to them but a gated (`/XObject`, `/Pattern`, `/Shading`, `/ExtGState`, `/Font`)
@@ -121,7 +127,7 @@ use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
 use crate::redaction::{purge_list, res};
 use crate::show_text::resource_components;
-use crate::syntax::{Dict, ObjRef, Object};
+use crate::syntax::{Dict, Lexer, ObjRef, Object, Stream, parse_standalone};
 use crate::writer::{reachable, trailer_roots};
 use hsk_studio_accord::CancellationToken;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1053,31 +1059,42 @@ fn holds(d: &Dict, key: &str) -> bool {
     d.get(key).is_some_and(|v| !matches!(v, Object::Null))
 }
 
-/// Document-level check of the SAVED file (counted in `residual_in_region`): no `/XFA`, no `/NeedsRendering`, no annotation
-/// whose `/P` and no structure item whose `/Pg` is a flattened page, and no structure tree: the tree counts 1 when the catalog
-/// holds a `/StructTreeRoot` (`catalog_names_structure_tree`) or any dictionary of the file holds a `/StructParents` or
-/// `/StructParent` entry, however many elements it has and whatever the purge removed (R23 FIX_FIRST -> STRUCTURE TREE = NOT
-/// PROVEN, lead decision 2026-10-12T08:41:40Z; tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
-/// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
-/// `structure_parents_left_in_the_file_are_reported`). Every dictionary and stream dictionary of the file is read, to the depth
-/// the parser admits (`Limits::depth_cap`); a value deeper than that counts 1 (fail closed; a parsed file has none).
-pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>) -> u32 {
-    let mut bad = 0u32;
-    let mut tagged = catalog_names_structure_tree(saved);
-    if let Ok(c) = saved.catalog() {
-        if c.get("NeedsRendering").is_some() {
-            bad = bad.saturating_add(1);
-        }
-        if c.get("AcroForm").map(|f| saved.resolve(f)).and_then(Object::as_dict).is_some_and(|f| f.get("XFA").is_some()) {
-            bad = bad.saturating_add(1);
-        }
-    }
-    let depth_cap = saved.limits.depth_cap();
-    for e in saved.objects.values() {
-        let mut stack: Vec<(&Object, usize)> = vec![(&e.obj, 0)];
+/// `d` has the shape of a structure element, of a structure tree root, or of an outline item that names a structure element
+/// (PLR-102, lead decision R24-P2: structure text survives in a file whose catalog names no tree). Read from the PARSED
+/// dictionary (names decoded, comments and strings never matched), a value that is a reference is followed (`resolve`, at most
+/// `MAX_REF_HOPS` hops): `/Type` is the name `StructElem` or `StructTreeRoot`; or `/S` is a name and `/P` is held together with
+/// any key of `STRUCT_TEXT_KEYS` (a dictionary with only `/S`, as an action or a border style has, is not one); or `/SE` is held
+/// (the outline item entry that names a structure element).
+fn structure_shaped(saved: &PdfDoc, d: &Dict) -> bool {
+    let named = |key: &str, name: &str| d.get(key).map(|v| saved.resolve(v)).is_some_and(|v| v.is_name(name));
+    named("Type", "StructElem")
+        || named("Type", "StructTreeRoot")
+        || (d.get("S").map(|v| saved.resolve(v)).is_some_and(|v| matches!(v, Object::Name(_)))
+            && holds(d, "P")
+            && STRUCT_TEXT_KEYS.iter().any(|k| holds(d, k)))
+        || holds(d, "SE")
+}
+
+/// What `check_document` has found so far. `structure` is the one count of the structure rules (tree, `/StructParents`,
+/// structure-element shape); `bad` is every other mismatch.
+struct Scan<'a> {
+    saved: &'a PdfDoc,
+    flat_pages: &'a BTreeSet<u32>,
+    /// The structure rules apply: the save flattened at least one region (PLR-101).
+    structure_rules: bool,
+    depth_cap: usize,
+    bad: u32,
+    structure: bool,
+}
+
+impl Scan<'_> {
+    /// Reads `root` and everything nested in it, to `depth_cap`: a value deeper than that counts 1 (fail closed; a parsed file
+    /// has none).
+    fn value(&mut self, root: &Object) {
+        let mut stack: Vec<(&Object, usize)> = vec![(root, 0)];
         while let Some((o, depth)) = stack.pop() {
-            if depth > depth_cap {
-                bad = bad.saturating_add(1);
+            if depth > self.depth_cap {
+                self.bad = self.bad.saturating_add(1);
                 continue;
             }
             let next = depth.saturating_add(1);
@@ -1085,16 +1102,116 @@ pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>) -> u32 
                 Object::Array(a) => stack.extend(a.iter().map(|x| (x, next))),
                 Object::Dict(_) | Object::Stream(_) => {
                     let Some(d) = o.as_dict() else { continue };
-                    let on = |k: &str| d.get(k).and_then(Object::as_ref).is_some_and(|r| flat_pages.contains(&r.num));
+                    let on = |k: &str| d.get(k).and_then(Object::as_ref).is_some_and(|r| self.flat_pages.contains(&r.num));
                     if on("Pg") || (on("P") && d.get("Subtype").is_some()) {
-                        bad = bad.saturating_add(1);
+                        self.bad = self.bad.saturating_add(1);
                     }
-                    tagged |= holds(d, "StructParents") || holds(d, "StructParent");
+                    if self.structure_rules {
+                        self.structure |= holds(d, "StructParents") || holds(d, "StructParent") || structure_shaped(self.saved, d);
+                    }
                     stack.extend(d.entries.iter().map(|(_, v)| (v, next)));
                 }
                 _ => {}
             }
         }
     }
-    bad.saturating_add(u32::from(tagged))
+
+    /// Reads the members of an object stream the saved file holds as a stream (referenced by an object, so the writer kept it;
+    /// no cross-reference entry names its members, so `saved.objects` does not hold them, K1 of the R24 pre-review). Decoded
+    /// against the decode budget, parsed like the reader parses one (`N` and `First`, header pairs, members that overlap
+    /// bounded by the decoded size, the node meter); a stream that cannot be decoded or parsed counts (fail closed).
+    fn object_stream(&mut self, s: &Stream, budget: &mut usize, nodes_left: &mut usize) {
+        let limits = &self.saved.limits;
+        let Ok(data) = filters::decode_stream(s, limits, budget) else {
+            self.structure = true;
+            return;
+        };
+        let count = |key: &str| s.dict.get(key).and_then(Object::as_int).and_then(|v| usize::try_from(v).ok());
+        let (Some(n), Some(first)) = (count("N"), count("First")) else {
+            self.structure = true;
+            return;
+        };
+        // Every member needs at least two bytes of header ("n o").
+        if n > (data.len() / 2).saturating_add(1) {
+            self.structure = true;
+            return;
+        }
+        let mut header = Lexer::new(&data, 0, limits.max_depth);
+        let mut offsets = Vec::with_capacity(n.min(4096));
+        for _ in 0..n {
+            match (header.read_uint(), header.read_uint()) {
+                (Ok(_), Ok(offset)) => offsets.push(offset),
+                _ => {
+                    self.structure = true;
+                    return;
+                }
+            }
+        }
+        let mut parsed_bytes = 0usize;
+        for offset in offsets {
+            let at = usize::try_from(offset).ok().and_then(|o| first.checked_add(o)).filter(|a| *a < data.len());
+            let Some(at) = at else {
+                self.structure = true;
+                return;
+            };
+            match parse_standalone(&data, at, limits.max_depth, nodes_left) {
+                Ok((member, used)) => {
+                    parsed_bytes = parsed_bytes.saturating_add(used);
+                    if parsed_bytes > data.len() {
+                        self.structure = true;
+                        return;
+                    }
+                    self.value(&member);
+                }
+                Err(_) => {
+                    self.structure = true;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Document-level check of the SAVED file (counted in `residual_in_region`): no `/XFA`, no `/NeedsRendering`, no annotation
+/// whose `/P` and no structure item whose `/Pg` is a flattened page, and, when `flattens` (the save flattened at least one
+/// region, PLR-101; a save with no region leaves the structure rules out and keeps the checks before them), no structure left
+/// in the file: ONE count, however many of these hold and whatever the purge removed (R23 FIX_FIRST -> STRUCTURE TREE = NOT
+/// PROVEN, lead decision 2026-10-12T08:41:40Z; PLR-102, lead decision R24-P2, fail closed): the catalog holds a
+/// `/StructTreeRoot` (`catalog_names_structure_tree`), or any dictionary of the file holds a `/StructParents` or `/StructParent`
+/// entry, or any dictionary has the shape of a structure element or of an outline item that names one (`structure_shaped`),
+/// wherever it sits: reachable from the catalog under any key, or a member of an object stream the file holds as a stream.
+/// Tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+/// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
+/// `structure_parents_left_in_the_file_are_reported`, `detached_structure_elements_are_reported`,
+/// `structure_rules_apply_only_when_a_region_is_flattened`. Every dictionary and stream dictionary of the file is read, to the
+/// depth the parser admits (`Limits::depth_cap`); a value deeper than that counts 1 (fail closed; a parsed file has none).
+pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flattens: bool) -> u32 {
+    let mut scan = Scan {
+        saved,
+        flat_pages,
+        structure_rules: flattens,
+        depth_cap: saved.limits.depth_cap(),
+        bad: 0,
+        structure: flattens && catalog_names_structure_tree(saved),
+    };
+    if let Ok(c) = saved.catalog() {
+        if c.get("NeedsRendering").is_some() {
+            scan.bad = scan.bad.saturating_add(1);
+        }
+        if c.get("AcroForm").map(|f| saved.resolve(f)).and_then(Object::as_dict).is_some_and(|f| f.get("XFA").is_some()) {
+            scan.bad = scan.bad.saturating_add(1);
+        }
+    }
+    let mut budget = saved.limits.max_decoded_total;
+    let mut nodes_left = saved.limits.max_nodes;
+    for e in saved.objects.values() {
+        scan.value(&e.obj);
+        if flattens
+            && let Object::Stream(s) = &e.obj
+            && s.dict.get("Type").map(|t| saved.resolve(t)).is_some_and(|t| t.is_name("ObjStm"))
+        {
+            scan.object_stream(s, &mut budget, &mut nodes_left);
+        }
+    }
+    scan.bad.saturating_add(u32::from(scan.structure))
 }
