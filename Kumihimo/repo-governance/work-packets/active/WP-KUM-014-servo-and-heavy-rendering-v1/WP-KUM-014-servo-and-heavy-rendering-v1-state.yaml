@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
-generation: 8
+generation: 9
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -72,6 +72,15 @@ proof:
     were reused. Native Windows Servo/libservo/zero-copy/video/audio/ARM/physical input/real GPU faults and performance
     gains remain unproven. Full99 future requirements remain OPEN; independent final evaluation/publication governs
     WP closure.'
+- kind: independent_original_seven_case_evaluation
+  publication_revision: b49929b4f24bc1623f6c1121357438e2c11e98f0
+  evaluation_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-evaluation.yaml
+  evaluation_section: servo_runtime_evaluation_b49929b4_publication
+  evaluation_sha256: ee19481e40340e8efce9382c1006307a35e10b4f215b6527f98b6f407cb711e0
+  observed: Original seven cases PASS_SCOPED_RUNTIME; F001 resolved/no open findings. Evaluator independently inspected132
+    canonical origin blobs and unchanged final source, exact20 images and existing independent engine/kernel/cleanup
+    evidence. Full99 future requirements remain OPEN. Final report append must be published and independently reread
+    before DONE.
 blockers: []
-next_action: Publish scoped Spec22/matrix9/topology and independent original seven evaluation; exact canonical origin
-  reread before DONE
+next_action: Publish exact final evaluation; independently reread canonical origin/report before DONE and second-packet
+  coder rotation

@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 35
+  version: 36
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -46,7 +46,7 @@ canonical_commands:
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 9
+  revision: 10
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -227,7 +227,10 @@ build_matrix:
       actual_gpu: Nine current actual DX12 PNG/JSON; compose8cbea27 PASS13.97s; full static equality/zero duplicate
         upload/depth work
       artifact_sha256: 91e97f740ef13d1a6199ddde334f813593c81f2b527e91b3c8af030791b54c42
-      independent_evaluation: Original seven cases; final canonical publication pending
+      independent_evaluation: PASS_SCOPED_RUNTIME; all seven original cases; F001 resolved; full future acceptances
+        remain OPEN
+      evaluation_sha256: ee19481e40340e8efce9382c1006307a35e10b4f215b6527f98b6f407cb711e0
+      evaluation_section: servo_runtime_evaluation_b49929b4_publication
     not_proven:
     - Native Windows Servo/embedded libservo/zero-copy/video/audio/ARM/other platform execution
     - Physical input/display/GPU faults/performance gains/universal memory savings

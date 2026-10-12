@@ -1102,3 +1102,93 @@ servo_runtime_evaluation_8cbea2746233:
     required: Lead publishes exact final report+product/manual/spec/matrix/topology/state, passes authoritative
       structural checks, and independently rereads canonical origin and shipped source hashes. Evaluator reviews
       released exact artifacts before case007/final packet PASS.
+servo_runtime_evaluation_b49929b4_publication:
+  evaluation_id: EVAL-KUM-014-RUNTIME-PUBLISHED-b49929b4-v1
+  updated_at: '2026-10-12'
+  phase: scoped_runtime_and_source_publication_proven
+  verdict: PASS_SCOPED_RUNTIME
+  supersedes_runtime_verdict: servo_runtime_evaluation_8cbea2746233
+  preservation:
+    prior_bytes: 70785
+    prior_sha256: 774ac04cacd3508987230cbb19e5bdafbd8a43fd7b527e08b52f4471dbde3dfb
+    frozen_prefix_bytes: 20831
+    frozen_prefix_sha256: 63460e850220fe87d0e051c4d440e8e823e1adf154eecab1cb61300fb72d3ca3
+    all_prior_bytes_retained: true
+    original_methods_expected_and_nine_requirement_mapping: Unchanged; canonical cases and both prior runtime sections
+      remain authoritative evidence.
+  cases:
+  - case_id: EVAL-KUM-014-001
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-001
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-001
+  - case_id: EVAL-KUM-014-002
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-002
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-002
+  - case_id: EVAL-KUM-014-003
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-003
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-003
+  - case_id: EVAL-KUM-014-004
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-004
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-004
+  - case_id: EVAL-KUM-014-005
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-005
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-005
+  - case_id: EVAL-KUM-014-006
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-006
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-006
+  - case_id: EVAL-KUM-014-007
+    runtime_status: PASS_SCOPED_RUNTIME
+    method_and_expected_ref: cases/EVAL-KUM-014-007
+    runtime_evidence_ref: servo_runtime_evaluation_8cbea2746233/cases/EVAL-KUM-014-007
+  case_007_observed: Exact source/manual/spec/matrix/topology/state and canonical-origin publication now inspected
+    independently. Original six methods remain proven through unchanged product and actual engine/GPU inputs. Prior
+    evidence contains all20 directly opened final images,55 independent kernel observations,3 owned exits/fresh
+    reload/cleanup and repaired actual renderer replacement. No new runtime or broader proof claimed.
+  publication_proof:
+    expected_and_observed_live_remote_head_tracking: b49929b4f24bc1623f6c1121357438e2c11e98f0
+    canonical_ref: refs/remotes/origin/codex/handpick
+    query: git ls-remote origin refs/heads/codex/handpick; independent read-only ls-tree/show/cat-file origin blobs
+    canonical_blobs: 132
+    product_blobs: 116
+    governance_blobs: 16
+    all_origin_live_lf_equivalent: true
+    ordered_path_sha256_fence: dde7721fd24dc3d9118276db459049af0c8c4efe879431abe15192dc0b7da350
+    fence_format: SHA256(newline-joined path + space + SHA256(blob), no terminal newline); exact132-path set independently
+      reconciled with lead verify-origin reader.
+    all_product_bytes_unchanged_from_gpu_source: 8cbea2746233a0987d0cf7556c59deeef744486b
+    engine_source: 35f141655e647c88203aa9c39c2980b54e0b32e6
+    published_report_bytes: 70785
+    published_report_sha256: 774ac04cacd3508987230cbb19e5bdafbd8a43fd7b527e08b52f4471dbde3dfb
+  synchronization: 'Inspected Spec22/master22/roadmap20/build35/matrix9,5 bridge nodes/7 links,current manuals,state8ACTIVE/board13DONE1ACTIVE.
+    Independently parsed99 requirements equal archivedSpec21;18 roadmap areas remain partial. Existing sync/check
+    outputs read: exit0/PASS/no stale; structural only.'
+  DIFF_ATTACK_SURFACES:
+  - Canonical source/report publication; scope preservation and prior runtime-input immutability.
+  INDEPENDENT_CHECKS_RUN:
+  - Live remote/HEAD/tracking read and132 origin blobs independently compared with live LF bytes; exact fence match.
+  - All116 product blobs equal8cbea;20 previously opened PNG/paired data and kernel/event/cleanup/admission/manifest
+    hashes still match.
+  - Current99 requirement records equal archivedSpec21; manuals/governance/status and existing structural outputs
+    inspected.
+  COUNTERFACTUAL_CHECKS:
+  - 'Unpublished/different candidate: live ref and canonical132blob equality reject it.'
+  - 'Post-GPU source change or full-scope overclaim: all116 product bytes unchanged;99 requirements preserved and18
+    areas partial.'
+  BOUNDARY_PROBES: Reuse unchanged exact original seven methods and actual boundary proof from prior runtime sections.
+  NEGATIVE_PATH_CHECKS: Reuse original admission/frame/budget/stale binding/protected/unknown/unsupported negatives
+    through unchanged inputs.
+  INDEPENDENT_FINDINGS: []
+  resolved_findings:
+  - EVAL-KUM-014-F001; directly opened8cbea recovery readable, exact prior scene pixels with fresh epoch2.
+  RESIDUAL_UNCERTAINTY:
+  - Scoped WP014 external Servo CPU-copy/DX12 experiment only; full99 product requirements OPEN.
+  - No native Windows Servo/libservo/zero-copy/media/ARM/physical display-input/real GPU fault/arbitrary JS-media
+    restore/performance-gain proof.
+  - Outside connect observed from LinuxIPv4/IPv6; no separate Windows connect/foreground observer claim.
+  - This final append awaits lead publication/canonical reread before stateDONE; evaluator does not mutate state/board/roles.
+  next_action: Report-only HOLD. Lead publishes this exact append, independently rereads it, then owns DONE/rotation.
