@@ -1137,6 +1137,33 @@ fn painted_source_named_through_a_stream_used_as_a_dictionary_is_reported() {
             ),
         ),
         (
+            "a page-tree node between page two and the node that holds the /Resources",
+            doc_in(
+                "",
+                "",
+                "",
+                ("3 0 R 23 0 R", 21),
+                false,
+                vec![
+                    (23, b"<< /Type /Pages /Parent 2 0 R /Kids [21 0 R] /Count 1 /Resources 22 0 R >>".to_vec()),
+                    (21, stream_body("/Type /Pages /Parent 23 0 R /Kids [5 0 R] /Count 1", b"x")),
+                    (22, dict_names.clone()),
+                ],
+            ),
+            doc_in(
+                "",
+                "",
+                "",
+                ("3 0 R 23 0 R", 21),
+                false,
+                vec![
+                    (23, b"<< /Type /Pages /Parent 2 0 R /Kids [21 0 R] /Count 1 /Resources 22 0 R >>".to_vec()),
+                    (21, b"<< /Type /Pages /Parent 23 0 R /Kids [5 0 R] /Count 1 >>".to_vec()),
+                    (22, dict_names.clone()),
+                ],
+            ),
+        ),
+        (
             "the page object itself (with its own /Resources)",
             doc_in("", &format!("/Resources << {names} >>"), "", ("3 0 R 5 0 R", 2), true, Vec::new()),
             doc_in("", &format!("/Resources << {names} >>"), "", ("3 0 R 5 0 R", 2), false, Vec::new()),
