@@ -496,11 +496,13 @@ class Worker:
         actions = [{"type": "pointer", "id": "host-pointer", "parameters": {"pointerType": "mouse"},
                     "actions": [{"type": "pointerMove", "duration": 0, "origin": "viewport", "x": x, "y": y},
                                 {"type": "pointerDown", "button": 0}, {"type": "pointerUp", "button": 0}]}]
-        if text:
-            actions.append({"type": "key", "id": "host-keyboard", "actions":
-                            [item for char in text for item in ({"type": "keyDown", "value": char}, {"type": "keyUp", "value": char})]})
         before = self.dom(engine, binding)
         self.http(engine, "POST", self.route(engine, "/actions"), {"actions": actions}, binding)
+        # Separate sources in one request share ticks; finish the click before typing.
+        if text:
+            keyboard = [{"type": "key", "id": "host-keyboard", "actions":
+                         [item for char in text for item in ({"type": "keyDown", "value": char}, {"type": "keyUp", "value": char})]}]
+            self.http(engine, "POST", self.route(engine, "/actions"), {"actions": keyboard}, binding)
         self.http(engine, "DELETE", self.route(engine, "/actions"), binding=binding)
         after = self.dom(engine, binding)
         engine["dirty"] = True
