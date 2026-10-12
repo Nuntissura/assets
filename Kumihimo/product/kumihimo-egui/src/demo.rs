@@ -1083,6 +1083,37 @@ pub fn with_policy_counts(
     }
     let text_view = views[0];
     let canvas_view = views[tabs_per_frame];
+    // Core validates a tool's owning workspace context during CreateTool.
+    let mut context = core::GeometryContext::new(Rect::new(0.0, 0.0, 960.0, 640.0)?);
+    context.gap = Scalar::new(6.0)?;
+    context.allow_floating = true;
+    context.allowed_docks = frames
+        .iter()
+        .flat_map(|frame| {
+            [
+                core::Edge::Left,
+                core::Edge::Right,
+                core::Edge::Top,
+                core::Edge::Bottom,
+            ]
+            .map(|edge| core::DockLocation::Beside {
+                frame: *frame,
+                edge,
+            })
+        })
+        .collect();
+    context
+        .allowed_docks
+        .push(core::DockLocation::Append { workspace: root });
+    host.dispatch(
+        &mut controller,
+        Command::SetGeometryContext {
+            workspace: root,
+            context,
+        },
+    )?
+    .outcome
+    .result?;
     let resource = controller.snapshot().views[&text_view].resource;
     let placement = core::ToolPlacement::Edge {
         anchor: core::ToolAnchor::View(text_view),
@@ -1123,36 +1154,6 @@ pub fn with_policy_counts(
     else {
         return Err(AdapterError::Invalid("tool"));
     };
-    let mut context = core::GeometryContext::new(Rect::new(0.0, 0.0, 960.0, 640.0)?);
-    context.gap = Scalar::new(6.0)?;
-    context.allow_floating = true;
-    context.allowed_docks = frames
-        .iter()
-        .flat_map(|frame| {
-            [
-                core::Edge::Left,
-                core::Edge::Right,
-                core::Edge::Top,
-                core::Edge::Bottom,
-            ]
-            .map(|edge| core::DockLocation::Beside {
-                frame: *frame,
-                edge,
-            })
-        })
-        .collect();
-    context
-        .allowed_docks
-        .push(core::DockLocation::Append { workspace: root });
-    host.dispatch(
-        &mut controller,
-        Command::SetGeometryContext {
-            workspace: root,
-            context,
-        },
-    )?
-    .outcome
-    .result?;
     let mut nodes = BTreeMap::new();
     let mut cells = vec![];
     for (i, frame) in frames.iter().enumerate() {

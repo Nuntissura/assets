@@ -163,6 +163,9 @@ struct NativeWindow {
     dirty: bool,
     deadline: Option<Instant>,
     capture: Option<CaptureTag>,
+    capture_intent: Option<(String, Option<u64>)>,
+    actual_size: [u32; 2],
+    actual_scale: f32,
     retries: u32,
     focused: bool,
     occluded: Option<bool>,
@@ -430,6 +433,9 @@ impl<H: NativeHost> App<H> {
                 dirty: true,
                 deadline: None,
                 capture: None,
+                capture_intent: None,
+                actual_size: [size.width, size.height],
+                actual_scale: scale,
                 retries: 0,
                 focused: false,
                 occluded: None,
@@ -484,10 +490,12 @@ impl<H: NativeHost> App<H> {
         if w.capture.is_some() {
             return Err(AdapterError::Budget("one capture per window"));
         }
+        w.capture_intent = Some((label.into(), pending_nonce));
         let size = w.window.inner_size();
         if size.width == 0 || size.height == 0 {
             w.status = SurfaceState::Unavailable;
-            return Err(AdapterError::Invalid("zero actual native size"));
+            w.dirty = false;
+            return Ok(());
         }
         let bytes = (size.width as usize)
             .checked_mul(size.height as usize)
@@ -687,6 +695,7 @@ impl<H: NativeHost> App<H> {
                 "core_generation":tag.generation,"readback_bytes":bytes,"pixels_nonuniform":image.pixels.iter().any(|p|p!=&image.pixels[0]),
                 "report":crate::diagnostics::report_json(&w.report)}));
             w.capture = None;
+            w.capture_intent = None;
             w.status = SurfaceState::Ready;
             if let Some(pending_nonce) = tag.pending_nonce {
                 let pending = self
@@ -771,7 +780,7 @@ impl<H: NativeHost> App<H> {
             }
             ProbePhase::Populated => {
                 // Request a real owned HWND resize; only Resized/current live size advances proof.
-                self.windows[&id]
+                let _ = self.windows[&id]
                     .window
                     .request_inner_size(winit::dpi::PhysicalSize::new(760u32, 520u32));
                 self.phase = ProbePhase::Resizing;
@@ -849,15 +858,56 @@ impl<H: NativeHost> App<H> {
     fn resize(&mut self, id: WindowId) -> Result<()> {
         let w = self
             .windows
-            .get_mut(&id)
+            .get(&id)
             .ok_or(AdapterError::Invalid("resize window"))?;
         let size = w.window.inner_size();
+        let actual_size = [size.width, size.height];
+        let scale = w.window.scale_factor() as f32;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(AdapterError::Invalid("actual native resize scale"));
+        }
+        // Compare separately recorded OS measurements, not bounds last updated by draw.
+        if actual_size == w.actual_size && scale == w.actual_scale {
+            return Ok(());
+        }
+        let intent = w.capture_intent.clone();
+        if let Some((_, Some(nonce))) = &intent {
+            let pending = self
+                .pending
+                .as_ref()
+                .ok_or(AdapterError::Stale("resize missing pending native"))?;
+            let snapshot = self.controller.snapshot();
+            // Reject prior unrelated drift BEFORE changing owned canonical geometry.
+            if self.current != Some(id)
+                || pending.nonce != *nonce
+                || pending.slot.root != w.surface.root
+                || pending.identity != snapshot.identity
+                || pending.generation != snapshot.generation
+            {
+                return Err(AdapterError::Stale(
+                    "resize pending identity/generation/window/nonce",
+                ));
+            }
+            self.slots.cancel(pending, snapshot)?;
+            crate::window_slots::eligible(snapshot, &pending.slot)?;
+        }
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            size.width as f64 / scale as f64,
+            size.height as f64 / scale as f64,
+        )?;
+        let w = self.windows.get_mut(&id).unwrap();
         w.surface.epoch = w
             .surface
             .epoch
             .checked_add(1)
             .ok_or(AdapterError::Budget("surface epoch"))?;
         w.capture = None;
+        w.actual_size = actual_size;
+        w.actual_scale = scale;
+        w.surface.bounds = bounds;
+        w.surface.pixels_per_point = scale;
         w.adapter.input.cancel("surface epoch changed");
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -871,6 +921,21 @@ impl<H: NativeHost> App<H> {
             w.dirty = false;
         }
         self.observations.push(serde_json::json!({"phase":"owned-resize-current-dpi","root":w.surface.root.raw(),"size":[size.width,size.height],"scale":w.window.scale_factor(),"epoch":w.surface.epoch}));
+        if !actual_size.contains(&0) {
+            if let Some((label, pending_nonce)) = intent {
+                if pending_nonce.is_some() {
+                    // The old generation was checked above; only arm may advance it for
+                    // freshly prepared owned context. Old screenshot tags remain invalid.
+                    let pending = self
+                        .pending
+                        .as_mut()
+                        .ok_or(AdapterError::Stale("resize pending native"))?;
+                    self.slots
+                        .arm(pending, &mut self.controller, &mut self.host, bounds)?;
+                }
+                self.request_capture(id, &label, pending_nonce)?;
+            }
+        }
         Ok(())
     }
     fn recreate(&mut self, id: WindowId) -> Result<()> {
@@ -1186,7 +1251,16 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let result = (|| {
-            if self.started.elapsed() > self.options.timeout && !self.options.interactive {
+            let quiet_cutoff = if self.options.interactive {
+                None
+            } else {
+                Some(
+                    self.started
+                        .checked_add(self.options.timeout)
+                        .ok_or(AdapterError::Budget("native quiet deadline"))?,
+                )
+            };
+            if quiet_cutoff.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(AdapterError::Host("bounded native probe deadline".into()));
             }
             self.receive_captures(event_loop)?;
@@ -1288,13 +1362,19 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                     event_loop.exit();
                 }
             }
-            let work_pending =
+            let io_pending =
                 self.windows.values().any(|w| w.capture.is_some()) || self.observer.is_some();
-            let next = self.windows.values().filter_map(|w| w.deadline).min();
-            if work_pending {
-                event_loop
-                    .set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(16)));
-            } else if let Some(deadline) = next {
+            let poll_deadline = io_pending.then(|| Instant::now() + Duration::from_millis(16));
+            // Quiet cutoff is unconditional: pending/zero/probe phases cannot strand it
+            // behind Wait after losing their last capture or observer wake source.
+            let next = self
+                .windows
+                .values()
+                .filter_map(|w| w.deadline)
+                .chain(poll_deadline)
+                .chain(quiet_cutoff)
+                .min();
+            if let Some(deadline) = next {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             } else {
                 event_loop.set_control_flow(ControlFlow::Wait);
