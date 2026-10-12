@@ -1506,23 +1506,70 @@ impl<H: NativeHost> App<H> {
     }
     fn unselected_tab(&self, id: WindowId) -> Result<ViewId> {
         let w = &self.windows[&id];
-        self.controller
-            .snapshot()
-            .frames
-            .values()
-            .filter(|f| f.workspace == w.surface.root)
-            .flat_map(|f| f.views.iter().filter(move |v| Some(**v) != f.selected_view))
-            .copied()
-            .find(|view| {
-                self.controller
-                    .snapshot()
-                    .views
-                    .get(view)
-                    .is_some_and(|v| v.closed.is_none())
-                    && w.report
+        let snapshot = self.controller.snapshot();
+        if w.report.epoch != w.surface.epoch
+            || w.report.generation != snapshot.generation
+            || w.report.post_generation != snapshot.generation
+        {
+            return Err(AdapterError::Invalid("UIA tab projection is stale"));
+        }
+        w.report
+            .controls
+            .iter()
+            .find_map(|control| {
+                let view = control.target?;
+                if !control.enabled
+                    || control.id != format!("view/{}/tab", view.raw())
+                    || w.report
                         .controls
                         .iter()
-                        .any(|c| c.id == format!("view/{}/tab", view.raw()))
+                        .filter(|other| other.enabled && other.label == control.label)
+                        .count()
+                        != 1
+                {
+                    return None;
+                }
+                let record = snapshot.views.get(&view)?;
+                let frame = snapshot.frames.get(&record.frame)?;
+                if record.closed.is_some()
+                    || frame.selected_view == Some(view)
+                    || !frame.views.contains(&view)
+                {
+                    return None;
+                }
+                let slot = w.report.slots.iter().find(|slot| {
+                    slot.frame == frame.id
+                        && slot.workspace == frame.workspace
+                        && Some(slot.view) == frame.selected_view
+                        && slot.visible
+                        && slot.epoch == w.surface.epoch
+                })?;
+                let mut workspace = frame.workspace;
+                for _ in 0..snapshot.workspaces.len() {
+                    if workspace == w.surface.root {
+                        break;
+                    }
+                    let owner = snapshot.workspaces.get(&workspace)?.owner?;
+                    workspace = snapshot.frames.get(&owner)?.workspace;
+                }
+                if workspace != w.surface.root {
+                    return None;
+                }
+                // Provider clips exclude headers; use the current reserved header and frame clip.
+                let content = to_egui(slot.canonical_bounds);
+                let header = egui::Rect::from_min_size(
+                    content.min,
+                    egui::vec2(
+                        content.width(),
+                        (slot.bounds.y() - slot.canonical_bounds.y()).max(0.0) as f32,
+                    ),
+                );
+                let geometry = snapshot.geometry(frame.workspace).ok()?;
+                let visible = to_egui(control.bounds)
+                    .intersect(header)
+                    .intersect(to_egui(*geometry.clips.get(&frame.id)?))
+                    .intersect(to_egui(w.surface.bounds));
+                (visible.width() > 0.0 && visible.height() > 0.0).then_some(view)
             })
             .ok_or(AdapterError::Invalid(
                 "UIA lifecycle needs projected unselected tab",

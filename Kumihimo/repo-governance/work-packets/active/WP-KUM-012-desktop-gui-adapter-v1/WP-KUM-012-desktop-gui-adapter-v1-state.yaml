@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 23
+generation: 24
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -233,6 +233,30 @@ proof:
     methods. All source owners HOLD; owning/default/combined/raster/native affected proof remains pending.
     Existing provider/Core/JSON/content/lock proof unchanged; no guard weakening or Ready/HWND minted for temporary
     storage.
+- kind: actual_owning29_and_rendered_float_native_target_failures
+  source_revision: 7f439784e1088bcd2155e015a6646c5ee0abc1f6
+  log_sha256:
+    test: 2d4be565292b1843da2d16d393c7249fda0f65e6503d572c77263dadacc658fc
+    default: 01545f12abd5c1dd2df2020d699a05f9c25dbb70d8993de912ed9bfb96abfefe
+    combined: e98450e0fc2defe3ced064568d632aa8c16afeae7170c1e80021518f7b24b2fc
+    capture: b2589fd2c901a6ba5496c6932a57d85de570590cf23498799d98346b5e626dcc
+    native: e313efdc6c5d32e5ee74b788a04c340c8cdc19115dbbe3b9a606befa0599ce4b
+  observed: 'Owning29 GREEN compile19.17s/run5.01s; default/combined all-target PASS1.54s/3.11s. Actual capture
+    terminal PASS80 scenes but independent image inspection found floats painted below docked providers. Pinned
+    egui GraphicsLayers::drain paints unregistered base after registered floats. Native advanced to19 captures/3
+    returns/gen70/UIA9 then needs projected unselected tab: helper restricted physical root, excluding mounted
+    nested view16 with unique full group label. Earlier preview/header/popup/pin findings repaired; full acceptance
+    remains pending.'
+- kind: held_registered_base_and_qualified_native_target
+  baseline_revision: 7f439784e1088bcd2155e015a6646c5ee0abc1f6
+  source_fence17_raw_sha256: 70d4711bf3a57cb49b55a7ac7441299950a9bcd291630fe2a14f22d3dee0d739
+  source_fence17_lf_sha256: 158aefb371b37617a4378358dc5fdbdfc8ed848967b433b9c2d8f123cff54b8f
+  observed: 'Root inspected three-file candidate: register existing Middle base before floats, retain host
+    ordering and Foreground popup; add actual FullOutput.shapes paint-order assertion in existing E003. Native
+    helper qualifies current report epoch/generation, canonical membership/ancestor, mounted selected-provider
+    slot, visible reserved header/clip and unique enabled full label. Parent and diagnostic inspection complete;
+    all source owners HOLD. Original14 exact prefix, all29 tests and frozen13 methods preserved. Fresh affected
+    owning/default/combined/raster/native proof pending; unchanged provider/Core/JSON/content/lock proof reused.'
 blockers: []
 next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
   original13 evaluation afterward

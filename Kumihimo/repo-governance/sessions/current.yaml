@@ -104,7 +104,7 @@ build_lane:
     free_disk_gib: 3055.7
     rust_processes: []
     scope: Fresh coordination tick; next proof runner refreshes before serial Cargo
-  candidate_revision: 1b3f0678a8d138ca39682a84a44489eb82f556d9
+  candidate_revision: 7f439784e1088bcd2155e015a6646c5ee0abc1f6
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat

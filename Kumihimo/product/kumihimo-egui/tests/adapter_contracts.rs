@@ -1491,6 +1491,44 @@ fn assert_revealed_header_geometry(h: &egui_kittest::Harness<'_, UiProof>) {
 
 #[test]
 fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
+    let mut layered = demo::new().unwrap();
+    let floating = *layered.controller.snapshot().floats.keys().next().unwrap();
+    let binding = surface(layered.root);
+    let (output, report) = paint(&mut layered, &mut DesktopAdapter::default(), binding);
+    let menu = report
+        .controls
+        .iter()
+        .find(|control| control.id == format!("frame/{}/menu", floating.raw()))
+        .expect("actual floating header control");
+    let menu_rect = to_egui(menu.bounds);
+    let overlap = menu_rect.center();
+    let docked = report
+        .slots
+        .iter()
+        .find(|slot| slot.frame != floating && to_egui(slot.clip).contains(overlap))
+        .expect("floating header overlaps actual docked provider clip");
+    let docked_clip = to_egui(docked.clip);
+    let last_docked_paint = output
+        .shapes
+        .iter()
+        .enumerate()
+        .filter(|(_, shape)| {
+            docked_clip.contains_rect(shape.clip_rect)
+                && shape.shape.visual_bounding_rect().intersects(docked_clip)
+        })
+        .map(|(index, _)| index)
+        .last()
+        .expect("actual docked provider paint shapes");
+    let floating_label = output
+        .shapes
+        .iter()
+        .position(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text) => menu_rect.contains(text.pos),
+            _ => false,
+        })
+        .expect("actual floating menu text shape");
+    assert!(floating_label > last_docked_paint,
+        "float header paint must follow docked provider paint at overlap: {floating_label} <= {last_docked_paint}");
     let mut h = ui_proof(3, false);
     let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
     ui_click(&mut h, "Frame");

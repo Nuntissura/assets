@@ -333,6 +333,11 @@ impl DesktopAdapter {
         surface.validate()?;
         let policy = host.policy();
         policy.settings.validate()?;
+        // Register the base before floats: egui drains unregistered layers last.
+        ctx.move_to_top(egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new(("kumihimo-surface", 0_u64)),
+        ));
         let projection = workspace::project_with_chrome(controller, surface, host, &self.chrome)?;
         let control_limit = policy
             .max_regions
