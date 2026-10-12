@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Kumihimo browser B</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}
+body{font:16px sans-serif;background:#65364b;color:#fff;border:8px solid #fb9c72;padding:14px}
+h1{font-size:26px;margin:0 0 12px}button,input{font:16px sans-serif;height:34px}
+button{width:145px;background:#c5b5ff;color:#39223f;border:0;margin-bottom:10px}
+input{display:block;width:210px;padding:4px}#status{padding:12px 0;color:#c5b5ff}
+#tile{height:48px;width:80%;background:#fb9c72;color:#39223f;padding:12px}
+</style><body><h1>Browser B · Servo</h1><button id="action">Change B</button>
+<input id="field" aria-label="B keyboard field" placeholder="Keyboard B"><div id="status">B ready</div>
+<div id="tile">Independent rose view</div>
+<script>
+window.kumihimoState={view:'browser-b',clicks:0,keys:0,mutations:0,lastPointer:null,trustedPointer:false,trustedKeyboard:false};
+const state=window.kumihimoState;
+function display(){document.getElementById('status').textContent='B clicks '+state.clicks+' · keys '+state.keys+' · mutations '+state.mutations;}
+document.getElementById('action').addEventListener('click',function(e){state.clicks++;state.lastPointer={x:e.clientX,y:e.clientY};state.trustedPointer=e.isTrusted;document.getElementById('tile').style.background=state.clicks%2?'#c5b5ff':'#fb9c72';display();});
+document.getElementById('field').addEventListener('keydown',function(e){state.keys++;state.trustedKeyboard=e.isTrusted;display();});
+window.kumihimoMutate=function(value){state.mutations++;document.getElementById('tile').textContent='B mutation '+String(value);display();return state;};
+</script></body></html>
