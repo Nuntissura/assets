@@ -537,9 +537,19 @@ class Worker:
 
     def owned_descendants(self, engine):
         records = {}
+        known_owned = {self.worker["pid"]}
+        for owned_engine in self.engines.values():
+            known_owned.add(owned_engine["owned"]["pid"])
+            known_owned.update(owned_engine["descendants"])
         for entry in Path("/proc").iterdir():
             if entry.name.isdigit():
-                record = proc_record(int(entry.name))
+                pid = int(entry.name)
+                try:
+                    record = proc_record(pid)
+                except PermissionError:
+                    if pid in known_owned:
+                        raise
+                    continue  # Foreign metadata is not owned-process absence proof.
                 if record:
                     records[record["pid"]] = record
         ancestors = {engine["owned"]["pid"]}
