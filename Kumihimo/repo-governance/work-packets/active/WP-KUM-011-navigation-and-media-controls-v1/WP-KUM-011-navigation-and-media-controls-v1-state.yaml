@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 6
+generation: 8
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -59,7 +59,21 @@ proof:
     files unchanged. README currentAPI/host boundaries updated. Lead default-encoding state write failed before
     any compile; exact published663f814 state restored, own README converted UTF8, all47product inputs UTF8LF verified.
     No compile/runtime/evaluation verdict yet.
-blockers: []
-next_action: Lead publish held47file source candidate, fresh exact origin/blob fence and resources, then single
-  serial default/navigation/backgrounds/combined checks and focused24case/quiet example proof; evaluator independently
-  inspect exact candidate
+- kind: focused_compile_failure
+  source_revision: 15cb5cfa14400811f05efe5db94c1d5b095ffdea
+  observed: 'Default all-target check passed dev2.00s; navigation-only passed dev1.45s. Backgrounds-only original
+    Cargo exit101: E0618 at background_contracts.rs730, local Scope binding at626 shadows helper scope declared157.
+    Combined/test/example not run. Published47file fence exact and protected29files/other13lockentries unchanged.'
+- kind: held_recorded_remediation
+  failed_source: 15cb5cfa14400811f05efe5db94c1d5b095ffdea
+  observed: 'Inspected actual E0618 log and exact diff: only background-gated test helper definition/ten calls renamed
+    scope to mount_scope plus formatter wrapping, all assertions unchanged. Other46 product bytes identical; changed
+    test SHA227897e0; product fence be747afc0888b6ebec72a23f0c4fae68df47917584bf8cec8ae252885ba471dd. Failed backgrounds
+    compile outcome remains pending retry; default/navigation source/config/behavior closure unchanged and their
+    green proof retained.'
+blockers:
+- 'Backgrounds-only test-target E0618: background_contracts.rs730 helper call shadowed by local Scope binding626;
+  narrow fixture rename before remaining proof'
+next_action: Lead publish exact five-file fixture-remediation candidate, fresh origin/fence/resource observations
+  and GP020 confirmation; retry backgrounds predecessor, then combined/focused24cases/quietexample; no unrelated
+  proof reruns

@@ -81,10 +81,12 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Lead publish held47file source candidate, fresh exact origin/blob fence and resources, then single
-    serial default/navigation/backgrounds/combined checks and focused24case/quiet example proof; evaluator independently
-    inspect exact candidate
-  blockers: []
+  next_action: Lead publish exact five-file fixture-remediation candidate, fresh origin/fence/resource observations
+    and GP020 confirmation; retry backgrounds predecessor, then combined/focused24cases/quietexample; no unrelated
+    proof reruns
+  blockers:
+  - 'Backgrounds-only test-target E0618: background_contracts.rs730 helper call shadowed by local Scope binding626;
+    narrow fixture rename before remaining proof'
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter
   phase: planned

@@ -154,7 +154,7 @@ fn attached(f: &mut Fixture, target: MountTarget, share: Option<InstanceId>) -> 
     .unwrap();
     id
 }
-fn scope(c: &Controller, mount: MountId) -> Scope {
+fn mount_scope(c: &Controller, mount: MountId) -> Scope {
     c.inspect().mounts[&mount].scope.clone()
 }
 fn policy(work: MediaWork, fps: u16) -> MediaPolicy {
@@ -223,7 +223,7 @@ fn eval_kum_011_009_real_targets_composition_and_binding() {
         )
         .is_err());
     assert_eq!(f.c.inspect(), unchanged);
-    let current = scope(&f.c, b);
+    let current = mount_scope(&f.c, b);
     let mut layers = SettingsLayers::<BackgroundSettingsPatch>::default();
     layers.host_profile.brightness = Some(Scalar::new(0.8).unwrap());
     layers.workspace.brightness = Some(Scalar::new(1.1).unwrap());
@@ -349,7 +349,7 @@ fn eval_kum_011_010_legibility_motion_audio_and_input_denial() {
     let mut f = fixture(ContentLimits::default());
     let target = MountTarget::FrameBackground(f.frame);
     let mount = attached(&mut f, target, None);
-    let scope = scope(&f.c, mount);
+    let scope = mount_scope(&f.c, mount);
     let before = f.c.inspect().media[&scope.instance].clone();
     let mut layers = SettingsLayers::<BackgroundSettingsPatch>::default();
     layers.surface.opacity = Some(Scalar::new(0.0).unwrap());
@@ -452,8 +452,8 @@ fn eval_kum_011_011_shared_min_ceilings_exact_echo_and_unknown() {
     let a = attached(&mut f, MountTarget::WorkspaceBackground(workspace), None);
     let instance = f.c.inspect().mounts[&a].instance;
     let b = attached(&mut f, MountTarget::FrameBackground(frame), Some(instance));
-    let sa = scope(&f.c, a);
-    let sb = scope(&f.c, b);
+    let sa = mount_scope(&f.c, a);
+    let sb = mount_scope(&f.c, b);
     f.c.media_policy(sa.clone(), policy(MediaWork::Run, 60), permission(), 0)
         .unwrap();
     apply_budget(&mut f.c, a, 0, 1);
@@ -623,7 +623,7 @@ fn eval_kum_011_011_shared_min_ceilings_exact_echo_and_unknown() {
     let mut single = fixture(ContentLimits::default());
     let target = MountTarget::FrameBackground(single.frame);
     let mount = attached(&mut single, target, None);
-    let scope = scope(&single.c, mount);
+    let scope = mount_scope(&single.c, mount);
     single
         .c
         .background_settings(
@@ -727,7 +727,7 @@ fn eval_kum_011_011_shared_min_ceilings_exact_echo_and_unknown() {
     let mut changed = fixture(ContentLimits::default());
     let target = MountTarget::FrameBackground(changed.frame);
     let mount = attached(&mut changed, target, None);
-    let scope = scope(&changed.c, mount);
+    let scope = mount_scope(&changed.c, mount);
     let old = changed
         .c
         .media_policy(scope.clone(), policy(MediaWork::Run, 30), permission(), 0)
@@ -849,11 +849,16 @@ fn eval_kum_011_012_exact_shared_cache_release_and_bounded_recovery() {
     let a = attached(&mut f, MountTarget::WorkspaceBackground(workspace), None);
     let instance = f.c.inspect().mounts[&a].instance;
     let b = attached(&mut f, MountTarget::FrameBackground(frame), Some(instance));
-    f.c.media_policy(scope(&f.c, a), policy(MediaWork::Run, 30), permission(), 0)
-        .unwrap();
+    f.c.media_policy(
+        mount_scope(&f.c, a),
+        policy(MediaWork::Run, 30),
+        permission(),
+        0,
+    )
+    .unwrap();
     apply_budget(&mut f.c, a, 0, 1);
     f.c.media_policy(
-        scope(&f.c, b),
+        mount_scope(&f.c, b),
         policy(MediaWork::Throttle, 15),
         permission(),
         0,
@@ -872,7 +877,7 @@ fn eval_kum_011_012_exact_shared_cache_release_and_bounded_recovery() {
         cache
     );
     let unchanged = f.c.inspect();
-    let mut foreign = scope(&f.c, a);
+    let mut foreign = mount_scope(&f.c, a);
     foreign.session = "other-session".into();
     assert!(f
         .c
@@ -917,7 +922,7 @@ fn eval_kum_011_012_exact_shared_cache_release_and_bounded_recovery() {
     assert!(f.c.inspect().instances[&instance].reserved);
     assert!(f.c.inspect().media[&instance].invalidated);
     let unchanged = f.c.inspect();
-    assert!(f.c.observe_media(scope(&f.c, b), old_actual).is_err());
+    assert!(f.c.observe_media(mount_scope(&f.c, b), old_actual).is_err());
     assert_eq!(f.c.inspect(), unchanged);
     assert!(f
         .c
