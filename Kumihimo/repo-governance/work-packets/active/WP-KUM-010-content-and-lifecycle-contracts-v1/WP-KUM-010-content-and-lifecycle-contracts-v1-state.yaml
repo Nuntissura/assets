@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
-generation: 7
+generation: 9
 phase: active
 owner: ROLE-KUM-CODER-02
 changed_files:
@@ -38,6 +38,20 @@ proof:
   observed: Allthree coding actors held;40productfiles exactrawUTF8LF; allCore/JSONpackage source/tests/manifests
     unchanged from testedc387;12publicconsumers present but notrun. Intermediateall-targetcompilecandidate only;
     no completed010acceptance claim
+- kind: focused_runtime_and_source_gap
+  source_revision: 950b7c3df02dd1da3b3a885cd2c8e271cfdddd8b
+  observed: 'Contentalltargetcheck exit0/dev8.17s;12publicconsumers exit0/testcompile11.90s/runtime0.01s; preserved40fence.
+    Root inspected expire/dispatch: queueddeadline notexpired beforedelivery, R010acceptancegap; stopbeforeexample,
+    coderadmitted narrowqueuedtimeout/remnantUnknown remediation. Oneunusedfixturewarning cosmetic retained; no
+    full010PASS/done'
+- kind: targeted_remediation_fence
+  git_base: 950b7c3df02dd1da3b3a885cd2c8e271cfdddd8b
+  product_file_count: 40
+  product_digest: 195f1eca659828cd208b4d0ae45d36fb72cab19abd532059bc33e629af618c75
+  coder_owned11_digest: ecc920872dd185e61e3948948251f1adb0074b373b7c4515d382fdcadcbed391
+  observed: Allcodersheld; rootmatched11fence/exact5changedfilesUTF8LF; openedrouting/lifecycle/scheduler diff forR010queueddeadline/known-not-started
+    cancellation andR006everconfirmedinstancehold afterdetach; existingCases004/006 expanded; runtimepending. Core/JSON/manifests/lock
+    unchanged
 blockers: []
-next_action: Publish exact intermediate source candidate; lead serial focused content all-target compiler check
-  before behavioral tests; coder holds until compiler feedback
+next_action: Publish remediedexactcandidate thenlead serial focusedcontentcheck/twelvecases/quietexample; evaluatorreconcileonlyaffectedfinaldiff/logs
+  beforefullscopedverdict

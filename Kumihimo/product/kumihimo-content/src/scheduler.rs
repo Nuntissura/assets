@@ -345,11 +345,10 @@ impl Controller {
         self.transaction(|core, s| {
             s.time(now)?;
             s.permission(mount, permission)?;
-            let m = s
-                .mounts
-                .get(&mount)
-                .ok_or(Error::Missing("mount", mount.0))?
-                .clone();
+            s.expire(now);
+            let Some(m) = s.mounts.get(&mount).cloned() else {
+                return Ok(None);
+            };
             if s.instances[&m.instance].busy.is_some() {
                 return Ok(None);
             }

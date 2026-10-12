@@ -602,6 +602,97 @@ fn eval_003_epochs_restore_replay_and_exact_ack() {
 
 #[test]
 fn eval_004_lifecycle_unknown_timeout_and_reconciliation() {
+    for direct_pull in [false, true] {
+        let mut queued = fixture(2, Default::default());
+        negotiate(&mut queued, shared());
+        let mut recorder = RecordingHost::default();
+        let mount = attached(&mut queued, &mut recorder, 0, None);
+        let focus = queued
+            .controller
+            .request(mount, RequestKind::Focus(true), permission(), 0)
+            .unwrap();
+        let action = queued
+            .controller
+            .request(mount, input("dependent queued input"), permission(), 0)
+            .unwrap();
+        let observed = recorder.observed.len();
+        let before = queued.controller.inspect();
+        assert!(matches!(
+            queued.controller.dispatch(
+                mount,
+                HostPermission {
+                    allowed: false,
+                    eligibility_revision: 0
+                },
+                30_000
+            ),
+            Err(Error::PermissionDenied)
+        ));
+        assert_eq!(queued.controller.inspect(), before);
+        if direct_pull {
+            assert!(queued
+                .controller
+                .dispatch(mount, permission(), 30_000)
+                .unwrap()
+                .is_none());
+        } else {
+            queued.controller.advance(30_000).unwrap();
+            assert!(queued
+                .controller
+                .dispatch(mount, permission(), 30_000)
+                .unwrap()
+                .is_none());
+        }
+        let expired = queued.controller.inspect();
+        let focus_receipt = expired
+            .receipts
+            .iter()
+            .find(|r| r.ticket.id == focus)
+            .unwrap();
+        assert_eq!(focus_receipt.status, RequestStatus::Cancelled);
+        assert_eq!(focus_receipt.cause, Some("queued deadline"));
+        assert_eq!(
+            expired
+                .receipts
+                .iter()
+                .find(|r| r.ticket.id == action)
+                .unwrap()
+                .status,
+            RequestStatus::Rejected
+        );
+        assert_eq!(expired.counts.pending, 0);
+        assert_eq!(expired.counts.queue, 0);
+        assert_eq!(expired.counts.instances, 1);
+        assert_eq!(recorder.observed.len(), observed);
+        assert!(matches!(
+            queued.controller.dispatch(mount, permission(), 29_999),
+            Err(Error::TimeWentBack)
+        ));
+        assert_eq!(queued.controller.inspect(), expired);
+    }
+    let mut queued_attach = fixture(2, Default::default());
+    negotiate(&mut queued_attach, shared());
+    let canonical = queued_attach.controller.snapshot().clone();
+    let mount = queued_attach
+        .controller
+        .attach(queued_attach.views[0], Default::default(), permission(), 0)
+        .unwrap();
+    let attach_id = queued_attach.controller.inspect().queue[0];
+    queued_attach.controller.advance(30_000).unwrap();
+    let expired = queued_attach.controller.inspect();
+    assert_eq!(expired.counts.mounts, 0);
+    assert_eq!(expired.counts.instances, 0);
+    assert_eq!(expired.counts.pending, 0);
+    assert_eq!(expired.counts.queue, 0);
+    assert!(!expired.mounts.contains_key(&mount));
+    let receipt = expired
+        .receipts
+        .iter()
+        .find(|r| r.ticket.id == attach_id)
+        .unwrap();
+    assert_eq!(receipt.status, RequestStatus::Cancelled);
+    assert_eq!(receipt.cause, Some("queued deadline"));
+    assert_eq!(queued_attach.controller.snapshot(), &canonical);
     let mut f = fixture(2, Default::default());
     negotiate(&mut f, shared());
     let mut host = RecordingHost::default();
@@ -1081,6 +1172,313 @@ fn eval_005_shared_moves_close_veto_and_historical_close() {
 
 #[test]
 fn eval_006_saved_live_protection_and_saturated_recovery() {
+    for retired in [false, true] {
+        let mut g = fixture(2, Default::default());
+        negotiate(&mut g, shared());
+        let mut recorder = RecordingHost::default();
+        let mount = attached(&mut g, &mut recorder, 0, None);
+        let instance = g.controller.inspect().mounts[&mount].instance;
+        g.controller
+            .set_eligibility(
+                mount,
+                Eligibility {
+                    revision: 1,
+                    can_destroy: true,
+                    recoverable: true,
+                    host_allowed: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let current = HostPermission {
+            allowed: true,
+            eligibility_revision: 1,
+        };
+        if retired {
+            let view = g.views[0];
+            assert!(execute(
+                &mut g,
+                Command::CloseView {
+                    view,
+                    approved: true
+                }
+            )
+            .outcome
+            .result
+            .is_ok());
+            assert!(!g.controller.inspect().mounts[&mount].active);
+            assert_eq!(g.controller.inspect().counts.instances, 1);
+        }
+        let detach = g
+            .controller
+            .recover_mount(mount, RequestKind::Detach, current, 0)
+            .unwrap();
+        let request = g
+            .controller
+            .dispatch_recovery(instance, current, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.ticket.id, detach);
+        let old_ticket = request.ticket.clone();
+        recorder.acknowledge(
+            &mut g.controller,
+            request,
+            AckResult::Confirmed(Confirmation::Done),
+            0,
+        );
+        assert_eq!(g.controller.inspect().counts.mounts, 0);
+        assert_eq!(g.controller.inspect().counts.instances, 1);
+        assert!(g.controller.inspect().instances[&instance].reserved);
+        let dispose = g
+            .controller
+            .recover_instance(instance, RequestKind::Dispose, current, 0)
+            .unwrap();
+        let request = g
+            .controller
+            .dispatch_recovery(instance, current, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.ticket.id, dispose);
+        assert_eq!(g.controller.inspect().counts.instances, 1);
+        recorder.acknowledge(
+            &mut g.controller,
+            request,
+            AckResult::Confirmed(Confirmation::Done),
+            0,
+        );
+        assert_eq!(g.controller.inspect().counts.instances, 0);
+        let before = g.controller.inspect();
+        g.controller
+            .ack(
+                Ack {
+                    ticket: old_ticket,
+                    result: AckResult::Confirmed(Confirmation::Done),
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(g.controller.inspect(), before);
+    }
+    for cancel in [false, true] {
+        let mut g = fixture(2, Default::default());
+        negotiate(&mut g, shared());
+        let mut recorder = RecordingHost::default();
+        let first = attached(&mut g, &mut recorder, 0, None);
+        let instance = g.controller.inspect().mounts[&first].instance;
+        g.controller
+            .set_eligibility(
+                first,
+                Eligibility {
+                    revision: 1,
+                    can_destroy: true,
+                    recoverable: true,
+                    host_allowed: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let current = HostPermission {
+            allowed: true,
+            eligibility_revision: 1,
+        };
+        let pending_mount = g
+            .controller
+            .attach(
+                g.views[1],
+                AttachOptions {
+                    mode: ContentMode::FullEditor,
+                    share: Some(instance),
+                    host_share: true,
+                },
+                permission(),
+                0,
+            )
+            .unwrap();
+        let queued = g.controller.inspect().queue[0];
+        g.controller
+            .recover_mount(first, RequestKind::Detach, current, 0)
+            .unwrap();
+        let detach = g
+            .controller
+            .dispatch_recovery(instance, current, 0)
+            .unwrap()
+            .unwrap();
+        recorder.acknowledge(
+            &mut g.controller,
+            detach,
+            AckResult::Confirmed(Confirmation::Done),
+            0,
+        );
+        assert_eq!(g.controller.inspect().counts.mounts, 1);
+        assert_eq!(g.controller.inspect().counts.instances, 1);
+        let now = if cancel { 0 } else { 30_000 };
+        if cancel {
+            g.controller.cancel(queued, now).unwrap();
+        } else {
+            g.controller.advance(now).unwrap();
+        }
+        let snapshot = g.controller.inspect();
+        assert_eq!(snapshot.counts.mounts, 0);
+        assert_eq!(snapshot.counts.instances, 1);
+        assert!(snapshot.instances[&instance].reserved);
+        assert!(!snapshot.mounts[&pending_mount].reserved);
+        assert_eq!(
+            snapshot
+                .receipts
+                .iter()
+                .find(|r| r.ticket.id == queued)
+                .unwrap()
+                .status,
+            RequestStatus::Cancelled
+        );
+        assert_eq!(recorder.observed.len(), 2);
+        g.controller
+            .recover_instance(instance, RequestKind::Dispose, current, now)
+            .unwrap();
+        let dispose = g
+            .controller
+            .dispatch_recovery(instance, current, now)
+            .unwrap()
+            .unwrap();
+        recorder.acknowledge(
+            &mut g.controller,
+            dispose,
+            AckResult::Confirmed(Confirmation::Done),
+            now,
+        );
+        assert_eq!(g.controller.inspect().counts.instances, 0);
+    }
+    for direct_pull in [false, true] {
+        let mut queued_recovery = fixture(2, Default::default());
+        negotiate(&mut queued_recovery, shared());
+        let mut recorder = RecordingHost::default();
+        let mount = attached(&mut queued_recovery, &mut recorder, 0, None);
+        let original = queued_recovery
+            .controller
+            .request(mount, RequestKind::Invalidate, permission(), 0)
+            .unwrap();
+        recorder.pull(&mut queued_recovery.controller, mount, 0);
+        queued_recovery.controller.advance(30_000).unwrap();
+        let instance = queued_recovery.controller.inspect().mounts[&mount].instance;
+        queued_recovery
+            .controller
+            .set_limits(ContentLimits {
+                pending: Some(0),
+                queue: Some(0),
+                leases: Some(0),
+                ..Default::default()
+            })
+            .unwrap();
+        let query = queued_recovery
+            .controller
+            .recover_mount(
+                mount,
+                RequestKind::Reconcile {
+                    uncertain: original,
+                },
+                permission(),
+                30_000,
+            )
+            .unwrap();
+        let before = queued_recovery.controller.inspect();
+        assert!(matches!(
+            queued_recovery.controller.dispatch_recovery(
+                instance,
+                HostPermission {
+                    allowed: false,
+                    eligibility_revision: 0
+                },
+                60_000
+            ),
+            Err(Error::PermissionDenied)
+        ));
+        assert_eq!(queued_recovery.controller.inspect(), before);
+        if direct_pull {
+            assert!(queued_recovery
+                .controller
+                .dispatch_recovery(instance, permission(), 60_000)
+                .unwrap()
+                .is_none());
+        } else {
+            queued_recovery.controller.advance(60_000).unwrap();
+            assert!(queued_recovery
+                .controller
+                .dispatch_recovery(instance, permission(), 60_000)
+                .unwrap()
+                .is_none());
+        }
+        let expired = queued_recovery.controller.inspect();
+        let old = expired
+            .receipts
+            .iter()
+            .find(|r| r.ticket.id == query)
+            .unwrap();
+        assert_eq!(old.status, RequestStatus::Cancelled);
+        assert_eq!(old.cause, Some("queued deadline"));
+        let old_ticket = old.ticket.clone();
+        assert_eq!(expired.pending[&original].status, RequestStatus::Unknown);
+        assert_eq!(expired.counts.instances, 1);
+        assert_eq!(expired.counts.mounts, 1);
+        assert!(matches!(
+            queued_recovery
+                .controller
+                .dispatch_recovery(instance, permission(), 59_999),
+            Err(Error::TimeWentBack)
+        ));
+        assert_eq!(queued_recovery.controller.inspect(), expired);
+        let fresh = queued_recovery
+            .controller
+            .recover_mount(
+                mount,
+                RequestKind::Reconcile {
+                    uncertain: original,
+                },
+                permission(),
+                60_000,
+            )
+            .unwrap();
+        assert_ne!(fresh, query);
+        let request = queued_recovery
+            .controller
+            .dispatch_recovery(instance, permission(), 60_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.ticket.id, fresh);
+        let before = queued_recovery.controller.inspect();
+        assert!(queued_recovery
+            .controller
+            .ack(
+                Ack {
+                    ticket: old_ticket,
+                    result: AckResult::Confirmed(Confirmation::Reconciled {
+                        effect: Effect::NotApplied,
+                        lifecycle: Some(LifecycleState::Visible)
+                    })
+                },
+                60_000
+            )
+            .is_err());
+        assert_eq!(queued_recovery.controller.inspect(), before);
+        recorder.acknowledge(
+            &mut queued_recovery.controller,
+            request,
+            AckResult::Confirmed(Confirmation::Reconciled {
+                effect: Effect::NotApplied,
+                lifecycle: Some(LifecycleState::Visible),
+            }),
+            60_000,
+        );
+        assert_eq!(
+            queued_recovery.controller.inspect().mounts[&mount].status,
+            MountStatus::Attached
+        );
+        assert_eq!(queued_recovery.controller.inspect().counts.instances, 1);
+        assert!(!queued_recovery
+            .controller
+            .inspect()
+            .pending
+            .contains_key(&original));
+    }
     for protection in 0..5 {
         let mut g = fixture(2, Default::default());
         negotiate(&mut g, shared());

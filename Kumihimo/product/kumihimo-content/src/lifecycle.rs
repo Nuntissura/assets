@@ -48,10 +48,12 @@ impl State {
             m.confirmed = Observation::Unknown;
             self.permits.remove(&id);
         }
+        self.stale_where(|p| p.request.ticket.scope.mount == id);
     }
     pub(crate) fn release_empty_uncommitted_instance(&mut self, id: InstanceId) {
         if let Some(i) = self.instances.get_mut(&id) {
-            if i.mounts.iter().all(|id| !self.mounts[id].reserved)
+            if !i.started
+                && i.mounts.iter().all(|id| !self.mounts[id].reserved)
                 && i.busy.is_none()
                 && !self.caches.values().any(|c| c.instance == id)
             {
@@ -124,6 +126,7 @@ impl State {
         let instance = p.request.ticket.scope.instance;
         match (&p.request.kind, c) {
             (RequestKind::Attach { .. }, Confirmation::Attached { strength }) => {
+                self.instances.get_mut(&instance).unwrap().started = true;
                 let m = self
                     .mounts
                     .get_mut(&id)
@@ -277,14 +280,36 @@ impl State {
             .values()
             .chain(self.mounts.values().filter_map(|m| m.recovery.as_ref()))
             .chain(self.instances.values().filter_map(|i| i.recovery.as_ref()))
-            .filter(|p| p.status == RequestStatus::Dispatched && now >= p.request.deadline)
-            .map(|p| (p.request.ticket.id, p.request.ticket.scope.mount))
+            .filter(|p| {
+                matches!(p.status, RequestStatus::Queued | RequestStatus::Dispatched)
+                    && now >= p.request.deadline
+            })
+            .map(|p| p.request.ticket.id)
             .collect();
-        for (id, mount) in ids {
-            self.unknown(id);
-            if let Some(m) = self.mounts.get_mut(&mount) {
-                m.status = MountStatus::Unknown;
-                m.confirmed = Observation::Unknown;
+        for id in ids {
+            let Some(p) = self.get_request(id) else {
+                continue;
+            };
+            let mount = p.request.ticket.scope.mount;
+            if p.status == RequestStatus::Queued {
+                self.remove_request(id);
+                self.reject_dependents(mount, id);
+                if matches!(p.request.kind, RequestKind::Attach { .. }) {
+                    self.release_mount(mount);
+                    self.release_empty_uncommitted_instance(p.request.ticket.scope.instance);
+                }
+                if let RequestKind::CacheRelease(cache) = p.request.kind {
+                    if let Some(c) = self.caches.get_mut(&cache) {
+                        c.requested_release = false;
+                    }
+                }
+                self.receipt(p, RequestStatus::Cancelled, None, Some("queued deadline"));
+            } else {
+                self.unknown(id);
+                if let Some(m) = self.mounts.get_mut(&mount) {
+                    m.status = MountStatus::Unknown;
+                    m.confirmed = Observation::Unknown;
+                }
             }
         }
     }
@@ -460,8 +485,20 @@ impl Controller {
                         .find(|p| p.status == RequestStatus::Queued)
                 })
                 .cloned();
-            let Some(p) = p else { return Ok(None) };
+            let Some(p) = p else {
+                s.permission(i.scope.mount, permission)?;
+                s.expire(now);
+                return Ok(None);
+            };
             s.permission(p.request.ticket.scope.mount, permission)?;
+            s.expire(now);
+            let Some(p) = s.get_request(p.request.ticket.id) else {
+                return Ok(None);
+            };
+            let i = s
+                .instances
+                .get(&instance)
+                .ok_or(Error::Missing("instance", instance.0))?;
             if p.eligibility_revision
                 != s.mounts[&p.request.ticket.scope.mount].eligibility.revision
             {
