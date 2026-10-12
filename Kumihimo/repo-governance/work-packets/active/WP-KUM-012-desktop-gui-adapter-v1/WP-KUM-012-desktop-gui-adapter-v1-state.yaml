@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 20
+generation: 21
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -25,6 +25,7 @@ changed_files:
 - product/Cargo.toml
 - product/Cargo.lock
 - product/third-party/accesskit_windows-0.29.2/
+- product/kumihimo-egui/Cargo.toml
 proof:
 - kind: local_full_contract_preparation
   source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
@@ -197,6 +198,16 @@ proof:
     reordered frame vector, so actual4/4 command correctly unchanged. Held suffix chooses a distinct current
     supported frame and asserts distinctness before real pointer click; original changed-layout assertion,
     all29 and original14 prefix preserved. No product/Core changes; fresh owning pending.
+- kind: actual_owning29_and_default_optional_diagnostic_guard
+  baseline_revision: 06e6cbd7a77cf6a38afdc77da29cd6f0da2db7eb
+  source_fence17_raw_sha256: f6dba87e1805fc123b513305f603c85924db2c8ed25e97ee04143a90c76e4f3c
+  source_fence17_lf_sha256: b0038e17282deddd48778179a2b346b02a005f42cc7b9fa502dbc83620b2d1ee
+  observed: Actual owning29 GREEN compile10.72s/run4.94s; no ignored cases. Fresh default all-target failed
+    E0433 at four new chrome diagnostic JSON sites because serde_json belongs to optional capture feature.
+    Held chrome-only guard repair preserves default command/UI execution, capture-feature diagnostic semantics
+    and all29 tests/original14 prefix. Manifest/lock/Core unchanged. Default then combined compile and fresh
+    actual raster/native captures pending; unchanged all-feature owning proof can be reused only after exact
+    guarded-body equivalence inspection.
 blockers: []
-next_action: Run one affected owning29 target with distinct current canonical Swap recipient; then affected
-  compile and actual captures
+next_action: Run affected default then combined compile on optional diagnostic guards; acquire actual fresh
+  raster/native bundle

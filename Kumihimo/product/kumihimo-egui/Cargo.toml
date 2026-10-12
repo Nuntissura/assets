@@ -32,3 +32,4 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Syst
 [dev-dependencies]
 egui_kittest = { version = "=0.33.3", default-features = false }
 kumihimo-layout-json = { path = "../kumihimo-layout-json", version = "0.1.0" }
+serde_json = { version = "=1.0.151" }

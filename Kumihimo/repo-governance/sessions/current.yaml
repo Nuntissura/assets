@@ -85,13 +85,13 @@ build_lane:
     free_disk_gib: 3055.7
     rust_processes: []
     scope: Fresh coordination tick; next proof runner refreshes before serial Cargo
-  candidate_revision: 2621f84dddbbebf72ab7a49680094a07b912f116
+  candidate_revision: 06e6cbd7a77cf6a38afdc77da29cd6f0da2db7eb
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Run one affected owning29 target with distinct current canonical Swap recipient; then affected
-  compile and actual captures; WP014 remains gated by WP012 DONE
+next_action: Run affected default then combined compile on optional diagnostic guards; acquire actual fresh
+  raster/native bundle; WP014 remains gated by WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

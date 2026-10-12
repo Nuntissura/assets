@@ -471,3 +471,23 @@ focused_standalone_owning_test_admission:
     standalone_workspace_member: accesskit_windows 0.29.2 only
     product_feature_change: false
   proof_boundary: Dependency readiness permits the standalone owning test; its compilation and result remain pending. The root native consumer continues to use the root lock and local patch. Component proof does not replace the required strict quiet UIA/native acceptance.
+focused_default_test_json_readiness:
+  observed_at: '2026-10-12'
+  verdict: ready_for_lead_default_compile
+  proposed_dev_dependency: serde_json = '=1.0.151'
+  lead_manifest_change_observed: true
+  manifest_ref: product/kumihimo-egui/Cargo.toml
+  manifest_sha256: 251d30e68d55813385db95de9e9c6a4b6c1b2316e730e80354c4a3fafacfea3d
+  requirement_evidence: Ungated UiProof trace and json! calls at adapter_contracts.rs lines 931 and 997 require JSON for default tests.
+  lock_sha256: d33c396e6827d8acdb4c1591974f71e3c15bc31f17129712aa67a436b21b24d8
+  locked_package_and_adapter_package_edge_already_present: serde_json 1.0.151
+  archive_sha256: c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14
+  selected_features_match_existing_all_feature_graph: [default, std]
+  cached_checksum_matched_packages: [serde_json, itoa, memchr, serde, serde_core, zmij]
+  declared_serde_json_rust_version: '1.71'
+  new_packages_or_acquisition_required: false
+  all_feature_lock_package_edges_or_feature_union_change: false
+  dependency_kind_change: Adds dev-kind JSON availability to default tests.
+  ordinary_default_normal_dependency: Remains optional and enabled by capture.
+  fresh_lead_default_compile: pending
+  proof_boundary: Frozen dependency preparation only; compilation and runtime acceptance remain pending.

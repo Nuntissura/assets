@@ -108,6 +108,7 @@ pub(crate) fn command(
 fn button(ui: &mut egui::Ui, key: &str, label: &str, report: &mut FrameReport) -> bool {
     let response = ui.push_id(key, |ui| ui.button(label)).inner;
     record(report, &response, key.into(), label.into(), None);
+    #[cfg(feature = "capture")]
     if key.ends_with("/preview-float-redock") || key.starts_with("destination/") {
         let events = ui.input(|input| {
             input
@@ -538,7 +539,9 @@ fn group_menu(
                     0
                 };
             let group_index = target.groups.len() - usize::from(destination == record.frame);
+            #[cfg(feature = "capture")]
             let before_generation = controller.snapshot().generation;
+            #[cfg(feature = "capture")]
             let rejection_start = report.rejected.len();
             command(
                 controller,
@@ -551,10 +554,12 @@ fn group_menu(
                 },
                 report,
             );
+            #[cfg(feature = "capture")]
             let trace = serde_json::json!({"group":group.raw(),"requested_destination":destination.raw(),
                 "before_generation":before_generation,"after_generation":controller.snapshot().generation,
                 "actual_group_frame":controller.snapshot().groups[&group].frame.raw(),
                 "dispatch_rejections":report.rejected.iter().skip(rejection_start).collect::<Vec<_>>()});
+            #[cfg(feature = "capture")]
             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("kumihimo-group-move-result"), trace));
         }
     });
@@ -662,7 +667,9 @@ fn frame_menu(
     let swap_menu = ui.menu_button("Swap with…", |ui| {
         if let Some(second) = destinations(ui, controller, state, "swap-destinations", size, report)
         {
+            #[cfg(feature = "capture")]
             let before_generation = controller.snapshot().generation;
+            #[cfg(feature = "capture")]
             let rejection_start = report.rejected.len();
             command(
                 controller,
@@ -673,10 +680,12 @@ fn frame_menu(
                 },
                 report,
             );
+            #[cfg(feature = "capture")]
             let trace = serde_json::json!({"first":f.frame.raw(),"second":second.raw(),
                 "pass":ui.ctx().cumulative_pass_nr(),"before_generation":before_generation,
                 "after_generation":controller.snapshot().generation,
                 "dispatch_rejections":report.rejected.iter().skip(rejection_start).collect::<Vec<_>>()});
+            #[cfg(feature = "capture")]
             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("kumihimo-swap-result"), trace));
         }
     });
@@ -938,6 +947,7 @@ pub fn draw(
                 format!("Reveal frame {} controls", frame.frame.raw()),
                 None,
             );
+            #[cfg(feature = "capture")]
             let pointer_events = ctx.input(|input| {
                 input
                     .events
@@ -954,6 +964,7 @@ pub fn draw(
                     .cloned()
                     .collect::<Vec<_>>()
             });
+            #[cfg(feature = "capture")]
             if let Some(point) = pointer_events
                 .iter()
                 .rev()
