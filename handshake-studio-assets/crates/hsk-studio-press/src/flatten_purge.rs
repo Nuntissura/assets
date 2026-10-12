@@ -566,7 +566,8 @@ enum Kind {
     /// A dictionary that is none of those (a graphics state, a font).
     Plain,
     /// Anything else: not a dictionary, an XObject subtype on a non-stream, a stream of no drawable kind, an object
-    /// with an `/OC` (optional content is not evaluated: possibly hidden, so never a certain draw).
+    /// with an `/OC` (optional content is not evaluated: possibly hidden, so not a certain draw; test
+    /// `painted_source_under_optional_content_is_reported`).
     Other,
 }
 
