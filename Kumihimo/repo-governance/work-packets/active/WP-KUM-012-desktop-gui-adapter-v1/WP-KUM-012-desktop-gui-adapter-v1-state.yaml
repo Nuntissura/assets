@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 9
+generation: 10
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -97,6 +97,12 @@ proof:
   observed: All seventeen admitted sources HOLD; nine changed paths, original fourteen test prefix exact, fifteen
     additive owning functions and original capture sequence retained. New rendering inputs require fresh actual
     captures. All new runtime variants unexecuted; unchanged provider owning b7 test reused.
+- kind: causal_default_compile_remediation
+  failed_revision: 9de99ce6c7c40b47a637aae72e3807a088fa6731
+  observed: 'Default check E0618 chrome519: existing Group local record shadowed newly added helper call. Coder
+    and diagnostic inspected actual output/source; only group call explicitly qualified, all arguments/control identity
+    retained. No runtime proof yet.'
+  repair_source_sha256: e053a3908fb56490f5319cebe958dbd4ad3aa4bcd274c2da5df045230e4a8e6e
 blockers: []
-next_action: 'One serial affected batch: default/all-feature checks, all29 owning cases, fresh capture states and
-  extended quiet native/UIA; independent original13 outcome before publication/DONE'
+next_action: Publish one-line qualified group recorder, rerun narrow default; proceed to remaining single affected
+  bundle only when green

@@ -516,7 +516,7 @@ fn group_menu(
             );
         }
     });
-    record(
+    crate::chrome::record(
         report,
         &move_menu.response,
         format!("group/{}/move-menu", group.raw()),
