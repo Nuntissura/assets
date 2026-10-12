@@ -10,18 +10,28 @@
 //! * OPEN is answered by OPENED alone (or by ERROR). A FRAME answering OPEN is a protocol fault (test
 //!   `frame_reply_to_open_is_a_protocol_fault`); so is a BATCH_END.
 //! * PACKET and FINISH are answered by zero or more FRAME replies (at most `MAX_FRAMES_PER_BATCH`) and then
-//!   one BATCH_END whose count equals the FRAMEs received (or an ERROR; OPENED is a protocol fault). Each
-//!   FRAME is within the container-declared picture size and carries the tag of a PACKET sent in the same
-//!   session (tests `oversize_picture_under_the_reply_cap_is_a_protocol_fault`,
-//!   `frame_with_an_unsent_tag_is_a_protocol_fault`).
+//!   one BATCH_END whose count equals the FRAMEs received (or an ERROR). Each FRAME is within the
+//!   container-declared picture size and carries the tag of a PACKET sent in the same session. Each breach
+//!   is a protocol fault, with its test: a FRAME over the declared size
+//!   (`oversize_picture_under_the_reply_cap_is_a_protocol_fault`), a FRAME with an unsent tag
+//!   (`frame_with_an_unsent_tag_is_a_protocol_fault`), more than `MAX_FRAMES_PER_BATCH` FRAMEs in one batch
+//!   (`more_frames_than_a_batch_may_hold_is_a_protocol_fault`), a BATCH_END whose count differs from the FRAMEs
+//!   received (`batch_end_count_differing_from_the_frames_received_is_a_protocol_fault`) and OPENED answering
+//!   PACKET (`opened_reply_to_a_packet_is_a_protocol_fault`) or FINISH
+//!   (`opened_reply_to_finish_is_a_protocol_fault`).
 //! * Every reply echoes the request id, so a stale or mismatched frame is a protocol fault (unit test
 //!   `wire_roundtrip_and_bounds`).
 //!
-//! HELLO: a greeting above the cap, made of bytes that are no frame, or that cannot be decoded is a
-//! protocol fault (tests `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
+//! HELLO: its first four bytes are read as a length. A greeting above the cap is a protocol fault: an
+//! oversize frame, and any bytes that are no frame whose first four bytes read as a length above the cap (a
+//! text banner does); so is a frame within the cap that cannot be decoded (tests
+//! `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
 //! `garbage_hello_is_a_protocol_fault_not_a_spawn_failure`,
-//! `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`); a worker that closes its output before
-//! greeting is a spawn failure (test `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`).
+//! `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`). A worker that closes its output before the
+//! greeting is complete is a spawn failure: it wrote nothing, fewer than four bytes, or fewer bytes than the
+//! length it announced (tests `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`,
+//! `a_greeting_cut_short_is_a_spawn_failure_not_a_protocol_fault`); so is one that stays silent past
+//! `spawn_timeout`.
 //!
 //! All decoding is bounds-checked and all size arithmetic is checked: a malformed frame (including one
 //! declaring u32::MAX dimensions, test `frame_dims_u32_max_is_malformed`) is `Malformed`, and nothing is
@@ -451,9 +461,10 @@ pub(crate) fn encode_oversize_frame(id: u64, filler: usize) -> Vec<u8> {
     out.0
 }
 
-/// A well-formed FRAME (2x2 mono 8-bit, inside any declared size): the worker's frame-on-OPEN test fault.
+/// A well-formed FRAME (2x2 mono 8-bit, inside any declared size) carrying `tag`: the worker's frame-on-OPEN
+/// (tag 0) and too-many-frames (the tag of the PACKET) test faults.
 #[cfg(all(feature = "av1-worker", feature = "test-faults"))]
-pub(crate) fn encode_tiny_frame(id: u64) -> Vec<u8> {
+pub(crate) fn encode_tiny_frame(id: u64, tag: u64) -> Vec<u8> {
     let format = VideoFormat {
         width: 2,
         height: 2,
@@ -470,7 +481,7 @@ pub(crate) fn encode_tiny_frame(id: u64) -> Vec<u8> {
     encode_frame(
         id,
         &WireFrame {
-            tag: 0,
+            tag,
             format,
             film_grain_applied: false,
             planes: vec![vec![0_u8; 4]],
@@ -500,6 +511,19 @@ pub(crate) fn encode_malformed_hello() -> Vec<u8> {
 /// length prefix far above the handshake cap.
 #[cfg(all(feature = "av1-worker", feature = "test-faults"))]
 pub(crate) const GARBAGE_HELLO: &[u8] = b"reel-native-av1-worker banner, not a frame\n";
+
+/// Fewer bytes than a length prefix: the worker's short-HELLO test fault (written, then the worker exits).
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
+pub(crate) const SHORT_HELLO: &[u8] = b"hi\n";
+
+/// A length prefix of 64 (within the handshake cap) followed by ten of the 64 bytes it announces: the worker's
+/// cut-HELLO test fault (written, then the worker exits).
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
+pub(crate) fn cut_hello() -> Vec<u8> {
+    let mut bytes = 64_u32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&[KIND_HELLO, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    bytes
+}
 
 /// A frame of an unknown kind: the worker's protocol-garbage test fault.
 #[cfg(all(feature = "av1-worker", feature = "test-faults"))]

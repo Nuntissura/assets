@@ -663,6 +663,17 @@ fn frame_reply_to_open_is_a_protocol_fault() {
 /// reel's registry route gives reel's distinct `DecoderFault::Protocol`, counted once more (3). Nothing is
 /// counted as a spawn failure, an output-cap kill or a crash, and no worker stays alive or is pooled.
 fn assert_protocol_fault_counted_once_per_call(liar: &WorkerAv1Provider, case: &str) {
+    assert_protocol_fault_counted_once_per_call_after(liar, case, 0);
+}
+
+/// [`assert_protocol_fault_counted_once_per_call`] for a fault the host can only see after earlier replies of the
+/// same request or session were delivered: at most `pictures` pictures reached the sink before the violation (the
+/// one FRAME that precedes the batch cap; the pictures of the PACKETs before a FINISH).
+fn assert_protocol_fault_counted_once_per_call_after(
+    liar: &WorkerAv1Provider,
+    case: &str,
+    pictures: usize,
+) {
     let limits = Limits::default();
     for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
         let mut sink = Collect::default();
@@ -682,8 +693,9 @@ fn assert_protocol_fault_counted_once_per_call(liar: &WorkerAv1Provider, case: &
         );
         assert_eq!(error.code(), "worker_protocol", "{case} {name}");
         assert!(
-            sink.chunks.is_empty(),
-            "{case} {name}: a picture reached the sink"
+            sink.chunks.len() <= pictures,
+            "{case} {name}: {} pictures reached the sink, at most {pictures} may",
+            sink.chunks.len()
         );
         let stats = liar.stats();
         assert_eq!(
@@ -717,7 +729,11 @@ fn assert_protocol_fault_counted_once_per_call(liar: &WorkerAv1Provider, case: &
         },
         "{case} registry route"
     );
-    assert!(sink.chunks.is_empty(), "{case} registry route");
+    assert!(
+        sink.chunks.len() <= pictures,
+        "{case} registry route: {} pictures reached the sink, at most {pictures} may",
+        sink.chunks.len()
+    );
     let stats = liar.stats();
     assert_eq!(
         (
@@ -750,6 +766,49 @@ fn frame_with_an_unsent_tag_is_a_protocol_fault() {
     });
 }
 
+/// PLR-078 (R15 pre-review): a worker that breaks one reply-grammar rule of `wire.rs` (on its first PACKET, or on
+/// FINISH), counted once per call as a worker protocol fault: typed `worker_protocol`, the worker killed and not
+/// pooled, nothing counted as a spawn failure, an output-cap kill or a crash. `pictures` is how many pictures may
+/// have reached the sink before the host saw the violation.
+fn reply_grammar_case(case: &'static str, fault: WorkerTestFault, pictures: usize) {
+    bounded_case(case, move || {
+        let liar = provider(Av1WorkerOptions {
+            test_fault: fault,
+            ..Av1WorkerOptions::default()
+        });
+        assert_protocol_fault_counted_once_per_call_after(&liar, case, pictures);
+    });
+}
+
+/// PLR-078: a BATCH_END that announces a different number of FRAMEs than the host received (here one announced, none
+/// sent) ends the batch as a protocol fault, not as a complete batch.
+#[test]
+fn batch_end_count_differing_from_the_frames_received_is_a_protocol_fault() {
+    reply_grammar_case("batch end count", WorkerTestFault::BatchEndCount, 0);
+}
+
+/// PLR-078: OPENED is the answer to OPEN only; answering a PACKET with it is a protocol fault.
+#[test]
+fn opened_reply_to_a_packet_is_a_protocol_fault() {
+    reply_grammar_case("opened on packet", WorkerTestFault::OpenedOnPacket, 0);
+}
+
+/// PLR-078: the same for FINISH. The PACKETs before it are served normally, so up to the three pictures of the
+/// fixture reach the sink before the violation.
+#[test]
+fn opened_reply_to_finish_is_a_protocol_fault() {
+    reply_grammar_case("opened on finish", WorkerTestFault::OpenedOnFinish, 3);
+}
+
+/// PLR-078: one FRAME more than `MAX_FRAMES_PER_BATCH` (64) in a batch is a protocol fault. All 65 FRAMEs are legal on
+/// their own (2x2 mono inside the declared size, the tag of the PACKET just sent) and the BATCH_END counts them, so only
+/// the cap can refuse the batch; the first FRAME is delivered (it matches the pending packet), the rest are dropped by
+/// reel's route as repeats, so at most one picture reaches the sink.
+#[test]
+fn more_frames_than_a_batch_may_hold_is_a_protocol_fault() {
+    reply_grammar_case("65 frames in a batch", WorkerTestFault::ManyFrames, 1);
+}
+
 /// A worker that greets with `fault` (a bad HELLO), counted once per call as a worker protocol fault.
 fn bad_hello_case(case: &'static str, fault: WorkerTestFault) {
     bounded_case(case, move || {
@@ -764,8 +823,8 @@ fn bad_hello_case(case: &'static str, fault: WorkerTestFault) {
 /// R9 pre-review (PLR-060): the worker greets first and the host bounds the greeting (`HELLO_CAP`, 1024
 /// bytes). A greeting above the cap is the worker breaking the protocol: counted in `protocol_faults`, not in
 /// `spawn_failed`, typed `worker_protocol` (reel `DecoderFault::Protocol`), and the worker is killed, not
-/// pooled. The next two tests do the same for greeting bytes that are no frame and for a well-framed greeting
-/// the decoder rejects.
+/// pooled. The next two tests do the same for greeting bytes whose first four bytes read as a length above the
+/// cap (bytes that are no frame) and for a well-framed greeting the decoder rejects.
 #[test]
 fn oversize_hello_is_a_protocol_fault_not_a_spawn_failure() {
     bad_hello_case("oversize hello", WorkerTestFault::OversizeHello);
@@ -862,6 +921,66 @@ fn a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault() {
             (0, 1, 0, 0),
             "{stats:?}"
         );
+    });
+}
+
+/// PLR-078 (R15 pre-review), the exact boundary of the greeting rule: the first four bytes are read as a length, so a
+/// worker that closes its output after fewer than four bytes (`ShortHello`, three bytes), or after the start of a frame
+/// whose announced length is within the cap (`CutHello`, ten of 64 bytes), never completed a greeting. That is a spawn
+/// failure (`worker_spawn_failed`, reel `CodecUnavailable` behind the route), not a protocol fault. Four or more bytes
+/// of text read as a length above the cap and are the protocol fault of `garbage_hello_is_a_protocol_fault_not_a_spawn_failure`.
+#[test]
+fn a_greeting_cut_short_is_a_spawn_failure_not_a_protocol_fault() {
+    bounded_case("a_greeting_cut_short", || {
+        let limits = Limits::default();
+        for (what, fault) in [
+            ("three bytes", WorkerTestFault::ShortHello),
+            ("ten bytes of a 64-byte frame", WorkerTestFault::CutHello),
+        ] {
+            let cut = provider(Av1WorkerOptions {
+                test_fault: fault,
+                ..Av1WorkerOptions::default()
+            });
+            let error = via_worker(&cut, MP4, 0, 3, &limits).unwrap_err();
+            assert_eq!(
+                error,
+                Av1Error::Worker(Av1WorkerFault::SpawnFailed),
+                "{what}"
+            );
+            assert_eq!(error.code(), "worker_spawn_failed", "{what}");
+            let stats = cut.stats();
+            assert_eq!(
+                (
+                    stats.spawned,
+                    stats.spawn_failed,
+                    stats.protocol_faults,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (1, 1, 0, 0, 0),
+                "{what}: {stats:?}"
+            );
+            let registry = Registry::standard().with_video_decoder(Arc::new(cut.clone()));
+            let mut sink = Collect::default();
+            let error = registry
+                .decode_segment(
+                    &mut Cursor::new(MP4.to_vec()),
+                    None,
+                    &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                    &limits,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), "MEDIA_CODEC_UNAVAILABLE", "{what}: {error:?}");
+            assert!(sink.chunks.is_empty(), "{what}");
+            let stats = cut.stats();
+            assert_eq!(
+                (stats.spawned, stats.spawn_failed, stats.protocol_faults),
+                (2, 2, 0),
+                "{what}: {stats:?}"
+            );
+        }
     });
 }
 

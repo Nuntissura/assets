@@ -90,6 +90,8 @@ impl Faults {
                     .and_then(|()| out.flush())
                     .is_ok(),
             ),
+            WorkerTestFault::ShortHello => bytes_then_exit(out, wire::SHORT_HELLO),
+            WorkerTestFault::CutHello => bytes_then_exit(out, &wire::cut_hello()),
             _ => None,
         }
     }
@@ -98,7 +100,14 @@ impl Faults {
     /// normal answer, `None` when the request must be served normally.
     fn on_open(&self, out: &mut impl Write, id: u64) -> Option<bool> {
         (self.fault == WorkerTestFault::FrameOnOpen)
-            .then(|| reply(out, &wire::encode_tiny_frame(id)))
+            .then(|| reply(out, &wire::encode_tiny_frame(id, 0)))
+    }
+
+    /// FINISH: answers OPENED instead of the batch. Returns `Some(alive)` when the fault replaced the
+    /// normal answer, `None` when the request must be served normally.
+    fn on_finish(&self, out: &mut impl Write, id: u64) -> Option<bool> {
+        (self.fault == WorkerTestFault::OpenedOnFinish)
+            .then(|| reply(out, &wire::encode_opened(id)))
     }
 
     /// Answers a decoded picture with another size (zeroed planes) for the picture-size faults; every
@@ -137,7 +146,7 @@ impl Faults {
 
     /// Injects the fault on the first PACKET. Returns `Some(alive)` when the fault replaced the
     /// normal answer, `None` when the packet must be decoded normally.
-    fn on_packet(&mut self, out: &mut impl Write, id: u64) -> Option<bool> {
+    fn on_packet(&mut self, out: &mut impl Write, id: u64, tag: u64) -> Option<bool> {
         if self.fired || self.fault == WorkerTestFault::None {
             return None;
         }
@@ -152,6 +161,16 @@ impl Faults {
                 Some(reply(out, &wire::encode_oversize_frame(id, 2 << 20)))
             }
             WorkerTestFault::GarbageReply => Some(reply(out, &wire::encode_garbage())),
+            // One FRAME announced that was never sent.
+            WorkerTestFault::BatchEndCount => Some(reply(out, &wire::encode_batch_end(id, 1))),
+            WorkerTestFault::OpenedOnPacket => Some(reply(out, &wire::encode_opened(id))),
+            // One FRAME more than a batch may hold, all legal on their own, and a BATCH_END that counts them.
+            WorkerTestFault::ManyFrames => {
+                let frames = wire::MAX_FRAMES_PER_BATCH.saturating_add(1);
+                let all_sent = (0..frames).all(|_| reply(out, &wire::encode_tiny_frame(id, tag)));
+                let count = u32::try_from(frames).unwrap_or(u32::MAX);
+                Some(all_sent && reply(out, &wire::encode_batch_end(id, count)))
+            }
             WorkerTestFault::None
             | WorkerTestFault::ExitOnOpen
             | WorkerTestFault::StallHello
@@ -162,9 +181,20 @@ impl Faults {
             | WorkerTestFault::OversizeHello
             | WorkerTestFault::GarbageHello
             | WorkerTestFault::MalformedHello
-            | WorkerTestFault::ExitBeforeHello => None,
+            | WorkerTestFault::ExitBeforeHello
+            | WorkerTestFault::ShortHello
+            | WorkerTestFault::CutHello
+            | WorkerTestFault::OpenedOnFinish => None,
         }
     }
+}
+
+/// Writes `bytes` as they are (no frame around them) and leaves with code 86: the host reads them and then end of
+/// stream (`WorkerTestFault::ShortHello`, `CutHello`).
+#[cfg(feature = "test-faults")]
+fn bytes_then_exit(out: &mut impl Write, bytes: &[u8]) -> ! {
+    let _ = out.write_all(bytes).and_then(|()| out.flush());
+    std::process::exit(86)
 }
 
 fn to_wire(frame: DecodedFrame) -> WireFrame {
@@ -235,6 +265,15 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
         let Ok(request) = wire::decode_request(&frame) else {
             return 2;
         };
+        #[cfg(feature = "test-faults")]
+        if let Request::Finish(id) = &request
+            && let Some(alive) = faults.on_finish(&mut out, *id)
+        {
+            if !alive {
+                return 1;
+            }
+            continue;
+        }
         let alive = match request {
             Request::Open(id, open) => {
                 // A new OPEN always replaces whatever decoder a cancelled segment left behind.
@@ -261,7 +300,7 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
             Request::Packet(id, tag, bytes) => {
                 #[cfg(feature = "test-faults")]
                 {
-                    if let Some(alive) = faults.on_packet(&mut out, id) {
+                    if let Some(alive) = faults.on_packet(&mut out, id, tag) {
                         if !alive {
                             return 1;
                         }

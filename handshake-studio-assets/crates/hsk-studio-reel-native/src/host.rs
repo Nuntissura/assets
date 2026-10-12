@@ -29,15 +29,23 @@
 //!   `supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn`), a FRAME answering OPEN
 //!   (test `frame_reply_to_open_is_a_protocol_fault`) or a FRAME whose tag no PACKET of the session carried
 //!   (test `frame_with_an_unsent_tag_is_a_protocol_fault`; the pictures of pre-roll packets carry sent tags and
-//!   are legal, test `worker_decode_is_bit_exact_with_in_process_and_the_dav1d_oracle`). The accepted
-//!   replies per request are listed in `wire.rs`;
-//! * handshake: the worker greets first and the greeting is bounded (`HELLO_CAP`, 1024 bytes). A greeting
-//!   above the bound, bytes that are no frame, and a frame the host cannot decode are the same protocol
-//!   fault (tests `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
+//!   are legal, test `worker_decode_is_bit_exact_with_in_process_and_the_dav1d_oracle`), more FRAMEs than a
+//!   batch may hold (test `more_frames_than_a_batch_may_hold_is_a_protocol_fault`), a BATCH_END whose count
+//!   differs from the FRAMEs received (test
+//!   `batch_end_count_differing_from_the_frames_received_is_a_protocol_fault`) or OPENED answering a PACKET or
+//!   FINISH (tests `opened_reply_to_a_packet_is_a_protocol_fault`, `opened_reply_to_finish_is_a_protocol_fault`).
+//!   The accepted replies per request are listed in `wire.rs`;
+//! * handshake: the worker greets first and the greeting is bounded (`HELLO_CAP`, 1024 bytes). Its first four
+//!   bytes are read as a length: a greeting above the bound is a protocol fault, whether it is an oversize
+//!   frame or bytes that are no frame whose first four read as a length above the bound (a text banner does),
+//!   and so is a frame within the bound that the host cannot decode (tests
+//!   `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
 //!   `garbage_hello_is_a_protocol_fault_not_a_spawn_failure`,
 //!   `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`). A well-formed greeting of another protocol
-//!   version or decoder is `worker_version_mismatch`. A worker that closes its output before greeting (test
-//!   `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`), stays silent past
+//!   version or decoder is `worker_version_mismatch`. A worker that closes its output before the greeting is
+//!   complete (it wrote nothing, fewer than four bytes, or fewer bytes than the length it announced; tests
+//!   `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`,
+//!   `a_greeting_cut_short_is_a_spawn_failure_not_a_protocol_fault`), stays silent past
 //!   `spawn_timeout` (test `canceled_call_does_not_wait_for_a_stalled_hello`) or cannot be started is
 //!   `worker_spawn_failed`, counted in `spawn_failed`;
 //! * crash: end of stream (abort, native crash, external kill) returns `decoder_crashed` with the exit
@@ -187,14 +195,16 @@ pub enum Av1WorkerFault {
     DecoderDeadline,
     /// A reply frame above the cap derived from the declared dimensions; the worker was killed.
     OutputTooLarge,
-    /// Wrong kind, id, count or content in a reply (including a picture tag no packet carried), or a
-    /// greeting above the handshake cap, made of bytes that are no frame, or undecodable; the worker was
-    /// killed.
+    /// Wrong kind, id, count or content in a reply (including a picture tag no packet carried, more FRAMEs than
+    /// a batch may hold, a BATCH_END that miscounts and OPENED answering a PACKET or FINISH), or a greeting whose
+    /// first four bytes read as a length above the handshake cap (an oversize frame, or bytes that are no
+    /// frame), or a greeting frame within the cap that cannot be decoded; the worker was killed.
     Protocol,
     /// The worker speaks another protocol version or decoder than this host was built for.
     VersionMismatch,
-    /// The worker process could not be started, or it closed its output or stayed silent before HELLO
-    /// (a greeting that arrives and breaks the protocol is `Protocol`).
+    /// The worker process could not be started, or it closed its output before the greeting was complete
+    /// (nothing, fewer than four bytes, or fewer bytes than the length it announced) or stayed silent before
+    /// HELLO (a greeting that arrives and breaks the protocol is `Protocol`).
     SpawnFailed,
     /// More than `max_spawns` workers would have started within `spawn_window`.
     RespawnLimited,
@@ -653,8 +663,10 @@ impl Pool {
             Waited::Failed(WireError::TooLarge | WireError::Malformed) => {
                 return Err(self.fail(&mut session, Failure::Protocol));
             }
-            // A worker that closed its output or stayed silent never greeted: a spawn failure. Test
-            // `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`.
+            // A worker that closed its output or stayed silent never completed a greeting (nothing, fewer
+            // than four bytes, or fewer bytes than the length it announced): a spawn failure. Tests
+            // `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault` and
+            // `a_greeting_cut_short_is_a_spawn_failure_not_a_protocol_fault`.
             Waited::TimedOut | Waited::Failed(WireError::Closed) => {
                 session.terminate(Duration::ZERO);
                 return Err(spawn_failed());

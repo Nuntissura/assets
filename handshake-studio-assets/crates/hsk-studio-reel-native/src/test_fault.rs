@@ -42,6 +42,20 @@ pub enum WorkerTestFault {
     MalformedHello,
     /// Before HELLO: exit with code 86 (a worker that closes its output without ever greeting).
     ExitBeforeHello,
+    /// Before HELLO: three bytes (fewer than a length prefix), then exit with code 86.
+    ShortHello,
+    /// Before HELLO: a length prefix (64) and ten bytes of the frame it announces, then exit with code 86.
+    CutHello,
+    /// First PACKET: answer BATCH_END announcing one FRAME after sending none (the count differs from the
+    /// FRAMEs received).
+    BatchEndCount,
+    /// First PACKET: answer OPENED (a reply only OPEN allows).
+    OpenedOnPacket,
+    /// FINISH: answer OPENED instead of the batch (the PACKETs before it are served normally).
+    OpenedOnFinish,
+    /// First PACKET: answer one more FRAME than a batch may hold (`MAX_FRAMES_PER_BATCH` + 1), each within the
+    /// declared size and carrying the tag of that PACKET, so only the count of FRAMEs is wrong.
+    ManyFrames,
 }
 
 impl WorkerTestFault {
@@ -64,6 +78,12 @@ impl WorkerTestFault {
             Self::GarbageHello => Some("garbage_hello"),
             Self::MalformedHello => Some("malformed_hello"),
             Self::ExitBeforeHello => Some("exit_before_hello"),
+            Self::ShortHello => Some("short_hello"),
+            Self::CutHello => Some("cut_hello"),
+            Self::BatchEndCount => Some("batch_end_count"),
+            Self::OpenedOnPacket => Some("opened_on_packet"),
+            Self::OpenedOnFinish => Some("opened_on_finish"),
+            Self::ManyFrames => Some("many_frames"),
         }
     }
 
@@ -84,6 +104,12 @@ impl WorkerTestFault {
             Ok("garbage_hello") => Self::GarbageHello,
             Ok("malformed_hello") => Self::MalformedHello,
             Ok("exit_before_hello") => Self::ExitBeforeHello,
+            Ok("short_hello") => Self::ShortHello,
+            Ok("cut_hello") => Self::CutHello,
+            Ok("batch_end_count") => Self::BatchEndCount,
+            Ok("opened_on_packet") => Self::OpenedOnPacket,
+            Ok("opened_on_finish") => Self::OpenedOnFinish,
+            Ok("many_frames") => Self::ManyFrames,
             _ => Self::None,
         }
     }
