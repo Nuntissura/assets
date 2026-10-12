@@ -14,6 +14,27 @@ The host owns actual content, provider engines, synchronization, file IO and res
 
 </topic>
 
+<topic id="desktop-adapter">
+
+`kumihimo-egui` 0.1 provides replaceable pane controls over a borrowed host `Controller` and `DesktopHost` dispatcher. It projects canonical geometry and routes commands; the host owns content, operation IDs, storage and resource policy. `DesktopAdapter::show` takes an egui context, controller, `SurfaceBinding` and host. Settings expose chrome profiles, hit sizes, navigation and bounded live work. Pane/tab counts remain host-configurable.
+
+Default features provide egui controls; `navigation` and `backgrounds` select existing content contracts, `capture` adds raster rendering, and `native` adds the winit/Painter runner. Editable text and generated canvas are sample providers. Video, native child surfaces and incompatible GPU sharing report unsupported. OS input/accessibility and engine compatibility require their actual observations.
+
+From the project root:
+
+```powershell
+cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-targets --locked --offline -j 2
+cargo test --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --test adapter_contracts --locked --offline -j 2
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --example capture_host --locked --offline -j 2 -- --output .local/desktop-proof
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --example native_probe --locked --offline -j 2 -- --output .local/desktop-proof
+```
+
+`capture_host` writes PNGs and redacted geometry/control/provider observations for nested, narrow, scale and navigation states. `native_probe` owns hidden inactive windows, waits for actual correlated surface pixels before Frame/View/Group migration, invokes the independent UIA observer, exercises return/veto/recreation and writes a native manifest/session. Its bounded deadline exits with a causal error; inspect the output and current canonical bindings before retrying. `--no-uia` explicitly leaves OS accessibility proof incomplete. Automation never requests foreground input. For a visible manual sample, explicitly run `desktop_host --interactive` through the same Cargo example command.
+
+Stable `ControlRecord` IDs and `FrameReport` identify targets, bounds, epochs, rejections and post-action generation. Host dispatch allocates canonical envelopes. `DesktopSession` wraps host storage metadata without persisting window or texture handles. Native return uses validated semantic anchors; missing destinations or vetoed survivors remain recoverable. Physical pen/touch, assistive hardware, GPU faults, other platforms and full editor/browser engines require separate proof. Current implementation checks and runtime observations are recorded per packet; these commands are reproduction paths, not a claim they have passed.
+
+</topic>
+
 <topic id="startup" ingestable="true">
 
 ## Start and check
