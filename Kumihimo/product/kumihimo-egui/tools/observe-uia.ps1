@@ -35,6 +35,23 @@ $actionBefore = $null
 $actionAfter = $null
 $actionPattern = $null
 $failure = $null
+$tracePath = Join-Path ([System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Output))) 'native-uia.trace.json'
+$checkpoints = [System.Collections.Generic.List[object]]::new()
+$targetDetails = $null
+function Save-Checkpoint([string]$Phase, [object]$Details = $null, [string]$ExceptionMessage = $null) {
+    # One observer writer; persist each bounded checkpoint before crossing the action boundary.
+    if ($checkpoints.Count -ge 64) { $checkpoints.RemoveAt(0) }
+    $checkpoints.Add([ordered]@{ phase=$Phase; timestamp_utc=[DateTime]::UtcNow.ToString('o'); timestamp_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString(); action_pattern=$actionPattern; target=$targetDetails; details=$Details; exception=$ExceptionMessage; owned_window=(Read-OwnedObservation) })
+    $trace = [ordered]@{ schema='kumihimo.uia-action-trace.v1'; writer='powershell-uia-observer'; nonce=$Nonce; expected_owned_pid=$ExpectedPid; hwnd=$Hwnd; target_view=$TargetView; target_control_id="view/$TargetView/tab"; target_label=$TargetLabel; checkpoints=@($checkpoints.ToArray()) }
+    $traceBytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($trace | ConvertTo-Json -Depth 16))
+    if ($traceBytes.Length -gt 1048576) { throw 'UIA trace byte budget exceeded' }
+    # Keep the last complete trace intact if owned helper cleanup interrupts this rewrite.
+    $traceTempPath = "$tracePath.tmp"
+    $traceStream = [System.IO.FileStream]::new($traceTempPath,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None)
+    try { $traceStream.Write($traceBytes,0,$traceBytes.Length); $traceStream.Flush($true) } finally { $traceStream.Dispose() }
+    if ([System.IO.File]::Exists($tracePath)) { [System.IO.File]::Replace($traceTempPath,$tracePath,$null) }
+    else { [System.IO.File]::Move($traceTempPath,$tracePath) }
+}
 function Read-Patterns($node) {
     $selection = $null
     $toggle = $null
@@ -47,8 +64,11 @@ function Read-Patterns($node) {
     return [ordered]@{ selected=$selected; value=$value; actions=@($node.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) }
 }
 try {
+    Save-Checkpoint 'observer-start'
     if (-not $before.exists -or -not $before.owned_pid -or $before.visible -or $before.foreground_owned) { throw 'Owned hidden HWND admission failed' }
+    Save-Checkpoint 'tree-request-before'
     $element = [System.Windows.Automation.AutomationElement]::FromHandle($target)
+    Save-Checkpoint 'tree-request-after'
     if ($element.Current.ProcessId -ne $ExpectedPid) { throw 'UIA target PID mismatch' }
     # Request the owned AccessKit tree while the native event loop pumps. No desktop/global query.
     $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
@@ -68,21 +88,33 @@ try {
                 $pattern = $null
                 $actionBefore=$patterns
                 if ($node.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)) {
-                    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
                     $actionPattern='SelectionItem.Select'
                 } elseif ($node.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {
-                    ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
                     $actionPattern='Invoke.Invoke'
                 } elseif ($node.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)) {
-                    ([System.Windows.Automation.TogglePattern]$pattern).Toggle()
                     $actionPattern='Toggle.Toggle'
                 } else { throw 'Exact target exposes no supported select/invoke/toggle action' }
+                $targetDetails=[ordered]@{ name=$current.Name; automation_id=$current.AutomationId; runtime_id=@($node.GetRuntimeId()); role=$current.ControlType.ProgrammaticName; process_id=$current.ProcessId; target_view=$TargetView; pattern_type=$pattern.GetType().FullName }
+                Save-Checkpoint 'action-call-before' $actionBefore
+                try {
+                    switch ($actionPattern) {
+                        'SelectionItem.Select' { ([System.Windows.Automation.SelectionItemPattern]$pattern).Select() }
+                        'Invoke.Invoke' { ([System.Windows.Automation.InvokePattern]$pattern).Invoke() }
+                        'Toggle.Toggle' { ([System.Windows.Automation.TogglePattern]$pattern).Toggle() }
+                    }
+                    Save-Checkpoint 'action-call-after'
+                } catch {
+                    Save-Checkpoint 'action-call-exception' $null $_.Exception.Message
+                    throw
+                }
                 $invoked=$current.Name
                 for ($settle=0; $settle -lt 20; $settle++) {
                     $actionAfter=Read-Patterns $node
+                    Save-Checkpoint 'action-settle' ([ordered]@{ attempt=$settle; selected=$actionAfter.selected; value=$actionAfter.value; actions=$actionAfter.actions })
                     if ($actionAfter.selected -eq $true) { break }
                     Start-Sleep -Milliseconds 80
                 }
+                Save-Checkpoint 'action-settled' $actionAfter
             }
             if ($depth -lt 8) {
                 $child = $walker.GetFirstChild($node)
@@ -93,7 +125,7 @@ try {
     }
     if ($records.Count -lt 2) { throw 'Owned UIA tree did not expose controls before bounded deadline' }
     if ($null -eq $invoked) { throw 'Exact demo tab target was not found in owned UIA tree' }
-} catch { $failure = $_.Exception.Message }
+} catch { $failure = $_.Exception.Message; Save-Checkpoint 'observer-exception' $null $failure }
 $after = Read-OwnedObservation
 if ($after.visible -or $after.foreground_owned -or -not $after.owned_pid) { $failure = 'Quiet ownership condition changed during UIA observation' }
 $result = [ordered]@{ schema='kumihimo.uia-observation.v1'; hwnd=$Hwnd; pid=$ExpectedPid; nonce=$Nonce; before=$before; after=$after; controls=@($records.ToArray()); invoked=$invoked; target_view=$TargetView; target_control_id="view/$TargetView/tab"; action_pattern=$actionPattern; action_before=$actionBefore; action_after=$actionAfter; error=$failure; scope='Owned hidden HWND exact tab query and supported action only; no global input/focus' }

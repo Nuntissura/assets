@@ -206,6 +206,7 @@ struct App<H: NativeHost> {
     observer_path: PathBuf,
     observer_nonce: String,
     observer_result: Option<serde_json::Value>,
+    accesskit_trace: Vec<serde_json::Value>,
     observer_generation: Option<u64>,
     observer_frame: Option<FrameId>,
     observer_previous: Option<ViewId>,
@@ -311,6 +312,7 @@ pub fn run<H: NativeHost + 'static>(
             observer: None,
             observer_started: None,
             observer_result: None,
+            accesskit_trace: Vec::new(),
             observer_generation: None,
             observer_frame: None,
             observer_previous: None,
@@ -1143,6 +1145,36 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                     use egui_winit::accesskit_winit::WindowEvent as AccessEvent;
                     match event.window_event {
                         AccessEvent::ActionRequested(request) => {
+                            // Durable single-writer evidence precedes egui queueing, even
+                            // when quiet failure prevents the next draw or final report.
+                            let arrival = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|elapsed| elapsed.as_millis().to_string());
+                            let checkpoint = serde_json::json!({
+                                "phase":"action-requested-before-egui-queue",
+                                "sequence":self.uia_actions.saturating_add(1),
+                                "timestamp_unix_millis":arrival.ok(),
+                                "arrival_elapsed_micros":self.started.elapsed().as_micros().to_string(),
+                                "action_kind":format!("{:?}",request.action),
+                                "action_type":"accesskit::ActionRequest",
+                                "target_node":request.target.0.to_string(),
+                                "expected_target_view":self.options.observer_target.map(|view|view.raw().to_string()),
+                                "window_id":format!("{:?}",event.window_id),
+                                "surface_epoch":w.surface.epoch.to_string(),
+                                "core_generation":self.controller.snapshot().generation.to_string(),
+                                "owned_window":os_observation(Some(hwnd(&w.window)))
+                            });
+                            let trace = write_accesskit_checkpoint(
+                                &self.options.output,
+                                &self.observer_nonce,
+                                &mut self.accesskit_trace,
+                                checkpoint,
+                                self.host.policy().max_capture_bytes.min(1024 * 1024),
+                            );
+                            if let Err(error) = trace {
+                                self.fail(event_loop, error);
+                                return;
+                            }
                             w.state.on_accesskit_action_request(request);
                             self.uia_actions += 1;
                             w.dirty = true;
@@ -1391,6 +1423,33 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
             let _ = child.wait();
         }
     }
+}
+fn write_accesskit_checkpoint(
+    output: &std::path::Path,
+    nonce: &str,
+    checkpoints: &mut Vec<serde_json::Value>,
+    checkpoint: serde_json::Value,
+    max_bytes: usize,
+) -> Result<()> {
+    use std::io::Write;
+    // Independent of the ordinary observation list; retain at most 128 latest arrivals.
+    if checkpoints.len() >= 128 {
+        checkpoints.remove(0);
+    }
+    checkpoints.push(checkpoint);
+    let value = serde_json::json!({
+        "schema":"kumihimo.accesskit-action-trace.v1",
+        "writer":"native-runner", "nonce":nonce,
+        "expected_owned_pid":std::process::id(),
+        "checkpoints":checkpoints,
+        "scope":"Read-only owned HWND/foreground observations before egui action queueing"
+    });
+    let bytes = crate::diagnostics::encode_bounded(&value, max_bytes)?;
+    let mut file = std::fs::File::create(output.join("native-accesskit.trace.json"))
+        .map_err(|error| AdapterError::Host(format!("AccessKit trace create: {error}")))?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| AdapterError::Host(format!("AccessKit trace persist: {error}")))
 }
 fn hwnd(window: &Window) -> isize {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
