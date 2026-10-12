@@ -95,16 +95,16 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
-  next_action: Publish bounded exact provider admission/readiness; coder patches onlynode.rs+singlehiddenowningtest;
-    affectedserialcomponent/nativeUIA/lifecycle proof, independent eval and closure
+  next_action: Complete original frozen13 method variants with coder03/evaluator/diagnostics; preserve quiet success
+    and bundle only affected proof, then scoped evaluation/publication/DONE
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
   title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml
-  next_action: Publish singleDOMfloatrepair, reuseunchangedcompiledWASM withfreshbindingmanifest; actualoriginalbrowsercases,
-    causalrepairifneeded, independenteval/publication
+  next_action: Coder04 completes original002/003/004 variants in same browser script; publish held source, reuse
+    compiled WASM and run affected actual browser batch, then independent evaluation/closure
   blockers: []
 - wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
   title: Prove browser and graphics integration boundaries

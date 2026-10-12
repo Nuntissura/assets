@@ -469,3 +469,212 @@ coordination:
 next_action: Hold exact frozen report; lead publishes preparation, acquires exact matching WASM tooling and
   resolves manifest graph for dependency readiness before coding. Observe exact candidate/browser outputs only
   when dispatched. No Cargo/product/spec/state/Git writes.
+
+browser_runtime_evaluation_8c5be443046a:
+  evaluation_id: EVAL-KUM-013-BROWSER-8c5be443046a-v1
+  updated_at: '2026-10-12T06:03:04.644507+00:00'
+  risk_tier: HIGH
+  phase: actual_browser_evaluated_original_variants_pending
+  effective_verdict: INCOMPLETE_FROZEN_CASE_PROOF
+  observed_assertions_verdict: PASS_SCOPED_WINDOWS_CHROME154
+  publication_status: LOCAL_EVALUATION_PENDING_LEAD_PUBLICATION
+  original_preparation_sha256: 07c9bad1e6b7234a52924f812db396fab77afbd4a645baeaea1ef655fb197d50
+  original_preparation_preserved: All original bytes, six full frozen case definitions, historical bindings and
+    selected semantics retained as prefix; original top-level preparation verdict is historical. This addendum is
+    the runtime assessment for the candidate below.
+  candidate:
+    revision: 8c5be443046a401cc0625b7a7b58678b276b5df6
+    build_manifest_ref: .local/web/8c5be443046a/build-manifest.json
+    build_manifest_sha256: 1e8cf49b79a352a2df2fdb503d81e746e2d8bfafe2970f421193d169582f871f
+    browser_evidence_ref: .local/web/8c5be443046a/proof/browser-batch/browser-evidence.json
+    browser_evidence_sha256: 3982431226b75ee8a7262f8860d60d581291613bc33989fceb611a9381ec8797
+    browser_version: 154.0.8037.98
+    browser_executable_sha256: 6849d2982038de9f9489a7b3858f3b785b7fec06a842c93c517281d21995c8ca
+    node_version: v24.19.0
+    playwright_version: 1.62.1
+    generated:
+    - path: .local\web\711efe012ce8\pkg\kumihimo_web.js
+      sha256: 27c0ec45d6738953d2696fdbc4da41ba4e5a7e2f17bb1fc0419ae789125f98c5
+      bytes: 8706
+    - path: .local\web\711efe012ce8\pkg\kumihimo_web_bg.wasm
+      sha256: 85a3b4c54b32e2c6939d26641541e6b057a1550549fe38856d276943bb785b88
+      bytes: 6908624
+    build_executed: false
+    source_binding: All manifest sources independently matched candidate Git bytes and current source at inspection;
+      later browser-proof repairs require a new candidate binding. Generated JS/WASM raw hashes and sizes matched
+      exact artifacts; embedded evidence build equals manifest.
+  proof_reuse:
+    candidate: 71b9acc630da92da5fe31197f47a13e9bae4eea1
+    default_check_seconds: 2.49
+    consumer_compile_seconds: 6.21
+    consumer_run_seconds: 0.39
+    consumer_passed: 6
+    consumer_failed: 0
+    wasm_build_seconds: 3.51
+    logs:
+    - ../.local/kumihimo-web/proof/default-71b9acc630da.log
+    - ../.local/kumihimo-web/proof/test-71b9acc630da.log
+    - ../.local/kumihimo-web/proof/wasm-71b9acc630da.log
+    independent_reuse_check: Rust web/Core/content/layout-json sources/tests unchanged between71b9 and8c5. Workspace
+      manifest/lock differs only desktop accesskit_windows patch/exclusion; independently traversed selected23-package
+      WASM closure and every corresponding lock record equals71b9; accesskit_windows absent. No new Cargo run claimed.
+  DIFF_ATTACK_SURFACES:
+  - Rust/DOM geometry and ancestor clipping at nested nonzero origins; cancellation ownership and scale conversion.
+  - Versioned SavedLayout wrapper/separate host store to fresh Controller candidate replacement.
+  - Decimal operation identity/actor/generation replay receipts versus current state and rejected watermark.
+  - Passive receipt observer attribution versus unrelated viewport commands; browser-enforced popup denial and accessibility
+    metadata.
+  INDEPENDENT_CHECKS_RUN:
+  - id: EVAL-KUM-013-INDEPENDENT-GEOMETRY
+    result: PASS_OBSERVED
+    observation: 'Independently reconciled all12 normal and12 narrow DOM frame rectangles against corresponding
+      Rust snapshots: maximum x/y/width/height delta0; all hidden flags agree; each frame clip contained by parent
+      workspace clip. Both actual scales1; changed browser scale is not proven.'
+  - id: EVAL-KUM-013-INDEPENDENT-PERSISTENCE
+    result: PASS_OBSERVED
+    observation: Actual15883-byte localStorage layout SHA ce1b0def7f52d9a5373630bc6876e413f719de43bb32ca5a8e110bac7484d257
+      independently recomputed. Wrapper version1/inner schema1; nine saved layout plans including weights equal
+      canonical saved plans. Saved workspace/frame/provider/resource/group fields agree; nullable persisted closed
+      is distinct from boolean projection. All8 fresh projection collections frames/groups/layouts/nodes/providers/resources/views/workspaces
+      equal pre-reload snapshot. Host tasks and revision equal; ephemeral last_recipient resets. Incarnation changes.
+  - id: EVAL-KUM-013-INDEPENDENT-RECEIPTS
+    result: PASS_OBSERVED
+    observation: Large operation9007199254740993 is retained exactly. Accepted receipt27, later34, replayed old
+      receipt27/current42 independently reconciled. Actor/intent conflicts rejected intent_mismatch. Stale generation
+      rejection preserves generation42 and advances watermark9007199254741009; exact retry replayed rejection with
+      same watermark/current state.
+  - id: EVAL-KUM-013-INDEPENDENT-TASK-OWNERSHIP
+    result: PASS_OBSERVED
+    observation: 'Independent task-field comparison: edit changes only task1 title/body hashes; domain changes only
+      task1 column/status to done/complete; provider unavailable changes no task meaning. Recipients view6/resource4/provider2
+      match task1. All16 unavailable views retain placeholder/reference;12 selected visible canonical views. Current
+      provider image does not show workspace placeholder.'
+  - id: EVAL-KUM-013-INDEPENDENT-ACCESSIBILITY
+    result: PASS_OBSERVED
+    observation: 67 captured DOM controls;12 selected tab metadata entries match12 selected Rust views, separators
+      expose values33/67/50. Exact six PNGs opened and hash-reconciled. Scoped DOM attributes/pixels do not establish
+      a full browser accessibility-tree audit.
+  COUNTERFACTUAL_CHECKS:
+  - If PilotHost::load in product/kumihimo-web/src/host.rs assigned self before replacement.sync/attach_views, a
+    failing candidate could destroy the previous valid Controller; inspected code constructs/validates replacement
+    and snapshot before final assignment.
+  - If KumihimoDomAdapter.cancelPreview in product/kumihimo-web/web/adapter.mjs left drag or previewState alive,
+    later pointerup could commit cancelled work; inspected function sends cancel route and clears both, while actual
+    blur/lostcapture variants remain unexecuted.
+  - If proofMoves attribution in product/kumihimo-web/tools/browser-proof.py used lastCommand after idle, a valid
+    parent-move receipt could be overwritten by viewport measurement; inspected bounded dedicated observer calls
+    original route once and binds exact one phase request/receipt/identity/actor/op, retaining original fresh destination
+    assertions.
+  BOUNDARY_PROBES:
+  - Independent actual storage bytes -> saved nested plan -> fresh Rust snapshot reconciliation above.
+  - Actual normal/narrow DOM bounds -> fresh canonical geometry with exact agreement above.
+  - Actual restricted iframe trusted click -> browser window.open null -> unchanged Rust membership and host revision;
+    sandbox lacks allow-popups.
+  NEGATIVE_PATH_CHECKS:
+  - Actual malformed/newer/oversized load errors invalid_session/unsupported_schema/route_size_limit retain full
+    canonical snapshot; inspected candidate-before-replacement load implementation.
+  - Actual wrong recipient and stale host revision rejected recipient_mismatch/stale_host_revision; veto keeps membership.
+  - Actual model unknown field/oversize/stale incarnation rejected invalid_request/route_size_limit/identity_mismatch;
+    actor/intent conflicts and stale-generation retry independently reconciled. Nonfinite validation is reused native
+    consumer proof, not claimed as actual browser observation.
+  - Storage refusal is an injected Storage.prototype.setItem QuotaExceededError; screenshot explicitly reports retained
+    workspace/retry. This proves handling, not actual quota exhaustion.
+  - Real iframe denied popup with trusted click and no extra pages; expected browser sandbox console error recorded,
+    no page errors and owned cleanup true. Same-origin/script iframe is a denial fixture, not an adversarial security-isolation
+    claim.
+  INDEPENDENT_FINDINGS:
+  - id: EVAL-KUM-013-FROZEN-002-CANCEL-SCALE
+    case: EVAL-KUM-013-002
+    severity: proof_gap
+    observation: Original frozen method names Escape/capture-loss/blur and changed-scale browser mapping. Actual8c5
+      proof exercises Escape and scale1 only. Source handlers and native consumer1.25 are supporting evidence, not
+      the absent browser boundary variants.
+    remediation: Keep original case; extend same browser-proof batch with actual lostpointercapture/blur cancellation
+      and browser-emulated changed DPR, preserving trusted-event provenance, canonical/host ownership and restored
+      normal metrics.
+  - id: EVAL-KUM-013-FROZEN-003-RECOVERY-PIXELS
+    case: EVAL-KUM-013-003
+    severity: proof_gap
+    observation: case003-provider-recovery.png is scrolled to arrangement/editor controls; placeholder workspace
+      is above viewport. DOM count/canonical placeholder references are observed but visible recovery pixels are
+      not.
+    remediation: Scroll retained unavailable view into viewport; assert reachable/visible reference and capture
+      original provider recovery image before restoring provider.
+  - id: EVAL-KUM-013-FROZEN-004-MISSING-PROVIDER
+    case: EVAL-KUM-013-004
+    severity: proof_gap
+    observation: Original frozen004/R006/A004 requires missing-provider load recovery. Actual source toggles provider
+      back before save/fresh reload; native consumer004 also has no missing-provider load variant.
+    remediation: Within same original batch, save/load unavailable provider state into fresh incarnation, prove
+      retained references/reachable placeholder and explicit recovery, then restore valid provider.
+  case_assessments:
+  - case_id: EVAL-KUM-013-001
+    runtime_status: PASS_OBSERVED_SCOPE
+    evidence: Variable4tasks/1detail/2depth, normal/narrow and fresh normal restored; all12 frame bounds exact,
+      ancestor clips contained; opened normal/narrow images readable with narrow task-view text truncated and content
+      wrapped. No universal budget/count performance claim.
+  - case_id: EVAL-KUM-013-002
+    runtime_status: INCOMPLETE_FROZEN_VARIANTS
+    evidence: Actual mouse/keyboard/buttons, Escape, float/redock/parentmove/return/dock/resize/select and stale
+      preview observed; host task meaning preserved. Missing variants recorded above.
+  - case_id: EVAL-KUM-013-003
+    runtime_status: INCOMPLETE_RECOVERY_PIXEL_PROOF
+    evidence: Actual isolated host edit/domain, wrong recipient/stale/veto/unavailable references observed. Provider
+      recovery pixels gap above.
+  - case_id: EVAL-KUM-013-004
+    runtime_status: INCOMPLETE_MISSING_PROVIDER_LOAD
+    evidence: Actual bytes and fresh WASM restore independently reconcile nested plans/proportions/references; malformed/oversize/newer
+      rejection and injected storage-refusal handling observed. Missing-provider load gap above.
+  - case_id: EVAL-KUM-013-005
+    runtime_status: PASS_OBSERVED_SCOPE
+    evidence: Actual decimal envelope/replay/old receipt/current/rejected watermark, actor/intent conflicts, stale
+      identity/generation, unknown/oversize observed; nonfinite component proof reused; no server auth claim. Manual
+      closure update remains lead-owned.
+  - case_id: EVAL-KUM-013-006
+    runtime_status: PASS_OBSERVED_SCOPE
+    evidence: Exact bindings/browser metadata, actual trusted restricted iframe popup null, source membership retained,12
+      selected DOM tabs/Rust views, readable controls, headless/private-profile/loopback/additionalpages0/owned
+      cleanup true observed.
+  images:
+  - ref: .local/web/8c5be443046a/proof/browser-batch/case001-normal.png
+    sha256: 182ebcbabc0063dcc747a413e80daea0aef079ae69472d0997bbceff762f7f3b
+    opened: true
+  - ref: .local/web/8c5be443046a/proof/browser-batch/case001-narrow.png
+    sha256: 0c28d9a5f86b5f0cadc4549ea7630c18a36c11b5869fa2c57ee3f035f42e1275
+    opened: true
+  - ref: .local/web/8c5be443046a/proof/browser-batch/case002-interactions.png
+    sha256: b2d0439010b720457cceaa571463b58bc73c2589b4c621e79ee8d48e6240eee2
+    opened: true
+  - ref: .local/web/8c5be443046a/proof/browser-batch/case003-provider-recovery.png
+    sha256: 816a6b51d1e251f62810c849c70bd9d35718da3d5d8a14a5e4f964df2c1ff764
+    opened: true
+  - ref: .local/web/8c5be443046a/proof/browser-batch/case004-fresh-reload.png
+    sha256: 81daef9989f4fb867f87fa53fa84f1fe6b35bf2e474a2a065ae24388ea596e8b
+    opened: true
+  - ref: .local/web/8c5be443046a/proof/browser-batch/case006-restricted-popup.png
+    sha256: 8ea772987b5eb682f5a85df3a0b137fded8fd5e0231fff5e20b6d224fcde82f4
+    opened: true
+  failure_resolution_history:
+  - 71b9 resolves actual Rust missing context/floating-point clip failures, reused six consumers/default/WASM green.
+  - 711 resolves float preview invalid_geometry through parent-contained pilot geometry; actualFloat/redock now
+    passes.
+  - 8c5 resolves parent/return proof receipt sampling race with passive exact response attribution; actual destination
+    and matching nonreplayed receipt now pass.
+  verdict_separation:
+    tests: Six reused consumers passed, default/WASM green on unchanged selected inputs.
+    runtime_observed_assertions: Actual8c5 browser batch passed its implemented assertions; exact6 PNGs opened.
+    contract_frozen_case_alignment: Incomplete original002/003/004 variants above; no full frozen-case PASS.
+    environment: Bounded Windows Chrome154 headless/private profile, generated Rust/WASM, localStorage and loopback.
+    final: INCOMPLETE_FROZEN_CASE_PROOF; preserve evidence and repair original browser batch only.
+  RESIDUAL_UNCERTAINTY:
+  - Actual lostcapture/blur/changed browser scale and missing-provider fresh-load/visible recovery remain pending
+    original proof.
+  - Injected quota refusal is scoped error handling only. Captured DOM roles are not comprehensive accessibility-tree
+    proof.
+  - Physical touch/pen, other browsers/platforms, native-style popup migration, Servo/heavy engines, real sibling
+    Portal integration and performance remain unproven.
+  - Lead-owned manual/topology/matrix/state/publication/origin closure is not completed by this local evaluation.
+  report_frozen_for_publication: true
+  next_action: Lead/coder repair only original browser proof variants; lead runs same affected batch with reused
+    unchanged WASM. Evaluator inspects fresh exact artifacts and records verdict before lead closure. No Cargo,
+    launch, product or Git mutation by evaluator.

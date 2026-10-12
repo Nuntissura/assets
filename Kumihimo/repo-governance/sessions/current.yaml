@@ -29,9 +29,9 @@ roles:
   dependencies:
     role_id: ROLE-KUM-DEPENDENCIES
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
-    model: gpt-6-luna
+    model: gpt-6.1-sol
     reasoning: high
-    assignment: WP012 exactlocalproviderbinding focusedreadiness; WP013 deps unchanged; noCargo builds
+    assignment: WP012 standalone Windows45-node owning closure ready; standby next required graph
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
@@ -43,8 +43,7 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Original13/6 cases preserved; WP012 R019 hiddenprovider appendixpreparation, actualruntimefailuresevaluated
-      only afterrootproof
+    assignment: Focused original13/6 acceptance reconciliation and actual evidence; no new suites or broad audit
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -53,8 +52,8 @@ roles:
     completed_implementation_wps:
     - WP-KUM-011-navigation-and-media-controls-v1
     rotate_after: 2
-    assignment: WP012 coding team leader admitted17 product source paths; disjoint three gpt-6.1-sol high subagents
-      authorized; no Cargo/Git/manifest/governance writes
+    assignment: Original17 source paths released for minimum original13 acceptance completion; provider source held;
+      no Cargo/Git
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -62,8 +61,8 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: WP013 admitted14 source paths, four-person gpt-6.1-sol high team with disjoint ownership; no Cargo/Git/shared
-      manifest/generated bindings/launches
+    assignment: Only browser-proof.py released for original002/003/004 browser variants; other13 files held; no
+      Cargo/Git
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -71,29 +70,26 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: idle_parallel_source_repairs
+  phase: idle_parallel_original_acceptance_source
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
   gameplan_relative_git_root: .local/kumihimo-web/gameplan.yaml
   last_resource_observation:
-    observed_utc: '2026-10-12T04:45:54.1571397Z'
-    cpu_percent: 32
-    available_memory_gib: 63.2
-    free_disk_gib: 3059.8
-    rust_processes:
-    - pid: 377344
-      name: cargo.exe
-      ownership: other team; preserved
-    scope: Observed before sole Kumihimo web consumer lane; cache/target reused
-  candidate_revision: df4b3b0ac861e286f92034fd2749e4803c9db744
+    observed_utc: '2026-10-12T06:04:15.5657937Z'
+    cpu_percent: 15
+    available_memory_gib: 62.4
+    free_disk_gib: 3057.6
+    rust_processes: []
+    scope: Fresh before owning13 serial test; stable target/cache retained; test completed
+  candidate_revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish12exactprovideradmission+13singleDOMrepair; serialaffectednativeprovider/UIA and reusedWASMbrowser
-  proofs; eachpacketclosurecommit/push
+next_action: Parallel minimum original desktop/browser acceptance variants; serial affected proof and per-packet
+  publish; Servo hard predecessor WP012 DONE remains required
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

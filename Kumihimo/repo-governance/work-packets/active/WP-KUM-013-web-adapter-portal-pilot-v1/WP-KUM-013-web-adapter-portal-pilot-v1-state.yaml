@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 6
+generation: 7
 phase: active
 owner: ROLE-KUM-CODER-04
 changed_files:
@@ -56,12 +56,21 @@ proof:
     OriginalDOMowner pilot.mjs minimalmeasurementflush/freshcanonicalparent-containedfloatcandidate held; nofullbrowserPASS.
 - kind: actual_browser_float_and_parent_move_observation
   source_revision: 711efe012ce89f88e0f9868d7ded72f8cc4fc784
-  observed: "InitialpersistentbrowserAPItransporttimeout before navigation; actualcurrentHTTP/standalone/privatebrowser\
-    \ GET200 exactgeneratedbytes, originalpersistentretrypassedgeneratedhashes/startup/case001. Timeoutcauseunproven.\
-    \ RealFloatpreviewcontained y-167.5/commitgen135 andRedockPASS. Trustedparentmove frame3\u2192workspace19 acceptedactualreceipt\
-    \ op184/gen164; freshcanonicalframe3workspace19 provesmovement. TestlastCommand-after-idle sampledlaterautoViewport\
-    \ op195/gen175 andFAILED owningreceiptassertion. Proof-only actualmove phasecapture bc5b2879 preservesbothoriginalparent/returnacceptedreceipt+canonicalrecipientassertions,\
-    \ addsattribution/unique/newrecord controls; independentlyopened byeval/diag, actualreturn/remainingcasespending."
+  observed: InitialpersistentbrowserAPItransporttimeout before navigation; actualcurrentHTTP/standalone/privatebrowser
+    GET200 exactgeneratedbytes, originalpersistentretrypassedgeneratedhashes/startup/case001. Timeoutcauseunproven.
+    RealFloatpreviewcontained y-167.5/commitgen135 andRedockPASS. Trustedparentmove frame3→workspace19 acceptedactualreceipt
+    op184/gen164; freshcanonicalframe3workspace19 provesmovement. TestlastCommand-after-idle sampledlaterautoViewport
+    op195/gen175 andFAILED owningreceiptassertion. Proof-only actualmove phasecapture bc5b2879 preservesbothoriginalparent/returnacceptedreceipt+canonicalrecipientassertions,
+    addsattribution/unique/newrecord controls; independentlyopened byeval/diag, actualreturn/remainingcasespending.
+- kind: actual_browser_six_case_scoped_result
+  source_revision: 8c5be443046a401cc0625b7a7b58678b276b5df6
+  browser_evidence_sha256: 3982431226b75ee8a7262f8860d60d581291613bc33989fceb611a9381ec8797
+  evaluation_sha256: 565a9a1993b83059a985fe98e9aa10476bd9d296a111c81df71c496d5dca2b56
+  observed: 'Actual six-case batch exit0 in11.208s, original ownership/task/storage/receipt/popup assertions PASS;
+    all6 images opened independently and root. Compiled WASM unchanged, CLI-only generation and browser actual cleanuptrue.
+    Independent frozen-case evaluation INCOMPLETE_FROZEN_CASE_PROOF: original002 lostcapture/blur and changed scale,003
+    visible unavailable recovery,004 missing-provider fresh-load variant absent. Only browser-proof.py released
+    for same-batch actual variants; no Rust/Core/DOM/build change or full packet verdict.'
 blockers: []
-next_action: Publishsingleproofreceipt-attribution repair; reusecompiledWASM/exactmanifest and runoriginalbrowserbatch;
-  focusedremainingfailures thenindependenteval/closure
+next_action: Coder04 completes original002/003/004 variants in same browser script; publish held source, reuse compiled
+  WASM and run affected actual browser batch, then independent evaluation/closure

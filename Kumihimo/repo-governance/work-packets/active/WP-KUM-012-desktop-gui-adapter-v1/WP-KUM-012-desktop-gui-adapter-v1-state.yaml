@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 7
+generation: 8
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -72,6 +72,25 @@ proof:
     trace replacement proven in owned cheapfileprobe. Strict quiet acceptance/actions retained. Exact upstream0.29.2
     provider localpatch admitted in Spec18/R019; originalsource19files/licenses materialized, ONElockbindingchanged;
     independent readiness/onehiddencomponentappendix and publication pending. No native/popout wholepacketPASS.'
+- kind: actual_quiet_native_and_affected_runtime
+  source_revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
+  logs:
+    provider: .local/kumihimo-desktop/proof/provider-b7dec3f107cb.log
+    native: .local/kumihimo-desktop/proof/native-b7dec3f107cb.log
+    combined: .local/kumihimo-desktop/proof/combined-b7dec3f107cb.log
+    test: .local/kumihimo-desktop/proof/test-b7dec3f107cb.log
+  log_sha256:
+    provider: 05ae875b4bff7040fc50e79a177df8647ee36b8b13f94e275234a4637a86543f
+    native: f6c7c1e7f138a412224b5f3290542b4a9bcd18bfd23c21fc6cf90b509a5c0fe1
+    combined: cd86c85b664fce9166a64e136e2951a10928dbf04f8607f7ee35ed50daf5b429
+    test: f071da81995dde32648764652886082fc720766782ef05d71cada72f7489a61e
+  native_manifest_sha256: 009bfb28b7aa191d16e711a8f91a15a4e32375b87fc1fc1fa115961bb147ecd0
+  observed: One standalone hidden ProviderOptions test PASS38.05s/0.22s; native original strict probe PASS15.99s
+    compile,14actual captures/3returns/3forwardedUIAactions. Canonical selected10 to12/gen43 to44; external foreground
+    unchanged and all owned windows hidden. All-feature all-target check PASS4.10s, owning13 PASS4.39s/0.19s; unchanged
+    e006 reused. Evaluator opened all14 native images and reports original frozen-method variants still unobserved
+    (post-popout accessibility and temporary overlay dismissal); coder03 admitted original17 source only for minimum
+    consolidated original13 proof completion. Provider source remains held, no full packet verdict.
 blockers: []
-next_action: Publish bounded exact provider admission/readiness; coder patches onlynode.rs+singlehiddenowningtest;
-  affectedserialcomponent/nativeUIA/lifecycle proof, independent eval and closure
+next_action: Complete original frozen13 method variants with coder03/evaluator/diagnostics; preserve quiet success
+  and bundle only affected proof, then scoped evaluation/publication/DONE
