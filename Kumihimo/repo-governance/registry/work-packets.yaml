@@ -121,3 +121,43 @@ work_packets:
   next_action: Manual and research discussion published; no external-app or file-drop implementation authorized
     in this packet
   blockers: []
+- wp_id: WP-KUM-017-extension-planning-and-handoff-v1
+  title: Author extension packets and dispatch a fresh implementation lead
+  phase: active
+  contract_ref: repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-state.yaml
+  next_action: Publish planning bundle, create fresh non-fork implementation lead, then publish and release exclusive
+    coordination ownership
+  blockers: []
+- wp_id: WP-KUM-018-file-drop-integration-v1
+  title: Host-owned file and asset drop integration for desktop and web
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-state.yaml
+  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
+    packet after predecessor publication
+  blockers: []
+- wp_id: WP-KUM-019-external-app-tiling-v1
+  title: Optional selected external desktop-application tiling
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-state.yaml
+  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
+    packet after predecessor publication
+  blockers: []
+- wp_id: WP-KUM-020-foreign-window-hosting-v1
+  title: Optional supported foreign-application window hosting
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-state.yaml
+  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
+    packet after predecessor publication
+  blockers: []
+- wp_id: WP-KUM-021-combined-workspace-demo-v1
+  title: Live sample with Servo, file drops and an external application
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-state.yaml
+  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
+    packet after predecessor publication
+  blockers: []

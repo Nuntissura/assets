@@ -1,0 +1,95 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-019-external-app-tiling-v1
+title: Optional selected external desktop-application tiling
+scope:
+- Add a small independently selectable external-app platform package rather than putting OS window control into
+  Core
+- Discover/bind explicitly selected windows, apply core-derived desktop bounds and restore original placement
+- Demonstrate selected real installed-app windows alongside Kumihimo without reparenting
+files:
+- product/kumihimo-external-apps/Cargo.toml
+- product/kumihimo-external-apps/src/lib.rs
+- product/kumihimo-external-apps/src/identity.rs
+- product/kumihimo-external-apps/src/tiling.rs
+- product/kumihimo-external-apps/src/recovery.rs
+- product/kumihimo-external-apps/src/windows.rs
+- product/kumihimo-external-apps/tests/
+- product/kumihimo-external-apps/examples/
+- product/Cargo.toml
+- product/Cargo.lock
+- product/README.md
+- product/INTERNAL-MANUAL.md
+- repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/
+dependencies:
+- WP-KUM-017-extension-planning-and-handoff-v1
+- WP-KUM-016-internal-user-manual-v1
+spec_refs:
+- TOPIC-KUM-BOUNDARIES
+- TOPIC-KUM-POPOUTS
+- REQ-KUM-POPOUTS-006
+- REQ-KUM-POPOUTS-007
+requirements:
+- Use canonical layout projection as geometry input; no second arrangement store and no mandatory native handle
+  type in Core/content
+- Select concrete window/process identity explicitly; revalidate process lifetime and window ownership before each
+  effect, never match solely by title or stale HWND/PID
+- Restrict operations to selected compatible windows; discover minimum sizing, monitor work area and scale where
+  required and report unsupported combinations
+- Store original bounds/state for detach and recovery; persisted references are semantic, raw handles stay live-only
+- Report per-window applied/rejected/failed outcomes and partial OS effects; compensate where valid rather than
+  claim an atomic multi-app OS transaction
+- Keep Windows bindings feature/platform gated; default portable consumers cannot acquire foreign-window dependencies
+  implicitly
+- Runtime proof launches a fresh owned installed-app instance; do not move, close, suspend or kill existing user
+  processes or whole desktop sets
+- Reuse mature Rust/Win32 positioning patterns after dependency agent records specific source/API evidence; no auto-download
+  of Blender
+acceptance:
+- Real selected installed-app window placement and resize visibly/independently match allocated desktop geometry
+- Unselected windows remain unchanged; invalid/replaced identities reject effects and carry causal diagnostics
+- Detach restores usable original placement; restart/missing-window state remains recoverable without persisting
+  HWNDs
+- Observed Windows x64 support is stated accurately; other platforms return explicit unsupported or remain unproven
+- Owned test process cleanup and source/config portability are recorded
+proof:
+- Focused identity/partial-effect/recovery cases with fake backend for failure logic only
+- One real installed-app selected-window tiling/resize/detach run, with fresh process/HWND identity and independently
+  queried OS bounds
+- Inspect actual app output as well as geometry; no foreground/focus stealing for automation
+- One compatible affected Cargo batch using stable target and verified cache
+reuse:
+- Core layout projections and saved semantic-resource identity
+- Komorebi WindowsApi positioning patterns and FancyZones desktop-zone distinction
+- Existing diagnostics, scoped ownership records and Windows bindings versions from workspace
+gaps_closed:
+- Current native popouts cover only Kumihimo windows
+- No foreign-window identity, selected-window positioning or original-placement restore contract
+roi_additions:
+- Shared identity/restore layer directly lowers WP020 effort
+- Skip unchanged geometry and batch compatible positioning to avoid unnecessary OS redraw
+risks_and_controls:
+- 'Wrong HWND/PID reused: revalidate process start identity plus window owner before effect'
+- 'App rejects resize or mixed DPI/minimum sizes: report exact per-window observation; preserve original placement'
+- 'Partial multi-window operation: per-window receipts and bounded compensation; retain recovery state'
+parallelism: May run source work parallel with WP018 on disjoint files; lead serializes shared manifest/lock/governance
+  writes and every Cargo run.
+research_basis:
+  source_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
+  selection: Host-owned drops, optional native control and per-app capability-gated hosting; mature platform operations
+    reused after specific dependency readiness
+  rejected:
+  - Native handles/process control in portable Core
+  - Universal application embedding claim
+  - Captured images or synthetic tests replacing actual boundary proof
+taskboard_ref: repo-governance/taskboard/taskboard.yaml
+execution:
+  lead: Fresh non-fork implementation chat created by WP017
+  dependencies: New dependency-role chat verifies source/runtime/tools before coding
+  evaluation: New evaluation-role chat authors focused cases and exact observed verdict per WP
+  diagnostics: New diagnostic-role chat deliberates causal failures directly with assigned coders
+  cargo: Single serialized lane; stable source/.local/cargo-target; verified sccache; bundled compatible checks
+  coding: gpt-6.1-sol high; rotate after two completed implementation WPs; disjoint parallel code allowed
+  publication: Commit and push after each completed WP; DONE requires accepted scope proof and remote containment
+  status: Update packet state then sync taskboard at meaningful milestones; preserve honest unsupported/blocker
+    outcomes
+  automation: Deleted tick remains deleted; do not create new recurring automation

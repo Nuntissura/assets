@@ -1,0 +1,110 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-020-foreign-window-hosting-v1
+title: Optional supported foreign-application window hosting
+scope:
+- Extend the optional external-app package with a capability-gated native window attachment lifecycle
+- Add narrow egui native-parent/epoch/physical-content-bounds hooks without exposing native handles through Core
+- Embed one compatible installed app in a frame/tab and support resize, visibility/focus routing and detach to desktop
+files:
+- product/kumihimo-external-apps/src/hosting.rs
+- product/kumihimo-external-apps/src/windows.rs
+- product/kumihimo-external-apps/src/recovery.rs
+- product/kumihimo-external-apps/src/lib.rs
+- product/kumihimo-external-apps/Cargo.toml
+- product/kumihimo-external-apps/tests/
+- product/kumihimo-egui/src/native.rs
+- product/kumihimo-egui/src/content.rs
+- product/kumihimo-egui/src/external_apps.rs
+- product/kumihimo-egui/src/lib.rs
+- product/kumihimo-egui/Cargo.toml
+- product/Cargo.lock
+- product/README.md
+- product/INTERNAL-MANUAL.md
+- repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/
+dependencies:
+- WP-KUM-019-external-app-tiling-v1
+spec_refs:
+- TOPIC-KUM-BOUNDARIES
+- TOPIC-KUM-POPOUTS
+- REQ-KUM-POPOUTS-007
+- REQ-KUM-POPOUTS-008
+- REQ-KUM-POPOUTS-009
+requirements:
+- Maintain explicit preflight/attaching/attached/detaching/failed state and real native readiness; no commit from
+  launch intent alone
+- Keep app resource identity and original parent/styles/placement recoverable; validate HWND/process and parent
+  epoch before applying geometry or focus
+- Use native-parent lifecycle plus physical content bounds and clipping inputs from the GUI adapter; preserve canonical
+  frame/tab ownership
+- Preflight DPI/style/parent compatibility and declared input/stacking/window-mode limits; fail safely or use external-window
+  fallback rather than forcing incompatible reparenting
+- Propagate frame resize/tab visibility and explicit user focus; tab hiding only hides presentation, never automatically
+  suspends or closes the app
+- 'Native child surfaces may have stacking/composition limits: expose them, constrain eligible placement/overlays
+  and keep toolbar/content input ownership explicit'
+- Detach restores original parent/style/usable desktop placement before destroying host surfaces; app disappearance
+  or parent loss keeps causal recovery/placeholder state
+- Respect application menus/dialogs, keyboard shortcuts and secondary-window ownership; declare unsupported actions
+  honestly and do not claim access to editor internals
+- Blender is preferred if compatible after fresh CLI/DPI inspection; another verified installed app is an authorized
+  fallback. Use fresh owned instances, never existing user sessions
+acceptance:
+- One real installed external app displays inside the declared frame with independently verified parent/bounds and
+  actual app pixels
+- Compatible mouse/keyboard input has observed application effects; resize and tab switching preserve usable content
+  and predictable focus
+- A real menu/dialog route is observed or explicitly denied with usable fallback; DPI/stacking/fullscreen support
+  is capability-gated
+- Detach/normal host teardown restores the app to desktop; stale app/parent identity and unsupported attach cannot
+  silently lose canonical resource references
+- Actual Blender compatibility is reported separately if Blender was tried; success with another program does not
+  certify Blender or universal hosting
+- Default core/GUI consumers remain independent; native child support is narrowly admitted rather than deleting
+  existing unsupported checks globally
+proof:
+- Dependency review of existing native.rs private HWND helper and content.rs native-child rejection, plus Microsoft
+  SetParent/DPI and Godot readiness/recovery patterns
+- Focused lifecycle/identity/compensation checks; use fixture backend for failure injection only
+- Actual installed-app attach/input/resize/hide/return and one relevant failure path, with OS parent/bounds re-read
+  and inspected pixels/state
+- Controlled visible/focus interaction, if unavoidable, must be surfaced before use; quiet nonforeground setup and
+  bounded cleanup remain default
+- Bundle stable affected checks; do not rerun the entire desktop/native proof history for an isolated failure
+reuse:
+- WP019 live identity and original-placement recovery
+- Existing egui SurfaceBinding epochs, host content lifecycle/diagnostics and native-owned window runner
+- Field capability/preflight/timeout patterns; preserve portable core
+gaps_closed:
+- Current egui content path rejects native child surfaces and exposes no native-parent lifecycle hook
+- Current native popout behavior cannot embed another installed application
+roi_additions:
+- Reusable explicit detach/fallback avoids app-specific wrapper recovery implementations
+- Capability and focus diagnostics give future hosts/models reliable integration boundaries
+risks_and_controls:
+- 'DPI mismatch resets app process awareness: preflight exact contexts and reject incompatible attach before SetParent'
+- 'Native child overlays steal input or cover controls: expose stacking/input limitations and constrain placement'
+- 'Host/app disappears mid-attach: revalidate identity, compensate safe owned changes and retain unknown/recovery
+  state'
+- 'Unsaved external work: wrapper detach does not close the application; document saving remains app/host owned'
+parallelism: After WP019 is published. It overlaps egui native/content paths with WP018; serialize those writes
+  under implementation lead ownership.
+research_basis:
+  source_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
+  selection: Host-owned drops, optional native control and per-app capability-gated hosting; mature platform operations
+    reused after specific dependency readiness
+  rejected:
+  - Native handles/process control in portable Core
+  - Universal application embedding claim
+  - Captured images or synthetic tests replacing actual boundary proof
+taskboard_ref: repo-governance/taskboard/taskboard.yaml
+execution:
+  lead: Fresh non-fork implementation chat created by WP017
+  dependencies: New dependency-role chat verifies source/runtime/tools before coding
+  evaluation: New evaluation-role chat authors focused cases and exact observed verdict per WP
+  diagnostics: New diagnostic-role chat deliberates causal failures directly with assigned coders
+  cargo: Single serialized lane; stable source/.local/cargo-target; verified sccache; bundled compatible checks
+  coding: gpt-6.1-sol high; rotate after two completed implementation WPs; disjoint parallel code allowed
+  publication: Commit and push after each completed WP; DONE requires accepted scope proof and remote containment
+  status: Update packet state then sync taskboard at meaningful milestones; preserve honest unsupported/blocker
+    outcomes
+  automation: Deleted tick remains deleted; do not create new recurring automation

@@ -1,0 +1,43 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-017-extension-planning-and-handoff-v1
+title: Author extension packets and dispatch a fresh implementation lead
+scope:
+- Create dependency-ordered implementation packets for file drops, external desktop tiling, foreign-window hosting and a combined sample
+- Preserve accepted specification and add the newly authorized extension direction with exact prior archive
+- Start a new local chat, never a fork, and authorize its lead to create role/team-leader chats and helpers
+- Publish planning and transfer exclusive session/Git/build coordination before that lead starts implementation
+files:
+- repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/
+- repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/
+- repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/
+- repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/
+- repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
+- repo-governance/sessions/current.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+dependencies:
+- WP-KUM-016-internal-user-manual-v1
+spec_refs:
+- TOPIC-KUM-BOUNDARIES
+- TOPIC-KUM-POPOUTS
+- TOPIC-KUM-CONTENT
+- TOPIC-KUM-ROADMAP
+requirements:
+- Preserve all existing full requirements and acceptance scope; describe extensions as authorized but unimplemented
+- Give each packet scope, files, dependencies, behavior, acceptance, focused proof, research/reuse basis and failure controls
+- Keep portable core independent of platform handles, file IO and process control
+- Fresh lead may create and steer its own fresh role/team-leader chats with bounded subagents; coders use gpt-6.1-sol high and rotate after two implementation packets
+- Preserve deleted tick, serial cached Cargo policy, direct causal blocker deliberation and commit/push after each completed packet
+acceptance:
+- Four complete planned implementation contracts/states exist and generated board links them
+- Current spec includes adopted direction without claiming implementation; previous six-file bundle archived exactly
+- Fresh implementation chat exists and begins session/dependency/team setup from published contracts, with no concurrent Git/session writer
+proof:
+- Focused packet/spec preservation and generated projection checks
+- Fresh canonical origin containment
+- create_thread result and bounded wait_threads observation of implementation lead startup
+taskboard_ref: repo-governance/taskboard/taskboard.yaml
+operator_request: Create work packets first; start a new chat without forking, authorize its own helper/leader chats and subagents, then implement using a sample rather than Handshake; Blender is an optional example
+research_basis: WP016 current primary-source research and inspected canonical code/spec; narrow implementation-specific research remains dependency readiness work for the new lead

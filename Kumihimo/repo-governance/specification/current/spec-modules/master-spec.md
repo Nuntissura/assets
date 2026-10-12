@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 23
+revision: 24
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -35,7 +35,7 @@ Kumihimo holds and arranges content supplied by a host app: editors, browsers, m
 
 The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. Implemented parts include the portable ownership/layout core, content/lifecycle contracts and optional desktop and web adapters. The Windows x64 desktop sample has demonstrated nested panes, tabs/groups, docking, tools, four navigation modes and supported native popouts. The Rust/WASM web pilot has demonstrated nested task frames, arrangement controls and layout/task save and restore in Chrome. The separate rendering experiment has demonstrated two real Linux Servo processes under WSL composed with 2D/3D content on Windows DX12. These are scoped sample providers and experiments; Notes, Studio, Atelier and the actual Portal are still intended consumers.
 
-Demonstrated means the stated scenario has recorded runtime evidence. Partially implemented means some behavior exists while the full feature acceptance is still open. Planned means the stated integration or capability has not been demonstrated. All 99 full requirements remain open and all 18 feature areas remain partially implemented; completed work packets do not certify the entire envisioned product. Physical touch/pen/display behavior, ARM execution, native Windows Servo/libservo, video/audio, full creative-module integration and performance improvements require their own proof. Hiding a view alone does not certify suspension or memory release.
+Demonstrated means the stated scenario has recorded runtime evidence. Partially implemented means some behavior exists while the full feature acceptance is still open. Planned means the stated integration or capability has not been demonstrated. All 105 full requirements remain open and all 18 feature areas remain partially implemented; completed work packets do not certify the entire envisioned product. Physical touch/pen/display behavior, ARM execution, native Windows Servo/libservo, video/audio, full creative-module integration and performance improvements require their own proof. Hiding a view alone does not certify suspension or memory release.
 
 Read the explanation at the start of each topic for the plain-language intent. The structured block records the corresponding requirements and focused acceptance scenarios. Optional field-inspired ideas live in the research note and are not required features.
 
@@ -260,6 +260,10 @@ A host can use supplied GUI controls, replace selected controls, or supply its o
 These are three logical submodules, not a requirement for exactly three crates. Keep code in small, cohesive modules and packages. Bundle state, geometry and commands when they form one independently usable core; split a backend or integration when it has different dependencies, platform support or lifecycle. Avoid one large crate that pulls every adapter into every app, and avoid a separate crate for each tiny helper.
 
 The portable core and shared contracts do not expose a chosen toolkit's widgets, native handles, GPU objects or Servo types as mandatory public inputs. Concrete adapters translate at the boundary. Optional adapters remain independently selectable so an app only brings in the integrations it uses.
+## Sample integration before Handshake
+
+The newly authorized extensions are demonstrated in a Kumihimo desktop sample; actual Handshake integration is not a predecessor. WP021 integrates a live Servo sample pane alongside a supported installed-app pane and host-owned file drops. Running an external desktop app inside a Kumihimo frame is not executing it inside a Servo web page. The prior Servo capture experiment is reusable evidence and infrastructure, not proof of a live interactive combined host. Keep the optional platform package separate from core/content and retain unsupported-capability reporting.
+
 ```
 
 ```yaml
@@ -921,6 +925,10 @@ content_blocks:
   - REQ-KUM-POPOUTS-003
   - REQ-KUM-POPOUTS-004
   - REQ-KUM-POPOUTS-005
+  - REQ-KUM-POPOUTS-006
+  - REQ-KUM-POPOUTS-007
+  - REQ-KUM-POPOUTS-008
+  - REQ-KUM-POPOUTS-009
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -933,6 +941,12 @@ content_blocks:
 An in-app floating frame stays inside the application. A native popout gets its own operating-system window. A popup is a temporary menu, preview or dialog. These need different focus, closing and recovery behavior.
 
 A popout is a handoff: prepare the destination, move the view only when it is usable, and keep a return location. Browsers may block the new window. Closing a popout can return its views to the workspace according to the host policy.
+## Authorized external-app tiling and hosting
+
+External desktop tiling and foreign-window hosting are separate optional integrations. Tiling arranges explicitly selected app windows on the desktop. Hosting places a supported app window inside a Kumihimo frame/tab while the application remains its own process. Neither means that Kumihimo owns the application document or exposes its internal editing tools. Keep Win32 handles and process effects behind an independently selectable platform adapter.
+
+The adapter validates window/process identity, preserves original placement for detach, reports partial OS effects honestly and declares DPI, focus, dialog, clipping/stacking and fullscreen limitations. Unsupported combinations keep an external-window fallback; hidden tabs do not certify suspension or memory release. Use fresh owned test instances and never disrupt existing user app processes. WP019 covers tiling and WP020 covers hosting. Blender is an example, not a required product dependency or universal compatibility claim.
+
 ```
 
 ```yaml
@@ -1007,6 +1021,66 @@ requirements:
   - FEAT-KUM-POPOUTS
   primitive_refs:
   - PRIM-KUM-POPOUTS
+- requirement_id: REQ-KUM-POPOUTS-006
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  statement: Expose independently selectable desktop-app tiling using canonical layout geometry and explicit selected
+    application windows, without moving operating-system control into the portable core.
+  rationale: Adopt the operator-authorized optional extension while preserving host ownership and portable module
+    boundaries.
+  acceptance_refs:
+  - ACC-KUM-POPOUTS-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-POPOUTS
+  primitive_refs:
+  - PRIM-KUM-POPOUTS
+- requirement_id: REQ-KUM-POPOUTS-007
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  statement: Bind external-window operations to revalidated process/window identity and preserve the original placement
+    for detach and recovery; durable layouts store semantic references rather than raw native handles.
+  rationale: Adopt the operator-authorized optional extension while preserving host ownership and portable module
+    boundaries.
+  acceptance_refs:
+  - ACC-KUM-POPOUTS-007
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-POPOUTS
+  primitive_refs:
+  - PRIM-KUM-POPOUTS
+- requirement_id: REQ-KUM-POPOUTS-008
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  statement: Expose optional platform-specific hosting of a supported external application window in a frame/tab,
+    with native parent, content bounds, focus and visibility supplied through the GUI adapter boundary.
+  rationale: Adopt the operator-authorized optional extension while preserving host ownership and portable module
+    boundaries.
+  acceptance_refs:
+  - ACC-KUM-POPOUTS-008
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-POPOUTS
+  primitive_refs:
+  - PRIM-KUM-POPOUTS
+- requirement_id: REQ-KUM-POPOUTS-009
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  statement: Declare external-hosting limitations and reject unsupported DPI, input, stacking or window-mode combinations
+    before destructive effects; preserve an external-window fallback and recovery state.
+  rationale: Adopt the operator-authorized optional extension while preserving host ownership and portable module
+    boundaries.
+  acceptance_refs:
+  - ACC-KUM-POPOUTS-009
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-POPOUTS
+  primitive_refs:
+  - PRIM-KUM-POPOUTS
 acceptance:
 - acceptance_id: ACC-KUM-POPOUTS-001
   requirement_refs:
@@ -1037,6 +1111,30 @@ acceptance:
   method: Use a real supported popout and a blocked or disallowed web destination.
   expected_result: Overlays and input stay in the correct window; blocked requests preserve content and report the
     restriction.
+- acceptance_id: ACC-KUM-POPOUTS-006
+  requirement_refs:
+  - REQ-KUM-POPOUTS-006
+  method: Tile selected real installed-app windows beside the sample shell and resize its layout.
+  expected_result: Only selected windows receive compatible bounds; partial OS failures remain visible per window,
+    and other applications are untouched.
+- acceptance_id: ACC-KUM-POPOUTS-007
+  requirement_refs:
+  - REQ-KUM-POPOUTS-007
+  method: Replace or close a selected window, reuse an invalid identity and detach a surviving selected window.
+  expected_result: Stale or mismatched identities reject effects; surviving windows recover a usable desktop placement;
+    missing applications retain a recoverable reference.
+- acceptance_id: ACC-KUM-POPOUTS-008
+  requirement_refs:
+  - REQ-KUM-POPOUTS-008
+  method: Host a fresh owned instance of a verified installed application, resize it, switch tabs and detach it.
+  expected_result: Actual application pixels and compatible input work in the declared scope; detach restores the
+    application window, and hiding does not imply process suspension or disposal.
+- acceptance_id: ACC-KUM-POPOUTS-009
+  requirement_refs:
+  - REQ-KUM-POPOUTS-009
+  method: Exercise host incompatibility or app disappearance and a compatible app menu/dialog path.
+  expected_result: Failure keeps a usable application or labelled placeholder and causal diagnostic; no universal
+    app/platform compatibility, shared editing tools or released-memory claim is invented.
 features:
 - feature_id: FEAT-KUM-POPOUTS
   title: Floating frames, native popouts and temporary popups
@@ -1046,6 +1144,10 @@ features:
   - REQ-KUM-POPOUTS-003
   - REQ-KUM-POPOUTS-004
   - REQ-KUM-POPOUTS-005
+  - REQ-KUM-POPOUTS-006
+  - REQ-KUM-POPOUTS-007
+  - REQ-KUM-POPOUTS-008
+  - REQ-KUM-POPOUTS-009
   primitive_refs:
   - PRIM-KUM-POPOUTS
 primitives:
@@ -1083,6 +1185,10 @@ decisions:
   research_source_refs:
   - https://dockview.dev/docs/core/groups/popoutGroups/
   - https://github.com/ocornut/imgui/wiki/Multi-Viewports
+  - https://github.com/LGUG2Z/komorebi/blob/master/komorebi/src/window.rs
+  - https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent
+  - https://doc.qt.io/qt-6/qwidget.html#createWindowContainer
+  - https://github.com/godotengine/godot/blob/master/editor/run/embedded_process.cpp
   supersedes: []
 ```
 
@@ -1410,6 +1516,8 @@ content_blocks:
   - REQ-KUM-CONTENT-005
   - REQ-KUM-CONTENT-006
   - REQ-KUM-CONTENT-007
+  - REQ-KUM-CONTENT-008
+  - REQ-KUM-CONTENT-009
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -1426,6 +1534,10 @@ Plugins may fail or disappear. Keep a labeled placeholder and recovery reference
 One host asset may have multiple declared views, such as an image in Notes, a moodboard and Studio, with independent per-view state. Shared-view support must be explicit. The host decides linked references versus independent copies and coordinates revisions and content undo. Providers can declare preview, quick-edit or full-editor presentations; Kumihimo does not implement image tools, rich-text editing, scene tools or kanban transitions. For Portal, dragging an arrangement surface and changing a card column are distinct host-routed actions.
 
 WP010 observed scope at ba2d6189704ced50c621dab18e6140e301aab136: Partial: typed capability negotiation, private Core routing/scoped ACKs, placeholders, pinned tools and opaque host asset/undo contracts proven; actual content engines/editors/asset store remain host integration. Twelve recording-host consumers, compilation and quiet example passed on Windows x64; full requirement acceptance remains open at the host boundaries.
+## Authorized file-drop integration
+
+The operator adopted shared file-drop coordination on 2026-10-12. Kumihimo coordinates eligible destinations, action previews and cancellation; the host owns open/link/import/copy/move semantics, file IO, permissions and undo. Native files, browser File objects and internal asset references remain distinct payload kinds. Hover uses bounded metadata; content access happens only through an admitted host operation. This direction is planned in WP018, not implemented by the current adapters.
+
 ```
 
 ```yaml
@@ -1531,6 +1643,36 @@ requirements:
   - FEAT-KUM-CONTENT
   primitive_refs:
   - PRIM-KUM-CONTENT
+- requirement_id: REQ-KUM-CONTENT-008
+  anchor_refs:
+  - TOPIC-KUM-CONTENT
+  statement: Expose an optional shared drop-intent coordinator binding a payload reference, explicit offered action
+    and current eligible frame/view target to a cancellable, generation-validated gesture.
+  rationale: Adopt the operator-authorized optional extension while preserving host ownership and portable module
+    boundaries.
+  acceptance_refs:
+  - ACC-KUM-CONTENT-008
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CONTENT
+  primitive_refs:
+  - PRIM-KUM-CONTENT
+- requirement_id: REQ-KUM-CONTENT-009
+  anchor_refs:
+  - TOPIC-KUM-CONTENT
+  statement: Keep file access, open/link/import/copy/move meaning, permissions, revisions and content undo with
+    the host; hover uses bounded metadata rather than eager file contents.
+  rationale: Adopt the operator-authorized optional extension while preserving host ownership and portable module
+    boundaries.
+  acceptance_refs:
+  - ACC-KUM-CONTENT-009
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CONTENT
+  primitive_refs:
+  - PRIM-KUM-CONTENT
 acceptance:
 - acceptance_id: ACC-KUM-CONTENT-001
   requirement_refs:
@@ -1573,6 +1715,19 @@ acceptance:
   method: Queue a tool action, change or close its target before delivery, and focus the toolbar itself.
   expected_result: Stale or unavailable work is explicitly rejected; another file is never substituted and ordinary
     keyboard focus does not retarget tools.
+- acceptance_id: ACC-KUM-CONTENT-008
+  requirement_refs:
+  - REQ-KUM-CONTENT-008
+  method: Deliver real native/browser file drops and internal asset transfers; cancel and invalidate a target before
+    release.
+  expected_result: The exact eligible target and advertised action receive at most one committed host operation;
+    cancellation or stale target performs no content change.
+- acceptance_id: ACC-KUM-CONTENT-009
+  requirement_refs:
+  - REQ-KUM-CONTENT-009
+  method: Drop a supported file, an unsupported format and a large payload; inject host refusal or delayed completion.
+  expected_result: Metadata-only hover stays bounded; host policy owns every content effect and reports pending/completed/failed
+    outcomes; layout-only movement never moves a physical file.
 features:
 - feature_id: FEAT-KUM-CONTENT
   title: Hosted modules and plugin contracts
@@ -1584,6 +1739,8 @@ features:
   - REQ-KUM-CONTENT-005
   - REQ-KUM-CONTENT-006
   - REQ-KUM-CONTENT-007
+  - REQ-KUM-CONTENT-008
+  - REQ-KUM-CONTENT-009
   primitive_refs:
   - PRIM-KUM-CONTENT
 primitives:
@@ -1625,6 +1782,8 @@ decisions:
   - https://doc.qt.io/qt-6/qtoolbar.html
   - https://doc.qt.io/qt-6/qdockwidget.html
   - https://doc.qt.io/qt-6/qaction.html
+  - https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idroptarget-dragenter
+  - https://developer.mozilla.org/en-US/docs/Web/API/HTML_Drag_and_Drop_API
   supersedes: []
 ```
 

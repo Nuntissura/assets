@@ -1,19 +1,24 @@
 schema_version: kumihimo.session.v1
 session_id: SESSION-KUM-2026-10-11-v1
-phase: done
+phase: active
 dev_lead: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
 git:
   workspace_relative_root: ..
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: null
+active_wp: WP-KUM-017-extension-planning-and-handoff-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
   operator_afk: false
   future_sessions_require_current_scope_reconciliation: true
-  remaining_work_packets_authorized: []
+  remaining_work_packets_authorized:
+  - WP-KUM-017-extension-planning-and-handoff-v1
+  - WP-KUM-018-file-drop-integration-v1
+  - WP-KUM-019-external-app-tiling-v1
+  - WP-KUM-020-foreign-window-hosting-v1
+  - WP-KUM-021-combined-workspace-demo-v1
   commit_push_after_each_completed_packet: true
   parallel_coding_and_team_expansion_authorized: true
   live_authorization:
@@ -24,6 +29,9 @@ operator_scope:
     ask coding team leader to expand team as needed'
   - Operator requests two subagents for a hidden-by-default internal user manual and code/spec verification, followed
     by brainstorming file drops, app tiling and external-app embedding; no new runtime feature implementation
+  - Operator requests packets first, then a new non-fork implementation lead chat with its own steered role/team-leader
+    chats and subagents; implement file drops, app tiling and foreign-app hosting using a sample shell; Blender
+    optional and Handshake not required
 roles:
   dependencies:
     role_id: ROLE-KUM-DEPENDENCIES
@@ -133,8 +141,7 @@ tick:
   operator_request: remove the tick
   observed_result: automation_update delete returned deleteStatus=deleted for kumihimo-dev-lead-tick
   automatic_restart_authorized: false
-next_action: All16 current packets complete and published; internal manual available through prominent model/consumer
-  links. File-drop and external-app ideas remain discussion only; automatic tick deleted
+next_action: Publish WP017 planning and fresh-lead dispatch; do not admit implementation before ownership transfer
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

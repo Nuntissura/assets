@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 21
+revision: 22
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -24,6 +24,8 @@ content_blocks:
 
 ```markdown
 
+Authorized extension sequence (not implemented): WP018 real file-drop integration; WP019 selected external desktop-app tiling; WP020 supported foreign-window hosting; WP021 a live combined desktop sample using Servo and an installed application. Handshake is not required; Blender is an optional example. All six new requirement acceptances remain open.
+
 Current inspectable surfaces are the desktop sample, the Rust/WASM Portal-style pilot and the separate browser/graphics experiment. Their appearance and sample content are demonstrations of the reusable module; actual Handshake modules remain separate integrations.
 
 | Surface | Demonstrated scope | Remaining scope |
@@ -33,7 +35,7 @@ Current inspectable surfaces are the desktop sample, the Rust/WASM Portal-style 
 | Rust/WASM web pilot | Nested movable task/detail frames, tabs, resize/dock/float controls, separate task edits and validated save/restore in Chrome | Actual Portal integration, native popup migration, other browsers and complete accessibility coverage |
 | Servo/2D/3D experiment | Two real Linux Servo processes under WSL, copied pixels in Windows DX12 scenes, resize/input, confirmed owned unload/page reload and renderer replacement | Native Windows Servo/libservo, zero-copy, video/audio, arbitrary page-state recovery and measured performance improvements |
 
-Demonstrated describes only the recorded scenario. Partially implemented means some behavior exists with full acceptance still open. Planned describes the remaining integrations and unproven capabilities. All 99 full requirements remain open; all 18 feature areas retain partially_implemented status. The existing product manual lists the selectable examples and their run paths; the specification below keeps the product boundaries explicit.
+Demonstrated describes only the recorded scenario. Partially implemented means some behavior exists with full acceptance still open. Planned describes the remaining integrations and unproven capabilities. All 105 full requirements remain open; all 18 feature areas retain partially_implemented status. The existing product manual lists the selectable examples and their run paths; the specification below keeps the product boundaries explicit.
 
 WP014 scoped external-engine experiment at 8cbea2746233a0987d0cf7556c59deeef744486b: independently selectable std-only render-bridge with optional desktop integration. Two actual Servo0.6.0-c78d2c206 Linux x64 software processes under Ubuntu24.04/WSL produce eleven independently hashed/timed PNG captures consumed byte-for-byte in nine actual Windows x64 DX12/NVIDIA RTX3090 GPU scenes with real2D and transformed/depth-tested3D providers. Independent resize and genuine WebDriver pointer/full keyboard input pass at normal and injected scale1.5; canonical normal/narrow/moved slots remain clipped. Fifty-five outside-kernel observations prove private loopback namespaces, three owned listeners with outside-Linux denial, actual CPU/RSS observations, protected unloads, three confirmed engine exits, fresh A page reload and final owned cleanup. Hidden retains its engine; unsupported freeze/throttle/frame-ready/context transfer stay explicit. Static GPU comparisons retain full pixels and zero added uploads/depth renders after one bounded GUI fade settlement. Actual renderer replacement rejects old bindings and safely reuploads accepted CPU pixels. Thirteen owning cases passed; unchanged Core/content/JSON/desktop/web proof and warm Cargo/cache were reused. Native Windows Servo/libservo/zero-copy/video/audio/ARM/physical input/real GPU faults and performance gains remain unproven. Full99 future requirements remain OPEN; independent final evaluation/publication governs WP closure.
 
@@ -81,10 +83,10 @@ roadmap:
   - REQ-KUM-WORKSPACE-006
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
   verification_summary: 'Partial: nested ownership, packing/docking, in-app floats, tabs and semantic saved-layout
-    recovery proven; full workspace and host/provider integration acceptance remains open. Scoped web adapter: Six original
-    browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
-    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open. Scoped
-    desktop: Host-configurable nested frames, canonical versus mounted counts and reachable pane list.'
+    recovery proven; full workspace and host/provider integration acceptance remains open. Scoped web adapter: Six
+    original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input
+    cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains
+    open. Scoped desktop: Host-configurable nested frames, canonical versus mounted counts and reachable pane list.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
@@ -106,11 +108,12 @@ roadmap:
   - REQ-KUM-BOUNDARIES-007
   implementation_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
   verification_summary: 'Partial: default std-only core and independent optional JSON codec with host-owned engines/IO
-    proven at their headless boundary; desktop/web adapters and the render bridge are described below; full provider integration remains open. Scoped web adapter: Six
-    original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input
-    cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains
-    open. Scoped desktop: Borrowed Controller and host-owned providers/policy; optional GUI and backend boundaries.
-    Scoped WP014: Separately selected std-only bridge and optional GPU adapter; host-owned engines.'
+    proven at their headless boundary; desktop/web adapters and the render bridge are described below; full provider
+    integration remains open. Scoped web adapter: Six original browser cases and eight inspected images PASS at
+    e6b48fd; canonical arrangement/task ownership, input cancellation/scale, save/reload/provider recovery and restricted
+    popup denial. Full requirement acceptance remains open. Scoped desktop: Borrowed Controller and host-owned providers/policy;
+    optional GUI and backend boundaries. Scoped WP014: Separately selected std-only bridge and optional GPU adapter;
+    host-owned engines.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
@@ -133,11 +136,11 @@ roadmap:
   - REQ-KUM-LAYOUT-007
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
   verification_summary: 'Partial: split/grid geometry, docking, floats, equalize/swap and reversible maximize/restore
-    proven; desktop/browser arrangement scenarios are described below; full layout acceptance remains open. Scoped web adapter: Six original browser cases
-    and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
-    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open. Scoped
-    desktop: Weighted/holes/deep geometry; drag/cancel/commit, float/redock/equalize/swap/maximize/restore and persistent
-    paint order.'
+    proven; desktop/browser arrangement scenarios are described below; full layout acceptance remains open. Scoped
+    web adapter: Six original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task
+    ownership, input cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement
+    acceptance remains open. Scoped desktop: Weighted/holes/deep geometry; drag/cancel/commit, float/redock/equalize/swap/maximize/restore
+    and persistent paint order.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
@@ -158,11 +161,11 @@ roadmap:
   - REQ-KUM-TABS-006
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
   verification_summary: 'Partial: groups/colors/collapse/pins, canonical membership/list paging, close-veto/retention/reopen
-    and atomic group movement proven; desktop paging/group controls and scoped Windows accessibility are described below; full overflow/accessibility acceptance remains open. Scoped web
-    adapter: Six original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership,
-    input cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement acceptance
-    remains open. Scoped desktop: Canonical paging/reorder/pins/veto/groups, labels/colors, and actual OS selected
-    state.'
+    and atomic group movement proven; desktop paging/group controls and scoped Windows accessibility are described
+    below; full overflow/accessibility acceptance remains open. Scoped web adapter: Six original browser cases and
+    eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale, save/reload/provider
+    recovery and restricted popup denial. Full requirement acceptance remains open. Scoped desktop: Canonical paging/reorder/pins/veto/groups,
+    labels/colors, and actual OS selected state.'
   matrix_entry_refs:
   - BM-KUM-CORE-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
@@ -180,9 +183,16 @@ roadmap:
   - REQ-KUM-POPOUTS-003
   - REQ-KUM-POPOUTS-004
   - REQ-KUM-POPOUTS-005
+  - REQ-KUM-POPOUTS-006
+  - REQ-KUM-POPOUTS-007
+  - REQ-KUM-POPOUTS-008
+  - REQ-KUM-POPOUTS-009
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
-  verification_summary: 'Partial: in-app floats with eligible return and explicit saved bounds repair proven; scoped Windows native handoff/return is described below; other platforms and engine-context migration remain open. Scoped desktop: Correlated native preflight for view/group/frame,
-    three returns, partial survivors, removed-origin return and preparation failures.'
+  verification_summary: 'Partial: in-app floats with eligible return and explicit saved bounds repair proven; scoped
+    Windows native handoff/return is described below; other platforms and engine-context migration remain open.
+    Scoped desktop: Correlated native preflight for view/group/frame, three returns, partial survivors, removed-origin
+    return and preparation failures. Newly authorized file-drop/selected external-app extensions remain planned
+    and unproven; see WP018-021.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
@@ -206,10 +216,11 @@ roadmap:
   - REQ-KUM-CHROME-010
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
   verification_summary: 'Partial: semantic pinned target/placement, tool reservations, closed/unavailable target
-    safety and projection guards proven; scoped desktop chrome/widgets and Windows accessibility are described below; complete chrome acceptance remains open. WP011 adds
-    version2 layered settings/capability provenance and current content0.2/protocol2 typed targets; all24 public
-    cases proved headlessly; later scoped GUI behavior is described below and full host acceptance remains open. Scoped desktop: Full/Compact/Contextual/Hidden profiles,
-    settings precedence, keyboard/semantic touch reveal and theme-backed controls.'
+    safety and projection guards proven; scoped desktop chrome/widgets and Windows accessibility are described below;
+    complete chrome acceptance remains open. WP011 adds version2 layered settings/capability provenance and current
+    content0.2/protocol2 typed targets; all24 public cases proved headlessly; later scoped GUI behavior is described
+    below and full host acceptance remains open. Scoped desktop: Full/Compact/Contextual/Hidden profiles, settings
+    precedence, keyboard/semantic touch reveal and theme-backed controls.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
@@ -229,16 +240,19 @@ roadmap:
   - REQ-KUM-CONTENT-005
   - REQ-KUM-CONTENT-006
   - REQ-KUM-CONTENT-007
+  - REQ-KUM-CONTENT-008
+  - REQ-KUM-CONTENT-009
   implementation_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
   verification_summary: 'Partial: typed capability negotiation, private Core routing/scoped ACKs, placeholders,
     pinned tools and opaque host asset/undo contracts proven; actual content engines/editors/asset store remain
     host integration. WP011 adds version2 layered settings/capability provenance and current content0.2/protocol2
-    typed targets; all24 public cases proved headlessly; later scoped GUI behavior is described below and full host acceptance remains open. Scoped web adapter: Six original
-    browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
-    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open. Scoped
-    desktop: Editable-text/generated-canvas providers, exact dispatch, unsupported backend reporting and placeholders.
-    Scoped WP014: Two independently sized genuine Servo contexts, exact accepted pixel provenance and explicit unavailable
-    capabilities.'
+    typed targets; all24 public cases proved headlessly; later scoped GUI behavior is described below and full host
+    acceptance remains open. Scoped web adapter: Six original browser cases and eight inspected images PASS at e6b48fd;
+    canonical arrangement/task ownership, input cancellation/scale, save/reload/provider recovery and restricted
+    popup denial. Full requirement acceptance remains open. Scoped desktop: Editable-text/generated-canvas providers,
+    exact dispatch, unsupported backend reporting and placeholders. Scoped WP014: Two independently sized genuine
+    Servo contexts, exact accepted pixel provenance and explicit unavailable capabilities. Newly authorized file-drop/selected
+    external-app extensions remain planned and unproven; see WP018-021.'
   matrix_entry_refs:
   - BM-KUM-CONTENT-WINX64-001
   - BM-KUM-NAVIGATION-MEDIA-WINX64-001
@@ -277,9 +291,11 @@ roadmap:
   - REQ-KUM-PERFORMANCE-005
   implementation_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
   verification_summary: 'Partial: causal bounded queues, independent signals, invalidation/animation deadlines,
-    declared cache reservations and provenance diagnostics proven; scoped rendering and CPU/RSS observations are described below; broad responsiveness, savings and performance acceptance remain open. Scoped desktop: Observed bounded work, fresh Instant/repaint scheduling
-    and delayed providers; no performance improvement claim. Scoped WP014: Bounded/coalesced affected captures and
-    zero static duplicate uploads; actual CPU/RSS observations, no savings claim.'
+    declared cache reservations and provenance diagnostics proven; scoped rendering and CPU/RSS observations are
+    described below; broad responsiveness, savings and performance acceptance remain open. Scoped desktop: Observed
+    bounded work, fresh Instant/repaint scheduling and delayed providers; no performance improvement claim. Scoped
+    WP014: Bounded/coalesced affected captures and zero static duplicate uploads; actual CPU/RSS observations, no
+    savings claim.'
   matrix_entry_refs:
   - BM-KUM-CONTENT-WINX64-001
   - BM-KUM-DESKTOP-WINX64-001
@@ -314,8 +330,9 @@ roadmap:
   - REQ-KUM-NAVIGATION-006
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
   verification_summary: 'Partial: four modes, full-range/minimum-thumb mapping, keyboard metadata, continuous transient
-    gesture, bounded host overview and typed actual/Unknown recovery proved headlessly; scoped desktop navigation/capture is described below; full accessibility and real host-document acceptance remain open. Scoped desktop: All four modes, rail/content-wheel distinction, transient
-    stationary reveal and current-epoch picks.'
+    gesture, bounded host overview and typed actual/Unknown recovery proved headlessly; scoped desktop navigation/capture
+    is described below; full accessibility and real host-document acceptance remain open. Scoped desktop: All four
+    modes, rail/content-wheel distinction, transient stationary reveal and current-epoch picks.'
   matrix_entry_refs:
   - BM-KUM-NAVIGATION-MEDIA-WINX64-001
   - BM-KUM-DESKTOP-WINX64-001
@@ -332,8 +349,9 @@ roadmap:
   - REQ-KUM-BACKGROUNDS-004
   implementation_source_revision: 7d9268ab90d5ed6e31d7af070cb73302765741cc
   verification_summary: 'Partial: real frame/workspace mounts, visual/legibility/motion/audio policy, explicit shared
-    media MIN ceilings and exact applied/Unknown cleanup proved headlessly; desktop still-image composition is described below; video decoding/audio and physical savings remain open. Scoped desktop: Host-fed still image fit/brightness/opacity preserved; video remains unsupported
-    in this adapter.'
+    media MIN ceilings and exact applied/Unknown cleanup proved headlessly; desktop still-image composition is described
+    below; video decoding/audio and physical savings remain open. Scoped desktop: Host-fed still image fit/brightness/opacity
+    preserved; video remains unsupported in this adapter.'
   matrix_entry_refs:
   - BM-KUM-NAVIGATION-MEDIA-WINX64-001
   - BM-KUM-DESKTOP-WINX64-001
@@ -352,8 +370,10 @@ roadmap:
   - REQ-KUM-LIFECYCLE-006
   implementation_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
   verification_summary: 'Partial: requested/confirmed/Unknown, separate mount/instance reservations, protected shared
-    cleanup, saturated recovery, queued deadlines and confirmed-instance retention proven; scoped external-engine unload/page reload is described below; general physical release and restart recovery remain host integration. Scoped WP014: Keep-alive/dirty protection, actual independently
-    confirmed unload, logical placeholder and fresh page reload.'
+    cleanup, saturated recovery, queued deadlines and confirmed-instance retention proven; scoped external-engine
+    unload/page reload is described below; general physical release and restart recovery remain host integration.
+    Scoped WP014: Keep-alive/dirty protection, actual independently confirmed unload, logical placeholder and fresh
+    page reload.'
   matrix_entry_refs:
   - BM-KUM-CONTENT-WINX64-001
   - BM-KUM-SERVO-RENDER-WINX64-001
@@ -389,12 +409,13 @@ roadmap:
   - REQ-KUM-RECOVERY-005
   implementation_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
   verification_summary: 'Partial: bounded schema1 wire, semantic live/fresh restore, identity/admission/placeholder
-    safety and save stamps proven; scoped web storage and desktop recreation are described below; filesystem interruption/native monitor/full content recovery remain open.
-    Scoped web adapter: Six original browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task
-    ownership, input cancellation/scale, save/reload/provider recovery and restricted popup denial. Full requirement
-    acceptance remains open. Scoped desktop: Actual teardown/recreation, labelled injected zero/suspend and bounded
-    failures, visible notice/recovery and session negatives. Scoped WP014: Real renderer replacement and accepted
-    CPU-pixel reupload; page reload strength only, arbitrary page state remains open.'
+    safety and save stamps proven; scoped web storage and desktop recreation are described below; filesystem interruption/native
+    monitor/full content recovery remain open. Scoped web adapter: Six original browser cases and eight inspected
+    images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale, save/reload/provider
+    recovery and restricted popup denial. Full requirement acceptance remains open. Scoped desktop: Actual teardown/recreation,
+    labelled injected zero/suspend and bounded failures, visible notice/recovery and session negatives. Scoped WP014:
+    Real renderer replacement and accepted CPU-pixel reupload; page reload strength only, arbitrary page state remains
+    open.'
   matrix_entry_refs:
   - BM-KUM-RECOVERY-WINX64-001
   - BM-KUM-WEB-WASM-001
@@ -413,11 +434,13 @@ roadmap:
   - REQ-KUM-INPUT-004
   implementation_source_revision: 8cbea2746233a0987d0cf7556c59deeef744486b
   verification_summary: 'Partial: typed mouse/touch/pen gesture identity/settlement, keyboard navigation, accessibility
-    range metadata and denied background input routes proved headlessly; scoped browser/native actions are described below; physical input and full assistive-technology acceptance remain open. Scoped web adapter: Six original browser cases and eight inspected images PASS at e6b48fd;
-    canonical arrangement/task ownership, input cancellation/scale, save/reload/provider recovery and restricted
-    popup denial. Full requirement acceptance remains open. Scoped desktop: Actual mouse/keyboard and Windows UIA
-    selection/menu actions; semantic touch/host pen remain separate from physical proof. Scoped WP014: Genuine WebDriver
-    pointer/keyboard at normal/1.5 and canonical per-provider 2D/3D scene picks; physical input remains open.'
+    range metadata and denied background input routes proved headlessly; scoped browser/native actions are described
+    below; physical input and full assistive-technology acceptance remain open. Scoped web adapter: Six original
+    browser cases and eight inspected images PASS at e6b48fd; canonical arrangement/task ownership, input cancellation/scale,
+    save/reload/provider recovery and restricted popup denial. Full requirement acceptance remains open. Scoped
+    desktop: Actual mouse/keyboard and Windows UIA selection/menu actions; semantic touch/host pen remain separate
+    from physical proof. Scoped WP014: Genuine WebDriver pointer/keyboard at normal/1.5 and canonical per-provider
+    2D/3D scene picks; physical input remains open.'
   matrix_entry_refs:
   - BM-KUM-NAVIGATION-MEDIA-WINX64-001
   - BM-KUM-WEB-WASM-001

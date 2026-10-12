@@ -1,0 +1,10 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-019-external-app-tiling-v1
+generation: 1
+phase: planned
+owner: fresh_implementation_lead_pending_dispatch
+changed_files: []
+proof: []
+blockers: []
+next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
+  packet after predecessor publication

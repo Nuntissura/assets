@@ -1,0 +1,48 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-017-extension-planning-and-handoff-v1
+generation: 2
+phase: active
+owner: dev_lead
+changed_files:
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/specification.yaml
+- repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-lead-brief.yaml
+- repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-state.yaml
+- repo-governance/registry/ids.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+proof:
+- kind: independent_planning_evaluation
+  evaluation_ref: repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-evaluation.yaml
+  evaluation_sha256: e235533a5992ae8f6c85e69ad30092724ee987147a5dad77a31d07bb103c97af
+  observed: PASS_SCOPED_PLANNING; five focused cases, no remaining findings; final contract/spec hashes match
+- kind: preservation
+  observed: Exact six-file v23 bundle archived from5069e3; all99 prior requirements/99 acceptances preserved; six
+    new requirements/acceptances added as authorized unimplemented extensions
+- kind: scope
+  observed: Four planned dependency-ordered implementation contracts and lead brief written; product source unchanged;
+    no runtime launch or compatibility claim
+blockers: []
+next_action: Publish planning bundle, create fresh non-fork implementation lead, then publish and release exclusive
+  coordination ownership

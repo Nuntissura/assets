@@ -1,0 +1,80 @@
+schema_version: kumihimo.lead-brief.v1
+brief_id: BRIEF-KUM-017-FRESH-LEAD-v1
+wp_id: WP-KUM-017-extension-planning-and-handoff-v1
+updated_at: '2026-10-12'
+operator_authorization:
+  source: Human message in original lead chat 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+  exact_request: >-
+    ok lets create the workpackets first. then start a new chat, no fork, instruct that chat leadder to spawn its own helpers.
+    and his own new chats that he steers with team leaders havingf their own sub agents like you had.
+    then lets implement it. the blenders isjust an example because handshake is not ready for this,
+    but we can try the servo sample you had and run blender or in it that is installed on this pc or any other program
+  standing_team_authorization: Operator explicitly authorized direct team communication, gpt-6.1-sol high coders rotated after two implementation packets, focused eval/dependency/diagnostic roles, useful disjoint parallel coding and commit/push after each completed packet
+  new_chats: Fresh lead may create and steer its own new local role/team-leader chats; team leaders may use bounded subagents
+  implementation_scope:
+  - WP-KUM-018-file-drop-integration-v1
+  - WP-KUM-019-external-app-tiling-v1
+  - WP-KUM-020-foreign-window-hosting-v1
+  - WP-KUM-021-combined-workspace-demo-v1
+  scope_expansion: Resolve justified causal blockers within these integrations; preserve requested deliverables and minimal ceremony, no unrelated rewrites
+  automation: Tick was explicitly removed; no new heartbeat/recurring automation authorized
+workspace:
+  app_project_label: .assets
+  project_root_relative_to_app_workspace: assets/Kumihimo
+  git_root_relative_to_project: ..
+  branch: codex/handpick
+  remote: origin
+  original_planning_baseline: 5069e3cea8e674c375a3592285bd4b22a912aef0
+  stable_source: Existing Kumihimo checkout; do not generate a fresh source path per candidate
+  stable_cargo_target: .local/cargo-target
+  cargo_target_anchor: Kumihimo project root
+startup_reads:
+- AGENTS.md
+- repo-governance/codex/CODEX.md
+- repo-governance/codex/build-rules/current/build-rules.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/taskboard/taskboard.yaml
+- product/INTERNAL-MANUAL.md
+- product/README.md
+- Current packet contract/state and referenced specification topics
+start_command: python repo-governance/repo-scripts/session_start.py
+ownership_transfer:
+  readiness: New chat may read and prepare team during WP017 publication; no source/Git/session mutation until original lead sends release and canonical session names the new lead
+  after_release: Fresh lead exclusively owns session, packet state, shared integration files, Git publication and Cargo admission; original lead has no active source assignment
+  existing_roles: Prior role chats/coders are held or retired; create fresh roles rather than assume prior agents are active
+team:
+  lead: Coordinate implementation to completion, track state and read actual evidence; do not end at a planning response
+  dependency_chat: Inspect source APIs, current external sources and actual runtime/tool/cache readiness before coding admission
+  diagnostic_chat: Deliberate failures directly with coding leaders, identify causal blockers and explore changed inputs before another attempt
+  evaluation_chat: Author focused cases and observed evidence per packet; distinguish contracts, fixtures, actual OS/application behavior and unproven support
+  coding_leader_chats: Fresh chats with gpt-6.1-sol high coding agents and bounded subagents; rotate individual coders after two implementation packets
+  source_parallelism: Give disjoint files to parallel teams; serialize native.rs, lib.rs, protocol/routing, workspace manifests/lock, docs and governance
+  no_parallel_cargo: Exactly one Kumihimo build/test lane across all role and leader chats
+implementation_context:
+  portable_boundary: Core holds arrangement, never native handles, file IO or process control. New optional kumihimo-external-apps package bundles related platform identity/tiling/hosting only
+  file_drop_gap: Native runner/host traits lack a file-drop host pipeline; browser pilot has no DataTransfer/files handler. AssetAction references do not themselves transfer files
+  native_hosting_gap: egui native parent helper is private and content GPU handoff rejects native child surfaces; add narrow native parent/epoch/physical-bounds hooks with capability gating
+  sample_gap: render-bridge compose.rs is captured plan/image composition; BridgeDesktopHost is not the current interactive NativeHost. WP021 requires live wiring and actual providers
+  shell: Kumihimo desktop shell surrounds a Servo pane and a supported external-app pane; do not claim Blender runs inside a Servo web page
+  handshake: No real Handshake/Notes/Studio dependency or implementation required
+  blender: Example and preferred installed test candidate; another installed program is authorized if incompatibility is observed and documented
+machine_local_readiness:
+  inventory_ref: .local/external-apps/planning-inventory.json
+  observed_candidate: Blender installed per registry5.1.2 and executable inspected; no Blender process observed during planning; no launch or hosting proof yet
+  fallback: VLC inspected, with an existing unowned VLC process; never reuse or disrupt that process. System Notepad may hand off to Store app, so process ownership must be proven
+  servo_runtime_ref: .local/servo-runtime/runtime-inspection.json
+  servo_config_example_ref: .local/servo-proof/35f141655e64/worker-config.json
+  servo_scope: Prior real Servo0.6 Linux x64 under WSL, copied pixels into Windows x64 DX12; native Windows Servo/libservo and video/audio unproven
+  cache: sccache executable found; verify current wrapper/version/stats before enabling reuse. Previous gameplan/confirmations belong WP014 and require fresh assignment checks
+  resource_policy: Fresh CPU/memory/disk and Cargo/rustc/linker observations before costly work; other Rust teams may delay builds while source work continues
+execution_constraints:
+- Use gameplan skill preparation before costly commands and its moment checks; correct preparation to project authority, never bypass hooks
+- Reuse compatible green proof only when all source/dependency/config/behavior inputs are unchanged
+- Bundle affected checks once inputs stabilize; no massive full historical suite for each small failure
+- Actual installed-app HWND/pixels/input and native/browser drop boundaries must be observed; mocked state or old PNGs cannot replace them
+- Launch fresh owned test app/engine instances with ignored local config; do not change user app profiles, documents or existing sessions
+- Default automation quiet/nonforeground; surface controlled visible/focus requirements before unavoidable input proof
+- Never stop unowned processes, delete caches, run parallel Cargo or repeat failures without changed inputs/evidence
+- Update internal manual and spec status from actual completed behavior; preserve hidden-by-default manual and explicit unsupported capabilities
+- Keep WP state, taskboard and recovery current at meaningful milestones; commit/push after each completed packet and verify canonical origin
+completion: Finish all four authorized packets or preserve exact evidence-backed blocking dependency; do not substitute documentation-only output for implementation

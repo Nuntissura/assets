@@ -1,0 +1,70 @@
+schema_version: kumihimo.evaluation.v1
+evaluation_id: EVAL-KUM-017-v1
+wp_id: WP-KUM-017-extension-planning-and-handoff-v1
+evaluator: manual_verifier
+updated_at: '2026-10-12'
+phase: planning_evaluated_pending_publication_and_handoff
+verdict: PASS_SCOPED_PLANNING
+scope: Bounded contract/specification readiness review and read-only installed-program/source inspection; no coding or runtime compatibility verdict.
+inspected_refs:
+- path: repo-governance/specification/current/specification.yaml
+  sha256: e02dd0ce755112437a84615f8b3527d028984d6730c1ffa46fa9c5667091c141
+- path: repo-governance/specification/current/spec-modules/master-spec.md
+  sha256: 23197049e1045595f885fd9ab02816e7c0e36650472060067a94fdf2e1c15721
+- path: repo-governance/specification/current/spec-modules/roadmap.md
+  sha256: e8bd9923a3a19f3b76d6484ef4d4434cc20b753409f83902ef78a68d2ddb40f5
+- path: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-contract.yaml
+  sha256: 8d446e47ebdb2034da8fd18ce7d0e9052f3031444f5216982797b91127b16d21
+- path: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-contract.yaml
+  sha256: 4ade7442058bfe6fa363a4cfa148bc2409929635494b404241c89c1cd50e7d01
+- path: repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-contract.yaml
+  sha256: 0d593c8d08d4519f9b892391e5ccae4cc1e8ef2bde825b63652194f0465cb02c
+- path: repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-contract.yaml
+  sha256: a8735121c054ddcfa0fc951eba48c9ba1312137f1ef32d1143607eddcdcca489
+checks:
+- id: EVAL-KUM-017-C01
+  result: PASS
+  target: Prior six-file specification archive and accepted requirement preservation.
+  method: Compare archive bytes with git show of 5069e3cea8e674c375a3592285bd4b22a912aef0; parse archived/current master YAML records.
+  observed: All six archived files exactly match Git blobs. All prior 99 requirement and 99 acceptance records remain semantically identical. Current specification contains 105 requirements and 105 acceptances, adding only CONTENT008/009 and POPOUTS006-009 with matching acceptances.
+- id: EVAL-KUM-017-C02
+  result: PASS
+  target: Four planned implementation contracts and states.
+  method: Parse WP018-021 contracts/states, verify research/spec references, dependency ordering, admitted source paths and overlap policy.
+  observed: Four states remain planned. Contracts include scope/files/dependencies/acceptance/proof/research/reuse/risks, optional modules, actual boundary proof and per-packet publication. WP018 and WP019 allow disjoint source work; shared paths and Cargo serialize; WP020 follows published WP019; WP021 follows all implementation predecessors.
+- id: EVAL-KUM-017-C03
+  result: PASS
+  target: Code-to-contract integration gaps and host boundaries.
+  method: Inspect existing egui DesktopHost/NativeHost, native.rs create_window/private HWND helper/event forwarding, content.rs native-child rejection and render-bridge compose/provider entry points.
+  observed: WP018 admits the necessary native/drop host hook and sample paths. WP020 explicitly adds parent/epoch/physical-bounds lifecycle hooks instead of placing handles in Core or deleting unsupported checks globally. WP021 explicitly requires a live native sample; current compose image/plan output and BridgeDesktopHost are not treated as an existing interactive Servo runner. Host file IO, app documents and process effects retain their boundaries.
+- id: EVAL-KUM-017-C04
+  result: PASS
+  target: Installed-app example and safe owned-instance preparation.
+  method: Read uninstall/App Paths registry, exact candidate executable metadata/hashes and current matching process identities; no program launch.
+  observed: Blender uninstall metadata reports 5.1.2; executable exists with PE version 5.1 and independently hashed bytes. VLC 3.0.23 is a verified installed fallback candidate, with an existing unowned instance observed and excluded. Notepad App Paths redirects to Store Notepad, so process handoff requires separate ownership proof. CLI, DPI, hosting, fresh-instance isolation and actual input compatibility remain unverified. WP020 permits another verified installed program if Blender is incompatible; Blender is not a mandatory dependency.
+  local_observation_ref: .local/external-apps/planning-inventory.json
+- id: EVAL-KUM-017-C05
+  result: PASS
+  target: Planned status, focused proof and fresh-lead operating constraints.
+  method: Read current roadmap, packet execution policies and WP017 contract; compare product diff against 5069e3cea8e674c375a3592285bd4b22a912aef0.
+  observed: Extensions are authorized/planned without runtime claims; current overview correctly says 105 open requirements. Product changes are empty. Fresh non-fork lead/helper chats, gpt-6.1-sol high coding/two-packet rotation, direct blocker deliberation, one reusable Cargo lane and deleted tick are preserved. Existing WP014 gameplan/cache/runtime pointers are preparation hints requiring fresh dependency verification, not execution admission.
+resolved_findings:
+- id: EVAL-KUM-017-F001
+  status: RESOLVED
+  correction: WP018 uses existing workspace.css and admits egui lib.rs/demo.rs/desktop_host.rs hook/sample paths.
+- id: EVAL-KUM-017-F002
+  status: RESOLVED
+  correction: Shared content-block requirement-ref lists append each new requirement once; no duplicate alias-list members.
+- id: EVAL-KUM-017-F003
+  status: RESOLVED
+  correction: Current roadmap count is 105; historical 99-requirement runtime narratives remain historical.
+- id: EVAL-KUM-017-F004
+  status: RESOLVED
+  correction: WP021 uses existing canonical RENDER/SERVO topic references; all inspected packet spec references resolve.
+findings: []
+residual_limits:
+- Planning verdict only; no file drop, tiling, foreign-app hosting or live combined demo has been implemented or executed by this evaluation.
+- Program hashes/registry metadata establish installation candidates, not application compatibility or fresh-process ownership; new dependency team must reverify before runtime.
+- Canonical publication, new chat creation/startup, exclusive session/Git/build ownership transfer and WP017 closure remain lead-owned pending acceptance surfaces.
+- No build, app launch, process stop or product/Git/session edit performed by evaluator; only this evaluation artifact written.
+next_action: Lead publishes accepted planning, verifies origin and dispatches the fresh non-fork implementation lead with exclusive coordination ownership before implementation.

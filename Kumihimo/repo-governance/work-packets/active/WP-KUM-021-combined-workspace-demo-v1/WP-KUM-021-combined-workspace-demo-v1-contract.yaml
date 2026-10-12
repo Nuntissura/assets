@@ -1,0 +1,114 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-021-combined-workspace-demo-v1
+title: Live sample with Servo, file drops and an external application
+scope:
+- Create an inspectable live desktop sample using Kumihimo, without requiring Handshake
+- Show a real Servo-backed pane alongside a supported external-app pane and a host-owned drop/content pane
+- Expose interaction, unsupported capabilities, selected app tiling/hosting/detach, resource observations and recovery
+  in the sample
+files:
+- product/kumihimo-egui/examples/external_workspace.rs
+- product/kumihimo-egui/src/demo.rs
+- product/kumihimo-render-bridge/src/
+- product/kumihimo-render-bridge/tools/
+- product/kumihimo-render-bridge/examples/
+- product/kumihimo-external-apps/examples/
+- product/kumihimo-egui/Cargo.toml
+- product/Cargo.toml
+- product/Cargo.lock
+- product/README.md
+- product/INTERNAL-MANUAL.md
+- README.md
+- repo-governance/codex/build-rules/current/build-rules.yaml
+- repo-governance/topology/
+- repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/
+dependencies:
+- WP-KUM-018-file-drop-integration-v1
+- WP-KUM-019-external-app-tiling-v1
+- WP-KUM-020-foreign-window-hosting-v1
+- WP-KUM-014-servo-and-heavy-rendering-v1
+spec_refs:
+- TOPIC-KUM-BOUNDARIES
+- TOPIC-KUM-CONTENT
+- TOPIC-KUM-POPOUTS
+- TOPIC-KUM-RENDER
+- TOPIC-KUM-SERVO
+requirements:
+- Use Kumihimo desktop shell as outer workspace; the external app runs in its own process, not inside a Servo web
+  page
+- Reuse verified WSL Linux Servo0.6 runtime/config/loader and copied-pixel bridge when available, but verify current
+  local inputs before launching; no native Windows Servo/libservo claim
+- 'Build live provider/runner wiring: existing compose.rs image/plan output and BridgeDesktopHost alone are not
+  an interactive NativeHost'
+- Demonstrate live browser input/resize and app input/resize/tab visibility/detach alongside host file drops; no
+  screenshot stand-in for live providers
+- Keep frame/tab counts configurable, default integrations optional and child-work scheduling bounded; no unnecessary
+  browser/graphics engine in every host
+- Provide explicit --interactive opt-in plus quiet structured routes/snapshots, stable controls, runtime health/errors
+  and capture evidence for model operation
+- Use ignored local executable/runtime config and semantic restore references; no machine paths or local ports baked
+  into source/manual
+- Sample task/document/file state remains host-owned; save/restore validates arrangement and provider references
+  and recovers missing app/engine placeholders
+- Expose observed resource/work counts and support flags; hiding external app does not claim stopped CPU/GPU or
+  released memory
+- Update internal manual/spec status from exact observations; provide verified launch instructions and leave a usable
+  inspectable demo or causal unsupported result for a tested program
+acceptance:
+- A live native shell runs actual Servo-backed content and one real compatible installed-app frame with no Handshake
+  dependency
+- File drop changes the intended sample host content; browser and external-app interactions visibly affect their
+  own content
+- Resize/tab switching/detach and missing-provider recovery are inspectable; no fixed stock pane count or universal
+  compatibility assertion
+- The demo has actual structured/captured GUI proof and concise reproducible startup/recovery documentation, hidden-by-default
+  manual retained
+- No unrelated process or user files disturbed; spawned owned engine/app resources have explicit cleanup; one Cargo
+  lane and warm artifacts reused
+proof:
+- One bounded combined end-to-end scenario at stable candidate, plus a focused failure/recovery path; reuse each
+  predecessor proof unchanged where inputs remain valid
+- Independently observe actual Servo PID/output and app HWND/parent/bounds; inspect captured live output and resulting
+  host content
+- Check runtime resource observations before build/engine launch and record sample work bounds; do not claim performance
+  improvement without measurements
+- Dependency/evaluation teams must distinguish a fixture, captured image, native child app and live browser provider
+- Commit/push completed packet and publish updated manual/runtime commands
+reuse:
+- Existing Servo worker/batch fixtures and proven loader/network isolation
+- Render bridge pixel provenance/device recovery and egui native runner
+- WP018 host drop handlers plus WP019-020 external identity/tiling/hosting
+gaps_closed:
+- Existing compose sample is offline composition rather than an interactive combined workspace
+- No current inspectable sample unites actual file drops and external applications with the Servo experiment
+roi_additions:
+- One combined consumer exposes integration seams before Handshake exists
+- Structured sample diagnostics and current internal manual lower future host/agent onboarding cost
+risks_and_controls:
+- 'Servo/native runtime incompatibility: inspect current runtime and evidence; preserve copied-pixel path with causal
+  unsupported diagnostics'
+- 'Cross-team CPU/build contention: serialize Cargo, measure current resources, continue source work during delay'
+- 'Provider or installed app absent: retain semantic placeholder and recovery route; do not substitute old PNGs
+  as live success'
+parallelism: Integration begins after predecessor publication; independent documentation/evaluation prep may proceed
+  while coders work. Do not overwrite other packet source ownership.
+research_basis:
+  source_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
+  selection: Host-owned drops, optional native control and per-app capability-gated hosting; mature platform operations
+    reused after specific dependency readiness
+  rejected:
+  - Native handles/process control in portable Core
+  - Universal application embedding claim
+  - Captured images or synthetic tests replacing actual boundary proof
+taskboard_ref: repo-governance/taskboard/taskboard.yaml
+execution:
+  lead: Fresh non-fork implementation chat created by WP017
+  dependencies: New dependency-role chat verifies source/runtime/tools before coding
+  evaluation: New evaluation-role chat authors focused cases and exact observed verdict per WP
+  diagnostics: New diagnostic-role chat deliberates causal failures directly with assigned coders
+  cargo: Single serialized lane; stable source/.local/cargo-target; verified sccache; bundled compatible checks
+  coding: gpt-6.1-sol high; rotate after two completed implementation WPs; disjoint parallel code allowed
+  publication: Commit and push after each completed WP; DONE requires accepted scope proof and remote containment
+  status: Update packet state then sync taskboard at meaningful milestones; preserve honest unsupported/blocker
+    outcomes
+  automation: Deleted tick remains deleted; do not create new recurring automation
