@@ -80,6 +80,8 @@ pub struct PendingRequest {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
+    #[cfg(feature = "navigation")]
+    pub overview_entries: usize,
     pub providers: usize,
     pub mounts: usize,
     pub instances: usize,
@@ -95,6 +97,12 @@ pub struct Counts {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentSnapshot {
+    #[cfg(feature = "navigation")]
+    pub navigation: BTreeMap<MountId, NavigationState>,
+    #[cfg(feature = "backgrounds")]
+    pub backgrounds: BTreeMap<MountId, BackgroundState>,
+    #[cfg(feature = "backgrounds")]
+    pub media: BTreeMap<InstanceId, MediaState>,
     pub providers: BTreeMap<ProviderId, ProviderConnection>,
     pub mounts: BTreeMap<MountId, Mount>,
     pub instances: BTreeMap<InstanceId, Instance>,
@@ -129,6 +137,12 @@ pub(crate) struct ClosePermit {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct State {
+    #[cfg(feature = "navigation")]
+    pub navigation: BTreeMap<MountId, NavigationState>,
+    #[cfg(feature = "backgrounds")]
+    pub backgrounds: BTreeMap<MountId, BackgroundState>,
+    #[cfg(feature = "backgrounds")]
+    pub media: BTreeMap<InstanceId, MediaState>,
     pub session: String,
     pub limits: ContentLimits,
     pub next_id: u64,
@@ -170,6 +184,12 @@ impl Controller {
         Ok(Self {
             core,
             state: State {
+                #[cfg(feature = "navigation")]
+                navigation: BTreeMap::new(),
+                #[cfg(feature = "backgrounds")]
+                backgrounds: BTreeMap::new(),
+                #[cfg(feature = "backgrounds")]
+                media: BTreeMap::new(),
                 session,
                 limits,
                 next_id: 1,
@@ -195,6 +215,12 @@ impl Controller {
     pub fn inspect(&self) -> ContentSnapshot {
         let s = &self.state;
         ContentSnapshot {
+            #[cfg(feature = "navigation")]
+            navigation: s.navigation.clone(),
+            #[cfg(feature = "backgrounds")]
+            backgrounds: s.backgrounds.clone(),
+            #[cfg(feature = "backgrounds")]
+            media: s.media.clone(),
             providers: s.providers.clone(),
             mounts: s.mounts.clone(),
             instances: s.instances.clone(),
@@ -269,7 +295,7 @@ impl Controller {
                 .state
                 .mounts
                 .values()
-                .find(|m| m.scope.view == view && m.active)
+                .find(|m| m.scope.target == MountTarget::View(view) && m.active)
             {
                 Some(m) if m.status == MountStatus::Attached => return None,
                 Some(m) if m.status == MountStatus::Unknown => PlaceholderReason::Unknown,
@@ -291,20 +317,59 @@ impl Controller {
         permission: HostPermission,
         now: u64,
     ) -> Result<MountId> {
+        let resource = self
+            .snapshot()
+            .views
+            .get(&view)
+            .ok_or(Error::Missing("view", view.raw()))?
+            .resource;
+        self.attach_target(
+            MountTarget::View(view),
+            resource,
+            options,
+            permission,
+            now,
+            #[cfg(feature = "backgrounds")]
+            None,
+        )
+    }
+    #[cfg(feature = "backgrounds")]
+    pub fn attach_background(
+        &mut self,
+        target: MountTarget,
+        resource: ResourceId,
+        kind: BackgroundKind,
+        options: AttachOptions,
+        permission: HostPermission,
+        now: u64,
+    ) -> Result<MountId> {
+        if !target.is_background() {
+            return Err(Error::Invalid("background target"));
+        }
+        self.attach_target(target, resource, options, permission, now, Some(kind))
+    }
+    fn attach_target(
+        &mut self,
+        target: MountTarget,
+        resource: ResourceId,
+        options: AttachOptions,
+        permission: HostPermission,
+        now: u64,
+        #[cfg(feature = "backgrounds")] background: Option<BackgroundKind>,
+    ) -> Result<MountId> {
         self.transaction(|core, s| {
             s.time(now)?;
             if !permission.allowed {
                 return Err(Error::PermissionDenied);
             }
             let snap = core.snapshot();
-            let v = snap
-                .views
-                .get(&view)
-                .ok_or(Error::Missing("view", view.raw()))?;
-            if v.closed.is_some() {
-                return Err(Error::Stale("closed view"));
+            if !State::target_valid(snap, target, resource) {
+                return Err(Error::Stale("mount target"));
             }
-            let r = &snap.resources[&v.resource];
+            let r = snap
+                .resources
+                .get(&resource)
+                .ok_or(Error::Missing("resource", resource.raw()))?;
             let p = &snap.providers[&r.provider];
             if p.availability != ProviderAvailability::Available {
                 return Err(Error::Stale("provider unavailable"));
@@ -317,8 +382,15 @@ impl Controller {
             if !conn.capabilities.modes.contains(&options.mode) {
                 return Err(Error::Unsupported("content mode"));
             }
-            if s.mounts.values().any(|m| m.active && m.scope.view == view) {
-                return Err(Error::Invalid("view already mounted"));
+            #[cfg(feature = "backgrounds")]
+            if background.is_some_and(|kind| !conn.capabilities.backgrounds.supports(kind)) {
+                return Err(Error::Unsupported("background kind"));
+            }
+            if s.mounts
+                .values()
+                .any(|m| m.active && m.scope.target == target)
+            {
+                return Err(Error::Invalid("target already mounted"));
             }
             let mount = MountId(s.id()?);
             let instance = if let Some(id) = options.share {
@@ -334,6 +406,7 @@ impl Controller {
                     || !i.reserved
                     || i.retired
                     || i.scope.connection != conn.epoch
+                    || i.scope.target.is_background() != target.is_background()
                 {
                     return Err(Error::Stale("shared instance"));
                 }
@@ -346,7 +419,7 @@ impl Controller {
                 session: s.session.clone(),
                 provider: r.provider,
                 resource: r.id,
-                view,
+                target,
                 connection: conn.epoch,
                 instance,
                 mount,
@@ -398,6 +471,12 @@ impl Controller {
                     recovery: None,
                 },
             );
+            #[cfg(feature = "backgrounds")]
+            if let Some(kind) = background {
+                s.backgrounds.insert(mount, BackgroundState::new(kind));
+                s.media.entry(instance).or_default();
+                s.media_changed(instance)?;
+            }
             s.enqueue(
                 core,
                 mount,
@@ -433,7 +512,13 @@ impl Controller {
                 return Err(Error::Stale("eligibility revision"));
             }
             m.eligibility = facts;
+            #[cfg(feature = "backgrounds")]
+            let instance = m.instance;
             s.permits.remove(&mount);
+            #[cfg(feature = "backgrounds")]
+            if s.media.contains_key(&instance) {
+                s.media_changed(instance)?;
+            }
             Ok(())
         })
     }
@@ -458,7 +543,7 @@ impl Controller {
                         .state
                         .mounts
                         .values()
-                        .find(|m| m.active && m.scope.view == v.id)
+                        .find(|m| m.active && m.scope.target == MountTarget::View(v.id))
                     {
                         if self
                             .state
@@ -486,10 +571,11 @@ impl Controller {
             .values()
             .filter(|m| m.active)
             .map(|m| {
-                let v = snap.views.get(&m.scope.view);
+                let v = m.scope.target.view().and_then(|id| snap.views.get(&id));
                 (
                     m.id,
                     v.map(|v| (v.pinned, v.unsaved, v.frame)),
+                    State::target_frame(snap, m.scope.target),
                     snap.pin_policy.clone(),
                 )
             })
@@ -505,15 +591,18 @@ impl Controller {
         {
             let restore = matches!(command, Command::Restore(_));
             let current = self.core.snapshot();
-            for (id, old, policy) in before {
+            for (id, old, old_frame, policy) in before {
                 let Some(m) = self.state.mounts.get(&id) else {
                     continue;
                 };
                 let invalid = restore || !self.state.binding_valid(current, &m.scope);
-                let new = current
-                    .views
-                    .get(&m.scope.view)
+                let new = m
+                    .scope
+                    .target
+                    .view()
+                    .and_then(|id| current.views.get(&id))
                     .map(|v| (v.pinned, v.unsaved, v.frame));
+                let new_frame = State::target_frame(current, m.scope.target);
                 if invalid {
                     if let Some(m) = self.state.mounts.get_mut(&id) {
                         m.eligibility.unsaved |= old.is_some_and(|x| x.1);
@@ -525,7 +614,7 @@ impl Controller {
                     self.state.permits.remove(&id);
                     self.state.stale_close(id);
                 }
-                if old.map(|x| x.2) != new.map(|x| x.2) {
+                if old_frame != new_frame {
                     self.state.stale_geometry(id);
                 }
             }
@@ -541,6 +630,31 @@ impl Controller {
     }
 }
 impl State {
+    fn target_valid(snap: &Snapshot, target: MountTarget, resource: ResourceId) -> bool {
+        match target {
+            MountTarget::View(id) => snap
+                .views
+                .get(&id)
+                .is_some_and(|v| v.closed.is_none() && v.resource == resource),
+            #[cfg(feature = "backgrounds")]
+            MountTarget::FrameBackground(id) => snap.frames.contains_key(&id),
+            #[cfg(feature = "backgrounds")]
+            MountTarget::WorkspaceBackground(id) => snap.workspaces.contains_key(&id),
+        }
+    }
+    fn target_frame(
+        snap: &Snapshot,
+        target: MountTarget,
+    ) -> Option<(kumihimo_core::FrameId, kumihimo_core::WorkspaceId)> {
+        let frame = match target {
+            MountTarget::View(id) => snap.views.get(&id).map(|v| v.frame),
+            #[cfg(feature = "backgrounds")]
+            MountTarget::FrameBackground(id) => Some(id),
+            #[cfg(feature = "backgrounds")]
+            MountTarget::WorkspaceBackground(id) => snap.workspaces.get(&id).and_then(|w| w.owner),
+        }?;
+        snap.frames.get(&frame).map(|f| (frame, f.workspace))
+    }
     pub(crate) fn id(&mut self) -> Result<u64> {
         let id = self.next_id;
         self.next_id = id.checked_add(1).ok_or(Error::Exhausted("protocol ID"))?;
@@ -560,10 +674,7 @@ impl State {
                 .providers
                 .get(&scope.provider)
                 .is_some_and(|p| p.epoch == scope.connection)
-            && snap
-                .views
-                .get(&scope.view)
-                .is_some_and(|v| v.closed.is_none() && v.resource == scope.resource)
+            && Self::target_valid(snap, scope.target, scope.resource)
             && snap
                 .resources
                 .get(&scope.resource)
@@ -575,6 +686,23 @@ impl State {
     }
     pub(crate) fn counts(&self) -> Result<Counts> {
         let mut bytes = 0usize;
+        #[cfg(feature = "navigation")]
+        let mut overview_entries = 0usize;
+        #[cfg(feature = "navigation")]
+        for n in self.navigation.values() {
+            bytes = bytes
+                .checked_add(n.opaque_bytes()?)
+                .ok_or(Error::Exhausted("navigation bytes"))?;
+            overview_entries = overview_entries
+                .checked_add(n.overview_marker_count())
+                .ok_or(Error::Exhausted("overview entries"))?;
+        }
+        #[cfg(feature = "backgrounds")]
+        for b in self.backgrounds.values() {
+            bytes = bytes
+                .checked_add(b.retained_bytes()?)
+                .ok_or(Error::Exhausted("background bytes"))?;
+        }
         for p in self.pending.values() {
             bytes = bytes
                 .checked_add(p.request.kind.opaque_bytes()?)
@@ -594,6 +722,8 @@ impl State {
                 .ok_or(Error::Exhausted("cache bytes"))?;
         }
         Ok(Counts {
+            #[cfg(feature = "navigation")]
+            overview_entries,
             providers: self.providers.len(),
             mounts: self.mounts.values().filter(|m| m.reserved).count(),
             instances: self.instances.values().filter(|i| i.reserved).count(),
@@ -614,6 +744,16 @@ impl State {
     pub(crate) fn admit(&self, prior: &Counts) -> Result<()> {
         let c = self.counts()?;
         let l = &self.limits;
+        #[cfg(feature = "navigation")]
+        if let Some(limit) = l.overview_entries {
+            if c.overview_entries > limit && c.overview_entries > prior.overview_entries {
+                return Err(Error::Admission {
+                    dimension: "overview entries",
+                    limit,
+                    attempted: c.overview_entries,
+                });
+            }
+        }
         for (dimension, limit, new, old) in [
             ("providers", l.providers, c.providers, prior.providers),
             ("mounts", l.mounts, c.mounts, prior.mounts),

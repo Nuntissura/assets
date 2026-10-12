@@ -19,10 +19,10 @@ impl State {
                 || !e.recoverable
                 || !e.host_allowed
                 || (m.active
-                    && core
-                        .snapshot()
-                        .views
-                        .get(&m.scope.view)
+                    && m.scope
+                        .target
+                        .view()
+                        .and_then(|id| core.snapshot().views.get(&id))
                         .is_some_and(|v| v.unsaved))
             {
                 return Err(Error::PermissionDenied);
@@ -41,6 +41,12 @@ impl State {
         Ok(())
     }
     pub(crate) fn release_mount(&mut self, id: MountId) {
+        #[cfg(feature = "navigation")]
+        self.navigation_invalidate(id);
+        #[cfg(feature = "backgrounds")]
+        if let Some(m) = self.mounts.get(&id) {
+            self.media_invalidate(m.instance);
+        }
         if let Some(m) = self.mounts.get_mut(&id) {
             m.active = false;
             m.reserved = false;
@@ -81,7 +87,13 @@ impl State {
             for m in i.mounts {
                 self.mounts.remove(&m);
                 self.permits.remove(&m);
+                #[cfg(feature = "navigation")]
+                self.navigation.remove(&m);
+                #[cfg(feature = "backgrounds")]
+                self.backgrounds.remove(&m);
             }
+            #[cfg(feature = "backgrounds")]
+            self.media.remove(&id);
             self.samples.retain(|(instance, _), _| *instance != id);
         }
     }
@@ -90,6 +102,16 @@ impl State {
             return Ok(());
         };
         let valid = match (&p.request.kind, c) {
+            #[cfg(feature = "navigation")]
+            (RequestKind::Navigation(n), Confirmation::Navigation(o)) => {
+                self.navigation_validate_confirmation(p.request.ticket.scope.mount, n, o)?;
+                true
+            }
+            #[cfg(feature = "backgrounds")]
+            (RequestKind::MediaBudget(b), Confirmation::MediaBudget(o)) => {
+                self.media_validate_confirmation(p.request.ticket.scope.mount, b, o)?;
+                true
+            }
             (RequestKind::Attach { .. }, Confirmation::Attached { strength }) => self
                 .providers
                 .get(&p.request.ticket.scope.provider)
@@ -125,6 +147,12 @@ impl State {
         let id = p.request.ticket.scope.mount;
         let instance = p.request.ticket.scope.instance;
         match (&p.request.kind, c) {
+            #[cfg(feature = "navigation")]
+            (RequestKind::Navigation(_), Confirmation::Navigation(o)) => {
+                self.navigation_apply(id, o)?
+            }
+            #[cfg(feature = "backgrounds")]
+            (RequestKind::MediaBudget(_), Confirmation::MediaBudget(o)) => self.media_apply(id, o),
             (RequestKind::Attach { .. }, Confirmation::Attached { strength }) => {
                 self.instances.get_mut(&instance).unwrap().started = true;
                 let m = self
@@ -256,6 +284,17 @@ impl State {
         }
     }
     pub(crate) fn unknown(&mut self, id: RequestId) {
+        #[cfg(any(feature = "navigation", feature = "backgrounds"))]
+        if let Some(p) = self.get_request(id) {
+            #[cfg(feature = "navigation")]
+            if matches!(p.request.kind, RequestKind::Navigation(_)) {
+                self.navigation_unknown(p.request.ticket.scope.mount);
+            }
+            #[cfg(feature = "backgrounds")]
+            if matches!(p.request.kind, RequestKind::MediaBudget(_)) {
+                self.media_unknown(p.request.ticket.scope.instance);
+            }
+        }
         if let Some(p) = self.pending.get_mut(&id) {
             p.status = RequestStatus::Unknown;
         }
@@ -606,6 +645,14 @@ impl Controller {
                         return Err(Error::Stale("reconciliation outcome"));
                     }
                     if *effect == Effect::Applied {
+                        let typed_observation_required = match &old.request.kind {
+                            #[cfg(feature = "navigation")]
+                            RequestKind::Navigation(_) => { s.navigation_unknown(old.request.ticket.scope.mount); true },
+                            #[cfg(feature = "backgrounds")]
+                            RequestKind::MediaBudget(_) => { s.media_unknown(old.request.ticket.scope.instance); true },
+                            _ => false,
+                        };
+                        if !typed_observation_required {
                         let c = match &old.request.kind {
                             RequestKind::Attach { .. } => Confirmation::Attached {
                                 strength: RestorationStrength::Unknown,
@@ -634,6 +681,7 @@ impl Controller {
                             )
                         {
                             s.apply(&old, &c)?;
+                        }
                         }
                     } else if matches!(old.request.kind, RequestKind::Attach { .. }) {
                         s.release_mount(old.request.ticket.scope.mount);

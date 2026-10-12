@@ -59,8 +59,9 @@ pub struct ProtocolVersion {
 }
 impl ProtocolVersion {
     pub const V1: Self = Self { major: 1, minor: 0 };
+    pub const V2: Self = Self { major: 2, minor: 0 };
     pub fn validate(self) -> Result<()> {
-        if self == Self::V1 {
+        if self == Self::V2 {
             Ok(())
         } else {
             Err(Error::Unsupported("protocol version"))
@@ -69,7 +70,7 @@ impl ProtocolVersion {
 }
 impl Default for ProtocolVersion {
     fn default() -> Self {
-        Self::V1
+        Self::V2
     }
 }
 
@@ -104,6 +105,10 @@ pub enum RestorationStrength {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
+    #[cfg(feature = "navigation")]
+    pub navigation: crate::NavigationCapabilities,
+    #[cfg(feature = "backgrounds")]
+    pub backgrounds: crate::BackgroundCapabilities,
     pub modes: BTreeSet<ContentMode>,
     pub lifecycle: BTreeSet<LifecycleState>,
     pub restoration: BTreeSet<RestorationStrength>,
@@ -124,6 +129,10 @@ pub struct Capabilities {
 impl Default for Capabilities {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "navigation")]
+            navigation: Default::default(),
+            #[cfg(feature = "backgrounds")]
+            backgrounds: Default::default(),
             modes: BTreeSet::from([
                 ContentMode::Preview,
                 ContentMode::QuickEdit,
@@ -166,6 +175,10 @@ impl Capabilities {
             return Err(Error::Unsupported("close mode"));
         }
         Ok(Self {
+            #[cfg(feature = "navigation")]
+            navigation: self.navigation.intersect(&provider.navigation),
+            #[cfg(feature = "backgrounds")]
+            backgrounds: self.backgrounds.intersect(&provider.backgrounds),
             modes: self.modes.intersection(&provider.modes).copied().collect(),
             lifecycle: self
                 .lifecycle
@@ -194,13 +207,43 @@ impl Capabilities {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MountTarget {
+    View(ViewId),
+    #[cfg(feature = "backgrounds")]
+    FrameBackground(kumihimo_core::FrameId),
+    #[cfg(feature = "backgrounds")]
+    WorkspaceBackground(kumihimo_core::WorkspaceId),
+}
+impl MountTarget {
+    pub fn view(self) -> Option<ViewId> {
+        match self {
+            Self::View(id) => Some(id),
+            #[cfg(feature = "backgrounds")]
+            _ => None,
+        }
+    }
+    pub fn raw(self) -> u64 {
+        match self {
+            Self::View(id) => id.raw(),
+            #[cfg(feature = "backgrounds")]
+            Self::FrameBackground(id) => id.raw(),
+            #[cfg(feature = "backgrounds")]
+            Self::WorkspaceBackground(id) => id.raw(),
+        }
+    }
+    pub fn is_background(self) -> bool {
+        self.view().is_none()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scope {
     pub identity: Identity,
     pub session: String,
     pub provider: ProviderId,
     pub resource: ResourceId,
-    pub view: ViewId,
+    pub target: MountTarget,
     pub connection: u64,
     pub instance: InstanceId,
     pub mount: MountId,
@@ -216,7 +259,7 @@ impl Scope {
                 return Err(Error::Invalid("identity/session token"));
             }
         }
-        if [self.provider.raw(), self.resource.raw(), self.view.raw()]
+        if [self.provider.raw(), self.resource.raw(), self.target.raw()]
             .iter()
             .any(|id| *id == 0 || *id == u64::MAX)
             || self.connection == 0
@@ -230,6 +273,10 @@ impl Scope {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Channel {
+    #[cfg(feature = "navigation")]
+    Navigation,
+    #[cfg(feature = "backgrounds")]
+    MediaBudget,
     Attach,
     Geometry,
     Focus,
@@ -362,6 +409,10 @@ impl Eligibility {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestKind {
+    #[cfg(feature = "navigation")]
+    Navigation(crate::NavigationRequest),
+    #[cfg(feature = "backgrounds")]
+    MediaBudget(crate::MediaBudgetRequest),
     Attach {
         mode: ContentMode,
         restore_reference: String,
@@ -394,6 +445,10 @@ pub enum RequestKind {
 impl RequestKind {
     pub fn channel(&self) -> Channel {
         match self {
+            #[cfg(feature = "navigation")]
+            Self::Navigation(_) => Channel::Navigation,
+            #[cfg(feature = "backgrounds")]
+            Self::MediaBudget(_) => Channel::MediaBudget,
             Self::Attach { .. } | Self::Detach => Channel::Attach,
             Self::Dispose | Self::Lifecycle(_) => Channel::Lifecycle,
             Self::Reconcile { .. } => Channel::Recovery,
@@ -411,6 +466,8 @@ impl RequestKind {
     }
     pub fn barrier(&self) -> bool {
         match self {
+            #[cfg(feature = "navigation")]
+            Self::Navigation(n) => n.barrier(),
             Self::Geometry(geometry) => geometry.anchor.is_some(),
             Self::Focus(_) | Self::Presentation(_) | Self::Invalidate | Self::Animation { .. } => {
                 false
@@ -419,6 +476,10 @@ impl RequestKind {
         }
     }
     pub fn coalescible(&self) -> bool {
+        #[cfg(feature = "navigation")]
+        if let Self::Navigation(n) = self {
+            return !n.barrier();
+        }
         matches!(
             self,
             Self::Geometry(Geometry { anchor: None, .. })
@@ -429,6 +490,8 @@ impl RequestKind {
     }
     pub fn opaque_bytes(&self) -> Result<usize> {
         match self {
+            #[cfg(feature = "navigation")]
+            Self::Navigation(n) => n.opaque_bytes(),
             Self::Attach {
                 restore_reference, ..
             } => Ok(restore_reference.len()),
@@ -451,6 +514,10 @@ impl RequestKind {
     }
     pub fn validate(&self, field_limit: Option<usize>) -> Result<()> {
         match self {
+            #[cfg(feature = "navigation")]
+            Self::Navigation(n) => n.validate(field_limit)?,
+            #[cfg(feature = "backgrounds")]
+            Self::MediaBudget(b) => b.validate()?,
             Self::Attach {
                 restore_reference, ..
             } => field(restore_reference, field_limit)?,
@@ -510,6 +577,10 @@ pub enum Effect {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Confirmation {
+    #[cfg(feature = "navigation")]
+    Navigation(crate::NavigationObservation),
+    #[cfg(feature = "backgrounds")]
+    MediaBudget(crate::MediaObservation),
     Done,
     Attached {
         strength: RestorationStrength,
@@ -543,6 +614,10 @@ impl AckResult {
         })
     }
     pub fn validate(&self, field_limit: Option<usize>) -> Result<()> {
+        #[cfg(feature = "backgrounds")]
+        if let Self::Confirmed(Confirmation::MediaBudget(obs)) = self {
+            obs.validate()?;
+        }
         if let Self::Confirmed(Confirmation::Geometry {
             anchor: Some(anchor),
         }) = self
@@ -579,6 +654,14 @@ pub struct Receipt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentLimits {
+    #[cfg(feature = "navigation")]
+    pub overview_markers: Option<usize>,
+    #[cfg(feature = "navigation")]
+    pub overview_entries: Option<usize>,
+    #[cfg(feature = "navigation")]
+    pub overview_bytes: Option<usize>,
+    #[cfg(feature = "navigation")]
+    pub marker_bytes: Option<usize>,
     pub providers: Option<usize>,
     pub mounts: Option<usize>,
     pub instances: Option<usize>,
@@ -595,6 +678,14 @@ pub struct ContentLimits {
 impl Default for ContentLimits {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "navigation")]
+            overview_markers: Some(4096),
+            #[cfg(feature = "navigation")]
+            overview_entries: Some(65536),
+            #[cfg(feature = "navigation")]
+            overview_bytes: Some(65536),
+            #[cfg(feature = "navigation")]
+            marker_bytes: Some(256),
             providers: Some(1024),
             mounts: Some(256),
             instances: Some(64),
@@ -613,6 +704,14 @@ impl Default for ContentLimits {
 impl ContentLimits {
     pub const fn unbounded() -> Self {
         Self {
+            #[cfg(feature = "navigation")]
+            overview_markers: None,
+            #[cfg(feature = "navigation")]
+            overview_entries: None,
+            #[cfg(feature = "navigation")]
+            overview_bytes: None,
+            #[cfg(feature = "navigation")]
+            marker_bytes: None,
             providers: None,
             mounts: None,
             instances: None,

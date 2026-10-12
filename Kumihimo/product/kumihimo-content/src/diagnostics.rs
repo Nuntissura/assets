@@ -45,9 +45,43 @@ pub struct DiagnosticRequest {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostics {
+    #[cfg(feature = "navigation")]
+    pub navigation: Vec<NavigationDiagnostic>,
+    #[cfg(feature = "backgrounds")]
+    pub backgrounds: Vec<BackgroundDiagnostic>,
     pub counts: Counts,
     pub samples: Vec<Sample>,
     pub requests: Vec<DiagnosticRequest>,
+}
+#[cfg(feature = "navigation")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavigationDiagnostic {
+    pub mount: MountId,
+    pub target: MountTarget,
+    pub settings_revision: u64,
+    pub model_revision: Option<u64>,
+    pub overview_revision: Option<u64>,
+    pub gesture: Option<u64>,
+    pub selected: NavigationMode,
+    pub effective: Option<NavigationMode>,
+    pub fallback: Option<NavigationDisabled>,
+    pub actual: Observation<NavigationObservation>,
+    pub request: Option<RequestId>,
+}
+#[cfg(feature = "backgrounds")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackgroundDiagnostic {
+    pub mount: MountId,
+    pub instance: InstanceId,
+    pub target: MountTarget,
+    pub kind: BackgroundKind,
+    pub settings_revision: u64,
+    pub policy_revision: u64,
+    pub available: bool,
+    pub fallback: Option<BackgroundFallback>,
+    pub transition: Transition,
+    pub requested: Option<MediaBudgetRequest>,
+    pub actual: Observation<MediaObservation>,
 }
 impl Controller {
     pub fn record_sample(&mut self, sample: Sample) -> Result<()> {
@@ -105,6 +139,52 @@ impl Controller {
             });
         }
         Diagnostics {
+            #[cfg(feature = "navigation")]
+            navigation: self
+                .state
+                .navigation
+                .iter()
+                .map(|(id, n)| {
+                    let (effective, fallback) =
+                        n.effective(&self.state.providers[&n.scope.provider].capabilities);
+                    NavigationDiagnostic {
+                        mount: *id,
+                        target: n.scope.target,
+                        settings_revision: n.settings_revision,
+                        model_revision: n.model.as_ref().map(|m| m.revision),
+                        overview_revision: n.overview.as_ref().map(|o| o.revision),
+                        gesture: n.gesture.as_ref().map(|g| g.id),
+                        selected: n.settings.mode.value,
+                        effective,
+                        fallback,
+                        actual: n.observation.clone(),
+                        request: n.last_request,
+                    }
+                })
+                .collect(),
+            #[cfg(feature = "backgrounds")]
+            backgrounds: self
+                .state
+                .backgrounds
+                .iter()
+                .map(|(id, b)| {
+                    let m = &self.state.mounts[id];
+                    let media = self.state.media.get(&m.instance);
+                    BackgroundDiagnostic {
+                        mount: *id,
+                        instance: m.instance,
+                        target: m.scope.target,
+                        kind: b.kind,
+                        settings_revision: b.settings_revision,
+                        policy_revision: b.policy_revision,
+                        available: b.settings.effective.is_some(),
+                        fallback: b.settings.fallback,
+                        transition: b.settings.transition,
+                        requested: media.and_then(|m| m.requested),
+                        actual: media.map_or(Observation::Unknown, |m| m.actual.clone()),
+                    }
+                })
+                .collect(),
             counts: self.state.counts().expect("admitted accounting"),
             samples: self.state.samples.values().cloned().collect(),
             requests,

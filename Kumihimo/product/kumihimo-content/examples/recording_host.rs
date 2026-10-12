@@ -67,7 +67,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut controller = Controller::new(core, "example-host-session-1", Default::default())?;
     controller.negotiate(
         provider,
-        ProtocolVersion::V1,
+        ProtocolVersion::V2,
         Default::default(),
         Default::default(),
     )?;

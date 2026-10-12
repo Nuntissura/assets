@@ -120,7 +120,7 @@ fn fixture(count: usize, limits: ContentLimits) -> Fixture {
 }
 fn negotiate(f: &mut Fixture, caps: Capabilities) {
     f.controller
-        .negotiate(f.provider, ProtocolVersion::V1, caps.clone(), caps)
+        .negotiate(f.provider, ProtocolVersion::V2, caps.clone(), caps)
         .unwrap();
 }
 fn shared() -> Capabilities {
@@ -232,7 +232,7 @@ fn eval_001_capability_version_and_placeholder() {
     assert!(matches!(
         f.controller.negotiate(
             f.provider,
-            ProtocolVersion { major: 2, minor: 0 },
+            ProtocolVersion { major: 1, minor: 0 },
             shared(),
             shared()
         ),
@@ -355,7 +355,7 @@ fn eval_002_segmented_causality_and_atomic_queue_bounds() {
         let mut wrong = request.ticket.clone();
         match field {
             0 => wrong.scope.provider = ProviderId::from_raw(999),
-            1 => wrong.scope.view = ViewId::from_raw(999),
+            1 => wrong.scope.target = MountTarget::View(ViewId::from_raw(999)),
             _ => wrong.scope.resource = ResourceId::from_raw(999),
         }
         assert!(matches!(
@@ -591,7 +591,7 @@ fn eval_003_epochs_restore_replay_and_exact_ack() {
     assert!(matches!(
         exhausted.negotiate(
             provider,
-            ProtocolVersion::V1,
+            ProtocolVersion::V2,
             Default::default(),
             Default::default()
         ),

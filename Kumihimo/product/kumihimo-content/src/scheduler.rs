@@ -34,7 +34,29 @@ impl State {
             return Err(Error::Stale("mount binding"));
         }
         let caps = &self.providers[&m.scope.provider].capabilities;
+        if m.scope.target.is_background()
+            && matches!(
+                kind,
+                RequestKind::Input(_)
+                    | RequestKind::Focus(_)
+                    | RequestKind::ToolAction { .. }
+                    | RequestKind::AssetAction(_)
+                    | RequestKind::CloseDecision { .. }
+            )
+        {
+            return Err(Error::Unsupported("background interaction"));
+        }
         let supported = match kind {
+            #[cfg(feature = "navigation")]
+            RequestKind::Navigation(n) => {
+                self.navigation_eligible(mount, n)?;
+                !m.scope.target.is_background()
+            }
+            #[cfg(feature = "backgrounds")]
+            RequestKind::MediaBudget(b) => {
+                self.media_eligible(mount, b)?;
+                true
+            }
             RequestKind::Attach { mode, .. } => caps.modes.contains(mode),
             RequestKind::Geometry(g) => {
                 caps.geometry && (g.anchor.is_none() || caps.anchored_reflow)
@@ -55,7 +77,7 @@ impl State {
                     .get(tool)
                     .ok_or(Error::Missing("tool", tool.raw()))?;
                 if t.target != *target
-                    || target.view != m.scope.view
+                    || Some(target.view) != m.scope.target.view()
                     || target.resource != m.scope.resource
                 {
                     return Err(Error::Stale("tool target"));
@@ -151,7 +173,26 @@ impl State {
     ) -> Result<RequestId> {
         kind.validate(self.limits.payload_bytes)?;
         self.permission(mount, permission)?;
+        #[cfg(feature = "navigation")]
+        if let RequestKind::Navigation(NavigationRequest {
+            gesture: Some(gesture),
+            ..
+        }) = &kind
+        {
+            if !self
+                .navigation
+                .get(&mount)
+                .and_then(|n| n.gesture.as_ref())
+                .is_some_and(|g| g.id == *gesture)
+            {
+                return Err(Error::Stale("new request for settled gesture"));
+            }
+        }
         self.eligible(core, mount, &kind)?;
+        #[cfg(feature = "navigation")]
+        if matches!(kind, RequestKind::Geometry(_) | RequestKind::Focus(_)) {
+            self.navigation_invalidate(mount);
+        }
         let m = self.mounts[&mount].clone();
         if matches!(kind, RequestKind::Lifecycle(_))
             && self.instances[&m.instance].busy.is_some_and(|id| {
@@ -183,6 +224,14 @@ impl State {
                     break;
                 }
                 if p.request.ticket.channel == kind.channel() {
+                    #[cfg(feature = "navigation")]
+                    if let (RequestKind::Navigation(a), RequestKind::Navigation(b)) =
+                        (&p.request.kind, &kind)
+                    {
+                        if !a.coalesces_with(b) {
+                            break;
+                        }
+                    }
                     old = Some(*id);
                     break;
                 }
@@ -295,6 +344,8 @@ impl State {
         });
     }
     pub(crate) fn stale_geometry(&mut self, id: MountId) {
+        #[cfg(feature = "navigation")]
+        self.navigation_invalidate(id);
         self.stale_where(|p| {
             p.request.ticket.scope.mount == id
                 && matches!(
@@ -309,6 +360,12 @@ impl State {
         );
     }
     pub(crate) fn retire_mount(&mut self, id: MountId) {
+        #[cfg(feature = "navigation")]
+        self.navigation_invalidate(id);
+        #[cfg(feature = "backgrounds")]
+        if let Some(m) = self.mounts.get(&id) {
+            self.media_unknown(m.instance);
+        }
         if let Some(m) = self.mounts.get_mut(&id) {
             m.active = false;
             m.status = MountStatus::Retired;
@@ -374,12 +431,16 @@ impl Controller {
                     continue;
                 }
                 let m = &s.mounts[&mount];
-                if matches!(
-                    p.request.kind,
+                let prerequisites = match p.request.kind {
                     RequestKind::Input(_)
-                        | RequestKind::ToolAction { .. }
-                        | RequestKind::AssetAction(_)
-                ) && (p.geometry != m.confirmed_geometry || p.focus != m.confirmed_focus)
+                    | RequestKind::ToolAction { .. }
+                    | RequestKind::AssetAction(_) => true,
+                    #[cfg(feature = "navigation")]
+                    RequestKind::Navigation(_) => true,
+                    _ => false,
+                };
+                if prerequisites
+                    && (p.geometry != m.confirmed_geometry || p.focus != m.confirmed_focus)
                 {
                     return Ok(None);
                 }

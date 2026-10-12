@@ -1,6 +1,6 @@
 [package]
 name = "kumihimo-content"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.91"
 description = "Bounded host-owned content protocol for Kumihimo"
@@ -8,3 +8,12 @@ publish = false
 
 [dependencies]
 kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features = false }
+
+[features]
+default = []
+navigation = []
+backgrounds = []
+
+[[example]]
+name = "controls_host"
+required-features = ["navigation", "backgrounds"]

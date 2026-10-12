@@ -1,13 +1,27 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 5
+generation: 6
 phase: active
-owner: ROLE-KUM-CODER-03
+owner: ROLE-KUM-DEV-LEAD
 changed_files:
-- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
-- repo-governance/specification/current/
-- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v13-r13-451f7c13cb75/
-- repo-governance/work-packets/archive/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-stub.yaml
+- product/Cargo.lock
+- product/README.md
+- product/kumihimo-content/Cargo.toml
+- product/kumihimo-content/examples/controls_host.rs
+- product/kumihimo-content/examples/recording_host.rs
+- product/kumihimo-content/src/backgrounds.rs
+- product/kumihimo-content/src/diagnostics.rs
+- product/kumihimo-content/src/lib.rs
+- product/kumihimo-content/src/lifecycle.rs
+- product/kumihimo-content/src/navigation.rs
+- product/kumihimo-content/src/overview.rs
+- product/kumihimo-content/src/protocol.rs
+- product/kumihimo-content/src/routing.rs
+- product/kumihimo-content/src/scheduler.rs
+- product/kumihimo-content/src/settings.rs
+- product/kumihimo-content/tests/background_contracts.rs
+- product/kumihimo-content/tests/navigation_contracts.rs
+- product/kumihimo-content/tests/recording_host.rs
 proof:
 - kind: predecessor_published_acceptance
   source_revision: d30e660218f04f498d63ba2f388196b11fdc9ec9
@@ -36,6 +50,16 @@ proof:
     bytes, three frozen contract/readiness/evaluation hashes matched; complete priorSpec13 six-file archive exact451f7c1.
     No product changes. Lead admits coder03 contract-owned sixteen product paths; no Cargo, lock, Git or governance
     authority delegated.
+- kind: held_source_and_local_lock
+  baseline_revision: 663f814c6f6f412ab2500ad7478e44a796b00fc8
+  product_file_count: 47
+  product_sha256: 1dfaf880de56028941a7f445309f56a15252f713a0a0559fa9ce87e28c348179
+  observed: Coder03 and both disjoint workers held; all16 handoff hashes matched actual raw bytes. Offline metadata
+    exit0 changed only content0.1 to0.2 among14 lock packages; other13 records and29 protected Core/JSON/workspace
+    files unchanged. README currentAPI/host boundaries updated. Lead default-encoding state write failed before
+    any compile; exact published663f814 state restored, own README converted UTF8, all47product inputs UTF8LF verified.
+    No compile/runtime/evaluation verdict yet.
 blockers: []
-next_action: Coder03 implement full WP011 on sixteen contract-owned product files; lead owns offline lock, README,
-  serial Cargo, publication and status; evaluator cases remain frozen until candidate runtime evaluation
+next_action: Lead publish held47file source candidate, fresh exact origin/blob fence and resources, then single
+  serial default/navigation/backgrounds/combined checks and focused24case/quiet example proof; evaluator independently
+  inspect exact candidate
