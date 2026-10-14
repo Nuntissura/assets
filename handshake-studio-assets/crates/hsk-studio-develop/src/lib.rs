@@ -43,7 +43,7 @@ pub use convert::{
     ProfileConverter, WIDE_CHUNK_PIXELS,
 };
 pub use local::{
-    Brush, Correction, LinearGradient, LocalStack, Mask, MaskBlend, MaskSource, RadialGradient, parse_dab,
+    Brush, ColourRange, Correction, LinearGradient, LuminanceRange, MAX_COLOUR_SAMPLES, LocalStack, Mask, MaskBlend, MaskSource, RadialGradient, parse_dab,
 };
 pub use colour::{ColourGrading, GrayscaleMix, MAX_POINT_COLOURS, PointColour, Wheel};
 pub use detail::{Detail, NoiseReduction, Sharpen};

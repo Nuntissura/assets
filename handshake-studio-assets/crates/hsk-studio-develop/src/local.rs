@@ -89,11 +89,36 @@ pub struct Brush {
     pub feather: f64,
 }
 
+/// Range mask on the pixel's own encoded luma (STU-RAW-121 `luminance_range`): coverage 1 for luma in
+/// `lo..=hi` (encoded 0..1), falling smoothly over `feather * 0.25` outside each edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LuminanceRange {
+    pub lo: f64,
+    pub hi: f64,
+    /// 0..1; 0 is a hard edge.
+    pub feather: f64,
+}
+
+/// Range mask on colour distance (STU-RAW-121 `colour_range`): coverage 1 within `r/2` of the nearest
+/// sample in encoded RGB, falling to 0 at `r = 0.02 + 0.6 * breadth` (the refine / breadth control).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourRange {
+    /// 1..=16 sampled colours, encoded sRGB components in 0..1.
+    pub samples: Vec<[f64; 3]>,
+    /// 0..1.
+    pub breadth: f64,
+}
+
+/// Most colour samples one colour-range mask may carry.
+pub const MAX_COLOUR_SAMPLES: usize = 16;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum MaskSource {
     LinearGradient(LinearGradient),
     RadialGradient(RadialGradient),
     Brush(Brush),
+    LuminanceRange(LuminanceRange),
+    ColourRange(ColourRange),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +198,28 @@ impl Mask {
                     return Err(DevelopError::InvalidMask);
                 }
             }
+            MaskSource::LuminanceRange(r) => {
+                finite(&[r.lo, r.hi, r.feather])?;
+                if !(0.0..=1.0).contains(&r.lo)
+                    || !(0.0..=1.0).contains(&r.hi)
+                    || r.lo >= r.hi
+                    || !(0.0..=1.0).contains(&r.feather)
+                {
+                    return Err(DevelopError::InvalidMask);
+                }
+            }
+            MaskSource::ColourRange(r) => {
+                finite(&[r.breadth])?;
+                if r.samples.is_empty() || r.samples.len() > MAX_COLOUR_SAMPLES || !(0.0..=1.0).contains(&r.breadth) {
+                    return Err(DevelopError::InvalidMask);
+                }
+                for sample in &r.samples {
+                    finite(sample)?;
+                    if sample.iter().any(|c| !(0.0..=1.0).contains(c)) {
+                        return Err(DevelopError::InvalidMask);
+                    }
+                }
+            }
             MaskSource::Brush(b) => {
                 finite(&[b.radius, b.flow, b.feather])?;
                 if b.dabs.len() > MAX_DABS
@@ -232,6 +279,8 @@ enum Geometry {
     Radial(RadialGradient),
     /// Index into the rasterised coverage planes.
     Brush(usize),
+    LuminanceRange(LuminanceRange),
+    ColourRange(ColourRange),
 }
 
 struct PreparedMask {
@@ -303,6 +352,8 @@ impl PreparedLocal {
                         local.brush_sources.push(b.clone());
                         Geometry::Brush(local.brush_sources.len() - 1)
                     }
+                    MaskSource::LuminanceRange(r) => Geometry::LuminanceRange(*r),
+                    MaskSource::ColourRange(r) => Geometry::ColourRange(r.clone()),
                 };
                 masks.push(PreparedMask { geometry, inverted: mask.inverted, value: mask.value, blend: mask.blend });
             }
@@ -351,7 +402,7 @@ fn rasterise_brush(brush: &Brush, width: usize, height: usize) -> Result<Vec<f32
     Ok(plane)
 }
 
-fn geometry_at(g: &Geometry, planes: &[Vec<f32>], x: usize, y: usize, width: usize, height: usize) -> f64 {
+fn geometry_at(g: &Geometry, planes: &[Vec<f32>], x: usize, y: usize, width: usize, height: usize, pixel: [f64; 3], luma: &[f64; 3]) -> f64 {
     let px = (x as f64 + 0.5) / width as f64;
     let py = (y as f64 + 0.5) / height as f64;
     match g {
@@ -381,13 +432,43 @@ fn geometry_at(g: &Geometry, planes: &[Vec<f32>], x: usize, y: usize, width: usi
             if r.flipped { 1.0 - g } else { g }
         }
         Geometry::Brush(i) => f64::from(planes[*i][y * width + x]),
+        Geometry::LuminanceRange(r) => {
+            let sum = luma[0] + luma[1] + luma[2];
+            let e = pixel.map(enc);
+            let ly = ((luma[0] / sum) * e[0] + (luma[1] / sum) * e[1]) + (luma[2] / sum) * e[2];
+            if r.feather == 0.0 {
+                return if (r.lo..=r.hi).contains(&ly) { 1.0 } else { 0.0 };
+            }
+            let fw = r.feather * 0.25;
+            smoothstep((ly - r.lo + fw) / (2.0 * fw)) * smoothstep((r.hi + fw - ly) / (2.0 * fw))
+        }
+        Geometry::ColourRange(r) => {
+            let e = pixel.map(enc);
+            let d = r
+                .samples
+                .iter()
+                .map(|s| ((e[0] - s[0]).powi(2) + (e[1] - s[1]).powi(2) + (e[2] - s[2]).powi(2)).sqrt())
+                .fold(f64::INFINITY, f64::min);
+            let radius = 0.02 + 0.6 * r.breadth;
+            1.0 - smoothstep((d - radius * 0.5) / (radius * 0.5))
+        }
     }
 }
 
-fn coverage(masks: &[PreparedMask], planes: &[Vec<f32>], x: usize, y: usize, width: usize, height: usize) -> f64 {
+#[allow(clippy::too_many_arguments)]
+fn coverage(
+    masks: &[PreparedMask],
+    planes: &[Vec<f32>],
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    pixel: [f64; 3],
+    luma: &[f64; 3],
+) -> f64 {
     let mut m = 0.0f64;
     for mask in masks {
-        let g = geometry_at(&mask.geometry, planes, x, y, width, height);
+        let g = geometry_at(&mask.geometry, planes, x, y, width, height, pixel, luma);
         let v = mask.value * if mask.inverted { 1.0 - g } else { g };
         m = match mask.blend {
             MaskBlend::Add => m + v - m * v,
@@ -428,14 +509,18 @@ pub(crate) fn apply(
     } else {
         None
     };
+    let source: &[f32] = &*rgb;
     let mut out = rgb.to_vec();
     let rows_per_band = (65_536 / w).max(1);
     for_each_band(&mut out, rows_per_band * w * 3, threads, cancel, |band, chunk| {
         for (offset, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
             let y = band * rows_per_band + offset;
             for (x, px) in row.chunks_exact_mut(3).enumerate() {
+                // Range masks read the image as it was before any correction ran.
+                let i = y * w + x;
+                let before = [f64::from(source[i * 3]), f64::from(source[i * 3 + 1]), f64::from(source[i * 3 + 2])];
                 for correction in &local.corrections {
-                    let m = coverage(&correction.masks, &planes, x, y, w, h);
+                    let m = coverage(&correction.masks, &planes, x, y, w, h, before, &luma);
                     if m == 0.0 {
                         continue;
                     }
