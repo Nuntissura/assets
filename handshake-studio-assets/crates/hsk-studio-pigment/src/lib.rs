@@ -3,6 +3,7 @@
 pub mod adjust_math;
 pub mod allocation;
 pub mod blend_math;
+pub mod brush;
 pub mod caller;
 pub mod coverage_math;
 pub mod effect_math;
