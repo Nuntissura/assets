@@ -21,7 +21,9 @@
 //!   STU-VEC-153 four-member enumeration, per-channel blend enablement, interior/clipped-effects
 //!   and transparency-shapes toggles).
 //! - `StudioEffectStack` (STU-RAS-040, 156-158: ordered multi-instance effects, common block, kind
-//!   blocks, `StudioContour`) and the document-level Global Light pair (STU-RAS-158).
+//!   blocks, `StudioContour`) and the document-level Global Light pair (STU-RAS-158). The stack also
+//!   carries the `blur` kind (layer or backdrop Gaussian blur, STU-FX-002/013/031), which is not a
+//!   STU-RAS-157 layer-style block.
 //!
 //! Folio stores and validates only; the maths is `hsk_studio_pigment::adjust_math` /
 //! `coverage_math`, and effects are not rendered yet.
@@ -63,6 +65,9 @@ pub const MAX_EFFECTS: usize = 1024;
 pub const MAX_HUE_BANDS: usize = 64;
 /// `StudioMask.feather` hard maximum in pixels (STU-RAS-115).
 pub const MAX_MASK_FEATHER: f64 = 10_000.0;
+/// Blur effect radius maximum in pixels: the D19 (f) engineering effect-size bound (STU-RAS-180 (f),
+/// staged), not a Photoshop or Figma limit.
+pub const MAX_BLUR_RADIUS: f64 = 1000.0;
 
 /// Channel of a levels record or curve (composite + R + G + B, STU-RAS-151).
 #[derive(
@@ -345,6 +350,16 @@ pub enum GlowTechnique {
     Softer,
     Precise,
 }
+/// What a blur effect reads (STU-FX-002 `render_scope`, members `layer` and `below`; `group` is not
+/// a blur scope here). `layer` is the uniform Gaussian layer blur (STU-FX-013 "Gaussian Blur",
+/// Figma `FOREGROUND_BLUR`); `below` blurs the backdrop under the layer (STU-FX-013 "Background
+/// Blur (backdrop)", Figma `BACKGROUND_BLUR`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BlurScope {
+    Layer,
+    Below,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GlowSource {
@@ -456,6 +471,14 @@ pub enum StudioEffectKind {
         size: f64,
         layer_knocks_out: bool,
     },
+    /// Gaussian blur of the layer or of its backdrop (added by SMB-FOLIO-PAINT-BLUR-STYLE; not a
+    /// STU-RAS-157 Photoshop layer-style kind: the blur family is STU-FX-013, and STU-FX-031 dedups
+    /// Figma's layer and background blur into it). `radius` is the Gaussian radius in pixels,
+    /// `0..=`[`MAX_BLUR_RADIUS`]. The common block's `colour` and `contour` must be absent (a blur has
+    /// neither); `angle`, `noise` and `use_global_light` are stored but not read. No renderer
+    /// draws it yet: composite lowering refuses the kind with its generic effect refusal until a
+    /// composite lane implements it.
+    Blur { render_scope: BlurScope, radius: f64 },
 }
 impl StudioEffectKind {
     pub const fn key(&self) -> &'static str {
@@ -470,6 +493,7 @@ impl StudioEffectKind {
             Self::GradientOverlay { .. } => "gradient_overlay",
             Self::PatternOverlay { .. } => "pattern_overlay",
             Self::DropShadow { .. } => "drop_shadow",
+            Self::Blur { .. } => "blur",
         }
     }
 }
@@ -930,6 +954,18 @@ fn validate_effects(s: &StudioEffectStack, target: &str, cx: &mut Ctx) -> Result
                 &t,
                 "drop_shadow",
             )?,
+            StudioEffectKind::Blur { radius, .. } => {
+                check(
+                    nonneg(*radius) && *radius <= MAX_BLUR_RADIUS,
+                    &t,
+                    "blur/radius",
+                )?;
+                check(
+                    e.colour.is_none() && e.contour.is_none(),
+                    &t,
+                    "blur/colour_contour",
+                )?;
+            }
         }
     }
     Ok(())
