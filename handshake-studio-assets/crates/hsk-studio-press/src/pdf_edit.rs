@@ -285,13 +285,15 @@ impl PdfDoc {
         Ok(leaves)
     }
 
-    /// Looks up an inheritable page attribute through the `/Parent` chain.
+    /// Looks up an inheritable page attribute through the `/Parent` chain. A value that resolves to null (the null object, or a
+    /// reference to an object the file does not hold) reads as an absent entry and the chain goes on (R27-P2: a page's
+    /// `/Resources null` inherits the node's; fail closed, the ISO 32000 null-entry rule is not re-read here, UNVERIFIED).
     pub(crate) fn inherited<'a>(&'a self, page: u32, key: &str) -> Option<&'a Object> {
         let mut num = page;
         for _ in 0..self.limits.depth_cap() {
             let d = self.dict_of(num)?;
-            if let Some(v) = d.get(key) {
-                return Some(self.resolve(v));
+            if let Some(v) = d.get(key).map(|v| self.resolve(v)).filter(|v| !matches!(v, Object::Null)) {
+                return Some(v);
             }
             num = d.get("Parent")?.as_ref()?.num;
         }

@@ -229,18 +229,26 @@ pub(crate) struct Flat {
     /// ([`detach_from_page_tree`]): the resource dictionaries the old page inherited now live there
     /// (`flatten_purge.rs` purges their property lists, PLR-104). The same set for every flattened page.
     pub heirs: BTreeSet<u32>,
-    /// The `/Resources` value the old page inherited (R26-P1): when the page had none of its own, the value of the nearest node
+    /// The `/Resources` value the old page inherited (R26-P1): when the page had none of its own (or one that resolves to null,
+    /// R27-P2), the value of the nearest node
     /// of its `/Parent` chain that has one, as written there (a reference, or a dictionary written inside the node). A kept page
     /// that has its own `/Resources` naming the same object is not an heir, so `flatten_purge.rs` reads this too (PLR-104).
     pub inherited_resources: Option<Object>,
 }
 
-/// The value of `key` on the nearest node of `page`'s `/Parent` chain (not the page itself), as written there, unresolved.
+/// `v` resolves to something other than null: an entry with a null value (or a reference to an object the file does not hold) is
+/// read as absent (R27-P2, the same rule as `PdfDoc::inherited`).
+fn present(doc: &PdfDoc, v: &Object) -> bool {
+    !matches!(doc.resolve(v), Object::Null)
+}
+
+/// The value of `key` on the nearest node of `page`'s `/Parent` chain (not the page itself) that holds it with a value that is not
+/// null ([`present`], R27-P2), as written there, unresolved.
 fn inherited_raw(doc: &PdfDoc, page: u32, key: &str) -> Option<Object> {
     let mut num = doc.dict_of(page)?.get("Parent")?.as_ref()?.num;
     for _ in 0..doc.limits.depth_cap() {
         let d = doc.dict_of(num)?;
-        if let Some(v) = d.get(key) {
+        if let Some(v) = d.get(key).filter(|v| present(doc, v)) {
             return Some(v.clone());
         }
         num = d.get("Parent")?.as_ref()?.num;
@@ -610,7 +618,8 @@ pub(crate) fn flatten_region_pages(doc: &mut PdfDoc, regions: &[RedactionRegion]
         let (w, h) = raster_size(vb, &doc.limits)?;
         let mut notes = BTreeSet::new();
         let old = doc.dict_of(page).cloned().ok_or(PressError::Malformed("page_node"))?;
-        let inherited_resources = if old.get("Resources").is_none() { inherited_raw(doc, page, "Resources") } else { None };
+        // R27-P2: a `/Resources` that resolves to null is absent, so the page inherits (as `PdfDoc::inherited` renders it).
+        let inherited_resources = if old.get("Resources").is_none_or(|v| !present(doc, v)) { inherited_raw(doc, page, "Resources") } else { None };
         let annots = viewer_annotations(doc, page);
         if !annots.is_empty() {
             notes.insert(FlattenNote::Annotations);
@@ -716,10 +725,11 @@ pub(crate) fn detach_from_page_tree(doc: &mut PdfDoc, flat: &BTreeSet<u32>) -> R
         let Some(pd) = doc.dict_of(p) else { continue };
         let mut sets = Vec::new();
         for key in INHERITED_KEYS {
-            if pd.get(key).is_some() {
+            // R27-P2: an entry that resolves to null is absent: the page inherits and is an heir.
+            if pd.get(key).is_some_and(|v| present(doc, v)) {
                 continue;
             }
-            let provider = chain.iter().find_map(|n| doc.dict_of(*n).and_then(|d| d.get(key)).map(|v| (*n, v.clone())));
+            let provider = chain.iter().find_map(|n| doc.dict_of(*n).and_then(|d| d.get(key)).filter(|v| present(doc, v)).map(|v| (*n, v.clone())));
             if let Some((node, value)) = provider
                 && clear.contains(&node)
             {
