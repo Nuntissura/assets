@@ -196,3 +196,114 @@ fn spot_heal_picks_the_best_matching_neighbourhood_and_removes_the_blemish() {
     let fp = StrokeFootprint { dabs: &d, hardness_pct: 100.0, selection: None };
     assert_eq!(spot_heal(&tiny, &tiny, &fp, &limits).unwrap_err(), RetouchError::SpotHealNoSource);
 }
+
+mod canvas {
+    use super::{coded, rect};
+    use hsk_studio_pigment::canvas_ops::*;
+    use hsk_studio_pigment::retouch::*;
+    use hsk_studio_pigment::transform_math::{ResampleFilter, resample_reference};
+
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+
+    #[test]
+    fn canvas_resize_places_content_by_the_nine_member_anchor() {
+        let plane = coded(rect(0, 0, 4, 4));
+        let limits = RetouchLimits::default();
+        let grow = |anchor: Anchor, w: u32, h: u32| {
+            let resize = CanvasResize { old_width: 4, old_height: 4, new_width: w, new_height: h, anchor, fill: RED };
+            canvas_resize(&plane, &resize, &limits).unwrap()
+        };
+        // 4x4 -> 6x8: top_left (0,0), middle_centre (1,2), bottom_right (2,4).
+        for (anchor, off) in [(Anchor::TopLeft, (0, 0)), (Anchor::MiddleCentre, (1, 2)), (Anchor::BottomRight, (2, 4))] {
+            let r = grow(anchor, 6, 8);
+            assert_eq!(r.offset, off, "{}", anchor.key());
+            assert_eq!(r.canvas, rect(0, 0, 6, 8));
+            assert_eq!(r.plane.at(off.0, off.1), plane.at(0, 0));
+            assert_eq!(r.plane.at(off.0 + 3, off.1 + 3), plane.at(3, 3));
+            let outside = if off.0 > 0 { (0, 0) } else { (5, 7) };
+            assert_eq!(r.plane.at(outside.0, outside.1), RED);
+        }
+        // Shrink 4x4 -> 1x1 centred: floor(-3/2) = -2, so old (2, 2) is kept.
+        let r = grow(Anchor::MiddleCentre, 1, 1);
+        assert_eq!(r.offset, (-2, -2));
+        assert_eq!(r.plane.data, vec![plane.at(2, 2)]);
+        // Spec discriminants round-trip; 0 and 10 are not anchors.
+        for v in 1..=9u8 {
+            assert_eq!(Anchor::from_u8(v).unwrap() as u8, v);
+        }
+        assert!(Anchor::from_u8(0).is_none() && Anchor::from_u8(10).is_none());
+    }
+
+    #[test]
+    fn crop_copies_exactly_and_rotation_is_the_transform_operator() {
+        let plane = coded(rect(0, 0, 16, 16));
+        let limits = RetouchLimits::default();
+        let o = CropOptions::default();
+        let r = crop(&plane, rect(3, 5, 6, 4), &o, &limits).unwrap();
+        assert_eq!((r.canvas, r.offset), (rect(0, 0, 6, 4), (-3, -5)));
+        assert_eq!(r.plane.at(0, 0), plane.at(3, 5));
+        assert_eq!(r.plane.at(5, 3), plane.at(8, 8));
+        // Crop-expand beyond the plane reads transparent; content-aware expand is refused.
+        let r = crop(&plane, rect(14, 0, 4, 2), &o, &limits).unwrap();
+        assert_eq!(r.plane.at(1, 0), plane.at(15, 0));
+        assert_eq!(r.plane.at(2, 0), [0.0; 4]);
+        let ca = CropOptions { content_aware_fill_on_expand: true, ..o };
+        assert_eq!(crop(&plane, rect(14, 0, 4, 2), &ca, &limits).unwrap_err().code(), "content_aware_unsupported");
+        // Keep cropped pixels: the plane only moves.
+        let keep = CropOptions { delete_cropped_pixels: false, ..o };
+        let r = crop(&plane, rect(3, 5, 6, 4), &keep, &limits).unwrap();
+        assert_eq!(r.plane.bounds, rect(-3, -5, 16, 16));
+        assert_eq!(r.plane.data, plane.data);
+        let keep_rot = CropOptions { angle_deg: 10.0, ..keep };
+        assert_eq!(crop(&plane, rect(3, 5, 6, 4), &keep_rot, &limits).unwrap_err().code(), "crop_rotate_keep_pixels_unsupported");
+        // Quarter turn of a square crop is an exact texel permutation.
+        let q = CropOptions { angle_deg: 90.0, ..o };
+        let r = crop(&plane, rect(4, 4, 8, 8), &q, &limits).unwrap();
+        let mut sorted_out: Vec<[u32; 4]> = r.plane.data.iter().map(|p| p.map(f32::to_bits)).collect();
+        let mut sorted_in: Vec<[u32; 4]> = (4..12).flat_map(|y| (4..12).map(move |x| (x, y))).map(|(x, y)| plane.at(x, y).map(f32::to_bits)).collect();
+        sorted_out.sort_unstable();
+        sorted_in.sort_unstable();
+        assert_eq!(sorted_out, sorted_in);
+        // Any angle: bytes equal the transform operator's reference resampler.
+        for (angle, filter) in [(30.0, ResampleFilter::Bicubic), (-12.5, ResampleFilter::Bilinear)] {
+            let opts = CropOptions { angle_deg: angle, filter, ..o };
+            let crop_rect = rect(2, 3, 9, 7);
+            let r = crop(&plane, crop_rect, &opts, &limits).unwrap();
+            assert_eq!(r.rotation_deg, angle);
+            let reference = resample_reference(&crop_transform(crop_rect, &opts), plane.bounds, r.canvas, |i, j| plane.at(i64::from(i), i64::from(j))).unwrap();
+            assert_eq!(r.plane.data, reference, "angle {angle}");
+        }
+        assert_eq!(crop(&plane, rect(0, 0, 4, 4), &CropOptions { angle_deg: f64::NAN, ..o }, &limits).unwrap_err(), RetouchError::OutOfRange);
+        assert_eq!(crop(&plane, rect(0, 0, 1 << 20, 1 << 20), &o, &limits).unwrap_err().code(), "budget_exceeded");
+    }
+
+    #[test]
+    fn trim_moves_selected_edges_to_the_content_bounds() {
+        let limits = RetouchLimits::default();
+        let bounds = rect(0, 0, 10, 8);
+        let mut data = vec![[0.0f32; 4]; 80];
+        for (x, y) in [(3usize, 2usize), (6, 5)] {
+            data[y * 10 + x] = RED;
+        }
+        let plane = RgbaPlane::new(bounds, data).unwrap();
+        assert_eq!(trim_rect(&plane, TrimBasis::TransparentPixels, TrimEdges::ALL).unwrap(), Some(rect(3, 2, 4, 4)));
+        let edges = TrimEdges { top: true, left: false, bottom: false, right: true };
+        assert_eq!(trim_rect(&plane, TrimBasis::TransparentPixels, edges).unwrap(), Some(rect(0, 2, 7, 6)));
+        let r = trim(&plane, TrimBasis::TransparentPixels, TrimEdges::ALL, &limits).unwrap();
+        assert_eq!((r.canvas, r.offset), (rect(0, 0, 4, 4), (-3, -2)));
+        assert_eq!(r.plane.at(0, 0), RED);
+        // Colour bases: a red border trimmed by its top-left / bottom-right pixel colour.
+        let mut data = vec![RED; 36];
+        data[2 * 6 + 3] = [0.0, 1.0, 0.0, 1.0];
+        let framed = RgbaPlane::new(rect(0, 0, 6, 6), data).unwrap();
+        for basis in [TrimBasis::TopLeftPixel, TrimBasis::BottomRightPixel] {
+            assert_eq!(trim_rect(&framed, basis, TrimEdges::ALL).unwrap(), Some(rect(3, 2, 1, 1)));
+        }
+        assert_eq!(TrimBasis::from_u8(9), Some(TrimBasis::BottomRightPixel));
+        assert_eq!(TrimBasis::BottomRightPixel as u8, 9);
+        assert!(TrimBasis::from_u8(2).is_none());
+        // Everything trimmed is a typed refusal.
+        let empty = RgbaPlane::filled(bounds, [0.0; 4], &limits).unwrap();
+        assert_eq!(trim(&empty, TrimBasis::TransparentPixels, TrimEdges::ALL, &limits).unwrap_err(), RetouchError::TrimEverything);
+    }
+}

@@ -59,6 +59,10 @@ pub enum RetouchError {
     /// Content-aware fill / move / patch / inpaint are not implemented (STU-RAS-143): refused,
     /// never approximated by another fill.
     ContentAwareUnsupported,
+    /// A rotated crop with `delete_cropped_pixels = false` (canvas_ops): not representable.
+    CropRotateKeepPixelsUnsupported,
+    /// A trim whose basis matches every pixel (canvas_ops).
+    TrimEverything,
 }
 impl RetouchError {
     pub const fn code(self) -> &'static str {
@@ -72,6 +76,8 @@ impl RetouchError {
             Self::Shape => "retouch_shape",
             Self::SpotHealNoSource => "spot_heal_no_source",
             Self::ContentAwareUnsupported => "content_aware_unsupported",
+            Self::CropRotateKeepPixelsUnsupported => "crop_rotate_keep_pixels_unsupported",
+            Self::TrimEverything => "trim_everything",
         }
     }
 }
