@@ -1541,7 +1541,10 @@ pub fn redact_and_save_with(
         canonicalize(&mut doc.objects, &doc.trailer, &doc.limits, cancel)?;
         // R13-F6: the old pages' images, forms, patterns and shadings that no kept content names and no kept object
         // references are dropped; a painted source that stays and is not drawn directly by a kept page is returned (reported).
-        let painted_sources_kept = drop_painted_sources(doc, &flats, cancel)?;
+        // PLR-104: the same pass purges the marked-content property lists (`/Properties`) of the old pages that no kept
+        // `BDC` or `DP` names; what it cannot purge or determine is counted in `residual_in_region` below.
+        let purged = drop_painted_sources(doc, &flats, cancel)?;
+        let painted_sources_kept = purged.painted_kept;
         let flattened: Vec<FlattenedPage> = flats.into_iter().map(|f| f.page).collect();
         let bytes = doc.save_full(cancel)?;
         // Fresh re-open of the saved bytes for the independent checks below.
@@ -1558,7 +1561,7 @@ pub fn redact_and_save_with(
         region_undetermined.dedup();
         // Every region page is a raster now: the saved page must hold exactly the raster, and every pixel
         // of every region on it the fill colour (re-read from the saved bytes, flatten::check_flattened).
-        let mut residual = 0u32;
+        let mut residual = purged.property_residual;
         for flat in &flattened {
             let rects: Vec<[f64; 4]> = regions.iter().filter(|r| r.page_index == flat.page_index).map(|r| r.rect).collect();
             residual = residual.saturating_add(check_flattened(&saved, flat, &rects, cancel)?);

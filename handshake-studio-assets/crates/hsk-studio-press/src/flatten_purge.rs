@@ -560,6 +560,12 @@ pub(crate) fn neutralize_structure(doc: &mut PdfDoc, flats: &[Flat], annots: &BT
 
 /// Resource categories a content stream reaches only by naming an entry.
 const GATED: [&str; 5] = ["XObject", "Pattern", "Shading", "ExtGState", "Font"];
+/// The resource category of named marked-content property lists (`BDC`, `DP`; PLR-104): gated like [`GATED`] (an entry is
+/// reached when kept content names it), purged by name (`purge_properties`), never pruned by object.
+const PROPERTIES: &str = "Properties";
+/// Keys of a property list whose text a viewer reads (alternate description, replacement text, expansion, title, language):
+/// a property list of the old page that stays unnamed in the file with one of them is counted (PLR-104, fail closed).
+const PROPERTY_TEXT_KEYS: [&str; 5] = ["Alt", "ActualText", "E", "T", "Lang"];
 
 /// A resource dictionary of a scope's chain, and whether every container on the way to it is a dictionary object (R18):
 /// the page or page-tree node that holds the `/Resources` entry (with the nodes between them) and the `/Resources`
@@ -602,6 +608,14 @@ struct Usage<'a> {
     budget: usize,
     steps: usize,
     incomplete: bool,
+    /// PLR-104: the names each `/Properties` dictionary (by address) has used by a `BDC` or `DP` of the content read (every
+    /// entry of that name in the scope's chain, the shadowed ones included: kept, not purged).
+    props_used: BTreeMap<usize, BTreeSet<Vec<u8>>>,
+    /// `/Properties` dictionaries of a scope whose content could not be read: every entry counts as used and the usage is
+    /// undetermined (fail closed, `purge_properties`).
+    props_undetermined: BTreeSet<usize>,
+    /// Objects a used `/Properties` entry names (the property lists kept content invokes).
+    props_named: BTreeSet<u32>,
 }
 
 fn ptr(d: &Dict) -> usize {
@@ -677,8 +691,8 @@ impl<'a> Usage<'a> {
         }
     }
 
-    /// A resource dictionary of a scope: marks it (and its gated sub-dictionaries) reached and follows its plain
-    /// entries (`/Properties`, `/ColorSpace`, ...) as plain references. Reached, not silent: a resource dictionary and
+    /// A resource dictionary of a scope: marks it (and its gated sub-dictionaries, `/Properties` included, PLR-104)
+    /// reached and follows its plain entries (`/ColorSpace`, ...) as plain references. Reached, not silent: a resource dictionary and
     /// a gated sub-dictionary are reached by position, not drawn, whatever object a document places there. The result
     /// says whether the `/Resources` value is a dictionary object (R18).
     fn resources(&mut self, holder_value: &'a Object) -> Option<ResDict<'a>> {
@@ -689,7 +703,8 @@ impl<'a> Usage<'a> {
         let d = value.as_dict()?;
         if self.plain_done.insert(ptr(d)) {
             for (k, v) in &d.entries {
-                if GATED.iter().any(|g| g.as_bytes() == k.as_slice()) {
+                // PLR-104: `/Properties` is gated too: an entry is reached when kept content names it (`BDC`, `DP`).
+                if GATED.iter().chain([&PROPERTIES]).any(|g| g.as_bytes() == k.as_slice()) {
                     if let Some(r) = v.as_ref() {
                         self.mark(r.num);
                     }
@@ -737,16 +752,35 @@ impl<'a> Usage<'a> {
         }
     }
 
-    /// Follows every gated entry of a scope's dictionaries (its content could not be read).
+    /// Follows every gated entry of a scope's dictionaries (its content could not be read). Every `/Properties` entry
+    /// counts as used (kept) and its dictionary as undetermined (PLR-104, fail closed).
     fn all_used(&mut self, chain: &[ResDict<'a>]) {
         for r in chain {
-            for g in GATED {
+            for g in GATED.iter().chain([&PROPERTIES]) {
                 if let Some(sub) = r.dict.get(g).map(|s| res(self.objs, s)).and_then(Object::as_dict) {
-                    for (_, v) in &sub.entries {
+                    for (k, v) in &sub.entries {
                         self.follow(v);
+                        if *g == PROPERTIES {
+                            self.props_used.entry(ptr(sub)).or_default().insert(k.clone());
+                            self.props_undetermined.insert(ptr(sub));
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// PLR-104: a `BDC` or `DP` names property list `name`: every entry of that name in the `/Properties` dictionaries of
+    /// the scope's chain is used (kept) and reached.
+    fn use_property(&mut self, chain: &[ResDict<'a>], name: &[u8]) {
+        for r in chain {
+            let Some(sub) = r.dict.get(PROPERTIES).map(|s| res(self.objs, s)).and_then(Object::as_dict) else { continue };
+            let Some(target) = sub.get_key(name) else { continue };
+            self.props_used.entry(ptr(sub)).or_default().insert(name.to_vec());
+            if let Some(t) = target.as_ref() {
+                self.props_named.insert(t.num);
+            }
+            self.follow(target);
         }
     }
 
@@ -800,6 +834,12 @@ impl<'a> Usage<'a> {
                         marked.pop();
                     }
                     _ => {}
+                }
+                // PLR-104: a named property list (`/Tag /Name BDC`, `/Tag /Name DP`); an inline one is part of the content.
+                if matches!(op.name.as_slice(), b"BDC" | b"DP")
+                    && let Some(name) = op.operands.get(1).and_then(Object::as_name)
+                {
+                    self.use_property(chain, name);
                 }
                 let (cat, name) = match op.name.as_slice() {
                     b"Do" => ("XObject", op.operands.first()),
@@ -882,12 +922,12 @@ impl<'a> Usage<'a> {
 /// content streams being named by one reference each): some usage is not determined, a kept object only references
 /// them or places them where a viewer draws nothing from them, or a viewer draws them through anything else than that
 /// direct `Do`: over-reporting is accepted (R14-P1, R16, R17, R18).
-pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &CancellationToken) -> Result<Vec<u32>> {
+pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &CancellationToken) -> Result<Purged> {
     let sources: BTreeSet<u32> = flats.iter().flat_map(|f| f.sources.iter().copied()).collect();
     if sources.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Purged::default());
     }
-    let (reached, silent, incomplete) = {
+    let (reached, silent, incomplete, plan) = {
         let objs: &Objs = &doc.objects;
         let mut holders: BTreeSet<u32> = doc.pages.iter().copied().collect();
         // Page-tree nodes: every node on a page's /Parent chain.
@@ -915,6 +955,9 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
             budget: doc.limits.max_decoded_total,
             steps: 0,
             incomplete: false,
+            props_used: BTreeMap::new(),
+            props_undetermined: BTreeSet::new(),
+            props_named: BTreeSet::new(),
         };
         // R14-P1: the trailer roots are followed as plain references only (reached, not silent): a painted
         // source that nothing draws but that a kept catalog structure merely points at (`/AF`, a `/Names` or
@@ -951,7 +994,8 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
             u.scopes.push(Scope { streams, chain, page });
         }
         u.drain(cancel)?;
-        (u.reached, u.silent, u.incomplete)
+        let plan = plan_properties(objs, flats, &sources, &u);
+        (u.reached, u.silent, u.incomplete, plan)
     };
     let painted: BTreeSet<u32> = sources
         .iter()
@@ -966,10 +1010,12 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         .collect();
     if incomplete {
         // The analysis did not finish: nothing is dropped; every painted source still in the file is
-        // reported.
+        // reported, and a property list the old page reached is undetermined (PLR-104, fail closed).
         let live = reachable(&doc.objects, &trailer_roots(&doc.trailer));
-        return Ok(painted.iter().filter(|n| live.contains(n)).copied().collect());
+        let property_residual = u32::from(plan.lists > 0);
+        return Ok(Purged { painted_kept: painted.iter().filter(|n| live.contains(n)).copied().collect(), property_residual });
     }
+    let property_residual = apply_properties(doc, &plan);
     let gone: BTreeSet<u32> = sources.iter().filter(|n| !reached.contains(n)).copied().collect();
     if !gone.is_empty() {
         // Every listing of a dropped source is a gated entry nobody uses (module docs).
@@ -994,7 +1040,193 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         }
     }
     let live = reachable(&doc.objects, &trailer_roots(&doc.trailer));
-    Ok(painted.iter().filter(|n| live.contains(n) && !silent.contains(n)).copied().collect())
+    // PLR-104: a property list of the old page whose entry was purged (or could not be) that stays in the file, no kept
+    // content names, and that holds a text key is counted (fail closed).
+    let kept_text = plan
+        .candidates
+        .iter()
+        .filter(|m| live.contains(m) && !plan.named.contains(m) && doc.objects.get(m).is_some_and(|e| property_text(&doc.objects, &e.obj)))
+        .count();
+    let property_residual = property_residual.saturating_add(u32::try_from(kept_text).unwrap_or(u32::MAX));
+    Ok(Purged { painted_kept: painted.iter().filter(|n| live.contains(n) && !silent.contains(n)).copied().collect(), property_residual })
+}
+
+/// What [`drop_painted_sources`] leaves: the painted sources that stay without being silent (reported,
+/// `NotProven::PaintedSourceKept`) and the property-list count of PLR-104 (`residual_in_region`).
+#[derive(Default)]
+pub(crate) struct Purged {
+    pub painted_kept: Vec<u32>,
+    /// PLR-104 (fail closed): property-list dictionaries the old page reached whose usage could not be determined, which the
+    /// purge cannot edit and that hold an unnamed entry with a text key, and property lists of the old page left in the file
+    /// unnamed with a text key (`plan_properties`, `apply_properties`).
+    pub property_residual: u32,
+}
+
+/// Where a resource dictionary the old page reached lives (PLR-104).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ResAt {
+    /// Object `n` is the resource dictionary (a dictionary object).
+    Object(u32),
+    /// The `/Resources` value written inside object `n` (a page, a stream or a Type 3 font) is the resource dictionary.
+    In(u32),
+}
+
+/// Where a `/Properties` dictionary the purge edits lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PropsAt {
+    /// Object `n` is the `/Properties` dictionary (a dictionary object).
+    Object(u32),
+    /// Written inside the resource dictionary at the `ResAt`.
+    Inline(ResAt),
+}
+
+/// The property-list purge (PLR-104), planned on the analysed document, applied after.
+#[derive(Default)]
+struct PropertyPlan {
+    /// Entries to remove: no `BDC` or `DP` of the content read names them.
+    remove: Vec<(PropsAt, BTreeSet<Vec<u8>>)>,
+    /// Counted before the edit: undetermined usage, or a dictionary the purge cannot edit with an unnamed entry with text.
+    counted: u32,
+    /// `/Properties` entries in the reached dictionaries (non-zero: a property list of the old page is still listed).
+    lists: usize,
+    /// Objects named by removed or unedited entries (checked after the edit: `property_text`).
+    candidates: BTreeSet<u32>,
+    /// Objects a used entry names.
+    named: BTreeSet<u32>,
+}
+
+/// `o` (resolved) is a dictionary that holds one of [`PROPERTY_TEXT_KEYS`].
+fn property_text(objs: &Objs, o: &Object) -> bool {
+    res(objs, o).as_dict().is_some_and(|d| PROPERTY_TEXT_KEYS.iter().any(|k| holds(d, k)))
+}
+
+/// The resource dictionaries the old pages reached and where they live now (PLR-104): an old page's own `/Resources` object
+/// (a dictionary another page may share), the `/Resources` a kept page received from a node of a flattened page's `/Parent`
+/// chain (`Flat::heirs`), and the `/Resources` of every stream and Type 3 font the old page reached (`Flat::sources`).
+fn reached_resources(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>) -> BTreeSet<ResAt> {
+    let mut out = BTreeSet::new();
+    let at = |holder: u32, v: &Object| match v {
+        Object::Ref(r) => Some(ResAt::Object(r.num)),
+        Object::Dict(_) => Some(ResAt::In(holder)),
+        _ => None,
+    };
+    for f in flats {
+        if let Some(Object::Ref(r)) = f.old.get("Resources") {
+            out.insert(ResAt::Object(r.num));
+        }
+        for p in &f.heirs {
+            if let Some(a) = objs.get(p).and_then(|e| e.obj.as_dict()).and_then(|d| d.get("Resources")).and_then(|v| at(*p, v)) {
+                out.insert(a);
+            }
+        }
+    }
+    for n in sources {
+        let Some(e) = objs.get(n) else { continue };
+        let Some(d) = e.obj.as_dict() else { continue };
+        let type3 = d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Type3"));
+        if (matches!(e.obj, Object::Stream(_)) || type3)
+            && let Some(a) = d.get("Resources").and_then(|v| at(*n, v))
+        {
+            out.insert(a);
+        }
+    }
+    out
+}
+
+/// Plans the property-list purge (PLR-104) on the analysed document: in every `/Properties` dictionary the old pages reached,
+/// the entries no `BDC` or `DP` of the content read names are removed (inline dictionaries and references alike); a dictionary
+/// whose usage could not be determined keeps every entry and is counted; one the purge cannot edit (a `/Resources` or
+/// `/Properties` value that is a stream, or reached through an alias object) is counted when an entry no content names holds a
+/// text key.
+fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usage<'_>) -> PropertyPlan {
+    let mut plan = PropertyPlan { named: u.props_named.clone(), ..PropertyPlan::default() };
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let none = BTreeSet::new();
+    for at in reached_resources(objs, flats, sources) {
+        // The resource dictionary, and whether the purge can edit it where it lives.
+        let (rd, editable) = match at {
+            ResAt::Object(n) => match objs.get(&n).map(|e| &e.obj) {
+                Some(Object::Dict(d)) => (Some(d), true),
+                Some(o) => (res(objs, o).as_dict(), false),
+                None => (None, false),
+            },
+            ResAt::In(n) => match objs.get(&n).and_then(|e| e.obj.as_dict()).and_then(|d| d.get("Resources")) {
+                Some(Object::Dict(d)) => (Some(d), true),
+                _ => (None, false),
+            },
+        };
+        let Some(rd) = rd else { continue };
+        let Some(pv) = rd.get(PROPERTIES) else { continue };
+        let (props, place) = match pv {
+            Object::Dict(p) if editable => (Some(p), Some(PropsAt::Inline(at))),
+            Object::Ref(r) => match objs.get(&r.num).map(|e| &e.obj) {
+                Some(Object::Dict(p)) => (Some(p), Some(PropsAt::Object(r.num))),
+                Some(o) => (res(objs, o).as_dict(), None),
+                None => (None, None),
+            },
+            o => (res(objs, o).as_dict(), None),
+        };
+        let Some(props) = props else { continue };
+        if !seen.insert(ptr(props)) {
+            continue;
+        }
+        plan.lists = plan.lists.saturating_add(props.entries.len());
+        let used = u.props_used.get(&ptr(props)).unwrap_or(&none);
+        if u.props_undetermined.contains(&ptr(props)) && !props.entries.is_empty() {
+            plan.counted = plan.counted.saturating_add(1);
+        }
+        let unnamed: Vec<&(Vec<u8>, Object)> = props.entries.iter().filter(|(k, _)| !used.contains(k)).collect();
+        plan.candidates.extend(unnamed.iter().filter_map(|(_, v)| v.as_ref()).map(|r| r.num));
+        match place {
+            Some(place) if !unnamed.is_empty() => plan.remove.push((place, unnamed.iter().map(|(k, _)| k.clone()).collect())),
+            Some(_) => {}
+            None => {
+                if unnamed.iter().any(|(_, v)| property_text(objs, v)) {
+                    plan.counted = plan.counted.saturating_add(1);
+                }
+            }
+        }
+    }
+    plan
+}
+
+/// Applies the property-list purge (PLR-104). Returns the count planned before the edit (`PropertyPlan::counted`).
+fn apply_properties(doc: &mut PdfDoc, plan: &PropertyPlan) -> u32 {
+    for (place, names) in &plan.remove {
+        let (num, inline) = match place {
+            PropsAt::Object(n) => (*n, None),
+            PropsAt::Inline(ResAt::Object(n)) => (*n, Some(false)),
+            PropsAt::Inline(ResAt::In(n)) => (*n, Some(true)),
+        };
+        let Some(e) = doc.objects.get_mut(&num) else { continue };
+        let holder: Option<&mut Dict> = match &mut e.obj {
+            Object::Dict(d) => Some(d),
+            Object::Stream(s) => Some(&mut s.dict),
+            _ => None,
+        };
+        let props: Option<&mut Dict> = match (holder, inline) {
+            (Some(d), None) => Some(d),
+            (Some(d), Some(false)) => match d.get_mut(PROPERTIES) {
+                Some(Object::Dict(p)) => Some(p),
+                _ => None,
+            },
+            (Some(d), Some(true)) => match d.get_mut("Resources") {
+                Some(Object::Dict(r)) => match r.get_mut(PROPERTIES) {
+                    Some(Object::Dict(p)) => Some(p),
+                    _ => None,
+                },
+                _ => None,
+            },
+            (None, _) => None,
+        };
+        let Some(props) = props else { continue };
+        let before = props.entries.len();
+        props.entries.retain(|(k, _)| !names.contains(k));
+        if props.entries.len() != before {
+            touch(e);
+        }
+    }
+    plan.counted
 }
 
 /// Removes gated entries naming `gone` from every resource dictionary inside `o`; gated sub-dictionaries

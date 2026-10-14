@@ -224,6 +224,10 @@ pub(crate) struct Flat {
     pub annots: Vec<u32>,
     /// Objects the old page's resources, content and group reached.
     pub sources: BTreeSet<u32>,
+    /// Kept pages that received a `/Resources` value from a node of a flattened page's `/Parent` chain
+    /// ([`detach_from_page_tree`]): the resource dictionaries the old page inherited now live there
+    /// (`flatten_purge.rs` purges their property lists, PLR-104). The same set for every flattened page.
+    pub heirs: BTreeSet<u32>,
 }
 
 fn refuse(c: FlattenCause) -> PressError {
@@ -640,10 +644,13 @@ pub(crate) fn flatten_region_pages(doc: &mut PdfDoc, regions: &[RedactionRegion]
         let generation = doc.objects.get(&page).map(|e| e.generation).unwrap_or(0);
         doc.objects.insert(page, Entry { generation, obj: Object::Dict(p), span: None, data_at: None });
         let page_out = FlattenedPage { page_index: index, object: page, width_px: w, height_px: h, notes: notes.into_iter().collect() };
-        out.push(Flat { page: page_out, old, annots, sources });
+        out.push(Flat { page: page_out, old, annots, sources, heirs: BTreeSet::new() });
     }
     let flat: BTreeSet<u32> = out.iter().map(|f| f.page.object).collect();
-    detach_from_page_tree(doc, &flat)?;
+    let heirs = detach_from_page_tree(doc, &flat)?;
+    for f in &mut out {
+        f.heirs.clone_from(&heirs);
+    }
     Ok(out)
 }
 
@@ -669,14 +676,16 @@ fn parent_chain(doc: &PdfDoc, page: u32) -> Result<Vec<u32>> {
 
 /// Makes sure nothing reaches a flattened page by inheritance (module docs; R13-F1, R13-F6): every node
 /// on a flattened page's `/Parent` chain keeps only [`NODE_KEYS`]; every other page of the tree that
-/// inherited one of [`INHERITED_KEYS`] from such a node gets it explicitly first.
-pub(crate) fn detach_from_page_tree(doc: &mut PdfDoc, flat: &BTreeSet<u32>) -> Result<()> {
+/// inherited one of [`INHERITED_KEYS`] from such a node gets it explicitly first. Returns the pages that
+/// received `/Resources` that way.
+pub(crate) fn detach_from_page_tree(doc: &mut PdfDoc, flat: &BTreeSet<u32>) -> Result<BTreeSet<u32>> {
     let mut clear: BTreeSet<u32> = BTreeSet::new();
     for f in flat {
         clear.extend(parent_chain(doc, *f)?);
     }
+    let mut heirs: BTreeSet<u32> = BTreeSet::new();
     if clear.is_empty() {
-        return Ok(());
+        return Ok(heirs);
     }
     let others: Vec<u32> = doc.pages.iter().copied().filter(|p| !flat.contains(p)).collect();
     let mut explicit: Vec<(u32, Vec<(&'static str, Object)>)> = Vec::new();
@@ -705,6 +714,9 @@ pub(crate) fn detach_from_page_tree(doc: &mut PdfDoc, flat: &BTreeSet<u32>) -> R
     for (p, sets) in explicit {
         if let Some(Entry { obj: Object::Dict(d), span, .. }) = doc.objects.get_mut(&p) {
             for (key, value) in sets {
+                if key == "Resources" {
+                    heirs.insert(p);
+                }
                 d.set(key, value);
             }
             *span = None;
@@ -719,7 +731,7 @@ pub(crate) fn detach_from_page_tree(doc: &mut PdfDoc, flat: &BTreeSet<u32>) -> R
             }
         }
     }
-    Ok(())
+    Ok(heirs)
 }
 
 /// Independent check of one flattened page on the SAVED file (module docs): number of mismatches.
