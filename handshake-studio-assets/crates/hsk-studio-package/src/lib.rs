@@ -4,6 +4,7 @@
 //! fixtures supply scoped in-memory resolver inputs rather than kernel imports.
 #![forbid(unsafe_code)]
 
+mod bounded_zip;
 mod error;
 mod hashing;
 mod limits;
@@ -17,7 +18,11 @@ mod write;
 mod zip;
 
 pub use error::{AssetError, PackageError};
-pub use hashing::sha256_hex_of;
+pub use bounded_zip::{
+    InflateFail, MAX_ZIP_NAME_LEN, ZipDirectory, ZipEntry, ZipLimits, ZipReadError, inflate_exact,
+    read_zip,
+};
+pub use hashing::{crc32_of, sha256_hex_of};
 pub use limits::Limits;
 pub use manifest::{
     ASSET_PREFIX, CONTAINER_VERSION, Codec, DOCUMENT_NAME, EntryKind, MANIFEST_NAME, Manifest,

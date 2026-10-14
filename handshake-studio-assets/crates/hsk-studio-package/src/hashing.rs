@@ -19,6 +19,11 @@ pub(crate) fn crc32(data: &[u8], cancel: &CancellationToken) -> Result<u32, Pack
     Ok(hasher.finalize())
 }
 
+/// The single CRC-32 (IEEE 802.3, as used by ZIP and gzip) of `data` for every Studio crate.
+pub fn crc32_of(data: &[u8]) -> u32 {
+    crc32fast::hash(data)
+}
+
 pub(crate) fn sha256_hex(data: &[u8], cancel: &CancellationToken) -> Result<String, PackageError> {
     let mut hasher = Sha256::new();
     for chunk in data.chunks(CHUNK) {
