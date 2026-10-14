@@ -126,6 +126,22 @@ pub trait TemporalSource {
         let _ = (layer_id, tick, cancel);
         Ok(None)
     }
+
+    /// The layer's whole matrix at `tick`: content plan coordinates (the authored tile placement)
+    /// -> plan pixels. `Some` expresses any affine (a parent chain, a sheared product of parent
+    /// scale and child rotation) and REPLACES the state's `translate_px`, `scale` and
+    /// `rotation_deg` and [`TemporalSource::layer_anchor`] (only `visible` and `opacity_scale` are
+    /// read); an exact integer translation still takes the tile-move path. `None` (the default)
+    /// = the state's fields.
+    fn layer_matrix(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Affine2>, TemporalError> {
+        let _ = (layer_id, tick, cancel);
+        Ok(None)
+    }
 }
 
 /// No animation: every frame inside the windows is the static plan.
@@ -352,9 +368,44 @@ fn admit_state(
     Ok(Movement::Resample(filter))
 }
 
+/// Classifies a source-supplied matrix like [`admit_state`] classifies the state's fields.
+fn admit_matrix(
+    layer_id: &str,
+    s: &LayerFrameState,
+    m: &Affine2,
+    filter: Option<ResampleFilter>,
+) -> Result<Movement, TemporalError> {
+    let invalid = |field| TemporalError::InvalidState {
+        layer_id: layer_id.to_owned(),
+        field,
+    };
+    if !s.opacity_scale.is_finite() || !(0.0..=1.0).contains(&s.opacity_scale) {
+        return Err(invalid("opacity_scale"));
+    }
+    if !m.m.iter().all(|v| v.is_finite()) {
+        return Err(invalid("matrix"));
+    }
+    let [a, b, c, d, e, f] = m.m;
+    if a == 1.0 && b == 0.0 && d == 0.0 && e == 1.0 && c.fract() == 0.0 && f.fract() == 0.0 {
+        return Ok(Movement::Integer(integer_px(layer_id, c)?, integer_px(layer_id, f)?));
+    }
+    let Some(filter) = filter else {
+        return Err(TemporalError::Unsupported {
+            layer_id: layer_id.to_owned(),
+            feature: TRANSFORM_REQUIRES_RESAMPLING,
+        });
+    };
+    if a * e - b * d == 0.0 {
+        return Ok(Movement::Collapsed);
+    }
+    Ok(Movement::Resample(filter))
+}
+
 /// One layer to resample: its state, explicit anchor (if any), filter and mask linkage.
 struct Resampled {
     state: LayerFrameState,
+    /// A source-supplied whole matrix ([`TemporalSource::layer_matrix`]).
+    matrix: Option<Affine2>,
     anchor: Option<[f64; 2]>,
     filter: ResampleFilter,
     linked_mask: bool,
@@ -428,7 +479,11 @@ pub fn lower_frame(
         let mut show = in_window;
         let mut opacity_scale = 1.0;
         if let Some(s) = state {
-            let movement = admit_state(id, &s, source.resample_filter(id))?;
+            let matrix = source.layer_matrix(id, tick, cancel)?;
+            let movement = match &matrix {
+                Some(m) => admit_matrix(id, &s, m, source.resample_filter(id))?,
+                None => admit_state(id, &s, source.resample_filter(id))?,
+            };
             show = s.visible && !matches!(movement, Movement::Collapsed);
             let linked = layer
                 .appearance
@@ -442,7 +497,10 @@ pub fn lower_frame(
                         feature: TRANSLATE_NON_RASTER_LAYER,
                     });
                 }
-                let anchor = source.layer_anchor(id, tick, cancel)?;
+                let anchor = match matrix {
+                    Some(_) => None,
+                    None => source.layer_anchor(id, tick, cancel)?,
+                };
                 if anchor.is_some_and(|a| !a.iter().all(|v| v.is_finite())) {
                     return Err(TemporalError::InvalidState {
                         layer_id: id.to_owned(),
@@ -453,6 +511,7 @@ pub fn lower_frame(
                     id.to_owned(),
                     Resampled {
                         state: s,
+                        matrix,
                         anchor,
                         filter,
                         linked_mask: linked,
@@ -626,15 +685,17 @@ fn transform_envelope(
             p.y as f64 + f64::from(p.height) / 2.0,
         ]);
         let s = &r.state;
-        let affine = Affine2::from_parts(
-            ax,
-            ay,
-            s.scale[0],
-            s.scale[1],
-            s.rotation_deg,
-            s.translate_px[0],
-            s.translate_px[1],
-        );
+        let affine = r.matrix.unwrap_or_else(|| {
+            Affine2::from_parts(
+                ax,
+                ay,
+                s.scale[0],
+                s.scale[1],
+                s.rotation_deg,
+                s.translate_px[0],
+                s.translate_px[1],
+            )
+        });
         for (g, node) in lowering.plan.nodes.iter().enumerate() {
             let PlanNode::Group(group) = node else {
                 continue;

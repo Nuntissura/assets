@@ -6,8 +6,7 @@
 #![cfg(feature = "motion")]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
-    COMPOSITION_ANCHOR_STREAM, COMPOSITION_LAYER_CLIPPED, COMPOSITION_LAYER_CONTENT, COMPOSITION_PARENT,
-    COMPOSITION_PRECOMP, COMPOSITION_TRACK_MATTE, CompositionInput, CompositionTemporalSource,
+    COMPOSITION_LAYER_CLIPPED, COMPOSITION_LAYER_CONTENT, COMPOSITION_PRECOMP, COMPOSITION_TRACK_MATTE, CompositionInput, CompositionTemporalSource,
 };
 use hsk_studio_composite::temporal::TRANSFORM_MULTI_TILE_LAYER;
 use hsk_studio_composite::{
@@ -55,7 +54,9 @@ fn document() -> Value {
             raster(2, vec![tile(2,"ta",8,6)]),
             raster(3, vec![tile(3,"tb",6,6)]),
             raster(4, vec![tile(4,"t0",4,4), {let mut t = tile(4,"t1",4,4); t["column"]=json!(1); t}]),
-            {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",5),"name":"vector","parent":null,"kind":"vector","payload":{"payload_kind":"vector","path_ids":[identity("SVPT",1)]},"visible":true}
+            {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",5),"name":"vector","parent":null,"kind":"vector","payload":{"payload_kind":"vector","path_ids":[identity("SVPT",1)]},"visible":true},
+            {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",6),"name":"null","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true},
+            raster(7, vec![tile(7,"tc",6,4)])
         ],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[source_op(2),source_op(3),
             {"layer_id":identity("SLYR",1),"operation_key":"mix","operation_kind":"composite",
@@ -94,7 +95,23 @@ fn records() -> Value {
             {"layer_id":identity("SLYR",2),"timing":timing(0,20),"streams":[
                 {"property":"position","static_value":[12.0,9.0]},
                 {"property":"opacity","static_value":[80.0]}]}
-        ]}]})
+        ]}, composition2()]})
+}
+/// Composition 2 of `tests/support/composition_scenes.rs` (`expected_scene2`).
+fn composition2() -> Value {
+    json!({"schema_id":"hsk.studio.composition@1","composition_id":scenes::composition2_id(),"name":"parented",
+        "width":32,"height":24,"pixel_aspect":{"numerator":1,"denominator":1},
+        "frame_rate":{"numerator":24,"denominator":1},"duration":f(48),
+        "layers":[
+            {"layer_id":identity("SLYR",6),"timing":timing(0,48),"streams":[
+                {"property":"position","static_value":[16.0,12.0]},
+                {"property":"scale","static_value":[150.0,75.0]},
+                {"property":"rotation","static_value":[0.0],"keyframes":[key(0,json!([0.0])),key(10,json!([90.0]))]}]},
+            {"layer_id":identity("SLYR",7),"timing":timing(0,48),"parent":identity("SLYR",6),"streams":[
+                {"property":"anchor","static_value":[0.0,0.0],"keyframes":[key(0,json!([0.0,0.0])),key(10,json!([6.0,4.0]))]},
+                {"property":"position","static_value":[2.0,1.0]},
+                {"property":"rotation","static_value":[20.0]}]}
+        ]})
 }
 
 struct Info<'a>(&'a Pixels);
@@ -112,14 +129,16 @@ impl TileInfoSource for Info<'_> {
 }
 
 fn source_from(doc: &Value, rec: &Value, pixels: &Pixels) -> Result<CompositionTemporalSource, TemporalError> {
+    source_of(doc, rec, pixels, &composition_id())
+}
+fn source_of(doc: &Value, rec: &Value, pixels: &Pixels, id: &str) -> Result<CompositionTemporalSource, TemporalError> {
     let snap = open(doc);
     let records: StudioCompositionRecords = serde_json::from_value(rec.clone()).expect("records shape");
-    let id = composition_id();
     let input = CompositionInput {
         snapshot: &snap,
         expected_revision: 7,
         records: &records,
-        composition_id: &id,
+        composition_id: id,
         budget: Budget::default(),
         resolver: &Available,
         blend_space: BlendSpace::Encoded,
@@ -256,11 +275,6 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         };
         let layer0 = "/compositions/0/layers/0";
         // Features of later slices are refused, never ignored.
-        let e = edit(&|r| r.pointer_mut(layer0).unwrap()["parent"] = json!(identity("SLYR", 2))).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_PARENT);
-        let e = edit(&|r| r.pointer_mut(&format!("{layer0}/streams")).unwrap().as_array_mut().unwrap()
-            .push(json!({"property":"anchor","static_value":[1.0,1.0]}))).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_ANCHOR_STREAM);
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["track_matte"] = json!({"source_layer_id":identity("SLYR",2),"mode":"alpha","inverted":false})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_TRACK_MATTE);
         let e = edit(&|r| {
@@ -343,4 +357,93 @@ fn lowering_is_identical_across_threads() {
             assert_eq!(h.join().unwrap(), base);
         }
     });
+}
+
+#[test]
+fn parent_chain_anchor_stream_and_source_time() {
+    bounded_case("parent_chain_anchor_stream_and_source_time", || {
+        let pixels = Pixels::fixture();
+        let cancel = CancellationToken::default();
+        let src = source_of(&document(), &records(), &pixels, &scenes::composition2_id()).unwrap();
+        for frame in scenes::FRAMES2 {
+            let got = src.scene_at(f(frame) as i64, &cancel).unwrap();
+            let want = scenes::expected_scene2(frame, &pixels);
+            assert_eq!(got.layers.len(), 2);
+            for (g, w) in got.layers.iter().zip(&want.layers) {
+                assert_eq!((&g.layer_id, &g.content, g.opacity), (&w.layer_id, &w.content, w.opacity));
+                near(&g.matrix, &w.matrix);
+            }
+        }
+        // Hand check at frame 10: the child's anchor (6, 4) sits at its position (2, 1) in the
+        // parent's space; the parent scales (1.5, 0.75), turns 90 deg clockwise and moves to
+        // (16, 12): (2 * 1.5, 1 * 0.75) = (3, 0.75) -> (-0.75, 3) -> (15.25, 15).
+        let m = src.scene_at(f(10) as i64, &cancel).unwrap().layers[0].matrix;
+        let (x, y) = m.apply(6.0, 4.0);
+        assert!((x - 15.25).abs() < 1e-12 && (y - 15.0).abs() < 1e-12, "({x}, {y})");
+        // Sheared: the columns of the linear part are not orthogonal.
+        let [a, b, _, d, e, _] = m.m;
+        assert!((a * b + d * e).abs() > 1e-3, "{:?}", m.m);
+
+        // lower_frame over the document graph honours the parent through
+        // TemporalSource::layer_matrix: layer 3 parented to layer 2 moves with it.
+        let mut rec = records();
+        rec["compositions"][0]["layers"][0]["parent"] = json!(identity("SLYR", 2));
+        let doc = document();
+        let snap = open(&doc);
+        let parented = source_from(&doc, &rec, &pixels).unwrap();
+        let scene = parented.scene_at(f(5) as i64, &cancel).unwrap();
+        // Layer 2's local transform: anchor (4, 3), position (12, 9).
+        let alone = src_scene_matrix(&pixels, f(5) as i64);
+        near(&scene.layers[1].matrix, &alone.then(Affine2::from_parts(4.0, 3.0, 1.0, 1.0, 0.0, 8.0, 6.0)));
+        let root = addr(1, "mix", "out");
+        let timings = parented.timings();
+        let req = FrameRequest {
+            snapshot: &snap,
+            expected_revision: 7,
+            blend_space: BlendSpace::Encoded,
+            limits: Limits::default(),
+            budget: Budget::default(),
+            resolver: &Available,
+            root: &root,
+            target: OutputTarget {
+                extent: hsk_studio_pigment::Rect { x: 0, y: 0, width: 32, height: 24 },
+                format: SampleFormat::RgbF32Le,
+                alpha: AlphaConvention::Straight,
+                space: scenes::space(),
+            },
+            info: &Info(&pixels),
+            timings: &timings,
+        };
+        let frame = lower_frame(&req, &parented, f(5) as i64, &cancel).unwrap();
+        near(&frame.extensions.layers[0].transform.unwrap().affine, &scene.layers[1].matrix);
+
+        // Source time: floor((tick - start) / stretch), equal to Folio's rule; reverse; overflow.
+        let mut rec = records();
+        let l7 = &mut rec["compositions"][1]["layers"][1]["timing"];
+        l7["start_time"] = json!(f(2));
+        l7["stretch"] = json!({"numerator":2,"denominator":1});
+        let stretched = source_of(&document(), &rec, &pixels, &scenes::composition2_id()).unwrap();
+        let id7 = identity("SLYR", 7);
+        assert_eq!(stretched.source_tick(&id7, f(6) as i64).unwrap(), f(2) as i64);
+        assert_eq!(stretched.source_tick(&id7, 3).unwrap(), (3 - f(2) as i64).div_euclid(2));
+        let folio: StudioCompositionRecords = serde_json::from_value(rec.clone()).unwrap();
+        let timing7 = folio.compositions[1].layers[1].timing;
+        for tick in [0u64, 1, 7, f(2) + 1, f(9) + 13] {
+            assert_eq!(Some(stretched.source_tick(&id7, tick as i64).unwrap()), timing7.source_tick(tick));
+        }
+        rec["compositions"][1]["layers"][1]["timing"]["stretch"] = json!({"numerator":-1,"denominator":1});
+        let reversed = source_of(&document(), &rec, &pixels, &scenes::composition2_id()).unwrap();
+        assert_eq!(reversed.source_tick(&id7, f(5) as i64).unwrap(), -(f(3) as i64));
+        rec["compositions"][1]["layers"][1]["timing"] = json!({"in_point":0,"out_point":f(48),"start_time":0,"stretch":{"numerator":1,"denominator":3}});
+        let slow = source_of(&document(), &rec, &pixels, &scenes::composition2_id()).unwrap();
+        assert_eq!(slow.source_tick(&id7, f(1) as i64).unwrap(), 3 * f(1) as i64);
+        assert!(matches!(slow.source_tick(&id7, i64::MAX), Err(TemporalError::Composite(CompositeError::Overflow))));
+        assert!(matches!(slow.source_tick("missing", 0), Err(TemporalError::Composite(CompositeError::DanglingInput(_)))));
+    });
+}
+
+/// Layer 3's own matrix at `tick` (composition 1, no parent).
+fn src_scene_matrix(pixels: &Pixels, tick: i64) -> Affine2 {
+    let src = source_from(&document(), &records(), pixels).unwrap();
+    src.scene_at(tick, &CancellationToken::default()).unwrap().layers[1].matrix
 }

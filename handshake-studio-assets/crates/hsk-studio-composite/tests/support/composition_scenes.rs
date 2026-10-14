@@ -125,6 +125,7 @@ impl Pixels {
             tiles: vec![
                 TilePix::new(tile_id(2, "ta"), 8, 6, 1),
                 TilePix::new(tile_id(3, "tb"), 6, 6, 2),
+                TilePix::new(tile_id(7, "tc"), 6, 4, 3),
             ],
         }
     }
@@ -180,6 +181,60 @@ pub fn expected_scene(frame: u64, pixels: &Pixels) -> SceneComposition {
         filter: ResampleFilter::Bilinear,
         layers,
     }
+}
+
+pub fn composition2_id() -> String {
+    identity("SCOM", 2)
+}
+/// Frames of composition 2 the renderer tests play.
+pub const FRAMES2: [u64; 3] = [0, 5, 10];
+
+/// Composition 2 (slice 2: anchor stream and parent chain), 32x24 px at 24 fps, no background:
+/// - layer 6: null layer (no content) at position (16, 12), scale (150, 75) %, rotation keys
+///   frame 0 -> 10: 0 -> 90 deg; anchor (0, 0) (content-less default).
+/// - layer 7: tile `tc` 6x4 at (0, 0), parent layer 6; anchor keys frame 0 -> 10: (0, 0) ->
+///   (6, 4); position (2, 1) in the parent's layer space; rotation 20 deg.
+///   Content matrix = local(7) then local(6): a sheared product (child rotation under the
+///   parent's non-uniform scale).
+pub fn expected_scene2(frame: u64, pixels: &Pixels) -> SceneComposition {
+    let t = (frame.min(10) as f64) / 10.0;
+    let parent = Affine2::from_parts(0.0, 0.0, 1.5, 0.75, lerp(0.0, 90.0, t), 16.0, 12.0);
+    let (ax, ay) = (lerp(0.0, 6.0, t), lerp(0.0, 4.0, t));
+    let child = Affine2::from_parts(ax, ay, 1.0, 1.0, 20.0, 2.0 - ax, 1.0 - ay);
+    let tc = pixels.get(&tile_id(7, "tc")).unwrap();
+    SceneComposition {
+        composition_id: composition2_id(),
+        width: W,
+        height: H,
+        background: None,
+        filter: ResampleFilter::Bilinear,
+        layers: vec![
+            SceneLayer {
+                layer_id: identity("SLYR", 7),
+                content: SceneContent::Tiles(vec![tc.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: child.then(parent),
+            },
+            SceneLayer {
+                layer_id: identity("SLYR", 6),
+                content: SceneContent::None,
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: parent,
+            },
+        ],
+    }
+}
+
+/// Every rendered case: `(label, scene)` for the renderer tests.
+pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
+    let mut out: Vec<(String, SceneComposition)> =
+        FRAMES.iter().map(|f| (format!("comp1/frame{f}"), expected_scene(*f, pixels))).collect();
+    out.extend(FRAMES2.iter().map(|f| (format!("comp2/frame{f}"), expected_scene2(*f, pixels))));
+    out
 }
 
 /// Straight RGBA of every composition pixel, row-major (module docs).

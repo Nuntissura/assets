@@ -11,6 +11,11 @@
 //!   at `position + R(rotation) S(scale) (x - anchor)` in composition pixels. Without streams the
 //!   layer keeps its authored placement: the default anchor is the content centre and the default
 //!   position is the content origin plus that anchor (identity).
+//! - Anchor stream (STU-MOT-013a, layer space) and parent chain (STU-MOT-008): the content matrix is
+//!   the layer's own transform followed by every parent's, so a parent's position, rotation and
+//!   scale move the child (any affine, shear included); parenting never inherits opacity, blend
+//!   mode or matte. Source time: [`CompositionTemporalSource::source_tick`] maps a composition
+//!   tick through `start_time` and the rational `stretch`.
 //! - The composition's resampling filter is DECLARED by the source ([`DEFAULT_COMPOSITION_FILTER`]
 //!   = bilinear unless [`CompositionTemporalSource::with_filter`] picks another; STU-MOT-007 names
 //!   `bilinear | bicubic` and no default; Folio stores no `resample_filter`, so this is the
@@ -22,10 +27,9 @@
 //!
 //! Refused typed (never ignored): records Folio refuses (`Document`), an unknown composition id
 //! (`DanglingInput`), a stale revision, layer content other than raster tiles or a null layer
-//! (`composition_layer_content`), clipped or masked layers (`composition_layer_clipped`,
+//! (`composition_layer_content`; a null layer is a Folio `group` layer with a `group` payload, since Folio binds no `null` kind), clipped or masked layers (`composition_layer_clipped`,
 //! `composition_layer_mask`), a pass-through blend on a content layer, sampled opacity outside
-//! `0..=100` (`InvalidState`), parenting (`composition_parent`), anchor streams
-//! (`composition_anchor_stream`), precompositions (`composition_precomp`) and track mattes
+//! `0..=100` (`InvalidState`), precompositions (`composition_precomp`) and track mattes
 //! (`composition_track_matte`) until their slices land. Not modelled: 3D layers, motion blur,
 //! expressions, frame blending, time remapping (Folio stores none of them).
 #![deny(clippy::arithmetic_side_effects)]
@@ -55,8 +59,6 @@ pub const COMPOSITION_LAYER_CONTENT: &str = "composition_layer_content";
 pub const COMPOSITION_LAYER_CLIPPED: &str = "composition_layer_clipped";
 pub const COMPOSITION_LAYER_MASK: &str = "composition_layer_mask";
 pub const COMPOSITION_LAYER_PASS_THROUGH: &str = "composition_layer_pass_through";
-pub const COMPOSITION_PARENT: &str = "composition_parent";
-pub const COMPOSITION_ANCHOR_STREAM: &str = "composition_anchor_stream";
 pub const COMPOSITION_PRECOMP: &str = "composition_precomp";
 pub const COMPOSITION_TRACK_MATTE: &str = "composition_track_matte";
 pub const COMPOSITION_BACKGROUND_PROFILE: &str = "composition_background_profile";
@@ -79,6 +81,7 @@ pub struct CompositionInput<'a> {
 
 #[derive(Clone, Debug)]
 struct Streams {
+    anchor: Option<Property>,
     position: Option<Property>,
     scale: Option<Property>,
     rotation: Option<Property>,
@@ -95,6 +98,7 @@ enum Content {
 struct CompLayer {
     layer_id: String,
     timing: StudioLayerTiming,
+    parent: Option<String>,
     visible: bool,
     mode: StudioBlendMode,
     opacity: f64,
@@ -223,6 +227,20 @@ fn bounds_of(rects: &[Rect]) -> Result<Option<Rect>, TemporalError> {
     }
 }
 
+/// `floor((tick - start_time) * denominator / numerator)` in `i128` (see
+/// [`CompositionTemporalSource::source_tick`]); `None` for a zero stretch or a result outside `i64`.
+fn map_source(t: &StudioLayerTiming, tick: i64) -> Option<i64> {
+    let offset = i128::from(tick).checked_sub(i128::from(t.start_time))?;
+    let scaled = offset.checked_mul(i128::from(t.stretch.denominator))?;
+    let divisor = i128::from(t.stretch.numerator);
+    let mut q = scaled.checked_div(divisor)?;
+    let r = scaled.checked_rem(divisor)?;
+    if r != 0 && ((r < 0) != (divisor < 0)) {
+        q = q.checked_sub(1)?;
+    }
+    i64::try_from(q).ok()
+}
+
 impl CompositionTemporalSource {
     /// Read and validate the records (module docs). Every refusal is typed; nothing is dropped.
     pub fn new(input: &CompositionInput<'_>, cancel: &CancellationToken) -> Result<Self, TemporalError> {
@@ -275,17 +293,11 @@ impl CompositionTemporalSource {
                 .iter()
                 .find(|d| d.layer_id == l.layer_id)
                 .ok_or_else(|| CompositeError::DanglingInput(l.layer_id.clone()))?;
-            if l.parent.is_some() {
-                return Err(unsupported(id, COMPOSITION_PARENT));
-            }
             if l.precomp.is_some() {
                 return Err(unsupported(id, COMPOSITION_PRECOMP));
             }
             if l.track_matte.is_some() {
                 return Err(unsupported(id, COMPOSITION_TRACK_MATTE));
-            }
-            if l.stream(StudioLayerProperty::Anchor).is_some() {
-                return Err(unsupported(id, COMPOSITION_ANCHOR_STREAM));
             }
             let content = match &dl.payload {
                 Payload::Group => Content::None,
@@ -333,11 +345,13 @@ impl CompositionTemporalSource {
             layers.push(CompLayer {
                 layer_id: l.layer_id.clone(),
                 timing: l.timing,
+                parent: l.parent.clone(),
                 visible: dl.visible,
                 mode,
                 opacity: a.opacity_fraction(),
                 fill_opacity: a.fill_opacity_fraction(),
                 streams: Streams {
+                    anchor: stream(StudioLayerProperty::Anchor)?,
                     position: stream(StudioLayerProperty::Position)?,
                     scale: stream(StudioLayerProperty::Scale)?,
                     rotation: stream(StudioLayerProperty::Rotation)?,
@@ -418,13 +432,16 @@ impl CompositionTemporalSource {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Parts, TemporalError> {
-        let (anchor, origin) = match &l.content {
+        let (mut anchor, origin) = match &l.content {
             Content::Tiles { bounds, .. } => (
                 [f64::from(bounds.width) / 2.0, f64::from(bounds.height) / 2.0],
                 [bounds.x as f64, bounds.y as f64],
             ),
             Content::None => ([0.0, 0.0], [0.0, 0.0]),
         };
+        if let Some(v) = sample(&l.layer_id, l.streams.anchor.as_ref(), 2, tick, cancel)? {
+            anchor = [v[0], v[1]];
+        }
         let position = match sample(&l.layer_id, l.streams.position.as_ref(), 2, tick, cancel)? {
             Some(v) => [v[0], v[1]],
             None => [origin[0] + anchor[0], origin[1] + anchor[1]],
@@ -445,19 +462,16 @@ impl CompositionTemporalSource {
         })
     }
 
-    /// Content plan coordinates -> composition pixels of one layer at `tick`.
-    fn matrix(l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<Affine2, TemporalError> {
+    /// Layer space -> the parent's layer space (composition pixels without a parent) at `tick`:
+    /// `position + R(rotation) S(scale) (x - anchor)`.
+    fn local(l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<Affine2, TemporalError> {
         let Parts {
             anchor,
             position,
             scale,
             rotation,
         } = Self::transform_parts(l, tick, cancel)?;
-        let origin = match &l.content {
-            Content::Tiles { bounds, .. } => [bounds.x as f64, bounds.y as f64],
-            Content::None => [0.0, 0.0],
-        };
-        let local = Affine2::from_parts(
+        Ok(Affine2::from_parts(
             anchor[0],
             anchor[1],
             scale[0],
@@ -465,8 +479,55 @@ impl CompositionTemporalSource {
             rotation,
             position[0] - anchor[0],
             position[1] - anchor[1],
-        );
-        Ok(Affine2::translate(-origin[0], -origin[1]).then(local))
+        ))
+    }
+
+    /// Content plan coordinates -> composition pixels of one layer at `tick`: the layer's own
+    /// transform, then every parent's (STU-MOT-008: the child's transform is evaluated in the
+    /// parent's space; parenting affects the transform group only). Parents act at every tick,
+    /// inside or outside their own window and whether or not they are visible (After Effects
+    /// behaviour, UNVERIFIED). Folio refuses parent loops; the walk is bounded by the layer count
+    /// anyway (`Cycle`).
+    fn matrix(
+        comp: &Comp,
+        l: &CompLayer,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Affine2, TemporalError> {
+        let origin = match &l.content {
+            Content::Tiles { bounds, .. } => [bounds.x as f64, bounds.y as f64],
+            Content::None => [0.0, 0.0],
+        };
+        let mut m = Affine2::translate(-origin[0], -origin[1]).then(Self::local(l, tick, cancel)?);
+        let mut next = l.parent.as_deref();
+        let mut steps = 0usize;
+        while let Some(pid) = next {
+            steps = steps.checked_add(1).ok_or(CompositeError::Overflow)?;
+            if steps > comp.layers.len() {
+                return Err(CompositeError::Cycle(l.layer_id.clone()).into());
+            }
+            let parent = comp
+                .layers
+                .iter()
+                .find(|p| p.layer_id == pid)
+                .ok_or_else(|| CompositeError::DanglingInput(pid.to_owned()))?;
+            m = m.then(Self::local(parent, tick, cancel)?);
+            next = parent.parent.as_deref();
+        }
+        Ok(m)
+    }
+
+    /// Source time of layer `layer_id` at composition tick `tick` (STU-MOT-006 `start_time` and
+    /// rational `stretch`, negative reverses): `floor((tick - start_time) / stretch)`, the same
+    /// rule as Folio's `StudioLayerTiming::source_tick` (floor rounding is a Studio reading, After
+    /// Effects UNVERIFIED), extended to negative ticks; a result outside `i64` is `Overflow`. A
+    /// precomposition layer samples its nested composition at this tick; a still raster layer's
+    /// pixels do not depend on it.
+    pub fn source_tick(&self, layer_id: &str, tick: i64) -> Result<i64, TemporalError> {
+        let l = self
+            .find(layer_id)
+            .ok_or_else(|| CompositeError::DanglingInput(layer_id.to_owned()))?;
+        map_source(&l.timing, tick).ok_or_else(|| CompositeError::Overflow.into())
     }
 
     /// The composition evaluated at composition tick `tick` (module docs).
@@ -490,7 +551,7 @@ impl CompositionTemporalSource {
                 mode: l.mode,
                 opacity,
                 fill_opacity: l.fill_opacity,
-                matrix: Self::matrix(l, tick, cancel)?,
+                matrix: Self::matrix(comp, l, tick, cancel)?,
             });
         }
         Ok(SceneComposition {
@@ -542,6 +603,20 @@ impl TemporalSource for CompositionTemporalSource {
 
     fn resample_filter(&self, layer_id: &str) -> Option<ResampleFilter> {
         self.find(layer_id).map(|_| self.filter)
+    }
+
+    /// The scene matrix (own transform and parent chain), so `lower_frame` places the layer
+    /// exactly as [`CompositionTemporalSource::scene_at`] does.
+    fn layer_matrix(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Affine2>, TemporalError> {
+        let Some(l) = self.find(layer_id) else {
+            return Ok(None);
+        };
+        Self::matrix(&self.root, l, tick, cancel).map(Some)
     }
 
     fn layer_anchor(
