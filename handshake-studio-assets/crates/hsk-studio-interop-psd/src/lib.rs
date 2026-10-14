@@ -49,7 +49,7 @@ pub use loss::{LossEntry, LossKind, LossReport, key_text};
 pub use pixels::Plane;
 pub use proposal::{
     DisplayConversion, GAMUT_CLAMP_TOLERANCE, IdMint, ImportProposal, LayerExtras, LayerMapEntry, MaskTileBlob,
-    ProposalConfig, Provenance, SourceIdentity, TILE_EDGE, TileBlob, to_proposal,
+    ProposalConfig, Provenance, RasterSource, SourceIdentity, TILE_EDGE, TileBlob, raster_proposal, to_proposal,
 };
 pub use report::{ReportContext, outcome_of, report};
 pub use samples::{SixteenBitScale, linear_to_srgb, sample_to_unit, srgb_to_linear, unit_to_sample};
@@ -66,9 +66,9 @@ pub const DESCRIPTOR: &str = concat!(
     "\"compressions\":{\"raw\":\"spec\",\"rle_packbits\":\"spec\",\"zip\":\"zlib,behaviour-reference\",\"zip_prediction\":\"depth8,behaviour-reference;depth16_32:unverified\"},",
     "\"limits\":{\"max_input_bytes\":536870912,\"max_layers\":8192,\"max_pixels\":268435456,\"max_decoded_bytes\":1073741824,",
     "\"max_tagged_block_bytes\":268435456,\"max_tagged_blocks\":16384,\"max_name_units\":1024,\"max_resources\":65536,\"max_group_depth\":128},",
-    "\"api\":\"read_psd / write_psd / to_proposal / export_psd / apply_edits / report; PsdDocument::{tree,loss_report,decode_merged,merged_oracle_rgba8}\",",
+    "\"api\":\"read_psd / write_psd / to_proposal / raster_proposal / export_psd / apply_edits / report; PsdDocument::{tree,loss_report,decode_merged,merged_oracle_rgba8}\",",
     "\"capabilities\":[\"layer_records_groups_resources\",\"byte_exact_rewrite\",\"typed_loss_report\",",
-    "\"folio_proposal_hierarchy_appearance_masks\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
+    "\"folio_proposal_hierarchy_appearance_masks\",\"layerless_merged_image_as_one_raster_layer\",\"raster_source_proposal_shared_tile_mapping\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
     "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",
     "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\",",
     "\"raster_records_adjustments_levels_curves_hue_saturation_brightness_contrast_exposure_invert_threshold_posterize\",",

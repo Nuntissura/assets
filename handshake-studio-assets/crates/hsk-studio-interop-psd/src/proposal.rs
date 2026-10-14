@@ -51,10 +51,10 @@ use crate::convert::{
     AbsoluteSummary, BpcSummary, ClipSummary, EngineSummary, IccConverter, IccRefusal, ProfileDevice, ProfileFacts,
     RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest, WideConvertSource, refusal_code,
 };
-use crate::document::{PsdDocument, TreeNode};
+use crate::document::{MergedImage, PsdDocument, TreeNode};
 use crate::error::{PsdError, Result};
 use crate::header::ColorMode;
-use crate::layers::{GroupRole, PsdLayer};
+use crate::layers::{GroupRole, PsdLayer, Rect};
 use crate::limits::Limits;
 use crate::loss::{LossKind, LossReport, key_text};
 use crate::pixels::Plane;
@@ -287,6 +287,9 @@ pub struct DisplayConversion {
 pub struct Provenance {
     pub source_sha256_hex: String,
     pub byte_len: usize,
+    /// `psd`, `psb`, or the [`RasterSource::format`] of a raster source.
+    pub source_format: &'static str,
+    /// 1 (PSD) or 2 (PSB); 0 for a [`RasterSource`].
     pub psd_version: u16,
     pub width: u32,
     pub height: u32,
@@ -353,6 +356,15 @@ fn studio_colour_mode(mode: ColorMode) -> u8 {
         ColorMode::Indexed => 6,
         ColorMode::Multichannel => 7,
         ColorMode::Duotone => 8,
+    }
+}
+
+/// Colour channel ids (and so the colour plane count, in this order) a colour mode maps from.
+fn colour_channel_ids(mode: ColorMode) -> &'static [i16] {
+    match mode {
+        ColorMode::Rgb | ColorMode::Lab => &[0, 1, 2],
+        ColorMode::Cmyk => &[0, 1, 2, 3],
+        _ => &[0],
     }
 }
 
@@ -1038,6 +1050,67 @@ impl Builder<'_, '_, '_> {
         }))
     }
 
+    /// One canvas-sized raster layer from whole-image planes: a layerless PSD's merged image or a
+    /// [`RasterSource`]. `path` prefixes the loss entries (`merged_image` or `raster`). The layer has
+    /// Normal blend at full opacity and no PSD record behind it, so it is in neither `layer_map` nor
+    /// `extras`.
+    fn image_layer(
+        &mut self,
+        path: &str,
+        name: &str,
+        image: &MergedImage,
+        alpha_plane: Option<usize>,
+    ) -> Result<Option<StackEntry>> {
+        let id = self.mint.layer_id();
+        if !self.pixels_mapped {
+            self.layers.push(json!({
+                "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": name, "parent": Value::Null,
+                "kind": "psd_raster_unmapped",
+                "payload": {"payload_kind": "unsupported", "kind": "psd_raster_unmapped",
+                    "schema_id": "psd.raster", "encoded_bytes": Vec::<u8>::new(), "reason": self.unmapped_reason},
+                "visible": true,
+            }));
+            self.note(format!("{path}/pixels"), LossKind::Unsupported, "raster_pixels_unmapped");
+            return Ok(None);
+        }
+        let colour = colour_channel_ids(image.color_mode).len();
+        let Some(planes) = image.planes.get(..colour) else {
+            self.note(format!("{path}/channels"), LossKind::Unsupported, "colour_channel_missing");
+            return Ok(None);
+        };
+        let alpha = alpha_plane.and_then(|at| image.planes.get(at));
+        let used = colour.saturating_add(usize::from(alpha.is_some()));
+        if image.planes.len() > used {
+            // Extra channels (saved selections, spot channels) are not layer pixels.
+            self.note(format!("{path}/channels"), LossKind::PreservedOpaque, "extra_channels_not_mapped");
+        }
+        let bottom = i32::try_from(image.height).map_err(|_| PsdError::BadDimensions)?;
+        let right = i32::try_from(image.width).map_err(|_| PsdError::BadDimensions)?;
+        let rect = Rect { top: 0, left: 0, bottom, right };
+        let tiles = self.tiles_from_planes(rect, planes, alpha, &id)?;
+        let slot = self.layers.len();
+        self.layers.push(json!({
+            "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": name, "parent": Value::Null,
+            "kind": "raster", "payload": {"payload_kind": "raster", "tiles": tiles}, "visible": true,
+            "appearance": {
+                "opacity": 100.0, "fill_opacity": 100.0, "blend_mode": StudioBlendMode::Normal.discriminant(),
+                "clipped": false, "isolation": "isolated",
+            },
+        }));
+        self.operations.push(json!({
+            "layer_id": id, "operation_key": "source", "operation_kind": "source",
+            "inputs": [], "outputs": [port("out", "one", "source")],
+        }));
+        Ok(Some(StackEntry {
+            out: address(&id, "source", "out"),
+            layer_id: id,
+            psd_index: usize::MAX,
+            slot,
+            clipped: false,
+            adjustment: false,
+        }))
+    }
+
     /// Folio `StudioMask` for the layer's user mask (the real user mask when both a user and a
     /// vector mask exist): coverage tiles over the layer rectangle (the mask rectangle for a layer
     /// without pixels), `default_color` outside the mask rectangle. Flags: bit 1 disabled; bit 0
@@ -1265,14 +1338,7 @@ impl Builder<'_, '_, '_> {
         }
         let doc = self.doc;
         let header = &doc.header;
-        let depth = header.depth;
-        let scale = self.cfg.scale;
-        let colour_ids: &[i16] = match header.color_mode {
-            ColorMode::Rgb | ColorMode::Lab => &[0, 1, 2],
-            ColorMode::Cmyk => &[0, 1, 2, 3],
-            _ => &[0],
-        };
-        let wide = self.wide;
+        let colour_ids = colour_channel_ids(header.color_mode);
         let mut planes = Vec::with_capacity(colour_ids.len());
         for &id in colour_ids {
             match layer.decode_channel(id, header, self.cfg.limits, self.cancel)? {
@@ -1284,6 +1350,24 @@ impl Builder<'_, '_, '_> {
             }
         }
         let alpha = layer.decode_channel(-1, header, self.cfg.limits, self.cancel)?;
+        self.tiles_from_planes(rect, &planes, alpha.as_ref(), layer_id)
+    }
+
+    /// The single raster -> tile mapping (CN-1): `planes` are the colour planes of the document's
+    /// colour mode over `rect` (canvas coordinates), `alpha` the straight transparency plane over the
+    /// same rectangle (`None` = opaque). Layer pixels, a layerless file's merged image and a
+    /// [`RasterSource`] all go through here, so the colour route, tiling and digests stay one owner.
+    fn tiles_from_planes(
+        &mut self,
+        rect: Rect,
+        planes: &[Plane],
+        alpha: Option<&Plane>,
+        layer_id: &str,
+    ) -> Result<Vec<Value>> {
+        let doc = self.doc;
+        let depth = doc.header.depth;
+        let scale = self.cfg.scale;
+        let wide = self.wide;
         let width = rect.width() as usize;
         let grid = Grid { origin_x: 0, origin_y: 0, tile_width: TILE_EDGE, tile_height: TILE_EDGE };
         let edge = i64::from(TILE_EDGE);
@@ -1306,7 +1390,7 @@ impl Builder<'_, '_, '_> {
                         let src = row_major(y.saturating_sub(top), x.saturating_sub(left), width)?;
                         let channel = |p: &Plane| p.unit_at(src, scale).ok_or(PsdError::ChannelSize);
                         let mut samples = [0.0f32; 4];
-                        for (slot, plane) in samples.iter_mut().zip(&planes) {
+                        for (slot, plane) in samples.iter_mut().zip(planes) {
                             let v = channel(plane)?;
                             // Only 32-bit float samples can be NaN or infinite; a non-finite value is
                             // replaced before the tile (it would poison every blend downstream).
@@ -1318,7 +1402,7 @@ impl Builder<'_, '_, '_> {
                             };
                         }
                         raw.push(samples);
-                        let a = match &alpha {
+                        let a = match alpha {
                             Some(p) => channel(p)?,
                             None => 1.0,
                         };
@@ -1617,15 +1701,138 @@ fn route(
     Ok(routing)
 }
 
+/// Whole-image pixels handed to [`raster_proposal`] (CN-1: TIFF pages, developed RAW and other
+/// single-image sources reuse the PSD importer's raster -> layer mapping, colour route, tiling and
+/// digests instead of a copy of them).
+///
+/// Planes use the PSD sample layout of [`Plane`]: big-endian 8/16-bit integers or 32-bit IEEE
+/// floats, row-major, `width x height`. `planes` are the colour planes of `colour_mode` in its
+/// channel order (RGB and Lab 3, CMYK 4, gray 1; CMYK stored inverted as in PSD, 0 = full ink).
+/// `alpha` is straight (unassociated) transparency. `icc` is the source's embedded profile: it is
+/// routed exactly as an embedded PSD profile (resource 1039), and without one 8/16-bit RGB/gray is
+/// the recorded sRGB assumption (`profile_assumed_srgb`), 32-bit is linear light, CMYK stays a typed
+/// unmapped layer (no default profile is invented).
+#[derive(Clone, Debug)]
+pub struct RasterSource<'a> {
+    /// Short format label recorded in [`Provenance::source_format`], e.g. `tiff` or `dng`.
+    pub format: &'static str,
+    /// Name of the one layer.
+    pub name: &'a str,
+    pub width: u32,
+    pub height: u32,
+    /// 8, 16 or 32.
+    pub depth: u16,
+    pub colour_mode: ColorMode,
+    pub planes: Vec<Plane>,
+    pub alpha: Option<Plane>,
+    pub icc: Option<Vec<u8>>,
+}
+
+/// What is mapped: the PSD layer tree (a layerless file maps its merged image as one layer), or one
+/// whole-image raster.
+enum Pixels<'s> {
+    Psd,
+    Raster { format: &'static str, name: &'s str, image: MergedImage, alpha_plane: Option<usize> },
+}
+
 /// Maps `doc` to a proposal. The Folio snapshot is produced by Folio's own validator from the
 /// wire document, so identities, parents, cycles and ports are checked there, not here.
+///
+/// A document without layer records (a layerless, merged-image-only file) maps its merged image as
+/// one canvas-sized raster layer named `Background` with the loss entry
+/// `merged_image/merged_image_as_single_layer` (test `layerless_psd_maps_its_merged_image_as_one_raster_layer`).
 pub fn to_proposal(
+    doc: &PsdDocument,
+    source: &SourceIdentity,
+    cfg: &ProposalConfig<'_>,
+    mint: &mut dyn IdMint,
+    converter: Option<&mut dyn IccConverter>,
+    cancel: &CancellationToken,
+) -> Result<ImportProposal> {
+    build(doc, source, cfg, mint, converter, cancel, Pixels::Psd)
+}
+
+/// Maps one whole-image raster to a proposal with one raster layer through the same mapping as
+/// PSD layer pixels ([`RasterSource`]). The source is checked before anything is allocated from it:
+/// depth 8/16/32, a colour mode with a mapping (RGB, gray, CMYK, Lab), the plane count of that mode,
+/// every plane (and the alpha) exactly `width x height` at `depth`, the canvas within
+/// `Limits::max_pixels` and the plane bytes within `Limits::max_decoded_bytes`; anything else is a
+/// typed error (tests `raster_source_sixteen_bit_gray_and_float_rgb_map_to_rgb_f32le_tiles`,
+/// `raster_source_shape_errors_are_typed`). `Provenance::psd_version` is 0 for a raster source.
+pub fn raster_proposal(
+    raster: RasterSource<'_>,
+    source: &SourceIdentity,
+    cfg: &ProposalConfig<'_>,
+    mint: &mut dyn IdMint,
+    converter: Option<&mut dyn IccConverter>,
+    cancel: &CancellationToken,
+) -> Result<ImportProposal> {
+    cancel.check()?;
+    let RasterSource { format, name, width, height, depth, colour_mode, mut planes, alpha, icc } = raster;
+    if !matches!(depth, 8 | 16 | 32) {
+        return Err(PsdError::BadDepth);
+    }
+    if !matches!(colour_mode, ColorMode::Rgb | ColorMode::Grayscale | ColorMode::Cmyk | ColorMode::Lab) {
+        return Err(PsdError::UnsupportedMode("raster_colour_mode"));
+    }
+    if width == 0 || height == 0 || i32::try_from(width).is_err() || i32::try_from(height).is_err() {
+        return Err(PsdError::BadDimensions);
+    }
+    if u64::from(width).saturating_mul(u64::from(height)) > cfg.limits.max_pixels {
+        return Err(PsdError::PixelLimit);
+    }
+    if planes.len() != colour_channel_ids(colour_mode).len() {
+        return Err(PsdError::BadChannelCount);
+    }
+    let plane_len = size_mul(crate::compression::row_bytes(width, depth)?, height as usize)?;
+    let mut total = 0usize;
+    for plane in planes.iter().chain(alpha.iter()) {
+        if plane.width != width || plane.height != height || plane.depth != depth || plane.bytes.len() != plane_len {
+            return Err(PsdError::ChannelSize);
+        }
+        total = size_add(total, plane_len)?;
+    }
+    if total > cfg.limits.max_decoded_bytes {
+        return Err(PsdError::PixelLimit);
+    }
+    let colour = planes.len();
+    let alpha_plane = alpha.is_some().then_some(colour);
+    planes.extend(alpha);
+    let channels = u16::try_from(planes.len()).map_err(|_| PsdError::BadChannelCount)?;
+    let mut resources = crate::resources::ImageResources::default();
+    if let Some(icc) = icc {
+        let pad = if icc.len() % 2 == 1 { vec![0] } else { Vec::new() };
+        resources.blocks.push(crate::resources::ImageResource {
+            signature: *b"8BIM",
+            id: RESOURCE_ICC_PROFILE,
+            name: Vec::new(),
+            name_pad: vec![0],
+            data: icc,
+            data_pad: pad,
+        });
+    }
+    // A header-only document carries the colour mode, depth and profile the shared route reads.
+    let version = if width > 30_000 || height > 30_000 { 2 } else { 1 };
+    let doc = PsdDocument {
+        header: crate::header::Header { version, channels, height, width, depth, color_mode: colour_mode },
+        color_mode_data: Vec::new(),
+        resources,
+        layer_section: crate::document::LayerSection::default(),
+        image_data: None,
+        tail: Vec::new(),
+    };
+    let image = MergedImage { color_mode: colour_mode, width, height, depth, planes, merged_alpha: alpha_plane.is_some() };
+    build(&doc, source, cfg, mint, converter, cancel, Pixels::Raster { format, name, image, alpha_plane })
+}
+
+fn build(
     doc: &PsdDocument,
     source: &SourceIdentity,
     cfg: &ProposalConfig<'_>,
     mint: &mut dyn IdMint,
     mut converter: Option<&mut dyn IccConverter>,
     cancel: &CancellationToken,
+    pixels: Pixels<'_>,
 ) -> Result<ImportProposal> {
     cancel.check()?;
     let header = &doc.header;
@@ -1657,7 +1864,15 @@ pub fn to_proposal(
         mask_tiles: Vec::new(),
         extras: Vec::new(),
         map: Vec::new(),
-        loss: doc.loss_report(cfg.limits),
+        loss: match pixels {
+            Pixels::Psd => doc.loss_report(cfg.limits),
+            // The header-only document has no merged image or image data of its own to report.
+            Pixels::Raster { .. } => {
+                let mut report = doc.loss_report(cfg.limits);
+                report.entries.retain(|e| !matches!(e.code, "merged_image_oracle_unknown" | "image_data_missing"));
+                report
+            }
+        },
         tile_bytes: 0,
         records: Vec::new(),
         effect_tally: effects::EffectTally::default(),
@@ -1665,7 +1880,21 @@ pub fn to_proposal(
     };
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
-    let outputs: Vec<Value> = b.walk(&tree, &Value::Null)?.into_iter().rev().map(|entry| entry.out).collect();
+    let mut entries = b.walk(&tree, &Value::Null)?;
+    let image_entry = match &pixels {
+        Pixels::Psd if doc.layers().is_empty() => match doc.decode_merged(cfg.limits, cancel)? {
+            Some(image) => {
+                b.note("merged_image".into(), LossKind::Transformed, "merged_image_as_single_layer");
+                let alpha_plane = image.merged_alpha.then_some(colour_channel_ids(image.color_mode).len());
+                b.image_layer("merged_image", "Background", &image, alpha_plane)?
+            }
+            None => None,
+        },
+        Pixels::Psd => None,
+        Pixels::Raster { name, image, alpha_plane, .. } => b.image_layer("raster", name, image, *alpha_plane)?,
+    };
+    entries.extend(image_entry);
+    let outputs: Vec<Value> = entries.into_iter().rev().map(|entry| entry.out).collect();
 
     let icc = doc.resources.icc_profile();
     let pixels_mapped = routing.pixels_mapped;
@@ -1781,7 +2010,9 @@ pub fn to_proposal(
     if doc.resources.find(RESOURCE_ICC_UNTAGGED).is_some_and(|r| r.data.first() == Some(&1)) && icc.is_none() {
         b.note("document/profile".into(), LossKind::Preserved, "profile_untagged_by_author");
     }
-    b.note("document/layer_extras".into(), LossKind::Preserved, "layer_extras_sidecar_only");
+    if matches!(pixels, Pixels::Psd) {
+        b.note("document/layer_extras".into(), LossKind::Preserved, "layer_extras_sidecar_only");
+    }
     if doc.resources.find(RESOURCE_ICC_PROFILE).is_some() && !pixels_mapped && !converter_present {
         b.note("document/profile".into(), LossKind::PreservedOpaque, "icc_profile_not_applied");
     }
@@ -1848,7 +2079,12 @@ pub fn to_proposal(
         provenance: Provenance {
             source_sha256_hex: hash_hex(&source.sha256),
             byte_len: source.byte_len,
-            psd_version: header.version,
+            source_format: match pixels {
+                Pixels::Psd if header.is_psb() => "psb",
+                Pixels::Psd => "psd",
+                Pixels::Raster { format, .. } => format,
+            },
+            psd_version: if matches!(pixels, Pixels::Psd) { header.version } else { 0 },
             width: header.width,
             height: header.height,
             depth: header.depth,
