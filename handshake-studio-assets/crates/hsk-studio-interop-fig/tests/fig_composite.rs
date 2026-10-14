@@ -200,7 +200,7 @@ fn render(m: &Mapped) -> Render {
     let mut plan = lower(&snap, snap.document().revision, BlendSpace::Encoded, &CLimits::default(), &cancel).unwrap();
     let outputs = plan.outputs.len();
     let mut refused: BTreeMap<String, u32> = BTreeMap::new();
-    let inputs = RenderInputs { vectors: Some(&vectors), ..RenderInputs::default() };
+    let inputs = RenderInputs { vectors: Some(&vectors), records: Some(&m.proposal.raster_records), ..RenderInputs::default() };
     // Outputs that cannot be drawn by this harness (text needs prepared fonts; strokes, gradients and
     // image paints are composite refusals) stay out of the document root, counted by reason.
     let probe: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
