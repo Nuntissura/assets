@@ -14,6 +14,7 @@ use super::{
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
 use crate::blend_math::{Exactness, StudioBlendMode};
+use crate::blur_math::{BLUR_EXACTNESS, BlurScope, LayerBlur};
 use crate::coverage_math::{
     BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
 };
@@ -83,6 +84,14 @@ impl Knockout {
 ///   ([`PlanError::TransformCombination`]); reported as [`ExtOperator::Transform`] (Approximate).
 ///   `None` = no transform (and absent from the digest).
 ///
+/// - `blur`: a Gaussian layer blur or backdrop blur ([`crate::blur_math`], lane
+///   SMB-COMPOSITE-NEW-KINDS): radius `0..=MAX_BLUR_RADIUS_PX`, the shared Gaussian (`sigma =
+///   radius / 2`). Refused ([`PlanError::BlurCombination`]) on an adjustment layer, a pass-through
+///   layer, a clipped layer or a clip base, together with effects or a non-identity Blend-If on the
+///   same layer, and (backdrop scope) in a non-isolated group, whose backdrop is not the group's
+///   own result. Reported as [`ExtOperator::Blur`] (Approximate). `None` = no blur (and absent
+///   from the digest).
+///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
 #[non_exhaustive]
@@ -98,6 +107,8 @@ pub struct LayerExtension {
     pub effects: Vec<EffectOp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transform: Option<LayerTransform>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<LayerBlur>,
 }
 impl LayerExtension {
     /// An extension that changes nothing (fill in the fields you need).
@@ -111,6 +122,7 @@ impl LayerExtension {
             knockout: Knockout::None,
             effects: Vec::new(),
             transform: None,
+            blur: None,
         }
     }
     pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
@@ -135,6 +147,10 @@ impl LayerExtension {
     }
     pub fn with_transform(mut self, transform: LayerTransform) -> Self {
         self.transform = Some(transform);
+        self
+    }
+    pub fn with_blur(mut self, blur: LayerBlur) -> Self {
+        self.blur = Some(blur);
         self
     }
 }
@@ -206,6 +222,9 @@ pub enum ExtOperator {
     /// [`crate::transform_math`]); class [`TRANSFORM_EXACTNESS`] (Approximate). A transformed mask
     /// uses the same operator.
     Transform(ResampleFilter),
+    /// A layer blur or backdrop blur ([`LayerExtension::blur`], [`crate::blur_math`]); class
+    /// [`BLUR_EXACTNESS`] (Approximate). Keys `blur_layer`, `blur_backdrop`.
+    Blur(BlurScope),
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -227,6 +246,7 @@ impl ExtOperator {
                 ResampleFilter::Bilinear => "transform_bilinear",
                 ResampleFilter::Bicubic => "transform_bicubic",
             },
+            Self::Blur(scope) => scope.key(),
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -243,6 +263,7 @@ impl ExtOperator {
             Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
             Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
             Self::Transform(_) => TRANSFORM_EXACTNESS,
+            Self::Blur(_) => BLUR_EXACTNESS,
         }
     }
 }
@@ -453,6 +474,27 @@ impl PlanExtensions {
                     return Err(PlanError::TransformLimit { node });
                 }
                 add(ExtOperator::Transform(t.filter));
+            }
+            if let Some(b) = &e.blur {
+                if !b.radius_px.is_finite() {
+                    return Err(PlanError::NonFinite { node });
+                }
+                b.validate().map_err(|_| PlanError::OutOfRange { node })?;
+                let blend_if = e
+                    .blend_if
+                    .iter()
+                    .any(|x| x.source != IDENTITY_RANGE || x.destination != IDENTITY_RANGE);
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || blend_if
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                    || (b.scope == BlurScope::Backdrop && !g.isolated)
+                {
+                    return Err(PlanError::BlurCombination { node });
+                }
+                add(ExtOperator::Blur(b.scope));
             }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {

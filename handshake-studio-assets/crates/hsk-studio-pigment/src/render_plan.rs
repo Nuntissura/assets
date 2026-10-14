@@ -415,6 +415,10 @@ pub enum PlanError {
     /// effects on the same layer, or a transformed (linked) mask with a mask feather, or a
     /// transformed mask without a coverage mask.
     TransformCombination { node: u32 },
+    /// A layer blur ([`LayerExtension::blur`]) combined with a feature it is not defined with:
+    /// an adjustment layer, effects or a non-identity Blend-If on the same layer, a pass-through
+    /// layer, a clipped layer or a clip base, or a backdrop blur in a non-isolated group.
+    BlurCombination { node: u32 },
     /// A [`PlanLimits`] field is above its hard maximum ([`PlanLimits::MAXIMUM`]): limits can only
     /// tighten. Not a defect of the plan: the caller's limits are refused before the plan is read.
     LimitAboveMaximum {
@@ -461,6 +465,7 @@ impl PlanError {
             Self::TransformMatrix { .. } => "plan_transform_matrix",
             Self::TransformLimit { .. } => "plan_transform_limit",
             Self::TransformCombination { .. } => "plan_transform_combination",
+            Self::BlurCombination { .. } => "plan_blur_combination",
         }
     }
 }
