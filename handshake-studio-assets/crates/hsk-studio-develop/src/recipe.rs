@@ -61,10 +61,6 @@ impl Enables {
             (self.enable_effects, "effects"),
             (self.enable_grayscale_mix, "grayscale_mix"),
             (self.enable_lens_corrections, "lens_corrections"),
-            (
-                self.enable_mask_group_based_corrections,
-                "mask_group_based_corrections",
-            ),
             (self.enable_red_eye, "red_eye"),
             (self.enable_retouch, "retouch"),
             (self.enable_transform, "transform"),
@@ -340,6 +336,7 @@ impl DevelopRecipe {
                 self.enables.enable_colour_adjustments,
                 self.enables.enable_tone_curve,
                 self.enables.enable_detail,
+                self.enables.enable_mask_group_based_corrections,
             )?,
         })
     }

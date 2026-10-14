@@ -970,8 +970,13 @@ fn develop_core(
         return Err(DevelopError::StaleSource);
     }
     let prepared = request.recipe.prepare()?;
-    if prepared.adjust.clarity != 0.0 && !whole_frame {
-        return Err(DevelopError::UnsupportedContribution("clarity_whole_frame"));
+    if !whole_frame {
+        if prepared.adjust.clarity != 0.0 {
+            return Err(DevelopError::UnsupportedContribution("clarity_whole_frame"));
+        }
+        if !prepared.adjust.local.is_empty() {
+            return Err(DevelopError::UnsupportedContribution("mask_group_whole_frame"));
+        }
     }
     if request.execution_hint == ExecutionHint::Sse2 {
         return Err(DevelopError::UnsupportedExecution);
@@ -1218,14 +1223,16 @@ pub fn develop_to_image_threads(
         height: receipt.output.height,
         rgb,
     };
-    postprocess(&mut image, recipe, cancel)?;
+    postprocess(&mut image, recipe, threads, cancel)?;
     Ok((image, receipt))
 }
 
-/// Whole-frame stages after the tiles: clarity (when `enable_detail` and the slider is nonzero).
+/// Whole-frame stages after the tiles: clarity (when `enable_detail` and the slider is nonzero),
+/// then the local corrections (when `enable_mask_group_based_corrections`).
 fn postprocess(
     image: &mut DevelopedImage,
     recipe: &DevelopRecipe,
+    threads: Threads,
     cancel: &CancellationToken,
 ) -> Result<(), DevelopError> {
     let prepared = recipe.prepare()?;
@@ -1239,5 +1246,14 @@ fn postprocess(
             prepared.adjust.luma,
         )?;
     }
+    crate::local::apply(
+        &mut image.rgb,
+        image.width,
+        image.height,
+        &prepared.adjust.local,
+        prepared.adjust.luma,
+        threads,
+        cancel,
+    )?;
     Ok(())
 }

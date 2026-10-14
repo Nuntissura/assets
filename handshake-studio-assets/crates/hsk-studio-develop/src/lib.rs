@@ -18,6 +18,7 @@ pub mod color;
 pub mod convert;
 mod cr2;
 pub mod curves;
+pub mod local;
 pub mod dng;
 pub mod pipeline;
 pub mod recipe;
@@ -37,6 +38,9 @@ pub use color::{CameraSolution, DngColor};
 pub use convert::{
     BandLimits, ConversionJob, ConversionStats, IccProfile, PrismContext, PrismConverter,
     ProfileConverter, WIDE_CHUNK_PIXELS,
+};
+pub use local::{
+    Brush, Correction, LinearGradient, LocalStack, Mask, MaskBlend, MaskSource, RadialGradient, parse_dab,
 };
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
@@ -79,6 +83,8 @@ pub enum DevelopError {
     InvalidCurve,
     /// An adjustment parameter outside its documented range or an unusable split/matrix.
     InvalidAdjustment,
+    /// A local-adjustment mask or correction with unusable geometry, counts or size.
+    InvalidMask,
     CurveDomain,
     InvalidDimensions,
     InvalidStride,
@@ -130,6 +136,7 @@ impl DevelopError {
             Self::InvalidProfile => "invalid_profile",
             Self::InvalidCurve => "invalid_curve",
             Self::InvalidAdjustment => "invalid_adjustment",
+            Self::InvalidMask => "invalid_mask",
             Self::CurveDomain => "curve_domain",
             Self::InvalidDimensions => "invalid_dimensions",
             Self::InvalidStride => "invalid_stride",

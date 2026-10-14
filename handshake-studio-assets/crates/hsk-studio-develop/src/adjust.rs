@@ -120,6 +120,9 @@ pub struct Adjustments {
     /// Working-space RGB -> XYZ D50 (colorants), used by the white-balance shift. Default sRGB.
     pub working_to_xyz_d50: Mat3,
     pub luma: [f64; 3],
+    /// Local corrections (gradient and brush masks); applied after the global stages by
+    /// `develop_to_image` when `enable_mask_group_based_corrections` is set. Whole-frame only.
+    pub local: Vec<crate::local::Correction>,
 }
 
 impl Default for Adjustments {
@@ -133,6 +136,7 @@ impl Default for Adjustments {
             parametric: ParametricCurve::default(),
             working_to_xyz_d50: SRGB_TO_XYZ_D50,
             luma: REC709_LUMA,
+            local: Vec::new(),
         }
     }
 }
@@ -507,7 +511,6 @@ impl ColourStage {
 // ---------------------------------------------------------------------------------------------
 
 /// Validated, derived adjustment numbers used per pixel.
-#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreparedAdjust {
     wb: Option<Mat3>,
     tone: Option<Pchip>,
@@ -516,6 +519,7 @@ pub(crate) struct PreparedAdjust {
     /// Clarity gain (slider / 100); 0 when off or its group (`enable_detail`) is disabled.
     pub(crate) clarity: f64,
     pub(crate) luma: [f64; 3],
+    pub(crate) local: crate::local::PreparedLocal,
 }
 
 impl PreparedAdjust {
@@ -525,6 +529,7 @@ impl PreparedAdjust {
         colour_on: bool,
         curve_on: bool,
         detail_on: bool,
+        mask_on: bool,
     ) -> Result<Self, DevelopError> {
         if adjust.version != ADJUST_VERSION {
             return Err(DevelopError::InvalidAdjustment);
@@ -549,6 +554,12 @@ impl PreparedAdjust {
             };
             mixer_active |= *slot != HslBand::default();
         }
+        let local = if mask_on {
+            crate::local::PreparedLocal::prepare(adjust, &adjust.local)?
+        } else {
+            adjust.local.iter().try_for_each(crate::local::Correction::validate)?;
+            crate::local::PreparedLocal::default()
+        };
         let colour = (colour_on && (vibrance != 0.0 || saturation != 0.0 || mixer_active)).then_some(ColourStage {
             vibrance,
             saturation,
@@ -562,6 +573,7 @@ impl PreparedAdjust {
             colour,
             clarity: if detail_on { clarity } else { 0.0 },
             luma,
+            local,
         })
     }
 
@@ -603,12 +615,13 @@ impl PreparedAdjust {
 /// Scalar reference response of every per-pixel family at once (all groups treated as enabled:
 /// white balance shift, basic tone, parametric regions, then vibrance/saturation/mixer) on one
 /// scene-linear working RGB value. This is the function the develop stage C runs per pixel (minus
-/// the point curves between the two halves), exposed for curve previews, tools and tests.
+/// the point curves between the two halves), exposed for curve previews, tools and tests. Local
+/// corrections need a whole frame and are not part of it.
 pub fn apply_pixel(adjust: &Adjustments, rgb: [f64; 3]) -> Result<[f64; 3], DevelopError> {
     if rgb.iter().any(|v| !v.is_finite()) {
         return Err(DevelopError::NonFinite);
     }
-    let prepared = PreparedAdjust::prepare(adjust, true, true, true)?;
+    let prepared = PreparedAdjust::prepare(adjust, true, true, true, false)?;
     prepared.colour(prepared.pre(rgb)?)
 }
 
