@@ -126,6 +126,7 @@ impl Pixels {
                 TilePix::new(tile_id(2, "ta"), 8, 6, 1),
                 TilePix::new(tile_id(3, "tb"), 6, 6, 2),
                 TilePix::new(tile_id(7, "tc"), 6, 4, 3),
+                TilePix::new(tile_id(9, "td"), 6, 6, 4),
             ],
         }
     }
@@ -229,37 +230,126 @@ pub fn expected_scene2(frame: u64, pixels: &Pixels) -> SceneComposition {
     }
 }
 
+pub fn composition3_id() -> String {
+    identity("SCOM", 3)
+}
+pub fn composition4_id() -> String {
+    identity("SCOM", 4)
+}
+/// Frames of composition 3 the renderer tests play: before the nested composition starts (0),
+/// fractional nested move (6), integer nested moves (12, 22), after the nested duration (30).
+pub const FRAMES3: [u64; 5] = [0, 6, 12, 22, 30];
+
+/// The nested composition 4 at its own frame `inner` (12x10 px, its red background is NOT drawn
+/// when nested): layer 9, tile `td` 6x6, anchor (3, 3), position keys inner frame 0 -> 10:
+/// (3, 3) -> (9, 7).
+pub fn inner_scene4(inner: u64, pixels: &Pixels) -> SceneComposition {
+    let t = (inner.min(10) as f64) / 10.0;
+    let (px, py) = (lerp(3.0, 9.0, t), lerp(3.0, 7.0, t));
+    let td = pixels.get(&tile_id(9, "td")).unwrap();
+    SceneComposition {
+        composition_id: composition4_id(),
+        width: 12,
+        height: 10,
+        background: None,
+        filter: ResampleFilter::Bilinear,
+        layers: vec![SceneLayer {
+            layer_id: identity("SLYR", 9),
+            content: SceneContent::Tiles(vec![td.scene_tile(0, 0)]),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2::from_parts(3.0, 3.0, 1.0, 1.0, 0.0, px - 3.0, py - 3.0),
+        }],
+    }
+}
+
+/// Composition 3 (slice 3: precomposition), 32x24 px, background (0.2, 0.2, 0.2, 1): layer 8
+/// shows composition 4 with `start_time` = frame 2 and `stretch` 2 (inner frame =
+/// (outer - 2) / 2), anchor = nested centre (6, 5), position (16, 12), rotation 15 deg. Composition
+/// 4 lasts 12 frames, so outer frames 0 (inner -1) and 30 (inner 14) show nothing.
+pub fn expected_scene3(frame: u64, pixels: &Pixels) -> SceneComposition {
+    let inner = if frame >= 2 && (frame - 2) / 2 < 12 {
+        inner_scene4((frame - 2) / 2, pixels)
+    } else {
+        SceneComposition { layers: Vec::new(), ..inner_scene4(0, pixels) }
+    };
+    SceneComposition {
+        composition_id: composition3_id(),
+        width: W,
+        height: H,
+        background: Some([0.2, 0.2, 0.2, 1.0]),
+        filter: ResampleFilter::Bilinear,
+        layers: vec![SceneLayer {
+            layer_id: identity("SLYR", 8),
+            content: SceneContent::Precomp(Box::new(inner)),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2::from_parts(6.0, 5.0, 1.0, 1.0, 15.0, 10.0, 7.0),
+        }],
+    }
+}
+
 /// Every rendered case: `(label, scene)` for the renderer tests.
 pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     let mut out: Vec<(String, SceneComposition)> =
         FRAMES.iter().map(|f| (format!("comp1/frame{f}"), expected_scene(*f, pixels))).collect();
     out.extend(FRAMES2.iter().map(|f| (format!("comp2/frame{f}"), expected_scene2(*f, pixels))));
+    out.extend(FRAMES3.iter().map(|f| (format!("comp3/frame{f}"), expected_scene3(*f, pixels))));
     out
 }
 
-/// Straight RGBA of every composition pixel, row-major (module docs).
+/// Where an oracle layer reads its texels.
+enum Texels<'a> {
+    Tile(&'a TilePix),
+    /// A nested oracle frame, row-major, `width` texels per row.
+    Frame(Vec<[f32; 4]>, u32),
+}
+impl Texels<'_> {
+    fn at(&self, i: u32, j: u32) -> [f32; 4] {
+        match self {
+            Self::Tile(t) => t.at(i, j),
+            Self::Frame(f, w) => f[(j * w + i) as usize],
+        }
+    }
+}
+
+/// Straight RGBA of every composition pixel, row-major (module docs). A precomposition is the
+/// oracle frame of the nested scene, sampled like a tile over the nested rect.
 pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
     let mut prepared = Vec::new();
     for l in &scene.layers {
-        let SceneContent::Tiles(tiles) = &l.content else { continue };
-        for t in tiles {
-            let tile = pixels.get(&t.tile_id).expect("fixture tile");
-            let p = PreparedTransform::new(&LayerTransform::new(l.matrix, scene.filter), t.placement)
+        if l.opacity == 0.0 {
+            continue;
+        }
+        let mut sources = Vec::new();
+        match &l.content {
+            SceneContent::Tiles(tiles) => {
+                for t in tiles {
+                    sources.push((Texels::Tile(pixels.get(&t.tile_id).expect("fixture tile")), t.placement));
+                }
+            }
+            SceneContent::Precomp(nested) => {
+                sources.push((Texels::Frame(oracle(nested, pixels), nested.width), nested.rect()));
+            }
+            _ => {}
+        }
+        for (texels, rect) in sources {
+            let p = PreparedTransform::new(&LayerTransform::new(l.matrix, scene.filter), rect)
                 .expect("invertible");
-            prepared.push((l, tile, p));
+            prepared.push((l, texels, p));
         }
     }
-    let mut out = Vec::with_capacity((W * H) as usize);
+    let mut out = Vec::with_capacity((scene.width * scene.height) as usize);
     for y in 0..i64::from(scene.height) {
         for x in 0..i64::from(scene.width) {
             let mut acc = Rgba::TRANSPARENT;
             if let Some(b) = scene.background {
                 acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, PixelSite::default()).unwrap();
             }
-            for (l, tile, p) in &prepared {
-                let s = p
-                    .sample_rgba(x, y, |i, j| Ok::<_, ()>(tile.at(i, j)))
-                    .unwrap();
+            for (l, texels, p) in &prepared {
+                let s = p.sample_rgba(x, y, |i, j| Ok::<_, ()>(texels.at(i, j))).unwrap();
                 let src = Rgba::new([s[0], s[1], s[2]], s[3]);
                 let opacity = (l.opacity * l.fill_opacity) as f32;
                 acc = composite_over(l.mode, acc, src, opacity, PixelSite { x, y, seed: 0 }).unwrap();

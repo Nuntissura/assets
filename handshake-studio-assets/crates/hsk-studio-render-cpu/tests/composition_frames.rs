@@ -20,7 +20,7 @@ mod scenes;
 const CPU_TOLERANCE: f32 = 1e-6;
 /// Frame digests (colour plane then alpha plane, SHA-256) of every `scenes::cases` entry,
 /// recorded when the case was added; any change to a frame's pixels shows here.
-const GOLDEN: [(&str, &str); 7] = [
+const GOLDEN: [(&str, &str); 12] = [
     ("comp1/frame0", "80952af10847e9206fc169b6d71ba416136135d5a6c92fd6df58ef22a695f1c3"),
     ("comp1/frame5", "17c0727e2320ba849bd7b70c829b62ce2cf7ffa080797d9d78ab32e1da2b41e6"),
     ("comp1/frame10", "b88a69fc89e656aa9c1b4f2732cf17ed35ff7d2586822cf08288e7c4f083d5c5"),
@@ -28,6 +28,12 @@ const GOLDEN: [(&str, &str); 7] = [
     ("comp2/frame0", "10ce5462a698d61fe7b306244b81ac6d7ad2c7f762f1afb27d0e0f43fe700abf"),
     ("comp2/frame5", "4209af188370aab1afda1cfdd2201f9e9d93cfdb76dea253c53bc2d7a1ddb0ea"),
     ("comp2/frame10", "b1bfe92b4d96a8371a87c97efb9493c4f5129e9041760fb8f438099eefdca548"),
+    ("comp3/frame0", "e7db49c40019dbf54679d502694c8d2cda0131906cab33c2945c348578304eab"),
+    ("comp3/frame6", "df069a9dfb244bc42238884578f8e0a21d579beae8e6cd467c47dc21377b6092"),
+    ("comp3/frame12", "476faede688b6943c9a3a6055651a866a26f350bb484ff117fbdd2e788d2194e"),
+    ("comp3/frame22", "622146a4e65879880e89b68ce2eb73c16034d4b48ed6a4505684a64f0c492513"),
+    // The nested composition is outside its duration: only the background (same as frame 0).
+    ("comp3/frame30", "e7db49c40019dbf54679d502694c8d2cda0131906cab33c2945c348578304eab"),
 ];
 
 fn render(renderer: &Renderer, scene: &SceneComposition, pixels: &scenes::Pixels) -> RenderedScene {

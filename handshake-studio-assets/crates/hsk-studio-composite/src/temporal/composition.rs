@@ -21,6 +21,14 @@
 //!   `bilinear | bicubic` and no default; Folio stores no `resample_filter`, so this is the
 //!   adapter's stated reading).
 //!
+//! - Precompositions (STU-MOT-005 `composition`): a layer whose record names a nested composition
+//!   (its Folio layer is a content-less `group`) shows that composition evaluated at the layer's
+//!   source tick ([`CompositionTemporalSource::source_tick`]: `start_time`, `stretch`, reverse);
+//!   outside `[0, duration)` of the nested composition it shows nothing; the nested composition's
+//!   background is not drawn (transparent, the After Effects nesting behaviour as Studio reads it,
+//!   UNVERIFIED); nesting is bounded by [`MAX_PRECOMP_DEPTH`]. `collapse_transformations` is
+//!   refused (`composition_precomp_collapse_transformations`).
+//!
 //! [`CompositionTemporalSource::scene_at`] returns the folio-free [`SceneComposition`] that
 //! `composition::lower_scene` / `render_scene` lower and render. The type also implements
 //! [`TemporalSource`] for `lower_frame` over a document whose graph mirrors the composition stack.
@@ -29,7 +37,9 @@
 //! (`DanglingInput`), a stale revision, layer content other than raster tiles or a null layer
 //! (`composition_layer_content`; a null layer is a Folio `group` layer with a `group` payload, since Folio binds no `null` kind), clipped or masked layers (`composition_layer_clipped`,
 //! `composition_layer_mask`), a pass-through blend on a content layer, sampled opacity outside
-//! `0..=100` (`InvalidState`), precompositions (`composition_precomp`) and track mattes
+//! `0..=100` (`InvalidState`), a precomposition layer whose Folio payload is not a content-less
+//! group (`composition_precomp_payload`), a precomposition on the document-graph path
+//! (`composition_precomp_on_document_graph`) and track mattes
 //! (`composition_track_matte`) until their slices land. Not modelled: 3D layers, motion blur,
 //! expressions, frame blending, time remapping (Folio stores none of them).
 #![deny(clippy::arithmetic_side_effects)]
@@ -59,7 +69,12 @@ pub const COMPOSITION_LAYER_CONTENT: &str = "composition_layer_content";
 pub const COMPOSITION_LAYER_CLIPPED: &str = "composition_layer_clipped";
 pub const COMPOSITION_LAYER_MASK: &str = "composition_layer_mask";
 pub const COMPOSITION_LAYER_PASS_THROUGH: &str = "composition_layer_pass_through";
-pub const COMPOSITION_PRECOMP: &str = "composition_precomp";
+pub const COMPOSITION_PRECOMP_COLLAPSE: &str = "composition_precomp_collapse_transformations";
+pub const COMPOSITION_PRECOMP_PAYLOAD: &str = "composition_precomp_payload";
+pub const COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH: &str = "composition_precomp_on_document_graph";
+/// Precomposition nesting bound of [`CompositionTemporalSource::scene_at`] (Folio refuses cycles;
+/// the record set holds at most 64 compositions).
+pub const MAX_PRECOMP_DEPTH: usize = 16;
 pub const COMPOSITION_TRACK_MATTE: &str = "composition_track_matte";
 pub const COMPOSITION_BACKGROUND_PROFILE: &str = "composition_background_profile";
 pub const COMPOSITION_BACKGROUND_LINEAR_LIGHT: &str = "composition_background_linear_light";
@@ -92,6 +107,20 @@ struct Streams {
 enum Content {
     None,
     Tiles { tiles: Vec<SceneTile>, bounds: Rect },
+    /// A nested composition; `bounds` = `(0, 0, width, height)` of it.
+    Precomp { composition_id: String, bounds: Rect },
+}
+
+impl Content {
+    fn bounds(&self) -> Option<Rect> {
+        match self {
+            Self::None => None,
+            Self::Tiles { bounds, .. } | Self::Precomp { bounds, .. } => Some(*bounds),
+        }
+    }
+    fn origin(&self) -> [f64; 2] {
+        self.bounds().map_or([0.0, 0.0], |b| [b.x as f64, b.y as f64])
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +150,7 @@ struct Comp {
     width: u32,
     height: u32,
     ticks_per_frame: u64,
+    duration: u64,
     background: Option<[f32; 4]>,
     /// Topmost first, as stored (STU-MOT-009).
     layers: Vec<CompLayer>,
@@ -129,7 +159,9 @@ struct Comp {
 /// A stored composition ready to be evaluated at any tick (module docs).
 #[derive(Clone, Debug)]
 pub struct CompositionTemporalSource {
-    root: Comp,
+    root: String,
+    /// The root and every composition it reaches through precomposition layers.
+    comps: BTreeMap<String, Comp>,
     filter: ResampleFilter,
     tiles: BTreeMap<String, TileRef>,
 }
@@ -255,14 +287,28 @@ impl CompositionTemporalSource {
         }
         validate_composition_records(input.records, doc, input.budget, cancel, input.resolver)
             .map_err(|e| TemporalError::Document(format!("{:?}:{}", e.code, e.target)))?;
-        let comp = input
-            .records
-            .composition(input.composition_id)
-            .ok_or_else(|| CompositeError::DanglingInput(input.composition_id.to_owned()))?;
         let mut tiles = BTreeMap::new();
-        let root = Self::read(comp, input, &mut tiles, cancel)?;
+        let mut comps = BTreeMap::new();
+        let mut pending = vec![input.composition_id.to_owned()];
+        while let Some(id) = pending.pop() {
+            if comps.contains_key(&id) {
+                continue;
+            }
+            let comp = input
+                .records
+                .composition(&id)
+                .ok_or_else(|| CompositeError::DanglingInput(id.clone()))?;
+            let read = Self::read(comp, input, &mut tiles, cancel)?;
+            for l in &read.layers {
+                if let Content::Precomp { composition_id, .. } = &l.content {
+                    pending.push(composition_id.clone());
+                }
+            }
+            comps.insert(id, read);
+        }
         Ok(Self {
-            root,
+            root: input.composition_id.to_owned(),
+            comps,
             filter: DEFAULT_COMPOSITION_FILTER,
             tiles,
         })
@@ -293,16 +339,32 @@ impl CompositionTemporalSource {
                 .iter()
                 .find(|d| d.layer_id == l.layer_id)
                 .ok_or_else(|| CompositeError::DanglingInput(l.layer_id.clone()))?;
-            if l.precomp.is_some() {
-                return Err(unsupported(id, COMPOSITION_PRECOMP));
-            }
             if l.track_matte.is_some() {
                 return Err(unsupported(id, COMPOSITION_TRACK_MATTE));
             }
-            let content = match &dl.payload {
-                Payload::Group => Content::None,
-                Payload::Raster { tiles } if tiles.is_empty() => Content::None,
-                Payload::Raster { tiles } => {
+            let content = match (&l.precomp, &dl.payload) {
+                (Some(p), _) if p.collapse_transformations => {
+                    return Err(unsupported(id, COMPOSITION_PRECOMP_COLLAPSE));
+                }
+                (Some(p), Payload::Group) => {
+                    let nested = input
+                        .records
+                        .composition(&p.composition_id)
+                        .ok_or_else(|| CompositeError::DanglingInput(p.composition_id.clone()))?;
+                    Content::Precomp {
+                        composition_id: p.composition_id.clone(),
+                        bounds: Rect {
+                            x: 0,
+                            y: 0,
+                            width: nested.width,
+                            height: nested.height,
+                        },
+                    }
+                }
+                (Some(_), _) => return Err(unsupported(id, COMPOSITION_PRECOMP_PAYLOAD)),
+                (None, Payload::Group) => Content::None,
+                (None, Payload::Raster { tiles }) if tiles.is_empty() => Content::None,
+                (None, Payload::Raster { tiles }) => {
                     let rects = tile_rects(tiles)?;
                     let mut scene_tiles = Vec::with_capacity(tiles.len());
                     for (t, rect) in tiles.iter().zip(&rects) {
@@ -335,7 +397,14 @@ impl CompositionTemporalSource {
             if a.mask.as_ref().is_some_and(|m| m.enabled) {
                 return Err(unsupported(id, COMPOSITION_LAYER_MASK));
             }
-            let mode = StudioBlendMode::try_from(a.blend_mode).map_err(CompositeError::from)?;
+            // A precomposition layer is a Folio `group`, whose identity appearance is pass-through;
+            // its rendered surface composites like any layer, so an UNAUTHORED appearance means
+            // normal. An authored pass-through stays refused below.
+            let mode = if dl.appearance.is_none() && matches!(content, Content::Precomp { .. }) {
+                StudioBlendMode::Normal
+            } else {
+                StudioBlendMode::try_from(a.blend_mode).map_err(CompositeError::from)?
+            };
             if mode == StudioBlendMode::PassThrough && !matches!(content, Content::None) {
                 return Err(unsupported(id, COMPOSITION_LAYER_PASS_THROUGH));
             }
@@ -365,9 +434,16 @@ impl CompositionTemporalSource {
             width: comp.width,
             height: comp.height,
             ticks_per_frame,
+            duration: comp.duration,
             background,
             layers,
         })
+    }
+
+    fn root(&self) -> Result<&Comp, TemporalError> {
+        self.comps
+            .get(&self.root)
+            .ok_or_else(|| CompositeError::DanglingInput(self.root.clone()).into())
     }
 
     /// Declare another resampling filter for the composition's transformed layers.
@@ -383,15 +459,16 @@ impl CompositionTemporalSource {
     /// The composition tick of frame `frame` (`frame * ticks_per_frame`, checked).
     pub fn frame_tick(&self, frame: u64) -> Result<i64, TemporalError> {
         frame
-            .checked_mul(self.root.ticks_per_frame)
+            .checked_mul(self.root()?.ticks_per_frame)
             .and_then(|t| i64::try_from(t).ok())
             .ok_or_else(|| CompositeError::Overflow.into())
     }
 
     /// The layer windows of the composition, for `FrameRequest::timings` (`lower_frame`).
     pub fn timings(&self) -> Vec<LayerTiming> {
-        self.root
-            .layers
+        self.comps
+            .get(&self.root)
+            .map_or(&[][..], |c| &c.layers[..])
             .iter()
             .map(|l| LayerTiming {
                 layer_id: l.layer_id.clone(),
@@ -407,8 +484,24 @@ impl CompositionTemporalSource {
         self.tiles.get(tile_id)
     }
 
+    /// A layer of the root composition.
     fn find(&self, layer_id: &str) -> Option<&CompLayer> {
-        self.root.layers.iter().find(|l| l.layer_id == layer_id)
+        self.comps
+            .get(&self.root)?
+            .layers
+            .iter()
+            .find(|l| l.layer_id == layer_id)
+    }
+
+    /// A root-composition layer for the document-graph path, which cannot render a
+    /// precomposition (the graph has no surface for it): refused, never drawn as an empty group.
+    fn graph_layer(&self, layer_id: &str) -> Result<Option<&CompLayer>, TemporalError> {
+        match self.find(layer_id) {
+            Some(l) if matches!(l.content, Content::Precomp { .. }) => {
+                Err(unsupported(layer_id, COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH))
+            }
+            other => Ok(other),
+        }
     }
 
     /// Sampled opacity stream as a fraction (absent = 1).
@@ -432,13 +525,10 @@ impl CompositionTemporalSource {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Parts, TemporalError> {
-        let (mut anchor, origin) = match &l.content {
-            Content::Tiles { bounds, .. } => (
-                [f64::from(bounds.width) / 2.0, f64::from(bounds.height) / 2.0],
-                [bounds.x as f64, bounds.y as f64],
-            ),
-            Content::None => ([0.0, 0.0], [0.0, 0.0]),
-        };
+        let origin = l.content.origin();
+        let mut anchor = l.content.bounds().map_or([0.0, 0.0], |b| {
+            [f64::from(b.width) / 2.0, f64::from(b.height) / 2.0]
+        });
         if let Some(v) = sample(&l.layer_id, l.streams.anchor.as_ref(), 2, tick, cancel)? {
             anchor = [v[0], v[1]];
         }
@@ -494,10 +584,7 @@ impl CompositionTemporalSource {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Affine2, TemporalError> {
-        let origin = match &l.content {
-            Content::Tiles { bounds, .. } => [bounds.x as f64, bounds.y as f64],
-            Content::None => [0.0, 0.0],
-        };
+        let origin = l.content.origin();
         let mut m = Affine2::translate(-origin[0], -origin[1]).then(Self::local(l, tick, cancel)?);
         let mut next = l.parent.as_deref();
         let mut steps = 0usize;
@@ -532,7 +619,16 @@ impl CompositionTemporalSource {
 
     /// The composition evaluated at composition tick `tick` (module docs).
     pub fn scene_at(&self, tick: i64, cancel: &CancellationToken) -> Result<SceneComposition, TemporalError> {
-        let comp = &self.root;
+        self.scene_of(self.root()?, tick, 0, cancel)
+    }
+
+    fn scene_of(
+        &self,
+        comp: &Comp,
+        tick: i64,
+        depth: usize,
+        cancel: &CancellationToken,
+    ) -> Result<SceneComposition, TemporalError> {
         let mut layers = Vec::new();
         for l in comp.layers.iter().rev() {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
@@ -542,12 +638,39 @@ impl CompositionTemporalSource {
             }
             let opacity_scale = Self::opacity_scale(l, tick, cancel)?;
             let opacity = l.opacity * opacity_scale;
+            let content = match &l.content {
+                Content::None => SceneContent::None,
+                Content::Tiles { tiles, .. } => SceneContent::Tiles(tiles.clone()),
+                Content::Precomp { composition_id, .. } => {
+                    let nested = self
+                        .comps
+                        .get(composition_id)
+                        .ok_or_else(|| CompositeError::DanglingInput(composition_id.clone()))?;
+                    if depth >= MAX_PRECOMP_DEPTH {
+                        return Err(CompositeError::BudgetExceeded.into());
+                    }
+                    let source = map_source(&l.timing, tick).ok_or(CompositeError::Overflow)?;
+                    let inside = u64::try_from(source).is_ok_and(|t| t < nested.duration);
+                    let mut scene = if inside {
+                        let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+                        self.scene_of(nested, source, depth, cancel)?
+                    } else {
+                        SceneComposition {
+                            composition_id: nested.composition_id.clone(),
+                            width: nested.width,
+                            height: nested.height,
+                            background: None,
+                            filter: self.filter,
+                            layers: Vec::new(),
+                        }
+                    };
+                    scene.background = None;
+                    SceneContent::Precomp(Box::new(scene))
+                }
+            };
             layers.push(SceneLayer {
                 layer_id: l.layer_id.clone(),
-                content: match &l.content {
-                    Content::None => SceneContent::None,
-                    Content::Tiles { tiles, .. } => SceneContent::Tiles(tiles.clone()),
-                },
+                content,
                 mode: l.mode,
                 opacity,
                 fill_opacity: l.fill_opacity,
@@ -575,7 +698,7 @@ impl TemporalSource for CompositionTemporalSource {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Option<LayerFrameState>, TemporalError> {
-        let Some(l) = self.find(layer_id) else {
+        let Some(l) = self.graph_layer(layer_id)? else {
             return Ok(None);
         };
         let Parts {
@@ -584,10 +707,7 @@ impl TemporalSource for CompositionTemporalSource {
             scale,
             rotation: rotation_deg,
         } = Self::transform_parts(l, tick, cancel)?;
-        let origin = match &l.content {
-            Content::Tiles { bounds, .. } => [bounds.x as f64, bounds.y as f64],
-            Content::None => [0.0, 0.0],
-        };
+        let origin = l.content.origin();
         let translate_px = [
             position[0] - (origin[0] + anchor[0]),
             position[1] - (origin[1] + anchor[1]),
@@ -613,10 +733,10 @@ impl TemporalSource for CompositionTemporalSource {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Option<Affine2>, TemporalError> {
-        let Some(l) = self.find(layer_id) else {
+        let Some(l) = self.graph_layer(layer_id)? else {
             return Ok(None);
         };
-        Self::matrix(&self.root, l, tick, cancel).map(Some)
+        Self::matrix(self.root()?, l, tick, cancel).map(Some)
     }
 
     fn layer_anchor(
@@ -629,10 +749,7 @@ impl TemporalSource for CompositionTemporalSource {
             return Ok(None);
         };
         let anchor = Self::transform_parts(l, tick, cancel)?.anchor;
-        let origin = match &l.content {
-            Content::Tiles { bounds, .. } => [bounds.x as f64, bounds.y as f64],
-            Content::None => [0.0, 0.0],
-        };
+        let origin = l.content.origin();
         Ok(Some([origin[0] + anchor[0], origin[1] + anchor[1]]))
     }
 }

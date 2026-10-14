@@ -17,10 +17,19 @@
 //! nothing. [`render_scene`] lowers and executes the plan through a caller-chosen
 //! `RenderBackend` into one full-frame surface.
 //!
+//! Precompositions ([`SceneContent::Precomp`], STU-MOT-005 `composition`): the nested scene (already
+//! evaluated at the layer's mapped source tick) is RENDERED first by the same backend into a
+//! surface of the nested composition's size (content outside the nested rect is clipped, and the
+//! nested composition has no background unless its scene carries one), and the surface is then
+//! placed like a one-tile raster layer with the layer's matrix, opacity and blend mode
+//! (STU-CMP-010: source resolution first, transform after). Recursion is bounded by
+//! [`SceneLimits::max_depth`] and every rendered surface counts against
+//! [`SceneLimits::max_surfaces`] and [`SceneLimits::max_surface_bytes`] BEFORE it is allocated.
+//!
 //! Everything a scene carries arrives from a caller and is bounded before use: layer count
-//! ([`SceneLimits::max_layers`]), surface bytes ([`SceneLimits::max_surface_bytes`], charged
-//! before allocation), non-finite or out-of-range opacities (`InvalidState`), cancellation between
-//! layers. Integer arithmetic is checked (workflow V4-01).
+//! ([`SceneLimits::max_layers`]), nesting depth, surface count and bytes, non-finite or
+//! out-of-range opacities (`InvalidState`), cancellation between layers. Integer arithmetic is
+//! checked (workflow V4-01).
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::CompositeError;
@@ -28,9 +37,9 @@ use crate::temporal::{TRANSFORM_MULTI_TILE_LAYER, TemporalError};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{ExactnessLedger, StudioBlendMode};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, ColourTag, ExecuteRequest, Group, Layer, LayerExtension,
-    OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend,
-    RenderPlan, RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
+    AlphaConvention, ColourTag, ExecuteRequest, Group, Layer, LayerExtension, OutputTarget,
+    PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
+    RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter};
 use hsk_studio_pigment::{Mask, Rect};
@@ -40,6 +49,10 @@ use std::collections::BTreeMap;
 pub const DEFAULT_MAX_SCENE_LAYERS: usize = 4096;
 /// Default bound on the bytes of every surface one render allocates (output frame included).
 pub const DEFAULT_MAX_SURFACE_BYTES: u64 = 1 << 32;
+/// Default bound on precomposition nesting below the rendered composition.
+pub const DEFAULT_MAX_SCENE_DEPTH: usize = 16;
+/// Default bound on the surfaces one render allocates (output frame included).
+pub const DEFAULT_MAX_SURFACES: usize = 256;
 /// Bytes per pixel of a rendered surface: `rgb_f32le` colour (12) + `f32le` alpha (4).
 pub const SURFACE_BYTES_PER_PIXEL: u64 = 16;
 
@@ -63,6 +76,9 @@ pub enum SceneContent {
     None,
     /// Raster tiles in the content's plan coordinates.
     Tiles(Vec<SceneTile>),
+    /// A nested composition evaluated at the layer's source tick; its content rect is
+    /// `(0, 0, width, height)` of the nested composition.
+    Precomp(Box<SceneComposition>),
 }
 
 /// One evaluated layer of a frame.
@@ -115,6 +131,8 @@ pub trait ScenePixels: Sync {
 pub struct SceneLimits {
     pub max_layers: usize,
     pub max_surface_bytes: u64,
+    pub max_depth: usize,
+    pub max_surfaces: usize,
 }
 
 impl Default for SceneLimits {
@@ -122,6 +140,8 @@ impl Default for SceneLimits {
         Self {
             max_layers: DEFAULT_MAX_SCENE_LAYERS,
             max_surface_bytes: DEFAULT_MAX_SURFACE_BYTES,
+            max_depth: DEFAULT_MAX_SCENE_DEPTH,
+            max_surfaces: DEFAULT_MAX_SURFACES,
         }
     }
 }
@@ -138,13 +158,47 @@ pub struct SceneContext<'a> {
     pub limits: SceneLimits,
 }
 
-/// The owned source table of a lowered scene: plan keys -> caller tiles.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A surface composite rendered and owns (a precomposition), straight alpha.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Surface {
+    pub width: u32,
+    pub height: u32,
+    pub colour: Vec<u8>,
+    pub alpha: Vec<u8>,
+    pub colour_sha256: [u8; 32],
+    pub alpha_sha256: [u8; 32],
+}
+
+impl Surface {
+    fn from_rendered(r: RenderedScene) -> Self {
+        Self {
+            colour_sha256: hsk_studio_prism::profile_hash(&r.colour),
+            alpha_sha256: hsk_studio_prism::profile_hash(&r.alpha),
+            width: r.width,
+            height: r.height,
+            colour: r.colour,
+            alpha: r.alpha,
+        }
+    }
+}
+
+/// The owned source table of a lowered scene: plan keys -> caller tiles or owned surfaces.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneSources {
+    pub space: ColourTag,
     pub tiles: BTreeMap<SourceKey, String>,
+    pub surfaces: BTreeMap<SourceKey, Surface>,
 }
 
 impl SceneSources {
+    fn new(space: ColourTag) -> Self {
+        Self {
+            space,
+            tiles: BTreeMap::new(),
+            surfaces: BTreeMap::new(),
+        }
+    }
+
     /// A `PlanSources` over these keys and the caller's pixels.
     pub fn bind<'a>(&'a self, pixels: &'a dyn ScenePixels) -> BoundSources<'a> {
         BoundSources {
@@ -162,6 +216,21 @@ pub struct BoundSources<'a> {
 
 impl PlanSources for BoundSources<'_> {
     fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        if let Some(s) = self.table.surfaces.get(&key) {
+            return Some(TilePlanes {
+                width: s.width,
+                height: s.height,
+                colour: &s.colour,
+                colour_stride_bytes: u64::from(s.width).checked_mul(12)?,
+                alpha: &s.alpha,
+                alpha_stride_bytes: u64::from(s.width).checked_mul(4)?,
+                colour_sha256: s.colour_sha256,
+                alpha_sha256: s.alpha_sha256,
+                format: SampleFormat::RgbF32Le,
+                alpha_convention: AlphaConvention::Straight,
+                space: self.table.space,
+            });
+        }
         self.pixels.tile(self.table.tiles.get(&key)?)
     }
     fn mask(&self, _key: SourceKey) -> Option<Mask<'_>> {
@@ -176,11 +245,14 @@ pub struct SceneLowering {
     /// One `LayerExtension::transform` per resampled layer (empty: the plain plan).
     pub extensions: PlanExtensions,
     pub sources: SceneSources,
+    /// The plan's operators plus those of every rendered precomposition.
     pub exactness: ExactnessLedger,
     /// Layers that render, bottom-first.
     pub rendered: Vec<String>,
     /// Layers that render nothing in this frame (opacity 0, singular matrix, no content).
     pub skipped: Vec<String>,
+    /// Surfaces rendered while lowering (precompositions, recursively).
+    pub surfaces_rendered: usize,
 }
 
 /// One rendered frame: the composition rect, straight alpha, tightly packed planes.
@@ -199,7 +271,15 @@ pub struct RenderedScene {
 impl RenderedScene {
     /// Straight RGBA of pixel `(x, y)` of the frame.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 4]> {
-        let i = usize::try_from(u64::from(y).checked_mul(u64::from(self.width))?.checked_add(u64::from(x))?).ok()?;
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let i = usize::try_from(
+            u64::from(y)
+                .checked_mul(u64::from(self.width))?
+                .checked_add(u64::from(x))?,
+        )
+        .ok()?;
         let f = |bytes: &[u8], at: usize| -> Option<f32> {
             let s = bytes.get(at..at.checked_add(4)?)?;
             Some(f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
@@ -280,7 +360,10 @@ impl Builder {
     }
     fn key(&mut self) -> Result<SourceKey, TemporalError> {
         let k = SourceKey(self.next_key);
-        self.next_key = self.next_key.checked_add(1).ok_or(CompositeError::Overflow)?;
+        self.next_key = self
+            .next_key
+            .checked_add(1)
+            .ok_or(CompositeError::Overflow)?;
         Ok(k)
     }
 }
@@ -300,14 +383,49 @@ fn surface_bytes(width: u32, height: u32) -> Result<u64, TemporalError> {
         .ok_or_else(|| CompositeError::Overflow.into())
 }
 
+/// Running charges of one render (every surface, nested ones included).
+#[derive(Default)]
+struct Charges {
+    bytes: u64,
+    surfaces: usize,
+}
+
+impl Charges {
+    /// Charge one surface before it is allocated.
+    fn surface(&mut self, ctx: &SceneContext<'_>, width: u32, height: u32) -> Result<(), TemporalError> {
+        let bytes = self
+            .bytes
+            .checked_add(surface_bytes(width, height)?)
+            .ok_or(CompositeError::Overflow)?;
+        let surfaces = self.surfaces.checked_add(1).ok_or(CompositeError::Overflow)?;
+        if bytes > ctx.limits.max_surface_bytes || surfaces > ctx.limits.max_surfaces {
+            return Err(CompositeError::BudgetExceeded.into());
+        }
+        self.bytes = bytes;
+        self.surfaces = surfaces;
+        Ok(())
+    }
+}
+
 /// Lower one scene (module docs). Refuses before any work: more layers than
 /// `limits.max_layers` (`BudgetExceeded`), an empty composition rect. Per layer: non-finite or
 /// out-of-range opacities and non-finite matrices (`InvalidState`), a resample of a multi-tile
-/// layer (`transform_multi_tile_layer`); pigment validates the plan and the envelope.
+/// layer (`transform_multi_tile_layer`); pigment validates the plan and the envelope. A scene with
+/// precompositions renders them through `ctx.backend` while lowering.
 pub fn lower_scene(
     scene: &SceneComposition,
     ctx: &SceneContext<'_>,
     cancel: &CancellationToken,
+) -> Result<SceneLowering, TemporalError> {
+    lower_inner(scene, ctx, cancel, 0, &mut Charges::default())
+}
+
+fn lower_inner(
+    scene: &SceneComposition,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
 ) -> Result<SceneLowering, TemporalError> {
     cancel.check().map_err(|_| canceled())?;
     if scene.layers.len() > ctx.limits.max_layers {
@@ -318,14 +436,16 @@ pub fn lower_scene(
     }
     let mut out = Builder {
         nodes: Vec::new(),
-        sources: SceneSources::default(),
+        sources: SceneSources::new(ctx.space),
         next_key: 0,
     };
+    let mut exactness = ExactnessLedger::default();
     let mut root_layers: Vec<Layer> = Vec::new();
     // (root layer index, transform) per resampled layer.
     let mut transforms: Vec<(usize, LayerTransform)> = Vec::new();
     let mut rendered = Vec::new();
     let mut skipped = Vec::new();
+    let surfaces_before = charges.surfaces;
     if let Some(rgba) = scene.background {
         if !rgba.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
             return Err(invalid(&scene.composition_id, "background"));
@@ -351,34 +471,64 @@ pub fn lower_scene(
             }
         }
         let placement = classify(id, &layer.matrix)?;
-        let tiles = match &layer.content {
-            SceneContent::Tiles(t) if !t.is_empty() => t,
-            _ => {
-                skipped.push(id.to_owned());
-                continue;
-            }
+        let has_content = match &layer.content {
+            SceneContent::Tiles(t) => !t.is_empty(),
+            SceneContent::Precomp(_) => true,
+            SceneContent::None => false,
         };
-        if layer.opacity == 0.0 || matches!(placement, Placement::Collapsed) {
+        if !has_content || layer.opacity == 0.0 || matches!(placement, Placement::Collapsed) {
             skipped.push(id.to_owned());
             continue;
+        }
+        // (plan source key, tile input without key) of the layer's content.
+        let mut inputs: Vec<(SourceKey, Rect, SceneTile)> = Vec::new();
+        match &layer.content {
+            SceneContent::Tiles(tiles) => {
+                for t in tiles {
+                    let key = out.key()?;
+                    out.sources.tiles.insert(key, t.tile_id.clone());
+                    inputs.push((key, t.placement, t.clone()));
+                }
+            }
+            SceneContent::Precomp(nested) => {
+                if depth >= ctx.limits.max_depth {
+                    return Err(CompositeError::BudgetExceeded.into());
+                }
+                let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+                let r = render_inner(nested, ctx, cancel, depth, charges)?;
+                for op in &r.exactness.operators {
+                    exactness.record(op.key, op.exactness);
+                }
+                let surface = Surface::from_rendered(r);
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{}/precomp/{}", id, nested.composition_id),
+                    placement: nested.rect(),
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, nested.rect(), tile));
+            }
+            SceneContent::None => {}
         }
         let shift = match placement {
             Placement::Integer(dx, dy) => (dx, dy),
             _ => (0, 0),
         };
-        if matches!(placement, Placement::Resample) && tiles.len() != 1 {
+        if matches!(placement, Placement::Resample) && inputs.len() != 1 {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: TRANSFORM_MULTI_TILE_LAYER,
             });
         }
-        let mut tile_nodes = Vec::with_capacity(tiles.len());
-        for t in tiles {
-            let key = out.key()?;
-            out.sources.tiles.insert(key, t.tile_id.clone());
+        let mut tile_nodes = Vec::with_capacity(inputs.len());
+        for (key, placement, t) in inputs {
             tile_nodes.push(out.push(PlanNode::Tile(TileInput {
                 key,
-                placement: shifted(t.placement, shift)?,
+                placement: shifted(placement, shift)?,
                 format: t.format,
                 alpha: t.alpha,
                 colour_sha256: t.colour_sha256,
@@ -421,6 +571,20 @@ pub fn lower_scene(
         });
         rendered.push(id.to_owned());
     }
+    if root_layers.is_empty() {
+        // Nothing renders: a transparent fill keeps the root a valid, non-empty group.
+        let id = out.push(PlanNode::Solid {
+            rect: scene.rect(),
+            rgba: [0.0; 4],
+        })?;
+        root_layers.push(Layer {
+            input: id,
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            mask: None,
+        });
+    }
     let root = out.push(PlanNode::Group(Group {
         isolated: true,
         layers: root_layers,
@@ -439,7 +603,6 @@ pub fn lower_scene(
     let operators = plan
         .validate(&PlanLimits::default())
         .map_err(CompositeError::Plan)?;
-    let mut exactness = ExactnessLedger::default();
     for op in operators {
         exactness.record(op.key(), op.intrinsic());
     }
@@ -462,6 +625,7 @@ pub fn lower_scene(
         exactness,
         rendered,
         skipped,
+        surfaces_rendered: charges.surfaces.saturating_sub(surfaces_before),
     })
 }
 
@@ -475,8 +639,12 @@ struct FrameSink {
 
 impl FrameSink {
     fn new(width: u32, height: u32) -> Result<Self, TemporalError> {
-        let px = usize::try_from(u64::from(width).checked_mul(u64::from(height)).ok_or(CompositeError::Overflow)?)
-            .map_err(|_| CompositeError::Overflow)?;
+        let px = usize::try_from(
+            u64::from(width)
+                .checked_mul(u64::from(height))
+                .ok_or(CompositeError::Overflow)?,
+        )
+        .map_err(|_| CompositeError::Overflow)?;
         Ok(Self {
             width,
             height,
@@ -489,7 +657,10 @@ impl FrameSink {
 impl TileSink for FrameSink {
     fn accept(&mut self, rect: Rect, colour: &[u8], alpha: &[u8]) -> Result<(), SinkError> {
         let bad = SinkError::Rejected;
-        let (x0, y0) = (u32::try_from(rect.x).map_err(|_| bad)?, u32::try_from(rect.y).map_err(|_| bad)?);
+        let (x0, y0) = (
+            u32::try_from(rect.x).map_err(|_| bad)?,
+            u32::try_from(rect.y).map_err(|_| bad)?,
+        );
         let x1 = x0.checked_add(rect.width).ok_or(bad)?;
         let y1 = y0.checked_add(rect.height).ok_or(bad)?;
         if x1 > self.width || y1 > self.height {
@@ -497,19 +668,24 @@ impl TileSink for FrameSink {
         }
         let w = usize::try_from(rect.width).map_err(|_| bad)?;
         let fw = usize::try_from(self.width).map_err(|_| bad)?;
+        let (x0, y0) = (
+            usize::try_from(x0).map_err(|_| bad)?,
+            usize::try_from(y0).map_err(|_| bad)?,
+        );
         for row in 0..usize::try_from(rect.height).map_err(|_| bad)? {
             let src = row.checked_mul(w).ok_or(bad)?;
-            let dst = usize::try_from(y0)
-                .ok()
-                .and_then(|y| y.checked_add(row))
+            let dst = y0
+                .checked_add(row)
                 .and_then(|y| y.checked_mul(fw))
-                .and_then(|v| v.checked_add(usize::try_from(x0).ok()?))
+                .and_then(|v| v.checked_add(x0))
                 .ok_or(bad)?;
             let span = |i: usize, n: usize| -> Option<std::ops::Range<usize>> {
                 let a = i.checked_mul(n)?;
                 Some(a..a.checked_add(w.checked_mul(n)?)?)
             };
-            let (Some(cs), Some(cd), Some(as_), Some(ad)) = (span(src, 12), span(dst, 12), span(src, 4), span(dst, 4)) else {
+            let (Some(cs), Some(cd), Some(a_src), Some(a_dst)) =
+                (span(src, 12), span(dst, 12), span(src, 4), span(dst, 4))
+            else {
                 return Err(bad);
             };
             self.colour
@@ -517,26 +693,35 @@ impl TileSink for FrameSink {
                 .ok_or(bad)?
                 .copy_from_slice(colour.get(cs).ok_or(bad)?);
             self.alpha
-                .get_mut(ad)
+                .get_mut(a_dst)
                 .ok_or(bad)?
-                .copy_from_slice(alpha.get(as_).ok_or(bad)?);
+                .copy_from_slice(alpha.get(a_src).ok_or(bad)?);
         }
         Ok(())
     }
 }
 
 /// Lower and execute one scene with the context's backend into a full-frame surface (straight
-/// alpha). The frame's bytes are charged against `limits.max_surface_bytes` before allocation;
-/// a backend refusal is `TemporalError::Render` with the backend's stable code.
+/// alpha). Every surface (the frame and each precomposition) is charged against the limits
+/// before allocation; a backend refusal is `TemporalError::Render` with the backend's stable
+/// code.
 pub fn render_scene(
     scene: &SceneComposition,
     ctx: &SceneContext<'_>,
     cancel: &CancellationToken,
 ) -> Result<RenderedScene, TemporalError> {
-    if surface_bytes(scene.width, scene.height)? > ctx.limits.max_surface_bytes {
-        return Err(CompositeError::BudgetExceeded.into());
-    }
-    let lowering = lower_scene(scene, ctx, cancel)?;
+    render_inner(scene, ctx, cancel, 0, &mut Charges::default())
+}
+
+fn render_inner(
+    scene: &SceneComposition,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+) -> Result<RenderedScene, TemporalError> {
+    charges.surface(ctx, scene.width, scene.height)?;
+    let lowering = lower_inner(scene, ctx, cancel, depth, charges)?;
     let mut sink = FrameSink::new(scene.width, scene.height)?;
     let sources = lowering.sources.bind(ctx.pixels);
     let receipt = ctx

@@ -6,7 +6,8 @@
 #![cfg(feature = "motion")]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
-    COMPOSITION_LAYER_CLIPPED, COMPOSITION_LAYER_CONTENT, COMPOSITION_PRECOMP, COMPOSITION_TRACK_MATTE, CompositionInput, CompositionTemporalSource,
+    COMPOSITION_LAYER_CLIPPED, COMPOSITION_LAYER_CONTENT, COMPOSITION_PRECOMP_COLLAPSE,
+    COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, COMPOSITION_PRECOMP_PAYLOAD, COMPOSITION_TRACK_MATTE, CompositionInput, CompositionTemporalSource,
 };
 use hsk_studio_composite::temporal::TRANSFORM_MULTI_TILE_LAYER;
 use hsk_studio_composite::{
@@ -56,7 +57,9 @@ fn document() -> Value {
             raster(4, vec![tile(4,"t0",4,4), {let mut t = tile(4,"t1",4,4); t["column"]=json!(1); t}]),
             {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",5),"name":"vector","parent":null,"kind":"vector","payload":{"payload_kind":"vector","path_ids":[identity("SVPT",1)]},"visible":true},
             {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",6),"name":"null","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true},
-            raster(7, vec![tile(7,"tc",6,4)])
+            raster(7, vec![tile(7,"tc",6,4)]),
+            {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",8),"name":"precomp","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true},
+            raster(9, vec![tile(9,"td",6,6)])
         ],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[source_op(2),source_op(3),
             {"layer_id":identity("SLYR",1),"operation_key":"mix","operation_kind":"composite",
@@ -95,7 +98,33 @@ fn records() -> Value {
             {"layer_id":identity("SLYR",2),"timing":timing(0,20),"streams":[
                 {"property":"position","static_value":[12.0,9.0]},
                 {"property":"opacity","static_value":[80.0]}]}
-        ]}, composition2()]})
+        ]}, composition2(), composition3(), composition4()]})
+}
+/// Composition 3 of `tests/support/composition_scenes.rs` (`expected_scene3`).
+fn composition3() -> Value {
+    json!({"schema_id":"hsk.studio.composition@1","composition_id":scenes::composition3_id(),"name":"outer",
+        "width":32,"height":24,"pixel_aspect":{"numerator":1,"denominator":1},
+        "frame_rate":{"numerator":24,"denominator":1},"duration":f(48),
+        "background":{"r":0.2,"g":0.2,"b":0.2,"a":1.0,"colour_profile_id":null},
+        "layers":[
+            {"layer_id":identity("SLYR",8),
+             "timing":{"in_point":0,"out_point":f(48),"start_time":f(2),"stretch":{"numerator":2,"denominator":1}},
+             "precomp":{"composition_id":scenes::composition4_id(),"collapse_transformations":false},
+             "streams":[
+                {"property":"position","static_value":[16.0,12.0]},
+                {"property":"rotation","static_value":[15.0]}]}
+        ]})
+}
+/// Composition 4 (nested, 12 frames, red background that is not drawn when nested).
+fn composition4() -> Value {
+    json!({"schema_id":"hsk.studio.composition@1","composition_id":scenes::composition4_id(),"name":"inner",
+        "width":12,"height":10,"pixel_aspect":{"numerator":1,"denominator":1},
+        "frame_rate":{"numerator":24,"denominator":1},"duration":f(12),
+        "background":{"r":1.0,"g":0.0,"b":0.0,"a":1.0,"colour_profile_id":null},
+        "layers":[
+            {"layer_id":identity("SLYR",9),"timing":timing(0,12),"streams":[
+                {"property":"position","static_value":[0.0,0.0],"keyframes":[key(0,json!([3.0,3.0])),key(10,json!([9.0,7.0]))]}]}
+        ]})
 }
 /// Composition 2 of `tests/support/composition_scenes.rs` (`expected_scene2`).
 fn composition2() -> Value {
@@ -277,14 +306,11 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         // Features of later slices are refused, never ignored.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["track_matte"] = json!({"source_layer_id":identity("SLYR",2),"mode":"alpha","inverted":false})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_TRACK_MATTE);
-        let e = edit(&|r| {
-            let mut nested = r["compositions"][0].clone();
-            nested["composition_id"] = json!(identity("SCOM", 4));
-            nested["layers"] = json!([{"layer_id":identity("SLYR",4),"timing":timing(0,1)}]);
-            r["compositions"].as_array_mut().unwrap().push(nested);
-            r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":identity("SCOM",4),"collapse_transformations":false});
-        }).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_PRECOMP);
+        // Precompositions: collapse transformations, and a precomposition layer with own content.
+        let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":true})).unwrap_err();
+        assert_eq!(unsupported(e), COMPOSITION_PRECOMP_COLLAPSE);
+        let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":false})).unwrap_err();
+        assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
         // Content other than raster tiles or a null layer.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 5))).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_LAYER_CONTENT);
@@ -296,7 +322,7 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         // Folio refusals of the records surface as Document; unknown composition and stale revision.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 99))).unwrap_err();
         assert!(matches!(&e, TemporalError::Document(t) if t.starts_with("DanglingReference")), "{e:?}");
-        let e = edit(&|r| r["compositions"][0]["composition_id"] = json!(identity("SCOM", 3))).unwrap_err();
+        let e = edit(&|r| r["compositions"][0]["composition_id"] = json!(identity("SCOM", 9))).unwrap_err();
         assert!(matches!(e, TemporalError::Composite(CompositeError::DanglingInput(_))), "{e:?}");
         let mut stale = document();
         stale["revision"] = json!(8);
@@ -446,4 +472,57 @@ fn parent_chain_anchor_stream_and_source_time() {
 fn src_scene_matrix(pixels: &Pixels, tick: i64) -> Affine2 {
     let src = source_from(&document(), &records(), pixels).unwrap();
     src.scene_at(tick, &CancellationToken::default()).unwrap().layers[1].matrix
+}
+
+/// Compares two scenes field by field (matrices to 1e-9), precompositions recursively.
+fn same_scene(got: &hsk_studio_composite::SceneComposition, want: &hsk_studio_composite::SceneComposition, what: &str) {
+    assert_eq!((&got.composition_id, got.width, got.height, got.background, got.filter),
+        (&want.composition_id, want.width, want.height, want.background, want.filter), "{what}");
+    assert_eq!(got.layers.len(), want.layers.len(), "{what}");
+    for (g, w) in got.layers.iter().zip(&want.layers) {
+        assert_eq!((&g.layer_id, g.mode, g.fill_opacity), (&w.layer_id, w.mode, w.fill_opacity), "{what}");
+        assert!((g.opacity - w.opacity).abs() < 1e-12, "{what}");
+        near(&g.matrix, &w.matrix);
+        match (&g.content, &w.content) {
+            (SceneContent::Precomp(a), SceneContent::Precomp(b)) => same_scene(a, b, what),
+            (a, b) => assert_eq!(a, b, "{what}"),
+        }
+    }
+}
+
+#[test]
+fn precomposition_plays_the_nested_composition_at_its_source_time() {
+    bounded_case("precomposition_plays_the_nested_composition_at_its_source_time", || {
+        let pixels = Pixels::fixture();
+        let cancel = CancellationToken::default();
+        let src = source_of(&document(), &records(), &pixels, &scenes::composition3_id()).unwrap();
+        for frame in scenes::FRAMES3 {
+            let got = src.scene_at(f(frame) as i64, &cancel).unwrap();
+            same_scene(&got, &scenes::expected_scene3(frame, &pixels), &format!("comp3 frame {frame}"));
+        }
+        // The nested composition renders into its own surface first (counted), then the surface
+        // is placed with the layer's matrix and the declared filter.
+        let pixels_ref = &pixels;
+        let ctx = SceneContext {
+            backend: &NoBackend,
+            pixels: pixels_ref,
+            request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+            space: scenes::space(),
+            limits: SceneLimits::default(),
+        };
+        let scene = src.scene_at(f(6) as i64, &cancel).unwrap();
+        // NoBackend refuses to render, so the nested surface cannot be produced: typed, not dropped.
+        let e = lower_scene(&scene, &ctx, &cancel).unwrap_err();
+        assert!(matches!(&e, TemporalError::Render { .. }), "{e:?}");
+        // Bounds: depth 0 refuses any nesting; one surface allowed refuses the nested one.
+        let no_depth = SceneContext { limits: SceneLimits { max_depth: 0, ..SceneLimits::default() }, ..ctx };
+        assert!(matches!(lower_scene(&scene, &no_depth, &cancel), Err(TemporalError::Composite(CompositeError::BudgetExceeded))));
+        let one_surface = SceneContext { limits: SceneLimits { max_surfaces: 1, ..SceneLimits::default() }, ..ctx };
+        assert!(matches!(hsk_studio_composite::render_scene(&scene, &one_surface, &cancel), Err(TemporalError::Composite(CompositeError::BudgetExceeded))));
+        let small = SceneContext { limits: SceneLimits { max_surface_bytes: 32 * 24 * 16, ..SceneLimits::default() }, ..ctx };
+        assert!(matches!(hsk_studio_composite::render_scene(&scene, &small, &cancel), Err(TemporalError::Composite(CompositeError::BudgetExceeded))));
+        // The document-graph path cannot render a precomposition: refused, not drawn empty.
+        let e = hsk_studio_composite::TemporalSource::layer_state(&src, &identity("SLYR", 8), 0, &cancel).unwrap_err();
+        assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, .. }), "{e:?}");
+    });
 }
