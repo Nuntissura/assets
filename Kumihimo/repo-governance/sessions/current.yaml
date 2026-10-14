@@ -123,7 +123,7 @@ roles:
     role_id: ROLE-KUM-DEPENDENCIES-RESUME
     agent_path: /root/dependencies
     status: wp019_source_ready_other_packets_inspecting
-    assignment: WP018–021 source/runtime readiness
+    assignment: WP018â€“021 source/runtime readiness
   resume_evaluation:
     role_id: ROLE-KUM-EVALUATION-RESUME
     agent_path: /root/evaluation
@@ -132,10 +132,13 @@ roles:
   resume_coder:
     role_id: ROLE-KUM-CODER-05
     agent_path: /root/external_apps_coder
-    status: implementing_owned_source
+    status: wp019_completed_source_released
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP019 new external-apps package only; no Cargo ownership
+    assignment: WP019 completed; available for WP020 after dependency readiness; rotate after second completed implementation
+      WP
+    completed_implementation_wps:
+    - WP-KUM-019-external-app-tiling-v1
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -166,8 +169,8 @@ tick:
   operator_request: remove the tick
   observed_result: automation_update delete returned deleteStatus=deleted for kumihimo-dev-lead-tick
   automatic_restart_authorized: false
-next_action: Obtain fresh WP019 dependency readiness and admit owned source; host-native WP018 sample boundary retained;
-  single Cargo lane and deleted tick
+next_action: WP020 dependency readiness then background source implementation; WP018 actual native transfer pending
+  explicit operator availability for desktop input
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
@@ -238,3 +241,4 @@ resume_2026_10_14:
   drop_boundary: Host receives native/browser drops and owns payload/file effects; optional adapter target/preview
     coordination; WP018 retained
   coordination_owner: 01a13753-c445-7060-85bf-3453ec40f581
+  desktop_input: Operator working; no mouse/keyboard control until explicitly authorized

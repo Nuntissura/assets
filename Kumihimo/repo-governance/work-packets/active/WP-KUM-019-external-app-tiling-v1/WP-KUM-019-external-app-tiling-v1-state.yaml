@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-019-external-app-tiling-v1
-generation: 3
-phase: active
+generation: 4
+phase: done
 owner: dev_lead_resume_2026_10_14
 changed_files:
 - product/kumihimo-external-apps/Cargo.toml
@@ -52,5 +52,9 @@ proof:
 - kind: independent_evaluation
   observed: Scoped runtime PASS after all four exact PNGs and OS identity/bounds read; source adversarial findings
     corrected and seven owning cases passed
+- kind: publication
+  observed: git push succeeded; independent git ls-remote origin refs/heads/codex/handpick exactly c398fc0d81241d052fb265fd923fe9934c164cce
+  implementation_revision: c398fc0d81241d052fb265fd923fe9934c164cce
 blockers: []
-next_action: Publish owned implementation/manual/spec status and verify remote containment; then mark packet done
+next_action: Complete; WP020 may proceed after fresh dependency readiness, with desktop input requiring an explicitly
+  agreed time

@@ -3,8 +3,8 @@ kind: derived_taskboard
 project_id: KUMIHIMO
 source: WP contracts and state
 counts:
-  done: 17
-  active: 2
+  done: 18
+  active: 1
   planned: 2
 work_packets:
 - wp_id: WP-KUM-001-init-v1
@@ -145,10 +145,11 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-019-external-app-tiling-v1
   title: Optional selected external desktop-application tiling
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-state.yaml
-  next_action: Publish owned implementation/manual/spec status and verify remote containment; then mark packet done
+  next_action: Complete; WP020 may proceed after fresh dependency readiness, with desktop input requiring an explicitly
+    agreed time
   blockers: []
 - wp_id: WP-KUM-020-foreign-window-hosting-v1
   title: Optional supported foreign-application window hosting
