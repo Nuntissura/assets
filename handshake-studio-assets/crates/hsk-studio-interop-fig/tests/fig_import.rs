@@ -172,20 +172,6 @@ fn find_all(bytes: &[u8], sig: [u8; 4]) -> Vec<usize> {
         .collect()
 }
 
-fn crc32(data: &[u8]) -> u32 {
-    !data.iter().fold(!0u32, |mut c, b| {
-        c ^= u32::from(*b);
-        for _ in 0..8 {
-            c = if c & 1 != 0 {
-                0xEDB8_8320 ^ (c >> 1)
-            } else {
-                c >> 1
-            };
-        }
-        c
-    })
-}
-
 /// ZIP writer for fixtures; names are written as given (duplicates, `..` and so on are allowed
 /// so hostile containers can be built). `deflate` chooses DEFLATE over STORE per part.
 fn zip(parts: &[(&str, &[u8], bool)]) -> Vec<u8> {
@@ -207,7 +193,7 @@ fn zip_junk(parts: &[(&str, &[u8], bool)], junk: &[u8]) -> Vec<u8> {
             Some(d) => (8, d),
             None => (0, data),
         };
-        let (crc, local) = (crc32(data), out.len() as u32);
+        let (crc, local) = (hsk_studio_package::crc32_of(data), out.len() as u32);
         p32(&mut out, 0x0403_4b50);
         for v in [20, 0, method, 0, 0x0021] {
             p16(&mut out, v);

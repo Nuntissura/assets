@@ -10,7 +10,8 @@
 //! census is produced only when the entire message decodes (test: unsupported_version_duplicate_key_bomb_cancel
 //! asserts no census for an unknown field id and a truncated message).
 #![deny(clippy::arithmetic_side_effects)]
-use crate::container::{CANVAS_PART, FigContainer, InflateFail, Limits, inflate_exact};
+use crate::container::{CANVAS_PART, FigContainer, Limits};
+use hsk_studio_package::{InflateFail, inflate_exact};
 use crate::import::{
     Census, DefinitionSummary, FieldSummary, LossEntry, LossKind, SchemaSummary, SourceId,
 };
