@@ -247,6 +247,44 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
+        self.frame_content_raw(layer, frame_rect, content, spare, fx)?;
+        if layer.mask.is_none() {
+            return Ok(());
+        }
+        let Some(region) = self
+            .prepared
+            .bound(layer.input)
+            .map(|b| intersect(b, frame_rect))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(());
+        };
+        let feathered = self.feather(layer, region, frame_rect, fx)?;
+        let plane = feathered.then_some(fx.plane.as_slice());
+        let (x1, y1) = end(region)?;
+        for y in region.y..y1 {
+            for x in region.x..x1 {
+                let at = index_in(frame_rect, x, y)?;
+                let mask = mask_value_clamped(layer, plane, x, y, at)?;
+                let pixel = content.get_mut(at).ok_or_else(overflow)?;
+                pixel[3] *= mask;
+            }
+        }
+        Ok(())
+    }
+
+    /// The layer content over `frame_rect` before the layer mask (colour and alpha of the input
+    /// node; transparent outside the content bounds). Shared by [`Eval::frame_content`] and the
+    /// filter chain, which applies the mask after the filters.
+    pub(super) fn frame_content_raw(
+        &self,
+        layer: &PLayer<'_>,
+        frame_rect: Rect,
+        content: &mut [[f32; 4]],
+        spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
+    ) -> Result<(), RenderError> {
         let Some(region) = self
             .prepared
             .bound(layer.input)
@@ -282,20 +320,6 @@ impl Eval<'_, '_> {
                 isolated: false, ..
             }
             | PNode::Unused => return Err(unsupported("plan_shape")),
-        }
-        if layer.mask.is_none() {
-            return Ok(());
-        }
-        let feathered = self.feather(layer, region, frame_rect, fx)?;
-        let plane = feathered.then_some(fx.plane.as_slice());
-        let (x1, y1) = end(region)?;
-        for y in region.y..y1 {
-            for x in region.x..x1 {
-                let at = index_in(frame_rect, x, y)?;
-                let mask = mask_value_clamped(layer, plane, x, y, at)?;
-                let pixel = content.get_mut(at).ok_or_else(overflow)?;
-                pixel[3] *= mask;
-            }
         }
         Ok(())
     }

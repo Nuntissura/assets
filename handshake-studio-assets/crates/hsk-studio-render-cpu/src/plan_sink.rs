@@ -26,6 +26,7 @@
 mod blur;
 mod effects;
 mod extended;
+mod filter;
 #[cfg(test)]
 mod refusal_keys;
 
@@ -751,8 +752,36 @@ fn prepare<'a, V: VectorSource>(
                         }
                         ext.set_blur_bounds(index, content_bounds);
                     }
-                    group_effects |=
-                        layer_fx.effect.is_some() || layer_fx.blur.is_some() || has_effects[input];
+                    // Layer filters (pigment `filter_math`): the layer is evaluated per window of the
+                    // chunk-level frame like a layer blur (see `filter`). Pigment validated the
+                    // combinations (`FilterCombination`); kept as defence in depth with its error.
+                    if let Some(index) = layer_fx.filter {
+                        if layer_fx.effect.is_some()
+                            || layer_fx.blur.is_some()
+                            || layer_fx.transform.is_some()
+                            || layer_fx.adjustment.is_some()
+                            || pass_through
+                            || clipped
+                        {
+                            return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                PlanError::FilterCombination { node: node_id },
+                            )));
+                        }
+                        if has_effects[input] {
+                            return Err(unsupported(filter::FILTER_NESTED));
+                        }
+                        let growth = ext
+                            .filter(index)
+                            .ok_or_else(|| unsupported("plan_shape"))?
+                            .total_growth()?;
+                        layer_bounds = layer_bounds.map(|b| grow_rect(b, growth)).transpose()?;
+                        ext.frame_depth = ext.frame_depth.max(need[input]);
+                        ext.set_filter_bounds(index, content_bounds);
+                    }
+                    group_effects |= layer_fx.effect.is_some()
+                        || layer_fx.blur.is_some()
+                        || layer_fx.filter.is_some()
+                        || has_effects[input];
                     let mask = match &l.mask {
                         None => None,
                         // Canonical clip-to-base encoding (pigment validated): no plane to resolve.
@@ -1159,6 +1188,9 @@ impl Eval<'_, '_> {
         }
         if self.is_layer_blur(layer) {
             return self.blur_layer(layer, chunk, dst, fx);
+        }
+        if self.is_filtered(layer) {
+            return self.filter_layer(layer, chunk, dst, fx);
         }
         let Some(region) = self.prepared.bound(layer.input)
             .map(|b| intersect(b, chunk))
@@ -1986,6 +2018,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Layer and backdrop blur (lane SMB-COMPOSITE-NEW-KINDS): pigment's `blur_window` and
             // `backdrop_mix` evaluate them, so the bytes are pigment's (tests/cpu_blur.rs).
             ExtOperator::Blur(_) => operator.intrinsic(),
+            // Layer filters (lane SMB-RENDER-FILTERS): pigment's `filter_window` evaluates every
+            // kind, so the bytes are pigment's (tests/cpu_filters.rs).
+            ExtOperator::Filter(_) => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

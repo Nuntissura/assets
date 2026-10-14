@@ -22,6 +22,9 @@ use hsk_studio_pigment::adjust_math::{
 };
 use hsk_studio_pigment::blend_math::Rgba;
 use hsk_studio_pigment::blur_math::{BlurError, BlurLimits, BlurScope, LayerBlur, blur_window_cost};
+use hsk_studio_pigment::filter_math::{
+    FilterError, FilterLimits, LayerFilter, MAX_FILTERS_PER_LAYER, filter_window_cost,
+};
 use hsk_studio_pigment::coverage_math::{
     BlendRangeEntry, CoverageError, IDENTITY_RANGE, blend_if_weight, feather_kernel,
     feather_support,
@@ -45,6 +48,8 @@ const BLEND_ENTRY_BYTES: u64 = 40;
 const SAMPLE_BYTES: u64 = 4;
 /// Resident bytes charged per effect instance (the `EffectOp` record).
 const EFFECT_OP_BYTES: u64 = 64;
+/// Resident bytes charged per layer filter instance (the `LayerFilter` record and its growth).
+const FILTER_OP_BYTES: u64 = 64;
 /// Resident bytes charged per layer transform (the record plus its prepared inverse and bounds).
 const TRANSFORM_STATE_BYTES: u64 = 256;
 /// Bytes the window arrays of one effect call hold next to pigment's own peak: the backdrop plane
@@ -69,6 +74,65 @@ pub(super) struct LayerFx {
     pub(super) transform: Option<usize>,
     /// Layer or backdrop blur (pigment `blur_math`, radius above 0): index into [`ExtPrep::blur`].
     pub(super) blur: Option<usize>,
+    /// Layer filters (pigment `filter_math`, lane SMB-RENDER-FILTERS): index into
+    /// [`ExtPrep::filters`].
+    pub(super) filter: Option<usize>,
+}
+
+/// The filters of one layer (list order), the growth of the layer's pixels each stage causes
+/// (`stage_growth`: the support of a blur-based filter, the radius of a median, 0 for a point
+/// filter), and the content bounds (set by `prepare`).
+pub(super) struct FilterLayer {
+    pub(super) ops: Vec<LayerFilter>,
+    pub(super) growth: Vec<usize>,
+    bounds: Option<Rect>,
+}
+impl FilterLayer {
+    /// Total growth of the layer bounds over all stages.
+    pub(super) fn total_growth(&self) -> Result<usize, RenderError> {
+        self.growth.iter().try_fold(0_usize, |a, g| add_u(a, *g))
+    }
+}
+
+/// Pixels the output of `filter` reaches beyond its input (a pixel outside this margin is
+/// transparent: gaussian blur and median read at most this far, the point filters (unsharp, high
+/// pass, noise) return transparent where the source alpha is 0).
+fn stage_growth(filter: &LayerFilter) -> Result<usize, RenderError> {
+    match *filter {
+        LayerFilter::GaussianBlur { .. } | LayerFilter::Median { .. } => stage_reach(filter),
+        _ => Ok(0),
+    }
+}
+/// Pixels the input of `filter` is read beyond the output window.
+pub(super) fn stage_reach(filter: &LayerFilter) -> Result<usize, RenderError> {
+    match *filter {
+        LayerFilter::GaussianBlur { radius_px }
+        | LayerFilter::UnsharpMask { radius_px, .. }
+        | LayerFilter::HighPass { radius_px } => to_usize(u64::from(
+            LayerBlur::new(BlurScope::Layer, radius_px)
+                .support_px()
+                .map_err(blur_error)?,
+        )),
+        LayerFilter::Median { radius_px } => to_usize(u64::from(radius_px)),
+        LayerFilter::AddNoise { .. } => Ok(0),
+    }
+}
+
+/// Typed mapping of a filter failure: a byte or work limit is `BudgetExceeded` with pigment's
+/// predicted need, a parameter pigment refuses is `filter_parameter`.
+pub(super) fn filter_error(error: FilterError) -> RenderError {
+    match error {
+        FilterError::OverBudget { needed, limit } => {
+            RenderError::Backend(BackendError::BudgetExceeded {
+                requested: needed,
+                limit,
+            })
+        }
+        FilterError::Overflow => overflow(),
+        FilterError::OutOfDomain => unsupported(SAMPLE_RANGE_OPERATOR),
+        FilterError::Shape => unsupported("filter_shape"),
+        _ => unsupported("filter_parameter"),
+    }
 }
 
 /// One blurred layer: the pigment blur, its taps and support, and the content bounds of the layer
@@ -105,6 +169,7 @@ pub(super) struct ExtPrep {
     effects: Vec<EffectLayer>,
     transforms: Vec<LayerTransform>,
     blurs: Vec<BlurLayer>,
+    filters: Vec<FilterLayer>,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -288,6 +353,28 @@ impl ExtPrep {
                     bounds: None,
                 });
             }
+            if !e.filters.is_empty() {
+                // Defence in depth for pigment's `FilterParameter` (validated at admission).
+                if e.filters.len() > MAX_FILTERS_PER_LAYER {
+                    return Err(unsupported("filter_parameter"));
+                }
+                let mut growth = Vec::with_capacity(e.filters.len());
+                for f in &e.filters {
+                    f.validate().map_err(filter_error)?;
+                    growth.push(stage_growth(f)?);
+                }
+                let bytes = u64::try_from(e.filters.len())
+                    .ok()
+                    .and_then(|n| n.checked_mul(FILTER_OP_BYTES))
+                    .ok_or_else(overflow)?;
+                prep.charge(bytes, limit)?;
+                fx.filter = Some(prep.filters.len());
+                prep.filters.push(FilterLayer {
+                    ops: e.filters.clone(),
+                    growth,
+                    bounds: None,
+                });
+            }
             if let Some(t) = &e.transform {
                 prep.charge(TRANSFORM_STATE_BYTES, limit)?;
                 fx.transform = Some(prep.transforms.len());
@@ -336,6 +423,17 @@ impl ExtPrep {
     /// Records the content bounds of blurred layer `index`; called by `prepare`.
     pub(super) fn set_blur_bounds(&mut self, index: usize, bounds: Option<Rect>) {
         if let Some(layer) = self.blurs.get_mut(index) {
+            layer.bounds = bounds;
+        }
+    }
+
+    /// Filtered layer `index` (see [`LayerFx::filter`]).
+    pub(super) fn filter(&self, index: usize) -> Option<&FilterLayer> {
+        self.filters.get(index)
+    }
+    /// Records the content bounds of filtered layer `index`; called by `prepare`.
+    pub(super) fn set_filter_bounds(&mut self, index: usize, bounds: Option<Rect>) {
+        if let Some(layer) = self.filters.get_mut(index) {
             layer.bounds = bounds;
         }
     }
@@ -403,6 +501,9 @@ pub(super) struct FrameShape {
     /// Limits handed to every blur window (pigment `blur_window`): the largest predicted bytes
     /// and [`MAX_EFFECT_WINDOW_WORK`].
     pub(super) blur_limits: BlurLimits,
+    /// Limits handed to every filter window (pigment `filter_window`): the largest predicted
+    /// bytes of one stage and [`MAX_EFFECT_WINDOW_WORK`].
+    pub(super) filter_limits: FilterLimits,
 }
 
 /// Typed mapping of a blur failure: a byte or work limit is `BudgetExceeded` with pigment's
@@ -441,7 +542,7 @@ impl ExtPrep {
         chunk_width: usize,
         chunk_height: usize,
     ) -> Result<Option<FrameShape>, RenderError> {
-        if self.effects.is_empty() && self.blurs.is_empty() {
+        if self.effects.is_empty() && self.blurs.is_empty() && self.filters.is_empty() {
             return Ok(None);
         }
         let (mut pixels, mut fx_plane, mut fx_tmp) = (0_usize, 0_usize, 0_usize);
@@ -493,6 +594,55 @@ impl ExtPrep {
             window_bytes = window_bytes.max(bytes);
             blur_peak = blur_peak.max(bytes);
         }
+        // Filtered layers: the stage bounds grow by each stage's growth; the largest window of
+        // stage `k` is the chunk inside the grown bounds, widened by the reach of the later stages
+        // and clipped to the stage bounds (the same recursion `filter_layer` runs per chunk).
+        let mut filter_peak = 0_u64;
+        for layer in &self.filters {
+            let Some(bounds) = layer.bounds else {
+                continue;
+            };
+            let (mut bw, mut bh) = (width_of(bounds)?, height_of(bounds)?);
+            if bw == 0 || bh == 0 {
+                continue;
+            }
+            let mut dims = vec![(bw, bh)];
+            for g in &layer.growth {
+                bw = add_u(bw, mul_u(*g, 2)?)?;
+                bh = add_u(bh, mul_u(*g, 2)?)?;
+                dims.push((bw, bh));
+            }
+            let n = layer.ops.len();
+            let (mut w, mut h) = dims.get(n).copied().ok_or_else(overflow)?;
+            w = w.min(chunk_width);
+            h = h.min(chunk_height);
+            let mut total_bytes = 0_u64;
+            for k in (0..n).rev() {
+                let op = layer.ops.get(k).ok_or_else(overflow)?;
+                let rect = Rect {
+                    x: 0,
+                    y: 0,
+                    width: u32::try_from(w).map_err(|_| overflow())?,
+                    height: u32::try_from(h).map_err(|_| overflow())?,
+                };
+                let (bytes, work) = filter_window_cost(op, rect).map_err(filter_error)?;
+                if work > MAX_EFFECT_WINDOW_WORK {
+                    return Err(unsupported("filter_work_limit"));
+                }
+                total_bytes = total_bytes.checked_add(bytes).ok_or_else(overflow)?;
+                filter_peak = filter_peak.max(bytes);
+                // Input window of stage k = output window grown by its reach, within stage bounds.
+                let reach = stage_reach(op)?;
+                let (pw, ph) = dims.get(k).copied().ok_or_else(overflow)?;
+                w = pw.min(add_u(w, mul_u(reach, 2)?)?);
+                h = ph.min(add_u(h, mul_u(reach, 2)?)?);
+            }
+            pixels = pixels.max(mul_u(w, h)?);
+            let (plane, tmp) = self.feather_dims(w, h)?;
+            fx_plane = fx_plane.max(plane);
+            fx_tmp = fx_tmp.max(tmp);
+            window_bytes = window_bytes.max(total_bytes);
+        }
         for layer in &self.effects {
             let Some(bounds) = layer.bounds else {
                 continue;
@@ -537,6 +687,10 @@ impl ExtPrep {
             limits: WindowLimits::new(peak, MAX_EFFECT_WINDOW_WORK),
             blur_limits: BlurLimits {
                 max_bytes: blur_peak,
+                max_work: MAX_EFFECT_WINDOW_WORK,
+            },
+            filter_limits: FilterLimits {
+                max_bytes: filter_peak,
                 max_work: MAX_EFFECT_WINDOW_WORK,
             },
         }))
@@ -584,6 +738,7 @@ pub(super) struct Frame {
     pub(super) fx: Fx,
     pub(super) limits: WindowLimits,
     pub(super) blur_limits: BlurLimits,
+    pub(super) filter_limits: FilterLimits,
 }
 impl Fx {
     pub(super) fn new(plane: usize, tmp: usize, frame: Option<FrameShape>) -> Self {
@@ -597,6 +752,7 @@ impl Fx {
                     fx: Fx::new(s.fx_plane, s.fx_tmp, None),
                     limits: s.limits,
                     blur_limits: s.blur_limits,
+                    filter_limits: s.filter_limits,
                 })
             }),
         }
