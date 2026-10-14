@@ -19,6 +19,7 @@ use crate::nodes::{FigDocument, FigNode, NodeLoss, NodePayload, Paint, PaintKind
 use crate::semantic_decode::EditableStatus;
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_components::instance_layer;
 use hsk_studio_folio::{
     ArtboardSchema, BLEND_NORMAL, BLEND_PASS_THROUGH, Bounds, Budget, DocumentSchema, GeometryUnit,
     GradientInterpolation, GradientSpread, GraphSchema, Isolation, LayerAppearance, LayerSchema,
@@ -31,6 +32,9 @@ use hsk_studio_folio::{
 use hsk_studio_folio::{
     StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioTextStory,
     TextStorySchema, validate_text_story,
+};
+use hsk_studio_folio::{
+    StudioComponent, StudioComponentInstance, StudioComponentSet, StudioOverrideRecord, StudioValue,
 };
 use hsk_studio_package::{ImportEntry, ImportRole};
 use serde_json::{Value, json};
@@ -132,14 +136,7 @@ const LEAF_KINDS: &[&str] = &[
     "LINE",
     "VECTOR",
 ];
-const CONTAINER_KINDS: &[&str] = &[
-    "FRAME",
-    "SECTION",
-    "GROUP",
-    "BOOLEAN_OPERATION",
-    "SYMBOL",
-    "INSTANCE",
-];
+const CONTAINER_KINDS: &[&str] = &["FRAME", "SECTION", "GROUP", "BOOLEAN_OPERATION", "SYMBOL"];
 /// Folio has no layer for these: they become design records (variables) in a later slice.
 const NON_LAYER_KINDS: &[&str] = &["VARIABLE", "VARIABLE_SET"];
 
@@ -155,6 +152,14 @@ struct Mapper<'a> {
     id_map: Vec<IdMapEntry>,
     loss: BTreeMap<(String, &'static str), (u32, Option<SourceId>)>,
     current: Option<SourceId>,
+    /// SYMBOL nodes (node index, group layer id), state-group FRAMEs (node index, layer id) and
+    /// INSTANCE nodes (node index, SCIN id), resolved into component records after the walk.
+    symbols: Vec<(usize, String)>,
+    sets: Vec<(usize, String)>,
+    instances: Vec<(usize, String)>,
+    components: Vec<StudioComponent>,
+    component_sets: Vec<StudioComponentSet>,
+    component_instances: Vec<StudioComponentInstance>,
 }
 
 fn px(value: f64) -> Length {
@@ -565,6 +570,234 @@ impl Mapper<'_> {
         });
     }
 
+    fn publishing(key: Option<&str>, fallback: String) -> StudioPublishing {
+        StudioPublishing {
+            description: String::new(),
+            description_markdown: String::new(),
+            documentation_links: Vec::new(),
+            publish_key: key.map_or(fallback, str::to_owned),
+            is_remote: false,
+        }
+    }
+
+    /// Component records after the walk: SYMBOL -> `StudioComponent` (its group layer), state-group
+    /// FRAME -> `StudioComponentSet` (variant values in member order, first member the default),
+    /// INSTANCE -> `StudioComponentInstance` (main component, overrides of characters, visibility
+    /// and opacity on definition layers; fills listed without a value).
+    fn components(&mut self) -> Result<()> {
+        let doc = self.doc;
+        let layer_of: HashMap<SourceId, String> = self
+            .id_map
+            .iter()
+            .filter(|e| e.node.node_kind == NodeKind::Layer)
+            .map(|e| (e.source, e.node.node_id.clone()))
+            .collect();
+        let mut component_of: HashMap<SourceId, String> = HashMap::new();
+        let symbols = std::mem::take(&mut self.symbols);
+        let sets = std::mem::take(&mut self.sets);
+        let instances = std::mem::take(&mut self.instances);
+        for (idx, layer_id) in &symbols {
+            let n = &doc.nodes[*idx];
+            self.current = Some(n.id);
+            let component_id = self.mint.mint("SCMP");
+            component_of.insert(n.id, component_id.clone());
+            let key = match &n.payload {
+                NodePayload::Symbol { component_key, .. } => component_key.as_deref(),
+                _ => None,
+            };
+            self.components.push(StudioComponent {
+                schema_id: hsk_studio_folio::ComponentSchema::V1,
+                component_id: component_id.clone(),
+                layer_id: layer_id.clone(),
+                publishing: Self::publishing(key, format!("fig-import/{}", n.id)),
+                variant_properties: None,
+                component_property_definitions: Vec::new(),
+            });
+        }
+        for (idx, layer_id) in &sets {
+            let set = &doc.nodes[*idx];
+            self.current = Some(set.id);
+            let NodePayload::Frame(f) = &set.payload else {
+                continue;
+            };
+            let names: HashMap<SourceId, String> = f
+                .component_props
+                .iter()
+                .filter(|d| d.kind.as_deref() == Some("VARIANT"))
+                .filter_map(|d| Some((d.id?, d.name.clone()?)))
+                .collect();
+            let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            let mut default_variant = None;
+            for &c in &set.children {
+                let member = &doc.nodes[c];
+                let NodePayload::Symbol { variant, .. } = &member.payload else {
+                    continue;
+                };
+                let Some(cid) = component_of.get(&member.id).cloned() else {
+                    continue;
+                };
+                let mut assigned = BTreeMap::new();
+                for v in variant {
+                    match (v.prop_def.and_then(|p| names.get(&p)), &v.value) {
+                        (Some(name), Some(value)) => {
+                            let values = groups.entry(name.clone()).or_default();
+                            if !values.contains(value) {
+                                values.push(value.clone());
+                            }
+                            assigned.insert(name.clone(), value.clone());
+                        }
+                        _ => {
+                            self.current = Some(member.id);
+                            self.lose("native.variant_property", "variant_property_unresolved");
+                        }
+                    }
+                }
+                if let Some(k) = self.components.iter_mut().find(|k| k.component_id == cid) {
+                    k.variant_properties = (!assigned.is_empty()).then_some(assigned);
+                }
+                default_variant.get_or_insert(cid);
+            }
+            self.current = Some(set.id);
+            let Some(default_variant_id) = default_variant else {
+                self.lose("native.component_set", "component_set_without_members");
+                continue;
+            };
+            if groups.is_empty() {
+                self.lose(
+                    "native.component_set",
+                    "component_set_without_variant_properties",
+                );
+                continue;
+            }
+            let component_id = self.mint.mint("SCMP");
+            self.component_sets.push(StudioComponentSet {
+                schema_id: hsk_studio_folio::ComponentSchema::V1,
+                component_id,
+                layer_id: layer_id.clone(),
+                publishing: Self::publishing(None, format!("fig-import/{}", set.id)),
+                default_variant_id,
+                variant_group_properties: groups,
+                component_property_definitions: Vec::new(),
+            });
+        }
+        // A component that names variant values but sits in no mapped set loses them.
+        let members: std::collections::BTreeSet<String> = self
+            .component_sets
+            .iter()
+            .flat_map(|s| {
+                let set_layer = s.layer_id.clone();
+                self.layers
+                    .iter()
+                    .filter(move |l| matches!(&l.parent, Parent::Node(p) if p.node_id == set_layer))
+                    .map(|l| l.layer_id.clone())
+            })
+            .collect();
+        let mut stray = 0u32;
+        for k in &mut self.components {
+            if k.variant_properties.is_some() && !members.contains(&k.layer_id) {
+                k.variant_properties = None;
+                stray = stray.saturating_add(1);
+            }
+        }
+        for _ in 0..stray {
+            self.lose("native.variant_property", "variant_outside_component_set");
+        }
+        for (idx, instance_id) in instances {
+            let n = &doc.nodes[idx];
+            self.current = Some(n.id);
+            let NodePayload::Instance { instance, .. } = &n.payload else {
+                continue;
+            };
+            let main = instance
+                .symbol_id
+                .and_then(|s| component_of.get(&s).cloned());
+            if main.is_none() {
+                self.lose(
+                    "native.instance.symbol_id",
+                    "instance_main_component_not_in_file",
+                );
+            }
+            let mut by_node: BTreeMap<String, StudioOverrideRecord> = BTreeMap::new();
+            for ov in &instance.overrides {
+                let target = match ov.guid_path.as_slice() {
+                    [one] => layer_of.get(one).cloned(),
+                    _ => None,
+                };
+                let Some(target) = target else {
+                    self.lose(
+                        "native.instance.override_path",
+                        "override_target_not_mapped",
+                    );
+                    continue;
+                };
+                let mut fields: Vec<(&'static str, Option<StudioValue>)> = Vec::new();
+                if let Some(c) = &ov.characters {
+                    fields.push(("characters", Some(StudioValue::String { value: c.clone() })));
+                }
+                if let Some(v) = ov.visible {
+                    fields.push(("visible", Some(StudioValue::Boolean { value: v })));
+                }
+                if let Some(o) = ov.opacity {
+                    fields.push(("opacity", Some(StudioValue::Float { value: wide(o) })));
+                }
+                if ov.fills.is_some() {
+                    self.lose(
+                        "native.instance.override_fills",
+                        "override_fill_value_no_folio_home",
+                    );
+                    fields.push(("fills", None));
+                }
+                if ov.name.is_some() {
+                    self.lose(
+                        "native.instance.override_name",
+                        "override_name_no_folio_home",
+                    );
+                }
+                if ov.size.is_some() {
+                    self.lose(
+                        "native.instance.override_size",
+                        "override_size_no_folio_home",
+                    );
+                }
+                if fields.is_empty() {
+                    continue;
+                }
+                let rec = by_node
+                    .entry(target.clone())
+                    .or_insert_with(|| StudioOverrideRecord {
+                        overridden_node_id: target,
+                        overridden_fields: Vec::new(),
+                        values: BTreeMap::new(),
+                    });
+                for (field, value) in fields {
+                    if !rec.overridden_fields.iter().any(|f| f == field) {
+                        rec.overridden_fields.push(field.to_owned());
+                    }
+                    if let Some(value) = value {
+                        rec.values.insert(field.to_owned(), value);
+                    }
+                }
+            }
+            let scale = instance.uniform_scale.map_or(1.0, wide);
+            let scale_factor = if (0.01..=100.0).contains(&scale) {
+                scale
+            } else {
+                self.lose("native.instance.scale", "instance_scale_out_of_range");
+                1.0
+            };
+            self.component_instances.push(StudioComponentInstance {
+                schema_id: hsk_studio_folio::ComponentInstanceSchema::V1,
+                instance_id,
+                main_component_id: main,
+                component_properties: BTreeMap::new(),
+                overrides: by_node.into_values().collect(),
+                scale_factor,
+                is_exposed_instance: false,
+            });
+        }
+        Ok(())
+    }
+
     /// Losses for decoded node data this slice does not map.
     fn unmapped(&mut self, n: &FigNode, artboard: bool) {
         if !artboard && n.type_name != "CANVAS" {
@@ -606,7 +839,9 @@ impl Mapper<'_> {
             NodePayload::Boolean { .. } => {
                 self.lose("native.boolean_operation", "boolean_operation_not_mapped")
             }
-            NodePayload::Frame(f) => {
+            NodePayload::Frame(f)
+            | NodePayload::Symbol { frame: f, .. }
+            | NodePayload::Instance { frame: f, .. } => {
                 if f.corner_radius.is_some() || f.corner_radii.is_some() {
                     self.lose("native.corner_radii", "frame_corner_radii_no_folio_home");
                 }
@@ -619,12 +854,18 @@ impl Mapper<'_> {
                 if f.scroll_direction.is_some() {
                     self.lose("native.scroll_direction", "scroll_not_mapped");
                 }
-                if !f.component_props.is_empty() || f.is_state_group == Some(true) {
-                    self.lose("native.component_set", "components_not_mapped");
+                for d in &f.component_props {
+                    if d.kind.as_deref() != Some("VARIANT") {
+                        self.lose(
+                            format!(
+                                "native.component_property={}",
+                                d.kind.as_deref().unwrap_or("?")
+                            ),
+                            "component_property_default_not_decoded",
+                        );
+                    }
                 }
             }
-            NodePayload::Symbol { .. } => self.lose("native.symbol", "components_not_mapped"),
-            NodePayload::Instance { .. } => self.lose("native.instance", "components_not_mapped"),
             NodePayload::Canvas {
                 background: Some(_),
                 ..
@@ -735,50 +976,67 @@ impl Mapper<'_> {
             };
         } else {
             let layer_id = self.mint.mint("SLYR");
-            let (kind, payload, group) = if CONTAINER_KINDS.contains(&ty) || ty == "DOCUMENT" {
-                ("group".to_owned(), Payload::Group, true)
-            } else if LEAF_KINDS.contains(&ty) {
-                (
-                    "vector".to_owned(),
-                    Payload::Vector {
-                        path_ids: Vec::new(),
-                    },
-                    false,
-                )
-            } else if let NodePayload::Text(text) = &n.payload {
-                let story_id = self.mint.mint("STXT");
-                self.story(text, story_id.clone());
-                ("text".to_owned(), Payload::Text { story_id }, false)
+            if ty == "INSTANCE" {
+                let instance_id = self.mint.mint("SCIN");
+                let mut l = instance_layer(&layer_id, &name, parent, &instance_id)
+                    .map_err(|_| FigError::NativeRejected(hsk_studio_folio::Code::InvalidId))?;
+                l.visible = n.visible.unwrap_or(true);
+                l.appearance = self.appearance(n, false);
+                self.layers.push(l);
+                self.instances.push((idx, instance_id));
             } else {
-                // Every kind without a Folio layer kind.
-                self.lose(
-                    format!("native.node={ty}"),
-                    "layer_kind_preserved_unsupported",
-                );
-                let kind = format!("fig_{}", ty.to_ascii_lowercase());
-                (
-                    kind.clone(),
-                    Payload::Unsupported {
-                        kind,
-                        schema_id: "fig-kiwi.NodeChange".into(),
-                        encoded_bytes: Vec::new(),
-                        reason: "no Folio layer kind for this Figma node kind in this slice".into(),
-                    },
-                    false,
-                )
-            };
-            let appearance = self.appearance(n, group);
-            self.layers.push(StudioLayer {
-                schema_id: LayerSchema::V1,
-                layer_id: layer_id.clone(),
-                name,
-                parent,
-                kind,
-                payload,
-                visible: n.visible.unwrap_or(true),
-                appearance,
-                text_frame: None,
-            });
+                let (kind, payload, group) = if CONTAINER_KINDS.contains(&ty) || ty == "DOCUMENT" {
+                    ("group".to_owned(), Payload::Group, true)
+                } else if LEAF_KINDS.contains(&ty) {
+                    (
+                        "vector".to_owned(),
+                        Payload::Vector {
+                            path_ids: Vec::new(),
+                        },
+                        false,
+                    )
+                } else if let NodePayload::Text(text) = &n.payload {
+                    let story_id = self.mint.mint("STXT");
+                    self.story(text, story_id.clone());
+                    ("text".to_owned(), Payload::Text { story_id }, false)
+                } else {
+                    // Every kind without a Folio layer kind.
+                    self.lose(
+                        format!("native.node={ty}"),
+                        "layer_kind_preserved_unsupported",
+                    );
+                    let kind = format!("fig_{}", ty.to_ascii_lowercase());
+                    (
+                        kind.clone(),
+                        Payload::Unsupported {
+                            kind,
+                            schema_id: "fig-kiwi.NodeChange".into(),
+                            encoded_bytes: Vec::new(),
+                            reason: "no Folio layer kind for this Figma node kind in this slice"
+                                .into(),
+                        },
+                        false,
+                    )
+                };
+                let appearance = self.appearance(n, group);
+                self.layers.push(StudioLayer {
+                    schema_id: LayerSchema::V1,
+                    layer_id: layer_id.clone(),
+                    name,
+                    parent,
+                    kind,
+                    payload,
+                    visible: n.visible.unwrap_or(true),
+                    appearance,
+                    text_frame: None,
+                });
+                if ty == "SYMBOL" {
+                    self.symbols.push((idx, layer_id.clone()));
+                }
+                if matches!(&n.payload, NodePayload::Frame(f) if f.is_state_group == Some(true)) {
+                    self.sets.push((idx, layer_id.clone()));
+                }
+            }
             node_ref = NodeRef {
                 node_kind: NodeKind::Layer,
                 node_id: layer_id,
@@ -863,6 +1121,12 @@ pub fn to_native(
         id_map: Vec::new(),
         loss: BTreeMap::new(),
         current: None,
+        symbols: Vec::new(),
+        sets: Vec::new(),
+        instances: Vec::new(),
+        components: Vec::new(),
+        component_sets: Vec::new(),
+        component_instances: Vec::new(),
     };
     for &root in &doc.roots {
         let r = &doc.nodes[root];
@@ -875,9 +1139,13 @@ pub fn to_native(
             m.walk(root, Parent::Root(()), false, 0)?;
         }
     }
+    m.components()?;
     let Mapper {
         layers,
         stories,
+        components,
+        component_sets,
+        component_instances,
         artboards,
         styles,
         designs,
@@ -913,6 +1181,9 @@ pub fn to_native(
     let mut design_records = StudioDesignRecords::new(document_id);
     design_records.paint_styles = styles;
     design_records.nodes = designs;
+    design_records.components = components;
+    design_records.component_sets = component_sets;
+    design_records.component_instances = component_instances;
     for story in &stories {
         validate_text_story(story, cfg.budget, cancel, cfg.resolver).map_err(folio_error)?;
     }

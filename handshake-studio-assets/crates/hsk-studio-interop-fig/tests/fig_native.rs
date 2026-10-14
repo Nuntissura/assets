@@ -364,6 +364,113 @@ fn package(
 }
 
 #[test]
+fn real_native_components_instances_overrides() {
+    let m = mapped("fig-components-autolayout.fig");
+    let p = &m.proposal;
+    let index = id_index(&p.id_map);
+    let layer_of = |name: &str| index[&m.doc.named(name).next().unwrap().id].node_id.clone();
+    // Component set: the state-group frame's layer, variants in member order, first is default.
+    assert_eq!(p.design.component_sets.len(), 1);
+    let set = &p.design.component_sets[0];
+    assert_eq!(set.layer_id, layer_of("fixture-button"));
+    assert_eq!(
+        set.variant_group_properties,
+        BTreeMap::from([(
+            "state".to_owned(),
+            vec!["default".to_owned(), "hover".to_owned()]
+        )])
+    );
+    // Components: one per SYMBOL, on its group layer, with its variant assignment.
+    assert_eq!(p.design.components.len(), 2);
+    let component = |name: &str| {
+        let layer = layer_of(name);
+        p.design
+            .components
+            .iter()
+            .find(|k| k.layer_id == layer)
+            .unwrap()
+            .clone()
+    };
+    let default = component("state=default");
+    let hover = component("state=hover");
+    assert_eq!(set.default_variant_id, default.component_id);
+    assert_eq!(
+        default.variant_properties,
+        Some(BTreeMap::from([("state".to_owned(), "default".to_owned())]))
+    );
+    assert_eq!(
+        hover.variant_properties,
+        Some(BTreeMap::from([("state".to_owned(), "hover".to_owned())]))
+    );
+    // Instances: component_instance layers bound to SCIN records naming the right component.
+    assert_eq!(p.design.component_instances.len(), 3);
+    let instance = |name: &str| {
+        let l = layer(p, name);
+        assert_eq!(l.kind, "component_instance");
+        let Payload::PrimitiveReference {
+            schema_id,
+            object_id,
+        } = &l.payload
+        else {
+            panic!("instance payload")
+        };
+        assert_eq!(schema_id, SCHEMA_STUDIO_COMPONENT_INSTANCE);
+        p.design
+            .component_instances
+            .iter()
+            .find(|i| &i.instance_id == object_id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        instance("button-instance-1").main_component_id,
+        Some(default.component_id.clone())
+    );
+    assert_eq!(
+        instance("button-instance-2").main_component_id,
+        Some(hover.component_id.clone())
+    );
+    let third = instance("button-instance-3");
+    assert_eq!(third.main_component_id, Some(default.component_id.clone()));
+    // The text override targets the definition's TEXT layer (source 4:10) with the new characters.
+    let label = index[&SourceId {
+        session: 4,
+        local: 10,
+    }]
+        .node_id
+        .clone();
+    let ov = third
+        .overrides
+        .iter()
+        .find(|o| o.overridden_node_id == label)
+        .unwrap();
+    assert_eq!(ov.overridden_fields, ["characters"]);
+    assert_eq!(
+        ov.values["characters"],
+        hsk_studio_folio::StudioValue::String {
+            value: "Changed text".into()
+        }
+    );
+    // Size and name overrides have no Folio field: counted losses (instance 3 resizes; all three
+    // carry a name override).
+    let c = counts(&p.mapping_loss);
+    assert_eq!(
+        c[&(
+            "native.instance.override_size".to_owned(),
+            "override_size_no_folio_home"
+        )],
+        1
+    );
+    assert_eq!(
+        c[&(
+            "native.instance.override_name".to_owned(),
+            "override_name_no_folio_home"
+        )],
+        3
+    );
+}
+
+#[test]
 fn real_native_package_round_trip() {
     let cancel = CancellationToken::default();
     for name in FIXTURES {
