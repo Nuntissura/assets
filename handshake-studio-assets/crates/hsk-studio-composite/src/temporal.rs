@@ -14,12 +14,25 @@
 //!    `TileInput` of a translated raster layer moves by the translation, and a layer mask moves with
 //!    it only when Folio marks it `linked`. The plan is validated again by pigment.
 //!
-//! Honest limit of pigment's render-plan IR (it has no transform or resampling operator): only an
-//! integer pixel translation is representable. A fractional translation, a scale other than 1 or a
-//! rotation other than 0 is refused as [`TRANSFORM_REQUIRES_RESAMPLING`], never rounded. A non-zero
-//! translation of a non-raster layer (a group) is refused as [`TRANSLATE_NON_RASTER_LAYER`]: the
-//! tiles of its members are not addressed by its id. Frame documents and plans are disposable and
-//! never stored. The motion adapter ([`motion::MotionTemporalSource`], feature `motion`) is the
+//! 5. Resampling transforms (lane SMB-PIGMENT-TRANSFORM): a fractional translation, a scale other
+//!    than 1 or a rotation other than 0 lowers to pigment's layer-transform operator
+//!    (`LayerExtension::transform`, carried in [`FrameLowering::extensions`]; execute the frame with
+//!    `RenderBackend::execute_extended`) when the source DECLARES the layer's resample filter
+//!    ([`TemporalSource::resample_filter`], STU-MOT-007 / STU-RAS-141: never a silent default). The
+//!    affine is After Effects' layer model `x' = anchor + translate + R(rotation) S(scale)
+//!    (x - anchor)` in plan pixels, `anchor` from [`TemporalSource::layer_anchor`] or, when the
+//!    source gives none, the centre of the layer's tile; a linked mask is transformed with its
+//!    content (`LayerTransform::transform_mask`), an unlinked one stays. A scale of 0 on an axis hides
+//!    the layer for the frame (nothing is rendered). The integer path above is unchanged and stays
+//!    byte-identical (no envelope entry).
+//!
+//! Refusals, typed and never rounded: a resampling transform whose source declares no filter
+//! ([`TRANSFORM_REQUIRES_RESAMPLING`], the behaviour before the operator existed); a raster layer
+//! lowered to more than one tile ([`TRANSFORM_MULTI_TILE_LAYER`]: resampling tiles one by one
+//! would seam at tile edges); a non-zero translation or a transform of a non-raster layer (a group)
+//! ([`TRANSLATE_NON_RASTER_LAYER`]: the tiles of its members are not addressed by its id); a matrix
+//! pigment refuses (`CompositeError::Plan(PlanError::TransformMatrix)`). Frame documents and plans
+//! are disposable and never stored. The motion adapter ([`motion::MotionTemporalSource`], feature `motion`) is the
 //! only motion-aware code in composite; the default build keeps the static closure.
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -32,7 +45,11 @@ use hsk_studio_folio::{Budget, Payload, Resolver, Snapshot, validate_document};
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::BlendSpace;
-use hsk_studio_pigment::render_plan::{OutputTarget, PlanLimits, PlanNode, SourceKey};
+use hsk_studio_pigment::render_plan::{
+    ExtOperator, LayerExtension, OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId,
+    SourceKey,
+};
+use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -43,6 +60,8 @@ pub mod motion;
 pub const TRANSFORM_REQUIRES_RESAMPLING: &str = "transform_requires_resampling";
 /// Refusal key: a non-zero translation on a layer whose own payload is not raster tiles.
 pub const TRANSLATE_NON_RASTER_LAYER: &str = "translate_non_raster_layer";
+/// Refusal key: a resampling transform of a raster layer lowered to more than one tile.
+pub const TRANSFORM_MULTI_TILE_LAYER: &str = "transform_multi_tile_layer";
 
 /// One layer's state at one tick. [`LayerFrameState::IDENTITY`] changes nothing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,11 +70,12 @@ pub struct LayerFrameState {
     pub visible: bool,
     /// Multiplies the authored opacity, `0.0..=1.0`.
     pub opacity_scale: f64,
-    /// Offset from the authored placement in plan pixels (x right, y down); integers only.
+    /// Offset from the authored placement in plan pixels (x right, y down). Integers take the
+    /// exact tile-move path; a fractional value resamples (module docs, item 5).
     pub translate_px: [f64; 2],
-    /// Scale factor per axis; anything other than `[1, 1]` is refused (resampling).
+    /// Scale factor per axis about the anchor; other than `[1, 1]` resamples, `0` hides.
     pub scale: [f64; 2],
-    /// Rotation in degrees; anything other than 0 is refused (resampling).
+    /// Rotation in degrees about the anchor, clockwise on screen (y down); other than 0 resamples.
     pub rotation_deg: f64,
 }
 
@@ -84,6 +104,26 @@ pub trait TemporalSource {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Option<LayerFrameState>, TemporalError>;
+
+    /// The layer's declared resample filter (STU-MOT-007 `resample_filter`, STU-RAS-141 method).
+    /// `None` (the default) declares none, and a frame that would resample the layer is refused as
+    /// [`TRANSFORM_REQUIRES_RESAMPLING`]: the filter is never chosen silently.
+    fn resample_filter(&self, layer_id: &str) -> Option<ResampleFilter> {
+        let _ = layer_id;
+        None
+    }
+
+    /// Anchor point of the layer's scale and rotation at `tick`, in plan pixels of the authored
+    /// placement. `None` (the default) = the centre of the layer's tile.
+    fn layer_anchor(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<[f64; 2]>, TemporalError> {
+        let _ = (layer_id, tick, cancel);
+        Ok(None)
+    }
 }
 
 /// No animation: every frame inside the windows is the static plan.
@@ -220,6 +260,9 @@ pub struct FrameLowering {
     pub applied: Vec<(String, LayerFrameState)>,
     /// Layers hidden for this frame by their window or by the source, in document order.
     pub hidden: Vec<String>,
+    /// Envelope of the frame: one `LayerExtension::transform` per resampled layer (empty when no
+    /// layer resamples, the plain plan). Validated by pigment against `lowering.plan`.
+    pub extensions: PlanExtensions,
 }
 
 /// Largest magnitude an `f64` translation may have and still convert to `i64` exactly.
@@ -246,8 +289,22 @@ fn integer_px(layer_id: &str, v: f64) -> Result<i64, TemporalError> {
     Ok(v as i64)
 }
 
-/// Checks one state and returns its integer translation.
-fn admit_state(layer_id: &str, s: &LayerFrameState) -> Result<(i64, i64), TemporalError> {
+/// How one admitted state moves its layer.
+enum Movement {
+    /// Exact integer tile move (the original path; `(0, 0)` = none).
+    Integer(i64, i64),
+    /// Resampled through pigment's layer transform with the declared filter.
+    Resample(ResampleFilter),
+    /// A scale of 0 on an axis: nothing is rendered this frame.
+    Collapsed,
+}
+
+/// Checks one state and classifies its movement; `filter` is the source's declared filter.
+fn admit_state(
+    layer_id: &str,
+    s: &LayerFrameState,
+    filter: Option<ResampleFilter>,
+) -> Result<Movement, TemporalError> {
     let invalid = |field| TemporalError::InvalidState {
         layer_id: layer_id.to_owned(),
         field,
@@ -261,16 +318,34 @@ fn admit_state(layer_id: &str, s: &LayerFrameState) -> Result<(i64, i64), Tempor
     if !s.rotation_deg.is_finite() {
         return Err(invalid("rotation_deg"));
     }
-    if s.scale != [1.0, 1.0] || s.rotation_deg != 0.0 {
+    let integral = s.translate_px.iter().all(|v| v.fract() == 0.0);
+    if s.scale == [1.0, 1.0] && s.rotation_deg == 0.0 && integral {
+        return Ok(Movement::Integer(
+            integer_px(layer_id, s.translate_px[0])?,
+            integer_px(layer_id, s.translate_px[1])?,
+        ));
+    }
+    if !s.translate_px.iter().all(|v| v.is_finite()) {
+        return Err(invalid("translate_px"));
+    }
+    let Some(filter) = filter else {
         return Err(TemporalError::Unsupported {
             layer_id: layer_id.to_owned(),
             feature: TRANSFORM_REQUIRES_RESAMPLING,
         });
+    };
+    if s.scale.contains(&0.0) {
+        return Ok(Movement::Collapsed);
     }
-    Ok((
-        integer_px(layer_id, s.translate_px[0])?,
-        integer_px(layer_id, s.translate_px[1])?,
-    ))
+    Ok(Movement::Resample(filter))
+}
+
+/// One layer to resample: its state, explicit anchor (if any), filter and mask linkage.
+struct Resampled {
+    state: LayerFrameState,
+    anchor: Option<[f64; 2]>,
+    filter: ResampleFilter,
+    linked_mask: bool,
 }
 
 fn shift(r: &mut Rect, (dx, dy): (i64, i64)) -> Result<(), TemporalError> {
@@ -328,6 +403,7 @@ pub fn lower_frame(
     let mut hidden = Vec::new();
     let mut moves: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut linked_masks: BTreeSet<String> = BTreeSet::new();
+    let mut resampled: BTreeMap<String, Resampled> = BTreeMap::new();
     for (index, layer) in doc.layers.iter().enumerate() {
         cancel.check().map_err(|_| canceled())?;
         let id = layer.layer_id.as_str();
@@ -340,10 +416,43 @@ pub fn lower_frame(
         let mut show = in_window;
         let mut opacity_scale = 1.0;
         if let Some(s) = state {
-            let movement = admit_state(id, &s)?;
-            show = s.visible;
+            let movement = admit_state(id, &s, source.resample_filter(id))?;
+            show = s.visible && !matches!(movement, Movement::Collapsed);
+            let linked = layer
+                .appearance
+                .as_ref()
+                .and_then(|a| a.mask.as_ref())
+                .is_some_and(|m| m.linked);
+            if show && let Movement::Resample(filter) = movement {
+                if !matches!(layer.payload, Payload::Raster { .. }) {
+                    return Err(TemporalError::Unsupported {
+                        layer_id: id.to_owned(),
+                        feature: TRANSLATE_NON_RASTER_LAYER,
+                    });
+                }
+                let anchor = source.layer_anchor(id, tick, cancel)?;
+                if anchor.is_some_and(|a| !a.iter().all(|v| v.is_finite())) {
+                    return Err(TemporalError::InvalidState {
+                        layer_id: id.to_owned(),
+                        field: "anchor_px",
+                    });
+                }
+                resampled.insert(
+                    id.to_owned(),
+                    Resampled {
+                        state: s,
+                        anchor,
+                        filter,
+                        linked_mask: linked,
+                    },
+                );
+            }
             if show {
                 opacity_scale = s.opacity_scale;
+                let movement = match movement {
+                    Movement::Integer(dx, dy) => (dx, dy),
+                    _ => (0, 0),
+                };
                 if movement != (0, 0) {
                     if !matches!(layer.payload, Payload::Raster { .. }) {
                         return Err(TemporalError::Unsupported {
@@ -352,12 +461,7 @@ pub fn lower_frame(
                         });
                     }
                     moves.insert(id.to_owned(), movement);
-                    if layer
-                        .appearance
-                        .as_ref()
-                        .and_then(|a| a.mask.as_ref())
-                        .is_some_and(|m| m.linked)
-                    {
+                    if linked {
                         linked_masks.insert(id.to_owned());
                     }
                 }
@@ -458,10 +562,90 @@ pub fn lower_frame(
             .validate(&PlanLimits::default())
             .map_err(CompositeError::Plan)?;
     }
+    let extensions = if resampled.is_empty() {
+        PlanExtensions::default()
+    } else {
+        transform_envelope(&mut lowering, &resampled)?
+    };
     Ok(FrameLowering {
         lowering,
         tick,
         applied,
         hidden,
+        extensions,
     })
+}
+
+/// The envelope entries of the resampled layers: each layer's single tile node, every group layer
+/// that references it, one `LayerTransform` with the After Effects affine. Records the transform
+/// operator's class in the lowering ledger and validates the envelope with pigment.
+fn transform_envelope(
+    lowering: &mut RenderLowering,
+    resampled: &BTreeMap<String, Resampled>,
+) -> Result<PlanExtensions, TemporalError> {
+    let owner: BTreeMap<SourceKey, &str> = lowering
+        .sources
+        .iter()
+        .map(|(k, t)| (*k, t.layer_id.as_str()))
+        .collect();
+    // Tile nodes of each resampled layer, in node order.
+    let mut tiles: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (n, node) in lowering.plan.nodes.iter().enumerate() {
+        if let PlanNode::Tile(t) = node
+            && let Some(layer) = owner.get(&t.key).filter(|l| resampled.contains_key(**l))
+        {
+            tiles.entry(layer).or_default().push(n);
+        }
+    }
+    let mut entries = Vec::new();
+    for (id, nodes) in &tiles {
+        let (Some(r), [tile_node]) = (resampled.get(*id), nodes.as_slice()) else {
+            return Err(TemporalError::Unsupported {
+                layer_id: (*id).to_owned(),
+                feature: TRANSFORM_MULTI_TILE_LAYER,
+            });
+        };
+        let Some(PlanNode::Tile(tile)) = lowering.plan.nodes.get(*tile_node) else {
+            return Err(CompositeError::Overflow.into());
+        };
+        let p = tile.placement;
+        let [ax, ay] = r.anchor.unwrap_or([
+            p.x as f64 + f64::from(p.width) / 2.0,
+            p.y as f64 + f64::from(p.height) / 2.0,
+        ]);
+        let s = &r.state;
+        let affine = Affine2::from_parts(
+            ax,
+            ay,
+            s.scale[0],
+            s.scale[1],
+            s.rotation_deg,
+            s.translate_px[0],
+            s.translate_px[1],
+        );
+        for (g, node) in lowering.plan.nodes.iter().enumerate() {
+            let PlanNode::Group(group) = node else {
+                continue;
+            };
+            for (li, l) in group.layers.iter().enumerate() {
+                if l.input.0 as usize != *tile_node {
+                    continue;
+                }
+                let has_mask = l.mask.is_some_and(|m| !m.is_clip_to_base());
+                let transform = LayerTransform::new(affine, r.filter)
+                    .with_mask(r.linked_mask && has_mask);
+                let (Ok(g32), Ok(li32)) = (u32::try_from(g), u32::try_from(li)) else {
+                    return Err(CompositeError::Overflow.into());
+                };
+                entries.push(LayerExtension::new(PlanNodeId(g32), li32).with_transform(transform));
+            }
+        }
+        let op = ExtOperator::Transform(r.filter);
+        lowering.exactness.record(op.key(), op.intrinsic());
+    }
+    let extensions = PlanExtensions::from_layers(entries);
+    extensions
+        .validate(&lowering.plan)
+        .map_err(CompositeError::Plan)?;
+    Ok(extensions)
 }
