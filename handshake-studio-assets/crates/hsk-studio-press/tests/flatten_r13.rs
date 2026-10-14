@@ -2756,6 +2756,7 @@ fn descriptor_states_the_structure_tree_rule() {
         "identified by its role and reachability",
         "structure_strip_follows_the_tree_and_structure_destinations",
         "through structure-tree keys, /K /P /Ref /ParentTree",
+        "through every key except the outward pointers /Pg /Obj /Stm /StmOwn",
     ] {
         assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
     }
@@ -2784,6 +2785,8 @@ fn descriptor_states_the_structure_tree_rule() {
         "structure_strip_keeps_multimedia_of_kept_pages",
         "structure_objects_still_written_after_the_strip_are_reported",
         "structure_destinations_of_goto_actions_named_through_references_are_unlinked",
+        "structure_tree_closed_set_follows_every_key_without_a_depth_cap",
+        "structure_tree_outward_keys_are_skipped_only_where_they_point_out",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
@@ -3741,6 +3744,155 @@ fn structure_tree_closed_set_follows_every_key_without_a_depth_cap() {
         }
         if name.starts_with("C7") && find(&out.bytes, b"/Link").is_none() {
             red.push(format!("{name}: the kept link annotation was removed"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R30-S1, R30-S2, R30-S3 (validation/R30-prereview-press-narrow.json, probes N1o, N1p, N1s, N1w, N2, N3ns, N3af; red at d43fd4e):
+/// the closed set of DIAG-PRESS-R29 skipped `/Pg`, `/Obj`, `/Stm` and `/StmOwn` in every dictionary, so a `/ClassMap` class, a
+/// `/RoleMap` entry or an attribute of a free-name owner (`/O /XML-1.00`) that the writer named `Obj`, `Pg`, `Stm` or `StmOwn`
+/// left the set (R30-S1, R30-S2), and a root holding only the PDF 2.0 root keys `/Namespaces`, `/AF` or `/PronunciationLexicon`
+/// named no tree (R30-S3); a private catalog key kept their text with the save read proven. Since R30 the four keys are skipped
+/// only where they point out of the tree: in a structure element (`/Pg`), a marked-content reference (`/Pg`, `/Stm`, `/StmOwn`)
+/// and an object reference (`/Pg`, `/Obj`) reached as structure (through `/K`, `/P`, `/Ref` and the parent and id trees); a class
+/// map, role map, attribute object or namespace is walked on every key, also when a class or attribute is named `S` (N1S, N2s).
+/// Each case reads NotProven with its text kept by the private key. Controls: N1o and N3ns without the private key read flattened
+/// with the loss; N4 (an `MCR` whose `/Stm` names the kept page's content stream) reads flattened (no over-count); the Word-like
+/// file C7 of `structure_tree_closed_set_follows_every_key_without_a_depth_cap` stays green.
+#[test]
+fn structure_tree_outward_keys_are_skipped_only_where_they_point_out() {
+    let tagged = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";
+    let class = |key: &str, cat: &str| -> (String, Vec<(u32, String)>) {
+        (
+            format!("{tagged} {cat}"),
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R] /ClassMap 85 0 R >>".to_string()),
+                (82, format!("<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /C /{key} /K 0 >>")),
+                (85, format!("<< /{key} 87 0 R >>")),
+                (87, "<< /O /UserProperties /P [<< /N (n) /V (CLASS-SECRET) >>] >>".to_string()),
+            ],
+        )
+    };
+    let attr = |a: &str| -> Vec<(u32, String)> {
+        vec![
+            (80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()),
+            (81, "<< /Type /StructElem /S /Table /P 80 0 R /Pg 3 0 R /A 86 0 R /K 0 >>".to_string()),
+            (86, a.to_string()),
+            (91, "(XMLATTR-SECRET)".to_string()),
+        ]
+    };
+    let root_only = |root: &str, n: u32, body: &str| -> Vec<(u32, String)> { vec![(80, root.to_string()), (n, body.to_string())] };
+    let private = "/HskCM 87 0 R";
+    // (name, catalog, page one extra, page two extra, objects, text, expected reported (true) or flattened with the loss (false))
+    type Case = (&'static str, String, &'static str, &'static str, Vec<(u32, String)>, &'static str, bool);
+    let mut cases: Vec<Case> = Vec::new();
+    for (name, key) in [("N1o: class named Obj", "Obj"), ("N1p: class named Pg", "Pg"), ("N1s: class named Stm", "Stm"), ("N1w: class named StmOwn", "StmOwn"), ("N1-ctrl: class named C1", "C1")] {
+        let (cat, objects) = class(key, private);
+        cases.push((name, cat, "", "/StructParents 0", objects, "CLASS-SECRET", true));
+    }
+    cases.push((
+        "N1S: class map with classes named S and Obj",
+        format!("{tagged} {private}"),
+        "",
+        "/StructParents 0",
+        vec![
+            (80, "<< /Type /StructTreeRoot /K [82 0 R] /ClassMap 85 0 R >>".to_string()),
+            (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /C [/S /Obj] /K 0 >>".to_string()),
+            (85, "<< /S << /O /Layout /Placement /Block >> /Obj 87 0 R >>".to_string()),
+            (87, "<< /O /UserProperties /P [<< /N (n) /V (CLASS-SECRET) >>] >>".to_string()),
+        ],
+        "CLASS-SECRET",
+        true,
+    ));
+    cases.push((
+        "N1r: role map entry named Obj",
+        format!("{tagged} /HskRM 88 0 R"),
+        "",
+        "/StructParents 0",
+        vec![
+            (80, "<< /Type /StructTreeRoot /K [82 0 R] /RoleMap 84 0 R >>".to_string()),
+            (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+            (84, "<< /Obj 88 0 R >>".to_string()),
+            (88, "(ROLEMAP-SECRET)".to_string()),
+        ],
+        "ROLEMAP-SECRET",
+        true,
+    ));
+    cases.push(("N2: XML-1.00 attribute named Obj", format!("{tagged} /HskX 91 0 R"), "/StructParents 0", "", attr("<< /O /XML-1.00 /Obj 91 0 R >>"), "XMLATTR-SECRET", true));
+    cases.push(("N2s: XML-1.00 attributes named S and Obj", format!("{tagged} /HskX 91 0 R"), "/StructParents 0", "", attr("<< /O /XML-1.00 /S (s) /Obj 91 0 R >>"), "XMLATTR-SECRET", true));
+    cases.push((
+        "N3ns: root with only /Namespaces",
+        format!("{tagged} /HskNS 92 0 R"),
+        "",
+        "",
+        root_only("<< /Namespaces [92 0 R] >>", 92, "<< /Type /Namespace /NS (NS-SECRET) >>"),
+        "NS-SECRET",
+        true,
+    ));
+    cases.push((
+        "N3af: root with only /AF",
+        format!("{tagged} /HskAF 93 0 R"),
+        "",
+        "",
+        root_only("<< /AF [93 0 R] >>", 93, "<< /Type /Filespec /F (a.txt) /Desc (AF-SECRET) >>"),
+        "AF-SECRET",
+        true,
+    ));
+    cases.push((
+        "N3pl: root with only /PronunciationLexicon",
+        format!("{tagged} /HskPL 94 0 R"),
+        "",
+        "",
+        root_only("<< /PronunciationLexicon [94 0 R] >>", 94, "<< /Type /Filespec /F (lex.pls) /Desc (PLS-SECRET) >>"),
+        "PLS-SECRET",
+        true,
+    ));
+    let (cat, objects) = class("Obj", "");
+    cases.push(("N1o control: class named Obj, no private key", cat, "", "/StructParents 0", objects, "CLASS-SECRET", false));
+    cases.push((
+        "N3ns control: root with only /Namespaces, no private key",
+        tagged.to_string(),
+        "",
+        "",
+        root_only("<< /Namespaces [92 0 R] >>", 92, "<< /Type /Namespace /NS (NS-SECRET) >>"),
+        "NS-SECRET",
+        false,
+    ));
+    cases.push((
+        "N4 control: MCR /Stm names the kept page's content stream",
+        tagged.to_string(),
+        "/StructParents 0",
+        "",
+        vec![
+            (80, "<< /Type /StructTreeRoot /K [81 0 R 83 0 R] >>".to_string()),
+            (81, "<< /Type /StructElem /S /Figure /P 80 0 R /Pg 3 0 R /Alt (MCR-ALT-SECRET) /K 0 >>".to_string()),
+            (83, "<< /Type /StructElem /S /P /P 80 0 R /K [<< /Type /MCR /Pg 5 0 R /Stm 7 0 R /StmOwn 6 0 R /MCID 0 >>] >>".to_string()),
+        ],
+        "MCR-ALT-SECRET",
+        false,
+    ));
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog, one, two, objects, text, reported) in cases {
+        let pdf = pages_pdf(&catalog, one, two, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        let state = format!("region_flattened {} residual {} reasons {:?} losses {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons(), out.losses);
+        if reported {
+            if gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} is gone (the case needs it to survive)"));
+            }
+            if !reported_for_the_tree(&out) {
+                red.push(format!("{name}: {state}, expected reported"));
+            }
+        } else if !gone(&out.bytes, text) || !read_as_flattened(&out) || out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] {
+            red.push(format!("{name}: {text} gone {} {state}, expected flattened with the loss", gone(&out.bytes, text)));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || find(&out.bytes, b"StructTreeRoot").is_some() {
+            red.push(format!("{name}: region text, kept page text or /StructTreeRoot wrong"));
+        }
+        if PdfDoc::open(&out.bytes, &quick(), &token()).is_err() {
+            red.push(format!("{name}: the saved file does not open"));
         }
     }
     assert!(red.is_empty(), "{red:#?}");

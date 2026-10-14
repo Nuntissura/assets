@@ -10,10 +10,12 @@
 //! `default_redaction_strips_the_structure_tree`, `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`,
 //! `structure_strip_keeps_multimedia_of_kept_pages`); structure objects still written after the strip are reported NotProven
 //! (key-based closed set from the original tree, lead diagnoses DIAG-PRESS-R28 and DIAG-PRESS-R29: [`strip_structure`] records every
-//! object the original tree reaches through every key except `/Pg`, `/Obj`, `/Stm` and `/StmOwn`, with no type, shape or depth
-//! exclusion, and `check_document` counts each one the save still writes, whatever its shape; budget exhaustion fails closed; tests
+//! object the original tree reaches through every key except the outward keys where they point out of the tree (`/Pg` of an
+//! element, `/Pg` `/Stm` `/StmOwn` of an `MCR`, `/Pg` `/Obj` of an `OBJR`, reached as structure; R30-S1 S2), with no type, shape or
+//! depth exclusion, and `check_document` counts each one the save still writes, whatever its shape; budget exhaustion fails closed; tests
 //! `structure_objects_still_written_after_the_strip_are_reported`, `structure_tree_closed_set_follows_every_key_without_a_depth_cap`,
-//! unit test `closed_set_budget_exhaustion_is_counted`); with the opt-out
+//! `structure_tree_outward_keys_are_skipped_only_where_they_point_out`, unit test `closed_set_budget_exhaustion_is_counted`); with
+//! the opt-out
 //! (`StructureTreePolicy::KeepNotProven`), in a structure tree whose root is an indirect object, the structure elements that
 //! the purge reads and that point at it stay with their text removed (best effort). Whatever the policy, when a save flattens at
 //! least one region and the saved document still has a structure tree (or a dictionary with the shape of a structure element,
@@ -667,13 +669,19 @@ fn link_values<'a>(o: &'a Object, gotos: &BTreeSet<u32>, depth: usize, cap: usiz
 /// text not re-read here, UNVERIFIED): `check_document` reads a dictionary holding one of them as a root (R26-S3).
 const STRUCT_ROOT_KEYS: [&str; 5] = ["ParentTree", "IDTree", "ClassMap", "RoleMap", "ParentTreeNextKey"];
 
-/// `d` has the keys of a structure tree root: `/Type` is the name `StructTreeRoot`, or there is no `/Type` and it holds `/K`
-/// or one of [`STRUCT_ROOT_KEYS`]. Only the typed loss of [`strip_structure`] reads it (R27-S1, R27-S3): a catalog
+/// Keys of a structure tree root dictionary besides `/Type` (PDF 2.0, ISO 32000-2 14.7.2, as the HexaPDF `StructTreeRoot` field
+/// list cites it; the standard's text not re-read here, UNVERIFIED): `/K`, the PDF 1.x root keys of [`STRUCT_ROOT_KEYS`] and the
+/// PDF 2.0 keys `/Namespaces`, `/PronunciationLexicon` and `/AF` (R30-S3). [`names_tree_root`] and [`root_shaped`] read them; the
+/// shape net of `check_document` keeps [`STRUCT_ROOT_KEYS`].
+const TREE_ROOT_KEYS: [&str; 9] = ["K", "ParentTree", "IDTree", "ClassMap", "RoleMap", "ParentTreeNextKey", "Namespaces", "PronunciationLexicon", "AF"];
+
+/// `d` has the keys of a structure tree root: `/Type` is the name `StructTreeRoot`, or there is no `/Type` and it holds one of
+/// [`TREE_ROOT_KEYS`]. Only the typed loss of [`strip_structure`] reads it (R27-S1, R27-S3): a catalog
 /// `/StructTreeRoot` that names an `/AcroForm`, an annotation or an optional-content group is unlinked, but no loss is reported.
 fn root_shaped(doc: &PdfDoc, d: &Dict) -> bool {
     match d.get("Type").map(|t| doc.resolve(t)) {
         Some(t) => t.is_name("StructTreeRoot"),
-        None => holds(d, "K") || STRUCT_ROOT_KEYS.iter().any(|k| holds(d, k)),
+        None => TREE_ROOT_KEYS.iter().any(|k| holds(d, k)),
     }
 }
 
@@ -696,9 +704,11 @@ fn root_shaped(doc: &PdfDoc, d: &Dict) -> bool {
 ///
 /// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and without a depth cap since DIAG-PRESS-R29): before the unlink,
 /// [`structure_tree_objects`] records every object reachable from the original catalog `/StructTreeRoot` through every key except
-/// the outward pointers `/Pg`, `/Obj`, `/Stm` and `/StmOwn` ([`Stripped::tree`]); `check_document` counts each one the saved file
-/// still holds (NotProven), whatever its shape (tests `structure_objects_still_written_after_the_strip_are_reported`,
-/// `structure_tree_closed_set_follows_every_key_without_a_depth_cap`). The walk is bounded by an object-count budget
+/// the outward keys where they point out of the tree ([`outward_keys`]: `/Pg` of an element, `/Pg` `/Stm` `/StmOwn` of an `MCR`,
+/// `/Pg` `/Obj` of an `OBJR`, each reached as structure; a class map, role map, attribute object or namespace is walked on every
+/// key, R30-S1 S2) ([`Stripped::tree`]); `check_document` counts each one the saved file still holds (NotProven), whatever its
+/// shape (tests `structure_objects_still_written_after_the_strip_are_reported`,
+/// `structure_tree_closed_set_follows_every_key_without_a_depth_cap`, `structure_tree_outward_keys_are_skipped_only_where_they_point_out`). The walk is bounded by an object-count budget
 /// (`Limits::max_objects`); when the budget runs out the set is incomplete and `check_document` counts that (fail closed, unit test
 /// `closed_set_budget_exhaustion_is_counted`). A `GoTo` whose `/S` is a reference resolving to the name `GoTo` is a `GoTo` too
 /// (R28-S2, test `structure_destinations_of_goto_actions_named_through_references_are_unlinked`).
@@ -758,17 +768,44 @@ pub(crate) struct Stripped {
     pub incomplete: bool,
 }
 
-/// Keys of a structure-tree object that point OUT of the tree (lead diagnosis DIAG-PRESS-R29): the page of an element or reference
-/// (`/Pg`), the annotation or XObject of an object reference (`/Obj`) and the content stream of a marked-content reference (`/Stm`,
-/// `/StmOwn`). [`structure_tree_objects`] follows every other key.
-const TREE_OUTWARD_KEYS: [&[u8]; 4] = [b"Pg", b"Obj", b"Stm", b"StmOwn"];
+/// Keys of the structure tree that point OUT of it where they have their ISO 32000 meaning (lead diagnosis DIAG-PRESS-R29, narrowed
+/// after R30-S1 and R30-S2): `/Pg` (the page) of a structure element; `/Pg`, `/Stm` and `/StmOwn` (the page and the content streams)
+/// of a marked-content reference (`/Type /MCR`); `/Pg` and `/Obj` (the page and the annotation or XObject) of an object reference
+/// (`/Type /OBJR`). [`outward_keys`] gives them for a dictionary that [`structure_tree_objects`] reaches as structure; every other
+/// dictionary (a class map, a role map, an attribute object of any owner, a namespace, an associated file) is walked on every key,
+/// a class, role or attribute named `Obj`, `Pg`, `Stm` or `StmOwn` included.
+const MCR_OUTWARD_KEYS: [&[u8]; 3] = [b"Pg", b"Stm", b"StmOwn"];
+const OBJR_OUTWARD_KEYS: [&[u8]; 2] = [b"Pg", b"Obj"];
+const ELEMENT_OUTWARD_KEYS: [&[u8]; 1] = [b"Pg"];
 
-/// The catalog's `/StructTreeRoot` value names a structure tree root by its keys: `/Type /StructTreeRoot`, or `/K` or a root key
-/// ([`STRUCT_ROOT_KEYS`]), whatever its other keys. A value that resolves to a dictionary without them (an `/AcroForm`, an
-/// annotation, an optional-content group, R27-S1 inputs X1, X2, X7) names no tree; any other value is walked.
+/// Keys through which a structure node names further structure nodes: `/K` (kids), `/P` (parent), `/Ref` (referenced elements),
+/// `/ParentTree` and `/IDTree` of the root, and `/Kids`, `/Nums` and `/Names` of their number-tree and name-tree nodes. A value
+/// that a structure node names through any other key (`/A`, `/C`, `/ClassMap`, `/RoleMap`, `/Namespaces`, `/AF`, a private key)
+/// is walked as data: on every key, whatever it holds, and so is everything it reaches (R30-S1, R30-S2).
+const TREE_STRUCT_KEYS: [&[u8]; 8] = [b"K", b"P", b"Ref", b"ParentTree", b"IDTree", b"Kids", b"Nums", b"Names"];
+
+/// The keys of `d`, reached as structure, that point out of the tree: [`MCR_OUTWARD_KEYS`] for `/Type /MCR`,
+/// [`OBJR_OUTWARD_KEYS`] for `/Type /OBJR`, [`ELEMENT_OUTWARD_KEYS`] for a structure element (`/Type /StructElem`, or no `/Type`
+/// and `/S`); none for any other dictionary (a root, a tree node, an alias, a dictionary with another `/Type`).
+fn outward_keys(doc: &PdfDoc, d: &Dict) -> &'static [&'static [u8]] {
+    if type_is(doc, d, "MCR") {
+        &MCR_OUTWARD_KEYS
+    } else if type_is(doc, d, "OBJR") {
+        &OBJR_OUTWARD_KEYS
+    } else if type_is(doc, d, "StructElem") || (!holds(d, "Type") && holds(d, "S")) {
+        &ELEMENT_OUTWARD_KEYS
+    } else {
+        &[]
+    }
+}
+
+/// The catalog's `/StructTreeRoot` value names a structure tree root by its keys: `/Type /StructTreeRoot`, or one of
+/// [`TREE_ROOT_KEYS`] (`/K`, a PDF 1.x root key, or since R30-S3 `/Namespaces`, `/PronunciationLexicon` or `/AF`), whatever its
+/// other keys. A value that resolves to a dictionary without them (an `/AcroForm`, an annotation, an optional-content group,
+/// R27-S1 inputs X1, X2, X7) names no tree; any other value is walked.
 fn names_tree_root(doc: &PdfDoc, value: &Object) -> bool {
     match doc.resolve(value).as_dict() {
-        Some(d) => type_is(doc, d, "StructTreeRoot") || holds(d, "K") || STRUCT_ROOT_KEYS.iter().any(|k| holds(d, k)),
+        Some(d) => type_is(doc, d, "StructTreeRoot") || TREE_ROOT_KEYS.iter().any(|k| holds(d, k)),
         None => true,
     }
 }
@@ -778,24 +815,32 @@ fn type_is(doc: &PdfDoc, d: &Dict, name: &str) -> bool {
 }
 
 /// The closed set of the structure tree (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and cap-free since DIAG-PRESS-R29,
-/// R29-S1 S2 S3): every object reachable from `value` (the catalog's `/StructTreeRoot`, as written) through every key of every
-/// dictionary and stream dictionary on the way except [`TREE_OUTWARD_KEYS`], and through every array element: the root, the
-/// elements (through `/K`, `/P`, `/Ref`, the parent tree and the id tree), the number-tree and name-tree nodes, the `/ClassMap`,
-/// `/RoleMap` and namespace objects, the attribute objects and what they name, alias objects and whatever else a tree value names,
-/// with no type, `/Subtype` or shape exclusion and no depth cap. Only the catalog and the pages are not entered (their own keys
-/// are judged by the page and catalog rules; entering them would reach the whole document). A value naming no tree root
-/// ([`names_tree_root`]) gives the empty set. Each object is entered once (visited set); the walk is iterative. The second value
-/// is `true` when the walk stopped because the set grew past `budget` objects (the set is then incomplete; fail closed).
-/// Over-count on an object a kept path shares with the tree is accepted (fail closed).
+/// R29-S1 S2 S3; outward keys only where they point out since R30-S1 S2 S3): every object reachable from `value` (the catalog's
+/// `/StructTreeRoot`, as written) through every key of every dictionary and stream dictionary on the way and through every array
+/// element, except the outward keys ([`outward_keys`]) of a structure element, a marked-content reference or an object reference
+/// reached as structure: the root, the elements (through `/K`, `/P`, `/Ref`, the parent tree and the id tree), the number-tree and
+/// name-tree nodes, the `/ClassMap`, `/RoleMap` and namespace objects, the attribute objects and what they name, associated files,
+/// alias objects and whatever else a tree value names, with no type, `/Subtype` or shape exclusion and no depth cap. Each value
+/// carries whether it is reached as structure: the root is; a value a structure node names through [`TREE_STRUCT_KEYS`] or an
+/// array element of a structure value is; anything else (a class map, a role map, an attribute object, a namespace, a private key's
+/// value, and everything they reach) is data and is walked on every key, `/Pg`, `/Obj`, `/Stm` and `/StmOwn` included (R30-S1,
+/// R30-S2). Only the catalog and the pages are not entered (their own keys are judged by the page and catalog rules; entering them
+/// would reach the whole document). A value naming no tree root ([`names_tree_root`]) gives the empty set. An object is expanded
+/// the first time it is entered and once more if it is later entered as data after being expanded as structure (the data walk
+/// follows a superset of keys); the walk is iterative. The second value is `true` when the walk stopped because the set grew past
+/// `budget` objects (the set is then incomplete; fail closed). Over-count on an object a kept path shares with the tree is accepted
+/// (fail closed).
 fn structure_tree_objects(doc: &PdfDoc, catalog: u32, value: &Object, budget: usize, cancel: &CancellationToken) -> Result<(BTreeSet<u32>, bool)> {
     let mut set: BTreeSet<u32> = BTreeSet::new();
     if !names_tree_root(doc, value) {
         return Ok((set, false));
     }
     let outside: BTreeSet<u32> = doc.pages.iter().copied().chain([catalog]).collect();
-    let mut stack: Vec<&Object> = vec![value];
+    // Objects expanded as data (every key followed); an object in `set` but not here was expanded as structure only.
+    let mut as_data: BTreeSet<u32> = BTreeSet::new();
+    let mut stack: Vec<(&Object, bool)> = vec![(value, true)];
     let mut steps = 0usize;
-    while let Some(o) = stack.pop() {
+    while let Some((o, structure)) = stack.pop() {
         steps = steps.saturating_add(1);
         if steps & 1023 == 0 {
             check_cancel(cancel)?;
@@ -805,19 +850,26 @@ fn structure_tree_objects(doc: &PdfDoc, catalog: u32, value: &Object, budget: us
                 if outside.contains(&r.num) {
                     continue;
                 }
-                if let Some(e) = doc.objects.get(&r.num)
-                    && set.insert(r.num)
-                {
-                    if set.len() > budget {
-                        return Ok((set, true));
-                    }
-                    stack.push(&e.obj);
+                let Some(e) = doc.objects.get(&r.num) else { continue };
+                let first = set.insert(r.num);
+                if first && set.len() > budget {
+                    return Ok((set, true));
+                }
+                let expand = if structure { first } else { as_data.insert(r.num) };
+                if expand {
+                    stack.push((&e.obj, structure));
                 }
             }
-            Object::Array(a) => stack.extend(a.iter()),
+            Object::Array(a) => stack.extend(a.iter().map(|v| (v, structure))),
             Object::Dict(_) | Object::Stream(_) => {
                 let Some(d) = o.as_dict() else { continue };
-                stack.extend(d.entries.iter().filter(|(k, _)| !TREE_OUTWARD_KEYS.contains(&k.as_slice())).map(|(_, v)| v));
+                let skip: &[&[u8]] = if structure { outward_keys(doc, d) } else { &[] };
+                for (k, v) in &d.entries {
+                    if skip.contains(&k.as_slice()) {
+                        continue;
+                    }
+                    stack.push((v, structure && TREE_STRUCT_KEYS.contains(&k.as_slice())));
+                }
             }
             _ => {}
         }
@@ -1802,12 +1854,13 @@ impl Scan<'_> {
 /// `/Type`, and its bytes that are not white space, comments, the header pairs or members count; the saved trailer's values
 /// (`/ID` is copied from the source) are read too.
 /// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and cap-free, DIAG-PRESS-R29): `stripped.tree` is the set of the
-/// objects the original structure tree reached through every key except `/Pg`, `/Obj`, `/Stm` and `/StmOwn` (`Stripped::tree`,
+/// objects the original structure tree reached through every key except the outward keys where they point out of the tree
+/// (`outward_keys`, R30-S1 S2) (`Stripped::tree`,
 /// empty unless the default strip ran); when `flattens`, any of them the saved file still holds (as an object or as a member of an
 /// object stream it holds as a stream) counts, whatever its shape, and so does a set the walk could not close within its object
 /// budget (`Stripped::incomplete`, fail closed); the shape rules above stay as a further net (tests
 /// `structure_objects_still_written_after_the_strip_are_reported`, `structure_tree_closed_set_follows_every_key_without_a_depth_cap`,
-/// unit test `closed_set_budget_exhaustion_is_counted`).
+/// `structure_tree_outward_keys_are_skipped_only_where_they_point_out`, unit test `closed_set_budget_exhaustion_is_counted`).
 pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flattens: bool, stripped: &Stripped) -> u32 {
     let tree = &stripped.tree;
     let mut scan = Scan {

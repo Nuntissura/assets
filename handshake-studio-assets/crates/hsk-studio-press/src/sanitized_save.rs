@@ -1609,8 +1609,8 @@ pub fn redact_and_save_opts(
         let annotations = page_annotations(doc, &flats);
         // Operator decision D28: by default a save that flattens a region removes the whole structure tree (typed loss);
         // the opt-out keeps it and neutralizes it best effort (then check_document reports it).
-        // DIAG-PRESS-R28/R29: the strip also returns the closed set of the tree's objects (every key but /Pg /Obj /Stm /StmOwn, no depth
-        // cap, object budget); check_document counts any the save still writes, and a set the budget left incomplete.
+        // DIAG-PRESS-R28/R29: the strip also returns the closed set of the tree's objects (every key but the outward keys of elements,
+        // MCR and OBJR reached as structure, R30; no depth cap, object budget); check_document counts any the save still writes, and a set the budget left incomplete.
         let stripped = if options.structure_tree == StructureTreePolicy::Strip && !flats.is_empty() { strip_structure(doc, cancel)? } else { Stripped::default() };
         let tags_removed = stripped.removed;
         let structure_elements_neutralized = neutralize_structure(doc, &flats, &annotations, cancel)?;
