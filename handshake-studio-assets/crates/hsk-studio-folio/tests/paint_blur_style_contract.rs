@@ -258,7 +258,7 @@ fn image_paint_round_trips_and_refusals() {
         ("/image_paints/0/image/content_digest/digest", json!("A".repeat(64))),
         ("/image_paints/0/image/content_digest/algorithm", json!("md5")),
         ("/image_paints/1/image/part", json!("images/../secret")),
-        ("/image_paints/1/image/part", json!("C:/x.png")),
+        ("/image_paints/1/image/part", json!("images/x:png")),
         ("/image_paints/1/image/part", json!("images\\x")),
         ("/image_paints/0/transform", json!([1.0, 2.0, 2.0, 4.0, 0.0, 0.0])),
         ("/image_paints/0/scaling_factor", json!(0.0)),
