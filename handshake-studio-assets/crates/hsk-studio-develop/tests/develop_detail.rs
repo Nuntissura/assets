@@ -343,7 +343,8 @@ fn recipe_gating_tile_api_refusals_and_hostile_fields() {
         assert_eq!(calls, 0);
     }
     // Every field is validated even while the group is off.
-    let hostile: [(&str, fn(&mut Detail), DevelopError); 8] = [
+    type Hostile = (&static str, fn(&mut Detail), DevelopError);
+    let hostile: [Hostile; 8] = [
         ("texture", |d| d.texture = 100.5, DevelopError::InvalidAdjustment),
         ("dehaze", |d| d.dehaze = f64::NAN, DevelopError::NonFinite),
         ("amount", |d| d.sharpen.amount = 151.0, DevelopError::InvalidAdjustment),
@@ -384,7 +385,10 @@ fn corpus_dng_detail_stack_is_pinned() {
         return;
     };
     let raw = decode_container(&bytes).unwrap();
-    let (plane, _) = raw.cfa_plane(raw.default_window(), RangePolicy::ClampReported, 1, Limits::LARGE).unwrap();
+    // A 640 x 480 crop of the frame keeps the debug-build run short (the stages are serial).
+    let full = raw.default_window();
+    let window = PlaneWindow { x: full.x + 600, y: full.y + 100, width: 640, height: 480 };
+    let (plane, _) = raw.cfa_plane(window, RangePolicy::ClampReported, 1, Limits::LARGE).unwrap();
     let (mut recipe, _) = raw
         .recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile(), BaselineExposure::Ignore)
         .unwrap();
@@ -413,4 +417,4 @@ fn corpus_dng_detail_stack_is_pinned() {
     assert_eq!(digest, PIN_DETAIL);
 }
 
-const PIN_DETAIL: &str = "";
+const PIN_DETAIL: &str = "4f94d078074b387b8616ef7c7684400b21d824fa898b95cc6d3594b3e1c3728b";
