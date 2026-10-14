@@ -20,7 +20,7 @@ use shaping::{FontFile, Seg, shape};
 const LAYER: &str = "SLYR-019abcde-0000-7000-8000-000000000003";
 const FILL: [f32; 4] = [0.8, 0.1, 0.2, 1.0];
 /// SHA-256 of the rendered colour plane followed by the alpha plane (rgb_f32le, f32le straight).
-const CPU_DIGEST: &str = "UNSET";
+const CPU_DIGEST: &str = "f4ef3bade277cde63abd75a9e3d75d18ab1605aee8ad0c06b66a6b1cc9457064";
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
