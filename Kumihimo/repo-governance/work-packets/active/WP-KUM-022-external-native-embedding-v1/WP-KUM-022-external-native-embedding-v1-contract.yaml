@@ -1,0 +1,104 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-022-external-native-embedding-v1
+title: Reusable external native readiness and theme-token embedding
+scope:
+- Original Assets-folder Kumihimo source only; sealed genuine native readiness/commit and semantic theme hooks
+files:
+- product/kumihimo-egui/src/native.rs
+- product/kumihimo-egui/src/window_slots.rs
+- product/kumihimo-egui/src/lib.rs
+- product/kumihimo-egui/src/input.rs
+- product/kumihimo-egui/src/navigation.rs
+- product/kumihimo-egui/src/chrome.rs
+- product/kumihimo-egui/tests/native_app_contracts.rs
+- product/kumihimo-egui/tests/adapter_contracts.rs
+- product/kumihimo-egui/tests/manual_sample_contracts.rs
+- product/kumihimo-egui/examples/native_probe.rs
+- product/kumihimo-egui/Cargo.toml
+- product/Cargo.lock
+- product/README.md
+- product/INTERNAL-MANUAL.md
+- README.md
+- repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/
+dependencies:
+- Published standalone desktop source 1e37e0aa49ce960306be0ef0fe2e432b73e85589
+spec_refs:
+- DEC-KUM-EXTERNAL-NATIVE-EMBEDDING-v1
+- TOPIC-KUM-POPOUTS
+- TOPIC-KUM-CHROME
+- TOPIC-KUM-BOUNDARIES
+requirements:
+- Provide a reusable public optional native embedding coordinator in the ORIGINAL Assets/Kumihimo component. The
+  coordinator owns actual renderer binding, private tagged GPU capture/readback and sealed readiness mint. No public
+  constructor accepts image bytes, screenshot events or asserted readiness. Commit binds the actual owned window,
+  pending nonce/root, controller identity/generation, surface epoch, physical dimensions, scale and complete readback;
+  stale, cancelled, foreign or replayed proof cannot move source ownership. Expose host-selected semantic preview/divider/rail
+  tokens with defaults derived from caller visuals. Preserve existing tab/provider-veto/semantic-return/quiet behavior.
+  No geometry expansion or native runner replacement. Eframe compatibility remains unproven; distinct pinned Handshake
+  adoption remains held until standalone proof and canonical GitHub publication.
+acceptance:
+- A001 Public consumer completes actual asset-owned quiet renderer readback and one canonical detach; no raw Ready/image/event
+  constructor
+- A002 Wrong owner/viewport/root/nonce/identity/generation/epoch/size/scale/byte count, timeout/cancel/replay reject
+  before source movement
+- A003 Existing semantic return/pin/dirty/provider veto and bounded slots remain intact
+- A004 Dark/light caller tokens reach shared preview/divider/rail; independently opened changed pixels and unchanged
+  identities/input/state
+- A005 Affected default/all-feature compile, owning tests and genuine quiet native readback pass on frozen source;
+  independent affected evaluation
+- A006 Meaningful original source/proof commit normally pushed to Nuntissura/assets codex/handpick and immutable
+  remote revision reread
+proof:
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-targets --locked --offline -j 2
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-targets --all-features --locked --offline
+  -j 2
+- cargo test --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --test adapter_contracts --test
+  native_app_contracts --test manual_sample_contracts --locked --offline -j 2
+- cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --example capture_host --locked --offline
+  -j 2 -- --output <owned-output>
+- cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --example native_probe --locked --offline
+  -j 2 -- --output <owned-output>
+- Independent opened actual pixels, native/UIA/readiness observations and diff; actual owned process settlement
+- git ls-remote origin refs/heads/codex/handpick; independent immutable source/proof readback
+execution:
+  module_change_stage: standalone_source
+  source_repository: https://github.com/Nuntissura/assets
+  asset_subfolder: Kumihimo
+  source_branch: codex/handpick
+  base_revision: 1e37e0aa49ce960306be0ef0fe2e432b73e85589
+  host_adoption: HELD_SEPARATE_CONTRACT
+  compiler: Explicit primary integrator shared physical-disk slot required; no worker Cargo
+authorization:
+  decision_id: WP012-KUMIHIMO-STANDALONE-SOURCE-20261014-10
+  owning_chat: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+  lease_resolution: Root explicitly resolves narrow leases under Operator source assignment despite unavailable
+    previous owner; preserve original session and other WP states
+  failed_coordination: Previous owner01a13753 unavailable durable host; no handoff claimed
+source_leases:
+  lead:
+  - src/lib.rs
+  - docs/version/Git
+  - this WP/spec/projections
+  native_coder:
+  - src/native.rs
+  - src/window_slots.rs
+  - tests/native_app_contracts.rs
+  - examples/native_probe.rs
+  theme_coder:
+  - src/input.rs
+  - src/navigation.rs
+  - src/chrome.rs
+  - tests/adapter_contracts.rs
+  - tests/manual_sample_contracts.rs
+dependency_readiness:
+  status: SOURCE_API_READY_BUILD_PENDING
+  observed: Independent exact official egui-wgpu0.33.3 HTTPS source and existing native.rs confirm set_window, paint_and_update_textures
+    and handle_screenshots; existing dependency pins sufficient for source extraction
+  build_cache: PENDING; declared stable target absent and default cache incomplete; no execution admission
+  host_eframe: NOT_PROVEN
+non_goals:
+- Handshake/kernel/pin writes
+- Raw fake-native receipt
+- Geometry or runner replacement
+- Sibling asset or original session ownership changes
+- Eframe runtime compatibility claim

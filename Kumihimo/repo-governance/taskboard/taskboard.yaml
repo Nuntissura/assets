@@ -5,6 +5,7 @@ source: WP contracts and state
 counts:
   done: 18
   blocked: 3
+  active: 1
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -172,3 +173,12 @@ work_packets:
   blockers:
   - WP018 actual native transfer and WP020 actual hosting acceptance remain unproven; published accepted predecessors
     required before combined demo implementation.
+- wp_id: WP-KUM-022-external-native-embedding-v1
+  title: Reusable external native readiness and theme-token embedding
+  phase: active
+  contract_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-state.yaml
+  next_action: Publish scoped preparation, admit disjoint coders; preserve host adoption hold
+  blockers:
+  - Source coding awaits published preparation
+  - Compile/runtime awaits shared compiler reservation and cache preparation

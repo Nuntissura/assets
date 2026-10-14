@@ -2,9 +2,9 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 25
+revision: 26
 title: Kumihimo master specification
-updated_at: '2026-10-12'
+updated_at: '2026-10-14'
 ---
 
 ```yaml
@@ -4443,5 +4443,24 @@ decisions:
   - https://github.com/servo/servo/blob/v0.6.0/components/webdriver_server/lib.rs
   - https://github.com/servo/servo/blob/v0.6.0/ports/servoshell/prefs.rs
   - https://github.com/emilk/egui/blob/0.33.3/crates/egui_demo_app/src/apps/custom3d_wgpu.rs
+  supersedes: []
+- decision_id: DEC-KUM-EXTERNAL-NATIVE-EMBEDDING-v1
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  - TOPIC-KUM-CHROME
+  - TOPIC-KUM-BOUNDARIES
+  decision: Provide a reusable public optional native embedding coordinator in the ORIGINAL Assets/Kumihimo component.
+    The coordinator owns actual renderer binding, private tagged GPU capture/readback and sealed readiness mint.
+    No public constructor accepts image bytes, screenshot events or asserted readiness. Commit binds the actual
+    owned window, pending nonce/root, controller identity/generation, surface epoch, physical dimensions, scale
+    and complete readback; stale, cancelled, foreign or replayed proof cannot move source ownership. Expose host-selected
+    semantic preview/divider/rail tokens with defaults derived from caller visuals. Preserve existing tab/provider-veto/semantic-return/quiet
+    behavior. No geometry expansion or native runner replacement. Eframe compatibility remains unproven; distinct
+    pinned Handshake adoption remains held until standalone proof and canonical GitHub publication.
+  rationale: One reusable original asset owns shared capture/commit and styling across consumers. Host content,
+    authentication, undo, storage and telemetry remain host policies.
+  research_source_refs:
+  - https://github.com/emilk/egui/blob/0.33.3/crates/egui-wgpu/src/winit.rs
+  - https://github.com/Nuntissura/assets/tree/codex/handpick/Kumihimo
   supersedes: []
 ```

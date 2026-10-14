@@ -39,6 +39,7 @@ ids:
 - WP-KUM-019-external-app-tiling-v1
 - WP-KUM-020-foreign-window-hosting-v1
 - WP-KUM-021-combined-workspace-demo-v1
+- WP-KUM-022-external-native-embedding-v1
 - SESSION-KUM-2026-10-11-v1
 - ROLE-KUM-DEPENDENCIES
 - ROLE-KUM-DIAGNOSTICS
@@ -472,5 +473,6 @@ ids:
 - ACC-KUM-POPOUTS-008
 - REQ-KUM-POPOUTS-009
 - ACC-KUM-POPOUTS-009
+- DEC-KUM-EXTERNAL-NATIVE-EMBEDDING-v1
 - DOC-KUM-ROADMAP-v1
 - TOPIC-KUM-ROADMAP

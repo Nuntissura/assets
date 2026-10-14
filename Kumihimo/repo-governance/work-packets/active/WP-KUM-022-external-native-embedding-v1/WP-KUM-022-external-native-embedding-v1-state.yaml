@@ -1,0 +1,13 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-022-external-native-embedding-v1
+generation: 1
+phase: active
+owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+changed_files:
+- repo-governance\specification\current\spec-modules\master-spec.md
+- repo-governance\specification\current\specification.yaml
+proof: []
+blockers:
+- Source coding awaits published preparation
+- Compile/runtime awaits shared compiler reservation and cache preparation
+next_action: Publish scoped preparation, admit disjoint coders; preserve host adoption hold
