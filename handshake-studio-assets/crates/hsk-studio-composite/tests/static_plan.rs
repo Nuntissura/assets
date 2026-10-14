@@ -183,10 +183,19 @@ fn static_closure_no_temporal_provider() {
                 in_deps = line == "[dependencies]" || line == "[dev-dependencies]";
                 continue;
             }
-            if in_deps && let Some((name, _)) = line.split_once('=') {
+            if in_deps && let Some((name, rest)) = line.split_once('=') {
+                // Decision T1: motion is allowed only as an optional dependency behind the
+                // non-default feature `motion`; the default build keeps the static closure.
+                if name.trim() == "hsk-studio-motion" && rest.contains("optional = true") {
+                    continue;
+                }
                 names.push(name.trim().to_owned());
             }
         }
+        assert!(
+            manifest.lines().any(|l| l.trim() == "default = []"),
+            "default features must stay empty"
+        );
         assert!(!names.is_empty());
         for name in &names {
             for banned in ["motion", "pulse", "reel", "score", "render-", "handshake_"] {
