@@ -38,6 +38,7 @@ members = [
   "crates/hsk-studio-motion-js",
   "crates/hsk-studio-worker",
   "crates/hsk-studio-interop-tiff",
+  "crates/hsk-studio-interop-raster",
 ]
 
 [workspace.package]
@@ -88,6 +89,7 @@ declared-members = [
   "crates/hsk-studio-motion-js",
   "crates/hsk-studio-worker",
   "crates/hsk-studio-interop-tiff",
+  "crates/hsk-studio-interop-raster",
 ]
 
 [workspace.metadata.studio.dependencies.hsk-studio-accord]
@@ -199,6 +201,9 @@ allowed = ["hsk-studio-accord", "hsk-studio-motion", "hsk-studio-observe", "hsk-
 allowed = ["hsk-studio-accord"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-tiff]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-raster]
 allowed = ["hsk-studio-accord", "hsk-studio-observe"]
 
 [workspace.metadata.studio.registry.hsk-studio-folio]

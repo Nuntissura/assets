@@ -11,7 +11,7 @@ default = []
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
-serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["float_roundtrip", "std"] }
 
 [lib]
 path = "src/lib.rs"
