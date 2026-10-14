@@ -125,11 +125,7 @@ fn text_over_raster_in_group_validates() {
     let mut unlinked = text_typed;
     unlinked["graph"]["edges"] = json!([edge(RASTER, 0)]);
     assert!(validate_doc(&unlinked).is_ok(), "existing text-typed source form");
-    // Only text sources gain the image form: a vector source declared image stays InvalidPort.
-    let mut vector_image = document_json("image");
-    vector_image["graph"]["operations"][0] = source_op(VEC_A, "image");
-    vector_image["graph"]["edges"] = json!([edge(TEXT, 0)]);
-    assert_eq!(validate_doc(&vector_image).unwrap_err().code, Code::InvalidPort);
+    // Vector sources gain the image form too: tests/vector_image_port_contract.rs.
 }
 
 fn blur(id: &str, scope: &str, radius: f64) -> Value {

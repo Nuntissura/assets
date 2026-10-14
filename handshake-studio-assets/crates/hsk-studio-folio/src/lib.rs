@@ -63,6 +63,8 @@ mod typestyle;
 pub use typestyle::*;
 mod composition;
 pub use composition::*;
+mod parentpages;
+pub use parentpages::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
@@ -804,7 +806,18 @@ fn validate(
             OperationKind::Source => {
                 let ty = match l.kind.as_str() {
                     "raster" => ValueType::Image,
-                    "vector" => ValueType::Vector,
+                    // SMB-FOLIO-VECTOR-IMAGE-PORT: a vector source may declare its single `out`
+                    // port `image` (rasterisable vector) so a vector layer can be a group input.
+                    // The vector-typed form is unchanged; edges still require equal value types.
+                    "vector" => match op.outputs.as_slice() {
+                        [
+                            Port {
+                                value_type: ValueType::Image,
+                                ..
+                            },
+                        ] => ValueType::Image,
+                        _ => ValueType::Vector,
+                    },
                     // Lead decision G1 (SMB-FOLIO-PAINT-BLUR-STYLE): a text source may declare its
                     // single `out` port `image` instead of `text` (rasterised text). Edges require
                     // equal value types and group `inputs` are image-typed, so this is the one
