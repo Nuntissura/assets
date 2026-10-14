@@ -20,7 +20,9 @@
 //! tight 8-bit 4:2:0 planes of the container-declared size (else the display aperture, else the frame
 //! size). Colour: the container `colr` (origin `Container`) else untagged; the bitstream VUI is not read.
 #![deny(clippy::arithmetic_side_effects)]
-use super::ffi::{Decoder, DecoderEntry, MfFail, RawPicture, Runtime, enumerate_h264_decoders};
+use super::ffi::{
+    Decoder, DecoderEntry, Gpu, MfFail, RawPicture, Runtime, create_gpu, enumerate_h264_decoders,
+};
 use super::nv12::{Nv12Error, nv12_to_i420};
 #[cfg(feature = "test-faults")]
 use crate::test_fault::WorkerTestFault;
@@ -48,15 +50,18 @@ fn unavailable() -> ReelError {
     }
 }
 
+/// Worker argument selecting the DXVA (Direct3D 11) path; without it the worker decodes in software.
+pub(crate) const DXVA_ARG: &str = "--dxva";
+
 /// HELLO version: printable ASCII only (the host interns `is_ascii_graphic` strings), bounded.
-fn version_of(entry: &DecoderEntry) -> String {
+fn version_of(entry: &DecoderEntry, dxva: &str) -> String {
     let name: String = entry
         .name
         .chars()
         .map(|c| if c.is_ascii_graphic() { c } else { '_' })
         .take(80)
         .collect();
-    format!("{name}|{}|dxva=0|os-licensed", entry.clsid_text())
+    format!("{name}|{}|dxva={dxva}|os-licensed", entry.clsid_text())
 }
 
 /// The OPEN config record of this worker: declared `(width, height)`.
@@ -78,6 +83,7 @@ fn open_size(open: &OpenRequest) -> Result<(u32, u32), ReelError> {
 fn decode_error(fail: MfFail) -> ReelError {
     match fail {
         MfFail::NoNv12 => unsupported("mf-output-type"),
+        MfFail::D3dRefused => unsupported("mf-dxva-unavailable"),
         MfFail::FormatChange => unsupported("mf-format-change-mid-segment"),
         MfFail::Call(_, _) => ReelError::Corrupt { what: "mf-decode" },
     }
@@ -85,6 +91,9 @@ fn decode_error(fail: MfFail) -> ReelError {
 
 struct Segment {
     decoder: Decoder,
+    /// DXVA requested: every picture must come out of the decoder as a Direct3D surface, else the segment
+    /// is refused (`mf-dxva-unavailable`) instead of reporting `dxva=1` for a software decode.
+    require_gpu_surface: bool,
     declared: (u32, u32),
     color: ColorTag,
     max_frame_bytes: u64,
@@ -138,6 +147,9 @@ impl Segment {
 
     /// Converts one decoder picture into a wire frame; `Err` is the typed refusal for the batch.
     fn frame_of(&mut self, raw: &RawPicture) -> Result<WireFrame, ReelError> {
+        if self.require_gpu_surface && !raw.gpu_surface {
+            return Err(unsupported("mf-dxva-unavailable"));
+        }
         let unknown = || unsupported("mf-output-time-unknown");
         let tag = u64::try_from(raw.time).map_err(|_| unknown())?;
         let at = match self.waiting.iter().position(|waiting| *waiting == tag) {
@@ -265,6 +277,17 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
     #[cfg(feature = "test-faults")]
     let fault = WorkerTestFault::from_env();
     let runtime = Runtime::start();
+    let dxva_requested = std::env::args().any(|arg| arg == DXVA_ARG);
+    let gpu_result: Option<Result<Gpu, i32>> = match (&runtime, dxva_requested) {
+        (Ok(_), true) => Some(create_gpu()),
+        _ => None,
+    };
+    // The HRESULT of a failed device creation goes into HELLO (`dxva=unavailable-<hex>`).
+    let gpu_error = match &gpu_result {
+        Some(Err(code)) => Some(u32::from_ne_bytes(code.to_ne_bytes())),
+        _ => None,
+    };
+    let gpu: Option<Gpu> = gpu_result.and_then(Result::ok);
     let chosen = match &runtime {
         Ok(_) => enumerate_h264_decoders()
             .map(|all| {
@@ -277,7 +300,14 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
     let version = match (&runtime, &chosen) {
         (Err(code), _) => format!("unavailable|mfstartup-{:08x}", u32::from_ne_bytes(code.to_ne_bytes())),
         (Ok(_), None) => "unavailable|no-sync-software-h264-decoder-mft".to_owned(),
-        (Ok(_), Some(entry)) => version_of(entry),
+        (Ok(_), Some(entry)) => version_of(
+            entry,
+            &match (dxva_requested, gpu.is_some()) {
+                (false, _) => "0".to_owned(),
+                (true, true) => "1".to_owned(),
+                (true, false) => format!("unavailable-{:08x}", gpu_error.unwrap_or(0)),
+            },
+        ),
     };
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -298,12 +328,14 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                 }
                 let opened = match &chosen {
                     None => Err(unavailable()),
+                    Some(_) if dxva_requested && gpu.is_none() => Err(unsupported("mf-dxva-unavailable")),
                     Some(entry) => open_size(&open).and_then(|declared| {
                         let size = (declared.0 > 0 && declared.1 > 0).then_some(declared);
-                        Decoder::open(entry, size)
+                        Decoder::open(entry, size, gpu.as_ref())
                             .map_err(decode_error)
                             .map(|decoder| Segment {
                                 decoder,
+                                require_gpu_surface: gpu.is_some(),
                                 declared,
                                 color: open.color,
                                 max_frame_bytes: open.max_chunk_bytes,
@@ -363,6 +395,7 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
     }
     drop(segment);
     drop(chosen);
+    drop(gpu);
     drop(runtime);
     0
 }

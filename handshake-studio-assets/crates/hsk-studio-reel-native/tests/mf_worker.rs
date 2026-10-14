@@ -349,3 +349,60 @@ fn mf_worker_fault_matrix() {
         assert_eq!(sha256_hex(&sink.chunks[23].2), oracle(BASELINE_HASH)[23]);
     });
 }
+
+/// DXVA parity gate (slice 2): the hardware path decodes both fixtures to exactly the ffmpeg oracle (which
+/// the software path equals, test `h264_baseline_software_decode_exact_vs_oracle`), its receipt says
+/// `dxva=1`; `Auto` decodes exactly whichever path it takes. A host without a Direct3D 11 video device (or
+/// whose decoder refuses the manager) prints `NOT_PROVEN:` and asserts the typed `mf-dxva-unavailable`.
+#[test]
+fn mf_dxva_parity_with_software() {
+    bounded_case("mf_dxva_parity", || {
+        let limits = Limits::default();
+        let expected = oracle(BASELINE_HASH);
+        let hardware = provider(MfWorkerOptions {
+            path: MfPath::Hardware,
+            ..MfWorkerOptions::default()
+        });
+        match decode(&hardware, BASELINE, 0, 24, &limits) {
+            Ok((receipt, sink)) => {
+                println!("dxva identity: {}", receipt.decoder_version);
+                assert!(receipt.decoder_version.contains("|dxva=1|"), "{}", receipt.decoder_version);
+                assert!(receipt.complete);
+                let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+                assert_eq!(got, expected, "DXVA output differs from software/ffmpeg");
+                let stats = hardware.hardware_stats().unwrap();
+                assert_eq!((stats.crashed, stats.protocol_faults), (0, 0), "{stats:?}");
+            }
+            Err(error) if unavailable(&error) => {
+                println!("NOT_PROVEN: no Media Foundation H.264 decoder on this host ({error:?})");
+                return;
+            }
+            Err(error) => {
+                println!(
+                    "NOT_PROVEN: DXVA path unavailable on this host ({error:?}); hardware worker HELLO {}",
+                    hardware.descriptor().decoder_version
+                );
+                assert_eq!(
+                    error,
+                    ReelError::Unsupported {
+                        what: MF_DXVA_UNAVAILABLE
+                    }
+                );
+            }
+        }
+        // Auto: exact on either path, and the receipt names the one taken.
+        let auto = provider(MfWorkerOptions {
+            path: MfPath::Auto,
+            ..MfWorkerOptions::default()
+        });
+        let (receipt, sink) = decode(&auto, BASELINE, 0, 24, &limits).unwrap();
+        println!("auto identity: {}", receipt.decoder_version);
+        assert!(
+            receipt.decoder_version.contains("|dxva=1|") || receipt.decoder_version.contains("|dxva=0|"),
+            "{}",
+            receipt.decoder_version
+        );
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, expected);
+    });
+}

@@ -906,7 +906,7 @@ impl WorkerAv1Provider {
         let program = resolve_program(options.program.clone(), WORKER_PROGRAM)
             .ok_or(Av1ConfigError::WorkerProgramMissing)?;
         Ok(Self {
-            pool: Arc::new(Pool::new(&AV1_SPEC, program, &options)),
+            pool: Arc::new(Pool::new(&AV1_SPEC, program, Vec::new(), Vec::new(), &options)),
         })
     }
 
@@ -917,21 +917,30 @@ impl WorkerAv1Provider {
 
 impl Pool {
     /// One pool for one worker kind: supervisor, respawn gate, deadlines and counters.
-    pub(crate) fn new(spec: &'static WorkerSpec, program: PathBuf, options: &Av1WorkerOptions) -> Self {
+    pub(crate) fn new(
+        spec: &'static WorkerSpec,
+        program: PathBuf,
+        args: Vec<String>,
+        base_env: Vec<(String, String)>,
+        options: &Av1WorkerOptions,
+    ) -> Self {
         #[cfg(feature = "test-faults")]
-        let env: Vec<(String, String)> = options
-            .test_fault
-            .env_value()
-            .map(|value| (WorkerTestFault::ENV.to_owned(), value.to_owned()))
+        let env: Vec<(String, String)> = base_env
             .into_iter()
+            .chain(
+                options
+                    .test_fault
+                    .env_value()
+                    .map(|value| (WorkerTestFault::ENV.to_owned(), value.to_owned())),
+            )
             .collect();
         #[cfg(not(feature = "test-faults"))]
-        let env: Vec<(String, String)> = Vec::new();
+        let env: Vec<(String, String)> = base_env;
         Self {
             spec,
             supervisor: Supervisor::new(SupervisorConfig {
                 program,
-                args: Vec::new(),
+                args,
                 env,
                 max_workers: options.max_workers,
                 max_in_flight_bytes: u64::MAX,

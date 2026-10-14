@@ -21,8 +21,19 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
     MFT_REGISTER_TYPE_INFO, MFT_TRANSFORM_CLSID_Attribute, MFVideoFormat_H264, MFVideoFormat_NV12,
 };
+use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device,
+    ID3D11Multithread,
+};
+use windows::Win32::Graphics::Dxgi::IDXGIAdapter;
+use windows::Win32::Media::MediaFoundation::{
+    IMFDXGIBuffer, IMFDXGIDeviceManager, MF_E_UNSUPPORTED_D3D_TYPE, MFCreateDXGIDeviceManager,
+    MFT_MESSAGE_SET_D3D_MANAGER,
+};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
-use windows::core::{GUID, HRESULT, PWSTR};
+use windows::core::{GUID, HRESULT, Interface, PWSTR};
 
 /// Media Foundation started on this thread (`CoInitializeEx` multithreaded + `MFStartup` lite). Dropped
 /// once: `MFShutdown`, then `CoUninitialize`.
@@ -60,6 +71,50 @@ impl Drop for Runtime {
             CoUninitialize();
         }
     }
+}
+
+/// A headless Direct3D 11 video device shared with Media Foundation through a DXGI device manager (Learn
+/// "Supporting Direct3D 11 video decoding in Media Foundation"): no window, no swap chain.
+pub(crate) struct Gpu {
+    _device: ID3D11Device,
+    manager: IMFDXGIDeviceManager,
+}
+
+/// Creates the hardware D3D11 device with `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`, turns on multithread
+/// protection and hands it to a new DXGI device manager. `Err(hresult)` when this host has no such device.
+pub(crate) fn create_gpu() -> Result<Gpu, i32> {
+    let mut device: Option<ID3D11Device> = None;
+    // SAFETY: default adapter, hardware driver, no software module, out pointer to a local; no window.
+    unsafe {
+        D3D11CreateDevice(
+            None::<&IDXGIAdapter>,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            None,
+        )
+    }
+    .map_err(|error| error.code().0)?;
+    let device = device.ok_or(0)?;
+    if let Ok(multithread) = device.cast::<ID3D11Multithread>() {
+        // SAFETY: plain flag set on the device the decoder and this thread share.
+        let _ = unsafe { multithread.SetMultithreadProtected(true) };
+    }
+    let mut token = 0_u32;
+    let mut manager: Option<IMFDXGIDeviceManager> = None;
+    // SAFETY: out pointers to locals.
+    unsafe { MFCreateDXGIDeviceManager(&mut token, &mut manager) }.map_err(|error| error.code().0)?;
+    let manager = manager.ok_or(0)?;
+    // SAFETY: binds the live device to the manager with the token the manager issued.
+    unsafe { manager.ResetDevice(&device, token) }.map_err(|error| error.code().0)?;
+    Ok(Gpu {
+        _device: device,
+        manager,
+    })
 }
 
 /// One H.264 decoder MFT as `MFTEnumEx` lists it.
@@ -156,6 +211,8 @@ pub(crate) fn enumerate_h264_decoders() -> Result<Vec<DecoderEntry>, i32> {
 pub(crate) enum MfFail {
     /// No NV12 output type offered.
     NoNv12,
+    /// The decoder refused the Direct3D manager (`MF_E_UNSUPPORTED_D3D_TYPE`).
+    D3dRefused,
     /// A second output format change after pictures were released in this segment.
     FormatChange,
     /// Any other failed HRESULT (the call that failed is the context).
@@ -173,6 +230,8 @@ pub(crate) struct RawPicture {
     pub default_stride: Option<i32>,
     /// `MF_MT_MINIMUM_DISPLAY_APERTURE` area `(width, height)` when set.
     pub aperture: Option<(i32, i32)>,
+    /// The decoder released a Direct3D surface (`IMFDXGIBuffer`): the picture was decoded through DXVA.
+    pub gpu_surface: bool,
 }
 
 struct OutLayout {
@@ -213,14 +272,34 @@ fn video_type(subtype: &GUID, size: Option<(u32, u32)>) -> Result<IMFMediaType, 
 }
 
 impl Decoder {
-    /// Activates `entry`, sets the H.264 input type (with the container-declared frame size when known)
-    /// and the NV12 output type, and starts streaming.
-    pub(crate) fn open(entry: &DecoderEntry, size: Option<(u32, u32)>) -> Result<Self, MfFail> {
+    /// Activates `entry`, hands it the Direct3D manager when `gpu` is given (DXVA), sets the H.264 input
+    /// type (with the container-declared frame size when known) and the NV12 output type, and starts
+    /// streaming. A decoder that cannot use the manager answers `D3dRefused` (the caller decides on a
+    /// software decoder; no silent switch inside a hardware request).
+    pub(crate) fn open(
+        entry: &DecoderEntry,
+        size: Option<(u32, u32)>,
+        gpu: Option<&Gpu>,
+    ) -> Result<Self, MfFail> {
         // SAFETY: activation of an object MFTEnumEx returned; the result is an owned interface.
         let mft: IMFTransform = call("ActivateObject", unsafe { entry.activate.ActivateObject() })?;
+        if let Some(gpu) = gpu {
+            // SAFETY: the message parameter is the manager's IUnknown pointer, alive for the decoder's
+            // lifetime (the Gpu outlives every Decoder of the worker; the MFT takes its own reference).
+            let sent = unsafe {
+                mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager.as_raw() as usize)
+            };
+            if sent.is_err() {
+                return Err(MfFail::D3dRefused);
+            }
+        }
         let input = video_type(&MFVideoFormat_H264, size)?;
         // SAFETY: stream 0 of a decoder MFT; `input` is a complete video type.
-        call("SetInputType", unsafe { mft.SetInputType(0, &input, 0) })?;
+        let accepted = unsafe { mft.SetInputType(0, &input, 0) };
+        if gpu.is_some() && code_of(&accepted) == Some(MF_E_UNSUPPORTED_D3D_TYPE) {
+            return Err(MfFail::D3dRefused);
+        }
+        call("SetInputType", accepted)?;
         let mut decoder = Self {
             mft,
             provides_samples: false,
@@ -263,7 +342,11 @@ impl Decoder {
                 continue;
             }
             // SAFETY: sets an offered type on stream 0.
-            call("SetOutputType", unsafe { self.mft.SetOutputType(0, &offered, 0) })?;
+            let set = unsafe { self.mft.SetOutputType(0, &offered, 0) };
+            if code_of(&set) == Some(MF_E_UNSUPPORTED_D3D_TYPE) {
+                return Err(MfFail::D3dRefused);
+            }
+            call("SetOutputType", set)?;
             self.read_layout()?;
             return Ok(());
         }
@@ -417,6 +500,9 @@ impl Decoder {
         // SAFETY: the contiguous buffer is locked, exactly `current` bytes are copied out, then unlocked.
         unsafe {
             let time = sample.GetSampleTime().unwrap_or(i64::MIN);
+            let gpu_surface = sample
+                .GetBufferByIndex(0)
+                .is_ok_and(|first| first.cast::<IMFDXGIBuffer>().is_ok());
             let buffer = call("ConvertToContiguousBuffer", sample.ConvertToContiguousBuffer())?;
             let mut data: *mut u8 = std::ptr::null_mut();
             let mut current = 0_u32;
@@ -434,6 +520,7 @@ impl Decoder {
                 height: self.layout.height,
                 default_stride: self.layout.default_stride,
                 aperture: self.layout.aperture,
+                gpu_surface,
             })
         }
     }

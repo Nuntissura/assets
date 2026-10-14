@@ -21,6 +21,16 @@
 //! decoder in packet order: a stream whose decoder releases pictures in another order (B-frame reordering)
 //! is refused with `Unsupported mf-reorder-needs-packet-timing` (reel's pump matches pictures to packets in
 //! decode order; presentation-order delivery needs packet timing, reel prerequisite P2).
+//!
+//! Paths (`MfPath`): `Software` (default; the decoder MFT without a Direct3D manager), `Hardware` (DXVA: the
+//! worker creates a headless Direct3D 11 video device and hands it to the decoder through a DXGI device
+//! manager; a host or stream the decoder cannot accelerate is `Unsupported mf-dxva-unavailable`, never a
+//! silent switch) and `Auto` (hardware first, then the software pool when the hardware pool answers
+//! `mf-dxva-unavailable` or `MEDIA_CODEC_UNAVAILABLE`). The receipt's decoder version says which path
+//! decoded the segment (`dxva=1` or `dxva=0`). DXVA output is read back through the decoder's own buffer
+//! lock; its equality with the software output is proven per host by test `mf_dxva_parity_with_software`
+//! (NOT_PROVEN on a host without a Direct3D 11 video device). Exports should keep `Software` until a parity
+//! receipt exists for the device (lane brief R3).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::host::{
     Av1ConfigError, Av1WorkerOptions, Av1WorkerStats, MAX_PACKET_BYTES, OpenPlan,
@@ -60,6 +70,30 @@ pub(crate) const MF_SPEC: WorkerSpec = WorkerSpec {
     packet_bytes: "h264-packet-bytes",
 };
 
+/// The DXVA pool: same decoder id, own process owner tag.
+pub(crate) const MF_DXVA_SPEC: WorkerSpec = WorkerSpec {
+    owner_session: "reel-native-mf-h264-dxva",
+    io_thread_name: "reel-native-mf-dxva-worker-io",
+    ..MF_SPEC
+};
+
+/// Worker argument of the DXVA pool (the worker's `DXVA_ARG`).
+const DXVA_ARG: &str = "--dxva";
+/// Refusal of a hardware pool that cannot accelerate (no device, or the decoder refused the manager).
+pub const MF_DXVA_UNAVAILABLE: &str = "mf-dxva-unavailable";
+
+/// Which decode path a provider uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MfPath {
+    /// The decoder MFT without a Direct3D manager (exact; the default).
+    #[default]
+    Software,
+    /// DXVA through a headless Direct3D 11 video device; `Unsupported mf-dxva-unavailable` where it cannot.
+    Hardware,
+    /// Hardware first, software when the hardware pool is unavailable for the stream.
+    Auto,
+}
+
 /// Pool policy of the H.264 worker pool (same meaning as `Av1WorkerOptions`).
 #[derive(Clone, Debug)]
 pub struct MfWorkerOptions {
@@ -71,6 +105,8 @@ pub struct MfWorkerOptions {
     pub spawn_timeout: Duration,
     pub batch_deadline: Duration,
     pub segment_deadline: Duration,
+    /// Decode path (default `Software`).
+    pub path: MfPath,
     /// Fault the spawned workers inject (`test-faults` feature only).
     #[cfg(feature = "test-faults")]
     pub test_fault: WorkerTestFault,
@@ -87,6 +123,7 @@ impl Default for MfWorkerOptions {
             spawn_timeout: base.spawn_timeout,
             batch_deadline: base.batch_deadline,
             segment_deadline: base.segment_deadline,
+            path: MfPath::Software,
             #[cfg(feature = "test-faults")]
             test_fault: WorkerTestFault::None,
         }
@@ -122,7 +159,35 @@ pub type MfConfigError = Av1ConfigError;
 /// Process-isolated H.264 decoder through Windows Media Foundation (host side). Cheap to clone.
 #[derive(Clone)]
 pub struct WorkerMfProvider {
-    pool: Arc<Pool>,
+    /// Software pool (`Software`, `Auto`) and DXVA pool (`Hardware`, `Auto`); at least one exists.
+    software: Option<Arc<Pool>>,
+    hardware: Option<Arc<Pool>>,
+}
+
+thread_local! {
+    /// Which pool served the last successful `open` on this thread: reel's route reads `identity()` right
+    /// after `open` on the same thread, so the receipt names the path that decodes the segment.
+    static LAST_HARDWARE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The one variable the DXVA worker gets on top of the empty environment: `SystemRoot` (a system path, no
+/// secret). Measured 2026-10-14 on this host: `D3D11CreateDevice(..., VIDEO_SUPPORT)` in a worker with an
+/// empty environment fails with `DXGI_ERROR_UNSUPPORTED` (0x887A0004) and succeeds with `SystemRoot` alone.
+fn dxva_env() -> Vec<(String, String)> {
+    std::env::var("SystemRoot")
+        .map(|value| vec![("SystemRoot".to_owned(), value)])
+        .unwrap_or_default()
+}
+
+/// Hardware-pool answers after which `Auto` uses the software pool.
+fn falls_back(error: &VideoDecodeError) -> bool {
+    matches!(
+        error,
+        VideoDecodeError::Media(ReelError::CodecUnavailable { .. })
+            | VideoDecodeError::Media(ReelError::Unsupported {
+                what: MF_DXVA_UNAVAILABLE
+            })
+    )
 }
 
 impl WorkerMfProvider {
@@ -138,24 +203,87 @@ impl WorkerMfProvider {
         }
         let program = resolve_program(options.program.clone(), MF_WORKER_PROGRAM)
             .ok_or(Av1ConfigError::WorkerProgramMissing)?;
-        Ok(Self {
-            pool: Arc::new(Pool::new(&MF_SPEC, program, &options.pool_options())),
-        })
+        let pool_options = options.pool_options();
+        let software = matches!(options.path, MfPath::Software | MfPath::Auto)
+            .then(|| {
+                Arc::new(Pool::new(
+                    &MF_SPEC,
+                    program.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    &pool_options,
+                ))
+            });
+        let hardware = matches!(options.path, MfPath::Hardware | MfPath::Auto).then(|| {
+            Arc::new(Pool::new(
+                &MF_DXVA_SPEC,
+                program,
+                vec![DXVA_ARG.to_owned()],
+                dxva_env(),
+                &pool_options,
+            ))
+        });
+        Ok(Self { software, hardware })
     }
 
+    /// The pool `identity()` and `descriptor()` describe: the one that served this thread's last open,
+    /// else the software pool when there is one.
+    fn pool(&self) -> &Arc<Pool> {
+        let hardware_last = LAST_HARDWARE.with(std::cell::Cell::get);
+        match (&self.software, &self.hardware) {
+            (Some(_), Some(hardware)) if hardware_last => hardware,
+            (Some(software), _) => software,
+            (None, Some(hardware)) => hardware,
+            (None, None) => unreachable!("WorkerMfProvider::new builds at least one pool"),
+        }
+    }
+
+    /// Counters of the software pool (or of the DXVA pool of a `Hardware` provider).
     pub fn stats(&self) -> MfWorkerStats {
-        self.pool.stats()
+        self.software
+            .as_ref()
+            .or(self.hardware.as_ref())
+            .map(|pool| pool.stats())
+            .unwrap_or_default()
+    }
+
+    /// Counters of the DXVA pool (`None` for a `Software` provider).
+    pub fn hardware_stats(&self) -> Option<MfWorkerStats> {
+        self.hardware.as_ref().map(|pool| pool.stats())
     }
 
     /// Capability descriptor: decoder `mf-h264`, version learned from the worker HELLO (`unknown` before the
     /// first worker started; it names the MFT, its CLSID, `dxva=0` and `os-licensed`), licence
     /// "Windows Media Foundation H.264 decoder, OS-licensed", decode only.
     pub fn descriptor(&self) -> CodecDescriptor {
-        h264_descriptor(self.pool.identity().version, true)
+        h264_descriptor(self.pool().identity().version, true)
     }
 
     fn open_session(
         &self,
+        spec: &VideoStreamSpec<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<WorkerSession, VideoDecodeError> {
+        if let Some(hardware) = &self.hardware {
+            match Self::open_on(hardware, spec, cancel) {
+                Ok(session) => {
+                    LAST_HARDWARE.with(|last| last.set(true));
+                    return Ok(session);
+                }
+                Err(error) if self.software.is_some() && falls_back(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let software = self.software.as_ref().ok_or(ReelError::Unsupported {
+            what: MF_DXVA_UNAVAILABLE,
+        })?;
+        let session = Self::open_on(software, spec, cancel)?;
+        LAST_HARDWARE.with(|last| last.set(false));
+        Ok(session)
+    }
+
+    fn open_on(
+        pool: &Arc<Pool>,
         spec: &VideoStreamSpec<'_>,
         cancel: &CancellationToken,
     ) -> Result<WorkerSession, VideoDecodeError> {
@@ -176,7 +304,7 @@ impl WorkerMfProvider {
             config: open_config,
         };
         open_worker(
-            &self.pool,
+            pool,
             OpenPlan {
                 open,
                 frame_cap,
@@ -284,7 +412,7 @@ fn annex_b_prep(config: H264Config) -> PacketPrep {
 impl ExternalVideoDecoder for WorkerMfProvider {
     /// `mf-h264`; version learned from the first worker HELLO (`unknown` before).
     fn identity(&self) -> DecoderIdentity {
-        self.pool.identity()
+        self.pool().identity()
     }
 
     fn supports(&self, codec: VideoCodec) -> bool {

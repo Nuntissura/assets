@@ -16,7 +16,7 @@ test-faults = []
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, optional = true }
-windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"], optional = true }
+windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com"], optional = true }
 
 [lib]
 path = "src/lib.rs"
