@@ -8,7 +8,7 @@ schema = "hsk.studio.duplicate-fingerprints@1"
 [[fingerprint]]
 id = "D16"
 title = "bounded ZIP container parsing (local/central/EOCD/ZIP64 signatures) and CRC-32 table generation"
-owner = "open: Operator/lead decision D16 (single owner for bounded ZIP/deflate/CRC)"
+owner = "hsk-studio-package (D16 option (a), 2026-10-14: bounded non-canonical ZIP reader bounded_zip.rs, canonical zip.rs, the single CRC-32)"
 patterns = [
   '(?i)0xedb8_?8320',
   '(?i)\b0x0?(?:4034b50|2014b50|6054b50|6064b50|7064b50|8074b50)\b',
@@ -16,11 +16,13 @@ patterns = [
   'PK\\x0[1-8]',
   '\[\s*0x50\s*,\s*0x4[bB]\s*,\s*0x0[1-8]',
 ]
+# interop-fig container.rs: ZIP magic sniff for format detection only, no reader (reads via package read_zip).
+# interop-layout container.rs: IDML writer; CRC via package; ZIP-writer consolidation is a separate candidate, not D16
+#   reader scope (reads via package ZipDirectory).
 allowed = [
+  "crates/hsk-studio-package/src/",
   "crates/hsk-studio-interop-fig/src/container.rs",
   "crates/hsk-studio-interop-layout/src/container.rs",
-  "crates/hsk-studio-interop-vector/src/gzip.rs",
-  "crates/hsk-studio-package/src/zip.rs",
 ]
 
 [[fingerprint]]
