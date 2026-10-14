@@ -143,7 +143,8 @@ fn real_native_mapping_structure() {
     // Rounded rectangle: vector layer, fill + stroke rows from the Figma paints.
     let r = layer(&m.proposal, "rounded-solid-shadow");
     assert_eq!((r.kind.as_str(), r.visible), ("vector", true));
-    assert!(matches!(r.payload, Payload::Vector { ref path_ids } if path_ids.is_empty()));
+    // Geometry slice: the fill outline is one path on the layer (fig_geometry pins the numbers).
+    assert!(matches!(r.payload, Payload::Vector { ref path_ids } if path_ids.len() == 1));
     let rs = rows(&m.proposal, &r.layer_id);
     assert_eq!(rs.len(), 2);
     let StudioAppearanceRow::Fill {
@@ -270,16 +271,12 @@ fn real_native_losses_accounted() {
             m.doc.nodes.len() - 1,
             "{name}"
         );
-        // Geometry has no Folio home without the nib edge: one loss per node carrying geometry.
-        let with_geometry = m
-            .doc
-            .nodes
-            .iter()
-            .filter(|n| !n.fill_geometry.is_empty() || !n.stroke_geometry.is_empty())
-            .count() as u32;
+        // Geometry slice: shape geometry is emitted as vector paths (pinned per fixture in
+        // fig_geometry::real_geometry_losses_shrink_and_are_pinned); the old edge-missing code
+        // is gone.
         assert_eq!(
             get("native.geometry", "vector_geometry_needs_nib_edge"),
-            with_geometry,
+            0,
             "{name}"
         );
         // Receipt entry carries the same mapping losses and the decode losses.
@@ -628,6 +625,7 @@ fn real_native_package_round_trip() {
         assert_eq!(records.design, m.proposal.design, "{name}");
         assert_eq!(records.id_map, m.proposal.id_map, "{name}");
         assert_eq!(records.stories, m.proposal.stories, "{name}");
+        assert_eq!(records.paths, m.proposal.paths, "{name}: vector geometry");
         assert_eq!(records.record_map, m.proposal.record_map, "{name}");
         let texts = m.doc.nodes.iter().filter(|n| n.type_name == "TEXT").count();
         assert_eq!(

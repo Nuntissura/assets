@@ -12,13 +12,22 @@
 //! (variables) and in the records import entry, so a saved and reopened package still names the
 //! source node of every layer and record (test: fig_native::real_native_package_round_trip).
 //!
-//! Not mapped (typed losses): vector path geometry and shape parameters (Folio vector layers list
-//! `hsk.studio.vector_path@1` ids whose geometry is owned by `hsk-studio-nib`; interop-fig has no
-//! edge to nib), layer transforms of non-artboard nodes (Folio layers carry no transform), image
-//! paints, effects, masks, text fonts and run styles, paint-to-variable bindings, flow starts,
-//! scroll behaviour. Editable import stays NOT_PROVEN (`FigImport::editable`).
+//! Geometry (see `geometry.rs`): shape nodes become `vector` layers listing `hsk.studio.vector_path@1`
+//! ids; the paths are Nib `OwnedPath`s in document px with the full node transform chain baked in
+//! (Folio layers carry no transform), taken from the decoded fill geometry blobs (rectangle radii,
+//! ellipse arcs, stars and polygons are already resolved there), else the vector network, else the
+//! LINE segment. They are persisted in the records entry as `vector_paths`.
+//!
+//! Not mapped (typed losses): geometry of containers and artboards (no path home on groups), the
+//! boolean result outline, stroke outlines (derived from the path plus the stroke row), transforms
+//! and sizes of nodes without emitted geometry, image paints, effects, masks, text fonts and run
+//! styles, paint-to-variable bindings, flow starts, scroll behaviour. Editable import stays
+//! NOT_PROVEN (`FigImport::editable`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::container::hex;
+use crate::geometry::{
+    Affine, IDENTITY, compose, fill_rule, line_path, network_paths, path_from_commands,
+};
 use crate::import::{FigImport, SourceId};
 use crate::nodes::VariableValue;
 use crate::nodes::{FigDocument, FigNode, NodeLoss, NodePayload, Paint, PaintKind};
@@ -50,6 +59,7 @@ use hsk_studio_folio::{
 use hsk_studio_folio::{
     StudioComponent, StudioComponentInstance, StudioComponentSet, StudioOverrideRecord, StudioValue,
 };
+use hsk_studio_nib::{OwnedPath, PathLimits};
 use hsk_studio_package::{ImportEntry, ImportRole};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -97,6 +107,19 @@ pub struct RecordMapEntry {
     pub record_id: String,
 }
 
+/// One `hsk.studio.vector_path@1` path of a vector layer: geometry in document px (every node
+/// transform of the Figma tree is baked in, Folio layers carry none), as Nib's owned path. The
+/// layer lists `path_id` in its `Payload::Vector`; the geometry itself is persisted in the
+/// package records entry (`vector_paths`), like the vector proposal of `hsk-studio-interop-vector`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigVectorPath {
+    /// `SVPT` id.
+    pub path_id: String,
+    /// `SLYR` id of the layer that lists this path.
+    pub layer_id: String,
+    pub geometry: OwnedPath,
+}
+
 /// One mapped node: Figma source id -> Folio node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdMapEntry {
@@ -113,6 +136,8 @@ pub struct NativeProposal {
     pub design: StudioDesignRecords,
     /// One inline text story per TEXT node (`hsk.studio.text_story@1`), validated.
     pub stories: Vec<StudioTextStory>,
+    /// Vector geometry of the vector layers, in document px (transforms baked in).
+    pub paths: Vec<FigVectorPath>,
     pub id_map: Vec<IdMapEntry>,
     /// Figma nodes that became design records rather than document nodes (variables).
     pub record_map: Vec<RecordMapEntry>,
@@ -169,6 +194,7 @@ struct Mapper<'a> {
     cancel: &'a CancellationToken,
     layers: Vec<StudioLayer>,
     stories: Vec<StudioTextStory>,
+    paths: Vec<FigVectorPath>,
     artboards: Vec<StudioArtboard>,
     styles: Vec<StudioPaintStyle>,
     designs: Vec<StudioNodeDesign>,
@@ -199,12 +225,12 @@ fn px(value: f64) -> Length {
 /// 0.9599999785423279): the authored value, and one that survives the package's JSON text without
 /// drift (17-digit values do not round-trip through the workspace serde_json, which is built
 /// without `float_roundtrip`; test fig_native::real_native_package_round_trip).
-fn wide(v: f32) -> f64 {
+pub(crate) fn wide(v: f32) -> f64 {
     v.to_string().parse().unwrap_or_else(|_| f64::from(v))
 }
 
 /// A computed f64 kept to 12 significant digits, for the same JSON round-trip reason as [`wide`].
-fn tidy(v: f64) -> f64 {
+pub(crate) fn tidy(v: f64) -> f64 {
     format!("{v:.11e}").parse().unwrap_or(v)
 }
 
@@ -236,6 +262,56 @@ fn invert(m: &crate::nodes::Matrix) -> Option<[f64; 6]> {
 }
 
 impl Mapper<'_> {
+    /// The vector paths of a shape node: its decoded fill geometry (rectangle radii, ellipse arcs,
+    /// stars, polygons, vectors are already resolved in those blobs), else the vector network
+    /// (VECTOR) or the segment from its size (LINE). Records the paths and returns their `SVPT`
+    /// ids; empty when nothing could be emitted.
+    fn geometry(&mut self, n: &FigNode, abs: &Affine, layer_id: &str) -> Vec<String> {
+        let mut built: Vec<OwnedPath> = Vec::new();
+        for g in &n.fill_geometry {
+            let Some(cmds) = &g.commands else { continue };
+            let Some(rule) = fill_rule(g.winding_rule.as_deref()) else {
+                self.lose("native.geometry", "winding_rule_unknown");
+                continue;
+            };
+            match path_from_commands(cmds, abs, rule) {
+                Some(p) => built.push(p),
+                None => self.lose("native.geometry", "geometry_rejected_by_nib"),
+            }
+        }
+        if built.is_empty() && n.fill_geometry.is_empty() {
+            match &n.payload {
+                NodePayload::Vector {
+                    network: Some(net),
+                    normalized_size,
+                } => {
+                    let scale = match (n.size, normalized_size) {
+                        (Some(s), Some(z)) if z.x > 0.0 && z.y > 0.0 => {
+                            (wide(s.x) / wide(z.x), wide(s.y) / wide(z.y))
+                        }
+                        _ => (1.0, 1.0),
+                    };
+                    built.extend(network_paths(net, scale, abs));
+                }
+                _ if n.type_name == "LINE" => {
+                    built.extend(line_path(abs, n.size.map_or(0.0, |s| wide(s.x))));
+                }
+                _ => {}
+            }
+        }
+        let mut ids = Vec::new();
+        for geometry in built {
+            let path_id = self.mint.mint("SVPT");
+            ids.push(path_id.clone());
+            self.paths.push(FigVectorPath {
+                path_id,
+                layer_id: layer_id.to_owned(),
+                geometry,
+            });
+        }
+        ids
+    }
+
     fn lose(&mut self, path: impl Into<String>, code: &'static str) {
         let first = self.current;
         let slot = self.loss.entry((path.into(), code)).or_insert((0, first));
@@ -1244,12 +1320,15 @@ impl Mapper<'_> {
     }
 
     /// Losses for decoded node data this slice does not map.
-    fn unmapped(&mut self, n: &FigNode, artboard: bool) {
-        if !artboard && n.type_name != "CANVAS" {
-            if n.transform.is_some() {
+    /// `baked`: the node's geometry was emitted as vector paths with its transform applied.
+    fn unmapped(&mut self, n: &FigNode, artboard: bool, baked: bool) {
+        let ty = n.type_name.as_str();
+        if !artboard && ty != "CANVAS" && !baked {
+            // A container's transform is composed into the geometry of its descendants.
+            if n.transform.is_some() && !CONTAINER_KINDS.contains(&ty) && ty != "DOCUMENT" {
                 self.lose("native.transform", "layer_transform_no_folio_home");
             }
-            if n.size.is_some() && n.type_name != "TEXT" {
+            if n.size.is_some() && ty != "TEXT" {
                 self.lose("native.size", "layer_size_no_folio_home");
             }
         }
@@ -1261,22 +1340,35 @@ impl Mapper<'_> {
         if n.mask == Some(true) {
             self.lose("native.mask", "mask_not_mapped");
         }
-        if !n.fill_geometry.is_empty() || !n.stroke_geometry.is_empty() {
-            self.lose("native.geometry", "vector_geometry_needs_nib_edge");
+        if !n.stroke_geometry.is_empty() {
+            // The stroke outline is derived from the path plus the stroke row; not stored.
+            self.lose("native.stroke_geometry", "stroke_outline_not_stored");
+        }
+        if !baked && !n.fill_geometry.is_empty() {
+            self.lose(
+                "native.geometry",
+                if CONTAINER_KINDS.contains(&ty) || artboard {
+                    "container_geometry_no_folio_home"
+                } else {
+                    "vector_geometry_not_emitted"
+                },
+            );
         }
         if n.flow_start.is_some() {
             self.lose("native.flow_start", "flow_start_not_mapped");
         }
         match &n.payload {
-            NodePayload::Rectangle { .. } => {
-                self.lose("native.corner_radii", "shape_parameters_need_nib_edge")
+            NodePayload::Rectangle { .. } if !baked => {
+                self.lose("native.corner_radii", "shape_geometry_not_emitted")
             }
-            NodePayload::Ellipse { .. } => {
-                self.lose("native.arc", "shape_parameters_need_nib_edge")
+            NodePayload::Ellipse { .. } if !baked => {
+                self.lose("native.arc", "shape_geometry_not_emitted")
             }
-            NodePayload::Star { .. } => self.lose("native.star", "shape_parameters_need_nib_edge"),
-            NodePayload::Vector { .. } => {
-                self.lose("native.vector_network", "vector_geometry_needs_nib_edge")
+            NodePayload::Star { .. } if !baked => {
+                self.lose("native.star", "shape_geometry_not_emitted")
+            }
+            NodePayload::Vector { .. } if !baked => {
+                self.lose("native.vector_network", "vector_geometry_not_emitted")
             }
             NodePayload::Boolean { .. } => {
                 self.lose("native.boolean_operation", "boolean_operation_not_mapped")
@@ -1322,6 +1414,7 @@ impl Mapper<'_> {
         parent: Parent,
         parent_is_canvas: bool,
         depth: usize,
+        parent_abs: &Affine,
     ) -> Result<()> {
         self.check()?;
         if depth > 64 {
@@ -1330,6 +1423,8 @@ impl Mapper<'_> {
         }
         let doc = self.doc;
         let n = &doc.nodes[idx];
+        let abs = compose(parent_abs, n.transform.as_ref());
+        let mut baked = false;
         self.current = Some(n.id);
         let ty = n.type_name.as_str();
         let name = n.name.clone().unwrap_or_default();
@@ -1427,13 +1522,9 @@ impl Mapper<'_> {
                 let (kind, payload, group) = if CONTAINER_KINDS.contains(&ty) || ty == "DOCUMENT" {
                     ("group".to_owned(), Payload::Group, true)
                 } else if LEAF_KINDS.contains(&ty) {
-                    (
-                        "vector".to_owned(),
-                        Payload::Vector {
-                            path_ids: Vec::new(),
-                        },
-                        false,
-                    )
+                    let path_ids = self.geometry(n, &abs, &layer_id);
+                    baked = !path_ids.is_empty();
+                    ("vector".to_owned(), Payload::Vector { path_ids }, false)
                 } else if let NodePayload::Text(text) = &n.payload {
                     let story_id = self.mint.mint("STXT");
                     self.story(text, story_id.clone());
@@ -1485,7 +1576,7 @@ impl Mapper<'_> {
             source: n.id,
             node: node_ref.clone(),
         });
-        self.unmapped(n, is_artboard);
+        self.unmapped(n, is_artboard, baked);
         if ty != "CANVAS" {
             self.style(n, node_ref.clone())?;
         }
@@ -1507,7 +1598,7 @@ impl Mapper<'_> {
         }
         let parent = Parent::Node(node_ref);
         for c in children {
-            self.walk(c, parent.clone(), ty == "CANVAS", depth.saturating_add(1))?;
+            self.walk(c, parent.clone(), ty == "CANVAS", depth.saturating_add(1), &abs)?;
         }
         Ok(())
     }
@@ -1561,6 +1652,7 @@ pub fn to_native(
         cancel,
         layers: Vec::new(),
         stories: Vec::new(),
+        paths: Vec::new(),
         artboards: Vec::new(),
         styles: Vec::new(),
         designs: Vec::new(),
@@ -1582,10 +1674,10 @@ pub fn to_native(
         m.current = Some(r.id);
         if r.type_name == "DOCUMENT" {
             for &c in &r.children {
-                m.walk(c, Parent::Root(()), false, 0)?;
+                m.walk(c, Parent::Root(()), false, 0, &IDENTITY)?;
             }
         } else {
-            m.walk(root, Parent::Root(()), false, 0)?;
+            m.walk(root, Parent::Root(()), false, 0, &IDENTITY)?;
         }
     }
     m.components()?;
@@ -1594,6 +1686,7 @@ pub fn to_native(
     let Mapper {
         layers,
         stories,
+        paths,
         components,
         component_sets,
         component_instances,
@@ -1655,6 +1748,7 @@ pub fn to_native(
         snapshot,
         design: design_records,
         stories,
+        paths,
         id_map,
         record_map,
         mapping_loss: aggregate(loss),
@@ -1703,6 +1797,12 @@ impl NativeProposal {
             "records_version": 1,
             "design_records": serde_json::to_value(&self.design).map_err(enc)?,
             "text_stories": serde_json::to_value(&self.stories).map_err(enc)?,
+            // Geometry as Nib's canonical JSON text (shortest round-trip digits, no f64 drift).
+            "vector_paths": self.paths.iter().map(|p| json!({
+                "path_id": p.path_id,
+                "layer_id": p.layer_id,
+                "geometry": p.geometry.to_canonical_json(),
+            })).collect::<Vec<_>>(),
             "id_map": self.id_map.iter().map(|e| json!({
                 "source": e.source.to_string(),
                 "node_kind": node_kind_token(&e.node.node_kind),
@@ -1726,6 +1826,7 @@ impl NativeProposal {
             "artboards": self.snapshot.document().artboards.len(),
             "paint_styles": self.design.paint_styles.len(),
             "text_stories": self.stories.len(),
+            "vector_paths": self.paths.len(),
             "mapped_nodes": self.id_map.len(),
             "mapping_loss": loss_json(&self.mapping_loss),
             "decode_loss": loss_json(&self.decode_loss),
@@ -1751,6 +1852,7 @@ impl NativeProposal {
 pub struct NativeRecords {
     pub design: StudioDesignRecords,
     pub stories: Vec<StudioTextStory>,
+    pub paths: Vec<FigVectorPath>,
     pub id_map: Vec<IdMapEntry>,
     pub record_map: Vec<RecordMapEntry>,
 }
@@ -1766,6 +1868,23 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
         serde_json::from_value(v["design_records"].clone()).map_err(|_| bad.clone())?;
     let stories: Vec<StudioTextStory> =
         serde_json::from_value(v["text_stories"].clone()).map_err(|_| bad.clone())?;
+    let mut paths = Vec::new();
+    for e in v["vector_paths"].as_array().ok_or_else(|| bad.clone())? {
+        let (Some(path_id), Some(layer_id), Some(text)) = (
+            e["path_id"].as_str(),
+            e["layer_id"].as_str(),
+            e["geometry"].as_str(),
+        ) else {
+            return Err(bad);
+        };
+        let geometry = OwnedPath::from_canonical_json(text, &PathLimits::default())
+            .map_err(|_| bad.clone())?;
+        paths.push(FigVectorPath {
+            path_id: path_id.to_owned(),
+            layer_id: layer_id.to_owned(),
+            geometry,
+        });
+    }
     let mut id_map = Vec::new();
     for e in v["id_map"].as_array().ok_or_else(|| bad.clone())? {
         let (Some(source), Some(kind), Some(node_id)) = (
@@ -1812,6 +1931,7 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
     Ok(NativeRecords {
         design,
         stories,
+        paths,
         id_map,
         record_map,
     })
