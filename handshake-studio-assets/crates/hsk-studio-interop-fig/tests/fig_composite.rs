@@ -341,48 +341,200 @@ fn over_bg(r: &Render, x: usize, y: usize, bg: [u8; 3]) -> [f64; 3] {
     [0, 1, 2].map(|c| f64::from(p[c]) * 255.0 * a + f64::from(bg[c]) * (1.0 - a))
 }
 
+fn name_of<'a>(m: &'a Mapped, id: &str) -> &'a str {
+    &m.proposal
+        .snapshot
+        .document()
+        .layers
+        .iter()
+        .find(|l| l.layer_id == id)
+        .expect("layer")
+        .name
+}
+
+fn rendered_names(m: &Mapped, r: &Render) -> Vec<String> {
+    r.ids.iter().map(|id| name_of(m, id).to_owned()).collect()
+}
+
+/// Largest per-channel difference (0..=255) between our pixel over the PNG background and the PNG.
+fn diff_at(r: &Render, png: &(usize, usize, Vec<u8>), canvas: (usize, usize), origin: (usize, usize)) -> f64 {
+    let bg = [png.2[0], png.2[1], png.2[2]];
+    let ours = over_bg(r, canvas.0, canvas.1, bg);
+    let o = ((canvas.1 - origin.1) * png.0 + (canvas.0 - origin.0)) * 4;
+    (0..3).map(|c| (ours[c] - f64::from(png.2[o + c])).abs()).fold(0.0, f64::max)
+}
+
+fn graph_pins(m: &Mapped) -> (usize, usize, usize) {
+    let g = &m.proposal.snapshot.document().graph;
+    (g.operations.len(), g.edges.len(), g.outputs.len())
+}
+
 #[test]
-fn discover2() {
+fn real_layer_graph_shape_and_losses_are_pinned() {
+    // (operations, edges, outputs, native.graph losses) per fixture. Edges exist only where a group
+    // holds image-typed content (text sources, boolean leaves); every vector layer with paths is a
+    // vector source listed as an output, so vector content is never a group input.
+    let pins: [(&str, (usize, usize, usize), &[(&str, u32)]); 3] = [
+        ("fig-basic-shapes.fig", (12, 0, 12), &[("group_flattened_vector_not_group_input", 3)]),
+        (
+            "fig-components-autolayout.fig",
+            (9, 5, 1),
+            &[("group_flattened_vector_not_group_input", 1), ("layer_kind_not_composited", 3)],
+        ),
+        (
+            "fig-prototype-pages.fig",
+            (27, 17, 9),
+            &[("group_flattened_vector_not_group_input", 4), ("page_outside_outputs", 1)],
+        ),
+    ];
+    for (name, shape, losses) in pins {
+        let m = mapped(name);
+        assert_eq!(graph_pins(&m), shape, "{name}");
+        let want: BTreeMap<&str, u32> = losses.iter().copied().collect();
+        assert_eq!(loss(&m.proposal, "native.graph"), want, "{name}");
+        // group_appearance_flattened never fires on these fixtures: no flattened group carries an
+        // authored appearance.
+        assert!(!want.contains_key("group_appearance_flattened"));
+        // Every operation names a layer of the document; every output names an operation.
+        let d = m.proposal.snapshot.document();
+        for op in &d.graph.operations {
+            assert!(d.layers.iter().any(|l| l.layer_id == op.layer_id), "{name}");
+        }
+        for o in &d.graph.outputs {
+            assert!(
+                d.graph
+                    .operations
+                    .iter()
+                    .any(|op| op.layer_id == o.layer_id && op.operation_key == o.operation_key),
+                "{name}"
+            );
+        }
+        // Instances are counted as losses, never silently listed.
+        let instances = d.layers.iter().filter(|l| l.kind == "component_instance").count();
+        assert_eq!(
+            u32::try_from(instances).unwrap(),
+            want.get("layer_kind_not_composited").copied().unwrap_or(0),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     let m = mapped("fig-basic-shapes.fig");
     let r = render(&m);
     let png = decode_png(&fixture("fig-basic-shapes.png"));
-    let bg = [png.2[0], png.2[1], png.2[2]];
-    println!("bg {bg:?}");
-    let doc = m.proposal.snapshot.document();
-    for id in &r.ids {
-        let l = doc.layers.iter().find(|l| &l.layer_id == id).unwrap();
-        let b = bbox_of(&m, id).unwrap();
-        let (cx, cy) = (((b[0] + b[2]) / 2.0) as usize, ((b[1] + b[3]) / 2.0) as usize);
-        let ours = over_bg(&r, cx, cy, bg);
-        let o = ((cy - 100) * png.0 + (cx - 100)) * 4;
-        println!("{} bbox {:?} centre ({cx},{cy}) ours {:?} png {:?}", l.name, b, ours.map(|v| v.round()), &png.2[o..o + 3]);
+    assert_eq!((png.0, png.1), (900, 640));
+    // The artboard sits at (100,100); the PNG is the artboard at 1x.
+    let origin = (100usize, 100usize);
+    // Composite refusals of the outputs, pinned (each is one named composite limit, not a graph
+    // defect): strokes, a gradient fill, an image fill, plus the text output (no prepared fonts).
+    let want: BTreeMap<String, u32> = [
+        ("image_paint_unresolved", 1),
+        ("paint_gradient", 1),
+        ("text_to_image_conversion", 1),
+        ("vector_stroke_not_rendered", 3),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect();
+    assert_eq!(r.refused, want);
+    assert_eq!((r.outputs, r.rendered), (12, 6));
+    let mut names = rendered_names(&m, &r);
+    names.sort();
+    assert_eq!(
+        names,
+        ["boolean-union", "group-background", "layer-blur", "mask-ellipse", "multiply-overlay", "star-half-opacity"]
+    );
+    // Named nodes at a probe inside their box: colours within 4/255 of the PNG (measured max 1/255).
+    // The star is 50 % opacity over the frame background, the overlay multiplies group-background,
+    // the union is a boolean leaf.
+    for (node, centre) in [
+        ("star-half-opacity", (809usize, 239usize)),
+        ("boolean-union", (437, 402)),
+        ("group-background", (635, 407)),
+        ("multiply-overlay", (665, 425)),
+        ("layer-blur", (825, 410)),
+    ] {
+        let id = m.proposal.snapshot.document().layers.iter().find(|l| l.name == node).unwrap().layer_id.clone();
+        let b = bbox_of(&m, &id).unwrap();
+        assert!(
+            (b[0]..=b[2]).contains(&(centre.0 as f64)) && (b[1]..=b[3]).contains(&(centre.1 as f64)),
+            "{node}: probe inside the node box"
+        );
+        let d = diff_at(&r, &png, centre, origin);
+        assert!(d <= 4.0, "{node}: colour differs by {d}/255 at {centre:?}");
+        assert!(r.px[centre.1 * r.w + centre.0][3] > 0.4, "{node}: painted at {centre:?}");
     }
-    let name = "fig-prototype-pages.fig";
-    let m = mapped(name);
+    // The multiply overlap region of group-background (x 570..700) and multiply-overlay (610..720).
+    let d = diff_at(&r, &png, (650, 420), origin);
+    assert!(d <= 4.0, "overlap differs by {d}");
+    // Positions: just outside the union box and the star box nothing is composited; the hidden mask
+    // source is not drawn.
+    for (x, y) in [(352usize, 402usize), (523, 402), (809, 178), (809, 301), (225, 590)] {
+        assert_eq!(r.px[y * r.w + x][3], 0.0, "empty at ({x},{y})");
+    }
+    // Pixel agreement over the artboard where the composite is opaque: at least 97 % of those pixels
+    // are within 8/255 of the PNG (edges and the blur halo are the rest).
+    let (mut opaque, mut close) = (0u32, 0u32);
+    for y in origin.1..origin.1 + png.1 {
+        for x in origin.0..origin.0 + png.0 {
+            if r.px[y * r.w + x][3] >= 0.99 {
+                opaque += 1;
+                if diff_at(&r, &png, (x, y), origin) <= 8.0 {
+                    close += 1;
+                }
+            }
+        }
+    }
+    assert!(opaque > 20_000, "opaque pixels {opaque}");
+    assert!(f64::from(close) >= 0.97 * f64::from(opaque), "close {close} of {opaque}");
+}
+
+#[test]
+fn real_prototype_orbs_composite_at_png_positions() {
+    let m = mapped("fig-prototype-pages.fig");
     let r = render(&m);
-    for id in &r.ids {
-        let l = m.proposal.snapshot.document().layers.iter().find(|l| &l.layer_id == id).unwrap();
-        let b = bbox_of(&m, id).unwrap();
-        println!("{} bbox {:?}", l.name, b);
-    }
-    for n in m.doc.nodes.iter().filter(|n| matches!(n.name.as_deref(), Some("start-screen" | "detail-screen" | "animated-screen" | "animated-orb"))) {
-        println!("node {:?} {} t={:?} size={:?}", n.name, n.type_name, n.transform.map(|t| (t.m02, t.m12)), n.size);
-    }
-    for f in ["start", "detail", "animated"] {
-        let p = decode_png(&fixture(&format!("fig-prototype-pages-{f}.png")));
-        println!("png {f} {}x{} corner {:?}", p.0, p.1, &p.2[..3]);
+    // Text outputs (6) are the only refusals; the three orbs render.
+    let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 6)].into_iter().collect();
+    assert_eq!(r.refused, want);
+    assert_eq!((r.outputs, r.rendered), (9, 3));
+    assert_eq!(rendered_names(&m, &r), ["animated-orb", "animated-orb", "animated-orb"]);
+    // The frames sit at (40,70), (440,70), (840,70) in a section at (100,100): origins below.
+    for (i, (frame, origin)) in [("start", (140usize, 170usize)), ("detail", (540, 170)), ("animated", (940, 170))]
+        .into_iter()
+        .enumerate()
+    {
+        let png = decode_png(&fixture(&format!("fig-prototype-pages-{frame}.png")));
+        assert_eq!((png.0, png.1), (360, 520));
+        let b = bbox_of(&m, &r.ids[i]).unwrap();
+        let (cx, cy) = (((b[0] + b[2]) / 2.0) as usize, ((b[1] + b[3]) / 2.0) as usize);
+        let d = diff_at(&r, &png, (cx, cy), origin);
+        assert!(d <= 4.0, "{frame}: orb centre differs by {d}/255");
+        // Orb edge along its centre row: empty just outside, painted just inside.
+        let (left, right) = (b[0] as usize, b[2] as usize);
+        assert_eq!(r.px[cy * r.w + left - 3][3], 0.0, "{frame}");
+        assert!(r.px[cy * r.w + left + 3][3] >= 0.99, "{frame}");
+        assert_eq!(r.px[cy * r.w + right + 3][3], 0.0, "{frame}");
+        assert!(r.px[cy * r.w + right - 3][3] >= 0.99, "{frame}");
+        // And the same edges in the PNG: the orb differs from the background there.
+        let bgpx = [png.2[0], png.2[1], png.2[2]];
+        let at = |x: usize| {
+            let o = ((cy - origin.1) * png.0 + (x - origin.0)) * 4;
+            (0..3).any(|c| png.2[o + c].abs_diff(bgpx[c]) > 24)
+        };
+        assert!(!at(left - 3) && at(left + 3) && at(right - 3) && !at(right + 3), "{frame}");
     }
 }
+
 #[test]
-fn discover() {
-    for name in ["fig-basic-shapes.fig", "fig-components-autolayout.fig", "fig-prototype-pages.fig"] {
-        let m = mapped(name);
-        let d = m.proposal.snapshot.document();
-        println!("== {name} ops={} edges={} outputs={}", d.graph.operations.len(), d.graph.edges.len(), d.graph.outputs.len());
-        println!("graph loss {:?}", loss(&m.proposal, "native.graph"));
-        let r = render(&m);
-        println!("outputs {} rendered {} refused {:?}", r.outputs, r.rendered, r.refused);
-        let lit = r.px.iter().filter(|p| p[3] > 0.0).count();
-        println!("lit pixels {lit} w={}", r.w);
-    }
+fn real_components_document_has_nothing_drawable_and_says_why() {
+    let m = mapped("fig-components-autolayout.fig");
+    let r = render(&m);
+    // The visible page holds a text-only component set and three instances: instances are
+    // layer_kind_not_composited (pinned above), the one output group is blocked by its text.
+    assert_eq!((r.outputs, r.rendered), (1, 0));
+    assert_eq!(r.refused.len(), 1);
+    assert!(r.refused.keys().next().unwrap().starts_with("input_unavailable:"));
+    assert!(r.px.iter().all(|p| p[3] == 0.0));
 }
