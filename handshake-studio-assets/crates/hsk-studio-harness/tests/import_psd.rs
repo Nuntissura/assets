@@ -306,7 +306,7 @@ fn walk(dir: &Path, depth: usize) -> Vec<PathBuf> {
 
 /// Bounded sweep over every PSD/PSB in `oracle-corpus/psd-tools/psd_files`: each file goes through
 /// `import` (sniff, interop-psd, native package) under `catch_unwind`; prints ok / typed-refusal (by
-/// code) / panic counts. Panics are defects. Shard `n` of 4 (by sorted index) keeps each test under
+/// code) / panic counts. Panics are defects. Shard `n` of SHARDS (by sorted index) keeps each test under
 /// the runner's per-test cap.
 fn sweep(shard: usize) {
     let Some(root) = corpus_root() else {
@@ -328,7 +328,7 @@ fn sweep(shard: usize) {
     let (mut ok, mut panics) = (0usize, Vec::new());
     let mut refusals: std::collections::BTreeMap<String, usize> = Default::default();
     for (i, path) in files.iter().enumerate() {
-        if i % 4 != shard {
+        if i % SHARDS != shard {
             continue;
         }
         let bytes = std::fs::read(path).unwrap();
@@ -340,10 +340,12 @@ fn sweep(shard: usize) {
             Err(_) => panics.push(name),
         }
     }
-    let total = files.iter().enumerate().filter(|(i, _)| i % 4 == shard).count();
+    let total = files.iter().enumerate().filter(|(i, _)| i % SHARDS == shard).count();
     println!("SWEEP psd_tools shard={shard} files={total} ok={ok} refused={} panics={} refusals={refusals:?} panic_files={panics:?}", refusals.values().sum::<usize>(), panics.len());
     assert!(panics.is_empty(), "panics are defects: {panics:?}");
 }
+
+const SHARDS: usize = 6;
 
 #[test]
 #[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
@@ -364,6 +366,16 @@ fn psd_tools_sweep_shard_2() {
 #[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
 fn psd_tools_sweep_shard_3() {
     sweep(3);
+}
+#[test]
+#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
+fn psd_tools_sweep_shard_4() {
+    sweep(4);
+}
+#[test]
+#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
+fn psd_tools_sweep_shard_5() {
+    sweep(5);
 }
 
 // ---- camera raw through develop (feature import-raw; external CC0 samples, ignored by default) --
@@ -391,30 +403,38 @@ fn pinned(test: &str, relative: &str, sha256: &str) -> Option<Vec<u8>> {
 #[test]
 #[ignore = "external CC0 DNG sample (oracle corpus dng/); run with --run-ignored ignored-only"]
 fn dng_converts_to_one_developed_raster_layer_and_opens_in_a_session() {
+    // The smallest corpus DNG (1920x818, lossless JPEG), so the debug build stays inside the per-test cap.
     let Some(bytes) = pinned(
         "dng_converts",
-        "dng/samsung-sm-g973u-16bit-uncompressed.dng",
-        "6492b7e0ac8e012524c0c83606a104cc9bf3b68f30fa60c7b73ffbe4dc584ab1",
+        "dng/canon-eos-5d3-mlv-14bit-lossless.dng",
+        "1d77dcc6cdb839b10c1948f0b4471984ab48cf15e973fb77520584cee72b603e",
     ) else {
         return;
     };
+    assert_eq!(sniff(&bytes), Some(SourceFormat::Tiff));
     let cancel = CancellationToken::default();
-    let (package, imported) = convert_to_native(&bytes, &TrustAllResolver, &cancel).expect("DNG converted");
-    assert_eq!(imported.format, SourceFormat::Tiff);
-    let doc = imported.snapshot.document();
-    assert_eq!(doc.layers.len(), 1);
-    assert_eq!(doc.layers[0].kind, "raster");
-    assert_eq!(imported.receipt["source_format"], "dng");
-    assert!(imported.receipt["loss"].as_array().unwrap().iter().any(|e| e["code"] == "float32_assumed_linear_light"));
-    assert!(imported.receipt["develop"]["route"].is_string());
-    let opened = read_package(&package, &Limits::default(), folio::Budget::default(), &TrustAllResolver, &cancel).unwrap();
-    assert_eq!(opened.import(ImportRole::Original).unwrap().bytes, bytes);
     let h = harness();
     let mut run = h.run(default_actor(), &cancel);
-    assert!(run.open_import(&bytes));
+    assert!(run.open_import(&bytes), "DNG imported");
+    assert!(run.summary());
+    let Some(checkpoint) = run.checkpoint() else {
+        panic!("checkpoint refused: {}", run.finish("import"));
+    };
     let report = run.finish("import");
     assert_eq!(report["verdict"], "pass", "{}", report["ops"][0]);
-    println!("DNG {}x{} tiles={} package_bytes={}", imported.receipt["develop"]["window"][2], imported.receipt["develop"]["window"][3], imported.receipt["tiles"], package.len());
+    let import_op = &report["ops"][0]["detail"]["import"];
+    assert_eq!(import_op["format"], "tiff");
+    assert_eq!(import_op["layers"], 1);
+    let layers = report["ops"][1]["detail"]["layers"].as_array().unwrap();
+    assert_eq!((layers.len(), layers[0]["kind"].as_str()), (1, Some("raster")));
+    // The package carries the original DNG and the receipt with the develop route and loss entries.
+    let opened = read_package(&checkpoint, &Limits::default(), folio::Budget::default(), &TrustAllResolver, &cancel).unwrap();
+    assert_eq!(opened.import_bytes(ImportRole::Original), Some(&bytes[..]));
+    let receipt: Value = serde_json::from_slice(opened.import_bytes(ImportRole::Receipt).unwrap()).unwrap();
+    assert_eq!(receipt["source_format"], "dng");
+    assert!(receipt["develop"]["route"].is_string());
+    assert!(receipt["loss"].as_array().unwrap().iter().any(|e| e["code"] == "float32_assumed_linear_light"));
+    println!("DNG window={} tiles={} package_bytes={}", receipt["develop"]["window"], receipt["tiles"], checkpoint.len());
 }
 
 #[cfg(feature = "import-raw")]
