@@ -257,7 +257,13 @@ fn bounds_overflow_and_identity_refusals() {
     assert_eq!(code(&bad_parent), Code::DanglingReference);
     // SCOM ids: a valid one is accepted; one that only looks like it is refused.
     let scom = identity("SCOM", 1);
-    assert_eq!(check(&with(&|v| v["compositions"][1]["composition_id"] = json!(scom))), Ok(vec![]));
+    assert_eq!(
+        check(&with(&|v| {
+            v["compositions"][1]["composition_id"] = json!(scom);
+            v["compositions"][0]["layers"][3]["precomp"]["composition_id"] = json!(scom);
+        })),
+        Ok(vec![])
+    );
     assert_eq!(code(&with(&|v| v["compositions"][1]["composition_id"] = json!("SCOM-nope"))), Code::InvalidField);
     // Wire shape: unknown fields and unknown properties do not deserialize.
     let mut unknown = rich();
