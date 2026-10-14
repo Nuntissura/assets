@@ -2,9 +2,10 @@
 //! existing adapter over `hsk-studio-prism`'s inspect/transform API) to `to_proposal` /
 //! `raster_proposal`, so an embedded ICC profile (PSD resource 1039, TIFF tag 34675) is converted by
 //! Prism into the document working space; the harness adds no colour math (CX-CAP-001). The working
-//! space is linear-light sRGB: the destination is the 480-byte CC0 ICC v4 profile in
-//! `profiles/sRGB-linear-v4.icc` (Prism's own test derivative, sha256 4813c25a...), the same
-//! linear sRGB the importer assumes without a profile and that develop's camera solution outputs.
+//! space is linear-light sRGB: the destination is Prism's public working profile
+//! `hsk_studio_prism::WORKING_PROFILE_LINEAR_SRGB` (480-byte CC0 ICC v4, sha256 4813c25a...; the
+//! harness ships no private copy, CX-CAP-001), the same linear sRGB the importer assumes without a
+//! profile and that develop's camera solution outputs.
 //!
 //! What interop-psd decides stays typed (tests in `tests/import_colour.rs`
 //! `embedded_profiles_convert_through_prism_into_the_working_space` and
@@ -22,8 +23,8 @@ use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
 use hsk_studio_prism::{Prism, hash_hex, profile_hash};
 use serde_json::{Value, json};
 
-/// Destination profile of every conversion: linear-light sRGB, ICC v4 matrix/TRC (CC0).
-pub const WORKING_PROFILE: &[u8] = include_bytes!("profiles/sRGB-linear-v4.icc");
+/// Destination profile of every conversion: Prism's linear-light sRGB working profile.
+pub const WORKING_PROFILE: &[u8] = hsk_studio_prism::WORKING_PROFILE_LINEAR_SRGB;
 
 /// Prism contexts cache this many transforms per import.
 const PRISM_CACHE_ENTRIES: usize = 4;

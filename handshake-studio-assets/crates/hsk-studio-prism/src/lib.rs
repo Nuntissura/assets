@@ -19,6 +19,8 @@ mod wide_job;
 pub use wide_job::*;
 mod wide_plan;
 pub use wide::*;
+mod working;
+pub use working::{WORKING_PROFILE_LINEAR_SRGB, WORKING_PROFILE_LINEAR_SRGB_SHA256_HEX, working_profile_linear_srgb};
 
 pub const ENGINE_NAME: &str = "moxcms";
 pub const ENGINE_VERSION: &str = "0.9.1";
