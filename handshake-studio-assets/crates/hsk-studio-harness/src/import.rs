@@ -220,13 +220,40 @@ mod with_package {
             return Err(ImportError::Package("entry_too_large"));
         }
         let format = sniff(bytes).ok_or(ImportError::FormatUnrecognised)?;
-        match format {
+        let mut imported = match format {
             SourceFormat::Psd | SourceFormat::Psb => psd_route(bytes, format, resolver, cancel),
             SourceFormat::Tiff => tiff_family(bytes, resolver, cancel),
             SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel),
             SourceFormat::Pdf => pdf_route(bytes, resolver, cancel),
             SourceFormat::Png | SourceFormat::Jpeg | SourceFormat::Webp => raster_route(bytes, format, resolver, cancel),
+        }?;
+        bind_blending_space(&mut imported, resolver, cancel)?;
+        Ok(imported)
+    }
+
+    /// Lane SMB-UI-SUPPORT-APIS: every importer converts pixels into the document's RGB working
+    /// space and composites there, so the converted document states it: an unassigned
+    /// `blending_space` is bound to `working_space_rgb` (re-validated by folio) and the receipt
+    /// records `blending_space` {bound_to, profile}. A document without an RGB working space
+    /// (PDF carried, nothing to composite) keeps it unassigned. Viewers then no longer assume it.
+    fn bind_blending_space(imported: &mut ImportedDocument, resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<(), ImportError> {
+        use hsk_studio_folio::ProfileBinding;
+        let doc = imported.snapshot.document();
+        let (ProfileBinding::Unassigned(()), ProfileBinding::Assigned(rgb)) = (&doc.blending_space, &doc.working_space_rgb) else {
+            return Ok(());
+        };
+        let profile = rgb.clone();
+        let mut bound = doc.clone();
+        bound.blending_space = ProfileBinding::Assigned(profile.clone());
+        imported.snapshot = hsk_studio_folio::validate_document(bound, hsk_studio_folio::Budget::default(), cancel, resolver).map_err(|_| ImportError::Package("blending_space_rejected"))?;
+        imported.receipt["blending_space"] = serde_json::json!({"bound_to": "working_space_rgb", "profile": profile});
+        let receipt = serde_json::to_vec(&imported.receipt).map_err(|_| ImportError::Package("receipt_encode"))?;
+        for entry in &mut imported.imports {
+            if entry.role == hsk_studio_package::ImportRole::Receipt {
+                *entry = ImportEntry::new(hsk_studio_package::ImportRole::Receipt, receipt.clone());
+            }
         }
+        Ok(())
     }
 
     /// Import, then native container bytes (convert to native).
