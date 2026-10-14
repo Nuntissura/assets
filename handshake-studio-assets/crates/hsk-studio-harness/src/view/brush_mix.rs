@@ -7,12 +7,12 @@
 //! engine's `after` planes are copied back. Replacement = `brush::paint_replacement` (the brush
 //! colour at alpha 1), mask = the stroke coverage cropped to the block (`coverage_u16le`).
 //!
-//! Colour: tiles are `rgb_f32le` linear light + straight `f32le` alpha (the importers' layout); the
-//! engine inspects the profile it is given and refuses anything but linear light. The profile
-//! bytes are Prism's `WORKING_PROFILE_LINEAR_SRGB`, the working space every importer converts into
-//! (`import::colour`); a tile in another profile id is refused by the engine's own id check only if
-//! the id differs from the tile's, so the harness passes the tile's own id with those bytes (the
-//! importers' convention, UNVERIFIED for packages written by other producers).
+//! Colour: tiles are `rgb_f32le` linear light + straight `f32le` alpha (the importers layout) in
+//! the working space every importer converts into (`import::colour`, Prism
+//! `WORKING_PROFILE_LINEAR_SRGB`). The engine admits only metadata-free profiles, so the bytes passed
+//! are Prism `WORKING_PROFILE_LINEAR_SRGB_ADMITTED` (same matrix, white point and gamma 1) under the
+//! tile own profile id; the engine refuses anything that is not linear light. A package whose tiles
+//! use another profile under their id is outside this convention (UNVERIFIED for other producers).
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio::TileRef;
@@ -22,7 +22,7 @@ use hsk_studio_pigment::caller::{MemoryAdmission, SerializedOwner};
 use hsk_studio_pigment::render_plan::MaskFormat;
 use hsk_studio_pigment::selection::CoveragePlane;
 use hsk_studio_pigment::{Grid, Mask, Outcome, Rect, Request, ResolvedTile, TileItem, masked_replace};
-use hsk_studio_prism::{ProfileInput, WORKING_PROFILE_LINEAR_SRGB, profile_hash};
+use hsk_studio_prism::{ProfileInput, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, profile_hash};
 use serde_json::json;
 
 /// Edge of one engine request block (64 x 64 = 4096 pixels, `masked_replace`'s rectangle cap).
@@ -85,7 +85,7 @@ fn tile_view<'a>(view: &'a TileRef, block: Rect, colour: &'a [u8], alpha: &'a [u
         alpha_sha256: profile_hash(alpha),
         transfer: "linear_light",
         alpha_association: "straight",
-        profile: ProfileInput { profile_id: profile, bytes: WORKING_PROFILE_LINEAR_SRGB, expected_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB) },
+        profile: ProfileInput { profile_id: profile, bytes: WORKING_PROFILE_LINEAR_SRGB_ADMITTED, expected_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB_ADMITTED) },
     }
 }
 

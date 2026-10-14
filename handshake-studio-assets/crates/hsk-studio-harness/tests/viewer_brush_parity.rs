@@ -17,7 +17,7 @@ use hsk_studio_pigment::brush::{BrushDynamics, BrushLimits, BrushTip, Channel, C
 use hsk_studio_pigment::caller::{MemoryAdmission, SerializedOwner};
 use hsk_studio_pigment::render_plan::MaskFormat;
 use hsk_studio_pigment::{Grid, Mask, Outcome, Rect, Request, ResolvedTile, TileItem, masked_replace};
-use hsk_studio_prism::{ProfileInput, WORKING_PROFILE_LINEAR_SRGB, profile_hash};
+use hsk_studio_prism::{ProfileInput, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, profile_hash};
 
 struct Quiet;
 impl SinkPort for Quiet {
@@ -147,6 +147,6 @@ fn view_of<'a>(view: &'a TileRef, bounds: Rect, c: &'a [u8], a: &'a [u8], profil
         alpha_sha256: profile_hash(a),
         transfer: "linear_light",
         alpha_association: "straight",
-        profile: ProfileInput { profile_id: profile, bytes: WORKING_PROFILE_LINEAR_SRGB, expected_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB) },
+        profile: ProfileInput { profile_id: profile, bytes: WORKING_PROFILE_LINEAR_SRGB_ADMITTED, expected_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB_ADMITTED) },
     }
 }
