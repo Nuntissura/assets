@@ -55,8 +55,8 @@ impl Resolver for Available {
     fn format_supported(&self, _: &str) -> bool {
         true
     }
-    fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
-        false
+    fn primitive_layer_binding(&self, kind: &str, schema: &str) -> bool {
+        kind == "component_instance" && schema == SCHEMA_STUDIO_COMPONENT_INSTANCE
     }
 }
 
