@@ -490,7 +490,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-composite", &["serde_json"]),
     ("hsk-studio-render-cpu", &["kurbo", "serde", "serde_json"]),
     ("hsk-studio-render-gpu", &["wgpu"]),
-    ("hsk-studio-package", &["crc32fast", "ruzstd", "serde", "serde_json", "sha2"]),
+    ("hsk-studio-package", &["crc32fast", "miniz_oxide", "ruzstd", "serde", "serde_json", "sha2"]),
     ("hsk-studio-interop-psd", &["miniz_oxide", "serde_json"]),
     ("hsk-studio-interop-vector", &["miniz_oxide", "roxmltree", "svgtypes"]),
     ("hsk-studio-interop-fig", &["miniz_oxide", "ruzstd", "serde_json", "sha2"]),
@@ -514,6 +514,10 @@ const NATIVE_OWNERS: &[&str] = &[
     "hsk-studio-score-plugin",
     "hsk-studio-reel-native",
     "hsk-studio-motion-js",
+    // D18 (lead decision 2026-10-14): worker-process supervision owner incl. Windows Job Objects; windows-sys
+    // limited by steward review to the motion-js job_object.rs feature set (Foundation, Security,
+    // System_Diagnostics_Debug, System_IO, System_JobObjects, System_Threading).
+    "hsk-studio-worker",
 ];
 // Restricted libraries allowed only in their designated owner's registry closure.
 const DESIGNATED: &[(&str, &[&str])] = &[
