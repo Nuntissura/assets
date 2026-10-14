@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 9
+generation: 13
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -46,7 +46,7 @@ proof:
   runtime: NOT_RUN
   acceptance: OPEN
 - kind: phase01_dependency_resolution
-  status: OBSERVED_EXIT_0_PRIMARY_REVIEW_PENDING
+  status: PRIMARY_INDEPENDENTLY_ACCEPTED_BOUNDED_RESOLVER_PRIMITIVE
   input_head: 086b924f0870a31b1e74b3487f6f4dda045c2791
   input_manifest_sha256: 7463dc35127c8db4b53c203199782bc9bad3f12a7a79dcd230c27d98eaeac317
   launcher_sha256: b984724a1324bcdb8bf13b2177f64a8262fea29413f64893b2266e86165d79e1
@@ -72,11 +72,80 @@ proof:
   resolved_input_sha256: 1fc3f4af514fa711169a3fb3b4b19deb063edc80ff9b37b83fd92abcbdd2be56
   compile: NOT_RUN
   native: NOT_RUN
+  independent_controller: 01a139f5-dc34-7af3-a3ed-e486ec461fb9
+- kind: phase02_sdk_locked_fetch
+  status: PRIMARY_INDEPENDENTLY_ACCEPTED_LOCKED_FETCH_PRIMITIVE
+  input_head: dbca329c260cd33f1187d4a4d0552a2609c90e15
+  input_manifest_sha256: 359312a25716234d62e02a5909460cfa01ff2719de27983fced78e442d37f799
+  launcher_sha256: 007767757e6b2df43435654771cf8dba33a3fcc17069de78bbcc1cfdf4796eef
+  argv:
+  - fetch
+  - --manifest-path
+  - product/third-party/egui-wgpu-0.33.3/Cargo.toml
+  - --target
+  - x86_64-pc-windows-msvc
+  - --locked
+  cargo_pid: 47848
+  cargo_birth_utc: '2026-10-14T21:36:15.9160786Z'
+  cargo_exit: 0
+  host_pid: 34636
+  host_exit: 0
+  phase_record: .local/wp022-proof/02-fetch-sdk.phase.json
+  phase_record_sha256: 4641820458006fdf161e26ff1fff0693733c49e5cf49f8bb0b9ce29029290d24
+  stderr_sha256: 09bd03720ef055e841889604e9898e2ee41397c5a76c4b38c84eb46e0afbe565
+  owned_closure: Fresh independent Get-Process after outer exit:47848/34000/34636 absent; no Cargo/rustc/cl/link;
+    warm cache4820 retained
+  source_inputs: All69 unchanged; resolved digest8437d4ea80d4e5b53ce8bd76b85e130644da66ba05d09fc295745a5fd12ffc9c
+  product_lock_sha256: 86a1dbb20a2c88b90d29a682d5c4b57970677fbbfd1fa8b17df5cd94d061d1c6
+  sdk_lock_sha256: 94224f3dc2f219beed80f21bb801b1568728712ec68d2d4d26da86af5cb359de
+  compile: NOT_RUN
+  native: NOT_RUN
+- kind: phase03_default_all_target_compile
+  status: PRIMARY_RECONCILED_COMPILER_PRIMITIVE_AND_LATE_CLOSURE
+  input_head: dbca329c260cd33f1187d4a4d0552a2609c90e15
+  input_manifest_sha256: 359312a25716234d62e02a5909460cfa01ff2719de27983fced78e442d37f799
+  launcher_sha256: 60a08e8fa4f0d62746148f9cb2f7a5bbd195b76df99e629d3bf4706d26b1c5b2
+  cargo_pid: 36936
+  cargo_birth_utc: '2026-10-14T21:47:50.4390148Z'
+  cargo_exit: 0
+  outer_host_pid: 48692
+  outer_tool_exit: 1
+  phase_record: .local/wp022-proof/03-default-check.phase.json
+  phase_record_sha256: 32c4d04d99891dd74285b298cb1f01b262ef7860b5b5fe363e600b990c0f8f95
+  stderr_sha256: a74b04a940684a334254316a48ea478d34d8cae0d632d3df968535c750f7c052
+  source_diagnostic: Finished dev profile; no compiler error lines; all emitted warnings retained; no source failure
+    inferred
+  remaining_owned:
+    pid: 52232
+    birth_utc: '2026-10-14T21:47:52.1728440Z'
+    name: vctip.exe
+    parent_pid: 876
+    parent_observation: owned link.exe876 born21:47:51.961516Z
+  other_owned: All38 other recorded owned identities plus host absent on fresh Get-Process; original cache4820 retained
+  diagnostics_owner: 01a13ad0-112c-7c51-9dac-b19da4d01c76
+  retry: NOT_AUTHORIZED; do not rerun Cargo0 to settle helper
+  native: NOT_RUN
+  late_owned_settlement:
+    authority: Primary original-owner guarded exact-process settlement within decision13
+    receipt: .local/wp022-proof/03-owned-settlement.json
+    receipt_sha256: dcf2ac086050c50f496559f7bbf1bd5f3dfd9135d35065749e4dea48a2010c3b
+    target_pid: 52232
+    native_birth_utc: '2026-10-14T21:47:52.1728449Z'
+    target_exit: -1
+    operation_tool_exit: 0
+    canonical_observation: All39 recorded owned plus original host40 absent; candidate children absent; compiler
+      processes absent; original warm cache4820 unchanged
+    original_phase_preserved: true
+    raw_parent_edge_chain_serialized: false
+    process_purpose: UNVERIFIED
+    review: PRIMARY_AND_DIAGNOSTICS_INDEPENDENTLY_RECONCILED
+    independent_reviewer: 01a13ad0-112c-7c51-9dac-b19da4d01c76
+  original_caller_status: FAILED_STOP
+  independent_controller: 01a139f5-dc34-7af3-a3ed-e486ec461fb9
 blockers:
-- Primary independent phase01 lock/closure review and next exact phase reservation required; compilation/native
-  acceptance OPEN
-next_action: Prepare unchanged SDK locked fetch phase02 after primary phase01 review; require next explicit grant
-  and current original gameplan before execution
+- Next exact primary phase04 reservation required; all-feature compile/tests/native/pixel acceptance OPEN
+next_action: Prepare phase04 all-feature all-target check on current coherent checkpoint and unchanged69 inputs;
+  require exact primary reservation/full original gate; do not rerun valid phase03 Cargo0
 source_freeze:
   native_worker: frozen_after_sealed_eframe_consumer_and_actual_viewport_probe_source
   theme_worker: frozen
@@ -98,10 +167,10 @@ source_freeze:
     product/kumihimo-egui/tests/native_app_contracts.rs: c43f8ef1a5d35b08fffbc7f6b3debe32f1a9f139eb5164fb19f69aeb2d09d1b0
     product/kumihimo-egui/examples/native_probe.rs: 8af751f7ede34a79a0724c5ce699cc4f94d6de972ff528865b70c077983cc738
   runtime: NOT_RUN
-  compiler: PHASE01_FETCH_EXIT_0_COMPILE_NOT_RUN_NEXT_SLOT_HELD
+  compiler: PHASE03_DEFAULT_ALL_TARGET_CARGO_0_HISTORICAL_WRAPPER_FAILED_LATE_OWNED_SETTLEMENT
   eframe_producer: SOURCE_IMPLEMENTED_NATIVE_PROOF_PENDING
   sdk_expansion: FROZEN_SOURCE_WITH_RESOLVED_PHASE01_LOCK_OUTPUT
   sdk_frame_worker: frozen
   sdk_producer_worker: frozen_after_byte_lease_and_cancelled_map_polling_repairs
   provenance: All 45 original SDK files reread; only six admitted sources changed; other 39 hashes retained
-  input_manifest: .local/wp022-proof/01-resolved-input.json
+  input_manifest: .local/wp022-phase02-input.json

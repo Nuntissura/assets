@@ -11,7 +11,7 @@ precedence: 'on conflict CODEX, role profile, WP contract, WP-STATE, MT win; cor
 scope: wp
 assignment: WP-KUM-022-external-native-embedding-v1
 parent: null
-generation: 11
+generation: 14
 expensive_actions: []
 steps:
 - {id: GP-001, role: any, at: before_round, do: require scoped asset preparation only before compiler grant, check: {type: confirm}, source: 'prep: contract command text matched foreign Handshake gate', state: retired}
@@ -23,3 +23,6 @@ steps:
 - {id: GP-007, role: any, at: before_submit, do: verify source checkpoint scope and regenerated WP projections; runtime proof remains NOT_RUN, check: {type: confirm}, source: 'prep: generation8 state made taskboard and registry projections stale', state: active}
 - {id: GP-008, role: any, at: before_submit, do: verify confirmation note is one line of at most120 characters, check: {type: confirm}, source: 'prep: overlong confirmation note rejected', state: active}
 - {id: GP-009, role: any, at: before_round, do: verify explicit WP gate binding and one-shot output ownership with failure finalization, check: {type: confirm}, source: 'prep: ambiguous gate path; duplicate redirection race; failure numeric and liveness could be lost', state: active}
+- {id: GP-010, role: any, at: before_round, do: compare each owned process birth with the same capture API and fail unknown on observation error, check: {type: confirm}, source: 'prep: CIM microsecond birth strings can differ from native Process100ns timestamps', state: active}
+- {id: GP-011, role: any, at: before_round, do: verify previous phase-owned descendants settled and retain compiler exit separately from wrapper failure, check: {type: confirm}, source: 'infra: phase03 Cargo0 but host1 because owned vctip52232 remained', state: active}
+- {id: GP-012, role: any, at: before_dispatch, do: verify primary-directed own process ancestry and exact birth/image on a retained handle before settlement, check: {type: confirm}, source: 'phase03: guarded settlement of captured own vctip52232 only', state: active}
