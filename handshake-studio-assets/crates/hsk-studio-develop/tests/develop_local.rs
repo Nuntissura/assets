@@ -304,7 +304,7 @@ fn mask_algebra_local_stack_and_thread_invariance_on_the_corpus_dng() {
     assert_eq!(digest, PIN_LOCAL, "corpus digest pin");
 }
 
-const PIN_LOCAL: &str = "";
+const PIN_LOCAL: &str = "c0168c479df37269452fc73a0d74a76b667456140f4b32436af3e6959a6b3028";
 
 fn corpus_file(test: &str, file: &str, sha256: &str) -> Option<Vec<u8>> {
     let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf();
