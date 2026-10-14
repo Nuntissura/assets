@@ -5,6 +5,7 @@
 //! licence notice are preserved (recorded verbatim in `data/hyph-en-us.txt` and in [`EN_US_LICENCE`]).
 //! Only ASCII letters hyphenate; a word containing any other alphabetic character is left whole,
 //! never guessed. Pure and deterministic: lookups only, no iteration over hashed state.
+#![deny(clippy::arithmetic_side_effects)]
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -27,7 +28,8 @@ pub struct HyphenationParams {
     pub min_before: usize,
     /// Minimum letters after a hyphen.
     pub min_after: usize,
-    /// Maximum consecutive hyphenated line ends (0 = unlimited).
+    /// Maximum consecutive hyphenated line ends (0 = unlimited). Every `u8` value is accepted: a
+    /// word holds at most `MAX_WORD_BYTES - 1` breaks, so a limit at or above that never binds.
     pub consecutive_limit: u8,
     pub hyphenate_capitalized: bool,
     /// Advance of the hyphen glyph in points (shaped by the caller with the line's font).
@@ -36,6 +38,32 @@ pub struct HyphenationParams {
     pub hyphen_penalty: f64,
     /// TeX `\doublehyphendemerits`, added when two consecutive lines both end in a hyphen.
     pub double_hyphen_demerits: f64,
+}
+impl HyphenationParams {
+    /// Refuses limits outside their domain: `min_word_len`, `min_before` or `min_after` above
+    /// [`MAX_WORD_BYTES`] (no hyphenable word can satisfy them), `min_before + min_after` above
+    /// [`MAX_WORD_BYTES`] (checked add, so `usize::MAX` refuses instead of overflowing), a negative
+    /// or non-finite hyphen advance, a non-finite penalty, and negative or non-finite double-hyphen
+    /// demerits. `consecutive_limit` accepts its whole `u8` range (see the field).
+    pub fn validate(&self) -> Result<(), HyphenationError> {
+        let ints_ok = self.min_word_len <= MAX_WORD_BYTES
+            && self.min_before <= MAX_WORD_BYTES
+            && self.min_after <= MAX_WORD_BYTES
+            && self
+                .min_before
+                .checked_add(self.min_after)
+                .is_some_and(|sum| sum <= MAX_WORD_BYTES);
+        let floats_ok = self.hyphen_advance_pt.is_finite()
+            && self.hyphen_advance_pt >= 0.0
+            && self.hyphen_penalty.is_finite()
+            && self.double_hyphen_demerits.is_finite()
+            && self.double_hyphen_demerits >= 0.0;
+        if ints_ok && floats_ok {
+            Ok(())
+        } else {
+            Err(HyphenationError::InvalidParams)
+        }
+    }
 }
 impl Default for HyphenationParams {
     fn default() -> Self {
@@ -56,10 +84,21 @@ impl Default for HyphenationParams {
 pub enum HyphenationError {
     /// A pattern file line is not `[.a-z0-9]` text, is empty, too long, or the file is too large.
     BadPatternData,
+    /// A [`HyphenationParams`] limit is out of its domain (see [`HyphenationParams::validate`]).
+    InvalidParams,
+}
+impl HyphenationError {
+    /// Stable snake_case code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::BadPatternData => "bad_pattern_data",
+            Self::InvalidParams => "invalid_hyphenation_params",
+        }
+    }
 }
 impl std::fmt::Display for HyphenationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("bad_pattern_data")
+        f.write_str(self.code())
     }
 }
 impl std::error::Error for HyphenationError {}
@@ -115,8 +154,10 @@ impl Hyphenator {
         for b in line.bytes() {
             match b {
                 b'0'..=b'9' => {
-                    let last = levels.len() - 1;
-                    levels[last] = b - b'0';
+                    // `levels` starts with one entry and only grows; b is an ASCII digit.
+                    if let Some(last) = levels.last_mut() {
+                        *last = b.wrapping_sub(b'0');
+                    }
                 }
                 b'a'..=b'z' | b'.' => {
                     letters.push(b);
@@ -152,39 +193,65 @@ impl Hyphenator {
     /// Break positions inside `word` as letter counts `k` (a hyphen may follow the first `k`
     /// letters), ascending, honouring `min_before` / `min_after`. Empty when `word` is not pure
     /// ASCII letters, is shorter than `min_word_len`, longer than [`MAX_WORD_BYTES`], or capitalised
-    /// with `hyphenate_capitalized` off.
+    /// with `hyphenate_capitalized` off, and when `p` is refused by [`HyphenationParams::validate`]
+    /// ([`Hyphenator::try_points`] reports that refusal as a typed error).
     pub fn points(&self, word: &str, p: &HyphenationParams) -> Vec<usize> {
+        self.try_points(word, p).unwrap_or_default()
+    }
+
+    /// [`Hyphenator::points`] with the parameter refusal typed: `Err(InvalidParams)` when `p` fails
+    /// [`HyphenationParams::validate`]. All index arithmetic is checked or saturating.
+    pub fn try_points(
+        &self,
+        word: &str,
+        p: &HyphenationParams,
+    ) -> Result<Vec<usize>, HyphenationError> {
+        p.validate()?;
         let n = word.len();
+        // validate() bounds the sum by MAX_WORD_BYTES; checked again so no path can overflow.
+        let sides = p
+            .min_before
+            .checked_add(p.min_after)
+            .ok_or(HyphenationError::InvalidParams)?;
         if n > MAX_WORD_BYTES
-            || n < p.min_word_len.max(p.min_before + p.min_after).max(2)
+            || n < p.min_word_len.max(sides).max(2)
             || !word.bytes().all(|b| b.is_ascii_alphabetic())
         {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         if !p.hyphenate_capitalized && word.as_bytes()[0].is_ascii_uppercase() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let lower: Vec<u8> = word.bytes().map(|b| b.to_ascii_lowercase()).collect();
-        let allowed = |k: usize| k >= p.min_before.max(1) && k + p.min_after.max(1) <= n;
+        let allowed = |k: usize| {
+            k >= p.min_before.max(1)
+                && k.checked_add(p.min_after.max(1)).is_some_and(|end| end <= n)
+        };
         if let Some(points) = self.exceptions.get(&lower) {
-            return points.iter().copied().filter(|k| allowed(*k)).collect();
+            return Ok(points.iter().copied().filter(|k| allowed(*k)).collect());
         }
-        let mut text = Vec::with_capacity(n + 2);
+        // n <= MAX_WORD_BYTES here, so the saturating sums below never saturate.
+        let len = n.saturating_add(2);
+        let mut text = Vec::with_capacity(len);
         text.push(b'.');
         text.extend_from_slice(&lower);
         text.push(b'.');
-        let mut levels = vec![0u8; text.len() + 1];
-        for i in 0..text.len() {
-            let hi = (i + self.max_pattern).min(text.len());
-            for j in i + 1..=hi {
-                if let Some(pat) = self.patterns.get(&text[i..j]) {
+        let mut levels = vec![0u8; len.saturating_add(1)];
+        for i in 0..len {
+            let hi = i.saturating_add(self.max_pattern).min(len);
+            for j in i.saturating_add(1)..=hi {
+                if let Some(pat) = text.get(i..j).and_then(|key| self.patterns.get(key)) {
                     for (o, v) in pat.iter().enumerate() {
-                        levels[i + o] = levels[i + o].max(*v);
+                        if let Some(slot) = levels.get_mut(i.saturating_add(o)) {
+                            *slot = (*slot).max(*v);
+                        }
                     }
                 }
             }
         }
-        (1..n).filter(|k| levels[k + 1] % 2 == 1 && allowed(*k)).collect()
+        Ok((1..n)
+            .filter(|k| levels.get(k.saturating_add(1)).is_some_and(|v| v & 1 == 1) && allowed(*k))
+            .collect())
     }
 
     /// Every hyphenable word of `text` as `(word start byte, break bytes)`; break bytes are absolute
@@ -200,7 +267,7 @@ impl Hyphenator {
             {
                 let pts = self.points(&text[s..end], p);
                 if !pts.is_empty() {
-                    out.push((s, pts.into_iter().map(|k| s + k).collect()));
+                    out.push((s, pts.into_iter().map(|k| s.saturating_add(k)).collect()));
                 }
             }
             *tainted = false;
@@ -223,7 +290,7 @@ impl Hyphenator {
 /// Renders `word` with `-` at its break points (test and diagnostic aid).
 pub fn hyphenated(h: &Hyphenator, word: &str, p: &HyphenationParams) -> String {
     let pts = h.points(word, p);
-    let mut s = String::with_capacity(word.len() + pts.len());
+    let mut s = String::with_capacity(word.len().saturating_add(pts.len()));
     for (k, c) in word.chars().enumerate() {
         if pts.contains(&k) {
             s.push('-');

@@ -423,6 +423,45 @@ fn consecutive_hyphen_limit() {
 }
 
 #[test]
+fn hostile_integer_options_at_type_max() {
+    bounded_case("integer-limits", || {
+        // R28 finding: TypesetOptions::validate checked floats only. Every integer option of the
+        // typeset options (all live in HyphenationParams; JustifyParams is floats only) at its
+        // type's maximum: usize limits refuse InvalidInput before any composition, in both composers.
+        let d = hy(6.0);
+        for composer in [Composer::FirstFit, Composer::KnuthPlass(KnuthPlassParams::default())] {
+            let case = Case::new("aaaa hyphenation", one_frame(60.0, 24.0), composer);
+            for (name, p) in [
+                ("min_word_len", HyphenationParams { min_word_len: usize::MAX, ..d }),
+                ("min_before", HyphenationParams { min_before: usize::MAX, ..d }),
+                ("min_after", HyphenationParams { min_after: usize::MAX, ..d }),
+                ("min_before=1+min_after=MAX", HyphenationParams { min_before: 1, min_after: usize::MAX, ..d }),
+            ] {
+                let o = TypesetOptions { hyphenation: Some(p), ..Default::default() };
+                assert_eq!(case.run_t(&o).unwrap_err(), LayoutError::InvalidInput, "{name} {composer:?}");
+            }
+        }
+        // consecutive_limit (u8) at u8::MAX is accepted and behaves as unlimited (limit 0) on the
+        // three-hyphen ladder.
+        let h = Hyphenator::from_pattern_text("[exceptions]\nab-ab-ab-ab\n").unwrap();
+        for composer in [Composer::FirstFit, Composer::KnuthPlass(KnuthPlassParams::default())] {
+            let case = Case::new("abababab", vec![frame(0, 0.0, 0.0, 18.0, 60.0, vec![])], composer);
+            let run = |limit| {
+                let o = TypesetOptions {
+                    hyphenation: Some(HyphenationParams { consecutive_limit: limit, ..d }),
+                    hyphenator: Some(&h),
+                    ..Default::default()
+                };
+                case.run_t(&o).unwrap().frames[0].lines.clone()
+            };
+            let top = run(u8::MAX);
+            assert_eq!(top, run(0), "{composer:?}");
+            assert_eq!(top.iter().filter(|l| l.hyphenated).count(), 3, "{composer:?}");
+        }
+    });
+}
+
+#[test]
 fn hostile_options_are_refused() {
     let case = Case::new("aa bb", one_frame(60.0, 24.0), Composer::FirstFit);
     for bad in [f64::NAN, f64::INFINITY, -1.0] {

@@ -164,14 +164,10 @@ impl TypesetOptions<'_> {
         if let Some(j) = &self.justify {
             j.validate()?;
         }
-        if let Some(h) = &self.hyphenation
-            && !(h.hyphen_advance_pt.is_finite()
-                && h.hyphen_advance_pt >= 0.0
-                && h.hyphen_penalty.is_finite()
-                && h.double_hyphen_demerits.is_finite()
-                && h.double_hyphen_demerits >= 0.0)
-        {
-            return Err(LayoutError::InvalidInput);
+        // Every integer and float limit of the hyphenation options (checked arithmetic, typed
+        // refusal): see `HyphenationParams::validate`. JustifyParams holds floats only.
+        if let Some(h) = &self.hyphenation {
+            h.validate().map_err(|_| LayoutError::InvalidInput)?;
         }
         Ok(())
     }

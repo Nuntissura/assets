@@ -172,7 +172,7 @@ pub(crate) fn first_fit(
                 }
             }
         } else if let Some(b) = best.take() {
-            run = if items[b].flagged { run + 1 } else { 0 };
+            run = if items[b].flagged { run.saturating_add(1) } else { 0 };
             breaks.push(LineBreak {
                 item: b,
                 overfull: false,

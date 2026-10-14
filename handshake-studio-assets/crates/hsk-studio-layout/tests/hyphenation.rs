@@ -1,6 +1,6 @@
 //! Liang hyphenation oracles. Expected breaks are the TeX en-US results (default InDesign-like
 //! limits 5/2/2 unless a test says otherwise); equality with InDesign output is UNVERIFIED.
-use hsk_studio_layout::{HyphenationParams, Hyphenator, hyphenated};
+use hsk_studio_layout::{HyphenationParams, Hyphenator, MAX_WORD_BYTES, hyphenated};
 
 fn h(word: &str) -> String {
     hyphenated(Hyphenator::en_us(), word, &HyphenationParams::default())
@@ -90,4 +90,41 @@ fn custom_pattern_set_liang_semantics() {
 #[test]
 fn licence_is_recorded() {
     assert!(hsk_studio_layout::EN_US_LICENCE.contains("Kuiken"));
+}
+
+/// R28 finding: `min_before + min_after` was an unchecked add (debug overflow panic at
+/// hyphenate.rs:159:39 observed on the unfixed code with (1, usize::MAX)). Every integer option at
+/// its type's maximum is refused with a typed error, never a panic.
+#[test]
+fn hostile_integer_limits_at_type_max_are_refused() {
+    use hsk_studio_layout::HyphenationError;
+    let set = Hyphenator::en_us();
+    let d = HyphenationParams::default();
+    let hostile = [
+        ("min_word_len", HyphenationParams { min_word_len: usize::MAX, ..d }),
+        ("min_before", HyphenationParams { min_before: usize::MAX, ..d }),
+        ("min_after", HyphenationParams { min_after: usize::MAX, ..d }),
+        ("min_before=1+min_after=MAX", HyphenationParams { min_before: 1, min_after: usize::MAX, ..d }),
+        ("min_before=MAX+min_after=1", HyphenationParams { min_before: usize::MAX, min_after: 1, ..d }),
+        ("both MAX", HyphenationParams { min_before: usize::MAX, min_after: usize::MAX, ..d }),
+        // Each side in range, sum one over the bound.
+        ("sum over bound", HyphenationParams { min_before: 32, min_after: 33, ..d }),
+        ("min_word_len over bound", HyphenationParams { min_word_len: MAX_WORD_BYTES + 1, ..d }),
+    ];
+    for (name, p) in hostile {
+        assert_eq!(p.validate(), Err(HyphenationError::InvalidParams), "{name}");
+        assert_eq!(set.try_points("hyphenation", &p), Err(HyphenationError::InvalidParams), "{name}");
+        assert!(set.points("hyphenation", &p).is_empty(), "{name}");
+        assert!(set.hyphenate_text("a hyphenation b", &p).is_empty(), "{name}");
+    }
+    assert_eq!(HyphenationError::InvalidParams.to_string(), "invalid_hyphenation_params");
+    // Bounds are inclusive: sum exactly MAX_WORD_BYTES is accepted; only k = 32 can qualify.
+    let edge = HyphenationParams { min_before: 32, min_after: 32, min_word_len: MAX_WORD_BYTES, ..d };
+    assert_eq!(edge.validate(), Ok(()));
+    let pts = set.try_points(&"ab".repeat(32), &edge).unwrap();
+    assert!(pts.iter().all(|k| *k == 32), "{pts:?}");
+    // consecutive_limit accepts its whole u8 range (0 = unlimited; no word has 255 breaks).
+    let top = HyphenationParams { consecutive_limit: u8::MAX, ..d };
+    assert_eq!(top.validate(), Ok(()));
+    assert_eq!(set.try_points("hyphenation", &top), Ok(vec![2, 6]));
 }
