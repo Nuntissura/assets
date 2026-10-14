@@ -1,16 +1,11 @@
 //! Optional JavaScript expression provider; isolate C/FFI/toolchain/runtime quotas from pure Motion
 //! semantics. Shared host sandbox lifecycle; no private script/plugin authority.
-// `unsafe` exists only in `job_object` (Windows Job Object FFI, quickjs feature); every other build
-// of this crate forbids it.
-#![cfg_attr(not(all(windows, feature = "quickjs")), forbid(unsafe_code))]
-#![cfg_attr(all(windows, feature = "quickjs"), deny(unsafe_code))]
+// No `unsafe` here: the Windows Job Object FFI lives in `hsk-studio-worker`.
+#![forbid(unsafe_code)]
 
 mod clock;
 mod descriptor;
 mod engine;
-#[cfg(all(windows, feature = "quickjs"))]
-#[allow(unsafe_code)]
-mod job_object;
 mod limits;
 #[cfg(feature = "quickjs")]
 mod os_caps;

@@ -5,7 +5,7 @@
 //! process, and observed by the HOST through a kernel notification, cannot be forged by script text:
 //! only a real allocation beyond the cap, or real CPU time beyond the cap, produces the event.
 //!
-//! Windows: one Job Object per worker (`job_object`): process memory limit (committed bytes), per
+//! Windows: one Job Object per worker (`hsk-studio-worker` job module): process memory limit (committed bytes), per
 //! process user CPU time limit (re-armed before every request, because the kernel counts the whole
 //! process lifetime; the host also polls the job's own CPU accounting every few milliseconds because
 //! the kernel limit alone was measured to stop a runaway loop seconds late), kill-on-close,
@@ -19,6 +19,7 @@
 //! turns that into a configuration error. Nothing is emulated.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::{limits::Quotas, quickjs::QuickJsConfigError};
+pub use hsk_studio_worker::OsLimits;
 use std::time::Duration;
 
 /// Added to the engine heap and stack limits to get the default process memory cap: covers the Rust
@@ -62,15 +63,6 @@ impl OsCapUnavailable {
 pub enum OsCapStatus {
     Enforced,
     Unavailable(OsCapUnavailable),
-}
-
-/// Caps applied to one worker process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OsLimits {
-    /// Most bytes the worker process may commit (Windows: `JOB_OBJECT_LIMIT_PROCESS_MEMORY`).
-    pub process_memory_bytes: u64,
-    /// User-mode CPU time one evaluation attempt may use (re-armed before every request).
-    pub cpu_time: Duration,
 }
 
 /// Cap policy of a worker pool: derived from the quotas unless `limits` is given.
@@ -125,65 +117,10 @@ impl OsCapConfig {
     }
 }
 
-/// What the operating system reported about a worker since the last drain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct OsEvents {
-    /// The process (or job) hit its memory cap: a commit beyond the cap was refused.
-    pub(crate) memory: bool,
-    /// The process exceeded its CPU time cap and was terminated by the kernel.
-    pub(crate) cpu: bool,
-}
-
-impl OsEvents {
-    pub(crate) fn is_clear(self) -> bool {
-        !self.memory && !self.cpu
-    }
-
-    pub(crate) fn merge(&mut self, other: Self) {
-        self.memory |= other.memory;
-        self.cpu |= other.cpu;
-    }
-}
-
 pub(crate) const fn platform_status() -> OsCapStatus {
-    if cfg!(windows) {
+    if hsk_studio_worker::JOB_CAPS_AVAILABLE {
         OsCapStatus::Enforced
     } else {
         OsCapStatus::Unavailable(OsCapUnavailable::PlatformNotSupported)
-    }
-}
-
-#[cfg(windows)]
-pub(crate) use crate::job_object::{WorkerJob, harden_worker_process};
-
-/// Worker-process start-up hardening against the platform crash reporter (Windows only).
-#[cfg(not(windows))]
-pub(crate) fn harden_worker_process() {}
-
-/// Placeholder so the worker code type-checks on platforms without an implementation; it is never
-/// constructed there because `platform_status` is `Unavailable`.
-#[cfg(not(windows))]
-#[allow(dead_code)]
-pub(crate) struct WorkerJob;
-
-#[cfg(not(windows))]
-impl WorkerJob {
-    pub(crate) fn attach(
-        _child: &std::process::Child,
-        _limits: OsLimits,
-    ) -> std::io::Result<Self> {
-        Err(std::io::ErrorKind::Unsupported.into())
-    }
-
-    pub(crate) fn arm_cpu(&mut self, _budget: Duration) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    pub(crate) fn cpu_exceeded(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn drain(&self) -> OsEvents {
-        OsEvents::default()
     }
 }
