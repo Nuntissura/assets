@@ -47,6 +47,12 @@ impl State {
             return Err(Error::Unsupported("background interaction"));
         }
         let supported = match kind {
+            #[cfg(feature = "drops")]
+            RequestKind::Drop(d) => {
+                crate::drop::validate_target(self, core.snapshot(), d)?;
+                if d.offer.expires_at_ms <= self.now { return Err(Error::Stale("drop payload expired")); }
+                caps.assets && !m.scope.target.is_background()
+            }
             #[cfg(feature = "navigation")]
             RequestKind::Navigation(n) => {
                 self.navigation_eligible(mount, n)?;
@@ -432,6 +438,8 @@ impl Controller {
                 }
                 let m = &s.mounts[&mount];
                 let prerequisites = match p.request.kind {
+                    #[cfg(feature = "drops")]
+                    RequestKind::Drop(_) => true,
                     RequestKind::Input(_)
                     | RequestKind::ToolAction { .. }
                     | RequestKind::AssetAction(_) => true,

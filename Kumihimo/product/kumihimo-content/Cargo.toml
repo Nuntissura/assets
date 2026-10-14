@@ -13,6 +13,7 @@ kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features
 default = []
 navigation = []
 backgrounds = []
+drops = []
 
 [[example]]
 name = "controls_host"

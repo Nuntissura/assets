@@ -12,6 +12,7 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = []
 wasm = ["dep:wasm-bindgen"]
+drops = ["kumihimo-content/drops"]
 
 [dependencies]
 kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features = false }

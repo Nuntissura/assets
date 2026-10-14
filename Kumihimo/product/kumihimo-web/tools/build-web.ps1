@@ -3,6 +3,7 @@ param(
     [string]$WasmBindgen = $env:KUMIHIMO_WASM_BINDGEN,
     [string]$OutputDir = '.local/web/pkg',
     [string]$ManifestOutput = '.local/web/build-manifest.json',
+    [string]$Features = 'wasm,drops',
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
@@ -33,7 +34,7 @@ $rustVersion = (& rustc --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'rustc version failed' }
 $workspaceManifest = Join-Path $projectRoot 'product/Cargo.toml'
 if (-not $SkipBuild) {
-    & cargo build --manifest-path $workspaceManifest -p kumihimo-web --features wasm --target wasm32-unknown-unknown --target-dir $targetRoot --locked --offline -j 2
+    & cargo build --manifest-path $workspaceManifest -p kumihimo-web --features $Features --target wasm32-unknown-unknown --target-dir $targetRoot --locked --offline -j 2
     if ($LASTEXITCODE -ne 0) { throw 'WASM build failed; no bindings generated.' }
 }
 $wasm = Join-Path $targetRoot 'wasm32-unknown-unknown/debug/kumihimo_web.wasm'

@@ -76,7 +76,8 @@ function expose(host) {
 function createWorkspace(restore = false) {
   const host = new BrowserPilot(crypto.randomUUID(), JSON.stringify(config()));
   const previous = adapter;
-  adapter = new BrowserAdapter({ host, root: $('#workspace'), status: $('#status'), onSnapshot: updateInspector });
+  adapter = new BrowserAdapter({ host, root: $('#workspace'), status: $('#status'), onSnapshot: updateInspector,
+    fileDrops: {} });
   previous?.dispose();
   // Retired DOM nodes are presentation only; the new host supplies all canonical state.
   if (previous) for (const node of previous.frames.values()) node.remove();

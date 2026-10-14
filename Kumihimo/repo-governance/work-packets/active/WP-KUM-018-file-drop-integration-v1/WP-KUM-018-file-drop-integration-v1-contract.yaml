@@ -2,10 +2,12 @@ schema_version: kumihimo.wp-contract.v1
 wp_id: WP-KUM-018-file-drop-integration-v1
 title: Host-owned file and asset drop integration for desktop and web
 scope:
-- Add optional bounded drop coordination over canonical frame/view destinations and existing host request/ACK routing
-- Implement actual native file-drop and browser File/internal-asset adapter paths with host-owned effects
-- Expose clear target/action preview, cancellation, rejection and pending/completed host outcomes; preserve arrangement-only
-  movement
+- Add optional bounded drop coordination over canonical frame/view destinations and
+  existing host request/ACK routing
+- Implement actual native file-drop and browser File/internal-asset adapter paths
+  with host-owned effects
+- Expose clear target/action preview, cancellation, rejection and pending/completed
+  host outcomes; preserve arrangement-only movement
 files:
 - product/kumihimo-content/src/drop.rs
 - product/kumihimo-content/src/lib.rs
@@ -30,6 +32,7 @@ files:
 - product/README.md
 - product/INTERNAL-MANUAL.md
 - repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/
+- product/kumihimo-egui/fixtures/file-drop/
 dependencies:
 - WP-KUM-017-extension-planning-and-handoff-v1
 - WP-KUM-016-internal-user-manual-v1
@@ -38,38 +41,41 @@ spec_refs:
 - REQ-KUM-CONTENT-008
 - REQ-KUM-CONTENT-009
 requirements:
-- Separate disk files, browser File handles and internal asset references; carry bounded metadata and host payload
-  tokens, not unrestricted bytes in Core
-- Host advertises permitted open/link/import/copy/move actions and scope; hover reads metadata only and highlights
-  exact frame/view target
-- Release validates destination generation, current permissions and payload lifetime, then routes one attributable
-  host operation; cancel/blur/invalid target cannot alter content
-- Keep actual file IO, validation/conversion, resource revision, content undo and partial import recovery with the
-  host
-- Use generation/incarnation/replay discipline; expose unavailable/denied/pending/completed/failed outcomes without
-  confusing drop with layout docking
-- Integrate with sample hosts using real small fixture files and real browser File content; do not require Notes,
-  Studio, Portal or Handshake
-- No fixed pane/tab count, default eager loading of huge files, raw path logging or silent physical move from a
-  layout drag
+- Separate disk files, browser File handles and internal asset references; carry bounded
+  metadata and host payload tokens, not unrestricted bytes in Core
+- Host advertises permitted open/link/import/copy/move actions and scope; hover reads
+  metadata only and highlights exact frame/view target
+- Release validates destination generation, current permissions and payload lifetime,
+  then routes one attributable host operation; cancel/blur/invalid target cannot alter
+  content
+- Keep actual file IO, validation/conversion, resource revision, content undo and
+  partial import recovery with the host
+- Use generation/incarnation/replay discipline; expose unavailable/denied/pending/completed/failed
+  outcomes without confusing drop with layout docking
+- Integrate with sample hosts using real small fixture files and real browser File
+  content; do not require Notes, Studio, Portal or Handshake
+- No fixed pane/tab count, default eager loading of huge files, raw path logging or
+  silent physical move from a layout drag
 acceptance:
-- Supported file drop reaches the exact target host once with observed fixture content; another frame receives a
-  different target
-- Open/link/import/copy meaning is explicit in preview and host dispatch; unsupported types/actions reject without
-  mutation
-- Cancel, stale target, multi-file bounds and host refusal/delayed completion produce bounded causal results without
-  document loss
-- Actual native OS transfer/drop and actual browser File-to-host boundary are exercised; synthetic controller events
-  alone are insufficient GUI proof
-- Default core/content stay independently usable; drop dependencies/features remain optional and current arrangement
-  gestures work
-- Manual/reference and scoped evidence describe precisely what file operations the sample performs
+- Supported file drop reaches the exact target host once with observed fixture content;
+  another frame receives a different target
+- Open/link/import/copy meaning is explicit in preview and host dispatch; unsupported
+  types/actions reject without mutation
+- Cancel, stale target, multi-file bounds and host refusal/delayed completion produce
+  bounded causal results without document loss
+- Actual native OS transfer/drop and actual browser File-to-host boundary are exercised;
+  synthetic controller events alone are insufficient GUI proof
+- Default core/content stay independently usable; drop dependencies/features remain
+  optional and current arrangement gestures work
+- Manual/reference and scoped evidence describe precisely what file operations the
+  sample performs
 proof:
-- Dependency agent inspect existing egui-winit raw drop fields/native event forwarding and browser DataTransfer/File
-  patterns before coding
-- Focused owning contract cases for target/action/lifetime and failed host effect; use the smallest fixture payload
-- One actual native drop scenario and one browser drop scenario with exact host outcome plus inspected visual/state
-  evidence; label physical-input limits
+- Dependency agent inspect existing egui-winit raw drop fields/native event forwarding
+  and browser DataTransfer/File patterns before coding
+- Focused owning contract cases for target/action/lifetime and failed host effect;
+  use the smallest fixture payload
+- One actual native drop scenario and one browser drop scenario with exact host outcome
+  plus inspected visual/state evidence; label physical-input limits
 - Bundle affected Cargo/WASM checks once stable; preserve/reuse unaffected prior results
 reuse:
 - Existing canonical geometry and frame/view identity
@@ -80,17 +86,21 @@ gaps_closed:
 - Ambiguous drop-open versus physical file move and layout-only gestures
 roi_additions:
 - Cheap current-context action previews reduce host-specific UI duplication
-- Shared target validation and result receipts prevent stale drops and make agent operations recoverable
+- Shared target validation and result receipts prevent stale drops and make agent
+  operations recoverable
 risks_and_controls:
-- 'Large payload on hover: metadata-only offer and configurable admission bounds; read content after admitted drop'
-- 'App/domain mismatch or stale view: capability negotiation plus generation validation; preserve host undo scope'
-- 'Partial import: host returns attributable status/recovery action; no success from receipt existence alone'
-parallelism: Independent from WP019 platform code. Content routing, shared Cargo manifests, README/manual and governance
-  are lead-owned overlapping writes; serialize them.
+- 'Large payload on hover: metadata-only offer and configurable admission bounds;
+  read content after admitted drop'
+- 'App/domain mismatch or stale view: capability negotiation plus generation validation;
+  preserve host undo scope'
+- 'Partial import: host returns attributable status/recovery action; no success from
+  receipt existence alone'
+parallelism: Independent from WP019 platform code. Content routing, shared Cargo manifests,
+  README/manual and governance are lead-owned overlapping writes; serialize them.
 research_basis:
   source_ref: repo-governance/work-packets/active/WP-KUM-016-internal-user-manual-v1/WP-KUM-016-internal-user-manual-v1-research.yaml
-  selection: Host-owned drops, optional native control and per-app capability-gated hosting; mature platform operations
-    reused after specific dependency readiness
+  selection: Host-owned drops, optional native control and per-app capability-gated
+    hosting; mature platform operations reused after specific dependency readiness
   rejected:
   - Native handles/process control in portable Core
   - Universal application embedding claim
@@ -99,11 +109,16 @@ taskboard_ref: repo-governance/taskboard/taskboard.yaml
 execution:
   lead: Fresh non-fork implementation chat created by WP017
   dependencies: New dependency-role chat verifies source/runtime/tools before coding
-  evaluation: New evaluation-role chat authors focused cases and exact observed verdict per WP
-  diagnostics: New diagnostic-role chat deliberates causal failures directly with assigned coders
-  cargo: Single serialized lane; stable source/.local/cargo-target; verified sccache; bundled compatible checks
-  coding: gpt-6.1-sol high; rotate after two completed implementation WPs; disjoint parallel code allowed
-  publication: Commit and push after each completed WP; DONE requires accepted scope proof and remote containment
-  status: Update packet state then sync taskboard at meaningful milestones; preserve honest unsupported/blocker
-    outcomes
+  evaluation: New evaluation-role chat authors focused cases and exact observed verdict
+    per WP
+  diagnostics: New diagnostic-role chat deliberates causal failures directly with
+    assigned coders
+  cargo: Single serialized lane; stable source/.local/cargo-target; verified sccache;
+    bundled compatible checks
+  coding: gpt-6.1-sol high; rotate after two completed implementation WPs; disjoint
+    parallel code allowed
+  publication: Commit and push after each completed WP; DONE requires accepted scope
+    proof and remote containment
+  status: Update packet state then sync taskboard at meaningful milestones; preserve
+    honest unsupported/blocker outcomes
   automation: Deleted tick remains deleted; do not create new recurring automation

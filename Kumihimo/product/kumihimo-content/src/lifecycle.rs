@@ -102,6 +102,8 @@ impl State {
             return Ok(());
         };
         let valid = match (&p.request.kind, c) {
+            #[cfg(feature = "drops")]
+            (RequestKind::Drop(_), Confirmation::Done) => true,
             #[cfg(feature = "navigation")]
             (RequestKind::Navigation(n), Confirmation::Navigation(o)) => {
                 self.navigation_validate_confirmation(p.request.ticket.scope.mount, n, o)?;

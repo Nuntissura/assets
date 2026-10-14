@@ -7,9 +7,14 @@ use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*, System::Threading::*, 
 #[derive(Default)]
 pub struct WindowsBackend;
 pub struct WindowsLease { process: HANDLE, identity: WindowIdentity, thread_id: u32, marker_name: Vec<u16>, marker_token: Box<u8>, marker_installed: bool }
+// Immutable retained Win32 handles/property identity may be queried across threads.
+// Each hosting backend admits only one mutation worker; CloseHandle runs after its last Arc.
+unsafe impl Send for WindowsLease {}
+unsafe impl Sync for WindowsLease {}
 impl WindowsLease {
     pub fn hwnd(&self) -> HWND { self.identity.hwnd as usize as HWND }
     pub fn identity(&self) -> WindowIdentity { self.identity }
+    pub fn thread_id(&self) -> u32 { self.thread_id }
     /// Recheck immediately before an additional native-adapter effect.
     pub fn validate(&self) -> Result<(), Diagnostic> { validate(self, self.identity) }
 }
@@ -22,7 +27,7 @@ impl Drop for WindowsLease {
         unsafe { CloseHandle(self.process); }
     }
 }
-fn os(code: &str, message: &str) -> Diagnostic {
+pub(crate) fn os(code: &str, message: &str) -> Diagnostic {
     Diagnostic { code: code.into(), message: message.into(), os_error: Some(unsafe { GetLastError() }) }
 }
 fn creation(process: HANDLE) -> Result<u64, Diagnostic> {
@@ -50,9 +55,9 @@ fn validate(lease: &WindowsLease, expected: WindowIdentity) -> Result<(), Diagno
     }
     Ok(())
 }
-struct DpiGuard(DPI_AWARENESS_CONTEXT);
+pub(crate) struct DpiGuard(DPI_AWARENESS_CONTEXT);
 impl DpiGuard {
-    fn enter() -> Result<Self, Diagnostic> {
+    pub(crate) fn enter() -> Result<Self, Diagnostic> {
         let prior = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         if prior.is_null() { Err(os("dpi_context", "Physical-pixel thread context is unavailable")) } else { Ok(Self(prior)) }
     }
@@ -64,9 +69,12 @@ fn bounds(rect: RECT) -> Result<PixelBounds, Diagnostic> {
         height: rect.bottom.checked_sub(rect.top).ok_or_else(|| Diagnostic::new("bounds_overflow", "OS height overflows"))? };
     bounds.validate()?; Ok(bounds)
 }
-impl WindowBackend for WindowsBackend {
-    type Lease = WindowsLease;
-    fn bind(&mut self, target: WindowTarget) -> Result<(WindowsLease, WindowIdentity), Diagnostic> {
+impl WindowsBackend {
+    pub fn bind_owned_parent(&mut self, target: WindowTarget) -> Result<WindowsLease, Diagnostic> {
+        if target.pid != unsafe { GetCurrentProcessId() } { return Err(Diagnostic::new("parent_not_owned", "Native hosting parent must belong to this host process")); }
+        self.bind_window(target, true).map(|(lease, _)| lease)
+    }
+    fn bind_window(&mut self, target: WindowTarget, owned_parent: bool) -> Result<(WindowsLease, WindowIdentity), Diagnostic> {
         if target.hwnd == 0 || target.pid == 0 || target.hwnd > usize::MAX as u64 {
             return Err(Diagnostic::new("invalid_target", "Explicit representable HWND and nonzero PID required"));
         }
@@ -84,7 +92,7 @@ impl WindowBackend for WindowsBackend {
             return Err(Diagnostic::new("selection_mismatch", "Explicit owner or creation time does not match live selection"));
         }
         validate(&lease, identity)?;
-        if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd || unsafe { IsWindowVisible(hwnd) } == 0 {
+        if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd || (!owned_parent && unsafe { IsWindowVisible(hwnd) } == 0) {
             return Err(Diagnostic::new("unsupported_window", "Only explicitly selected visible top-level windows are supported"));
         }
         if unsafe { IsIconic(hwnd) } != 0 || unsafe { IsZoomed(hwnd) } != 0 {
@@ -102,6 +110,10 @@ impl WindowBackend for WindowsBackend {
         validate(&lease, identity)?;
         Ok((lease, identity))
     }
+}
+impl WindowBackend for WindowsBackend {
+    type Lease = WindowsLease;
+    fn bind(&mut self, target: WindowTarget) -> Result<(WindowsLease, WindowIdentity), Diagnostic> { self.bind_window(target, false) }
     fn validate(&mut self, lease: &WindowsLease, identity: WindowIdentity) -> Result<(), Diagnostic> { validate(lease, identity) }
     fn observe(&mut self, lease: &WindowsLease) -> Result<Placement, Diagnostic> {
         lease.validate()?;

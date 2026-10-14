@@ -6,9 +6,15 @@ pub mod chrome;
 pub mod content;
 pub mod demo;
 pub mod diagnostics;
+#[cfg(all(feature = "native-apps", windows))]
+pub mod external_apps;
+#[cfg(feature = "drops")]
+pub mod drop;
 pub mod input;
 #[cfg(feature = "native")]
 pub mod native;
+#[cfg(all(feature = "native-drops", windows))]
+pub mod native_drop;
 #[cfg(feature = "navigation")]
 pub mod navigation;
 pub mod persistence;
@@ -291,6 +297,8 @@ pub struct ControlRecord {
 }
 #[derive(Clone, Debug, Default)]
 pub struct FrameReport {
+    #[cfg(all(feature="native-apps",windows))]
+    pub native_child_overlay_blocked:bool,
     pub generation: u64,
     pub post_generation: u64,
     pub epoch: u64,
@@ -405,6 +413,8 @@ impl DesktopAdapter {
             ctx.request_repaint();
         }
         report.post_generation = controller.snapshot().generation;
+        #[cfg(all(feature="native-apps",windows))]
+        {report.native_child_overlay_blocked=external_apps::native_child_overlays_blocked(ctx,&report.slots,self.chrome.preview.is_some()||self.input.active_capture().is_some());}
         Ok(report)
     }
 }

@@ -21,6 +21,7 @@ files:
 - product/README.md
 - product/INTERNAL-MANUAL.md
 - repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/
+- product/kumihimo-egui/examples/foreign_app_host.rs
 dependencies:
 - WP-KUM-019-external-app-tiling-v1
 spec_refs:

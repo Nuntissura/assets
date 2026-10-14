@@ -21,6 +21,7 @@ main { padding: 14px 28px 28px; }
 .frame-header { height: 36px; display: flex; align-items: center; gap: 5px; padding: 3px 5px; background: #303c4d; border-bottom: 1px solid #536378; user-select: none; touch-action: none; cursor: grab; }
 .frame-title { font-size: 12px; font-weight: 600; max-width: 27%; flex-shrink: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .frame-header > button { padding: 1px 7px; font-size: 18px; }
+.frame-header > .host-asset-drag { padding: 3px 6px; font-size: 11px; flex-shrink: 0; cursor: grab; }
 .tabs { display: flex; gap: 3px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
 .tabs button { padding: 4px 7px; border-radius: 4px; font-size: 11px; flex-shrink: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .tabs button[aria-selected=true] { background: #496786; border-color: #95bce5; }
@@ -36,3 +37,5 @@ main { padding: 14px 28px 28px; }
 details { margin-top: 16px; padding: 12px; border: 1px solid #34404f; border-radius: 7px; } summary { cursor: pointer; font-size: 13px; }
 iframe { width: 100%; max-width: 450px; height: 90px; border: 1px solid #536378; border-radius: 5px; }
 @media (max-width: 760px) { main { padding: 12px; } .page-header { padding: 16px 12px; flex-direction: column; }.inspector { grid-template-columns: 1fr; }.workspace-shell { margin-left: 17px; margin-right: 3px; } #workspace { height: 440px; }.frame-title { display: none; }.tabs button { max-width: 110px; } }
+.frame-content[data-file-drop] { outline: 3px solid #70c4ff; outline-offset: -3px; }
+.frame-content[data-file-drop]::after { content: attr(data-file-drop); position: absolute; inset: 4px 4px auto auto; background: #18354d; color: white; padding: 4px 8px; pointer-events: none; }

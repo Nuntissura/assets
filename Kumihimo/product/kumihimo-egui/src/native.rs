@@ -1,6 +1,6 @@
 //! Thin winit/Painter integration, following egui 0.33.3 public integration APIs.
 //! API provenance: egui-winit/src/lib.rs and egui-wgpu/src/winit.rs (MIT OR Apache-2.0).
-//! No eframe code, automatic first-frame showing, global input, or readiness callbacks.
+//! No automatic first-frame showing or global input; foreign-parent hooks are opt-in.
 use crate::{
     persistence::{NativeBinding, NativeContent, ReturnAnchor},
     window_slots::{PendingNative, WindowSlots},
@@ -121,6 +121,31 @@ pub enum NativeClosePolicy {
 }
 /// Host coordination extends the borrowed desktop path without duplicating command allocation.
 pub trait NativeHost: DesktopHost {
+    #[cfg(all(feature = "native-apps", windows))]
+    fn native_apps_enabled(&self)->bool { false }
+    #[cfg(all(feature = "native-apps", windows))]
+    fn native_parent_ready(&mut self,_controller:&mut Controller,_surface:SurfaceBinding,_parent:crate::external_apps::NativeParentBinding)->Result<()> { Err(AdapterError::Unsupported("native-app parent-ready handler required")) }
+    #[cfg(all(feature = "native-apps", windows))]
+    fn native_app_slots(&mut self,_controller:&mut Controller,_surface:SurfaceBinding,_parent:&crate::external_apps::NativeParentBinding,_report:&FrameReport)->Result<()> { Err(AdapterError::Unsupported("native-app slot handler required")) }
+    /// Parent popup/preview pixels wait until child presentation is independently hidden.
+    #[cfg(all(feature = "native-apps", windows))]
+    fn native_app_overlay_ready(&mut self,_controller:&mut Controller,_surface:SurfaceBinding,_parent:&crate::external_apps::NativeParentBinding)->Result<bool> {Err(AdapterError::Unsupported("native-app overlay visibility proof handler required"))}
+    /// False retains the owned HWND and all foreign-app obligations; it never means detached.
+    #[cfg(all(feature = "native-apps", windows))]
+    fn before_native_parent_destroy(&mut self,_controller:&mut Controller,_surface:SurfaceBinding,_parent:&crate::external_apps::NativeParentBinding)->Result<bool> { Err(AdapterError::Unsupported("native-app detach proof handler required")) }
+    /// Called only by an explicit caller retry or a real CloseRequested gesture.
+    #[cfg(all(feature = "native-apps", windows))]
+    fn retry_native_parent_detach(&mut self,_controller:&mut Controller,_surface:SurfaceBinding,_parent:&crate::external_apps::NativeParentBinding)->Result<()> { Err(AdapterError::Unsupported("native-app explicit detach retry handler required")) }
+    /// Optional host-owned diagnostic projection; default does not disclose payloads.
+    fn native_host_snapshot(&self, _controller: &Controller) -> serde_json::Value { serde_json::Value::Null }
+    /// Explicit host opt-in replaces winit's coordinate-losing default OLE receiver.
+    #[cfg(all(feature = "native-drops", windows))]
+    fn native_drops(&self) -> bool { false }
+    #[cfg(all(feature = "native-drops", windows))]
+    fn native_drop_event(
+        &mut self, _controller: &mut Controller, _surface: SurfaceBinding,
+        _report: &FrameReport, _event: crate::native_drop::NativeDropEvent,
+    ) -> Result<()> { Err(AdapterError::Unsupported("host native drop handler")) }
     fn take_native_actions(&mut self) -> Vec<AdapterAction> {
         Vec::new()
     }
@@ -147,6 +172,25 @@ pub trait NativeHost: DesktopHost {
     }
 }
 impl NativeHost for crate::demo::DemoHost {
+    fn native_host_snapshot(&self, controller: &Controller) -> serde_json::Value {
+        #[cfg(feature = "drops")]
+        if self.drop_observe {
+            return serde_json::json!({"drop_status":self.drop_status,"documents":controller.snapshot().resources.keys()
+                .filter_map(|id| self.document_text(*id).map(|text| serde_json::json!({"resource":id.raw(),"text":text})))
+                .take(32).collect::<Vec<_>>(),"receipts":self.receipts.iter().filter(|r|r.kind.starts_with("file-drop"))
+                .map(|r|serde_json::json!({"view":r.view.raw(),"resource":r.resource.raw(),"request":r.request,"kind":r.kind}))
+                .take(32).collect::<Vec<_>>()});
+        }
+        let _ = controller;
+        serde_json::Value::Null
+    }
+    #[cfg(all(feature = "native-drops", windows))]
+    fn native_drops(&self) -> bool { self.drop_enabled }
+    #[cfg(all(feature = "native-drops", windows))]
+    fn native_drop_event(
+        &mut self, controller: &mut Controller, surface: SurfaceBinding,
+        report: &FrameReport, event: crate::native_drop::NativeDropEvent,
+    ) -> Result<()> { self.handle_native_drop(controller, surface, report, event) }
     fn take_native_actions(&mut self) -> Vec<AdapterAction> {
         std::mem::take(&mut self.native_actions)
     }
@@ -162,6 +206,8 @@ impl NativeHost for crate::demo::DemoHost {
     }
 }
 enum NativeEvent {
+    #[cfg(all(feature = "native-apps", windows))]
+    ExternalWake,
     Accessibility(egui_winit::accesskit_winit::Event),
     Repaint {
         viewport: egui::ViewportId,
@@ -175,6 +221,15 @@ impl From<egui_winit::accesskit_winit::Event> for NativeEvent {
     }
 }
 struct NativeWindow {
+    #[cfg(all(feature = "native-apps", windows))]
+    overlay_pending:bool,
+    #[cfg(all(feature = "native-apps", windows))]
+    deferred_textures:egui::TexturesDelta,
+    #[cfg(all(feature = "native-apps", windows))]
+    external_parent:Option<crate::external_apps::NativeParentBinding>,
+    // Registration must be dropped before the Arc<Window> releases the owned HWND.
+    #[cfg(all(feature = "native-drops", windows))]
+    drops: Option<crate::native_drop::Registration>,
     window: Arc<Window>,
     state: egui_winit::State,
     adapter: DesktopAdapter,
@@ -217,6 +272,8 @@ enum ProbePhase {
     Finished,
 }
 struct App<H: NativeHost> {
+    native_apps_active:bool,
+    exit_blocked:bool,
     controller: Controller,
     host: H,
     root: WorkspaceId,
@@ -271,6 +328,74 @@ pub fn run<H: NativeHost + 'static>(
     root: WorkspaceId,
     options: NativeOptions,
 ) -> Result<NativeOutcome> {
+    #[cfg(all(feature = "native-apps", windows))]
+    if host.native_apps_enabled() { return Err(AdapterError::Unsupported("native-app hosts require run_with_recovery before HWND effects")); }
+    run_impl(controller,host,root,options,false)?.outcome.ok_or(AdapterError::Invalid("legacy runner cannot retain native-app ownership"))
+}
+
+struct RunResult<H:NativeHost+'static> {
+    outcome:Option<NativeOutcome>,
+    #[cfg(all(feature = "native-apps", windows))]
+    retained:Option<RetainedNativeOwner<H>>,
+    marker:std::marker::PhantomData<H>,
+}
+
+#[cfg(all(feature = "native-apps", windows))]
+pub enum NativeRunResult<H:NativeHost+'static> { Completed(NativeOutcome),Retained(RetainedNativeOwner<H>) }
+#[cfg(all(feature = "native-apps", windows))]
+struct HeldNativeRun<H:NativeHost+'static> { app:App<H>,event_loop:EventLoop<NativeEvent> }
+/// Opaque, !Send owner. Inspect/retry/retrieve on the originating UI thread.
+/// Parent destruction is allowed only after fresh independent detach observations.
+#[cfg(all(feature = "native-apps", windows))]
+pub struct RetainedNativeOwner<H:NativeHost+'static> {
+    held:Option<Box<HeldNativeRun<H>>>,admission:kumihimo_external_apps::retention::RecoveryAdmission,
+}
+#[cfg(all(feature = "native-apps", windows))]
+impl<H:NativeHost+'static> RetainedNativeOwner<H> {
+    pub fn recovery_id(&self)->u64 { self.admission.id() }
+    pub fn inspect(&self)->serde_json::Value {
+        let held=self.held.as_ref().unwrap();serde_json::json!({"event":"retained_native_owner","recovery_id":self.recovery_id(),"parent_destroy_allowed":false,"owned_parents":held.app.windows.len(),"cause":held.app.error.as_ref().map(|error|format!("{error:?}")),"host":held.app.host.native_host_snapshot(&held.app.controller)})
+    }
+    /// One bounded pass only; worker completion is nonblocking and retains its own wake.
+    pub fn retry_detach(&mut self)->Result<bool> {
+        let held=self.held.as_mut().unwrap();held.app.explicit_detach_retry()?;held.app.prepare_parent_cleanup()
+    }
+    /// Pump owned-parent messages without new intent, then one nonblocking reconciliation.
+    pub fn reconcile(&mut self)->Result<bool> {
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+        let held=self.held.as_mut().unwrap();
+        held.event_loop.pump_app_events(Some(Duration::ZERO),&mut held.app);
+        held.app.prepare_parent_cleanup()
+    }
+    pub fn finish(mut self)->std::result::Result<Result<NativeOutcome>,Self> {
+        match self.reconcile() { Ok(true)=>{},_=>return Err(self) }
+        let held=self.held.take().unwrap();let HeldNativeRun { app,event_loop }=*held;
+        let outcome=finish_native_app(app);drop(event_loop);
+        // Cleanup and the original runtime/artifact error stay distinct and observable.
+        Ok(outcome)
+    }
+    pub fn retrieve(id:u64)->Result<Self> {
+        let bank=kumihimo_external_apps::retention::RecoveryBank::current_thread();
+        let (held,admission)=bank.retrieve::<HeldNativeRun<H>>(id).map_err(|error|AdapterError::Host(error.to_string()))?;
+        Ok(Self { held:Some(Box::new(held)),admission })
+    }
+}
+#[cfg(all(feature = "native-apps", windows))]
+impl<H:NativeHost+'static> Drop for RetainedNativeOwner<H> {
+    fn drop(&mut self) {
+        if let Some(held)=self.held.take() {
+            // Never silently release attached parents. The shared admission remains occupied.
+            self.admission.retain(*held,kumihimo_external_apps::Diagnostic::new("native_runner_retained", "Retrieve the native owner on its original UI thread and reconcile before thread/process teardown"));
+        }
+    }
+}
+#[cfg(all(feature = "native-apps", windows))]
+pub fn run_with_recovery<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,options:NativeOptions)->Result<NativeRunResult<H>> {
+    let result=run_impl(controller,host,root,options,true)?;
+    if let Some(retained)=result.retained { Ok(NativeRunResult::Retained(retained)) } else { Ok(NativeRunResult::Completed(result.outcome.ok_or(AdapterError::Invalid("retained native result"))?)) }
+}
+
+fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,options:NativeOptions,retained_mode:bool)->Result<RunResult<H>> {
     #[cfg(not(windows))]
     {
         let _ = (controller, host, root, options);
@@ -280,6 +405,12 @@ pub fn run<H: NativeHost + 'static>(
     }
     #[cfg(windows)]
     {
+        #[cfg(all(feature = "native-apps", windows))]
+        let admission=if retained_mode {
+            let identity=&controller.snapshot().identity;
+            let key=format!("native-run:{}:{}:{}",identity.lineage,identity.incarnation,root.raw());
+            Some(kumihimo_external_apps::retention::RecoveryBank::current_thread().reserve_key("native-run",Some(&key)).map_err(|error|AdapterError::Host(error.to_string()))?)
+        } else {None};
         if options.max_captures == 0
             || options.max_captures > 128
             || options.max_retries == 0
@@ -332,7 +463,13 @@ pub fn run<H: NativeHost + 'static>(
             plan.push(NativeContent::Group(g));
         }
         let before = os_observation(None);
+        #[cfg(all(feature="native-apps",windows))]
+        let native_apps_active=retained_mode&&host.native_apps_enabled();
+        #[cfg(not(all(feature="native-apps",windows)))]
+        let native_apps_active=false;
         let mut app = App {
+            native_apps_active,
+            exit_blocked:false,
             controller,
             host,
             root,
@@ -383,9 +520,24 @@ pub fn run<H: NativeHost + 'static>(
             error: None,
             before,
         };
-        event_loop
-            .run_app(&mut app)
-            .map_err(|e| AdapterError::Host(e.to_string()))?;
+        let mut event_loop_holder=Some(event_loop);
+        let loop_result=if retained_mode {
+            use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+            event_loop_holder.as_mut().unwrap().run_app_on_demand(&mut app)
+        } else { event_loop_holder.take().unwrap().run_app(&mut app) };
+        if let Err(error)=loop_result { app.error=Some(AdapterError::Host(error.to_string())); }
+        #[cfg(all(feature = "native-apps", windows))]
+        if retained_mode && !matches!(app.prepare_parent_cleanup(),Ok(true)) {
+            app.exit_blocked=true;
+            let owner=RetainedNativeOwner { held:Some(Box::new(HeldNativeRun { app,event_loop:event_loop_holder.take().unwrap() })),admission:admission.unwrap() };
+            return Ok(RunResult {outcome:None,retained:Some(owner),marker:std::marker::PhantomData});
+        }
+        let outcome=finish_native_app(app)?;
+        Ok(RunResult { outcome:Some(outcome),#[cfg(all(feature = "native-apps", windows))]retained:None,marker:std::marker::PhantomData })
+    }
+}
+#[cfg(windows)]
+fn finish_native_app<H:NativeHost>(mut app:App<H>)->Result<NativeOutcome> {
         // Dropping only our own Arc<Window>/Painter surfaces destroys owned HWNDs.
         let handles: Vec<_> = app.windows.values().map(|w| hwnd(&w.window)).collect();
         app.windows.clear();
@@ -397,7 +549,7 @@ pub fn run<H: NativeHost + 'static>(
             .collect();
         let manifest = app.options.output.join("native-manifest.json");
         let value = serde_json::json!({ "schema":"kumihimo.native-observation.v1", "pid":std::process::id(),
-            "interactive_opt_in":app.options.interactive, "before":app.before, "during":app.observations, "after":after, "cleanup":cleanup,
+            "interactive_opt_in":app.options.interactive, "host_snapshot":app.host.native_host_snapshot(&app.controller), "before":app.before, "during":app.observations, "after":after, "cleanup":cleanup,
             "backend":app.painter.render_state().map(|r|format!("{:?}",r.adapter.get_info().backend)),
             "captures":app.captures, "canonical_generation":app.controller.snapshot().generation,
             "prepared_slots":app.slots.prepared().len(), "returned":app.returned,
@@ -421,9 +573,43 @@ pub fn run<H: NativeHost + 'static>(
             returned: app.returned,
             uia_actions: app.uia_actions,
         })
-    }
 }
 impl<H: NativeHost> App<H> {
+    #[cfg(all(feature = "native-apps", windows))]
+    fn explicit_detach_retry(&mut self)->Result<()> {
+        let parents:Vec<_>=self.windows.values().filter_map(|window|window.external_parent.clone().map(|parent|(window.surface,parent))).collect();
+        for (surface,parent) in parents {self.host.retry_native_parent_detach(&mut self.controller,surface,&parent)?;}
+        Ok(())
+    }
+    fn prepare_parent_cleanup(&mut self)->Result<bool> {
+        #[cfg(all(feature = "native-apps", windows))]
+        if self.native_apps_active {
+            let parents:Vec<_>=self.windows.values().filter_map(|window|window.external_parent.clone().map(|parent|(window.surface,parent))).collect();
+            let mut ready=true;
+            for (surface,parent) in parents {
+                // Epoch is current from the owned runner; native effects revalidate its witness.
+                match self.host.before_native_parent_destroy(&mut self.controller,surface,&parent) {
+                    Ok(true)=>{},Ok(false)=>ready=false,
+                    Err(error)=>{ready=false;if self.error.is_none(){self.error=Some(error);} },
+                }
+            }
+            return Ok(ready);
+        }
+        Ok(true)
+    }
+    fn try_exit(&mut self,event_loop:&ActiveEventLoop) {
+        match self.prepare_parent_cleanup() {
+            Ok(true)=>{self.exit_blocked=false;event_loop.exit();},
+            result=>{
+                if !self.exit_blocked {
+                    self.observations.push(serde_json::json!({"phase":"native-parent-destroy-denied","pending":true,"cause":result.err().map(|error|format!("{error:?}")),"owned_parents_retained":self.windows.len()}));
+                }
+                self.exit_blocked=true;
+                // Worker completion posts ExternalWake. Expired timers never schedule busy retries.
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+        }
+    }
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: AdapterError) {
         if self.error.is_none() {
             self.error = Some(error);
@@ -432,7 +618,7 @@ impl<H: NativeHost> App<H> {
             let check = self.slots.cancel(&pending, self.controller.snapshot());
             self.observations.push(serde_json::json!({"phase":"precommit-failure", "source_unchanged":check.is_ok(), "source_frame":pending.source_frame.raw(), "prepared_root":pending.slot.root.raw()}));
         }
-        event_loop.exit();
+        self.try_exit(event_loop);
     }
     fn create_window(
         &mut self,
@@ -451,7 +637,10 @@ impl<H: NativeHost> App<H> {
         #[cfg(windows)]
         let attributes = {
             use winit::platform::windows::WindowAttributesExtWindows;
-            attributes.with_skip_taskbar(!self.options.interactive)
+            let attributes = attributes.with_skip_taskbar(!self.options.interactive);
+            #[cfg(feature = "native-drops")]
+            let attributes = attributes.with_drag_and_drop(!self.host.native_drops());
+            attributes
         };
         let window = Arc::new(
             event_loop
@@ -489,9 +678,29 @@ impl<H: NativeHost> App<H> {
             bounds,
             pixels_per_point: scale,
         };
+        #[cfg(all(feature = "native-apps", windows))]
+        let external_parent=if self.native_apps_active {
+            let proxy=self.proxy.clone();
+            Some(crate::external_apps::NativeParentBinding::new(window.clone(),hwnd(&window) as u64,surface,Arc::new(move||{let _=proxy.send_event(NativeEvent::ExternalWake);}))?)
+        } else {None};
+        #[cfg(all(feature = "native-drops", windows))]
+        let drops = if self.host.native_drops() {
+            let proxy = self.proxy.clone();
+            Some(crate::native_drop::Registration::new(hwnd(&window), surface.epoch, move || {
+                let _ = proxy.send_event(NativeEvent::Repaint { viewport, after: Duration::ZERO, pass: 0 });
+            })?)
+        } else { None };
         self.windows.insert(
             id,
             NativeWindow {
+                #[cfg(all(feature = "native-apps", windows))]
+                overlay_pending:false,
+                #[cfg(all(feature = "native-apps", windows))]
+                deferred_textures:Default::default(),
+                #[cfg(all(feature = "native-apps", windows))]
+                external_parent:external_parent.clone(),
+                #[cfg(all(feature = "native-drops", windows))]
+                drops,
                 window: window.clone(),
                 state,
                 adapter: Default::default(),
@@ -510,6 +719,8 @@ impl<H: NativeHost> App<H> {
                 draw_count: 0,
             },
         );
+        #[cfg(all(feature = "native-apps", windows))]
+        if let Some(parent)=external_parent { self.host.native_parent_ready(&mut self.controller,surface,parent)?; }
         if self.options.interactive {
             window.set_visible(true);
         }
@@ -598,6 +809,7 @@ impl<H: NativeHost> App<H> {
         Ok(())
     }
     fn draw(&mut self, id: WindowId) -> Result<()> {
+        if self.exit_blocked { return Ok(()); }
         let window = self
             .windows
             .get(&id)
@@ -606,6 +818,8 @@ impl<H: NativeHost> App<H> {
             .clone();
         self.assert_quiet(&window, "draw-before")?;
         let w = self.windows.get_mut(&id).unwrap();
+        #[cfg(all(feature="native-apps",windows))]
+        if w.overlay_pending {w.dirty=false;w.deadline=None;return Ok(());}
         if matches!(
             w.status,
             SurfaceState::Unavailable | SurfaceState::Lost | SurfaceState::Failed
@@ -649,6 +863,13 @@ impl<H: NativeHost> App<H> {
         }
         // Set canonical contexts before arming preflight; draw after arming is nonmutating
         // unless the host changes source state, which invalidates the generation receipt.
+        #[cfg(all(feature = "native-drops", windows))]
+        if let Some(receiver) = &w.drops {
+            for event in receiver.drain() {
+                self.host.native_drop_event(&mut self.controller, w.surface, &w.report, event)?;
+            }
+            receiver.set_epoch(w.surface.epoch);
+        }
         let mut input = w.state.take_egui_input(&window);
         input.viewport_id = w.surface.viewport;
         input
@@ -659,7 +880,7 @@ impl<H: NativeHost> App<H> {
         input.screen_rect = Some(to_egui(w.surface.bounds));
         let mut result = Ok(FrameReport::default());
         let recovery_notice = self.recovery_notice && w.surface.root == self.root;
-        let output = self.ctx.run(input, |ctx| {
+        let mut output = self.ctx.run(input, |ctx| {
             result = w
                 .adapter
                 .show(ctx, &mut self.controller, w.surface, &mut self.host);
@@ -689,6 +910,20 @@ impl<H: NativeHost> App<H> {
             }
         });
         w.report = result?;
+        #[cfg(all(feature = "native-apps", windows))]
+        if let Some(parent)=&w.external_parent {
+            w.report.native_child_overlay_blocked|=recovery_notice;
+            self.host.native_app_slots(&mut self.controller,w.surface,parent,&w.report)?;
+            if w.report.native_child_overlay_blocked&&!self.host.native_app_overlay_ready(&mut self.controller,w.surface,parent)? {
+                let records=w.deferred_textures.set.len()+w.deferred_textures.free.len()+output.textures_delta.set.len()+output.textures_delta.free.len();
+                let bytes=w.deferred_textures.set.iter().chain(output.textures_delta.set.iter()).try_fold(0usize,|total,(_,delta)|{let size=delta.image.size();total.checked_add(size[0].checked_mul(size[1])?.checked_mul(4)?) });
+                if records>64||bytes.is_none_or(|bytes|bytes>self.host.policy().max_capture_bytes.min(64*1024*1024)){return Err(AdapterError::Budget("deferred native overlay textures"));}
+                w.deferred_textures.append(output.textures_delta);w.overlay_pending=true;w.dirty=false;w.deadline=None;
+                return Ok(()); // No overlapping GPU pixels before hidden-child proof.
+            }
+            w.overlay_pending=false;
+            let mut textures=std::mem::take(&mut w.deferred_textures);textures.append(output.textures_delta);output.textures_delta=textures;
+        }
         w.draw_count = w
             .draw_count
             .checked_add(1)
@@ -1359,6 +1594,8 @@ impl<H: NativeHost> App<H> {
         w.actual_scale = scale;
         w.surface.bounds = bounds;
         w.surface.pixels_per_point = scale;
+        #[cfg(all(feature = "native-apps", windows))]
+        if let Some(parent)=&w.external_parent { parent.set_epoch(w.surface.epoch); }
         w.adapter.input.cancel("surface epoch changed");
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
@@ -1414,6 +1651,8 @@ impl<H: NativeHost> App<H> {
             .epoch
             .checked_add(1)
             .ok_or(AdapterError::Budget("surface epoch"))?;
+        #[cfg(all(feature = "native-apps", windows))]
+        if let Some(parent)=&w.external_parent { parent.set_epoch(w.surface.epoch); }
         w.status = SurfaceState::Unavailable;
         w.capture = None;
         w.capture_intent = None;
@@ -1475,6 +1714,8 @@ impl<H: NativeHost> App<H> {
             .epoch
             .checked_add(1)
             .ok_or(AdapterError::Budget("surface epoch"))?;
+        #[cfg(all(feature = "native-apps", windows))]
+        if let Some(parent)=&w.external_parent { parent.set_epoch(w.surface.epoch); }
         w.capture = None;
         // Painter.set_window(None) clears ALL surfaces; gc_viewports removes only this owned surface.
         let keep = self
@@ -1507,6 +1748,14 @@ impl<H: NativeHost> App<H> {
         Ok(())
     }
     fn remove_window(&mut self, id: WindowId) -> Result<()> {
+        #[cfg(all(feature = "native-apps", windows))]
+        if let Some(window)=self.windows.get(&id) {
+            if let Some(parent)=&window.external_parent {
+                if !self.host.before_native_parent_destroy(&mut self.controller,window.surface,parent)? {
+                    return Err(AdapterError::Host("Native child detach remains unknown; parent window retained".into()));
+                }
+            }
+        }
         let Some(w) = self.windows.remove(&id) else {
             return Ok(());
         };
@@ -1792,7 +2041,17 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
             .push(serde_json::json!({"phase":"os-suspend","source_ownership_unchanged":true}));
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: NativeEvent) {
+        if self.exit_blocked {
+            #[cfg(all(feature = "native-apps", windows))]
+            if matches!(event,NativeEvent::ExternalWake) {self.try_exit(event_loop);}
+            return;
+        }
         match event {
+            #[cfg(all(feature = "native-apps", windows))]
+            NativeEvent::ExternalWake=>{
+                if self.exit_blocked {self.try_exit(event_loop);return;}
+                for window in self.windows.values_mut(){window.overlay_pending=false;window.dirty=true;}
+            },
             NativeEvent::Accessibility(event) => {
                 if let Some(w) = self.windows.get_mut(&event.window_id) {
                     use egui_winit::accesskit_winit::WindowEvent as AccessEvent;
@@ -1875,9 +2134,19 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.exit_blocked {
+            if matches!(event,WindowEvent::CloseRequested) {
+                #[cfg(all(feature = "native-apps", windows))]
+                if let Err(error)=self.explicit_detach_retry(){self.observations.push(serde_json::json!({"phase":"explicit-detach-retry-denied","cause":format!("{error:?}")}));}
+                self.try_exit(event_loop);
+            }
+            return;
+        }
         let Some(w) = self.windows.get_mut(&id) else {
             return;
         };
+        #[cfg(all(feature = "native-apps", windows))]
+        if w.overlay_pending&&!matches!(event,WindowEvent::CloseRequested|WindowEvent::Resized(_)|WindowEvent::ScaleFactorChanged{..}){return;}
         let response = w.state.on_window_event(&w.window, &event);
         if response.repaint {
             w.dirty = true;
@@ -1887,7 +2156,7 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                 let root = w.surface.root;
                 if root == self.root {
                     if self.slots.bindings().is_empty() {
-                        event_loop.exit();
+                        self.try_exit(event_loop);
                     }
                 } else {
                     let fallback = self
@@ -1928,6 +2197,17 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                 w.focused = focused;
                 if !focused {
                     w.adapter.input.cancel("native focus lost");
+                    #[cfg(all(feature = "native-drops", windows))]
+                    if w.drops.is_some() {
+                        let event = crate::native_drop::NativeDropEvent {
+                            hwnd: hwnd(&w.window), epoch: w.surface.epoch, client_pixels: None,
+                            kind: crate::native_drop::NativeDropKind::Leave,
+                        };
+                        if let Err(error) = self.host.native_drop_event(&mut self.controller, w.surface, &w.report, event) {
+                            self.observations.push(serde_json::json!({"phase":"drop-blur-rejected","cause":error.to_string()}));
+                        }
+                        w.dirty = true;
+                    }
                 }
             }
             WindowEvent::Occluded(occluded) => {
@@ -1942,6 +2222,7 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_blocked { event_loop.set_control_flow(ControlFlow::Wait);return; }
         let result = (|| {
             let quiet_cutoff = if self.options.interactive {
                 None
@@ -2186,7 +2467,7 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
             if matches!(self.phase, ProbePhase::Observer) && self.observer.is_none() {
                 self.phase = ProbePhase::Finished;
                 if !self.options.interactive {
-                    event_loop.exit();
+                    self.try_exit(event_loop);
                 }
             }
             let io_pending =

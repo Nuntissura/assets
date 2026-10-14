@@ -3,8 +3,12 @@
 mod identity;
 mod recovery;
 mod tiling;
+pub mod hosting;
+pub mod retention;
 #[cfg(all(windows, feature = "windows"))]
 pub mod windows;
+#[cfg(all(windows, feature = "windows"))]
+pub mod windows_hosting;
 pub use identity::*;
 pub use recovery::*;
 pub use tiling::*;

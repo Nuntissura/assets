@@ -436,6 +436,8 @@ pub enum RequestKind {
         payload: String,
     },
     AssetAction(AssetAction),
+    #[cfg(feature = "drops")]
+    Drop(crate::DropRequest),
     Lifecycle(LifecycleState),
     CloseDecision {
         eligibility_revision: u64,
@@ -460,6 +462,8 @@ impl RequestKind {
             Self::Input(_) => Channel::Input,
             Self::ToolAction { .. } => Channel::Tool,
             Self::AssetAction(_) => Channel::Asset,
+            #[cfg(feature = "drops")]
+            Self::Drop(_) => Channel::Asset,
             Self::CloseDecision { .. } => Channel::Close,
             Self::CacheRelease(_) => Channel::Cache,
         }
@@ -490,6 +494,8 @@ impl RequestKind {
     }
     pub fn opaque_bytes(&self) -> Result<usize> {
         match self {
+            #[cfg(feature = "drops")]
+            Self::Drop(d) => d.offer.opaque_bytes(),
             #[cfg(feature = "navigation")]
             Self::Navigation(n) => n.opaque_bytes(),
             Self::Attach {
@@ -514,6 +520,8 @@ impl RequestKind {
     }
     pub fn validate(&self, field_limit: Option<usize>) -> Result<()> {
         match self {
+            #[cfg(feature = "drops")]
+            Self::Drop(d) => d.validate(field_limit)?,
             #[cfg(feature = "navigation")]
             Self::Navigation(n) => n.validate(field_limit)?,
             #[cfg(feature = "backgrounds")]

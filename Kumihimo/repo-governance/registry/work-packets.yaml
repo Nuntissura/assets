@@ -131,12 +131,14 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-018-file-drop-integration-v1
   title: Host-owned file and asset drop integration for desktop and web
-  phase: active
+  phase: blocked
   contract_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-state.yaml
-  next_action: Coder implements optional metadata/target coordination and browser/sample host drops; root owns exact
-    native callback-coordinate receiver; host owns IO
-  blockers: []
+  next_action: Operator runs exact manual tests; lead reads emitted JSON and operator observations, remedies actual
+    failures, then publishes accepted packet. No desktop automation.
+  blockers:
+  - Operator manual runtime observations required; agent must not launch GUI or control mouse/keyboard. Prepared
+    commands, fixtures, expected outcomes and evidence locations are in product/INTERNAL-MANUAL.md#manual-extension-acceptance
 - wp_id: WP-KUM-019-external-app-tiling-v1
   title: Optional selected external desktop-application tiling
   phase: done
@@ -147,17 +149,21 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-020-foreign-window-hosting-v1
   title: Optional supported foreign-application window hosting
-  phase: planned
+  phase: blocked
   contract_ref: repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-020-foreign-window-hosting-v1/WP-KUM-020-foreign-window-hosting-v1-state.yaml
-  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-    packet after predecessor publication
-  blockers: []
+  next_action: Operator runs exact manual tests; lead reads emitted JSON and operator observations, remedies actual
+    failures, then publishes accepted packet. No desktop automation.
+  blockers:
+  - Operator manual runtime observations required; agent must not launch GUI or control mouse/keyboard. Prepared
+    commands, fixtures, expected outcomes and evidence locations are in product/INTERNAL-MANUAL.md#manual-extension-acceptance
 - wp_id: WP-KUM-021-combined-workspace-demo-v1
   title: Live sample with Servo, file drops and an external application
-  phase: planned
+  phase: blocked
   contract_ref: repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-021-combined-workspace-demo-v1/WP-KUM-021-combined-workspace-demo-v1-state.yaml
-  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-    packet after predecessor publication
-  blockers: []
+  next_action: Finish controlled desktop acceptance and publication of WP018 and WP020; then implement actual live
+    Servo/app/drop combined host. Prior offline captures cannot replace live proof.
+  blockers:
+  - WP018 actual native transfer and WP020 actual hosting acceptance remain unproven; published accepted predecessors
+    required before combined demo implementation.

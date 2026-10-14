@@ -1,19 +1,25 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-018-file-drop-integration-v1
-generation: 2
-phase: active
+generation: 6
+phase: blocked
 owner: dev_lead_resume_2026_10_14
-changed_files: []
+changed_files:
+- product/INTERNAL-MANUAL.md
+- product/kumihimo-egui/examples/file_drop_host.rs
+- product/kumihimo-egui/src/demo.rs
+- product/kumihimo-egui/tests/manual_sample_contracts.rs
 proof:
 - kind: dependency_readiness_source_only
-  observed: Pinned egui-winit0.33.3 receives winit file events; winit0.30.13 discards native POINTL; no native pointer
-    fallback admitted. Browser requires synchronous File retention at drop, protected metadata hover
+  observed: Pinned egui-winit0.33.3 receives winit file events; winit0.30.13 discards
+    native POINTL; no native pointer fallback admitted. Browser requires synchronous
+    File retention at drop, protected metadata hover
   sources:
   - https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idroptarget-dragover
   - https://html.spec.whatwg.org/multipage/dnd.html#the-drag-data-store
   - https://doc.qt.io/qt-6.11/dnd.html
-  selected: Host owns receiver, payload tokens, File/paths, IO and outcomes; optional coordinator validates target
-    generation/epoch/permission and reuses existing request ACK
+  selected: Host owns receiver, payload tokens, File/paths, IO and outcomes; optional
+    coordinator validates target generation/epoch/permission and reuses existing request
+    ACK
   rejected:
   - Last egui pointer as native drop position
   - Reading browser File bytes during hover
@@ -22,8 +28,62 @@ proof:
   - 'Delayed pointer: use native callback POINTL; reject unavailable coordinates'
   - 'Async stale target: retain token then revalidate target/incarnation/generation/permission'
   - 'Duplicate effects: one native receiver/dispatch path'
-  validation: Focused owning failure cases plus actual native/browser drop host content and visual proof; no synthetic
-    proof replacement
-blockers: []
-next_action: Coder implements optional metadata/target coordination and browser/sample host drops; root owns exact
-  native callback-coordinate receiver; host owns IO
+  validation: Focused owning failure cases plus actual native/browser drop host content
+    and visual proof; no synthetic proof replacement
+- kind: browser_file_boundary
+  artifact_ref: .local/web/drop-proof-2026-10-14/drop-evidence.json
+  artifact_sha256: 1b1a9439d6e8a2a91014af26967f54cebf25ca98ed69a30d3363b9d1f6085b8c
+  observed: Seven real File/DataTransfer production-listener cases; exact two destination
+    resources; refusal, oversize and delayed Escape cancellation preserve documents;
+    internal Link/Copy; all three PNGs opened by lead and independent evaluation
+  limits: DragEvents untrusted synthetic; no physical OS-to-browser drag claim
+- kind: focused_contracts
+  observed: Content six and web three drop contract cases passed; native-drops examples
+    compiled; native actual Shell transfer failed E_INVALIDARG before import; bounded
+    compatible Shell path and redacted stage diagnostics rebuilt, rerun not performed
+- kind: browser_arrangement_regression_and_real_internal_drag
+  artifact_ref: .local/web/drop-proof-gesture-regression/drop-evidence.json
+  artifact_sha256: ae09207b53e9aa3aa878c71afdb5dfb2ec26add602a4591eec54c7889126f786
+  observed: Eleven focused cases passed on strict regenerated manifest using unchanged
+    compiled WASM. Trusted headless Chromium title/header drag-frame capture plus
+    accepted Rust preview; Escape leaves generation/layout/host unchanged. Tab pointer/keyboard
+    selection and split preview/cancel preserved. Dedicated task-link control trusted
+    HTML dragstart/dragover/drop performs exact host Link/Copy. Both lead and independent
+    evaluator opened all three PNGs; controls and state readable
+  fixed: Entire task-title asset drag hijacked normal arrangement; title arrangement
+    restored and separate Drag task link control added
+  limits: No desktop input or physical OS-to-browser file transfer; disk-file DragEvents
+    remain untrusted synthetic using actual browser File bytes
+- kind: native_closed_receiver_guard
+  observed: Fresh current-HEAD preparation gate PASS16/16 before guarded native_drop_source
+    run; fixture validated then receiver_open_process HRESULT80070057 rejects closed
+    PID345256 before transfer. Independent Get-Process345256 absent; no desktop input
+  limits: Successful native transfer and actual host import remain unproven
+- kind: manual_acceptance_sample_readiness
+  artifact_ref: .local/manual-acceptance/candidate.json
+  candidate_manifest_sha256: 9496e06f226f66d00f43f0a02ec5bc338e99eeda7ab2cdd24abf1779e0de91d5
+  observed: Hosting constructor/identity/tab/geometry memory case PASS; two distinct
+    drop destination/default provider cases PASS; both sample binaries built; default
+    all-target and native-drops-only examples checks PASS; timeout=0 binary rejection
+    PASS before native effects; independent source/manual review no blocker
+  limits: No GUI launched or desktop input injected; actual transfer, app pixels/input/resize/hide/return/teardown
+    remain OPEN
+  manual_ref: product/INTERNAL-MANUAL.md#manual-extension-acceptance
+- kind: guarded_undo_and_final_manual_binaries
+  artifact_ref: .local/manual-acceptance/candidate-undo-guard.json
+  candidate_manifest_sha256: 8a5c5a424f441572babfce6f57ea96199f50cb2c9dc280faae963bd6adefd10e
+  observed: 'Two focused undo memory cases PASS: normal restoration consumes entry;
+    later edits reject before mutation/history removal. Both prepared sample executables
+    rebuilt PASS8.81s; independent narrow source review no blocker'
+  reuse: Three constructor tests and default/native-drops-only checks from preceding
+    proof retained; undo-only changes are drops-gated, constructors and default asserted
+    behavior unchanged
+  limits: No successful actual native transfer or installed-app hosting/input/teardown
+    claim; operator manual tests still required
+blockers:
+- Operator manual runtime observations required; agent must not launch GUI or control
+  mouse/keyboard. Prepared commands, fixtures, expected outcomes and evidence locations
+  are in product/INTERNAL-MANUAL.md#manual-extension-acceptance
+next_action: Operator runs exact manual tests; lead reads emitted JSON and operator
+  observations, remedies actual failures, then publishes accepted packet. No desktop
+  automation.

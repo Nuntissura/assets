@@ -13,13 +13,17 @@ const rectStyle = (node, rect, origin) => {
 };
 const entries = value => Array.isArray(value) ? value : Object.values(value ?? {});
 export class BrowserAdapter {
-  constructor({ host, root, storage = {}, status, onSnapshot = () => {} }) {
+  constructor({ host, root, storage = {}, status, onSnapshot = () => {}, fileDrops = null }) {
     if (!host?.route_json || !root) throw new TypeError('Rust host and workspace root required');
     this.host = host;
     this.root = root;
     this.statusNode = status;
     this.onSnapshot = onSnapshot;
     this.events = [];
+    this.fileDrops = fileDrops;
+    this.dropPreview = null;
+    this.pendingDrops = new Map();
+    this.dropSequence = 0;
     this.storage = {
       layoutKey: storage.layoutKey ?? 'kumihimo-pilot-layout-v1',
       hostKey: storage.hostKey ?? 'kumihimo-pilot-host-v1',
@@ -44,8 +48,13 @@ export class BrowserAdapter {
     root.addEventListener('lostpointercapture', () => { if (this.drag) this.cancelPreview('lostpointercapture'); }, options);
     root.addEventListener('click', event => this.click(event), options);
     root.addEventListener('keydown', event => this.keyDown(event), options);
-    window.addEventListener('blur', () => this.cancelPreview('blur'), options);
+    root.addEventListener('dragover', event => this.fileDragOver(event), options);
+    root.addEventListener('dragleave', event => { if (!root.contains(event.relatedTarget)) this.clearFilePreview(); }, options);
+    root.addEventListener('drop', event => this.fileDrop(event), options);
+    root.addEventListener('dragstart', event => this.internalAssetDrag(event), options);
+    window.addEventListener('blur', () => { this.cancelPreview('blur'); this.cancelFileDrops('blur'); }, options);
     window.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && (this.dropPreview || this.pendingDrops.size)) { event.preventDefault(); this.cancelFileDrops('Escape'); }
       if (event.key === 'Escape' && this.previewState) { event.preventDefault(); this.cancelPreview('Escape'); }
     }, options);
     window.addEventListener('resize', () => this.queueMeasure(), options);
@@ -126,6 +135,104 @@ export class BrowserAdapter {
     this.record('cancel', { source: reason });
     this.queueRender();
   }
+  clearFilePreview() {
+    this.dropPreview = null;
+    for (const frame of this.frames.values()) frame.querySelector('.frame-content')?.removeAttribute('data-file-drop');
+  }
+  fileTarget(event, snapshot = this.current) {
+    if (!snapshot || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+    const inside = rect => rect && event.clientX >= rect.x && event.clientX < rect.x + rect.width && event.clientY >= rect.y && event.clientY < rect.y + rect.height;
+    const frame = entries(snapshot.frames).filter(f => f.visible && inside(f.rect) && inside(f.clip ?? f.rect)).sort((a, b) => Number(b.depth ?? 0) - Number(a.depth ?? 0) || (BigInt(a.id) > BigInt(b.id) ? -1 : 1))[0];
+    if (!frame?.expanded || !frame.selected_view || !inside(frame.content)) return null;
+    const view = entries(snapshot.views).find(v => v.id === frame?.selected_view && !v.closed && !v.placeholder);
+    if (!frame || !view || entries(snapshot.providers).some(p => p.id === view.provider && p.available === false)) return null;
+    const advertised = this.hostCurrent?.drop_capabilities;
+    if (advertised && !advertised.allowed_views.includes(view.id)) return null;
+    return { identity: snapshot.identity, generation: snapshot.generation, epoch: snapshot.epoch, frame: frame.id,
+      view: view.id, resource: view.resource, provider: view.provider, x: event.clientX, y: event.clientY };
+  }
+  fileDragOver(event) {
+    if (!this.fileDrops || this.disposed || this.drag) return;
+    const types = [...(event.dataTransfer?.types ?? [])];
+    const source = types.includes('application/x-kumihimo-asset') ? 'internal_assets' : types.includes('Files') ? 'browser_files' : null;
+    const destination = source && this.fileTarget(event);
+    const actions = this.hostCurrent?.drop_capabilities?.actions ?? this.fileDrops.actions;
+    if (!source || !actions?.[source]?.length) return;
+    const action = source === 'internal_assets' ? (event.ctrlKey ? 'copy' : 'link') : (event.ctrlKey ? 'copy' : event.shiftKey ? 'open' : 'import');
+    const allowed = destination && actions[source].includes(action);
+    this.clearFilePreview();
+    // Only this opt-in host intercepts advertised transfers. Protected dragover reads kinds/types only.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = allowed ? (action === 'link' ? 'link' : 'copy') : 'none';
+    if (allowed) {
+      this.dropPreview = { destination, action, source };
+      this.frames.get(destination.frame)?.querySelector('.frame-content')?.setAttribute('data-file-drop', `${action} → view ${destination.view}`);
+      this.status(`${action[0].toUpperCase() + action.slice(1)} into frame ${destination.frame}, view ${destination.view}. Text files up to 8 KiB; original file stays in place.`);
+    }
+  }
+  internalAssetDrag(event) {
+    if (!this.fileDrops || !event.dataTransfer) return;
+    const node = event.target.closest('[data-host-asset]');
+    if (!node || !this.root.contains(node)) return;
+    const task = entries(this.hostCurrent?.tasks).find(t => t.id === node.dataset.hostAsset);
+    if (!task) return;
+    event.dataTransfer.setData('application/x-kumihimo-asset', JSON.stringify({ asset: task.id, revision: this.hostCurrent.revision }));
+    event.dataTransfer.effectAllowed = 'copyLink';
+  }
+  async fileDrop(event) {
+    if (!this.fileDrops || this.disposed || this.drag) return;
+    const types = [...(event.dataTransfer?.types ?? [])];
+    const source = types.includes('application/x-kumihimo-asset') ? 'internal_assets' : types.includes('Files') ? 'browser_files' : null;
+    if (!source || !(this.hostCurrent?.drop_capabilities?.actions ?? this.fileDrops.actions)?.[source]?.length) return;
+    event.preventDefault();
+    const preview = this.dropPreview;
+    this.clearFilePreview();
+    const destination = this.fileTarget(event, this.snapshot());
+    const action = source === 'internal_assets' ? (event.ctrlKey ? 'copy' : 'link') : (event.ctrlKey ? 'copy' : event.shiftKey ? 'open' : 'import');
+    if (!destination || !(this.hostCurrent?.drop_capabilities?.actions ?? this.fileDrops.actions)?.[source]?.includes(action) || this.pendingDrops.size >= 1 || (preview && (preview.destination.frame !== destination.frame || preview.action !== action || preview.destination.generation !== destination.generation))) { this.status('File drop rejected: stale, unavailable or busy destination.', 'error'); return; }
+    // Retain actual File references and internal data synchronously: DataTransfer is protected after this callback.
+    const files = source === 'browser_files' ? [...event.dataTransfer.files] : [];
+    let asset;
+    try { if (source === 'internal_assets') asset = JSON.parse(event.dataTransfer.getData('application/x-kumihimo-asset')); }
+    catch { this.status('Invalid internal asset transfer.', 'error'); return; }
+    const items = source === 'browser_files' ? files.map(file => ({ label: file.name, media_type: file.type, bytes: file.size, asset: null, asset_revision: null })) : [{ label: 'Host task', media_type: 'application/x-kumihimo-asset', bytes: null, asset: asset?.asset, asset_revision: asset?.revision }];
+    const now = () => Math.floor(performance.now());
+    const admitted = this.route({ version: 1, route: 'drop_admit', destination, action, source, items, now_ms: now() });
+    if (!admitted.ok) return;
+    const token = admitted.result.token;
+    const pending = { token, destination, source, files, started: now(), sequence: ++this.dropSequence };
+    this.pendingDrops.set(token, pending);
+    this.status(`${admitted.result.action} pending in view ${destination.view}.`);
+    const timer = setTimeout(() => this.cancelFileDrops('expired'), admitted.result.lifetime_ms);
+    try {
+      const contents = [];
+      // Read after host admission, cap each actual read and total before allocating decoded text.
+      let total = 0;
+      for (const file of files) {
+        total += file.size;
+        if (total > admitted.result.max_bytes) throw new RangeError('payload limit');
+        const bytes = await file.arrayBuffer();
+        if (this.disposed || this.pendingDrops.get(token) !== pending) return;
+        contents.push(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
+      }
+      if (this.disposed || this.pendingDrops.get(token) !== pending) return;
+      const current = this.snapshot();
+      if (JSON.stringify(current?.identity) !== JSON.stringify(destination.identity) || current?.generation !== destination.generation || current?.epoch !== destination.epoch || now() - pending.started >= admitted.result.lifetime_ms) { this.cancelFileDrops('stale'); this.status('File drop cancelled: destination changed while reading.', 'error'); return; }
+      const response = this.route({ version: 1, route: 'drop_complete', token, contents, now_ms: now() });
+      this.pendingDrops.delete(token);
+      this.record('file-drop', { source, action, frame: destination.frame, view: destination.view, status: response.ok ? 'completed' : 'failed', trusted: event.isTrusted });
+      this.refresh();
+      if (response.ok) this.status(`${admitted.result.action} completed in view ${destination.view}. Original file retained.`);
+    } catch {
+      if (!this.disposed && this.pendingDrops.get(token) === pending) { this.route({ version: 1, route: 'drop_cancel', token }); this.pendingDrops.delete(token); this.status('File read refused or unsupported UTF-8 payload. Existing content retained.', 'error'); }
+    } finally { clearTimeout(timer); pending.files = []; }
+  }
+  cancelFileDrops(reason) {
+    this.clearFilePreview();
+    for (const [token, pending] of this.pendingDrops) { this.route({ version: 1, route: 'drop_cancel', token }); pending.files = []; }
+    this.pendingDrops.clear();
+    this.record('file-drop-cancel', { source: reason });
+  }
   save() {
     if (!this.storage.enabled) { this.status('Storage disabled by host policy.', 'error'); return { ok: false, error: 'storage_disabled' }; }
     const response = this.route({ version: 1, route: 'save' });
@@ -194,6 +301,7 @@ export class BrowserAdapter {
         node = element('section', undefined, { class: 'frame', 'data-frame': frame.id, role: 'group', tabindex: '-1' });
         const header = element('div', undefined, { class: 'frame-header', 'data-action': 'drag-frame', 'data-frame': frame.id, tabindex: '0', role: 'toolbar' });
         header.append(element('span', '', { class: 'frame-title' }), element('div', undefined, { class: 'tabs', role: 'tablist', 'aria-label': `Frame ${frame.id} tabs` }),
+          element('button', 'Drag task link', { class: 'host-asset-drag', type: 'button', 'data-action': 'drag-host-asset', title: 'Drag task link into content; hold Ctrl to copy task text', 'aria-label': 'Drag task link; hold Control to copy task text' }),
           element('button', '−', { 'data-action': 'expand', 'data-frame': frame.id }));
         node.append(header, element('div', '', { class: 'frame-content', 'data-action': 'content', 'data-frame': frame.id }));
         this.root.append(node); this.frames.set(frame.id, node);
@@ -206,6 +314,17 @@ export class BrowserAdapter {
       const clip = frame.clip ?? frame.rect;
       node.style.clipPath = `inset(${Math.max(0, clip.y - frame.rect.y)}px ${Math.max(0, frame.rect.x + frame.rect.width - clip.x - clip.width)}px ${Math.max(0, frame.rect.y + frame.rect.height - clip.y - clip.height)}px ${Math.max(0, clip.x - frame.rect.x)}px)`;
       const task = tasks.get(frame.selected_view);
+      const hostTitle = node.querySelector('.frame-title');
+      // Titles always retain the normal frame pointer gesture; asset transfer has its own control.
+      hostTitle.draggable = false;
+      delete hostTitle.dataset.hostAsset;
+      hostTitle.removeAttribute('title');
+      const assetDrag = node.querySelector('.host-asset-drag');
+      const assetActions = this.hostCurrent?.drop_capabilities?.actions?.internal_assets ?? this.fileDrops?.actions?.internal_assets;
+      assetDrag.hidden = !(this.fileDrops && task && assetActions?.length);
+      assetDrag.draggable = !assetDrag.hidden;
+      if (!assetDrag.hidden) assetDrag.dataset.hostAsset = task.id;
+      else delete assetDrag.dataset.hostAsset;
       node.setAttribute('aria-label', task ? `${task.title} · Portal-style demo card` : `Detail frame ${frame.id}`);
       node.querySelector('.frame-title').textContent = task?.title ?? `Detail ${frame.id}`;
       const expand = node.querySelector('[data-action=expand]');
@@ -233,7 +352,7 @@ export class BrowserAdapter {
       if (view?.placeholder) content.dataset.placeholder = 'provider-unavailable';
       else delete content.dataset.placeholder;
       content.dataset.view = frame.selected_view ?? '';
-      content.textContent = provider?.available === false ? 'Provider unavailable. Select this frame and use Restore provider.' : frame.child_workspace && frame.expanded ? '' : task ? `${task.column} · ${task.status}\n${task.body}` : `Host content · view ${frame.selected_view ?? 'none'}`;
+      content.textContent = provider?.available === false ? 'Provider unavailable. Select this frame and use Restore provider.' : frame.child_workspace && frame.expanded ? '' : task ? `${task.column} · ${task.status}\n${task.body}${Object.keys(task.links ?? {}).length ? `\nLinked tasks: ${Object.keys(task.links).join(', ')}` : ''}` : `Host content · view ${frame.selected_view ?? 'none'}`;
       if (frame.content) {
         rectStyle(content, frame.content, frame.rect);
       }
@@ -292,7 +411,7 @@ export class BrowserAdapter {
     const target = event.target.closest('[data-action]');
     if (!target || event.button !== 0 || event.target.closest('button,input,textarea,select')) return;
     const kind = target.dataset.action;
-    if (!['drag-frame', 'resize-split'].includes(kind)) return;
+    if (!['drag-frame', 'resize-split'].includes(kind) || event.target.closest('[data-host-asset]')) return;
     this.record('event', { source: 'pointerdown', action: kind, trusted: event.isTrusted });
     this.drag = { kind, pointerId: event.pointerId, frame: target.dataset.frame, workspace: target.dataset.workspace,
       node: target.dataset.node, divider: Number(target.dataset.divider), x: event.clientX, y: event.clientY,
@@ -346,5 +465,5 @@ export class BrowserAdapter {
     }
   }
   async whenIdle() { await new Promise(resolve => requestAnimationFrame(resolve)); while (this.renderTicket !== null || this.measureTicket !== null) await new Promise(resolve => requestAnimationFrame(resolve)); return this.current; }
-  dispose() { this.disposed = true; this.cancelPreview('dispose'); this.observer.disconnect(); this.abort.abort(); if (this.renderTicket !== null) cancelAnimationFrame(this.renderTicket); if (this.measureTicket !== null) cancelAnimationFrame(this.measureTicket); }
+  dispose() { this.cancelFileDrops('dispose'); this.disposed = true; this.cancelPreview('dispose'); this.observer.disconnect(); this.abort.abort(); if (this.renderTicket !== null) cancelAnimationFrame(this.renderTicket); if (this.measureTicket !== null) cancelAnimationFrame(this.measureTicket); }
 }

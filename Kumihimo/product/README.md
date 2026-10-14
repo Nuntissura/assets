@@ -22,7 +22,7 @@ WP012 scoped Windows x64 MSVC/rustc1.91.1 desktop adapter at 7d9268ab90d5ed6e31d
 
 `kumihimo-egui` 0.1 provides replaceable pane controls over a borrowed host `Controller` and `DesktopHost` dispatcher. It projects canonical geometry and routes commands; the host owns content, operation IDs, storage and resource policy. `DesktopAdapter::show` takes an egui context, controller, `SurfaceBinding` and host. Settings expose chrome profiles, hit sizes, navigation and bounded live work. Pane/tab counts remain host-configurable.
 
-Default features provide egui controls; `navigation` and `backgrounds` select existing content contracts, `capture` adds raster rendering, and `native` adds the winit/Painter runner. Editable text and generated canvas are sample providers. Video, native child surfaces and incompatible GPU sharing report unsupported. OS input/accessibility and engine compatibility require their actual observations.
+Default features provide egui controls; `navigation` and `backgrounds` select existing content contracts, `capture` adds raster rendering, and `native` adds the winit/Painter runner. Editable text and generated canvas are sample providers. GPU `native_child` and incompatible GPU sharing remain unsupported. Separate optional `drops`, `native-drops` and `native-apps` development routes are described below; their native positive acceptance remains open.
 
 From the project root:
 
@@ -56,7 +56,7 @@ From the project root, configure `KUMIHIMO_WASM_BINDGEN` with the verified match
 ```powershell
 cargo check --manifest-path product/Cargo.toml -p kumihimo-web --all-targets --locked --offline -j 2
 cargo test --manifest-path product/Cargo.toml -p kumihimo-web --test web_contracts --locked --offline -j 2
-cargo build --manifest-path product/Cargo.toml -p kumihimo-web --features wasm --target wasm32-unknown-unknown --target-dir .local/cargo-target --locked --offline -j 2
+cargo build --manifest-path product/Cargo.toml -p kumihimo-web --features wasm,drops --target wasm32-unknown-unknown --target-dir .local/cargo-target --locked --offline -j 2
 & product/kumihimo-web/tools/build-web.ps1 -SkipBuild -CargoTargetDir .local/cargo-target -WasmBindgen $env:KUMIHIMO_WASM_BINDGEN
 python product/kumihimo-web/tools/serve.py --pkg .local/web/pkg --port 0
 ```
@@ -127,7 +127,7 @@ Default bounds are message4MiB, PNG/raw RGBA16MiB, side2048, one pending capture
 
 ## Optional selected external-app tiling
 
-`kumihimo-external-apps` 0.1 is independently selectable; its default has no native Windows dependency. Enable `windows` on Windows to use `windows::WindowsBackend`. Core/content acquire no OS handles. This package positions explicitly selected compatible top-level application windows beside the host; it does not embed them, launch applications or control the whole desktop.
+`kumihimo-external-apps` 0.1 is independently selectable; its default has no native Windows dependency. Enable `windows` on Windows to use `windows::WindowsBackend`. Core/content acquire no OS handles. This published desktop-tiling route positions explicitly selected compatible top-level application windows beside the host. It launches no applications and controls no desktop set. The separate in-development hosting route below has no actual installed-app acceptance yet.
 
 Create `ExternalApps::new(backend)`, then `bind(WindowTarget { hwnd, pid, expected_creation_time }, semantic_reference)`. The returned `SelectedWindow` retains the process handle, creation time, original placement and a unique window-scoped property token. Ownership, process lifetime and that token are checked before each effect, so removal or replacement invalidates the selection even inside the same process/thread. Installing/removing the token is a reversible selected-window metadata effect; a denied installation rejects binding. Native identities stay live-only.
 
@@ -153,7 +153,53 @@ Optional `--created FILETIME` checks the host's expected decimal process creatio
 
 Choose tile bounds from the inspected capabilities. `recover` accepts `{"op":"recover","record":...}` using the exact saved recovery object. Read each response before the next effect. Restore and inspect the original bounds before cleanup; `exit` refuses success while pending, and premature EOF emits `unresolved_dispatch` plus recovery and exits with failure. The CLI only releases its own lease; the host owns application startup and cleanup and must preserve unresolved obligations.
 
-The 2026-10-14 Windows x64 VLC demonstration used one fresh owned instance: independent OS reads matched 900×600 placement, 1000×650 resize and restoration to its original bounds. Inspected captures show the VLC interface at the tiled and restored sizes. The sampled foreground window and the independently observed unselected window remained unchanged; the controller cleaned up its owned instance and CLI. This establishes that scoped VLC path, not universal application compatibility, Blender, media playback, mixed-DPI behavior or another platform. WP019's state/evaluation and eventual publication remain the packet acceptance authority.
+The published WP019 result used one fresh owned VLC instance on 2026-10-14 Windows x64: independent OS reads matched 900×600 placement, 1000×650 resize and restoration to its original bounds. Inspected captures show the VLC interface at the tiled and restored sizes. The sampled foreground window and the independently observed unselected window remained unchanged; the controller cleaned up its owned instance and CLI. This establishes that scoped VLC path; universal application compatibility, Blender, media playback, mixed-DPI behavior and other platforms remain unproven.
+
+</topic>
+
+<topic id="file-drop-in-development" ingestable="true">
+
+## File-drop integration in development
+
+WP018 is in development; manual acceptance remains open. Select `kumihimo-content/drops` for the portable protocol, `kumihimo-web/drops` for the pilot route, `kumihimo-egui/drops` for desktop coordination, or `kumihimo-egui/native-drops` for the Windows OLE receiver (also selects `native` and `drops`). Defaults omit these integrations. `build-web.ps1` currently selects `wasm,drops`; use `-Features wasm` for bindings without drops.
+
+[`DropCoordinator`](kumihimo-content/src/drop.rs) validates metadata-only hover and consumes a fresh offer/grant at release through the existing Controller request/ACK path. Offers bind opaque tokens, revisions, expiry and bounded item metadata to canonical frame/view/resource, generation and epoch. Core receives no unrestricted paths or file bytes. The host retains payloads, performs permission checks and bounded IO after admission, revalidates delayed completion, and owns domain undo/recovery. Cancellation or stale selection invalidates the preview; arrangement tab/frame moves never move physical files.
+
+The pilot accepts bounded UTF-8 files (up to eight, 8 KiB total): Open/Copy replace the destination task body and Import appends. Internal task Link adds a reference; Copy copies its body. The separate **Drag task link** control starts asset transfer; dragging the frame title or blank header moves the frame. Browser Move is denied. Eleven inspected headless Chromium cases cover trusted pointer arrangement/tab/cancellation and task-link gestures, plus synthetic untrusted DragEvents carrying actual File/DataTransfer objects through production listeners and Rust host IO. Physical OS-to-browser file dragging is **NOT_PROVEN**; these cases do not complete WP018.
+
+The native sample imports `.txt`/`.md` into text panes only, up to eight files and 8 KiB total, with all reads validated before one append, bounded undo and causal ACKs. Shell transfer advertises COPY or NONE; it never deletes/moves source files. The OLE receiver captures native POINTL coordinates, converts against the current owned HWND and epoch, rechecks process/property lifetime, and unregisters before window destruction.
+
+Run the visible fixture host only on an agreed controlled desktop:
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --features native-drops --example file_drop_host --target-dir .local/cargo-target --locked --offline -j 2 -- --interactive
+```
+
+Optional `--output PATH` selects observations. **`--observe-host` includes imported document text in the native snapshot**; use it only with explicit test fixtures. Default observations omit that payload. [`native_drop_source.rs`](kumihimo-egui/examples/native_drop_source.rs) accepts `--fixture PATH --receiver-hwnd DECIMAL --receiver-pid PID`; it validates the live registered receiver/process/property and actual cursor target throughout a bounded three-second OLE COPY attempt. It requires controlled desktop agreement. A dead-receiver rejection has been observed; successful native transfer/import is still unproven. Inspect host receipts and exact destination text independently before accepting a positive transfer.
+
+</topic>
+
+<topic id="foreign-window-hosting-in-development" ingestable="true">
+
+## Foreign-window hosting in development
+
+WP020 is in development; manual acceptance remains open. Select `kumihimo-egui/native-apps` to add the separate Windows route and `kumihimo-external-apps/windows`; default and `native-drops` consumers need not select it. Source compilation and seven lifecycle/five adapter fixtures passed without native windows or app effects. Installed-app attach, resize, tab visibility, input and return acceptance remain **UNPROVEN**. Published WP019 desktop tiling does not prove embedding.
+
+[`NativeChildRoute`](kumihimo-egui/src/external_apps.rs) binds a distinct canonical view/resource to `HostingSession<WindowsHostingBackend>`. Only the owned runner supplies `NativeParentBinding`. Allocation uses the current post-toolbar/navigation RenderSlot in parent-client physical pixels, exact full DIP clipping, scale, generation and epoch. A different parent HWND is rejected even at the same epoch; migration requires confirmed desktop detach before an explicit new binding. Partial clipping and floating overlays are unsupported. Actual egui popup/foreground/tooltip/preview state blocks child presentation; overlay painting waits for observed hiding with no pending worker.
+
+Preflight requires normal compatible windows, exact app/parent DPI-context equality, app/parent process/property lifetime and an owned parent on the originating UI thread. Unsupported ownership, native menus, window styles/modes or sizing reject before attach. Each host has bounded bindings/operations; one foreign-call worker retains both leases and the actual parent Window, wakes the event loop on completion, and admits no conflicting dispatch. `request(operation)` accepts `HostingOperation` variants Attach, Resize, Visibility and Detach; `reconcile()` distinguishes observed completion from pending `Unknown`. A stale dispatched epoch cannot commit current attachment. Cross-process focus/keyboard routing, application menus/dialogs and fullscreen are denied: explicitly detach to the original desktop placement for that work. GPU `native_child` remains unsupported.
+
+Opted-in `NativeHost` implementations use `native::run_with_recovery`; legacy `native::run` rejects app opt-in before HWND effects. Implement parent/slot/overlay hooks plus `before_native_parent_destroy` and explicit `retry_native_parent_detach`. Every close, failure, timeout, probe and removal consults detach before releasing the parent. Unresolved work keeps the event loop alive; one automatic detach attempt is followed by explicit retry, without expired-timer spin. Exceptional return yields `NativeRunResult::Retained` with the entire owner, rather than reporting cleanup success.
+
+On the originating UI thread, `RetainedNativeOwner` exposes `recovery_id()`, `inspect()`, bounded `reconcile()`, explicit `retry_detach()` and `finish()`. Dropping an unresolved owner retains it in `RecoveryBank::current_thread()`; inspect that bank and use `RetainedNativeOwner::<Host>::retrieve(id)` (or `HostingSession::<Backend>::retrieve(bank, id)`) to resume. Active and retained owners share capacity eight by default; `configure_capacity(capacity)` accepts 1–64 and requires an empty bank. Full/conflicting admission rejects before effects. Do not terminate the originating thread/process while obligations remain. Semantic `HostingRecovery` stores original settings and pending intent, not actionable HWND/PID; restoring a file does not discharge live cleanup.
+
+[`foreign_app_host.rs`](kumihimo-egui/examples/foreign_app_host.rs) composes DemoHost with a separate `selected-installed-app` resource and semantic reference `external-app:selected-app-host-example`. Supply a fresh explicitly selected instance on an agreed controlled desktop:
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --features native-apps --example foreign_app_host --target-dir .local/cargo-target --locked --offline -j 2 -- --interactive --pid $SelectedPid --hwnd $SelectedHwnd
+```
+
+HWND is decimal. The example launches/closes no application and injects no mouse/keyboard input. Its sibling host pane offers desktop detach. After a retained return, stdin commands are `inspect`, `retry` and `finish`; EOF keeps reconciling the owned parent instead of exiting with an attached app. Verify original parent/styles/visibility/bounds independently, then release the owner and verify parent absence before accepting cleanup. This is a source/proof entry, not a completed runtime demonstration.
 
 </topic>
 

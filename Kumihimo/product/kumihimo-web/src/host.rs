@@ -9,6 +9,9 @@ const LINEAGE: &str = "kumihimo-portal-pilot";
 const RECEIPTS: usize = 64;
 const PREVIEWS: usize = 16;
 const STORE_BYTES: usize = 1024 * 1024;
+#[cfg(feature = "drops")]
+#[path = "drop.rs"]
+mod drops;
 
 /// Browser effects remain explicit host decisions, outside portable arrangement.
 pub trait HostDispatcher {
@@ -71,6 +74,9 @@ impl Default for PilotConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Task {
+    #[cfg(feature = "drops")]
+    #[serde(default)]
+    links: BTreeMap<String, Decimal>,
     id: String,
     title: String,
     body: String,
@@ -184,6 +190,10 @@ struct LayoutSession {
 
 /// Demonstration host: a single controller, independent tasks, bounded transient state.
 pub struct PilotHost {
+    #[cfg(feature = "drops")]
+    drops: BTreeMap<u64, drops::Admission>,
+    #[cfg(feature = "drops")]
+    next_drop: u64,
     controller: content::Controller,
     tasks: TaskStore,
     config: PilotConfig,
@@ -419,6 +429,8 @@ impl PilotHost {
                 return Err(WebError::new("creation_failed"));
             };
             let mut task = Task {
+                #[cfg(feature = "drops")]
+                links: BTreeMap::new(),
                 id,
                 title: format!("Task {}", index + 1),
                 body: "Editable host-owned task notes".into(),
@@ -485,6 +497,10 @@ impl PilotHost {
             previews: BTreeMap::new(),
             next_preview: 1,
             converted: VecDeque::new(),
+            #[cfg(feature = "drops")]
+            drops: BTreeMap::new(),
+            #[cfg(feature = "drops")]
+            next_drop: 1,
         };
         host.attach_views()?;
         Ok(host)
@@ -643,13 +659,21 @@ impl PilotHost {
     }
     fn route(&mut self, request: Request) -> (&'static str, Result<Value, WebError>) {
         match request {
+            #[cfg(feature = "drops")]
+            Request::DropAdmit { destination, action, source, items, now_ms, .. } => ("drop_admit", self.drop_admit(destination, &action, &source, items, now_ms)),
+            #[cfg(feature = "drops")]
+            Request::DropComplete { token, contents, now_ms, .. } => ("drop_complete", self.drop_complete(token.0, contents, now_ms)),
+            #[cfg(feature = "drops")]
+            Request::DropCancel { token, .. } => ("drop_cancel", self.drop_cancel(token.0)),
             Request::Snapshot { .. } => ("snapshot", self.snapshot()),
             Request::HostSnapshot { .. } => (
                 "host_snapshot",
-                Ok(
-                    json!({"revision":self.tasks.revision,"tasks":self.tasks.tasks,
-                "last_recipient":self.tasks.last_recipient}),
-                ),
+                Ok({
+                    let value = json!({"revision":self.tasks.revision,"tasks":self.tasks.tasks,"last_recipient":self.tasks.last_recipient});
+                    #[cfg(feature = "drops")]
+                    let value = { let mut value = value; value["drop_capabilities"] = json!({"actions":{"browser_files":["open","import","copy"],"internal_assets":["link","copy"]},"max_files":8,"max_bytes":8192,"lifetime_ms":30_000,"allowed_views":self.tasks.tasks.iter().filter(|t| !t.veto).flat_map(|t| t.views.iter()).collect::<Vec<_>>()}); value };
+                    value
+                }),
             ),
             Request::Save { .. } => ("save", self.save()),
             Request::Load {
@@ -1210,6 +1234,10 @@ impl PilotHost {
             previews: BTreeMap::new(),
             next_preview: 1,
             converted: VecDeque::new(),
+            #[cfg(feature = "drops")]
+            drops: BTreeMap::new(),
+            #[cfg(feature = "drops")]
+            next_drop: 1,
         };
         replacement.sync()?;
         replacement.attach_views()?;

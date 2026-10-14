@@ -102,9 +102,9 @@ Kumihimo owns arrangement records and validates arrangement commands. The host o
 - Storage and atomic publication of saved layouts alongside the host's own data.
 - Policy for live instances, suspension, unloading, memory and CPU/GPU budgets.
 
-**File dragging:** moving an existing tab or frame is available. Typed host asset-action requests are also available, with linked-edit, independent-copy and domain-change modes. The current adapters do not implement a general file-drop pipeline. Dragging a disk file into a frame, dropping a browser file object, or transferring an asset between applications still needs host/platform integration. No arrangement action moves or copies a physical file.
+**File dragging:** optional WP018 source integrates bounded host-owned file and internal-task drops. It is in development; manual acceptance remains open; physical browser file transfer and successful native OLE import remain unproven. Frame/header dragging arranges frames; the pilot's separate **Drag task link** control transfers task references or content. No arrangement action moves a physical file. See [file-drop development](#file-drop-development).
 
-**Other applications:** native popouts contain Kumihimo-owned surfaces. The optional external-app package can position explicitly selected compatible Windows application windows beside the host and restore their original placement. It has scoped VLC observations; it does not wrap a running Blender window inside a frame or establish arbitrary-app compatibility. See [selected external-app tiling](#selected-external-app-tiling).
+**Other applications:** native popouts contain Kumihimo-owned surfaces. Published WP019 positions explicitly selected compatible Windows application windows beside the host and restores their original placement, with scoped VLC observations. Separate WP020 hosting source is in development; manual acceptance remains open; installed-app embedding/input/return remain unproven, including Blender. See [selected external-app tiling](#selected-external-app-tiling) and [hosting development](#foreign-app-hosting-development).
 
 **Rendering speed:** the content and rendering bridge can bound and coalesce requested work and carry lifecycle information. Actual performance improvements and physical resource release require host implementation and measurement. Keeping many logical tabs does not require keeping all their engines alive, but the host must implement that policy.
 
@@ -118,9 +118,9 @@ Kumihimo owns arrangement records and validates arrangement commands. The host o
 | --- | --- |
 | [kumihimo-core](kumihimo-core/Cargo.toml) | Arrangement state and commands. Default features use only the Rust standard library. |
 | [kumihimo-layout-json](kumihimo-layout-json/Cargo.toml) | Bounded JSON encoding/decoding of saved semantic layouts. |
-| [kumihimo-content](kumihimo-content/Cargo.toml) | A controller owning Core plus typed host-content coordination. `navigation` and `backgrounds` are optional features. |
-| [kumihimo-egui](kumihimo-egui/Cargo.toml) | Replaceable desktop controls. Optional `native` adds the sample native runner; `capture` adds raster capture. |
-| [kumihimo-web](kumihimo-web/Cargo.toml) | Rust browser adapter and Portal-style pilot. Optional `wasm` exports its browser bindings. |
+| [kumihimo-content](kumihimo-content/Cargo.toml) | A controller owning Core plus typed host-content coordination. Optional `navigation`, `backgrounds` and development `drops`. |
+| [kumihimo-egui](kumihimo-egui/Cargo.toml) | Desktop controls; optional `native` runner and `capture`. Development `drops` supplies coordination; `native-drops` adds Windows OLE; `native-apps` separately adds foreign-window hosting. |
+| [kumihimo-web](kumihimo-web/Cargo.toml) | Browser adapter/pilot; `wasm` exports bindings, development `drops` selects file/task transfer. |
 | [kumihimo-render-bridge](kumihimo-render-bridge/Cargo.toml) | Bounded pixel/identity/lifecycle contracts and the optional `desktop` composition experiment. |
 | [kumihimo-external-apps](kumihimo-external-apps/Cargo.toml) | Explicit selected-window placement and recovery. Optional `windows` enables the native backend. |
 
@@ -165,7 +165,7 @@ Prerequisites include the Rust `wasm32-unknown-unknown` target, cached dependenc
 python product/kumihimo-web/tools/serve.py --pkg .local/web/pkg --port 0
 ```
 
-The first script builds WASM and generates matching JS/WASM under `.local/web/pkg`. The server prints its owned loopback URL; open that printed URL. If you already have a matching selected WASM build, the script's `-SkipBuild` option reuses it. Do not use that option to disguise a missing or stale build.
+The first script currently builds `wasm,drops` and generates matching JS/WASM under `.local/web/pkg`; `-Features wasm` omits drop integration. The server prints its owned loopback URL; open that printed URL. If you already have a matching selected WASM build, the script's `-SkipBuild` option reuses it. Do not use that option to disguise a missing or stale build.
 
 The pilot has Cards, Details, Depth and live-record-budget inputs. Drag frame headers, select tabs, and use the labelled arrangement controls to float, redock, resize, maximize or move a tab into another frame. Escape cancels an uncommitted preview. The separate host task editor changes task meaning. **Save layout + tasks** and **Restore saved** use separate selected browser-storage keys. Native-style browser popup migration is unsupported.
 
@@ -197,7 +197,43 @@ The [technical reference](README.md#optional-selected-external-app-tiling) provi
 
 Use tile bounds that fit the reported capabilities, read each response, then verify restoration before ending the session. `recover` accepts the exact saved object as `{"op":"recover","record":...}`. Exit is refused while dispatch remains pending; EOF with pending work emits recovery and exits with failure. Your host owns startup and cleanup of its own selected instance; the example does not stop applications.
 
-On 2026-10-14, one fresh owned VLC instance on Windows x64 was tiled to 900×600, resized to 1000×650 and restored, with matching independent OS bounds and inspected VLC captures. The sampled foreground window and observed unselected window stayed unchanged, and the proof controller cleaned up its owned app/CLI. This is a scoped VLC result; it does not establish Blender, arbitrary application compatibility, playback or foreign-window embedding. Packet completion and publication are tracked separately.
+Published WP019 used one fresh owned VLC instance on 2026-10-14 Windows x64: tile to 900×600, resize to 1000×650 and restore matched independent OS bounds and inspected VLC captures. The sampled foreground window and observed unselected window stayed unchanged; the proof controller cleaned up its owned app/CLI. Blender, arbitrary application compatibility, playback and foreign-window embedding remain unproven.
+
+</topic>
+
+<topic id="file-drop-development" ingestable="true">
+
+## File-drop development
+
+WP018 is in development; manual acceptance remains open. The host owns payload tokens, permission, file IO, task edits and undo; Core receives bounded metadata and canonical destination identity. Hover reads no file contents. Release validates current selection/generation/epoch; delayed reads must revalidate before completion. Browser Open/Copy replace task text, Import appends, and internal task Link adds a reference. Move is denied. Eleven inspected headless cases cover trusted frame/tab/cancellation and task-link gestures plus synthetic untrusted File/DataTransfer events through production listeners and Rust host reads. Physical OS-to-browser file dragging is **NOT_PROVEN**.
+
+The Windows fixture host opts into `native-drops`, supplies two independently backed text frames, imports only `.txt`/`.md` (eight files, 8 KiB total), and exposes **Undo last file import**. Undo rejects if the imported document was edited afterwards, preserving those later edits. Source files remain untouched. Start only with an agreed controlled desktop:
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --features native-drops --example file_drop_host --target-dir .local/cargo-target --locked --offline -j 2 -- --interactive
+```
+
+`--output PATH` selects observations. **`--observe-host` records imported document text**, so use explicit fixtures; default snapshots omit payload. The [guarded OLE source](kumihimo-egui/examples/native_drop_source.rs) takes `--fixture PATH --receiver-hwnd DECIMAL --receiver-pid PID`, requires the actual cursor over that live registered receiver, and cancels on identity change or its three-second limit. It needs controlled desktop agreement. Dead-receiver denial is observed; successful native transfer/import remains unproven. Read receipts and independently inspect the exact destination; compilation or a COPY result alone does not prove the import. See [protocol details](README.md#file-drop-integration-in-development).
+
+</topic>
+
+<topic id="foreign-app-hosting-development" ingestable="true">
+
+## Foreign-app hosting development
+
+WP020 is in development; manual acceptance remains open. `native-apps` selects a separate Windows child route; it is optional independently of `native-drops`. Source checks and memory fixtures do not prove installed-app attach, resize, tab hiding, input or desktop return. GPU native-child sharing remains unsupported.
+
+The [sample](kumihimo-egui/examples/foreign_app_host.rs) uses a distinct `selected-installed-app` resource alongside DemoHost. Its full-width app frame contains **Selected application** and **Host document (tab visibility)** tabs; sibling panes contain detach controls. Supply a fresh selected instance; it spawns/closes no app and injects no input. `--output PATH` separates observations. `--timeout-seconds 1..=120` selects a diagnostic/capture budget, not an interactive session deadline. Run only on an agreed controlled desktop:
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --features native-apps --example foreign_app_host --target-dir .local/cargo-target --locked --offline -j 2 -- --interactive --pid $SelectedPid --hwnd $SelectedHwnd
+```
+
+HWND is decimal. Hosting requires exact app/parent DPI contexts, normal supported window state, lifetime-validated identities, an owned parent and a current fully clipped content slot. Another parent, partial clipping, floats or unsupported menus/styles reject. Actual host popup/preview overlays require observed child hiding before painting. Cross-process keyboard/focus, app menus/dialogs and fullscreen are denied; use the sibling pane's **Detach application to desktop** control for that work. Returning must restore original parent/styles/visibility/bounds; the application remains user-owned.
+
+Opted-in hosts call `native::run_with_recovery`; legacy `run` rejects app opt-in before effects. Unresolved detach prevents parent destruction and keeps the event loop alive. Pending/stale completion is `Unknown`; automatic teardown attempts once, then needs explicit retry. Exceptional return supplies `NativeRunResult::Retained`: on the original UI thread, inspect, reconcile, explicitly retry detach and finish only after cleanup is observed. Dropped unresolved owners remain retrievable by `recovery_id()` through `RetainedNativeOwner::<Host>::retrieve(id)` and `RecoveryBank::current_thread().inspect()`. Active/retained owners share default capacity eight (configurable 1–64 only while empty); full/conflicting admission rejects. Reconcile before ending that thread/process; saved semantic recovery cannot erase a live obligation.
+
+The sample's retained-owner stdin commands are `inspect`, `retry`, `finish`; EOF keeps reconciling rather than exiting with an attached app. Independently verify restoration and, after owner release, parent absence. See [hosting API and constraints](README.md#foreign-window-hosting-in-development). This source entry does not complete WP020.
 
 </topic>
 
@@ -220,6 +256,93 @@ A saved layout records semantic arrangement and host resource references, not na
 Resource reservations describe declared obligations. They do not measure physical memory. “Requested unload,” “confirmed unload,” “hidden” and “unknown” have different meanings. Keep outstanding cleanup obligations until the host confirms the exact effect; do not blindly resend requests or stop unrelated processes.
 
 Diagnostics exclude opaque input/asset payloads in the content controller. They still need appropriate host handling. Native sample captures and manifests, browser events and storage observations, and rendering-bridge receipts provide different evidence; use the one belonging to the failing layer.
+
+</topic>
+
+<topic id="manual-extension-acceptance" ingestable="true">
+
+## Manual extension acceptance
+
+These tests exercise WP018/WP020 development code. They do not mark either packet complete. The operator launches windows and supplies all mouse/keyboard actions; the agent can inspect resulting files in the background. Run commands from the Kumihimo project root. The prepared executables live under ignored `.local`; a fresh checkout needs them built first. The fixture files are included in `product/kumihimo-egui/fixtures/file-drop`.
+
+### Native file transfer
+
+Launch the prepared sample yourself:
+
+```powershell
+& .local/cargo-target/debug/examples/file_drop_host.exe --interactive --observe-host --output .local/manual-acceptance/native-drop
+```
+
+In Explorer, open `product/kumihimo-egui/fixtures/file-drop`. The prepared files are `alpha.txt` (22 bytes), `beta.md` (21 bytes), `unsupported.bin` (26 bytes), and `oversize.txt` (8193 bytes).
+
+1. Drag `alpha.txt` over **Import target 1 · document 1**. Before releasing, confirm the highlighted pane and status name the destination and **Import**. Release: `KUMIHIMO-NATIVE-ALPHA` must append once to that document; the source remains in Explorer.
+2. Drag `beta.md` into **Import target 2 · document 1**, inside the other frame's nested pane. Only that document gains `KUMIHIMO-NATIVE-BETA`; target 1 retains its alpha marker.
+3. Click **Undo last file import**. Target 2 returns to its original text; target 1 retains alpha. Import beta again so the final snapshot retains both distinct results.
+4. Hover alpha over either destination and press Escape before release. Text must remain unchanged.
+5. Drop `unsupported.bin`, then `oversize.txt`. Each must report rejection and preserve both documents. Do not infer success from the Windows drag cursor alone.
+6. Drag a frame by its title. This must rearrange the frame, without importing content or moving a physical fixture file.
+7. Close the sample normally using its window close button. Record the outcomes of steps 1–6, including the visible frame/view IDs. The final `.local/manual-acceptance/native-drop/native-manifest.json` contains `host_snapshot.documents`, `drop_status`, and `receipts`. Only explicit fixture text should be used with `--observe-host`.
+
+Capture or describe the two populated panes before closing. The automatic startup PNG does not prove post-drop content.
+
+### Physical browser file transfer
+
+Start the prepared browser package server yourself; open the URL it prints:
+
+```powershell
+python product/kumihimo-web/tools/serve.py
+```
+
+Drag alpha and beta from Explorer into two different task cards, without modifier keys. Each preview must name **import**, and only the corresponding task body must gain its marker once. With a fresh task, hold Shift while dropping alpha: **open** replaces the body. Hold Ctrl while dropping beta: **copy** replaces that destination body and retains the source file. Hover and Escape, unsupported extension, and oversize file must preserve the current bodies. Dragging the frame title must still arrange frames; **Drag task link** handles internal task transfers. Record the destination task IDs, displayed status and resulting bodies. These operator gestures supply the physical-input proof missing from the headless tests. Stop only the server you started, with Ctrl+C in its own terminal.
+
+### Installed-app hosting
+
+VLC is the already inspected fallback; this does not certify Blender or arbitrary applications. Start a fresh VLC instance yourself, with configuration ignored and single-instance forwarding disabled:
+
+```powershell
+$vlcPath = Join-Path $env:ProgramFiles 'VideoLAN/VLC/vlc.exe'
+Get-Item -LiteralPath $vlcPath
+$selectedApp = Start-Process -FilePath $vlcPath -ArgumentList '--no-one-instance','--ignore-config','--qt-auto-raise=0','--no-qt-system-tray','--no-qt-privacy-ask','--no-qt-updates-notif' -PassThru
+[void]$selectedApp.WaitForInputIdle(10000)
+$selectedApp.Refresh()
+$selectedHwnd = $selectedApp.MainWindowHandle.ToInt64()
+if ($selectedHwnd -eq 0) { throw 'Wait for the fresh VLC main window, then refresh its handle before proceeding.' }
+$selectedApp.Id
+$selectedHwnd
+python .local/manual-acceptance/observe-window.py --pid $selectedApp.Id --hwnd $selectedHwnd --output .local/manual-acceptance/hosting-before.json
+& .local/cargo-target/debug/examples/foreign_app_host.exe --interactive --pid $selectedApp.Id --hwnd $selectedHwnd --output .local/manual-acceptance/hosting
+```
+
+The sample may reject DPI/style compatibility. Record the exact diagnostic if VLC stays on the desktop; that is a rejection outcome, not successful hosting.
+
+For a successful attach:
+
+1. Confirm actual VLC pixels appear inside **Selected application**. Click a VLC control and record its visible effect. Test keyboard input after clicking inside VLC; for example, press Ctrl+L and confirm the playlist appears, then press it again ([VideoLAN shortcut implementation](https://mailman.videolan.org/pipermail/vlc-commits/2024-April/069687.html)). A denied or ineffective keyboard action remains a failed/open acceptance case; detached input cannot replace this check.
+2. Resize the host and the horizontal divider below the application. VLC must follow the allocated pane without covering tabs, tools or sibling controls.
+3. Select **Host document (tab visibility)**. VLC must disappear from that pane without exiting. Select **Selected application** again; VLC must reappear usable.
+4. Click **Detach application to desktop** in a sibling pane. VLC must return to a usable desktop window. Test its menu/dialog there; the sample declares that fallback rather than promising embedded menu/focus support.
+5. Close the host normally. VLC must remain alive and usable. After the host command returns, run the observer again with the same app PID/HWND and output `hosting-after.json`; compare parent and styles with `hosting-before.json`.
+6. Run a second hosting session with the same fresh VLC instance and a separate `--output .local/manual-acceptance/hosting-close` directory. Close the host while VLC is still attached. Normal teardown must return VLC to the desktop. Observe again after the host exits.
+7. After both return tests, close that fresh VLC window yourself. Run the hosting command once more with its old PID/HWND. It must reject stale identity before opening a host window. Preserve the exact error. This is the real stale-application failure case; memory fixtures cannot replace it.
+
+In a second PowerShell terminal, set `$selectedPid` and `$selectedHwnd` to the two printed numbers and use this read-only command during attached, resized, hidden and returned stages, changing the output filename each time:
+
+```powershell
+python .local/manual-acceptance/observe-window.py --pid $selectedPid --hwnd $selectedHwnd --output .local/manual-acceptance/hosting-attached.json
+```
+
+The observer records independent OS parent, physical screen/client bounds, visibility, styles and DPI without injecting input. Attached parent must belong to the test host; hidden must have `visible=false`; returned parent/styles must match the baseline. Preserve screenshots or precise observations of actual VLC pixels and input effects. The host manifest alone is not independent OS evidence.
+
+After the host command returns, independently check that the parent recorded during attachment no longer exists:
+
+```powershell
+$attachedObservation = Get-Content .local/manual-acceptance/hosting-attached.json -Raw | ConvertFrom-Json
+python .local/manual-acceptance/observe-window.py --pid $attachedObservation.parent.pid --hwnd $attachedObservation.app.parent --output .local/manual-acceptance/hosting-parent-after.json
+```
+
+`hosting-parent-after.json` must report `exists=false`. Repeat for the second session's recorded parent; a manifest cleanup field alone cannot replace this check.
+
+If the console reports retained recovery, keep it open and use `inspect`, then an explicit `retry`, then `finish` after return succeeds. Report the diagnostic if recovery does not finish. Close the fresh VLC window yourself after it has returned; do not use an existing working VLC session for these tests. Unresolved native ownership is not a successful teardown. WP021 remains pending the accepted and published predecessor packets.
 
 </topic>
 

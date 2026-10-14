@@ -445,6 +445,12 @@ pub enum HostAction {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "route", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    #[cfg(feature = "drops")]
+    DropAdmit { version: u32, destination: DropDestinationWire, action: String, source: String, items: Vec<DropItemWire>, now_ms: u64 },
+    #[cfg(feature = "drops")]
+    DropComplete { version: u32, token: Decimal, contents: Vec<String>, now_ms: u64 },
+    #[cfg(feature = "drops")]
+    DropCancel { version: u32, token: Decimal },
     Snapshot {
         version: u32,
     },
@@ -504,6 +510,8 @@ pub enum Request {
 impl Request {
     pub fn version(&self) -> u32 {
         match self {
+            #[cfg(feature = "drops")]
+            Self::DropAdmit { version, .. } | Self::DropComplete { version, .. } | Self::DropCancel { version, .. } => *version,
             Self::Snapshot { version }
             | Self::HostSnapshot { version }
             | Self::Save { version }
@@ -601,6 +609,22 @@ impl Request {
         }
         Ok(())
     }
+}
+
+#[cfg(feature = "drops")]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DropDestinationWire {
+    pub identity: core::Identity, pub generation: Decimal, pub epoch: Decimal,
+    pub frame: Decimal, pub view: Decimal, pub resource: Decimal, pub provider: Decimal,
+    pub x: f64, pub y: f64,
+}
+#[cfg(feature = "drops")]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DropItemWire {
+    pub label: String, pub media_type: String, pub bytes: Option<u64>,
+    pub asset: Option<String>, pub asset_revision: Option<Decimal>,
 }
 
 pub fn parse_request(input: &str) -> Result<Request, WebError> {

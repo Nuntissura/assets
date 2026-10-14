@@ -30,6 +30,18 @@ struct Document {
     clicked: Option<egui::Pos2>,
 }
 pub struct DemoHost {
+    #[cfg(feature = "drops")]
+    pub drop_observe: bool,
+    #[cfg(feature = "drops")]
+    pub drop_enabled: bool,
+    #[cfg(feature = "drops")]
+    pub drop_status: String,
+    #[cfg(feature = "drops")]
+    pub drop_preview: Option<content::DropDestination>,
+    #[cfg(feature = "drops")]
+    drop_undo: VecDeque<(ResourceId, String, String)>,
+    #[cfg(feature = "drops")]
+    drop_sequence: u64,
     pub policy: HostPolicy,
     pub native_actions: Vec<AdapterAction>,
     pub receipts: VecDeque<ProviderReceipt>,
@@ -49,6 +61,18 @@ pub struct DemoHost {
 impl Default for DemoHost {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "drops")]
+            drop_observe: false,
+            #[cfg(feature = "drops")]
+            drop_enabled: false,
+            #[cfg(feature = "drops")]
+            drop_status: String::new(),
+            #[cfg(feature = "drops")]
+            drop_preview: None,
+            #[cfg(feature = "drops")]
+            drop_undo: VecDeque::new(),
+            #[cfg(feature = "drops")]
+            drop_sequence: 0,
             policy: HostPolicy::default(),
             native_actions: vec![],
             receipts: VecDeque::new(),
@@ -68,6 +92,92 @@ impl Default for DemoHost {
     }
 }
 impl DemoHost {
+    #[cfg(feature = "drops")]
+    pub fn document_text(&self, resource: ResourceId) -> Option<&str> {
+        self.documents.get(&resource).filter(|d| !d.canvas).map(|d| d.text.as_str())
+    }
+    #[cfg(feature = "drops")]
+    pub fn undo_last_file_drop(&mut self) -> Result<()> {
+        let (resource, before, after) = self.drop_undo.back().ok_or(AdapterError::Unsupported("no file drop undo"))?;
+        let doc = self.documents.get_mut(resource).ok_or(AdapterError::Stale("drop undo document"))?;
+        if doc.text != *after { return Err(AdapterError::Stale("document changed after file import")); }
+        doc.text = before.clone();
+        self.drop_undo.pop_back();
+        self.drop_status = "Last file import undone by sample host.".into();
+        Ok(())
+    }
+    #[cfg(all(feature = "native-drops", windows))]
+    pub fn handle_native_drop(&mut self, controller: &mut Controller, surface: SurfaceBinding, report: &FrameReport, event: crate::native_drop::NativeDropEvent) -> Result<()> {
+        use crate::{drop::{destination, HostDropPoint}, native_drop::NativeDropKind};
+        use std::io::Read;
+        if !self.drop_enabled { return Err(AdapterError::Unsupported("native drops not enabled")); }
+        if matches!(event.kind, NativeDropKind::Leave) { self.drop_preview = None; self.drop_status = "File drop cancelled.".into(); return Ok(()); }
+        if let NativeDropKind::Rejected(cause) = event.kind { self.drop_preview = None; self.drop_status = format!("File drop rejected: {cause}"); return Ok(()); }
+        let result = (|| -> Result<()> {
+            if event.epoch != surface.epoch || event.hwnd == 0 { return Err(AdapterError::Stale("native drop surface")); }
+            let pixels = event.client_pixels.ok_or(AdapterError::Unsupported("drop point outside client"))?;
+            let target = destination(controller, report, HostDropPoint { point: egui::pos2(surface.bounds.x() as f32 + pixels[0] as f32 / surface.pixels_per_point, surface.bounds.y() as f32 + pixels[1] as f32 / surface.pixels_per_point), epoch: event.epoch })?;
+            let doc = self.documents.get(&target.scope.resource).ok_or(AdapterError::Stale("drop document"))?;
+            if doc.canvas || self.delayed.contains(&target.scope.target.view().ok_or(AdapterError::Stale("drop view"))?) { return Err(AdapterError::Unsupported("drop text host unavailable")); }
+            if matches!(event.kind, NativeDropKind::Hover) {
+                self.drop_status = format!("Import text · frame {} · view {} · max 8 files / 8 KiB · source retained", target.frame.raw(), target.scope.target.raw());
+                self.drop_preview = Some(target);
+                return Ok(());
+            }
+            let NativeDropKind::Drop(paths) = event.kind else { return Ok(()); };
+            if self.drop_preview.take().is_none_or(|preview| preview != target) { return Err(AdapterError::Stale("native drop preview")); }
+            if paths.is_empty() || paths.len() > 8 { return Err(AdapterError::Budget("drop file count")); }
+            let mut total = 0_u64;
+            let mut items = Vec::with_capacity(paths.len());
+            for path in &paths {
+                let label = path.file_name().and_then(|v| v.to_str()).ok_or(AdapterError::Unsupported("drop filename encoding"))?;
+                if !matches!(path.extension().and_then(|v| v.to_str()), Some("txt" | "md")) { return Err(AdapterError::Unsupported("drop text format")); }
+                let metadata = std::fs::metadata(path).map_err(|_| AdapterError::Host("drop file metadata refused".into()))?;
+                if !metadata.is_file() { return Err(AdapterError::Unsupported("drop non-file")); }
+                total = total.checked_add(metadata.len()).ok_or(AdapterError::Budget("drop byte arithmetic"))?;
+                if total > 8192 { return Err(AdapterError::Budget("drop payload bytes")); }
+                items.push(content::DropItem { label: label.into(), media_type: "text/plain".into(), bytes: Some(metadata.len()), asset: None });
+            }
+            self.drop_sequence = self.drop_sequence.checked_add(1).ok_or(AdapterError::Budget("drop sequence"))?;
+            let offer = content::DropOffer { kind: content::DropPayloadKind::DiskFiles, token: format!("native-drop-{}", self.drop_sequence), revision: 1, expires_at_ms: self.now_ms.checked_add(30_000).ok_or(AdapterError::Budget("drop lifetime"))?, items };
+            let revision = controller.inspect().mounts[&target.scope.mount].eligibility.revision;
+            let grant = content::DropGrant { permission: content::HostPermission { allowed: true, eligibility_revision: revision }, actions: BTreeSet::from([content::DropAction::Import]), kinds: vec![content::DropPayloadKind::DiskFiles] };
+            let limits = content::DropLimits { items: 8, metadata_bytes: 4096, payload_bytes: 8192 };
+            self.pump(controller, target.scope.mount)?;
+            let mut coordinator = content::DropCoordinator::default();
+            coordinator.hover(controller, content::DropRequest { offer: offer.clone(), destination: target.clone(), action: content::DropAction::Import }, &grant, limits, self.now_ms)?;
+            let id = coordinator.release(controller, &offer, &grant, limits, self.now_ms)?;
+            let request = controller.dispatch(target.scope.mount, grant.permission, self.now_ms)?.ok_or(AdapterError::Stale("drop prerequisites pending"))?;
+            if request.ticket.id != id { return Err(AdapterError::Stale("drop dispatch ordering")); }
+            // Host content access starts only after admitted dispatch. Read all files before mutation.
+            let applied = (|| -> Result<()> {
+                let mut contents = Vec::with_capacity(paths.len());
+                for (path, item) in paths.iter().zip(&offer.items) {
+                    let file = std::fs::File::open(path).map_err(|_| AdapterError::Host("drop open refused".into()))?;
+                    let mut bytes = Vec::new();
+                    file.take(8193).read_to_end(&mut bytes).map_err(|_| AdapterError::Host("drop read failed".into()))?;
+                    if bytes.len() > 8192 || Some(bytes.len() as u64) != item.bytes { return Err(AdapterError::Stale("drop size changed")); }
+                    contents.push(String::from_utf8(bytes).map_err(|_| AdapterError::Unsupported("drop UTF-8 text"))?);
+                }
+                let text = contents.join("\n");
+                let doc = self.documents.get_mut(&target.scope.resource).ok_or(AdapterError::Stale("drop document"))?;
+                let candidate = format!("{}\n{}", doc.text, text);
+                if candidate.len() > 65_536 { return Err(AdapterError::Budget("drop document bytes")); }
+                self.drop_undo.push_back((target.scope.resource, doc.text.clone(), candidate.clone()));
+                while self.drop_undo.len() > 16 { self.drop_undo.pop_front(); }
+                doc.text = candidate;
+                self.drop_status = format!("Import completed · view {} · {} bytes · source retained", target.scope.target.raw(), total);
+                Ok(())
+            })();
+            let ack = if applied.is_ok() { content::AckResult::Confirmed(content::Confirmation::Done) } else { content::AckResult::Failed { ambiguous: false } };
+            controller.ack(content::Ack { ticket: request.ticket, result: ack }, self.now_ms)?;
+            self.receipts.push_back(ProviderReceipt { view: target.scope.target.view().unwrap(), resource: target.scope.resource, request: id.0, kind: if applied.is_ok() { "file-drop" } else { "file-drop-failed" }, local_point: None, close_approved: None });
+            while self.receipts.len() > self.policy.max_pending { self.receipts.pop_front(); }
+            applied
+        })();
+        if let Err(error) = result { self.drop_preview = None; self.drop_status = format!("File drop rejected: {error}. Existing document retained."); }
+        Ok(())
+    }
     fn prune_draw_bindings(&mut self, controller: &Controller) {
         let content = controller.inspect();
         let live = |view: &ViewId| {
@@ -481,6 +591,40 @@ impl DemoHost {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "drops"))]
+mod file_drop_undo_contracts {
+    use super::*;
+
+    fn imported_document() -> (DemoHost, ResourceId) {
+        let resource = ResourceId::from_raw(1);
+        let mut host = DemoHost::default();
+        host.documents.insert(resource, Document {
+            text: "original\nimported".into(), canvas: false, texture: None,
+            offset: 0.0, revision: 1, clicked: None,
+        });
+        host.drop_undo.push_back((resource, "original".into(), "original\nimported".into()));
+        (host, resource)
+    }
+
+    #[test]
+    fn normal_undo_restores_original_and_consumes_history() {
+        let (mut host, resource) = imported_document();
+        host.undo_last_file_drop().expect("unchanged imported text can undo");
+        assert_eq!(host.document_text(resource), Some("original"));
+        assert!(host.drop_undo.is_empty());
+    }
+
+    #[test]
+    fn manual_edit_rejects_undo_and_preserves_text_and_history() {
+        let (mut host, resource) = imported_document();
+        host.documents.get_mut(&resource).unwrap().text.push_str("\nmanual edit");
+        let history = host.drop_undo.clone();
+        assert!(matches!(host.undo_last_file_drop(), Err(AdapterError::Stale("document changed after file import"))));
+        assert_eq!(host.document_text(resource), Some("original\nimported\nmanual edit"));
+        assert_eq!(host.drop_undo, history);
+    }
+}
 impl DesktopHost for DemoHost {
     fn policy(&self) -> HostPolicy {
         self.policy.clone()
@@ -562,6 +706,14 @@ impl DesktopHost for DemoHost {
         slot: &RenderSlot,
         controller: &mut Controller,
     ) -> Result<()> {
+        #[cfg(feature = "drops")]
+        if self.drop_enabled {
+            if let Some(destination) = &self.drop_preview {
+                if destination.scope.target.view() == Some(slot.view) && destination.epoch == slot.epoch && destination.generation == controller.snapshot().generation {
+                    ui.painter().rect_stroke(to_egui(slot.clip), 0.0, egui::Stroke::new(3.0, egui::Color32::LIGHT_BLUE), egui::StrokeKind::Inside);
+                }
+            }
+        }
         self.synchronize(controller, slot)?;
         let (visible, minimized, occlusion) = self.surface_facts(controller, slot.workspace);
         if !visible || minimized {
@@ -644,10 +796,6 @@ impl DesktopHost for DemoHost {
                 );
             }
         }
-        let doc = self
-            .documents
-            .get_mut(&slot.resource)
-            .ok_or(AdapterError::Invalid("demo resource"))?;
         let inner = to_egui(slot.bounds).shrink(10.0);
         let mut body = ui.new_child(
             egui::UiBuilder::new()
@@ -655,6 +803,17 @@ impl DesktopHost for DemoHost {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         body.set_clip_rect(to_egui(slot.clip).intersect(inner));
+        #[cfg(feature = "drops")]
+        if self.drop_enabled {
+            body.label(&self.drop_status);
+            if body.add_enabled(!self.drop_undo.is_empty(), egui::Button::new("Undo last file import")).clicked() {
+                if let Err(error) = self.undo_last_file_drop() { self.drop_status = format!("Import undo rejected: {error:?}"); }
+            }
+        }
+        let doc = self
+            .documents
+            .get_mut(&slot.resource)
+            .ok_or(AdapterError::Invalid("demo resource"))?;
         body.label(
             egui::RichText::new(if doc.canvas {
                 "Generated canvas demo"
@@ -1012,6 +1171,19 @@ pub fn with_policy_counts(
     tabs_per_frame: usize,
     policy: HostPolicy,
 ) -> Result<Demo> {
+    with_policy_counts_and_text_frames(frame_count, tabs_per_frame, policy, 1)
+}
+/// Opt-in file-drop fixture: two independently backed editable destinations.
+#[cfg(feature = "drops")]
+pub fn file_drop_sample() -> Result<Demo> {
+    with_policy_counts_and_text_frames(2, 2, HostPolicy::default(), 2)
+}
+fn with_policy_counts_and_text_frames(
+    frame_count: usize,
+    tabs_per_frame: usize,
+    policy: HostPolicy,
+    text_frames: usize,
+) -> Result<Demo> {
     let count = frame_count
         .checked_mul(tabs_per_frame)
         .ok_or(AdapterError::Budget("demo provider count arithmetic"))?;
@@ -1128,7 +1300,7 @@ pub fn with_policy_counts(
     for (index, frame) in frames.iter().copied().enumerate() {
         let target = if index == 1 { child } else { frame };
         for tab in 0..tabs_per_frame {
-            let canvas = index % 2 == 1 || index > 1;
+            let canvas = index >= text_frames;
             let EntityId::Resource(resource) = created(
                 &mut host,
                 &mut controller,
@@ -1157,7 +1329,11 @@ pub fn with_policy_counts(
                 &mut controller,
                 Command::SetViewMetadata {
                     view,
-                    label: format!("{} {}", if canvas { "Canvas" } else { "Document" }, tab + 1),
+                    label: if text_frames > 1 && !canvas {
+                        format!("Import target {} · document {}", index + 1, tab + 1)
+                    } else {
+                        format!("{} {}", if canvas { "Canvas" } else { "Document" }, tab + 1)
+                    },
                     pinned: tab == 1,
                     unsaved: tab == 2,
                 },

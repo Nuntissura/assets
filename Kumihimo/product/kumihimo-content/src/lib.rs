@@ -4,6 +4,8 @@
 #[cfg(feature = "backgrounds")]
 mod backgrounds;
 mod diagnostics;
+#[cfg(feature = "drops")]
+mod drop;
 mod lifecycle;
 #[cfg(feature = "navigation")]
 mod navigation;
@@ -17,6 +19,8 @@ mod settings;
 #[cfg(feature = "backgrounds")]
 pub use backgrounds::*;
 pub use diagnostics::*;
+#[cfg(feature = "drops")]
+pub use drop::*;
 #[cfg(feature = "navigation")]
 pub use navigation::*;
 #[cfg(feature = "navigation")]

@@ -10,8 +10,11 @@ publish = false
 default = []
 navigation = ["kumihimo-content/navigation"]
 backgrounds = ["kumihimo-content/backgrounds"]
+drops = ["kumihimo-content/drops"]
+native-drops = ["native", "drops", "dep:windows", "dep:windows-core"]
 capture = ["dep:egui-wgpu", "dep:wgpu", "dep:pollster", "dep:image", "dep:serde_json"]
 native = ["capture", "egui-wgpu/winit", "dep:egui-winit", "dep:winit", "dep:raw-window-handle", "dep:windows-sys"]
+native-apps = ["native", "dep:kumihimo-external-apps", "kumihimo-external-apps/windows"]
 
 [dependencies]
 kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features = false }
@@ -25,8 +28,11 @@ serde_json = { version = "=1.0.151", optional = true }
 egui-winit = { version = "=0.33.3", default-features = false, features = ["accesskit"], optional = true }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"], optional = true }
 raw-window-handle = { version = "=0.6.2", optional = true }
+kumihimo-external-apps = { path = "../kumihimo-external-apps", version = "0.1.0", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+windows-core = { version = "=0.61.2", optional = true }
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"], optional = true }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"], optional = true }
 
 [dev-dependencies]

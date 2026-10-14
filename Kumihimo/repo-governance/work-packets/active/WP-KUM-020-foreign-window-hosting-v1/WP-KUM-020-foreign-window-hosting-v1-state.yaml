@@ -1,10 +1,110 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-020-foreign-window-hosting-v1
-generation: 1
-phase: planned
-owner: fresh_implementation_lead_pending_dispatch
-changed_files: []
-proof: []
-blockers: []
-next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-  packet after predecessor publication
+generation: 6
+phase: blocked
+owner: dev_lead_resume_2026_10_14
+changed_files:
+- product/Cargo.lock
+- product/INTERNAL-MANUAL.md
+- product/README.md
+- product/kumihimo-egui/Cargo.toml
+- product/kumihimo-egui/examples/file_drop_host.rs
+- product/kumihimo-egui/examples/foreign_app_host.rs
+- product/kumihimo-egui/examples/native_drop_source.rs
+- product/kumihimo-egui/src/demo.rs
+- product/kumihimo-egui/src/drop.rs
+- product/kumihimo-egui/src/external_apps.rs
+- product/kumihimo-egui/src/lib.rs
+- product/kumihimo-egui/src/native.rs
+- product/kumihimo-egui/src/native_drop.rs
+- product/kumihimo-egui/tests/manual_sample_contracts.rs
+- product/kumihimo-egui/tests/native_app_contracts.rs
+- product/kumihimo-external-apps/src/hosting.rs
+- product/kumihimo-external-apps/src/lib.rs
+- product/kumihimo-external-apps/src/retention.rs
+- product/kumihimo-external-apps/src/windows.rs
+- product/kumihimo-external-apps/src/windows_hosting.rs
+- product/kumihimo-external-apps/tests/hosting_contracts.rs
+proof:
+- kind: dependency_readiness_source_only
+  observed: Hosting dependency agent inspected current native callbacks, RenderSlot,
+    preserved native-child GPU rejection, pinned windows-sys0.61.2 APIs and Microsoft/Godot
+    source; admits background implementation only
+  sources:
+  - https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent
+  - https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw
+  - https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos
+  - https://github.com/godotengine/godot/blob/master/platform/windows/display_server_windows.cpp
+  selected: Separate optional native-child hosting route, owned parent epoch/lifetime
+    hooks, exact DPI preflight, original parent/styles/placement recovery; no OS handles
+    in Core
+  rejected:
+  - Global native-child GPU admission
+  - DPI-reset reparenting
+  - Async OS dispatch as successful attachment
+  - Forced teardown while foreign child remains attached
+  risks_controls:
+  - 'Foreign synchronous APIs may stall: isolate dispatch and retain Unknown; no false
+    completion or parent destruction'
+  - 'Native child overlays/clipping differ from egui: narrowly admit fully clipped
+    eligible pane or explicit fallback'
+  - 'App/parent replacement: retained identity and epoch before every effect'
+  validation: Focused fixture lifecycle/identity/partial-effect/failed-detach tests;
+    actual app pixels/input/resize/hide/detach only at explicitly agreed desktop availability
+- kind: focused_hosting_source_and_memory_proof
+  candidate_manifest_sha256: 911ddb73cf367bbcdc531b95b33b3dd2739a0a498051a23429a7469d8985c851
+  observed: Independent review found and resolved unbounded irretrievable Drop retention
+    and old-epoch attachment acceptance. Windows-feature hosting_contracts six passed,
+    build24.34s/test0.00s; default-feature all-target compile passed3.80s. Frozen
+    source bytes independently match candidate after checks; explicit offline lock
+    regeneration changed only admitted optional egui dependencies
+  scope: Memory-only lifecycle/failure proof and Windows x64 compilation; no native
+    app attach/input/window creation performed
+  remaining: Egui native-parent callbacks/retained runner and concrete opt-in host
+    source still implementing; actual installed-app acceptance requires agreed desktop
+    availability
+- kind: final_source_and_compile_memory_proof
+  candidate_manifest_sha256: 6a2b1ea384f5fa9cd0c1bb7ff5566c6db656b49f409e3acbb69da605ba896381
+  artifact_ref: .local/external-apps/hosting-final-candidate.json
+  observed: Combined native-apps/native-drops/external Windows all-target compile
+    PASS; seven memory lifecycle cases PASS; five memory/egui-context adapter cases
+    PASS; default all-target compile PASS; native-drops without native-apps all-target
+    compile PASS; three explicit interactive examples built17.79s but not launched
+  independent_review: No remaining actionable source blocker found after bounded retrieval/old-epoch/one-shot-failed-detach/fullclip/parent-mismatch/overlay
+    and retained-owner controls; actual runtime remains OPEN
+  limits:
+  - Memory fixtures and compilation do not prove real app hosting/input
+  - Keyboard/focus/menu/dialog API remains denied with desktop fallback; actual compatibility
+    not certified
+  - In-manifest cleanup may observe retained Window Arc; final real proof needs independent
+    absence after host/owner release
+  documentation: Product README/manual describe development status, exact source APIs
+    and controlled desktop prerequisites
+- kind: manual_acceptance_sample_readiness
+  artifact_ref: .local/manual-acceptance/candidate.json
+  candidate_manifest_sha256: 9496e06f226f66d00f43f0a02ec5bc338e99eeda7ab2cdd24abf1779e0de91d5
+  observed: Hosting constructor/identity/tab/geometry memory case PASS; two distinct
+    drop destination/default provider cases PASS; both sample binaries built; default
+    all-target and native-drops-only examples checks PASS; timeout=0 binary rejection
+    PASS before native effects; independent source/manual review no blocker
+  limits: No GUI launched or desktop input injected; actual transfer, app pixels/input/resize/hide/return/teardown
+    remain OPEN
+  manual_ref: product/INTERNAL-MANUAL.md#manual-extension-acceptance
+- kind: guarded_undo_and_final_manual_binaries
+  artifact_ref: .local/manual-acceptance/candidate-undo-guard.json
+  candidate_manifest_sha256: 8a5c5a424f441572babfce6f57ea96199f50cb2c9dc280faae963bd6adefd10e
+  observed: 'Two focused undo memory cases PASS: normal restoration consumes entry;
+    later edits reject before mutation/history removal. Both prepared sample executables
+    rebuilt PASS8.81s; independent narrow source review no blocker'
+  reuse: Three constructor tests and default/native-drops-only checks from preceding
+    proof retained; undo-only changes are drops-gated, constructors and default asserted
+    behavior unchanged
+  limits: No successful actual native transfer or installed-app hosting/input/teardown
+    claim; operator manual tests still required
+blockers:
+- Operator manual runtime observations required; agent must not launch GUI or control
+  mouse/keyboard. Prepared commands, fixtures, expected outcomes and evidence locations
+  are in product/INTERNAL-MANUAL.md#manual-extension-acceptance
+next_action: Operator runs exact manual tests; lead reads emitted JSON and operator
+  observations, remedies actual failures, then publishes accepted packet. No desktop
+  automation.
