@@ -59,6 +59,8 @@ mod raster;
 pub use raster::*;
 mod vector;
 pub use vector::*;
+mod typestyle;
+pub use typestyle::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
@@ -801,7 +803,20 @@ fn validate(
                 let ty = match l.kind.as_str() {
                     "raster" => ValueType::Image,
                     "vector" => ValueType::Vector,
-                    "text" => ValueType::Text,
+                    // Lead decision G1 (SMB-FOLIO-PAINT-BLUR-STYLE): a text source may declare its
+                    // single `out` port `image` instead of `text` (rasterised text). Edges require
+                    // equal value types and group `inputs` are image-typed, so this is the one
+                    // way text is authored over other layers inside a group. The text-typed form
+                    // is unchanged; renderers that do not rasterise text refuse the image form.
+                    "text" => match op.outputs.as_slice() {
+                        [
+                            Port {
+                                value_type: ValueType::Image,
+                                ..
+                            },
+                        ] => ValueType::Image,
+                        _ => ValueType::Text,
+                    },
                     // STU-RAS-007 lists `adjustment` as a layer kind; STU-CMP-092 makes the
                     // graph input order the stack order, so an adjustment layer is an image
                     // source like any other layer. The payload must name its own record.

@@ -190,7 +190,7 @@ pub struct StudioRgba {
     pub colour_profile_id: ProfileBinding,
 }
 impl StudioRgba {
-    fn validate(&self, target: &str, c: &mut Ctx) -> Result<()> {
+    pub(crate) fn validate(&self, target: &str, c: &mut Ctx) -> Result<()> {
         if ![self.r, self.g, self.b, self.a]
             .into_iter()
             .all(unit_interval)
