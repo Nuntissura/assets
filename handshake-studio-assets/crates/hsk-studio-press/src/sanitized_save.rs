@@ -1351,8 +1351,9 @@ pub struct RedactedOutput {
     /// document; test `xfa_is_stripped_from_redaction_outputs`).
     pub xfa_removed: bool,
     /// What the save removed from the document beyond the regions, as typed losses (sorted, unique; Operator decision D28:
-    /// [`RedactionLoss::AccessibilityTagsRemoved`] when the default [`StructureTreePolicy::Strip`] removed a structure tree;
-    /// test `default_redaction_strips_the_structure_tree`).
+    /// [`RedactionLoss::AccessibilityTagsRemoved`] when the default [`StructureTreePolicy::Strip`] removed a structure tree or a
+    /// structure entry; `/MarkInfo` alone is not one, R26-S4; tests `default_redaction_strips_the_structure_tree`,
+    /// `structure_strip_reports_no_loss_without_structure`).
     pub losses: Vec<RedactionLoss>,
     /// Images, forms, patterns and shadings (object numbers in `bytes`) a flattened page reached that
     /// stay in the saved file and are not silent (R18, the minimal draw set: silent only when the source is an image
@@ -1513,7 +1514,8 @@ pub fn redact_and_save_with(
 pub enum StructureTreePolicy {
     /// Default. When the save flattens at least one region, the whole structure tree is removed (`flatten_purge.rs`
     /// `strip_structure`: the catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`, `/StructParent` and `/SE`
-    /// entry, every dictionary with the shape of a structure element; what only the tree reached, `/ParentTree`, `/IDTree`,
+    /// entry and the `/SD` of every `GoTo` action, every object of the structure tree identified by its role and reachability,
+    /// not by its shape (R26-S1: a media rendition or clip stays); what only the tree reached, `/ParentTree`, `/IDTree`,
     /// `/RoleMap` and `/ClassMap` included, is no longer written); marked-content operators in content streams (`BDC` with
     /// `/MCID`) are kept. The save reports [`RedactionLoss::AccessibilityTagsRemoved`] and a tagged document can read
     /// `region_flattened` (test `default_redaction_strips_the_structure_tree`).

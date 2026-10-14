@@ -3188,3 +3188,112 @@ fn structure_strip_reports_what_it_cannot_remove() {
     }
     assert!(red.is_empty(), "{red:#?}");
 }
+
+/// R26-S1 (validation/R26-prereview-press-narrow.json, inputs M1, M2): the D28 strip deleted every dictionary with the SHAPE of a
+/// structure element (`/S` name + `/P` + a text key), so ISO 32000 multimedia on a KEPT page of an untagged document (a media
+/// rendition `/S /MR` with `/C` and `/P`, a media clip `/S /MCD` with `/P` and `/Alt`; as objects, and the rendition inline in the
+/// action) was deleted and the save reported `accessibility_tags_removed` and read proven (red at ade85a0). The strip now removes
+/// structure-tree objects by their role only: the multimedia stays, no loss is reported, and the shape rule of `check_document` still
+/// reads it (over-report, NOT PROVEN) instead of deleting it.
+#[test]
+fn structure_strip_keeps_multimedia_of_kept_pages() {
+    let media = |inline: bool| -> Vec<(u32, String)> {
+        let clip = "<< /Type /MediaClip /S /MCD /CT (video/mp4) /D << /Type /Filespec /F (MEDIA-FILE-KEEP.mp4) >> /P << /TF (TEMPACCESS) >> /Alt [() (MEDIA-ALT-KEEP)] >>";
+        let rendition = "<< /Type /Rendition /S /MR /N (MEDIA-NAME-KEEP) /C 74 0 R /P << /Type /MediaPlayParams /BE << /V 1 >> >> >>";
+        let action = if inline { format!("<< /S /Rendition /OP 0 /AN 71 0 R /R {rendition} >>") } else { "<< /S /Rendition /OP 0 /AN 71 0 R /R 73 0 R >>".to_string() };
+        vec![
+            (71, "<< /Type /Annot /Subtype /Screen /Rect [10 10 200 200] /P 5 0 R /T (MEDIA-TITLE-KEEP) /A 72 0 R >>".to_string()),
+            (72, action),
+            (73, rendition.to_string()),
+            (74, clip.to_string()),
+        ]
+    };
+    let mut red: Vec<String> = Vec::new();
+    for (name, inline) in [("M1 rendition and clip objects", false), ("M2 rendition inline in the action", true)] {
+        let pdf = pages_pdf("", "", "/Annots [71 0 R]", &media(inline));
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        for text in ["MEDIA-NAME-KEEP", "MEDIA-ALT-KEEP", "MEDIA-FILE-KEEP", "MEDIA-TITLE-KEEP", "/MediaClip", "/Rendition"] {
+            if gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} was removed from the kept page"));
+            }
+        }
+        if !out.losses.is_empty() {
+            red.push(format!("{name}: losses {:?} for an untagged document", out.losses));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || !(read_as_flattened(&out) || reported_for_the_tree(&out)) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R26-S2 (PLR-103 under D28, input S1) and R26-S3 (input S2): the strip follows the structure tree by role. (a) A tagged document
+/// whose kept-page link names, through a PDF 2.0 structure destination (`/SD` of a `GoTo` action), an element with `/S` and `/Alt`
+/// but no `/P` and no `/Type`: the element is a structure object by role, so it is removed and the action loses `/SD` (it keeps
+/// `/D`); red at ade85a0 (`SD-ALT-SECRET` survived with the save read proven). (b) A structure tree root without `/Type` that a
+/// private catalog key also names, holding `/IDTree` and `/ClassMap` text: the root is removed with every reference to it. Both
+/// read flattened with the loss `accessibility_tags_removed`, the link annotation and the kept page's text stay.
+#[test]
+fn structure_strip_follows_the_tree_and_structure_destinations() {
+    let tagged_cat = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";
+    let sd: Vec<(u32, String)> = vec![
+        (80, "<< /Type /StructTreeRoot /K [82 0 R] /ParentTree << /Nums [0 [82 0 R] 1 [82 0 R]] >> >>".to_string()),
+        (81, "<< /S /Figure /Alt (SD-ALT-SECRET) /K 0 >>".to_string()),
+        (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+        (71, "<< /Type /Annot /Subtype /Link /Rect [10 10 20 20] /P 5 0 R /A << /S /GoTo /D [5 0 R /Fit] /SD [81 0 R /Fit] >> >>".to_string()),
+    ];
+    let typeless: Vec<(u32, String)> = vec![
+        (80, "<< /K [82 0 R] /IDTree << /Names [(IDTREE-SECRET) 82 0 R] >> /ClassMap << /C1 << /O /UserProperties /P [<< /N (n) /V (CLASSMAP-SECRET) >>] >> >> >>".to_string()),
+        (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /C /C1 /ID (IDTREE-SECRET) /K 0 >>".to_string()),
+    ];
+    type Case = (&'static str, String, &'static str, &'static str, Vec<(u32, String)>, &'static [&'static str]);
+    let cases: Vec<Case> = vec![
+        ("(a) /SD names an element without /P and /Type", tagged_cat.to_string(), "/StructParents 0", "/StructParents 1 /Annots [71 0 R]", sd, &["SD-ALT-SECRET"]),
+        ("(b) a typeless root also under a private key", format!("{tagged_cat} /HskTree 80 0 R"), "", "", typeless, &["IDTREE-SECRET", "CLASSMAP-SECRET"]),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog, one, two, objects, secrets) in cases {
+        let pdf = pages_pdf(&catalog, one, two, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        for text in secrets.iter().chain(&["SECRET-ALPHA"]) {
+            if !gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} survives"));
+            }
+        }
+        if !read_as_flattened(&out) || out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?} losses {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons(), out.losses));
+        }
+        if gone(&out.bytes, "Page two") {
+            red.push(format!("{name}: the kept page lost its text"));
+        }
+        for key in ["StructTreeRoot", "StructParents", "HskTree", "/SD"] {
+            if find(&out.bytes, key.as_bytes()).is_some() {
+                red.push(format!("{name}: {key} is still written"));
+            }
+        }
+        if name.starts_with("(a)") && (find(&out.bytes, b"/Link").is_none() || find(&out.bytes, b"/GoTo").is_none()) {
+            red.push(format!("{name}: the link annotation or its action was removed (only /SD goes)"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R26-S4 (input S4): an untagged document whose catalog holds only `/MarkInfo << /Marked false >>` has no structure tree, so a
+/// save that flattens a region reports no loss (red at ade85a0: `losses [AccessibilityTagsRemoved]`). The loss is reported when a
+/// structure tree or a structure entry (`/StructTreeRoot`, `/StructParents`, `/StructParent`, `/SE`, `/SD`, a structure object) was
+/// removed; `/MarkInfo` alone does not count.
+#[test]
+fn structure_strip_reports_no_loss_without_structure() {
+    let mut red: Vec<String> = Vec::new();
+    for mark in ["/MarkInfo << /Marked false >>", "/MarkInfo << /Marked true >>"] {
+        let pdf = pages_pdf(mark, "", "", &[]);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        if !out.losses.is_empty() || !read_as_flattened(&out) {
+            red.push(format!("{mark}: losses {:?} region_flattened {}", out.losses, out.region_flattened()));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
