@@ -13,6 +13,7 @@
 //! error (V4-01), here and in the `fragments` submodule; `tests/v4_hardening.rs` pushes box sizes,
 //! largesize boxes, sample counts, durations, offsets, edit lists and `ctts` to their 32/64-bit limits.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::codec_adapters::{SampleEntryRoute, route_for_sample_entry};
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use crate::time::media_to_ticks;
@@ -1739,12 +1740,16 @@ impl MediaProvider for IsobmffProvider {
     fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
             id: ISOBMFF_PROVIDER_ID,
+            name: "ISO BMFF / QuickTime demuxer",
             kind: MediaKind::Container,
             container: "isobmff-mov-mp4",
             bit_depths: &[],
             chroma: None,
             transfer: None,
+            decoder_id: "isobmff-demux",
             decoder_version: DECODER_VERSION,
+            licence: STUDIO_OWNED_LICENCE,
+            certification: Certification::NotApplicable,
             can_decode: false,
             can_encode: false,
         }
@@ -1882,12 +1887,23 @@ impl IsobmffProvider {
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
-            if track.codec == *b"av01" {
+            let routed = if track.codec == *b"av01" {
+                Some(VideoCodec::Av1)
+            } else {
+                match route_for_sample_entry(track.codec) {
+                    Some(SampleEntryRoute::Codec(codec)) => Some(codec),
+                    Some(SampleEntryRoute::Refused(what)) => {
+                        return Err(ReelError::Unsupported { what });
+                    }
+                    None => None,
+                }
+            };
+            if let Some(codec) = routed {
                 return crate::video::decode_video_track(
                     src,
                     VideoTrack {
                         track,
-                        codec: VideoCodec::Av1,
+                        codec,
                         container: "isobmff",
                         demux_id: "isobmff-demux",
                         config: &track.codec_config,

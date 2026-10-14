@@ -323,12 +323,16 @@ impl MediaProvider for MxfProvider {
     fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
             id: MXF_PROVIDER_ID,
+            name: "MXF demuxer",
             kind: MediaKind::Container,
             container: "mxf-op1a-opatom",
             bit_depths: &[],
             chroma: None,
             transfer: None,
+            decoder_id: "mxf-demux",
             decoder_version: DECODER_VERSION,
+            licence: STUDIO_OWNED_LICENCE,
+            certification: Certification::NotApplicable,
             can_decode: false,
             can_encode: false,
         }

@@ -1602,12 +1602,16 @@ impl MediaProvider for MatroskaProvider {
     fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
             id: MATROSKA_PROVIDER_ID,
+            name: "Matroska / WebM demuxer",
             kind: MediaKind::Container,
             container: "matroska-webm",
             bit_depths: &[],
             chroma: None,
             transfer: None,
+            decoder_id: "matroska-demux",
             decoder_version: DECODER_VERSION,
+            licence: STUDIO_OWNED_LICENCE,
+            certification: Certification::NotApplicable,
             can_decode: false,
             can_encode: false,
         }

@@ -220,12 +220,16 @@ impl MediaProvider for WavProvider {
     fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
             id: WAV_PROVIDER_ID,
+            name: "WAV PCM",
             kind: MediaKind::Audio,
             container: "wav",
             bit_depths: &[8, 16, 24, 32, 64],
             chroma: None,
             transfer: None,
+            decoder_id: WAV_PROVIDER_ID,
             decoder_version: DECODER_VERSION,
+            licence: STUDIO_OWNED_LICENCE,
+            certification: Certification::NotApplicable,
             can_decode: true,
             can_encode: true,
         }

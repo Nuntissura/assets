@@ -25,16 +25,52 @@ impl MediaKind {
     }
 }
 
-/// Enumerable capability descriptor (STU-VID-051).
+/// Certification status of a decoder by the owner of the format (STU-VID-051 item 1 as enriched by D23:
+/// every adapter descriptor carries it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Certification {
+    /// The format has no owner certification programme that applies (open containers, PCM, raw video).
+    NotApplicable,
+    /// The format owner has NOT certified this decoder (e.g. a ProRes decoder written from SMPTE RDD 36,
+    /// which is not Apple-certified).
+    NotCertified,
+    /// Certified by the format owner.
+    Certified,
+}
+
+impl Certification {
+    /// Stable wire string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::NotCertified => "not_certified",
+            Self::Certified => "certified",
+        }
+    }
+}
+
+/// Licence string of code written in this workspace (Studio-owned adapters): the workspace declares no
+/// SPDX licence yet, so the descriptor says whose code it is instead of inventing one.
+pub const STUDIO_OWNED_LICENCE: &str = "studio-owned";
+
+/// Enumerable capability descriptor (STU-VID-051; D23: decoder id, licence and certification status).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodecDescriptor {
     pub id: &'static str,
+    /// User-facing name of the adapter (D24: the ProRes adapter is exactly
+    /// "ProRes (RDD 36 decoder, not Apple-certified)").
+    pub name: &'static str,
     pub kind: MediaKind,
     pub container: &'static str,
     pub bit_depths: &'static [u8],
     pub chroma: Option<&'static str>,
     pub transfer: Option<&'static str>,
+    /// Id of the decoder implementation; the same string a receipt of that decoder carries.
+    pub decoder_id: &'static str,
     pub decoder_version: &'static str,
+    /// Licence of the decoder implementation (SPDX expression, or `STUDIO_OWNED_LICENCE`).
+    pub licence: &'static str,
+    pub certification: Certification,
     pub can_decode: bool,
     pub can_encode: bool,
 }
@@ -49,14 +85,18 @@ impl CodecDescriptor {
             .join(",");
         let opt = |v: Option<&str>| v.map_or_else(|| "null".to_string(), |s| format!("\"{s}\""));
         format!(
-            "{{\"id\":\"{}\",\"kind\":\"{}\",\"container\":\"{}\",\"bit_depths\":[{}],\"chroma\":{},\"transfer\":{},\"decoder_version\":\"{}\",\"can_decode\":{},\"can_encode\":{}}}",
+            "{{\"id\":\"{}\",\"name\":\"{}\",\"kind\":\"{}\",\"container\":\"{}\",\"bit_depths\":[{}],\"chroma\":{},\"transfer\":{},\"decoder_id\":\"{}\",\"decoder_version\":\"{}\",\"licence\":\"{}\",\"certification\":\"{}\",\"can_decode\":{},\"can_encode\":{}}}",
             self.id,
+            self.name,
             self.kind.as_str(),
             self.container,
             depths,
             opt(self.chroma),
             opt(self.transfer),
+            self.decoder_id,
             self.decoder_version,
+            self.licence,
+            self.certification.as_str(),
             self.can_decode,
             self.can_encode
         )

@@ -7,6 +7,7 @@ rust-version = { workspace = true }
 [features]
 default = []
 av1 = ["dep:rav1d", "dep:libc"]
+prores = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

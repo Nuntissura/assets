@@ -125,6 +125,13 @@ impl Registry {
         self.providers.iter().map(|p| p.descriptor()).collect()
     }
 
+    /// Descriptors of the Studio-owned video codec adapters (ProRes, DNx/VC-3), which are video routes,
+    /// not providers: each says whether THIS build can decode it (`can_decode`), its decoder id, version,
+    /// licence and certification status (STU-VID-051, D23). Same list for every registry.
+    pub fn video_codec_descriptors(&self) -> Vec<CodecDescriptor> {
+        crate::codec_adapters::video_codec_descriptors()
+    }
+
     pub fn descriptors_json(&self) -> String {
         let items = self
             .providers

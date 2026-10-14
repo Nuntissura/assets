@@ -229,12 +229,16 @@ impl MediaProvider for Y4mProvider {
     fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
             id: Y4M_PROVIDER_ID,
+            name: "YUV4MPEG2 raw video",
             kind: MediaKind::Video,
             container: "y4m",
             bit_depths: &[8],
             chroma: Some("420,422,444,mono"),
             transfer: None,
+            decoder_id: Y4M_PROVIDER_ID,
             decoder_version: DECODER_VERSION,
+            licence: STUDIO_OWNED_LICENCE,
+            certification: Certification::NotApplicable,
             can_decode: true,
             can_encode: true,
         }

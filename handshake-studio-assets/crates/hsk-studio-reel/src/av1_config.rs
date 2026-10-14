@@ -3,18 +3,23 @@
 //! record and describes the same capability without linking the in-process rav1d decoder (feature `av1`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::ReelError;
-use crate::model::{CodecDescriptor, MediaKind};
+use crate::model::{Certification, CodecDescriptor, MediaKind};
 
 /// Enumerable capability descriptor (STU-VID-051) for AV1 decode by a decoder reporting `decoder_version`.
+/// The decoder is rav1d (BSD-2-Clause) in-process (feature `av1`) or in the reel-native worker.
 pub fn av1_descriptor(decoder_version: &'static str, can_decode: bool) -> CodecDescriptor {
     CodecDescriptor {
         id: "av1",
+        name: "AV1 (rav1d decoder)",
         kind: MediaKind::Video,
         container: "isobmff-mp4|matroska-webm",
         bit_depths: &[8, 10, 12],
         chroma: Some("mono|420|422|444"),
         transfer: None,
+        decoder_id: "rav1d",
         decoder_version,
+        licence: "BSD-2-Clause",
+        certification: Certification::NotCertified,
         can_decode,
         can_encode: false,
     }

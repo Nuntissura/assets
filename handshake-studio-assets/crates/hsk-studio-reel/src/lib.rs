@@ -35,6 +35,7 @@
 pub mod av1;
 mod av1_config;
 mod cache;
+mod codec_adapters;
 #[cfg(test)]
 mod delivery_tests;
 mod error;
@@ -54,6 +55,11 @@ mod y4m;
 
 pub use av1_config::{Av1Config, av1_descriptor, parse_av1c};
 pub use cache::{CacheStats, IndexCache};
+pub use codec_adapters::{
+    DNX_DECODER_ID, DNX_DECODER_VERSION, DNX_DISPLAY_NAME, DNX_IDENTITY, PRORES_COMPILED_IN,
+    PRORES_DECODER_ID, PRORES_DECODER_VERSION, PRORES_DISPLAY_NAME, PRORES_IDENTITY,
+    dnx_descriptor, prores_descriptor, video_codec_descriptors,
+};
 pub use error::{DecoderFault, ReelError};
 pub use identity::{
     IdentityParams, RelinkConfidence, RelinkMatch, RelinkOutcome, RelinkQuery, SourceIdentity,

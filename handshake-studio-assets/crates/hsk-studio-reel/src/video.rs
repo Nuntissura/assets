@@ -51,12 +51,19 @@ pub enum SourceTrust {
 #[non_exhaustive]
 pub enum VideoCodec {
     Av1,
+    /// ProRes 422/4444 frames (SMPTE RDD 36). In-process decoder only with cargo feature `prores`
+    /// (default off, D24); otherwise an external decoder or `MEDIA_CODEC_UNAVAILABLE`.
+    ProRes,
+    /// VC-3 (SMPTE ST 2019-1; DNxHD/DNxHR) frames. In-process decoder in every build (D24).
+    Dnx,
 }
 
 impl VideoCodec {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Av1 => "av1",
+            Self::ProRes => "prores",
+            Self::Dnx => "dnx",
         }
     }
 }
@@ -472,6 +479,8 @@ pub(crate) fn decode_video_track_with(
             parse_av1c(video.config)?;
         }
         VideoCodec::Av1 => {}
+        // Both carry everything in each frame header; the sample entry has no configuration record.
+        VideoCodec::ProRes | VideoCodec::Dnx => {}
     }
     // Export is exact or it fails: everything an export of this range can be refused for before a
     // picture exists is refused HERE, before a decoder session exists, so a refused export spawns no
