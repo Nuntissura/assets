@@ -11,6 +11,7 @@ pub use proposal::*;
 
 mod descriptor;
 pub mod boolean;
+pub mod edit;
 pub mod flatten;
 pub mod raster;
 pub mod stroke;
