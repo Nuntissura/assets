@@ -14,7 +14,7 @@ default = []
 desktop = ["dep:kumihimo-egui", "dep:kumihimo-core", "dep:kumihimo-content", "dep:egui", "dep:wgpu", "dep:egui-wgpu", "dep:image", "dep:serde", "dep:serde_json", "dep:bytemuck", "dep:sha2"]
 
 [dependencies]
-kumihimo-egui = { path = "../kumihimo-egui", version = "0.1.0", default-features = false, features = ["capture"], optional = true }
+kumihimo-egui = { path = "../kumihimo-egui", version = "0.2.0", default-features = false, features = ["capture"], optional = true }
 kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features = false, optional = true }
 kumihimo-content = { path = "../kumihimo-content", version = "0.2.0", default-features = false, optional = true }
 egui = { version = "=0.33.3", default-features = false, optional = true }

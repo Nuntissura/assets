@@ -23,25 +23,27 @@ use winit::{
 
 /// This value cannot be constructed by hosts, tests, callbacks or window-slot callers.
 /// It is minted only after successful set_window and an owned matched Screenshot event.
-pub struct Ready {
+pub(crate) struct Ready {
     tag: CaptureTag,
     scale: f32,
     bytes: usize,
+    window: Arc<Window>,
+    timeout: Duration,
 }
 impl Ready {
     pub(crate) fn validate(&self, pending: &PendingNative, snapshot: &Snapshot) -> Result<()> {
-        if self.tag.pending_nonce != Some(pending.nonce)
-            || self.tag.root != pending.slot.root
-            || self.tag.identity != pending.identity
-            || self.tag.generation != pending.generation
-            || snapshot.identity != self.tag.identity
-            || snapshot.generation != self.tag.generation
+        if !intent_matches(&self.tag, pending, snapshot)
             || self.tag.epoch == 0
             || self.tag.hwnd == 0
             || self.tag.size.contains(&0)
             || !self.scale.is_finite()
             || self.scale <= 0.0
-            || self.bytes == 0
+            || !owned_window(&self.window)
+            || self.tag.hwnd != hwnd(&self.window)
+            || self.tag.size != [self.window.inner_size().width, self.window.inner_size().height]
+            || self.scale != self.window.scale_factor() as f32
+            || self.tag.requested_at.elapsed() >= self.timeout
+            || expected_readback_bytes(self.tag.size) != Some(self.bytes)
         {
             return Err(AdapterError::Stale("native readiness receipt"));
         }
@@ -63,6 +65,458 @@ struct CaptureTag {
     label: String,
     requested_at: Instant,
 }
+
+/// Creates and exclusively controls the Painter and its native viewport bindings.
+/// Existing raw Painters cannot be adopted because their surface ownership is opaque.
+pub struct NativeRenderer {
+    painter: egui_wgpu::winit::Painter,
+    windows: HashMap<egui::ViewportId, Arc<Window>>,
+    max_windows: usize,
+}
+impl NativeRenderer {
+    pub async fn new(
+        context: egui::Context, configuration: egui_wgpu::WgpuConfiguration,
+        max_windows: usize,
+    ) -> Result<Self> {
+        if max_windows == 0 {
+            return Err(AdapterError::Budget("native renderer windows"));
+        }
+        let painter = egui_wgpu::winit::Painter::new(context, configuration, false, Default::default()).await;
+        Ok(Self { painter, windows: HashMap::new(), max_windows })
+    }
+    async fn bind_window(&mut self, viewport: egui::ViewportId, window: Arc<Window>) -> Result<()> {
+        if !owned_window(&window) { return Err(AdapterError::Invalid("native renderer window owner")); }
+        if let Some(bound) = self.windows.get(&viewport) {
+            if !Arc::ptr_eq(bound, &window) {
+                return Err(AdapterError::Stale("native viewport already bound to another window"));
+            }
+            return Ok(());
+        }
+        if self.windows.len() >= self.max_windows { return Err(AdapterError::Budget("native renderer windows")); }
+        // Only this method creates surfaces, so absence in the map means SDK absence too.
+        self.painter.set_window(viewport, Some(window.clone())).await
+            .map_err(|error| AdapterError::Host(format!("Painter.set_window: {error}")))?;
+        self.windows.insert(viewport, window);
+        Ok(())
+    }
+    fn matches_window(&self, viewport: egui::ViewportId, window: &Arc<Window>) -> bool {
+        self.windows.get(&viewport).is_some_and(|bound| Arc::ptr_eq(bound, window))
+    }
+    fn gc_viewports(&mut self, keep: &egui::ViewportIdSet) {
+        self.painter.gc_viewports(keep);
+        self.windows.retain(|viewport, _| keep.contains(viewport));
+    }
+    /// Paint populated content after handoff without requesting readiness or capture.
+    pub fn paint(
+        &mut self, surface: SurfaceBinding, pixels_per_point: f32, clear_color: [f32; 4],
+        primitives: &[egui::ClippedPrimitive], textures: &egui::TexturesDelta,
+    ) -> Result<()> {
+        surface.validate()?;
+        let window = self.windows.get(&surface.viewport)
+            .ok_or(AdapterError::Invalid("native renderer viewport"))?;
+        let size = window.inner_size();
+        if !owned_window(window) || size.width == 0 || size.height == 0
+            || surface.physical_size()? != [size.width, size.height]
+            || pixels_per_point != window.scale_factor() as f32
+            || pixels_per_point != surface.pixels_per_point
+        { return Err(AdapterError::Stale("native renderer paint allocation")); }
+        self.painter.paint_and_update_textures(surface.viewport, pixels_per_point,
+            clear_color, primitives, textures, Vec::new());
+        Ok(())
+    }
+    /// Resize only the tracked surface to dimensions read from its actual window.
+    pub fn resize_viewport(&mut self, viewport: egui::ViewportId) -> Result<[u32; 2]> {
+        let window = self.windows.get(&viewport)
+            .ok_or(AdapterError::Invalid("native renderer viewport"))?;
+        if !owned_window(window) { return Err(AdapterError::Stale("native renderer window owner")); }
+        let size = window.inner_size();
+        let width = NonZeroU32::new(size.width).ok_or(AdapterError::Invalid("zero native renderer width"))?;
+        let height = NonZeroU32::new(size.height).ok_or(AdapterError::Invalid("zero native renderer height"))?;
+        self.painter.on_window_resized(viewport, width, height);
+        Ok([size.width, size.height])
+    }
+    /// Explicitly release one tracked renderer surface; other viewports stay bound.
+    /// Return or close canonical content separately before destroying its host window.
+    pub fn release_viewport(&mut self, viewport: egui::ViewportId) -> Result<()> {
+        if !self.windows.contains_key(&viewport) { return Err(AdapterError::Invalid("native renderer viewport")); }
+        let keep = self.windows.keys().copied().filter(|id| *id != viewport).collect();
+        self.gc_viewports(&keep);
+        Ok(())
+    }
+}
+
+/// Borrows an asset-controlled renderer and owns one bounded native handoff.
+/// Bind after WindowSlots::arm; keep the lease until commit or cancellation.
+/// Dropping the lease cannot move content. It never shows or activates a window.
+pub struct ExternalNativeCoordinator<'a> {
+    renderer: &'a mut NativeRenderer,
+    slots: &'a mut WindowSlots,
+    window: Arc<Window>,
+    surface: SurfaceBinding,
+    pending: Option<PendingNative>,
+    tag: CaptureTag,
+    timeout: Duration,
+    submitted: bool,
+    delivered: bool,
+}
+
+/// Opaque readback produced only by the leased Painter. No host constructor exists.
+pub struct NativeCapture {
+    ready: Ready,
+    image: Arc<egui::ColorImage>,
+}
+impl NativeCapture {
+    pub fn image(&self) -> &egui::ColorImage { &self.image }
+}
+/// Screenshots for other viewports are returned to their host rather than discarded.
+pub struct NativeReadbackPoll {
+    pub capture: Option<NativeCapture>,
+    pub forwarded_events: Vec<egui::Event>,
+}
+pub struct NativeCommitOutcome {
+    tag: CaptureTag,
+    binding: NativeBinding,
+    image: Arc<egui::ColorImage>,
+    forwarded_events: Vec<egui::Event>,
+    sdk_observation: Option<serde_json::Value>,
+}
+impl NativeCommitOutcome {
+    pub fn binding(&self) -> &NativeBinding { &self.binding }
+    pub fn image(&self) -> &egui::ColorImage { &self.image }
+    pub fn forwarded_events(&self) -> &[egui::Event] { &self.forwarded_events }
+    pub fn sdk_observation(&self) -> Option<&serde_json::Value> { self.sdk_observation.as_ref() }
+    pub fn into_parts(self) -> (NativeBinding, Arc<egui::ColorImage>, Vec<egui::Event>) {
+        (self.binding, self.image, self.forwarded_events)
+    }
+}
+impl<'a> ExternalNativeCoordinator<'a> {
+    pub async fn bind(
+        renderer: &'a mut NativeRenderer,
+        window: Arc<Window>,
+        surface: SurfaceBinding,
+        slots: &'a mut WindowSlots,
+        pending: PendingNative,
+        snapshot: &Snapshot,
+        timeout: Duration,
+        max_capture_bytes: usize,
+    ) -> Result<Self> {
+        surface.validate()?;
+        slots.validate_pending(&pending)?;
+        slots.cancel(&pending, snapshot)?;
+        crate::window_slots::eligible(snapshot, &pending.slot)?;
+        let size = window.inner_size();
+        let size = [size.width, size.height];
+        if timeout.is_zero() || timeout > Duration::from_secs(120)
+            || surface.root != pending.slot.root || pending.identity != snapshot.identity
+            || pending.generation != snapshot.generation || !owned_window(&window)
+            || surface.physical_size()? != size
+            || surface.pixels_per_point != window.scale_factor() as f32
+            || snapshot.contexts.get(&surface.root)
+                != Some(&kumihimo_core::GeometryContext::new(surface.bounds))
+        {
+            return Err(AdapterError::Stale("external native binding"));
+        }
+        let bytes = expected_readback_bytes(size)
+            .ok_or(AdapterError::Invalid("external native capture dimensions"))?;
+        if bytes > max_capture_bytes {
+            return Err(AdapterError::Budget("external native capture bytes"));
+        }
+        renderer.bind_window(surface.viewport, window.clone()).await?;
+        let tag = CaptureTag {
+            capture: pending.nonce, pending_nonce: Some(pending.nonce),
+            viewport: surface.viewport, root: surface.root, hwnd: hwnd(&window),
+            epoch: surface.epoch, size, scale: surface.pixels_per_point,
+            identity: snapshot.identity.clone(), generation: snapshot.generation,
+            label: "external-native".into(), requested_at: Instant::now(),
+        };
+        Ok(Self { renderer, slots, window, surface, pending: Some(pending), tag,
+            timeout, submitted: false, delivered: false })
+    }
+    fn validate_live(&self, surface: SurfaceBinding, snapshot: &Snapshot) -> Result<()> {
+        let pending = self.pending.as_ref().ok_or(AdapterError::Stale("native handoff consumed"))?;
+        self.slots.validate_pending(pending)?;
+        if !self.renderer.matches_window(surface.viewport, &self.window)
+            || surface != self.surface || self.tag.root != surface.root
+            || self.tag.identity != snapshot.identity || self.tag.generation != snapshot.generation
+            || self.tag.requested_at.elapsed() >= self.timeout || !owned_window(&self.window)
+            || self.tag.hwnd != hwnd(&self.window)
+            || self.tag.size != [self.window.inner_size().width, self.window.inner_size().height]
+            || self.tag.scale != self.window.scale_factor() as f32
+        {
+            return Err(AdapterError::Stale("external native live binding"));
+        }
+        Ok(())
+    }
+    /// Submit the caller's actual egui render output; the capture tag stays private.
+    pub fn paint(
+        &mut self, surface: SurfaceBinding, snapshot: &Snapshot,
+        pixels_per_point: f32, clear_color: [f32; 4],
+        primitives: &[egui::ClippedPrimitive], textures: &egui::TexturesDelta,
+    ) -> Result<()> {
+        self.validate_live(surface, snapshot)?;
+        if self.submitted || pixels_per_point != self.tag.scale {
+            return Err(AdapterError::Stale("native capture already submitted or scale changed"));
+        }
+        self.renderer.painter.paint_and_update_textures(surface.viewport, pixels_per_point,
+            clear_color, primitives, textures, vec![egui::UserData::new(self.tag.clone())]);
+        self.submitted = true;
+        Ok(())
+    }
+    /// Polls the leased renderer, never an event queue or image supplied by the host.
+    pub fn poll(&mut self, surface: SurfaceBinding, snapshot: &Snapshot) -> Result<NativeReadbackPoll> {
+        self.validate_live(surface, snapshot)?;
+        if !self.submitted || self.delivered {
+            return Err(AdapterError::Stale("native capture unavailable or already delivered"));
+        }
+        if let Some(render) = self.renderer.painter.render_state() {
+            render.device.poll(wgpu::PollType::Poll)
+                .map_err(|error| AdapterError::Host(error.to_string()))?;
+        }
+        let mut events = Vec::new();
+        self.renderer.painter.handle_screenshots(&mut events);
+        let mut result = NativeReadbackPoll { capture: None, forwarded_events: Vec::new() };
+        for event in events {
+            let egui::Event::Screenshot { viewport_id, user_data, image } = &event else {
+                result.forwarded_events.push(event); continue;
+            };
+            let Some(tag) = user_data.data.as_ref().and_then(|data| data.downcast_ref::<CaptureTag>()) else {
+                result.forwarded_events.push(event); continue;
+            };
+            if tag != &self.tag { result.forwarded_events.push(event); continue; }
+            if !readback_matches(&self.window, self.surface, Some(&self.tag), tag,
+                *viewport_id, image.size, image.pixels.len(), snapshot, self.timeout)
+            {
+                return Err(AdapterError::Stale("external native renderer readback"));
+            }
+            if result.capture.is_some() {
+                return Err(AdapterError::Stale("duplicate native renderer readback"));
+            }
+            result.capture = Some(NativeCapture {
+                ready: Ready { tag: tag.clone(), scale: tag.scale,
+                    bytes: image.pixels.len() * 4, window: self.window.clone(), timeout: self.timeout },
+                image: image.clone(),
+            });
+        }
+        self.delivered = result.capture.is_some();
+        Ok(result)
+    }
+    pub fn commit(
+        &mut self, surface: SurfaceBinding, capture: NativeCapture,
+        controller: &mut Controller, host: &mut impl DesktopHost,
+    ) -> Result<NativeBinding> {
+        self.validate_live(surface, controller.snapshot())?;
+        if !self.delivered || capture.ready.tag != self.tag
+            || !Arc::ptr_eq(&capture.ready.window, &self.window)
+        {
+            return Err(AdapterError::Stale("foreign native capture"));
+        }
+        let pending = self.pending.as_ref().ok_or(AdapterError::Stale("native handoff consumed"))?.clone();
+        let result = self.slots.commit(pending, capture.ready, controller, host);
+        if result.is_ok() { self.pending = None; }
+        result
+    }
+    pub fn poll_and_commit(
+        &mut self, surface: SurfaceBinding, controller: &mut Controller,
+        host: &mut impl DesktopHost,
+    ) -> Result<(Option<NativeCommitOutcome>, Vec<egui::Event>)> {
+        let poll = self.poll(surface, controller.snapshot())?;
+        let Some(capture) = poll.capture else { return Ok((None, poll.forwarded_events)); };
+        let image = capture.image.clone();
+        let binding = self.commit(surface, capture, controller, host)?;
+        Ok((Some(NativeCommitOutcome { tag: self.tag.clone(), binding, image, forwarded_events: poll.forwarded_events,
+            sdk_observation: None }), Vec::new()))
+    }
+    pub fn cancel(&mut self, snapshot: &Snapshot) -> Result<()> {
+        let pending = self.pending.as_ref().ok_or(AdapterError::Stale("native handoff consumed"))?;
+        self.slots.cancel_pending(pending, snapshot)?;
+        self.pending = None;
+        Ok(())
+    }
+}
+
+/// Consumes only sealed receipts from the native-wgpu producer exposed by eframe.
+/// Hosts keep canonical WindowSlots and Controller ownership; screenshot input is irrelevant.
+#[cfg(feature = "native-eframe")]
+pub struct EframeNativeCoordinator {
+    handle: egui_wgpu::NativeCaptureHandle,
+    requests: std::collections::BTreeMap<u64, EframePending>,
+    max_pending: usize,
+    max_capture_bytes: usize,
+    timeout: Duration,
+}
+#[cfg(feature = "native-eframe")]
+struct EframePending {
+    request: egui_wgpu::NativeCaptureRequest,
+    target: egui_wgpu::NativeCaptureTarget,
+    pending: PendingNative,
+    surface: SurfaceBinding,
+    tag: CaptureTag,
+}
+#[cfg(feature = "native-eframe")]
+impl EframeNativeCoordinator {
+    pub fn new(
+        handle: egui_wgpu::NativeCaptureHandle, max_pending: usize,
+        max_capture_bytes: usize, timeout: Duration,
+    ) -> Result<Self> {
+        if max_pending == 0 || max_capture_bytes == 0 || timeout.is_zero()
+            || timeout > Duration::from_secs(120)
+        { return Err(AdapterError::Invalid("eframe native capture budget/deadline")); }
+        Ok(Self { handle, requests: Default::default(), max_pending, max_capture_bytes, timeout })
+    }
+    pub fn request(
+        &mut self, viewport: egui::ViewportId, slots: &mut WindowSlots,
+        pending: &mut PendingNative, controller: &mut Controller, host: &mut impl DesktopHost,
+    ) -> Result<u64> {
+        if self.requests.len() >= self.max_pending {
+            return Err(AdapterError::Budget("eframe native pending captures"));
+        }
+        slots.validate_pending(pending)?;
+        let target = self.handle.target(viewport)
+            .map_err(|error| AdapterError::Host(format!("native SDK target: {error:?}")))?;
+        let window = target.window();
+        let dimensions = target.physical_dimensions();
+        let scale = target.scale_factor();
+        if !owned_window(window) || dimensions.contains(&0) || !scale.is_finite() || scale <= 0.0
+            || target.viewport_id() != viewport || target.renderer_incarnation() == 0
+            || target.surface_incarnation() == 0
+            || dimensions != [window.inner_size().width, window.inner_size().height]
+            || scale != window.scale_factor()
+        { return Err(AdapterError::Stale("eframe native SDK target")); }
+        let bytes = expected_readback_bytes(dimensions)
+            .ok_or(AdapterError::Budget("eframe native capture arithmetic"))?;
+        if bytes > self.max_capture_bytes { return Err(AdapterError::Budget("eframe native capture bytes")); }
+        let bounds = Rect::new(0.0, 0.0, dimensions[0] as f64 / scale, dimensions[1] as f64 / scale)?;
+        if let Err(error) = slots.arm(pending, controller, host, bounds) {
+            slots.revoke_pending(pending);
+            return Err(error);
+        }
+        let request = match self.handle.request(viewport) {
+            Ok(request) => request,
+            Err(error) => {
+                slots.revoke_pending(pending);
+                return Err(AdapterError::Host(format!("native SDK request: {error:?}")));
+            }
+        };
+        if !sdk_targets_match(&target, request.target()) {
+            slots.revoke_pending(pending);
+            self.cancel_sdk_request(&request)?;
+            return Err(AdapterError::Stale("eframe native target changed while arming"));
+        }
+        let surface = SurfaceBinding { root: pending.slot.root, viewport,
+            epoch: target.surface_incarnation(), bounds, pixels_per_point: scale as f32 };
+        let tag = CaptureTag { capture: request.request_id(), pending_nonce: Some(pending.nonce),
+            viewport, root: pending.slot.root, hwnd: hwnd(window), epoch: surface.epoch,
+            size: dimensions, scale: scale as f32, identity: pending.identity.clone(),
+            generation: pending.generation, label: "eframe-native".into(), requested_at: Instant::now() };
+        let id = request.request_id();
+        if self.requests.contains_key(&id) {
+            slots.revoke_pending(pending);
+            self.cancel_sdk_request(&request)?;
+            return Err(AdapterError::Stale("eframe native repeated request ID"));
+        }
+        self.requests.insert(id, EframePending { request, target, pending: pending.clone(), surface, tag });
+        Ok(id)
+    }
+    pub fn poll_and_commit(
+        &mut self, id: u64, slots: &mut WindowSlots, controller: &mut Controller,
+        host: &mut impl DesktopHost,
+    ) -> Result<Option<NativeCommitOutcome>> {
+        match self.try_poll_and_commit(id, slots, controller, host) {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                if let Some(entry) = self.requests.remove(&id) {
+                    slots.revoke_pending(&entry.pending);
+                    if let Err(cleanup) = self.cancel_sdk_request(&entry.request) {
+                        return Err(AdapterError::Host(format!("native SDK failure {error:?}; settlement {cleanup:?}")));
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+    fn try_poll_and_commit(
+        &mut self, id: u64, slots: &mut WindowSlots, controller: &mut Controller,
+        host: &mut impl DesktopHost,
+    ) -> Result<Option<NativeCommitOutcome>> {
+        let entry = self.requests.get(&id).ok_or(AdapterError::Stale("eframe native request consumed/cancelled"))?;
+        slots.validate_pending(&entry.pending)?;
+        if !intent_matches(&entry.tag, &entry.pending, controller.snapshot())
+            || entry.tag.requested_at.elapsed() >= self.timeout
+        { return Err(AdapterError::Stale("eframe native pending intent/deadline")); }
+        let current = self.handle.target(entry.surface.viewport)
+            .map_err(|error| AdapterError::Host(format!("native SDK current target: {error:?}")))?;
+        if !sdk_targets_match(&entry.target, &current) {
+            return Err(AdapterError::Stale("eframe native surface replaced/resized"));
+        }
+        let outcome = self.handle.poll(&entry.request)
+            .map_err(|error| AdapterError::Host(format!("native SDK poll: {error:?}")))?;
+        let Some(outcome) = outcome else { return Ok(None); };
+        let receipt = match outcome {
+            egui_wgpu::NativeCaptureOutcome::Presented(receipt) => receipt,
+            egui_wgpu::NativeCaptureOutcome::Failed(error) => {
+                return Err(AdapterError::Host(format!("native SDK capture failed: {error:?}")));
+            }
+        };
+        if receipt.request_id() != id || receipt.viewport_id() != entry.surface.viewport
+            || receipt.renderer_incarnation() != entry.target.renderer_incarnation()
+            || receipt.surface_incarnation() != entry.target.surface_incarnation()
+            || !Arc::ptr_eq(receipt.window(), entry.target.window())
+            || receipt.physical_dimensions() != entry.target.physical_dimensions()
+            || receipt.scale_factor() != entry.target.scale_factor() || receipt.submission_id() == 0
+            || receipt.readback_bytes() != expected_readback_bytes(entry.tag.size).unwrap_or(0)
+            || receipt.image().pixels.len().checked_mul(4) != Some(receipt.readback_bytes())
+            || !readback_matches(receipt.window(), entry.surface, Some(&entry.tag), &entry.tag,
+                receipt.viewport_id(), receipt.image().size, receipt.image().pixels.len(),
+                controller.snapshot(), self.timeout)
+        { return Err(AdapterError::Stale("eframe native sealed receipt")); }
+        let ready = Ready { tag: entry.tag.clone(), scale: entry.tag.scale,
+            bytes: receipt.readback_bytes(), window: receipt.window().clone(), timeout: self.timeout };
+        let image = Arc::new(receipt.image().clone());
+        let sdk_observation = serde_json::json!({"request_id":receipt.request_id(),
+            "renderer_incarnation":receipt.renderer_incarnation(),"surface_incarnation":receipt.surface_incarnation(),
+            "submission_id":receipt.submission_id(),"physical_dimensions":receipt.physical_dimensions(),
+            "scale_factor":receipt.scale_factor(),"readback_bytes":receipt.readback_bytes(),
+            "hwnd":hwnd(receipt.window()),"presentation":"GPU readback and presentation-call completion"});
+        let binding = slots.commit(entry.pending.clone(), ready, controller, host)?;
+        let entry = self.requests.remove(&id).unwrap();
+        Ok(Some(NativeCommitOutcome { tag: entry.tag, binding, image, forwarded_events: Vec::new(),
+            sdk_observation: Some(sdk_observation) }))
+    }
+    pub fn cancel(&mut self, id: u64, slots: &mut WindowSlots, snapshot: &Snapshot) -> Result<()> {
+        let entry = self.requests.get(&id).ok_or(AdapterError::Stale("eframe native request consumed/cancelled"))?;
+        slots.validate_pending(&entry.pending)?;
+        slots.cancel(&entry.pending, snapshot)?;
+        self.cancel_sdk_request(&entry.request)?;
+        slots.cancel_pending(&entry.pending, snapshot)?;
+        self.requests.remove(&id);
+        Ok(())
+    }
+    pub fn surface(&self, id: u64) -> Result<SurfaceBinding> {
+        self.requests.get(&id).map(|entry| entry.surface)
+            .ok_or(AdapterError::Stale("eframe native request consumed/cancelled"))
+    }
+    fn cancel_sdk_request(&self, request: &egui_wgpu::NativeCaptureRequest) -> Result<()> {
+        match self.handle.cancel(request) {
+            Ok(()) => {}
+            Err(egui_wgpu::NativeCaptureFailure::AlreadyConsumed) => return Ok(()),
+            Err(error) => return Err(AdapterError::Host(format!("native SDK cancellation: {error:?}"))),
+        }
+        match self.handle.poll(request) {
+            Ok(Some(egui_wgpu::NativeCaptureOutcome::Failed(egui_wgpu::NativeCaptureFailure::Cancelled))) => Ok(()),
+            other => Err(AdapterError::Host(format!("native SDK cancellation settlement: {}",
+                match other { Err(error) => format!("{error:?}"), _ => "unexpected outcome".into() }))),
+        }
+    }
+}
+#[cfg(feature = "native-eframe")]
+fn sdk_targets_match(expected: &egui_wgpu::NativeCaptureTarget, actual: &egui_wgpu::NativeCaptureTarget) -> bool {
+    expected.viewport_id() == actual.viewport_id()
+        && expected.renderer_incarnation() == actual.renderer_incarnation()
+        && expected.surface_incarnation() == actual.surface_incarnation()
+        && Arc::ptr_eq(expected.window(), actual.window())
+        && expected.physical_dimensions() == actual.physical_dimensions()
+        && expected.scale_factor() == actual.scale_factor()
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SurfaceState {
     Unavailable,
@@ -76,6 +530,8 @@ pub struct NativeOptions {
     /// The only mode allowed to make windows visible; must be explicitly selected.
     pub interactive: bool,
     pub probe: bool,
+    /// Exercise the borrowed public coordinator in the original quiet probe runner.
+    pub external_native_probe: bool,
     pub output: PathBuf,
     pub timeout: Duration,
     pub observer_timeout: Duration,
@@ -93,6 +549,7 @@ impl Default for NativeOptions {
         Self {
             interactive: false,
             probe: true,
+            external_native_probe: false,
             output: PathBuf::from(".local/desktop-proof"),
             timeout: Duration::from_secs(45),
             observer_timeout: Duration::from_secs(10),
@@ -121,6 +578,21 @@ pub enum NativeClosePolicy {
 }
 /// Host coordination extends the borrowed desktop path without duplicating command allocation.
 pub trait NativeHost: DesktopHost {
+    /// Optional public-consumer proof hook in the quiet probe; the runner owns its HWND.
+    fn external_native_handoff(
+        &mut self, coordinator: &mut ExternalNativeCoordinator<'_>, surface: SurfaceBinding,
+        controller: &mut Controller, pixels_per_point: f32,
+        primitives: &[egui::ClippedPrimitive], textures: &egui::TexturesDelta,
+    ) -> Result<NativeCommitOutcome> where Self: Sized {
+        coordinator.paint(surface, controller.snapshot(), pixels_per_point,
+            [0.025, 0.03, 0.045, 1.0], primitives, textures)?;
+        loop {
+            let (outcome, forwarded) = coordinator.poll_and_commit(surface, controller, self)?;
+            if !forwarded.is_empty() { return Err(AdapterError::Invalid("unexpected concurrent probe readback")); }
+            if let Some(outcome) = outcome { return Ok(outcome); }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
     #[cfg(all(feature = "native-apps", windows))]
     fn native_apps_enabled(&self)->bool { false }
     #[cfg(all(feature = "native-apps", windows))]
@@ -279,7 +751,7 @@ struct App<H: NativeHost> {
     root: WorkspaceId,
     options: NativeOptions,
     ctx: egui::Context,
-    painter: egui_wgpu::winit::Painter,
+    renderer: NativeRenderer,
     proxy: EventLoopProxy<NativeEvent>,
     windows: HashMap<WindowId, NativeWindow>,
     slots: WindowSlots,
@@ -287,6 +759,7 @@ struct App<H: NativeHost> {
     next_capture: u64,
     capture_bytes: usize,
     captures: Vec<serde_json::Value>,
+    external_readbacks: Vec<(WindowId, CaptureTag, Arc<egui::ColorImage>, NativeBinding, Vec<serde_json::Value>)>,
     observations: Vec<serde_json::Value>,
     plan: Vec<NativeContent>,
     current: Option<WindowId>,
@@ -411,7 +884,8 @@ fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,
             let key=format!("native-run:{}:{}:{}",identity.lineage,identity.incarnation,root.raw());
             Some(kumihimo_external_apps::retention::RecoveryBank::current_thread().reserve_key("native-run",Some(&key)).map_err(|error|AdapterError::Host(error.to_string()))?)
         } else {None};
-        if options.max_captures == 0
+        if options.external_native_probe && (!options.probe || options.interactive)
+            || options.max_captures == 0
             || options.max_captures > 128
             || options.max_retries == 0
             || options.max_retries > 8
@@ -446,12 +920,10 @@ fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,
             wgpu_setup: setup.into(),
             ..Default::default()
         };
-        let painter = pollster::block_on(egui_wgpu::winit::Painter::new(
-            ctx.clone(),
-            configuration,
-            false,
-            Default::default(),
-        ));
+        let renderer = pollster::block_on(NativeRenderer::new(
+            ctx.clone(), configuration, host.policy().max_native_slots.checked_add(1)
+                .ok_or(AdapterError::Budget("native renderer window capacity"))?,
+        ))?;
         let mut plan = Vec::new();
         if let Some(f) = options.probe_frame {
             plan.push(NativeContent::Frame(f));
@@ -481,7 +953,7 @@ fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,
             ),
             options,
             ctx,
-            painter,
+            renderer,
             proxy,
             windows: HashMap::new(),
             slots: WindowSlots::default(),
@@ -489,6 +961,7 @@ fn run_impl<H:NativeHost+'static>(controller:Controller,host:H,root:WorkspaceId,
             next_capture: 0,
             capture_bytes: 0,
             captures: vec![],
+            external_readbacks: vec![],
             observations: vec![],
             plan,
             current: None,
@@ -541,7 +1014,7 @@ fn finish_native_app<H:NativeHost>(mut app:App<H>)->Result<NativeOutcome> {
         // Dropping only our own Arc<Window>/Painter surfaces destroys owned HWNDs.
         let handles: Vec<_> = app.windows.values().map(|w| hwnd(&w.window)).collect();
         app.windows.clear();
-        app.painter.gc_viewports(&Default::default());
+        app.renderer.gc_viewports(&Default::default());
         let after = os_observation(None);
         let cleanup: Vec<_> = handles
             .into_iter()
@@ -550,7 +1023,7 @@ fn finish_native_app<H:NativeHost>(mut app:App<H>)->Result<NativeOutcome> {
         let manifest = app.options.output.join("native-manifest.json");
         let value = serde_json::json!({ "schema":"kumihimo.native-observation.v1", "pid":std::process::id(),
             "interactive_opt_in":app.options.interactive, "host_snapshot":app.host.native_host_snapshot(&app.controller), "before":app.before, "during":app.observations, "after":after, "cleanup":cleanup,
-            "backend":app.painter.render_state().map(|r|format!("{:?}",r.adapter.get_info().backend)),
+            "backend":app.renderer.painter.render_state().map(|r|format!("{:?}",r.adapter.get_info().backend)),
             "captures":app.captures, "canonical_generation":app.controller.snapshot().generation,
             "prepared_slots":app.slots.prepared().len(), "returned":app.returned,
             "remaining_native_bindings":app.slots.bindings().len(), "uia":app.observer_result,
@@ -652,15 +1125,14 @@ impl<H: NativeHost> App<H> {
             configure_owned_quiet(&window)?;
         }
         self.assert_quiet(&window, "created")?;
-        pollster::block_on(self.painter.set_window(viewport, Some(window.clone())))
-            .map_err(|e| AdapterError::Host(format!("Painter.set_window: {e}")))?;
+        pollster::block_on(self.renderer.bind_window(viewport, window.clone()))?;
         let mut state = egui_winit::State::new(
             self.ctx.clone(),
             viewport,
             event_loop,
             Some(window.scale_factor() as f32),
             window.theme(),
-            self.painter.max_texture_side(),
+            self.renderer.painter.max_texture_side(),
         );
         state.init_accesskit(event_loop, &window, self.proxy.clone());
         let scale = window.scale_factor() as f32;
@@ -855,7 +1327,7 @@ impl<H: NativeHost> App<H> {
             self.surface_observations.remove(0);
         }
         self.surface_observations.push(serde_json::json!({"root":w.surface.root.raw(),"epoch":w.surface.epoch,"elapsed_millis":self.started.elapsed().as_millis().to_string(),"actual_window":os,"logical_render_eligible":true,"minimized":minimized,"os_occlusion":w.occluded,"native_focused":w.focused,"provenance":"Independent owned HWND visibility/IsIconic; Occluded and Focused only from actual winit events"}));
-        if let Some(render) = self.painter.render_state() {
+        if let Some(render) = self.renderer.painter.render_state() {
             self.host.renderer_binding(
                 w.surface,
                 crate::content::GpuBinding::new(&render.device, w.surface)?,
@@ -952,7 +1424,38 @@ impl<H: NativeHost> App<H> {
             .as_ref()
             .map(|t| vec![egui::UserData::new(t.clone())])
             .unwrap_or_default();
-        self.painter.paint_and_update_textures(
+        if self.options.external_native_probe && w.capture.as_ref().is_some_and(|tag| tag.pending_nonce.is_some()) {
+            let pending = self.pending.as_ref().ok_or(AdapterError::Stale("external probe pending"))?.clone();
+            let proof_pending = pending.clone();
+            let proof_snapshot = self.controller.snapshot().clone();
+            let original_tag = w.capture.as_ref().unwrap().clone();
+            let surface = w.surface;
+            let mut coordinator = pollster::block_on(ExternalNativeCoordinator::bind(
+                &mut self.renderer, window.clone(), surface, &mut self.slots, pending,
+                self.controller.snapshot(), self.options.timeout,
+                self.host.policy().max_capture_bytes.saturating_sub(self.capture_bytes),
+            ))?;
+            coordinator.tag.capture = original_tag.capture;
+            coordinator.tag.label = original_tag.label;
+            let tag = coordinator.tag.clone();
+            let outcome = self.host.external_native_handoff(&mut coordinator, surface,
+                &mut self.controller, output.pixels_per_point, &primitives, &output.textures_delta)?;
+            if coordinator.pending.is_some() || outcome.tag != tag
+                || !coordinator.slots.bindings().contains(&outcome.binding)
+                || outcome.binding.root != surface.root
+            {
+                return Err(AdapterError::Stale("external probe handoff result"));
+            }
+            if !outcome.forwarded_events.is_empty() {
+                return Err(AdapterError::Invalid("unexpected concurrent probe readback"));
+            }
+            let challenges = capture_challenges(&window, surface, &tag, &outcome.image,
+                &proof_snapshot, self.options.timeout)?;
+            check_intent_tag_challenges(&tag, &proof_pending, &proof_snapshot)?;
+            w.capture = Some(tag.clone());
+            self.external_readbacks.push((id, tag, outcome.image, outcome.binding, challenges));
+        } else {
+        self.renderer.painter.paint_and_update_textures(
             w.surface.viewport,
             output.pixels_per_point,
             [0.025, 0.03, 0.045, 1.0],
@@ -960,6 +1463,7 @@ impl<H: NativeHost> App<H> {
             &output.textures_delta,
             captures,
         );
+        }
         w.dirty = w.report.repaint_requested;
         let repaint = output
             .viewport_output
@@ -974,14 +1478,16 @@ impl<H: NativeHost> App<H> {
         self.assert_quiet(&window, "draw-after")
     }
     fn receive_captures(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if let Some(render) = self.painter.render_state() {
+        if let Some(render) = self.renderer.painter.render_state() {
             render
                 .device
                 .poll(wgpu::PollType::Poll)
                 .map_err(|e| AdapterError::Host(e.to_string()))?;
         }
         let mut events = Vec::new();
-        self.painter.handle_screenshots(&mut events);
+        self.renderer.painter.handle_screenshots(&mut events);
+        let mut readbacks: Vec<_> = self.external_readbacks.drain(..)
+            .map(|(id, tag, image, binding, challenges)| (id, tag, image, Some((binding, challenges)))).collect();
         for event in events {
             let egui::Event::Screenshot {
                 viewport_id,
@@ -1006,15 +1512,18 @@ impl<H: NativeHost> App<H> {
             else {
                 continue;
             };
+            readbacks.push((id, tag, image, None));
+        }
+        for (id, tag, image, external) in readbacks {
             let window = self.windows[&id].window.clone();
             self.assert_quiet(&window, "screenshot-readback")?;
             let w = self.windows.get_mut(&id).unwrap();
-            if !screenshot_matches(
+            if external.is_none() && !screenshot_matches(
                 w,
                 &tag,
-                viewport_id,
+                tag.viewport,
                 image.size,
-                image.pixels.is_empty(),
+                image.pixels.len(),
                 self.controller.snapshot(),
                 self.options.timeout,
             ) {
@@ -1024,43 +1533,11 @@ impl<H: NativeHost> App<H> {
                 continue;
             }
             if tag.pending_nonce.is_some() {
-                let mut challenges = Vec::new();
-                for kind in [
-                    "wrong-window",
-                    "old-epoch",
-                    "wrong-nonce",
-                    "wrong-size",
-                    "timed-out",
-                ] {
-                    let mut changed = tag.clone();
-                    match kind {
-                        "wrong-window" => changed.hwnd = 0,
-                        "old-epoch" => changed.epoch = 0,
-                        "wrong-nonce" => {
-                            changed.pending_nonce =
-                                changed.pending_nonce.and_then(|n| n.checked_add(1))
-                        }
-                        "wrong-size" => changed.size = [0, 0],
-                        _ => {
-                            changed.requested_at = Instant::now()
-                                .checked_sub(self.options.timeout + Duration::from_secs(1))
-                                .ok_or(AdapterError::Invalid("capture challenge clock"))?
-                        }
-                    }
-                    let rejected = !screenshot_matches(
-                        w,
-                        &changed,
-                        viewport_id,
-                        image.size,
-                        image.pixels.is_empty(),
-                        self.controller.snapshot(),
-                        self.options.timeout,
-                    );
-                    if !rejected {
-                        return Err(AdapterError::Invalid("adversarial screenshot accepted"));
-                    }
-                    challenges.push(serde_json::json!({"kind":kind,"rejected":rejected}));
-                }
+                let challenges = match &external {
+                    Some((_, challenges)) => challenges.clone(),
+                    None => capture_challenges(&w.window, w.surface, &tag, &image,
+                        self.controller.snapshot(), self.options.timeout)?,
+                };
                 self.observations.push(serde_json::json!({"phase":"authentic-screenshot-correlation-challenges","provenance":"Injected tag mutations checked against actual owned readback; no Ready minted for invalid tag","capture":tag.capture,"challenges":challenges}));
             }
             let bytes = image
@@ -1100,36 +1577,20 @@ impl<H: NativeHost> App<H> {
                 if pending.nonce != pending_nonce {
                     return Err(AdapterError::Stale("pending native nonce"));
                 }
-                // The constructor exists only here, behind Painter readback and live HWND checks.
-                let ready = Ready {
-                    scale: tag.scale,
-                    bytes,
-                    tag,
+                let binding = match external {
+                    Some((binding, _)) => {
+                        self.observations.push(serde_json::json!({"phase":"external-native-coordinator-public-consumer","root":binding.root.raw(),"pending_nonce":pending.nonce,"private_tagged_painter_readback":true,"canonical_commit":true}));
+                        self.observations.push(serde_json::json!({"phase":"authentic-ready-intent-challenges","wrong_nonce_rejected":true,"wrong_root_rejected":true,"wrong_generation_rejected":true,"source_before_commit":pending.source_frame.raw(),"provenance":"Probe checked actual coordinator readback against frozen precommit intent; mutations never submitted"}));
+                        binding
+                    }
+                    None => {
+                        let ready = Ready { scale: tag.scale, bytes, window: window.clone(),
+                            timeout: self.options.timeout, tag };
+                        check_intent_challenges(&ready, &pending, self.controller.snapshot())?;
+                        self.observations.push(serde_json::json!({"phase":"authentic-ready-intent-challenges","wrong_nonce_rejected":true,"wrong_root_rejected":true,"wrong_generation_rejected":true,"source_before_commit":pending.source_frame.raw(),"provenance":"Actual native-minted Ready consumed only after mutated intent negatives"}));
+                        self.slots.commit(pending, ready, &mut self.controller, &mut self.host)?
+                    }
                 };
-                let mut wrong = pending.clone();
-                wrong.nonce = wrong
-                    .nonce
-                    .checked_add(1)
-                    .ok_or(AdapterError::Budget("pending challenge nonce"))?;
-                let wrong_nonce = ready.validate(&wrong, self.controller.snapshot()).is_err();
-                wrong = pending.clone();
-                wrong.slot.root = self.root;
-                let wrong_root = ready.validate(&wrong, self.controller.snapshot()).is_err();
-                wrong = pending.clone();
-                wrong.generation = wrong
-                    .generation
-                    .checked_add(1)
-                    .ok_or(AdapterError::Budget("pending challenge generation"))?;
-                let wrong_generation = ready.validate(&wrong, self.controller.snapshot()).is_err();
-                if !wrong_nonce || !wrong_root || !wrong_generation {
-                    return Err(AdapterError::Invalid(
-                        "authentic Ready accepted changed intent",
-                    ));
-                }
-                self.observations.push(serde_json::json!({"phase":"authentic-ready-intent-challenges","wrong_nonce_rejected":wrong_nonce,"wrong_root_rejected":wrong_root,"wrong_generation_rejected":wrong_generation,"source_before_commit":pending.source_frame.raw(),"provenance":"Actual native-minted Ready consumed only after mutated intent negatives"}));
-                let binding =
-                    self.slots
-                        .commit(pending, ready, &mut self.controller, &mut self.host)?;
                 self.observations.push(serde_json::json!({"phase":"committed-canonical-recipient","root":binding.root.raw(),"generation":self.controller.snapshot().generation}));
                 let session = crate::persistence::DesktopSession::capture(
                     self.controller.snapshot(),
@@ -1198,6 +1659,31 @@ impl<H: NativeHost> App<H> {
                 &mut self.host,
                 bounds,
             )?;
+            if self.options.external_native_probe {
+                let surface = self.windows[&interrupted_id].surface;
+                let bound = self.windows[&interrupted_id].window.clone();
+                let other = self.windows.values().find(|window| window.surface.root == self.root)
+                    .ok_or(AdapterError::Invalid("probe source native window"))?;
+                let other_surface = other.surface;
+                let other_window = other.window.clone();
+                let before = self.controller.snapshot().clone();
+                let rejection = pollster::block_on(ExternalNativeCoordinator::bind(
+                    &mut self.renderer, other_window.clone(), surface, &mut self.slots,
+                    interrupted.clone(), &before, self.options.timeout,
+                    self.host.policy().max_capture_bytes,
+                )).err();
+                let rejected = matches!(rejection,
+                    Some(AdapterError::Stale("native viewport already bound to another window")));
+                let mappings_preserved = self.renderer.matches_window(surface.viewport, &bound)
+                    && self.renderer.matches_window(other_surface.viewport, &other_window);
+                if !rejected || !mappings_preserved || self.controller.snapshot() != &before {
+                    return Err(AdapterError::Invalid("native reused viewport binding challenge"));
+                }
+                self.observations.push(serde_json::json!({"phase":"external-native-reused-viewport-rejected",
+                    "rejected":rejected,"actual_bound_hwnd":hwnd(&bound),"wrong_requested_hwnd":hwnd(&other_window),
+                    "owned_renderer_mappings_preserved":mappings_preserved,"canonical_source_unchanged":true,
+                    "scope":"Two actual owned windows; public bind rejects SDK retained-surface ambiguity before capture"}));
+            }
             self.slots
                 .cancel(&interrupted, self.controller.snapshot())?;
             self.observations.push(serde_json::json!({"phase":"injected-interrupted-native-handoff","provenance":"Actual owned HWND/Painter binding interrupted before capture request","ready_minted":false,"owned_window":os_observation(Some(hwnd(&self.windows[&interrupted_id].window))),"source_frame":source_frame.raw(),"source_workspace":source_workspace.raw(),"source_unchanged":self.controller.snapshot().frames[&source_frame].workspace==source_workspace,"same_prepared_slot_reused":interrupted.slot.root==prepared.slot.root,"committed_bindings":self.slots.bindings().len()}));
@@ -1600,7 +2086,7 @@ impl<H: NativeHost> App<H> {
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         {
-            self.painter
+            self.renderer.painter
                 .on_window_resized(w.surface.viewport, width, height);
             w.status = SurfaceState::Recreating;
             w.dirty = true;
@@ -1644,7 +2130,7 @@ impl<H: NativeHost> App<H> {
             .iter()
             .filter_map(|(key, w)| (*key != id).then_some(w.surface.viewport))
             .collect();
-        self.painter.gc_viewports(&keep);
+        self.renderer.gc_viewports(&keep);
         let w = self.windows.get_mut(&id).unwrap();
         w.surface.epoch = w
             .surface
@@ -1723,7 +2209,7 @@ impl<H: NativeHost> App<H> {
             .iter()
             .filter_map(|(key, w)| (*key != id).then_some(w.surface.viewport))
             .collect();
-        self.painter.gc_viewports(&keep);
+        self.renderer.gc_viewports(&keep);
         let w = self.windows.get_mut(&id).unwrap();
         if injected_failure {
             w.status = SurfaceState::Failed;
@@ -1734,10 +2220,8 @@ impl<H: NativeHost> App<H> {
         }
         w.status = SurfaceState::Recreating;
         pollster::block_on(
-            self.painter
-                .set_window(w.surface.viewport, Some(w.window.clone())),
-        )
-        .map_err(|e| AdapterError::Host(format!("recreate set_window: {e}")))?;
+            self.renderer.bind_window(w.surface.viewport, w.window.clone()),
+        )?;
         w.dirty = true;
         if self.controller.snapshot() != &canonical {
             return Err(AdapterError::Invalid(
@@ -1761,7 +2245,7 @@ impl<H: NativeHost> App<H> {
         };
         let handle = hwnd(&w.window);
         let keep = self.windows.values().map(|w| w.surface.viewport).collect();
-        self.painter.gc_viewports(&keep);
+        self.renderer.gc_viewports(&keep);
         drop(w);
         self.observations.push(serde_json::json!({"phase":"owned-window-cleanup","window":os_observation(Some(handle))}));
         Ok(())
@@ -2031,7 +2515,7 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
         }
     }
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.painter.gc_viewports(&Default::default());
+        self.renderer.gc_viewports(&Default::default());
         for w in self.windows.values_mut() {
             w.status = SurfaceState::Unavailable;
             w.capture = None;
@@ -2505,20 +2989,107 @@ fn screenshot_matches(
     tag: &CaptureTag,
     viewport: egui::ViewportId,
     image_size: [usize; 2],
-    image_empty: bool,
+    image_pixels: usize,
     snapshot: &Snapshot,
     timeout: Duration,
 ) -> bool {
-    w.capture.as_ref() == Some(tag)
+    readback_matches(&w.window, w.surface, w.capture.as_ref(), tag, viewport,
+        image_size, image_pixels, snapshot, timeout)
+}
+fn readback_matches(
+    window: &Window, surface: SurfaceBinding, expected: Option<&CaptureTag>,
+    tag: &CaptureTag, viewport: egui::ViewportId, image_size: [usize; 2],
+    image_pixels: usize, snapshot: &Snapshot, timeout: Duration,
+) -> bool {
+    expected == Some(tag)
         && tag.viewport == viewport
-        && tag.hwnd == hwnd(&w.window)
-        && tag.epoch == w.surface.epoch
-        && tag.size == [w.window.inner_size().width, w.window.inner_size().height]
-        && tag.scale == w.window.scale_factor() as f32
+        && tag.viewport == surface.viewport
+        && tag.root == surface.root
+        && owned_window(window)
+        && tag.hwnd == hwnd(window)
+        && tag.epoch == surface.epoch
+        && tag.size == [window.inner_size().width, window.inner_size().height]
+        && tag.scale == window.scale_factor() as f32
         && image_size == [tag.size[0] as usize, tag.size[1] as usize]
-        && !image_empty
+        && image_pixels.checked_mul(4) == expected_readback_bytes(tag.size)
         && tag.identity == snapshot.identity
+        && tag.generation == snapshot.generation
         && tag.requested_at.elapsed() < timeout
+}
+fn expected_readback_bytes(size: [u32; 2]) -> Option<usize> {
+    if size.contains(&0) { return None; }
+    (size[0] as usize).checked_mul(size[1] as usize)?.checked_mul(4)
+}
+fn capture_challenges(
+    window: &Window, surface: SurfaceBinding, tag: &CaptureTag,
+    image: &egui::ColorImage, snapshot: &Snapshot, timeout: Duration,
+) -> Result<Vec<serde_json::Value>> {
+    if !readback_matches(window, surface, Some(tag), tag, tag.viewport,
+        image.size, image.pixels.len(), snapshot, timeout)
+    { return Err(AdapterError::Stale("native challenge baseline")); }
+    let mut challenges = Vec::new();
+    for kind in ["wrong-window", "wrong-viewport", "wrong-root", "old-epoch", "wrong-nonce",
+        "wrong-size", "wrong-scale", "wrong-identity", "wrong-generation", "wrong-byte-count", "timed-out"] {
+        let mut changed = tag.clone();
+        let mut pixels = image.pixels.len();
+        match kind {
+            "wrong-window" => changed.hwnd = 0,
+            "wrong-viewport" => changed.viewport = if tag.viewport == egui::ViewportId::ROOT {
+                egui::ViewportId::from_hash_of("wrong-native-viewport")
+            } else { egui::ViewportId::ROOT },
+            "wrong-root" => changed.root = WorkspaceId::from_raw(0),
+            "old-epoch" => changed.epoch = 0,
+            "wrong-nonce" => changed.pending_nonce = None,
+            "wrong-size" => changed.size = [0, 0],
+            "wrong-scale" => changed.scale = 0.0,
+            "wrong-identity" => changed.identity.incarnation.push_str("-wrong"),
+            "wrong-generation" => changed.generation ^= 1,
+            "wrong-byte-count" => pixels = pixels.saturating_sub(1),
+            _ => changed.requested_at = Instant::now().checked_sub(timeout + Duration::from_secs(1))
+                .ok_or(AdapterError::Invalid("capture challenge clock"))?,
+        }
+        let rejected = !readback_matches(window, surface, Some(tag), &changed, tag.viewport,
+            image.size, pixels, snapshot, timeout);
+        if !rejected { return Err(AdapterError::Invalid("adversarial screenshot accepted")); }
+        challenges.push(serde_json::json!({"kind":kind,"rejected":rejected}));
+    }
+    Ok(challenges)
+}
+fn check_intent_challenges(ready: &Ready, pending: &PendingNative, snapshot: &Snapshot) -> Result<()> {
+    ready.validate(pending, snapshot)?;
+    check_intent_tag_challenges(&ready.tag, pending, snapshot)
+}
+fn intent_matches(tag: &CaptureTag, pending: &PendingNative, snapshot: &Snapshot) -> bool {
+    tag.pending_nonce == Some(pending.nonce) && tag.root == pending.slot.root
+        && tag.identity == pending.identity && tag.generation == pending.generation
+        && snapshot.identity == tag.identity && snapshot.generation == tag.generation
+}
+fn check_intent_tag_challenges(tag: &CaptureTag, pending: &PendingNative, snapshot: &Snapshot) -> Result<()> {
+    if !intent_matches(tag, pending, snapshot) { return Err(AdapterError::Stale("native intent challenge baseline")); }
+    let mut wrong = pending.clone();
+    wrong.nonce ^= 1;
+    if intent_matches(tag, &wrong, snapshot) { return Err(AdapterError::Invalid("native nonce challenge")); }
+    wrong = pending.clone();
+    wrong.slot.root = WorkspaceId::from_raw(0);
+    if intent_matches(tag, &wrong, snapshot) { return Err(AdapterError::Invalid("native root challenge")); }
+    wrong = pending.clone();
+    wrong.generation ^= 1;
+    if intent_matches(tag, &wrong, snapshot) { return Err(AdapterError::Invalid("native generation challenge")); }
+    Ok(())
+}
+fn owned_window(window: &Window) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{System::Threading::GetCurrentProcessId,
+            UI::WindowsAndMessaging::GetWindowThreadProcessId};
+        let handle = hwnd(window);
+        if handle == 0 { return false; }
+        let mut owner = 0;
+        unsafe { GetWindowThreadProcessId(handle as _, &mut owner); }
+        owner != 0 && owner == unsafe { GetCurrentProcessId() }
+    }
+    #[cfg(not(windows))]
+    { let _ = window; false }
 }
 fn write_accesskit_checkpoint(
     output: &std::path::Path,

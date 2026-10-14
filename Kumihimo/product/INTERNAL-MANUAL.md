@@ -12,6 +12,8 @@ updated_at: '2026-10-14'
 
 Kumihimo supplies the arrangement system for an application: nested frames, tabs, grids, docking, tools and saved layouts. Your application supplies the things shown inside those frames. In this guide, that application is the **host**.
 
+This is the original `Kumihimo/` component in the shared Assets repository. Update reusable frame/window capabilities here before adopting a pinned source revision in a host. Host authorization, document undo, storage and telemetry remain host responsibilities.
+
 This download contains Rust libraries, source and example hosts. It is not a finished standalone editor, browser or desktop window manager. The packages currently use Cargo path dependencies and are marked `publish = false`; downloading the source does not install an executable. The examples let you inspect selected behavior before integrating it into your own application.
 
 The core has no GUI or content engine. Optional desktop and web adapters provide usable presentations. Their existence does not mean every feature works identically on every platform.

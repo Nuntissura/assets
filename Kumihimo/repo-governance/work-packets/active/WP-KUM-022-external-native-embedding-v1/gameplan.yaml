@@ -11,7 +11,7 @@ precedence: 'on conflict CODEX, role profile, WP contract, WP-STATE, MT win; cor
 scope: wp
 assignment: WP-KUM-022-external-native-embedding-v1
 parent: null
-generation: 8
+generation: 10
 expensive_actions: []
 steps:
 - {id: GP-001, role: any, at: before_round, do: require scoped asset preparation only before compiler grant, check: {type: confirm}, source: 'prep: contract command text matched foreign Handshake gate', state: retired}
@@ -20,3 +20,5 @@ steps:
 - {id: GP-004, role: any, at: before_round, do: verify stable source target cache toolchain and owned proof output, check: {type: confirm}, source: 'prep: asset stable target absent and default cache incomplete', state: active}
 - {id: GP-005, role: any, at: before_round, do: require source writers frozen and exact candidate digest recorded, check: {type: confirm}, source: 'source10: no proof on changing input', state: active}
 - {id: GP-006, role: any, at: before_round, do: require quiet bounded owned native windows and actual process closure, check: {type: confirm}, source: 'WP022: no foreground input or unowned process effects', state: active}
+- {id: GP-007, role: any, at: before_submit, do: verify source checkpoint scope and regenerated WP projections; runtime proof remains NOT_RUN, check: {type: confirm}, source: 'prep: generation8 state made taskboard and registry projections stale', state: active}
+- {id: GP-008, role: any, at: before_submit, do: verify confirmation note is one line of at most120 characters, check: {type: confirm}, source: 'prep: overlong confirmation note rejected', state: active}

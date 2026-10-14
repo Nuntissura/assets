@@ -1,8 +1,10 @@
 [workspace]
 members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content", "kumihimo-egui", "kumihimo-web", "kumihimo-render-bridge", "kumihimo-external-apps"]
 default-members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content"]
-exclude = ["third-party/accesskit_windows-0.29.2"]
+exclude = ["third-party/accesskit_windows-0.29.2", "third-party/eframe-0.33.3", "third-party/egui-wgpu-0.33.3"]
 resolver = "2"
 
 [patch.crates-io]
 accesskit_windows = { path = "third-party/accesskit_windows-0.29.2" }
+eframe = { path = "third-party/eframe-0.33.3" }
+egui-wgpu = { path = "third-party/egui-wgpu-0.33.3" }

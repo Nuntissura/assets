@@ -8,12 +8,12 @@ use kumihimo_core::{
     Change, DockIntent, DockLocation, EntityId, GeometryContext, Identity, Snapshot,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedSlot {
     pub root: WorkspaceId,
     pub carrier: Option<FrameId>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingNative {
     pub nonce: u64,
     pub slot: PreparedSlot,
@@ -29,6 +29,7 @@ pub struct WindowSlots {
     slots: Vec<PreparedSlot>,
     bindings: Vec<NativeBinding>,
     next_nonce: u64,
+    pending: std::collections::BTreeMap<WorkspaceId, PendingNative>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct CloseResult {
@@ -102,7 +103,7 @@ impl WindowSlots {
             .next_nonce
             .checked_add(1)
             .ok_or(AdapterError::Budget("native nonce exhausted"))?;
-        Ok(PendingNative {
+        let pending = PendingNative {
             nonce: self.next_nonce,
             slot,
             content,
@@ -111,16 +112,20 @@ impl WindowSlots {
             generation: controller.snapshot().generation,
             source_frame,
             source_workspace,
-        })
+        };
+        self.pending.insert(pending.slot.root, pending.clone());
+        Ok(pending)
     }
     /// Complete root context preparation before binding the screenshot to a generation.
     pub fn arm(
-        &self,
+        &mut self,
         pending: &mut PendingNative,
         controller: &mut Controller,
         host: &mut impl DesktopHost,
         bounds: Rect,
     ) -> Result<()> {
+        self.validate_pending(pending)?;
+        self.cancel(pending, controller.snapshot())?;
         eligible(controller.snapshot(), &pending.slot)?;
         let context = GeometryContext::new(bounds);
         if controller.snapshot().contexts.get(&pending.slot.root) != Some(&context) {
@@ -142,6 +147,7 @@ impl WindowSlots {
             return Err(AdapterError::Stale("native source identity"));
         }
         pending.generation = controller.snapshot().generation;
+        self.pending.insert(pending.slot.root, pending.clone());
         Ok(())
     }
     pub fn cancel(&self, pending: &PendingNative, snapshot: &Snapshot) -> Result<()> {
@@ -154,6 +160,26 @@ impl WindowSlots {
         }
         Ok(())
     }
+    /// Revoke this exact reservation; preparation remains available for a fresh nonce.
+    pub fn cancel_pending(&mut self, pending: &PendingNative, snapshot: &Snapshot) -> Result<()> {
+        self.validate_pending(pending)?;
+        self.cancel(pending, snapshot)?;
+        self.pending.remove(&pending.slot.root);
+        Ok(())
+    }
+    pub(crate) fn validate_pending(&self, pending: &PendingNative) -> Result<()> {
+        if self.pending.get(&pending.slot.root) != Some(pending) {
+            return Err(AdapterError::Stale("native reservation cancelled/replaced/changed"));
+        }
+        Ok(())
+    }
+    /// Revoke this failed attempt only; a later reservation at the same root is untouched.
+    pub(crate) fn revoke_pending(&mut self, pending: &PendingNative) -> bool {
+        if self.pending.get(&pending.slot.root) == Some(pending) {
+            self.pending.remove(&pending.slot.root);
+            true
+        } else { false }
+    }
     pub(crate) fn commit(
         &mut self,
         pending: PendingNative,
@@ -161,6 +187,7 @@ impl WindowSlots {
         controller: &mut Controller,
         host: &mut impl DesktopHost,
     ) -> Result<NativeBinding> {
+        self.validate_pending(&pending)?;
         ready.validate(&pending, controller.snapshot())?;
         eligible(controller.snapshot(), &pending.slot)?;
         let (frame, _) = source(controller.snapshot(), &pending.content)?;
@@ -201,6 +228,7 @@ impl WindowSlots {
             return_anchor: pending.return_anchor,
         };
         verify_recipient(controller.snapshot(), &binding)?;
+        self.pending.remove(&binding.root);
         self.bindings.push(binding.clone());
         Ok(binding)
     }

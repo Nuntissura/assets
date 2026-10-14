@@ -668,11 +668,12 @@ pub fn process(
                 ));
             }
         }
+        let theme = crate::chrome::ThemeTokens::resolve(ctx, &host.policy());
         if let Some(preview) = &capture.preview {
-            paint_preview(ctx, preview);
+            paint_preview(ctx, preview, theme);
         }
         if let Some(geometry) = &capture.resize_geometry {
-            paint_geometry(ctx, geometry);
+            paint_geometry(ctx, geometry, theme);
         }
     }
     // Frame shortcuts are explicit chords. Plain text, wheel and editor shortcuts retain content ownership.
@@ -851,9 +852,13 @@ fn route_content(
         report.reject(error);
     }
 }
-pub(crate) fn paint_preview(ctx: &egui::Context, preview: &DockPreview) {
+pub(crate) fn paint_preview(
+    ctx: &egui::Context,
+    preview: &DockPreview,
+    theme: crate::chrome::ThemeTokens,
+) {
     for geometry in preview.geometry() {
-        paint_geometry(ctx, geometry);
+        paint_geometry(ctx, geometry, theme);
     }
 }
 fn keyboard_resize(
@@ -999,7 +1004,11 @@ fn keyboard_resize(
         }
     }
 }
-fn paint_geometry(ctx: &egui::Context, geometry: &kumihimo_core::GeometryOutput) {
+fn paint_geometry(
+    ctx: &egui::Context,
+    geometry: &kumihimo_core::GeometryOutput,
+    theme: crate::chrome::ThemeTokens,
+) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
         egui::Id::new("kumihimo-preview"),
@@ -1008,7 +1017,7 @@ fn paint_geometry(ctx: &egui::Context, geometry: &kumihimo_core::GeometryOutput)
         painter.rect_stroke(
             to_egui(*bounds),
             0.0,
-            egui::Stroke::new(2.0, egui::Color32::LIGHT_BLUE),
+            egui::Stroke::new(2.0, theme.preview_stroke),
             egui::StrokeKind::Inside,
         );
     }
@@ -1021,6 +1030,7 @@ pub(crate) fn draw_resize_handles(
     policy: &HostPolicy,
     report: &mut FrameReport,
 ) {
+    let theme = crate::chrome::ThemeTokens::resolve(ctx, policy);
     for frame in projection.frames.iter().filter(|f| f.floating) {
         let bounds = to_egui(frame.bounds);
         let size = frame.settings.hit_size.max(16.0);
@@ -1044,7 +1054,7 @@ pub(crate) fn draw_resize_handles(
         });
         ui.painter().line_segment(
             [rect.left_bottom(), rect.right_top()],
-            egui::Stroke::new(2.0, egui::Color32::GRAY),
+            egui::Stroke::new(2.0, theme.resize_handle_stroke),
         );
         crate::chrome::record(
             report,
@@ -1219,7 +1229,7 @@ pub(crate) fn draw_resize_handles(
                         line,
                         egui::Stroke::new(
                             if response.hovered() { 3.0 } else { 1.0 },
-                            egui::Color32::from_gray(110),
+                            theme.divider_stroke,
                         ),
                     );
                 }

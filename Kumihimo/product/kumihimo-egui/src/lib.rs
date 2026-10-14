@@ -24,7 +24,7 @@ pub mod workspace;
 
 use kumihimo_content::Controller;
 use kumihimo_core::{Command, FrameId, Rect, ResourceId, Response, ToolId, ViewId, WorkspaceId};
-pub const ADAPTER_VERSION: &str = "0.1.0";
+pub const ADAPTER_VERSION: &str = "0.2.0";
 pub const SETTINGS_VERSION: u32 = 1;
 pub type Result<T> = std::result::Result<T, AdapterError>;
 
@@ -146,6 +146,7 @@ impl AdapterSettings {
 }
 #[derive(Clone, Debug)]
 pub struct HostPolicy {
+    pub theme_tokens: Option<chrome::ThemeTokens>,
     pub max_regions: usize,
     pub tab_page_size: usize,
     pub max_pending: usize,
@@ -159,6 +160,7 @@ pub struct HostPolicy {
 impl Default for HostPolicy {
     fn default() -> Self {
         Self {
+            theme_tokens: None,
             max_regions: 4096,
             tab_page_size: 32,
             max_pending: 64,

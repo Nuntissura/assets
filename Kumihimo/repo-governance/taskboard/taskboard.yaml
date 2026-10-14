@@ -178,8 +178,7 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-state.yaml
-  next_action: Publish bounded producer dependency contract/spec; import exact original SDK packages/provenance;
-    implement disjoint producer/Frame/asset integration; no Cargo until explicit primary grant
+  next_action: Submit frozen source and pre-resolution lock input with literal resolver/fetch/owning proof batch;
+    execute only after explicit primary grant and preparation checks
   blockers:
-  - Source SDK package VCS/original-byte verification precedes disjoint patch writers
-  - New producer source/integration proof still OPEN; compiler reservation and cache preparation required
+  - Actual producer/consumer compilation and native proof OPEN; sole primary compiler/fetch reservation required

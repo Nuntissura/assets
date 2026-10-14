@@ -1,6 +1,7 @@
 #![cfg(all(feature="native-apps",windows))]
 //! Memory-only adapter proof. No HWND construction, launch, focus or input calls.
 use kumihimo_egui::*;
+use kumihimo_egui::persistence::{NativeContent, ReturnAnchor};
 use kumihimo_core::{Core,Identity,Limits,WorkspaceId,ViewId,ResourceId,FrameId,Rect,Command,Response};
 use kumihimo_content::{Controller,ContentLimits};
 fn surface()->SurfaceBinding {SurfaceBinding {root:WorkspaceId::from_raw(1),viewport:egui::ViewportId::ROOT,epoch:4,bounds:Rect::new(0.0,0.0,1000.0,700.0).unwrap(),pixels_per_point:1.5}}
@@ -49,4 +50,57 @@ fn legacy_run_rejects_opt_in_before_any_native_initialization() {
     let controller=Controller::new(core,"fixture",ContentLimits::default()).unwrap();
     let result=native::run(controller,OptIn,WorkspaceId::from_raw(1),native::NativeOptions::default());
     assert!(matches!(result,Err(AdapterError::Unsupported("native-app hosts require run_with_recovery before HWND effects"))));
+}
+
+#[test]
+fn cancelled_native_reservation_cannot_rearm_or_cancel_twice() {
+    let mut demo = demo::new().unwrap();
+    let mut slots = window_slots::WindowSlots::default();
+    let mut pending = slots.prepare(&mut demo.controller, &mut demo.host,
+        NativeContent::View(demo.text_view)).unwrap();
+    let before = demo.controller.snapshot().clone();
+    slots.cancel_pending(&pending, &before).unwrap();
+    assert!(slots.cancel_pending(&pending, &before).is_err());
+    assert!(slots.arm(&mut pending, &mut demo.controller, &mut demo.host,
+        Rect::new(0.0, 0.0, 800.0, 600.0).unwrap()).is_err());
+    assert_eq!(demo.controller.snapshot(), &before);
+    assert!(slots.bindings().is_empty());
+    let fresh = slots.prepare(&mut demo.controller, &mut demo.host,
+        NativeContent::View(demo.text_view)).unwrap();
+    assert_eq!(fresh.slot, pending.slot);
+    assert_ne!(fresh.nonce, pending.nonce);
+}
+
+#[test]
+fn changed_or_replaced_native_intent_rejects_before_geometry_and_source_mutation() {
+    let mut demo = demo::new().unwrap();
+    let mut slots = window_slots::WindowSlots::default();
+    let pending = slots.prepare(&mut demo.controller, &mut demo.host,
+        NativeContent::View(demo.text_view)).unwrap();
+    let before = demo.controller.snapshot().clone();
+    for change in 0..8 {
+        let mut changed = pending.clone();
+        match change {
+            0 => changed.nonce ^= 1,
+            1 => changed.slot.root = demo.root,
+            2 => changed.identity.incarnation.push_str("-wrong"),
+            3 => changed.generation ^= 1,
+            4 => changed.source_frame = FrameId::from_raw(0),
+            5 => changed.source_workspace = WorkspaceId::from_raw(0),
+            6 => changed.content = NativeContent::View(demo.canvas_view),
+            _ => changed.return_anchor = ReturnAnchor::View { frame: FrameId::from_raw(0), index: 0 },
+        }
+        assert!(slots.arm(&mut changed, &mut demo.controller, &mut demo.host,
+            Rect::new(0.0, 0.0, 800.0, 600.0).unwrap()).is_err());
+        assert!(slots.cancel_pending(&changed, demo.controller.snapshot()).is_err());
+        assert_eq!(demo.controller.snapshot(), &before);
+    }
+    let mut replaced = pending;
+    let fresh = slots.prepare(&mut demo.controller, &mut demo.host,
+        NativeContent::View(demo.text_view)).unwrap();
+    assert_eq!(fresh.slot, replaced.slot);
+    assert!(slots.arm(&mut replaced, &mut demo.controller, &mut demo.host,
+        Rect::new(0.0, 0.0, 800.0, 600.0).unwrap()).is_err());
+    assert_eq!(demo.controller.snapshot(), &before);
+    assert!(slots.bindings().is_empty());
 }

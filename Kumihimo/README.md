@@ -1,12 +1,14 @@
 ---
 file_id: KUM-MANUAL-v1
 file_kind: product-and-model-manual
-updated_at: '2026-10-12'
+updated_at: '2026-10-14'
 ---
 
 <topic id="kumihimo">
 
 # Kumihimo
+
+Kumihimo is the `Kumihimo/` component of the [Nuntissura/assets source repository](https://github.com/Nuntissura/assets/tree/codex/handpick/Kumihimo). Shared frame/window behavior is maintained here in its original Assets-folder source. Handshake adoption must consume an explicitly pinned revision through a separate host adapter. Current Handshake adoption is held; this component remains the original source.
 
 > **NEW USERS AND AGENTS: [START WITH THE INTERNAL USER MANUAL](product/INTERNAL-MANUAL.md).** It explains what you can use today, what the host supplies, how to try the examples and how to recover. It ships as documentation and is not shown in the default GUI.
 

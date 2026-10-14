@@ -3,6 +3,33 @@ use crate::*;
 use kumihimo_core::{DockIntent, DockPreview, GroupId, TabQuery, TabRow};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Caller-selected colors for shared docking, resizing and navigation paint.
+/// Stroke widths and interaction geometry remain adapter-owned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThemeTokens {
+    pub preview_stroke: egui::Color32,
+    pub resize_handle_stroke: egui::Color32,
+    pub divider_stroke: egui::Color32,
+    pub rail_fill: egui::Color32,
+    pub rail_thumb_fill: egui::Color32,
+}
+impl ThemeTokens {
+    pub fn from_visuals(visuals: &egui::Visuals) -> Self {
+        Self {
+            preview_stroke: visuals.selection.stroke.color,
+            resize_handle_stroke: visuals.widgets.inactive.fg_stroke.color,
+            divider_stroke: visuals.widgets.noninteractive.bg_stroke.color,
+            rail_fill: visuals.extreme_bg_color,
+            rail_thumb_fill: visuals.widgets.inactive.bg_fill,
+        }
+    }
+    pub(crate) fn resolve(ctx: &egui::Context, policy: &HostPolicy) -> Self {
+        policy
+            .theme_tokens
+            .unwrap_or_else(|| Self::from_visuals(&ctx.style().visuals))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SettingsPatch {
     pub profile: Option<ChromeProfile>,
@@ -1291,7 +1318,7 @@ pub fn draw(
     }
     crate::input::draw_resize_handles(ctx, controller, projection, surface, &policy, report);
     if let Some(preview) = &state.preview {
-        crate::input::paint_preview(ctx, preview);
+        crate::input::paint_preview(ctx, preview, ThemeTokens::resolve(ctx, &policy));
     }
 }
 pub fn surface_frames(controller: &Controller, root: WorkspaceId) -> Vec<FrameId> {

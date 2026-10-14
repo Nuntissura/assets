@@ -8,9 +8,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let mut args = std::env::args().skip(1);
     let mut output = std::path::PathBuf::from(".local/desktop-proof");
+    let mut light = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--output" => output = args.next().ok_or("--output needs a directory")?.into(),
+            "--light" => light = true,
             _ => return Err(format!("unknown argument: {arg}").into()),
         }
     }
@@ -19,6 +21,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut adapter = DesktopAdapter::default();
     let budget = demo.host.policy.max_capture_bytes;
     let mut renderer = OffscreenRenderer::new(budget)?;
+    renderer.context.set_visuals(if light { egui::Visuals::light() } else { egui::Visuals::dark() });
     let mut surface = SurfaceBinding {
         root: demo.root,
         viewport: egui::ViewportId::ROOT,

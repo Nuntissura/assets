@@ -48,6 +48,138 @@ fn command(demo: &mut demo::Demo, cmd: Command) -> core::Change {
         .unwrap()
 }
 
+fn theme_frame(
+    ctx: &egui::Context,
+    d: &mut demo::Demo,
+    adapter: &mut DesktopAdapter,
+    binding: SurfaceBinding,
+) -> (egui::FullOutput, FrameReport) {
+    let mut report = None;
+    let output = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(to_egui(binding.bounds)),
+            ..Default::default()
+        },
+        |ctx| {
+            report = Some(adapter.show(ctx, &mut d.controller, binding, &mut d.host).unwrap());
+        },
+    );
+    (output, report.unwrap())
+}
+
+fn custom_theme() -> chrome::ThemeTokens {
+    chrome::ThemeTokens {
+        preview_stroke: egui::Color32::from_rgb(219, 37, 173),
+        resize_handle_stroke: egui::Color32::from_rgb(13, 193, 211),
+        divider_stroke: egui::Color32::from_rgb(211, 151, 17),
+        rail_fill: egui::Color32::from_rgb(83, 19, 143),
+        rail_thumb_fill: egui::Color32::from_rgb(173, 229, 41),
+    }
+}
+
+fn has_theme_paint(shape: &egui::Shape, color: egui::Color32, filled: bool) -> bool {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().any(|shape| has_theme_paint(shape, color, filled)),
+        egui::Shape::Rect(rect) if filled => rect.fill == color,
+        egui::Shape::Rect(rect) => rect.stroke.color == color,
+        egui::Shape::LineSegment { stroke, .. } if !filled => stroke.color == color,
+        _ => false,
+    }
+}
+
+#[test]
+fn caller_visuals_supply_default_semantic_theme() {
+    assert!(HostPolicy::default().theme_tokens.is_none());
+    let dark = egui::Visuals::dark();
+    let light = egui::Visuals::light();
+    for visuals in [&dark, &light] {
+        let theme = chrome::ThemeTokens::from_visuals(visuals);
+        assert_eq!(theme.preview_stroke, visuals.selection.stroke.color);
+        assert_eq!(theme.resize_handle_stroke, visuals.widgets.inactive.fg_stroke.color);
+        assert_eq!(theme.divider_stroke, visuals.widgets.noninteractive.bg_stroke.color);
+        assert_eq!(theme.rail_fill, visuals.extreme_bg_color);
+        assert_eq!(theme.rail_thumb_fill, visuals.widgets.inactive.bg_fill);
+    }
+    assert_ne!(chrome::ThemeTokens::from_visuals(&dark), chrome::ThemeTokens::from_visuals(&light));
+}
+
+#[test]
+fn host_theme_reaches_shared_controls_without_changing_identity_geometry_or_input() {
+    let mut d = demo::new().unwrap();
+    let binding = surface(d.root);
+    let ctx = egui::Context::default();
+    let mut adapter = DesktopAdapter::default();
+    for _ in 0..3 {
+        theme_frame(&ctx, &mut d, &mut adapter, binding);
+    }
+    #[cfg(feature = "navigation")]
+    {
+        d.host.navigation_mode(&mut d.controller, kumihimo_content::NavigationMode::ScrollbarOnly).unwrap();
+        for _ in 0..3 {
+            theme_frame(&ctx, &mut d, &mut adapter, binding);
+        }
+    }
+    let snapshot = d.controller.snapshot().clone();
+    let (_, baseline) = theme_frame(&ctx, &mut d, &mut adapter, binding);
+    let controls = |report: &FrameReport| report.controls.iter().map(|control| {
+        (control.id.clone(), control.bounds, control.target, control.enabled)
+    }).collect::<Vec<_>>();
+    let slots = |report: &FrameReport| report.slots.iter().map(|slot| {
+        (slot.view, slot.resource, slot.frame, slot.workspace, slot.bounds, slot.clip, slot.epoch)
+    }).collect::<Vec<_>>();
+    let input = (adapter.input.focused_view, adapter.input.last_settlement, adapter.input.consumed_pointer);
+    let theme = custom_theme();
+    for (visuals, selected) in [
+        (egui::Visuals::dark(), None),
+        (egui::Visuals::light(), None),
+        (egui::Visuals::dark(), Some(theme)),
+        (egui::Visuals::light(), Some(theme)),
+    ] {
+        let expected = selected.unwrap_or_else(|| chrome::ThemeTokens::from_visuals(&visuals));
+        ctx.set_visuals(visuals);
+        d.host.policy.theme_tokens = selected;
+        let (output, report) = theme_frame(&ctx, &mut d, &mut adapter, binding);
+        assert!(output.shapes.iter().any(|shape| has_theme_paint(&shape.shape, expected.resize_handle_stroke, false)));
+        assert!(output.shapes.iter().any(|shape| has_theme_paint(&shape.shape, expected.divider_stroke, false)));
+        #[cfg(feature = "navigation")]
+        for color in [expected.rail_fill, expected.rail_thumb_fill] {
+            assert!(output.shapes.iter().any(|shape| has_theme_paint(&shape.shape, color, true)));
+        }
+        assert_eq!(d.controller.snapshot(), &snapshot);
+        assert_eq!(controls(&report), controls(&baseline));
+        assert_eq!(slots(&report), slots(&baseline));
+        assert_eq!((adapter.input.focused_view, adapter.input.last_settlement, adapter.input.consumed_pointer), input);
+        assert!(adapter.input.active_capture().is_none());
+    }
+}
+
+#[test]
+fn selected_theme_paints_actual_menu_preview_without_committing_it() {
+    let mut h = ui_proof(3, false);
+    h.run_steps(3);
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Preview in-app float");
+    assert!(h.state().adapter.chrome.preview.is_some());
+    let snapshot = h.state().demo.controller.snapshot().clone();
+    let generation = h.state().adapter.chrome.preview.as_ref().unwrap().generation();
+    let ctx = h.ctx.clone();
+    for (visuals, selected) in [
+        (egui::Visuals::dark(), None),
+        (egui::Visuals::light(), None),
+        (egui::Visuals::light(), Some(custom_theme())),
+    ] {
+        let expected = selected.unwrap_or_else(|| chrome::ThemeTokens::from_visuals(&visuals));
+        ctx.set_visuals(visuals);
+        let state = h.state_mut();
+        state.demo.host.policy.theme_tokens = selected;
+        let (output, _) = theme_frame(&ctx, &mut state.demo, &mut state.adapter, state.binding);
+        assert!(output.shapes.iter().any(|shape| has_theme_paint(&shape.shape, expected.preview_stroke, false)));
+        assert_eq!(state.demo.controller.snapshot(), &snapshot);
+        assert_eq!(state.adapter.chrome.preview.as_ref().unwrap().generation(), generation);
+        assert!(state.adapter.input.active_capture().is_none());
+    }
+}
+
 #[test]
 fn e001_shared_widgets_render_recursive_mixed_providers_and_clip_children() {
     let mut d = demo::new().unwrap();

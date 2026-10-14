@@ -24,6 +24,7 @@ pub fn draw(
     state: &mut InputState,
     report: &mut FrameReport,
 ) {
+    let theme = crate::chrome::ThemeTokens::resolve(ctx, &host.policy());
     let now = controller.inspect().now;
     let mut events = crate::input::pointer_events(ctx, surface.epoch);
     events.extend(state.injected.iter().copied());
@@ -466,7 +467,7 @@ pub fn draw(
                 hit_rect.center(),
                 egui::vec2(nav.rail_width.get() as f32, hit_rect.height()),
             );
-            painter.rect_filled(rail_rect, 2.0, egui::Color32::from_gray(35));
+            painter.rect_filled(rail_rect, 2.0, theme.rail_fill);
             if let Some(thumb) = &nav.thumb {
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -477,7 +478,7 @@ pub fn draw(
                         egui::vec2(nav.thumb_width.get() as f32, thumb.length.get() as f32),
                     ),
                     3.0,
-                    egui::Color32::LIGHT_GRAY,
+                    theme.rail_thumb_fill,
                 );
             }
         }
