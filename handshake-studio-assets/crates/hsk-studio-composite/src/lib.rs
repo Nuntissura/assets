@@ -2,6 +2,7 @@
 //! Temporal/effect providers attach through typed ports; no unconditional motion/pulse engine
 //! dependency in the static render closure.
 #![forbid(unsafe_code)]
+pub mod composition;
 pub mod evaluate_static;
 pub mod lower_extensions;
 pub mod lower_plan;
@@ -48,6 +49,10 @@ pub use vector::{
 };
 pub use lower_render_plan::{
     InputsLowering, RenderInputs, evaluate_with_inputs, lower_with_inputs, vector_layer_render_plan,
+};
+pub use composition::{
+    RenderedScene, SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits,
+    SceneLowering, ScenePixels, SceneSources, SceneTile, lower_scene, render_scene,
 };
 pub use temporal::{
     FrameLowering, FrameRequest, LayerFrameState, LayerTiming, NoTemporalSource, TemporalError,

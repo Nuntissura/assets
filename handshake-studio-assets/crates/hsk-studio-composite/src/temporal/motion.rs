@@ -39,7 +39,7 @@ impl MotionTemporalSource {
     }
 }
 
-fn sample(
+pub(super) fn sample(
     layer_id: &str,
     property: Option<&Property>,
     components: usize,

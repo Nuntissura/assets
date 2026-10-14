@@ -54,6 +54,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 #[cfg(feature = "motion")]
+pub mod composition;
+#[cfg(feature = "motion")]
 pub mod motion;
 
 /// Refusal key: the frame needs pixel resampling, which pigment's plan IR cannot express.
@@ -181,6 +183,11 @@ pub enum TemporalError {
     Document(String),
     /// The temporal source failed (its own stable code).
     Source { layer_id: String, code: String },
+    /// A render backend refused a composition plan (the backend's stable code).
+    Render {
+        composition_id: String,
+        code: &'static str,
+    },
 }
 
 impl TemporalError {
@@ -193,6 +200,7 @@ impl TemporalError {
             Self::DuplicateTiming { .. } => "temporal_duplicate_timing",
             Self::Document(_) => "temporal_frame_document",
             Self::Source { .. } => "temporal_source",
+            Self::Render { .. } => "temporal_render",
         }
     }
 }
@@ -218,6 +226,10 @@ impl fmt::Display for TemporalError {
             }
             Self::Document(t) => write!(f, "{}:{t}", self.code()),
             Self::Source { layer_id, code } => write!(f, "{}:{layer_id}:{code}", self.code()),
+            Self::Render {
+                composition_id,
+                code,
+            } => write!(f, "{}:{composition_id}:{code}", self.code()),
         }
     }
 }
