@@ -101,7 +101,9 @@ const CORPUS: &[Facts] = &[
         active: (0, 0, 2611, 3900),
         default_crop: Some((14, 9, 3872, 2592)),
         linearized: true,
-        illuminants: (None, None),
+        // IFD0 CalibrationIlluminant1/2 (0xC65A/0xC65B) = 17, 21 in the downloaded file (byte
+        // inspection, lane SMB-DEVELOP-DNG-MLV 2026-10-14); the pre-download entry said none.
+        illuminants: (Some(17), Some(21)),
         unapplied: &[],
         clamp_pct_max: 1,
         refusal: None,
