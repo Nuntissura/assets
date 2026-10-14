@@ -8,6 +8,7 @@ pub mod coverage_math;
 pub mod effect_math;
 pub mod masked_patch;
 pub mod render_plan;
+pub mod selection;
 pub mod tile;
 pub mod wire;
 use hsk_studio_observe::ResourceCode;
