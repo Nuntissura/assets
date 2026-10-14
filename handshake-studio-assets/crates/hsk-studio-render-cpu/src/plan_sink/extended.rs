@@ -21,6 +21,7 @@ use hsk_studio_pigment::adjust_math::{
     AdjustError, AdjustLayerError, PreparedAdjustment, composite_adjustment,
 };
 use hsk_studio_pigment::blend_math::Rgba;
+use hsk_studio_pigment::blur_math::{BlurError, BlurLimits, BlurScope, LayerBlur, blur_window_cost};
 use hsk_studio_pigment::coverage_math::{
     BlendRangeEntry, CoverageError, IDENTITY_RANGE, blend_if_weight, feather_kernel,
     feather_support,
@@ -66,6 +67,17 @@ pub(super) struct LayerFx {
     pub(super) effect: Option<usize>,
     /// Layer transform (pigment `transform_math`): index into [`ExtPrep::transform`].
     pub(super) transform: Option<usize>,
+    /// Layer or backdrop blur (pigment `blur_math`, radius above 0): index into [`ExtPrep::blur`].
+    pub(super) blur: Option<usize>,
+}
+
+/// One blurred layer: the pigment blur, its taps and support, and the content bounds of the layer
+/// (set by `prepare`).
+pub(super) struct BlurLayer {
+    pub(super) blur: LayerBlur,
+    pub(super) taps: Vec<f32>,
+    pub(super) support: usize,
+    bounds: Option<Rect>,
 }
 
 /// The effects of one layer (list order), the margin around its content they read
@@ -92,6 +104,7 @@ pub(super) struct ExtPrep {
     kernels: Vec<Kernel>,
     effects: Vec<EffectLayer>,
     transforms: Vec<LayerTransform>,
+    blurs: Vec<BlurLayer>,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -259,6 +272,22 @@ impl ExtPrep {
                     bounds: None,
                 });
             }
+            if let Some(b) = e.blur.filter(|b| b.radius_px > 0.0) {
+                let taps = b.taps().map_err(blur_error)?;
+                let bytes = u64::try_from(taps.len())
+                    .ok()
+                    .and_then(|n| n.checked_mul(SAMPLE_BYTES))
+                    .ok_or_else(overflow)?;
+                prep.charge(bytes, limit)?;
+                let support = to_usize(u64::from(b.support_px().map_err(blur_error)?))?;
+                fx.blur = Some(prep.blurs.len());
+                prep.blurs.push(BlurLayer {
+                    blur: b,
+                    taps,
+                    support,
+                    bounds: None,
+                });
+            }
             if let Some(t) = &e.transform {
                 prep.charge(TRANSFORM_STATE_BYTES, limit)?;
                 fx.transform = Some(prep.transforms.len());
@@ -298,6 +327,17 @@ impl ExtPrep {
             prep.layers.insert((e.group.0, e.layer), fx);
         }
         Ok(prep)
+    }
+
+    /// Blurred layer `index` (see [`LayerFx::blur`]).
+    pub(super) fn blur(&self, index: usize) -> Option<&BlurLayer> {
+        self.blurs.get(index)
+    }
+    /// Records the content bounds of blurred layer `index`; called by `prepare`.
+    pub(super) fn set_blur_bounds(&mut self, index: usize, bounds: Option<Rect>) {
+        if let Some(layer) = self.blurs.get_mut(index) {
+            layer.bounds = bounds;
+        }
     }
 
     /// Layer transform `index` (see [`LayerFx::transform`]).
@@ -360,6 +400,26 @@ pub(super) struct FrameShape {
     /// Limits handed to every window call: pigment's predicted peak of the largest window and
     /// [`MAX_EFFECT_WINDOW_WORK`].
     pub(super) limits: WindowLimits,
+    /// Limits handed to every blur window (pigment `blur_window`): the largest predicted bytes
+    /// and [`MAX_EFFECT_WINDOW_WORK`].
+    pub(super) blur_limits: BlurLimits,
+}
+
+/// Typed mapping of a blur failure: a byte or work limit is `BudgetExceeded` with pigment's
+/// predicted need (both are checked before the first sink call in `frame_shape`), a radius pigment
+/// refuses is `blur_parameter`.
+pub(super) fn blur_error(error: BlurError) -> RenderError {
+    match error {
+        BlurError::OverBudget { needed, limit } => {
+            RenderError::Backend(BackendError::BudgetExceeded {
+                requested: needed,
+                limit,
+            })
+        }
+        BlurError::Overflow => overflow(),
+        BlurError::OutOfDomain => unsupported(SAMPLE_RANGE_OPERATOR),
+        _ => unsupported("blur_parameter"),
+    }
 }
 
 impl ExtPrep {
@@ -381,11 +441,58 @@ impl ExtPrep {
         chunk_width: usize,
         chunk_height: usize,
     ) -> Result<Option<FrameShape>, RenderError> {
-        if self.effects.is_empty() {
+        if self.effects.is_empty() && self.blurs.is_empty() {
             return Ok(None);
         }
         let (mut pixels, mut fx_plane, mut fx_tmp) = (0_usize, 0_usize, 0_usize);
         let (mut window_bytes, mut peak) = (0_u64, 0_u64);
+        let mut blur_peak = 0_u64;
+        // Blurred layers: a layer blur reads its content over the window grown by the support
+        // (clipped to the layer), a backdrop blur the group's backdrop over the window (the chunk
+        // inside the layer) grown by the support; one blur window holds pigment's predicted bytes
+        // (`blur_window_cost`), and a window whose work is above `MAX_EFFECT_WINDOW_WORK` is the
+        // typed refusal `blur_work_limit` before the first sink call.
+        for layer in &self.blurs {
+            let Some(bounds) = layer.bounds else {
+                continue;
+            };
+            let (bounds_width, bounds_height) = (width_of(bounds)?, height_of(bounds)?);
+            if bounds_width == 0 || bounds_height == 0 {
+                continue;
+            }
+            let twice = mul_u(layer.support, 2)?;
+            let (window_width, window_height, frame_width, frame_height) =
+                if layer.blur.scope == BlurScope::Layer {
+                    let w = chunk_width.min(add_u(bounds_width, twice)?);
+                    let h = chunk_height.min(add_u(bounds_height, twice)?);
+                    (
+                        w,
+                        h,
+                        bounds_width.min(add_u(w, twice)?),
+                        bounds_height.min(add_u(h, twice)?),
+                    )
+                } else {
+                    let w = chunk_width.min(bounds_width);
+                    let h = chunk_height.min(bounds_height);
+                    (w, h, add_u(w, twice)?, add_u(h, twice)?)
+                };
+            pixels = pixels.max(mul_u(frame_width, frame_height)?);
+            let (plane, tmp) = self.feather_dims(frame_width, frame_height)?;
+            fx_plane = fx_plane.max(plane);
+            fx_tmp = fx_tmp.max(tmp);
+            let window = Rect {
+                x: 0,
+                y: 0,
+                width: u32::try_from(window_width).map_err(|_| overflow())?,
+                height: u32::try_from(window_height).map_err(|_| overflow())?,
+            };
+            let (bytes, work) = blur_window_cost(window, layer.taps.len()).map_err(blur_error)?;
+            if work > MAX_EFFECT_WINDOW_WORK {
+                return Err(unsupported("blur_work_limit"));
+            }
+            window_bytes = window_bytes.max(bytes);
+            blur_peak = blur_peak.max(bytes);
+        }
         for layer in &self.effects {
             let Some(bounds) = layer.bounds else {
                 continue;
@@ -428,6 +535,10 @@ impl ExtPrep {
             fx_tmp,
             window_bytes,
             limits: WindowLimits::new(peak, MAX_EFFECT_WINDOW_WORK),
+            blur_limits: BlurLimits {
+                max_bytes: blur_peak,
+                max_work: MAX_EFFECT_WINDOW_WORK,
+            },
         }))
     }
 
@@ -472,6 +583,7 @@ pub(super) struct Frame {
     pub(super) spare: Vec<Vec<[f32; 4]>>,
     pub(super) fx: Fx,
     pub(super) limits: WindowLimits,
+    pub(super) blur_limits: BlurLimits,
 }
 impl Fx {
     pub(super) fn new(plane: usize, tmp: usize, frame: Option<FrameShape>) -> Self {
@@ -484,6 +596,7 @@ impl Fx {
                     spare: (0..s.depth).map(|_| vec![[0.0; 4]; s.pixels]).collect(),
                     fx: Fx::new(s.fx_plane, s.fx_tmp, None),
                     limits: s.limits,
+                    blur_limits: s.blur_limits,
                 })
             }),
         }

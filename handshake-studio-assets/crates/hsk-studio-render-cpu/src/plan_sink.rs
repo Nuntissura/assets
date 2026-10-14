@@ -23,6 +23,7 @@
 //! Workflow v4 V4-01: this module and `px` deny unchecked integer arithmetic; plan-derived sizes
 //! and coordinates go through the checked helpers of `crate::px`.
 #![deny(clippy::arithmetic_side_effects)]
+mod blur;
 mod effects;
 mod extended;
 #[cfg(test)]
@@ -39,6 +40,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::blur_math::BlurScope;
 use hsk_studio_pigment::coverage_math::mask_coverage;
 use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::transform_math::{LayerTransform, PreparedTransform};
@@ -711,7 +713,46 @@ fn prepare<'a, V: VectorSource>(
                         ext.frame_depth = ext.frame_depth.max(need[input]);
                         ext.set_effect_bounds(index, content_bounds);
                     }
-                    group_effects |= layer_fx.effect.is_some() || has_effects[input];
+                    // Layer blur / backdrop blur (pigment `blur_math`): evaluated per chunk window
+                    // on the chunk-level frame like the effects (see `blur`).
+                    if let Some(index) = layer_fx.blur {
+                        let (scope, support) = ext
+                            .blur(index)
+                            .map(|b| (b.blur.scope, b.support))
+                            .ok_or_else(|| unsupported("plan_shape"))?;
+                        // The frame is the chunk-level scratch: a blur or effects inside the
+                        // content of a blurred layer have none left (typed, before any sink call).
+                        if has_effects[input] {
+                            return Err(unsupported(blur::BLUR_NESTED));
+                        }
+                        match scope {
+                            BlurScope::Layer => {
+                                layer_bounds =
+                                    layer_bounds.map(|b| grow_rect(b, support)).transpose()?;
+                                ext.frame_depth = ext.frame_depth.max(need[input]);
+                            }
+                            BlurScope::Backdrop => {
+                                // Defence in depth for pigment's `BlurCombination`: the backdrop
+                                // is the isolated group's own result below the layer.
+                                if !g.isolated {
+                                    return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                        PlanError::BlurCombination { node: node_id },
+                                    )));
+                                }
+                                // The backdrop is re-evaluated over the grown window on the frame:
+                                // layers below with effects or a blur would need a second frame.
+                                if group_effects {
+                                    return Err(unsupported(blur::BLUR_NESTED));
+                                }
+                                let prefix = run_need
+                                    .map_or(group_need, |r| group_need.max(r.saturating_add(1)));
+                                ext.frame_depth = ext.frame_depth.max(prefix).max(need[input]);
+                            }
+                        }
+                        ext.set_blur_bounds(index, content_bounds);
+                    }
+                    group_effects |=
+                        layer_fx.effect.is_some() || layer_fx.blur.is_some() || has_effects[input];
                     let mask = match &l.mask {
                         None => None,
                         // Canonical clip-to-base encoding (pigment validated): no plane to resolve.
@@ -860,10 +901,23 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
+        self.group_upto(idx, usize::MAX, chunk, dst, spare, fx)
+    }
+
+    /// [`Eval::group`] over the first `upto` layers only (the backdrop of layer `upto`).
+    fn group_upto(
+        &self,
+        idx: usize,
+        upto: usize,
+        chunk: Rect,
+        dst: &mut [[f32; 4]],
+        spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
+    ) -> Result<(), RenderError> {
         let PNode::Group { layers, .. } = &self.prepared.nodes[idx] else {
             return Err(unsupported("plan_shape"));
         };
-        let mut rest: &[PLayer<'_>] = layers;
+        let mut rest: &[PLayer<'_>] = layers.get(..upto).unwrap_or(layers);
         while let Some((base, tail)) = rest.split_first() {
             // Pigment validation guarantees a clipped layer follows an unclipped one.
             if base.clipped {
@@ -872,6 +926,15 @@ impl Eval<'_, '_> {
             let clipped = tail.iter().take_while(|l| l.clipped).count();
             let (run, next) = tail.split_at(clipped);
             if run.is_empty() {
+                // A backdrop blur changes the backdrop inside the layer before the layer itself
+                // composites (pigment `blur_math`); validation keeps it out of clipping runs.
+                if base.fx.blur.is_some() {
+                    let position = layers
+                        .len()
+                        .checked_sub(rest.len())
+                        .ok_or_else(overflow)?;
+                    self.backdrop_blur(idx, position, base, chunk, dst, fx)?;
+                }
                 self.layer(base, chunk, dst, spare, fx)?;
             } else {
                 self.clip_run(base, run, chunk, dst, spare, fx)?;
@@ -1089,9 +1152,13 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
-        // A layer with effects is evaluated per tile of an effect frame (see `effects`).
+        // A layer with effects is evaluated per tile of an effect frame (see `effects`), a layer
+        // with a layer blur per window of a blur frame (see `blur`).
         if layer.fx.effect.is_some() {
             return self.effect_layer(layer, chunk, dst, fx);
+        }
+        if self.is_layer_blur(layer) {
+            return self.blur_layer(layer, chunk, dst, fx);
         }
         let Some(region) = self.prepared.bound(layer.input)
             .map(|b| intersect(b, chunk))
@@ -1916,6 +1983,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Layer transforms (lane SMB-PIGMENT-TRANSFORM): every filter is evaluated by pigment's
             // binary64 reference sampler, so the bytes are pigment's (tests/cpu_transform.rs).
             ExtOperator::Transform(_) => operator.intrinsic(),
+            // Layer and backdrop blur (lane SMB-COMPOSITE-NEW-KINDS): pigment's `blur_window` and
+            // `backdrop_mix` evaluate them, so the bytes are pigment's (tests/cpu_blur.rs).
+            ExtOperator::Blur(_) => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

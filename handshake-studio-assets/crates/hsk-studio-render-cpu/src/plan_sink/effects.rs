@@ -162,6 +162,7 @@ impl Eval<'_, '_> {
             spare,
             fx: frame_fx,
             limits,
+            ..
         } = frame;
         // The alpha reads of the window stay inside the window grown by the margin and the layer.
         let frame_rect = intersect(grow_rect(window, margin)?, bounds)?
@@ -238,7 +239,7 @@ impl Eval<'_, '_> {
     /// The layer's shape over `frame_rect`: straight colour and the content alpha times the layer
     /// mask (feather, invert and density), before opacity and fill. Pixels outside the content
     /// bounds stay transparent.
-    fn frame_content(
+    pub(super) fn frame_content(
         &self,
         layer: &PLayer<'_>,
         frame_rect: Rect,
