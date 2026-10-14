@@ -36,6 +36,7 @@ members = [
   "crates/hsk-studio-reel-native",
   "crates/hsk-studio-interop-lrcat",
   "crates/hsk-studio-motion-js",
+  "crates/hsk-studio-worker",
 ]
 
 [workspace.package]
@@ -84,6 +85,7 @@ declared-members = [
   "crates/hsk-studio-reel-native",
   "crates/hsk-studio-interop-lrcat",
   "crates/hsk-studio-motion-js",
+  "crates/hsk-studio-worker",
 ]
 
 [workspace.metadata.studio.dependencies.hsk-studio-accord]
@@ -190,6 +192,9 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-motion-js]
 allowed = ["hsk-studio-accord", "hsk-studio-motion", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-worker]
+allowed = ["hsk-studio-accord"]
 
 [workspace.metadata.studio.registry.hsk-studio-folio]
 direct = { schemars = { version = "1.2.2", features = ["derive", "std"], default-features = false }, serde = { version = "1.0.229", features = ["derive", "std"], default-features = false }, serde_json = { version = "1.0.151", features = ["std"], default-features = false } }
