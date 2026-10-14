@@ -17,9 +17,10 @@
 //! but Folio does not depend on motion: the streams are plain data and an adapter in composite builds
 //! the `Property` values from them.
 //!
-//! Declared gaps, not invented here: no identity prefix is specified for a composition and the Accord
-//! prefix registry holds none, so `composition_id` is a document-local key (`[A-Za-z0-9_-]{1,128}`,
-//! like `sequence_id`) until Accord registers one. Layers reference the document's `SLYR` layers, so one
+//! Declared gaps, not invented here: the spec states no identity prefix for a composition; Accord
+//! registers `SCOM` for `hsk.studio.composition@1` (SMB-ACCORD-COMPOSITION-PREFIX), and
+//! `composition_id` is an `SCOM-{uuid_v7}` id. Legacy document-local keys (`[A-Za-z0-9_-]{1,128}`, like
+//! `sequence_id`) are still accepted; anything starting `SCOM-` must be a valid id. Layers reference the document's `SLYR` layers, so one
 //! document layer belongs to at most one composition (`DuplicateIdentity` otherwise). Not stored: the
 //! rest of the STU-MOT-004 settings (resolution divisor, shutter, samples, renderer, nested-rate
 //! flags), 3D, expressions, markers, work area, blend/quality/switch attributes (blend mode and
@@ -283,7 +284,7 @@ impl StudioCompositionLayer {
 #[serde(deny_unknown_fields)]
 pub struct StudioComposition {
     pub schema_id: CompositionSchema,
-    /// Document-local key (no Accord identity prefix exists yet); unique in the set.
+    /// `SCOM-{uuid_v7}` (or a legacy document-local key); unique in the set.
     pub composition_id: String,
     pub name: String,
     pub width: u32,
@@ -352,6 +353,15 @@ fn check(ok: bool, target: &str, field: &str) -> Result<()> {
         Ok(())
     } else {
         Err(err(Code::InvalidField, format!("{target}/{field}")))
+    }
+}
+/// A composition id: an Accord `SCOM` identity (`SCOM-{uuid_v7}`), or a legacy document-local key.
+/// Anything spelled like an `SCOM` id must be a valid one.
+fn composition_key(s: &str) -> bool {
+    if s.starts_with("SCOM-") {
+        id(s, "SCOM", "composition_id").is_ok()
+    } else {
+        key(s)
     }
 }
 fn overflow(target: &str, field: &str) -> super::Diagnostic {
@@ -433,7 +443,7 @@ fn validate_layer(
         return Err(overflow(t, "timing/stretch"));
     }
     if let Some(p) = &l.precomp {
-        check(key(&p.composition_id), t, "precomp")?;
+        check(composition_key(&p.composition_id), t, "precomp")?;
     }
     if let Some(m) = &l.track_matte {
         id(&m.source_layer_id, "SLYR", &format!("{t}/track_matte"))?;
@@ -481,7 +491,7 @@ fn validate_composition(
 ) -> Result<()> {
     cx.tick()?;
     let t = c.composition_id.as_str();
-    check(key(t), "composition_id", t)?;
+    check(composition_key(t), "composition_id", t)?;
     check(label(&c.name), t, "name")?;
     cx.text(&c.name, t)?;
     let side = MIN_COMPOSITION_SIDE..=MAX_COMPOSITION_SIDE;
