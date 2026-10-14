@@ -61,7 +61,15 @@ fn main() -> ExitCode {
                 );
             }
             if let Some(c) = &i.census {
-                println!("census nodes={} roots={}", c.node_count, c.root_ids.len());
+                println!(
+                    "census nodes={} roots={} file_version={:?}",
+                    c.node_count,
+                    c.root_ids.len(),
+                    c.file_version
+                );
+                for (name, n) in &c.node_field_histogram {
+                    println!("census field {name} {n}");
+                }
                 for (name, n) in &c.node_type_histogram {
                     println!("census type {name} {n}");
                 }

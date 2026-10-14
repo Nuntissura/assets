@@ -1,14 +1,19 @@
 //! Version policy: which (kind, version) pairs a caller admits for decoding. The container reader
-//! does not judge versions (test: unsupported_version_duplicate_key_bomb_cancel). The default policy admits NOTHING: no Figma-authored file exists on this
-//! machine, so no real version value has been observed; a version is added only from a file that was
-//! actually read (record it in `OBSERVED_VERSIONS` with its provenance). Callers and synthetic tests
-//! opt in explicitly through [`VersionPolicy::with_supported`].
+//! does not judge versions (test: unsupported_version_duplicate_key_bomb_cancel). The default policy
+//! admits NOTHING; [`VersionPolicy::observed`] admits only `OBSERVED_VERSIONS`, which lists a version
+//! only after it was read in a real file (record it with its provenance). Callers and synthetic
+//! tests opt in explicitly through [`VersionPolicy::with_supported`].
 use crate::container::{FigContainer, FigKind};
 use crate::{FigError, Result};
 
-/// Versions seen in real Figma-authored files, with provenance. Empty until the operator supplies
-/// files (`tests/fixtures/*.fig`).
-pub const OBSERVED_VERSIONS: &[(FigKind, u32, &str)] = &[];
+/// Versions seen in real Figma-authored files, with provenance: the three Operator-authored files
+/// in `tests/fixtures` (Figma desktop 126.10.7, "Save local copy", 2026-10-14; `provenance.json`)
+/// all carry `fig-kiwi` version 106. No `fig-jam.` or `fig-deck` file has been observed.
+pub const OBSERVED_VERSIONS: &[(FigKind, u32, &str)] = &[(
+    FigKind::Design,
+    106,
+    "tests/fixtures/*.fig, Figma desktop 126.10.7, 2026-10-14",
+)];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VersionPolicy {
@@ -33,7 +38,7 @@ impl VersionPolicy {
         &self.supported
     }
     pub fn admits(&self, kind: FigKind, version: u32) -> bool {
-        !matches!(kind, FigKind::Unknown(_)) && self.supported.contains(&(kind, version))
+        !matches!(kind, FigKind::Unknown(_) | FigKind::Diff) && self.supported.contains(&(kind, version))
     }
 }
 
@@ -41,6 +46,11 @@ impl VersionPolicy {
 /// kind is not admitted (test: legacy_bare_and_foreign_kinds). The caller keeps the container opaque-preserved: nothing is decoded and
 /// no partial import exists.
 pub fn check_version(container: &FigContainer, policy: &VersionPolicy) -> Result<()> {
+    if container.kind == FigKind::Diff {
+        return Err(FigError::UnsupportedKind {
+            kind: container.kind,
+        });
+    }
     if policy.admits(container.kind, container.version) {
         Ok(())
     } else {

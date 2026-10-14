@@ -82,6 +82,7 @@ fn schema_with(local_id_value: u32) -> Vec<u8> {
             vec![
                 ("nodeChanges", D_NODE_CHANGE, true, 1),
                 ("note", T_STRING, false, 2),
+                ("fileVersion", T_UINT, false, 18),
             ],
         ),
     ];
@@ -776,9 +777,185 @@ fn unsupported_version_duplicate_key_bomb_cancel() {
     );
 }
 
+// ---------- real Figma-authored fixtures (Operator, Figma desktop 126.10.7, tests/fixtures) ----------
+
+const REAL_FIXTURES: [&str; 3] = [
+    "fig-basic-shapes.fig",
+    "fig-components-autolayout.fig",
+    "fig-prototype-pages.fig",
+];
+
+fn real_fixture(name: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("fixture {name} must be checked in: {e}"))
+}
+
+fn real_import(name: &str) -> FigImport {
+    let out = import_fig(
+        &real_fixture(name),
+        &Limits::default(),
+        &VersionPolicy::observed(),
+        None,
+        &CancellationToken::default(),
+    )
+    .unwrap_or_else(|e| panic!("real fixture {name} must import: {e}"));
+    let FigOutcome::Imported(imp) = out else {
+        panic!("observed version must import: {name}")
+    };
+    *imp
+}
+
+#[test]
+fn real_fig_fixtures_container_facts() {
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&real_fixture("provenance.json")).unwrap();
+    assert_eq!(provenance["author"], "Operator");
+    let listed = provenance["files"].as_array().unwrap();
+    for name in REAL_FIXTURES {
+        let bytes = real_fixture(name);
+        let entry = listed.iter().find(|f| f["name"] == name).unwrap();
+        assert_eq!(entry["sha256"], hex(&sha(&bytes)), "{name} provenance sha256");
+        assert_eq!(entry["size"], bytes.len(), "{name} provenance size");
+
+        let c = open_fig(&bytes, &Limits::default(), &CancellationToken::default()).unwrap();
+        assert_eq!(c.packaging, Packaging::Zip);
+        assert_eq!(c.kind, FigKind::Design);
+        assert_eq!(c.version, 106, "header u32 LE after the 8-byte prelude");
+        assert_eq!(&c.canvas().bytes[..8], b"fig-kiwi");
+        assert!(c.part(META_PART).is_some() && c.part(THUMBNAIL_PART).is_some());
+        // Chunk table: u32 LE length prefixes, exactly two chunks, no bytes left over.
+        assert_eq!(c.chunks.len(), 2);
+        let end = c.chunks[1].offset + c.chunks[1].len;
+        assert_eq!(end, c.canvas().bytes.len());
+        // chunk 1 is a zstd frame; chunk 0 (schema) is raw DEFLATE, proven by the schema summary.
+        assert!(c.chunk_bytes(1).unwrap().starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
+        assert!(!c.chunk_bytes(0).unwrap().starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
+
+        let imp = real_import(name);
+        let schema = imp.schema_summary.as_ref().expect("schema decodes");
+        assert_eq!(schema.chunk_index, 0);
+        assert_eq!(schema.definitions.len(), 653);
+        let census = imp.census.as_ref().expect("zstd message decodes fully");
+        // Message.fileVersion (field 18) is absent from these files: recorded as None, not invented.
+        assert_eq!(census.file_version, None);
+        assert_eq!(
+            census.root_ids,
+            vec![SourceId {
+                session: 0,
+                local: 0
+            }]
+        );
+        assert_eq!(census.node_type_histogram["DOCUMENT"], 1);
+    }
+    assert!(
+        OBSERVED_VERSIONS
+            .iter()
+            .any(|(k, v, _)| *k == FigKind::Design && *v == 106)
+    );
+    assert_eq!(
+        OBSERVED_VERSIONS.len(),
+        1,
+        "only observed versions are listed"
+    );
+    assert!(VersionPolicy::observed().admits(FigKind::Design, 106));
+    assert!(!VersionPolicy::observed().admits(FigKind::Design, 105));
+    assert!(!VersionPolicy::observed().admits(FigKind::Jam, 106));
+}
+
+#[test]
+fn real_fig_node_change_schema_field_count_pinned() {
+    let imp = real_import("fig-basic-shapes.fig");
+    let defs = &imp.schema_summary.as_ref().unwrap().definitions;
+    let node = defs.iter().find(|d| d.name == "NodeChange").unwrap();
+    // Field count of the schema embedded in the real files (research/app-inspect-figma.md: 616).
+    assert_eq!(node.fields.len(), 616);
+    assert_eq!(node.fields.iter().map(|f| f.id).max(), Some(616));
+    let max = Limits::default().max_fields;
+    assert!(
+        node.fields.len() < max,
+        "NodeChange must fit max_fields {max}"
+    );
+    // The headroom is thin enough to notice: a limit one below the real count refuses the file.
+    let tight = Limits {
+        max_fields: 615,
+        ..Limits::default()
+    };
+    let out = import_fig(
+        &real_fixture("fig-basic-shapes.fig"),
+        &tight,
+        &VersionPolicy::observed(),
+        None,
+        &CancellationToken::default(),
+    );
+    assert_eq!(out.unwrap_err(), FigError::BudgetExceeded("fields"));
+}
+
+fn diff_canvas() -> Vec<u8> {
+    let mut b = b"fig-diff".to_vec();
+    b.extend_from_slice(&7u32.to_le_bytes());
+    b.extend_from_slice(&[1, 2, 3]);
+    b
+}
+
+#[test]
+fn fig_diff_is_known_unsupported_and_file_version_is_recorded() {
+    // `fig-diff` (installed editor constant): typed kind, not NotFig, never decoded.
+    let bare = diff_canvas();
+    let zipped = zip(&[("canvas.fig", &diff_canvas(), false)]);
+    for bytes in [bare, zipped] {
+        let c = open_fig(&bytes, &Limits::default(), &CancellationToken::default()).unwrap();
+        assert_eq!(c.kind, FigKind::Diff);
+        assert_eq!(c.kind.prelude(), *b"fig-diff");
+        assert_eq!(c.kind.label(), "diff");
+        assert!(c.chunks.is_empty());
+        let admitting = VersionPolicy::default().with_supported(FigKind::Diff, 7);
+        let out = import_fig(
+            &bytes,
+            &Limits::default(),
+            &admitting,
+            None,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let FigOutcome::OpaqueOnly { error, container } = out else {
+            panic!("fig-diff must stay opaque")
+        };
+        assert_eq!(
+            error,
+            FigError::UnsupportedKind {
+                kind: FigKind::Diff
+            }
+        );
+        assert_eq!(error.code(), "unsupported_kind");
+        assert_eq!(error.failure_code(), Some(FailureCode::Unsupported));
+        assert_eq!(container.kind, FigKind::Diff);
+    }
+    // Message.fileVersion (field 18) lands in the census when present.
+    let mut msg = message_bytes(&nodes());
+    assert_eq!(msg.pop(), Some(0));
+    varuint(&mut msg, 18);
+    varuint(&mut msg, 106);
+    varuint(&mut msg, 0);
+    let with_version = zip(&[(
+        "canvas.fig",
+        &canvas_with_message(b"fig-kiwi", SYNTH_VERSION, &msg),
+        false,
+    )]);
+    assert_eq!(
+        imported(&with_version).census.unwrap().file_version,
+        Some(106)
+    );
+    assert_eq!(
+        imported(&fig_zip(SYNTH_VERSION)).census.unwrap().file_version,
+        None
+    );
+}
+
 #[test]
 fn actual_fig_instance_variable_prototype_edit_reopen() {
-    // No Figma-authored fixture exists: the semantic decoder is BLOCKED (NOT_PROVEN), not skipped.
+    // Synthetic container: the semantic decoder is BLOCKED (NOT_PROVEN), not skipped.
     let i = imported(&fig_zip(SYNTH_VERSION));
     assert_eq!(
         decode_semantic(&i.container).unwrap_err(),
@@ -786,52 +963,68 @@ fn actual_fig_instance_variable_prototype_edit_reopen() {
             reason: "NOT_PROVEN: needs original-produced semantic/render proof"
         }
     );
-    assert_eq!(
-        decode_semantic(&i.container).unwrap_err().code(),
-        "editable_decoder_blocked"
-    );
 
-    // When the operator drops Figma-authored files at tests/fixtures/*.fig, they must open, their
-    // real version must be recorded in version_map.rs, and editability stays NOT_PROVEN.
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let fixtures: Vec<_> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "fig"))
-        .collect();
-    if fixtures.is_empty() {
-        // Not a pass of the real-file proof: counted as NOT_PROVEN (V4-03). Only the blocked-decoder
-        // assertion above ran.
-        eprintln!(
-            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen reason=no_figma_authored_fixture (tests/fixtures/*.fig absent; D17); original-produced semantic/render proof missing, editable status NOT_PROVEN"
-        );
+    // Real Figma-authored files: what decodes is the Kiwi census (node types, source ids, which
+    // NodeChange fields are present). Property values, the node tree and instance/variable/prototype
+    // semantics are not decoded, so editable import stays NOT_PROVEN on every real file.
+    let count = |imp: &FigImport, ty: &str| {
+        imp.census
+            .as_ref()
+            .unwrap()
+            .node_type_histogram
+            .get(ty)
+            .copied()
+            .unwrap_or(0)
+    };
+    let field = |imp: &FigImport, name: &str| {
+        imp.census
+            .as_ref()
+            .unwrap()
+            .node_field_histogram
+            .get(name)
+            .copied()
+            .unwrap_or(0)
+    };
+    let shapes = real_import("fig-basic-shapes.fig");
+    for ty in [
+        "ELLIPSE",
+        "ROUNDED_RECTANGLE",
+        "STAR",
+        "LINE",
+        "VECTOR",
+        "BOOLEAN_OPERATION",
+        "TEXT",
+        "FRAME",
+    ] {
+        assert!(count(&shapes, ty) > 0, "basic shapes: {ty}");
     }
-    for entry in fixtures {
-        let bytes = std::fs::read(entry.path()).unwrap();
-        let c = open_fig(&bytes, &Limits::default(), &CancellationToken::default())
-            .unwrap_or_else(|e| panic!("real fixture {:?} must open: {e}", entry.path()));
-        assert!(
-            OBSERVED_VERSIONS
-                .iter()
-                .any(|(k, v, _)| *k == c.kind && *v == c.version),
-            "record version {} ({}) of {:?} in version_map::OBSERVED_VERSIONS",
-            c.version,
-            c.kind.label(),
-            entry.path()
-        );
-        let out = import_fig(
-            &bytes,
-            &Limits::default(),
-            &VersionPolicy::observed(),
-            None,
-            &CancellationToken::default(),
-        )
-        .unwrap();
-        let FigOutcome::Imported(imp) = out else {
-            panic!("observed version must import")
-        };
+    let comps = real_import("fig-components-autolayout.fig");
+    assert_eq!(count(&comps, "SYMBOL"), 2);
+    assert_eq!(count(&comps, "INSTANCE"), 3);
+    assert_eq!(count(&comps, "VARIABLE"), 3);
+    assert_eq!(count(&comps, "VARIABLE_SET"), 1);
+    assert_eq!(field(&comps, "symbolData"), 3);
+    assert_eq!(field(&comps, "stackMode"), 8);
+    assert_eq!(
+        field(&comps, "variableSetModes"),
+        1,
+        "one variable set carries its modes list"
+    );
+    let proto = real_import("fig-prototype-pages.fig");
+    assert_eq!(count(&proto, "CANVAS"), 3);
+    assert_eq!(field(&proto, "prototypeInteractions"), 3);
+    assert_eq!(field(&proto, "prototypeStartingPoint"), 1);
+
+    for name in REAL_FIXTURES {
+        let imp = real_import(name);
         assert_eq!(imp.editable, EditableStatus::NotProven);
+        assert_eq!(
+            decode_semantic(&imp.container).unwrap_err().code(),
+            "editable_decoder_blocked"
+        );
+        eprintln!(
+            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen file={name} decoded=census_only(node types, source ids, NodeChange field presence) editable_import=not_decoded(tree, properties, instances, variables, prototypes)"
+        );
     }
 }
 

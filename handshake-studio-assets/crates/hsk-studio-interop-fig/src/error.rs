@@ -23,6 +23,9 @@ pub enum FigError {
     /// The container opened but its (kind, version) is not in the caller's [`crate::VersionPolicy`]:
     /// nothing was decoded, the container is preserved opaque (STU-IO-187 unknown-version behaviour).
     UnsupportedVersion { kind: FigKind, found: u32 },
+    /// The prelude names a known editor format whose layout is not supported (`fig-diff`): the
+    /// container is preserved opaque and nothing is decoded. Distinct from `NotFig`.
+    UnsupportedKind { kind: FigKind },
     /// `expected_sha256` does not match the supplied bytes.
     StaleSource,
     /// The Kiwi schema chunk is not a valid Kiwi binary schema (`what` names the check).
@@ -47,6 +50,7 @@ impl FigError {
             Self::ChunkOverflow => "chunk_overflow",
             Self::NotFig(_) => "not_fig",
             Self::UnsupportedVersion { .. } => "unsupported_version",
+            Self::UnsupportedKind { .. } => "unsupported_kind",
             Self::StaleSource => "stale_source",
             Self::SchemaInvalid(_) => "schema_invalid",
             Self::MessageInvalid(_) => "message_invalid",
@@ -61,7 +65,7 @@ impl FigError {
     pub const fn failure_code(&self) -> Option<FailureCode> {
         match self {
             Self::Canceled => None,
-            Self::UnsupportedVersion { .. } | Self::NotFig(_) => Some(FailureCode::Unsupported),
+            Self::UnsupportedVersion { .. } | Self::UnsupportedKind { .. } | Self::NotFig(_) => Some(FailureCode::Unsupported),
             Self::DecoderUnavailable { .. } | Self::EditableDecoderBlocked { .. } => {
                 Some(FailureCode::Unavailable)
             }

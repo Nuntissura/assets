@@ -57,6 +57,13 @@ pub struct Census {
     pub node_type_histogram: std::collections::BTreeMap<String, u32>,
     pub node_count: u32,
     pub root_ids: Vec<SourceId>,
+    /// `Message.fileVersion` (field 18, uint) when present: a second version witness next to the
+    /// header u32 (observed 106 header; see the fixture test for the in-message value).
+    pub file_version: Option<u32>,
+    /// For each `NodeChange` field name, the number of nodes that carry it (presence only; values
+    /// are not decoded). Evidence for which node features exist in the file, for example
+    /// `symbolData` (instances) or `prototypeInteractions`.
+    pub node_field_histogram: std::collections::BTreeMap<String, u32>,
 }
 
 /// Definition names, kinds and field names/ids of the Kiwi schema chunk.
@@ -158,6 +165,13 @@ fn base_loss(container: &FigContainer) -> Vec<LossEntry> {
             code: "meta_json_not_object",
         }),
         _ => {}
+    }
+    if matches!(container.kind, FigKind::Diff) {
+        loss.push(LossEntry {
+            part: CANVAS_PART.to_owned(),
+            kind: LossKind::PreservedOpaque,
+            code: "canvas_kind_diff_unsupported",
+        });
     }
     if matches!(container.kind, FigKind::Unknown(_)) {
         loss.push(LossEntry {

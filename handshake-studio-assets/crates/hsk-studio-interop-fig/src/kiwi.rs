@@ -390,7 +390,7 @@ fn find_field<'d>(d: &'d Def, name: &str) -> Option<&'d Field> {
 
 /// Walks the whole message once and counts `nodeChanges` elements by their `type` enum name; ids are
 /// the `guid` struct's `sessionID`/`localID` verbatim. Root ids are the nodes whose type name is
-/// `DOCUMENT`. Field names are the community-documented ones (UNVERIFIED against a real file): when
+/// `DOCUMENT`. Field names are verified against three real Figma files and the installed editor schema: when
 /// the schema lacks them the result is a typed `MessageInvalid`.
 pub(crate) fn census(
     schema: &Schema,
@@ -441,9 +441,17 @@ pub(crate) fn census(
         },
         max_depth: limits.max_depth,
     };
+    let file_version_f = find_field(root, "fileVersion")
+        .filter(|f| f.ty == Ty::Native(Native::Uint) && !f.is_array);
+    let mut file_version = None;
+    let mut field_histogram = BTreeMap::<String, u32>::new();
     let (mut histogram, mut node_count) = (BTreeMap::<String, u32>::new(), 0u32);
     let mut roots = Vec::new();
     while let Some(field) = w.next_field(root)? {
+        if file_version_f.is_some_and(|f| std::ptr::eq(field, f)) {
+            file_version = Some(w.r.var_uint().map_err(FigError::MessageInvalid)?);
+            continue;
+        }
         if !std::ptr::eq(field, changes) {
             w.skip_field(field, 1)?;
             continue;
@@ -457,6 +465,8 @@ pub(crate) fn census(
                 .ok_or(FigError::BudgetExceeded("nodes"))?;
             let (mut id, mut type_name) = (None::<SourceId>, None::<String>);
             while let Some(f) = w.next_field(node)? {
+                let seen = field_histogram.entry(f.name.clone()).or_insert(0u32);
+                *seen = seen.saturating_add(1);
                 if std::ptr::eq(f, guid_f) {
                     let (mut session, mut local) = (None, None);
                     for sf in &guid.fields {
@@ -500,6 +510,8 @@ pub(crate) fn census(
         node_type_histogram: histogram,
         node_count,
         root_ids: roots,
+        file_version,
+        node_field_histogram: field_histogram,
     })
 }
 

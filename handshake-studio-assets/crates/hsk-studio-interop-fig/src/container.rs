@@ -3,8 +3,12 @@
 //! version) and its length-prefixed chunk table. Every ZIP part is kept verbatim with its sha256
 //! (opaque preservation is the default); chunks are recorded as ranges of the canvas part.
 //!
-//! Format facts come from public community sources, not an official spec, and are UNVERIFIED against
-//! a Figma-authored file (none exists on this machine). The reader does not decide what a version
+//! Container facts OBSERVED in three Figma desktop 126.10.7 "Save local copy" files
+//! (tests/fixtures, provenance.json): ZIP with `canvas.fig`, `thumbnail.png`, `meta.json` and
+//! `images/<40-hex>`; prelude `fig-kiwi`, then u32 LE version (106 in all three), then u32 LE
+//! length-prefixed chunks: chunk 0 = Kiwi schema (raw DEFLATE), chunk 1 = message (zstd frame); two
+//! chunks, no trailing bytes (test: real_fig_fixtures_container_facts). The `fig-jam.` and
+//! `fig-deck` layouts are NOT observed. The reader does not decide what a version
 //! means: that is `version_map` (test: unsupported_version_duplicate_key_bomb_cancel opens version 99).
 //!
 //! ZIP rules: bounded entry count, entry size, total inflated size and expansion ratio; exact and
@@ -37,16 +41,21 @@ pub fn hex(digest: &Sha256Bytes) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Product family named by the 8-byte `canvas.fig` prelude. Only the three preludes seen in public
-/// community notes are classified; anything else is `Unknown` (test: legacy_bare_and_foreign_kinds).
+/// Product family named by the 8-byte `canvas.fig` prelude. `fig-kiwi` is observed in real files;
+/// `fig-jam.` and `fig-diff` occur in the installed editor's constants (research/app-inspect-figma.md);
+/// `fig-deck` has community-only evidence (no installed-app or file evidence). Anything else is
+/// `Unknown` (test: legacy_bare_and_foreign_kinds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FigKind {
     /// `fig-kiwi`
     Design,
     /// `fig-jam.`
     Jam,
-    /// `fig-deck`
+    /// `fig-deck`: UNVERIFIED (community notes only; absent from the installed editor bundle).
     Deck,
+    /// `fig-diff`: a known editor prelude whose chunk layout is not observed. Known but unsupported:
+    /// opens with its identity and bytes preserved, no chunk table, never decoded.
+    Diff,
     Unknown([u8; 8]),
 }
 
@@ -56,6 +65,7 @@ impl FigKind {
             b"fig-kiwi" => Self::Design,
             b"fig-jam." => Self::Jam,
             b"fig-deck" => Self::Deck,
+            b"fig-diff" => Self::Diff,
             other => Self::Unknown(*other),
         }
     }
@@ -64,6 +74,7 @@ impl FigKind {
             Self::Design => *b"fig-kiwi",
             Self::Jam => *b"fig-jam.",
             Self::Deck => *b"fig-deck",
+            Self::Diff => *b"fig-diff",
             Self::Unknown(p) => p,
         }
     }
@@ -73,6 +84,7 @@ impl FigKind {
             Self::Design => "design",
             Self::Jam => "jam",
             Self::Deck => "deck",
+            Self::Diff => "diff",
             Self::Unknown(_) => "unknown",
         }
     }
@@ -174,7 +186,7 @@ pub struct FigContainer {
     /// ZIP entries in central-directory order, or the single bare canvas part.
     pub parts: Vec<FigPart>,
     canvas: usize,
-    /// Empty when the prelude is `Unknown` (the chunk layout is only known for classified kinds).
+    /// Empty when the prelude is `Unknown` or `Diff` (the chunk layout is only known for Design/Jam/Deck).
     pub chunks: Vec<FigChunk>,
     pub meta: MetaKeys,
 }
@@ -241,7 +253,7 @@ fn parse_canvas(canvas: &[u8], limits: &Limits) -> Result<(FigKind, u32, Vec<Fig
     let kind = FigKind::from_prelude(&prelude);
     let version = u32::from_le_bytes([canvas[8], canvas[9], canvas[10], canvas[11]]);
     let mut chunks = Vec::new();
-    if matches!(kind, FigKind::Unknown(_)) {
+    if matches!(kind, FigKind::Unknown(_) | FigKind::Diff) {
         return Ok((kind, version, chunks));
     }
     let mut at = PRELUDE_AND_VERSION;
