@@ -6,8 +6,8 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{self as folio, ContentDigest, Payload, Resolver, Snapshot, StudioDocument};
 use hsk_studio_package::{
     ASSET_PREFIX, AssetError, AssetReader, AssetSource, AssetStream, Codec, EntryKind, EntryMeta,
-    Limits, LossNote, LossReason, MANIFEST_NAME, Manifest, PackageError, PackageReader,
-    Quarantined, sha256_hex_of,
+    IMPORT_PREFIX, ImportRef, ImportRole, Limits, LossNote, LossReason, MANIFEST_NAME, Manifest,
+    PackageError, PackageReader, Quarantined, sha256_hex_of,
 };
 use std::{
     collections::BTreeSet,
@@ -127,6 +127,22 @@ pub(crate) struct Parts {
     pub(crate) snapshot: Snapshot,
     pub(crate) quarantined: Vec<Quarantined>,
     pub(crate) loss: Vec<LossNote>,
+    /// Typed import entries (also present in `quarantined`; no loss note).
+    pub(crate) imports: Vec<ImportRef>,
+}
+
+/// `Some` for a well-formed reserved import name whose digest is the entry's content digest.
+fn import_ref(name: &str, sha256_hex: &str) -> Option<ImportRef> {
+    let rest = name.strip_prefix(IMPORT_PREFIX)?;
+    let (token, digest) = rest.split_once('.')?;
+    let role = [ImportRole::Records, ImportRole::Receipt, ImportRole::Original]
+        .into_iter()
+        .find(|r| r.token() == token)?;
+    (digest == sha256_hex).then(|| ImportRef {
+        role,
+        name: name.to_owned(),
+        sha256_hex: sha256_hex.to_owned(),
+    })
 }
 
 /// Reads the document and the entries that must be preserved verbatim (opaque and unlisted),
@@ -145,7 +161,8 @@ pub(crate) fn load_parts(
     let wrap = SessionError::from_package;
     let meta_of = |name: &str| entries.iter().find(|m| m.name == name);
     let mut document: Option<Vec<u8>> = None;
-    let mut held: Vec<(Quarantined, LossReason)> = Vec::new();
+    let mut held: Vec<(Quarantined, Option<LossReason>)> = Vec::new();
+    let mut imports: Vec<ImportRef> = Vec::new();
     let mut resident = 0u64;
     let mut listed: BTreeSet<&str> = BTreeSet::new();
     for entry in &manifest.entries {
@@ -176,13 +193,21 @@ pub(crate) fn load_parts(
                 if sha256_hex_of(&bytes) != entry.sha256_hex {
                     return Err(wrap(PackageError::HashMismatch));
                 }
+                // A typed import entry is preserved like any opaque entry but is not a loss.
+                let reason = match import_ref(&entry.name, &entry.sha256_hex) {
+                    Some(reference) => {
+                        imports.push(reference);
+                        None
+                    }
+                    None => Some(LossReason::Opaque),
+                };
                 held.push((
                     Quarantined {
                         name: entry.name.clone(),
                         bytes,
                         sha256_hex: entry.sha256_hex.clone(),
                     },
-                    LossReason::Opaque,
+                    reason,
                 ));
             }
         }
@@ -202,20 +227,22 @@ pub(crate) fn load_parts(
                 sha256_hex: sha256_hex_of(&bytes),
                 bytes,
             },
-            LossReason::Unlisted,
+            Some(LossReason::Unlisted),
         ));
     }
     held.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-    let (quarantined, loss) = held
-        .into_iter()
-        .map(|(q, reason)| {
-            let note = LossNote {
+    imports.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut quarantined = Vec::with_capacity(held.len());
+    let mut loss = Vec::new();
+    for (q, reason) in held {
+        if let Some(reason) = reason {
+            loss.push(LossNote {
                 name: q.name.clone(),
                 reason,
-            };
-            (q, note)
-        })
-        .unzip();
+            });
+        }
+        quarantined.push(q);
+    }
 
     let document = document.ok_or(wrap(PackageError::MissingEntry))?;
     let inspection = folio::inspect_bytes(&document, budget, cancel, resolver)
@@ -233,6 +260,7 @@ pub(crate) fn load_parts(
         snapshot,
         quarantined,
         loss,
+        imports,
     })
 }
 

@@ -20,7 +20,7 @@ use hsk_studio_chronicle::{
 use hsk_studio_folio::{self as folio, Resolver, Snapshot, StudioDocument, Unresolved};
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
-    Codec, Extras, Limits, LossNote, Manifest, PackageError, PackageReader, PreviewImage,
+    Codec, Extras, ImportRef, Limits, LossNote, Manifest, PackageError, PackageReader, PreviewImage,
     PreviewRef, Quarantined, StreamSave, WriteOptions, WriteReceipt, read_package,
     save_atomic_streaming, sha256_hex_of, write_package_with,
 };
@@ -284,6 +284,8 @@ pub struct SaveReceipt {
     pub bytes_written: u64,
     /// Unknown package entries re-emitted verbatim.
     pub quarantined_preserved: usize,
+    /// Typed import entries re-emitted verbatim (counted apart from `quarantined_preserved`).
+    pub imports_preserved: usize,
     /// Preview entries written (only previews that describe the revision being written).
     pub previews_preserved: usize,
     /// Preview images held or declared but not written: they described another revision, were
@@ -309,6 +311,8 @@ pub struct Checkpoint {
     pub sha256_hex: String,
     pub entries: u32,
     pub quarantined_preserved: usize,
+    /// Typed import entries re-emitted verbatim (counted apart from `quarantined_preserved`).
+    pub imports_preserved: usize,
     pub previews_preserved: usize,
     pub previews_dropped: usize,
     pub report: ReportStatus,
@@ -415,6 +419,8 @@ pub struct Session {
     source_bytes: Arc<AtomicU64>,
     quarantined: Vec<Quarantined>,
     loss: Vec<LossNote>,
+    /// Typed import entries carried verbatim inside `quarantined` (no loss note).
+    imports: Vec<ImportRef>,
     /// Previews declared by `source` (bodies stay in the source until written).
     preview_refs: Vec<PreviewRef>,
     /// The document revision the previews in `source` describe.
@@ -610,6 +616,7 @@ impl Session {
                     source_bytes,
                     quarantined: parts.quarantined,
                     loss: parts.loss,
+                    imports: parts.imports,
                     preview_revision: revision,
                     supplied_previews: None,
                     origin,
@@ -1705,7 +1712,8 @@ impl Session {
             revision,
             entries: written.entries,
             bytes_written: written.bytes_written,
-            quarantined_preserved: self.quarantined.len(),
+            quarantined_preserved: self.quarantined.len().saturating_sub(self.imports.len()),
+            imports_preserved: self.imports.len(),
             previews_preserved: images.len(),
             previews_dropped,
             report: ReportStatus::Unaddressed,
@@ -1737,7 +1745,14 @@ impl Session {
             .snapshot()
             .is_some_and(|s| s.encoded_bytes() == self.snapshot.encoded_bytes())
             && reread.manifest.revision == revision
+            && reread.imports == self.imports
             && reread.quarantined.len() == self.quarantined.len()
+            && {
+                let digests = |q: &[Quarantined]| -> BTreeSet<(String, String)> {
+                    q.iter().map(|e| (e.name.clone(), e.sha256_hex.clone())).collect()
+                };
+                digests(&reread.quarantined) == digests(&self.quarantined)
+            }
             && reread.previews.len() == built.previews_written;
         if !same {
             return Err(SessionError::VerifyMismatch);
@@ -1746,7 +1761,8 @@ impl Session {
             revision,
             sha256_hex: sha256_hex_of(&built.bytes),
             entries: built.receipt.entries,
-            quarantined_preserved: self.quarantined.len(),
+            quarantined_preserved: self.quarantined.len().saturating_sub(self.imports.len()),
+            imports_preserved: self.imports.len(),
             previews_preserved: built.previews_written,
             previews_dropped: built.previews_dropped,
             bytes: built.bytes,
@@ -1825,6 +1841,12 @@ impl Session {
 
     pub fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// Typed import entries of the opened package (`import/<records|receipt|original>.<sha256>`),
+    /// carried verbatim through save and checkpoint and not reported by [`Session::loss`].
+    pub fn imports(&self) -> &[ImportRef] {
+        &self.imports
     }
 
     /// Entries the package kept verbatim or could not import (opaque / unlisted).

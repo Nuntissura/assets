@@ -197,6 +197,10 @@ impl Fixture {
     }
 
     fn with_blob(name: &str, blob: Vec<u8>) -> Self {
+        Self::with_extra_entries(name, blob, Vec::new())
+    }
+
+    fn with_extra_entries(name: &str, blob: Vec<u8>, more: Vec<Quarantined>) -> Self {
         let dir =
             std::env::temp_dir().join(format!("hsk-studio-session-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -213,17 +217,18 @@ impl Fixture {
             folio::Inspection::Editable(s) => s,
             folio::Inspection::ReadOnly(_) => panic!("fixture became read-only"),
         };
-        let opaque = Quarantined {
+        let mut opaque = vec![Quarantined {
             name: "vendor/extra.bin".to_owned(),
             bytes: OPAQUE.to_vec(),
             sha256_hex: sha256_hex_of(&OPAQUE),
-        };
+        }];
+        opaque.extend(more);
         let mut bytes = Vec::new();
         write_package_with(
             &snapshot,
             &assets as &dyn AssetSource,
             &Extras {
-                quarantined: &[opaque],
+                quarantined: &opaque,
                 previews: &[preview_image()],
             },
             &WriteOptions::default(),
@@ -2987,4 +2992,71 @@ fn session_consumes_the_chronicle_addressability_table() {
             assert_eq!(session.snapshot().encoded_bytes(), bytes_before.as_slice());
         },
     );
+}
+
+#[test]
+fn import_entries_round_trip_without_loss_notes_and_unknown_entries_still_report() {
+    bounded_case("import_entries_round_trip", || {
+        let imports = [
+            hsk_studio_package::ImportEntry::new(
+                hsk_studio_package::ImportRole::Records,
+                b"{\"records\":[]}".to_vec(),
+            ),
+            hsk_studio_package::ImportEntry::new(
+                hsk_studio_package::ImportRole::Receipt,
+                b"{\"loss\":[]}".to_vec(),
+            ),
+            hsk_studio_package::ImportEntry::new(
+                hsk_studio_package::ImportRole::Original,
+                (0..4096u32).map(|i| (i % 251) as u8).collect(),
+            ),
+        ];
+        let fixture = Fixture::with_extra_entries(
+            "importentries",
+            BLOB.to_vec(),
+            imports.iter().map(|e| e.to_opaque()).collect(),
+        );
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+
+        // Import entries are typed, not losses; the unknown opaque entry still is.
+        assert_eq!(session.imports().len(), 3);
+        assert_eq!(session.loss().len(), 1);
+        assert_eq!(session.loss()[0].name, "vendor/extra.bin");
+        assert_eq!(
+            session.loss()[0].reason,
+            hsk_studio_package::LossReason::Opaque
+        );
+
+        // Checkpoint re-read accounts for them apart from the genuinely quarantined entry.
+        let checkpoint = session.export_checkpoint(&token()).unwrap();
+        assert_eq!(checkpoint.imports_preserved, 3);
+        assert_eq!(checkpoint.quarantined_preserved, 1);
+        let reopened = read_package(
+            &checkpoint.bytes,
+            &Limits::default(),
+            folio::Budget::default(),
+            &Granted,
+            &token(),
+        )
+        .unwrap();
+        assert_eq!(reopened.imports.len(), 3);
+        assert_eq!(reopened.loss.len(), 1);
+        for entry in &imports {
+            assert_eq!(
+                reopened.import_bytes(entry.role),
+                Some(entry.bytes.as_slice()),
+                "{:?} is byte-identical",
+                entry.role
+            );
+        }
+
+        // Save, reopen through the session: still typed, still no loss note.
+        let receipt = session.save(&token()).unwrap();
+        assert_eq!(receipt.imports_preserved, 3);
+        assert_eq!(receipt.quarantined_preserved, 1);
+        let again = open(&fixture, &frames);
+        assert_eq!(again.imports(), session.imports());
+        assert_eq!(again.loss().len(), 1);
+    });
 }
