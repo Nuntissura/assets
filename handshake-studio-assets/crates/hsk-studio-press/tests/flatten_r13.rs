@@ -2788,10 +2788,19 @@ fn descriptor_states_the_structure_tree_rule() {
     // PLR-104 (V4-07): the property-list sentence states the purge and the fail-closed count and cites tests that exist.
     let props_start = descriptor.find("PLR-104 marked-content property lists").expect("PLR-104 sentence");
     let props = &descriptor[props_start..props_start + descriptor[props_start..].find("; residuals:").expect("end of the PLR-104 sentence")];
-    for needle in ["the entries that no BDC or DP of the content read names are removed, inline dictionaries and references alike", "residual_in_region counts, fail closed"] {
+    for needle in [
+        "the entries that no BDC or DP of the content read names are removed, inline dictionaries and references alike",
+        "residual_in_region counts, fail closed",
+        "a /Properties dictionary a kept page reaches, as its own /Resources or inherited, inline or as an object, is not purged per entry",
+    ] {
         assert!(props.contains(needle), "PLR-104 sentence lacks {needle:?}");
     }
-    for name in ["marked_content_property_lists_of_flattened_pages_are_purged", "property_lists_the_purge_cannot_clear_are_counted"] {
+    for name in [
+        "marked_content_property_lists_of_flattened_pages_are_purged",
+        "property_lists_the_purge_cannot_clear_are_counted",
+        "property_lists_a_kept_page_reaches_are_counted",
+        "inherited_property_lists_shared_with_a_kept_pages_own_resources_are_counted",
+    ] {
         assert!(props.contains(name), "the PLR-104 sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
     }
@@ -2862,9 +2871,16 @@ const PROPS: &str = "/MC0 << /Alt (PROP-ALT-SECRET) /ActualText (PROP-ACTUAL-SEC
 /// `/Resources` and inherits the node's, page two has its own and does not inherit: `node-shared` (node and page two name resources
 /// object 9), `node-object-properties` (node names object 9, which names `/Properties` object 21; page two's own inline `/Resources`
 /// names 21), `node-inline-properties` (the node's inline `/Resources` names 21; page two's own inline `/Resources` names 21).
+/// R27-P1 (inputs P8, P9): `node-inline-lists` (the node's inline `/Resources` holds an inline `/Properties` naming the property-list
+/// objects 22, 23, 20 and 30; page two's own inline `/Resources` names the same objects), `own-inline-lists` (the same dictionary
+/// as page one's own inline `/Resources`). R27-P2 (input P7b): `null-own` (page one `/Resources null` and draws a path only, the
+/// node and page two name resources object 9). DIAG-PRESS-R27 purge layouts: `own` (page one alone names resources object 9; page
+/// two's own inline `/Properties` names 23 and 30) and `own-held` (the same, and the catalog also names object 9).
 fn properties_pdf(layout: &str, page_two_ops: &str, catalog_extra: &str, more: &[(u32, String)]) -> Vec<u8> {
     let inline_res = format!("<< /Font << /F1 6 0 R >> /Properties << {PROPS} >> >>");
     let names_21 = "/Resources << /Font << /F1 6 0 R >> /Properties 21 0 R >>".to_string();
+    let inline_lists = "/Resources << /Font << /F1 6 0 R >> /Properties << /MC0 22 0 R /MC1 23 0 R /MC2 20 0 R /OC1 30 0 R >> >>".to_string();
+    let own_lists = "/Resources << /Font << /F1 6 0 R >> /Properties << /MC1 23 0 R /OC1 30 0 R >> >>".to_string();
     let (node, own_one, own_two) = match layout {
         "shared" => (String::new(), "/Resources 9 0 R".to_string(), "/Resources 9 0 R".to_string()),
         "inherited" => (format!("/Resources {inline_res}"), String::new(), String::new()),
@@ -2873,18 +2889,23 @@ fn properties_pdf(layout: &str, page_two_ops: &str, catalog_extra: &str, more: &
         "node-shared" => ("/Resources 9 0 R".to_string(), String::new(), "/Resources 9 0 R".to_string()),
         "node-object-properties" => ("/Resources 9 0 R".to_string(), String::new(), names_21),
         "node-inline-properties" => (names_21.clone(), String::new(), names_21),
+        "node-inline-lists" => (inline_lists.clone(), String::new(), inline_lists),
+        "own-inline-lists" => (String::new(), inline_lists.clone(), inline_lists),
+        "null-own" => ("/Resources 9 0 R".to_string(), "/Resources null".to_string(), "/Resources 9 0 R".to_string()),
+        "own" | "own-held" => (String::new(), "/Resources 9 0 R".to_string(), own_lists),
         _ => (String::new(), "/Resources 9 0 R".to_string(), "/Resources 9 0 R".to_string()),
     };
+    let held = if layout == "own-held" { "/HskKeep 9 0 R" } else { "" };
     let res9 = match layout {
         "lists-as-objects" => "<< /Font << /F1 6 0 R >> /Properties << /MC0 22 0 R /MC1 23 0 R /MC2 20 0 R /OC1 30 0 R >> >>".to_string(),
         "alias" => "<< /Font << /F1 6 0 R >> /Properties 24 0 R >>".to_string(),
         "node-object-properties" => "<< /Font << /F1 6 0 R >> /Properties 21 0 R >>".to_string(),
         _ => inline_res.clone(),
     };
-    let page_one = format!("/Span /MC0 BDC {SECRET} EMC /Note /MC2 DP");
+    let page_one = if layout == "null-own" { "/Span /MC0 BDC 100 700 m 150 710 l S EMC /Note /MC2 DP".to_string() } else { format!("/Span /MC0 BDC {SECRET} EMC /Note /MC2 DP") };
     let page_two = format!("/Span /MC1 BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC /OC /OC1 BDC 0 g 10 10 5 5 re f EMC {page_two_ops}");
     let mut objs: Vec<(u32, Vec<u8>)> = vec![
-        (1, format!("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [30 0 R] /D << /Order [30 0 R] >> >> {catalog_extra} >>").into_bytes()),
+        (1, format!("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [30 0 R] /D << /Order [30 0 R] >> >> {held} {catalog_extra} >>").into_bytes()),
         (2, format!("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 612 792] {node} >>").into_bytes()),
         (3, format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {own_one} >>").into_bytes()),
         (4, stream_body("", page_one.as_bytes())),
@@ -2916,14 +2937,8 @@ fn property_names(bytes: &[u8], index: usize) -> Vec<String> {
     page.raw().get::<HDict<'_>>(b"Resources").and_then(|r| r.get::<HDict<'_>>(b"Properties")).map(|p| keys(&p)).unwrap_or_default()
 }
 
-/// PLR-104 (R25-P7; Operator-confirmed plan 2026-10-14, lane SMB-PRESS-PROPERTIES): a marked-content property list of a flattened
-/// page (`/Alt`, `/ActualText`, `/E`, `/Lang`) kept in a resources dictionary another page shares or inherits survived with the save
-/// read proven (red at 1da2453: R25-P7 X2a shared, X2b inherited). `/Properties` is now a gated category: every entry the flattened
-/// page reached that no kept `BDC` or `DP` names is purged (inline dictionaries and references), the entries the kept page names stay
-/// (its own `/Span` text and its optional-content group), and the save reads flattened. Control: when the kept page names `/MC0`
-/// too, `/MC0` stays (kept content invokes it) and the save still reads flattened.
-/// The PLR-104 expectations for one `properties_pdf` layout: the flattened page's property lists are gone, the kept page's stay
-/// (`MC1`, `OC1`), and the save reads flattened.
+/// The PLR-104 purge expectations for one `properties_pdf` layout whose property-list dictionaries no kept page reaches: the
+/// flattened page's property lists are gone, the kept page's stay (`MC1`, `OC1`), and the save reads flattened.
 fn check_properties_purged(layout: &str, red: &mut Vec<String>) {
     let out = properties_output(layout, "", "", &[]);
     for text in PROP_TEXTS.iter().chain(&["SECRET-ALPHA"]) {
@@ -2943,30 +2958,73 @@ fn check_properties_purged(layout: &str, red: &mut Vec<String>) {
     }
 }
 
+/// PLR-104 (R25-P7; Operator-confirmed plan 2026-10-14, lane SMB-PRESS-PROPERTIES), exact purge, which since DIAG-PRESS-R27 runs
+/// only on property-list dictionaries no kept page reaches: page one alone names resources object 9 (`own`), also when the catalog
+/// names object 9 too so it stays in the file (`own-held`); every entry no kept `BDC` or `DP` names is removed from it (inline
+/// dictionaries and references), the kept page's own lists stay (`MC1` text through object 23, the optional-content group 30) and
+/// the save reads flattened. V4-08 (on the count of `property_lists_a_kept_page_reaches_are_counted`, layout `shared`, with `/MC2`
+/// named so that `/MC0` is the only unnamed list with text): the names are read from the parsed operators. A name escape (`/MC#30`)
+/// and the DP form name /MC0 (kept content invokes it: it stays and nothing is counted); a comment that holds the operator and a
+/// name in another case (`/mc0`) do not (counted, NOT PROVEN).
 #[test]
 fn marked_content_property_lists_of_flattened_pages_are_purged() {
     let mut red: Vec<String> = Vec::new();
-    for layout in ["shared", "inherited", "inherited-object", "properties-object", "lists-as-objects"] {
+    for layout in ["own", "own-held"] {
         check_properties_purged(layout, &mut red);
     }
-    // V4-08: the names are read from the parsed operators. A name escape (`/MC#30`) names /MC0 (kept); a comment that holds the
-    // operator and a name in another case (`/mc0`) do not (purged). The DP form names a property list as BDC does.
-    for (what, ops, kept) in [
+    for (what, ops, named) in [
         ("/MC0 named by the kept page", "/Span /MC0 BDC EMC", true),
         ("/MC0 named through a name escape, /MC#30", "/Span /MC#30 BDC EMC", true),
         ("/MC0 named by DP", "/Note /MC0 DP", true),
         ("a comment holds /Span /MC0 BDC", "% /Span /MC0 BDC EMC\n", false),
         ("a name in another case, /mc0", "/Span /mc0 BDC EMC", false),
     ] {
-        let out = properties_output("shared", ops, "", &[]);
-        if gone(&out.bytes, "PROP-ALT-SECRET") == kept || !read_as_flattened(&out) {
+        let out = properties_output("shared", &format!("{ops} /Note /MC2 DP"), "", &[]);
+        if read_as_flattened(&out) != named || (!named && !reported_for_the_tree(&out)) || !gone(&out.bytes, "SECRET-ALPHA") {
             red.push(format!(
-                "control, {what}: PROP-ALT-SECRET kept {} (expected {kept}) region_flattened {} reasons {:?}",
-                !gone(&out.bytes, "PROP-ALT-SECRET"),
+                "control, {what}: expected {} region_flattened {} residual {} reasons {:?}",
+                if named { "flattened" } else { "counted" },
                 out.region_flattened(),
+                out.residual_in_region,
                 out.not_proven_reasons()
             ));
         }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// The DIAG-PRESS-R27 count for one `properties_pdf` layout whose property-list dictionaries a kept page reaches: nothing of the
+/// kept page's dictionary is edited (its `/Properties` still lists `MC0` or the shared names next to `MC1` and `OC1`), the
+/// flattened page's text-bearing lists are counted (`residual_in_region`, `NotProven::ResidualInRegion`, `region_flattened` false),
+/// the region text is gone and the kept page's `KEPT-PROP-TEXT` stays.
+fn check_properties_counted(layout: &str, red: &mut Vec<String>) {
+    let out = properties_output(layout, "", "", &[]);
+    if !reported_for_the_tree(&out) {
+        red.push(format!("{layout}: region_flattened {} residual {} reasons {:?}, expected counted", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+    }
+    if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "KEPT-PROP-TEXT") {
+        red.push(format!("{layout}: SECRET-ALPHA gone {} KEPT-PROP-TEXT kept {}", gone(&out.bytes, "SECRET-ALPHA"), !gone(&out.bytes, "KEPT-PROP-TEXT")));
+    }
+    let names = property_names(&out.bytes, 1);
+    if !names.iter().any(|n| n == "MC1") || !names.iter().any(|n| n == "OC1") {
+        red.push(format!("{layout}: page two /Properties {names:?}, expected MC1 and OC1 kept"));
+    }
+}
+
+/// R27-P1 (validation/R27-prereview-press-narrow.json, inputs P8 and P9; red at 13534f8: read proven while the flattened page's
+/// `/Alt` and `/ActualText` stayed): the old page's `/Resources` was written inline (in the `/Pages` node, or in the page itself)
+/// with an inline `/Properties` naming property-list OBJECTS that the kept page's own `/Properties` names too; the purge skipped that
+/// dictionary before collecting its objects, so the kept page kept the list live uncounted. Changed approach (lead diagnosis
+/// DIAG-PRESS-R27): a property list a kept page reaches, inline or referenced, own or inherited, is not purged per entry; one with
+/// `/Alt`, `/ActualText`, `/E`, `/T` or `/Lang` that no kept content names is counted. The earlier purge layouts a kept page reaches
+/// (`shared`, `inherited`, `inherited-object`, `properties-object`, `lists-as-objects`; red at 1da2453 as R25-P7) read counted now.
+/// R27-P2 (input P7b, `null-own`; red at 13534f8): page one's `/Resources null` reads as absent, so it inherits object 9 that page
+/// two also names, and its list is counted.
+#[test]
+fn property_lists_a_kept_page_reaches_are_counted() {
+    let mut red: Vec<String> = Vec::new();
+    for layout in ["node-inline-lists", "own-inline-lists", "null-own", "shared", "inherited", "inherited-object", "properties-object", "lists-as-objects"] {
+        check_properties_counted(layout, &mut red);
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -2975,12 +3033,13 @@ fn marked_content_property_lists_of_flattened_pages_are_purged() {
 /// `/Pages` node's, while the kept page has its OWN `/Resources` naming the same resources object or the same `/Properties` object
 /// (so it is not an heir of the node). The property lists only the flattened page names (`/MC0` with `/Alt` and `/ActualText`, `/MC2`
 /// with `/E` and `/Lang`) survived with the save read proven (red at 950fd85 and ade85a0). The old page's inherited `/Resources` is
-/// now one of the dictionaries the purge reads: they are purged, the kept page's `/MC1` and `/OC1` stay, the save reads flattened.
+/// one of the dictionaries the purge reads; since DIAG-PRESS-R27 a dictionary the kept page reaches is not purged per entry, so
+/// these lists are counted (NOT PROVEN), the kept page's `/MC1` and `/OC1` stay.
 #[test]
-fn inherited_property_lists_shared_with_a_kept_pages_own_resources_are_purged() {
+fn inherited_property_lists_shared_with_a_kept_pages_own_resources_are_counted() {
     let mut red: Vec<String> = Vec::new();
     for layout in ["node-shared", "node-object-properties", "node-inline-properties"] {
-        check_properties_purged(layout, &mut red);
+        check_properties_counted(layout, &mut red);
     }
     assert!(red.is_empty(), "{red:#?}");
 }

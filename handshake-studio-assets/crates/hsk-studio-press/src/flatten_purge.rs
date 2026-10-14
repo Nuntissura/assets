@@ -92,21 +92,24 @@
 //!   `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
 //!   `painted_sources_rendered_with_a_drawn_image_are_reported`,
 //!   `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`.
-//! - Marked-content property lists ([`drop_painted_sources`], PLR-104, Operator-confirmed plan 2026-10-14): `/Properties` is a
-//!   gated category too. In every `/Properties` dictionary the old page reached (in its own `/Resources` object, a `/Properties`
-//!   object its own `/Resources` named, the `/Resources` object or `/Properties` object it inherited from a `/Pages` node also
-//!   when a kept page names that object from its own `/Resources` (R26-P1), the `/Resources` a kept page received from a node of
-//!   its `/Parent` chain, and the `/Resources` of every stream and Type 3 font it reached), every entry that no `BDC` or `DP` of
-//!   the content read names is
-//!   removed, inline dictionaries and references alike; the entries kept content names stay (with their text: kept content
-//!   invokes them), an optional-content group a kept page names among them. Counted in `RedactedOutput::residual_in_region`
-//!   (fail closed, `region_flattened` false, `NotProven::ResidualInRegion`): such a dictionary whose scope's content could not be
-//!   read (usage undetermined: every entry stays) or the usage analysis did not finish, one the purge cannot edit (a
-//!   `/Resources` or `/Properties` value that is a stream or an alias object) holding an entry no kept content names whose
-//!   property list has `/Alt`, `/ActualText`, `/E`, `/T` or `/Lang`, and a property list of a removed or unedited entry that
-//!   stays in the file (another object references it) with one of those keys while no kept content names it. A property list
-//!   written inline in the old page's content left with the page. Tests
-//!   `marked_content_property_lists_of_flattened_pages_are_purged`, `property_lists_the_purge_cannot_clear_are_counted`.
+//! - Marked-content property lists ([`drop_painted_sources`], PLR-104, Operator-confirmed plan 2026-10-14; changed approach of the
+//!   lead diagnosis DIAG-PRESS-R27 after R27-P1): `/Properties` is a gated category too. Of the `/Properties` dictionaries the old
+//!   page reached (its own `/Resources`, inline or as an object, a `/Properties` object it named, the `/Resources` it inherited
+//!   from a `/Pages` node (R26-P1; also when its own `/Resources` resolves to null, R27-P2), the `/Resources` a kept page received
+//!   from a node of its `/Parent` chain, and the `/Resources` of every stream and Type 3 font it reached), one no kept page reaches
+//!   is purged exactly: every entry that no `BDC` or `DP` of the content read names is removed, inline dictionaries and
+//!   references alike. A dictionary a kept page reaches (its own `/Resources` or inherited, inline or as an object) is not edited:
+//!   the entries kept content names stay (with their text: kept content invokes them), an optional-content group a kept page names
+//!   among them. Counted in `RedactedOutput::residual_in_region` (fail closed, `region_flattened` false,
+//!   `NotProven::ResidualInRegion`): an entry of such a kept-page dictionary that no kept content names whose inline property list
+//!   has `/Alt`, `/ActualText`, `/E`, `/T` or `/Lang`; a property-list object that an unnamed entry of any reached dictionary names
+//!   (one written inline in the replaced page or the emptied node included, R27-P1) and that stays in the file with one of those
+//!   keys while no kept content names it; a dictionary whose scope's content could not be read (usage undetermined: every entry
+//!   stays) or the usage analysis did not finish; and one the purge cannot edit (a `/Resources` or `/Properties` value that is a
+//!   stream or an alias object) holding an entry no kept content names whose property list has one of those keys. A property list
+//!   written inline in the old page's content left with the page. Tests `marked_content_property_lists_of_flattened_pages_are_purged`,
+//!   `property_lists_a_kept_page_reaches_are_counted`, `inherited_property_lists_shared_with_a_kept_pages_own_resources_are_counted`,
+//!   `property_lists_the_purge_cannot_clear_are_counted`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -1154,7 +1157,12 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
             u.scopes.push(Scope { streams, chain, page });
         }
         u.drain(cancel)?;
-        let plan = plan_properties(objs, flats, &sources, &u);
+        // DIAG-PRESS-R27: what the kept pages reach (their own and inherited `/Resources`, inline or as objects, and everything
+        // else they name) is not purged per entry (`plan_properties`).
+        let flat_pages: BTreeSet<u32> = flats.iter().map(|f| f.page.object).collect();
+        let kept_pages: Vec<u32> = doc.pages.iter().copied().filter(|p| !flat_pages.contains(p)).collect();
+        let kept_reach = reachable(objs, &kept_pages);
+        let plan = plan_properties(objs, flats, &sources, &u, &kept_reach);
         (u.reached, u.silent, u.incomplete, plan)
     };
     let painted: BTreeSet<u32> = sources
@@ -1240,7 +1248,8 @@ enum ResAt {
 enum PropsAt {
     /// Object `n` is the `/Properties` dictionary (a dictionary object).
     Object(u32),
-    /// Written inside the resource dictionary at the `ResAt`.
+    /// Written inside the resource dictionary at the `ResAt` (`ResAt::Object` or `ResAt::In`; a `ResAt::Old` dictionary left the
+    /// file and is not edited).
     Inline(ResAt),
 }
 
@@ -1264,10 +1273,10 @@ fn property_text(objs: &Objs, o: &Object) -> bool {
     res(objs, o).as_dict().is_some_and(|d| PROPERTY_TEXT_KEYS.iter().any(|k| holds(d, k)))
 }
 
-/// The `/Resources` value the old page read: its own, else the one it inherited from the nearest node of its `/Parent` chain
-/// that has one (`Flat::inherited_resources`, R26-P1), as written there.
+/// The `/Resources` value the old page read: the one it inherited from the nearest node of its `/Parent` chain that has one when
+/// its own is absent or resolves to null (`Flat::inherited_resources`, R26-P1, R27-P2), else its own, as written there.
 fn old_resources(f: &Flat) -> Option<&Object> {
-    f.old.get("Resources").or(f.inherited_resources.as_ref())
+    f.inherited_resources.as_ref().or_else(|| f.old.get("Resources"))
 }
 
 /// The resource dictionaries the old pages reached and where they live now (PLR-104): the `/Resources` object an old page read
@@ -1311,47 +1320,50 @@ fn reached_resources(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>) -> BT
     out
 }
 
-/// Plans the property-list purge (PLR-104) on the analysed document: in every `/Properties` dictionary the old pages reached,
-/// the entries no `BDC` or `DP` of the content read names are removed (inline dictionaries and references alike); a dictionary
-/// whose usage could not be determined keeps every entry and is counted; one the purge cannot edit (a `/Resources` or
-/// `/Properties` value that is a stream, or reached through an alias object) is counted when an entry no content names holds a
-/// text key.
-fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usage<'_>) -> PropertyPlan {
+/// Plans the property-list purge (PLR-104; changed approach of the lead diagnosis DIAG-PRESS-R27 after R27-P1) on the analysed
+/// document, for every `/Properties` dictionary the old pages reached. The exact purge (the entries no `BDC` or `DP` of the content
+/// read names are removed, inline dictionaries and references alike) runs only on a dictionary no kept page reaches (`kept_reach`:
+/// the objects reachable from the kept pages; the dictionary's holder object is not among them). A dictionary a kept page reaches,
+/// as its own `/Resources` or inherited, inline or as an object, is not edited: an entry no kept content names that is a property
+/// list written inline with `/Alt`, `/ActualText`, `/E`, `/T` or `/Lang` is counted, and the property lists its entries name as
+/// objects are checked after the edits like every other one. The property-list OBJECTS the unnamed entries of every reached
+/// dictionary name are candidates, the dictionaries written inside the replaced page or the emptied node included (R27-P1: they
+/// left the file, the objects they named may not): after the edits and the painted-source prune, each candidate the file still
+/// holds that no kept content names and that has one of those keys is counted ([`drop_painted_sources`]). A dictionary whose usage
+/// could not be determined is counted; one the purge cannot edit (a `/Resources` or `/Properties` value that is a stream, or
+/// reached through an alias object) is counted when an entry no content names holds a text key.
+fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usage<'_>, kept_reach: &BTreeSet<u32>) -> PropertyPlan {
     let mut plan = PropertyPlan { named: u.props_named.clone(), ..PropertyPlan::default() };
     let mut seen: BTreeSet<usize> = BTreeSet::new();
     let none = BTreeSet::new();
     for at in reached_resources(objs, flats, sources) {
-        // The resource dictionary, and whether the purge can edit it where it lives.
-        let (rd, editable) = match at {
+        // The resource dictionary, whether the purge can edit it where it lives, and the object that holds it (none: it left the
+        // file with the replaced page, or with the node `detach_from_page_tree` emptied).
+        let (rd, editable, home) = match at {
             ResAt::Object(n) => match objs.get(&n).map(|e| &e.obj) {
-                Some(Object::Dict(d)) => (Some(d), true),
-                Some(o) => (res(objs, o).as_dict(), false),
-                None => (None, false),
+                Some(Object::Dict(d)) => (Some(d), true, Some(n)),
+                Some(o) => (res(objs, o).as_dict(), false, Some(n)),
+                None => (None, false, None),
             },
             ResAt::In(n) => match objs.get(&n).and_then(|e| e.obj.as_dict()).and_then(|d| d.get("Resources")) {
-                Some(Object::Dict(d)) => (Some(d), true),
-                _ => (None, false),
+                Some(Object::Dict(d)) => (Some(d), true, Some(n)),
+                _ => (None, false, None),
             },
-            // Not in the file any more: only a `/Properties` value that is a reference is read (and edited) below.
             ResAt::Old(page) => match flats.iter().find(|f| f.page.object == page).and_then(old_resources) {
-                Some(Object::Dict(d)) => (Some(d), false),
-                _ => (None, false),
+                Some(Object::Dict(d)) => (Some(d), false, None),
+                _ => (None, false, None),
             },
         };
         let Some(rd) = rd else { continue };
-        let Some(pv) = rd.get(PROPERTIES) else { continue };
-        if matches!(at, ResAt::Old(_)) && !matches!(pv, Object::Ref(_)) {
-            // Written inside the replaced page dictionary: it left the file with the page.
-            continue;
-        }
-        let (props, place) = match pv {
-            Object::Dict(p) if editable => (Some(p), Some(PropsAt::Inline(at))),
+        let Some(pv) = rd.get(PROPERTIES).filter(|v| !matches!(v, Object::Null)) else { continue };
+        let (props, place, props_home) = match pv {
+            Object::Dict(p) => (Some(p), if editable { Some(PropsAt::Inline(at)) } else { None }, home),
             Object::Ref(r) => match objs.get(&r.num).map(|e| &e.obj) {
-                Some(Object::Dict(p)) => (Some(p), Some(PropsAt::Object(r.num))),
-                Some(o) => (res(objs, o).as_dict(), None),
-                None => (None, None),
+                Some(Object::Dict(p)) => (Some(p), Some(PropsAt::Object(r.num)), Some(r.num)),
+                Some(o) => (res(objs, o).as_dict(), None, Some(r.num)),
+                None => (None, None, None),
             },
-            o => (res(objs, o).as_dict(), None),
+            o => (res(objs, o).as_dict(), None, home),
         };
         let Some(props) = props else { continue };
         if !seen.insert(ptr(props)) {
@@ -1363,7 +1375,19 @@ fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usa
             plan.counted = plan.counted.saturating_add(1);
         }
         let unnamed: Vec<&(Vec<u8>, Object)> = props.entries.iter().filter(|(k, _)| !used.contains(k)).collect();
+        // R27-P1: the objects every reached dictionary's unnamed entries name, also when the dictionary left the file.
         plan.candidates.extend(unnamed.iter().filter_map(|(_, v)| v.as_ref()).map(|r| r.num));
+        let Some(holder) = props_home else {
+            // Written inside the replaced page or the emptied node: it left the file; its inline lists left with it.
+            continue;
+        };
+        if kept_reach.contains(&holder) {
+            // DIAG-PRESS-R27: a dictionary a kept page reaches is not purged per entry; an unnamed inline list with text counts.
+            if unnamed.iter().any(|(_, v)| matches!(v, Object::Dict(_)) && property_text(objs, v)) {
+                plan.counted = plan.counted.saturating_add(1);
+            }
+            continue;
+        }
         match place {
             Some(place) if !unnamed.is_empty() => plan.remove.push((place, unnamed.iter().map(|(k, _)| k.clone()).collect())),
             Some(_) => {}
