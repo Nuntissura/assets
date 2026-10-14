@@ -90,8 +90,10 @@
 //!   `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`.
 //! - Marked-content property lists ([`drop_painted_sources`], PLR-104, Operator-confirmed plan 2026-10-14): `/Properties` is a
 //!   gated category too. In every `/Properties` dictionary the old page reached (in its own `/Resources` object, a `/Properties`
-//!   object its own `/Resources` named, the `/Resources` a kept page received from a node of its `/Parent` chain, and the
-//!   `/Resources` of every stream and Type 3 font it reached), every entry that no `BDC` or `DP` of the content read names is
+//!   object its own `/Resources` named, the `/Resources` object or `/Properties` object it inherited from a `/Pages` node also
+//!   when a kept page names that object from its own `/Resources` (R26-P1), the `/Resources` a kept page received from a node of
+//!   its `/Parent` chain, and the `/Resources` of every stream and Type 3 font it reached), every entry that no `BDC` or `DP` of
+//!   the content read names is
 //!   removed, inline dictionaries and references alike; the entries kept content names stay (with their text: kept content
 //!   invokes them), an optional-content group a kept page names among them. Counted in `RedactedOutput::residual_in_region`
 //!   (fail closed, `region_flattened` false, `NotProven::ResidualInRegion`): such a dictionary whose scope's content could not be
@@ -1232,8 +1234,9 @@ enum ResAt {
     Object(u32),
     /// The `/Resources` value written inside object `n` (a page, a stream or a Type 3 font) is the resource dictionary.
     In(u32),
-    /// The old page's own `/Resources` was written inside the page dictionary (replaced by the flatten): only a `/Properties`
-    /// object it names is still in the file (`Flat::old` of the flattened page `n`).
+    /// The `/Resources` the old page read was written inside the page dictionary (replaced by the flatten) or inside the `/Pages`
+    /// node it inherited it from (emptied by `detach_from_page_tree`, R26-P1): only a `/Properties` object it names is still in
+    /// the file (`old_resources` of the flattened page `n`).
     Old(u32),
 }
 
@@ -1266,8 +1269,16 @@ fn property_text(objs: &Objs, o: &Object) -> bool {
     res(objs, o).as_dict().is_some_and(|d| PROPERTY_TEXT_KEYS.iter().any(|k| holds(d, k)))
 }
 
-/// The resource dictionaries the old pages reached and where they live now (PLR-104): an old page's own `/Resources` object
-/// (a dictionary another page may share), the `/Resources` a kept page received from a node of a flattened page's `/Parent`
+/// The `/Resources` value the old page read: its own, else the one it inherited from the nearest node of its `/Parent` chain
+/// that has one (`Flat::inherited_resources`, R26-P1), as written there.
+fn old_resources(f: &Flat) -> Option<&Object> {
+    f.old.get("Resources").or(f.inherited_resources.as_ref())
+}
+
+/// The resource dictionaries the old pages reached and where they live now (PLR-104): the `/Resources` object an old page read
+/// (its own or, R26-P1, the one it inherited from a `/Pages` node; a dictionary another page may share, also as its own
+/// `/Resources`), the `/Properties` object named by the `/Resources` dictionary an old page read when that dictionary was written
+/// inside the page or the node (`ResAt::Old`), the `/Resources` a kept page received from a node of a flattened page's `/Parent`
 /// chain (`Flat::heirs`), and the `/Resources` of every stream and Type 3 font the old page reached (`Flat::sources`).
 fn reached_resources(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>) -> BTreeSet<ResAt> {
     let mut out = BTreeSet::new();
@@ -1277,7 +1288,7 @@ fn reached_resources(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>) -> BT
         _ => None,
     };
     for f in flats {
-        match f.old.get("Resources") {
+        match old_resources(f) {
             Some(Object::Ref(r)) => {
                 out.insert(ResAt::Object(r.num));
             }
@@ -1327,7 +1338,7 @@ fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usa
                 _ => (None, false),
             },
             // Not in the file any more: only a `/Properties` value that is a reference is read (and edited) below.
-            ResAt::Old(page) => match flats.iter().find(|f| f.page.object == page).and_then(|f| f.old.get("Resources")) {
+            ResAt::Old(page) => match flats.iter().find(|f| f.page.object == page).and_then(old_resources) {
                 Some(Object::Dict(d)) => (Some(d), false),
                 _ => (None, false),
             },

@@ -229,6 +229,23 @@ pub(crate) struct Flat {
     /// ([`detach_from_page_tree`]): the resource dictionaries the old page inherited now live there
     /// (`flatten_purge.rs` purges their property lists, PLR-104). The same set for every flattened page.
     pub heirs: BTreeSet<u32>,
+    /// The `/Resources` value the old page inherited (R26-P1): when the page had none of its own, the value of the nearest node
+    /// of its `/Parent` chain that has one, as written there (a reference, or a dictionary written inside the node). A kept page
+    /// that has its own `/Resources` naming the same object is not an heir, so `flatten_purge.rs` reads this too (PLR-104).
+    pub inherited_resources: Option<Object>,
+}
+
+/// The value of `key` on the nearest node of `page`'s `/Parent` chain (not the page itself), as written there, unresolved.
+fn inherited_raw(doc: &PdfDoc, page: u32, key: &str) -> Option<Object> {
+    let mut num = doc.dict_of(page)?.get("Parent")?.as_ref()?.num;
+    for _ in 0..doc.limits.depth_cap() {
+        let d = doc.dict_of(num)?;
+        if let Some(v) = d.get(key) {
+            return Some(v.clone());
+        }
+        num = d.get("Parent")?.as_ref()?.num;
+    }
+    None
 }
 
 fn refuse(c: FlattenCause) -> PressError {
@@ -593,6 +610,7 @@ pub(crate) fn flatten_region_pages(doc: &mut PdfDoc, regions: &[RedactionRegion]
         let (w, h) = raster_size(vb, &doc.limits)?;
         let mut notes = BTreeSet::new();
         let old = doc.dict_of(page).cloned().ok_or(PressError::Malformed("page_node"))?;
+        let inherited_resources = if old.get("Resources").is_none() { inherited_raw(doc, page, "Resources") } else { None };
         let annots = viewer_annotations(doc, page);
         if !annots.is_empty() {
             notes.insert(FlattenNote::Annotations);
@@ -645,7 +663,7 @@ pub(crate) fn flatten_region_pages(doc: &mut PdfDoc, regions: &[RedactionRegion]
         let generation = doc.objects.get(&page).map(|e| e.generation).unwrap_or(0);
         doc.objects.insert(page, Entry { generation, obj: Object::Dict(p), span: None, data_at: None });
         let page_out = FlattenedPage { page_index: index, object: page, width_px: w, height_px: h, notes: notes.into_iter().collect() };
-        out.push(Flat { page: page_out, old, annots, sources, heirs: BTreeSet::new() });
+        out.push(Flat { page: page_out, old, annots, sources, heirs: BTreeSet::new(), inherited_resources });
     }
     let flat: BTreeSet<u32> = out.iter().map(|f| f.page.object).collect();
     let heirs = detach_from_page_tree(doc, &flat)?;
