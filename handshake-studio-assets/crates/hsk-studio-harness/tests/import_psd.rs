@@ -163,6 +163,8 @@ fn unknown_and_not_yet_importable_formats_are_typed_refusals() {
         let (code, detail) = code(bytes).expect("refused, never a fake success");
         assert_eq!(detail["format"], format, "{code}");
         let reaches_importer = match format {
+            // With import-pdf a stub PDF reaches press, whose typed refusal passes through.
+            "pdf" => cfg!(feature = "import-pdf"),
             "camera_raw" => cfg!(feature = "import-raw"),
             "tiff" => cfg!(feature = "import-raw") || cfg!(feature = "import-tiff"),
             _ => false,
@@ -174,8 +176,7 @@ fn unknown_and_not_yet_importable_formats_are_typed_refusals() {
             assert!(code == "format_unavailable" || detail["importer_code"] == code, "{format}: {code}");
         } else {
             assert_eq!(code, "format_unavailable", "{format}");
-            let reason = if format == "pdf" { "importer_not_implemented" } else { "feature_not_enabled" };
-            assert_eq!(detail["reason"], reason, "{format}");
+            assert_eq!(detail["reason"], "feature_not_enabled", "{format}");
         }
     }
     assert_eq!(sniff(b"8BPS\0\x02"), Some(SourceFormat::Psb));
@@ -196,8 +197,14 @@ fn unknown_and_not_yet_importable_formats_are_typed_refusals() {
     assert!(!run.open_import(b"%PDF-1.4"));
     let report = run.finish("import");
     assert_eq!(report["verdict"], "fail");
-    assert_eq!(report["ops"][0]["error"], "format_unavailable");
-    assert_eq!(report["ops"][0]["detail"]["import"]["feature"], "import-pdf");
+    if cfg!(feature = "import-pdf") {
+        // A truncated PDF is press's typed refusal, passed through unchanged.
+        assert_eq!(report["ops"][0]["detail"]["import"]["format"], "pdf", "{report}");
+        assert_eq!(report["ops"][0]["detail"]["import"]["importer_code"], report["ops"][0]["error"], "{report}");
+    } else {
+        assert_eq!(report["ops"][0]["error"], "format_unavailable");
+        assert_eq!(report["ops"][0]["detail"]["import"]["feature"], "import-pdf");
+    }
 }
 
 /// Test scratch directory under TMP, removed on drop (TMP is on D: through studio-env.sh).

@@ -4,10 +4,10 @@
 //! Each importer is an explicitly selected provider behind its own feature (no default features):
 //! `import-psd` (PSD/PSB through `hsk-studio-interop-psd`), `import-raw` (DNG and the camera raw
 //! containers `hsk-studio-develop` decodes) and `import-tiff` (plain TIFF through
-//! `hsk-studio-interop-tiff`, SMB-CONVERT-TIFF). A detected format whose importer is not in this
-//! build, or does not exist yet (PDF in this slice), is the typed refusal
-//! `format_unavailable` naming the format, the feature and the reason; unknown bytes are
-//! `format_unrecognised`. Nothing is reported as imported that was not (tests in `tests/import_psd.rs`).
+//! `hsk-studio-interop-tiff`, SMB-CONVERT-TIFF), `import-pdf` (PDF through `hsk-studio-press`:
+//! carried, not imported; module `pdf`). A detected format whose importer is not in this build is
+//! the typed refusal `format_unavailable` naming the format, the feature and the reason; unknown
+//! bytes are `format_unrecognised`. Nothing is reported as imported that was not (tests in `tests/import_psd.rs`).
 //!
 //! The converted package carries, next to the document and its digest-keyed tile assets, the typed
 //! import entries of `hsk-studio-package` (CN-2): the importer's standalone records (when it produced
@@ -135,17 +135,14 @@ impl std::error::Error for ImportError {}
 /// Largest source the harness reads (equal to the PSD importer's and the package's entry bound).
 pub const MAX_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Importers that do not exist yet in any build (typed refusal, never a fake success).
-#[cfg(feature = "import")]
-fn not_implemented(format: SourceFormat) -> ImportError {
-    ImportError::FormatUnavailable { format, feature: format.feature(), reason: "importer_not_implemented" }
-}
-
 #[cfg(feature = "import")]
 pub use with_package::*;
 
 #[cfg(feature = "import-tiff")]
 mod tiff;
+
+#[cfg(feature = "import-pdf")]
+mod pdf;
 
 #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
 mod colour;
@@ -154,11 +151,11 @@ mod colour;
 mod with_package {
     use super::*;
     use hsk_studio_accord::CancellationToken;
-    use hsk_studio_folio::{self as folio, Resolver, Snapshot};
-    use hsk_studio_package::{
-        Extras, ImportEntry, ImportRole, Limits as PackageLimits, MemoryAssetSource, WriteOptions, write_package_with,
-    };
-    use serde_json::{Value, json};
+    use hsk_studio_folio::{Resolver, Snapshot};
+    use hsk_studio_package::{Extras, ImportEntry, Limits as PackageLimits, MemoryAssetSource, WriteOptions, write_package_with};
+    use serde_json::Value;
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    use {hsk_studio_folio as folio, hsk_studio_package::ImportRole, serde_json::json};
 
     /// What an importer produced, ready to be written as a native container.
     pub struct ImportedDocument {
@@ -202,7 +199,7 @@ mod with_package {
             SourceFormat::Psd | SourceFormat::Psb => psd_route(bytes, format, resolver, cancel),
             SourceFormat::Tiff => tiff_family(bytes, resolver, cancel),
             SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel),
-            SourceFormat::Pdf => Err(not_implemented(format)),
+            SourceFormat::Pdf => pdf_route(bytes, resolver, cancel),
         }
     }
 
@@ -220,6 +217,17 @@ mod with_package {
     #[cfg(not(feature = "import-psd"))]
     fn psd_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format, feature: format.feature(), reason: "feature_not_enabled" })
+    }
+
+    /// `%PDF-`: carried, not imported (feature `import-pdf`, module `pdf`).
+    #[cfg(feature = "import-pdf")]
+    fn pdf_route(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        super::pdf::import_pdf(bytes, resolver, cancel)
+    }
+
+    #[cfg(not(feature = "import-pdf"))]
+    fn pdf_route(_: &[u8], _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        Err(ImportError::FormatUnavailable { format: SourceFormat::Pdf, feature: "import-pdf", reason: "feature_not_enabled" })
     }
 
     #[cfg(not(feature = "import-raw"))]
@@ -450,13 +458,13 @@ mod with_package {
     /// Deterministic standalone identity minting for converted documents: UUIDv7-shaped ids whose
     /// first 48 bits are the source digest's and whose tail is a counter. The same source always
     /// converts to the same ids (byte-identical packages); it is a stand-in for a host `IdMint`.
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-pdf"))]
     pub struct SourceMint {
         seed: String,
         n: u64,
     }
 
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-pdf"))]
     impl SourceMint {
         pub fn new(sha256: &[u8; 32]) -> Self {
             let hex: String = sha256.iter().take(6).map(|b| format!("{b:02x}")).collect();
@@ -466,11 +474,20 @@ mod with_package {
 
         /// Ids outside the counter range (`ffff` + `k`), for objects that are not document
         /// identities (colour profile and conversion resource ids).
+        #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
         pub(crate) fn reserved(&self, prefix: &str, k: u32) -> String {
             format!("{prefix}-{}-7000-8000-ffff{k:08x}", self.seed)
         }
 
-        fn next(&mut self, prefix: &str) -> String {
+        /// Same seed as [`SourceMint::new`] from the lowercase hex SHA-256 of the source.
+        #[cfg(feature = "import-pdf")]
+        pub(crate) fn from_sha256_hex(hex: &str) -> Self {
+            let head = hex.get(..12).unwrap_or("000000000000");
+            let (time_high, time_low) = head.split_at(8);
+            Self { seed: format!("{time_high}-{time_low}"), n: 0 }
+        }
+
+        pub(crate) fn next(&mut self, prefix: &str) -> String {
             self.n = self.n.saturating_add(1);
             format!("{prefix}-{}-7000-8000-{:012x}", self.seed, self.n)
         }

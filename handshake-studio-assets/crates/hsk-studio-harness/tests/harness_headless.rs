@@ -307,6 +307,7 @@ fn quiet_sources_use_no_process_network_or_environment_api() {
         ("import.rs", include_str!("../src/import.rs")),
         ("import/tiff.rs", include_str!("../src/import/tiff.rs")),
         ("import/colour.rs", include_str!("../src/import/colour.rs")),
+        ("import/pdf.rs", include_str!("../src/import/pdf.rs")),
     ];
     for (name, text) in sources {
         for token in ["std::process", "Command::new", "std::net", "TcpStream", "UdpSocket", "std::env", "env::var"] {

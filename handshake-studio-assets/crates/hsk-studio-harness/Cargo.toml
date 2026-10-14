@@ -10,6 +10,7 @@ import = ["dep:hsk-studio-package"]
 import-psd = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism"]
 import-raw = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-develop"]
 import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-tiff"]
+import-pdf = ["import", "dep:hsk-studio-press"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
@@ -21,6 +22,7 @@ hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", defau
 hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-interop-tiff = { path = "../hsk-studio-interop-tiff", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 
