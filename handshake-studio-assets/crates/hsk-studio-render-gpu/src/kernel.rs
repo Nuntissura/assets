@@ -30,6 +30,10 @@ pub(crate) const PARAMS_BYTES: u64 = 64;
 pub(crate) const TEXEL_BYTES: u64 = 16;
 /// Bytes per mask texel: coverage f32.
 pub(crate) const MASK_TEXEL_BYTES: u64 = 4;
+/// Bytes of the resample parameter block (`resample.wgsl` `ResampleParams`).
+pub(crate) const RESAMPLE_PARAMS_BYTES: u64 = 48;
+/// Bytes of one per-pixel sample site of the resample pass.
+pub(crate) const SITE_BYTES: u64 = 16;
 
 /// WGSL bodies of `fn blend_<key>(b: f32, s: f32) -> f32` (b = backdrop, s = source), copied
 /// operation-for-operation from `hsk_studio_pigment::blend_math` (W3C Compositing 1 s10.1 and the
@@ -331,6 +335,9 @@ pub(crate) struct Kernel {
     /// Layer-effect matte passes (`fx.wgsl`, its own module and bind group layout).
     pipeline_fx: wgpu::ComputePipeline,
     layout_fx: wgpu::BindGroupLayout,
+    /// Layer-transform resampling (`resample.wgsl`, lane SMB-PIGMENT-TRANSFORM).
+    pipeline_resample: wgpu::ComputePipeline,
+    layout_resample: wgpu::BindGroupLayout,
 }
 
 impl Kernel {
@@ -440,6 +447,37 @@ impl Kernel {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        // Layer-transform resampling: 0 uniform parameters, 1 per-pixel sample sites, 2 the source
+        // window, 3 the region-sized output (the composite pass's source buffer).
+        let layout_resample = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu resample layout"),
+            entries: &[
+                entry(0, wgpu::BufferBindingType::Uniform),
+                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(3, wgpu::BufferBindingType::Storage { read_only: false }),
+            ],
+        });
+        let pipeline_layout_resample =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("hsk-studio-render-gpu resample pipeline layout"),
+                bind_group_layouts: &[&layout_resample],
+                push_constant_ranges: &[],
+            });
+        let resample_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hsk-studio-render-gpu resample"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "resample.wgsl"
+            ))),
+        });
+        let pipeline_resample = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("hsk-studio-render-gpu resample"),
+            layout: Some(&pipeline_layout_resample),
+            module: &resample_module,
+            entry_point: Some("resample"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
         match crate::device::block_on_bounded(device.pop_error_scope(), None) {
             Some(None) => Ok(Self {
                 pipeline,
@@ -449,6 +487,8 @@ impl Kernel {
                 layout_ext,
                 pipeline_fx,
                 layout_fx,
+                pipeline_resample,
+                layout_resample,
             }),
             Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
             None => Err(GpuError::Pipeline("shader_validation_timeout")),
@@ -523,6 +563,41 @@ impl Kernel {
                 },
             ],
         })
+    }
+
+    /// Bind group of the resample pass: parameters, sample sites, source window, output.
+    pub(crate) fn bind_resample(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        sites: &wgpu::Buffer,
+        window: &wgpu::Buffer,
+        out: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = [params, sites, window, out]
+            .into_iter()
+            .zip(0u32..)
+            .map(|(buffer, binding)| wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            })
+            .collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu resample bind"),
+            layout: &self.layout_resample,
+            entries: &entries,
+        })
+    }
+
+    /// One resample pass over `width` x `height` texels (bind group from [`Kernel::bind_resample`]).
+    pub(crate) fn dispatch_resample(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_resample, encoder, bind, width, height);
     }
 
     pub(crate) fn bind(

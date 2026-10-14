@@ -400,8 +400,24 @@ impl PreparedTransform {
                     wx,
                     wy,
                     n,
+                    tx,
+                    ty,
                 }
             }
+        }
+    }
+
+    /// The sampling decision of destination pixel `(x, y)` (see [`SampleSite`]).
+    pub fn sample_site(&self, x: i64, y: i64) -> SampleSite {
+        match self.taps(x, y) {
+            Taps::None => SampleSite::Transparent,
+            Taps::Exact(column, row) => SampleSite::Texel { column, row },
+            Taps::Filtered { x0, y0, tx, ty, .. } => SampleSite::Filtered {
+                first_column: x0,
+                first_row: y0,
+                tx,
+                ty,
+            },
         }
     }
 
@@ -426,7 +442,9 @@ impl PreparedTransform {
         match self.taps(x, y) {
             Taps::None => Ok([0.0; 4]),
             Taps::Exact(i, j) => texel(i, j),
-            Taps::Filtered { x0, y0, wx, wy, n } => {
+            Taps::Filtered {
+                x0, y0, wx, wy, n, ..
+            } => {
                 let (mut a, mut p) = (0.0f64, [0.0f64; 3]);
                 for (dj, wyj) in wy.iter().take(n).enumerate() {
                     let Some(j) = self.tap_index(y0.saturating_add(dj as i64), self.src.height)
@@ -471,7 +489,9 @@ impl PreparedTransform {
         match self.taps(x, y) {
             Taps::None => Ok(0.0),
             Taps::Exact(i, j) => value(i, j),
-            Taps::Filtered { x0, y0, wx, wy, n } => {
+            Taps::Filtered {
+                x0, y0, wx, wy, n, ..
+            } => {
                 let mut sum = 0.0f64;
                 for (dj, wyj) in wy.iter().take(n).enumerate() {
                     let Some(j) = self.tap_index(y0.saturating_add(dj as i64), self.src.height)
@@ -501,6 +521,28 @@ enum Taps {
         wx: [f64; 4],
         wy: [f64; 4],
         n: usize,
+        tx: f64,
+        ty: f64,
+    },
+}
+
+/// Where destination pixel `(x, y)` samples the source ([`PreparedTransform::sample_site`]): the
+/// geometry half of the reference, exposed so a backend that evaluates the filter itself (render-gpu,
+/// binary32) reads the same decisions (rules 1, 2 and 5) and binary64 positions as this module.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SampleSite {
+    /// Transparent / zero coverage.
+    Transparent,
+    /// Exactly this texel (rule 1, or nearest).
+    Texel { column: u32, row: u32 },
+    /// Bilinear (2 taps per axis) or bicubic (4) from `first_column`, `first_row`; `tx`, `ty` in
+    /// `[0, 1)` are the fractions the weights are taken at ([`catmull_rom`] for bicubic, `1 - t, t`
+    /// for bilinear). Taps outside the source follow the edge mode.
+    Filtered {
+        first_column: i64,
+        first_row: i64,
+        tx: f64,
+        ty: f64,
     },
 }
 

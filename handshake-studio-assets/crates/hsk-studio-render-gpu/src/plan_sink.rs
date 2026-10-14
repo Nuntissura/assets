@@ -35,13 +35,16 @@ use crate::fx::{
     margin_of, params_bytes,
 };
 use crate::kernel::{
-    LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES, SourceKind, TEXEL_BYTES, gpu_adjust_supported,
-    gpu_blend_supported,
+    LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES, RESAMPLE_PARAMS_BYTES, SITE_BYTES, SourceKind,
+    TEXEL_BYTES, gpu_adjust_supported, gpu_blend_supported,
 };
 use crate::residency::{Residency, ResidentKey};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::effect_math::EffectKind;
+use hsk_studio_pigment::transform_math::{
+    EdgeMode, PreparedTransform, ResampleFilter, SampleSite, TransformError,
+};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MASK_DENSITY_OPERATOR,
@@ -93,8 +96,25 @@ struct MaskView<'a> {
     density: f32,
     /// Index into `Prepared::feathered` of the blurred coverage of this layer's region.
     feather: Option<usize>,
+    /// A linked mask of a transformed layer: resampled on the host by pigment's binary64
+    /// `PreparedTransform::sample_coverage` (bit-identical to render-cpu), zero outside the plane.
+    xform: Option<PreparedTransform>,
 }
 impl MaskView<'_> {
+    /// [`MaskView::raw`], or the resampled coverage of a transformed (linked) mask.
+    fn stored(&self, x: i64, y: i64) -> f32 {
+        let Some(t) = &self.xform else {
+            return self.raw(x, y);
+        };
+        let (bx, by) = (self.bounds.x, self.bounds.y);
+        t.sample_coverage(x, y, |i, j| {
+            Ok::<f32, ()>(self.raw(
+                bx.saturating_add(i64::from(i)),
+                by.saturating_add(i64::from(j)),
+            ))
+        })
+        .unwrap_or(0.0)
+    }
     /// Stored coverage before feather, inversion and density. Same conversion as render-cpu: f64
     /// division, one rounding to f32. Inside a plain execution `(x, y)` stays inside the verified
     /// plane bounds. A plan with layer effects evaluates frames that reach beyond the target, and
@@ -134,7 +154,7 @@ impl MaskView<'_> {
     fn coverage(&self, feathered: &[FeatherPlane], x: i64, y: i64) -> f32 {
         let c = match self.feather.and_then(|i| feathered.get(i)) {
             Some(plane) => plane.at(x, y),
-            None => self.raw(x, y),
+            None => self.stored(x, y),
         };
         if self.inverted { 1.0 - c } else { c }
     }
@@ -171,10 +191,21 @@ enum PNode<'a> {
         layers: Vec<PLayer<'a>>,
         isolated: bool,
     },
+    /// A tile resampled through a layer transform (envelope `LayerExtension::transform`): a node of
+    /// `Prepared::extra`, evaluated by the resample pass (`resample.wgsl`).
+    Transformed {
+        planes: TilePlanes<'a>,
+        prep: PreparedTransform,
+    },
 }
 struct Prepared<'a> {
     nodes: Vec<PNode<'a>>,
     bounds: Vec<Option<Rect>>,
+    /// Transformed-tile nodes, addressed as `nodes.len() + k` by the layers that use them.
+    extra: Vec<PNode<'a>>,
+    extra_bounds: Vec<Option<Rect>>,
+    /// Texels of the largest transformed tile: the resample source window is sized to hold it.
+    transform_window_texels: u64,
     /// Extra destination levels an evaluation of the node needs below its own destination.
     need: Vec<usize>,
     root: usize,
@@ -196,6 +227,30 @@ struct Prepared<'a> {
     /// Margin in pixels every chunk is evaluated with beyond its own rectangle: the largest sum,
     /// along any chain of nested layers with effects, of the margins the effects read.
     frame_margin: u32,
+}
+
+impl<'a> Prepared<'a> {
+    /// Node `index` of the plan, or transformed-tile node `index - nodes.len()`.
+    fn node(&self, index: usize) -> Result<&PNode<'a>, GpuError> {
+        match index.checked_sub(self.nodes.len()) {
+            None => self.nodes.get(index),
+            Some(k) => self.extra.get(k),
+        }
+        .ok_or_else(|| unsupported("plan_shape"))
+    }
+    /// Bounds of [`Prepared::node`] `index`.
+    fn bound(&self, index: usize) -> Option<Rect> {
+        match index.checked_sub(self.bounds.len()) {
+            None => self.bounds.get(index).copied().flatten(),
+            Some(k) => self.extra_bounds.get(k).copied().flatten(),
+        }
+    }
+}
+fn transform_invalid(node: u32, error: TransformError) -> GpuError {
+    GpuError::Backend(BackendError::InvalidPlan(PlanError::TransformMatrix {
+        node,
+        error,
+    }))
 }
 
 fn unsupported(operator: &'static str) -> GpuError {
@@ -411,6 +466,9 @@ fn prepare<'a>(
     let mut fx_window_ops = 1u64;
     // Per node: the margin a chunk must be evaluated with so the effects inside it read real data.
     let mut margins: Vec<u32> = Vec::with_capacity(n);
+    let mut extra: Vec<PNode<'a>> = Vec::new();
+    let mut extra_bounds: Vec<Option<Rect>> = Vec::new();
+    let mut transform_window_texels = 0u64;
     for (i, node) in plan.nodes.iter().enumerate() {
         if !reach[i] {
             nodes.push(PNode::Unused);
@@ -515,8 +573,47 @@ fn prepare<'a>(
                         _ => None,
                     };
                     let clipped = l.mask.as_ref().is_some_and(|m| m.is_clip_to_base());
+                    // Layer transform (envelope): the layer reads a transformed-tile node of
+                    // `extra`. Pigment validated the tile input, the combinations and the matrix;
+                    // kept as defence in depth with pigment's error values.
+                    let node_id = u32::try_from(i).map_err(|_| overflow())?;
+                    let mut mask_transform = None;
+                    let (source_index, content_bounds) =
+                        match layer_ext.and_then(|x| x.transform.as_ref()) {
+                            None => (input, bounds[input]),
+                            Some(t) => {
+                                let PNode::Tile { planes, rect } = &nodes[input] else {
+                                    return Err(GpuError::Backend(BackendError::InvalidPlan(
+                                        PlanError::TransformTarget { node: node_id },
+                                    )));
+                                };
+                                if fx.is_some()
+                                    || (t.transform_mask
+                                        && layer_ext.is_some_and(|x| x.mask_feather_px > 0.0))
+                                {
+                                    return Err(GpuError::Backend(BackendError::InvalidPlan(
+                                        PlanError::TransformCombination { node: node_id },
+                                    )));
+                                }
+                                let prep = PreparedTransform::new(t, *rect)
+                                    .map_err(|e| transform_invalid(node_id, e))?;
+                                if t.transform_mask {
+                                    mask_transform = Some(*t);
+                                }
+                                transform_window_texels = transform_window_texels.max(
+                                    u64::from(rect.width).saturating_mul(u64::from(rect.height)),
+                                );
+                                let at = n.checked_add(extra.len()).ok_or_else(overflow)?;
+                                extra.push(PNode::Transformed {
+                                    planes: *planes,
+                                    prep,
+                                });
+                                extra_bounds.push(Some(prep.bounds()));
+                                (at, Some(prep.bounds()))
+                            }
+                        };
                     let layer_region =
-                        bounds[input].and_then(|b| intersect(b, target.extent).ok().flatten());
+                        content_bounds.and_then(|b| intersect(b, target.extent).ok().flatten());
                     let mask = match &l.mask {
                         None => None,
                         // Clip-to-base carries no plane: the coverage is the base alpha.
@@ -547,7 +644,10 @@ fn prepare<'a>(
                             {
                                 return Err(mismatch(m.key));
                             }
-                            if let Some(region) = layer_region
+                            // A transformed (linked) mask has zero coverage outside its resampled
+                            // plane by definition: no gap to check.
+                            if mask_transform.is_none()
+                                && let Some(region) = layer_region
                                 && !plane.bounds.contains(region).map_err(|_| overflow())?
                             {
                                 return Err(mismatch(m.key));
@@ -561,6 +661,10 @@ fn prepare<'a>(
                                 inverted: m.inverted,
                                 density: m.density,
                                 feather: None,
+                                xform: mask_transform
+                                    .map(|t| PreparedTransform::new(&t, plane.bounds))
+                                    .transpose()
+                                    .map_err(|e| transform_invalid(node_id, e))?,
                             };
                             // Mask feather (envelope): Gaussian blur of the stored coverage over the
                             // layer's region, on the host with pigment's taps, before inversion and
@@ -626,7 +730,7 @@ fn prepare<'a>(
                     // The layer's bounds grow by its effect margin; the margin of the node is the
                     // largest chain sum of effect margins through nested groups.
                     let layer_margin = fx.as_ref().map_or(0, |f| f.margin);
-                    let layer_bounds = match (bounds[input], fx.as_ref()) {
+                    let layer_bounds = match (content_bounds, fx.as_ref()) {
                         (Some(b), Some(f)) => Some(grow_rect(b, f.margin)?),
                         (b, _) => b,
                     };
@@ -641,7 +745,7 @@ fn prepare<'a>(
                     );
                     group_bounds = union(group_bounds, layer_bounds)?;
                     layers.push(PLayer {
-                        input,
+                        input: source_index,
                         clipped,
                         mode: l.mode,
                         opacity: l.opacity * l.fill_opacity,
@@ -657,9 +761,13 @@ fn prepare<'a>(
                 // below G, each member's isolated child.
                 // A layer with effects also holds its content frame one level below its own.
                 let child_depth = |k: usize| {
-                    let below = match &plan.nodes[layers[k].input] {
-                        PlanNode::Group(c) if c.isolated => need[layers[k].input].saturating_add(1),
-                        PlanNode::Group(_) => need[layers[k].input],
+                    // A transformed-tile node (index past the plan) is a leaf.
+                    let input = layers[k].input;
+                    let below = match plan.nodes.get(input) {
+                        Some(PlanNode::Group(c)) if c.isolated => {
+                            need.get(input).copied().unwrap_or(0).saturating_add(1)
+                        }
+                        Some(PlanNode::Group(_)) => need.get(input).copied().unwrap_or(0),
                         _ => 0,
                     };
                     if layers[k].fx.is_some() {
@@ -715,6 +823,9 @@ fn prepare<'a>(
     Ok(Prepared {
         nodes,
         bounds,
+        extra,
+        extra_bounds,
+        transform_window_texels,
         need,
         root,
         reachable: reach.iter().filter(|r| **r).count() as u64,
@@ -1118,7 +1229,8 @@ impl RenderBackend<NoVector> for GpuBackend {
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
             | ExtOperator::MaskFeather
-            | ExtOperator::EffectsNested => true,
+            | ExtOperator::EffectsNested
+            | ExtOperator::Transform(_) => true,
             ExtOperator::AlphaPremultiplied => false,
             ExtOperator::Adjustment(kind) => gpu_adjust_supported(kind),
             ExtOperator::Effect(kind) => matches!(
@@ -1202,8 +1314,20 @@ fn texel_bytes(width: u32, height: u32) -> u64 {
 enum Src<'x, 'a> {
     Solid([f32; 4]),
     Tile(&'x TilePlanes<'a>, Rect),
+    /// A tile resampled through a layer transform by the resample pass.
+    Transformed(&'x TilePlanes<'a>, &'x PreparedTransform),
     /// The finished group buffer of the next nesting level.
     Chunk,
+}
+
+/// Device buffers of the resample pass (only when a layer is transformed): the parameter block,
+/// the per-pixel sample sites (frame-sized), the source window (the largest transformed tile) and
+/// the bind group that writes the result into `Exec::src`.
+struct ResampleBuffers {
+    params: wgpu::Buffer,
+    sites: wgpu::Buffer,
+    window: wgpu::Buffer,
+    bind: wgpu::BindGroup,
 }
 
 /// Envelope device buffers and bind groups (only when a layer uses Blend-If or an adjustment).
@@ -1238,6 +1362,7 @@ struct Exec<'e> {
     binds_chunk: Vec<wgpu::BindGroup>,
     ext: Option<ExtBuffers>,
     fx: Option<FxBuffers>,
+    resample: Option<ResampleBuffers>,
     /// Blur kernels of the plan's effects (the passes index into it).
     kernels: &'e FxKernels,
     /// Blurred mask coverage of the envelope's feathered layers (`MaskView::feather` indexes it).
@@ -1322,6 +1447,10 @@ impl Exec<'_> {
         let kind = match source {
             Src::Solid(rgba) => SourceKind::Solid(rgba),
             Src::Chunk => SourceKind::Chunk,
+            Src::Transformed(planes, prep) => {
+                self.resample(planes, prep, region)?;
+                SourceKind::Region
+            }
             Src::Tile(planes, placement) => {
                 self.upload.clear();
                 for y in 0..i64::from(region.height) {
@@ -1387,6 +1516,132 @@ impl Exec<'_> {
                     .dispatch(&mut encoder, bind, region.width, region.height);
             }
         }
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+
+    /// Resample `region` of a transformed tile into `src` (region-sized, row-major): the sample
+    /// sites come from pigment `PreparedTransform::sample_site` (binary64, the reference's geometry),
+    /// the source window is the tile rect covering every tap of the region, and `resample.wgsl`
+    /// evaluates the filter in binary32.
+    fn resample(
+        &mut self,
+        planes: &TilePlanes<'_>,
+        prep: &PreparedTransform,
+        region: Rect,
+    ) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let Some(rs) = self.resample.as_ref() else {
+            return Err(unsupported("plan_shape"));
+        };
+        let taps: i64 = match prep.filter() {
+            ResampleFilter::Bicubic => 4,
+            _ => 2,
+        };
+        let (tw, th) = (i64::from(planes.width), i64::from(planes.height));
+        let clamp_edge = prep.edge() == EdgeMode::Clamp;
+        let (mut lo_x, mut lo_y, mut hi_x, mut hi_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        let mut sites: Vec<u8> = Vec::new();
+        let last = |len: i64| len.saturating_sub(1);
+        for y in 0..i64::from(region.height) {
+            for x in 0..i64::from(region.width) {
+                let site = prep.sample_site(region.x.saturating_add(x), region.y.saturating_add(y));
+                let (c, r, tx, ty, span) = match site {
+                    SampleSite::Transparent => (0, 0, -1.0_f32, 0.0_f32, 0),
+                    SampleSite::Texel { column, row } => {
+                        (i64::from(column), i64::from(row), -2.0, 0.0, 1)
+                    }
+                    SampleSite::Filtered {
+                        first_column,
+                        first_row,
+                        tx,
+                        ty,
+                    } => (first_column, first_row, tx as f32, ty as f32, taps),
+                };
+                if span > 0 {
+                    // The texels these taps read (clamped into the tile: a tap outside reads the
+                    // edge texel in clamp mode and nothing in transparent mode).
+                    let end = |v: i64| v.saturating_add(span).saturating_sub(1);
+                    let (x0, x1) = (c.clamp(0, last(tw)), end(c).clamp(0, last(tw)));
+                    let (y0, y1) = (r.clamp(0, last(th)), end(r).clamp(0, last(th)));
+                    let inside_x = clamp_edge || (end(c) >= 0 && c < tw);
+                    let inside_y = clamp_edge || (end(r) >= 0 && r < th);
+                    if inside_x && inside_y {
+                        lo_x = lo_x.min(x0);
+                        hi_x = hi_x.max(x1);
+                        lo_y = lo_y.min(y0);
+                        hi_y = hi_y.max(y1);
+                    }
+                }
+                let word = |v: i64| i32::try_from(v).map(i32::to_ne_bytes).map_err(|_| overflow());
+                sites.extend_from_slice(&word(c)?);
+                sites.extend_from_slice(&word(r)?);
+                sites.extend_from_slice(&tx.to_ne_bytes());
+                sites.extend_from_slice(&ty.to_ne_bytes());
+            }
+        }
+        // The source window (empty when nothing in the region reads the tile).
+        self.upload.clear();
+        let (sx, sy, sw, sh) = if lo_x <= hi_x && lo_y <= hi_y {
+            for row in lo_y..=hi_y {
+                for column in lo_x..=hi_x {
+                    let (cx, cy) = (
+                        u32::try_from(column).map_err(|_| overflow())?,
+                        u32::try_from(row).map_err(|_| overflow())?,
+                    );
+                    for v in tile_pixel(planes, cx, cy) {
+                        self.upload.extend_from_slice(&v.to_ne_bytes());
+                    }
+                }
+            }
+            let side = |a: i64, b: i64| {
+                b.checked_sub(a)
+                    .and_then(|d| d.checked_add(1))
+                    .and_then(|d| u32::try_from(d).ok())
+                    .ok_or_else(overflow)
+            };
+            (lo_x, lo_y, side(lo_x, hi_x)?, side(lo_y, hi_y)?)
+        } else {
+            (0, 0, 0, 0)
+        };
+        if !self.upload.is_empty() {
+            ctx.queue.write_buffer(&rs.window, 0, &self.upload);
+        }
+        ctx.queue.write_buffer(&rs.sites, 0, &sites);
+        let filter: u32 = match prep.filter() {
+            ResampleFilter::Bicubic => 2,
+            _ => 1,
+        };
+        let word_i = |v: i64| i32::try_from(v).map(i32::to_ne_bytes).map_err(|_| overflow());
+        let mut params: Vec<u8> = Vec::with_capacity(48);
+        for w in [
+            region.width.to_ne_bytes(),
+            region.height.to_ne_bytes(),
+            word_i(sx)?,
+            word_i(sy)?,
+            sw.to_ne_bytes(),
+            sh.to_ne_bytes(),
+            planes.width.to_ne_bytes(),
+            planes.height.to_ne_bytes(),
+            filter.to_ne_bytes(),
+            u32::from(clamp_edge).to_ne_bytes(),
+            0u32.to_ne_bytes(),
+            0u32.to_ne_bytes(),
+        ] {
+            params.extend_from_slice(&w);
+        }
+        ctx.queue.write_buffer(&rs.params, 0, &params);
+        self.stats.bytes_uploaded = self.stats.bytes_uploaded.saturating_add(
+            u64::try_from(sites.len().saturating_add(self.upload.len())).unwrap_or(u64::MAX),
+        );
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu resample"),
+            });
+        ctx.kernel
+            .dispatch_resample(&mut encoder, &rs.bind, region.width, region.height);
         ctx.queue.submit(Some(encoder.finish()));
         self.stats.dispatches = self.stats.dispatches.saturating_add(1);
         Ok(())
@@ -1624,7 +1879,7 @@ fn source_pass(
     } else {
         layer.blend_if.as_ref()
     };
-    match &prep.nodes[layer.input] {
+    match prep.node(layer.input)? {
         // Isolated: own transparent buffer one level down, then composited as a source.
         PNode::Group { isolated: true, .. } => {
             ex.clear(
@@ -1654,6 +1909,17 @@ fn source_pass(
             chunk,
             level,
             Src::Tile(planes, *rect),
+        ),
+        PNode::Transformed { planes, prep } => ex.composite(
+            layer.mode,
+            layer.opacity,
+            mask,
+            blend_if,
+            pass,
+            region,
+            chunk,
+            level,
+            Src::Transformed(planes, prep),
         ),
         PNode::Solid { rgba } if rgba[3] <= 0.0 => Ok(()),
         PNode::Solid { rgba } => ex.composite(
@@ -1689,7 +1955,8 @@ fn eval_layer(
     if layer.opacity <= 0.0 {
         return Ok(());
     }
-    let Some(region) = prep.bounds[layer.input]
+    let Some(region) = prep
+        .bound(layer.input)
         .map(|b| intersect(b, chunk))
         .transpose()?
         .flatten()
@@ -1698,7 +1965,7 @@ fn eval_layer(
     };
     // Pass-through: the child's layers composite onto this level's running backdrop.
     if matches!(
-        prep.nodes[layer.input],
+        prep.node(layer.input)?,
         PNode::Group {
             isolated: false,
             ..
@@ -1727,7 +1994,7 @@ fn eval_effect_layer(
         return Ok(());
     }
     // Content outside the frame is farther than the margin from every pixel that is kept.
-    let Some(bounds) = prep.bounds[layer.input] else {
+    let Some(bounds) = prep.bound(layer.input) else {
         return Ok(());
     };
     let Some(content_region) = intersect(bounds, chunk)? else {
@@ -1739,7 +2006,7 @@ fn eval_effect_layer(
     let content = level.saturating_add(1);
     ex.clear(content, texel_bytes(chunk.width, chunk.height));
     let mask = layer.mask.as_ref();
-    match &prep.nodes[layer.input] {
+    match prep.node(layer.input)? {
         PNode::Group { isolated: true, .. } => {
             let below = content.saturating_add(1);
             ex.clear(below, texel_bytes(chunk.width, chunk.height));
@@ -1766,6 +2033,17 @@ fn eval_effect_layer(
             chunk,
             content,
             Src::Tile(planes, *rect),
+        )?,
+        PNode::Transformed { planes, prep } => ex.composite(
+            StudioBlendMode::Normal,
+            1.0,
+            mask,
+            None,
+            Pass::Normal,
+            content_region,
+            chunk,
+            content,
+            Src::Transformed(planes, prep),
         )?,
         PNode::Solid { rgba } if rgba[3] <= 0.0 => {}
         PNode::Solid { rgba } => ex.composite(
@@ -1831,7 +2109,8 @@ fn eval_clip_run(
     if base.opacity <= 0.0 {
         return Ok(());
     }
-    let Some(base_region) = prep.bounds[base.input]
+    let Some(base_region) = prep
+        .bound(base.input)
         .map(|b| intersect(b, chunk))
         .transpose()?
         .flatten()
@@ -1847,7 +2126,8 @@ fn eval_clip_run(
             continue;
         }
         // Content outside the base has zero alpha in G, so only the overlap can change.
-        let Some(region) = prep.bounds[clipped.input]
+        let Some(region) = prep
+            .bound(clipped.input)
             .map(|b| intersect(b, base_region))
             .transpose()?
             .flatten()
@@ -1920,6 +2200,14 @@ fn run(
     let margin = prepared.frame_margin;
     let margin2 = margin.checked_mul(2).ok_or_else(overflow)?;
     let masked = prepared.has_masks || fx_on;
+    // Layer transforms: per frame texel one sample site, plus the parameter block and a source
+    // window that holds the largest transformed tile.
+    let transform_on = !prepared.extra.is_empty();
+    let window_bytes = if transform_on {
+        mul_bytes(prepared.transform_window_texels.max(1), TEXEL_BYTES)?
+    } else {
+        0
+    };
     let per_texel = sum_bytes(&[
         mul_bytes(
             TEXEL_BYTES,
@@ -1927,6 +2215,7 @@ fn run(
         )?,
         if masked { MASK_TEXEL_BYTES } else { 0 },
         if fx_on { FX_PLANE_TEXEL_BYTES } else { 0 },
+        if transform_on { SITE_BYTES } else { 0 },
     ])?;
     let fixed = sum_bytes(&[
         PARAMS_BYTES,
@@ -1934,6 +2223,11 @@ fn run(
         if masked { 0 } else { MASK_TEXEL_BYTES },
         ext_fixed,
         if fx_on { FXP_BYTES } else { 0 },
+        if transform_on {
+            sum_bytes(&[RESAMPLE_PARAMS_BYTES, window_bytes])?
+        } else {
+            0
+        },
     ])?;
     let limit = request.max_working_bytes.min(residency.budget_bytes());
     let by_budget = limit
@@ -2030,6 +2324,15 @@ fn run(
     } else {
         0
     };
+    let sites_bytes = mul_bytes(frame_texels, SITE_BYTES)?;
+    let resample_total = if transform_on {
+        residency.reserve(ResidentKey::Scratch("resample_params"), RESAMPLE_PARAMS_BYTES)?;
+        residency.reserve(ResidentKey::Scratch("resample_sites"), sites_bytes)?;
+        residency.reserve(ResidentKey::Scratch("resample_window"), window_bytes)?;
+        sum_bytes(&[RESAMPLE_PARAMS_BYTES, sites_bytes, window_bytes])?
+    } else {
+        0
+    };
     let total = sum_bytes(&[
         mul_bytes(frame_bytes, levels_u64)?,
         chunk_bytes,
@@ -2038,11 +2341,22 @@ fn run(
         PARAMS_BYTES,
         ext_fixed,
         fx_total,
+        resample_total,
     ])?;
     let device = &ctx.device;
     let queue = &ctx.queue;
-    let (levels, staging, src, mask, params, binds_tile, binds_chunk, ext_buffers, fx_buffers) =
-        scoped(device, total, limit, || {
+    let (
+        levels,
+        staging,
+        src,
+        mask,
+        params,
+        binds_tile,
+        binds_chunk,
+        ext_buffers,
+        fx_buffers,
+        resample_buffers,
+    ) = scoped(device, total, limit, || {
             let buffer = |label, size, usage| {
                 device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some(label),
@@ -2138,6 +2452,32 @@ fn run(
                     binds_chunk,
                 }
             });
+            let resample_buffers = transform_on.then(|| {
+                let params = buffer(
+                    "hsk-studio-render-gpu resample params",
+                    RESAMPLE_PARAMS_BYTES,
+                    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                );
+                let sites = buffer(
+                    "hsk-studio-render-gpu resample sites",
+                    sites_bytes,
+                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                );
+                let window = buffer(
+                    "hsk-studio-render-gpu resample window",
+                    window_bytes,
+                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                );
+                let bind = ctx
+                    .kernel
+                    .bind_resample(device, &params, &sites, &window, &src);
+                ResampleBuffers {
+                    params,
+                    sites,
+                    window,
+                    bind,
+                }
+            });
             (
                 levels,
                 staging,
@@ -2148,6 +2488,7 @@ fn run(
                 binds_chunk,
                 ext_buffers,
                 fx_buffers,
+                resample_buffers,
             )
         })?;
 
@@ -2163,6 +2504,7 @@ fn run(
         binds_chunk,
         ext: ext_buffers,
         fx: fx_buffers,
+        resample: resample_buffers,
         kernels: &prepared.fx_kernels,
         feathered: &prepared.feathered,
         upload: Vec::new(),
