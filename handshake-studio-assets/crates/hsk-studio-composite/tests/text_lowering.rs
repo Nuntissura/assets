@@ -1,7 +1,7 @@
 //! SMB-COMPOSITE-TEXT: text layers lower to a Solid fill masked by Type's coverage_u8 plane.
 //! Expected shapes are derived by hand from the fixture; fonts are the hash-pinned OFL fixtures of
-//! hsk-studio-type (V4-03). Executing these plans on render-cpu / render-gpu is NOT_PROVEN here:
-//! no crate may depend on composite and a renderer (module law; lane file blocker B1).
+//! hsk-studio-type (V4-03). render-cpu and render-gpu execute the same plan (text_layer_render_plan)
+//! in their tests/text_render.rs (decision B1: renderers dev-depend on composite).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::*;
 use hsk_studio_folio::TileRef;
@@ -165,11 +165,13 @@ fn text_layer_lowers_with_pinned_digest() {
         let digest = hex(&plan.digest().unwrap());
         println!("text_plan digest={digest} plane_sha256={}", hex(&plane.sha256));
         assert_eq!(digest, PLAN_DIGEST, "lowered plan anchor");
+        // The Folio-free entry point the renderer tests execute is the same plan, byte for byte.
+        assert_eq!(text_layer_render_plan(&text, &identity("SLYR", 3), 7, target()).unwrap(), low);
         // Deterministic: a second preparation and lowering give identical bytes.
         let again = hi(&resolution(), FILL).unwrap();
         assert_eq!(again, text);
         assert_eq!(lowered(&doc(None), &again).0, low);
-        println!("NOT_PROVEN: render-cpu / render-gpu execution of the lowered text plan (no allowed edge joins composite and a renderer; blocker B1)");
+        // Executed by render-cpu tests/text_render.rs (pinned digest) and render-gpu tests/text_render.rs.
     });
 }
 

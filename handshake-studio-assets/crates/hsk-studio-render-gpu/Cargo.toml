@@ -15,6 +15,10 @@ hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-f
 hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
 wgpu = { version = "=27.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "dx12", "metal"] }
 
+[dev-dependencies]
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
+
 [lib]
 path = "src/lib.rs"
 

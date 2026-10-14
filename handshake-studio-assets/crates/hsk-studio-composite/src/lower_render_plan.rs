@@ -494,6 +494,50 @@ pub fn lower_to_render_plan_extended(
     })
 }
 
+/// Folio-free plan for one prepared text layer rendered as its own neutral root: the same emitter
+/// and node layout as a text root lowered from a document ([`lower_inner`]), so the plans are equal
+/// (test `tests/text_lowering.rs` `text_layer_lowers_with_pinned_digest`).
+pub(crate) fn text_root_plan(
+    plane: &crate::text::TextPlane,
+    revision: u64,
+    target: OutputTarget,
+) -> Result<(RenderLowering, crate::text::TextMaskTable), CompositeError> {
+    let none = |_: &TileRef| None;
+    let mut out = Emitter {
+        nodes: Vec::new(),
+        sources: Vec::new(),
+        mask_sources: Vec::new(),
+        text_masks: Vec::new(),
+        next_key: 0,
+        info: &none,
+    };
+    let root = out.text(plane)?.ok_or_else(|| {
+        CompositeError::Unavailable(format!("{}:text_layer_empty", plane.layer_id))
+    })?;
+    let render = RenderPlan {
+        revision,
+        target,
+        nodes: out.nodes,
+        root,
+    };
+    let operators = render
+        .validate(&PlanLimits::default())
+        .map_err(CompositeError::Plan)?;
+    let mut exactness = ExactnessLedger::default();
+    for op in operators {
+        exactness.record(op.key(), op.intrinsic());
+    }
+    Ok((
+        RenderLowering {
+            plan: render,
+            sources: out.sources,
+            mask_sources: out.mask_sources,
+            exactness,
+        },
+        out.text_masks,
+    ))
+}
+
 /// `text`: prepared text planes (crate::text); `None` keeps every text layer unsupported.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_inner(

@@ -21,7 +21,7 @@
 //! Documents without text are lowered by the unchanged static path (byte-identical plans).
 use crate::evaluate_static::{EvalReport, evaluate_with};
 use crate::lower_plan::{LoweredPlan, NodeAddr};
-use crate::lower_render_plan::{RenderLowering, TileInfoSource, lower_inner};
+use crate::lower_render_plan::{RenderLowering, TileInfoSource, lower_inner, text_root_plan};
 use crate::CompositeError;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::Snapshot;
@@ -268,6 +268,26 @@ pub fn lower_to_render_plan_with_text(
 ) -> Result<TextRenderLowering, CompositeError> {
     let (lowering, _, _, text_masks) =
         lower_inner(plan, report, snap, None, root, target, info, Some(text))?;
+    Ok(TextRenderLowering {
+        lowering,
+        text_masks,
+    })
+}
+
+/// One prepared text layer as a standalone render plan (no Folio document): exactly the plan
+/// [`lower_to_render_plan_with_text`] returns for that layer as a neutral root. For hosts that
+/// preview or re-render one text layer (and for the renderer parity tests, which cannot depend on
+/// Folio). `Unavailable <layer>:text_layer_not_prepared | text_layer_empty`.
+pub fn text_layer_render_plan(
+    text: &PreparedText,
+    layer_id: &str,
+    revision: u64,
+    target: OutputTarget,
+) -> Result<TextRenderLowering, CompositeError> {
+    let plane = text.plane(layer_id).ok_or_else(|| {
+        CompositeError::Unavailable(format!("{layer_id}:text_layer_not_prepared"))
+    })?;
+    let (lowering, text_masks) = text_root_plan(plane, revision, target)?;
     Ok(TextRenderLowering {
         lowering,
         text_masks,
