@@ -28,6 +28,7 @@
 #   ignored    per selected crate and feature set declared in [ignored] of .config/round-features.toml (an empty set =
 #              default features): -p CRATE [--features SET] --run-ignored only, own build + run under
 #              ignored/CRATE[+F1...]/ (the #[ignore]d oracle-corpus tests; absent sets as for features, exit 74).
+#              --canary builds these units without running them (corpus tests exceed the canary profile's cap).
 #   doctest   `cargo test --doc` per selected crate with a doctested lib target, default features and every
 #              declared set (the per-test runner does not run doctests): doctest/CRATE[+F1...].{stdout,stderr}.txt.
 #              Per-test timeout: doctests run serially (--test-threads=1), so libtest prints "test NAME ... " when a
@@ -652,6 +653,16 @@ while IFS=$'\t' read -r kind crate feats status; do
     nextest_unit "$results/features/$name" "$feats" -p "$crate"
     unlock_unit
     rec "features:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "features/$name"
+  elif [ "$kind" = ignored ] && [ $canary -eq 1 ]; then
+    # Canary: corpus sweeps exceed the canary profile's 30 s cap by design; build them (no run).
+    fa=(); [ "$feats" != - ] && fa=(--features "$feats")
+    mkdir -p "$results/ignored/$name"
+    lock_unit
+    cargo nextest run "${nx[@]}" --no-run ${locked[@]+"${locked[@]}"} -p "$crate" --run-ignored only ${fa[@]+"${fa[@]}"} \
+      >"$results/ignored/$name/build.stdout.txt" 2>"$results/ignored/$name/build.stderr.txt"
+    b=$?
+    unlock_unit
+    rec "ignored:$name" nextest "$crate" "$feats" run "$b" - "ignored/$name"
   elif [ "$kind" = ignored ]; then
     lock_unit
     nextest_unit "$results/ignored/$name" "$feats" -p "$crate" --run-ignored only
