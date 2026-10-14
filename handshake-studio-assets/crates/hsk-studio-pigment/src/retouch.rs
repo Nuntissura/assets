@@ -56,9 +56,9 @@ pub enum RetouchError {
     Shape,
     /// Spot healing found no candidate source region fully inside the sample plane.
     SpotHealNoSource,
-    /// A content-aware request this entry point cannot serve: the two-argument
-    /// [`content_aware_fill`] (no options or limits) and the crop expand option; the native
-    /// implementation is [`crate::content_aware`]. Refused, never approximated by another fill.
+    /// A content-aware request with no implementation. No pigment entry point returns it since lane
+    /// SMB-PIGMENT-CONTENT-AWARE-2 ([`content_aware_fill`] and the crop expand option call
+    /// [`crate::content_aware::fill`]); kept so callers matching the code keep compiling.
     ContentAwareUnsupported,
     /// Content-aware synthesis found no valid source patch (every candidate overlaps the hole,
     /// leaves the plane or lies outside the sampling area).
@@ -736,7 +736,7 @@ pub const SPOT_RING_PX: u32 = 2;
 /// lowest score wins, ties go to the earlier candidate. No candidate: typed
 /// [`RetouchError::SpotHealNoSource`]. Photoshop's spot healing ("Proximity Match" type) is the
 /// behavioural reference; its candidate search is UNVERIFIED (D5), class Approximate. The
-/// "Content-Aware" type is out of scope ([`content_aware_fill`]).
+/// "Content-Aware" type is the native fill ([`content_aware_fill`], [`crate::content_aware`]).
 pub fn spot_heal(
     target: &RgbaPlane,
     sample: &RgbaPlane,
@@ -805,16 +805,24 @@ pub fn spot_heal(
     heal_with_coverage(target, sample, &map, &cov, Some((ox, oy)), limits)
 }
 
-/// Legacy two-argument content-aware entry (lane SMB-PIGMENT-RETOUCH): it carries no options,
-/// sampling area or limits, so it keeps the typed refusal [`RetouchError::ContentAwareUnsupported`]
-/// (never another fill in its place). The native STU-RAS-143 implementation is
-/// [`crate::content_aware::fill`] (and `patch`, `content_aware_move`).
+/// Two-argument content-aware fill (lane SMB-PIGMENT-RETOUCH entry; since lane
+/// SMB-PIGMENT-CONTENT-AWARE-2 the native STU-RAS-143 fill): [`crate::content_aware::fill`] of
+/// `region` (coverage > 0) with `SamplingArea::Auto`, `ContentAwareOptions::default()` and
+/// `RetouchLimits::default()` (test `tests/content_aware_wiring.rs`). Callers that need options, a
+/// sampling area, limits or the quality receipt call `content_aware::fill` directly.
 pub fn content_aware_fill(
-    _target: &RgbaPlane,
-    _region: &CoveragePlane,
+    target: &RgbaPlane,
+    region: &CoveragePlane,
 ) -> Result<RetouchResult, RetouchError> {
-    Err(RetouchError::ContentAwareUnsupported)
+    crate::content_aware::fill(
+        target,
+        region,
+        crate::content_aware::SamplingArea::Auto,
+        &crate::content_aware::ContentAwareOptions::default(),
+        &RetouchLimits::default(),
+    )
+    .map(|r| r.result)
 }
 
 /// Retouch surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"retouch","version":1,"plane":"RgbaPlane{bounds, straight RGBA f32 in [0,1]}","clone_stamp":"CloneSource(source point, CloneOptions{aligned default true, source_rotation_deg -180..180 default 0, sample_scope current_layer|current_and_below|all_layers resolved by the caller, filter}) -> begin_stroke(first dab) -> CloneMap d = R(theta)(s - S) + A (A = first dab of the first stroke when aligned, of each stroke otherwise); sampled through transform_math PreparedTransform::sample_rgba (integer offset, no rotation = exact copy); painted source-over with alpha * stroke coverage (brush::stroke_coverage intersect selection), binary64, one binary32 rounding; zero coverage keeps bytes","heal":"heal(target, sample, CloneMap, footprint): membrane Poisson blend f = g + h, lap(h) = 0 in coverage>0 domain, h = d - g on its 4-neighbour boundary, Neumann beyond the target; SOR omega 1.9 row-major single thread, tolerance 1e-9, iteration cap min(max_work/domain, 16(w+h)+256); HealReceipt{iterations, converged, residual}; output d + c(f - d) premultiplied","spot_heal":"proximity match: 16 candidate displacements (m=1,2 x E,W,S,N,SE,SW,NE,NW, step = footprint size + 2 ring + 1), candidates fully inside the sample plane, score = squared premultiplied difference over the 2 px ring outside the footprint, lowest wins (ties: earlier), then heal; none = spot_heal_no_source","content_aware":"content_aware_fill refuses content_aware_unsupported (STU-RAS-143 gap)","class":"approximate","parity":"NOT_PROVEN (Photoshop clone/heal behaviour UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"retouch","version":1,"plane":"RgbaPlane{bounds, straight RGBA f32 in [0,1]}","clone_stamp":"CloneSource(source point, CloneOptions{aligned default true, source_rotation_deg -180..180 default 0, sample_scope current_layer|current_and_below|all_layers resolved by the caller, filter}) -> begin_stroke(first dab) -> CloneMap d = R(theta)(s - S) + A (A = first dab of the first stroke when aligned, of each stroke otherwise); sampled through transform_math PreparedTransform::sample_rgba (integer offset, no rotation = exact copy); painted source-over with alpha * stroke coverage (brush::stroke_coverage intersect selection), binary64, one binary32 rounding; zero coverage keeps bytes","heal":"heal(target, sample, CloneMap, footprint): membrane Poisson blend f = g + h, lap(h) = 0 in coverage>0 domain, h = d - g on its 4-neighbour boundary, Neumann beyond the target; SOR omega 1.9 row-major single thread, tolerance 1e-9, iteration cap min(max_work/domain, 16(w+h)+256); HealReceipt{iterations, converged, residual}; output d + c(f - d) premultiplied","spot_heal":"proximity match: 16 candidate displacements (m=1,2 x E,W,S,N,SE,SW,NE,NW, step = footprint size + 2 ring + 1), candidates fully inside the sample plane, score = squared premultiplied difference over the 2 px ring outside the footprint, lowest wins (ties: earlier), then heal; none = spot_heal_no_source","content_aware":"content_aware_fill(target, region) = content_aware::fill(target, region, auto, default options, default limits) (STU-RAS-143 native fill)","class":"approximate","parity":"NOT_PROVEN (Photoshop clone/heal behaviour UNVERIFIED, D5)"}"#;

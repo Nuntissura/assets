@@ -125,9 +125,14 @@ fn hostile_clone_inputs_are_typed_refusals_before_allocation() {
     assert_eq!(map.sample(&small, huge, &RetouchLimits::default()).unwrap_err().code(), "budget_exceeded");
     // Singular / non-finite maps.
     assert!(CloneMap::offset(f64::INFINITY, 0.0, ResampleFilter::Bilinear).is_err());
-    // Content-aware fill is a typed refusal.
+    // Content-aware fill is the native fill since SMB-PIGMENT-CONTENT-AWARE-2 (was a typed
+    // refusal): an empty region returns the target unchanged (fill proven in
+    // tests/content_aware_wiring.rs); a malformed region is still a typed refusal.
     let cov = hsk_studio_pigment::selection::CoveragePlane { bounds: rect(0, 0, 0, 0), data: vec![] };
-    assert_eq!(content_aware_fill(&small, &cov).unwrap_err().code(), "content_aware_unsupported");
+    let r = content_aware_fill(&small, &cov).unwrap();
+    assert_eq!((r.plane, r.damage), (small.clone(), None));
+    let bad = hsk_studio_pigment::selection::CoveragePlane { bounds: rect(0, 0, 2, 2), data: vec![1; 3] };
+    assert_eq!(content_aware_fill(&small, &bad).unwrap_err().code(), "retouch_shape");
 }
 
 fn grey(bounds: Rect, f: impl Fn(i64, i64) -> f32) -> RgbaPlane {
@@ -243,12 +248,15 @@ mod canvas {
         assert_eq!((r.canvas, r.offset), (rect(0, 0, 6, 4), (-3, -5)));
         assert_eq!(r.plane.at(0, 0), plane.at(3, 5));
         assert_eq!(r.plane.at(5, 3), plane.at(8, 8));
-        // Crop-expand beyond the plane reads transparent; content-aware expand is refused.
+        // Crop-expand beyond the plane reads transparent. Content-aware expand is the native fill
+        // since SMB-PIGMENT-CONTENT-AWARE-2 (was refused content_aware_unsupported): a 4 x 2 crop
+        // keeps too few pixels for one 7 x 7 source patch, so it is the fill's typed refusal (the
+        // fill itself is proven in tests/content_aware_wiring.rs).
         let r = crop(&plane, rect(14, 0, 4, 2), &o, &limits).unwrap();
         assert_eq!(r.plane.at(1, 0), plane.at(15, 0));
         assert_eq!(r.plane.at(2, 0), [0.0; 4]);
         let ca = CropOptions { content_aware_fill_on_expand: true, ..o };
-        assert_eq!(crop(&plane, rect(14, 0, 4, 2), &ca, &limits).unwrap_err().code(), "content_aware_unsupported");
+        assert_eq!(crop(&plane, rect(14, 0, 4, 2), &ca, &limits).unwrap_err().code(), "content_aware_no_source");
         // Keep cropped pixels: the plane only moves.
         let keep = CropOptions { delete_cropped_pixels: false, ..o };
         let r = crop(&plane, rect(3, 5, 6, 4), &keep, &limits).unwrap();

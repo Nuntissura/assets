@@ -16,10 +16,20 @@
 //!   background colour for a background layer: the caller's choice); content beyond the new canvas
 //!   is dropped.
 //! - Crop ([`crop`]): `rect` in document coordinates. Angle 0 is an exact integer copy; a
-//!   rectangle beyond the plane reads transparent there (crop-expand), and
-//!   `content_aware_fill_on_expand = true` is refused (`content_aware_unsupported`). With
+//!   rectangle beyond the plane reads transparent there (crop-expand). With
+//!   `content_aware_fill_on_expand = true` the newly exposed area is synthesized by the native
+//!   content-aware fill ([`crate::content_aware::fill`], lane SMB-PIGMENT-CONTENT-AWARE-2,
+//!   STU-RAS-143 "content-aware crop-expand"): the hole is every pixel where an opaque
+//!   mask of the plane bounds, cropped the same way, has alpha below 1 (so a rotated crop fills its
+//!   transparent corners and their anti-aliased edge), and the crop pixel is composited
+//!   source-over the fill there (a partly exposed pixel keeps its visible part); the sampling area
+//!   is every other pixel of the crop result (keep-pixels: the moved plane);
+//!   [`crop_content_aware`] takes the fill options and returns the quality receipt, [`crop`] uses
+//!   `ContentAwareOptions::default()` (test `tests/content_aware_wiring.rs`). With
 //!   `delete_cropped_pixels = false` (angle 0 only) the whole plane is kept and only moved by the
-//!   offset, so pixels outside the new canvas survive (hidden); a rotated crop that keeps pixels is
+//!   offset, so pixels outside the new canvas survive (hidden; with content-aware expand the plane
+//!   grows to the union of the moved plane and the canvas, and only the canvas pixels outside the
+//!   moved plane are filled); a rotated crop that keeps pixels is
 //!   refused (`crop_rotate_keep_pixels_unsupported`). A non-zero `angle_deg` (clockwise on screen,
 //!   y down; `-360..=360`) rotates the crop rectangle about its centre on the source and returns its
 //!   content upright: destination `d = R(-angle) (s - c) + (w/2, h/2)` resampled by the layer
@@ -35,7 +45,9 @@
 //! Hostile sizes (V4-01/02): output bytes are checked against [`RetouchLimits`] before
 //! allocation; integer arithmetic is checked.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::retouch::{RGBA_SAMPLE_BYTES, RetouchError, RetouchLimits, RgbaPlane, check_sample};
+use crate::content_aware::{ContentAwareOptions, ContentAwareReceipt, SamplingArea};
+use crate::retouch::{RGBA_SAMPLE_BYTES, RetouchError, RetouchLimits, RgbaPlane, check_sample, paint_over};
+use crate::selection::CoveragePlane;
 use crate::transform_math::{
     Affine2, EdgeMode, LayerTransform, PreparedTransform, ResampleFilter,
 };
@@ -209,8 +221,117 @@ pub fn crop_transform(rect: Rect, options: &CropOptions) -> LayerTransform {
     LayerTransform::new(affine, options.filter).with_edge(EdgeMode::Transparent)
 }
 
-/// Crop the plane to `rect` (document coordinates) with optional rotation.
+/// Crop the plane to `rect` (document coordinates) with optional rotation; a content-aware expand
+/// uses `ContentAwareOptions::default()` ([`crop_content_aware`]).
 pub fn crop(
+    plane: &RgbaPlane,
+    rect: Rect,
+    options: &CropOptions,
+    limits: &RetouchLimits,
+) -> Result<CanvasResult, RetouchError> {
+    crop_content_aware(plane, rect, options, &ContentAwareOptions::default(), limits).map(|(r, _)| r)
+}
+
+/// Crop like [`crop`]; when `content_aware_fill_on_expand` is set and the crop exposes area outside
+/// the plane, that area is synthesized by [`crate::content_aware::fill`] with `fill` (module docs)
+/// and its quality receipt is returned (`None` when no fill ran). The fill options are validated
+/// before any work (typed refusals of `content_aware::fill`); a crop result with nothing to sample
+/// is `content_aware_no_source`. Studio reading, class Approximate; Photoshop's crop-expand fill is
+/// UNVERIFIED (D5).
+pub fn crop_content_aware(
+    plane: &RgbaPlane,
+    rect: Rect,
+    options: &CropOptions,
+    fill: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<(CanvasResult, Option<ContentAwareReceipt>), RetouchError> {
+    if !options.content_aware_fill_on_expand {
+        return Ok((crop_plain(plane, rect, options, limits)?, None));
+    }
+    fill.validate()?;
+    let plain = crop_plain(plane, rect, options, limits)?;
+    let expands = !plane.bounds.contains(rect)? || options.angle_deg.rem_euclid(360.0) != 0.0;
+    if !expands {
+        return Ok((plain, None));
+    }
+    let CanvasResult { plane: cropped, canvas, offset, rotation_deg } = plain;
+    let mut blank: Vec<bool> = Vec::new();
+    let (target, hole, sampling) = if options.delete_cropped_pixels {
+        // Exposed = the pixels where an opaque mask of the plane bounds, cropped the same way, has
+        // alpha below 1 (`round((1 - alpha) 65535) > 0`); the hole is binary and the visible part
+        // of a partly exposed pixel is composited over the fill below.
+        let mask = RgbaPlane::filled(plane.bounds, [1.0; 4], limits)?;
+        let m = crop_plain(&mask, rect, options, limits)?;
+        let data = m
+            .plane
+            .data
+            .iter()
+            .map(|p| {
+                let open = ((1.0 - f64::from(p[3]).clamp(0.0, 1.0)) * f64::from(u16::MAX)).round();
+                if open > 0.0 { u16::MAX } else { 0 }
+            })
+            .collect();
+        (cropped, CoveragePlane { bounds: m.plane.bounds, data }, SamplingArea::Auto)
+    } else {
+        // Keep pixels (angle 0): the plane grows to the union of the moved plane and the canvas.
+        // Every union pixel outside the moved plane is synthesized (so no transparent filler
+        // enters a patch or the healing boundary); afterwards only the canvas pixels keep the fill
+        // and the pixels outside both the canvas and the moved plane return to transparent.
+        let moved = cropped.bounds;
+        let all = union_rect(moved, canvas)?;
+        let grown = place(&cropped, (0, 0), all, [0.0; 4], limits)?;
+        let n = limits.admit_area(all, 3)?;
+        let mut data = Vec::with_capacity(n);
+        blank = Vec::with_capacity(n);
+        let (ex, ey) = all.end()?;
+        let (mx, my) = moved.end()?;
+        let (cx, cy) = canvas.end()?;
+        for y in all.y..ey {
+            for x in all.x..ex {
+                let in_canvas = x >= canvas.x && y >= canvas.y && x < cx && y < cy;
+                let in_moved = x >= moved.x && y >= moved.y && x < mx && y < my;
+                data.push(if in_moved { 0 } else { u16::MAX });
+                blank.push(!in_moved && !in_canvas);
+            }
+        }
+        // Only the moved plane holds content: the rest of the union is never sampled.
+        (grown, CoveragePlane { bounds: all, data }, SamplingArea::Rectangular(moved))
+    };
+    let filled = crate::content_aware::fill(&target, &hole, sampling, fill, limits)?;
+    let mut out = filled.result.plane;
+    for (o, b) in out.data.iter_mut().zip(&blank) {
+        if *b {
+            *o = [0.0; 4];
+        }
+    }
+    // The visible part of a partly exposed pixel stays on top: crop pixel over the fill.
+    for (i, (o, h)) in out.data.iter_mut().zip(&hole.data).enumerate() {
+        if *h > 0
+            && let Some(d) = target.data.get(i)
+            && d[3] > 0.0
+        {
+            *o = paint_over(*o, *d, 1.0);
+        }
+    }
+    Ok((CanvasResult { plane: out, canvas, offset, rotation_deg }, Some(filled.receipt)))
+}
+
+/// Smallest rectangle containing `a` and `b` (checked).
+fn union_rect(a: Rect, b: Rect) -> Result<Rect, Error> {
+    let (ae, af) = a.end()?;
+    let (be, bf) = b.end()?;
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    let (e, f) = (ae.max(be), af.max(bf));
+    Ok(Rect {
+        x,
+        y,
+        width: u32::try_from(e.checked_sub(x).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?,
+        height: u32::try_from(f.checked_sub(y).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?,
+    })
+}
+
+/// The crop without content-aware expand (exposed area transparent).
+fn crop_plain(
     plane: &RgbaPlane,
     rect: Rect,
     options: &CropOptions,
@@ -230,12 +351,6 @@ pub fn crop(
         rect.x.checked_neg().ok_or(Error::Overflow)?,
         rect.y.checked_neg().ok_or(Error::Overflow)?,
     );
-    // Fail closed: a rotated crop with content-aware expand is refused without measuring whether
-    // its rotated corners leave the plane.
-    let expands = !plane.bounds.contains(rect)? || a.rem_euclid(360.0) != 0.0;
-    if expands && options.content_aware_fill_on_expand {
-        return Err(RetouchError::ContentAwareUnsupported);
-    }
     if a.rem_euclid(360.0) == 0.0 {
         if options.delete_cropped_pixels {
             let out = place(plane, offset, canvas, [0.0; 4], limits)?;
@@ -367,4 +482,4 @@ pub fn trim(
 }
 
 /// Canvas surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"canvas_ops","version":1,"canvas_resize":"anchor STU-RAS-141 1..9; offset = floor((W'-W) * {0,1/2,1}), floor((H'-H) * {0,1/2,1}); fill outside the old plane; content beyond the new canvas dropped","crop":"rect in document coordinates; angle 0 = exact integer copy, expand reads transparent, content_aware_fill_on_expand refused content_aware_unsupported, delete_cropped_pixels false keeps the moved plane; angle -360..360 (clockwise, y down) = transform_math layer transform d = R(-angle)(s - c) + (w/2, h/2), edge transparent, caller filter (default bicubic); rotated keep-pixels refused crop_rotate_keep_pixels_unsupported","trim":"basis transparent_pixels=0 (alpha 0) | top_left_pixel=1 | bottom_right_pixel=9 (exact four-component match); selected edges move to the content bounds; all trimmed refused trim_everything","class":"exact for integer copies, approximate for rotated crops","parity":"NOT_PROVEN (Photoshop centre rounding, crop angle sign, trim match rule UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"canvas_ops","version":1,"canvas_resize":"anchor STU-RAS-141 1..9; offset = floor((W'-W) * {0,1/2,1}), floor((H'-H) * {0,1/2,1}); fill outside the old plane; content beyond the new canvas dropped","crop":"rect in document coordinates; angle 0 = exact integer copy, expand reads transparent, content_aware_fill_on_expand = native content_aware::fill of the exposed pixels (cropped opaque bounds mask alpha < 1, crop pixel composited source-over the fill; keep-pixels: canvas outside the moved plane, plane grows to the union, sampling the moved plane) sampling the rest of the result (crop_content_aware takes the fill options and returns the receipt), delete_cropped_pixels false keeps the moved plane; angle -360..360 (clockwise, y down) = transform_math layer transform d = R(-angle)(s - c) + (w/2, h/2), edge transparent, caller filter (default bicubic); rotated keep-pixels refused crop_rotate_keep_pixels_unsupported","trim":"basis transparent_pixels=0 (alpha 0) | top_left_pixel=1 | bottom_right_pixel=9 (exact four-component match); selected edges move to the content bounds; all trimmed refused trim_everything","class":"exact for integer copies, approximate for rotated crops","parity":"NOT_PROVEN (Photoshop centre rounding, crop angle sign, trim match rule UNVERIFIED, D5)"}"#;
