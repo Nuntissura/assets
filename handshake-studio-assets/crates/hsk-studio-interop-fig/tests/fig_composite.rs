@@ -275,9 +275,7 @@ fn kurbo_bbox(p: &OwnedPath) -> [f64; 4] {
 }
 
 fn decode_png(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
-    assert_eq!(&bytes[..8], b"PNG
-
-");
+    assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
     let (mut at, mut idat) = (8usize, Vec::new());
     let (mut w, mut h, mut ct) = (0usize, 0usize, 0u8);
     while at + 8 <= bytes.len() {
