@@ -26,16 +26,13 @@ allowed = [
 [[fingerprint]]
 id = "D18"
 title = "worker process supervision (spawn, creation flags, kill/respawn)"
-owner = "hsk-studio-worker (D18 option (a), 2026-10-14); the three consumer copies stay allowed until the worker lane empties them"
+owner = "hsk-studio-worker (D18 option (a), 2026-10-14); consumer copies removed by SMB-WORKER-CRATE"
 patterns = [
   '\bCommand::new\s*\(',
   '\.creation_flags\s*\(',
 ]
 allowed = [
   "crates/hsk-studio-worker/src/",
-  "crates/hsk-studio-motion-js/src/quickjs_worker.rs",
-  "crates/hsk-studio-reel-native/src/host.rs",
-  "crates/hsk-studio-score-plugin/src/supervisor.rs",
 ]
 
 [[fingerprint]]
