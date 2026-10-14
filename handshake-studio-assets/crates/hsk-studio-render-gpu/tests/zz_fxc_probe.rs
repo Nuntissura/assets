@@ -71,17 +71,18 @@ fn probe() {
         variants.push((format!("only case {keep}"), s));
     }
     for (name, wgsl) in variants {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(wgsl)) });
-        let _p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
-            layout: Some(&pl),
-            module: &module,
-            entry_point: Some("filter_pass"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let err = block_on(device.pop_error_scope(), Some(&device));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(wgsl)) });
+            let _p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(&pl),
+                module: &module,
+                entry_point: Some("filter_pass"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        }));
+        let err: Option<String> = r.err().map(|_| "PANIC (pipeline creation failed)".to_string());
         println!("PROBE {name}: {}", err.map_or("ok".to_string(), |e| format!("{e}").replace('\n', " | ")));
     }
 }
