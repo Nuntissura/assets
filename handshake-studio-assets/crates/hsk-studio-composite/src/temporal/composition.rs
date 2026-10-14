@@ -21,6 +21,11 @@
 //!   `bilinear | bicubic` and no default; Folio stores no `resample_filter`, so this is the
 //!   adapter's stated reading).
 //!
+//! - Track mattes (STU-CMP-030): a layer's matte names ANOTHER layer of the same composition (any
+//!   stack position, one matte may serve several layers); the matte layer is evaluated at the tick
+//!   (its window, opacity, transform, parent chain and own matte; its `visible` flag does not
+//!   matter) and carried as [`SceneMatte`]; a matte source never renders on its own (STU-CMP-030:
+//!   by default the matte layer does not render); outside its window the matte is absent.
 //! - Precompositions (STU-MOT-005 `composition`): a layer whose record names a nested composition
 //!   (its Folio layer is a content-less `group`) shows that composition evaluated at the layer's
 //!   source tick ([`CompositionTemporalSource::source_tick`]: `start_time`, `stretch`, reverse);
@@ -35,25 +40,31 @@
 //!
 //! Refused typed (never ignored): records Folio refuses (`Document`), an unknown composition id
 //! (`DanglingInput`), a stale revision, layer content other than raster tiles or a null layer
-//! (`composition_layer_content`; a null layer is a Folio `group` layer with a `group` payload, since Folio binds no `null` kind), clipped or masked layers (`composition_layer_clipped`,
+//! (`composition_layer_content`; a null layer is a Folio `group` layer with a `group` payload,
+//! since Folio binds no `null` kind), clipped or masked layers (`composition_layer_clipped`,
 //! `composition_layer_mask`), a pass-through blend on a content layer, sampled opacity outside
 //! `0..=100` (`InvalidState`), a precomposition layer whose Folio payload is not a content-less
-//! group (`composition_precomp_payload`), a precomposition on the document-graph path
-//! (`composition_precomp_on_document_graph`) and track mattes
-//! (`composition_track_matte`) until their slices land. Not modelled: 3D layers, motion blur,
-//! expressions, frame blending, time remapping (Folio stores none of them).
+//! group (`composition_precomp_payload`), a precomposition, a matted layer or a matte source on
+//! the document-graph path (`composition_precomp_on_document_graph`,
+//! `composition_track_matte_on_document_graph`). Not modelled (Folio stores none of them, so
+//! nothing is dropped): 3D layers and cameras/lights, motion blur, expressions, frame blending,
+//! time remapping, `preserve_source_visibility` of a matte (the spec default, not rendered, is
+//! applied).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::motion::sample;
 use super::{LayerFrameState, LayerTiming, TemporalError, TemporalSource};
-use crate::composition::{SceneComposition, SceneContent, SceneLayer, SceneTile};
+use crate::composition::{
+    SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode, SceneTile,
+};
 use crate::evaluate_static::tile_rects;
 use crate::{CompositeError, TileInfoSource};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{
     Budget, Payload, ProfileBinding, Resolver, Snapshot, StudioComposition,
     StudioCompositionRecords, StudioInterpolation, StudioLayerProperty, StudioLayerTiming,
-    StudioPropertyStream, StudioRgba, TileRef, validate_composition_records,
+    StudioMatteMode, StudioPropertyStream, StudioRgba, StudioTrackMatte, TileRef,
+    validate_composition_records,
 };
 use hsk_studio_motion::{Interpolation, Keyframe, MotionError, Property, TemporalTangent};
 use hsk_studio_pigment::Rect;
@@ -75,7 +86,7 @@ pub const COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH: &str = "composition_precomp_on_
 /// Precomposition nesting bound of [`CompositionTemporalSource::scene_at`] (Folio refuses cycles;
 /// the record set holds at most 64 compositions).
 pub const MAX_PRECOMP_DEPTH: usize = 16;
-pub const COMPOSITION_TRACK_MATTE: &str = "composition_track_matte";
+pub const COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH: &str = "composition_track_matte_on_document_graph";
 pub const COMPOSITION_BACKGROUND_PROFILE: &str = "composition_background_profile";
 pub const COMPOSITION_BACKGROUND_LINEAR_LIGHT: &str = "composition_background_linear_light";
 
@@ -128,6 +139,7 @@ struct CompLayer {
     layer_id: String,
     timing: StudioLayerTiming,
     parent: Option<String>,
+    matte: Option<StudioTrackMatte>,
     visible: bool,
     mode: StudioBlendMode,
     opacity: f64,
@@ -339,9 +351,6 @@ impl CompositionTemporalSource {
                 .iter()
                 .find(|d| d.layer_id == l.layer_id)
                 .ok_or_else(|| CompositeError::DanglingInput(l.layer_id.clone()))?;
-            if l.track_matte.is_some() {
-                return Err(unsupported(id, COMPOSITION_TRACK_MATTE));
-            }
             let content = match (&l.precomp, &dl.payload) {
                 (Some(p), _) if p.collapse_transformations => {
                     return Err(unsupported(id, COMPOSITION_PRECOMP_COLLAPSE));
@@ -415,6 +424,7 @@ impl CompositionTemporalSource {
                 layer_id: l.layer_id.clone(),
                 timing: l.timing,
                 parent: l.parent.clone(),
+                matte: l.track_matte.clone(),
                 visible: dl.visible,
                 mode,
                 opacity: a.opacity_fraction(),
@@ -499,6 +509,18 @@ impl CompositionTemporalSource {
         match self.find(layer_id) {
             Some(l) if matches!(l.content, Content::Precomp { .. }) => {
                 Err(unsupported(layer_id, COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH))
+            }
+            Some(l)
+                if l.matte.is_some()
+                    || self.root().is_ok_and(|c| {
+                        c.layers.iter().any(|o| {
+                            o.matte
+                                .as_ref()
+                                .is_some_and(|m| m.source_layer_id == layer_id)
+                        })
+                    }) =>
+            {
+                Err(unsupported(layer_id, COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH))
             }
             other => Ok(other),
         }
@@ -629,53 +651,21 @@ impl CompositionTemporalSource {
         depth: usize,
         cancel: &CancellationToken,
     ) -> Result<SceneComposition, TemporalError> {
+        // Matte sources do not render on their own (STU-CMP-030 default).
+        let matte_sources: std::collections::BTreeSet<&str> = comp
+            .layers
+            .iter()
+            .filter_map(|l| l.matte.as_ref().map(|m| m.source_layer_id.as_str()))
+            .collect();
         let mut layers = Vec::new();
         for l in comp.layers.iter().rev() {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
-            let exists = u64::try_from(tick).is_ok_and(|t| l.timing.contains(t));
-            if !exists || !l.visible {
+            if !l.visible || matte_sources.contains(l.layer_id.as_str()) {
                 continue;
             }
-            let opacity_scale = Self::opacity_scale(l, tick, cancel)?;
-            let opacity = l.opacity * opacity_scale;
-            let content = match &l.content {
-                Content::None => SceneContent::None,
-                Content::Tiles { tiles, .. } => SceneContent::Tiles(tiles.clone()),
-                Content::Precomp { composition_id, .. } => {
-                    let nested = self
-                        .comps
-                        .get(composition_id)
-                        .ok_or_else(|| CompositeError::DanglingInput(composition_id.clone()))?;
-                    if depth >= MAX_PRECOMP_DEPTH {
-                        return Err(CompositeError::BudgetExceeded.into());
-                    }
-                    let source = map_source(&l.timing, tick).ok_or(CompositeError::Overflow)?;
-                    let inside = u64::try_from(source).is_ok_and(|t| t < nested.duration);
-                    let mut scene = if inside {
-                        let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
-                        self.scene_of(nested, source, depth, cancel)?
-                    } else {
-                        SceneComposition {
-                            composition_id: nested.composition_id.clone(),
-                            width: nested.width,
-                            height: nested.height,
-                            background: None,
-                            filter: self.filter,
-                            layers: Vec::new(),
-                        }
-                    };
-                    scene.background = None;
-                    SceneContent::Precomp(Box::new(scene))
-                }
-            };
-            layers.push(SceneLayer {
-                layer_id: l.layer_id.clone(),
-                content,
-                mode: l.mode,
-                opacity,
-                fill_opacity: l.fill_opacity,
-                matrix: Self::matrix(comp, l, tick, cancel)?,
-            });
+            if let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? {
+                layers.push(layer);
+            }
         }
         Ok(SceneComposition {
             composition_id: comp.composition_id.clone(),
@@ -685,6 +675,89 @@ impl CompositionTemporalSource {
             filter: self.filter,
             layers,
         })
+    }
+
+    /// One layer at `tick` (`None` outside its window), with its precomposition and matte chain.
+    fn layer_at(
+        &self,
+        comp: &Comp,
+        l: &CompLayer,
+        tick: i64,
+        depth: usize,
+        matte_depth: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SceneLayer>, TemporalError> {
+        let exists = u64::try_from(tick).is_ok_and(|t| l.timing.contains(t));
+        if !exists {
+            return Ok(None);
+        }
+        let opacity_scale = Self::opacity_scale(l, tick, cancel)?;
+        let opacity = l.opacity * opacity_scale;
+        let content = match &l.content {
+            Content::None => SceneContent::None,
+            Content::Tiles { tiles, .. } => SceneContent::Tiles(tiles.clone()),
+            Content::Precomp { composition_id, .. } => {
+                let nested = self
+                    .comps
+                    .get(composition_id)
+                    .ok_or_else(|| CompositeError::DanglingInput(composition_id.clone()))?;
+                if depth >= MAX_PRECOMP_DEPTH {
+                    return Err(CompositeError::BudgetExceeded.into());
+                }
+                let source = map_source(&l.timing, tick).ok_or(CompositeError::Overflow)?;
+                let inside = u64::try_from(source).is_ok_and(|t| t < nested.duration);
+                let mut scene = if inside {
+                    let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+                    self.scene_of(nested, source, depth, cancel)?
+                } else {
+                    SceneComposition {
+                        composition_id: nested.composition_id.clone(),
+                        width: nested.width,
+                        height: nested.height,
+                        background: None,
+                        filter: self.filter,
+                        layers: Vec::new(),
+                    }
+                };
+                scene.background = None;
+                SceneContent::Precomp(Box::new(scene))
+            }
+        };
+        let matte = match &l.matte {
+            None => None,
+            Some(m) => {
+                // Folio refuses matte loops; the chain is bounded by the layer count anyway.
+                if matte_depth >= comp.layers.len() {
+                    return Err(CompositeError::Cycle(l.layer_id.clone()).into());
+                }
+                let source = comp
+                    .layers
+                    .iter()
+                    .find(|o| o.layer_id == m.source_layer_id)
+                    .ok_or_else(|| CompositeError::DanglingInput(m.source_layer_id.clone()))?;
+                let next = matte_depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+                let layer = self
+                    .layer_at(comp, source, tick, depth, next, cancel)?
+                    .map(Box::new);
+                Some(SceneMatte {
+                    layer,
+                    mode: match m.mode {
+                        StudioMatteMode::Alpha => SceneMatteMode::Alpha,
+                        StudioMatteMode::Luma => SceneMatteMode::Luma,
+                    },
+                    inverted: m.inverted,
+                })
+            }
+        };
+        Ok(Some(SceneLayer {
+            layer_id: l.layer_id.clone(),
+            content,
+            mode: l.mode,
+            opacity,
+            fill_opacity: l.fill_opacity,
+            matrix: Self::matrix(comp, l, tick, cancel)?,
+            matte,
+        }))
     }
 }
 

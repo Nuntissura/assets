@@ -26,6 +26,16 @@
 //! [`SceneLimits::max_depth`] and every rendered surface counts against
 //! [`SceneLimits::max_surfaces`] and [`SceneLimits::max_surface_bytes`] BEFORE it is allocated.
 //!
+//! Track mattes ([`SceneMatte`], STU-CMP-030): the matte layer is rendered ALONE (its content,
+//! transform, opacity and its own matte; never its blend mode) over the composition rect by the
+//! same backend; its alpha (alpha matte) or `LUMA_WEIGHTS . rgb * alpha` (luma matte) becomes a
+//! `coverage_u16le` plane (`round(v * 65535)`) applied as the matted layer's coverage mask, inverted
+//! when the matte is inverted (pigment's mask invert), so it multiplies after transform and opacity
+//! and before the blend (STU-CMP-010 step 7). The exactness ledger records `track_matte`
+//! Approximate (16-bit quantisation; the luma weights and space are a Studio reading). A matte
+//! layer absent at the tick is coverage 0: the matted layer renders nothing, or everything when
+//! inverted.
+//!
 //! Everything a scene carries arrives from a caller and is bounded before use: layer count
 //! ([`SceneLimits::max_layers`]), nesting depth, surface count and bytes, non-finite or
 //! out-of-range opacities (`InvalidState`), cancellation between layers. Integer arithmetic is
@@ -35,10 +45,10 @@
 use crate::CompositeError;
 use crate::temporal::{TRANSFORM_MULTI_TILE_LAYER, TemporalError};
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pigment::blend_math::{ExactnessLedger, StudioBlendMode};
+use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger, StudioBlendMode};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, ColourTag, ExecuteRequest, Group, Layer, LayerExtension, OutputTarget,
-    PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
+    AlphaConvention, ColourTag, ExecuteRequest, Group, Layer, LayerExtension, MaskFormat,
+    MaskInput, OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
     RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter};
@@ -55,6 +65,14 @@ pub const DEFAULT_MAX_SCENE_DEPTH: usize = 16;
 pub const DEFAULT_MAX_SURFACES: usize = 256;
 /// Bytes per pixel of a rendered surface: `rgb_f32le` colour (12) + `f32le` alpha (4).
 pub const SURFACE_BYTES_PER_PIXEL: u64 = 16;
+/// Bytes per pixel of a track-matte coverage plane (`coverage_u16le`).
+pub const MATTE_BYTES_PER_PIXEL: u64 = 2;
+/// Exactness-ledger key of a track matte: the matte coverage is quantised to 16 bits and the
+/// luma weights are a Studio reading, so the class is `Approximate`.
+pub const TRACK_MATTE_KEY: &str = "track_matte";
+/// Luma weights of a luma matte (ITU-R BT.709 on the plan's colour values; After Effects'
+/// weights and space are UNVERIFIED, D5 oracle).
+pub const LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
 /// One caller tile of a layer's content, placed in the content's plan coordinates. `tile_id` is
 /// the caller's handle; [`ScenePixels::tile`] resolves it at execution.
@@ -81,6 +99,26 @@ pub enum SceneContent {
     Precomp(Box<SceneComposition>),
 }
 
+/// Which channel of the rendered matte layer becomes the coverage (STU-CMP-030 `channel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneMatteMode {
+    /// The matte layer's alpha.
+    Alpha,
+    /// The matte layer's luminance over transparent black: `LUMA_WEIGHTS . rgb * alpha`.
+    Luma,
+}
+
+/// A track matte (STU-CMP-030): ANOTHER layer, rendered alone with its own transform and opacity
+/// over the composition rect, whose alpha or luma becomes this layer's coverage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneMatte {
+    /// The matte layer at this tick; `None` = it does not exist at this tick (coverage 0, which
+    /// an inverted matte turns into full coverage).
+    pub layer: Option<Box<SceneLayer>>,
+    pub mode: SceneMatteMode,
+    pub inverted: bool,
+}
+
 /// One evaluated layer of a frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneLayer {
@@ -93,6 +131,8 @@ pub struct SceneLayer {
     pub fill_opacity: f64,
     /// Content plan coordinates -> composition pixels.
     pub matrix: Affine2,
+    /// Track matte applied after transform and opacity, before the blend (STU-CMP-010 step 7).
+    pub matte: Option<SceneMatte>,
 }
 
 /// One evaluated frame of a composition.
@@ -182,12 +222,22 @@ impl Surface {
     }
 }
 
+/// A track-matte coverage plane composite owns (`coverage_u16le`, composition rect).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MattePlane {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+    pub sha256: [u8; 32],
+}
+
 /// The owned source table of a lowered scene: plan keys -> caller tiles or owned surfaces.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneSources {
     pub space: ColourTag,
     pub tiles: BTreeMap<SourceKey, String>,
     pub surfaces: BTreeMap<SourceKey, Surface>,
+    pub mattes: BTreeMap<SourceKey, MattePlane>,
 }
 
 impl SceneSources {
@@ -196,6 +246,7 @@ impl SceneSources {
             space,
             tiles: BTreeMap::new(),
             surfaces: BTreeMap::new(),
+            mattes: BTreeMap::new(),
         }
     }
 
@@ -233,8 +284,20 @@ impl PlanSources for BoundSources<'_> {
         }
         self.pixels.tile(self.table.tiles.get(&key)?)
     }
-    fn mask(&self, _key: SourceKey) -> Option<Mask<'_>> {
-        None
+    fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
+        let m = self.table.mattes.get(&key)?;
+        Some(Mask {
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                width: m.width,
+                height: m.height,
+            },
+            sample_format: "coverage_u16le",
+            bytes: &m.bytes,
+            stride_bytes: u64::from(m.width).checked_mul(2)?,
+            sha256: m.sha256,
+        })
     }
 }
 
@@ -393,10 +456,12 @@ struct Charges {
 impl Charges {
     /// Charge one surface before it is allocated.
     fn surface(&mut self, ctx: &SceneContext<'_>, width: u32, height: u32) -> Result<(), TemporalError> {
-        let bytes = self
-            .bytes
-            .checked_add(surface_bytes(width, height)?)
-            .ok_or(CompositeError::Overflow)?;
+        self.charge(ctx, surface_bytes(width, height)?)
+    }
+
+    /// Charge one allocation of `bytes` (a surface or a matte plane) before it is made.
+    fn charge(&mut self, ctx: &SceneContext<'_>, bytes: u64) -> Result<(), TemporalError> {
+        let bytes = self.bytes.checked_add(bytes).ok_or(CompositeError::Overflow)?;
         let surfaces = self.surfaces.checked_add(1).ok_or(CompositeError::Overflow)?;
         if bytes > ctx.limits.max_surface_bytes || surfaces > ctx.limits.max_surfaces {
             return Err(CompositeError::BudgetExceeded.into());
@@ -476,7 +541,15 @@ fn lower_inner(
             SceneContent::Precomp(_) => true,
             SceneContent::None => false,
         };
-        if !has_content || layer.opacity == 0.0 || matches!(placement, Placement::Collapsed) {
+        let matte_empty = layer
+            .matte
+            .as_ref()
+            .is_some_and(|m| m.layer.is_none() && !m.inverted);
+        if !has_content
+            || layer.opacity == 0.0
+            || matte_empty
+            || matches!(placement, Placement::Collapsed)
+        {
             skipped.push(id.to_owned());
             continue;
         }
@@ -560,6 +633,25 @@ fn lower_inner(
                 LayerTransform::new(layer.matrix, scene.filter),
             ));
         }
+        let mask = match &layer.matte {
+            None => None,
+            Some(matte) => {
+                let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+                let plane = matte_plane(scene, id, matte, ctx, cancel, depth, charges, &mut exactness)?;
+                exactness.record(TRACK_MATTE_KEY, Exactness::Approximate);
+                let key = out.key()?;
+                let input = MaskInput {
+                    key,
+                    placement: scene.rect(),
+                    format: MaskFormat::CoverageU16Le,
+                    sha256: plane.sha256,
+                    inverted: matte.inverted,
+                    density: 1.0,
+                };
+                out.sources.mattes.insert(key, plane);
+                Some(input)
+            }
+        };
         // Opacities are validated `0..=1`, so the narrowing keeps them in range.
         #[allow(clippy::cast_possible_truncation)]
         root_layers.push(Layer {
@@ -567,7 +659,7 @@ fn lower_inner(
             mode: layer.mode,
             opacity: layer.opacity as f32,
             fill_opacity: layer.fill_opacity as f32,
-            mask: None,
+            mask,
         });
         rendered.push(id.to_owned());
     }
@@ -626,6 +718,89 @@ fn lower_inner(
         rendered,
         skipped,
         surfaces_rendered: charges.surfaces.saturating_sub(surfaces_before),
+    })
+}
+
+/// The coverage plane of one track matte (module docs): the matte layer rendered alone over the
+/// composition rect, converted to `coverage_u16le`. Absent matte layer = zero coverage (no
+/// render). The render and the plane are charged before allocation.
+#[allow(clippy::too_many_arguments)]
+fn matte_plane(
+    scene: &SceneComposition,
+    layer_id: &str,
+    matte: &SceneMatte,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<MattePlane, TemporalError> {
+    if depth > ctx.limits.max_depth {
+        return Err(CompositeError::BudgetExceeded.into());
+    }
+    let px = u64::from(scene.width)
+        .checked_mul(u64::from(scene.height))
+        .ok_or(CompositeError::Overflow)?;
+    let plane_bytes = px
+        .checked_mul(MATTE_BYTES_PER_PIXEL)
+        .ok_or(CompositeError::Overflow)?;
+    charges.charge(ctx, plane_bytes)?;
+    let len = usize::try_from(plane_bytes).map_err(|_| CompositeError::Overflow)?;
+    let mut bytes = vec![0u8; len];
+    if let Some(source) = &matte.layer {
+        let alone = SceneComposition {
+            composition_id: format!("{}/matte/{layer_id}", scene.composition_id),
+            width: scene.width,
+            height: scene.height,
+            background: None,
+            filter: scene.filter,
+            layers: vec![SceneLayer {
+                // The matte contributes its coverage, never its blend mode.
+                mode: StudioBlendMode::Normal,
+                ..(**source).clone()
+            }],
+        };
+        let r = render_inner(&alone, ctx, cancel, depth, charges)?;
+        for op in &r.exactness.operators {
+            exactness.record(op.key, op.exactness);
+        }
+        let read = |plane: &[u8], i: usize| -> Option<f32> {
+            let s = plane.get(i..i.checked_add(4)?)?;
+            Some(f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+        };
+        for (i, out) in bytes.chunks_exact_mut(2).enumerate() {
+            let c = i.checked_mul(12).ok_or(CompositeError::Overflow)?;
+            let a_at = i.checked_mul(4).ok_or(CompositeError::Overflow)?;
+            let alpha = read(&r.alpha, a_at).ok_or(CompositeError::Overflow)?;
+            let v = match matte.mode {
+                SceneMatteMode::Alpha => alpha,
+                SceneMatteMode::Luma => {
+                    let mut luma = 0.0f32;
+                    for (k, w) in LUMA_WEIGHTS.iter().enumerate() {
+                        let at = k
+                            .checked_mul(4)
+                            .and_then(|o| c.checked_add(o))
+                            .ok_or(CompositeError::Overflow)?;
+                        luma += w * read(&r.colour, at).ok_or(CompositeError::Overflow)?;
+                    }
+                    luma * alpha
+                }
+            };
+            if !v.is_finite() {
+                return Err(invalid(layer_id, "matte"));
+            }
+            // `v` is clamped to `0..=1`, so the scaled value fits a u16.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let q = (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+            out.copy_from_slice(&q.to_le_bytes());
+        }
+    }
+    let sha256 = hsk_studio_prism::profile_hash(&bytes);
+    Ok(MattePlane {
+        width: scene.width,
+        height: scene.height,
+        bytes,
+        sha256,
     })
 }
 

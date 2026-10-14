@@ -15,7 +15,10 @@
 //! pigment's binary64 reference sampler (`PreparedTransform::sample_rgba`) and composites with
 //! pigment's single-pixel `composite_over`, bottom to top over the background.
 #![allow(dead_code)]
-use hsk_studio_composite::{RenderedScene, SceneComposition, SceneContent, SceneLayer, ScenePixels, SceneTile};
+use hsk_studio_composite::{
+    RenderedScene, SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode, ScenePixels,
+    SceneTile,
+};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendSpace, PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::render_plan::{AlphaConvention, ColourTag, SampleFormat, TilePlanes};
@@ -127,6 +130,9 @@ impl Pixels {
                 TilePix::new(tile_id(3, "tb"), 6, 6, 2),
                 TilePix::new(tile_id(7, "tc"), 6, 4, 3),
                 TilePix::new(tile_id(9, "td"), 6, 6, 4),
+                TilePix::new(tile_id(10, "te"), 10, 8, 5),
+                TilePix::new(tile_id(11, "tf"), 20, 14, 6),
+                TilePix::new(tile_id(12, "tg"), 8, 8, 7),
             ],
         }
     }
@@ -156,6 +162,7 @@ pub fn expected_scene(frame: u64, pixels: &Pixels) -> SceneComposition {
             opacity: 0.8,
             fill_opacity: 1.0,
             matrix: Affine2::translate(8.0, 6.0),
+            matte: None,
         });
     }
     if (2..40).contains(&frame) {
@@ -172,6 +179,7 @@ pub fn expected_scene(frame: u64, pixels: &Pixels) -> SceneComposition {
             fill_opacity: 1.0,
             // anchor (3, 3): x' = position + R S (x - anchor).
             matrix: Affine2::from_parts(3.0, 3.0, s, s, rot, px - 3.0, py - 3.0),
+            matte: None,
         });
     }
     SceneComposition {
@@ -217,6 +225,7 @@ pub fn expected_scene2(frame: u64, pixels: &Pixels) -> SceneComposition {
                 opacity: 1.0,
                 fill_opacity: 1.0,
                 matrix: child.then(parent),
+                matte: None,
             },
             SceneLayer {
                 layer_id: identity("SLYR", 6),
@@ -225,6 +234,7 @@ pub fn expected_scene2(frame: u64, pixels: &Pixels) -> SceneComposition {
                 opacity: 1.0,
                 fill_opacity: 1.0,
                 matrix: parent,
+                matte: None,
             },
         ],
     }
@@ -260,6 +270,7 @@ pub fn inner_scene4(inner: u64, pixels: &Pixels) -> SceneComposition {
             opacity: 1.0,
             fill_opacity: 1.0,
             matrix: Affine2::from_parts(3.0, 3.0, 1.0, 1.0, 0.0, px - 3.0, py - 3.0),
+            matte: None,
         }],
     }
 }
@@ -287,6 +298,7 @@ pub fn expected_scene3(frame: u64, pixels: &Pixels) -> SceneComposition {
             opacity: 1.0,
             fill_opacity: 1.0,
             matrix: Affine2::from_parts(6.0, 5.0, 1.0, 1.0, 15.0, 10.0, 7.0),
+            matte: None,
         }],
     }
 }
@@ -297,7 +309,122 @@ pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
         FRAMES.iter().map(|f| (format!("comp1/frame{f}"), expected_scene(*f, pixels))).collect();
     out.extend(FRAMES2.iter().map(|f| (format!("comp2/frame{f}"), expected_scene2(*f, pixels))));
     out.extend(FRAMES3.iter().map(|f| (format!("comp3/frame{f}"), expected_scene3(*f, pixels))));
+    out.extend(FRAMES5.iter().map(|f| (format!("comp5/frame{f}"), expected_scene5(*f, pixels))));
     out
+}
+
+pub fn composition5_id() -> String {
+    identity("SCOM", 5)
+}
+/// Frames of composition 5: matte inside its window (0, 5) and after it (10).
+pub const FRAMES5: [u64; 3] = [0, 5, 10];
+
+/// Layer 10 of composition 5 (the matte source): tile `te` 10x8, window frames [0, 8), anchor
+/// (5, 4), position keys frame 0 -> 10: (8, 12) -> (24.5, 12).
+pub fn matte_layer10(frame: u64, pixels: &Pixels) -> Option<SceneLayer> {
+    if frame >= 8 {
+        return None;
+    }
+    let t = (frame.min(10) as f64) / 10.0;
+    let px = lerp(8.0, 24.5, t);
+    let te = pixels.get(&tile_id(10, "te")).unwrap();
+    Some(SceneLayer {
+        layer_id: identity("SLYR", 10),
+        content: SceneContent::Tiles(vec![te.scene_tile(0, 0)]),
+        mode: StudioBlendMode::Normal,
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        matrix: Affine2::from_parts(5.0, 4.0, 1.0, 1.0, 0.0, px - 5.0, 12.0 - 4.0),
+        matte: None,
+    })
+}
+
+/// Composition 5 (slice 4: track mattes), 32x24 px, background (0.1, 0.1, 0.1, 1). Stack
+/// (bottom first): layer 11 (tile `tf` 20x14 at position (16, 12), anchor (10, 7) -> integer
+/// move (6, 5)) with an ALPHA matte from layer 10; layer 12 (tile `tg` 8x8 at position (6, 6),
+/// anchor (4, 4) -> move (2, 2)) with an INVERTED LUMA matte from the same layer 10. Layer 10
+/// itself does not render (STU-CMP-030 default). At frame 10 layer 10 is outside its window:
+/// layer 11 shows nothing and layer 12 shows fully.
+pub fn expected_scene5(frame: u64, pixels: &Pixels) -> SceneComposition {
+    let tf = pixels.get(&tile_id(11, "tf")).unwrap();
+    let tg = pixels.get(&tile_id(12, "tg")).unwrap();
+    let matte = |mode, inverted| SceneMatte {
+        layer: matte_layer10(frame, pixels).map(Box::new),
+        mode,
+        inverted,
+    };
+    SceneComposition {
+        composition_id: composition5_id(),
+        width: W,
+        height: H,
+        background: Some([0.1, 0.1, 0.1, 1.0]),
+        filter: ResampleFilter::Bilinear,
+        layers: vec![
+            SceneLayer {
+                layer_id: identity("SLYR", 11),
+                content: SceneContent::Tiles(vec![tf.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: Affine2::translate(6.0, 5.0),
+                matte: Some(matte(SceneMatteMode::Alpha, false)),
+            },
+            SceneLayer {
+                layer_id: identity("SLYR", 12),
+                content: SceneContent::Tiles(vec![tg.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: Affine2::translate(2.0, 2.0),
+                matte: Some(matte(SceneMatteMode::Luma, true)),
+            },
+        ],
+    }
+}
+
+/// Effective coverage of a matte over the composition rect, row-major: the matte layer's oracle
+/// frame alone (normal mode, no background), alpha or BT.709 luma times alpha, quantised to 16
+/// bits like composite's `coverage_u16le` plane, inverted when the matte is inverted.
+pub fn matte_coverage(scene: &SceneComposition, m: &SceneMatte, pixels: &Pixels) -> Vec<f32> {
+    let n = (scene.width * scene.height) as usize;
+    let raw: Vec<f32> = match &m.layer {
+        None => vec![0.0; n],
+        Some(l) => {
+            let alone = SceneComposition {
+                background: None,
+                layers: vec![SceneLayer { mode: StudioBlendMode::Normal, ..(**l).clone() }],
+                ..scene.clone()
+            };
+            oracle(&alone, pixels)
+                .iter()
+                .map(|p| match m.mode {
+                    SceneMatteMode::Alpha => p[3],
+                    SceneMatteMode::Luma => (0.2126f32 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) * p[3],
+                })
+                .collect()
+        }
+    };
+    raw.iter()
+        .map(|v| {
+            let q = (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+            let c = (f64::from(q) / 65535.0) as f32;
+            if m.inverted { 1.0 - c } else { c }
+        })
+        .collect()
+}
+
+/// Does any layer of the scene (precompositions and mattes included) need resampling, i.e. has
+/// a content matrix other than an exact integer translation?
+pub fn scene_resamples(scene: &SceneComposition) -> bool {
+    fn layer(l: &SceneLayer) -> bool {
+        let [a, b, c, d, e, f] = l.matrix.m;
+        let integer = a == 1.0 && b == 0.0 && d == 0.0 && e == 1.0 && c.fract() == 0.0 && f.fract() == 0.0;
+        let has_content = !matches!(l.content, SceneContent::None);
+        (has_content && !integer)
+            || matches!(&l.content, SceneContent::Precomp(n) if scene_resamples(n))
+            || l.matte.as_ref().and_then(|m| m.layer.as_deref()).is_some_and(layer)
+    }
+    scene.layers.iter().any(layer)
 }
 
 /// Where an oracle layer reads its texels.
@@ -320,7 +447,7 @@ impl Texels<'_> {
 pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
     let mut prepared = Vec::new();
     for l in &scene.layers {
-        if l.opacity == 0.0 {
+        if l.opacity == 0.0 || l.matte.as_ref().is_some_and(|m| m.layer.is_none() && !m.inverted) {
             continue;
         }
         let mut sources = Vec::new();
@@ -335,10 +462,11 @@ pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
             }
             _ => {}
         }
+        let coverage = l.matte.as_ref().map(|m| matte_coverage(scene, m, pixels));
         for (texels, rect) in sources {
             let p = PreparedTransform::new(&LayerTransform::new(l.matrix, scene.filter), rect)
                 .expect("invertible");
-            prepared.push((l, texels, p));
+            prepared.push((l, texels, p, coverage.clone()));
         }
     }
     let mut out = Vec::with_capacity((scene.width * scene.height) as usize);
@@ -348,10 +476,11 @@ pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
             if let Some(b) = scene.background {
                 acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, PixelSite::default()).unwrap();
             }
-            for (l, texels, p) in &prepared {
+            for (l, texels, p, coverage) in &prepared {
                 let s = p.sample_rgba(x, y, |i, j| Ok::<_, ()>(texels.at(i, j))).unwrap();
                 let src = Rgba::new([s[0], s[1], s[2]], s[3]);
-                let opacity = (l.opacity * l.fill_opacity) as f32;
+                let mask = coverage.as_ref().map_or(1.0, |c| c[(y * i64::from(scene.width) + x) as usize]);
+                let opacity = (l.opacity * l.fill_opacity) as f32 * mask;
                 acc = composite_over(l.mode, acc, src, opacity, PixelSite { x, y, seed: 0 }).unwrap();
             }
             out.push([acc.rgb[0], acc.rgb[1], acc.rgb[2], acc.a]);

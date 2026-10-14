@@ -7,7 +7,8 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
     COMPOSITION_LAYER_CLIPPED, COMPOSITION_LAYER_CONTENT, COMPOSITION_PRECOMP_COLLAPSE,
-    COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, COMPOSITION_PRECOMP_PAYLOAD, COMPOSITION_TRACK_MATTE, CompositionInput, CompositionTemporalSource,
+    COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, COMPOSITION_PRECOMP_PAYLOAD,
+    COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH, CompositionInput, CompositionTemporalSource,
 };
 use hsk_studio_composite::temporal::TRANSFORM_MULTI_TILE_LAYER;
 use hsk_studio_composite::{
@@ -59,7 +60,10 @@ fn document() -> Value {
             {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",6),"name":"null","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true},
             raster(7, vec![tile(7,"tc",6,4)]),
             {"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",8),"name":"precomp","parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true},
-            raster(9, vec![tile(9,"td",6,6)])
+            raster(9, vec![tile(9,"td",6,6)]),
+            raster(10, vec![tile(10,"te",10,8)]),
+            raster(11, vec![tile(11,"tf",20,14)]),
+            raster(12, vec![tile(12,"tg",8,8)])
         ],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[source_op(2),source_op(3),
             {"layer_id":identity("SLYR",1),"operation_key":"mix","operation_kind":"composite",
@@ -98,7 +102,24 @@ fn records() -> Value {
             {"layer_id":identity("SLYR",2),"timing":timing(0,20),"streams":[
                 {"property":"position","static_value":[12.0,9.0]},
                 {"property":"opacity","static_value":[80.0]}]}
-        ]}, composition2(), composition3(), composition4()]})
+        ]}, composition2(), composition3(), composition4(), composition5()]})
+}
+/// Composition 5 of `tests/support/composition_scenes.rs` (`expected_scene5`).
+fn composition5() -> Value {
+    json!({"schema_id":"hsk.studio.composition@1","composition_id":scenes::composition5_id(),"name":"mattes",
+        "width":32,"height":24,"pixel_aspect":{"numerator":1,"denominator":1},
+        "frame_rate":{"numerator":24,"denominator":1},"duration":f(48),
+        "background":{"r":0.1,"g":0.1,"b":0.1,"a":1.0,"colour_profile_id":null},
+        "layers":[
+            {"layer_id":identity("SLYR",12),"timing":timing(0,48),
+             "track_matte":{"source_layer_id":identity("SLYR",10),"mode":"luma","inverted":true},
+             "streams":[{"property":"position","static_value":[6.0,6.0]}]},
+            {"layer_id":identity("SLYR",11),"timing":timing(0,48),
+             "track_matte":{"source_layer_id":identity("SLYR",10),"mode":"alpha","inverted":false},
+             "streams":[{"property":"position","static_value":[16.0,12.0]}]},
+            {"layer_id":identity("SLYR",10),"timing":timing(0,8),"streams":[
+                {"property":"position","static_value":[0.0,0.0],"keyframes":[key(0,json!([8.0,12.0])),key(10,json!([24.5,12.0]))]}]}
+        ]})
 }
 /// Composition 3 of `tests/support/composition_scenes.rs` (`expected_scene3`).
 fn composition3() -> Value {
@@ -303,9 +324,6 @@ fn refusals_are_typed_and_nothing_is_dropped() {
             source_from(&document(), &r, &pixels)
         };
         let layer0 = "/compositions/0/layers/0";
-        // Features of later slices are refused, never ignored.
-        let e = edit(&|r| r.pointer_mut(layer0).unwrap()["track_matte"] = json!({"source_layer_id":identity("SLYR",2),"mode":"alpha","inverted":false})).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_TRACK_MATTE);
         // Precompositions: collapse transformations, and a precomposition layer with own content.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":true})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_COLLAPSE);
@@ -482,11 +500,26 @@ fn same_scene(got: &hsk_studio_composite::SceneComposition, want: &hsk_studio_co
     for (g, w) in got.layers.iter().zip(&want.layers) {
         assert_eq!((&g.layer_id, g.mode, g.fill_opacity), (&w.layer_id, w.mode, w.fill_opacity), "{what}");
         assert!((g.opacity - w.opacity).abs() < 1e-12, "{what}");
-        near(&g.matrix, &w.matrix);
-        match (&g.content, &w.content) {
-            (SceneContent::Precomp(a), SceneContent::Precomp(b)) => same_scene(a, b, what),
-            (a, b) => assert_eq!(a, b, "{what}"),
+        same_layer_body(g, w, what);
+    }
+}
+fn same_layer_body(g: &hsk_studio_composite::SceneLayer, w: &hsk_studio_composite::SceneLayer, what: &str) {
+    near(&g.matrix, &w.matrix);
+    match (&g.content, &w.content) {
+        (SceneContent::Precomp(a), SceneContent::Precomp(b)) => same_scene(a, b, what),
+        (a, b) => assert_eq!(a, b, "{what}"),
+    }
+    match (&g.matte, &w.matte) {
+        (None, None) => {}
+        (Some(a), Some(b)) => {
+            assert_eq!((a.mode, a.inverted, a.layer.is_some()), (b.mode, b.inverted, b.layer.is_some()), "{what}");
+            if let (Some(x), Some(y)) = (&a.layer, &b.layer) {
+                assert_eq!((&x.layer_id, x.mode), (&y.layer_id, y.mode), "{what}");
+                assert!((x.opacity - y.opacity).abs() < 1e-12, "{what}");
+                same_layer_body(x, y, what);
+            }
         }
+        (a, b) => panic!("{what}: matte {a:?} vs {b:?}"),
     }
 }
 
@@ -524,5 +557,52 @@ fn precomposition_plays_the_nested_composition_at_its_source_time() {
         // The document-graph path cannot render a precomposition: refused, not drawn empty.
         let e = hsk_studio_composite::TemporalSource::layer_state(&src, &identity("SLYR", 8), 0, &cancel).unwrap_err();
         assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, .. }), "{e:?}");
+    });
+}
+
+#[test]
+fn track_mattes_use_another_layers_rendered_alpha_or_luma() {
+    bounded_case("track_mattes_use_another_layers_rendered_alpha_or_luma", || {
+        let pixels = Pixels::fixture();
+        let cancel = CancellationToken::default();
+        let src = source_of(&document(), &records(), &pixels, &scenes::composition5_id()).unwrap();
+        for frame in scenes::FRAMES5 {
+            let got = src.scene_at(f(frame) as i64, &cancel).unwrap();
+            // The matte source (layer 10) never renders on its own.
+            assert!(got.layers.iter().all(|l| l.layer_id != identity("SLYR", 10)));
+            same_scene(&got, &scenes::expected_scene5(frame, &pixels), &format!("comp5 frame {frame}"));
+        }
+        // Lowering at frame 10 (matte absent): the alpha-matted layer renders nothing (exact skip,
+        // no matte render); the inverted luma-matted layer still gets a (zero, inverted) plane.
+        let ctx = SceneContext {
+            backend: &NoBackend,
+            pixels: &pixels,
+            request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+            space: scenes::space(),
+            limits: SceneLimits::default(),
+        };
+        let late = lower_scene(&src.scene_at(f(10) as i64, &cancel).unwrap(), &ctx, &cancel).unwrap();
+        assert_eq!(late.skipped, vec![identity("SLYR", 11)]);
+        assert_eq!(late.rendered, vec![identity("SLYR", 12)]);
+        let (_, plane) = late.sources.mattes.iter().next().unwrap();
+        assert!(plane.bytes.iter().all(|b| *b == 0) && plane.bytes.len() == 32 * 24 * 2);
+        let root = match &late.plan.nodes[late.plan.root.0 as usize] {
+            PlanNode::Group(g) => g.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mask = root.layers.last().unwrap().mask.unwrap();
+        assert!(mask.inverted && mask.density == 1.0);
+        assert!(late.exactness.operators.iter().any(|o| o.key == "track_matte" && o.exactness == Exactness::Approximate));
+        // With the matte present the matte layer must be rendered: NoBackend refuses it, typed.
+        let e = lower_scene(&src.scene_at(f(5) as i64, &cancel).unwrap(), &ctx, &cancel).unwrap_err();
+        assert!(matches!(e, TemporalError::Render { .. }), "{e:?}");
+        // The matte plane is charged before allocation: frame + matte render + plane must fit.
+        let tight = SceneContext { limits: SceneLimits { max_surface_bytes: 32 * 24 * 16, ..SceneLimits::default() }, ..ctx };
+        assert!(matches!(hsk_studio_composite::render_scene(&src.scene_at(f(10) as i64, &cancel).unwrap(), &tight, &cancel), Err(TemporalError::Composite(CompositeError::BudgetExceeded))));
+        // The document-graph path cannot apply a matte: matted layers and matte sources refuse.
+        for n in [10, 11] {
+            let e = hsk_studio_composite::TemporalSource::layer_state(&src, &identity("SLYR", n), 0, &cancel).unwrap_err();
+            assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH, .. }), "{e:?}");
+        }
     });
 }

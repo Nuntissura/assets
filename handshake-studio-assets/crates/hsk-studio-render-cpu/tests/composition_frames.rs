@@ -68,9 +68,11 @@ fn composition_frames_match_the_oracle_on_every_chunking_and_thread_count() {
             let other = render(&Renderer::with_threads(chunk, threads).unwrap(), scene, &pixels);
             assert_eq!(other.digest(), base.digest(), "{label} chunk {chunk} threads {threads}");
         }
-        // Every frame except the static one resamples with the composition's declared filter.
+        // A frame resamples with the composition's declared filter exactly when one of its
+        // layers (precompositions and mattes included) has a non-integer matrix.
         let keys: Vec<_> = base.exactness.operators.iter().map(|o| o.key).collect();
-        assert_eq!(keys.contains(&"transform_bilinear"), label != "comp1/frame0", "{label}: {keys:?}");
+        assert_eq!(keys.contains(&"transform_bilinear"), scenes::scene_resamples(scene), "{label}: {keys:?}");
+        assert_eq!(keys.contains(&"track_matte"), label.starts_with("comp5/"), "{label}: {keys:?}");
         digests.push((label.clone(), digest));
     }
     let golden: Vec<(String, String)> =
