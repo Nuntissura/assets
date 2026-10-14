@@ -11,6 +11,7 @@ mod folio_input;
 mod geometry;
 mod hyphenate;
 mod paragraph;
+mod parent_adapter;
 mod parents;
 mod styles;
 mod threaded_reflow;
@@ -24,6 +25,10 @@ pub use hyphenate::{
 };
 pub use paragraph::{
     Break, BreakKind, LayoutGlyph, ShapedParagraph, SpaceParams, break_opportunities,
+};
+pub use parent_adapter::{
+    LayerAssignment, LayerRects, ParentAdapterError, parent_set_from_records,
+    records_from_parent_set, resolve_page_from_records,
 };
 pub use parents::{
     ItemOverride, ItemSource, PageBinding, ParentItem, ParentItemKind, ParentPage, ParentSet,
