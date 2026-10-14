@@ -973,6 +973,7 @@ dependencies = [
  "hsk-studio-interop-tiff",
  "hsk-studio-observe",
  "hsk-studio-package",
+ "hsk-studio-press",
  "hsk-studio-prism",
  "hsk-studio-session",
  "serde_json",
