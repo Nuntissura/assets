@@ -31,7 +31,8 @@
 //!    sweeps; vote. A sweep is JACOBI (every centre reads only the previous sweep's field):
 //!    candidates are the current match, the propagated matches of the 4-neighbours at distance 1
 //!    and at the jump distance `2^min(4, S-1-s)` (sweep `s` of `S`), and random search around the
-//!    best match at radii `max(w, h)`, halved down to 1, with offsets drawn from SplitMix64 of
+//!    best match at radii `max(w, h)` (guided: the structure window), halved down to 1, with
+//!    offsets drawn from SplitMix64 of
 //!    `(seed, level, EM iteration, sweep, centre, draw)`; a candidate replaces the match only when
 //!    strictly closer. Vote: each hole pixel becomes the weighted mean, over every domain patch
 //!    covering it, of the pixel its match puts there, weight `exp(-e / (2 sigma^2))` with `e` the
@@ -68,9 +69,10 @@
 use crate::blend_math::Exactness;
 use crate::filter_math::splitmix;
 use crate::retouch::{
-    HealReceipt, RGBA_SAMPLE_BYTES, RetouchError, RetouchLimits, RetouchResult, RgbaPlane, copy_plane,
-    heal_with_guide, premul, straight,
+    CloneMap, HealReceipt, RGBA_SAMPLE_BYTES, RetouchError, RetouchLimits, RetouchResult, RgbaPlane,
+    copy_plane, heal_with_coverage, heal_with_guide, paint_over, premul, straight,
 };
+use crate::transform_math::ResampleFilter;
 use crate::selection::CoveragePlane;
 use crate::{Error, Rect};
 
@@ -651,9 +653,22 @@ impl Sweep<'_> {
         let q = l.xy(qi);
         let mut best = self.nnf.get(k).copied().unwrap_or(0);
         let mut bd = self.dist.get(k).copied().unwrap_or(f64::INFINITY);
+        // Guided (content-aware patch): a candidate must lie within the structure window of the
+        // dragged source `q + offset` (Chebyshev), so propagation cannot pull the patch away.
+        let in_window = |c: u32| match self.guide {
+            None => true,
+            Some((ox, oy)) => {
+                let (cx, cy) = l.xy(c);
+                let gx = q.0.wrapping_add(ox);
+                let gy = q.1.wrapping_add(oy);
+                cx.wrapping_sub(gx).unsigned_abs() <= self.window.unsigned_abs()
+                    && cy.wrapping_sub(gy).unsigned_abs() <= self.window.unsigned_abs()
+            }
+        };
         let try_cand = |cand: Option<u32>, best: &mut u32, bd: &mut f64| {
             if let Some(c) = cand
                 && c != *best
+                && in_window(c)
             {
                 let d = l.dist(self.r, q, l.xy(c), *bd);
                 if d < *bd {
@@ -1180,5 +1195,199 @@ pub fn fill(
     run(target, hole, sampling, None, None, options, limits)
 }
 
+/// `structure` (1 ..= 7) of a content-aware patch: the level-0 random search radius around the best
+/// match is `2^(PATCH_WINDOW_LOG2 - structure)` pixels (structure 7 = 8 px, 1 = 512 px), halved per
+/// pyramid level.
+pub const PATCH_WINDOW_LOG2: u32 = 10;
+
+/// STU-RAS-026 Patch mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatchMode {
+    /// Healing transfer of the dragged source along the offset (the retouch heal solver).
+    Normal,
+    /// Synthesis guided by the dragged source: every domain centre `q` starts at (and keeps trying)
+    /// the source `q + offset`, the coarsest hole starts from the dragged pixels, and every later
+    /// candidate (propagated or random) must lie within the structure window of `q + offset`
+    /// (Chebyshev; higher structure = closer to the dragged source).
+    ContentAware { structure: u8 },
+}
+
+/// The rectangle `r` moved by `(dx, dy)` (checked).
+fn shifted(r: Rect, dx: i64, dy: i64) -> Result<Rect, Error> {
+    let moved = Rect {
+        x: r.x.checked_add(dx).ok_or(Error::Overflow)?,
+        y: r.y.checked_add(dy).ok_or(Error::Overflow)?,
+        width: r.width,
+        height: r.height,
+    };
+    moved.end()?;
+    Ok(moved)
+}
+
+/// Content-aware patch (STU-RAS-026 Patch row): repair the pixels of `region` (coverage > 0,
+/// clipped to the target) from the source region `region + source_offset` (destination pixel
+/// `p` reads `p + source_offset`). The source rectangle (clipped region bounds moved by the
+/// offset) must lie inside the target (else `retouch_out_of_range`). `Normal` heals the source in
+/// (receipt: no levels, `blend` = the healing receipt with `source_offset`); `ContentAware`
+/// synthesizes like [`fill`] with the patch guidance (receipt `guided`). Studio readings of the
+/// Photoshop Patch tool, class Approximate, UNVERIFIED (D5).
+pub fn patch(
+    target: &RgbaPlane,
+    region: &CoveragePlane,
+    source_offset: (i64, i64),
+    mode: PatchMode,
+    sampling: SamplingArea<'_>,
+    options: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<ContentAwareResult, RetouchError> {
+    options.validate()?;
+    target.validate()?;
+    let window = match mode {
+        PatchMode::Normal => None,
+        PatchMode::ContentAware { structure } => {
+            if !(1..=7).contains(&structure) {
+                return Err(RetouchError::OutOfRange);
+            }
+            let shift = PATCH_WINDOW_LOG2.checked_sub(u32::from(structure)).ok_or(Error::Overflow)?;
+            Some(1i64.checked_shl(shift).ok_or(Error::Overflow)?)
+        }
+    };
+    let Some(cov) = clip_hole(target, region, limits)? else {
+        return Ok(ContentAwareResult {
+            result: RetouchResult { plane: copy_plane(target, limits)?, damage: None },
+            receipt: ContentAwareReceipt::empty(options, true),
+        });
+    };
+    let (ox, oy) = source_offset;
+    if !target.bounds.contains(shifted(cov.bounds, ox, oy)?)? {
+        return Err(RetouchError::OutOfRange);
+    }
+    match window {
+        None => {
+            // Destination p reads p + offset: destination = sample - offset (offsets are bounded
+            // by the plane size here, so the binary64 conversion is exact).
+            let map = CloneMap::offset(-(ox as f64), -(oy as f64), ResampleFilter::NearestNeighbour)?;
+            let healed = heal_with_coverage(target, target, &map, &cov, Some(source_offset), limits)?;
+            let mut receipt = ContentAwareReceipt::empty(options, true);
+            receipt.blend = Some(healed.receipt);
+            Ok(ContentAwareResult { result: healed.result, receipt })
+        }
+        Some(window) => run(
+            target,
+            &cov,
+            sampling,
+            None,
+            Some(Guide { offset: source_offset, window }),
+            options,
+            limits,
+        ),
+    }
+}
+
+/// STU-RAS-026 Content-aware move mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveMode {
+    /// The object leaves its place: the vacated selection is content-aware filled.
+    Move,
+    /// The object is duplicated at the destination; its original stays.
+    Extend,
+}
+
+/// Result of a content-aware move.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveResult {
+    pub result: RetouchResult,
+    /// The fill of the vacated area (`Move`; `None` for `Extend` or an empty selection).
+    pub fill: Option<ContentAwareReceipt>,
+    /// The healing blend of the placed object (`colour_adaptation = default`).
+    pub paste: Option<HealReceipt>,
+}
+
+/// Content-aware move (STU-RAS-026 row): move (or extend) the selected object by `offset`
+/// (destination pixel `p` shows the original pixel `p - offset`). `Move` first fills the vacated
+/// selection like [`fill`], never sampling the destination footprint; then the object is placed:
+/// `colour_adaptation = none` paints it source-over with its selection coverage, `default` heals it
+/// in (membrane Poisson, guide = the moved original, so it keeps its texture and takes the new
+/// surroundings' colour at its edge). A destination outside the target places nothing. Integer
+/// offsets only (transform-on-drop is not modelled). Studio readings, class Approximate,
+/// Photoshop UNVERIFIED (D5).
+pub fn content_aware_move(
+    target: &RgbaPlane,
+    selection: &CoveragePlane,
+    offset: (i64, i64),
+    mode: MoveMode,
+    sampling: SamplingArea<'_>,
+    options: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<MoveResult, RetouchError> {
+    options.validate()?;
+    target.validate()?;
+    let Some(sel) = clip_hole(target, selection, limits)? else {
+        return Ok(MoveResult {
+            result: RetouchResult { plane: copy_plane(target, limits)?, damage: None },
+            fill: None,
+            paste: None,
+        });
+    };
+    let (ox, oy) = offset;
+    let dest = CoveragePlane { bounds: shifted(sel.bounds, ox, oy)?, data: sel.data.clone() };
+    let (mut plane, fill_receipt, mut damage) = match mode {
+        MoveMode::Move => {
+            let r = run(target, &sel, sampling, Some(&dest), None, options, limits)?;
+            (r.result.plane, Some(r.receipt), r.result.damage)
+        }
+        MoveMode::Extend => (copy_plane(target, limits)?, None, None),
+    };
+    let mut paste = None;
+    if let Some(visible) = dest.bounds.intersect(target.bounds)? {
+        match options.colour_adaptation {
+            ColourAdaptation::None => {
+                let (ex, ey) = visible.end()?;
+                for y in visible.y..ey {
+                    for x in visible.x..ex {
+                        let c = f64::from(dest.at(x, y)) / f64::from(u16::MAX);
+                        let sx = x.checked_sub(ox).ok_or(Error::Overflow)?;
+                        let sy = y.checked_sub(oy).ok_or(Error::Overflow)?;
+                        let src = target.at(sx, sy);
+                        if let Some(i) = plane.index(x, y)
+                            && let Some(px) = plane.data.get_mut(i)
+                        {
+                            *px = paint_over(*px, src, c);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // The destination intersects the target, so the offset is bounded by the plane
+                // sizes and the binary64 conversion is exact.
+                let map = CloneMap::offset(ox as f64, oy as f64, ResampleFilter::NearestNeighbour)?;
+                let back = (ox.checked_neg().ok_or(Error::Overflow)?, oy.checked_neg().ok_or(Error::Overflow)?);
+                let healed = heal_with_coverage(&plane, target, &map, &dest, Some(back), limits)?;
+                plane = healed.result.plane;
+                paste = Some(healed.receipt);
+            }
+        }
+        damage = Some(match damage {
+            None => visible,
+            Some(d) => union(d, visible)?,
+        });
+    }
+    Ok(MoveResult { result: RetouchResult { plane, damage }, fill: fill_receipt, paste })
+}
+
+/// Smallest rectangle containing `a` and `b` (checked).
+fn union(a: Rect, b: Rect) -> Result<Rect, Error> {
+    let (ae, af) = a.end()?;
+    let (be, bf) = b.end()?;
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    let (e, f) = (ae.max(be), af.max(bf));
+    Ok(Rect {
+        x,
+        y,
+        width: u32::try_from(e.checked_sub(x).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?,
+        height: u32::try_from(f.checked_sub(y).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?,
+    })
+}
+
 /// Content-aware surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":1,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)) and a best-patch final vote at level 0, levels need source centres >= domain centres, coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default (high, very_high refused content_aware_option_unsupported)","rotation_adaptation":"none only","scale":"false only","mirror":"false only"},"receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","not_modelled":["sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":1,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)) and a best-patch final vote at level 0, levels need source centres >= domain centres, coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default (high, very_high refused content_aware_option_unsupported)","rotation_adaptation":"none only","scale":"false only","mirror":"false only"},"receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","patch":"patch(target, region, source_offset (p reads p + offset), PatchMode normal = retouch heal along the offset | content_aware{structure 1..7} = fill guided by q + offset (coarsest hole starts from the dragged pixels, every candidate within the window 2^(10 - structure) px of q + offset at level 0, halved per level); source rect must lie inside the target (retouch_out_of_range)","move":"content_aware_move(target, selection, offset (p shows p - offset), MoveMode move|extend): move fills the vacated selection (destination footprint never sampled), then places the object: colour_adaptation none = source-over with selection coverage, default = retouch heal with the moved original as guide; integer offsets only","not_modelled":["transform-on-drop","sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;

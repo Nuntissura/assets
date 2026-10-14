@@ -262,3 +262,148 @@ fn hostile_fill_inputs_are_typed_refusals() {
     assert_eq!(r.result.damage, None);
     assert!(r.receipt.levels.is_empty());
 }
+
+/// Horizontal stripes of period 4.
+fn hstripes(_x: i64, y: i64) -> [f32; 4] {
+    if y.rem_euclid(4) < 2 { grey(0.1) } else { grey(0.9) }
+}
+
+/// Mean absolute RGB error over the rectangle `r` against `expect`.
+fn rect_error(out: &RgbaPlane, r: Rect, expect: impl Fn(i64, i64) -> [f32; 4]) -> f64 {
+    let (ex, ey) = r.end().unwrap();
+    let (mut sum, mut n) = (0.0f64, 0.0f64);
+    for y in r.y..ey {
+        for x in r.x..ex {
+            let (a, b) = (out.at(x, y), expect(x, y));
+            for k in 0..3 {
+                sum += (f64::from(a[k]) - f64::from(b[k])).abs();
+                n += 1.0;
+            }
+        }
+    }
+    sum / n
+}
+
+#[test]
+fn patch_normal_heals_the_dragged_source_and_content_aware_follows_it() {
+    let limits = RetouchLimits::default();
+    // Normal: a blemish on stripes, dragged over stripes 12 px to the right (same phase).
+    let canvas = rect(0, 0, 48, 32);
+    let target = plane(canvas, |x, y| {
+        if (18..26).contains(&x) && (10..18).contains(&y) { [0.0, 1.0, 0.0, 1.0] } else { stripes(x, y) }
+    });
+    let region = hole(canvas, RectF { x: 18.0, y: 10.0, width: 8.0, height: 8.0 });
+    let d = ContentAwareOptions::default();
+    let r = patch(&target, &region, (12, 0), PatchMode::Normal, SamplingArea::Auto, &d, &limits).unwrap();
+    let (mean, worst) = hole_error(&r.result.plane, &region, stripes);
+    assert!(worst <= 1e-5, "normal patch: mean {mean} worst {worst}");
+    let blend = r.receipt.blend.expect("healing receipt");
+    assert!(blend.converged && blend.source_offset == Some((12, 0)));
+    assert!(r.receipt.guided && r.receipt.levels.is_empty());
+    assert_eq!(r.result.plane.at(30, 12), target.at(30, 12), "the source is not modified");
+
+    // Content-aware: vertical stripes left, horizontal stripes right; the hole sits in the
+    // vertical half. Unguided, the fill continues the vertical stripes; dragged onto the
+    // horizontal block with structure 7, its interior follows the dragged source.
+    let canvas = rect(0, 0, 64, 40);
+    let target = plane(canvas, |x, y| if x < 32 { stripes(x, y) } else { hstripes(x, y) });
+    let region = hole(canvas, RectF { x: 8.0, y: 14.0, width: 10.0, height: 10.0 });
+    let inner = rect(11, 17, 4, 4);
+    let none = ContentAwareOptions { colour_adaptation: ColourAdaptation::None, ..d };
+    let plain = fill(&target, &region, SamplingArea::Auto, &none, &limits).unwrap();
+    let e_plain = rect_error(&plain.result.plane, inner, stripes);
+    let guided = patch(
+        &target,
+        &region,
+        (32, 0),
+        PatchMode::ContentAware { structure: 7 },
+        SamplingArea::Auto,
+        &none,
+        &limits,
+    )
+    .unwrap();
+    let e_guided = rect_error(&guided.result.plane, inner, hstripes);
+    println!("plain vs vertical {e_plain:.3e}; guided vs horizontal {e_guided:.3e}; receipt {:?}", guided.receipt);
+    assert!(e_plain <= 0.05, "unguided fill continues the surroundings: {e_plain}");
+    assert!(e_guided <= 0.05, "content-aware patch follows the dragged source: {e_guided}");
+    assert!(guided.receipt.guided && !guided.receipt.levels.is_empty());
+    assert_eq!(guided.result.damage, Some(rect(8, 14, 10, 10)));
+}
+
+#[test]
+fn move_fills_the_vacated_area_and_places_the_object() {
+    let limits = RetouchLimits::default();
+    let canvas = rect(0, 0, 48, 32);
+    let red = [1.0f32, 0.0, 0.0, 1.0];
+    let object = |x: i64, y: i64| (8..16).contains(&x) && (12..20).contains(&y);
+    let target = plane(canvas, |x, y| if object(x, y) { red } else { stripes(x, y) });
+    // The selection keeps a one-pixel margin of background around the object.
+    let sel = hole(canvas, RectF { x: 7.0, y: 11.0, width: 10.0, height: 10.0 });
+    let moved = |x: i64, y: i64| if object(x - 24, y) { red } else { stripes(x, y) };
+    for adaptation in [ColourAdaptation::None, ColourAdaptation::Default] {
+        let o = ContentAwareOptions { colour_adaptation: adaptation, ..ContentAwareOptions::default() };
+        let r = content_aware_move(&target, &sel, (24, 0), MoveMode::Move, SamplingArea::Auto, &o, &limits).unwrap();
+        let (mean, worst) = hole_error(&r.result.plane, &sel, stripes);
+        println!("move {adaptation:?}: vacated mean {mean:.2e} worst {worst:.2e}; paste {:?}", r.paste);
+        assert!(mean <= 0.02 && worst <= 0.1, "vacated area continues the stripes: {mean} {worst}");
+        assert!(rect_error(&r.result.plane, rect(31, 11, 10, 10), moved) <= 1e-5, "object placed");
+        assert_eq!(r.result.damage, Some(rect(7, 11, 34, 10)));
+        assert!(r.fill.as_ref().is_some_and(|f| !f.levels.is_empty()));
+        assert_eq!(r.paste.is_some(), adaptation == ColourAdaptation::Default);
+        if let Some(p) = r.paste {
+            assert!(p.converged && p.source_offset == Some((-24, 0)));
+        }
+        // Extend keeps the original.
+        let e = content_aware_move(&target, &sel, (24, 0), MoveMode::Extend, SamplingArea::Auto, &o, &limits).unwrap();
+        assert!(rect_error(&e.result.plane, rect(8, 12, 8, 8), |_, _| red) <= 1e-5);
+        assert!(rect_error(&e.result.plane, rect(32, 12, 8, 8), |_, _| red) <= 1e-5);
+        assert!(e.fill.is_none());
+        assert_eq!(e.result.damage, Some(rect(31, 11, 10, 10)));
+        // Thread count does not change the bytes.
+        let t = content_aware_move(
+            &target,
+            &sel,
+            (24, 0),
+            MoveMode::Move,
+            SamplingArea::Auto,
+            &ContentAwareOptions { threads: 4, ..o },
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(t, r);
+    }
+}
+
+#[test]
+fn hostile_patch_and_move_inputs_are_typed_refusals() {
+    let limits = RetouchLimits::default();
+    let canvas = rect(0, 0, 32, 32);
+    let target = plane(canvas, stripes);
+    let region = hole(canvas, RectF { x: 8.0, y: 8.0, width: 6.0, height: 6.0 });
+    let d = ContentAwareOptions::default();
+    let auto = SamplingArea::Auto;
+    let pcode = |r: Result<ContentAwareResult, hsk_studio_pigment::retouch::RetouchError>| r.unwrap_err().code();
+    let mcode = |r: Result<MoveResult, hsk_studio_pigment::retouch::RetouchError>| r.unwrap_err().code();
+    for structure in [0u8, 8, 255] {
+        let m = PatchMode::ContentAware { structure };
+        assert_eq!(pcode(patch(&target, &region, (8, 0), m, auto, &d, &limits)), "retouch_out_of_range");
+    }
+    // Source outside the target, or an offset whose rectangle overflows.
+    assert_eq!(pcode(patch(&target, &region, (20, 0), PatchMode::Normal, auto, &d, &limits)), "retouch_out_of_range");
+    assert_eq!(pcode(patch(&target, &region, (i64::MAX, 0), PatchMode::Normal, auto, &d, &limits)), "overflow");
+    assert_eq!(mcode(content_aware_move(&target, &region, (0, i64::MAX), MoveMode::Move, auto, &d, &limits)), "overflow");
+    // Malformed selection planes and unsupported options.
+    let bad = CoveragePlane { bounds: rect(0, 0, 4, 4), data: vec![65535; 15] };
+    assert_eq!(pcode(patch(&target, &bad, (8, 0), PatchMode::Normal, auto, &d, &limits)), "retouch_shape");
+    assert_eq!(mcode(content_aware_move(&target, &bad, (8, 0), MoveMode::Move, auto, &d, &limits)), "retouch_shape");
+    let mirror = ContentAwareOptions { mirror: true, ..d };
+    assert_eq!(mcode(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &mirror, &limits)), "content_aware_option_unsupported");
+    let tight = RetouchLimits { max_work: 1_000, ..limits };
+    assert_eq!(mcode(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &d, &tight)), "budget_exceeded");
+    // A destination entirely outside the target: the vacated area is filled, nothing is placed.
+    let gone = content_aware_move(&target, &region, (1000, 0), MoveMode::Move, auto, &d, &limits).unwrap();
+    assert!(gone.paste.is_none() && gone.fill.is_some());
+    assert_eq!(gone.result.damage, Some(rect(8, 8, 6, 6)));
+    let (mean, _) = hole_error(&gone.result.plane, &region, stripes);
+    assert!(mean <= 0.02, "vacated area continues the stripes: {mean}");
+}
