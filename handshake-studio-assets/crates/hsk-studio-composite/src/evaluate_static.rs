@@ -6,7 +6,8 @@
 use crate::{
     CompositeError,
     lower_extensions::{
-        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_CLIP_BASE_PASS_THROUGH,
+        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_BLUR_COMBINATION,
+        REFUSE_CLIP_BASE_PASS_THROUGH,
         REFUSE_CLIP_GROUP_BLEND_OFF, REFUSE_EFFECT_ON_CLIP_BASE, adjustment_for,
         blend_if_operator, is_adjustment_layer,
     },
@@ -434,6 +435,9 @@ pub(crate) fn evaluate_with(
     // Index-aligned with `evals`: the step is visible and has Blend Clipped Layers as Group
     // switched off (it matters on a clip base that renders a clipped layer).
     let mut group_blend_off_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
+    // Index-aligned with `evals`: the step is visible and carries a backdrop blur, which needs an
+    // isolated parent group (a pass-through group has no own result to be the backdrop).
+    let mut backdrop_blur_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
     let effect_cx = records.map(|r| EffectContext {
         global_light: r.global_light.as_ref(),
         blending: &doc.blending_space,
@@ -463,6 +467,7 @@ pub(crate) fn evaluate_with(
         let mut step_effects = false;
         let mut step_blend_if = false;
         let mut step_group_blend_off = false;
+        let mut step_backdrop_blur = false;
         if let (Some(recs), Some(cx), Some(l), true) = (records, effect_cx.as_ref(), layer, step.visible())
         {
             if let Some(Ok(c)) = &converted {
@@ -490,7 +495,9 @@ pub(crate) fn evaluate_with(
                 ledger.record(key, *exactness);
             }
             ext_block = features.refusal(a, converted.is_some());
-            step_effects = features.has_effects();
+            // A blur on a clip base is refused like effects there (pigment `BlurCombination`).
+            step_effects = features.has_effects() || features.has_blur();
+            step_backdrop_blur = features.has_backdrop_blur();
             step_blend_if = !features.blend_if.is_empty();
             step_group_blend_off = features.clipped_group_blend_off;
         }
@@ -498,6 +505,7 @@ pub(crate) fn evaluate_with(
         effects_steps.push(step_effects);
         blend_if_steps.push(step_blend_if);
         group_blend_off_steps.push(step_group_blend_off);
+        backdrop_blur_steps.push(step_backdrop_blur);
         let eval = match step {
             Step::Source {
                 addr,
@@ -646,6 +654,14 @@ pub(crate) fn evaluate_with(
                     }
                     if !child.visible {
                         continue;
+                    }
+                    if backdrop_blur_steps[i]
+                        && step.appearance().mode == StudioBlendMode::PassThrough
+                    {
+                        ledger.record(REFUSE_BLUR_COMBINATION, Exactness::Unsupported);
+                        blocked.get_or_insert_with(|| {
+                            format!("{REFUSE_BLUR_COMBINATION}:{}", child.addr.text())
+                        });
                     }
                     match &child.status {
                         StepStatus::Ready => {

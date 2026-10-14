@@ -266,6 +266,7 @@ struct EntryParts {
     feather_px: f32,
     knockout: Knockout,
     effects: Vec<EffectOp>,
+    blur: Option<hsk_studio_pigment::blur_math::LayerBlur>,
 }
 
 impl EntryParts {
@@ -286,6 +287,7 @@ impl EntryParts {
                 .map_or(0.0, |m| m.feather_px),
             knockout: features.knockout,
             effects: features.effect_ops().to_vec(),
+            blur: features.blur,
         })
     }
     fn is_empty(&self) -> bool {
@@ -294,6 +296,7 @@ impl EntryParts {
             && self.feather_px <= 0.0
             && self.knockout == Knockout::None
             && self.effects.is_empty()
+            && self.blur.is_none()
     }
     fn into_extension(self, group: PlanNodeId) -> LayerExtension {
         let mut e = LayerExtension::new(group, self.layer);
@@ -311,6 +314,9 @@ impl EntryParts {
         }
         if !self.effects.is_empty() {
             e = e.with_effects(self.effects);
+        }
+        if let Some(b) = self.blur {
+            e = e.with_blur(b);
         }
         e
     }
@@ -916,7 +922,9 @@ pub(crate) fn lower_inner(
                         base_pass_through = present
                             && plan.steps[child].appearance().mode == StudioBlendMode::PassThrough;
                         base_adjustment = adjustment && child_visible;
-                        base_effects = features.as_ref().is_some_and(LayerFeatures::has_effects);
+                        base_effects = features
+                            .as_ref()
+                            .is_some_and(|f| f.has_effects() || f.has_blur());
                         base_group_blend_off = features
                             .as_ref()
                             .is_some_and(|f| f.clipped_group_blend_off);
@@ -932,6 +940,17 @@ pub(crate) fn lower_inner(
                     let layer = child_layer
                         .ok_or_else(|| CompositeError::DanglingInput(input.text()))?;
                     let child_appearance = plan.steps[child].appearance();
+                    // A backdrop blur needs the group's own result as its backdrop (pigment's
+                    // `BlurCombination` for a non-isolated group).
+                    if !group_isolated
+                        && features.as_ref().is_some_and(LayerFeatures::has_backdrop_blur)
+                    {
+                        return Err(CompositeError::Unavailable(format!(
+                            "{}:{}",
+                            layer.layer_id,
+                            crate::lower_extensions::REFUSE_BLUR_COMBINATION
+                        )));
+                    }
                     if let Some(reason) = features
                         .as_ref()
                         .and_then(|f| f.refusal(child_appearance, adjustment))

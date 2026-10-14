@@ -15,7 +15,7 @@
 //! it for every backend (`blend_if_clip_base`, `blend_if_clipped_layer`); the ledger says so.
 use crate::lower_plan::StepAppearance;
 use hsk_studio_folio::{
-    ADJUSTMENT_SCHEMA, GlowSource as FolioGlowSource, GlowTechnique as FolioGlowTechnique,
+    ADJUSTMENT_SCHEMA, BlurScope as FolioBlurScope, GlowSource as FolioGlowSource, GlowTechnique as FolioGlowTechnique,
     Parent, Payload, ProfileBinding, StrokeFillType, StrokePosition as FolioStrokePosition,
     StudioAdjustment,
     StudioAdjustmentChannel, StudioAdvancedBlending, StudioBlendChannel, StudioColor,
@@ -26,6 +26,7 @@ use hsk_studio_pigment::adjust_math::{
     BrightnessContrast, Curves, Exposure, HueSaturation, Levels, LevelsRecord,
 };
 use hsk_studio_pigment::blend_math::{BlendSpace, Exactness, StudioBlendMode};
+use hsk_studio_pigment::blur_math::{BlurScope as PigmentBlurScope, LayerBlur};
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry};
 use hsk_studio_pigment::effect_math::{
     ColourOverlayOp, DropShadowOp, EffectError, EffectFeature, EffectOp, GlowSource,
@@ -94,6 +95,17 @@ pub const REFUSE_CLIP_GROUP_BLEND_OFF: &str = "blend_clipped_layers_as_group_off
 /// (plausible register PLR-006; the ledger entries for an adjustment or effects clip base already do
 /// the same through `PlanError::AdjustmentClipBase` and `PlanError::EffectClipRun`).
 pub const REFUSE_CLIP_BASE_PASS_THROUGH: &str = PlanError::ClipBasePassThrough { node: 0 }.code();
+
+/// Refusal code: a blur together with something pigment does not define it with (effects or a
+/// non-identity Blend-If on the same layer, an adjustment, pass-through or clipped layer, a clip
+/// base, a backdrop blur in a pass-through group): pigment's `PlanError::BlurCombination` code.
+pub const REFUSE_BLUR_COMBINATION: &str = PlanError::BlurCombination { node: 0 }.code();
+/// Refusal code: more than one enabled blur instance on one layer (pigment carries one blur per
+/// layer; a layer blur plus a backdrop blur on one layer is not modelled).
+pub const REFUSE_BLUR_MULTIPLE: &str = "blur_multiple";
+/// Refusal code: a blur instance with an opacity other than 100 percent or a blend mode other than
+/// normal (a blur has no matte to weigh; Figma's blurs carry neither).
+pub const REFUSE_BLUR_PARAMETER: &str = "blur_parameter";
 
 /// Lowering-report key: one curve point whose corner flag pigment cannot carry.
 pub const NOTE_CURVE_CORNER_DROPPED: &str = "curves_corner_flag_dropped";
@@ -564,19 +576,54 @@ fn convert_effect(
     Ok(op)
 }
 
-/// The pigment effect ops of a stack, in list order, or the refusal. A disabled stack and disabled
-/// instances render nothing (an unsupported kind that is disabled is not refused).
+/// A Folio blur instance as pigment's [`LayerBlur`] (`layer` -> layer blur, `below` -> backdrop
+/// blur; the radius is passed as is: pigment's convention `sigma = radius / 2`). A blur carries no
+/// colour, contour or noise (Folio validation, plus the noise check here) and must be at 100
+/// percent, normal (`blur_parameter` otherwise).
+fn convert_blur(e: &StudioEffect, scope: FolioBlurScope, radius: f64) -> Result<LayerBlur, &'static str> {
+    if e.noise > 0.0 {
+        return Err(REFUSE_EFFECT_NOISE);
+    }
+    if e.opacity != 100.0 || e.blend_mode != hsk_studio_folio::BLEND_NORMAL {
+        return Err(REFUSE_BLUR_PARAMETER);
+    }
+    let scope = match scope {
+        FolioBlurScope::Layer => PigmentBlurScope::Layer,
+        FolioBlurScope::Below => PigmentBlurScope::Backdrop,
+    };
+    let blur = LayerBlur::new(scope, radius as f32);
+    blur.validate().map_err(|_| REFUSE_EFFECT_LIMIT)?;
+    Ok(blur)
+}
+
+/// The converted live stack of a layer: the pigment effect ops in list order, the blur (at most
+/// one) and the approximation notes.
+pub(crate) struct ConvertedEffects {
+    pub ops: Vec<EffectOp>,
+    pub blur: Option<LayerBlur>,
+    pub notes: Notes,
+}
+
+/// The pigment effect ops of a stack, in list order, and its blur, or the refusal. A disabled stack
+/// and disabled instances render nothing (an unsupported kind that is disabled is not refused). A
+/// blur together with any other live effect is refused (`plan_blur_combination`, pigment refuses
+/// the combination), as are two live blurs (`blur_multiple`).
 pub(crate) fn convert_effects(
     stack: &StudioEffectStack,
     cx: &EffectContext<'_>,
-) -> Result<(Vec<EffectOp>, Notes), &'static str> {
+) -> Result<ConvertedEffects, &'static str> {
     let live: Vec<&StudioEffect> = if stack.enabled {
         stack.effects.iter().filter(|e| e.enabled).collect()
     } else {
         Vec::new()
     };
+    let mut out = ConvertedEffects {
+        ops: Vec::new(),
+        blur: None,
+        notes: Vec::new(),
+    };
     if live.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(out);
     }
     if stack.scale != 100.0 {
         return Err(REFUSE_EFFECT_SCALE);
@@ -584,12 +631,24 @@ pub(crate) fn convert_effects(
     if live.len() > MAX_EFFECTS_PER_LAYER {
         return Err(REFUSE_EFFECT_LIMIT);
     }
-    let mut ops = Vec::with_capacity(live.len());
-    let mut notes = Vec::new();
     for e in live {
-        ops.push(convert_effect(e, cx, &mut notes)?);
+        if let StudioEffectKind::Blur {
+            render_scope,
+            radius,
+        } = &e.params
+        {
+            if out.blur.is_some() {
+                return Err(REFUSE_BLUR_MULTIPLE);
+            }
+            out.blur = Some(convert_blur(e, *render_scope, *radius)?);
+        } else {
+            out.ops.push(convert_effect(e, cx, &mut out.notes)?);
+        }
     }
-    Ok((ops, notes))
+    if out.blur.is_some() && !out.ops.is_empty() {
+        return Err(REFUSE_BLUR_COMBINATION);
+    }
+    Ok(out)
 }
 
 /// The Blend-If operator pigment reports for a layer with a non-identity range in the clip role it
@@ -627,6 +686,8 @@ pub(crate) struct LayerFeatures {
     pub knockout: Knockout,
     /// The converted effect ops in list order, or the refusal code of the stack.
     pub effects: Result<Vec<EffectOp>, &'static str>,
+    /// The layer's blur (a Folio `blur` effect instance), carried in `LayerExtension.blur`.
+    pub blur: Option<LayerBlur>,
     /// Approximations made while converting (effects); adjustments carry their own.
     pub notes: Notes,
     /// Blend Clipped Layers as Group is switched off on this layer (`clbl = 0`). It only matters
@@ -645,12 +706,12 @@ impl LayerFeatures {
     ) -> Self {
         let rec = records.layer(layer_id);
         let blending = rec.and_then(|r| r.advanced_blending.as_ref());
-        let (effects, notes) = match rec.and_then(|r| r.effects.as_ref()) {
+        let (effects, blur, notes) = match rec.and_then(|r| r.effects.as_ref()) {
             Some(stack) => match convert_effects(stack, cx) {
-                Ok((ops, notes)) => (Ok(ops), notes),
-                Err(code) => (Err(code), Vec::new()),
+                Ok(c) => (Ok(c.ops), c.blur, c.notes),
+                Err(code) => (Err(code), None, Vec::new()),
             },
-            None => (Ok(Vec::new()), Vec::new()),
+            None => (Ok(Vec::new()), None, Vec::new()),
         };
         Self {
             mask: rec.and_then(|r| r.mask.as_ref()).map(|m| MaskParams {
@@ -661,6 +722,7 @@ impl LayerFeatures {
             blend_if: blending.map(blend_if).unwrap_or_default(),
             knockout: resolve_knockout(layers, records, layer_id),
             effects,
+            blur,
             notes,
             clipped_group_blend_off: blending.is_some_and(|b| !b.blend_clipped_effects),
             channel_blend_default: blending
@@ -692,6 +754,14 @@ impl LayerFeatures {
         if let Err(code) = &self.effects {
             return Some(code);
         }
+        if self.blur.is_some()
+            && (adjustment
+                || appearance.mode == StudioBlendMode::PassThrough
+                || appearance.clipped
+                || !self.blend_if.is_empty())
+        {
+            return Some(REFUSE_BLUR_COMBINATION);
+        }
         if self.has_effects() {
             if adjustment {
                 return Some(REFUSE_EFFECT_ON_ADJUSTMENT);
@@ -708,7 +778,21 @@ impl LayerFeatures {
 
     /// Does the layer change nothing beyond its own appearance?
     pub(crate) fn is_neutral(&self) -> bool {
-        self.blend_if.is_empty() && self.knockout == Knockout::None && !self.has_effects()
+        self.blend_if.is_empty()
+            && self.knockout == Knockout::None
+            && !self.has_effects()
+            && self.blur.is_none()
+    }
+
+    /// Does the layer carry a blur whose radius is above 0 (a radius-0 blur changes nothing)?
+    pub(crate) fn has_blur(&self) -> bool {
+        self.blur.is_some_and(|b| b.radius_px > 0.0)
+    }
+
+    /// Does the layer carry a backdrop blur?
+    pub(crate) fn has_backdrop_blur(&self) -> bool {
+        self.blur
+            .is_some_and(|b| b.scope == PigmentBlurScope::Backdrop)
     }
 
     /// Envelope operators this layer uses besides Blend-If (see [`blend_if_operator`]).
@@ -732,6 +816,9 @@ impl LayerFeatures {
             if !ops.contains(&e) {
                 ops.push(e);
             }
+        }
+        if let Some(b) = self.blur {
+            ops.push(ExtOperator::Blur(b.scope));
         }
         ops
     }
