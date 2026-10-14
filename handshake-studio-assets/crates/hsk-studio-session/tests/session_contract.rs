@@ -370,8 +370,8 @@ fn open_edit_undo_save_reopen_round_trip() {
         assert_eq!(session.loss().len(), 1, "the opaque entry is a loss note");
         assert_eq!(
             session.revisions().len(),
-            5,
-            "2 layers x (name, visible) + artboard name"
+            10,
+            "group (name, visible, opacity, blend_mode) + raster (the same + tiles) + artboard name"
         );
         assert!(session.revisions().iter().all(|e| e.revision == 0));
         assert_eq!(
@@ -2754,9 +2754,29 @@ fn value_at(document: &folio::StudioDocument, address: &PropertyAddress) -> Prop
                 .name
                 .clone(),
         ),
+        (NodeKind::Layer, Property::Opacity) => PropertyValue::number(
+            document.layers.iter().find(|l| l.layer_id == id).unwrap().effective_appearance().opacity,
+        )
+        .unwrap(),
+        (NodeKind::Layer, Property::BlendMode) => PropertyValue::Number(
+            document.layers.iter().find(|l| l.layer_id == id).unwrap().effective_appearance().blend_mode.into(),
+        ),
+        (NodeKind::Layer, Property::Tiles) => {
+            match &document.layers.iter().find(|l| l.layer_id == id).unwrap().payload {
+                folio::Payload::Raster { tiles } => PropertyValue::Tiles(chronicle::TileList(tiles.clone())),
+                // Chronicle refuses tiles of a non-raster layer before it compares a value.
+                _ => PropertyValue::Tiles(chronicle::TileList(Vec::new())),
+            }
+        }
         // Chronicle refuses these pairs before it reads a value; the probe only needs a value of
         // the property's type.
         (NodeKind::Artboard | NodeKind::PageSpread, Property::Visible) => PropertyValue::Bool(true),
+        (NodeKind::Artboard | NodeKind::PageSpread, Property::Opacity | Property::BlendMode) => {
+            PropertyValue::Number(1.into())
+        }
+        (NodeKind::Artboard | NodeKind::PageSpread, Property::Tiles) => {
+            PropertyValue::Tiles(chronicle::TileList(Vec::new()))
+        }
     }
 }
 
@@ -2770,9 +2790,17 @@ impl ProposalProvider for ProbePair {
     fn propose(&self, request: &ProposalRequest<'_>) -> Result<Prepared, ProviderError> {
         let live = request.snapshot.document();
         let current = value_at(live, &self.address);
-        let written = match &current {
-            PropertyValue::Bool(v) => PropertyValue::Bool(!v),
-            PropertyValue::String(_) => PropertyValue::String(format!("probe-{}", live.revision)),
+        let written = match (&current, self.address.property) {
+            (PropertyValue::Bool(v), _) => PropertyValue::Bool(!v),
+            (PropertyValue::String(_), _) => PropertyValue::String(format!("probe-{}", live.revision)),
+            (PropertyValue::Number(n), Property::Opacity) => {
+                PropertyValue::Number(if n.as_f64() == Some(100.0) { 50 } else { 100 }.into())
+            }
+            (PropertyValue::Number(n), _) => {
+                PropertyValue::Number(if n.as_u64() == Some(2) { 10 } else { 2 }.into())
+            }
+            // An empty tile list needs no new asset (every remaining tile is in the source).
+            (PropertyValue::Tiles(_), _) => PropertyValue::Tiles(chronicle::TileList(Vec::new())),
         };
         let mut base = request.snapshot.clone();
         if self.smuggle {
@@ -2898,7 +2926,9 @@ fn session_consumes_the_chronicle_addressability_table() {
                         property,
                     };
                     let table_says = chronicle::addressable(kind, property);
-                    let expect_commit = table_says && *node_id != unsupported;
+                    // `tiles` is a raster layer's property: seeded and writable only on layer 2.
+                    let raster_only = property != Property::Tiles || *node_id == identity("SLYR", 2);
+                    let expect_commit = table_says && *node_id != unsupported && raster_only;
                     assert_eq!(
                         session.revisions().iter().any(|e| e.address == address),
                         expect_commit,
@@ -2951,10 +2981,11 @@ fn session_consumes_the_chronicle_addressability_table() {
                     }
                 }
             }
-            // Layers 1 and 2 (name, visible), the artboard and the page spread (name) commit;
-            // visibility of the artboard and page spread, and both properties of the unsupported
-            // layer, are refused.
-            assert_eq!((committed, refused), (6, 4));
+            // Layer 1 (name, visible, opacity, blend_mode), layer 2 (the same + tiles), the artboard
+            // and the page spread (name) commit; tiles of the group, the four non-name properties
+            // of the artboard and of the page spread, and all five of the unsupported layer are
+            // refused.
+            assert_eq!((committed, refused), (11, 14));
             assert_eq!(session.document_revision(), 7 + committed);
 
             // The session derives lineage through chronicle's mask: a successor that carries one more
@@ -3058,5 +3089,86 @@ fn import_entries_round_trip_without_loss_notes_and_unknown_entries_still_report
         let again = open(&fixture, &frames);
         assert_eq!(again.imports(), session.imports());
         assert_eq!(again.loss().len(), 1);
+    });
+}
+
+/// Lane SMB-UI-SUPPORT-APIS: a pixel edit is a staged tile body plus a chronicle `tiles` write; it
+/// commits, serves its bytes to viewers, saves and reopens, and its inverse (undo) restores the
+/// original tile; a write naming an unstaged digest is refused before anything is published.
+#[test]
+fn pixel_edits_stage_tiles_commit_undo_save_and_reopen() {
+    bounded_case("pixel_edits_stage_tiles_commit_undo_save_and_reopen", || {
+        let fixture = Fixture::new("pixeledit");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        let raster = identity("SLYR", 2);
+        let tiles_at = PropertyAddress {
+            target: NodeRef { node_kind: NodeKind::Layer, node_id: raster.clone() },
+            property: Property::Tiles,
+        };
+        let original = match &session.snapshot().document().layers[1].payload {
+            folio::Payload::Raster { tiles } => tiles.clone(),
+            other => panic!("{other:?}"),
+        };
+        let old = original[0].content_digest.clone();
+        assert_eq!(session.render_assets(&token()).unwrap(), BTreeMap::from([(old.digest.clone(), BLOB.to_vec())]));
+
+        let painted: Vec<u8> = (0..64u8).collect();
+        let new = session.stage_tile(painted.clone(), &token()).unwrap();
+        assert_eq!(session.stage_tile(painted.clone(), &token()).unwrap(), new, "same bytes, one copy");
+        assert_eq!(session.staged_bytes(), 64);
+        assert_eq!(session.tile_bytes(&new, &token()).unwrap(), painted);
+        let mut edited = original.clone();
+        edited[0].content_digest = new.clone();
+        let tiles_patch = |from: &[folio::TileRef], to: Vec<folio::TileRef>, read_revision: u64, command: &str| Patch {
+            transport_version: 1,
+            document_id: identity("SDOC", 1),
+            // Provenance only: the reads gate the patch.
+            base_revision: 7,
+            command_id: command.into(),
+            correlation_id: 9,
+            actor: patch_actor(),
+            reads: vec![PropertyRead { address: tiles_at.clone(), expected_revision: read_revision, expected_value: PropertyValue::Tiles(chronicle::TileList(from.to_vec())) }],
+            writes: vec![PropertyWrite { address: tiles_at.clone(), value: PropertyValue::Tiles(chronicle::TileList(to)) }],
+        };
+
+        // A digest that is neither in the package nor staged is refused, nothing changes.
+        let mut ghost = original.clone();
+        ghost[0].content_digest.digest = "ab".repeat(32);
+        let (revision, before) = (session.document_revision(), session.snapshot().encoded_bytes().to_vec());
+        let refused = session.submit(CHRONICLE_PROVIDER_ID, &json_bytes(&tiles_patch(&original, ghost, 0, "ghost")), revision, &token()).unwrap_err();
+        assert_eq!(refused.error.code(), "missing_asset");
+        assert_eq!((session.document_revision(), session.snapshot().encoded_bytes()), (revision, before.as_slice()));
+
+        // Paint: commit, the render assets now serve the painted tile.
+        let applied = session.submit(CHRONICLE_PROVIDER_ID, &json_bytes(&tiles_patch(&original, edited.clone(), 0, "paint")), revision, &token()).unwrap();
+        assert!(applied.changed);
+        assert_eq!(session.render_assets(&token()).unwrap(), BTreeMap::from([(new.digest.clone(), painted.clone())]));
+        let painted_path = fixture.dir.join("painted.handshake");
+        session.save_to(&painted_path, &token()).unwrap();
+        let reopened = Session::open_path(&painted_path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(reopened.tile_bytes(&new, &token()).unwrap(), painted, "the staged tile was written");
+
+        // Undo through the inverse: the original tile is back, saved and reopened byte-exact.
+        let inverse = applied.inverse.unwrap().invocation("undo".into(), 10, patch_actor(), session.document_revision());
+        session.submit(CHRONICLE_PROVIDER_ID, &json_bytes(&inverse), session.document_revision(), &token()).unwrap();
+        match &session.snapshot().document().layers[1].payload {
+            folio::Payload::Raster { tiles } => assert_eq!(tiles, &original),
+            other => panic!("{other:?}"),
+        }
+        let undone_path = fixture.dir.join("undone.handshake");
+        session.save_to(&undone_path, &token()).unwrap();
+        let again = Session::open_path(&undone_path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(again.render_assets(&token()).unwrap(), BTreeMap::from([(old.digest.clone(), BLOB.to_vec())]));
+        // The painted body stays staged for redo, and the original tile replaced before the first
+        // save was retained from the old source (that is what let the undo above commit).
+        assert_eq!(session.staged_bytes(), 64 + BLOB.len() as u64);
+
+        // Bounds: one body over the package entry limit is refused typed.
+        let mut small = SessionConfig::new(actor_context());
+        small.budgets.limits.max_entry_bytes = 64 * 1024;
+        let mut bounded = Session::open_path(&fixture.path, small, ports(&frames), &token()).unwrap();
+        assert_eq!(bounded.stage_tile(vec![0; 64 * 1024 + 1], &token()).unwrap_err().code(), "entry_too_large");
+        assert_eq!(bounded.staged_bytes(), 0);
     });
 }

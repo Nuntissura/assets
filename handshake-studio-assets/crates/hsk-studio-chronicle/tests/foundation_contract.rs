@@ -78,6 +78,10 @@ fn patch(property: Property, value: PropertyValue) -> Patch {
     let expected = match property {
         Property::Name => PropertyValue::String("original-private-name".into()),
         Property::Visible => PropertyValue::Bool(true),
+        // Layer 1 is a group: identity opacity 100, pass_through (1).
+        Property::Opacity => PropertyValue::Number(100.into()),
+        Property::BlendMode => PropertyValue::Number(1.into()),
+        Property::Tiles => PropertyValue::Tiles(TileList(Vec::new())),
     };
     Patch {
         transport_version: 1,
@@ -1202,6 +1206,9 @@ fn exported_table_is_the_table_prepare_enforces() {
             match p {
                 Property::Name => 0,
                 Property::Visible => 1,
+                Property::Opacity => 2,
+                Property::BlendMode => 3,
+                Property::Tiles => 4,
             }
         }
         for (i, p) in PROPERTIES.into_iter().enumerate() {
@@ -1210,7 +1217,11 @@ fn exported_table_is_the_table_prepare_enforces() {
 
         let s = table_snapshot();
         let seeded = seed_revisions(s.document());
-        let supported = |a: &PropertyAddress| a.target.node_id != id("SLYR", 3);
+        // The unsupported layer is read-only; the fixture has no raster layer, so `tiles` (a raster
+        // layer's property) is refused on every layer and seeded for none.
+        let supported = |a: &PropertyAddress| {
+            a.target.node_id != id("SLYR", 3) && a.property != Property::Tiles
+        };
 
         // Every (node, property) pair of every node kind: prepare itself decides acceptance, with
         // a vector that holds only the pair under test (prepare refuses an unaddressable entry).
@@ -1230,6 +1241,12 @@ fn exported_table_is_the_table_prepare_enforces() {
                         PropertyValue::String("probe".into()),
                     ),
                     Property::Visible => (PropertyValue::Bool(true), PropertyValue::Bool(false)),
+                    Property::Opacity => (PropertyValue::Number(100.into()), PropertyValue::Number(40.into())),
+                    Property::BlendMode => (PropertyValue::Number(1.into()), PropertyValue::Number(2.into())),
+                    Property::Tiles => (
+                        PropertyValue::Tiles(TileList(Vec::new())),
+                        PropertyValue::Tiles(TileList(Vec::new())),
+                    ),
                 };
                 let mut p = patch(Property::Name, PropertyValue::String("x".into()));
                 p.reads = vec![PropertyRead {
@@ -1261,8 +1278,9 @@ fn exported_table_is_the_table_prepare_enforces() {
                 accepted += usize::from(verdict.is_ok());
             }
         }
-        // Layer 1 (name, visible), the artboard and the page spread (name): 4 of 8 pairs.
-        assert_eq!((accepted, seeded.len()), (4, 4));
+        // Layer 1 (name, visible, opacity, blend_mode), the artboard and the page spread (name):
+        // 6 of 20 pairs.
+        assert_eq!((accepted, seeded.len()), (6, 6));
         // The unsupported layer and visibility of artboards and page spreads are refused with the
         // dimension that explains it.
         assert!(!addressable(&NodeKind::Artboard, Property::Visible));
@@ -1282,7 +1300,7 @@ fn exported_table_is_the_table_prepare_enforces() {
         // The seed is the document-order vector at revision 0, and prepare takes it whole.
         assert_eq!(
             seeded.iter().map(|e| e.revision).collect::<Vec<_>>(),
-            [0, 0, 0, 0]
+            [0; 6]
         );
         assert_eq!(
             seeded.iter().map(|e| e.address.clone()).collect::<Vec<_>>(),
@@ -1336,5 +1354,59 @@ fn exported_table_is_the_table_prepare_enforces() {
             assert!(!mask_property(&mut a, &refused), "{refused:?}");
             assert_eq!(a, before);
         }
+    });
+}
+
+#[test]
+fn appearance_properties_transact_and_invert_to_the_original_document() {
+    bounded_case("appearance_properties_transact_and_invert_to_the_original_document", || {
+        let original = snapshot();
+        let mut v = seed_revisions(original.document());
+        assert_eq!(v.len(), 4, "group layer: name, visible, opacity, blend_mode (no tiles)");
+        // Opacity 40 on the group and blend mode normal in one patch.
+        let mut p = patch(Property::Opacity, PropertyValue::number(40.0).unwrap());
+        p.reads.push(PropertyRead { address: address(Property::BlendMode), expected_revision: 0, expected_value: PropertyValue::Number(1.into()) });
+        p.writes.push(PropertyWrite { address: address(Property::BlendMode), value: PropertyValue::Number(2.into()) });
+        let wire = serde_json::to_vec(&p).unwrap();
+        assert_eq!(decode_patch(&wire, Budget::default(), &CancellationToken::default()).unwrap(), p, "numbers round-trip the typed wire");
+        let changed = run(&p, &original, &v).unwrap();
+        let next = changed.successor().unwrap().clone();
+        let a = next.document().layers[0].appearance.clone().expect("appearance stored once it differs from identity");
+        assert_eq!((a.opacity, a.blend_mode, a.isolation), (40.0, 2, hsk_studio_folio::Isolation::Isolated), "a group leaving pass-through is isolated");
+        assert_eq!(changed.revision_updates().len(), 2);
+        advance(&mut v, &changed);
+        // 40 and 40.0 are the same value; the inverse restores the original document exactly
+        // (identity appearance is stored absent again), not only the original pixels.
+        let inverse = changed.inverse().unwrap().invocation("undo".into(), 2, actor(), next.document().revision);
+        assert!(inverse.reads.iter().any(|r| r.expected_value == PropertyValue::Number(40.into())), "whole stored values are written as integers");
+        let undone = run(&inverse, &next, &v).unwrap();
+        let back = undone.successor().unwrap();
+        assert_eq!(back.document().layers, original.document().layers);
+        assert!(back.document().layers[0].appearance.is_none());
+        // Types: opacity is a finite number, blend_mode an integer; ranges and applicability are folio's.
+        let wrong = |property, value| {
+            let mut p = patch(property, value);
+            p.reads[0].expected_value = match property {
+                Property::Opacity => PropertyValue::Number(100.into()),
+                _ => PropertyValue::Number(1.into()),
+            };
+            run(&p, &original, &seed_revisions(original.document())).unwrap_err().code
+        };
+        assert_eq!(wrong(Property::Opacity, PropertyValue::Bool(true)), Code::WrongType);
+        assert_eq!(wrong(Property::BlendMode, PropertyValue::number(2.5).unwrap()), Code::WrongType);
+        assert_eq!(wrong(Property::BlendMode, PropertyValue::Number(70000.into())), Code::WrongType);
+        assert_eq!(wrong(Property::Opacity, PropertyValue::number(150.0).unwrap()), Code::FolioRejected);
+        assert_eq!(wrong(Property::BlendMode, PropertyValue::Number(24.into())), Code::FolioRejected, "tool-only behind");
+        assert_eq!(wrong(Property::BlendMode, PropertyValue::Number(36.into())), Code::FolioRejected, "unknown discriminant");
+        // A stale read of the old opacity after the change is a value conflict, typed and addressed.
+        let stale = run(&p, &next, &v).unwrap_err();
+        assert_eq!(stale.code, Code::RevisionConflict);
+        assert_eq!(stale.address, Some(address(Property::Opacity)));
+        // Artboards and page spreads have no appearance property; tiles exist only on raster layers.
+        assert!(!addressable(&NodeKind::Artboard, Property::Opacity));
+        assert!(!addressable(&NodeKind::PageSpread, Property::BlendMode));
+        let mut t = patch(Property::Tiles, PropertyValue::Tiles(TileList(Vec::new())));
+        t.reads[0].expected_revision = 0;
+        assert_eq!(run(&t, &original, &[RevisionEntry { address: address(Property::Tiles), revision: 0 }]).unwrap_err().code, Code::InvalidTarget);
     });
 }

@@ -10,6 +10,7 @@ use hsk_studio_package::{
     PackageError, PackageReader, Quarantined, sha256_hex_of,
 };
 use std::{
+    collections::BTreeMap,
     collections::BTreeSet,
     io::{self, Cursor, Read, Seek, SeekFrom},
     sync::{
@@ -299,6 +300,9 @@ pub(crate) fn require_tile_assets(
 /// `asset_absent`.
 pub(crate) struct LazyAssets<'a> {
     reader: &'a Mutex<PackageReader<Handle>>,
+    /// Tile bodies staged in memory by `Session::stage_tile` (pixel edits), by sha256 hex; looked
+    /// up before the source package.
+    staged: &'a BTreeMap<String, Vec<u8>>,
     /// A cursor over the same stream as `reader`, forked for each raw asset range.
     raw: &'a Handle,
     cancel: &'a CancellationToken,
@@ -309,10 +313,12 @@ impl<'a> LazyAssets<'a> {
     pub(crate) fn new(
         reader: &'a Mutex<PackageReader<Handle>>,
         raw: &'a Handle,
+        staged: &'a BTreeMap<String, Vec<u8>>,
         cancel: &'a CancellationToken,
     ) -> Self {
         Self {
             reader,
+            staged,
             raw,
             cancel,
             failure: Mutex::new(None),
@@ -336,6 +342,13 @@ impl AssetSource for LazyAssets<'_> {
     fn read(&self, digest: &ContentDigest, max: u64) -> Result<Vec<u8>, AssetError> {
         if digest.algorithm != "sha256" {
             return Err(AssetError::Absent);
+        }
+        if let Some(bytes) = self.staged.get(&digest.digest) {
+            return if bytes.len() as u64 > max {
+                Err(AssetError::TooLarge)
+            } else {
+                Ok(bytes.clone())
+            };
         }
         let mut reader = self.reader.lock().unwrap_or_else(PoisonError::into_inner);
         let name = format!("{ASSET_PREFIX}{}", digest.digest);
@@ -363,6 +376,15 @@ impl AssetStream for LazyAssets<'_> {
     fn open(&self, digest: &ContentDigest, max: u64) -> Result<AssetReader<'_>, AssetError> {
         if digest.algorithm != "sha256" {
             return Err(AssetError::Absent);
+        }
+        if let Some(bytes) = self.staged.get(&digest.digest) {
+            if bytes.len() as u64 > max {
+                return Err(AssetError::TooLarge);
+            }
+            return Ok(AssetReader {
+                len: bytes.len() as u64,
+                reader: Box::new(Cursor::new(bytes.as_slice())),
+            });
         }
         let name = format!("{ASSET_PREFIX}{}", digest.digest);
         let mut reader = self.reader.lock().unwrap_or_else(PoisonError::into_inner);

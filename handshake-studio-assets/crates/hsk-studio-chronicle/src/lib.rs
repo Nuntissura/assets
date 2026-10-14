@@ -2,7 +2,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio::{
-    NodeKind, NodeRef, Payload, Resolver, Snapshot, StudioDocument, StudioLayer,
+    BLEND_PASS_THROUGH, Isolation, LayerAppearance, NodeKind, NodeRef, Payload, Resolver, Snapshot,
+    StudioDocument, StudioLayer, TileRef,
 };
 use hsk_studio_observe::{Observation, Observe, Outcome, SinkPort};
 use schemars::{JsonSchema, generate::SchemaSettings};
@@ -70,6 +71,17 @@ impl Actor {
 pub enum Property {
     Name,
     Visible,
+    /// Layer opacity in percent (`LayerAppearance.opacity`, `0..=100`), value `Number`.
+    Opacity,
+    /// Layer blend mode (`LayerAppearance.blend_mode`, the `StudioBlendMode` discriminant), value
+    /// an integer `Number`. Writing it on a group also sets the group's isolation (pass-through
+    /// for discriminant 1, isolated otherwise), the one combination folio accepts.
+    BlendMode,
+    /// The tile references of a raster layer (`Payload::Raster.tiles`), value `Tiles`: a pixel
+    /// edit is a new tile list whose new content digests the caller makes available (the session
+    /// stages their bytes). Only raster layers have this property (`seed_revisions` seeds it for
+    /// them alone; any other payload is `InvalidTarget`).
+    Tiles,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +99,23 @@ pub struct PropertyAddress {
 pub enum PropertyValue {
     String(String),
     Bool(bool),
+    /// A finite JSON number (`opacity` percent, `blend_mode` discriminant). Compared by numeric
+    /// value, so `50` and `50.0` are the same value.
+    Number(serde_json::Number),
+    /// A raster layer's complete tile list.
+    Tiles(TileList),
+}
+/// A raster layer's tile references in document order. Equality is folio's field equality; folio
+/// only admits finite tile lengths and JSON has no NaN, so the relation is reflexive (`Eq`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct TileList(pub Vec<TileRef>);
+impl Eq for TileList {}
+impl PropertyValue {
+    /// A finite number; `None` for NaN or an infinity.
+    pub fn number(v: f64) -> Option<Self> {
+        serde_json::Number::from_f64(v).map(Self::Number)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -289,7 +318,13 @@ fn address_valid(a: &PropertyAddress) -> Result<()> {
 /// Adding a `Property` variant fails to compile in `addressable` and `mask_property` until the
 /// table is extended; this list is the one hand-maintained mirror of the enum (compile-time
 /// guard in the test `exported_table_is_the_table_prepare_enforces`).
-pub const PROPERTIES: [Property; 2] = [Property::Name, Property::Visible];
+pub const PROPERTIES: [Property; 5] = [
+    Property::Name,
+    Property::Visible,
+    Property::Opacity,
+    Property::BlendMode,
+    Property::Tiles,
+];
 /// The addressability table: whether chronicle can address `property` on a `kind` node.
 ///
 /// This is the single owner of that fact. `prepare` refuses an address for which this is false
@@ -300,9 +335,19 @@ pub const PROPERTIES: [Property; 2] = [Property::Name, Property::Visible];
 /// Test: `exported_table_is_the_table_prepare_enforces`.
 pub fn addressable(kind: &NodeKind, property: Property) -> bool {
     match (kind, property) {
-        (NodeKind::Layer, Property::Name | Property::Visible)
+        (
+            NodeKind::Layer,
+            Property::Name
+            | Property::Visible
+            | Property::Opacity
+            | Property::BlendMode
+            | Property::Tiles,
+        )
         | (NodeKind::Artboard | NodeKind::PageSpread, Property::Name) => true,
-        (NodeKind::Artboard | NodeKind::PageSpread, Property::Visible) => false,
+        (
+            NodeKind::Artboard | NodeKind::PageSpread,
+            Property::Visible | Property::Opacity | Property::BlendMode | Property::Tiles,
+        ) => false,
     }
 }
 /// A layer whose payload folio preserves but does not understand is read-only to chronicle.
@@ -317,9 +362,9 @@ fn layer_addressable(layer: &StudioLayer) -> bool {
 /// each seeded address. Test: `exported_table_is_the_table_prepare_enforces`.
 pub fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
     let mut vector = Vec::new();
-    let mut seed = |node_kind: NodeKind, node_id: &str| {
+    let mut seed = |node_kind: NodeKind, node_id: &str, raster: bool| {
         for property in PROPERTIES {
-            if addressable(&node_kind, property) {
+            if addressable(&node_kind, property) && (raster || property != Property::Tiles) {
                 vector.push(RevisionEntry {
                     address: PropertyAddress {
                         target: NodeRef {
@@ -334,17 +379,19 @@ pub fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
         }
     };
     for layer in document.layers.iter().filter(|l| layer_addressable(l)) {
-        seed(NodeKind::Layer, &layer.layer_id);
+        let raster = matches!(layer.payload, Payload::Raster { .. });
+        seed(NodeKind::Layer, &layer.layer_id, raster);
     }
     for artboard in &document.artboards {
-        seed(NodeKind::Artboard, &artboard.artboard_id);
+        seed(NodeKind::Artboard, &artboard.artboard_id, false);
     }
     for spread in &document.page_spreads {
-        seed(NodeKind::PageSpread, &spread.page_spread_id);
+        seed(NodeKind::PageSpread, &spread.page_spread_id, false);
     }
     vector
 }
-/// Sets the addressed property to a neutral value (empty name, not visible) so two documents can
+/// Sets the addressed property to a neutral value (empty name, not visible, the kind's identity
+/// opacity and blend mode, after which an identity appearance is stored as absent) so two documents can
 /// be compared with that property left out, for example to check that a successor differs from
 /// its base only at declared addresses. False, with the document untouched, when `addressable`
 /// refuses the pair or the document has no such node. Test:
@@ -356,18 +403,32 @@ pub fn mask_property(document: &mut StudioDocument, address: &PropertyAddress) -
     let neutral = match address.property {
         Property::Name => PropertyValue::String(String::new()),
         Property::Visible => PropertyValue::Bool(false),
+        Property::Opacity => PropertyValue::Number(100.into()),
+        Property::BlendMode => {
+            let group = document
+                .layers
+                .iter()
+                .find(|l| l.layer_id == address.target.node_id)
+                .is_some_and(is_group);
+            PropertyValue::Number(LayerAppearance::identity(group).blend_mode.into())
+        }
+        Property::Tiles => PropertyValue::Tiles(TileList(Vec::new())),
     };
     set(document, address, &neutral).is_ok()
 }
 enum ValueRef<'a> {
     String(&'a str),
     Bool(bool),
+    Number(f64),
+    Tiles(&'a [TileRef]),
 }
 impl ValueRef<'_> {
     fn equals(&self, v: &PropertyValue) -> bool {
         match (self, v) {
             (Self::String(a), PropertyValue::String(b)) => *a == b.as_str(),
             (Self::Bool(a), PropertyValue::Bool(b)) => a == b,
+            (Self::Number(a), PropertyValue::Number(b)) => b.as_f64() == Some(*a),
+            (Self::Tiles(a), PropertyValue::Tiles(b)) => *a == b.0.as_slice(),
             _ => false,
         }
     }
@@ -375,8 +436,22 @@ impl ValueRef<'_> {
         match self {
             Self::String(s) => PropertyValue::String((*s).into()),
             Self::Bool(v) => PropertyValue::Bool(*v),
+            // Folio validated the document: stored appearance numbers are finite. A whole value
+            // (a blend-mode discriminant, a whole percent) is written as an integer so the
+            // inverse of a blend-mode write passes the integer type check.
+            Self::Number(v) if v.fract() == 0.0 && (0.0..=65_535.0).contains(v) => {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let whole = *v as u64;
+                PropertyValue::Number(whole.into())
+            }
+            Self::Number(v) => PropertyValue::number(*v).unwrap_or(PropertyValue::Number(0.into())),
+            Self::Tiles(t) => PropertyValue::Tiles(TileList(t.to_vec())),
         }
     }
+}
+/// The kind test `StudioLayer::effective_appearance` uses for the identity default.
+fn is_group(l: &StudioLayer) -> bool {
+    l.kind == "group" && matches!(l.payload, Payload::Group)
 }
 fn value<'a>(d: &'a StudioDocument, a: &PropertyAddress) -> Result<ValueRef<'a>> {
     address_valid(a)?;
@@ -393,6 +468,14 @@ fn value<'a>(d: &'a StudioDocument, a: &PropertyAddress) -> Result<ValueRef<'a>>
             match a.property {
                 Property::Name => Ok(ValueRef::String(&l.name)),
                 Property::Visible => Ok(ValueRef::Bool(l.visible)),
+                Property::Opacity => Ok(ValueRef::Number(l.effective_appearance().opacity)),
+                Property::BlendMode => Ok(ValueRef::Number(f64::from(
+                    l.effective_appearance().blend_mode,
+                ))),
+                Property::Tiles => match &l.payload {
+                    Payload::Raster { tiles } => Ok(ValueRef::Tiles(tiles)),
+                    _ => Err(failure(Code::InvalidTarget, Some(a))),
+                },
             }
         }
         NodeKind::Artboard => {
@@ -414,10 +497,19 @@ fn value<'a>(d: &'a StudioDocument, a: &PropertyAddress) -> Result<ValueRef<'a>>
     }
 }
 fn value_type(a: &PropertyAddress, v: &PropertyValue) -> Result<()> {
-    if !matches!(
-        (a.property, v),
-        (Property::Name, PropertyValue::String(_)) | (Property::Visible, PropertyValue::Bool(_))
-    ) {
+    let ok = match (a.property, v) {
+        (Property::Name, PropertyValue::String(_)) | (Property::Visible, PropertyValue::Bool(_)) => {
+            true
+        }
+        (Property::Opacity, PropertyValue::Number(n)) => n.as_f64().is_some_and(f64::is_finite),
+        // A discriminant is an integer; range and applicability are folio's (FolioRejected).
+        (Property::BlendMode, PropertyValue::Number(n)) => {
+            n.as_u64().is_some_and(|d| u16::try_from(d).is_ok())
+        }
+        (Property::Tiles, PropertyValue::Tiles(_)) => true,
+        _ => false,
+    };
+    if !ok {
         return Err(failure(Code::WrongType, Some(a)));
     }
     Ok(())
@@ -425,8 +517,47 @@ fn value_type(a: &PropertyAddress, v: &PropertyValue) -> Result<()> {
 fn size(v: &PropertyValue) -> usize {
     match v {
         PropertyValue::String(s) => s.len(),
-        PropertyValue::Bool(_) => 0,
+        PropertyValue::Bool(_) | PropertyValue::Number(_) => 0,
+        // Text of every reference plus a fixed 128 for its numbers (as `snapshot_budget` counts).
+        PropertyValue::Tiles(list) => list.0.iter().fold(0usize, |sum, t| {
+            [
+                &t.object_key,
+                &t.layer_id,
+                &t.format,
+                &t.colour_profile_id,
+                &t.content_digest.algorithm,
+                &t.content_digest.digest,
+                &t.artifact_manifest_id,
+            ]
+            .iter()
+            .fold(sum.saturating_add(128), |n, text| n.saturating_add(text.len()))
+        }),
     }
+}
+/// Writes an appearance property of a layer. An appearance equal to the kind's identity is stored
+/// as absent (folio's encoding of the default), so setting a value and setting it back restores the
+/// original document, not only the original pixels.
+fn set_appearance(l: &mut StudioLayer, property: Property, n: &serde_json::Number) {
+    let group = is_group(l);
+    let mut appearance = l.effective_appearance();
+    match property {
+        Property::Opacity => appearance.opacity = n.as_f64().unwrap_or(f64::NAN),
+        Property::BlendMode => {
+            appearance.blend_mode = n
+                .as_u64()
+                .and_then(|d| u16::try_from(d).ok())
+                .unwrap_or(0);
+            if group {
+                appearance.isolation = if appearance.blend_mode == BLEND_PASS_THROUGH {
+                    Isolation::PassThrough
+                } else {
+                    Isolation::Isolated
+                };
+            }
+        }
+        Property::Name | Property::Visible | Property::Tiles => {}
+    }
+    l.appearance = (appearance != LayerAppearance::identity(group)).then_some(appearance);
 }
 fn set(d: &mut StudioDocument, a: &PropertyAddress, v: &PropertyValue) -> Result<()> {
     value_type(a, v)?;
@@ -440,6 +571,11 @@ fn set(d: &mut StudioDocument, a: &PropertyAddress, v: &PropertyValue) -> Result
             match v {
                 PropertyValue::String(v) => l.name = v.clone(),
                 PropertyValue::Bool(v) => l.visible = *v,
+                PropertyValue::Number(n) => set_appearance(l, a.property, n),
+                PropertyValue::Tiles(list) => match &mut l.payload {
+                    Payload::Raster { tiles } => tiles.clone_from(&list.0),
+                    _ => return Err(failure(Code::InvalidTarget, Some(a))),
+                },
             }
         }
         NodeKind::Artboard => {
@@ -609,6 +745,8 @@ fn scalar_size(v: &PropertyValue, t: &CancellationToken) -> Result<usize> {
     match v {
         PropertyValue::String(s) => encoded_size(s, t),
         PropertyValue::Bool(v) => encoded_size(v, t),
+        PropertyValue::Number(n) => encoded_size(n, t),
+        PropertyValue::Tiles(list) => encoded_size(list, t),
     }
 }
 /// Stateless preparation. The caller serializes a fresh current read plus publication.
@@ -948,10 +1086,13 @@ pub fn deliver_result(
                 Code::FolioRejected => DiagnosticCode::ValidationRejected,
             };
             // A diagnostic supplied by a caller cannot serialize an unvalidated ID/property.
+            // Observe's closed diagnostic vocabulary names only `name` and `visible`; a failure at an
+            // appearance address reports its code without an address (no new telemetry field).
             let address = error
                 .address
                 .as_ref()
                 .filter(|a| address_valid(a).is_ok())
+                .filter(|a| matches!(a.property, Property::Name | Property::Visible))
                 .map(|a| {
                     let target = match a.target.node_kind {
                         NodeKind::Layer => DiagnosticTarget::Layer,
@@ -959,8 +1100,11 @@ pub fn deliver_result(
                         NodeKind::PageSpread => DiagnosticTarget::PageSpread,
                     };
                     let property = match a.property {
-                        Property::Name => DiagnosticProperty::Name,
                         Property::Visible => DiagnosticProperty::Visible,
+                        Property::Name
+                        | Property::Opacity
+                        | Property::BlendMode
+                        | Property::Tiles => DiagnosticProperty::Name,
                     };
                     DiagnosticAddress::new(
                         target,
@@ -1118,6 +1262,8 @@ impl<'de> Visitor<'de> for Seed<'_, '_> {
             let limit = match k.as_str() {
                 "reads" => self.context.budget.reads,
                 "writes" => self.context.budget.writes,
+                // A tile list value: one entry per tile, bounded like the revision vector.
+                "value" | "expected_value" => self.context.budget.revisions,
                 _ => 16,
             };
             let v = a.next_value_seed(Seed {
@@ -1199,4 +1345,4 @@ pub fn result_schema() -> schemars::Schema {
         .into_generator()
         .into_root_schema_for::<SourceResult>()
 }
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver / addressability table: PROPERTIES, addressable(kind, property), seed_revisions(document), mask_property(document, address)","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes/name or visible; caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input are not telemetry (test actual_detail_changed_nochange_inverse_conflict_and_privacy); missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver / addressability table: PROPERTIES, addressable(kind, property), seed_revisions(document), mask_property(document, address)","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes of layer name, visible, opacity (percent number), blend_mode (StudioBlendMode discriminant number; a group write also sets its isolation) or tiles (a raster layer's complete tile list, seeded only for raster layers; new digests must be made available by the caller, e.g. session staging), artboard/page-spread name; an appearance equal to the kind identity is stored absent so a write and its inverse restore the original document (tests appearance_properties_transact_and_invert_to_the_original_document, tiles_property_is_raster_only_and_inverts); caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address (name and visible only: observe has no opacity/blend_mode/tiles property, so those failures report the code without an address)/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input are not telemetry (test actual_detail_changed_nochange_inverse_conflict_and_privacy); missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;

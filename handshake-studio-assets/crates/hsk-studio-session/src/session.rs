@@ -436,6 +436,29 @@ pub struct Session {
     closed: bool,
     operations: u64,
     last_report: ReportStatus,
+    /// Tile bodies staged by [`Session::stage_tile`] (pixel edits), by sha256 hex. Written by save
+    /// and checkpoint when the document references them; kept across saves so an undo or redo
+    /// that brings a tile back still finds its bytes. Bounded by [`MAX_STAGED_BYTES`].
+    staged: BTreeMap<String, Vec<u8>>,
+    staged_bytes: u64,
+}
+
+/// Largest total of staged tile bytes one session holds (`stage_tile` refuses beyond it with
+/// `total_too_large`).
+pub const MAX_STAGED_BYTES: u64 = 1 << 30;
+
+/// Every asset digest a document references: raster tiles and mask coverage tiles.
+fn referenced_digests(document: &StudioDocument) -> Vec<&folio::ContentDigest> {
+    let mut out = Vec::new();
+    for layer in &document.layers {
+        if let folio::Payload::Raster { tiles } = &layer.payload {
+            out.extend(tiles.iter().map(|t| &t.content_digest));
+        }
+        if let Some(mask) = layer.appearance.as_ref().and_then(|a| a.mask.as_ref()) {
+            out.extend(mask.tiles.iter().map(|t| &t.content_digest));
+        }
+    }
+    out
 }
 
 const _: fn() = || {
@@ -627,6 +650,8 @@ impl Session {
                     closed: false,
                     operations: 1,
                     last_report: report,
+                    staged: BTreeMap::new(),
+                    staged_bytes: 0,
                 })
             }
             Err(error) => {
@@ -1048,6 +1073,11 @@ impl Session {
                 prepared.revision_updates(),
             ) {
                 return Err(SessionError::ProposalNotDerived);
+            }
+            // A pixel edit (chronicle `tiles`) may only name tiles whose bytes the session can
+            // write: in the source package or staged. Refused before anything is published.
+            if !self.assets_available(successor.document()) {
+                return Err(SessionError::Package(PackageError::MissingAsset));
             }
             successor_snapshot = Some(successor.clone());
         }
@@ -1559,7 +1589,7 @@ impl Session {
     /// the writer needs them.
     fn build_package(&self, cancel: &CancellationToken) -> Result<Built, SessionError> {
         let (images, dropped) = self.gather_previews(cancel)?;
-        let assets = LazyAssets::new(&self.source, &self.raw, cancel);
+        let assets = LazyAssets::new(&self.source, &self.raw, &self.staged, cancel);
         let mut bytes = Vec::new();
         let receipt = write_package_with(
             &self.snapshot,
@@ -1665,7 +1695,7 @@ impl Session {
         // Streamed: raw assets flow from the source file into the temp file through one bounded
         // chunk (hash- and length-verified on the way), so peak memory does not grow with the
         // assets. The package re-verifies the finished temp from disk before the atomic replace.
-        let assets = LazyAssets::new(&self.source, &self.raw, cancel);
+        let assets = LazyAssets::new(&self.source, &self.raw, &self.staged, cancel);
         let written = save_atomic_streaming(
             path,
             &StreamSave {
@@ -1681,6 +1711,9 @@ impl Session {
             cancel,
         )
         .map_err(|error| Self::writer_cause(&assets, error))?;
+        // The new file holds only the tiles the document references; tiles a pixel edit replaced
+        // stay readable for undo/redo by moving into the staged set before the source changes.
+        self.retain_replaced_assets(cancel);
         let revision = self.snapshot.document().revision;
         let (landed, landed_raw) = File::open(path)
             .map_err(|e| SessionError::Io(e.kind()))
@@ -1814,6 +1847,132 @@ impl Session {
         &self.snapshot
     }
 
+    /// True when every tile the document references (raster and mask) is in the source package
+    /// or staged.
+    fn assets_available(&self, document: &StudioDocument) -> bool {
+        let reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+        let manifest = reader.manifest();
+        referenced_digests(document).into_iter().all(|digest| {
+            digest.algorithm == "sha256"
+                && (self.staged.contains_key(&digest.digest)
+                    || manifest.entries.iter().any(|e| {
+                        e.kind == hsk_studio_package::EntryKind::Asset
+                            && e.name.strip_prefix(hsk_studio_package::ASSET_PREFIX)
+                                == Some(digest.digest.as_str())
+                    }))
+        })
+    }
+
+    /// Stages the body of a new tile (a pixel edit) and returns its sha256 identity for a tile
+    /// reference. Nothing in the document changes until a chronicle `tiles` write names it; save
+    /// and checkpoint then write it. Bounded: one body at most the package's `max_entry_bytes`,
+    /// all staged bodies at most [`MAX_STAGED_BYTES`] (`entry_too_large` / `total_too_large`).
+    /// Staging the same bytes twice keeps one copy.
+    pub fn stage_tile(
+        &mut self,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+    ) -> Result<folio::ContentDigest, SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let len = bytes.len() as u64;
+        if len > self.config.budgets.limits.max_entry_bytes {
+            return Err(SessionError::Package(PackageError::EntryTooLarge));
+        }
+        let digest = sha256_hex_of(&bytes);
+        if !self.staged.contains_key(&digest) {
+            let total = self
+                .staged_bytes
+                .checked_add(len)
+                .filter(|total| *total <= MAX_STAGED_BYTES)
+                .ok_or(SessionError::Package(PackageError::TotalTooLarge))?;
+            self.staged.insert(digest.clone(), bytes);
+            self.staged_bytes = total;
+        }
+        Ok(folio::ContentDigest {
+            algorithm: "sha256".into(),
+            digest,
+        })
+    }
+
+    /// The bytes of one tile asset: staged first, else read from the source package
+    /// (hash-verified by the package reader). For viewers and editors that need pixels.
+    pub fn tile_bytes(
+        &self,
+        digest: &folio::ContentDigest,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>, SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        if digest.algorithm != "sha256" {
+            return Err(SessionError::Package(PackageError::InvalidDigest));
+        }
+        if let Some(bytes) = self.staged.get(&digest.digest) {
+            return Ok(bytes.clone());
+        }
+        let mut reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+        reader
+            .read_asset(&digest.digest, cancel)
+            .map_err(SessionError::from_package)
+    }
+
+    /// Render-ready view of the current revision: the snapshot plus the bytes of every tile it
+    /// references (raster and mask), keyed by sha256 hex, so a viewer needs no package decoding of
+    /// its own. Bodies are read one at a time from the source (or staged); the map is the
+    /// caller's to keep or drop.
+    pub fn render_assets(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<BTreeMap<String, Vec<u8>>, SessionError> {
+        let mut out = BTreeMap::new();
+        for digest in referenced_digests(self.snapshot.document()) {
+            if !out.contains_key(&digest.digest) {
+                let bytes = self.tile_bytes(digest, cancel)?;
+                out.insert(digest.digest.clone(), bytes);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Copies every asset of the current source that the document no longer references (tiles a
+    /// pixel edit replaced) into the staged set, up to [`MAX_STAGED_BYTES`], so an inverse that
+    /// brings such a tile back still finds its bytes after the source is replaced by a save.
+    /// Best effort: an asset that cannot be read or does not fit is left out, and an undo naming
+    /// it is then refused `missing_asset` (never a broken save).
+    fn retain_replaced_assets(&mut self, cancel: &CancellationToken) {
+        let referenced: BTreeSet<&str> = referenced_digests(self.snapshot.document())
+            .into_iter()
+            .map(|d| d.digest.as_str())
+            .collect();
+        let mut reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+        let replaced: Vec<String> = reader
+            .manifest()
+            .entries
+            .iter()
+            .filter(|e| e.kind == hsk_studio_package::EntryKind::Asset)
+            .filter_map(|e| e.name.strip_prefix(hsk_studio_package::ASSET_PREFIX))
+            .filter(|hex| !referenced.contains(hex) && !self.staged.contains_key(*hex))
+            .map(str::to_owned)
+            .collect();
+        for hex in replaced {
+            let Ok(bytes) = reader.read_asset(&hex, cancel) else {
+                continue;
+            };
+            let Some(total) = self
+                .staged_bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|t| *t <= MAX_STAGED_BYTES)
+            else {
+                continue;
+            };
+            self.staged.insert(hex, bytes);
+            self.staged_bytes = total;
+        }
+    }
+
+    /// Bytes currently staged by [`Session::stage_tile`].
+    pub fn staged_bytes(&self) -> u64 {
+        self.staged_bytes
+    }
+
     pub fn document_revision(&self) -> u64 {
         self.snapshot.document().revision
     }
@@ -1898,8 +2057,9 @@ impl Session {
             .flat_map(|(_, images)| images)
             .map(|image| image.pixels.len())
             .sum();
-        (self.snapshot.encoded_bytes().len())
+        ((self.snapshot.encoded_bytes().len())
             .saturating_add(quarantined)
-            .saturating_add(supplied) as u64
+            .saturating_add(supplied) as u64)
+            .saturating_add(self.staged_bytes)
     }
 }
