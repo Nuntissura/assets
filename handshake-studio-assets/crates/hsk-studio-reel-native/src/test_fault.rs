@@ -87,7 +87,7 @@ impl WorkerTestFault {
         }
     }
 
-    #[cfg(feature = "av1-worker")]
+    #[cfg(any(feature = "av1-worker", feature = "mf-worker"))]
     pub(crate) fn from_env() -> Self {
         match std::env::var(Self::ENV).as_deref() {
             Ok("hang_on_packet") => Self::HangOnPacket,

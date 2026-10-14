@@ -62,7 +62,10 @@ const KIND_ERROR: u8 = 8;
 
 /// Fixed table of the `what` strings a decoder error can carry: errors cross the wire as an index, so a
 /// peer can never make the host invent or leak a new static string. Index 0 is the catch-all.
-const WHATS: [&str; 20] = [
+/// Entries 0..=19 are the AV1 worker's (validated wire, never renumbered); 20.. were appended for the
+/// Media Foundation H.264 worker (`mf-worker`). Class 4 (`CodecUnavailable`) carries the codec name as its
+/// `what` (only `h264` is in the table).
+const WHATS: [&str; 34] = [
     "av1-worker-error",
     "av1-frame-resources",
     "av1-unsupported-stream-feature",
@@ -83,6 +86,20 @@ const WHATS: [&str; 20] = [
     "av1-decoder-stalled",
     "av1-format-change-mid-segment",
     "av1-worker-no-open",
+    "h264",
+    "mf-worker-error",
+    "mf-no-decoder",
+    "mf-unsupported-stream",
+    "mf-decode",
+    "mf-output-type",
+    "mf-format-change-mid-segment",
+    "mf-picture-size",
+    "mf-plane-stride",
+    "mf-sample-bytes",
+    "mf-worker-no-open",
+    "mf-open-config",
+    "mf-frame-bytes",
+    "mf-reorder-needs-packet-timing",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,7 +178,7 @@ impl Out {
         self.u32(u32::try_from(value.len()).unwrap_or(u32::MAX));
         self.0.extend_from_slice(value);
     }
-    #[cfg(any(test, feature = "av1-worker"))]
+    #[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
     fn text(&mut self, value: &str) {
         self.bytes(value.as_bytes());
     }
@@ -211,7 +228,7 @@ impl<'a> In<'a> {
     fn text(&mut self) -> Res<String> {
         String::from_utf8(self.bytes()?.to_vec()).map_err(|_| WireError::Malformed)
     }
-    #[cfg(any(test, feature = "av1-worker"))]
+    #[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
     fn rest(&mut self) -> &'a [u8] {
         let rest = &self.buf[self.pos..];
         self.pos = self.buf.len();
@@ -235,7 +252,7 @@ pub(crate) struct Hello {
     pub decoder_version: String,
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_hello(decoder_id: &str, decoder_version: &str) -> Vec<u8> {
     let mut out = Out::header(KIND_HELLO, 0);
     out.text(decoder_id);
@@ -271,7 +288,7 @@ pub(crate) struct OpenRequest {
     pub config: Vec<u8>,
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Request {
     Open(u64, OpenRequest),
@@ -320,7 +337,7 @@ pub(crate) fn encode_finish(id: u64) -> Vec<u8> {
     Out::header(KIND_FINISH, id).0
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn decode_request(frame: &[u8]) -> Res<Request> {
     let kind = *frame.first().ok_or(WireError::Malformed)?;
     match kind {
@@ -389,19 +406,19 @@ pub(crate) enum Reply {
     Error(ReelError),
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_opened(id: u64) -> Vec<u8> {
     Out::header(KIND_OPENED, id).0
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_batch_end(id: u64, frames: u32) -> Vec<u8> {
     let mut out = Out::header(KIND_BATCH_END, id);
     out.u32(frames);
     out.0
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_frame(id: u64, frame: &WireFrame) -> Vec<u8> {
     let planes_len = frame
         .planes
@@ -438,12 +455,16 @@ pub(crate) fn encode_frame(id: u64, frame: &WireFrame) -> Vec<u8> {
     out.0
 }
 
-#[cfg(any(test, feature = "av1-worker"))]
+#[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_error(id: u64, error: &ReelError) -> Vec<u8> {
     let (class, what) = match error {
         ReelError::Corrupt { what } => (1_u8, *what),
         ReelError::LimitExceeded { what } => (2, *what),
         ReelError::Unsupported { what } => (3, *what),
+        ReelError::CodecUnavailable { codec } if WHATS.contains(&codec.as_str()) => {
+            let known = WHATS.iter().find(|known| **known == codec.as_str());
+            (4, known.copied().unwrap_or(WHATS[0]))
+        }
         _ => (3, WHATS[0]),
     };
     let index = WHATS.iter().position(|known| *known == what).unwrap_or(0);
@@ -558,6 +579,9 @@ pub(crate) fn decode_reply(frame: &[u8], id: u64) -> Res<Reply> {
                 1 => ReelError::Corrupt { what },
                 2 => ReelError::LimitExceeded { what },
                 3 => ReelError::Unsupported { what },
+                4 => ReelError::CodecUnavailable {
+                    codec: what.to_owned(),
+                },
                 _ => return Err(WireError::Malformed),
             }))
         }

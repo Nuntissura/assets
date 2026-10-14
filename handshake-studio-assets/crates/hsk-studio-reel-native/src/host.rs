@@ -101,7 +101,7 @@ pub const AV1_PROVIDER_ID: &str = "av1";
 /// File name of the worker executable (without the platform suffix).
 pub const WORKER_PROGRAM: &str = "reel-native-av1-worker";
 /// Largest packet a request frame can carry (frame cap minus header room).
-const MAX_PACKET_BYTES: usize = wire::MAX_REQUEST_FRAME - 64;
+pub(crate) const MAX_PACKET_BYTES: usize = wire::MAX_REQUEST_FRAME - 64;
 /// Decoder the `reel-native-av1-worker` of this package hosts (reel's rav1d decoder, reel
 /// `av1::DECODER_ID`). The host checks it in HELLO; it does not link the decoder.
 const WORKER_DECODER_ID: &str = "rav1d";
@@ -110,6 +110,36 @@ const DECODER_VERSION_UNKNOWN: &str = "unknown";
 /// Bounds for a decoder version string a worker may report, and for the distinct versions interned.
 const MAX_VERSION_BYTES: usize = 64;
 const MAX_INTERNED_VERSIONS: usize = 8;
+
+/// What distinguishes one isolated decoder kind on the shared pool core (one supervisor core for every
+/// worker kind of this crate, V4-05/D18; process supervision itself is `hsk-studio-worker`'s).
+#[derive(Debug)]
+pub(crate) struct WorkerSpec {
+    /// Decoder id the worker must name in HELLO and the provider reports in receipts.
+    pub decoder_id: &'static str,
+    /// Owner tag of the spawned processes (supervisor ledger).
+    pub owner_session: &'static str,
+    pub io_thread_name: &'static str,
+    /// Longest decoder version string a HELLO may carry.
+    pub max_version_bytes: usize,
+    /// Codec named by `CodecUnavailable` when no worker can be started.
+    pub codec_label: &'static str,
+    /// `Unsupported` reason when a session is used after its worker ended.
+    pub session_ended: &'static str,
+    /// `LimitExceeded` reason for a packet above the request frame.
+    pub packet_bytes: &'static str,
+}
+
+/// The AV1 worker (`reel-native-av1-worker`, rav1d).
+pub(crate) const AV1_SPEC: WorkerSpec = WorkerSpec {
+    decoder_id: WORKER_DECODER_ID,
+    owner_session: "reel-native-av1",
+    io_thread_name: "reel-native-av1-worker-io",
+    max_version_bytes: MAX_VERSION_BYTES,
+    codec_label: AV1_PROVIDER_ID,
+    session_ended: "av1-worker-session-ended",
+    packet_bytes: "av1-packet-bytes",
+};
 
 /// Worker-pool policy.
 #[derive(Clone, Debug)]
@@ -251,13 +281,18 @@ impl Av1WorkerFault {
     /// is a `DecoderFault` (says nothing about the media); an oversize reply, respawn bound or busy pool
     /// is a limit; a version mismatch is unsupported; a worker that cannot start is an unavailable codec.
     fn into_decode_error(self) -> VideoDecodeError {
+        self.into_decode_error_for(AV1_PROVIDER_ID)
+    }
+
+    /// `into_decode_error` with the codec a failed start makes unavailable.
+    pub(crate) fn into_decode_error_for(self, codec_label: &str) -> VideoDecodeError {
         match self {
             Self::DecoderCrashed { .. } => DecoderFault::Crashed.into(),
             Self::DecoderDeadline => DecoderFault::Deadline.into(),
             Self::Protocol => DecoderFault::Protocol.into(),
             Self::VersionMismatch => ReelError::Unsupported { what: self.code() }.into(),
             Self::SpawnFailed => ReelError::CodecUnavailable {
-                codec: AV1_PROVIDER_ID.to_owned(),
+                codec: codec_label.to_owned(),
             }
             .into(),
             Self::OutputTooLarge | Self::RespawnLimited | Self::PoolBusy => {
@@ -329,10 +364,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// A decoder version a worker reported, as a `&'static str` for receipts. Only short printable ASCII
 /// is accepted, and at most `MAX_INTERNED_VERSIONS` distinct strings are ever kept per process (each
 /// kept once), so a worker cannot grow host memory through HELLO.
-fn intern_version(version: &str) -> Option<&'static str> {
+fn intern_version(version: &str, max_bytes: usize) -> Option<&'static str> {
     static VERSIONS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     if version.is_empty()
-        || version.len() > MAX_VERSION_BYTES
+        || version.len() > max_bytes
         || !version.bytes().all(|byte| byte.is_ascii_graphic())
     {
         return None;
@@ -349,7 +384,7 @@ fn intern_version(version: &str) -> Option<&'static str> {
     Some(kept)
 }
 
-type Proc = Session<Vec<u8>, WireError>;
+pub(crate) type Proc = Session<Vec<u8>, WireError>;
 
 /// The supervisor's frame reader for this protocol.
 fn read_reply(stdout: &mut ChildStdout, cap: u32) -> Result<Vec<u8>, ReadFailure<WireError>> {
@@ -408,7 +443,8 @@ struct Clock<'a> {
     segment_wall: Instant,
 }
 
-struct Pool {
+pub(crate) struct Pool {
+    spec: &'static WorkerSpec,
     supervisor: Supervisor,
     respawn: RespawnGate,
     max_workers: usize,
@@ -427,9 +463,9 @@ impl Pool {
         self.request_ids.fetch_add(1, Ordering::AcqRel)
     }
 
-    fn identity(&self) -> DecoderIdentity {
+    pub(crate) fn identity(&self) -> DecoderIdentity {
         DecoderIdentity {
-            id: WORKER_DECODER_ID,
+            id: self.spec.decoder_id,
             version: self
                 .decoder_version
                 .get()
@@ -441,10 +477,10 @@ impl Pool {
     /// Accepts a HELLO naming this protocol version and the expected decoder; the first accepted
     /// version is pinned for the pool and every later worker must report the same one.
     fn accept_hello(&self, hello: &wire::Hello) -> bool {
-        if hello.protocol != wire::PROTOCOL_VERSION || hello.decoder_id != WORKER_DECODER_ID {
+        if hello.protocol != wire::PROTOCOL_VERSION || hello.decoder_id != self.spec.decoder_id {
             return false;
         }
-        intern_version(&hello.decoder_version)
+        intern_version(&hello.decoder_version, self.spec.max_version_bytes)
             .is_some_and(|version| *self.decoder_version.get_or_init(|| version) == version)
     }
 
@@ -468,7 +504,7 @@ impl Pool {
         let started = self.supervisor.start(
             permit,
             StartRequest {
-                owner_session: "reel-native-av1",
+                owner_session: self.spec.owner_session,
                 extra_args: &[],
                 keepalive: None,
                 hello_cap: u32::try_from(wire::HELLO_CAP).unwrap_or(u32::MAX),
@@ -652,7 +688,7 @@ impl Pool {
 
 /// Worker fault behind the error the route saw, for the typed `decode_av1` result (reel's error
 /// vocabulary is closed, so the exit code of a crash would otherwise be lost on the way up).
-type FaultSlot = Arc<Mutex<Option<Av1WorkerFault>>>;
+pub(crate) type FaultSlot = Arc<Mutex<Option<Av1WorkerFault>>>;
 
 fn to_picture(frame: WireFrame) -> DecodedPicture {
     DecodedPicture {
@@ -665,7 +701,11 @@ fn to_picture(frame: WireFrame) -> DecodedPicture {
 
 /// One open decode on a pooled worker, driven by reel's packet pump as a `VideoDecodeSession`. Returns the
 /// worker to the idle pool when dropped, unless a failure made it unusable.
-struct WorkerSession {
+/// Rewrites one container packet into the bytes the worker decodes (H.264: length-prefixed NAL units to
+/// Annex B with the parameter sets in front of IDR access units), into the scratch buffer.
+pub(crate) type PacketPrep = Box<dyn FnMut(&[u8], &mut Vec<u8>) -> Result<(), ReelError> + Send>;
+
+pub(crate) struct WorkerSession {
     pool: Arc<Pool>,
     session: Option<Proc>,
     segment_wall: Instant,
@@ -677,6 +717,14 @@ struct WorkerSession {
     /// the packets of the requested segment): the only tags a reply picture may carry.
     sent_tags: HashSet<u64>,
     faults: Option<FaultSlot>,
+    /// Packet rewrite before it is sent (none for AV1) and its scratch buffer.
+    prep: Option<PacketPrep>,
+    prepared: Vec<u8>,
+    /// `Some(reason)`: pictures must leave the worker in packet (decode) order; a picture whose tag is below
+    /// one already released is refused with `Unsupported reason` (reel's pump matches pictures to packets in
+    /// decode order, so a reordering decoder would otherwise lose pictures without a word).
+    decode_order_only: Option<&'static str>,
+    last_tag: Option<u64>,
 }
 
 impl Drop for WorkerSession {
@@ -688,16 +736,37 @@ impl Drop for WorkerSession {
 }
 
 impl WorkerSession {
-    fn convert(faults: Option<&FaultSlot>, error: Av1Error) -> VideoDecodeError {
+    fn convert(
+        faults: Option<&FaultSlot>,
+        spec: &WorkerSpec,
+        error: Av1Error,
+    ) -> VideoDecodeError {
         match error {
             Av1Error::Reel(error) => error.into(),
             Av1Error::Worker(fault) => {
                 if let Some(slot) = faults {
                     *lock(slot) = Some(fault);
                 }
-                fault.into_decode_error()
+                fault.into_decode_error_for(spec.codec_label)
             }
         }
+    }
+
+    /// Hands a released picture to reel's sink, refusing a picture out of decode order when the session
+    /// requires decode order.
+    fn release(
+        decode_order_only: Option<&'static str>,
+        last_tag: &mut Option<u64>,
+        frame: WireFrame,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), ReelError> {
+        if let Some(what) = decode_order_only {
+            if last_tag.is_some_and(|last| frame.tag < last) {
+                return Err(ReelError::Unsupported { what });
+            }
+            *last_tag = Some(frame.tag);
+        }
+        out.accept(to_picture(frame))
     }
 
     fn request(
@@ -710,7 +779,7 @@ impl WorkerSession {
     ) -> Result<(), VideoDecodeError> {
         let Some(session) = self.session.as_mut().filter(|session| session.is_usable()) else {
             return Err(ReelError::Unsupported {
-                what: "av1-worker-session-ended",
+                what: self.pool.spec.session_ended,
             }
             .into());
         };
@@ -728,7 +797,7 @@ impl WorkerSession {
         };
         self.pool
             .exchange(session, call, &clock, on_frame)
-            .map_err(|error| Self::convert(self.faults.as_ref(), error))
+            .map_err(|error| Self::convert(self.faults.as_ref(), self.pool.spec, error))
     }
 }
 
@@ -740,24 +809,39 @@ impl VideoDecodeSession for WorkerSession {
         cancel: &CancellationToken,
         out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError> {
+        let packet_bytes = ReelError::LimitExceeded {
+            what: self.pool.spec.packet_bytes,
+        };
         if packet.len() > self.max_packet_bytes {
-            return Err(ReelError::LimitExceeded {
-                what: "av1-packet-bytes",
-            }
-            .into());
+            return Err(packet_bytes.into());
         }
         if packet.is_empty() {
             return Ok(()); // an empty unit decodes to nothing, as in-process
         }
-        self.sent_tags.insert(tag);
         let id = self.pool.next_id();
-        self.request(
-            wire::encode_packet(id, tag, packet),
-            id,
-            Want::BatchEnd,
-            cancel,
-            &mut |frame| out.accept(to_picture(frame)),
-        )
+        let mut prepared = std::mem::take(&mut self.prepared);
+        let frame = match self.prep.as_mut() {
+            Some(prep) => {
+                let prepared_ok = prep(packet, &mut prepared);
+                let frame = match prepared_ok {
+                    Ok(()) if prepared.len() <= self.max_packet_bytes => {
+                        Ok(wire::encode_packet(id, tag, &prepared))
+                    }
+                    Ok(()) => Err(packet_bytes),
+                    Err(error) => Err(error),
+                };
+                self.prepared = prepared;
+                frame?
+            }
+            None => wire::encode_packet(id, tag, packet),
+        };
+        self.sent_tags.insert(tag);
+        let (order, mut last) = (self.decode_order_only, self.last_tag);
+        let result = self.request(frame, id, Want::BatchEnd, cancel, &mut |frame| {
+            Self::release(order, &mut last, frame, out)
+        });
+        self.last_tag = last;
+        result
     }
 
     fn finish(
@@ -766,13 +850,12 @@ impl VideoDecodeSession for WorkerSession {
         out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError> {
         let id = self.pool.next_id();
-        self.request(
-            wire::encode_finish(id),
-            id,
-            Want::BatchEnd,
-            cancel,
-            &mut |frame| out.accept(to_picture(frame)),
-        )
+        let (order, mut last) = (self.decode_order_only, self.last_tag);
+        let result = self.request(wire::encode_finish(id), id, Want::BatchEnd, cancel, &mut |frame| {
+            Self::release(order, &mut last, frame, out)
+        });
+        self.last_tag = last;
+        result
     }
 }
 
@@ -822,6 +905,19 @@ impl WorkerAv1Provider {
         }
         let program = resolve_program(options.program.clone(), WORKER_PROGRAM)
             .ok_or(Av1ConfigError::WorkerProgramMissing)?;
+        Ok(Self {
+            pool: Arc::new(Pool::new(&AV1_SPEC, program, &options)),
+        })
+    }
+
+    pub fn stats(&self) -> Av1WorkerStats {
+        self.pool.stats()
+    }
+}
+
+impl Pool {
+    /// One pool for one worker kind: supervisor, respawn gate, deadlines and counters.
+    pub(crate) fn new(spec: &'static WorkerSpec, program: PathBuf, options: &Av1WorkerOptions) -> Self {
         #[cfg(feature = "test-faults")]
         let env: Vec<(String, String)> = options
             .test_fault
@@ -831,37 +927,36 @@ impl WorkerAv1Provider {
             .collect();
         #[cfg(not(feature = "test-faults"))]
         let env: Vec<(String, String)> = Vec::new();
-        Ok(Self {
-            pool: Arc::new(Pool {
-                supervisor: Supervisor::new(SupervisorConfig {
-                    program,
-                    args: Vec::new(),
-                    env,
-                    max_workers: options.max_workers,
-                    max_in_flight_bytes: u64::MAX,
-                    spawn_timeout: options.spawn_timeout,
-                    os_limits: None,
-                    reply_buffer: Some(1),
-                    io_thread_name: "reel-native-av1-worker-io".to_owned(),
-                }),
-                respawn: RespawnGate::new(
-                    usize::try_from(options.max_spawns).unwrap_or(usize::MAX),
-                    options.spawn_window,
-                ),
+        Self {
+            spec,
+            supervisor: Supervisor::new(SupervisorConfig {
+                program,
+                args: Vec::new(),
+                env,
                 max_workers: options.max_workers,
+                max_in_flight_bytes: u64::MAX,
                 spawn_timeout: options.spawn_timeout,
-                batch_deadline: options.batch_deadline,
-                segment_deadline: options.segment_deadline,
-                decoder_version: OnceLock::new(),
-                idle: Mutex::new(Vec::new()),
-                request_ids: AtomicU64::new(1),
-                counters: Counters::default(),
+                os_limits: None,
+                reply_buffer: Some(1),
+                io_thread_name: spec.io_thread_name.to_owned(),
             }),
-        })
+            respawn: RespawnGate::new(
+                usize::try_from(options.max_spawns).unwrap_or(usize::MAX),
+                options.spawn_window,
+            ),
+            max_workers: options.max_workers,
+            spawn_timeout: options.spawn_timeout,
+            batch_deadline: options.batch_deadline,
+            segment_deadline: options.segment_deadline,
+            decoder_version: OnceLock::new(),
+            idle: Mutex::new(Vec::new()),
+            request_ids: AtomicU64::new(1),
+            counters: Counters::default(),
+        }
     }
 
-    pub fn stats(&self) -> Av1WorkerStats {
-        let c = &self.pool.counters;
+    pub(crate) fn stats(&self) -> Av1WorkerStats {
+        let c = &self.counters;
         Av1WorkerStats {
             spawned: c.spawned.load(Ordering::Acquire),
             requests: c.requests.load(Ordering::Acquire),
@@ -872,11 +967,13 @@ impl WorkerAv1Provider {
             killed_deadline: c.killed_deadline.load(Ordering::Acquire),
             killed_canceled: c.killed_canceled.load(Ordering::Acquire),
             killed_oversize: c.killed_oversize.load(Ordering::Acquire),
-            alive: self.pool.supervisor.stats().workers_live,
+            alive: self.supervisor.stats().workers_live,
             last_crash_exit_code: *lock(&c.last_crash_exit_code),
         }
     }
+}
 
+impl WorkerAv1Provider {
     /// Decodes one AV1 segment in a worker process. Same request, sink and receipt vocabulary as reel's
     /// in-process decode (`req.codec` is `"av1"`, `req.output` is `Decoded`); the typed result keeps the
     /// contained worker faults distinct from media errors. The container is demuxed by reel's providers
@@ -957,19 +1054,73 @@ impl WorkerAv1Provider {
             color: spec.color,
             config: spec.config.to_vec(),
         };
+        open_worker(
+            pool,
+            OpenPlan {
+                open,
+                frame_cap,
+                declared: (spec.width, spec.height),
+                max_packet_bytes: spec.limits.max_chunk_bytes,
+                prep: None,
+                decode_order_only: None,
+            },
+            faults,
+            cancel,
+        )
+    }
+}
+
+/// What `open_worker` sends and enforces for one segment.
+pub(crate) struct OpenPlan {
+    pub open: OpenRequest,
+    /// Largest packed picture the declared stream allows (reply cap = this + slack).
+    pub frame_cap: usize,
+    pub declared: (u32, u32),
+    /// The caller's packet limit (capped at the request frame).
+    pub max_packet_bytes: usize,
+    pub prep: Option<PacketPrep>,
+    pub decode_order_only: Option<&'static str>,
+}
+
+/// Checks a worker out of `pool`, sends OPEN and returns the session (shared by every worker kind).
+pub(crate) fn open_worker(
+    pool: &Arc<Pool>,
+    plan: OpenPlan,
+    faults: Option<FaultSlot>,
+    cancel: &CancellationToken,
+) -> Result<WorkerSession, VideoDecodeError> {
+    let OpenPlan {
+        open,
+        frame_cap,
+        declared,
+        max_packet_bytes,
+        prep,
+        decode_order_only,
+    } = plan;
+    {
         let mut worker = WorkerSession {
             pool: Arc::clone(pool),
             session: None,
             segment_wall: after(pool.segment_deadline),
             reply_cap: frame_cap.saturating_add(wire::REPLY_SLACK),
-            max_packet_bytes: spec.limits.max_chunk_bytes.min(MAX_PACKET_BYTES),
-            declared: (spec.width, spec.height),
+            max_packet_bytes: max_packet_bytes.min(MAX_PACKET_BYTES),
+            declared,
             sent_tags: HashSet::new(),
             faults,
+            prep,
+            prepared: Vec::new(),
+            decode_order_only,
+            last_tag: None,
         };
         match pool.checkout(cancel) {
             Ok(session) => worker.session = Some(session),
-            Err(error) => return Err(WorkerSession::convert(worker.faults.as_ref(), error)),
+            Err(error) => {
+                return Err(WorkerSession::convert(
+                    worker.faults.as_ref(),
+                    pool.spec,
+                    error,
+                ));
+            }
         }
         let id = pool.next_id();
         // OPEN is answered by OPENED alone: a picture here is the worker breaking the protocol, which

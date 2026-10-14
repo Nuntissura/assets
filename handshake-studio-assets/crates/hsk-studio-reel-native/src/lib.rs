@@ -21,24 +21,38 @@
 //! decoded in the caller's process. A worker crash, hang, protocol violation or oversize reply becomes a
 //! typed `Av1WorkerFault` (`decoder_crashed`, `decoder_deadline`, ...; reel's `ReelError::DecoderFault` for
 //! crash, deadline and protocol faults) and the provider stays usable with bounded respawn.
-#![forbid(unsafe_code)]
+// Default and host builds: no unsafe. With the opt-in `mf-worker` feature only `mf/ffi.rs` may use it
+// (Media Foundation COM calls); every other module still refuses it.
+#![cfg_attr(not(feature = "mf-worker"), forbid(unsafe_code))]
+#![cfg_attr(feature = "mf-worker", deny(unsafe_code))]
 
-#[cfg(feature = "av1")]
+#[cfg(any(feature = "av1", feature = "mf"))]
 mod host;
-#[cfg(all(feature = "av1", feature = "test-faults"))]
+#[cfg(feature = "mf")]
+mod mf;
+#[cfg(feature = "mf")]
+mod mf_host;
+#[cfg(all(any(feature = "av1", feature = "mf"), feature = "test-faults"))]
 mod test_fault;
-#[cfg(feature = "av1")]
+#[cfg(any(feature = "av1", feature = "mf"))]
 mod wire;
 #[cfg(feature = "av1-worker")]
 mod worker;
 
-#[cfg(feature = "av1")]
+#[cfg(any(feature = "av1", feature = "mf"))]
 pub use host::{
     AV1_PROVIDER_ID, Av1ConfigError, Av1Error, Av1WorkerFault, Av1WorkerOptions, Av1WorkerStats,
     WORKER_PROGRAM, WorkerAv1Provider,
 };
-#[cfg(all(feature = "av1", feature = "test-faults"))]
+#[cfg(all(any(feature = "av1", feature = "mf"), feature = "test-faults"))]
 pub use test_fault::WorkerTestFault;
+#[cfg(feature = "mf")]
+pub use mf_host::{
+    MF_H264_PROVIDER_ID, MF_MAX_HEIGHT, MF_MAX_WIDTH, MF_MIN_SIDE, MF_REORDER_REFUSAL,
+    MF_WORKER_PROGRAM, MfConfigError, MfWorkerOptions, MfWorkerStats, WorkerMfProvider,
+};
+#[cfg(all(feature = "mf-worker", windows))]
+pub use mf::worker::{MF_DECODER_ID, MF_PANIC_EXIT_CODE, mf_worker_main};
 #[cfg(feature = "av1-worker")]
 pub use worker::{PANIC_EXIT_CODE, worker_main};
 

@@ -8,12 +8,15 @@ rust-version = { workspace = true }
 default = []
 av1 = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
 av1-worker = ["av1", "hsk-studio-reel/av1"]
+mf = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
+mf-worker = ["mf", "dep:windows"]
 test-faults = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, optional = true }
+windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"], optional = true }
 
 [lib]
 path = "src/lib.rs"
@@ -22,6 +25,16 @@ path = "src/lib.rs"
 name = "reel-native-av1-worker"
 path = "src/bin/reel-native-av1-worker.rs"
 required-features = ["av1-worker"]
+
+[[bin]]
+name = "reel-native-mf-worker"
+path = "src/bin/reel-native-mf-worker.rs"
+required-features = ["mf-worker"]
+
+[[test]]
+name = "mf_worker"
+path = "tests/mf_worker.rs"
+required-features = ["mf-worker", "test-faults"]
 
 [[test]]
 name = "av1_worker"
