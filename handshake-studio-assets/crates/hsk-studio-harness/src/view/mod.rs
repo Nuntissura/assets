@@ -1,0 +1,604 @@
+//! Desktop viewer state and UI (feature `viewer`; the window host is feature `desktop`, binary
+//! `studio-harness`). Everything here runs without a window: [`Viewer`] is the whole application
+//! state and [`Viewer::ui`] draws one egui frame into any `egui::Context`, so tests drive it
+//! headlessly (`tests/viewer_headless.rs`).
+//!
+//! Flow: open a file (PSD/PSB, TIFF, camera raw, PDF through `import::convert_to_native` and
+//! `Run::open_import_detailed`; a native `.handshake` package through `Run::open_bytes`) -> render
+//! the composite ([`render::render`]: render-gpu, render-cpu fallback) -> layer tree with
+//! visibility toggles and the controls-descriptor panel of the selected layer (name and visible
+//! commit through the session's chronicle provider; appearance values are read-only because
+//! chronicle has no appearance property) -> import receipt and loss panel -> save as a native
+//! package (`Run::save_to`, never over the opened source).
+//!
+//! Model navigation: every interactive widget has a stable id from [`widget`] (`hsk-studio-ui`
+//! plus a name, layer rows add the layer id); [`Viewer::ui`] records the ids it drew in
+//! [`Viewer::drawn`], and [`Viewer::state_json`] is a structured projection of the whole state.
+#![deny(clippy::arithmetic_side_effects)]
+
+pub mod render;
+
+use crate::harness::{Harness, References, Run, Selection};
+use crate::panel::{self, PanelValues, Route};
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio::{Parent, StudioLayer};
+use hsk_studio_package::ImportRole;
+use render::{Assets, Frame, Prefer, RenderFail};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+
+/// Stable widget ids (egui `Id` sources) of the viewer.
+pub mod widget {
+    pub const PATH_FIELD: &str = "open.path";
+    pub const OPEN_BUTTON: &str = "open.button";
+    pub const SAVE_FIELD: &str = "save.path";
+    pub const SAVE_OVERWRITE: &str = "save.overwrite";
+    pub const SAVE_BUTTON: &str = "save.button";
+    pub const RENDER_BACKEND: &str = "render.prefer_gpu";
+    pub const FIT_BUTTON: &str = "view.fit";
+    pub const ACTUAL_SIZE_BUTTON: &str = "view.actual_size";
+    pub const ZOOM_SLIDER: &str = "view.zoom";
+    pub const CANVAS: &str = "view.canvas";
+    pub const LAYER_PANEL: &str = "layers";
+    pub const PROPERTIES_PANEL: &str = "properties";
+    pub const RECEIPT_PANEL: &str = "receipt";
+    pub const STATUS_PANEL: &str = "status";
+    /// Layer rows: `layer.<layer_id>.visible` (checkbox) and `layer.<layer_id>.select` (label).
+    pub fn layer(layer_id: &str, part: &str) -> String {
+        format!("layer.{layer_id}.{part}")
+    }
+    /// The egui `Id` of a viewer widget name.
+    pub fn id(name: &str) -> egui::Id {
+        egui::Id::new(("hsk-studio-ui", name))
+    }
+}
+
+/// One row of the layer tree (top-first, depth = nesting level).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerRow {
+    pub layer_id: String,
+    pub name: String,
+    pub kind: String,
+    pub depth: usize,
+    pub visible: bool,
+    pub opacity: f64,
+}
+
+/// The application state of the desktop viewer.
+pub struct Viewer {
+    run: Run<'static>,
+    pub path_input: String,
+    pub save_input: String,
+    pub overwrite: bool,
+    pub prefer: Prefer,
+    source: Option<PathBuf>,
+    assets: Assets,
+    receipt: Option<Value>,
+    frame: Option<Frame>,
+    render_error: Option<RenderFail>,
+    texture: Option<egui::TextureHandle>,
+    dirty: bool,
+    gpu: Option<hsk_studio_render_gpu::GpuBackend>,
+    gpu_options: hsk_studio_render_gpu::DeviceOptions,
+    selected: Option<String>,
+    status: Vec<String>,
+    zoom: f32,
+    pan: egui::Vec2,
+    fit: bool,
+    drawn: Vec<String>,
+    cancel: &'static CancellationToken,
+}
+
+const MAX_STATUS: usize = 200;
+
+impl Viewer {
+    /// A viewer with the chronicle provider selected (edits commit through the session) and
+    /// development references (`trust_all`, recorded in every harness report).
+    pub fn new(prefer: Prefer) -> Self {
+        Self::with_gpu_options(prefer, hsk_studio_render_gpu::DeviceOptions::default())
+    }
+
+    /// As [`Viewer::new`] with explicit render-gpu device options (tests pass `BackendChoice::None`
+    /// to prove the render-cpu fallback without touching a GPU).
+    pub fn with_gpu_options(prefer: Prefer, gpu_options: hsk_studio_render_gpu::DeviceOptions) -> Self {
+        let selection = Selection { providers: vec![hsk_studio_session::CHRONICLE_PROVIDER_ID.to_string()], references: References::TrustAll };
+        // The application owns one harness and one token for its whole life; a `Run` borrows both.
+        let harness: &'static Harness = Box::leak(Box::new(Harness::new(selection).expect("the chronicle provider is available")));
+        let cancel: &'static CancellationToken = Box::leak(Box::new(CancellationToken::default()));
+        Self {
+            run: harness.run(crate::harness::default_actor(), cancel),
+            path_input: String::new(),
+            save_input: String::new(),
+            overwrite: false,
+            prefer,
+            source: None,
+            assets: Assets::new(),
+            receipt: None,
+            frame: None,
+            render_error: None,
+            texture: None,
+            dirty: false,
+            gpu: None,
+            gpu_options,
+            selected: None,
+            status: Vec::new(),
+            zoom: 1.0,
+            pan: egui::Vec2::ZERO,
+            fit: true,
+            drawn: Vec::new(),
+            cancel,
+        }
+    }
+
+    fn say(&mut self, line: String) {
+        self.status.push(line);
+        if self.status.len() > MAX_STATUS {
+            let excess = self.status.len().saturating_sub(MAX_STATUS);
+            self.status.drain(..excess);
+        }
+    }
+
+    fn last_op(&self) -> Value {
+        self.run.ops().last().cloned().unwrap_or(Value::Null)
+    }
+
+    fn op_error(&self) -> String {
+        let op = self.last_op();
+        op["error"].as_str().unwrap_or("failed").to_string()
+    }
+
+    /// Opens `path`: a recognised source format is imported and converted to native; anything else
+    /// is opened as a native package. Bounded by `import::MAX_SOURCE_BYTES`.
+    pub fn open(&mut self, path: &Path) -> Result<(), String> {
+        let result = self.open_inner(path);
+        if let Err(e) = &result {
+            self.say(e.clone());
+        }
+        result
+    }
+
+    fn open_inner(&mut self, path: &Path) -> Result<(), String> {
+        let len = std::fs::metadata(path).map_err(|e| format!("open {}: {e}", path.display()))?.len();
+        if len > crate::import::MAX_SOURCE_BYTES {
+            return Err(format!("open {}: {len} bytes exceeds {}", path.display(), crate::import::MAX_SOURCE_BYTES));
+        }
+        let bytes = std::fs::read(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        let (package, receipt) = if crate::import::sniff(&bytes).is_some() {
+            match self.run.open_import_detailed(&bytes) {
+                Some((package, receipt)) => (package, Some(receipt)),
+                None => return Err(format!("import {}: {}", path.display(), self.last_op())),
+            }
+        } else {
+            if !self.run.open_bytes(&bytes) {
+                return Err(format!("open {}: {}", path.display(), self.op_error()));
+            }
+            (bytes, None)
+        };
+        let opened = hsk_studio_package::read_package(
+            &package,
+            &hsk_studio_package::Limits::default(),
+            hsk_studio_folio::Budget::default(),
+            &crate::harness::TrustAll,
+            self.cancel,
+        )
+        .map_err(|e| format!("tiles {}: {}", path.display(), e.code()))?;
+        let receipt = receipt.or_else(|| opened.import_bytes(ImportRole::Receipt).and_then(|b| serde_json::from_slice(b).ok()));
+        self.assets = opened.assets;
+        self.receipt = receipt;
+        self.source = Some(path.to_path_buf());
+        self.selected = None;
+        self.frame = None;
+        self.render_error = None;
+        self.dirty = true;
+        self.fit = true;
+        self.pan = egui::Vec2::ZERO;
+        if self.save_input.is_empty() {
+            self.save_input = path.with_extension("handshake").to_string_lossy().into_owned();
+            if self.source.as_deref() == Some(Path::new(&self.save_input)) {
+                self.save_input = path.with_extension("saved.handshake").to_string_lossy().into_owned();
+            }
+        }
+        let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
+        self.say(format!("opened {} (revision {revision}, {} tile assets)", path.display(), self.assets.len()));
+        Ok(())
+    }
+
+    /// The layer tree, top-first, depth-first.
+    pub fn layers(&self) -> Vec<LayerRow> {
+        let Some(snap) = self.run.snapshot() else {
+            return Vec::new();
+        };
+        let layers = &snap.document().layers;
+        let mut rows = Vec::new();
+        let mut stack: Vec<(&StudioLayer, usize)> = layers.iter().filter(|l| matches!(l.parent, Parent::Root(()))).rev().map(|l| (l, 0)).collect();
+        while let Some((layer, depth)) = stack.pop() {
+            rows.push(LayerRow {
+                layer_id: layer.layer_id.clone(),
+                name: layer.name.clone(),
+                kind: layer.kind.clone(),
+                depth,
+                visible: layer.visible,
+                opacity: layer.effective_appearance().opacity,
+            });
+            let children = layers.iter().filter(|c| matches!(&c.parent, Parent::Node(n) if n.node_id == layer.layer_id));
+            let next = depth.saturating_add(1);
+            stack.extend(children.rev().map(|c| (c, next)));
+        }
+        rows
+    }
+
+    /// Shows or hides a layer through the layer panel's `layer.visible` control (descriptor-parsed,
+    /// committed by the chronicle provider). Returns the new document revision.
+    pub fn set_visible(&mut self, layer_id: &str, visible: bool) -> Result<u64, String> {
+        self.commit(layer_id, panel::VISIBLE, if visible { "true" } else { "false" })
+    }
+
+    fn commit(&mut self, layer_id: &str, control: &str, text: &str) -> Result<u64, String> {
+        if self.run.panel_set(layer_id, control, text, None) {
+            let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
+            self.dirty = true;
+            self.say(format!("{control} = {text} on {layer_id} (revision {revision})"));
+            Ok(revision)
+        } else {
+            let e = format!("{control} on {layer_id} refused: {}", self.op_error());
+            self.say(e.clone());
+            Err(e)
+        }
+    }
+
+    /// Saves the working session as a native package. Refuses the opened source path unless
+    /// `overwrite` is set (the same guard as the CLI's `--save`).
+    pub fn save(&mut self, path: &Path, overwrite: bool) -> Result<(), String> {
+        if let Some(source) = &self.source {
+            let same = match (std::fs::canonicalize(source), std::fs::canonicalize(path)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => source == path,
+            };
+            if same && !overwrite {
+                let e = format!("save {}: refused, it is the opened source (tick overwrite to replace it)", path.display());
+                self.say(e.clone());
+                return Err(e);
+            }
+        }
+        if self.run.save_to(path) {
+            self.say(format!("saved {}", path.display()));
+            Ok(())
+        } else {
+            let e = format!("save {}: {}", path.display(), self.op_error());
+            self.say(e.clone());
+            Err(e)
+        }
+    }
+
+    /// Renders now if the document changed since the last frame.
+    pub fn render_if_dirty(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
+        let Some(snap) = self.run.snapshot() else {
+            return;
+        };
+        if self.prefer == Prefer::Gpu && self.gpu.is_none() {
+            self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options));
+        }
+        let result = render::render(snap, &self.assets, self.prefer, self.gpu.as_ref(), self.cancel);
+        match result {
+            Ok(frame) => {
+                let line = format!("rendered revision {} with render-{} ({}x{}){}", frame.revision, frame.backend, frame.width, frame.height, if frame.notes.is_empty() { String::new() } else { format!("; {}", frame.notes.join("; ")) });
+                self.frame = Some(frame);
+                self.render_error = None;
+                self.texture = None;
+                self.say(line);
+            }
+            Err(e) => {
+                self.say(format!("render failed: {e}"));
+                self.render_error = Some(e);
+                self.frame = None;
+                self.texture = None;
+            }
+        }
+    }
+
+    pub fn frame(&self) -> Option<&Frame> {
+        self.frame.as_ref()
+    }
+
+    pub fn render_error(&self) -> Option<&RenderFail> {
+        self.render_error.as_ref()
+    }
+
+    pub fn receipt(&self) -> Option<&Value> {
+        self.receipt.as_ref()
+    }
+
+    pub fn run(&self) -> &Run<'static> {
+        &self.run
+    }
+
+    /// Widget names drawn by the last [`Viewer::ui`] call (see [`widget`]).
+    pub fn drawn(&self) -> &[String] {
+        &self.drawn
+    }
+
+    pub fn select(&mut self, layer_id: Option<String>) {
+        self.selected = layer_id;
+    }
+
+    /// Structured projection of the viewer for agents and tests.
+    pub fn state_json(&self) -> Value {
+        let rows: Vec<Value> = self
+            .layers()
+            .iter()
+            .map(|r| json!({"id": r.layer_id, "name": r.name, "kind": r.kind, "depth": r.depth, "visible": r.visible, "opacity": r.opacity}))
+            .collect();
+        json!({
+            "source": self.source.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "revision": self.run.snapshot().map(|s| s.document().revision),
+            "layers": rows,
+            "selected": self.selected,
+            "frame": self.frame.as_ref().map(|f| json!({"width": f.width, "height": f.height, "backend": f.backend, "revision": f.revision, "notes": f.notes})),
+            "render_error": self.render_error.as_ref().map(|e| json!({"code": e.code, "detail": e.detail})),
+            "receipt": self.receipt.as_ref().map(|r| json!({"source_format": r["source_format"], "layers": r["layers"], "loss_entries": r["loss"].as_array().map_or(0, Vec::len)})),
+            "ops": self.run.ops(),
+            "status": self.status,
+        })
+    }
+
+    // ----- egui ---------------------------------------------------------------------------
+
+    /// Draws one frame. Never opens a window: the host (eframe in `desktop`, a bare
+    /// `egui::Context` in tests) owns the context.
+    pub fn ui(&mut self, ctx: &egui::Context) {
+        self.drawn.clear();
+        let mut open_request = None;
+        let mut save_request = None;
+        egui::TopBottomPanel::top(widget::id("toolbar")).show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("File");
+                ui.add(egui::TextEdit::singleline(&mut self.path_input).id(widget::id(widget::PATH_FIELD)).hint_text("path to .psd .psb .tif .dng .cr2 .pdf .handshake").desired_width(360.0));
+                self.drawn.push(widget::PATH_FIELD.into());
+                if ui.add(egui::Button::new("Open")).on_hover_text("Import or open the file named in the path field").clicked() {
+                    open_request = Some(PathBuf::from(self.path_input.trim()));
+                }
+                self.drawn.push(widget::OPEN_BUTTON.into());
+                ui.separator();
+                ui.label("Save as");
+                ui.add(egui::TextEdit::singleline(&mut self.save_input).id(widget::id(widget::SAVE_FIELD)).hint_text("out.handshake").desired_width(260.0));
+                self.drawn.push(widget::SAVE_FIELD.into());
+                ui.checkbox(&mut self.overwrite, "overwrite source");
+                self.drawn.push(widget::SAVE_OVERWRITE.into());
+                if ui.add_enabled(self.run.snapshot().is_some(), egui::Button::new("Save")).clicked() {
+                    save_request = Some(PathBuf::from(self.save_input.trim()));
+                }
+                self.drawn.push(widget::SAVE_BUTTON.into());
+                ui.separator();
+                let mut gpu = self.prefer == Prefer::Gpu;
+                if ui.checkbox(&mut gpu, "GPU").on_hover_text("render-gpu with render-cpu fallback; off = render-cpu only").changed() {
+                    self.prefer = if gpu { Prefer::Gpu } else { Prefer::Cpu };
+                    self.dirty = true;
+                }
+                self.drawn.push(widget::RENDER_BACKEND.into());
+                if let Some(f) = &self.frame {
+                    ui.label(format!("render-{} r{}", f.backend, f.revision));
+                }
+            });
+        });
+        if let Some(path) = open_request {
+            let _ = self.open(&path);
+        }
+        if let Some(path) = save_request {
+            let overwrite = self.overwrite;
+            let _ = self.save(&path, overwrite);
+        }
+        self.render_if_dirty();
+
+        egui::TopBottomPanel::bottom(widget::id(widget::STATUS_PANEL)).resizable(true).default_height(90.0).show(ctx, |ui| {
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                for line in &self.status {
+                    ui.label(line);
+                }
+            });
+        });
+        self.drawn.push(widget::STATUS_PANEL.into());
+
+        let mut toggles = Vec::new();
+        egui::SidePanel::left(widget::id(widget::LAYER_PANEL)).resizable(true).default_width(240.0).show(ctx, |ui| {
+            ui.heading("Layers");
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for row in self.layers() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0 * row.depth as f32);
+                        let mut visible = row.visible;
+                        let vis_id = widget::layer(&row.layer_id, "visible");
+                        if ui.push_id(widget::id(&vis_id), |ui| ui.checkbox(&mut visible, "")).inner.on_hover_text("Visible").changed() {
+                            toggles.push((row.layer_id.clone(), visible));
+                        }
+                        self.drawn.push(vis_id);
+                        let sel_id = widget::layer(&row.layer_id, "select");
+                        let selected = self.selected.as_deref() == Some(row.layer_id.as_str());
+                        let label = format!("{}  {:.0}%{}", row.name, row.opacity, if row.kind == "group" { "  (group)" } else { "" });
+                        if ui.push_id(widget::id(&sel_id), |ui| ui.selectable_label(selected, label)).inner.clicked() {
+                            self.selected = Some(row.layer_id.clone());
+                        }
+                        self.drawn.push(sel_id);
+                    });
+                }
+            });
+        });
+        self.drawn.push(widget::LAYER_PANEL.into());
+        for (layer, visible) in toggles {
+            let _ = self.set_visible(&layer, visible);
+        }
+
+        let mut commits = Vec::new();
+        egui::SidePanel::right(widget::id(widget::PROPERTIES_PANEL)).resizable(true).default_width(300.0).show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Properties");
+                commits = self.properties_ui(ui);
+                ui.separator();
+                ui.heading("Import receipt");
+                self.receipt_ui(ui);
+            });
+        });
+        self.drawn.push(widget::PROPERTIES_PANEL.into());
+        self.drawn.push(widget::RECEIPT_PANEL.into());
+        for (layer, control, text) in commits {
+            let _ = self.commit(&layer, &control, &text);
+        }
+        self.render_if_dirty();
+
+        egui::CentralPanel::default().show(ctx, |ui| self.canvas_ui(ui));
+    }
+
+    /// Controls-descriptor panel of the selected layer; returns the routed commits to perform.
+    fn properties_ui(&mut self, ui: &mut egui::Ui) -> Vec<(String, String, String)> {
+        let mut commits = Vec::new();
+        let Some(layer_id) = self.selected.clone() else {
+            ui.label("Select a layer.");
+            return commits;
+        };
+        let Some(layer) = self.run.snapshot().and_then(|s| s.document().layers.iter().find(|l| l.layer_id == layer_id).cloned()) else {
+            ui.label("The selected layer is gone.");
+            return commits;
+        };
+        let mut built = match panel::build(&PanelValues::of(&layer)) {
+            Ok(p) => p,
+            Err(e) => {
+                ui.colored_label(egui::Color32::RED, format!("panel: {}", e.code()));
+                return commits;
+            }
+        };
+        ui.label(format!("{} ({})", layer.name, layer.layer_id));
+        let outcome = hsk_studio_controls::egui_adapter::show_panel_and_apply(ui, &built.registry, &mut built.store, None);
+        for change in outcome.changes.iter().filter(|c| c.is_undo_step()) {
+            match built.routes.get(&change.control_id).copied() {
+                Some(Route::ChronicleName | Route::ChronicleVisible) => {
+                    let text = match &change.new {
+                        hsk_studio_controls::Value::Bool(b) => b.to_string(),
+                        hsk_studio_controls::Value::Text(t) => t.clone(),
+                        other => built.registry.get(&change.control_id).map_or_else(String::new, |s| s.format_value(other)),
+                    };
+                    commits.push((layer_id.clone(), change.control_id.clone(), text));
+                }
+                Some(Route::None(reason)) => self.say(format!("{} is read-only here: {reason}", change.control_id)),
+                None => self.say(format!("{} has no commit route", change.control_id)),
+            }
+        }
+        ui.small("Name and Visible commit through the session (chronicle). Appearance values are read-only: chronicle has no appearance property.");
+        commits
+    }
+
+    fn receipt_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(r) = &self.receipt else {
+            ui.label("No import receipt (a native package without import entries, or nothing open).");
+            return;
+        };
+        ui.label(format!("source format: {}", r["source_format"].as_str().unwrap_or("?")));
+        ui.label(format!("layers: {}", r["layers"]));
+        if let Some(colour) = r.get("colour") {
+            ui.label(format!("colour: {}", colour["status"].as_str().unwrap_or("?")));
+        }
+        let loss = r["loss"].as_array().cloned().unwrap_or_default();
+        egui::CollapsingHeader::new(format!("Loss entries ({})", loss.len())).id_salt(widget::id("receipt.loss")).default_open(true).show(ui, |ui| {
+            egui::Grid::new(widget::id("receipt.loss.grid")).striped(true).show(ui, |ui| {
+                ui.strong("path");
+                ui.strong("kind");
+                ui.strong("code");
+                ui.end_row();
+                for e in &loss {
+                    ui.label(e["path"].as_str().unwrap_or(""));
+                    ui.label(e["kind"].as_str().unwrap_or(""));
+                    ui.label(e["code"].as_str().unwrap_or(""));
+                    ui.end_row();
+                }
+            });
+        });
+        if let Some(np) = r["not_proven"].as_array() {
+            egui::CollapsingHeader::new(format!("Not proven ({})", np.len())).id_salt(widget::id("receipt.not_proven")).show(ui, |ui| {
+                for v in np {
+                    ui.label(v.as_str().unwrap_or(""));
+                }
+            });
+        }
+    }
+
+    fn canvas_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.push_id(widget::id(widget::FIT_BUTTON), |ui| ui.button("Fit")).inner.clicked() {
+                self.fit = true;
+                self.pan = egui::Vec2::ZERO;
+            }
+            self.drawn.push(widget::FIT_BUTTON.into());
+            if ui.push_id(widget::id(widget::ACTUAL_SIZE_BUTTON), |ui| ui.button("1:1")).inner.clicked() {
+                self.fit = false;
+                self.zoom = 1.0;
+                self.pan = egui::Vec2::ZERO;
+            }
+            self.drawn.push(widget::ACTUAL_SIZE_BUTTON.into());
+            let mut zoom = self.zoom;
+            if ui.push_id(widget::id(widget::ZOOM_SLIDER), |ui| ui.add(egui::Slider::new(&mut zoom, 0.05..=16.0).logarithmic(true).text("zoom"))).inner.changed() {
+                self.zoom = zoom;
+                self.fit = false;
+            }
+            self.drawn.push(widget::ZOOM_SLIDER.into());
+        });
+        if let Some(e) = &self.render_error {
+            ui.colored_label(egui::Color32::RED, format!("render failed: {e}"));
+        }
+        let Some(frame) = &self.frame else {
+            if self.run.snapshot().is_none() {
+                ui.label("Open a file: type its path above and press Open (or pass it as the first argument).");
+            }
+            return;
+        };
+        let (w, h) = (frame.width, frame.height);
+        let texture = self.texture.get_or_insert_with(|| {
+            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &frame.rgba8);
+            ui.ctx().load_texture("hsk-studio-ui.view.texture", image, egui::TextureOptions::NEAREST)
+        });
+        let id = texture.id();
+        let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        self.drawn.push(widget::CANVAS.into());
+        let size = egui::vec2(w as f32, h as f32);
+        if self.fit {
+            self.zoom = (rect.width() / size.x).min(rect.height() / size.y).clamp(0.05, 16.0);
+        }
+        if response.dragged() {
+            self.pan += response.drag_delta();
+            self.fit = false;
+        }
+        if response.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll != 0.0 {
+                self.zoom = (self.zoom * (1.0 + scroll * 0.002)).clamp(0.05, 16.0);
+                self.fit = false;
+            }
+        }
+        let shown = egui::Rect::from_center_size(rect.center() + self.pan, size * self.zoom);
+        let painter = ui.painter_at(rect);
+        checker(&painter, shown.intersect(rect));
+        painter.image(id, shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    }
+}
+
+/// Transparency checkerboard behind the image.
+fn checker(painter: &egui::Painter, rect: egui::Rect) {
+    if !rect.is_positive() {
+        return;
+    }
+    painter.rect_filled(rect, 0.0, egui::Color32::from_gray(200));
+    let step = 12.0;
+    let mut y = rect.top();
+    let mut row = 0u32;
+    while y < rect.bottom() {
+        let mut x = rect.left() + if row % 2 == 0 { 0.0 } else { step };
+        while x < rect.right() {
+            let cell = egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2((x + step).min(rect.right()), (y + step).min(rect.bottom())));
+            painter.rect_filled(cell, 0.0, egui::Color32::from_gray(150));
+            x += 2.0 * step;
+        }
+        y += step;
+        row = row.wrapping_add(1);
+    }
+}

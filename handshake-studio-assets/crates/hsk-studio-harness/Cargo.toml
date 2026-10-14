@@ -11,6 +11,10 @@ import-psd = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism"]
 import-raw = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-develop"]
 import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-tiff"]
 import-pdf = ["import", "dep:hsk-studio-press"]
+# Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
+viewer = ["import-psd", "import-raw", "import-tiff", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu"]
+# Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
+desktop = ["viewer", "dep:eframe"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
@@ -24,7 +28,13 @@ hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", defau
 hsk-studio-interop-tiff = { path = "../hsk-studio-interop-tiff", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-render-gpu = { path = "../hsk-studio-render-gpu", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
+eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts"], optional = true }
 
 [lib]
 path = "src/lib.rs"
@@ -32,3 +42,8 @@ path = "src/lib.rs"
 [[example]]
 name = "studio-harness"
 path = "examples/studio-harness.rs"
+
+[[bin]]
+name = "studio-harness"
+path = "src/bin/studio-harness.rs"
+required-features = ["desktop"]

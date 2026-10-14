@@ -137,7 +137,7 @@ fn json_output_is_stable_and_manual_comes_from_the_descriptors() {
     assert_eq!(owners, ["STUDIO-MODULE-ACCORD", "STUDIO-MODULE-FOLIO", "STUDIO-MODULE-SESSION", "hsk-studio-controls", "STUDIO-MODULE-OBSERVE"]);
     // The crate's own descriptor is valid JSON with the expected owner.
     let own: Value = serde_json::from_str(hsk_studio_harness::DESCRIPTOR).unwrap();
-    assert!(own["owner"] == "STUDIO-MODULE-HARNESS" && own["mode"] == "headless_only");
+    assert!(own["owner"] == "STUDIO-MODULE-HARNESS" && own["mode"] == "headless_default");
 }
 
 #[test]
@@ -308,6 +308,8 @@ fn quiet_sources_use_no_process_network_or_environment_api() {
         ("import/tiff.rs", include_str!("../src/import/tiff.rs")),
         ("import/colour.rs", include_str!("../src/import/colour.rs")),
         ("import/pdf.rs", include_str!("../src/import/pdf.rs")),
+        ("view/mod.rs", include_str!("../src/view/mod.rs")),
+        ("view/render.rs", include_str!("../src/view/render.rs")),
     ];
     for (name, text) in sources {
         for token in ["std::process", "Command::new", "std::net", "TcpStream", "UdpSocket", "std::env", "env::var"] {

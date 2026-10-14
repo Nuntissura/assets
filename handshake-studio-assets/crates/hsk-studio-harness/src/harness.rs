@@ -30,9 +30,9 @@ pub const AVAILABLE_PROVIDERS: &[&str] = &[CHRONICLE_PROVIDER_ID];
 
 /// Capabilities the harness cannot prove today (listed in every report's `not_proven`).
 pub const NOT_PROVEN: &[&str] = &[
-    "visual_render_proof (no RenderPort; render engines are not dependencies of the harness)",
+    "visual_render_proof (the run itself renders nothing; the feature `viewer` renders through composite + render-gpu/render-cpu, asserted on a synthetic document only)",
     "appearance_commit (chronicle has no appearance property; appearance controls are read-only projections)",
-    "desktop_window_consumer (eframe/winit are probe-forbidden; lead decision pending)",
+    "desktop_window_visual_check (feature `desktop` window opens only in an Operator-attended session, RUN-UI.md)",
 ];
 
 /// How document references (tiles, profiles) are answered while opening.
@@ -89,7 +89,7 @@ impl std::fmt::Display for HarnessError {
 
 impl std::error::Error for HarnessError {}
 
-struct TrustAll;
+pub(crate) struct TrustAll;
 impl Resolver for TrustAll {
     fn primitive(&self, _: &str, _: &str) -> Resolution {
         Resolution::Available
@@ -362,16 +362,24 @@ impl Run<'_> {
     /// (`format_unrecognised`, `format_unavailable`, or the importer's own code).
     #[cfg(feature = "import")]
     pub fn open_import(&mut self, bytes: &[u8]) -> bool {
+        self.open_import_detailed(bytes).is_some()
+    }
+
+    /// [`Run::open_import`] that also returns the native package bytes and the import receipt
+    /// (`None` exactly when the `import` record failed). The desktop viewer reads its tile bytes
+    /// from the returned package.
+    #[cfg(feature = "import")]
+    pub fn open_import_detailed(&mut self, bytes: &[u8]) -> Option<(Vec<u8>, Value)> {
         let before = self.frames.count();
         let resolver = self.harness.resolver();
         let (package, imported) = match crate::import::convert_to_native(bytes, resolver.as_ref(), self.cancel) {
             Ok(done) => done,
             Err(e) => {
-                let ok = self.push("import", before, Err(e.code()), None, None);
+                self.push("import", before, Err(e.code()), None, None);
                 if let Some(record) = self.ops.last_mut() {
                     record["detail"] = json!({"import": e.detail()});
                 }
-                return ok;
+                return None;
             }
         };
         let summary = json!({
@@ -391,7 +399,17 @@ impl Run<'_> {
                 record["detail"] = json!({"import": summary});
             }
         }
-        ok
+        ok.then(|| (package, imported.receipt))
+    }
+
+    /// The working document (read-only), when one is open.
+    pub fn snapshot(&self) -> Option<&folio::Snapshot> {
+        self.session.as_ref().map(Session::snapshot)
+    }
+
+    /// The operation records so far (the `ops` of [`Run::finish`]).
+    pub fn ops(&self) -> &[Value] {
+        &self.ops
     }
 
     fn finish_open(&mut self, op: &str, before: usize, opened: Result<Session, Failed>, reopen: bool) -> bool {
