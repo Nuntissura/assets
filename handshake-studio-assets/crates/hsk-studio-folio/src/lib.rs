@@ -61,6 +61,8 @@ mod vector;
 pub use vector::*;
 mod typestyle;
 pub use typestyle::*;
+mod composition;
+pub use composition::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
