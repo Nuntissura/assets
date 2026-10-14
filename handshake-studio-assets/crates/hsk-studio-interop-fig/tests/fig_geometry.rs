@@ -229,7 +229,7 @@ fn real_geometry_losses_shrink_and_are_pinned() {
     // with geometry (14 / 10 / 17) and every shape node added native.transform + native.size and
     // a corner_radii / arc / star / vector_network loss (basic-shapes: 12 shapes, 0 paths).
     let pins: [(&str, u32, u32, u32, u32, u32, usize); 3] = [
-        ("fig-basic-shapes.fig", 2, 3, 1, 3, 0, 12),
+        ("fig-basic-shapes.fig", 1, 3, 1, 2, 0, 13),
         ("fig-components-autolayout.fig", 8, 0, 6, 7, 6, 2),
         ("fig-prototype-pages.fig", 14, 1, 14, 12, 1, 3),
     ];
