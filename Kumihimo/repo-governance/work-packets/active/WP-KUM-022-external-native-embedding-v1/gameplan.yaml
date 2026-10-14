@@ -11,7 +11,7 @@ precedence: 'on conflict CODEX, role profile, WP contract, WP-STATE, MT win; cor
 scope: wp
 assignment: WP-KUM-022-external-native-embedding-v1
 parent: null
-generation: 18
+generation: 19
 expensive_actions: []
 steps:
 - {id: GP-001, role: any, at: before_round, do: require scoped asset preparation only before compiler grant, check: {type: confirm}, source: 'prep: contract command text matched foreign Handshake gate', state: retired}
@@ -30,3 +30,4 @@ steps:
 - {id: GP-014, role: any, at: before_submit, do: verify gameplan subcommand arguments against actual CLI help, check: {type: confirm}, source: 'prep: confirm rejected unsupported role argument before phase04 launch', state: active}
 - {id: GP-015, role: any, at: before_round, do: verify native probe phase Copy snapshot preserves all eight pending guards and scoped dependency proof, check: {type: confirm}, source: 'phase04: Cargo101 E0510 mutable self calls in match self.phase guards', state: active}
 - {id: GP-016, role: any, at: before_round, do: verify original PID and birth identity closure; distinguish reused PIDs and their unrelated children, check: {type: confirm}, source: 'prep: phase06 PID19060 and53424 reused by later node processes after true owned closure', state: active}
+- {id: GP-017, role: any, at: before_submit, do: verify JSON birth timestamps preserve ISO strings before canonical process identity comparisons, check: {type: confirm}, source: 'prep: PowerShell JSON auto-date conversion made later PID-reuse gauge locale-date parsing fail', state: active}
