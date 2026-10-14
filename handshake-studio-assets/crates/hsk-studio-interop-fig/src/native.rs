@@ -54,6 +54,12 @@ use hsk_studio_folio::{
     VariableSchema, VariableType,
 };
 use hsk_studio_folio::{
+    ContentDigest, StudioBooleanGroup, StudioBooleanOperation, StudioImagePaint, StudioImageScale,
+    StudioImageSource, StudioLetterSpacing, StudioLineHeight, StudioTextAlign, StudioTypeStyle,
+    StudioTypeStyleRecords, TypeStyleResolver, TypeStyleSchema, TypeStyleScope,
+    check_story_style_scopes, validate_type_style_records,
+};
+use hsk_studio_folio::{
     StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioTextStory,
     TextStorySchema, validate_text_story,
 };
@@ -126,92 +132,93 @@ pub struct FigVectorPath {
     pub geometry: OwnedPath,
 }
 
-/// An IMAGE paint of a node. Folio's paint model has no image kind (declared gap in `paint.rs`),
-/// so no appearance row is written; this record binds the node to the image part, whose bytes stay
-/// byte-identical inside the package's original entry (receipt: `image_paints`).
+/// Font and layout values of one `STYS` id while mapping (`character` or `paragraph`); converted
+/// into a Folio `StudioTypeStyle` once the set is built.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FigImagePaint {
-    pub source: SourceId,
-    pub node: NodeRef,
-    /// `fills` or `strokes`.
-    pub what: &'static str,
-    /// Index in the node's paint list.
-    pub ordinal: usize,
-    /// Hex image hash as stored by Figma.
-    pub hash: String,
-    /// Container entry `images/<hash>` when present.
-    pub part: Option<String>,
-    pub scale_mode: Option<String>,
-    pub original_size: Option<(u32, u32)>,
-    pub opacity: f64,
-    pub visible: bool,
-}
-
-/// The font and layout values bound to one `STYS` id of a text story (`kind` is `character` for a
-/// range binding, `paragraph` for a paragraph binding). Folio stores only the `STYS` reference of
-/// a story (the style record is host-resolved, `SCHEMA_STUDIO_TYPE_STYLE`), so the values live in
-/// the records entry; the host creates the style records from them. Font references are by
-/// Figma family and style name; no font file is resolved.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FigTextStyle {
-    pub style_ref: String,
-    pub kind: &'static str,
-    pub font_family: Option<String>,
-    pub font_style: Option<String>,
-    pub font_size: Option<f64>,
+struct FigTextStyle {
+    style_ref: String,
+    kind: &'static str,
+    font_family: Option<String>,
+    font_style: Option<String>,
+    font_size: Option<f64>,
     /// First visible solid fill (r, g, b, a in 0..=1).
-    pub fill: Option<[f64; 4]>,
-    pub line_height: Option<(f64, String)>,
-    pub letter_spacing: Option<(f64, String)>,
-    pub align_horizontal: Option<String>,
-    pub align_vertical: Option<String>,
-    pub auto_resize: Option<String>,
+    fill: Option<[f64; 4]>,
+    line_height: Option<(f64, String)>,
+    letter_spacing: Option<(f64, String)>,
+    align_horizontal: Option<String>,
 }
 
 impl FigTextStyle {
-    fn to_json(&self) -> Value {
-        json!({
-            "style_ref": self.style_ref, "kind": self.kind,
-            "font_family": self.font_family, "font_style": self.font_style,
-            "font_size": self.font_size, "fill": self.fill,
-            "line_height": self.line_height.as_ref().map(|(v, u)| json!([v, u])),
-            "letter_spacing": self.letter_spacing.as_ref().map(|(v, u)| json!([v, u])),
-            "align_horizontal": self.align_horizontal,
-            "align_vertical": self.align_vertical,
-            "auto_resize": self.auto_resize,
-        })
+    fn key(&self) -> String {
+        format!("{self:?}")
     }
 
-    fn from_json(v: &Value) -> Option<Self> {
-        let s = |k: &str| v[k].as_str().map(str::to_owned);
-        let pair = |k: &str| {
-            let a = v[k].as_array()?;
-            Some((a.first()?.as_f64()?, a.get(1)?.as_str()?.to_owned()))
+    /// Folio type style; the `bool` is true when a line height or spacing unit had no mapping.
+    fn to_folio(&self, ordinal: usize) -> (StudioTypeStyle, bool) {
+        let mut unit_lost = false;
+        let length = |v: f64| Length {
+            value: v,
+            unit: GeometryUnit::Px,
         };
-        let fill = match v["fill"].as_array() {
-            Some(a) => {
-                let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
-                Some(<[f64; 4]>::try_from(n).ok()?)
-            }
-            None => None,
-        };
-        Some(Self {
-            style_ref: s("style_ref")?,
-            kind: match v["kind"].as_str()? {
-                "character" => "character",
-                "paragraph" => "paragraph",
-                _ => return None,
+        let line_height = self
+            .line_height
+            .as_ref()
+            .and_then(|(v, u)| match u.as_str() {
+                "PERCENT" => Some(StudioLineHeight::Percent { value: *v }),
+                "PIXELS" => Some(StudioLineHeight::Length { length: length(*v) }),
+                _ => {
+                    unit_lost = true;
+                    None
+                }
+            });
+        let letter_spacing = self
+            .letter_spacing
+            .as_ref()
+            .and_then(|(v, u)| match u.as_str() {
+                "PERCENT" => Some(StudioLetterSpacing::Percent { value: *v }),
+                "PIXELS" => Some(StudioLetterSpacing::Length { length: length(*v) }),
+                _ => {
+                    unit_lost = true;
+                    None
+                }
+            });
+        let paragraph = self.kind == "paragraph";
+        let style = StudioTypeStyle {
+            schema_id: TypeStyleSchema::V1,
+            style_id: self.style_ref.clone(),
+            scope: if paragraph {
+                TypeStyleScope::Paragraph
+            } else {
+                TypeStyleScope::Character
             },
-            font_family: s("font_family"),
-            font_style: s("font_style"),
-            font_size: v["font_size"].as_f64(),
-            fill,
-            line_height: pair("line_height"),
-            letter_spacing: pair("letter_spacing"),
-            align_horizontal: s("align_horizontal"),
-            align_vertical: s("align_vertical"),
-            auto_resize: s("auto_resize"),
-        })
+            name: format!("fig/{}/{ordinal}", self.kind),
+            based_on: None,
+            next_style: None,
+            font_family: self.font_family.clone(),
+            font_style: self.font_style.clone(),
+            font_size: self.font_size.map(length),
+            fill: self.fill.map(|[r, g, b, a]| StudioRgba {
+                r,
+                g,
+                b,
+                a,
+                colour_profile_id: ProfileBinding::Unassigned(()),
+            }),
+            line_height,
+            letter_spacing,
+            align: self
+                .align_horizontal
+                .as_deref()
+                .and_then(|a| match a {
+                    "LEFT" => Some(StudioTextAlign::Left),
+                    "CENTER" => Some(StudioTextAlign::Center),
+                    "RIGHT" => Some(StudioTextAlign::Right),
+                    "JUSTIFIED" => Some(StudioTextAlign::Justified),
+                    _ => None,
+                })
+                .filter(|_| paragraph),
+        };
+        (style, unit_lost)
     }
 }
 
@@ -233,16 +240,16 @@ pub struct NativeProposal {
     pub stories: Vec<StudioTextStory>,
     /// Vector geometry of the vector layers, in document px (transforms baked in).
     pub paths: Vec<FigVectorPath>,
-    /// Font and layout values behind the `STYS` bindings of the stories.
-    pub text_styles: Vec<FigTextStyle>,
-    /// `STYS` bindings the caller's resolver did not resolve (host-owned style records pending).
+    /// Type styles behind the `STYS` bindings of the stories (`hsk.studio.type_style_records@1`),
+    /// validated; the stories resolve against them through `TypeStyleResolver`.
+    pub type_styles: StudioTypeStyleRecords,
+    /// `STYS` bindings still unresolved after the type style set (expected empty).
     pub unresolved_text_styles: Vec<String>,
-    /// Shadow effects per layer (`hsk.studio.raster_records@1`), validated.
+    /// Effects (shadows, blurs) per layer (`hsk.studio.raster_records@1`), validated.
     pub raster_records: StudioRasterRecords,
-    /// Masks and their attachments (`hsk.studio.vector_records@1`), validated.
+    /// Masks, attachments, image paints and boolean groups (`hsk.studio.vector_records@1`),
+    /// validated.
     pub vector_records: StudioVectorRecords,
-    /// IMAGE paints (no Folio paint kind; see [`FigImagePaint`]).
-    pub image_paints: Vec<FigImagePaint>,
     pub id_map: Vec<IdMapEntry>,
     /// Figma nodes that became design records rather than document nodes (variables).
     pub record_map: Vec<RecordMapEntry>,
@@ -301,7 +308,10 @@ struct Mapper<'a> {
     stories: Vec<StudioTextStory>,
     paths: Vec<FigVectorPath>,
     fx: Vec<StudioRasterLayerRecord>,
-    image_paints: Vec<FigImagePaint>,
+    image_paint_records: Vec<StudioImagePaint>,
+    boolean_groups: Vec<StudioBooleanGroup>,
+    /// Image paint produced by the last `paint` call, bound to its row by `style`.
+    pending_image: Option<StudioImagePaint>,
     text_styles: Vec<FigTextStyle>,
     /// Canonical style JSON (without the id) -> minted `STYS` id.
     text_style_ids: HashMap<String, String>,
@@ -584,13 +594,81 @@ impl Mapper<'_> {
                     percent(base),
                 ))
             }
-            PaintKind::Image { .. } => {
-                // Bound and carried (FigImagePaint, original entry) but not an appearance row.
-                self.lose(
-                    format!("native.{what}.IMAGE"),
-                    "image_paint_not_a_folio_paint",
-                );
-                None
+            PaintKind::Image {
+                part,
+                scale_mode,
+                transform,
+                ..
+            } => {
+                // A stand-in grey row carries the paint; the image binds to that row and reads
+                // its bytes from the `images/<hash>` part of the import-original entry.
+                let digest = |d: &[u8; 32]| ContentDigest {
+                    algorithm: "sha256".to_owned(),
+                    digest: hex(d),
+                };
+                let mode = match scale_mode.as_deref() {
+                    None | Some("FILL") => Some(StudioImageScale::Fill),
+                    Some("FIT") => Some(StudioImageScale::Fit),
+                    Some("CROP") | Some("STRETCH") => Some(StudioImageScale::Crop),
+                    Some("TILE") => Some(StudioImageScale::Tile),
+                    Some(_) => None,
+                };
+                let part_digest = part
+                    .as_ref()
+                    .and_then(|p| self.doc.image_parts.get(p).map(|d| (p.clone(), *d)));
+                let (Some(mode), Some((part, part_sha)), Some(source_sha)) =
+                    (mode, part_digest, self.doc.source_sha256)
+                else {
+                    self.lose(
+                        format!("native.{what}.IMAGE"),
+                        if mode.is_none() {
+                            "image_scale_mode_unknown"
+                        } else {
+                            "image_part_unavailable"
+                        },
+                    );
+                    return None;
+                };
+                // Figma's image transform maps the node's unit box to image space; Folio's maps
+                // the unit image square to the unit square of the object: the inverse. UNVERIFIED.
+                let folio_transform = match transform {
+                    None => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    Some(m) => match invert(m) {
+                        Some(i) => i.map(tidy),
+                        None => {
+                            self.lose(
+                                format!("native.{what}.IMAGE"),
+                                "image_transform_not_invertible",
+                            );
+                            return None;
+                        }
+                    },
+                };
+                self.pending_image = Some(StudioImagePaint {
+                    style_id: String::new(),
+                    row: 0,
+                    image: StudioImageSource::ImportOriginal {
+                        entry_digest: digest(&source_sha),
+                        part,
+                        content_digest: digest(&part_sha),
+                    },
+                    scale_mode: mode,
+                    transform: folio_transform,
+                    scaling_factor: 1.0,
+                    rotation: 0.0,
+                    opacity: percent(base),
+                });
+                Some((
+                    StudioPaint::Solid {
+                        colour: StudioColor {
+                            r: 0.5,
+                            g: 0.5,
+                            b: 0.5,
+                            colour_profile_id: ProfileBinding::Unassigned(()),
+                        },
+                    },
+                    percent(base),
+                ))
             }
             PaintKind::Unsupported { type_name } => {
                 self.lose(
@@ -622,8 +700,14 @@ impl Mapper<'_> {
     /// strokes), bound through `fill_style_id`. `None` when the node has no mappable paint.
     fn style(&mut self, n: &FigNode, node: NodeRef) -> Result<()> {
         let mut rows = Vec::new();
+        let mut images: Vec<StudioImagePaint> = Vec::new();
         for p in &n.fills {
+            self.pending_image = None;
             if let Some((paint, opacity)) = self.paint(p, n.size, "fills") {
+                if let Some(mut img) = self.pending_image.take() {
+                    img.row = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+                    images.push(img);
+                }
                 let blend_mode = self.paint_blend(p, "fills");
                 rows.push(StudioAppearanceRow::Fill {
                     paint,
@@ -646,7 +730,12 @@ impl Mapper<'_> {
             };
             let weight = wide(n.stroke_weight.unwrap_or(1.0)).max(0.0);
             for p in &n.strokes {
+                self.pending_image = None;
                 if let Some((paint, opacity)) = self.paint(p, n.size, "strokes") {
+                    if let Some(mut img) = self.pending_image.take() {
+                        img.row = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+                        images.push(img);
+                    }
                     let blend_mode = self.paint_blend(p, "strokes");
                     rows.push(StudioAppearanceRow::Stroke {
                         paint,
@@ -687,6 +776,10 @@ impl Mapper<'_> {
             },
             rows,
         });
+        for mut img in images {
+            img.style_id = style_id.clone();
+            self.image_paint_records.push(img);
+        }
         self.design_for(&node)
             .style_refs
             .insert("fill_style_id".into(), style_id);
@@ -740,11 +833,19 @@ impl Mapper<'_> {
             ranges.push((0, len, style));
         }
         // Paragraph style: line height, letter spacing, alignment and auto-resize of the node.
+        // Vertical alignment and auto-resize have no type style member: typed losses per story.
+        if t.align_vertical.is_some() {
+            self.lose(
+                "native.text.align_vertical",
+                "text_layout_no_type_style_home",
+            );
+        }
+        if t.auto_resize.is_some() {
+            self.lose("native.text.auto_resize", "text_layout_no_type_style_home");
+        }
         let paragraph_style = if t.line_height.is_some()
             || t.letter_spacing.is_some()
             || t.align_horizontal.is_some()
-            || t.align_vertical.is_some()
-            || t.auto_resize.is_some()
         {
             let pair = |p: &Option<(f32, String)>| p.as_ref().map(|(v, u)| (wide(*v), u.clone()));
             Some(self.text_style(FigTextStyle {
@@ -757,8 +858,6 @@ impl Mapper<'_> {
                 line_height: pair(&t.line_height),
                 letter_spacing: pair(&t.letter_spacing),
                 align_horizontal: t.align_horizontal.clone(),
-                align_vertical: t.align_vertical.clone(),
-                auto_resize: t.auto_resize.clone(),
             }))
         } else {
             None
@@ -794,7 +893,7 @@ impl Mapper<'_> {
 
     /// The `STYS` id of a style value set (one id per distinct set within the document).
     fn text_style(&mut self, mut st: FigTextStyle) -> String {
-        let key = st.to_json().to_string();
+        let key = st.key();
         if let Some(id) = self.text_style_ids.get(&key) {
             return id.clone();
         }
@@ -839,8 +938,6 @@ impl Mapper<'_> {
             line_height: None,
             letter_spacing: None,
             align_horizontal: None,
-            align_vertical: None,
-            auto_resize: None,
         }))
     }
 
@@ -1524,37 +1621,6 @@ impl Mapper<'_> {
         }
     }
 
-    /// Records the image fill/stroke paints of a node: the Folio paint model has no image kind
-    /// (declared gap), so the binding lives in the records entry; the bytes stay in the original.
-    fn image_paints(&mut self, n: &FigNode, node: &NodeRef) {
-        for (what, list) in [("fills", &n.fills), ("strokes", &n.strokes)] {
-            for (ordinal, p) in list.iter().enumerate() {
-                let PaintKind::Image {
-                    hash,
-                    part,
-                    scale_mode,
-                    original_size,
-                    ..
-                } = &p.kind
-                else {
-                    continue;
-                };
-                self.image_paints.push(FigImagePaint {
-                    source: n.id,
-                    node: node.clone(),
-                    what,
-                    ordinal,
-                    hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
-                    part: part.clone(),
-                    scale_mode: scale_mode.clone(),
-                    original_size: *original_size,
-                    opacity: percent(p.opacity.unwrap_or(1.0)),
-                    visible: p.visible.unwrap_or(true),
-                });
-            }
-        }
-    }
-
     /// Losses for decoded node data this slice does not map.
     /// `baked`: the node's geometry was emitted as vector paths with its transform applied.
     fn unmapped(&mut self, n: &FigNode, artboard: bool, baked: bool) {
@@ -1598,9 +1664,8 @@ impl Mapper<'_> {
             NodePayload::Vector { .. } if !baked => {
                 self.lose("native.vector_network", "vector_geometry_not_emitted")
             }
-            NodePayload::Boolean { .. } => {
-                self.lose("native.boolean_operation", "boolean_operation_not_mapped")
-            }
+            // Mapped to a `StudioBooleanGroup` (or lost) by `walk`.
+            NodePayload::Boolean { .. } => {}
             NodePayload::Frame(f)
             | NodePayload::Symbol { frame: f, .. }
             | NodePayload::Instance { frame: f, .. } => {
@@ -1653,6 +1718,8 @@ impl Mapper<'_> {
         let n = &doc.nodes[idx];
         let abs = compose(parent_abs, n.transform.as_ref());
         let mut baked = false;
+        let mut bool_op: Option<StudioBooleanOperation> = None;
+        let mut bool_outline: Vec<String> = Vec::new();
         self.current = Some(n.id);
         let ty = n.type_name.as_str();
         let name = n.name.clone().unwrap_or_default();
@@ -1748,6 +1815,23 @@ impl Mapper<'_> {
                 self.instances.push((idx, instance_id));
             } else {
                 let (kind, payload, group) = if CONTAINER_KINDS.contains(&ty) || ty == "DOCUMENT" {
+                    if let NodePayload::Boolean { operation } = &n.payload {
+                        bool_op = match operation.as_deref() {
+                            Some("UNION") => Some(StudioBooleanOperation::Union),
+                            Some("INTERSECT") => Some(StudioBooleanOperation::Intersect),
+                            Some("SUBTRACT") => Some(StudioBooleanOperation::Subtract),
+                            Some("EXCLUDE") => Some(StudioBooleanOperation::Exclude),
+                            _ => {
+                                self.lose("native.boolean_operation", "boolean_operation_unknown");
+                                None
+                            }
+                        };
+                        if bool_op.is_some() {
+                            // Cached outline: the decoded result geometry of the node.
+                            bool_outline = self.geometry(n, &abs, &layer_id);
+                            baked = !bool_outline.is_empty();
+                        }
+                    }
                     ("group".to_owned(), Payload::Group, true)
                 } else if LEAF_KINDS.contains(&ty) {
                     let path_ids = self.geometry(n, &abs, &layer_id);
@@ -1807,7 +1891,6 @@ impl Mapper<'_> {
         self.unmapped(n, is_artboard, baked);
         self.node_refs.insert(idx, node_ref.clone());
         self.effects(n, &node_ref);
-        self.image_paints(n, &node_ref);
         if ty != "CANVAS" {
             self.style(n, node_ref.clone())?;
         }
@@ -1831,6 +1914,8 @@ impl Mapper<'_> {
         // A mask node masks every later sibling in the same parent (Figma stacking order:
         // ascending position = bottom to top).
         let mut open_mask: Option<usize> = None;
+        let group_layer = parent_layer_id(&parent);
+        let mut operands: Vec<String> = Vec::new();
         for c in children {
             self.walk(
                 c,
@@ -1843,6 +1928,9 @@ impl Mapper<'_> {
                 continue;
             };
             self.current = Some(doc.nodes[c].id);
+            if r.node_kind == NodeKind::Layer {
+                operands.push(r.node_id.clone());
+            }
             if doc.nodes[c].mask == Some(true) {
                 if r.node_kind == NodeKind::Layer {
                     open_mask = Some(self.mask_plans.len());
@@ -1858,6 +1946,20 @@ impl Mapper<'_> {
                 } else {
                     self.lose("native.mask", "masked_artboard_no_folio_home");
                 }
+            }
+        }
+        if let (Some(operation), Some(layer_id)) = (bool_op, group_layer) {
+            self.current = Some(n.id);
+            if operands.is_empty() {
+                self.paths.retain(|p| p.layer_id != layer_id);
+                self.lose("native.boolean_operation", "boolean_without_operands");
+            } else {
+                self.boolean_groups.push(StudioBooleanGroup {
+                    layer_id,
+                    operation,
+                    operands,
+                    fill_geometry_path_ids: bool_outline,
+                });
             }
         }
         Ok(())
@@ -1914,7 +2016,9 @@ pub fn to_native(
         stories: Vec::new(),
         paths: Vec::new(),
         fx: Vec::new(),
-        image_paints: Vec::new(),
+        image_paint_records: Vec::new(),
+        boolean_groups: Vec::new(),
+        pending_image: None,
         text_styles: Vec::new(),
         text_style_ids: HashMap::new(),
         node_refs: HashMap::new(),
@@ -1954,7 +2058,8 @@ pub fn to_native(
         stories,
         paths,
         fx,
-        image_paints,
+        image_paint_records,
+        boolean_groups,
         text_styles,
         mask_plans,
         components,
@@ -2017,11 +2122,41 @@ pub fn to_native(
     design_records.component_instances = component_instances;
     design_records.variable_collections = collections;
     design_records.variables = variables;
+    // Type styles: one `StudioTypeStyle` per STYS id; stories resolve against the set.
+    let mut type_styles = StudioTypeStyleRecords::new(snapshot.document().document_id.clone());
+    let mut unit_lost = false;
+    for (i, st) in text_styles.iter().enumerate() {
+        let (style, lost) = st.to_folio(i);
+        unit_lost |= lost;
+        type_styles.styles.push(style);
+    }
+    if unit_lost {
+        let slot = loss
+            .entry((
+                "native.text.units".to_owned(),
+                "text_unit_no_type_style_home",
+            ))
+            .or_insert((0, None));
+        slot.0 = slot.0.saturating_add(1);
+    }
+    validate_type_style_records(
+        &type_styles,
+        snapshot.document(),
+        cfg.budget,
+        cancel,
+        cfg.resolver,
+    )
+    .map_err(folio_error)?;
+    let style_resolver = TypeStyleResolver {
+        styles: &type_styles,
+        inner: cfg.resolver,
+    };
     let mut unresolved_text_styles = Vec::new();
     for story in &stories {
         let issues =
-            validate_text_story(story, cfg.budget, cancel, cfg.resolver).map_err(folio_error)?;
+            validate_text_story(story, cfg.budget, cancel, &style_resolver).map_err(folio_error)?;
         unresolved_text_styles.extend(issues.into_iter().map(|i| i.target));
+        check_story_style_scopes(story, &type_styles).map_err(folio_error)?;
     }
     validate_design_records(
         &design_records,
@@ -2063,6 +2198,8 @@ pub fn to_native(
             });
         }
     }
+    vector_records.image_paints = image_paint_records;
+    vector_records.boolean_groups = boolean_groups;
     validate_vector_records(
         &vector_records,
         snapshot.document(),
@@ -2086,11 +2223,10 @@ pub fn to_native(
         design: design_records,
         stories,
         paths,
-        text_styles,
+        type_styles,
         unresolved_text_styles,
         raster_records,
         vector_records,
-        image_paints,
         id_map,
         record_map,
         mapping_loss: aggregate(loss),
@@ -2120,10 +2256,13 @@ fn loss_json(list: &[NodeLoss]) -> Value {
 
 /// What every receipt of this mapping states it does not prove.
 pub const NATIVE_NOT_PROVEN: &[&str] = &[
-    "editable_import (names, ids, mapped records, vector geometry, shadow effects and masks survive a save and reopen; image paints are bindings only, blurs and text fonts are losses)",
+    "editable_import (names, ids, mapped records, vector geometry, effects, masks, image paints, boolean groups and type styles survive a save and reopen; nothing renders them yet and no Figma render parity is shown)",
     "effect_conventions (shadow size = radius px, offset as distance + Photoshop light angle, colour alpha as opacity percent, inner-shadow spread as choke percent; not compared with Figma rendering)",
     "mask_semantics (a mask node masks its later siblings, written as ALPHA masks with the source layer hidden; Figma maskType is not decoded)",
-    "text_styles (font family/style/size, solid fill, line height, letter spacing and alignment are carried as STYS-bound values in the records entry; Folio has no style record, so the host resolves the STYS ids, and no font file is resolved)",
+    "text_styles (STYS type styles carry family, style, size, solid fill, line height, letter spacing and horizontal alignment; vertical alignment and auto-resize are losses; no font file is resolved)",
+    "blur_radius (the Figma blur radius is written as the Folio radius unchanged; whether it is the Gaussian sigma or twice it is unverified)",
+    "image_transform (Folio transform = inverse of the Figma image transform, identity when absent; scaling factor 1, rotation 0; scale modes FILL FIT CROP/STRETCH TILE; row stand-in is a grey solid; unverified against Figma rendering)",
+    "boolean_groups (operands = all child layers bottom first; cached outline = the decoded result geometry, in canvas px)",
     "geometry_space (paths are baked into canvas px with every node transform composed; artboard-local coordinates are path minus artboard bounds)",
     "figma_render_parity (no comparison against Figma's rendering)",
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
@@ -2149,22 +2288,9 @@ impl NativeProposal {
                 "layer_id": p.layer_id,
                 "geometry": p.geometry.to_canonical_json(),
             })).collect::<Vec<_>>(),
-            "text_styles": self.text_styles.iter().map(FigTextStyle::to_json).collect::<Vec<_>>(),
+            "type_style_records": serde_json::to_value(&self.type_styles).map_err(enc)?,
             "raster_records": serde_json::to_value(&self.raster_records).map_err(enc)?,
             "vector_records": serde_json::to_value(&self.vector_records).map_err(enc)?,
-            "image_paints": self.image_paints.iter().map(|p| json!({
-                "source": p.source.to_string(),
-                "node_kind": node_kind_token(&p.node.node_kind),
-                "node_id": p.node.node_id,
-                "what": p.what,
-                "ordinal": p.ordinal,
-                "hash": p.hash,
-                "part": p.part,
-                "scale_mode": p.scale_mode,
-                "original_size": p.original_size.map(|(w, h)| json!([w, h])),
-                "opacity": p.opacity,
-                "visible": p.visible,
-            })).collect::<Vec<_>>(),
             "id_map": self.id_map.iter().map(|e| json!({
                 "source": e.source.to_string(),
                 "node_kind": node_kind_token(&e.node.node_kind),
@@ -2189,16 +2315,22 @@ impl NativeProposal {
             "paint_styles": self.design.paint_styles.len(),
             "text_stories": self.stories.len(),
             "vector_paths": self.paths.len(),
-            "text_styles": self.text_styles.len(),
+            "type_styles": self.type_styles.styles.len(),
             "unresolved_text_styles": self.unresolved_text_styles.len(),
             "effect_stacks": self.raster_records.layers.len(),
             "masks": self.vector_records.masks.len(),
+            "boolean_groups": self.vector_records.boolean_groups.len(),
             // Image bytes stay byte-identical in the original entry; identity of each part here.
-            "image_paints": self.image_paints.iter().map(|p| {
-                let part = p.part.as_deref().and_then(|n| import.container.part(n));
-                json!({"node_id": p.node.node_id, "hash": p.hash, "part": p.part,
-                       "part_bytes": part.map(|x| x.bytes.len()),
-                       "part_sha256": part.map(|x| hex(&x.sha256))})
+            "image_paints": self.vector_records.image_paints.iter().map(|p| {
+                let StudioImageSource::ImportOriginal { part, content_digest, .. } = &p.image
+                else {
+                    return json!({"style_id": p.style_id, "row": p.row});
+                };
+                let held = import.container.part(part);
+                json!({"style_id": p.style_id, "row": p.row, "part": part,
+                       "part_bytes": held.map(|x| x.bytes.len()),
+                       "part_sha256": held.map(|x| hex(&x.sha256)),
+                       "recorded_sha256": content_digest.digest})
             }).collect::<Vec<_>>(),
             "mapped_nodes": self.id_map.len(),
             "mapping_loss": loss_json(&self.mapping_loss),
@@ -2226,10 +2358,9 @@ pub struct NativeRecords {
     pub design: StudioDesignRecords,
     pub stories: Vec<StudioTextStory>,
     pub paths: Vec<FigVectorPath>,
-    pub text_styles: Vec<FigTextStyle>,
+    pub type_styles: StudioTypeStyleRecords,
     pub raster_records: StudioRasterRecords,
     pub vector_records: StudioVectorRecords,
-    pub image_paints: Vec<FigImagePaint>,
     pub id_map: Vec<IdMapEntry>,
     pub record_map: Vec<RecordMapEntry>,
 }
@@ -2262,62 +2393,12 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
             geometry,
         });
     }
-    let mut text_styles = Vec::new();
-    for e in v["text_styles"].as_array().ok_or_else(|| bad.clone())? {
-        text_styles.push(FigTextStyle::from_json(e).ok_or_else(|| bad.clone())?);
-    }
+    let type_styles: StudioTypeStyleRecords =
+        serde_json::from_value(v["type_style_records"].clone()).map_err(|_| bad.clone())?;
     let raster_records: StudioRasterRecords =
         serde_json::from_value(v["raster_records"].clone()).map_err(|_| bad.clone())?;
     let vector_records: StudioVectorRecords =
         serde_json::from_value(v["vector_records"].clone()).map_err(|_| bad.clone())?;
-    let mut image_paints = Vec::new();
-    for e in v["image_paints"].as_array().ok_or_else(|| bad.clone())? {
-        let (Some(source), Some(kind), Some(node_id), Some(what), Some(hash)) = (
-            e["source"].as_str(),
-            e["node_kind"].as_str(),
-            e["node_id"].as_str(),
-            e["what"].as_str(),
-            e["hash"].as_str(),
-        ) else {
-            return Err(bad);
-        };
-        let (s, l) = source.split_once(':').ok_or_else(|| bad.clone())?;
-        let node_kind = match kind {
-            "layer" => NodeKind::Layer,
-            "artboard" => NodeKind::Artboard,
-            _ => return Err(bad),
-        };
-        let size = |i: usize| {
-            e["original_size"][i]
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-        };
-        image_paints.push(FigImagePaint {
-            source: SourceId {
-                session: s.parse().map_err(|_| bad.clone())?,
-                local: l.parse().map_err(|_| bad.clone())?,
-            },
-            node: NodeRef {
-                node_kind,
-                node_id: node_id.to_owned(),
-            },
-            what: match what {
-                "fills" => "fills",
-                "strokes" => "strokes",
-                _ => return Err(bad),
-            },
-            ordinal: e["ordinal"]
-                .as_u64()
-                .and_then(|n| usize::try_from(n).ok())
-                .ok_or_else(|| bad.clone())?,
-            hash: hash.to_owned(),
-            part: e["part"].as_str().map(str::to_owned),
-            scale_mode: e["scale_mode"].as_str().map(str::to_owned),
-            original_size: size(0).zip(size(1)),
-            opacity: e["opacity"].as_f64().ok_or_else(|| bad.clone())?,
-            visible: e["visible"].as_bool().ok_or_else(|| bad.clone())?,
-        });
-    }
     let mut id_map = Vec::new();
     for e in v["id_map"].as_array().ok_or_else(|| bad.clone())? {
         let (Some(source), Some(kind), Some(node_id)) = (
@@ -2365,10 +2446,9 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
         design,
         stories,
         paths,
-        text_styles,
+        type_styles,
         raster_records,
         vector_records,
-        image_paints,
         id_map,
         record_map,
     })
@@ -2377,4 +2457,11 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
 /// Index of a proposal's id map by source id.
 pub fn id_index(map: &[IdMapEntry]) -> HashMap<SourceId, &NodeRef> {
     map.iter().map(|e| (e.source, &e.node)).collect()
+}
+
+fn parent_layer_id(p: &Parent) -> Option<String> {
+    match p {
+        Parent::Node(r) if r.node_kind == NodeKind::Layer => Some(r.node_id.clone()),
+        _ => None,
+    }
 }

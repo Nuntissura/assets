@@ -266,8 +266,14 @@ fn real_geometry_losses_shrink_and_are_pinned() {
                 .iter()
                 .find(|l| l.layer_id == p.layer_id)
                 .unwrap();
+            let outline = m
+                .proposal
+                .vector_records
+                .boolean_group(&p.layer_id)
+                .is_some_and(|g| g.fill_geometry_path_ids.contains(&p.path_id));
             assert!(
-                matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&p.path_id))
+                outline
+                    || matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&p.path_id))
             );
         }
     }
@@ -323,14 +329,25 @@ fn real_geometry_matches_png_positions() {
     ];
     let p = painted(&png, grow(u)).expect("union painted");
     assert!(near(u, p, 2.0), "union {u:?} vs painted {p:?}");
-    // The boolean group itself has no Folio geometry home: result outline is a typed loss.
-    let c = loss_counts(&m.proposal);
-    assert_eq!(
-        c[&(
-            "native.boolean_operation".to_owned(),
-            "boolean_operation_not_mapped"
-        )],
-        1
+    // The boolean group's cached outline is its result geometry: it covers the same union box.
+    let g = &m.proposal.vector_records.boolean_groups[0];
+    let outline = m
+        .proposal
+        .paths
+        .iter()
+        .filter(|p| g.fill_geometry_path_ids.contains(&p.path_id))
+        .map(|p| bbox(&p.geometry))
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |u, b| {
+            [
+                u[0].min(b[0]),
+                u[1].min(b[1]),
+                u[2].max(b[2]),
+                u[3].max(b[3]),
+            ]
+        });
+    assert!(
+        near(local(outline), u, 2.0),
+        "outline {outline:?} vs union {u:?}"
     );
 }
 
@@ -392,7 +409,6 @@ fn lum(png: &(usize, usize, Vec<u8>), x: usize, y: usize) -> i32 {
 #[test]
 fn real_effects_masks_image_paints_pinned() {
     use hsk_studio_folio::{StudioEffectKind, StudioMaskMode};
-    use hsk_studio_package::ImportRole;
     let m = mapped("fig-basic-shapes.fig");
     let p = &m.proposal;
     let layer_id = |name: &str| {
@@ -406,8 +422,15 @@ fn real_effects_masks_image_paints_pinned() {
             .clone()
     };
     // Drop shadow of rounded-solid-shadow (offset 4,6, radius 10, black 25%): one effect stack.
-    assert_eq!(p.raster_records.layers.len(), 1);
-    let rec = &p.raster_records.layers[0];
+    assert_eq!(
+        p.raster_records.layers.len(),
+        2,
+        "shadow layer + blur layer"
+    );
+    let rec = p
+        .raster_records
+        .layer(&layer_id("rounded-solid-shadow"))
+        .expect("shadow record");
     assert_eq!(rec.layer_id, layer_id("rounded-solid-shadow"));
     let stack = rec.effects.as_ref().unwrap();
     assert_eq!(stack.effects.len(), 1);
@@ -428,19 +451,9 @@ fn real_effects_masks_image_paints_pinned() {
     // above the top edge, both 3 px away; artboard-local rectangle x 40..210, y 90..200).
     let png = decode_png(&fixture("fig-basic-shapes.png"));
     assert!(lum(&png, 125, 203) + 6 < lum(&png, 125, 87));
-    // Blur: no Folio effect kind, still a typed loss; spread/choke notes absent here.
+    // Blur and shadow are both effect records now (fig_folio_kinds pins the blur).
     let c = loss_counts(p);
-    assert_eq!(
-        c[&(
-            "native.effects.FOREGROUND_BLUR".to_owned(),
-            "effect_kind_not_in_folio"
-        )],
-        1
-    );
-    assert!(
-        !c.keys()
-            .any(|(path, _)| path == "native.effects.DROP_SHADOW")
-    );
+    assert!(!c.keys().any(|(path, _)| path.starts_with("native.effects")));
     // Mask: mask-ellipse masks its later sibling masked-gradient; the source layer is hidden.
     let v = &p.vector_records;
     assert_eq!(v.masks.len(), 1);
@@ -461,115 +474,4 @@ fn real_effects_masks_image_paints_pinned() {
         .unwrap();
     assert!(!source.visible);
     assert!(!c.keys().any(|(path, _)| path == "native.mask"));
-    // Image paint: bound to masked-gradient, no appearance row, part carried byte-exact.
-    assert_eq!(p.image_paints.len(), 1);
-    let img = &p.image_paints[0];
-    assert_eq!(img.node.node_id, layer_id("masked-gradient"));
-    assert_eq!((img.what, img.ordinal, img.visible), ("fills", 0, true));
-    assert_eq!(img.original_size, Some((480, 320)));
-    let part = img.part.as_deref().expect("image part present");
-    assert_eq!(part, format!("images/{}", img.hash));
-    let bytes = fixture("fig-basic-shapes.fig");
-    let cancel = CancellationToken::default();
-    let FigOutcome::Imported(import) = import_fig(
-        &bytes,
-        &Limits::default(),
-        &VersionPolicy::observed(),
-        None,
-        &cancel,
-    )
-    .unwrap() else {
-        panic!("imports")
-    };
-    let entries = p.import_entries(&import, &bytes).unwrap();
-    let receipt: serde_json::Value = serde_json::from_slice(
-        &entries
-            .iter()
-            .find(|e| e.role == ImportRole::Receipt)
-            .unwrap()
-            .bytes,
-    )
-    .unwrap();
-    let want = import.container.part(part).expect("container part");
-    let r = &receipt["image_paints"][0];
-    assert_eq!(r["part_bytes"], want.bytes.len());
-    assert_eq!(r["part_sha256"], hex(&want.sha256));
-    assert!(want.bytes.starts_with(b"\x89PNG") || want.bytes.starts_with(&[0xFF, 0xD8]));
-    assert_eq!(receipt["effect_stacks"], 1);
-    assert_eq!(receipt["masks"], 1);
-}
-
-#[test]
-fn real_text_fonts_bound_as_styles() {
-    // (fixture, style values, text losses): Inter Regular/Bold with solid fills, one paragraph
-    // style (100% line height, 0% letter spacing, top, width-and-height) per fixture.
-    for (name, styles) in [
-        ("fig-basic-shapes.fig", 3usize),
-        ("fig-components-autolayout.fig", 3),
-        ("fig-prototype-pages.fig", 3),
-    ] {
-        let m = mapped(name);
-        let p = &m.proposal;
-        assert_eq!(p.text_styles.len(), styles, "{name}");
-        let c = loss_counts(p);
-        assert!(
-            !c.keys().any(|(path, _)| path.starts_with("native.text")),
-            "{name}: no text losses"
-        );
-        // Every STYS binding of a story names a carried style of the right kind.
-        for s in &p.stories {
-            for r in &s.character_ranges {
-                let st = p
-                    .text_styles
-                    .iter()
-                    .find(|t| Some(&t.style_ref) == r.style_ref.as_ref())
-                    .expect("character style carried");
-                assert_eq!(st.kind, "character");
-                assert_eq!(st.font_family.as_deref(), Some("Inter"));
-                assert!(st.font_size.is_some() && st.fill.is_some());
-            }
-            for para in &s.paragraphs {
-                let st = p
-                    .text_styles
-                    .iter()
-                    .find(|t| Some(&t.style_ref) == para.style_ref.as_ref())
-                    .expect("paragraph style carried");
-                assert_eq!(st.kind, "paragraph");
-                assert_eq!(st.line_height, Some((100.0, "PERCENT".to_owned())));
-            }
-        }
-        // Folio holds no style record: the host resolver (absent here) is told every binding.
-        assert!(!p.unresolved_text_styles.is_empty(), "{name}");
-        assert!(
-            p.unresolved_text_styles
-                .iter()
-                .all(|t| t.contains("/style/STYS-"))
-        );
-    }
-    // mixed-style-text: "Regular text + " (15 bytes) Inter Regular 26, "bold text" Inter Bold 26.
-    let m = mapped("fig-basic-shapes.fig");
-    let p = &m.proposal;
-    let layer = p
-        .snapshot
-        .document()
-        .layers
-        .iter()
-        .find(|l| l.name == "mixed-style-text")
-        .unwrap();
-    let Payload::Text { story_id } = &layer.payload else {
-        panic!("text layer")
-    };
-    let story = p.stories.iter().find(|s| &s.story_id == story_id).unwrap();
-    let style_of = |i: usize| {
-        let r = &story.character_ranges[i];
-        let st = p
-            .text_styles
-            .iter()
-            .find(|t| Some(&t.style_ref) == r.style_ref.as_ref())
-            .unwrap();
-        (r.start, r.end, st.font_style.clone().unwrap(), st.font_size)
-    };
-    assert_eq!(story.character_ranges.len(), 2);
-    assert_eq!(style_of(0), (0, 15, "Regular".to_owned(), Some(26.0)));
-    assert_eq!(style_of(1), (15, 24, "Bold".to_owned(), Some(26.0)));
 }

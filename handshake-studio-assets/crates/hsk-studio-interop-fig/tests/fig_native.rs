@@ -307,31 +307,17 @@ fn real_native_losses_accounted() {
     }
     let shapes = mapped("fig-basic-shapes.fig");
     let c = counts(&shapes.proposal.mapping_loss);
-    assert_eq!(
-        c[&(
-            "native.fills.IMAGE".to_owned(),
-            "image_paint_not_a_folio_paint"
-        )],
-        1
-    );
-    // Slice 2: the drop shadow and the mask are records now (fig_geometry pins them); only the
-    // blur (no Folio effect kind) stays a loss.
-    assert!(!c.keys().any(|(p, _)| p == "native.effects.DROP_SHADOW"));
-    assert!(!c.keys().any(|(p, _)| p == "native.mask"));
-    assert_eq!(
-        c[&(
-            "native.effects.FOREGROUND_BLUR".to_owned(),
-            "effect_kind_not_in_folio"
-        )],
-        1
-    );
-    assert_eq!(
-        c[&(
-            "native.boolean_operation".to_owned(),
-            "boolean_operation_not_mapped"
-        )],
-        1
-    );
+    // Shadows, blur, mask, image paint and boolean group are records now (fig_geometry and
+    // fig_folio_kinds pin them): none of their typed losses remain on this fixture.
+    for gone in [
+        "native.effects.DROP_SHADOW",
+        "native.effects.FOREGROUND_BLUR",
+        "native.mask",
+        "native.fills.IMAGE",
+        "native.boolean_operation",
+    ] {
+        assert!(!c.keys().any(|(p, _)| p == gone), "{gone}");
+    }
 }
 
 fn package(
@@ -627,8 +613,7 @@ fn real_native_package_round_trip() {
         assert_eq!(records.paths, m.proposal.paths, "{name}: vector geometry");
         assert_eq!(records.raster_records, m.proposal.raster_records, "{name}");
         assert_eq!(records.vector_records, m.proposal.vector_records, "{name}");
-        assert_eq!(records.image_paints, m.proposal.image_paints, "{name}");
-        assert_eq!(records.text_styles, m.proposal.text_styles, "{name}");
+        assert_eq!(records.type_styles, m.proposal.type_styles, "{name}");
         assert_eq!(records.record_map, m.proposal.record_map, "{name}");
         let texts = m.doc.nodes.iter().filter(|n| n.type_name == "TEXT").count();
         assert_eq!(

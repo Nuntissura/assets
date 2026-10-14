@@ -405,6 +405,10 @@ pub struct FigDocument {
     /// Field paths that were read, with how often (`NodeChange.fillPaints.color` -> 12). Together
     /// with the `field_not_decoded` losses this accounts for every field present.
     pub decoded: BTreeMap<String, u32>,
+    /// sha256 of the exact source bytes (`None` when decoded from a bare tree without container).
+    pub source_sha256: Option<[u8; 32]>,
+    /// `images/<hash>` container parts -> sha256 of the part bytes (image paint identity).
+    pub image_parts: BTreeMap<String, [u8; 32]>,
 }
 
 impl FigDocument {
@@ -1656,6 +1660,16 @@ pub fn document_from_tree(
         blob_count,
         loss: Vec::new(),
         decoded: std::mem::take(&mut cx.decoded),
+        source_sha256: container.map(|c| c.source_sha256),
+        image_parts: container
+            .map(|c| {
+                c.parts
+                    .iter()
+                    .filter(|p| p.name.starts_with(IMAGES_PREFIX))
+                    .map(|p| (p.name.clone(), p.sha256))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     resolve_variables(&mut doc, &mut cx);
     doc.loss = cx

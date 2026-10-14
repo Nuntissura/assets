@@ -1,5 +1,5 @@
-//! Figma shadow effects -> Folio `StudioEffect` (raster records, `StudioEffectKind::DropShadow` /
-//! `InnerShadow`). Folio has no blur effect kind: blurs stay typed losses.
+//! Figma shadow and blur effects -> Folio `StudioEffect` (raster records,
+//! `StudioEffectKind::DropShadow` / `InnerShadow` / `Blur`).
 //!
 //! Conventions written here (all UNVERIFIED against Figma rendering, see `NATIVE_NOT_PROVEN`):
 //! `size` = Figma radius in px; a Figma offset becomes distance + light angle with
@@ -10,16 +10,54 @@
 use crate::native::{blend, tidy, wide};
 use crate::nodes::Effect;
 use hsk_studio_folio::{
-    BLEND_PASS_THROUGH, ProfileBinding, StudioColor, StudioEffect, StudioEffectKind,
+    BLEND_PASS_THROUGH, BlurScope, MAX_BLUR_RADIUS, ProfileBinding, StudioColor, StudioEffect,
+    StudioEffectKind,
 };
 
 /// A mapped effect plus the loss codes of the parts that did not survive (approximations).
 pub(crate) type Mapped = (StudioEffect, Vec<&'static str>);
 
+/// FOREGROUND_BLUR -> `Blur { layer }`, BACKGROUND_BLUR -> `Blur { below }`. The Figma radius is
+/// written as the Folio radius unchanged; whether it equals the Gaussian sigma or twice it is
+/// UNVERIFIED (listed in `NATIVE_NOT_PROVEN`). Folio refuses a colour or contour on a blur and
+/// bounds the radius to `0..=MAX_BLUR_RADIUS`.
+fn blur(e: &Effect, ordinal: usize) -> Result<Mapped, &'static str> {
+    let radius = wide(e.radius.unwrap_or(0.0));
+    if !(0.0..=MAX_BLUR_RADIUS).contains(&radius) {
+        return Err("effect_blur_radius_out_of_range");
+    }
+    let render_scope = if e.kind == "BACKGROUND_BLUR" {
+        BlurScope::Below
+    } else {
+        BlurScope::Layer
+    };
+    Ok((
+        StudioEffect {
+            instance_id: format!("fig-fx-{ordinal}"),
+            enabled: e.visible != Some(false),
+            visible_in_editor: true,
+            blend_mode: blend("NORMAL").ok_or("effect_blend_mode_no_folio_home")?,
+            opacity: 100.0,
+            colour: None,
+            contour: None,
+            anti_alias: true,
+            noise: 0.0,
+            angle: 0.0,
+            use_global_light: false,
+            params: StudioEffectKind::Blur {
+                render_scope,
+                radius,
+            },
+        },
+        Vec::new(),
+    ))
+}
+
 pub(crate) fn effect(e: &Effect, ordinal: usize) -> Result<Mapped, &'static str> {
     let drop = match e.kind.as_str() {
         "DROP_SHADOW" => true,
         "INNER_SHADOW" => false,
+        "FOREGROUND_BLUR" | "BACKGROUND_BLUR" => return blur(e, ordinal),
         _ => return Err("effect_kind_not_in_folio"),
     };
     let c = e.color.as_ref().ok_or("effect_colour_missing")?;
