@@ -532,6 +532,11 @@ pub(crate) fn decode_video_track_with(
                     Box::new(crate::vc3::open_session(&spec)) as Box<dyn VideoDecodeSession>,
                     crate::vc3::IDENTITY,
                 ),
+                #[cfg(feature = "prores")]
+                VideoCodec::ProRes => (
+                    Box::new(crate::prores::open_session(&spec)) as Box<dyn VideoDecodeSession>,
+                    crate::codec_adapters::PRORES_IDENTITY,
+                ),
                 _ => {
                     return Err(ReelError::CodecUnavailable {
                         codec: video.codec_label,

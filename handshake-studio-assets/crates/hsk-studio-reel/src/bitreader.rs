@@ -52,6 +52,19 @@ impl<'a> BitReader<'a> {
         value
     }
 
+    #[cfg_attr(not(feature = "prores"), allow(dead_code))]
+    /// True when every bit not yet read is 0 (vacuously true at the end).
+    pub(crate) fn rest_is_zero(&self) -> bool {
+        let mut at = self.pos;
+        while at < self.end {
+            if self.bit_at(at) != 0 {
+                return false;
+            }
+            at = at.saturating_add(1);
+        }
+        true
+    }
+
     /// Consume `n` bits; `None` when fewer remain.
     pub(crate) fn skip(&mut self, n: u32) -> Option<()> {
         let next = self.pos.checked_add(u64::from(n))?;

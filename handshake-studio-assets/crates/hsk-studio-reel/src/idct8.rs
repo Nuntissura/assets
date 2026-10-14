@@ -101,13 +101,20 @@ pub(crate) const BASIS: [[f64; 8]; 8] = [
 /// Inverse DCT of `coeffs[v][u]` into `out[j][i]` (row = vertical index). Floating-point arithmetic only
 /// (no integer overflow is possible: `arithmetic_side_effects` does not apply to f64).
 pub(crate) fn idct8x8(coeffs: &[[i32; 8]; 8], out: &mut [[f64; 8]; 8]) {
+    // i32 -> f64 is exact, so this is the same arithmetic as `idct8x8_f64` on the converted block.
+    idct8x8_f64(&coeffs.map(|row| row.map(f64::from)), out);
+}
+
+#[cfg_attr(not(feature = "prores"), allow(dead_code))]
+/// `idct8x8` for coefficients with a fractional part (ProRes dequantizes to multiples of 1/8, RDD 36 7.3).
+pub(crate) fn idct8x8_f64(coeffs: &[[f64; 8]; 8], out: &mut [[f64; 8]; 8]) {
     // Horizontal pass: tmp[v][i] = sum_u BASIS[u][i] * X(u, v).
     let mut tmp = [[0.0f64; 8]; 8];
     for (row_in, row_out) in coeffs.iter().zip(tmp.iter_mut()) {
         for (i, cell) in row_out.iter_mut().enumerate() {
             let mut acc = 0.0f64;
             for (u, value) in row_in.iter().enumerate() {
-                acc += BASIS[u][i] * f64::from(*value);
+                acc += BASIS[u][i] * *value;
             }
             *cell = acc;
         }
