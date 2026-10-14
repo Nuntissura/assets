@@ -25,3 +25,9 @@ path = "src/lib.rs"
 [[example]]
 name = "interop-fig-consumer"
 path = "examples/interop-fig-consumer.rs"
+
+[dev-dependencies]
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }

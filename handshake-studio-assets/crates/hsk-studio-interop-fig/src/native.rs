@@ -1860,7 +1860,23 @@ impl Mapper<'_> {
                         false,
                     )
                 };
-                let appearance = self.appearance(n, group);
+                let mut appearance = self.appearance(n, group);
+                if bool_op.is_some() {
+                    // A boolean result is one shape (composite draws it as an isolated leaf), so
+                    // it composites Normal, not Pass Through.
+                    let a = appearance.get_or_insert(LayerAppearance {
+                        opacity: 100.0,
+                        fill_opacity: 100.0,
+                        blend_mode: BLEND_NORMAL,
+                        clipped: false,
+                        isolation: Isolation::Isolated,
+                        mask: None,
+                    });
+                    if a.blend_mode == BLEND_PASS_THROUGH {
+                        a.blend_mode = BLEND_NORMAL;
+                        a.isolation = Isolation::Isolated;
+                    }
+                }
                 self.layers.push(StudioLayer {
                     schema_id: LayerSchema::V1,
                     layer_id: layer_id.clone(),
