@@ -115,7 +115,7 @@ fn json_output_is_stable_and_manual_comes_from_the_descriptors() {
     let (_, panel) = cli_json(&["panel", p, "--layer", L2]);
     let detail = &op(&panel, "panel")["detail"];
     assert!(detail["controls"]["schema"] == "hsk.studio.controls@1" && detail["controls"]["controls"].as_array().unwrap().len() == 7);
-    assert!(detail["bindings"]["layer.name"]["route"] == "chronicle.patch" && detail["bindings"]["appearance.opacity"]["reason"] == "no_chronicle_property");
+    assert!(detail["bindings"]["layer.name"]["route"] == "chronicle.patch" && detail["bindings"]["appearance.opacity"]["property"] == "opacity" && detail["bindings"]["appearance.fill_opacity"]["reason"] == "no_chronicle_property");
     let visible = detail["controls"]["controls"].as_array().unwrap().iter().find(|c| c["id"] == "layer.visible").unwrap();
     assert!(visible["value"]["value"] == false && visible["consumers"][0] == "harness.commit.chronicle");
 
@@ -164,7 +164,7 @@ fn refusals_are_typed_and_nothing_is_committed() {
     assert_eq!(failing(&h, &|r| r.panel_set(L2, "layer.visible", "maybe", None)).0, "invalid_text");
     assert_eq!(failing(&h, &|r| r.panel_set(L2, "layer.name", &"n".repeat(300), None)).0, "text_too_long");
     // Appearance values are projected but have no commit route: refused, not faked.
-    let (code, last) = failing(&h, &|r| r.panel_set(L2, "appearance.opacity", "50", None));
+    let (code, last) = failing(&h, &|r| r.panel_set(L2, "appearance.fill_opacity", "50", None));
     assert_eq!(code, "no_commit_route");
     assert_eq!(last["observe"]["frames"], 1);
     // No provider selected: refused before any session operation.

@@ -1,8 +1,8 @@
 //! A control panel bound to one layer, built ONLY from `hsk-studio-controls` descriptors. The same
 //! registry feeds the agent JSON, the manual topics and (in a host) the egui renderer; the harness
-//! renders nothing. Each control carries an explicit commit route: only name and visibility have a
-//! chronicle property today, so layer appearance values are projected read-only and an edit is
-//! refused with a typed reason rather than pretending to commit.
+//! renders nothing. Each control carries an explicit commit route: name, visibility, opacity and
+//! blend mode have a chronicle property; fill opacity, clipping and isolation do not, so those are
+//! projected read-only and an edit is refused with a typed reason rather than pretending to commit.
 
 use hsk_studio_controls::{
     ChangeSource, ChoiceOption, ControlError, ControlSpec, IntegerSpec, NumberSpec, Registry, SectionSpec, Value,
@@ -27,6 +27,10 @@ pub enum Route {
     ChronicleName,
     /// Chronicle `visible` property of the layer (provider `chronicle.patch`).
     ChronicleVisible,
+    /// Chronicle `opacity` property of the layer (percent; provider `chronicle.patch`).
+    ChronicleOpacity,
+    /// Chronicle `blend_mode` property of the layer (discriminant; provider `chronicle.patch`).
+    ChronicleBlendMode,
     /// No commit route exists; the reason is a stable code.
     None(&'static str),
 }
@@ -36,6 +40,8 @@ impl Route {
         match self {
             Route::ChronicleName => json!({"route":"chronicle.patch","property":"name"}),
             Route::ChronicleVisible => json!({"route":"chronicle.patch","property":"visible"}),
+            Route::ChronicleOpacity => json!({"route":"chronicle.patch","property":"opacity"}),
+            Route::ChronicleBlendMode => json!({"route":"chronicle.patch","property":"blend_mode"}),
             Route::None(reason) => json!({"route":"none","reason":reason}),
         }
     }
@@ -132,9 +138,9 @@ pub fn build(values: &PanelValues) -> Result<LayerPanel, ControlError> {
     for (id, route, consumer) in [
         (NAME, Route::ChronicleName, "harness.commit.chronicle"),
         (VISIBLE, Route::ChronicleVisible, "harness.commit.chronicle"),
-        (OPACITY, Route::None("no_chronicle_property"), "harness.appearance-readback"),
+        (OPACITY, Route::ChronicleOpacity, "harness.commit.chronicle"),
         (FILL_OPACITY, Route::None("no_chronicle_property"), "harness.appearance-readback"),
-        (BLEND_MODE, Route::None("no_chronicle_property"), "harness.appearance-readback"),
+        (BLEND_MODE, Route::ChronicleBlendMode, "harness.commit.chronicle"),
         (CLIPPED, Route::None("no_chronicle_property"), "harness.appearance-readback"),
         (ISOLATION, Route::None("no_chronicle_property"), "harness.appearance-readback"),
     ] {

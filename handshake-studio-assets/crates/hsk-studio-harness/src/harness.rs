@@ -31,7 +31,7 @@ pub const AVAILABLE_PROVIDERS: &[&str] = &[CHRONICLE_PROVIDER_ID];
 /// Capabilities the harness cannot prove today (listed in every report's `not_proven`).
 pub const NOT_PROVEN: &[&str] = &[
     "visual_render_proof (the run itself renders nothing; the feature `viewer` renders through composite + render-gpu/render-cpu, asserted on a synthetic document only)",
-    "appearance_commit (chronicle has no appearance property; appearance controls are read-only projections)",
+    "appearance_commit_beyond_opacity_and_blend_mode (fill opacity, clipping and isolation have no chronicle property; those controls are read-only projections)",
     "desktop_window_visual_check (feature `desktop` window opens only in an Operator-attended session, RUN-UI.md)",
 ];
 
@@ -207,6 +207,8 @@ impl Harness {
             session: None,
             reopened: None,
             expectations: Vec::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 }
@@ -241,11 +243,49 @@ fn observe_json(report: ReportStatus, frames: usize) -> Value {
 enum Prop {
     Name,
     Visible,
+    Opacity,
+    BlendMode,
+    Tiles,
+}
+
+impl Prop {
+    fn field(self) -> &'static str {
+        match self {
+            Prop::Name => "name",
+            Prop::Visible => "visible",
+            Prop::Opacity => "opacity",
+            Prop::BlendMode => "blend_mode",
+            Prop::Tiles => "tiles",
+        }
+    }
 }
 
 enum PropValue {
     Text(String),
     Bool(bool),
+    Number(f64),
+    Tiles(Vec<TileRef>),
+}
+
+impl PropValue {
+    fn wire(&self) -> Value {
+        match self {
+            PropValue::Text(t) => json!({"value_kind":"string","value":t}),
+            PropValue::Bool(b) => json!({"value_kind":"bool","value":b}),
+            // A whole value goes out as a JSON integer: chronicle types a blend-mode discriminant
+            // as an integer number.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            PropValue::Number(n) if n.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(n) => json!({"value_kind":"number","value":*n as u64}),
+            PropValue::Number(n) => json!({"value_kind":"number","value":n}),
+            PropValue::Tiles(t) => json!({"value_kind":"tiles","value":t}),
+        }
+    }
+}
+
+/// One undoable step: chronicle's inverse of a committed change (its wire form) and a label.
+struct HistoryStep {
+    label: String,
+    inverse: Value,
 }
 
 /// Why an operation did not complete.
@@ -272,6 +312,10 @@ pub struct Run<'a> {
     session: Option<Session>,
     reopened: Option<Session>,
     expectations: Vec<Expectation>,
+    /// Undo history of the working session: chronicle inverses, newest last.
+    undo_stack: Vec<HistoryStep>,
+    /// Redo history: the inverses of undone steps, newest last; any new edit clears it.
+    redo_stack: Vec<HistoryStep>,
 }
 
 impl Run<'_> {
@@ -422,6 +466,8 @@ impl Run<'_> {
                     self.reopened = Some(session);
                 } else {
                     self.session = Some(session);
+                    self.undo_stack.clear();
+                    self.redo_stack.clear();
                 }
                 self.push(op, before, Ok(detail), Some(report), Some(revision))
             }
@@ -542,6 +588,9 @@ impl Run<'_> {
         let (prop, new) = match (route, &value) {
             (Route::ChronicleName, hsk_studio_controls::Value::Text(t)) => (Prop::Name, PropValue::Text(t.clone())),
             (Route::ChronicleVisible, hsk_studio_controls::Value::Bool(b)) => (Prop::Visible, PropValue::Bool(*b)),
+            (Route::ChronicleOpacity, hsk_studio_controls::Value::Number(n)) => (Prop::Opacity, PropValue::Number(*n)),
+            #[allow(clippy::cast_precision_loss)]
+            (Route::ChronicleBlendMode, hsk_studio_controls::Value::Int(i)) => (Prop::BlendMode, PropValue::Number(*i as f64)),
             _ => return self.own_op("panel_set", before, Err("unsupported_route")),
         };
         let ok = self.property_edit("panel_set", layer_id, prop, new, expected_revision);
@@ -562,15 +611,22 @@ impl Run<'_> {
         let result = self.submit_property(layer_id, prop, &new, expected_revision, n);
         match result {
             Ok(applied) => {
-                let field = match prop {
-                    Prop::Name => "name",
-                    Prop::Visible => "visible",
-                };
+                let field = prop.field();
                 let expected = match &new {
-                    PropValue::Text(t) => json!(t),
-                    PropValue::Bool(b) => json!(b),
+                    PropValue::Text(t) => Some(json!(t)),
+                    PropValue::Bool(b) => Some(json!(b)),
+                    PropValue::Number(n) => Some(json!(n)),
+                    PropValue::Tiles(_) => None,
                 };
-                self.expectations.push(Expectation { layer_id: layer_id.to_string(), field, expected });
+                if let Some(expected) = expected {
+                    self.expectations.push(Expectation { layer_id: layer_id.to_string(), field, expected });
+                }
+                if applied.changed
+                    && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
+                {
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse });
+                    self.redo_stack.clear();
+                }
                 let detail = json!({
                     "layer_id": layer_id, "field": field, "provider": applied.provider, "command": applied.command_id,
                     "previous_revision": applied.previous_revision, "revision": applied.revision,
@@ -600,6 +656,131 @@ impl Run<'_> {
         let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
         let params = patch_json(session, &self.actor, layer_id, prop, new, n).map_err(Fail::Refused)?;
         let revision = expected.unwrap_or_else(|| session.document_revision());
+        session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
+    }
+
+    /// Sets a layer's opacity (percent) through chronicle (undoable).
+    pub fn set_opacity(&mut self, layer_id: &str, percent: f64, expected_revision: Option<u64>) -> bool {
+        self.property_edit("set_opacity", layer_id, Prop::Opacity, PropValue::Number(percent), expected_revision)
+    }
+
+    /// Sets a layer's blend mode (StudioBlendMode discriminant) through chronicle (undoable).
+    pub fn set_blend_mode(&mut self, layer_id: &str, mode: u16, expected_revision: Option<u64>) -> bool {
+        self.property_edit("set_blend_mode", layer_id, Prop::BlendMode, PropValue::Number(f64::from(mode)), expected_revision)
+    }
+
+    /// Replaces a raster layer's tile list (a pixel edit) through chronicle (undoable). Every new
+    /// tile body must be staged first ([`Run::stage_tile`]); otherwise the session refuses
+    /// `missing_asset`.
+    pub fn set_tiles(&mut self, op: &str, layer_id: &str, tiles: Vec<TileRef>) -> bool {
+        self.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None)
+    }
+
+    /// Stages a tile body in the working session (no record; nothing changes until a
+    /// [`Run::set_tiles`] names it). `None` without a session or when the session refuses it.
+    pub fn stage_tile(&mut self, bytes: Vec<u8>) -> Result<folio::ContentDigest, &'static str> {
+        let cancel = self.cancel;
+        let session = self.session.as_mut().ok_or("not_open")?;
+        session.stage_tile(bytes, cancel).map_err(|e| e.code())
+    }
+
+    /// Every tile body the working revision references, by sha256 hex (session render_assets).
+    pub fn render_assets(&self) -> Result<std::collections::BTreeMap<String, Vec<u8>>, &'static str> {
+        let session = self.session.as_ref().ok_or("not_open")?;
+        session.render_assets(self.cancel).map_err(|e| e.code())
+    }
+
+    /// Undoes the newest committed step by submitting chronicle's inverse; the step moves to the
+    /// redo history. One record `undo` (`nothing_to_undo` when the history is empty).
+    pub fn undo(&mut self) -> bool {
+        self.history_step(true)
+    }
+
+    /// Re-applies the newest undone step. One record `redo` (`nothing_to_redo` when empty).
+    pub fn redo(&mut self) -> bool {
+        self.history_step(false)
+    }
+
+    /// Labels of the undo and redo histories, oldest first.
+    pub fn history(&self) -> Value {
+        json!({
+            "undo": self.undo_stack.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+            "redo": self.redo_stack.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+        })
+    }
+
+    fn history_step(&mut self, undo: bool) -> bool {
+        let op = if undo { "undo" } else { "redo" };
+        let before = self.frames.count();
+        let popped = if undo { self.undo_stack.pop() } else { self.redo_stack.pop() };
+        let Some(step) = popped else {
+            let code = if undo { "nothing_to_undo" } else { "nothing_to_redo" };
+            return if self.session.is_some() { self.own_op(op, before, Err(code)) } else { self.push(op, before, Err(code), None, None) };
+        };
+        let n = self.op_no();
+        match self.submit_inverse(&step.inverse, n) {
+            Ok(applied) => {
+                let next = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok()).unwrap_or(Value::Null);
+                // The values the step restored are what a later verify expects.
+                for write in step.inverse["writes"].as_array().into_iter().flatten() {
+                    let layer = write["address"]["target"]["node_id"].as_str().unwrap_or_default().to_string();
+                    let field = match write["address"]["property"].as_str() {
+                        Some("name") => "name",
+                        Some("visible") => "visible",
+                        Some("opacity") => "opacity",
+                        Some("blend_mode") => "blend_mode",
+                        _ => continue,
+                    };
+                    self.expectations.retain(|e| !(e.layer_id == layer && e.field == field));
+                    self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
+                }
+                let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
+                let entry = HistoryStep { label: step.label, inverse: next };
+                if undo {
+                    self.redo_stack.push(entry);
+                } else {
+                    self.undo_stack.push(entry);
+                }
+                self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+            }
+            Err(fail) => {
+                if undo {
+                    self.undo_stack.push(step);
+                } else {
+                    self.redo_stack.push(step);
+                }
+                match fail {
+                    Fail::Refused(code) if self.session.is_some() => self.own_op(op, before, Err(code)),
+                    Fail::Refused(code) => self.push(op, before, Err(code), None, None),
+                    Fail::Session(f) => {
+                        let revision = self.revision();
+                        self.push(op, before, Err(f.code()), Some(f.report), revision)
+                    }
+                }
+            }
+        }
+    }
+
+    fn submit_inverse(&mut self, inverse: &Value, n: u64) -> Result<Applied, Fail> {
+        if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
+            return Err(Fail::Refused("provider_not_selected"));
+        }
+        let cancel = self.cancel;
+        let actor = actor_json(&self.actor);
+        let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
+        // Inverse::invocation in wire form: fresh command, correlation and actor identity.
+        let patch = json!({
+            "transport_version": 1,
+            "document_id": inverse["document_id"],
+            "base_revision": session.document_revision(),
+            "command_id": format!("harness-op-{n}"),
+            "correlation_id": n,
+            "actor": actor,
+            "reads": inverse["reads"],
+            "writes": inverse["writes"],
+        });
+        let params = serde_json::to_vec(&patch).map_err(|_| Fail::Refused("patch_encoding"))?;
+        let revision = session.document_revision();
         session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
@@ -710,9 +891,16 @@ impl Run<'_> {
             .map(|e| {
                 let actual = session.snapshot().document().layers.iter().find(|l| l.layer_id == e.layer_id).map(|l| match e.field {
                     "name" => json!(l.name),
+                    "opacity" => json!(l.effective_appearance().opacity),
+                    "blend_mode" => json!(l.effective_appearance().blend_mode),
                     _ => json!(l.visible),
                 });
-                json!({"layer_id":e.layer_id,"field":e.field,"expected":e.expected,"actual":actual,"ok":actual.as_ref() == Some(&e.expected)})
+                // Numbers compare by value (100 and 100.0 are the same opacity).
+                let ok = match (actual.as_ref().and_then(Value::as_f64), e.expected.as_f64()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => actual.as_ref() == Some(&e.expected),
+                };
+                json!({"layer_id":e.layer_id,"field":e.field,"expected":e.expected,"actual":actual,"ok":ok})
             })
             .collect()
     }
@@ -750,14 +938,19 @@ impl Run<'_> {
 /// edit in `open_edit_save_reopen_verify_end_to_end`).
 fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Prop, new: &PropValue, n: u64) -> Result<Vec<u8>, &'static str> {
     let layer = session.snapshot().document().layers.iter().find(|l| l.layer_id == layer_id).ok_or("unknown_layer")?;
-    let (property, current) = match prop {
-        Prop::Name => ("name", json!({"value_kind":"string","value":layer.name})),
-        Prop::Visible => ("visible", json!({"value_kind":"bool","value":layer.visible})),
-    };
-    let wanted = match new {
-        PropValue::Text(t) => json!({"value_kind":"string","value":t}),
-        PropValue::Bool(b) => json!({"value_kind":"bool","value":b}),
-    };
+    let property = prop.field();
+    let current = match prop {
+        Prop::Name => PropValue::Text(layer.name.clone()),
+        Prop::Visible => PropValue::Bool(layer.visible),
+        Prop::Opacity => PropValue::Number(layer.effective_appearance().opacity),
+        Prop::BlendMode => PropValue::Number(f64::from(layer.effective_appearance().blend_mode)),
+        Prop::Tiles => match &layer.payload {
+            folio::Payload::Raster { tiles } => PropValue::Tiles(tiles.clone()),
+            _ => return Err("not_a_raster_layer"),
+        },
+    }
+    .wire();
+    let wanted = new.wire();
     let address = json!({"target":{"node_kind":"layer","node_id":layer_id},"property":property});
     let revision = session
         .revisions()
@@ -771,13 +964,18 @@ fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Pro
         "base_revision": session.document_revision(),
         "command_id": format!("harness-op-{n}"),
         "correlation_id": n,
-        "actor": {
-            "account_id": actor.account_id(), "principal_id": actor.principal_id(),
-            "owner_account_id": actor.owner_account_id(), "owner_principal_id": actor.owner_principal_id(),
-            "access_space_id": actor.access_space_id(), "session_id": actor.session_id(),
-        },
+        "actor": actor_json(actor),
         "reads": [{"address": address, "expected_revision": revision, "expected_value": current}],
         "writes": [{"address": address, "value": wanted}],
     });
     serde_json::to_vec(&patch).map_err(|_| "patch_encoding")
+}
+
+/// The chronicle `Actor` wire form of the run's attribution.
+fn actor_json(actor: &ActorContext) -> Value {
+    json!({
+        "account_id": actor.account_id(), "principal_id": actor.principal_id(),
+        "owner_account_id": actor.owner_account_id(), "owner_principal_id": actor.owner_principal_id(),
+        "access_space_id": actor.access_space_id(), "session_id": actor.session_id(),
+    })
 }

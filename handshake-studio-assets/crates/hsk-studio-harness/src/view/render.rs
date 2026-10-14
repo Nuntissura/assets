@@ -57,6 +57,9 @@ pub trait GpuDisplay {
 pub struct Frame {
     pub width: u32,
     pub height: u32,
+    /// Document pixel of the frame's top-left corner (the artboard origin).
+    pub x: i64,
+    pub y: i64,
     /// `width * height * 4` bytes, sRGB-encoded, straight (unmultiplied) alpha. Empty when the frame
     /// lives only in the host's display texture (`texture` is set).
     pub rgba8: Vec<u8>,
@@ -132,7 +135,7 @@ pub fn render_to(
     {
         match display.present(&lowering.plan, &request, &sources, cancel) {
             Ok(texture) => {
-                return Ok(Frame { width: extent.width, height: extent.height, rgba8: Vec::new(), backend: "gpu-shared", texture: Some(texture), revision: doc.revision, notes });
+                return Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: Vec::new(), backend: "gpu-shared", texture: Some(texture), revision: doc.revision, notes });
             }
             Err(e) => notes.push(format!("gpu_shared_fallback: {e}; read-back path used")),
         }
@@ -160,7 +163,7 @@ pub fn render_to(
         let cpu = hsk_studio_render_cpu::Renderer::new(hsk_studio_render_cpu::DEFAULT_CHUNK_SIDE).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
         cpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
     }
-    Ok(Frame { width: extent.width, height: extent.height, rgba8: sink.to_rgba8(), backend, texture: None, revision: doc.revision, notes })
+    Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: sink.to_rgba8(), backend, texture: None, revision: doc.revision, notes })
 }
 
 fn extent_of(bounds: &folio::Bounds) -> Result<Rect, RenderFail> {

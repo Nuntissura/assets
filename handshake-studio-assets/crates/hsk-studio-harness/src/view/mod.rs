@@ -6,10 +6,10 @@
 //! Flow: open a file (PSD/PSB, TIFF, camera raw, PDF through `import::convert_to_native` and
 //! `Run::open_import_detailed`; a native `.handshake` package through `Run::open_bytes`) -> render
 //! the composite ([`render::render`]: render-gpu, render-cpu fallback) -> layer tree with
-//! visibility toggles and the controls-descriptor panel of the selected layer (name and visible
-//! commit through the session's chronicle provider; appearance values are read-only because
-//! chronicle has no appearance property) -> import receipt and loss panel -> save as a native
-//! package (`Run::save_to`, never over the opened source).
+//! visibility toggles and the controls-descriptor panel of the selected layer (name, visible,
+//! opacity and blend mode commit through the session's chronicle provider) -> editing tools
+//! (module [`edit`]: selections, brush, undo/redo) -> import receipt and loss panel -> save as a
+//! native package (`Run::save_to`, never over the opened source).
 //!
 //! Model navigation: every interactive widget has a stable id from [`widget`] (`hsk-studio-ui`
 //! plus a name, layer rows add the layer id); [`Viewer::ui`] records the ids it drew in
@@ -18,6 +18,7 @@
 
 #[cfg(feature = "desktop")]
 pub mod display;
+pub mod edit;
 pub mod export;
 pub mod render;
 
@@ -27,6 +28,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Parent, StudioLayer};
 use hsk_studio_package::ImportRole;
 use export::ExportFormat;
+use edit::{EditState, Tool};
+use hsk_studio_pigment::brush::StrokeSample;
+use hsk_studio_pigment::selection::CombineMode;
 use render::{Assets, Frame, GpuDisplay, Prefer, RenderFail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -50,6 +54,18 @@ pub mod widget {
     pub const PROPERTIES_PANEL: &str = "properties";
     pub const RECEIPT_PANEL: &str = "receipt";
     pub const STATUS_PANEL: &str = "status";
+    /// Editing (lane SMB-HARNESS-UI-2): tool buttons `tool.<key>` (keys of `edit::Tool`).
+    pub const UNDO_BUTTON: &str = "edit.undo";
+    pub const REDO_BUTTON: &str = "edit.redo";
+    pub const COMBINE: &str = "select.combine";
+    pub const CLEAR_SELECTION: &str = "select.clear";
+    pub const BRUSH_SIZE: &str = "brush.size";
+    pub const BRUSH_HARDNESS: &str = "brush.hardness";
+    pub const BRUSH_OPACITY: &str = "brush.opacity";
+    pub const BRUSH_COLOUR: &str = "brush.colour";
+    pub fn tool(key: &str) -> String {
+        format!("tool.{key}")
+    }
     /// Layer rows: `layer.<layer_id>.visible` (checkbox) and `layer.<layer_id>.select` (label).
     pub fn layer(layer_id: &str, part: &str) -> String {
         format!("layer.{layer_id}.{part}")
@@ -90,6 +106,8 @@ pub struct Viewer {
     /// Host display path (desktop: eframe's wgpu device); when set, GPU frames render straight into
     /// the display texture and no own render-gpu device is created.
     display: Option<Box<dyn GpuDisplay>>,
+    /// Tools, selection, brush (module `edit`).
+    edit: EditState,
     selected: Option<String>,
     status: Vec<String>,
     zoom: f32,
@@ -131,6 +149,7 @@ impl Viewer {
             gpu: None,
             gpu_options,
             display: None,
+            edit: EditState::default(),
             selected: None,
             status: Vec::new(),
             zoom: 1.0,
@@ -207,7 +226,10 @@ impl Viewer {
         )
         .map_err(|e| format!("tiles {}: {}", path.display(), e.code()))?;
         let receipt = receipt.or_else(|| opened.import_bytes(ImportRole::Receipt).and_then(|b| serde_json::from_slice(b).ok()));
-        self.assets = opened.assets;
+        // Tile bodies come from the session (render-ready view of the opened revision).
+        self.assets = self.run.render_assets().map_err(|e| format!("tiles {}: {e}", path.display()))?;
+        self.edit = EditState { tool: self.edit.tool, combine: self.edit.combine, brush: self.edit.brush, ..EditState::default() };
+        drop(opened);
         self.receipt = receipt;
         self.source = Some(path.to_path_buf());
         self.selected = None;
@@ -410,7 +432,8 @@ impl Viewer {
             "selected": self.selected,
             "frame": self.frame.as_ref().map(|f| json!({"width": f.width, "height": f.height, "backend": f.backend, "display_texture": f.texture.is_some(), "revision": f.revision, "notes": f.notes})),
             "render_error": self.render_error.as_ref().map(|e| json!({"code": e.code, "detail": e.detail})),
-            "receipt": self.receipt.as_ref().map(|r| json!({"source_format": r["source_format"], "layers": r["layers"], "loss_entries": r["loss"].as_array().map_or(0, Vec::len)})),
+            "receipt": self.receipt.as_ref().map(|r| json!({"source_format": r["source_format"], "layers": r["layers"], "loss_entries": r["loss"].as_array().map_or(0, Vec::len), "blending_space": r["blending_space"]})),
+            "edit": self.edit_json(),
             "ops": self.run.ops(),
             "status": self.status,
         })
@@ -464,7 +487,9 @@ impl Viewer {
                     ui.label(format!("render-{} r{}", f.backend, f.revision));
                 }
             });
+            ui.horizontal_wrapped(|ui| self.tools_ui(ui));
         });
+        self.shortcuts(ctx);
         if let Some(path) = open_request {
             let _ = self.open(&path);
         }
@@ -532,6 +557,7 @@ impl Viewer {
         for (layer, control, text) in commits {
             let _ = self.commit(&layer, &control, &text);
         }
+        ctx.request_repaint_after(std::time::Duration::from_millis(if self.edit.selection.is_some() { 120 } else { 1000 }));
         self.render_if_dirty();
 
         egui::CentralPanel::default().show(ctx, |ui| self.canvas_ui(ui));
@@ -559,7 +585,7 @@ impl Viewer {
         let outcome = hsk_studio_controls::egui_adapter::show_panel_and_apply(ui, &built.registry, &mut built.store, None);
         for change in outcome.changes.iter().filter(|c| c.is_undo_step()) {
             match built.routes.get(&change.control_id).copied() {
-                Some(Route::ChronicleName | Route::ChronicleVisible) => {
+                Some(Route::ChronicleName | Route::ChronicleVisible | Route::ChronicleOpacity | Route::ChronicleBlendMode) => {
                     let text = match &change.new {
                         hsk_studio_controls::Value::Bool(b) => b.to_string(),
                         hsk_studio_controls::Value::Text(t) => t.clone(),
@@ -571,7 +597,7 @@ impl Viewer {
                 None => self.say(format!("{} has no commit route", change.control_id)),
             }
         }
-        ui.small("Name and Visible commit through the session (chronicle). Appearance values are read-only: chronicle has no appearance property.");
+        ui.small("Name, Visible, Opacity and Blend mode commit through the session (chronicle, undoable). Fill opacity, Clipped and Isolation are read-only: chronicle has no property for them.");
         commits
     }
 
@@ -650,13 +676,15 @@ impl Viewer {
                 })
                 .id(),
         };
+        let (fx, fy) = (frame.x as f32, frame.y as f32);
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         self.drawn.push(widget::CANVAS.into());
         let size = egui::vec2(w as f32, h as f32);
         if self.fit {
             self.zoom = (rect.width() / size.x).min(rect.height() / size.y).clamp(0.05, 16.0);
         }
-        if response.dragged() {
+        let tool = self.edit.tool;
+        if tool == Tool::View && response.dragged() {
             let d = response.drag_delta();
             self.pan = egui::vec2(self.pan.x + d.x, self.pan.y + d.y);
             self.fit = false;
@@ -670,9 +698,181 @@ impl Viewer {
         }
         let centre = egui::pos2(rect.center().x + self.pan.x, rect.center().y + self.pan.y);
         let shown = egui::Rect::from_center_size(centre, egui::vec2(size.x * self.zoom, size.y * self.zoom));
+        let zoom = self.zoom;
+        // Screen <-> document pixels.
+        let to_doc = |p: egui::Pos2| [f64::from(fx + (p.x - shown.min.x) / zoom), f64::from(fy + (p.y - shown.min.y) / zoom)];
+        let to_screen = |d: [f32; 2]| egui::pos2(shown.min.x + (d[0] - fx) * zoom, shown.min.y + (d[1] - fy) * zoom);
+
+        // Tool gestures (every action below is a headless Viewer method).
+        if tool != Tool::View {
+            if response.drag_started() {
+                self.edit.gesture.clear();
+            }
+            if response.dragged()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                // Tablet pressure when the platform reports a touch force; the mouse is pressure 1.
+                let force = ui.input(|i| i.events.iter().rev().find_map(|e| if let egui::Event::Touch { force: Some(f), .. } = e { Some(*f) } else { None }));
+                let [x, y] = to_doc(p);
+                let sample = StrokeSample { x, y, pressure: Some(force.unwrap_or(1.0).clamp(0.0, 1.0)), time_ms: None };
+                match tool {
+                    Tool::RectSelect | Tool::EllipseSelect if self.edit.gesture.len() >= 2 => {
+                        if let Some(last) = self.edit.gesture.last_mut() {
+                            *last = sample;
+                        }
+                    }
+                    _ => self.edit.gesture.push(sample),
+                }
+            }
+            if response.drag_stopped() {
+                let points: Vec<[f64; 2]> = self.edit.gesture.iter().map(|s| [s.x, s.y]).collect();
+                let samples = std::mem::take(&mut self.edit.gesture);
+                let corners = (points.first().copied(), points.last().copied());
+                let _ = match (tool, corners) {
+                    (Tool::RectSelect, (Some(a), Some(b))) => self.select_rect(a[0].min(b[0]), a[1].min(b[1]), (a[0] - b[0]).abs(), (a[1] - b[1]).abs()),
+                    (Tool::EllipseSelect, (Some(a), Some(b))) => self.select_ellipse(a[0].min(b[0]), a[1].min(b[1]), (a[0] - b[0]).abs(), (a[1] - b[1]).abs()),
+                    (Tool::Lasso, _) => self.select_lasso(&points),
+                    (Tool::Brush, _) => match self.selected.clone() {
+                        Some(layer) => self.paint(&layer, &samples).map(|_| ()),
+                        None => {
+                            self.say("brush: select a raster layer in the layer panel first".into());
+                            Ok(())
+                        }
+                    },
+                    _ => Ok(()),
+                };
+            }
+            if tool == Tool::Text && response.clicked()
+                && let Some(p) = response.interact_pointer_pos()
+            {
+                let [x, y] = to_doc(p);
+                let _ = self.place_text(x, y, "Text");
+            }
+        }
+
         let painter = ui.painter_at(rect);
         checker(&painter, shown.intersect(rect));
         painter.image(id, shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+
+        // Gesture preview.
+        let g: Vec<egui::Pos2> = self.edit.gesture.iter().map(|s| to_screen([s.x as f32, s.y as f32])).collect();
+        let line = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(40, 140, 255));
+        match (tool, g.first(), g.last()) {
+            (Tool::RectSelect, Some(a), Some(b)) => {
+                painter.rect_stroke(egui::Rect::from_two_pos(*a, *b), 0.0, line, egui::StrokeKind::Middle);
+            }
+            (Tool::EllipseSelect, Some(a), Some(b)) => {
+                let r = egui::Rect::from_two_pos(*a, *b);
+                let pts: Vec<egui::Pos2> = (0..=64)
+                    .map(|i| {
+                        let t = i as f32 / 64.0 * std::f32::consts::TAU;
+                        egui::pos2(r.center().x + r.width() / 2.0 * t.cos(), r.center().y + r.height() / 2.0 * t.sin())
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(pts, line));
+            }
+            (Tool::Lasso | Tool::Brush, Some(_), Some(_)) => {
+                let stroke = if tool == Tool::Brush {
+                    let [r, gg, bb] = self.edit.brush.rgb8;
+                    egui::Stroke::new((self.edit.brush.diameter_px as f32 * zoom).max(1.0), egui::Color32::from_rgba_unmultiplied(r, gg, bb, 120))
+                } else {
+                    line
+                };
+                painter.add(egui::Shape::line(g, stroke));
+            }
+            _ => {}
+        }
+
+        // Marching ants: the 50 % outline of the selection, black under white dashes that move.
+        if !self.edit.ants.is_empty() {
+            let phase = (ui.input(|i| i.time) * 12.0 % 8.0) as f32;
+            let mut shapes = Vec::with_capacity(self.edit.ants.len().saturating_mul(2));
+            for seg in &self.edit.ants {
+                let pts = [to_screen(seg[0]), to_screen(seg[1])];
+                if !rect.intersects(egui::Rect::from_two_pos(pts[0], pts[1]).expand(1.0)) {
+                    continue;
+                }
+                shapes.push(egui::Shape::line_segment(pts, egui::Stroke::new(1.0_f32, egui::Color32::BLACK)));
+                shapes.extend(egui::Shape::dashed_line_with_offset(&pts, egui::Stroke::new(1.0_f32, egui::Color32::WHITE), &[4.0], &[4.0], phase));
+            }
+            painter.extend(shapes);
+        }
+    }
+
+    /// Tool row: tools, selection combine mode, brush settings, undo/redo (all with stable ids).
+    fn tools_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("Tool");
+        for tool in Tool::ALL {
+            let name = widget::tool(tool.key());
+            let hover = match tool {
+                Tool::View => "Drag pans the view",
+                Tool::RectSelect => "Drag a rectangular selection",
+                Tool::EllipseSelect => "Drag an elliptical selection",
+                Tool::Lasso => "Drag a freehand selection",
+                Tool::Brush => "Paint on the selected raster layer (clipped to the selection)",
+                Tool::Text => edit::TEXT_TOOL_GAP,
+            };
+            if ui.push_id(widget::id(&name), |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).inner.on_hover_text(hover).clicked() {
+                self.set_tool(tool);
+            }
+            self.drawn.push(name);
+        }
+        ui.separator();
+        let mut combine = self.edit.combine;
+        ui.push_id(widget::id(widget::COMBINE), |ui| {
+            egui::ComboBox::from_label("combine").selected_text(edit::combine_key(combine)).show_ui(ui, |ui| {
+                for mode in [CombineMode::Replace, CombineMode::Extend, CombineMode::Diminish, CombineMode::Intersect] {
+                    ui.selectable_value(&mut combine, mode, edit::combine_key(mode));
+                }
+            });
+        });
+        self.drawn.push(widget::COMBINE.into());
+        if combine != self.edit.combine {
+            self.set_combine(combine);
+        }
+        if ui.push_id(widget::id(widget::CLEAR_SELECTION), |ui| ui.add_enabled(self.edit.selection.is_some(), egui::Button::new("Deselect"))).inner.clicked() {
+            self.clear_selection();
+        }
+        self.drawn.push(widget::CLEAR_SELECTION.into());
+        ui.separator();
+        let mut brush = self.edit.brush;
+        ui.push_id(widget::id(widget::BRUSH_SIZE), |ui| ui.add(egui::Slider::new(&mut brush.diameter_px, 1.0..=500.0).logarithmic(true).text("size")));
+        self.drawn.push(widget::BRUSH_SIZE.into());
+        ui.push_id(widget::id(widget::BRUSH_HARDNESS), |ui| ui.add(egui::Slider::new(&mut brush.hardness_pct, 0.0..=100.0).text("hard")));
+        self.drawn.push(widget::BRUSH_HARDNESS.into());
+        ui.push_id(widget::id(widget::BRUSH_OPACITY), |ui| ui.add(egui::Slider::new(&mut brush.opacity_pct, 0.0..=100.0).text("opacity")));
+        self.drawn.push(widget::BRUSH_OPACITY.into());
+        ui.push_id(widget::id(widget::BRUSH_COLOUR), |ui| ui.color_edit_button_srgb(&mut brush.rgb8));
+        self.drawn.push(widget::BRUSH_COLOUR.into());
+        if brush != self.edit.brush {
+            self.set_brush(brush);
+        }
+        ui.separator();
+        let history = self.run.history();
+        let can = |k: &str| history[k].as_array().is_some_and(|a| !a.is_empty());
+        if ui.push_id(widget::id(widget::UNDO_BUTTON), |ui| ui.add_enabled(can("undo"), egui::Button::new("Undo"))).inner.on_hover_text("Ctrl+Z").clicked() {
+            let _ = self.undo();
+        }
+        self.drawn.push(widget::UNDO_BUTTON.into());
+        if ui.push_id(widget::id(widget::REDO_BUTTON), |ui| ui.add_enabled(can("redo"), egui::Button::new("Redo"))).inner.on_hover_text("Ctrl+Shift+Z / Ctrl+Y").clicked() {
+            let _ = self.redo();
+        }
+        self.drawn.push(widget::REDO_BUTTON.into());
+    }
+
+    /// Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y when no text field has keyboard focus.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+        let redo_shift = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+        let redo_y = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+        let undo = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+        if ctx.input_mut(|i| i.consume_shortcut(&redo_shift) || i.consume_shortcut(&redo_y)) {
+            let _ = self.redo();
+        } else if ctx.input_mut(|i| i.consume_shortcut(&undo)) {
+            let _ = self.undo();
+        }
     }
 }
 
