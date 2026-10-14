@@ -1033,6 +1033,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-interop-tiff"
+version = "0.1.0"
+
+[[package]]
 name = "hsk-studio-interop-vector"
 version = "0.1.0"
 dependencies = [
@@ -1084,8 +1088,8 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-motion",
  "hsk-studio-observe",
+ "hsk-studio-worker",
  "rquickjs",
- "windows-sys",
 ]
 
 [[package]]
@@ -1181,6 +1185,7 @@ version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
  "hsk-studio-reel",
+ "hsk-studio-worker",
 ]
 
 [[package]]
@@ -1235,6 +1240,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
  "hsk-studio-score",
+ "hsk-studio-worker",
  "sha2 0.10.9",
 ]
 
@@ -1280,6 +1286,10 @@ dependencies = [
 [[package]]
 name = "hsk-studio-worker"
 version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "windows-sys",
+]
 
 [[package]]
 name = "html5ever"
