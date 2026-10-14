@@ -25,6 +25,7 @@
 //! NOT_PROVEN (`FigImport::editable`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::container::hex;
+use crate::effects::effect;
 use crate::geometry::{
     Affine, IDENTITY, compose, fill_rule, line_path, network_paths, path_from_commands,
 };
@@ -58,6 +59,11 @@ use hsk_studio_folio::{
 };
 use hsk_studio_folio::{
     StudioComponent, StudioComponentInstance, StudioComponentSet, StudioOverrideRecord, StudioValue,
+};
+use hsk_studio_folio::{
+    StudioEffectStack, StudioMaskAttachment, StudioMaskMode, StudioRasterLayerRecord,
+    StudioRasterRecords, StudioVectorMask, StudioVectorRecords, validate_raster_records,
+    validate_vector_records,
 };
 use hsk_studio_nib::{OwnedPath, PathLimits};
 use hsk_studio_package::{ImportEntry, ImportRole};
@@ -120,6 +126,27 @@ pub struct FigVectorPath {
     pub geometry: OwnedPath,
 }
 
+/// An IMAGE paint of a node. Folio's paint model has no image kind (declared gap in `paint.rs`),
+/// so no appearance row is written; this record binds the node to the image part, whose bytes stay
+/// byte-identical inside the package's original entry (receipt: `image_paints`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigImagePaint {
+    pub source: SourceId,
+    pub node: NodeRef,
+    /// `fills` or `strokes`.
+    pub what: &'static str,
+    /// Index in the node's paint list.
+    pub ordinal: usize,
+    /// Hex image hash as stored by Figma.
+    pub hash: String,
+    /// Container entry `images/<hash>` when present.
+    pub part: Option<String>,
+    pub scale_mode: Option<String>,
+    pub original_size: Option<(u32, u32)>,
+    pub opacity: f64,
+    pub visible: bool,
+}
+
 /// One mapped node: Figma source id -> Folio node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdMapEntry {
@@ -138,6 +165,12 @@ pub struct NativeProposal {
     pub stories: Vec<StudioTextStory>,
     /// Vector geometry of the vector layers, in document px (transforms baked in).
     pub paths: Vec<FigVectorPath>,
+    /// Shadow effects per layer (`hsk.studio.raster_records@1`), validated.
+    pub raster_records: StudioRasterRecords,
+    /// Masks and their attachments (`hsk.studio.vector_records@1`), validated.
+    pub vector_records: StudioVectorRecords,
+    /// IMAGE paints (no Folio paint kind; see [`FigImagePaint`]).
+    pub image_paints: Vec<FigImagePaint>,
     pub id_map: Vec<IdMapEntry>,
     /// Figma nodes that became design records rather than document nodes (variables).
     pub record_map: Vec<RecordMapEntry>,
@@ -150,7 +183,7 @@ pub struct NativeProposal {
 
 /// Figma blend mode name -> Folio `StudioBlendMode` discriminant (`hsk-studio-pigment`
 /// `blend_math::StudioBlendMode`, values read 2026-10-14). `None`: no counterpart.
-fn blend(name: &str) -> Option<u16> {
+pub(crate) fn blend(name: &str) -> Option<u16> {
     Some(match name {
         "PASS_THROUGH" => 1,
         "NORMAL" => 2,
@@ -195,6 +228,12 @@ struct Mapper<'a> {
     layers: Vec<StudioLayer>,
     stories: Vec<StudioTextStory>,
     paths: Vec<FigVectorPath>,
+    fx: Vec<StudioRasterLayerRecord>,
+    image_paints: Vec<FigImagePaint>,
+    /// Node index -> mapped node, for sibling mask resolution.
+    node_refs: HashMap<usize, NodeRef>,
+    /// Mask source layer id and the layer ids it masks (later siblings in the same parent).
+    mask_plans: Vec<(String, Vec<String>)>,
     artboards: Vec<StudioArtboard>,
     styles: Vec<StudioPaintStyle>,
     designs: Vec<StudioNodeDesign>,
@@ -471,7 +510,11 @@ impl Mapper<'_> {
                 ))
             }
             PaintKind::Image { .. } => {
-                self.lose(format!("native.{what}.IMAGE"), "image_paint_no_folio_home");
+                // Bound and carried (FigImagePaint, original entry) but not an appearance row.
+                self.lose(
+                    format!("native.{what}.IMAGE"),
+                    "image_paint_not_a_folio_paint",
+                );
                 None
             }
             PaintKind::Unsupported { type_name } => {
@@ -1319,6 +1362,70 @@ impl Mapper<'_> {
         }
     }
 
+    /// Shadow effects of a layer node -> one `StudioEffectStack` in the raster records; every
+    /// effect without a Folio kind (blurs) or on an artboard is a typed loss.
+    fn effects(&mut self, n: &FigNode, node: &NodeRef) {
+        let mut list = Vec::new();
+        for (i, e) in n.effects.iter().enumerate() {
+            let path = format!("native.effects.{}", e.kind);
+            if node.node_kind != NodeKind::Layer {
+                self.lose(path, "effect_on_artboard_no_folio_home");
+                continue;
+            }
+            match effect(e, i) {
+                Ok((fx, notes)) => {
+                    list.push(fx);
+                    for note in notes {
+                        self.lose(path.clone(), note);
+                    }
+                }
+                Err(code) => self.lose(path, code),
+            }
+        }
+        if !list.is_empty() {
+            let stack = StudioEffectStack {
+                effect_stack_id: self.mint.mint("SEFX"),
+                enabled: true,
+                scale: 100.0,
+                effects: list,
+            };
+            let mut rec = StudioRasterLayerRecord::new(node.node_id.clone());
+            rec.effects = Some(stack);
+            self.fx.push(rec);
+        }
+    }
+
+    /// Records the image fill/stroke paints of a node: the Folio paint model has no image kind
+    /// (declared gap), so the binding lives in the records entry; the bytes stay in the original.
+    fn image_paints(&mut self, n: &FigNode, node: &NodeRef) {
+        for (what, list) in [("fills", &n.fills), ("strokes", &n.strokes)] {
+            for (ordinal, p) in list.iter().enumerate() {
+                let PaintKind::Image {
+                    hash,
+                    part,
+                    scale_mode,
+                    original_size,
+                    ..
+                } = &p.kind
+                else {
+                    continue;
+                };
+                self.image_paints.push(FigImagePaint {
+                    source: n.id,
+                    node: node.clone(),
+                    what,
+                    ordinal,
+                    hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
+                    part: part.clone(),
+                    scale_mode: scale_mode.clone(),
+                    original_size: *original_size,
+                    opacity: percent(p.opacity.unwrap_or(1.0)),
+                    visible: p.visible.unwrap_or(true),
+                });
+            }
+        }
+    }
+
     /// Losses for decoded node data this slice does not map.
     /// `baked`: the node's geometry was emitted as vector paths with its transform applied.
     fn unmapped(&mut self, n: &FigNode, artboard: bool, baked: bool) {
@@ -1331,14 +1438,6 @@ impl Mapper<'_> {
             if n.size.is_some() && ty != "TEXT" {
                 self.lose("native.size", "layer_size_no_folio_home");
             }
-        }
-        if !n.effects.is_empty() {
-            for e in &n.effects {
-                self.lose(format!("native.effects.{}", e.kind), "effect_no_folio_home");
-            }
-        }
-        if n.mask == Some(true) {
-            self.lose("native.mask", "mask_not_mapped");
         }
         if !n.stroke_geometry.is_empty() {
             // The stroke outline is derived from the path plus the stroke row; not stored.
@@ -1577,6 +1676,9 @@ impl Mapper<'_> {
             node: node_ref.clone(),
         });
         self.unmapped(n, is_artboard, baked);
+        self.node_refs.insert(idx, node_ref.clone());
+        self.effects(n, &node_ref);
+        self.image_paints(n, &node_ref);
         if ty != "CANVAS" {
             self.style(n, node_ref.clone())?;
         }
@@ -1597,8 +1699,37 @@ impl Mapper<'_> {
             return Ok(());
         }
         let parent = Parent::Node(node_ref);
+        // A mask node masks every later sibling in the same parent (Figma stacking order:
+        // ascending position = bottom to top).
+        let mut open_mask: Option<usize> = None;
         for c in children {
-            self.walk(c, parent.clone(), ty == "CANVAS", depth.saturating_add(1), &abs)?;
+            self.walk(
+                c,
+                parent.clone(),
+                ty == "CANVAS",
+                depth.saturating_add(1),
+                &abs,
+            )?;
+            let Some(r) = self.node_refs.get(&c).cloned() else {
+                continue;
+            };
+            self.current = Some(doc.nodes[c].id);
+            if doc.nodes[c].mask == Some(true) {
+                if r.node_kind == NodeKind::Layer {
+                    open_mask = Some(self.mask_plans.len());
+                    self.mask_plans.push((r.node_id, Vec::new()));
+                } else {
+                    self.lose("native.mask", "mask_on_artboard_no_folio_home");
+                }
+            } else if let Some(m) = open_mask {
+                if r.node_kind == NodeKind::Layer {
+                    if let Some(plan) = self.mask_plans.get_mut(m) {
+                        plan.1.push(r.node_id);
+                    }
+                } else {
+                    self.lose("native.mask", "masked_artboard_no_folio_home");
+                }
+            }
         }
         Ok(())
     }
@@ -1653,6 +1784,10 @@ pub fn to_native(
         layers: Vec::new(),
         stories: Vec::new(),
         paths: Vec::new(),
+        fx: Vec::new(),
+        image_paints: Vec::new(),
+        node_refs: HashMap::new(),
+        mask_plans: Vec::new(),
         artboards: Vec::new(),
         styles: Vec::new(),
         designs: Vec::new(),
@@ -1687,6 +1822,9 @@ pub fn to_native(
         layers,
         stories,
         paths,
+        fx,
+        image_paints,
+        mask_plans,
         components,
         component_sets,
         component_instances,
@@ -1700,6 +1838,20 @@ pub fn to_native(
         loss,
         ..
     } = m;
+    let mut layers = layers;
+    let mut loss = loss;
+    // Mask sources are not drawn themselves (Figma masks hide their own shape): hidden layers,
+    // like the source layers of `hsk-studio-interop-vector` masks.
+    for (source, targets) in &mask_plans {
+        if targets.is_empty() {
+            let slot = loss
+                .entry(("native.mask".to_owned(), "mask_without_targets"))
+                .or_insert((0, None));
+            slot.0 = slot.0.saturating_add(1);
+        } else if let Some(l) = layers.iter_mut().find(|l| &l.layer_id == source) {
+            l.visible = false;
+        }
+    }
     let document = StudioDocument {
         schema_id: DocumentSchema::V1,
         document_id: document_id.clone(),
@@ -1744,11 +1896,64 @@ pub fn to_native(
         cfg.resolver,
     )
     .map_err(folio_error)?;
+    let doc_id = snapshot.document().document_id.clone();
+    let mut vector_records = StudioVectorRecords::new(doc_id.clone());
+    let mut attached: BTreeMap<String, ()> = BTreeMap::new();
+    for (i, (source, targets)) in mask_plans.iter().enumerate() {
+        if targets.is_empty() {
+            continue;
+        }
+        let mask_id = format!("fig-mask-{i}");
+        vector_records.masks.push(StudioVectorMask {
+            mask_id: mask_id.clone(),
+            source_layer_id: source.clone(),
+            // Figma's maskType is not decoded: alpha is its default reading (UNVERIFIED).
+            mode: StudioMaskMode::Alpha,
+            mask_clip: false,
+            invert_mask: false,
+            region: None,
+        });
+        for t in targets {
+            if attached.insert(t.clone(), ()).is_some() {
+                let slot = loss
+                    .entry(("native.mask".to_owned(), "second_mask_on_layer_dropped"))
+                    .or_insert((0, None));
+                slot.0 = slot.0.saturating_add(1);
+                continue;
+            }
+            vector_records.attachments.push(StudioMaskAttachment {
+                layer_id: t.clone(),
+                clip_id: None,
+                mask_id: Some(mask_id.clone()),
+            });
+        }
+    }
+    validate_vector_records(
+        &vector_records,
+        snapshot.document(),
+        Some(&design_records),
+        cfg.budget,
+        cancel,
+    )
+    .map_err(folio_error)?;
+    let mut raster_records = StudioRasterRecords::new(doc_id);
+    raster_records.layers = fx;
+    validate_raster_records(
+        &raster_records,
+        snapshot.document(),
+        cfg.budget,
+        cancel,
+        cfg.resolver,
+    )
+    .map_err(folio_error)?;
     Ok(NativeProposal {
         snapshot,
         design: design_records,
         stories,
         paths,
+        raster_records,
+        vector_records,
+        image_paints,
         id_map,
         record_map,
         mapping_loss: aggregate(loss),
@@ -1778,7 +1983,10 @@ fn loss_json(list: &[NodeLoss]) -> Value {
 
 /// What every receipt of this mapping states it does not prove.
 pub const NATIVE_NOT_PROVEN: &[&str] = &[
-    "editable_import (only names, ids and the mapped records survive a save and reopen; geometry, transforms, effects, images and masks are losses)",
+    "editable_import (names, ids, mapped records, vector geometry, shadow effects and masks survive a save and reopen; image paints are bindings only, blurs and text fonts are losses)",
+    "effect_conventions (shadow size = radius px, offset as distance + Photoshop light angle, colour alpha as opacity percent, inner-shadow spread as choke percent; not compared with Figma rendering)",
+    "mask_semantics (a mask node masks its later siblings, written as ALPHA masks with the source layer hidden; Figma maskType is not decoded)",
+    "geometry_space (paths are baked into canvas px with every node transform composed; artboard-local coordinates are path minus artboard bounds)",
     "figma_render_parity (no comparison against Figma's rendering)",
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",
@@ -1802,6 +2010,21 @@ impl NativeProposal {
                 "path_id": p.path_id,
                 "layer_id": p.layer_id,
                 "geometry": p.geometry.to_canonical_json(),
+            })).collect::<Vec<_>>(),
+            "raster_records": serde_json::to_value(&self.raster_records).map_err(enc)?,
+            "vector_records": serde_json::to_value(&self.vector_records).map_err(enc)?,
+            "image_paints": self.image_paints.iter().map(|p| json!({
+                "source": p.source.to_string(),
+                "node_kind": node_kind_token(&p.node.node_kind),
+                "node_id": p.node.node_id,
+                "what": p.what,
+                "ordinal": p.ordinal,
+                "hash": p.hash,
+                "part": p.part,
+                "scale_mode": p.scale_mode,
+                "original_size": p.original_size.map(|(w, h)| json!([w, h])),
+                "opacity": p.opacity,
+                "visible": p.visible,
             })).collect::<Vec<_>>(),
             "id_map": self.id_map.iter().map(|e| json!({
                 "source": e.source.to_string(),
@@ -1827,6 +2050,15 @@ impl NativeProposal {
             "paint_styles": self.design.paint_styles.len(),
             "text_stories": self.stories.len(),
             "vector_paths": self.paths.len(),
+            "effect_stacks": self.raster_records.layers.len(),
+            "masks": self.vector_records.masks.len(),
+            // Image bytes stay byte-identical in the original entry; identity of each part here.
+            "image_paints": self.image_paints.iter().map(|p| {
+                let part = p.part.as_deref().and_then(|n| import.container.part(n));
+                json!({"node_id": p.node.node_id, "hash": p.hash, "part": p.part,
+                       "part_bytes": part.map(|x| x.bytes.len()),
+                       "part_sha256": part.map(|x| hex(&x.sha256))})
+            }).collect::<Vec<_>>(),
             "mapped_nodes": self.id_map.len(),
             "mapping_loss": loss_json(&self.mapping_loss),
             "decode_loss": loss_json(&self.decode_loss),
@@ -1853,6 +2085,9 @@ pub struct NativeRecords {
     pub design: StudioDesignRecords,
     pub stories: Vec<StudioTextStory>,
     pub paths: Vec<FigVectorPath>,
+    pub raster_records: StudioRasterRecords,
+    pub vector_records: StudioVectorRecords,
+    pub image_paints: Vec<FigImagePaint>,
     pub id_map: Vec<IdMapEntry>,
     pub record_map: Vec<RecordMapEntry>,
 }
@@ -1883,6 +2118,58 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
             path_id: path_id.to_owned(),
             layer_id: layer_id.to_owned(),
             geometry,
+        });
+    }
+    let raster_records: StudioRasterRecords =
+        serde_json::from_value(v["raster_records"].clone()).map_err(|_| bad.clone())?;
+    let vector_records: StudioVectorRecords =
+        serde_json::from_value(v["vector_records"].clone()).map_err(|_| bad.clone())?;
+    let mut image_paints = Vec::new();
+    for e in v["image_paints"].as_array().ok_or_else(|| bad.clone())? {
+        let (Some(source), Some(kind), Some(node_id), Some(what), Some(hash)) = (
+            e["source"].as_str(),
+            e["node_kind"].as_str(),
+            e["node_id"].as_str(),
+            e["what"].as_str(),
+            e["hash"].as_str(),
+        ) else {
+            return Err(bad);
+        };
+        let (s, l) = source.split_once(':').ok_or_else(|| bad.clone())?;
+        let node_kind = match kind {
+            "layer" => NodeKind::Layer,
+            "artboard" => NodeKind::Artboard,
+            _ => return Err(bad),
+        };
+        let size = |i: usize| {
+            e["original_size"][i]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        image_paints.push(FigImagePaint {
+            source: SourceId {
+                session: s.parse().map_err(|_| bad.clone())?,
+                local: l.parse().map_err(|_| bad.clone())?,
+            },
+            node: NodeRef {
+                node_kind,
+                node_id: node_id.to_owned(),
+            },
+            what: match what {
+                "fills" => "fills",
+                "strokes" => "strokes",
+                _ => return Err(bad),
+            },
+            ordinal: e["ordinal"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bad.clone())?,
+            hash: hash.to_owned(),
+            part: e["part"].as_str().map(str::to_owned),
+            scale_mode: e["scale_mode"].as_str().map(str::to_owned),
+            original_size: size(0).zip(size(1)),
+            opacity: e["opacity"].as_f64().ok_or_else(|| bad.clone())?,
+            visible: e["visible"].as_bool().ok_or_else(|| bad.clone())?,
         });
     }
     let mut id_map = Vec::new();
@@ -1932,6 +2219,9 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
         design,
         stories,
         paths,
+        raster_records,
+        vector_records,
+        image_paints,
         id_map,
         record_map,
     })

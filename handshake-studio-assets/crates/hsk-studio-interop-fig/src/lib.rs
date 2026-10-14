@@ -13,6 +13,7 @@
 
 mod container;
 mod descriptor;
+mod effects;
 mod error;
 mod geometry;
 mod import;
@@ -36,8 +37,9 @@ pub use import::{
 };
 pub use kiwi_value::{KiwiField, KiwiValue, decode_kiwi, decode_message_tree};
 pub use native::{
-    FigVectorPath, IdMapEntry, IdMint, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal, NativeRecords,
-    RecordMapEntry, SequentialIdMint, id_index, read_native_records, to_native,
+    FigImagePaint, FigVectorPath, IdMapEntry, IdMint, NATIVE_NOT_PROVEN, NativeConfig,
+    NativeProposal, NativeRecords, RecordMapEntry, SequentialIdMint, id_index, read_native_records,
+    to_native,
 };
 pub use nodes::{
     AutoLayout, COMMON_NODE_FIELDS, Color, ComponentPropDef, Effect, FigDocument, FigNode,

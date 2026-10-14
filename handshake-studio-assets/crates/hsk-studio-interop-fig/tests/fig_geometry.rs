@@ -383,3 +383,118 @@ fn rotation_and_line_baked_and_network_fallback() {
     let line = layer_bbox(&m.proposal, "line-outline");
     assert!(near(line, [550.0, 245.0, 700.0, 245.0], 1e-6), "{line:?}");
 }
+
+fn lum(png: &(usize, usize, Vec<u8>), x: usize, y: usize) -> i32 {
+    let o = (y * png.0 + x) * 4;
+    (0..3).map(|c| i32::from(png.2[o + c])).sum()
+}
+
+#[test]
+fn real_effects_masks_image_paints_pinned() {
+    use hsk_studio_folio::{StudioEffectKind, StudioMaskMode};
+    use hsk_studio_package::ImportRole;
+    let m = mapped("fig-basic-shapes.fig");
+    let p = &m.proposal;
+    let layer_id = |name: &str| {
+        p.snapshot
+            .document()
+            .layers
+            .iter()
+            .find(|l| l.name == name)
+            .unwrap_or_else(|| panic!("layer {name}"))
+            .layer_id
+            .clone()
+    };
+    // Drop shadow of rounded-solid-shadow (offset 4,6, radius 10, black 25%): one effect stack.
+    assert_eq!(p.raster_records.layers.len(), 1);
+    let rec = &p.raster_records.layers[0];
+    assert_eq!(rec.layer_id, layer_id("rounded-solid-shadow"));
+    let stack = rec.effects.as_ref().unwrap();
+    assert_eq!(stack.effects.len(), 1);
+    let fx = &stack.effects[0];
+    assert!((fx.opacity - 25.0).abs() < 1e-9 && fx.enabled && fx.blend_mode == 2);
+    assert!((fx.angle - 123.690067526).abs() < 1e-6, "{}", fx.angle);
+    let StudioEffectKind::DropShadow {
+        distance,
+        spread,
+        size,
+        ..
+    } = &fx.params
+    else {
+        panic!("drop shadow")
+    };
+    assert!((distance - 52f64.sqrt()).abs() < 1e-9 && *spread == 0.0 && *size == 10.0);
+    // The render agrees: the shadow falls below the rectangle (darker under the bottom edge than
+    // above the top edge, both 3 px away; artboard-local rectangle x 40..210, y 90..200).
+    let png = decode_png(&fixture("fig-basic-shapes.png"));
+    assert!(lum(&png, 125, 203) + 6 < lum(&png, 125, 87));
+    // Blur: no Folio effect kind, still a typed loss; spread/choke notes absent here.
+    let c = loss_counts(p);
+    assert_eq!(
+        c[&(
+            "native.effects.FOREGROUND_BLUR".to_owned(),
+            "effect_kind_not_in_folio"
+        )],
+        1
+    );
+    assert!(
+        !c.keys()
+            .any(|(path, _)| path == "native.effects.DROP_SHADOW")
+    );
+    // Mask: mask-ellipse masks its later sibling masked-gradient; the source layer is hidden.
+    let v = &p.vector_records;
+    assert_eq!(v.masks.len(), 1);
+    assert_eq!(v.masks[0].source_layer_id, layer_id("mask-ellipse"));
+    assert_eq!(v.masks[0].mode, StudioMaskMode::Alpha);
+    assert_eq!(v.attachments.len(), 1);
+    assert_eq!(v.attachments[0].layer_id, layer_id("masked-gradient"));
+    assert_eq!(
+        v.attachments[0].mask_id.as_deref(),
+        Some(v.masks[0].mask_id.as_str())
+    );
+    let source = p
+        .snapshot
+        .document()
+        .layers
+        .iter()
+        .find(|l| l.layer_id == v.masks[0].source_layer_id)
+        .unwrap();
+    assert!(!source.visible);
+    assert!(!c.keys().any(|(path, _)| path == "native.mask"));
+    // Image paint: bound to masked-gradient, no appearance row, part carried byte-exact.
+    assert_eq!(p.image_paints.len(), 1);
+    let img = &p.image_paints[0];
+    assert_eq!(img.node.node_id, layer_id("masked-gradient"));
+    assert_eq!((img.what, img.ordinal, img.visible), ("fills", 0, true));
+    assert_eq!(img.original_size, Some((480, 320)));
+    let part = img.part.as_deref().expect("image part present");
+    assert_eq!(part, format!("images/{}", img.hash));
+    let bytes = fixture("fig-basic-shapes.fig");
+    let cancel = CancellationToken::default();
+    let FigOutcome::Imported(import) = import_fig(
+        &bytes,
+        &Limits::default(),
+        &VersionPolicy::observed(),
+        None,
+        &cancel,
+    )
+    .unwrap() else {
+        panic!("imports")
+    };
+    let entries = p.import_entries(&import, &bytes).unwrap();
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &entries
+            .iter()
+            .find(|e| e.role == ImportRole::Receipt)
+            .unwrap()
+            .bytes,
+    )
+    .unwrap();
+    let want = import.container.part(part).expect("container part");
+    let r = &receipt["image_paints"][0];
+    assert_eq!(r["part_bytes"], want.bytes.len());
+    assert_eq!(r["part_sha256"], hex(&want.sha256));
+    assert!(want.bytes.starts_with(b"\x89PNG") || want.bytes.starts_with(&[0xFF, 0xD8]));
+    assert_eq!(receipt["effect_stacks"], 1);
+    assert_eq!(receipt["masks"], 1);
+}
