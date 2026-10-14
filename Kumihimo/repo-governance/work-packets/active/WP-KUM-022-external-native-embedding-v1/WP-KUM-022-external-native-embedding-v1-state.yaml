@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 16
+generation: 17
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -312,10 +312,120 @@ proof:
   source_inputs: All69 unchanged after actual tests and settlement; original3 locks retained
   retry: Do not repeat42 passing tests to erase historical wrapper failure
   native: NOT_RUN
+- kind: phase07_dark_offscreen_capture
+  status: PRIMARY_ACCEPTED_NUMERIC_AND_IDENTITY_CLOSURE_VISUAL_ACCEPTANCE_OPEN
+  attempt: 1
+  source_revision: d314813dfc18bdfbc1d142479d4d4035822ff84a
+  proof_checkpoint: 258f2594ee0ed5e173fa60f31a27ba93143ef416
+  input_manifest_sha256: bbb5a5d7cfe8c7675cec264d45c4335c1e732d4bd4898790bdeffaa70965b57f
+  launcher_sha256: dfec92e780204dd9379ecdc5ef8ad897ea06b551ae84ad88966263f64ad5b3fc
+  cargo_pid: 15092
+  cargo_birth_utc: '2026-10-14T23:12:09.8886279Z'
+  cargo_exit: 0
+  outer_host_pid: 40460
+  outer_tool_exit: 1
+  original_caller_status: FAILED_STOP
+  phase_record: .local/wp022-proof/07-capture-dark.phase.json
+  phase_record_sha256: 9e86073c9e7a5b063f1c4f74d685102aabf5bf0d7f0d8d63c673c5843076d094
+  stdout_sha256: 2b2e036f9f98561799c676c186b34824c5a5c5f46c433c3c4b6ec1789b120d8d
+  stderr_sha256: 7530a91b51e93eda8d3222805197fe84d138165c7962ad130f954e0df1b65311
+  late_owned_settlement:
+    receipt: .local/wp022-proof/07-owned-settlement.json
+    receipt_sha256: b060f02d00159b28339d423151b64e96512b3f1166172d522dac891fac0c8731
+    target_pid: 12060
+    native_birth_utc: '2026-10-14T23:12:19.6281522Z'
+    cim_birth_utc: '2026-10-14T23:12:19.6281520Z'
+    target_exit: -1
+    operation_tool_exit: 0
+    raw_parent_edge_chain_serialized: true
+    canonical_observation: All7 recorded original PID+APIbirth identities plus host8 absent; no current compiler
+      or capture_host; warm cache4820 retained
+    review: PRIMARY_AND_DIAGNOSTICS_INDEPENDENTLY_RECONCILED
+    process_purpose: UNVERIFIED
+  artifacts:
+    root: .local/wp022-proof/capture-dark
+    png_count: 80
+    scene_json_count: 80
+    additional_json:
+    - coverage-observations.json
+    - provider-receipts.json
+    all_scene_pairs_present: true
+    actual_images_opened:
+      original_owning_visual_helper: 77
+      disjoint_gui_cloud_peer:
+      - static-idle-0.png
+      - static-idle-1.png
+      - static-idle-2.png
+      root_representatives:
+      - dock-eligible-snap-preview.png
+      - scrollbar-and-minimap.png
+    backend: Dx12 Qualcomm Adreno X2-85 GPU
+    provider_receipts:
+      count: 38
+      attach: 9
+      geometry: 13
+      input: 7
+      navigation: 1
+      presentation: 7
+      tool: 1
+  observed_paint: Actual preview outlines in eligible/menu captures and absent after cancel/forbidden; dividers,
+    rail/thumb, transient release document position327 and1.5scale observed
+  scene_diagnostics:
+  - scene: dock-forbidden-drag-preview
+    reason: ForbiddenDestination
+    classification: EXPECTED_POLICY_NEGATIVE_WITH_SOURCE_ASSERTION
+  - scene: tabs-pinned-reorder-rejected
+    reason: Pinned(ViewId(11))
+    classification: EXPECTED_POLICY_NEGATIVE_WITH_SOURCE_ASSERTION
+  - scene: tool-hidden-target-retain
+    reason: tool20 hidden:target unavailable;preserved view9
+    classification: NAMED_HIDDEN_TARGET_RETENTION_NEGATIVE
+  - scene: weighted-holes-shrink
+    reason: Invalid("point outside global clip")
+    classification: UNCLASSIFIED_NOT_ASSERTED_EXPECTED_BY_COVERAGE_VARIANT
+  visual_acceptance:
+    status: OPEN_PENDING_ORIGINAL_POLICY_BASELINE_CLASSIFICATION
+    overlap_or_clipping_scenes:
+    - compact-narrow
+    - weighted-holes-deep
+    - dock-float-menu-preview
+    - weighted-holes-shrink
+    evidence: Actual opened pixels and enabled workspace/panes-menu versus frame drag/menu/tab bounds intersect;
+      corresponding scene JSON records exact rectangles
+    first_frame_observation: Static-idle0 PNG lacks tool12 toolbar and top-right Panes label seen1/2; JSONtool12
+      disabled0/enabled1/2 while Panes enabledall3; same provider bodies/slot geometry/gen17/epoch200/rejected[];
+      no cause inferred
+    classification_owner: 01a13ad0-112c-7c51-9dac-b19da4d01c76
+    not_claimed:
+    - all controls readable and unobscured
+    - theme regression
+    - baseline visual compatibility
+    - paired dark/light acceptance
+    - native presentation
+    - OS accessibility
+    - physical input
+    overlap_classification: DIAGNOSTICS_VERIFIED_PREEXISTING_SHARED_CHROME_COMPOSITION_DEFECT_NOT_THEME_INTRODUCED
+    source_comparison:
+      baseline: 1e37e0aa49ce960306be0ef0fe2e432b73e85589
+      current: d314813dfc18bdfbc1d142479d4d4035822ff84a
+      global_menu: chrome.rs797-805 fixed Foreground position max(right-170,left),top and surface clipping identical
+        to baseline770+
+      frame_header: chrome.rs1094-1107 starts at frame.content.min and clips to frame.clip without global-row reservation
+      scope: Original WP012 reachability/readability requirements do not make observed overlap an expected policy
+        negative; WP022 paint-only/no geometry expansion requires finite authority decision before geometry repair
+      baseline_raster_comparison: NOT_PERFORMED; classification derives exact source comparison plus current actual
+        PNG and enabled bounds
+  source_inputs: All69 unchanged after capture and settlement; source digest2319084e5fb2481c7900e799a5b0b27b92c6dcebf73833ba1e8ab4c2155195a1;
+    original3 locks retained
+  physical_compiler_slot: PRIMARY_RELEASED_AFTER_ACTUAL_IDENTITY_CLOSURE
+  retry: No07 rerun or phase08 until scoped classification and exact Primary admission
+  native: NOT_RUN
 blockers:
-- Exact Primary phase07 reservation required; generated dark/light captures/native/pixel acceptance OPEN
-next_action: Publish actual06 contract-test and independent original-identity closure checkpoint; prepare fresh
-  phase07 capture binding; retain prior proof and no green test repeats
+- Primary finite original Assets scope/contract decision required for verified preexisting shared-chrome overlap;
+  Diagnostics shrink rejection and static-idle first-frame classification pending; phase08 not authorized; light/native
+  acceptance OPEN
+next_action: Publish actual07 accepted numeric/closure and inspected visual findings; await sole Diagnostics remaining
+  exact classification and Primary finite original-source admission; no geometry edits/rerender/phase08
 source_freeze:
   native_worker: frozen_after_phase04_u8_phase_snapshot_remediation
   theme_worker: frozen
@@ -336,7 +446,7 @@ source_freeze:
     product/README.md: 34461a7c621398ab8d664f58f878e64f65914451cc98b1b110fdf73681a23e66
     product/kumihimo-egui/tests/native_app_contracts.rs: c43f8ef1a5d35b08fffbc7f6b3debe32f1a9f139eb5164fb19f69aeb2d09d1b0
     product/kumihimo-egui/examples/native_probe.rs: 9497ec15f4b760339c158e1ad59599db44d0a44685a017859e835bee95468b0b
-  runtime: NOT_RUN
+  runtime: OFFSCREEN_DARK_CAPTURE_RUN_NATIVE_NOT_RUN
   compiler: PHASE04_ALL_FEATURE_ALL_TARGET_CARGO0_OUTER0_INDEPENDENTLY_ACCEPTED
   eframe_producer: SOURCE_IMPLEMENTED_NATIVE_PROOF_PENDING
   sdk_expansion: FROZEN_SOURCE_WITH_RESOLVED_PHASE01_LOCK_OUTPUT
@@ -346,3 +456,4 @@ source_freeze:
   input_manifest: .local/wp022-phase07-reviewed-input.json
   sdk_owning_tests: PHASE05_FOUR_PASSED_CARGO0_HISTORICAL_WRAPPER_FAILED_INDEPENDENT_LATE_CLOSURE
   adapter_contracts: PHASE06_32_ADAPTER_3_MANUAL_7_NATIVE_APP_PASSED_CARGO0_INDEPENDENT_LATE_CLOSURE
+  dark_capture: 80_PNG_82_JSON_ACTUALLY_INSPECTED_VISUAL_ACCEPTANCE_OPEN
