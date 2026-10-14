@@ -1014,6 +1014,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-folio",
  "hsk-studio-observe",
+ "hsk-studio-pulse",
 ]
 
 [[package]]
@@ -1271,6 +1272,10 @@ dependencies = [
  "html5ever",
  "sha2 0.10.9",
 ]
+
+[[package]]
+name = "hsk-studio-worker"
+version = "0.1.0"
 
 [[package]]
 name = "html5ever"

@@ -182,16 +182,16 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
 allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-score-plugin]
-allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe"]
+allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe", "hsk-studio-worker"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-reel-native]
-allowed = ["hsk-studio-accord", "hsk-studio-reel", "hsk-studio-observe"]
+allowed = ["hsk-studio-accord", "hsk-studio-reel", "hsk-studio-observe", "hsk-studio-worker"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-lrcat]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-motion-js]
-allowed = ["hsk-studio-accord", "hsk-studio-motion", "hsk-studio-observe"]
+allowed = ["hsk-studio-accord", "hsk-studio-motion", "hsk-studio-observe", "hsk-studio-worker"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-worker]
 allowed = ["hsk-studio-accord"]
