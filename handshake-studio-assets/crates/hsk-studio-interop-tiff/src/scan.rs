@@ -28,6 +28,7 @@ pub(crate) const TAG_TILE_WIDTH: u16 = 322;
 pub(crate) const TAG_TILE_LENGTH: u16 = 323;
 pub(crate) const TAG_TILE_OFFSETS: u16 = 324;
 pub(crate) const TAG_TILE_COUNTS: u16 = 325;
+pub(crate) const TAG_COLOR_MAP: u16 = 320;
 pub(crate) const TAG_YCBCR_COEFFICIENTS: u16 = 529;
 pub(crate) const TAG_EXTRA_SAMPLES: u16 = 338;
 pub(crate) const TAG_SAMPLE_FORMAT: u16 = 339;
@@ -256,7 +257,14 @@ impl<'a> Ctx<'a> {
 /// One validated page: everything the decoder needs plus what is handed out.
 pub(crate) struct PageScan {
     pub(crate) info: PageInfo,
+    /// Codec-domain decoded bytes (the file's own samples).
     pub(crate) decoded_bytes: u64,
+    /// Bytes charged to the budgets: codec output plus any expansion built from it.
+    pub(crate) budget_bytes: u64,
+    /// Samples per pixel as the codec sees them (palette pages: 1; `info` describes the expanded output).
+    pub(crate) file_spp: u16,
+    /// ColorMap (all reds, then greens, then blues) for palette pages.
+    pub(crate) palette: Option<Vec<u16>>,
     /// Byte overlays presented to the codec only (never to the caller): see `extra_sample_patch`.
     pub(crate) patch: Vec<(u64, u8)>,
 }
@@ -288,7 +296,7 @@ pub(crate) fn scan(bytes: &[u8], limits: &Limits) -> Result<FileScan> {
         }
         let (entries, nxt) = read_ifd(&cur, hdr.big, next, limits)?;
         let page = page(&ctx, &entries, hdr.order)?;
-        total = cadd(total, page.decoded_bytes)?;
+        total = cadd(total, page.budget_bytes)?;
         if total > limits.max_total_decoded_bytes {
             return Err(TiffError::Limit("aggregate_over_budget"));
         }
@@ -323,9 +331,9 @@ fn page(ctx: &Ctx<'_>, entries: &[Entry], order: ByteOrder) -> Result<PageScan> 
         5 => (Photometric::Cmyk, 5),
         6 => (Photometric::Rgb, 6),
         9 => (Photometric::IccLab, 9),
-        3 => return Err(TiffError::unsupported("photometric_palette")),
+        3 => (Photometric::Rgb, 3),
         4 => return Err(TiffError::unsupported("photometric_mask")),
-        8 => return Err(TiffError::unsupported("photometric_cielab")),
+        8 => (Photometric::CieLab, 8),
         10 => return Err(TiffError::unsupported("photometric_itulab")),
         32844 | 32845 => return Err(TiffError::unsupported("photometric_logluv")),
         other => {
@@ -415,15 +423,64 @@ fn page(ctx: &Ctx<'_>, entries: &[Entry], order: ByteOrder) -> Result<PageScan> 
         _ => Alpha::None,
     };
 
+    // Palette (PI 3) and CIELab (PI 8): the codec cannot classify them, so it is shown BlackIsZero and
+    // delivers the raw samples; the expansion / raw hand-out happens in decode.
+    let mut pi_patch: Vec<(u64, u8)> = Vec::new();
+    let mut palette: Option<Vec<u16>> = None;
+    if pi == 3 || pi == 8 {
+        let pie = find(entries, TAG_PHOTOMETRIC).ok_or(TiffError::MissingTag(TAG_PHOTOMETRIC))?;
+        if pie.ty != 3 {
+            return Err(TiffError::Corrupt("bad_field_type"));
+        }
+        pi_patch = if ctx.cur.le {
+            vec![(pie.data_pos, 1), (pie.data_pos.saturating_add(1), 0)]
+        } else {
+            vec![(pie.data_pos, 0), (pie.data_pos.saturating_add(1), 1)]
+        };
+    }
+    if pi == 3 {
+        if spp != 1 {
+            return Err(TiffError::unsupported_value("palette_samples_unsupported", u32::from(spp)));
+        }
+        if !matches!(bits, 8 | 16) || sample_format != SampleFormat::Uint {
+            return Err(TiffError::unsupported_value("bits_unsupported", u32::from(bits)));
+        }
+        let n = 1_u64.checked_shl(u32::from(bits)).ok_or(TiffError::DimsOverflow)?;
+        let e = find(entries, TAG_COLOR_MAP).ok_or(TiffError::MissingTag(TAG_COLOR_MAP))?;
+        if e.ty != 3 || e.count != cmul(n, 3)? {
+            return Err(TiffError::Corrupt("bad_color_map"));
+        }
+        palette = Some(
+            ctx.uints(e, cmul(n, 3)?)?
+                .into_iter()
+                .map(|v| u16::try_from(v).map_err(|_| TiffError::Corrupt("bad_color_map")))
+                .collect::<Result<_>>()?,
+        );
+    }
+    if pi == 8 {
+        if spp != 3 {
+            return Err(TiffError::unsupported_value("cielab_samples_unsupported", u32::from(spp)));
+        }
+        if !matches!(bits, 8 | 16) || sample_format != SampleFormat::Uint {
+            return Err(TiffError::unsupported_value("bits_unsupported", u32::from(bits)));
+        }
+    }
+
     // Declared sizes, before any allocation (V4-02).
     if width > limits.max_dimension || height > limits.max_dimension {
         return Err(TiffError::Limit("limit_dimension"));
     }
     let samples = cmul(cmul(u64::from(width), u64::from(height))?, spp_n)?;
     let decoded_bytes = cmul(samples, container)?;
-    if decoded_bytes > limits.max_page_decoded_bytes {
+    let out_bytes = if palette.is_some() {
+        cmul(cmul(cmul(u64::from(width), u64::from(height))?, 3)?, 2)?
+    } else {
+        0
+    };
+    if decoded_bytes > limits.max_page_decoded_bytes || out_bytes > limits.max_page_decoded_bytes {
         return Err(TiffError::Limit("limit_page_bytes"));
     }
+    let budget_bytes = cadd(decoded_bytes, out_bytes)?;
 
     chunks(ctx, entries, width, height, spp_n, container, planar, compression)?;
 
@@ -447,9 +504,10 @@ fn page(ctx: &Ctx<'_>, entries: &[Entry], order: ByteOrder) -> Result<PageScan> 
         height,
         photometric,
         source_photometric,
-        bits_per_sample: bits,
+        bits_per_sample: if palette.is_some() { 16 } else { bits },
+        source_bits_per_sample: bits,
         sample_format,
-        samples_per_pixel: spp,
+        samples_per_pixel: if palette.is_some() { 3 } else { spp },
         planar_in_file: planar,
         alpha,
         extra_samples,
@@ -461,8 +519,9 @@ fn page(ctx: &Ctx<'_>, entries: &[Entry], order: ByteOrder) -> Result<PageScan> 
         image_source_data: raw(TAG_IMAGE_SOURCE_DATA)?,
         image_resources: raw(TAG_IMAGE_RESOURCES)?,
     };
-    let patch = extra_sample_patch(ctx, entries, &info)?;
-    Ok(PageScan { info, decoded_bytes, patch })
+    let mut patch = if palette.is_some() { Vec::new() } else { extra_sample_patch(ctx, entries, &info)? };
+    patch.extend(pi_patch);
+    Ok(PageScan { info, decoded_bytes, budget_bytes, file_spp: spp, palette, patch })
 }
 
 /// The codec classifies an extra sample as data only when ExtraSamples says alpha; an Unspecified (0) extra
@@ -472,7 +531,7 @@ fn page(ctx: &Ctx<'_>, entries: &[Entry], order: ByteOrder) -> Result<PageScan> 
 fn extra_sample_patch(ctx: &Ctx<'_>, entries: &[Entry], info: &PageInfo) -> Result<Vec<(u64, u8)>> {
     let base: u16 = match info.photometric {
         Photometric::BlackIsZero => return Ok(Vec::new()),
-        Photometric::Rgb | Photometric::IccLab => 3,
+        Photometric::Rgb | Photometric::IccLab | Photometric::CieLab => 3,
         Photometric::Cmyk => 4,
     };
     let extra = info.samples_per_pixel.checked_sub(base).ok_or(TiffError::Corrupt("samples_below_photometric"))?;

@@ -47,7 +47,7 @@ fn decode_page(decoder: &mut Decoder<Overlay<'_>>, page: PageScan) -> Result<Tif
         return Err(TiffError::Corrupt("decoder_size_mismatch"));
     }
     let planes = layout.planes.max(1);
-    let spp = usize::from(info.samples_per_pixel);
+    let spp = usize::from(page.file_spp);
     let pixel_count = to_usize(cmul(u64::from(info.width), u64::from(info.height))?)?;
     let samples = match result {
         DecodingResult::U8(v) => Samples::U8(interleave(v, planes, spp, pixel_count)?),
@@ -56,6 +56,10 @@ fn decode_page(decoder: &mut Decoder<Overlay<'_>>, page: PageScan) -> Result<Tif
         DecodingResult::F32(v) => Samples::F32(interleave(v, planes, spp, pixel_count)?),
         DecodingResult::F64(v) => Samples::F64(interleave(v, planes, spp, pixel_count)?),
         _ => return Err(TiffError::unsupported("sample_type_unsupported")),
+    };
+    let samples = match &page.palette {
+        Some(p) => expand_palette(samples, p, info.source_bits_per_sample)?,
+        None => samples,
     };
     let samples = if info.source_photometric == 6 { ycbcr_to_rgb(samples, spp)? } else { samples };
     if u64::try_from(samples.len()).map_err(|_| TiffError::DimsOverflow)?
@@ -149,4 +153,25 @@ fn ycbcr_to_rgb(samples: Samples, spp: usize) -> Result<Samples> {
         }
     }
     Ok(Samples::U8(v))
+}
+
+/// Palette indices to 16-bit RGB through the ColorMap (reds, then greens, then blues; entries kept exactly).
+fn expand_palette(indices: Samples, map: &[u16], bits: u16) -> Result<Samples> {
+    let n = 1_usize.checked_shl(u32::from(bits)).ok_or(TiffError::DimsOverflow)?;
+    let idx: Vec<usize> = match indices {
+        Samples::U8(v) => v.into_iter().map(usize::from).collect(),
+        Samples::U16(v) => v.into_iter().map(usize::from).collect(),
+        _ => return Err(TiffError::unsupported("bits_unsupported")),
+    };
+    let mut out = Vec::with_capacity(idx.len().checked_mul(3).ok_or(TiffError::DimsOverflow)?);
+    for i in idx {
+        if i >= n {
+            return Err(TiffError::Corrupt("palette_index_out_of_range"));
+        }
+        for plane in 0..3_usize {
+            let at = plane.checked_mul(n).and_then(|b| b.checked_add(i)).ok_or(TiffError::DimsOverflow)?;
+            out.push(*map.get(at).ok_or(TiffError::Corrupt("bad_color_map"))?);
+        }
+    }
+    Ok(Samples::U16(out))
 }

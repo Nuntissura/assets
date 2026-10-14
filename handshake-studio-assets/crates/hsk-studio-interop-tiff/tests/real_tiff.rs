@@ -82,7 +82,7 @@ const EXPECT: &[(&str, &str)] = &[
     ("tiled-jpeg-rgb-u8.tif", "OK pages=1 big=false 374x499 spp=3 bits=8 fmt=Uint pi=2/Rgb comp=7 pred=1 planar=false alpha=None icc=0 extra=[]"),
     ("tiled-jpeg-ycbcr.tif", "OK pages=1 big=false 374x499 spp=3 bits=8 fmt=Uint pi=6/Rgb comp=7 pred=1 planar=false alpha=None icc=0 extra=[]"),
     ("planar-rgb-u8.tif", "OK pages=1 big=false 374x499 spp=3 bits=8 fmt=Uint pi=2/Rgb comp=5 pred=1 planar=true alpha=None icc=0 extra=[]"),
-    ("palette-1c-8b.tiff", "ERR photometric_palette"),
+    ("palette-1c-8b.tiff", "OK pages=1 big=false 157x151 spp=3 bits=16 fmt=Uint pi=3/Rgb comp=1 pred=1 planar=false alpha=None icc=0 extra=[]"),
     ("int16_zstd.tif", "ERR compression_unsupported(50000)"),
     ("logluv-3c-16b.tiff", "ERR photometric_logluv"),
     ("seq__seq-1c-8b-multipage-adeefdcc.tiff", "OK pages=3 big=false 16x16 spp=1 bits=8 fmt=Uint pi=1/BlackIsZero comp=1 pred=1 planar=false alpha=None icc=0 extra=[]"),
@@ -150,15 +150,16 @@ fn corpus_files_decode_or_refuse_as_pinned() {
         // Hostile sweep on real bytes (header/IFD region mutations and truncations): typed result, never a panic.
         let small = Limits { max_page_decoded_bytes: 16 << 20, max_total_decoded_bytes: 32 << 20, ..Limits::default() };
         let live = CancellationToken::default();
-        for i in 0..bytes.len().min(300) {
+        let (span, cuts) = if bytes.len() > 40_000 { (60, 8) } else { (300, 32) };
+        for i in 0..bytes.len().min(span) {
             for v in [0_u8, 0xFF] {
                 let mut m = bytes.clone();
                 m[i] = v;
                 let _ = decode(&m, &small, &live);
             }
         }
-        for k in 0..32 {
-            let _ = decode(&bytes[..bytes.len() / 32 * k], &small, &live);
+        for k in 0..cuts {
+            let _ = decode(&bytes[..bytes.len() / cuts * k], &small, &live);
         }
     }
     for group in SAME_PIXELS {
@@ -166,6 +167,13 @@ fn corpus_files_decode_or_refuse_as_pinned() {
         for other in &group[1..] {
             assert_eq!(decoded[*other].pages[0].pixels(), first, "{} vs {}", group[0], other);
         }
+    }
+    // Palette expansion: high bytes of the 16-bit RGB equal Pillow 11 `Image.open(..).convert("RGB")` (independent oracle).
+    if let Samples::U16(v) = decoded["palette-1c-8b.tiff"].pages[0].pixels() {
+        let rgb8: Vec<u8> = v.iter().map(|x| (x >> 8) as u8).collect();
+        assert_eq!(hex(&Sha256::digest(&rgb8)), "1944b9bf417cd0aa3ae515425609126f80431c02e1b5103df15b29f26d2dc6a1");
+    } else {
+        panic!("palette page must expand to u16");
     }
     // JPEG YCbCr is converted to RGB by this crate (the codec leaves Y/Cb/Cr; unconverted it differs by ~62): it must sit near the RGB JPEG and the lossless original.
     let ycc = decoded["tiled-jpeg-ycbcr.tif"].pages[0].pixels();

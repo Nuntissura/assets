@@ -240,8 +240,8 @@ fn typed_refusals_multipage_and_observe_frame() {
         b.page(2, 2, pi, bits, &[0; 12], vec![]);
         patch(b.buf, comp)
     };
-    assert_eq!(dec(&mk(8, 1)).unwrap_err(), TiffError::unsupported("photometric_cielab"));
-    assert_eq!(dec(&mk(3, 1)).unwrap_err(), TiffError::unsupported("photometric_palette"));
+    assert_eq!(dec(&mk(10, 1)).unwrap_err(), TiffError::unsupported("photometric_itulab"));
+    assert_eq!(dec(&mk(4, 1)).unwrap_err(), TiffError::unsupported("photometric_mask"));
     assert_eq!(
         dec(&mk(1, 50000)).unwrap_err(),
         TiffError::unsupported_value("compression_unsupported", 50000)
@@ -273,7 +273,7 @@ fn typed_refusals_multipage_and_observe_frame() {
     dead.cancel();
     for (result, want) in [
         (dec(&b.buf).map(|_| ()), Outcome::Success),
-        (dec(&mk(3, 1)).map(|_| ()), Outcome::Failure(hsk_studio_observe::FailureCode::Unsupported)),
+        (dec(&mk(10, 1)).map(|_| ()), Outcome::Failure(hsk_studio_observe::FailureCode::Unsupported)),
         (decode(&b.buf, &Limits::default(), &dead).map(|_| ()), Outcome::Canceled),
     ] {
         let mut sink = VecSink::default();
@@ -283,4 +283,80 @@ fn typed_refusals_multipage_and_observe_frame() {
         assert_eq!(sink.0.len(), 1);
         assert_eq!(sink.0[0].0, DeliveryClass::Terminal);
     }
+}
+
+/// 6. Slice 2: palette expansion through the ColorMap, CIELab delivered as stored, ImageSourceData envelope.
+#[test]
+fn palette_cielab_and_image_source_data() {
+    for le in [true, false] {
+        // 4x2 8-bit palette; entry i maps to (i*257, 65535 - i*257, i*100).
+        let idx: Vec<u8> = vec![0, 1, 2, 3, 255, 254, 1, 0];
+        let mut map = Vec::new();
+        for plane in 0..3_u32 {
+            for i in 0..256_u32 {
+                map.push(match plane {
+                    0 => (i * 257) as u16,
+                    1 => (65535 - i * 257) as u16,
+                    _ => (i * 100) as u16,
+                });
+            }
+        }
+        let mut b = Builder::new(le);
+        b.page(4, 2, 3, &[8], &idx, vec![shorts_e(le, 320, &map)]);
+        let p = &dec(&b.buf).expect("palette").pages[0];
+        let want: Vec<u16> = idx
+            .iter()
+            .flat_map(|i| {
+                let i = u32::from(*i);
+                [(i * 257) as u16, (65535 - i * 257) as u16, (i * 100) as u16]
+            })
+            .collect();
+        assert_eq!(p.pixels(), &Samples::U16(want));
+        assert_eq!((p.source_photometric, p.source_bits_per_sample, p.bits_per_sample, p.samples_per_pixel), (3, 8, 16, 3));
+
+        // CIELab 8-bit and 16-bit: raw samples, a/b two-complement left as stored.
+        let lab8: Vec<u8> = vec![200, 0x80, 0x7F, 10, 0xFF, 1];
+        let mut b = Builder::new(le);
+        b.page(2, 1, 8, &[8, 8, 8], &lab8, vec![]);
+        let p = &dec(&b.buf).expect("lab8").pages[0];
+        assert_eq!((p.photometric, p.pixels()), (Photometric::CieLab, &Samples::U8(lab8)));
+        let lab16: Vec<u16> = vec![60000, 0x8000, 0x7FFF, 10, 0xFFFF, 1];
+        let raw16: Vec<u8> = lab16.iter().flat_map(|v| if le { v.to_le_bytes() } else { v.to_be_bytes() }).collect();
+        let mut b = Builder::new(le);
+        b.page(2, 1, 8, &[16, 16, 16], &raw16, vec![]);
+        assert_eq!(dec(&b.buf).expect("lab16").pages[0].pixels(), &Samples::U16(lab16));
+
+        // Wrong ColorMap length is corrupt, not guessed.
+        let mut b = Builder::new(le);
+        b.page(4, 2, 3, &[8], &idx, vec![shorts_e(le, 320, &map[..300])]);
+        assert_eq!(dec(&b.buf).unwrap_err(), TiffError::Corrupt("bad_color_map"));
+    }
+
+    // ImageSourceData: tag 37724 comes out raw with the file byte order; the envelope keys decode.
+    let sig = b"Adobe Photoshop Document Data Block\0";
+    for (key, order, wide) in [
+        (b"8BIM", ByteOrder::Big, false),
+        (b"MIB8", ByteOrder::Little, false),
+        (b"8B64", ByteOrder::Big, true),
+        (b"46B8", ByteOrder::Little, true),
+    ] {
+        let mut data = sig.to_vec();
+        data.extend_from_slice(key);
+        data.extend_from_slice(b"8BIMLayr\x00\x00\x00\x04abcd");
+        let mut b = Builder::new(false);
+        b.page(2, 2, 1, &[8], &[1, 2, 3, 4], vec![bytes_e(37724, &data), bytes_e(34377, b"res")]);
+        let p = &dec(&b.buf).unwrap().pages[0];
+        let block = p.image_source_data.clone().expect("37724");
+        assert_eq!((block.byte_order, &block.bytes), (ByteOrder::Big, &data));
+        assert_eq!(p.image_resources.as_ref().map(|r| r.bytes.as_slice()), Some(&b"res"[..]));
+        let parsed = image_source_data(&block).unwrap();
+        assert_eq!((parsed.byte_order, parsed.wide_sizes), (order, wide));
+        assert_eq!(parsed.blocks, b"8BIMLayr\x00\x00\x00\x04abcd");
+    }
+    let bad = RawBlock { byte_order: ByteOrder::Big, bytes: b"Adobe Photoshop Document Data Blocx\0XXXX".to_vec() };
+    assert_eq!(image_source_data(&bad).unwrap_err(), TiffError::Corrupt("image_source_data_signature"));
+    let key = RawBlock { byte_order: ByteOrder::Big, bytes: [&sig[..], b"ZZZZ"].concat() };
+    assert_eq!(image_source_data(&key).unwrap_err().code(), "image_source_data_key");
+    let short = RawBlock { byte_order: ByteOrder::Big, bytes: sig.to_vec() };
+    assert_eq!(image_source_data(&short).unwrap_err(), TiffError::Truncated);
 }

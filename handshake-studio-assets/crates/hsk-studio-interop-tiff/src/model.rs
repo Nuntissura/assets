@@ -16,6 +16,9 @@ pub enum Photometric {
     Cmyk,
     /// ICC L*a*b* (PI 9): L, a+128, b+128 as unsigned samples.
     IccLab,
+    /// CIE L*a*b* (PI 8) exactly as stored: L unsigned, a and b two-complement signed values held in the
+    /// unsigned sample type (8 or 16 bits); no scaling or offset is applied.
+    CieLab,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,9 +92,12 @@ pub struct PageInfo {
     pub width: u32,
     pub height: u32,
     pub photometric: Photometric,
-    /// PhotometricInterpretation value in the file (0 WhiteIsZero, 1 BlackIsZero, 2 RGB, 5 CMYK, 6 YCbCr, 9 ICCLab).
+    /// PhotometricInterpretation value in the file (0 WhiteIsZero, 1 BlackIsZero, 2 RGB, 3 palette, 5 CMYK, 6 YCbCr, 8 CIELab, 9 ICCLab).
     pub source_photometric: u16,
+    /// Bits per sample of `pixels()`. Palette pages are expanded to 16-bit RGB.
     pub bits_per_sample: u16,
+    /// Bits per sample stored in the file (8 or 16 index bits for a palette page).
+    pub source_bits_per_sample: u16,
     pub sample_format: SampleFormat,
     pub samples_per_pixel: u16,
     /// File PlanarConfiguration was 2; the samples are interleaved regardless.
