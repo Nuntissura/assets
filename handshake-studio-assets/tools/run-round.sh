@@ -21,7 +21,8 @@
 # Units (each its own result; all run; a unit's build failure skips only that unit's test run):
 #   default    union over the selection, default features: one build (nextest --no-run) + one run (--no-fail-fast);
 #              files at the results root (build.*, run.*, list.txt, canary-filter.txt, junit.xml) as before.
-#              Per-test timeouts: .config/nextest.toml slow-timeout (CX-EXEC-005).
+#              Per-test timeouts: .config/nextest.toml slow-timeout (CX-EXEC-005); a junit <failure type="test
+#              timeout"> is reported timed_out (round.json timed_out_tests), not failed (aggregator self-check).
 #   features   per selected crate and feature set declared in .config/round-features.toml: -p CRATE --features SET,
 #              own build + run under features/CRATE+F1+F2/. A set naming a feature (or crate) the candidate lacks is
 #              recorded feature_absent (crate_absent) and fails the round with exit 74 (declared unit absent).
@@ -721,20 +722,36 @@ def summary(d):
             lines += [l.strip() for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if re.match(r"^ *Summary ", l)]
     return lines[-1] if lines else ""
 NP = re.compile(r"^[ \t]*NOT_PROVEN:[ \t]*(.*?)[ \t\r]*$", re.M)
-def junit(path, unit, feats):
+def case_status(case):
+    # nextest junit: a per-test timeout is <failure type="test timeout"/> (CX-EXEC-005: timed_out, not failed).
+    bad = [c for c in case if c.tag in ("failure", "error")]
+    if bad:
+        return "timed_out" if all(c.get("type") == "test timeout" for c in bad) else "failed"
+    return "skipped" if any(c.tag == "skipped" for c in case) else "passed"
+def junit(path, unit, feats, root=None):
     out = []
-    if not path.exists():
-        return out
-    for suite in ET.parse(path).getroot().iter("testsuite"):
+    if root is None:
+        if not path.exists():
+            return out
+        root = ET.parse(path).getroot()
+    for suite in root.iter("testsuite"):
         binary = suite.get("name", "")
         for case in suite.iter("testcase"):
-            tags = {c.tag for c in case}
-            status = "failed" if tags & {"failure", "error"} else "skipped" if "skipped" in tags else "passed"
+            status = case_status(case)
             text = "\n".join(c.text or "" for c in case if c.tag in ("system-out", "system-err"))
             out.append({"unit": unit, "kind": "nextest", "crate": binary.split("::")[0], "features": feats,
                         "binary": binary, "name": case.get("name", ""), "status": status,
                         "seconds": float(case.get("time") or 0), "not_proven": NP.findall(text)})
     return out
+# Self-check of the junit mapping (synthetic: one pass, one fail, one timeout, one skip); a mismatch is an aggregator
+# defect, so the round reports it instead of mislabelling verdicts.
+_probe = ET.fromstring('<testsuites><testsuite name="c::b"><testcase name="p"/>'
+                       '<testcase name="f"><failure type="test failure with exit code 101"/></testcase>'
+                       '<testcase name="t"><failure type="test timeout"/></testcase>'
+                       '<testcase name="s"><skipped/></testcase></testsuite></testsuites>')
+_got = {t["name"]: t["status"] for t in junit(None, "self-check", [], root=_probe)}
+if _got != {"p": "passed", "f": "failed", "t": "timed_out", "s": "skipped"}:
+    sys.exit(f"run-round: aggregator self-check failed (junit status mapping): {_got}")
 DOC = re.compile(r"^test (.+?) +\.\.\. (ok|FAILED|ignored|TIMEOUT|NOT_RUN)\b")
 DOC_STATUS = {"ok": "passed", "FAILED": "failed", "ignored": "skipped", "TIMEOUT": "timed_out", "NOT_RUN": "not_run"}
 def doctests(path, unit, crate, feats):

@@ -1326,6 +1326,7 @@ dependencies = [
  "hsk-studio-develop",
  "hsk-studio-folio",
  "hsk-studio-interop-psd",
+ "hsk-studio-interop-raster",
  "hsk-studio-interop-tiff",
  "hsk-studio-observe",
  "hsk-studio-package",
