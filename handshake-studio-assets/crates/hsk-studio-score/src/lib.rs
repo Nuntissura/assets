@@ -12,6 +12,7 @@ mod bounce;
 mod chain;
 mod digest;
 mod dsp;
+mod dynamics;
 mod engine;
 mod eq;
 mod error;
@@ -24,6 +25,7 @@ mod spectrum;
 mod src_bounce;
 mod stage;
 mod stream_resample;
+mod truepeak;
 
 pub use block::{InputBlock, OutputBlock};
 pub use bounce::{BounceChunk, BounceReceipt, BounceRequest};
@@ -33,6 +35,12 @@ pub use dsp::{
     ChannelMix, Gain, HARD_LIMITER_INPUT_BOOST_DB, HARD_LIMITER_LOOKAHEAD_MS,
     HARD_LIMITER_MAX_AMP_DB, HARD_LIMITER_RELEASE_MS, HardLimiter, HardLimiterParams, Pan, Unity,
     db_to_linear, linear_to_db, normalised_to_value, value_to_normalised,
+};
+pub use dynamics::{
+    DYNAMICS_ATTACK_MS, DYNAMICS_HOLD_MS, DYNAMICS_KNEE_DB, DYNAMICS_MAKEUP_DB, DYNAMICS_RANGE_DB,
+    DYNAMICS_RATIO, DYNAMICS_RELEASE_MS, DYNAMICS_RMS_WINDOW_MS, DYNAMICS_THRESHOLD_DB, Detector,
+    Dynamics, DynamicsMode, DynamicsParams, LIMITER_CEILING_DB, LIMITER_LOOKAHEAD_MS,
+    LIMITER_RELEASE_MS, LimiterParams, LookaheadLimiter,
 };
 pub use engine::{BlockReceipt, Engine, Processor, RequestContext, Reservation};
 pub use eq::{
