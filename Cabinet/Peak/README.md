@@ -1,14 +1,14 @@
 ---
 file_id: cabinet-peak-manual-v1
 file_kind: module-manual
-updated_at: 2026-10-11
+updated_at: 2026-10-14
 ---
 
 <topic id="use">
 
 Peak is an independent, optional hover preview asset. Its default crate has no dependencies and performs no file, network or database access. Hosts supply authorized stable `Key` values, display names and typed tags. Call `hover` on a row or model-focused target; `leave` otherwise. Compact shows name and tags only. `tick` emits one `PreviewRequest` only at expanded stage, after both configured delays. Decode in an owned bounded worker, then return `PreviewCompletion`. Requests are independent of Cabinet's durable mutation slot. Escape calls `dismiss`; the same target stays dismissed until pointer leave. Late completions for replaced resource/context/request identities are rejected.
 
-`Settings::valid` validates settings. Compact and expanded presentation share data; expansion occurs after `hover_delay_ms + expand_delay_ms`. `egui_view::PeakView::show` consumes egui's Window geometry and resizing. The host passes the row anchor each frame and retains it while the returned rectangle is hovered. Resized dimensions update settings. The host persists settings if desired.
+`Settings::valid` validates settings. Compact and expanded presentation share data; expansion occurs after `hover_delay_ms + expand_delay_ms`. The separate `cabinet-peak-egui` crate provides `cabinet_peak_egui::PeakView::show`, which consumes egui's Window geometry and resizing. The host passes the row anchor each frame and retains it while the returned rectangle is hovered. Resized dimensions update settings. The host persists settings if desired.
 
 The optional `images` feature decodes PNG, JPEG, WebP, GIF (first image), BMP, TIFF, ICO, TGA, PNM, QOI, HDR, EXR, DDS and Farbfeld. UTF-8 and BOM-marked UTF-16 text previews work with any source language as plain text. Binary/control-rich input is unavailable; unknown encoding is explicit. Text and images respect input/output bounds. No syntax execution or external viewer launches occur.
 
@@ -17,6 +17,8 @@ The optional `raw` feature attempts embedded previews, then thumbnails using Raw
 Source decoding has a separate `max_decode_pixels` ceiling (default 100 million, maximum 200 million) from `max_output_pixels` (default 4 million). The input ceiling defaults to 128 MiB and hosts may lower it. Image headers and RAW development headers are checked against the decode ceiling; accepted sources are downscaled without enlargement to fit configured popup dimensions and the output pixel ceiling. Common image decoder orientation is applied before downscaling. Camera-specific RAW orientation/color metadata still needs sample proof.
 
 Malformed data, missing embedded previews and disabled providers produce typed `Unsupported`/`Failed` content. Diagnostics are bounded. Native decoding allocates the source image before thumbnailing. `image` allocation limits are best-effort; Rawler may panic or allocate before a pixel bound is known. Panic capture does not prevent abort/OOM. Strict decode deadlines/memory isolation require a bounded host worker process. UI timeout or discarded result never proves decoding stopped. Host must preserve worker ownership and resource limits through completion.
+
+The host supplies its own GUI or embeds the separate adapter; `cabinet-peak` has no GUI feature or framework dependency.
 
 Validation targets: default core timing/fence/text tests; images corrupt header/pixel limit/representative codecs; raw representative camera/model/compression and malformed input; egui hover/expansion/Escape/resize/context change. Native x64/ARM proofs belong to the consuming host. This asset's source is not a Handshake integration verdict.
 

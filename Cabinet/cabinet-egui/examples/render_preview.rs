@@ -1,5 +1,6 @@
 //! Software capture of actual egui tessellation. No window, process or GPU is launched.
-use cabinet::{egui_view::CabinetView, *};
+use cabinet::*;
+use cabinet_egui::CabinetView;
 use egui::{
     epaint::{ImageData, Primitive},
     Context as EguiContext, TextureId,
@@ -92,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let height = 600usize;
     let mut textures: HashMap<TextureId, egui::ColorImage> = HashMap::new();
     let mut pixels = vec![[24u8, 24, 27]; width * height];
-    let mut layout: Option<cabinet::egui_view::ViewResponse> = None;
+    let mut layout: Option<cabinet_egui::ViewResponse> = None;
     let frame_count = if mode == "menu" || mode == "color" {
         12
     } else {

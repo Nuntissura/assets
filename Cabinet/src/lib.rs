@@ -4,5 +4,4 @@ mod core;
 pub use cabinet_peak as peak;
 pub use contracts::*;
 pub use core::Cabinet;
-#[cfg(feature = "egui")]
-pub mod egui_view;
+pub mod interaction;

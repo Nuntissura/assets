@@ -1,7 +1,7 @@
 {
   "schema": "cabinet.asset_contract@1",
   "file_id": "CABINET-ASSET-001",
-  "status": "VALIDATED_STANDALONE",
+  "status": "GUI_SPLIT_VALIDATED_STANDALONE",
   "purpose": "Reusable hierarchy navigation and host-owned operations for database and filesystem trees",
   "operator_scope": {
     "destination": "Cabinet/",
@@ -12,11 +12,11 @@
   "requirements": [
     {
       "id": "CAB-001",
-      "requirement": "Default Rust core has no GUI, database, network, filesystem or forge dependency"
+      "requirement": "Rust core has no GUI-framework dependency under any feature; hosts provide GUI rendering and assets provide reusable logic"
     },
     {
       "id": "CAB-002",
-      "requirement": "Optional native egui renderer exposes stable diagnostic and accessibility identities"
+      "requirement": "Separate cabinet-egui and cabinet-peak-egui renderer crates expose stable diagnostic and accessibility identities"
     },
     {
       "id": "CAB-003",
@@ -153,6 +153,14 @@
     {
       "id": "CAB-036",
       "requirement": "Independent dependency and code inspection rejects dead scaffolding, redundant constructions and unused public integration paths"
+    },
+    {
+      "id": "CAB-039",
+      "requirement": "Framework-independent InteractionState owns reusable editing, context reconciliation, move preflight, lazy expansion and preview scheduling for host GUIs"
+    },
+    {
+      "id": "CAB-040",
+      "requirement": "The repository asset index records Cabinet, Peak and their separate GUI adapter crate boundaries"
     }
   ],
   "research_basis": {
@@ -517,6 +525,61 @@
       "src/core.rs": "129fc9b2ed51ef75e20a1ddb1e29cd56bd6b9d47fd25c20215997dab6e830b5f",
       "src/egui_view.rs": "99036dccd43ed076c16790ac72d4c38e9e771379d9c2892bbdb155016360a321",
       "src/lib.rs": "56993d4591bade6529d0220e6132e7e5a3b30255fbcc9b0ef800b1b557c6ef49"
+    }
+  },
+  "gui_split": {
+    "updated_at": "2026-10-14",
+    "status": "VALIDATED_STANDALONE",
+    "logic": [
+      "Cargo.toml",
+      "Peak/Cargo.toml",
+      "src/interaction.rs"
+    ],
+    "gui_adapters": [
+      "cabinet-egui/Cargo.toml",
+      "Peak/cabinet-peak-egui/Cargo.toml"
+    ],
+    "index": "../assets-index.yaml",
+    "research_basis": {
+      "sources": [
+        "https://doc.rust-lang.org/cargo/reference/workspaces.html",
+        "https://github.com/emilk/egui/blob/main/crates/egui/Cargo.toml",
+        "https://github.com/emilk/egui/blob/main/crates/eframe/Cargo.toml"
+      ],
+      "pattern": "Separate crates for independent logic, GUI framework and host window integration",
+      "selected": "Asset-local workspace; headless interaction state; separate host-embedded adapters",
+      "rejected": [
+        "Optional GUI framework embedded in core",
+        "Duplicated host interaction logic",
+        "Repository-wide workspace migration"
+      ],
+      "risks": [
+        "Changed imports can break hosts",
+        "Copied GUI tests can omit fixture helpers",
+        "Old proof hashes do not describe the new crate layout"
+      ],
+      "mitigations": [
+        "Document migration and check all local consumers",
+        "Compile all targets then run moved gesture tests",
+        "Retain prior proof as historical and validate the staged split independently"
+      ]
+    },
+    "prior_proof": "The existing proof section is historical evidence for its recorded source inputs; it does not validate this split",
+    "proof_commands": [
+      "cargo test --locked -p cabinet --test interaction",
+      "cargo test --locked --workspace --all-features",
+      "cargo tree --locked -p cabinet --all-features -e normal",
+      "cargo tree --locked -p cabinet-peak --all-features -e normal",
+      "cargo run --locked -p cabinet-egui --example render_preview -- <output.ppm>"
+    ],
+    "results": {
+      "candidate": "Isolated Git-index export excluding pre-existing Bin work and other staged assets",
+      "workspace_all_feature_tests_passed": 109,
+      "headless_interaction_tests_passed": 4,
+      "core_dependency_graphs": "Cabinet and Peak contain no GUI frameworks with all features enabled",
+      "visual": "Directly inspected software renders: tree, menu, color and expanded Peak at 900x600",
+      "index": "Partial Cabinet/Peak index reconciled against actual manifests and paths",
+      "migration": "All local Cabinet examples and tests use separate adapter crates; external hosts are not changed by this split"
     }
   }
 }

@@ -168,19 +168,34 @@ name = "cabinet"
 version = "0.1.0"
 dependencies = [
  "cabinet-peak",
- "egui",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cabinet-egui"
+version = "0.1.0"
+dependencies = [
+ "cabinet",
+ "cabinet-peak-egui",
+ "egui",
 ]
 
 [[package]]
 name = "cabinet-peak"
 version = "0.1.0"
 dependencies = [
- "egui",
  "image",
  "rawler",
  "serde",
+]
+
+[[package]]
+name = "cabinet-peak-egui"
+version = "0.1.0"
+dependencies = [
+ "cabinet-peak",
+ "egui",
 ]
 
 [[package]]

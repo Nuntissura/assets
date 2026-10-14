@@ -1,0 +1,10 @@
+[package]
+name = "cabinet-peak-egui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Host-embedded egui adapter for Peak hover previews"
+
+[dependencies]
+cabinet-peak = { version = "0.1.0", path = ".." }
+egui = { version = "=0.33.3", features = ["accesskit"] }

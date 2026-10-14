@@ -126,77 +126,7 @@ fn diagnostics(size: usize, shape: &str, phase: &str, c: &Cabinet) {
     let d = c.diagnostics();
     println!("{{\"schema\":\"cabinet-benchmark-v1\",\"nodes\":{size},\"shape\":\"{shape}\",\"operation\":\"diagnostics\",\"phase\":\"{phase}\",\"loaded\":{},\"projected\":{},\"rendered\":{},\"projection_rebuilds\":{}}}", d.loaded,d.projected,d.rendered,d.projection_rebuilds);
 }
-#[cfg(feature = "egui")]
-fn frames(size: usize, shape: &str, c: &mut Cabinet) {
-    use cabinet::egui_view::CabinetView;
-    c.select("e0", SelectionModifiers::default()).unwrap();
-    let ctx = egui::Context::default();
-    let mut view = CabinetView::new("benchmark-view");
-    let mut elapsed = Vec::new();
-    let mut mounted_max = 0;
-    let mut stationary_ids = Vec::new();
-    let mut scroll_pointer = egui::pos2(300.0, 300.0);
-    let mut scroll_applicable = false;
-    let mut changed_viewport_frames = 0;
-    let memory = heap::begin();
-    for frame in 0..20 {
-        let start = Instant::now();
-        let _ = ctx.run(
-            egui::RawInput {
-                time: Some(frame as f64 / 60.0),
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::Vec2::new(700.0, 500.0),
-                )),
-                events: if frame >= 10 && scroll_applicable {
-                    vec![
-                        egui::Event::PointerMoved(scroll_pointer),
-                        egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Point,
-                            delta: egui::vec2(0.0, -120.0),
-                            modifiers: Default::default(),
-                        },
-                    ]
-                } else {
-                    vec![]
-                },
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let response = view.show(ui, c);
-                    mounted_max = mounted_max.max(response.rows.len());
-                    if frame >= 9 {
-                        let mut ids: Vec<_> = response.rows.keys().cloned().collect();
-                        ids.sort_unstable();
-                        if frame == 9 {
-                            scroll_applicable = c.projected_rows().len() > ids.len();
-                            let mut centers: Vec<_> =
-                                response.rows.values().map(|rect| rect.center()).collect();
-                            centers.sort_by(|a, b| a.y.total_cmp(&b.y));
-                            if !centers.is_empty() {
-                                scroll_pointer = centers[centers.len() / 2];
-                            }
-                            stationary_ids = ids;
-                        } else if ids != stationary_ids {
-                            changed_viewport_frames += 1;
-                        }
-                    }
-                });
-            },
-        );
-        elapsed.push(start.elapsed().as_nanos());
-    }
-    elapsed.sort_unstable();
-    let (allocation_calls, live_heap_bytes, peak_extra_heap_bytes) = heap::end(memory);
-    let scroll_input_frames = if scroll_applicable { 10 } else { 0 };
-    println!("{{\"schema\":\"cabinet-benchmark-v1\",\"nodes\":{size},\"shape\":\"{shape}\",\"operation\":\"egui-frames\",\"frames\":20,\"stationary_frames\":10,\"scroll_input_frames\":{scroll_input_frames},\"scroll_applicable\":{scroll_applicable},\"changed_viewport_frames\":{changed_viewport_frames},\"p50_ns\":{},\"p95_ns\":{},\"max_ns\":{},\"mounted_max\":{mounted_max},\"allocation_calls\":{allocation_calls},\"live_heap_bytes\":{live_heap_bytes},\"peak_extra_heap_bytes\":{peak_extra_heap_bytes},\"instrumented\":true}}",elapsed[9],elapsed[18],elapsed[19]);
-    assert!(
-        !scroll_applicable || changed_viewport_frames > 0,
-        "scrollable benchmark must observe changed mounted identities after wheel input"
-    );
-    diagnostics(size, shape, "after-egui", c);
-}
+
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let sizes: Vec<usize> = if args.is_empty() {
@@ -274,8 +204,6 @@ fn main() {
             measure(size, shape, "expanded", "rows-expanded", || {
                 black_box(c.rows())
             });
-            #[cfg(feature = "egui")]
-            frames(size, shape, &mut c);
             let mut changed = c.entry(&last).unwrap().clone();
             changed.revision += 1;
             changed.label = "Delta-last".into();

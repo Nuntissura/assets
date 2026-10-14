@@ -1549,8 +1549,7 @@ impl Cabinet {
 
 impl Cabinet {
     // Cache this context-bound list when the dialog opens; the request rechecks all rights.
-    #[cfg(feature = "egui")]
-    pub(crate) fn move_destinations(&self, id: &str) -> Vec<(Option<EntryId>, bool)> {
+    pub fn move_destinations(&self, id: &str) -> Vec<(Option<EntryId>, bool)> {
         let source = vec![id.to_owned()];
         let allowed = self
             .validate_loaded_move(&source, &Placement::Into(None))

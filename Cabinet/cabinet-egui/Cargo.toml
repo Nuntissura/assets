@@ -1,0 +1,17 @@
+[package]
+name = "cabinet-egui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Host-embedded egui adapter for Cabinet hierarchy navigation"
+
+[features]
+default = []
+serde = ["cabinet/serde"]
+preview-images = ["cabinet/preview-images"]
+preview-raw = ["cabinet/preview-raw"]
+
+[dependencies]
+cabinet = { version = "0.1.0", path = ".." }
+cabinet-peak-egui = { version = "0.1.0", path = "../Peak/cabinet-peak-egui" }
+egui = { version = "=0.33.3", features = ["accesskit"] }

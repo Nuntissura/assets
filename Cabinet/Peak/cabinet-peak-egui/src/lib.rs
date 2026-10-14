@@ -1,5 +1,5 @@
 //! egui owns window geometry, resize and focus; Peak supplies fenced preview state.
-use crate::{Content, Key, Peak, Stage};
+use cabinet_peak::{Content, Key, Peak, Stage};
 use egui::{Rect, TextureHandle};
 pub struct PeakView {
     namespace: String,
@@ -200,7 +200,7 @@ fn hex(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Settings, Tag};
+    use cabinet_peak::{Settings, Tag};
     fn render(ctx: &egui::Context, view: &mut PeakView, peak: &mut Peak) -> Rect {
         render_events(ctx, view, peak, vec![])
     }

@@ -10,10 +10,8 @@ default = []
 serde = ["dep:serde"]
 images = ["dep:image"]
 raw = ["images", "dep:rawler"]
-egui = ["dep:egui"]
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"], optional = true }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico", "tga", "pnm", "qoi", "hdr", "exr", "dds", "ff"], optional = true }
 rawler = { version = "=0.8.0", optional = true }
-egui = { version = "=0.33.3", optional = true, features = ["accesskit"] }

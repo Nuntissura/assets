@@ -1,0 +1,43 @@
+schema: assets.index.v1
+updated_at: '2026-10-14'
+coverage: partial
+coverage_note: Only Cabinet and Peak are indexed. Other asset folders are not yet catalogued.
+assets:
+  - id: CABINET-ASSET-001
+    name: Cabinet
+    path: Cabinet
+    manual: Cabinet/README.md
+    contract: Cabinet/spec/cabinet.contract.json
+    components:
+      - CABINET-PEAK-ASSET-001
+    packages:
+      - name: cabinet
+        manifest: Cabinet/Cargo.toml
+        role: logic
+        api: Cabinet/src/lib.rs
+        interaction: Cabinet/src/interaction.rs
+        depends_on:
+          - cabinet-peak
+      - name: cabinet-egui
+        manifest: Cabinet/cabinet-egui/Cargo.toml
+        role: host-gui-adapter
+        api: Cabinet/cabinet-egui/src/lib.rs
+        depends_on:
+          - cabinet
+          - cabinet-peak-egui
+  - id: CABINET-PEAK-ASSET-001
+    name: Peak
+    path: Cabinet/Peak
+    manual: Cabinet/Peak/README.md
+    packages:
+      - name: cabinet-peak
+        manifest: Cabinet/Peak/Cargo.toml
+        role: logic
+        api: Cabinet/Peak/src/lib.rs
+        depends_on: []
+      - name: cabinet-peak-egui
+        manifest: Cabinet/Peak/cabinet-peak-egui/Cargo.toml
+        role: host-gui-adapter
+        api: Cabinet/Peak/cabinet-peak-egui/src/lib.rs
+        depends_on:
+          - cabinet-peak

@@ -3,8 +3,6 @@ mod decode;
 pub use decode::*;
 mod scheduler;
 pub use scheduler::*;
-#[cfg(feature = "egui")]
-pub mod egui_view;
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

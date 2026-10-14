@@ -1,7 +1,7 @@
 ---
 file_id: CABINET-MANUAL-001
 file_kind: asset_manual
-updated_at: 2026-10-11
+updated_at: 2026-10-14
 ---
 
 <topic id="purpose">
@@ -10,7 +10,7 @@ updated_at: 2026-10-11
 
 Portable Rust hierarchy navigation with host-owned operations. Database folders, files, documents and bookmarks can share tree mechanics while retaining their own storage semantics.
 
-The default crate and its Peak subcrate have no external runtime dependencies. The optional `egui` feature provides native UI. Cabinet does not connect to Notes, Forgejo, HandForge, databases, networks or the filesystem. Explicit decoder helpers consume authorized bytes supplied by the host.
+The default crate and its Peak subcrate have no external runtime dependencies. Hosts provide the GUI. Separate `cabinet-egui` and `cabinet-peak-egui` crates provide optional egui adapters for hosts that use that framework. Cabinet does not connect to Notes, Forgejo, HandForge, databases, networks or the filesystem. Explicit decoder helpers consume authorized bytes supplied by the host.
 
 </topic>
 
@@ -20,7 +20,7 @@ The default crate and its Peak subcrate have no external runtime dependencies. T
 
 Supply a `Snapshot` of stable entries and a scoped `Context`, then construct `Cabinet::new(snapshot)`. The host supplies resource IDs, revision numbers, capabilities, child loading state and complete folder ancestry. `EntryId` identifies a tree occurrence; `resource_id` identifies the underlying resource, so bookmarks and folder memberships may represent the same resource separately.
 
-Enable `egui` to call `CabinetView::show(ui, &mut cabinet)`. Execute each returned `Request` through the owning application. Before writing, recheck its context, entry revisions, permissions and canonical hierarchy. Return `Completion` with a canonical snapshot on success or a diagnostic error on failure. A success without a canonical reread is not persistence proof.
+Depend on `cabinet-egui` and import `cabinet_egui::CabinetView` to call `CabinetView::show(ui, &mut cabinet)`. Execute each returned `Request` through the owning application. Before writing, recheck its context, entry revisions, permissions and canonical hierarchy. Return `Completion` with a canonical snapshot on success or a diagnostic error on failure. A success without a canonical reread is not persistence proof.
 
 `reveal(id)` expands ancestor paths and selects the entry. Hosts should call it when the active editor changes. `replace(snapshot)` refreshes entries while retaining live expansion and selection in the same context. A scope or generation change clears private interaction and history state. Never reuse a generation after account/workspace revocation.
 
@@ -40,7 +40,7 @@ Before/after placement is available where the destination folder uses Manual ord
 
 [Peak](Peak/README.md) is independently reusable. Hover first shows the full name and colored tags, then expands a resizable preview after the configured delay. Escape dismisses it; pointer travel into the preview keeps it open. Its requests are separate from the durable operation slot.
 
-Execute `ViewResponse.preview_requests` in an owned worker and return content through `view.peak.complete(completion)`. The request identifies account/workspace scope, generation, context revision, occurrence, resource and entry revision; late results cannot replace another hover target. Preview bytes must be authorized by the host. Use host thumbnails where available; do not read whole files on the GUI thread.
+Execute `ViewResponse.preview_requests` in an owned worker and return content through `view.state.peak.complete(completion)`. The request identifies account/workspace scope, generation, context revision, occurrence, resource and entry revision; late results cannot replace another hover target. Preview bytes must be authorized by the host. Use host thumbnails where available; do not read whole files on the GUI thread.
 
 UTF-8 and BOM-marked UTF-16 source files preview as plain text regardless of programming language. `preview-images` enables common image codecs; `preview-raw` adds embedded camera previews and optional explicit RAW development. HEIC/HEIF and standalone AVIF/JPEG-XL require host providers. RAW model/compression support and native worker isolation require consuming-host proof; see Peak's coverage limits.
 
@@ -74,6 +74,20 @@ The software screenshot example enables the scheduler and completes demonstratio
 
 </topic>
 
+<topic id="host-gui-boundary">
+
+## Host GUI and reusable logic
+
+`cabinet` and `cabinet-peak` are framework-independent logic crates. A host owns GUI rendering, layout, styling, event wiring, I/O, and durable operations. Use `cabinet::interaction::InteractionState` with `Cabinet` for reusable edit drafts, context reconciliation, move preflight, lazy expansion, and preview scheduling. Call `sync` against the current Cabinet snapshot before reading interaction state or handling a host event. Canonical refreshes cancel stale drafts; account or generation changes erase private queries, catalogs, and cached previews.
+
+For inline naming, call `begin_create` or `begin_rename`, bind the host text field to `state.text`, and call `submit_edit` on confirmation. Invalid names preserve the draft and return an error. A successful submission emits a fenced host request and clears the draft; it does not mutate canonical entries. `request` selects move preflight for incomplete hierarchy. `expand` can return a load request; the host executes it. `move_destinations` supplies validated destination choices without a GUI framework.
+
+Hosts using egui can embed `cabinet-egui` and `cabinet-peak-egui`; neither crate opens a window or owns a native event loop. `CabinetView::state` is the same headless `InteractionState`, including its `peak` and scheduler. `Palette`, `ViewResponse`, window geometry, texture handles, and egui event translation belong to the adapter crates.
+
+Migration: remove the `egui` feature from `cabinet` and `cabinet-peak` dependencies. Add the separate adapter dependency and change `cabinet::egui_view::CabinetView` to `cabinet_egui::CabinetView`, `cabinet::egui_view::ViewResponse` to `cabinet_egui::ViewResponse`, and `cabinet::peak::egui_view::PeakView` to `cabinet_peak_egui::PeakView`. Change `view.peak` to `view.state.peak`. Core codec and serde features remain in their owning logic crates; the Cabinet adapter forwards them when needed. GUI integration tests and software capture examples live in `cabinet-egui`; core tests run without any adapter dependency. The repository asset index is [assets-index.yaml](../assets-index.yaml), explicitly covering only Cabinet and Peak for now.
+
+</topic>
+
 <topic id="build-and-verify" ingestable="true">
 
 ## Build and verify
@@ -82,13 +96,13 @@ Run from the Cabinet directory with a configured external `CARGO_TARGET_DIR`. Ru
 
 ```powershell
 cargo test --locked
-cargo test --locked --features egui
+cargo test --locked -p cabinet-egui -p cabinet-peak-egui
 cargo run --locked --example headless
-cargo run --locked --features egui --example render_preview -- <external-output.ppm>
-cargo test --locked --workspace --features egui,serde,preview-images,preview-raw
+cargo run --locked -p cabinet-egui --example render_preview -- <external-output.ppm>
+cargo test --locked --workspace --all-features
 cargo run --locked --features serde --example settings_persistence -- <external-settings.json>
 cargo run --locked --example host_workflows
-cargo run --locked --release --features egui --example large_tree -- 10000 100000 1000000
+cargo run --locked --release -p cabinet-egui --example large_tree_gui -- 10000 100000 1000000
 ```
 
 The headless example uses an explicit demonstration host. Its in-memory operations demonstrate the API; they do not prove an application's durable storage, security or recovery boundary.
