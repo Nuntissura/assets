@@ -88,7 +88,7 @@ fn coverage_hand_values_and_fill_rules() {
 
 // Recomputed independently: sha256(LE i32 0, i32 0, u32 4, u32 3 ++ the 12 bytes above).
 const PIN_RECT: &str = "88bd9d143f5f57f73555a99440038e592bc1e62a47c15d4855c5bca3137ca5c9";
-const PIN_CIRCLE: &str = "pending";
+const PIN_CIRCLE: &str = "7721135cd3d143ee274d263769d2c81265316ef623a7d921b83fd60156044314";
 
 fn stop(offset: f64, v: f32) -> GradientStop {
     GradientStop { offset, colour: [v, v, v, 1.0], midpoint: None }
