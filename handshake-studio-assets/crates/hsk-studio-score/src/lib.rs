@@ -17,6 +17,7 @@ mod engine;
 mod eq;
 mod error;
 mod layout;
+mod loudness;
 mod mix;
 mod ramp;
 mod report;
@@ -52,6 +53,9 @@ pub use layout::{
     BlockSpec, CANCEL_CHECK_FRAMES, ChannelLayout, DEFAULT_SAMPLE_RATE_HZ, MAX_BLOCK_FRAMES,
     MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, STEREO_LABELS, sample_to_ticks, ticks_per_sample,
     ticks_to_sample,
+};
+pub use loudness::{
+    LoudnessMeter, LoudnessReadout, LoudnessSnapshot, SURROUND_WEIGHT, k_weighting_coefficients,
 };
 pub use mix::{MAX_SENDS, SendRoute};
 pub use ramp::RampedGain;
