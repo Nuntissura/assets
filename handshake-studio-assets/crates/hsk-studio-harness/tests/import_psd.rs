@@ -317,10 +317,68 @@ fn walk(dir: &Path, depth: usize) -> Vec<PathBuf> {
     out
 }
 
+/// Sweep weight of one corpus file: its length plus the composite size its PSD/PSB header declares
+/// (channels x height x width x depth / 8; 0 when the header is short or not `8BPS`). Large CMYK or
+/// 16-bit documents dominate the import time, so the weight follows the decoded size, not the file order.
+fn sweep_weight(path: &Path) -> u64 {
+    use std::io::Read;
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let mut header = [0u8; 26];
+    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut header));
+    if read.is_err() || &header[..4] != b"8BPS" {
+        return len;
+    }
+    let channels = u64::from(u16::from_be_bytes([header[12], header[13]]));
+    let height = u64::from(u32::from_be_bytes([header[14], header[15], header[16], header[17]]));
+    let width = u64::from(u32::from_be_bytes([header[18], header[19], header[20], header[21]]));
+    let depth = u64::from(u16::from_be_bytes([header[22], header[23]]));
+    let decoded = channels.saturating_mul(height).saturating_mul(width).saturating_mul(depth) / 8;
+    len.saturating_add(decoded)
+}
+
+/// Deterministic size-balanced partition (longest processing time first): files ordered by weight
+/// (heaviest first, ties by index) each go to the currently lightest shard (lowest shard on ties).
+/// Every index lands in exactly one shard, so the union of all shards is the whole corpus.
+fn partition(weights: &[u64], shards: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by(|&a, &b| weights[b].cmp(&weights[a]).then(a.cmp(&b)));
+    let mut load = vec![0u64; shards];
+    let mut assigned = vec![0usize; weights.len()];
+    for i in order {
+        let (lightest, _) = load.iter().enumerate().min_by(|(a, x), (b, y)| x.cmp(y).then(a.cmp(b))).unwrap();
+        load[lightest] = load[lightest].saturating_add(weights[i]);
+        assigned[i] = lightest;
+    }
+    assigned
+}
+
+#[test]
+fn sweep_partition_covers_every_file_once_and_balances_by_weight() {
+    // One heavy file and many light ones: the heavy file gets a shard of its own and every index is
+    // assigned exactly once (same coverage as an unsharded sweep).
+    let mut weights = vec![1_000u64];
+    weights.extend((0..47u64).map(|i| 10 + i));
+    let assigned = partition(&weights, SHARDS);
+    assert_eq!(assigned.len(), weights.len());
+    assert!(assigned.iter().all(|&s| s < SHARDS));
+    let heavy = assigned[0];
+    assert!(assigned[1..].iter().all(|&s| s != heavy), "the heaviest file shares no shard here: {assigned:?}");
+    let mut load = vec![0u64; SHARDS];
+    for (i, &s) in assigned.iter().enumerate() {
+        load[s] += weights[i];
+    }
+    let light: Vec<u64> = load.iter().enumerate().filter(|(s, _)| *s != heavy).map(|(_, l)| *l).collect();
+    let (min, max) = (light.iter().min().unwrap(), light.iter().max().unwrap());
+    assert!(max - min <= 56, "light shards balanced within one file weight: {load:?}");
+    // Deterministic: same input, same assignment.
+    assert_eq!(partition(&weights, SHARDS), assigned);
+}
+
 /// Bounded sweep over every PSD/PSB in `oracle-corpus/psd-tools/psd_files`: each file goes through
-/// `import` (sniff, interop-psd, native package) under `catch_unwind`; prints ok / typed-refusal (by
-/// code) / panic counts. Panics are defects. Shard `n` of SHARDS (by sorted index) keeps each test under
-/// the runner's per-test cap.
+/// `convert_to_native` (sniff, interop-psd, native package) under `catch_unwind`; prints ok /
+/// typed-refusal (by code) / panic counts. Panics are defects. The corpus is split into SHARDS
+/// size-balanced shards ([`partition`] over [`sweep_weight`]) so each test stays under the runner's
+/// 120 s per-test cap; the union of the shards is every file (same coverage as before re-sharding).
 fn sweep(shard: usize) {
     let Some(root) = corpus_root() else {
         println!("NOT_PROVEN: psd_tools_sweep shard={shard} reason=corpus_root_absent");
@@ -337,13 +395,18 @@ fn sweep(shard: usize) {
         .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("psd") || e.eq_ignore_ascii_case("psb")))
         .collect();
     files.sort();
+    let weights: Vec<u64> = files.iter().map(|p| sweep_weight(p)).collect();
+    let assigned = partition(&weights, SHARDS);
+    let started = std::time::Instant::now();
     let cancel = CancellationToken::default();
-    let (mut ok, mut panics) = (0usize, Vec::new());
+    let (mut ok, mut total, mut weight, mut panics) = (0usize, 0usize, 0u64, Vec::new());
     let mut refusals: std::collections::BTreeMap<String, usize> = Default::default();
     for (i, path) in files.iter().enumerate() {
-        if i % SHARDS != shard {
+        if assigned[i] != shard {
             continue;
         }
+        total += 1;
+        weight += weights[i];
         let bytes = std::fs::read(path).unwrap();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert_to_native(&bytes, &TrustAllResolver, &cancel).map(|(p, d)| (p.len(), d.snapshot.document().layers.len()))));
@@ -353,42 +416,54 @@ fn sweep(shard: usize) {
             Err(_) => panics.push(name),
         }
     }
-    let total = files.iter().enumerate().filter(|(i, _)| i % SHARDS == shard).count();
-    println!("SWEEP psd_tools shard={shard} files={total} ok={ok} refused={} panics={} refusals={refusals:?} panic_files={panics:?}", refusals.values().sum::<usize>(), panics.len());
+    println!(
+        "SWEEP psd_tools shard={shard}/{SHARDS} corpus_files={} files={total} weight={weight} elapsed_ms={} ok={ok} refused={} panics={} refusals={refusals:?} panic_files={panics:?}",
+        files.len(),
+        started.elapsed().as_millis(),
+        refusals.values().sum::<usize>(),
+        panics.len()
+    );
     assert!(panics.is_empty(), "panics are defects: {panics:?}");
 }
 
-const SHARDS: usize = 6;
+const SHARDS: usize = 16;
+
+macro_rules! sweep_shards {
+    ($($name:ident = $shard:expr;)*) => {$(
+        #[test]
+        #[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
+        fn $name() {
+            sweep($shard);
+        }
+    )*};
+}
+
+sweep_shards! {
+    psd_tools_sweep_shard_0 = 0;
+    psd_tools_sweep_shard_1 = 1;
+    psd_tools_sweep_shard_2 = 2;
+    psd_tools_sweep_shard_3 = 3;
+    psd_tools_sweep_shard_4 = 4;
+    psd_tools_sweep_shard_5 = 5;
+    psd_tools_sweep_shard_6 = 6;
+    psd_tools_sweep_shard_7 = 7;
+    psd_tools_sweep_shard_8 = 8;
+    psd_tools_sweep_shard_9 = 9;
+    psd_tools_sweep_shard_10 = 10;
+    psd_tools_sweep_shard_11 = 11;
+    psd_tools_sweep_shard_12 = 12;
+    psd_tools_sweep_shard_13 = 13;
+    psd_tools_sweep_shard_14 = 14;
+    psd_tools_sweep_shard_15 = 15;
+}
 
 #[test]
-#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
-fn psd_tools_sweep_shard_0() {
-    sweep(0);
-}
-#[test]
-#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
-fn psd_tools_sweep_shard_1() {
-    sweep(1);
-}
-#[test]
-#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
-fn psd_tools_sweep_shard_2() {
-    sweep(2);
-}
-#[test]
-#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
-fn psd_tools_sweep_shard_3() {
-    sweep(3);
-}
-#[test]
-#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
-fn psd_tools_sweep_shard_4() {
-    sweep(4);
-}
-#[test]
-#[ignore = "external corpus sweep (psd-tools fixtures under the oracle corpus); run with --run-ignored ignored-only"]
-fn psd_tools_sweep_shard_5() {
-    sweep(5);
+fn sweep_shard_count_matches_the_declared_shard_tests() {
+    // A shard without a test would silently drop files: the macro list above must name 0..SHARDS.
+    let src = include_str!("import_psd.rs");
+    let declared = (0..SHARDS).filter(|s| src.contains(&format!("psd_tools_sweep_shard_{s} = {s};"))).count();
+    assert_eq!(declared, SHARDS);
+    assert!(!src.contains(&format!("psd_tools_sweep_shard_{SHARDS} = ")));
 }
 
 // ---- camera raw through develop (feature import-raw; external CC0 samples, ignored by default) --
