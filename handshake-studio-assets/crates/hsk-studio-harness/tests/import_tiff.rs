@@ -291,6 +291,30 @@ fn photoshop_tiff_imports_its_layers_through_interop_psd() {
     assert_eq!(fallback.receipt["layers"], 1);
     assert!(codes(&fallback.receipt).iter().any(|c| c == "tiff_photoshop_layers_not_imported"));
     assert!(fallback.receipt["tiff"]["image_source_data"]["parse_error"].as_str().is_some());
+
+    // A real Photoshop-written layered TIFF (Pillow test image, Photoshop CS Windows, sha256-pinned in
+    // oracle-corpus/tiff-layered): its records are little-endian (`MIB8ryaL`), which interop-psd
+    // refuses, so the composite imports with the typed loss and real-Photoshop parity stays NOT_PROVEN.
+    let Some(root) = corpus_root() else {
+        println!("NOT_PROVEN: tiff_layered_photoshop reason=corpus_root_absent");
+        return;
+    };
+    let name = "tiff-layered/pillow-tiff-adobe-deflate-photoshop-cs.tif";
+    let Ok(real) = std::fs::read(root.join(name)) else {
+        println!("NOT_PROVEN: tiff_layered_photoshop {name} reason=file_absent");
+        return;
+    };
+    if hsk_studio_package::sha256_hex_of(&real) != "3ec989816b1532e587a9619980db33a925c0428d7538290bb6b4eb1b6a8efade" {
+        println!("NOT_PROVEN: tiff_layered_photoshop {name} reason=sha256_mismatch");
+        return;
+    }
+    let imported = import(&real, &TrustAllResolver, &cancel).expect("real layered TIFF imports its composite");
+    let isd = &imported.receipt["tiff"]["image_source_data"];
+    assert_eq!((isd["envelope"].as_str(), isd["byte_order"].as_str()), (Some("valid"), Some("little")), "{isd}");
+    assert!(isd["parse_error"].as_str().unwrap_or_default().contains("image_source_little_endian"), "{isd}");
+    assert_eq!(imported.receipt["layers"], 1);
+    assert!(codes(&imported.receipt).iter().any(|c| c == "tiff_photoshop_layers_not_imported"));
+    println!("NOT_PROVEN: tiff_layered_photoshop_parity {name} reason=little_endian_layer_records_unsupported (composite imported, typed loss recorded)");
 }
 
 /// The one corpus-root convention (`.config/oracle-corpus.toml`): walk up from the workspace root.
