@@ -113,8 +113,8 @@ fn cpu_renders_lowered_text_with_pinned_digest() {
             max_err = max_err.max((alpha - FILL[3] * cov).abs());
             if cov > 0.0 {
                 ink += 1;
-                for c in 0..3 {
-                    max_err = max_err.max((f32_at(&planes.colour, i * 3 + c) - FILL[c]).abs());
+                for (c, want) in FILL.iter().take(3).enumerate() {
+                    max_err = max_err.max((f32_at(&planes.colour, i * 3 + c) - want).abs());
                 }
             }
         }
