@@ -56,9 +56,18 @@ pub enum RetouchError {
     Shape,
     /// Spot healing found no candidate source region fully inside the sample plane.
     SpotHealNoSource,
-    /// Content-aware fill / move / patch / inpaint are not implemented (STU-RAS-143): refused,
-    /// never approximated by another fill.
+    /// A content-aware request this entry point cannot serve: the two-argument
+    /// [`content_aware_fill`] (no options or limits) and the crop expand option; the native
+    /// implementation is [`crate::content_aware`]. Refused, never approximated by another fill.
     ContentAwareUnsupported,
+    /// Content-aware synthesis found no valid source patch (every candidate overlaps the hole,
+    /// leaves the plane or lies outside the sampling area).
+    ContentAwareNoSource,
+    /// The hole has more pixels than `ContentAwareOptions::max_hole_pixels`.
+    ContentAwareHoleTooLarge,
+    /// A content-aware option value with no implementation (for example `colour_adaptation`
+    /// high/very_high, rotation adaptation, scale, mirror): refused, never approximated.
+    ContentAwareOptionUnsupported,
     /// A rotated crop with `delete_cropped_pixels = false` (canvas_ops): not representable.
     CropRotateKeepPixelsUnsupported,
     /// A trim whose basis matches every pixel (canvas_ops).
@@ -76,6 +85,9 @@ impl RetouchError {
             Self::Shape => "retouch_shape",
             Self::SpotHealNoSource => "spot_heal_no_source",
             Self::ContentAwareUnsupported => "content_aware_unsupported",
+            Self::ContentAwareNoSource => "content_aware_no_source",
+            Self::ContentAwareHoleTooLarge => "content_aware_hole_too_large",
+            Self::ContentAwareOptionUnsupported => "content_aware_option_unsupported",
             Self::CropRotateKeepPixelsUnsupported => "crop_rotate_keep_pixels_unsupported",
             Self::TrimEverything => "trim_everything",
         }
@@ -484,12 +496,12 @@ pub struct HealResult {
     pub receipt: HealReceipt,
 }
 
-fn premul(p: [f32; 4]) -> [f64; 4] {
+pub(crate) fn premul(p: [f32; 4]) -> [f64; 4] {
     let a = f64::from(p[3]);
     [f64::from(p[0]) * a, f64::from(p[1]) * a, f64::from(p[2]) * a, a]
 }
 
-fn straight(p: [f64; 4]) -> [f32; 4] {
+pub(crate) fn straight(p: [f64; 4]) -> [f32; 4] {
     let a = p[3].clamp(0.0, 1.0);
     if a <= 0.0 || a.is_nan() {
         return [0.0; 4];
@@ -516,7 +528,7 @@ fn grow(r: Rect, g: u32) -> Result<Rect, Error> {
 }
 
 /// `r` grown by `g` pixels on every side, intersected with `within`.
-fn grow_within(r: Rect, g: u32, within: Rect) -> Result<Option<Rect>, Error> {
+pub(crate) fn grow_within(r: Rect, g: u32, within: Rect) -> Result<Option<Rect>, Error> {
     grow(r, g)?.intersect(within)
 }
 
@@ -553,13 +565,26 @@ pub fn heal(
     heal_with_coverage(target, sample, map, &cov, None, limits)
 }
 
-fn heal_with_coverage(
+pub(crate) fn heal_with_coverage(
     target: &RgbaPlane,
     sample: &RgbaPlane,
     map: &CloneMap,
     cov: &CoveragePlane,
     source_offset: Option<(i64, i64)>,
     limits: &RetouchLimits,
+) -> Result<HealResult, RetouchError> {
+    heal_with_guide(target, cov, source_offset, limits, |region| map.sample(sample, region, limits))
+}
+
+/// The healing solve of [`heal`] with the guide `g` supplied by `guide(region)` (straight RGBA over
+/// exactly `region` = the coverage bounds grown by one pixel within the target), used by
+/// [`heal`] (cloned source) and by `content_aware` (synthesized fill).
+pub(crate) fn heal_with_guide(
+    target: &RgbaPlane,
+    cov: &CoveragePlane,
+    source_offset: Option<(i64, i64)>,
+    limits: &RetouchLimits,
+    guide: impl FnOnce(Rect) -> Result<RgbaPlane, RetouchError>,
 ) -> Result<HealResult, RetouchError> {
     let mut out = copy_plane(target, limits)?;
     let unchanged = |plane: RgbaPlane| HealResult {
@@ -573,7 +598,10 @@ fn heal_with_coverage(
         return Ok(unchanged(out));
     };
     let n = limits.admit_area(region, HEAL_BYTES_PER_PIXEL)?;
-    let guide = map.sample(sample, region, limits)?;
+    let guide = guide(region)?;
+    if guide.bounds != region || guide.data.len() != n {
+        return Err(RetouchError::Shape);
+    }
     let rw = region.width as usize;
     let (ex, ey) = region.end()?;
     let mut d = Vec::with_capacity(n);
@@ -777,8 +805,10 @@ pub fn spot_heal(
     heal_with_coverage(target, sample, &map, &cov, Some((ox, oy)), limits)
 }
 
-/// Content-aware fill / move / patch / inpaint (STU-RAS-143): not implemented in this lane; always
-/// the typed refusal [`RetouchError::ContentAwareUnsupported`] (never another fill in its place).
+/// Legacy two-argument content-aware entry (lane SMB-PIGMENT-RETOUCH): it carries no options,
+/// sampling area or limits, so it keeps the typed refusal [`RetouchError::ContentAwareUnsupported`]
+/// (never another fill in its place). The native STU-RAS-143 implementation is
+/// [`crate::content_aware::fill`] (and `patch`, `content_aware_move`).
 pub fn content_aware_fill(
     _target: &RgbaPlane,
     _region: &CoveragePlane,

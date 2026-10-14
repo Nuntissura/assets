@@ -1,0 +1,1170 @@
+//! Content-aware fill, patch and move (lane SMB-PIGMENT-CONTENT-AWARE, Photoshop parity gap PS-18;
+//! spec basis STU-RAS-143 "content-aware fill ... MUST have a native on-device implementation",
+//! STU-RAS-030, STU-RAS-026 rows Patch and Content-aware move). Pure compute over straight-RGBA
+//! planes ([`RgbaPlane`]); the hole is a selection plane ([`CoveragePlane`], pixel in the hole when
+//! its coverage is above 0). No model, no provider: an exemplar-based patch synthesizer written
+//! from the published algorithms (Wexler, Shechtman, Irani 2007 "Space-Time Completion of Video",
+//! global patch-coherence EM with weighted voting; Barnes, Shechtman, Finkelstein, Goldman 2009
+//! "PatchMatch", randomized nearest-neighbour field with propagation and random search). No code
+//! from any implementation was read or copied.
+//!
+//! Synthesis ([`fill`]):
+//! 1. Pyramid. Level 0 is the target (premultiplied RGBA, binary32). Level `l + 1` halves level
+//!    `l` (ceil): a coarse pixel is in the hole when any of its children is, may be sampled when
+//!    all of its children may, and its colour is the mean of its non-hole children. Levels are
+//!    added while the hole's bounding box at the current level is wider or taller than one patch,
+//!    the next level is at least two patches wide and tall, it still has a valid source patch, and
+//!    fewer than `max_levels` exist.
+//! 2. Patches are `(2 r + 1)^2` squares (`patch_radius = r`). A SOURCE patch centre is valid when
+//!    the whole patch lies inside the plane and every pixel of it may be sampled (outside the
+//!    hole, inside the sampling area, outside any exclusion). The DOMAIN is every centre whose
+//!    patch overlaps the hole (the hole dilated by `r`, Chebyshev); its nearest-neighbour field
+//!    (NNF) maps each domain centre to a valid source centre. Patch distance = sum of squared
+//!    premultiplied RGBA differences over the patch pixels inside the plane (binary64).
+//! 3. Coarsest level: hole pixels start from an onion peel (each pass, every unknown hole pixel
+//!    with a known 4-neighbour takes the mean of its known 4-neighbours as they were before the
+//!    pass); the NNF starts at seeded random valid sources. Finer levels: hole pixels start from
+//!    the parent's estimate (nearest) and the NNF from the parent's match doubled (plus the child
+//!    parity) when that is a valid source, else a seeded random valid source.
+//! 4. Each level runs `em_iterations` of: recompute distances; `search_iterations` PatchMatch
+//!    sweeps; vote. A sweep is JACOBI (every centre reads only the previous sweep's field):
+//!    candidates are the current match, the propagated matches of the 4-neighbours at distance 1
+//!    and at the jump distance `2^min(4, S-1-s)` (sweep `s` of `S`), and random search around the
+//!    best match at radii `max(w, h)`, halved down to 1, with offsets drawn from SplitMix64 of
+//!    `(seed, level, EM iteration, sweep, centre, draw)`; a candidate replaces the match only when
+//!    strictly closer. Vote: each hole pixel becomes the weighted mean, over every domain patch
+//!    covering it, of the pixel its match puts there, weight `exp(-e / (2 sigma^2))` with `e` the
+//!    patch's mean squared difference per pixel channel and `sigma` = [`VOTE_SIGMA`] (uniform mean
+//!    if the weights vanish). Votes read only source pixels, never hole pixels.
+//! 5. Blend (`colour_adaptation`): `none` writes `d + c (f - d)` (premultiplied, `c` the hole
+//!    coverage, `f` the synthesized value); `default` runs the healing solver of
+//!    [`crate::retouch::heal`] (membrane Poisson, Perez/Gangnet/Blake 2003) with the guide = the
+//!    synthesized pixels in the hole and the votes of the NNF on the hole's 4-neighbour ring, so
+//!    the fill keeps its synthesized texture and takes the surrounding colour at the seam.
+//!
+//! Determinism: every per-centre and per-pixel update is a pure function of the previous state and
+//! the seed, so the work split over `threads` scoped threads (contiguous chunks) never changes the
+//! bytes (test `content_aware.rs` `fill_is_thread_count_invariant`); the onion peel, the pyramid
+//! and the Poisson solve are single-threaded. Same binary, same inputs, same seed: same bytes.
+//!
+//! Bounds (V4-01/02): option ranges are checked (never clamped); the hole pixel count is checked
+//! against `max_hole_pixels`; the working bytes of the whole pyramid (upper bound) are charged
+//! against [`RetouchLimits::max_bytes`] before any allocation; the work (patch-pixel visits of
+//! every sweep, recompute and vote) is computed with checked arithmetic and charged against
+//! [`RetouchLimits::max_work`] before synthesis starts. Typed refusals, never partial results.
+//!
+//! Spec controls (STU-RAS-143) implemented: `sampling_area_mode` auto | rectangular | custom,
+//! `colour_adaptation` none | default (high and very_high refused
+//! `content_aware_option_unsupported`), `rotation_adaptation` none (others refused), `scale` and
+//! `mirror` false (true refused). Not modelled here (caller or later lanes): the overlay,
+//! `sample_all_layers` (the caller flattens), `additional_document_source`, output brightness /
+//! contrast / colour balance, `output_to`. Every reading is a Studio reading, class Approximate;
+//! Photoshop's content-aware algorithms and results are UNVERIFIED (oracle list D5).
+#![deny(clippy::arithmetic_side_effects)]
+use crate::blend_math::Exactness;
+use crate::filter_math::splitmix;
+use crate::retouch::{
+    HealReceipt, RGBA_SAMPLE_BYTES, RetouchError, RetouchLimits, RetouchResult, RgbaPlane, copy_plane,
+    heal_with_guide, premul, straight,
+};
+use crate::selection::CoveragePlane;
+use crate::{Error, Rect};
+
+/// Class of every content-aware operator (Studio readings; Photoshop parity UNVERIFIED, D5).
+pub const CONTENT_AWARE_EXACTNESS: Exactness = Exactness::Approximate;
+/// Voting weight scale: `exp(-e / (2 VOTE_SIGMA^2))` with `e` the mean squared difference per
+/// patch pixel channel (premultiplied units).
+pub const VOTE_SIGMA: f64 = 0.1;
+/// A custom sampling plane marks a pixel as sampled when its coverage is at least this (one half).
+pub const SAMPLING_THRESHOLD: u16 = 32768;
+/// Conservative working bytes per pyramid pixel (image, masks, source list, slot map, domain list,
+/// two fields and distances, integral image, vote output), charged before allocation.
+pub const LEVEL_BYTES_PER_PIXEL: u64 = 112;
+/// Largest jump exponent of a Jacobi sweep's long-range propagation (jump `2^4 = 16`).
+const MAX_JUMP_SHIFT: u32 = 4;
+const NONE: u32 = u32::MAX;
+
+/// STU-RAS-143 `colour_adaptation` (closed set).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColourAdaptation {
+    None,
+    #[default]
+    Default,
+    High,
+    VeryHigh,
+}
+impl ColourAdaptation {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Default => "default",
+            Self::High => "high",
+            Self::VeryHigh => "very_high",
+        }
+    }
+}
+
+/// STU-RAS-143 `rotation_adaptation` (closed set); only `none` is implemented.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RotationAdaptation {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+    Full,
+}
+impl RotationAdaptation {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Full => "full",
+        }
+    }
+}
+
+/// STU-RAS-143 `sampling_area_mode`: `auto` samples every pixel outside the hole; `rectangular`
+/// only pixels inside the rectangle; `custom` only pixels whose coverage is at least
+/// [`SAMPLING_THRESHOLD`]. The hole is never sampled.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum SamplingArea<'a> {
+    #[default]
+    Auto,
+    Rectangular(Rect),
+    Custom(&'a CoveragePlane),
+}
+impl SamplingArea<'_> {
+    pub const fn key(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Rectangular(_) => "rectangular",
+            Self::Custom(_) => "custom",
+        }
+    }
+    fn allows(&self, x: i64, y: i64) -> bool {
+        match self {
+            Self::Auto => true,
+            Self::Rectangular(r) => {
+                r.end().is_ok_and(|(ex, ey)| x >= r.x && y >= r.y && x < ex && y < ey)
+            }
+            Self::Custom(c) => c.at(x, y) >= SAMPLING_THRESHOLD,
+        }
+    }
+}
+
+/// Synthesis options (ranges checked by [`ContentAwareOptions::validate`], never clamped).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContentAwareOptions {
+    /// Patch radius `r` (patch `(2r+1)^2`), `1 ..= 8`; default 3 (7 x 7).
+    pub patch_radius: u32,
+    /// EM iterations per pyramid level, `1 ..= 64`; default 4.
+    pub em_iterations: u32,
+    /// PatchMatch sweeps per EM iteration, `1 ..= 32`; default 4.
+    pub search_iterations: u32,
+    /// Pyramid levels at most, `1 ..= 16`; default 8.
+    pub max_levels: u32,
+    /// Random seed (fixed seed = fixed bytes).
+    pub seed: u64,
+    /// Worker threads, `1 ..= 64`; the bytes do not depend on it.
+    pub threads: u32,
+    /// Hole pixels at most (else `content_aware_hole_too_large`); default `1 << 20`.
+    pub max_hole_pixels: u64,
+    pub colour_adaptation: ColourAdaptation,
+    pub rotation_adaptation: RotationAdaptation,
+    pub scale: bool,
+    pub mirror: bool,
+}
+impl Default for ContentAwareOptions {
+    fn default() -> Self {
+        Self {
+            patch_radius: 3,
+            em_iterations: 4,
+            search_iterations: 4,
+            max_levels: 8,
+            seed: 0,
+            threads: 1,
+            max_hole_pixels: 1 << 20,
+            colour_adaptation: ColourAdaptation::Default,
+            rotation_adaptation: RotationAdaptation::None,
+            scale: false,
+            mirror: false,
+        }
+    }
+}
+impl ContentAwareOptions {
+    pub fn validate(&self) -> Result<(), RetouchError> {
+        let ok = (1..=8).contains(&self.patch_radius)
+            && (1..=64).contains(&self.em_iterations)
+            && (1..=32).contains(&self.search_iterations)
+            && (1..=16).contains(&self.max_levels)
+            && (1..=64).contains(&self.threads);
+        if !ok {
+            return Err(RetouchError::OutOfRange);
+        }
+        let supported = matches!(self.colour_adaptation, ColourAdaptation::None | ColourAdaptation::Default)
+            && self.rotation_adaptation == RotationAdaptation::None
+            && !self.scale
+            && !self.mirror;
+        if !supported {
+            return Err(RetouchError::ContentAwareOptionUnsupported);
+        }
+        Ok(())
+    }
+}
+
+/// One pyramid level of a synthesis (`energies[i]` = mean squared difference per patch pixel
+/// channel over the domain after the searches of EM iteration `i`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LevelReceipt {
+    pub width: u32,
+    pub height: u32,
+    pub hole_pixels: u64,
+    pub domain_centres: u64,
+    pub source_centres: u64,
+    pub em_iterations: u32,
+    pub search_iterations: u32,
+    pub energies: Vec<f64>,
+}
+
+/// Quality receipt of a synthesis (no silent partial result).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentAwareReceipt {
+    pub seed: u64,
+    pub patch_radius: u32,
+    /// Coarsest first, level 0 last; empty when nothing was synthesized.
+    pub levels: Vec<LevelReceipt>,
+    /// EM iterations run over all levels.
+    pub iterations: u32,
+    /// Level 0's last energy (0 when nothing was synthesized).
+    pub final_energy: f64,
+    /// Work charged against [`RetouchLimits::max_work`] (patch-pixel visits).
+    pub work: u64,
+    /// Patch guidance was used (content-aware patch).
+    pub guided: bool,
+    /// The healing blend's receipt (`colour_adaptation = default`, patch normal, move paste).
+    pub blend: Option<HealReceipt>,
+}
+impl ContentAwareReceipt {
+    fn empty(options: &ContentAwareOptions, guided: bool) -> Self {
+        Self {
+            seed: options.seed,
+            patch_radius: options.patch_radius,
+            levels: Vec::new(),
+            iterations: 0,
+            final_energy: 0.0,
+            work: 0,
+            guided,
+            blend: None,
+        }
+    }
+}
+
+/// Result of a content-aware operator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentAwareResult {
+    pub result: RetouchResult,
+    pub receipt: ContentAwareReceipt,
+}
+
+/// Patch guidance: domain centre `q` prefers the source `q + offset`; random search stays within
+/// `window` pixels (level 0) of the best match.
+#[derive(Clone, Copy, Debug)]
+struct Guide {
+    offset: (i64, i64),
+    window: i64,
+}
+
+struct Level {
+    w: usize,
+    h: usize,
+    img: Vec<[f32; 4]>,
+    hole: Vec<bool>,
+    allowed: Vec<bool>,
+    valid: Vec<bool>,
+    sources: Vec<u32>,
+    slot: Vec<u32>,
+    domain: Vec<u32>,
+    holes: Vec<u32>,
+}
+
+#[inline]
+fn ix(w: usize, x: usize, y: usize) -> usize {
+    // Coordinates are inside an allocated level, so the index is below its length.
+    y.wrapping_mul(w).wrapping_add(x)
+}
+
+fn coverage_validate(c: &CoveragePlane) -> Result<(), RetouchError> {
+    c.bounds.end()?;
+    let n = usize::try_from(c.bounds.area()).map_err(|_| Error::Overflow)?;
+    if c.data.len() != n {
+        return Err(RetouchError::Shape);
+    }
+    Ok(())
+}
+
+/// Dimensions of the pyramid levels at most `max_levels` deep (no allocation).
+fn pyramid_dims(w: usize, h: usize, max_levels: u32) -> Vec<(usize, usize)> {
+    let mut dims = vec![(w, h)];
+    let (mut cw, mut ch) = (w, h);
+    while u32::try_from(dims.len()).is_ok_and(|n| n < max_levels) && (cw > 1 || ch > 1) {
+        cw = cw.div_ceil(2);
+        ch = ch.div_ceil(2);
+        dims.push((cw, ch));
+    }
+    dims
+}
+
+impl Level {
+    fn compute_valid(&mut self, r: usize) -> Result<(), Error> {
+        let (w, h) = (self.w, self.h);
+        let w1 = w.checked_add(1).ok_or(Error::Overflow)?;
+        let h1 = h.checked_add(1).ok_or(Error::Overflow)?;
+        let mut sat = vec![0u64; w1.checked_mul(h1).ok_or(Error::Overflow)?];
+        for y in 0..h {
+            let mut row = 0u64;
+            for x in 0..w {
+                if !self.allowed.get(ix(w, x, y)).copied().unwrap_or(false) {
+                    row = row.wrapping_add(1);
+                }
+                let above = sat.get(ix(w1, x.wrapping_add(1), y)).copied().unwrap_or(0);
+                if let Some(v) = sat.get_mut(ix(w1, x.wrapping_add(1), y.wrapping_add(1))) {
+                    *v = above.wrapping_add(row);
+                }
+            }
+        }
+        self.valid = vec![false; self.img.len()];
+        self.sources.clear();
+        let pw = r.checked_mul(2).and_then(|v| v.checked_add(1)).ok_or(Error::Overflow)?;
+        if w < pw || h < pw {
+            return Ok(());
+        }
+        for y in r..h.wrapping_sub(r) {
+            for x in r..w.wrapping_sub(r) {
+                let (x0, y0) = (x.wrapping_sub(r), y.wrapping_sub(r));
+                let (x1, y1) = (x.wrapping_add(r).wrapping_add(1), y.wrapping_add(r).wrapping_add(1));
+                let s = |xx: usize, yy: usize| sat.get(ix(w1, xx, yy)).copied().unwrap_or(0);
+                let bad = s(x1, y1).wrapping_sub(s(x1, y0)).wrapping_sub(s(x0, y1)).wrapping_add(s(x0, y0));
+                if bad == 0 {
+                    let i = ix(w, x, y);
+                    if let Some(v) = self.valid.get_mut(i) {
+                        *v = true;
+                    }
+                    self.sources.push(u32::try_from(i).map_err(|_| Error::Overflow)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_domain(&mut self, r: usize) -> Result<(), Error> {
+        let (w, h) = (self.w, self.h);
+        let n = self.img.len();
+        let mut rows = vec![false; n];
+        let mut dom = vec![false; n];
+        self.holes.clear();
+        for y in 0..h {
+            for x in 0..w {
+                if self.hole.get(ix(w, x, y)).copied().unwrap_or(false) {
+                    self.holes.push(u32::try_from(ix(w, x, y)).map_err(|_| Error::Overflow)?);
+                    let hi = x.saturating_add(r).min(w.saturating_sub(1));
+                    for xx in x.saturating_sub(r)..=hi {
+                        if let Some(v) = rows.get_mut(ix(w, xx, y)) {
+                            *v = true;
+                        }
+                    }
+                }
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                if rows.get(ix(w, x, y)).copied().unwrap_or(false) {
+                    let hi = y.saturating_add(r).min(h.saturating_sub(1));
+                    for yy in y.saturating_sub(r)..=hi {
+                        if let Some(v) = dom.get_mut(ix(w, x, yy)) {
+                            *v = true;
+                        }
+                    }
+                }
+            }
+        }
+        self.slot = vec![NONE; n];
+        self.domain.clear();
+        for (i, d) in dom.iter().enumerate() {
+            if *d {
+                let k = u32::try_from(self.domain.len()).map_err(|_| Error::Overflow)?;
+                if let Some(s) = self.slot.get_mut(i) {
+                    *s = k;
+                }
+                self.domain.push(u32::try_from(i).map_err(|_| Error::Overflow)?);
+            }
+        }
+        Ok(())
+    }
+
+    fn downsample(&self) -> Result<Level, Error> {
+        let (nw, nh) = (self.w.div_ceil(2), self.h.div_ceil(2));
+        let n = nw.checked_mul(nh).ok_or(Error::Overflow)?;
+        let mut img = Vec::with_capacity(n);
+        let mut hole = Vec::with_capacity(n);
+        let mut allowed = Vec::with_capacity(n);
+        for yc in 0..nh {
+            for xc in 0..nw {
+                let (mut any_hole, mut all_allowed) = (false, true);
+                let mut sum = [0.0f64; 4];
+                let mut cnt = 0u32;
+                for (dx, dy) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
+                    let (x, y) = (xc.wrapping_mul(2).wrapping_add(dx), yc.wrapping_mul(2).wrapping_add(dy));
+                    if x >= self.w || y >= self.h {
+                        continue;
+                    }
+                    let i = ix(self.w, x, y);
+                    let hl = self.hole.get(i).copied().unwrap_or(true);
+                    any_hole |= hl;
+                    all_allowed &= self.allowed.get(i).copied().unwrap_or(false);
+                    if !hl {
+                        let p = self.img.get(i).copied().unwrap_or([0.0; 4]);
+                        for (s, v) in sum.iter_mut().zip(p) {
+                            *s += f64::from(v);
+                        }
+                        cnt = cnt.saturating_add(1);
+                    }
+                }
+                let mut px = [0.0f32; 4];
+                if cnt > 0 {
+                    for (o, s) in px.iter_mut().zip(sum) {
+                        *o = (s / f64::from(cnt)) as f32;
+                    }
+                }
+                img.push(px);
+                hole.push(any_hole);
+                allowed.push(all_allowed && !any_hole);
+            }
+        }
+        Ok(Level {
+            w: nw,
+            h: nh,
+            img,
+            hole,
+            allowed,
+            valid: Vec::new(),
+            sources: Vec::new(),
+            slot: Vec::new(),
+            domain: Vec::new(),
+            holes: Vec::new(),
+        })
+    }
+
+    fn hole_extent(&self) -> usize {
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+        for &i in &self.holes {
+            let i = i as usize;
+            let (x, y) = (i.checked_rem(self.w).unwrap_or(0), i.checked_div(self.w).unwrap_or(0));
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        if self.holes.is_empty() {
+            return 0;
+        }
+        x1.wrapping_sub(x0).max(y1.wrapping_sub(y0)).wrapping_add(1)
+    }
+
+    #[inline]
+    fn xy(&self, i: u32) -> (i64, i64) {
+        let i = i as usize;
+        let x = i.checked_rem(self.w).unwrap_or(0);
+        let y = i.checked_div(self.w).unwrap_or(0);
+        (x as i64, y as i64)
+    }
+
+    #[inline]
+    fn index(&self, x: i64, y: i64) -> Option<usize> {
+        if x < 0 || y < 0 || x >= self.w as i64 || y >= self.h as i64 {
+            return None;
+        }
+        Some(ix(self.w, x as usize, y as usize))
+    }
+
+    #[inline]
+    fn valid_at(&self, x: i64, y: i64) -> Option<u32> {
+        let i = self.index(x, y)?;
+        if self.valid.get(i).copied().unwrap_or(false) { u32::try_from(i).ok() } else { None }
+    }
+
+    #[inline]
+    fn px(&self, i: usize) -> [f32; 4] {
+        self.img.get(i).copied().unwrap_or([0.0; 4])
+    }
+
+    /// Patch pixels of centre `q` inside the plane.
+    fn patch_count(&self, r: i64, q: (i64, i64)) -> f64 {
+        let span = |c: i64, n: usize| -> i64 {
+            let lo = c.wrapping_sub(r).max(0);
+            let hi = c.wrapping_add(r).min((n as i64).wrapping_sub(1));
+            hi.wrapping_sub(lo).wrapping_add(1).max(0)
+        };
+        (span(q.0, self.w) as f64) * (span(q.1, self.h) as f64)
+    }
+
+    /// Squared premultiplied RGBA difference between the patch at `q` (pixels inside the plane)
+    /// and the patch at source `s` (always inside); stops early once at least `cap`.
+    fn dist(&self, r: i64, q: (i64, i64), s: (i64, i64), cap: f64) -> f64 {
+        let mut sum = 0.0f64;
+        for oy in r.wrapping_neg()..=r {
+            let ty = q.1.wrapping_add(oy);
+            if ty < 0 || ty >= self.h as i64 {
+                continue;
+            }
+            let sy = s.1.wrapping_add(oy);
+            for ox in r.wrapping_neg()..=r {
+                let tx = q.0.wrapping_add(ox);
+                if tx < 0 || tx >= self.w as i64 {
+                    continue;
+                }
+                let a = self.px(ix(self.w, tx as usize, ty as usize));
+                let b = self.px(ix(self.w, s.0.wrapping_add(ox) as usize, sy as usize));
+                for c in 0..4 {
+                    let d = f64::from(a[c]) - f64::from(b[c]);
+                    sum += d * d;
+                }
+            }
+            if sum >= cap {
+                return sum;
+            }
+        }
+        sum
+    }
+
+    /// Weighted vote of pixel `p` from every domain patch covering it.
+    fn vote(&self, r: i64, nnf: &[u32], dist: &[f64], p: (i64, i64)) -> [f32; 4] {
+        let mut sum = [0.0f64; 4];
+        let mut usum = [0.0f64; 4];
+        let (mut wsum, mut cnt) = (0.0f64, 0.0f64);
+        let two_s2 = 2.0 * VOTE_SIGMA * VOTE_SIGMA;
+        for oy in r.wrapping_neg()..=r {
+            for ox in r.wrapping_neg()..=r {
+                let q = (p.0.wrapping_sub(ox), p.1.wrapping_sub(oy));
+                let Some(qi) = self.index(q.0, q.1) else { continue };
+                let k = self.slot.get(qi).copied().unwrap_or(NONE);
+                if k == NONE {
+                    continue;
+                }
+                let k = k as usize;
+                let Some(&s) = nnf.get(k) else { continue };
+                let (sx, sy) = self.xy(s);
+                let Some(si) = self.index(sx.wrapping_add(ox), sy.wrapping_add(oy)) else { continue };
+                let v = self.px(si);
+                let e = dist.get(k).copied().unwrap_or(0.0) / (4.0 * self.patch_count(r, q)).max(1.0);
+                let wt = (-e / two_s2).exp();
+                for c in 0..4 {
+                    sum[c] += wt * f64::from(v[c]);
+                    usum[c] += f64::from(v[c]);
+                }
+                wsum += wt;
+                cnt += 1.0;
+            }
+        }
+        let mut out = [0.0f32; 4];
+        if wsum > 0.0 && wsum.is_finite() {
+            for c in 0..4 {
+                out[c] = (sum[c] / wsum) as f32;
+            }
+        } else if cnt > 0.0 {
+            for c in 0..4 {
+                out[c] = (usum[c] / cnt) as f32;
+            }
+        }
+        out
+    }
+}
+
+fn rng(seed: u64, level: usize, em: u32, sweep: u32, q: u32, draw: u32) -> u64 {
+    let a = splitmix(seed ^ splitmix(level as u64));
+    let b = splitmix(a ^ (u64::from(em) << 32 | u64::from(sweep)));
+    splitmix(b ^ splitmix(u64::from(q) << 32 | u64::from(draw)))
+}
+
+fn random_source(l: &Level, seed: u64, level: usize, q: u32) -> u32 {
+    let n = l.sources.len() as u64;
+    let h = rng(seed, level, u32::MAX, u32::MAX, q, 0);
+    let k = h.checked_rem(n).unwrap_or(0) as usize;
+    l.sources.get(k).copied().unwrap_or(0)
+}
+
+/// Compute `out[k] = f(k)` for every `k`, split into contiguous chunks over `threads` scoped
+/// threads; `f` is pure, so the result does not depend on `threads`.
+fn par_fill<T: Send, F: Fn(usize) -> T + Sync>(out: &mut [T], threads: usize, f: F) {
+    if threads <= 1 || out.len() < 2 {
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = f(k);
+        }
+        return;
+    }
+    let chunk = out.len().div_ceil(threads).max(1);
+    let f = &f;
+    std::thread::scope(|scope| {
+        for (c, part) in out.chunks_mut(chunk).enumerate() {
+            let base = c.wrapping_mul(chunk);
+            scope.spawn(move || {
+                for (k, o) in part.iter_mut().enumerate() {
+                    *o = f(base.wrapping_add(k));
+                }
+            });
+        }
+    });
+}
+
+struct Sweep<'a> {
+    l: &'a Level,
+    r: i64,
+    nnf: &'a [u32],
+    dist: &'a [f64],
+    seed: u64,
+    level: usize,
+    em: u32,
+    sweep: u32,
+    jump: i64,
+    window: i64,
+    guide: Option<(i64, i64)>,
+}
+
+impl Sweep<'_> {
+    fn step(&self, k: usize) -> (u32, f64) {
+        let l = self.l;
+        let Some(&qi) = l.domain.get(k) else { return (0, f64::INFINITY) };
+        let q = l.xy(qi);
+        let mut best = self.nnf.get(k).copied().unwrap_or(0);
+        let mut bd = self.dist.get(k).copied().unwrap_or(f64::INFINITY);
+        let try_cand = |cand: Option<u32>, best: &mut u32, bd: &mut f64| {
+            if let Some(c) = cand
+                && c != *best
+            {
+                let d = l.dist(self.r, q, l.xy(c), *bd);
+                if d < *bd {
+                    *best = c;
+                    *bd = d;
+                }
+            }
+        };
+        if let Some((ox, oy)) = self.guide {
+            try_cand(l.valid_at(q.0.wrapping_add(ox), q.1.wrapping_add(oy)), &mut best, &mut bd);
+        }
+        let mut jumps = [1i64, 0];
+        if self.jump > 1 {
+            jumps[1] = self.jump;
+        }
+        for j in jumps {
+            if j == 0 {
+                continue;
+            }
+            for (dx, dy) in [(j.wrapping_neg(), 0), (j, 0), (0, j.wrapping_neg()), (0, j)] {
+                let Some(ni) = l.index(q.0.wrapping_add(dx), q.1.wrapping_add(dy)) else { continue };
+                let ns = l.slot.get(ni).copied().unwrap_or(NONE);
+                if ns == NONE {
+                    continue;
+                }
+                let Some(&sn) = self.nnf.get(ns as usize) else { continue };
+                let (sx, sy) = l.xy(sn);
+                try_cand(l.valid_at(sx.wrapping_sub(dx), sy.wrapping_sub(dy)), &mut best, &mut bd);
+            }
+        }
+        let mut radius = self.window;
+        let mut draw = 0u32;
+        while radius >= 1 {
+            let (bx, by) = l.xy(best);
+            let span = (radius as u64).wrapping_mul(2).wrapping_add(1);
+            let h1 = rng(self.seed, self.level, self.em, self.sweep, qi, draw);
+            let h2 = rng(self.seed, self.level, self.em, self.sweep, qi, draw.wrapping_add(1));
+            let dx = (h1.checked_rem(span).unwrap_or(0) as i64).wrapping_sub(radius);
+            let dy = (h2.checked_rem(span).unwrap_or(0) as i64).wrapping_sub(radius);
+            try_cand(l.valid_at(bx.wrapping_add(dx), by.wrapping_add(dy)), &mut best, &mut bd);
+            radius = radius.checked_div(2).unwrap_or(0);
+            draw = draw.wrapping_add(2);
+        }
+        (best, bd)
+    }
+}
+
+fn level_work(l: &Level, r: usize, options: &ContentAwareOptions, guided: bool) -> Option<u64> {
+    let a = (r as u64).checked_mul(2)?.checked_add(1)?;
+    let a = a.checked_mul(a)?;
+    let d = l.domain.len() as u64;
+    let hcount = l.holes.len() as u64;
+    let bits = u64::from(usize::BITS.checked_sub(l.w.max(l.h).leading_zeros())?);
+    let cands = 8u64.checked_add(bits)?.checked_add(u64::from(guided))?;
+    let per_sweep = d.checked_mul(cands)?.checked_mul(a)?;
+    let per_em = d
+        .checked_mul(a)?
+        .checked_add(per_sweep.checked_mul(u64::from(options.search_iterations))?)?
+        .checked_add(hcount.checked_mul(a)?)?;
+    per_em.checked_mul(u64::from(options.em_iterations))
+}
+
+struct Synthesis {
+    level0: Level,
+    nnf: Vec<u32>,
+    dist: Vec<f64>,
+    receipt: ContentAwareReceipt,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn synthesize(
+    target: &RgbaPlane,
+    hole: &CoveragePlane,
+    sampling: &SamplingArea<'_>,
+    exclude: Option<&CoveragePlane>,
+    guide: Option<Guide>,
+    options: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<Option<Synthesis>, RetouchError> {
+    let b = target.bounds;
+    let w = b.width as usize;
+    let h = b.height as usize;
+    // Hole size first (no allocation).
+    let mut hole_pixels = 0u64;
+    for v in &hole.data {
+        if *v > 0 {
+            hole_pixels = hole_pixels.checked_add(1).ok_or(Error::Overflow)?;
+        }
+    }
+    if hole_pixels > options.max_hole_pixels {
+        return Err(RetouchError::ContentAwareHoleTooLarge);
+    }
+    if hole_pixels == 0 || w == 0 || h == 0 {
+        return Ok(None);
+    }
+    // Working bytes of the whole pyramid (upper bound) plus the output plane, before allocation.
+    let mut bytes = b.area().checked_mul(RGBA_SAMPLE_BYTES).ok_or(Error::Overflow)?;
+    for (lw, lh) in pyramid_dims(w, h, options.max_levels) {
+        let px = (lw as u64).checked_mul(lh as u64).ok_or(Error::Overflow)?;
+        bytes = bytes
+            .checked_add(px.checked_mul(LEVEL_BYTES_PER_PIXEL).ok_or(Error::Overflow)?)
+            .ok_or(Error::Overflow)?;
+    }
+    if bytes > limits.max_bytes {
+        return Err(Error::BudgetExceeded.into());
+    }
+    if u32::try_from(b.area()).is_err() {
+        return Err(Error::Overflow.into());
+    }
+    let r = options.patch_radius as usize;
+    let ri = i64::from(options.patch_radius);
+    let pw = r.wrapping_mul(2).wrapping_add(1);
+    let threads = options.threads as usize;
+    // Level 0.
+    let n = w.wrapping_mul(h);
+    let mut img = Vec::with_capacity(n);
+    let mut hl = Vec::with_capacity(n);
+    let mut allowed = Vec::with_capacity(n);
+    let (ex, ey) = b.end()?;
+    for y in b.y..ey {
+        for x in b.x..ex {
+            let p = premul(target.at(x, y));
+            img.push([p[0] as f32, p[1] as f32, p[2] as f32, p[3] as f32]);
+            let in_hole = hole.at(x, y) > 0;
+            hl.push(in_hole);
+            let excluded = exclude.is_some_and(|e| e.at(x, y) > 0);
+            allowed.push(!in_hole && !excluded && sampling.allows(x, y));
+        }
+    }
+    let mut l0 = Level {
+        w,
+        h,
+        img,
+        hole: hl,
+        allowed,
+        valid: Vec::new(),
+        sources: Vec::new(),
+        slot: Vec::new(),
+        domain: Vec::new(),
+        holes: Vec::new(),
+    };
+    l0.compute_valid(r)?;
+    if l0.sources.is_empty() {
+        return Err(RetouchError::ContentAwareNoSource);
+    }
+    l0.compute_domain(r)?;
+    let mut levels = vec![l0];
+    while let Some(cur) = levels.last() {
+        let depth_ok = u32::try_from(levels.len()).is_ok_and(|v| v < options.max_levels);
+        let (nw, nh) = (cur.w.div_ceil(2), cur.h.div_ceil(2));
+        if !depth_ok || cur.hole_extent() <= pw || nw.min(nh) < pw.saturating_mul(2) {
+            break;
+        }
+        let mut next = cur.downsample()?;
+        next.compute_valid(r)?;
+        if next.sources.is_empty() {
+            break;
+        }
+        next.compute_domain(r)?;
+        levels.push(next);
+    }
+    // Work budget (checked before synthesis).
+    let mut work = 0u64;
+    for l in &levels {
+        let lw = level_work(l, r, options, guide.is_some()).ok_or(Error::Overflow)?;
+        work = work.checked_add(lw).ok_or(Error::Overflow)?;
+    }
+    limits.admit_work(work)?;
+
+    let top = levels.len().saturating_sub(1);
+    let mut receipts: Vec<LevelReceipt> = Vec::new();
+    let mut prev: Option<(Level, Vec<u32>)> = None;
+    let mut total_iters = 0u32;
+    let mut final_nnf = Vec::new();
+    let mut final_dist = Vec::new();
+    for li in (0..=top).rev() {
+        let Some(mut l) = levels.pop() else { break };
+        let shift = u32::try_from(li).map_err(|_| Error::Overflow)?;
+        let goff = guide.map(|g| {
+            (
+                g.offset.0.checked_shr(shift).unwrap_or(0),
+                g.offset.1.checked_shr(shift).unwrap_or(0),
+            )
+        });
+        // Initial hole estimate and field.
+        let mut nnf = vec![0u32; l.domain.len()];
+        match &prev {
+            None => {
+                onion_peel(&mut l);
+                if let Some((ox, oy)) = goff {
+                    for &p in &l.holes.clone() {
+                        let (x, y) = l.xy(p);
+                        if let Some(si) = l.index(x.wrapping_add(ox), y.wrapping_add(oy))
+                            && !l.hole.get(si).copied().unwrap_or(true)
+                        {
+                            let v = l.px(si);
+                            if let Some(t) = l.img.get_mut(p as usize) {
+                                *t = v;
+                            }
+                        }
+                    }
+                }
+                for (k, slot) in nnf.iter_mut().enumerate() {
+                    let qi = l.domain.get(k).copied().unwrap_or(0);
+                    let (qx, qy) = l.xy(qi);
+                    *slot = goff
+                        .and_then(|(ox, oy)| l.valid_at(qx.wrapping_add(ox), qy.wrapping_add(oy)))
+                        .unwrap_or_else(|| random_source(&l, options.seed, li, qi));
+                }
+            }
+            Some((coarse, cnnf)) => {
+                for &p in &l.holes.clone() {
+                    let (x, y) = l.xy(p);
+                    let ci = coarse.index(x.checked_div(2).unwrap_or(0), y.checked_div(2).unwrap_or(0));
+                    let v = ci.map(|c| coarse.px(c)).unwrap_or([0.0; 4]);
+                    if let Some(t) = l.img.get_mut(p as usize) {
+                        *t = v;
+                    }
+                }
+                for (k, slot) in nnf.iter_mut().enumerate() {
+                    let qi = l.domain.get(k).copied().unwrap_or(0);
+                    let (qx, qy) = l.xy(qi);
+                    let from_parent = coarse
+                        .index(qx.checked_div(2).unwrap_or(0), qy.checked_div(2).unwrap_or(0))
+                        .and_then(|c| coarse.slot.get(c).copied())
+                        .filter(|s| *s != NONE)
+                        .and_then(|s| cnnf.get(s as usize).copied())
+                        .and_then(|cs| {
+                            let (sx, sy) = coarse.xy(cs);
+                            l.valid_at(
+                                sx.wrapping_mul(2).wrapping_add(qx.checked_rem(2).unwrap_or(0)),
+                                sy.wrapping_mul(2).wrapping_add(qy.checked_rem(2).unwrap_or(0)),
+                            )
+                        });
+                    *slot = from_parent
+                        .or_else(|| goff.and_then(|(ox, oy)| l.valid_at(qx.wrapping_add(ox), qy.wrapping_add(oy))))
+                        .unwrap_or_else(|| random_source(&l, options.seed, li, qi));
+                }
+            }
+        }
+        let window = match guide {
+            Some(g) => g.window.checked_shr(shift).unwrap_or(0).max(1),
+            None => i64::try_from(l.w.max(l.h)).map_err(|_| Error::Overflow)?,
+        };
+        let mut dist = vec![0.0f64; nnf.len()];
+        let mut energies = Vec::new();
+        let norm: f64 = l.domain.iter().map(|&q| 4.0 * l.patch_count(ri, l.xy(q))).sum::<f64>().max(1.0);
+        for em in 0..options.em_iterations {
+            {
+                let lr = &l;
+                let nf = &nnf;
+                par_fill(&mut dist, threads, |k| {
+                    let q = lr.xy(lr.domain.get(k).copied().unwrap_or(0));
+                    let s = lr.xy(nf.get(k).copied().unwrap_or(0));
+                    lr.dist(ri, q, s, f64::INFINITY)
+                });
+            }
+            for sw in 0..options.search_iterations {
+                let exp = options.search_iterations.wrapping_sub(1).wrapping_sub(sw).min(MAX_JUMP_SHIFT);
+                let ctx = Sweep {
+                    l: &l,
+                    r: ri,
+                    nnf: &nnf,
+                    dist: &dist,
+                    seed: options.seed,
+                    level: li,
+                    em,
+                    sweep: sw,
+                    jump: 1i64.checked_shl(exp).unwrap_or(1),
+                    window,
+                    guide: goff,
+                };
+                let mut out = vec![(0u32, 0.0f64); nnf.len()];
+                par_fill(&mut out, threads, |k| ctx.step(k));
+                for ((o, d), (no, nd)) in nnf.iter_mut().zip(dist.iter_mut()).zip(out) {
+                    *o = no;
+                    *d = nd;
+                }
+            }
+            energies.push(dist.iter().sum::<f64>() / norm);
+            // Vote (reads source pixels only).
+            let mut votes = vec![[0.0f32; 4]; l.holes.len()];
+            {
+                let lr = &l;
+                let (nf, df) = (&nnf, &dist);
+                par_fill(&mut votes, threads, |k| {
+                    lr.vote(ri, nf, df, lr.xy(lr.holes.get(k).copied().unwrap_or(0)))
+                });
+            }
+            for (&p, v) in l.holes.iter().zip(votes) {
+                if let Some(t) = l.img.get_mut(p as usize) {
+                    *t = v;
+                }
+            }
+            total_iters = total_iters.saturating_add(1);
+        }
+        receipts.push(LevelReceipt {
+            width: u32::try_from(l.w).map_err(|_| Error::Overflow)?,
+            height: u32::try_from(l.h).map_err(|_| Error::Overflow)?,
+            hole_pixels: l.holes.len() as u64,
+            domain_centres: l.domain.len() as u64,
+            source_centres: l.sources.len() as u64,
+            em_iterations: options.em_iterations,
+            search_iterations: options.search_iterations,
+            energies,
+        });
+        if li == 0 {
+            final_nnf = nnf;
+            final_dist = dist;
+            prev = Some((l, Vec::new()));
+        } else {
+            prev = Some((l, nnf));
+        }
+    }
+    let Some((level0, _)) = prev else { return Ok(None) };
+    let final_energy = receipts.last().and_then(|r| r.energies.last().copied()).unwrap_or(0.0);
+    Ok(Some(Synthesis {
+        level0,
+        nnf: final_nnf,
+        dist: final_dist,
+        receipt: ContentAwareReceipt {
+            seed: options.seed,
+            patch_radius: options.patch_radius,
+            levels: receipts,
+            iterations: total_iters,
+            final_energy,
+            work,
+            guided: guide.is_some(),
+            blend: None,
+        },
+    }))
+}
+
+/// Coarsest-level hole initialisation (single-threaded, deterministic).
+fn onion_peel(l: &mut Level) {
+    let mut known: Vec<bool> = l.hole.iter().map(|h| !h).collect();
+    let mut pending: Vec<u32> = l.holes.clone();
+    let mut passes = 0usize;
+    let cap = l.w.saturating_add(l.h).saturating_add(2);
+    while !pending.is_empty() && passes < cap {
+        let mut updates = Vec::new();
+        for &p in &pending {
+            let (x, y) = l.xy(p);
+            let mut sum = [0.0f64; 4];
+            let mut cnt = 0u32;
+            for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                if let Some(ni) = l.index(x.wrapping_add(dx), y.wrapping_add(dy))
+                    && known.get(ni).copied().unwrap_or(false)
+                {
+                    let v = l.px(ni);
+                    for (s, c) in sum.iter_mut().zip(v) {
+                        *s += f64::from(c);
+                    }
+                    cnt = cnt.saturating_add(1);
+                }
+            }
+            if cnt > 0 {
+                let mut px = [0.0f32; 4];
+                for (o, s) in px.iter_mut().zip(sum) {
+                    *o = (s / f64::from(cnt)) as f32;
+                }
+                updates.push((p, px));
+            }
+        }
+        if updates.is_empty() {
+            break;
+        }
+        for (p, v) in updates {
+            if let Some(t) = l.img.get_mut(p as usize) {
+                *t = v;
+            }
+            if let Some(k) = known.get_mut(p as usize) {
+                *k = true;
+            }
+        }
+        pending.retain(|p| !known.get(*p as usize).copied().unwrap_or(true));
+        passes = passes.saturating_add(1);
+    }
+}
+
+fn f32x4_to_f64(p: [f32; 4]) -> [f64; 4] {
+    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2]), f64::from(p[3])]
+}
+
+/// The hole clipped to the target bounds (budget checked).
+fn clip_hole(
+    target: &RgbaPlane,
+    hole: &CoveragePlane,
+    limits: &RetouchLimits,
+) -> Result<Option<CoveragePlane>, RetouchError> {
+    coverage_validate(hole)?;
+    let Some(bounds) = hole.bounds.intersect(target.bounds)? else { return Ok(None) };
+    let n = limits.admit_area(bounds, 2)?;
+    let mut data = Vec::with_capacity(n);
+    let (ex, ey) = bounds.end()?;
+    for y in bounds.y..ey {
+        for x in bounds.x..ex {
+            data.push(hole.at(x, y));
+        }
+    }
+    Ok(Some(CoveragePlane { bounds, data }))
+}
+
+fn validate_sampling(sampling: &SamplingArea<'_>) -> Result<(), RetouchError> {
+    match sampling {
+        SamplingArea::Auto => Ok(()),
+        SamplingArea::Rectangular(r) => {
+            r.end()?;
+            Ok(())
+        }
+        SamplingArea::Custom(c) => coverage_validate(c),
+    }
+}
+
+fn run(
+    target: &RgbaPlane,
+    hole: &CoveragePlane,
+    sampling: SamplingArea<'_>,
+    exclude: Option<&CoveragePlane>,
+    guide: Option<Guide>,
+    options: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<ContentAwareResult, RetouchError> {
+    options.validate()?;
+    target.validate()?;
+    validate_sampling(&sampling)?;
+    if let Some(e) = exclude {
+        coverage_validate(e)?;
+    }
+    let unchanged = |plane: RgbaPlane| ContentAwareResult {
+        result: RetouchResult { plane, damage: None },
+        receipt: ContentAwareReceipt::empty(options, guide.is_some()),
+    };
+    let Some(cov) = clip_hole(target, hole, limits)? else {
+        return Ok(unchanged(copy_plane(target, limits)?));
+    };
+    let Some(syn) = synthesize(target, &cov, &sampling, exclude, guide, options, limits)? else {
+        return Ok(unchanged(copy_plane(target, limits)?));
+    };
+    let b = target.bounds;
+    let l = &syn.level0;
+    let local = |x: i64, y: i64| -> Option<usize> { l.index(x.wrapping_sub(b.x), y.wrapping_sub(b.y)) };
+    let mut receipt = syn.receipt;
+    let plane = match options.colour_adaptation {
+        ColourAdaptation::None => {
+            let mut out = copy_plane(target, limits)?;
+            let (ex, ey) = cov.bounds.end()?;
+            for y in cov.bounds.y..ey {
+                for x in cov.bounds.x..ex {
+                    let c = f64::from(cov.at(x, y)) / f64::from(u16::MAX);
+                    if c <= 0.0 {
+                        continue;
+                    }
+                    let Some(li) = local(x, y) else { continue };
+                    let f = f32x4_to_f64(l.px(li));
+                    let d = premul(target.at(x, y));
+                    let mut v = [0.0f64; 4];
+                    for k in 0..4 {
+                        v[k] = d[k] + c * (f[k] - d[k]);
+                    }
+                    if let Some(oi) = out.index(x, y)
+                        && let Some(px) = out.data.get_mut(oi)
+                    {
+                        *px = straight(v);
+                    }
+                }
+            }
+            out
+        }
+        _ => {
+            let ri = i64::from(options.patch_radius);
+            let healed = heal_with_guide(target, &cov, None, limits, |region| {
+                let n = limits.admit_area(region, RGBA_SAMPLE_BYTES)?;
+                let mut data = Vec::with_capacity(n);
+                let (ex, ey) = region.end()?;
+                for y in region.y..ey {
+                    for x in region.x..ex {
+                        let Some(li) = local(x, y) else {
+                            data.push(target.at(x, y));
+                            continue;
+                        };
+                        let in_hole = l.hole.get(li).copied().unwrap_or(false);
+                        let ring = !in_hole
+                            && [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].iter().any(|(dx, dy)| {
+                                local(x.wrapping_add(*dx), y.wrapping_add(*dy))
+                                    .is_some_and(|ni| l.hole.get(ni).copied().unwrap_or(false))
+                            });
+                        let p = if in_hole {
+                            straight(f32x4_to_f64(l.px(li)))
+                        } else if ring {
+                            let (lx, ly) = l.xy(u32::try_from(li).map_err(|_| Error::Overflow)?);
+                            straight(f32x4_to_f64(l.vote(ri, &syn.nnf, &syn.dist, (lx, ly))))
+                        } else {
+                            target.at(x, y)
+                        };
+                        data.push(p);
+                    }
+                }
+                Ok(RgbaPlane { bounds: region, data })
+            })?;
+            receipt.blend = Some(healed.receipt);
+            healed.result.plane
+        }
+    };
+    Ok(ContentAwareResult {
+        result: RetouchResult { plane, damage: Some(cov.bounds) },
+        receipt,
+    })
+}
+
+/// Content-aware fill (STU-RAS-143): synthesize the pixels of `hole` (coverage > 0, clipped to the
+/// target) from the sampling area of `target` (module documentation: pyramid, PatchMatch NNF,
+/// weighted voting, optional healing blend). Returns the whole new plane, the damage rectangle
+/// (the clipped hole bounds) and the quality receipt. An empty hole returns the target unchanged.
+pub fn fill(
+    target: &RgbaPlane,
+    hole: &CoveragePlane,
+    sampling: SamplingArea<'_>,
+    options: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<ContentAwareResult, RetouchError> {
+    run(target, hole, sampling, None, None, options, limits)
+}
+
+/// Content-aware surface description (Studio readings, parity NOT_PROVEN).
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":1,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)), coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default (high, very_high refused content_aware_option_unsupported)","rotation_adaptation":"none only","scale":"false only","mirror":"false only"},"receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","not_modelled":["sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;

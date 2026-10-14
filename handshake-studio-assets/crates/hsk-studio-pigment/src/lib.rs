@@ -7,6 +7,7 @@ pub mod blur_math;
 pub mod brush;
 pub mod caller;
 pub mod canvas_ops;
+pub mod content_aware;
 pub mod coverage_math;
 pub mod effect_math;
 pub mod filter_math;
