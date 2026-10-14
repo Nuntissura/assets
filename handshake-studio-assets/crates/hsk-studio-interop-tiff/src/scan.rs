@@ -52,17 +52,17 @@ impl<'a> Cur<'a> {
         self.b.get(p..e).ok_or(TiffError::Truncated)
     }
 
-    fn u16(&self, pos: u64) -> Result<u16> {
+    pub(crate) fn u16(&self, pos: u64) -> Result<u16> {
         let a: [u8; 2] = self.slice(pos, 2)?.try_into().map_err(|_| TiffError::Truncated)?;
         Ok(if self.le { u16::from_le_bytes(a) } else { u16::from_be_bytes(a) })
     }
 
-    fn u32(&self, pos: u64) -> Result<u32> {
+    pub(crate) fn u32(&self, pos: u64) -> Result<u32> {
         let a: [u8; 4] = self.slice(pos, 4)?.try_into().map_err(|_| TiffError::Truncated)?;
         Ok(if self.le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) })
     }
 
-    fn u64(&self, pos: u64) -> Result<u64> {
+    pub(crate) fn u64(&self, pos: u64) -> Result<u64> {
         let a: [u8; 8] = self.slice(pos, 8)?.try_into().map_err(|_| TiffError::Truncated)?;
         Ok(if self.le { u64::from_le_bytes(a) } else { u64::from_be_bytes(a) })
     }
@@ -78,7 +78,7 @@ pub(crate) struct Entry {
     pub(crate) data_len: u64,
 }
 
-fn type_size(ty: u16) -> Option<u64> {
+pub(crate) fn type_size(ty: u16) -> Option<u64> {
     match ty {
         1 | 2 | 6 | 7 => Some(1),
         3 | 8 => Some(2),
@@ -91,7 +91,7 @@ fn type_size(ty: u16) -> Option<u64> {
 pub(crate) struct Header {
     pub(crate) big: bool,
     pub(crate) order: ByteOrder,
-    first_ifd: u64,
+    pub(crate) first_ifd: u64,
 }
 
 pub(crate) fn header(b: &[u8]) -> Result<Header> {
@@ -114,7 +114,15 @@ pub(crate) fn header(b: &[u8]) -> Result<Header> {
     }
 }
 
-fn read_ifd(cur: &Cur<'_>, big: bool, off: u64, limits: &Limits) -> Result<(Vec<Entry>, u64)> {
+/// `keep_unknown`: entries of an unknown field type are kept with an empty value range (container facade);
+/// the decoder path drops them.
+pub(crate) fn read_ifd(
+    cur: &Cur<'_>,
+    big: bool,
+    off: u64,
+    limits: &Limits,
+    keep_unknown: bool,
+) -> Result<(Vec<Entry>, u64)> {
     let (count, count_len, entry_len, next_len) = if big {
         (cur.u64(off)?, 8_u64, 20_u64, 8_u64)
     } else {
@@ -135,6 +143,9 @@ fn read_ifd(cur: &Cur<'_>, big: bool, off: u64, limits: &Limits) -> Result<(Vec<
         let ty = cur.u16(cadd(epos, 2)?)?;
         let count = if big { cur.u64(cadd(epos, 4)?)? } else { u64::from(cur.u32(cadd(epos, 4)?)?) };
         let Some(size) = type_size(ty) else {
+            if keep_unknown {
+                entries.push(Entry { tag, ty, count, data_pos: 0, data_len: 0 });
+            }
             continue;
         };
         let data_len = cmul(count, size)?;
@@ -294,7 +305,7 @@ pub(crate) fn scan(bytes: &[u8], limits: &Limits) -> Result<FileScan> {
         if pages.len() >= to_usize(u64::from(limits.max_pages))? {
             return Err(TiffError::Limit("limit_pages"));
         }
-        let (entries, nxt) = read_ifd(&cur, hdr.big, next, limits)?;
+        let (entries, nxt) = read_ifd(&cur, hdr.big, next, limits, false)?;
         let page = page(&ctx, &entries, hdr.order)?;
         total = cadd(total, page.budget_bytes)?;
         if total > limits.max_total_decoded_bytes {
