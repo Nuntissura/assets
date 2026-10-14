@@ -110,15 +110,52 @@ fn cr2_350d_decodes_the_stored_frame_deterministically() {
     println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
 }
 
+/// D1H facts: raw SubIFD read by byte inspection (2026-10-14): 2012 x 1324, BitsPerSample 12,
+/// Compression 1, CFAPattern 2,1,1,0 (BGGR), IFD0 Model "NIKON D1H".
+#[test]
+#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+fn nef_d1h_uncompressed_decodes_deterministically() {
+    const TEST: &str = "nef_d1h_uncompressed_decodes_deterministically";
+    let Some(bytes) = read(TEST, "nikon-d1h-12bit-uncompressed.nef", "d110b80a8b10a3a67b5cd1c15ef33f1a6397557b73d5d3f4e565739f0c072571") else {
+        return;
+    };
+    let raw = decode_container(&bytes).unwrap();
+    assert_eq!((raw.width, raw.height, raw.bits_per_sample, raw.white_level), (2012, 1324, 12, 4095));
+    assert_eq!(raw.cfa_pattern, CfaPattern::Bayer(Bayer::Bggr));
+    assert_eq!(raw.unique_camera_model.as_deref(), Some("NIKON D1H"));
+    assert_eq!(raw.solve_colour().err(), Some(DevelopError::MissingColourData));
+    let digest = samples_digest(&raw);
+    assert_eq!(digest, samples_digest(&decode_container(&bytes).unwrap()), "decode is deterministic");
+    // MSB-first packing check on real data: same-colour neighbours two columns apart are close on
+    // average (a wrong bit order scrambles them; measured 162 vs 632 by byte inspection).
+    let mut total = 0u64;
+    for x in 0..raw.width - 2 {
+        total += u64::from(raw.sample(x, 500).abs_diff(raw.sample(x + 2, 500)));
+    }
+    let mean = total / u64::from(raw.width - 2);
+    assert!(mean < 300, "row 500 same-colour mean step {mean}");
+    println!("nef d1h: 2012x1324 bits 12 samples_sha256={digest} row500_step={mean}");
+    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
+}
+
+fn samples_digest(raw: &DngRaw) -> String {
+    let mut h = Sha256::new();
+    for y in 0..raw.height {
+        for x in 0..raw.width {
+            h.update(raw.sample(x, y).to_le_bytes());
+        }
+    }
+    hex(&h.finalize())
+}
+
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn vendor_files_route_to_typed_outcomes() {
     const TEST: &str = "vendor_files_route_to_typed_outcomes";
-    let cases: [(&str, &str, DevelopError); 9] = [
+    let cases: [(&str, &str, DevelopError); 8] = [
         ("canon-eos-r6.cr3", "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778", DevelopError::DecoderUnavailable("cr3")),
-        ("nikon-d1h-12bit-uncompressed.nef", "d110b80a8b10a3a67b5cd1c15ef33f1a6397557b73d5d3f4e565739f0c072571", DevelopError::UnsupportedContainer),
-        ("nikon-d70s-12bit-lossy-type1.nef", NEF_D70S, DevelopError::UnsupportedContainer),
-        ("nikon-z6-12bit-compressed.nef", NEF_Z6, DevelopError::UnsupportedContainer),
+        ("nikon-d70s-12bit-lossy-type1.nef", NEF_D70S, DevelopError::UnsupportedCompression),
+        ("nikon-z6-12bit-compressed.nef", NEF_Z6, DevelopError::UnsupportedCompression),
         ("sony-ilce-7s-14bit-compressed.arw", ARW_7S, DevelopError::UnsupportedContainer),
         ("fujifilm-finepix-s5000.raf", RAF_S5000, DevelopError::DecoderUnavailable("raf")),
         ("fujifilm-x-s10-14bit-compressed-xtrans.raf", RAF_XS10, DevelopError::DecoderUnavailable("raf")),
