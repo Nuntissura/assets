@@ -399,7 +399,7 @@ impl Run<'_> {
                 record["detail"] = json!({"import": summary});
             }
         }
-        ok.then(|| (package, imported.receipt))
+        ok.then_some((package, imported.receipt))
     }
 
     /// The working document (read-only), when one is open.

@@ -565,7 +565,8 @@ impl Viewer {
             self.zoom = (rect.width() / size.x).min(rect.height() / size.y).clamp(0.05, 16.0);
         }
         if response.dragged() {
-            self.pan += response.drag_delta();
+            let d = response.drag_delta();
+            self.pan = egui::vec2(self.pan.x + d.x, self.pan.y + d.y);
             self.fit = false;
         }
         if response.hovered() {
@@ -575,7 +576,8 @@ impl Viewer {
                 self.fit = false;
             }
         }
-        let shown = egui::Rect::from_center_size(rect.center() + self.pan, size * self.zoom);
+        let centre = egui::pos2(rect.center().x + self.pan.x, rect.center().y + self.pan.y);
+        let shown = egui::Rect::from_center_size(centre, egui::vec2(size.x * self.zoom, size.y * self.zoom));
         let painter = ui.painter_at(rect);
         checker(&painter, shown.intersect(rect));
         painter.image(id, shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
@@ -592,7 +594,7 @@ fn checker(painter: &egui::Painter, rect: egui::Rect) {
     let mut y = rect.top();
     let mut row = 0u32;
     while y < rect.bottom() {
-        let mut x = rect.left() + if row % 2 == 0 { 0.0 } else { step };
+        let mut x = rect.left() + if row.is_multiple_of(2) { 0.0 } else { step };
         while x < rect.right() {
             let cell = egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2((x + step).min(rect.right()), (y + step).min(rect.bottom())));
             painter.rect_filled(cell, 0.0, egui::Color32::from_gray(150));
