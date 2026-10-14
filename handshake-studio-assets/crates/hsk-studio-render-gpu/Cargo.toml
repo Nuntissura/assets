@@ -7,6 +7,8 @@ rust-version = { workspace = true }
 [features]
 default = []
 test-faults = []
+# Render into a caller-owned wgpu device/queue/texture (plan_sink::shared; names wgpu types publicly).
+shared-device = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

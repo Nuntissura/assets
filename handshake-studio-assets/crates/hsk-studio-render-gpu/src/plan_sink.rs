@@ -1042,7 +1042,7 @@ impl GpuBackend {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
-        self.execute_inner(plan, None, request, sources, cancel, sink)
+        self.execute_inner(plan, None, request, sources, cancel, sink, None)
     }
 
     /// [`GpuBackend::execute_detailed`] for a plan with its extension envelope (pigment
@@ -1059,9 +1059,12 @@ impl GpuBackend {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
-        self.execute_inner(plan, Some(extensions), request, sources, cancel, sink)
+        self.execute_inner(plan, Some(extensions), request, sources, cancel, sink, None)
     }
 
+    /// `texture`: the shared-device output (lane SMB-RENDER-GPU-SHARED-DEVICE); `None` = read back
+    /// into `sink`.
+    #[allow(clippy::too_many_arguments)]
     fn execute_inner(
         &self,
         plan: &RenderPlan<NoVector>,
@@ -1070,6 +1073,7 @@ impl GpuBackend {
         sources: &dyn PlanSources,
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
+        texture: Option<&TextureOut<'_>>,
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
         let mut ledger = match extensions {
             None => admit::<NoVector>(plan, self, request, cancel)?,
@@ -1111,6 +1115,7 @@ impl GpuBackend {
             cancel,
             sink,
             &mut stats,
+            texture,
         );
         stats.peak_resident_bytes = residency.peak_used();
         stats.evictions = residency.evictions().saturating_sub(evictions_before);
@@ -2173,6 +2178,7 @@ fn run(
     cancel: &CancellationToken,
     sink: &mut dyn TileSink,
     stats: &mut GpuStats,
+    texture: Option<&TextureOut<'_>>,
 ) -> Result<u64, GpuError> {
     ctx.check_alive()?;
     let _ = ctx.take_fault();
@@ -2553,6 +2559,13 @@ fn run(
             } else {
                 eval_layer(&mut ex, prepared, &root_layer, frame, 0)?;
             }
+            // Shared-device output: the chunk goes straight into the caller's texture, no read-back.
+            if let Some(out) = texture {
+                out.write_chunk(&ex.levels[0], rect, frame.width, margin)?;
+                chunks = chunks.saturating_add(1);
+                cx = cx.checked_add(side_w).ok_or_else(overflow)?;
+                continue;
+            }
 
             // Read the finished chunk back (the central rows of the frame when it has a margin).
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -2631,6 +2644,21 @@ fn run(
 
 #[cfg(test)]
 mod refusal_keys;
+
+#[cfg(feature = "shared-device")]
+pub mod shared;
+#[cfg(feature = "shared-device")]
+use shared::TextureOut;
+/// Without the `shared-device` feature there is no texture output; the type keeps the private
+/// `run` signature identical in both builds.
+#[cfg(not(feature = "shared-device"))]
+struct TextureOut<'a>(std::convert::Infallible, std::marker::PhantomData<&'a ()>);
+#[cfg(not(feature = "shared-device"))]
+impl TextureOut<'_> {
+    fn write_chunk(&self, _: &wgpu::Buffer, _: Rect, _: u32, _: u32) -> Result<(), GpuError> {
+        match self.0 {}
+    }
+}
 
 /// Defence in depth for Blend-If on a clip role: `admit_extended` refuses it first, so `prepare`
 /// cannot be reached with one through the public API; the roles and keys it uses are tested here.

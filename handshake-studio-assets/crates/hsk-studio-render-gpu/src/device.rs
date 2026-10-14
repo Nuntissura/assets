@@ -117,6 +117,37 @@ impl DeviceInfo {
     }
 }
 
+/// Plain-data description of an adapter at `generation`.
+fn info_of(raw: wgpu::AdapterInfo, generation: u64) -> DeviceInfo {
+    DeviceInfo {
+        backend: match raw.backend {
+            wgpu::Backend::Vulkan => "vulkan",
+            wgpu::Backend::Dx12 => "dx12",
+            wgpu::Backend::Metal => "metal",
+            wgpu::Backend::Gl => "gl",
+            _ => "other",
+        },
+        adapter_kind: match raw.device_type {
+            wgpu::DeviceType::DiscreteGpu => AdapterKind::Discrete,
+            wgpu::DeviceType::IntegratedGpu => AdapterKind::Integrated,
+            wgpu::DeviceType::VirtualGpu => AdapterKind::Virtual,
+            wgpu::DeviceType::Cpu => AdapterKind::Cpu,
+            wgpu::DeviceType::Other => AdapterKind::Unknown,
+        },
+        adapter_name: raw.name,
+        generation,
+    }
+}
+
+/// Effective cap for one buffer: `min(options, device limits)`.
+fn buffer_cap(device: &wgpu::Device, options: &DeviceOptions) -> u64 {
+    let limits = device.limits();
+    options
+        .max_buffer_bytes
+        .min(limits.max_buffer_size)
+        .min(u64::from(limits.max_storage_buffer_binding_size))
+}
+
 /// Latches written by wgpu callbacks (device lost, uncaptured error).
 #[derive(Default)]
 struct Signals {
@@ -228,36 +259,39 @@ impl GpuContext {
         }));
 
         let kernel = Kernel::new(&device, shader)?;
-        let raw = adapter.get_info();
-        let info = DeviceInfo {
-            backend: match raw.backend {
-                wgpu::Backend::Vulkan => "vulkan",
-                wgpu::Backend::Dx12 => "dx12",
-                wgpu::Backend::Metal => "metal",
-                wgpu::Backend::Gl => "gl",
-                _ => "other",
-            },
-            adapter_kind: match raw.device_type {
-                wgpu::DeviceType::DiscreteGpu => AdapterKind::Discrete,
-                wgpu::DeviceType::IntegratedGpu => AdapterKind::Integrated,
-                wgpu::DeviceType::VirtualGpu => AdapterKind::Virtual,
-                wgpu::DeviceType::Cpu => AdapterKind::Cpu,
-                wgpu::DeviceType::Other => AdapterKind::Unknown,
-            },
-            adapter_name: raw.name,
-            generation: previous_generation.saturating_add(1),
-        };
-        let device_limits = device.limits();
-        let max_buffer_bytes = options
-            .max_buffer_bytes
-            .min(device_limits.max_buffer_size)
-            .min(u64::from(device_limits.max_storage_buffer_binding_size));
+        let info = info_of(adapter.get_info(), previous_generation.saturating_add(1));
+        let max_buffer_bytes = buffer_cap(&device, options);
         Ok(Self {
             device,
             queue,
             kernel,
             signals,
             info,
+            max_buffer_bytes,
+        })
+    }
+
+    /// Wrap a caller-owned device and queue (feature `shared-device`, lane
+    /// SMB-RENDER-GPU-SHARED-DEVICE; `plan_sink::shared::SharedDevice` is the only caller). No
+    /// adapter or device is requested and no device-lost or uncaptured-error callback is installed:
+    /// wgpu keeps one callback of each per device and the host (egui-wgpu) owns them, so loss
+    /// detection stays the host's. The compute pipelines are built on the caller's device; a
+    /// device whose limits cannot hold them is the typed `GpuError::Pipeline`.
+    #[cfg(feature = "shared-device")]
+    pub(crate) fn from_external(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter: wgpu::AdapterInfo,
+        options: &DeviceOptions,
+    ) -> Result<Self, GpuError> {
+        let kernel = Kernel::new(&device, None)?;
+        let max_buffer_bytes = buffer_cap(&device, options);
+        Ok(Self {
+            device,
+            queue,
+            kernel,
+            signals: Arc::new(Signals::default()),
+            info: info_of(adapter, 1),
             max_buffer_bytes,
         })
     }
