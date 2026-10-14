@@ -73,6 +73,10 @@
 use crate::test_fault::WorkerTestFault;
 use crate::wire::{self, OpenRequest, Reply, WireError, WireFrame};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_worker::{
+    EXIT_PATIENCE, ReadFailure, RespawnGate, Session, StartError, StartRequest, Supervisor,
+    SupervisorConfig, Waited, after, resolve_program,
+};
 use hsk_studio_reel::{
     Av1Config, ChunkSink, CodecDescriptor, DecodedPicture, DecoderFault, DecoderIdentity,
     ExternalVideoDecoder, ISOBMFF_PROVIDER_ID, IsobmffProvider, Limits, MATROSKA_PROVIDER_ID,
@@ -81,16 +85,14 @@ use hsk_studio_reel::{
     VideoRoute, VideoStreamSpec, av1_descriptor, detect_type, parse_av1c,
 };
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     io::SeekFrom,
-    path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    path::PathBuf,
+    process::ChildStdout,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, RecvTimeoutError},
+        atomic::{AtomicU64, Ordering},
     },
-    thread,
     time::{Duration, Instant},
 };
 
@@ -98,12 +100,6 @@ use std::{
 pub const AV1_PROVIDER_ID: &str = "av1";
 /// File name of the worker executable (without the platform suffix).
 pub const WORKER_PROGRAM: &str = "reel-native-av1-worker";
-/// How often a waiting host thread re-checks cancel and the wall-clock deadlines.
-const WAIT_SLICE: Duration = Duration::from_millis(5);
-/// How long a worker that closed its stdout gets to exit by itself (to read its true exit code).
-const EXIT_PATIENCE: Duration = Duration::from_millis(500);
-/// Cap for a wait the platform clock cannot represent (`Instant` overflow).
-const LONGEST_WAIT: Duration = Duration::from_secs(86_400);
 /// Largest packet a request frame can carry (frame cap minus header room).
 const MAX_PACKET_BYTES: usize = wire::MAX_REQUEST_FRAME - 64;
 /// Decoder the `reel-native-av1-worker` of this package hosts (reel's rav1d decoder, reel
@@ -114,10 +110,6 @@ const DECODER_VERSION_UNKNOWN: &str = "unknown";
 /// Bounds for a decoder version string a worker may report, and for the distinct versions interned.
 const MAX_VERSION_BYTES: usize = 64;
 const MAX_INTERNED_VERSIONS: usize = 8;
-
-/// Win32 `CREATE_NO_WINDOW` process creation flag (0x08000000, Process Creation Flags, Win32 docs).
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Worker-pool policy.
 #[derive(Clone, Debug)]
@@ -334,14 +326,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// `now + wait` without overflow: a wait the clock cannot represent is capped at `LONGEST_WAIT`.
-fn deadline_after(wait: Duration) -> Instant {
-    let now = Instant::now();
-    now.checked_add(wait)
-        .or_else(|| now.checked_add(LONGEST_WAIT))
-        .unwrap_or(now)
-}
-
 /// A decoder version a worker reported, as a `&'static str` for receipts. Only short printable ASCII
 /// is accepted, and at most `MAX_INTERNED_VERSIONS` distinct strings are ever kept per process (each
 /// kept once), so a worker cannot grow host memory through HELLO.
@@ -365,143 +349,28 @@ fn intern_version(version: &str) -> Option<&'static str> {
     Some(kept)
 }
 
-struct Job {
-    frame: Vec<u8>,
-    cap: usize,
+type Proc = Session<Vec<u8>, WireError>;
+
+/// The supervisor's frame reader for this protocol.
+fn read_reply(stdout: &mut ChildStdout, cap: u32) -> Result<Vec<u8>, ReadFailure<WireError>> {
+    let cap = usize::try_from(cap).unwrap_or(usize::MAX);
+    wire::read_frame(stdout, cap).map_err(|error| match error {
+        WireError::Closed => ReadFailure::Closed,
+        other => ReadFailure::Failed(other),
+    })
 }
 
-type Frames = Result<Vec<u8>, WireError>;
-
-enum Waited {
-    Frame(Vec<u8>),
-    Canceled,
-    TimedOut,
-    Failed(WireError),
+/// Reply frames that end a request (the supervisor's I/O thread stops reading after one).
+#[allow(clippy::ptr_arg)] // the signature must be `TerminalFn<Vec<u8>>`
+fn is_terminal_reply(frame: &Vec<u8>) -> bool {
+    wire::is_terminal(frame)
 }
 
-/// Counts one live worker process; released only after its `Session` has been reaped.
-struct Permit(Arc<AtomicUsize>);
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-/// One live worker process plus the I/O thread that owns its pipes.
-struct Session {
-    child: Child,
-    jobs: mpsc::Sender<Job>,
-    frames: mpsc::Receiver<Frames>,
-    /// False once the process was terminated or its stream is out of sync: never reused.
-    usable: bool,
-    _permit: Permit,
-}
-
-impl Session {
-    fn is_alive(&mut self) -> bool {
-        self.usable && matches!(self.child.try_wait(), Ok(None))
-    }
-
-    /// Waits for the next reply frame, polling cancel and the real-time deadline.
-    fn wait(&self, cancel: &CancellationToken, wall: Instant) -> Waited {
-        loop {
-            match self.frames.recv_timeout(WAIT_SLICE) {
-                Ok(Ok(frame)) => return Waited::Frame(frame),
-                Ok(Err(error)) => return Waited::Failed(error),
-                Err(RecvTimeoutError::Disconnected) => return Waited::Failed(WireError::Closed),
-                Err(RecvTimeoutError::Timeout) => {
-                    if cancel.check().is_err() {
-                        return Waited::Canceled;
-                    }
-                    if Instant::now() >= wall {
-                        return Waited::TimedOut;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Reaps the child, killing it if it is still running after `patience`. Returns whether the
-    /// process is provably gone and, if it exited by itself, its exit code.
-    fn terminate(&mut self, patience: Duration) -> (bool, Option<i32>) {
-        self.usable = false;
-        let until = deadline_after(patience);
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(status)) => return (true, status.code()),
-                Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(5)),
-                _ => break,
-            }
-        }
-        let _ = self.child.kill();
-        (self.child.wait().is_ok(), None)
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.terminate(Duration::ZERO);
-    }
-}
-
-/// Owns the worker's pipes: HELLO first, then per job one write and every reply up to the terminator.
-fn io_loop(
-    mut stdin: ChildStdin,
-    mut stdout: ChildStdout,
-    jobs: &mpsc::Receiver<Job>,
-    out: &mpsc::SyncSender<Frames>,
-) {
-    let hello = wire::read_frame(&mut stdout, wire::HELLO_CAP);
-    let failed = hello.is_err();
-    if out.send(hello).is_err() || failed {
-        return;
-    }
-    while let Ok(job) = jobs.recv() {
-        if wire::write_frame(&mut stdin, &job.frame).is_err() {
-            let _ = out.send(Err(WireError::Closed));
-            return;
-        }
-        loop {
-            match wire::read_frame(&mut stdout, job.cap) {
-                Ok(frame) => {
-                    let terminal = wire::is_terminal(&frame);
-                    if out.send(Ok(frame)).is_err() {
-                        return;
-                    }
-                    if terminal {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ = out.send(Err(error));
-                    return;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn quiet(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn quiet(_command: &mut Command) {}
-
-/// The worker executable inside the directory of `exe` and nowhere else: no parent directory and no
-/// search path, so a file planted in a directory above the host's own cannot be executed as the decoder
-/// worker (HELLO only checks self-reported strings). Test `worker_is_found_only_beside_the_running_executable`;
-/// same rule as the motion-js (961c301) and score-plugin (7d5641c) workers.
-fn discover_beside(exe: &Path) -> Option<PathBuf> {
-    let name = format!("{WORKER_PROGRAM}{}", std::env::consts::EXE_SUFFIX);
-    Some(exe.parent()?.join(name)).filter(|candidate| candidate.is_file())
-}
-
-fn discover_program() -> Option<PathBuf> {
-    discover_beside(&std::env::current_exe().ok()?)
+/// A request payload with its length prefix, as the supervisor writes it; `None` above the frame limit.
+fn framed(payload: &[u8]) -> Option<Vec<u8>> {
+    let mut frame = Vec::with_capacity(payload.len().saturating_add(4));
+    wire::write_frame(&mut frame, payload).ok()?;
+    Some(frame)
 }
 
 /// Why a request ended without a usable terminal reply.
@@ -540,20 +409,15 @@ struct Clock<'a> {
 }
 
 struct Pool {
-    program: PathBuf,
+    supervisor: Supervisor,
+    respawn: RespawnGate,
     max_workers: usize,
-    max_spawns: usize,
-    spawn_window: Duration,
     spawn_timeout: Duration,
     batch_deadline: Duration,
     segment_deadline: Duration,
-    #[cfg(feature = "test-faults")]
-    fault_env: Option<&'static str>,
     /// Decoder version learned from the first HELLO of this pool.
     decoder_version: OnceLock<&'static str>,
-    live: Arc<AtomicUsize>,
-    idle: Mutex<Vec<Session>>,
-    spawn_log: Mutex<VecDeque<Instant>>,
+    idle: Mutex<Vec<Proc>>,
     request_ids: AtomicU64,
     counters: Counters,
 }
@@ -584,75 +448,45 @@ impl Pool {
             .is_some_and(|version| *self.decoder_version.get_or_init(|| version) == version)
     }
 
-    fn admit_spawn(&self) -> Result<(), Av1WorkerFault> {
-        let now = Instant::now();
-        let mut log = lock(&self.spawn_log);
-        while log
-            .front()
-            .is_some_and(|started| now.duration_since(*started) > self.spawn_window)
-        {
-            log.pop_front();
-        }
-        if log.len() >= self.max_spawns {
-            bump(&self.counters.spawn_denied);
-            return Err(Av1WorkerFault::RespawnLimited);
-        }
-        log.push_back(now);
-        Ok(())
-    }
-
     /// Starts one worker and waits for its HELLO. The wait is polled in `WAIT_SLICE` slices, so a cancel
     /// is honoured within one slice (a stalled or slow-starting worker never holds a canceled call for
     /// the whole `spawn_timeout`): the starting worker is killed and reaped and the call is `Canceled`.
     /// `spawn_timeout` still bounds the wait. Test `canceled_call_does_not_wait_for_a_stalled_hello`.
-    fn spawn(&self, cancel: &CancellationToken) -> Result<Session, Av1Error> {
-        let previous = self.live.fetch_add(1, Ordering::AcqRel);
-        let permit = Permit(Arc::clone(&self.live));
-        if previous >= self.max_workers {
-            return Err(Av1Error::Worker(Av1WorkerFault::PoolBusy));
+    fn spawn(&self, cancel: &CancellationToken) -> Result<Proc, Av1Error> {
+        let permit = self
+            .supervisor
+            .admit(0)
+            .map_err(|_| Av1Error::Worker(Av1WorkerFault::PoolBusy))?;
+        if !self.respawn.admit() {
+            bump(&self.counters.spawn_denied);
+            return Err(Av1Error::Worker(Av1WorkerFault::RespawnLimited));
         }
-        self.admit_spawn().map_err(Av1Error::Worker)?;
         let spawn_failed = || {
             bump(&self.counters.spawn_failed);
             Av1Error::Worker(Av1WorkerFault::SpawnFailed)
         };
-        let mut command = Command::new(&self.program);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .env_clear();
-        #[cfg(feature = "test-faults")]
-        {
-            if let Some(value) = self.fault_env {
-                command.env(WorkerTestFault::ENV, value);
-            }
-        }
-        quiet(&mut command);
-        let mut child = command.spawn().map_err(|_| spawn_failed())?;
-        bump(&self.counters.spawned);
-        let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
-        let (frames_tx, frames_rx) = mpsc::sync_channel::<Frames>(1);
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(spawn_failed());
-        };
+        let started = self.supervisor.start(
+            permit,
+            StartRequest {
+                owner_session: "reel-native-av1",
+                extra_args: &[],
+                keepalive: None,
+                hello_cap: u32::try_from(wire::HELLO_CAP).unwrap_or(u32::MAX),
+            },
+            read_reply,
+            Some(is_terminal_reply),
+        );
         // From here the session owns the child: dropping it on any error path kills and reaps it.
-        let mut session = Session {
-            child,
-            jobs: jobs_tx,
-            frames: frames_rx,
-            usable: true,
-            _permit: permit,
+        let mut session = match started {
+            Ok(session) => session,
+            Err(StartError::NotStarted) => return Err(spawn_failed()),
+            Err(StartError::Setup) => {
+                bump(&self.counters.spawned);
+                return Err(spawn_failed());
+            }
         };
-        let io_thread = thread::Builder::new()
-            .name("reel-native-av1-worker-io".to_owned())
-            .spawn(move || io_loop(stdin, stdout, &jobs_rx, &frames_tx));
-        if io_thread.is_err() {
-            return Err(spawn_failed());
-        }
-        let hello = match session.wait(cancel, deadline_after(self.spawn_timeout)) {
+        bump(&self.counters.spawned);
+        let hello = match session.wait(cancel, after(self.spawn_timeout)) {
             Waited::Frame(hello) => hello,
             Waited::Canceled => return Err(self.fail(&mut session, Failure::Canceled)),
             // A greeting above `HELLO_CAP`, or bytes that are no frame (their first four read as a huge
@@ -660,14 +494,16 @@ impl Pool {
             // once, `worker_protocol`. Tests `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
             // `garbage_hello_is_a_protocol_fault_not_a_spawn_failure` and
             // `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`.
-            Waited::Failed(WireError::TooLarge | WireError::Malformed) => {
+            Waited::Failed(ReadFailure::Failed(WireError::TooLarge | WireError::Malformed)) => {
                 return Err(self.fail(&mut session, Failure::Protocol));
             }
             // A worker that closed its output or stayed silent never completed a greeting (nothing, fewer
             // than four bytes, or fewer bytes than the length it announced): a spawn failure. Tests
             // `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault` and
             // `a_greeting_cut_short_is_a_spawn_failure_not_a_protocol_fault`.
-            Waited::TimedOut | Waited::Failed(WireError::Closed) => {
+            Waited::TimedOut
+            | Waited::CpuCap
+            | Waited::Failed(ReadFailure::Closed | ReadFailure::Failed(WireError::Closed)) => {
                 session.terminate(Duration::ZERO);
                 return Err(spawn_failed());
             }
@@ -682,7 +518,7 @@ impl Pool {
         }
     }
 
-    fn checkout(&self, cancel: &CancellationToken) -> Result<Session, Av1Error> {
+    fn checkout(&self, cancel: &CancellationToken) -> Result<Proc, Av1Error> {
         loop {
             let idle = lock(&self.idle).pop();
             let Some(mut session) = idle else {
@@ -695,7 +531,7 @@ impl Pool {
         }
     }
 
-    fn checkin(&self, mut session: Session) {
+    fn checkin(&self, mut session: Proc) {
         if !session.is_alive() {
             return;
         }
@@ -707,7 +543,7 @@ impl Pool {
 
     /// Ends a request that produced no usable terminal reply: the worker is terminated and reaped
     /// (a worker that only closed its stream gets `EXIT_PATIENCE` to report its own exit code).
-    fn fail(&self, session: &mut Session, failure: Failure) -> Av1Error {
+    fn fail(&self, session: &mut Proc, failure: Failure) -> Av1Error {
         let counters = &self.counters;
         match failure {
             Failure::Canceled => {
@@ -732,7 +568,7 @@ impl Pool {
             }
             Failure::Closed => {
                 bump(&counters.crashed);
-                let (_, exit_code) = session.terminate(EXIT_PATIENCE);
+                let exit_code = session.terminate(EXIT_PATIENCE).exit_code;
                 *lock(&counters.last_crash_exit_code) = exit_code;
                 Av1Error::Worker(Av1WorkerFault::DecoderCrashed { exit_code })
             }
@@ -744,7 +580,7 @@ impl Pool {
     /// worker usable (it dropped its decoder); every other failure terminates it.
     fn exchange(
         &self,
-        session: &mut Session,
+        session: &mut Proc,
         call: Call<'_>,
         clock: &Clock<'_>,
         on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
@@ -757,8 +593,9 @@ impl Pool {
             declared,
             sent,
         } = call;
-        let wall = deadline_after(self.batch_deadline).min(clock.segment_wall);
-        if session.jobs.send(Job { frame, cap }).is_err() {
+        let wall = after(self.batch_deadline).min(clock.segment_wall);
+        let cap = u32::try_from(cap).unwrap_or(u32::MAX);
+        if !framed(&frame).is_some_and(|bytes| session.send_request(bytes, cap)) {
             return Err(self.fail(session, Failure::Closed));
         }
         bump(&self.counters.requests);
@@ -767,14 +604,16 @@ impl Pool {
             let bytes = match session.wait(clock.cancel, wall) {
                 Waited::Frame(bytes) => bytes,
                 Waited::Canceled => return Err(self.fail(session, Failure::Canceled)),
-                Waited::TimedOut => return Err(self.fail(session, Failure::Deadline)),
-                Waited::Failed(WireError::TooLarge) => {
+                Waited::TimedOut | Waited::CpuCap => {
+                    return Err(self.fail(session, Failure::Deadline));
+                }
+                Waited::Failed(ReadFailure::Failed(WireError::TooLarge)) => {
                     return Err(self.fail(session, Failure::Oversize));
                 }
-                Waited::Failed(WireError::Malformed) => {
+                Waited::Failed(ReadFailure::Failed(WireError::Malformed)) => {
                     return Err(self.fail(session, Failure::Protocol));
                 }
-                Waited::Failed(WireError::Closed) => {
+                Waited::Failed(ReadFailure::Closed | ReadFailure::Failed(WireError::Closed)) => {
                     return Err(self.fail(session, Failure::Closed));
                 }
             };
@@ -828,7 +667,7 @@ fn to_picture(frame: WireFrame) -> DecodedPicture {
 /// worker to the idle pool when dropped, unless a failure made it unusable.
 struct WorkerSession {
     pool: Arc<Pool>,
-    session: Option<Session>,
+    session: Option<Proc>,
     segment_wall: Instant,
     reply_cap: usize,
     max_packet_bytes: usize,
@@ -869,7 +708,7 @@ impl WorkerSession {
         cancel: &CancellationToken,
         on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
     ) -> Result<(), VideoDecodeError> {
-        let Some(session) = self.session.as_mut().filter(|session| session.usable) else {
+        let Some(session) = self.session.as_mut().filter(|session| session.is_usable()) else {
             return Err(ReelError::Unsupported {
                 what: "av1-worker-session-ended",
             }
@@ -981,27 +820,40 @@ impl WorkerAv1Provider {
         {
             return Err(Av1ConfigError::PolicyInvalid);
         }
-        let program = options
-            .program
-            .clone()
-            .or_else(discover_program)
-            .filter(|path| path.is_file())
+        let program = resolve_program(options.program.clone(), WORKER_PROGRAM)
             .ok_or(Av1ConfigError::WorkerProgramMissing)?;
+        #[cfg(feature = "test-faults")]
+        let env: Vec<(String, String)> = options
+            .test_fault
+            .env_value()
+            .map(|value| (WorkerTestFault::ENV.to_owned(), value.to_owned()))
+            .into_iter()
+            .collect();
+        #[cfg(not(feature = "test-faults"))]
+        let env: Vec<(String, String)> = Vec::new();
         Ok(Self {
             pool: Arc::new(Pool {
-                program,
+                supervisor: Supervisor::new(SupervisorConfig {
+                    program,
+                    args: Vec::new(),
+                    env,
+                    max_workers: options.max_workers,
+                    max_in_flight_bytes: u64::MAX,
+                    spawn_timeout: options.spawn_timeout,
+                    os_limits: None,
+                    reply_buffer: Some(1),
+                    io_thread_name: "reel-native-av1-worker-io".to_owned(),
+                }),
+                respawn: RespawnGate::new(
+                    usize::try_from(options.max_spawns).unwrap_or(usize::MAX),
+                    options.spawn_window,
+                ),
                 max_workers: options.max_workers,
-                max_spawns: usize::try_from(options.max_spawns).unwrap_or(usize::MAX),
-                spawn_window: options.spawn_window,
                 spawn_timeout: options.spawn_timeout,
                 batch_deadline: options.batch_deadline,
                 segment_deadline: options.segment_deadline,
-                #[cfg(feature = "test-faults")]
-                fault_env: options.test_fault.env_value(),
                 decoder_version: OnceLock::new(),
-                live: Arc::new(AtomicUsize::new(0)),
                 idle: Mutex::new(Vec::new()),
-                spawn_log: Mutex::new(VecDeque::new()),
                 request_ids: AtomicU64::new(1),
                 counters: Counters::default(),
             }),
@@ -1020,7 +872,7 @@ impl WorkerAv1Provider {
             killed_deadline: c.killed_deadline.load(Ordering::Acquire),
             killed_canceled: c.killed_canceled.load(Ordering::Acquire),
             killed_oversize: c.killed_oversize.load(Ordering::Acquire),
-            alive: u64::try_from(self.pool.live.load(Ordering::Acquire)).unwrap_or(u64::MAX),
+            alive: self.pool.supervisor.stats().workers_live,
             last_crash_exit_code: *lock(&c.last_crash_exit_code),
         }
     }
@@ -1108,7 +960,7 @@ impl WorkerAv1Provider {
         let mut worker = WorkerSession {
             pool: Arc::clone(pool),
             session: None,
-            segment_wall: deadline_after(pool.segment_deadline),
+            segment_wall: after(pool.segment_deadline),
             reply_cap: frame_cap.saturating_add(wire::REPLY_SLACK),
             max_packet_bytes: spec.limits.max_chunk_bytes.min(MAX_PACKET_BYTES),
             declared: (spec.width, spec.height),
@@ -1303,7 +1155,6 @@ impl MediaProvider for WorkerAv1Provider {
 mod tests {
     use super::*;
     use hsk_studio_reel::{ChromaFormat, ColorInfo, ColorOrigin};
-    use std::fs;
 
     fn picture(width: u32, height: u32) -> VideoFormat {
         VideoFormat {
@@ -1350,44 +1201,5 @@ mod tests {
         assert!(!within_declared_size(&picture(17, 1), (16, 0)));
         assert!(within_declared_size(&picture(u32::MAX, 16), (0, 16)));
         assert!(!within_declared_size(&picture(1, 17), (0, 16)));
-    }
-
-    /// Removes the scratch directory this test made (it lives under the TMP root of the cargo env).
-    struct Scratch(PathBuf);
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// R7 review B (PLR-034): a worker file planted in the directory ABOVE the host executable's own
-    /// directory is never selected; only the executable's directory is.
-    #[test]
-    fn worker_is_found_only_beside_the_running_executable() {
-        let root =
-            std::env::temp_dir().join(format!("hsk-reel-native-discover-{}", std::process::id()));
-        let _guard = Scratch(root.clone());
-        let bin = root.join("bin");
-        fs::create_dir_all(&bin).expect("scratch directory");
-        let name = format!("{WORKER_PROGRAM}{}", std::env::consts::EXE_SUFFIX);
-        let host = bin.join(format!("host{}", std::env::consts::EXE_SUFFIX));
-
-        fs::write(root.join(&name), b"decoy above the executable directory").expect("decoy");
-        assert_eq!(
-            discover_beside(&host),
-            None,
-            "the parent directory must not be searched"
-        );
-        fs::create_dir_all(bin.join(&name)).expect("a directory named like the worker");
-        assert_eq!(
-            discover_beside(&host),
-            None,
-            "a directory is not a worker program"
-        );
-        fs::remove_dir_all(bin.join(&name)).expect("remove the directory");
-        fs::write(bin.join(&name), b"beside the executable").expect("worker beside the host");
-        assert_eq!(discover_beside(&host), Some(bin.join(&name)));
-        assert_eq!(discover_beside(Path::new("")), None, "no parent, no lookup");
     }
 }

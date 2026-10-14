@@ -6,13 +6,14 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-av1 = ["dep:hsk-studio-accord", "dep:hsk-studio-reel"]
+av1 = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
 av1-worker = ["av1", "hsk-studio-reel/av1"]
 test-faults = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, optional = true }
 
 [lib]
 path = "src/lib.rs"
