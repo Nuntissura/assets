@@ -978,6 +978,7 @@ version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
+ "hsk-studio-package",
  "miniz_oxide",
  "ruzstd",
  "serde_json",
@@ -1039,6 +1040,7 @@ dependencies = [
  "hsk-studio-folio",
  "hsk-studio-nib",
  "hsk-studio-observe",
+ "hsk-studio-package",
  "miniz_oxide",
  "roxmltree",
  "svgtypes",
