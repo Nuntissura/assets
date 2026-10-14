@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 8
+generation: 9
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -45,17 +45,45 @@ proof:
   sdk_reference_sha256: 2E2A3BCA930697140E208BDA230B7BFF350AD1374D9B80C76435F4C14339CA41
   runtime: NOT_RUN
   acceptance: OPEN
+- kind: phase01_dependency_resolution
+  status: OBSERVED_EXIT_0_PRIMARY_REVIEW_PENDING
+  input_head: 086b924f0870a31b1e74b3487f6f4dda045c2791
+  input_manifest_sha256: 7463dc35127c8db4b53c203199782bc9bad3f12a7a79dcd230c27d98eaeac317
+  launcher_sha256: b984724a1324bcdb8bf13b2177f64a8262fea29413f64893b2266e86165d79e1
+  argv:
+  - fetch
+  - --manifest-path
+  - product/Cargo.toml
+  - --target
+  - x86_64-pc-windows-msvc
+  cargo_pid: 39044
+  cargo_birth_utc: '2026-10-14T21:17:10.6277554Z'
+  cargo_exit: 0
+  host_pid: 53664
+  host_exit: 0
+  phase_record: .local/wp022-proof/01-fetch-product.phase.json
+  phase_record_sha256: 5b3450b00224192e32135ccf4b4dc73587e163a9093e04c20edacee8c81b6bff
+  stderr_sha256: 4a5f32c4ce03fb07eb089adec317bac4f6fa419ec2551553cbbdb7db6641ea55
+  owned_closure: Fresh independent Get-Process queries after outer exit:39044/52724/27692/53664 all absent; no Cargo/rustc/link/cl;
+    original warm cache4820 retained
+  output_lock_sha256: 86a1dbb20a2c88b90d29a682d5c4b57970677fbbfd1fa8b17df5cd94d061d1c6
+  lock_delta: All327 existing name/version pairs preserved;50 added pairs all reachable from admitted eframe0.33.3;
+    only approved egui-wgpu0.33.3 registry-to-local identity change; original SDK locks retained
+  resolved_input_sha256: 1fc3f4af514fa711169a3fb3b4b19deb063edc80ff9b37b83fd92abcbdd2be56
+  compile: NOT_RUN
+  native: NOT_RUN
 blockers:
-- Actual producer/consumer compilation and native proof OPEN; sole primary compiler/fetch reservation required
-next_action: Submit frozen source and pre-resolution lock input with literal resolver/fetch/owning proof batch;
-  execute only after explicit primary grant and preparation checks
+- Primary independent phase01 lock/closure review and next exact phase reservation required; compilation/native
+  acceptance OPEN
+next_action: Prepare unchanged SDK locked fetch phase02 after primary phase01 review; require next explicit grant
+  and current original gameplan before execution
 source_freeze:
   native_worker: frozen_after_sealed_eframe_consumer_and_actual_viewport_probe_source
   theme_worker: frozen
   adapter_version: 0.2.0
   inputs:
     README.md: b8de27afbbbd25de9056102fa2935c2b81339ab9704e37427568b458599fdad5
-    product/Cargo.lock: 01041dc57b5d3b3102a4bd51dc2f3e7b6eaf09661be983987f5d69feae7ea4dd
+    product/Cargo.lock: 86a1dbb20a2c88b90d29a682d5c4b57970677fbbfd1fa8b17df5cd94d061d1c6
     product/INTERNAL-MANUAL.md: 65abadee50deaeeb5cb3d1e521429867607ccc00e7f8e5ce6dbf7072ee942798
     product/kumihimo-egui/Cargo.toml: 8f514c85bca92353a92a382375da8733a0af60d90f4b0b08baf993f1bfd58ac4
     product/kumihimo-egui/src/lib.rs: 67bd502b173c30d06022e902fa484b976356c682d30398946937bb80ba6345b1
@@ -70,10 +98,10 @@ source_freeze:
     product/kumihimo-egui/tests/native_app_contracts.rs: c43f8ef1a5d35b08fffbc7f6b3debe32f1a9f139eb5164fb19f69aeb2d09d1b0
     product/kumihimo-egui/examples/native_probe.rs: 8af751f7ede34a79a0724c5ce699cc4f94d6de972ff528865b70c077983cc738
   runtime: NOT_RUN
-  compiler: NO_SLOT_GRANTED
+  compiler: PHASE01_FETCH_EXIT_0_COMPILE_NOT_RUN_NEXT_SLOT_HELD
   eframe_producer: SOURCE_IMPLEMENTED_NATIVE_PROOF_PENDING
-  sdk_expansion: FROZEN_SOURCE_WITH_PRE_RESOLUTION_LOCK_INPUT
+  sdk_expansion: FROZEN_SOURCE_WITH_RESOLVED_PHASE01_LOCK_OUTPUT
   sdk_frame_worker: frozen
   sdk_producer_worker: frozen_after_byte_lease_and_cancelled_map_polling_repairs
   provenance: All 45 original SDK files reread; only six admitted sources changed; other 39 hashes retained
-  input_manifest: .local/wp022-input.json
+  input_manifest: .local/wp022-proof/01-resolved-input.json

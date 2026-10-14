@@ -178,7 +178,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-state.yaml
-  next_action: Submit frozen source and pre-resolution lock input with literal resolver/fetch/owning proof batch;
-    execute only after explicit primary grant and preparation checks
+  next_action: Prepare unchanged SDK locked fetch phase02 after primary phase01 review; require next explicit grant
+    and current original gameplan before execution
   blockers:
-  - Actual producer/consumer compilation and native proof OPEN; sole primary compiler/fetch reservation required
+  - Primary independent phase01 lock/closure review and next exact phase reservation required; compilation/native
+    acceptance OPEN
