@@ -94,7 +94,7 @@ pub enum DevelopError {
     Canceled,
     SinkRejected,
     /// A recognised container family without a decoder in this crate; carries the family
-    /// (`orf`, `rw2`, `raf`, `cr3`) or `unknown` for unrecognised bytes.
+    /// (`orf`, `rw2`, `raf`, `cr3`, `jpeg`) or `unknown` for unrecognised bytes.
     DecoderUnavailable(&'static str),
 }
 
@@ -205,8 +205,8 @@ impl From<hsk_studio_accord::ValidationError> for DevelopError {
 /// frame, colour caller-supplied); a classic TIFF whose IFD0 Make is NIKON and that has no
 /// DNGVersion decodes as NEF (uncompressed only; Nikon compressions are `unsupported_compression`);
 /// other TIFF-family bytes go to the DNG reader (no DNGVersion = `unsupported_container`, e.g. ARW
-/// today). ORF, RW2, RAF and CR3 are recognised by their
-/// magic and refused as `decoder_unavailable` naming the family; anything else is
+/// today). ORF, RW2, RAF, CR3 and JPEG are recognised by
+/// their magic and refused as `decoder_unavailable` naming the family; anything else is
 /// `decoder_unavailable:unknown` (STU-CON-042: typed refusal).
 pub fn decode_container(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // TIFF family (classic + BigTIFF magic); BigTIFF is then refused by the reader, not mislabeled.
@@ -236,6 +236,8 @@ fn recognise(bytes: &[u8]) -> &'static str {
         "raf"
     } else if bytes.get(4..12) == Some(&b"ftypcrx "[..]) {
         "cr3"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpeg" // a rendered JPEG (e.g. a .dng download that is really a JFIF preview), not raw
     } else {
         "unknown"
     }

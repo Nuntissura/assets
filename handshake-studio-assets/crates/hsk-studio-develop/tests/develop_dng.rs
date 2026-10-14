@@ -152,6 +152,9 @@ struct Spec {
     /// Encode the BlackLevelDelta arrays as DOUBLE instead of SRATIONAL (hostile magnitudes).
     delta_double: bool,
     lj: (usize, u8, u8, u32, usize),
+    /// Lossless-JPEG frame shape per block as (samples per JPEG row, JPEG rows); `None` = the
+    /// block's own (width, height). The samples stay in block raster order.
+    lj_shape: Option<(usize, usize)>,
 }
 
 struct Built {
@@ -196,6 +199,7 @@ fn base() -> Spec {
         delta_v: None,
         delta_double: false,
         lj: (2, 1, 16, 0, 0),
+        lj_shape: None,
     }
 }
 
@@ -235,7 +239,8 @@ fn build(s: &Spec) -> Built {
         .iter()
         .map(|(bw, bh, v)| {
             if s.compression == 7 {
-                ljpeg_encode(v, *bw, *bh, s.lj)
+                let (jw, jh) = s.lj_shape.unwrap_or((*bw, *bh));
+                ljpeg_encode(v, jw, jh, s.lj)
             } else {
                 v.iter().flat_map(|x| sample_bytes(*x)).collect()
             }
@@ -1101,5 +1106,55 @@ fn dng_aggregate_over_budget_is_refused_before_allocating() {
         let largest = tracking::disarm();
         assert_eq!(result.err(), Some(DevelopError::InvalidDimensions));
         assert!(largest < 4 << 20, "lossless JPEG aggregate bomb requested a {largest}-byte allocation");
+    });
+}
+
+/// Lane SMB-DEVELOP-DNG-MLV, red case from the corpus: canon-eos-5d3-mlv-14bit-lossless.dng (MLV
+/// App) stores a 1920x818 strip as a lossless-JPEG frame of 3840 samples x 409 lines x 1 component
+/// (two block rows per JPEG row); the reader refused it as invalid_container. The same samples in
+/// raster order must decode for every whole-row split with the exact sample count; any other
+/// split is refused.
+#[test]
+fn dng_lossless_jpeg_frame_may_split_block_rows_differently() {
+    bounded_case("dng_lossless_jpeg_frame_may_split_block_rows_differently", || {
+        let (width, height) = (8u32, 6u32);
+        let samples: Vec<u16> = (0..(width * height) as usize).map(|i| ((i * 2654435761) % 16384) as u16).collect();
+        let spec = |lj: (usize, u8, u8, u32, usize), shape: Option<(usize, usize)>, tiles: Option<(u32, u32)>| Spec {
+            width,
+            height,
+            samples: samples.clone(),
+            tiles,
+            compression: 7,
+            lj,
+            lj_shape: shape,
+            white: Some(16383),
+            forward: [None, None],
+            color: [None, None],
+            ..base()
+        };
+        let decode = |s: Spec| {
+            let raw = decode_container(&build(&s).bytes)?;
+            Ok::<Vec<u16>, DevelopError>((0..height).flat_map(|y| (0..width).map(move |x| (x, y))).map(|(x, y)| raw.sample(x, y)).collect())
+        };
+        // Strips are 8 x 2: one JPEG row of 16 samples (MLV shape, 1 and 2 components), or four
+        // JPEG rows of 4 samples (half-width rows, 1 and 2 components).
+        for (lj, shape) in [
+            ((1, 1, 14, 0, 0), (16, 1)),
+            ((2, 1, 14, 0, 0), (16, 1)),
+            ((1, 1, 14, 0, 0), (4, 4)),
+            ((2, 1, 14, 0, 0), (4, 4)),
+        ] {
+            assert_eq!(decode(spec(lj, Some(shape), None)), Ok(samples.clone()), "strip shape {shape:?} {lj:?}");
+        }
+        // Tiles are 4 x 4: one JPEG row of 16 samples x 1 line, or 8 x 2.
+        for shape in [(16, 1), (8, 2), (2, 8)] {
+            assert_eq!(decode(spec((1, 1, 14, 0, 0), Some(shape), Some((4, 4)))), Ok(samples.clone()), "tile shape {shape:?}");
+        }
+        // Exact sample count but JPEG rows that do not tile the block rows: a 6 x 2 strip (12
+        // samples) as 3 JPEG rows of 4 (4 neither divides nor is a multiple of 6) is refused.
+        let ragged = Spec { width: 6, samples: samples[..36].to_vec(), ..spec((1, 1, 14, 0, 0), Some((4, 3)), None) };
+        assert_eq!(decode_container(&build(&ragged).bytes).err(), Some(DevelopError::InvalidContainer));
+        // Fewer samples than the block (8 x 2 strip as one JPEG row of 8) is refused.
+        assert_eq!(decode(spec((1, 1, 14, 0, 0), Some((8, 1)), None)).err(), Some(DevelopError::InvalidContainer));
     });
 }

@@ -492,7 +492,19 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
                     .checked_mul(block_h as usize)
                     .ok_or(DevelopError::InvalidDimensions)?;
                 let image = ljpeg::decode(stream, max_samples)?;
-                if (image.width as usize).checked_mul(image.components) != Some(block_w) || image.height != block_h {
+                // The stream carries the block's samples in raster order. Its SOF3 frame may split
+                // them differently (e.g. MLV App: a 1920x818 strip as 3840 samples x 409 lines x 1
+                // component, two block rows per JPEG row; or 2 components of half width): accepted
+                // when the decoded sample count is exactly the block's and JPEG rows and block rows
+                // tile each other in whole rows. Anything else is refused, never re-shaped.
+                let jpeg_row = (image.width as usize)
+                    .checked_mul(image.components)
+                    .ok_or(DevelopError::InvalidContainer)?;
+                let jpeg_total = jpeg_row
+                    .checked_mul(image.height as usize)
+                    .ok_or(DevelopError::InvalidContainer)?;
+                let whole_rows = jpeg_row != 0 && (jpeg_row.is_multiple_of(block_w) || block_w.is_multiple_of(jpeg_row));
+                if jpeg_total != max_samples || image.samples.len() != max_samples || !whole_rows {
                     return Err(DevelopError::InvalidContainer);
                 }
                 // A decoded value above the stream's own precision means a corrupt stream.

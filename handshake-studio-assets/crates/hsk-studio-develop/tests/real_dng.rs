@@ -29,6 +29,13 @@ struct Facts {
     illuminants: (Option<u16>, Option<u16>),
     /// `unapplied` entries the reader must report.
     unapplied: &'static [&'static str],
+    /// Percent of default-window samples that may be clamped (below black / above white). Sensor
+    /// noise around black in a dark frame clamps below black; 1 unless the file's own data shows
+    /// otherwise (measured value recorded at the entry).
+    clamp_pct_max: u64,
+    /// The downloaded file is not decodable as the facts describe: the exact typed refusal
+    /// expected instead (the case then proves only the refusal and prints NOT_PROVEN).
+    refusal: Option<(DevelopError, &'static str)>,
 }
 
 const CORPUS: &[Facts] = &[
@@ -48,6 +55,11 @@ const CORPUS: &[Facts] = &[
         linearized: false,
         illuminants: (Some(17), Some(21)),
         unapplied: &[],
+        // Dark MLV frame: 11.3% of samples sit below the authored black 2145 (decoded min 2052,
+        // p5 2104, p25 2233, p50 2459; lane SMB-DEVELOP-DNG-MLV probe 2026-10-14), i.e. read noise
+        // around black, not a decode fault (same-colour steps below prove the row assembly).
+        clamp_pct_max: 15,
+        refusal: None,
     },
     // Samsung SM-G973U: uncompressed 16-bit, one-row strips, 2x2 black repeat, GainMap opcode list 2.
     Facts {
@@ -65,6 +77,15 @@ const CORPUS: &[Facts] = &[
         linearized: false,
         illuminants: (Some(20), Some(17)),
         unapplied: &["opcode_list_2"],
+        clamp_pct_max: 1,
+        // The CC0 download (raw.pixls.us id 3839, sha256 = the listing checksum) is a baseline JFIF
+        // rendering (SOF0 4016x1892x3, 8-bit) whose Exif APP1 carries this DNG's IFD0 tags but no
+        // raw strips (byte inspection, lane SMB-DEVELOP-DNG-MLV 2026-10-14): not a DNG. The facts
+        // above stay as the published Exiv2 values for a replacement sample.
+        refusal: Some((
+            DevelopError::DecoderUnavailable("jpeg"),
+            "listed_download_is_a_jfif_rendering_not_a_dng",
+        )),
     },
     // Nikon D80: raw in a SubIFD (IFD0 = thumbnail), 256x240 lossless-JPEG tiles, LinearizationTable.
     Facts {
@@ -82,6 +103,8 @@ const CORPUS: &[Facts] = &[
         linearized: true,
         illuminants: (None, None),
         unapplied: &[],
+        clamp_pct_max: 1,
+        refusal: None,
     },
 ];
 
@@ -151,6 +174,12 @@ fn real_dng_decode_and_develop() {
         let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(sha, facts.sha256, "{}: corpus file differs from the published checksum", facts.file);
 
+        if let Some((error, reason)) = facts.refusal {
+            assert_eq!(decode_container(&bytes).err(), Some(error), "{}", facts.file);
+            println!("NOT_PROVEN: real_dng_decode_and_develop {} reason={reason}", facts.file);
+            summary.push(format!("{}: refused {error} (expected: {reason})", facts.file));
+            continue;
+        }
         let t = Instant::now();
         let raw = decode_container(&bytes).unwrap_or_else(|e| panic!("{}: decode refused: {e}", facts.file));
         let decode_ms = t.elapsed().as_millis();
@@ -206,8 +235,24 @@ fn real_dng_decode_and_develop() {
         assert!(image.rgb.iter().all(|v| v.is_finite()), "{}: non-finite output", facts.file);
         let mean = image.rgb.iter().map(|v| f64::from(*v)).sum::<f64>() / image.rgb.len() as f64;
         assert!(mean > 0.0 && mean < 4.0, "{}: implausible mean {mean}", facts.file);
-        // Clamping must stay the exception (sensor noise at black), not the rule.
-        assert!((report.clamped_below + report.clamped_above) * 100 < samples, "{}: {report:?}", facts.file);
+        // Clamping stays within the file's measured budget (sensor noise at black), not the rule.
+        assert!(
+            (report.clamped_below + report.clamped_above) * 100 < samples * facts.clamp_pct_max,
+            "{}: {report:?} over {}%",
+            facts.file,
+            facts.clamp_pct_max
+        );
+        // Row assembly check independent of levels: same-colour neighbours two rows apart differ
+        // about as much as same-colour neighbours two columns apart (a misassembled strip or
+        // lossless-JPEG row split makes the vertical step explode).
+        let (mut hstep, mut vstep) = (0u64, 0u64);
+        for y in (0..raw.height - 2).step_by(7) {
+            for x in (0..raw.width - 2).step_by(5) {
+                hstep += u64::from(raw.sample(x, y).abs_diff(raw.sample(x + 2, y)));
+                vstep += u64::from(raw.sample(x, y).abs_diff(raw.sample(x, y + 2)));
+            }
+        }
+        assert!(vstep < hstep.max(1) * 3 && hstep < vstep.max(1) * 3, "{}: hstep {hstep} vstep {vstep}", facts.file);
         summary.push(format!(
             "{}: {}x{} bits={} comp={} cfa={:?} decode_ms={decode_ms} window={}x{} clamped_below={} clamped_above={} \
              cct={:.0} fm={} develop_ms={develop_ms} tiles={} mean={mean:.4} unapplied={:?} oracle={oracle}",
