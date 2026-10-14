@@ -3180,3 +3180,143 @@ fn pixel_edits_stage_tiles_commit_undo_save_and_reopen() {
         assert_eq!(bounded.staged_bytes(), 0);
     });
 }
+
+/// SMB-HARNESS-UI-3 slice 3: typed document entries (`studio/<token>.<sha256>`) hold state that
+/// belongs to the document but is not a Folio record (the active selection, text stories); they
+/// survive save, checkpoint and reopen without a loss note, replace in place, and stay bounded.
+#[test]
+fn document_entries_save_reopen_and_stay_bounded() {
+    bounded_case("document_entries_save_reopen_and_stay_bounded", || {
+        // A studio-named entry whose name digest is not its body's is an ordinary opaque loss.
+        let forged = Quarantined {
+            name: format!("{DOCUMENT_ENTRY_PREFIX}selection.{}", "0".repeat(64)),
+            bytes: b"forged".to_vec(),
+            sha256_hex: sha256_hex_of(b"forged"),
+        };
+        let fixture = Fixture::with_extra_entries("docentries", BLOB.to_vec(), vec![forged.clone()]);
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        assert_eq!(session.document_entry("selection"), None, "a forged name is not a typed entry");
+        assert!(session.loss().iter().any(|n| n.name == forged.name));
+        assert!(!session.is_dirty());
+
+        session.set_document_entry("selection", Some(b"selection-1".to_vec()), &token()).unwrap();
+        assert_eq!(session.document_entry("selection"), Some(&b"selection-1"[..]));
+        assert!(session.is_dirty(), "an entry change needs a save");
+        let path = fixture.dir.join("entries.handshake");
+        session.save_to(&path, &token()).unwrap();
+        assert!(!session.is_dirty());
+        let reopened = Session::open_path(&path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(reopened.document_entry("selection"), Some(&b"selection-1"[..]));
+        let typed = format!("{DOCUMENT_ENTRY_PREFIX}selection.{}", sha256_hex_of(b"selection-1"));
+        assert!(!reopened.loss().iter().any(|n| n.name == typed), "the typed entry is no loss");
+
+        // Replace in place (one entry per token), checkpoint carries it, removal drops it.
+        session.set_document_entry("selection", Some(b"selection-2".to_vec()), &token()).unwrap();
+        session.set_document_entry("text", Some(b"{}".to_vec()), &token()).unwrap();
+        let checkpoint = session.export_checkpoint(&token()).unwrap();
+        let from_bytes = Session::open_bytes(&checkpoint.bytes, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(from_bytes.document_entry("selection"), Some(&b"selection-2"[..]));
+        assert_eq!(from_bytes.document_entry("text"), Some(&b"{}"[..]));
+        let read = read_package(&checkpoint.bytes, &Limits::default(), folio::Budget::default(), &Granted, &token()).unwrap();
+        assert_eq!(read.quarantined.iter().filter(|q| q.name.starts_with("studio/selection.")).count(), 2, "the forged entry and one typed entry");
+        session.set_document_entry("selection", None, &token()).unwrap();
+        session.save_to(&path, &token()).unwrap();
+        let removed = Session::open_path(&path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(removed.document_entry("selection"), None);
+        assert_eq!(removed.document_entry("text"), Some(&b"{}"[..]));
+
+        // Refusals change nothing: an unknown token, and all opaque entries over the reopen bound.
+        assert_eq!(session.set_document_entry("secrets", Some(vec![1]), &token()).unwrap_err().code(), "unsafe_name");
+        let mut small = SessionConfig::new(actor_context());
+        small.budgets.limits.max_entry_bytes = 64 * 1024;
+        let mut bounded = Session::open_path(&fixture.path, small, ports(&frames), &token()).unwrap();
+        assert_eq!(bounded.set_document_entry("selection", Some(vec![0; 64 * 1024]), &token()).unwrap_err().code(), "total_too_large");
+        assert_eq!(bounded.document_entry("selection"), None);
+        assert!(!bounded.is_dirty());
+    });
+}
+
+/// SMB-HARNESS-UI-3 slice 5: the pixel-edit path with a commit authority (CommitPort). The
+/// authority receives the successor document naming the staged tile; the tile body stays
+/// session-local until save, which writes it; a digest that is neither in the package nor staged
+/// is refused before the authority is called; a lost acknowledgement is reconciled and the staged
+/// body is still served and saved; undo and redo commit through the authority too.
+#[test]
+fn commit_authority_tile_path_commits_stages_saves_and_reconciles() {
+    bounded_case("commit_authority_tile_path", || {
+        let rig = Rig::new("authoritytiles", 4);
+        let mut session = rig.session();
+        let raster = identity("SLYR", 2);
+        let tiles_at = PropertyAddress {
+            target: NodeRef { node_kind: NodeKind::Layer, node_id: raster },
+            property: Property::Tiles,
+        };
+        let original = match &session.snapshot().document().layers[1].payload {
+            folio::Payload::Raster { tiles } => tiles.clone(),
+            other => panic!("{other:?}"),
+        };
+        let patch = |from: &[folio::TileRef], to: Vec<folio::TileRef>, read_revision: u64, command: &str| Patch {
+            transport_version: 1,
+            document_id: identity("SDOC", 1),
+            base_revision: 7,
+            command_id: command.into(),
+            correlation_id: 11,
+            actor: patch_actor(),
+            reads: vec![PropertyRead { address: tiles_at.clone(), expected_revision: read_revision, expected_value: PropertyValue::Tiles(chronicle::TileList(from.to_vec())) }],
+            writes: vec![PropertyWrite { address: tiles_at.clone(), value: PropertyValue::Tiles(chronicle::TileList(to)) }],
+        };
+
+        // Unstaged digest: refused missing_asset before the authority sees anything.
+        let mut ghost = original.clone();
+        ghost[0].content_digest.digest = "cd".repeat(32);
+        let calls = rig.authority.commit_calls();
+        let refused = session.submit_keyed(&key("tile-ghost"), ID, &json_bytes(&patch(&original, ghost, 0, "ghost")), 7, &token()).unwrap_err();
+        assert_eq!(refused.error.code(), "missing_asset");
+        assert_eq!((rig.authority.commit_calls(), rig.authority.commits(), session.document_revision()), (calls, 0, 7));
+
+        // Staged tile, keyed commit: the authority holds the successor naming the staged digest.
+        let painted: Vec<u8> = (100..164u8).collect();
+        let staged = session.stage_tile(painted.clone(), &token()).unwrap();
+        let mut edited = original.clone();
+        edited[0].content_digest = staged.clone();
+        let applied = session.submit_keyed(&key("tile-paint"), ID, &json_bytes(&patch(&original, edited.clone(), 0, "paint")), 7, &token()).unwrap();
+        assert!(applied.changed && applied.commit.is_some());
+        assert_eq!(rig.authority.commits(), 1);
+        let committed = document_of(&rig.authority.last_document());
+        assert_eq!(committed.encoded_bytes(), session.snapshot().encoded_bytes(), "the authority holds the published document");
+        assert!(String::from_utf8_lossy(&rig.authority.last_document()).contains(&staged.digest));
+        assert_eq!(session.render_assets(&token()).unwrap(), BTreeMap::from([(staged.digest.clone(), painted.clone())]));
+        // The authority holds the document only: the staged body is written by the session save.
+        let saved = rig.fixture.dir.join("authority-painted.handshake");
+        session.save_to(&saved, &token()).unwrap();
+        // Reopens report to their own sink: the rig balances the authority session only.
+        let reopened = Session::open_path(&saved, SessionConfig::new(actor_context()), ports(&Frames::default()), &token()).unwrap();
+        assert_eq!(reopened.tile_bytes(&staged, &token()).unwrap(), painted);
+        assert_eq!(reopened.snapshot().encoded_bytes(), committed.encoded_bytes());
+
+        // Undo through the authority after a lost acknowledgement: reconcile adopts it exactly once.
+        let inverse = applied.inverse.clone().unwrap().invocation("undo".into(), 12, patch_actor(), 8);
+        rig.authority.with(|s| s.mode = Mode::LoseAck);
+        let lost = session.submit_keyed(&key("tile-undo"), ID, &json_bytes(&inverse), 8, &token()).unwrap_err();
+        assert_eq!(lost.error.code(), "outcome_unknown");
+        assert_eq!(session.document_revision(), 8, "nothing adopted before the lookup");
+        let report = session.reconcile(&token()).unwrap();
+        assert_eq!((report.adopted, report.still_unknown), (1, 0));
+        assert_eq!(session.document_revision(), 9);
+        match &session.snapshot().document().layers[1].payload {
+            folio::Payload::Raster { tiles } => assert_eq!(tiles, &original),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(rig.authority.commits(), 2);
+        // Redo finds the staged body still held, and the save writes it.
+        let redo = patch(&original, edited, 2, "redo");
+        session.submit_keyed(&key("tile-redo"), ID, &json_bytes(&redo), 9, &token()).unwrap();
+        let redone = rig.fixture.dir.join("authority-redone.handshake");
+        session.save_to(&redone, &token()).unwrap();
+        let again = Session::open_path(&redone, SessionConfig::new(actor_context()), ports(&Frames::default()), &token()).unwrap();
+        assert_eq!(again.render_assets(&token()).unwrap(), BTreeMap::from([(staged.digest.clone(), painted)]));
+        assert_eq!(rig.authority.commits(), 3);
+        rig.assert_balanced(&session);
+    });
+}

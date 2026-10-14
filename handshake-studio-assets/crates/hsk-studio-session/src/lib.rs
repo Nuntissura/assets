@@ -24,6 +24,7 @@ pub use registry::{
     CHRONICLE_PROVIDER_ID, ChronicleProvider, MAX_PROVIDER_ID_BYTES, MAX_PROVIDERS,
     ProposalProvider, ProposalRequest, ProviderInfo, ProviderRegistry, provider_error,
 };
+pub use source::{DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS};
 pub use session::{
     Applied, Budgets, Checkpoint, Disagreement, Divergence, DivergenceReport, DrainReport,
     MAX_STAGED_BYTES, MAX_SUPPLIED_PREVIEWS, PreviewReceipt, ReceiptPolicy, ReceiptStats, ReconcileReport,

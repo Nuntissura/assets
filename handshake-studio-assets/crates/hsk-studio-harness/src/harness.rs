@@ -766,6 +766,19 @@ impl Run<'_> {
         session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
     }
 
+    /// Sets or removes a session document entry (`selection`, `text`; saved with the package as
+    /// `studio/<token>.<sha256>`, restored on reopen). No record: it is saved by the next `save`.
+    pub fn set_document_entry(&mut self, token: &str, bytes: Option<Vec<u8>>) -> Result<(), &'static str> {
+        let cancel = self.cancel;
+        let session = self.session.as_mut().ok_or("not_open")?;
+        session.set_document_entry(token, bytes, cancel).map_err(|e| e.code())
+    }
+
+    /// The bytes of a session document entry of the working session.
+    pub fn document_entry(&self, token: &str) -> Option<&[u8]> {
+        self.session.as_ref()?.document_entry(token)
+    }
+
     /// Stages a tile body in the working session (no record; nothing changes until a
     /// [`Run::set_tiles`] names it). `None` without a session or when the session refuses it.
     pub fn stage_tile(&mut self, bytes: Vec<u8>) -> Result<folio::ContentDigest, &'static str> {

@@ -318,6 +318,16 @@ impl Viewer {
         self.apply_selection("select_lasso", plane)
     }
 
+    /// Installs a selection plane as it was saved (no combine), with its outline.
+    pub(super) fn restore_selection(&mut self, plane: CoveragePlane) {
+        let empty = plane.data.iter().all(|v| *v == 0);
+        let (ants, truncated) = if empty { (Vec::new(), false) } else { outline(&plane) };
+        self.edit.ants = ants;
+        self.edit.ants_truncated = truncated;
+        self.say(format!("selection restored {:?}", plane.bounds));
+        self.edit.selection = (!empty).then_some(plane);
+    }
+
     pub fn clear_selection(&mut self) {
         self.edit.selection = None;
         self.edit.ants.clear();

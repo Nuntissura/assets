@@ -11,7 +11,10 @@ use crate::{
         GrantPort, GrantToken, IdempotencyKey, JobPort, JobScope, Lookup, MonotonicClock,
     },
     registry::{ProposalRequest, ProviderRegistry},
-    source::{Handle, LazyAssets, SourceBox, load_parts, require_tile_assets},
+    source::{
+        DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS, Handle, LazyAssets, SourceBox, document_entry,
+        load_parts, require_tile_assets,
+    },
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
@@ -438,6 +441,8 @@ pub struct Session {
     asset_codec: Codec,
     origin: Option<PathBuf>,
     saved_revision: Option<u64>,
+    /// A document entry (`set_document_entry`) changed since the last save.
+    entries_changed: bool,
     receipts: BTreeMap<String, Entry>,
     receipt_seq: u64,
     receipts_evicted: u64,
@@ -652,6 +657,7 @@ impl Session {
                     supplied_previews: None,
                     origin,
                     saved_revision: Some(revision),
+                    entries_changed: false,
                     receipts: BTreeMap::new(),
                     receipt_seq: 0,
                     receipts_evicted: 0,
@@ -1794,6 +1800,7 @@ impl Session {
             .unwrap_or_else(PoisonError::into_inner) = landed;
         self.raw = landed_raw;
         self.saved_revision = Some(revision);
+        self.entries_changed = false;
         self.origin = Some(path.to_path_buf());
         Ok(SaveReceipt {
             revision,
@@ -2022,6 +2029,60 @@ impl Session {
         }
     }
 
+    /// The bytes of the document entry `token` (`studio/<token>.<sha256>`, one of
+    /// [`DOCUMENT_ENTRY_TOKENS`]) the session holds, if any.
+    pub fn document_entry(&self, token: &str) -> Option<&[u8]> {
+        self.quarantined
+            .iter()
+            .find(|q| document_entry(&q.name, &q.sha256_hex) == Some(token))
+            .map(|q| q.bytes.as_slice())
+    }
+
+    /// Sets (`Some`) or removes (`None`) the document entry `token`: state that belongs to the
+    /// document but is not a Folio record (lane SMB-HARNESS-UI-3: the active selection, text
+    /// stories and styles). The package carries it as the opaque entry `studio/<token>.<sha256>`;
+    /// every save and checkpoint writes it, a reopen holds it again without a loss note (test
+    /// `document_entries_save_reopen_and_stay_bounded`). Not undoable and not a revision: the
+    /// session is dirty until the next save. Refusals change nothing: an unknown token is
+    /// `unsafe_name`; all opaque entries together above `limits.max_entry_bytes` (the bound a
+    /// reopen enforces) is `total_too_large`.
+    pub fn set_document_entry(
+        &mut self,
+        token: &str,
+        bytes: Option<Vec<u8>>,
+        cancel: &CancellationToken,
+    ) -> Result<(), SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let token = *DOCUMENT_ENTRY_TOKENS
+            .iter()
+            .find(|t| **t == token)
+            .ok_or(SessionError::Package(PackageError::UnsafeName))?;
+        let others: u64 = self
+            .quarantined
+            .iter()
+            .filter(|q| document_entry(&q.name, &q.sha256_hex) != Some(token))
+            .map(|q| q.bytes.len() as u64)
+            .fold(0u64, u64::saturating_add);
+        if let Some(body) = &bytes
+            && others.saturating_add(body.len() as u64) > self.config.budgets.limits.max_entry_bytes
+        {
+            return Err(SessionError::Package(PackageError::TotalTooLarge));
+        }
+        self.quarantined
+            .retain(|q| document_entry(&q.name, &q.sha256_hex) != Some(token));
+        if let Some(body) = bytes {
+            let sha256_hex = sha256_hex_of(&body);
+            self.quarantined.push(Quarantined {
+                name: format!("{DOCUMENT_ENTRY_PREFIX}{token}.{sha256_hex}"),
+                bytes: body,
+                sha256_hex,
+            });
+            self.quarantined.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        self.entries_changed = true;
+        Ok(())
+    }
+
     /// Bytes currently staged by [`Session::stage_tile`].
     pub fn staged_bytes(&self) -> u64 {
         self.staged_bytes
@@ -2055,7 +2116,7 @@ impl Session {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.saved_revision != Some(self.snapshot.document().revision)
+        self.entries_changed || self.saved_revision != Some(self.snapshot.document().revision)
     }
 
     pub fn is_closed(&self) -> bool {

@@ -133,6 +133,21 @@ pub(crate) struct Parts {
 }
 
 /// `Some` for a well-formed reserved import name whose digest is the entry's content digest.
+/// Reserved name prefix of the typed document entries a session keeps beside the document (lane
+/// SMB-HARNESS-UI-3): `studio/<token>.<sha256hex>`, carried in the package as opaque entries.
+pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
+/// Tokens of [`DOCUMENT_ENTRY_PREFIX`] entries: the active selection (`selection`) and the text
+/// stories and type styles of text layers (`text`). The bytes belong to their producer.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text"];
+
+/// The token of a well-formed document entry name whose digest is its body's.
+pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {
+    let rest = name.strip_prefix(DOCUMENT_ENTRY_PREFIX)?;
+    let (token, digest) = rest.split_once('.')?;
+    let token = DOCUMENT_ENTRY_TOKENS.iter().find(|t| **t == token)?;
+    (digest == sha256_hex).then_some(*token)
+}
+
 fn import_ref(name: &str, sha256_hex: &str) -> Option<ImportRef> {
     let rest = name.strip_prefix(IMPORT_PREFIX)?;
     let (token, digest) = rest.split_once('.')?;
@@ -194,12 +209,14 @@ pub(crate) fn load_parts(
                 if sha256_hex_of(&bytes) != entry.sha256_hex {
                     return Err(wrap(PackageError::HashMismatch));
                 }
-                // A typed import entry is preserved like any opaque entry but is not a loss.
+                // A typed import entry or a session document entry is preserved like any opaque
+                // entry but is not a loss.
                 let reason = match import_ref(&entry.name, &entry.sha256_hex) {
                     Some(reference) => {
                         imports.push(reference);
                         None
                     }
+                    None if document_entry(&entry.name, &entry.sha256_hex).is_some() => None,
                     None => Some(LossReason::Opaque),
                 };
                 held.push((

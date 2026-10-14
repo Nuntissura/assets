@@ -22,6 +22,7 @@ pub mod edit;
 pub mod export;
 pub mod brush_mix;
 pub mod layers;
+pub mod selection_store;
 pub mod render;
 
 use crate::harness::{Harness, References, Run, Selection};
@@ -240,6 +241,13 @@ impl Viewer {
         self.assets = self.run.render_assets().map_err(|e| format!("tiles {}: {e}", path.display()))?;
         self.edit = EditState { tool: self.edit.tool, combine: self.edit.combine, brush: self.edit.brush, ..EditState::default() };
         drop(opened);
+        // A selection saved with the document comes back (session document entry `selection`).
+        if let Some(bytes) = self.run.document_entry("selection").map(<[u8]>::to_vec) {
+            match selection_store::decode(&bytes, &hsk_studio_pigment::selection::SelectionLimits::default()) {
+                Ok(plane) => self.restore_selection(plane),
+                Err(code) => self.say(format!("saved selection not restored: {code}")),
+            }
+        }
         self.receipt = receipt;
         self.source = Some(path.to_path_buf());
         self.selected = None;
@@ -376,6 +384,13 @@ impl Viewer {
                 self.say(e.clone());
                 return Err(e);
             }
+        }
+        // The active selection is saved with the document (removed when there is none).
+        let selection = self.edit.selection.as_ref().map(selection_store::encode);
+        if let Err(code) = self.run.set_document_entry("selection", selection) {
+            let e = format!("save {}: selection {code}", path.display());
+            self.say(e.clone());
+            return Err(e);
         }
         if self.run.save_to(path) {
             self.say(format!("saved {}", path.display()));
