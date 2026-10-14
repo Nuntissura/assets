@@ -13,8 +13,9 @@
 //!    `l` (ceil): a coarse pixel is in the hole when any of its children is, may be sampled when
 //!    all of its children may, and its colour is the mean of its non-hole children. Levels are
 //!    added while the hole's bounding box at the current level is wider or taller than one patch,
-//!    the next level is at least two patches wide and tall, it still has a valid source patch, and
-//!    fewer than `max_levels` exist.
+//!    the next level is at least two patches wide and tall, it has at least as many valid source
+//!    centres as domain centres (step 2; a coarse level with too few exemplars would steer the
+//!    finer levels into a wrong texture), and fewer than `max_levels` exist.
 //! 2. Patches are `(2 r + 1)^2` squares (`patch_radius = r`). A SOURCE patch centre is valid when
 //!    the whole patch lies inside the plane and every pixel of it may be sampled (outside the
 //!    hole, inside the sampling area, outside any exclusion). The DOMAIN is every centre whose
@@ -35,7 +36,10 @@
 //!    strictly closer. Vote: each hole pixel becomes the weighted mean, over every domain patch
 //!    covering it, of the pixel its match puts there, weight `exp(-e / (2 sigma^2))` with `e` the
 //!    patch's mean squared difference per pixel channel and `sigma` = [`VOTE_SIGMA`] (uniform mean
-//!    if the weights vanish). Votes read only source pixels, never hole pixels.
+//!    if the weights vanish); the LAST vote of level 0 instead takes the pixel proposed by the
+//!    covering patch of least mean error (first in scan order on ties), so the final texture is a
+//!    copy of exemplar pixels, not an average that blurs it. Votes read only source pixels, never
+//!    hole pixels.
 //! 5. Blend (`colour_adaptation`): `none` writes `d + c (f - d)` (premultiplied, `c` the hole
 //!    coverage, `f` the synthesized value); `default` runs the healing solver of
 //!    [`crate::retouch::heal`] (membrane Poisson, Perez/Gangnet/Blake 2003) with the guide = the
@@ -539,9 +543,11 @@ impl Level {
         sum
     }
 
-    /// Weighted vote of pixel `p` from every domain patch covering it.
-    fn vote(&self, r: i64, nnf: &[u32], dist: &[f64], p: (i64, i64)) -> [f32; 4] {
+    /// Vote of pixel `p` from every domain patch covering it: the weighted mean, or with `best` the
+    /// pixel proposed by the covering patch of least mean error (first in scan order on ties).
+    fn vote(&self, r: i64, nnf: &[u32], dist: &[f64], p: (i64, i64), best: bool) -> [f32; 4] {
         let mut sum = [0.0f64; 4];
+        let mut best_v: Option<(f64, [f32; 4])> = None;
         let mut usum = [0.0f64; 4];
         let (mut wsum, mut cnt) = (0.0f64, 0.0f64);
         let two_s2 = 2.0 * VOTE_SIGMA * VOTE_SIGMA;
@@ -559,6 +565,9 @@ impl Level {
                 let Some(si) = self.index(sx.wrapping_add(ox), sy.wrapping_add(oy)) else { continue };
                 let v = self.px(si);
                 let e = dist.get(k).copied().unwrap_or(0.0) / (4.0 * self.patch_count(r, q)).max(1.0);
+                if best_v.is_none_or(|(be, _)| e < be) {
+                    best_v = Some((e, v));
+                }
                 let wt = (-e / two_s2).exp();
                 for c in 0..4 {
                     sum[c] += wt * f64::from(v[c]);
@@ -569,6 +578,9 @@ impl Level {
             }
         }
         let mut out = [0.0f32; 4];
+        if best && let Some((_, v)) = best_v {
+            return v;
+        }
         if wsum > 0.0 && wsum.is_finite() {
             for c in 0..4 {
                 out[c] = (sum[c] / wsum) as f32;
@@ -797,10 +809,10 @@ fn synthesize(
         }
         let mut next = cur.downsample()?;
         next.compute_valid(r)?;
-        if next.sources.is_empty() {
+        next.compute_domain(r)?;
+        if next.sources.len() < next.domain.len() {
             break;
         }
-        next.compute_domain(r)?;
         levels.push(next);
     }
     // Work budget (checked before synthesis).
@@ -922,13 +934,15 @@ fn synthesize(
                 }
             }
             energies.push(dist.iter().sum::<f64>() / norm);
-            // Vote (reads source pixels only).
+            // Vote (reads source pixels only); the last EM iteration of level 0 takes the best
+            // covering patch's pixel (no averaging blur of the final texture).
+            let best_vote = li == 0 && em.wrapping_add(1) == options.em_iterations;
             let mut votes = vec![[0.0f32; 4]; l.holes.len()];
             {
                 let lr = &l;
                 let (nf, df) = (&nnf, &dist);
                 par_fill(&mut votes, threads, |k| {
-                    lr.vote(ri, nf, df, lr.xy(lr.holes.get(k).copied().unwrap_or(0)))
+                    lr.vote(ri, nf, df, lr.xy(lr.holes.get(k).copied().unwrap_or(0)), best_vote)
                 });
             }
             for (&p, v) in l.holes.iter().zip(votes) {
@@ -1133,7 +1147,7 @@ fn run(
                             straight(f32x4_to_f64(l.px(li)))
                         } else if ring {
                             let (lx, ly) = l.xy(u32::try_from(li).map_err(|_| Error::Overflow)?);
-                            straight(f32x4_to_f64(l.vote(ri, &syn.nnf, &syn.dist, (lx, ly))))
+                            straight(f32x4_to_f64(l.vote(ri, &syn.nnf, &syn.dist, (lx, ly), true)))
                         } else {
                             target.at(x, y)
                         };
@@ -1167,4 +1181,4 @@ pub fn fill(
 }
 
 /// Content-aware surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":1,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)), coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default (high, very_high refused content_aware_option_unsupported)","rotation_adaptation":"none only","scale":"false only","mirror":"false only"},"receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","not_modelled":["sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":1,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)) and a best-patch final vote at level 0, levels need source centres >= domain centres, coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default (high, very_high refused content_aware_option_unsupported)","rotation_adaptation":"none only","scale":"false only","mirror":"false only"},"receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","not_modelled":["sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;
