@@ -14,10 +14,13 @@
 //! any), the import receipt (loss report, provenance, PSD layer map and layer extras) and the original
 //! source bytes, so nothing the importer did not map is lost (STU-IO-001/005).
 //!
-//! Limits of this slice (recorded in every receipt's `not_proven`): no colour converter (the harness
-//! has no prism edge), so an embedded profile is preserved, not applied, and 8/16-bit pixels take the
-//! importer's recorded sRGB assumption; identities come from [`SourceMint`], a deterministic
-//! standalone stand-in seeded by the source digest, not a host `IdMint`.
+//! Colour (SMB-CONVERT-COLOUR, module `colour`): every importer passes a Prism-backed converter, so an
+//! embedded profile is converted into the linear-light sRGB working space and the receipt key
+//! `colour` records the route; a missing or unusable profile is a typed loss entry.
+//!
+//! Limits of this slice (recorded in every receipt's `not_proven`): identities come from
+//! [`SourceMint`], a deterministic standalone stand-in seeded by the source digest, not a host
+//! `IdMint`.
 #![deny(clippy::arithmetic_side_effects)]
 
 /// A source format recognised by its leading bytes.
@@ -143,6 +146,9 @@ pub use with_package::*;
 
 #[cfg(feature = "import-tiff")]
 mod tiff;
+
+#[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+mod colour;
 
 #[cfg(feature = "import")]
 mod with_package {
@@ -282,6 +288,8 @@ mod with_package {
             raw.cfa_plane(window, develop::RangePolicy::ClampReported, 1, develop::Limits::LARGE).map_err(refusal)?;
         let source = psd::SourceIdentity::of(bytes);
         let mut mint = SourceMint::new(&source.sha256);
+        let mut frames = super::colour::FrameCount::default();
+        let mut converter = super::colour::converter(format, &mint, &mut frames)?;
         let profile_id = psd::IdMint::linear_working_profile_id(&mut mint);
         let binding = develop::ProfileBinding {
             profile_id: hsk_studio_accord::DomainId::parse(&profile_id).map_err(|_| ImportError::Package("profile_id"))?,
@@ -319,8 +327,16 @@ mod with_package {
         let psd_refusal = |e: psd::PsdError| {
             if e == psd::PsdError::Canceled { ImportError::Canceled } else { ImportError::Importer { format, code: e.code() } }
         };
-        let proposal = psd::raster_proposal(raster, &source, &cfg, &mut mint, None, cancel).map_err(psd_refusal)?;
+        let proposal =
+            psd::raster_proposal(raster, &source, &cfg, &mut mint, Some(&mut converter), cancel).map_err(psd_refusal)?;
+        drop(converter);
+        let colour = super::colour::summary(
+            &proposal,
+            frames.0,
+            "develop camera solution -> linear light with sRGB primaries (the working space; no ICC transform); DNG embedded profiles are not read",
+        );
         let extra = json!({
+            "colour": colour,
             "develop": {
                 "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
                 "demosaic": receipt.demosaic_algorithm,
@@ -349,10 +365,15 @@ mod with_package {
         let source = psd::SourceIdentity::of(bytes);
         let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), resolver);
         let mut mint = SourceMint::new(&source.sha256);
-        let proposal = psd::to_proposal(&doc, &source, &cfg, &mut mint, None, cancel).map_err(refusal)?;
+        let mut frames = super::colour::FrameCount::default();
+        let mut converter = super::colour::converter(format, &mint, &mut frames)?;
+        let proposal = psd::to_proposal(&doc, &source, &cfg, &mut mint, Some(&mut converter), cancel).map_err(refusal)?;
+        drop(converter);
+        let colour = super::colour::summary(&proposal, frames.0, "embedded PSD profile (resource 1039) -> working space");
 
         let p = &proposal.provenance;
         let extra = json!({
+            "colour": colour,
             "provenance": {
                 "psd_version": p.psd_version, "width": p.width, "height": p.height, "depth": p.depth,
                 "assumed_profile": p.assumed_profile, "icc_converted": p.icc_converted, "icc_sha256": p.icc_sha256_hex,
@@ -421,7 +442,7 @@ mod with_package {
 
     /// What every receipt of this slice states it does not prove.
     pub const RECEIPT_NOT_PROVEN: &[&str] = &[
-        "colour_managed_import (no converter: the harness has no prism edge; an embedded profile is preserved, not applied)",
+        "colour_oracle_parity (embedded profiles convert through Prism into linear sRGB; no Photoshop/LittleCMS oracle comparison of the converted pixels in this flow)",
         "host_identity_minting (SourceMint is a deterministic standalone stand-in seeded by the source digest)",
         "photoshop_parity (no Photoshop-authored oracle comparison in this flow)",
     ];
@@ -441,6 +462,12 @@ mod with_package {
             let hex: String = sha256.iter().take(6).map(|b| format!("{b:02x}")).collect();
             let (time_high, time_low) = hex.split_at(8);
             Self { seed: format!("{time_high}-{time_low}"), n: 0 }
+        }
+
+        /// Ids outside the counter range (`ffff` + `k`), for objects that are not document
+        /// identities (colour profile and conversion resource ids).
+        pub(crate) fn reserved(&self, prefix: &str, k: u32) -> String {
+            format!("{prefix}-{}-7000-8000-ffff{k:08x}", self.seed)
         }
 
         fn next(&mut self, prefix: &str) -> String {

@@ -73,6 +73,8 @@ pub(crate) fn import_tiff(
 
     let source = psd::SourceIdentity::of(bytes);
     let mut mint = SourceMint::new(&source.sha256);
+    let mut frames = super::colour::FrameCount::default();
+    let mut converter = super::colour::converter(FORMAT, &mint, &mut frames)?;
     let limits = psd::Limits::default();
     let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), resolver);
     let (width, height) = (page.width, page.height);
@@ -87,14 +89,16 @@ pub(crate) fn import_tiff(
         alpha: raster.alpha,
         icc: page.icc.clone(),
     };
-    let mut proposal = psd::raster_proposal(raster_source, &source, &cfg, &mut mint, None, cancel).map_err(|e| {
-        if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) }
-    })?;
+    let mut proposal = psd::raster_proposal(raster_source, &source, &cfg, &mut mint, Some(&mut converter), cancel)
+        .map_err(|e| if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) })?;
+    drop(converter);
+    let colour = super::colour::summary(&proposal, frames.0, "embedded TIFF profile (tag 34675) -> working space");
     for (path, kind, code) in losses {
         proposal.loss.entries.push(psd::LossEntry { path, kind, code });
     }
     let resolution = page.resolution.map(|r| json!({"x": [r.x.0, r.x.1], "y": [r.y.0, r.y.1], "unit": r.unit}));
     let extra = json!({
+        "colour": colour,
         "tiff": {
             "byte_order": order(file.byte_order), "big_tiff": file.big_tiff, "pages": file.pages.len(),
             "imported_page": 0, "camera_raw_check": camera_raw_check,
