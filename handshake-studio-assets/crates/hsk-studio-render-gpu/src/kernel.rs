@@ -338,6 +338,51 @@ pub(crate) struct Kernel {
     /// Layer-transform resampling (`resample.wgsl`, lane SMB-PIGMENT-TRANSFORM).
     pipeline_resample: wgpu::ComputePipeline,
     layout_resample: wgpu::BindGroupLayout,
+    /// Layer and backdrop blur passes (`blur.wgsl`, lane SMB-COMPOSITE-NEW-KINDS).
+    pipeline_blur: wgpu::ComputePipeline,
+    layout_blur: wgpu::BindGroupLayout,
+}
+
+/// Bytes of the uniform block `BlurP` in `blur.wgsl`: 8 header words and 751 vec4 of taps.
+pub(crate) const BLURP_BYTES: u64 = 12_048;
+/// Taps the block can carry (pigment's largest blur kernel is 2 * 1500 + 1 = 3001).
+pub(crate) const BLUR_MAX_TAPS: usize = 3_004;
+
+/// One blur pass of `blur.wgsl` over a `fw x fh` frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlurOp {
+    Horizontal,
+    Vertical,
+    Mix,
+}
+
+/// The `BlurP` block: header and taps; `None` when there are more taps than the block holds.
+pub(crate) fn blur_params_bytes(
+    op: BlurOp,
+    frame_w: u32,
+    frame_h: u32,
+    taps: &[f32],
+    opacity: f32,
+) -> Option<Vec<u8>> {
+    if taps.len() > BLUR_MAX_TAPS || taps.is_empty() {
+        return None;
+    }
+    let half = u32::try_from(taps.len().checked_div(2)?).ok()?;
+    let n = u32::try_from(taps.len()).ok()?;
+    let op = match op {
+        BlurOp::Horizontal => 0u32,
+        BlurOp::Vertical => 1,
+        BlurOp::Mix => 2,
+    };
+    let mut out = Vec::with_capacity(BLURP_BYTES as usize);
+    for w in [frame_w, frame_h, half, n, op, 0, opacity.to_bits(), 0] {
+        out.extend_from_slice(&w.to_ne_bytes());
+    }
+    for t in taps {
+        out.extend_from_slice(&t.to_ne_bytes());
+    }
+    out.resize(BLURP_BYTES as usize, 0);
+    Some(out)
 }
 
 impl Kernel {
@@ -478,6 +523,34 @@ impl Kernel {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        // Blur passes: 0 uniform parameters (with the taps), 1 read-only source, 2 the output, 3 a
+        // read-only auxiliary frame (the layer shape of the backdrop mix).
+        let layout_blur = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu blur layout"),
+            entries: &[
+                entry(0, wgpu::BufferBindingType::Uniform),
+                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(2, wgpu::BufferBindingType::Storage { read_only: false }),
+                entry(3, wgpu::BufferBindingType::Storage { read_only: true }),
+            ],
+        });
+        let pipeline_layout_blur = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu blur pipeline layout"),
+            bind_group_layouts: &[&layout_blur],
+            push_constant_ranges: &[],
+        });
+        let blur_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hsk-studio-render-gpu blur"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("blur.wgsl"))),
+        });
+        let pipeline_blur = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("hsk-studio-render-gpu blur"),
+            layout: Some(&pipeline_layout_blur),
+            module: &blur_module,
+            entry_point: Some("blur"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
         match crate::device::block_on_bounded(device.pop_error_scope(), None) {
             Some(None) => Ok(Self {
                 pipeline,
@@ -489,6 +562,8 @@ impl Kernel {
                 layout_fx,
                 pipeline_resample,
                 layout_resample,
+                pipeline_blur,
+                layout_blur,
             }),
             Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
             None => Err(GpuError::Pipeline("shader_validation_timeout")),
@@ -587,6 +662,42 @@ impl Kernel {
             layout: &self.layout_resample,
             entries: &entries,
         })
+    }
+
+    /// Bind group of one blur pass: parameters, source, output, auxiliary frame. The output must
+    /// differ from both read-only buffers.
+    pub(crate) fn bind_blur(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        src: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        aux: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = [params, src, dst, aux]
+            .into_iter()
+            .zip(0u32..)
+            .map(|(buffer, binding)| wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            })
+            .collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu blur bind"),
+            layout: &self.layout_blur,
+            entries: &entries,
+        })
+    }
+
+    /// One blur pass over `width` x `height` texels (bind group from [`Kernel::bind_blur`]).
+    pub(crate) fn dispatch_blur(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_blur, encoder, bind, width, height);
     }
 
     /// One resample pass over `width` x `height` texels (bind group from [`Kernel::bind_resample`]).

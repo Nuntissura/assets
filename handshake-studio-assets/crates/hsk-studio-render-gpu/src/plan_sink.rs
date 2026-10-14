@@ -35,9 +35,11 @@ use crate::fx::{
     margin_of, params_bytes,
 };
 use crate::kernel::{
-    LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES, RESAMPLE_PARAMS_BYTES, SITE_BYTES, SourceKind,
-    TEXEL_BYTES, gpu_adjust_supported, gpu_blend_supported,
+    BLUR_MAX_TAPS, BLURP_BYTES, BlurOp, LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES,
+    RESAMPLE_PARAMS_BYTES, SITE_BYTES, SourceKind, TEXEL_BYTES, blur_params_bytes,
+    gpu_adjust_supported, gpu_blend_supported,
 };
+use hsk_studio_pigment::blur_math::BlurScope;
 use crate::residency::{Residency, ResidentKey};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
@@ -177,6 +179,15 @@ struct PLayer<'a> {
     adjust: Option<Box<AdjustGpu>>,
     /// Layer effects of the envelope (pigment `effect_math`), compiled into matte passes.
     fx: Option<Box<FxLayer>>,
+    /// Layer or backdrop blur of the envelope (pigment `blur_math`, radius above 0).
+    blur: Option<Box<BlurGpu>>,
+}
+
+/// A blur compiled for the passes of `blur.wgsl`: the scope, pigment's taps and their half width.
+struct BlurGpu {
+    scope: BlurScope,
+    taps: Vec<f32>,
+    support: u32,
 }
 enum PNode<'a> {
     Unused,
@@ -227,6 +238,11 @@ struct Prepared<'a> {
     /// Margin in pixels every chunk is evaluated with beyond its own rectangle: the largest sum,
     /// along any chain of nested layers with effects, of the margins the effects read.
     frame_margin: u32,
+    /// Some reachable layer has a blur: the blur pipeline, parameter block and two frame-sized
+    /// scratch buffers exist.
+    has_blur: bool,
+    /// Most taps of any blur (a blur pass costs taps x frame pixels).
+    blur_taps: u64,
 }
 
 impl<'a> Prepared<'a> {
@@ -469,6 +485,8 @@ fn prepare<'a>(
     let mut extra: Vec<PNode<'a>> = Vec::new();
     let mut extra_bounds: Vec<Option<Rect>> = Vec::new();
     let mut transform_window_texels = 0u64;
+    let mut has_blur = false;
+    let mut blur_taps = 0u64;
     for (i, node) in plan.nodes.iter().enumerate() {
         if !reach[i] {
             nodes.push(PNode::Unused);
@@ -727,17 +745,54 @@ fn prepare<'a>(
                         return Err(unsupported(key));
                     }
                     has_ext |= blend_if.is_some() || adjust.is_some();
-                    // The layer's bounds grow by its effect margin; the margin of the node is the
-                    // largest chain sum of effect margins through nested groups.
-                    let layer_margin = fx.as_ref().map_or(0, |f| f.margin);
-                    let layer_bounds = match (content_bounds, fx.as_ref()) {
-                        (Some(b), Some(f)) => Some(grow_rect(b, f.margin)?),
-                        (b, _) => b,
+                    // Layer / backdrop blur (pigment `blur_math`). Pigment validated the
+                    // combinations; a backdrop blur outside an isolated group is refused again here
+                    // with pigment's error value (defence in depth).
+                    let blur = match layer_ext.and_then(|x| x.blur).filter(|b| b.radius_px > 0.0) {
+                        Some(b) => {
+                            if b.scope == BlurScope::Backdrop && !g.isolated {
+                                return Err(GpuError::Backend(BackendError::InvalidPlan(
+                                    PlanError::BlurCombination { node: node_id },
+                                )));
+                            }
+                            let taps = b.taps().map_err(|_| unsupported("blur_parameter"))?;
+                            if taps.len() > BLUR_MAX_TAPS {
+                                return Err(unsupported("blur_parameter"));
+                            }
+                            let support = b.support_px().map_err(|_| unsupported("blur_parameter"))?;
+                            has_blur = true;
+                            blur_taps = blur_taps
+                                .max(u64::try_from(taps.len()).map_err(|_| overflow())?);
+                            Some(Box::new(BlurGpu {
+                                scope: b.scope,
+                                taps,
+                                support,
+                            }))
+                        }
+                        None => None,
+                    };
+                    // The layer's bounds grow by its effect margin (and a layer blur's support);
+                    // the margin of the node is the largest chain sum of effect margins through
+                    // nested groups. A backdrop blur reads the backdrop of the layers below up to
+                    // its support away, so it needs their margin plus its support.
+                    let layer_blur = blur
+                        .as_ref()
+                        .filter(|b| b.scope == BlurScope::Layer)
+                        .map_or(0, |b| b.support);
+                    let layer_margin = fx.as_ref().map_or(0, |f| f.margin).max(layer_blur);
+                    let layer_bounds = match content_bounds {
+                        Some(b) if layer_margin > 0 => Some(grow_rect(b, layer_margin)?),
+                        b => b,
                     };
                     let child_margin = match &plan.nodes[input] {
                         PlanNode::Group(_) => margins[input],
                         _ => 0,
                     };
+                    if let Some(b) = blur.as_ref().filter(|b| b.scope == BlurScope::Backdrop) {
+                        group_margin = group_margin
+                            .checked_add(b.support)
+                            .ok_or_else(overflow)?;
+                    }
                     group_margin = group_margin.max(
                         layer_margin
                             .checked_add(child_margin)
@@ -754,6 +809,7 @@ fn prepare<'a>(
                         blend_if,
                         adjust,
                         fx,
+                        blur,
                     });
                 }
                 // Destination levels below this group's own: a plain layer needs its isolated child's
@@ -770,7 +826,7 @@ fn prepare<'a>(
                         Some(PlanNode::Group(_)) => need.get(input).copied().unwrap_or(0),
                         _ => 0,
                     };
-                    if layers[k].fx.is_some() {
+                    if layers[k].fx.is_some() || layers[k].blur.is_some() {
                         below.saturating_add(1)
                     } else {
                         below
@@ -838,6 +894,8 @@ fn prepare<'a>(
         fx_kernels,
         fx_window_ops,
         frame_margin: margins[root],
+        has_blur,
+        blur_taps,
     })
 }
 
@@ -1235,7 +1293,8 @@ impl RenderBackend<NoVector> for GpuBackend {
             | ExtOperator::MaskDensity
             | ExtOperator::MaskFeather
             | ExtOperator::EffectsNested
-            | ExtOperator::Transform(_) => true,
+            | ExtOperator::Transform(_)
+            | ExtOperator::Blur(_) => true,
             ExtOperator::AlphaPremultiplied => false,
             ExtOperator::Adjustment(kind) => gpu_adjust_supported(kind),
             ExtOperator::Effect(kind) => matches!(
@@ -1351,6 +1410,14 @@ struct FxBuffers {
     planes: [wgpu::Buffer; 3],
 }
 
+/// Device buffers of the blur passes (only when a layer has a blur): the parameter block and two
+/// frame-sized RGBA scratch planes.
+struct BlurBuffers {
+    params: wgpu::Buffer,
+    a: wgpu::Buffer,
+    b: wgpu::Buffer,
+}
+
 /// Device buffers and bind groups of one execution plus the state the layer recursion shares.
 struct Exec<'e> {
     ctx: &'e GpuContext,
@@ -1368,6 +1435,7 @@ struct Exec<'e> {
     ext: Option<ExtBuffers>,
     fx: Option<FxBuffers>,
     resample: Option<ResampleBuffers>,
+    blur: Option<BlurBuffers>,
     /// Blur kernels of the plan's effects (the passes index into it).
     kernels: &'e FxKernels,
     /// Blurred mask coverage of the envelope's feathered layers (`MaskView::feather` indexes it).
@@ -1849,6 +1917,13 @@ fn eval_group(
             j = j.saturating_add(1);
         }
         if j == i.saturating_add(1) {
+            if layers[i]
+                .blur
+                .as_ref()
+                .is_some_and(|b| b.scope == BlurScope::Backdrop)
+            {
+                eval_backdrop_blur(ex, prep, &layers[i], chunk, level)?;
+            }
             eval_layer(ex, prep, &layers[i], chunk, level)?;
         } else {
             eval_clip_run(ex, prep, &layers[i..j], chunk, level)?;
@@ -1956,6 +2031,9 @@ fn eval_layer(
     ex.check()?;
     if let Some(fx) = &layer.fx {
         return eval_effect_layer(ex, prep, layer, fx, chunk, level);
+    }
+    if let Some(blur) = layer.blur.as_ref().filter(|b| b.scope == BlurScope::Layer) {
+        return eval_blur_layer(ex, prep, layer, blur, chunk, level);
     }
     if layer.opacity <= 0.0 {
         return Ok(());
@@ -2156,6 +2234,180 @@ fn eval_clip_run(
     )
 }
 
+/// The layer's shape into the cleared `levels[content]` over `region`: its content composited
+/// Normal at opacity 1 with its mask (an isolated group renders one level further down first),
+/// exactly the content frame of [`eval_effect_layer`].
+fn render_shape(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    region: Rect,
+    chunk: Rect,
+    content: usize,
+) -> Result<(), GpuError> {
+    ex.clear(content, texel_bytes(chunk.width, chunk.height));
+    let mask = layer.mask.as_ref();
+    let normal = |ex: &mut Exec<'_>, src: Src<'_, '_>| {
+        ex.composite(
+            StudioBlendMode::Normal,
+            1.0,
+            mask,
+            None,
+            Pass::Normal,
+            region,
+            chunk,
+            content,
+            src,
+        )
+    };
+    match prep.node(layer.input)? {
+        PNode::Group { isolated: true, .. } => {
+            let below = content.saturating_add(1);
+            ex.clear(below, texel_bytes(chunk.width, chunk.height));
+            eval_group(ex, prep, layer.input, chunk, below)?;
+            normal(ex, Src::Chunk)
+        }
+        PNode::Tile { planes, rect } => normal(ex, Src::Tile(planes, *rect)),
+        PNode::Transformed { planes, prep: t } => normal(ex, Src::Transformed(planes, t)),
+        PNode::Solid { rgba } if rgba[3] <= 0.0 => Ok(()),
+        PNode::Solid { rgba } => normal(ex, Src::Solid(*rgba)),
+        PNode::Group {
+            isolated: false, ..
+        }
+        | PNode::Unused => Err(unsupported("plan_shape")),
+    }
+}
+
+/// A layer with a layer blur (pigment `blur_math`): the shape content one level below, blurred
+/// horizontally into the scratch plane and vertically back into that level over the whole frame,
+/// then composited with the layer's mode and `opacity * fill` over the layer bounds grown by the
+/// support (the frame margin carries the support, so every kept pixel reads real content).
+fn eval_blur_layer(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    blur: &BlurGpu,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    if layer.opacity <= 0.0 {
+        return Ok(());
+    }
+    let Some(bounds) = prep.bound(layer.input) else {
+        return Ok(());
+    };
+    let Some(content_region) = intersect(bounds, chunk)? else {
+        return Ok(());
+    };
+    let Some(region) = intersect(grow_rect(bounds, blur.support)?, chunk)? else {
+        return Ok(());
+    };
+    let content = level.saturating_add(1);
+    render_shape(ex, prep, layer, content_region, chunk, content)?;
+    ex.blur_pass(BlurOp::Horizontal, blur, 0.0, chunk, BlurIo::LevelToA(content))?;
+    ex.blur_pass(BlurOp::Vertical, blur, 0.0, chunk, BlurIo::AToLevel(content))?;
+    ex.composite(
+        layer.mode,
+        layer.opacity,
+        None,
+        None,
+        Pass::Normal,
+        region,
+        chunk,
+        level,
+        Src::Chunk,
+    )
+}
+
+/// Backdrop blur of `layer` before it composites: the running backdrop `levels[level]` is blurred
+/// (horizontal into scratch A, vertical into scratch B) and mixed into the backdrop inside the
+/// layer's shape (rendered one level below) with `k = shape alpha * layer opacity`.
+fn eval_backdrop_blur(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    let Some(blur) = layer.blur.as_ref() else {
+        return Ok(());
+    };
+    if layer.layer_opacity <= 0.0 {
+        return Ok(());
+    }
+    let Some(region) = prep
+        .bound(layer.input)
+        .map(|b| intersect(b, chunk))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+    ex.check()?;
+    ex.blur_pass(BlurOp::Horizontal, blur, 0.0, chunk, BlurIo::LevelToA(level))?;
+    ex.blur_pass(BlurOp::Vertical, blur, 0.0, chunk, BlurIo::AToB)?;
+    let content = level.saturating_add(1);
+    render_shape(ex, prep, layer, region, chunk, content)?;
+    ex.blur_pass(
+        BlurOp::Mix,
+        blur,
+        layer.layer_opacity,
+        chunk,
+        BlurIo::MixInto { level, shape: content },
+    )
+}
+
+/// Buffers of one blur pass.
+#[derive(Clone, Copy)]
+enum BlurIo {
+    /// `levels[l]` (straight) -> scratch A (premultiplied).
+    LevelToA(usize),
+    /// Scratch A -> `levels[l]` (straight).
+    AToLevel(usize),
+    /// Scratch A -> scratch B (straight).
+    AToB,
+    /// Scratch B mixed into `levels[level]` inside the shape alpha of `levels[shape]`.
+    MixInto { level: usize, shape: usize },
+}
+
+impl Exec<'_> {
+    /// One pass of `blur.wgsl` over the whole frame `chunk`.
+    fn blur_pass(
+        &mut self,
+        op: BlurOp,
+        blur: &BlurGpu,
+        opacity: f32,
+        chunk: Rect,
+        io: BlurIo,
+    ) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let Some(bb) = self.blur.as_ref() else {
+            return Err(unsupported("plan_shape"));
+        };
+        let level = |l: usize| self.levels.get(l).ok_or_else(|| unsupported("plan_shape"));
+        let (src, dst, aux) = match io {
+            BlurIo::LevelToA(l) => (level(l)?, &bb.a, &bb.b),
+            BlurIo::AToLevel(l) => (&bb.a, level(l)?, &bb.b),
+            BlurIo::AToB => (&bb.a, &bb.b, level(0)?),
+            BlurIo::MixInto { level: l, shape } => (&bb.b, level(l)?, level(shape)?),
+        };
+        let bytes = blur_params_bytes(op, chunk.width, chunk.height, &blur.taps, opacity)
+            .ok_or_else(|| unsupported("blur_parameter"))?;
+        ctx.queue.write_buffer(&bb.params, 0, &bytes);
+        let bind = ctx.kernel.bind_blur(&ctx.device, &bb.params, src, dst, aux);
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu blur pass"),
+            });
+        ctx.kernel
+            .dispatch_blur(&mut encoder, &bind, chunk.width, chunk.height);
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+}
+
 /// Sum of byte counts; an overflow is the typed `Overflow`, not a wrapped size.
 fn sum_bytes(parts: &[u64]) -> Result<u64, GpuError> {
     parts
@@ -2214,10 +2466,16 @@ fn run(
     } else {
         0
     };
+    let blur_on = prepared.has_blur;
     let per_texel = sum_bytes(&[
         mul_bytes(
             TEXEL_BYTES,
-            sum_bytes(&[levels_u64, 1, u64::from(prepared.has_tiles)])?,
+            sum_bytes(&[
+                levels_u64,
+                1,
+                u64::from(prepared.has_tiles),
+                if blur_on { 2 } else { 0 },
+            ])?,
         )?,
         if masked { MASK_TEXEL_BYTES } else { 0 },
         if fx_on { FX_PLANE_TEXEL_BYTES } else { 0 },
@@ -2229,6 +2487,7 @@ fn run(
         if masked { 0 } else { MASK_TEXEL_BYTES },
         ext_fixed,
         if fx_on { FXP_BYTES } else { 0 },
+        if blur_on { BLURP_BYTES } else { 0 },
         if transform_on {
             sum_bytes(&[RESAMPLE_PARAMS_BYTES, window_bytes])?
         } else {
@@ -2255,10 +2514,12 @@ fn run(
     // One effect pass costs `window x frame pixels`; the frame shrinks until a pass stays under the
     // cost bound (a pass that runs for seconds can hit the driver's watchdog).
     let mut cost_limited = false;
-    if fx_on {
+    if fx_on || blur_on {
+        // A blur pass costs `taps x frame pixels`, like an effect pass costs its window.
+        let pass_ops = prepared.fx_window_ops.max(prepared.blur_taps).max(1);
         let by_cost = u32::try_from(
             FX_PASS_MAX_OPS
-                .checked_div(prepared.fx_window_ops)
+                .checked_div(pass_ops)
                 .unwrap_or(0)
                 .isqrt(),
         )
@@ -2269,7 +2530,7 @@ fn run(
         }
     }
     let side = frame_side.saturating_sub(margin2);
-    let min_side = if fx_on { MIN_FX_SIDE } else { 1 };
+    let min_side = if fx_on || blur_on { MIN_FX_SIDE } else { 1 };
     if side < min_side {
         if cost_limited {
             return Err(unsupported("effect_cost"));
@@ -2330,6 +2591,14 @@ fn run(
     } else {
         0
     };
+    let blur_total = if blur_on {
+        residency.reserve(ResidentKey::Scratch("blur_params"), BLURP_BYTES)?;
+        residency.reserve(ResidentKey::Scratch("blur_a"), frame_bytes)?;
+        residency.reserve(ResidentKey::Scratch("blur_b"), frame_bytes)?;
+        sum_bytes(&[BLURP_BYTES, mul_bytes(frame_bytes, 2)?])?
+    } else {
+        0
+    };
     let sites_bytes = mul_bytes(frame_texels, SITE_BYTES)?;
     let resample_total = if transform_on {
         residency.reserve(ResidentKey::Scratch("resample_params"), RESAMPLE_PARAMS_BYTES)?;
@@ -2348,6 +2617,7 @@ fn run(
         ext_fixed,
         fx_total,
         resample_total,
+        blur_total,
     ])?;
     let device = &ctx.device;
     let queue = &ctx.queue;
@@ -2362,6 +2632,7 @@ fn run(
         ext_buffers,
         fx_buffers,
         resample_buffers,
+        blur_buffers,
     ) = scoped(device, total, limit, || {
             let buffer = |label, size, usage| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -2458,6 +2729,15 @@ fn run(
                     binds_chunk,
                 }
             });
+            let blur_buffers = blur_on.then(|| BlurBuffers {
+                params: buffer(
+                    "hsk-studio-render-gpu blur params",
+                    BLURP_BYTES,
+                    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                ),
+                a: buffer("hsk-studio-render-gpu blur a", frame_bytes, wgpu::BufferUsages::STORAGE),
+                b: buffer("hsk-studio-render-gpu blur b", frame_bytes, wgpu::BufferUsages::STORAGE),
+            });
             let resample_buffers = transform_on.then(|| {
                 let params = buffer(
                     "hsk-studio-render-gpu resample params",
@@ -2495,6 +2775,7 @@ fn run(
                 ext_buffers,
                 fx_buffers,
                 resample_buffers,
+                blur_buffers,
             )
         })?;
 
@@ -2511,6 +2792,7 @@ fn run(
         ext: ext_buffers,
         fx: fx_buffers,
         resample: resample_buffers,
+        blur: blur_buffers,
         kernels: &prepared.fx_kernels,
         feathered: &prepared.feathered,
         upload: Vec::new(),
@@ -2528,6 +2810,7 @@ fn run(
         blend_if: None,
         adjust: None,
         fx: None,
+        blur: None,
     };
     let mut colour: Vec<u8> = Vec::new();
     let mut alpha: Vec<u8> = Vec::new();
