@@ -35,8 +35,9 @@ fn hsv(rgb: [f64; 3]) -> (f64, f64, f64) {
 
 fn synthetic_colour() -> DngColor {
     let mut c = DngColor::empty();
-    // A linear-sRGB-primaried camera: XYZ(D50) -> camera is the inverse of the sRGB colorants.
-    c.color_matrix[0] = Some(color::invert(&color::SRGB_TO_XYZ_D50).unwrap());
+    // A camera whose sensitivities overlap (all-positive XYZ -> camera), so every illuminant gives a
+    // positive neutral; a camera with sRGB primaries would go negative for extreme whites.
+    c.color_matrix[0] = Some([0.9, 0.1, 0.0, 0.1, 0.8, 0.1, 0.0, 0.1, 0.9]);
     c.calibration_illuminant[0] = Some(23);
     c.as_shot_neutral = Some([1.0, 1.0, 1.0]);
     c
@@ -361,7 +362,7 @@ fn colour_grading_regions_blending_and_balance() {
     assert!(apply_pixel(&lift, dark).unwrap()[1] > dark[1]);
     assert!((apply_pixel(&lift, bright).unwrap()[1] - bright[1]).abs() < 1e-9);
     // Balance toward highlights widens the shadow region; toward shadows narrows it.
-    let probe = lin([0.55, 0.55, 0.55]);
+    let probe = lin([0.35, 0.35, 0.35]);
     let balanced = |b: f64| shift(&with(|a| { a.grading.shadows = wheel(0.0, 100.0, 0.0); a.grading.balance = b; }), probe);
     assert!(balanced(100.0) > balanced(0.0) && balanced(0.0) > balanced(-100.0), "{} {} {}", balanced(100.0), balanced(0.0), balanced(-100.0));
     // Blending widens the overlap: at a tone between the regions, the shadow wheel reaches further.
@@ -453,5 +454,5 @@ fn version_1_0_recipes_still_read_and_corpus_pin() {
     assert_eq!(digest(&g), PIN_GRAY);
 }
 
-const PIN_COLOUR: &str = "";
-const PIN_GRAY: &str = "";
+const PIN_COLOUR: &str = "cb9de7e9c7d5c97a8e13a880fc90e1fbfae3f3ed2d75ca40cb0e72eb7aa457e7";
+const PIN_GRAY: &str = "409f41e1a48afdfe4354faba9a83fedc3ef9b512599c3ad85f7ed73ddbfd66a7";
