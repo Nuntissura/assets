@@ -36,6 +36,9 @@ pub enum FigError {
     DecoderUnavailable { stage: &'static str },
     /// Editable decoding is blocked until original-produced semantic/render proof exists (STU-IO-186).
     EditableDecoderBlocked { reason: &'static str },
+    /// The native (Folio) mapping produced a document or records Folio refused, or an import entry
+    /// could not be encoded/parsed (the Folio code names the check).
+    NativeRejected(hsk_studio_folio::Code),
 }
 
 impl FigError {
@@ -56,6 +59,7 @@ impl FigError {
             Self::MessageInvalid(_) => "message_invalid",
             Self::DecoderUnavailable { .. } => "decoder_unavailable",
             Self::EditableDecoderBlocked { .. } => "editable_decoder_blocked",
+            Self::NativeRejected(_) => "native_rejected",
         }
     }
 

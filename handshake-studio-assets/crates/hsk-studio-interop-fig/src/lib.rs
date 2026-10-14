@@ -17,6 +17,7 @@ mod error;
 mod import;
 mod kiwi;
 mod kiwi_value;
+mod native;
 mod nodes;
 mod semantic_decode;
 mod version_map;
@@ -33,6 +34,10 @@ pub use import::{
     sanitized_summary,
 };
 pub use kiwi_value::{KiwiField, KiwiValue, decode_kiwi, decode_message_tree};
+pub use native::{
+    IdMapEntry, IdMint, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal, NativeRecords,
+    SequentialIdMint, id_index, read_native_records, to_native,
+};
 pub use nodes::{
     AutoLayout, COMMON_NODE_FIELDS, Color, ComponentPropDef, Effect, FigDocument, FigNode,
     FramePayload, Geometry, GradientStop, InstanceOverride, InstancePayload, Interaction,
