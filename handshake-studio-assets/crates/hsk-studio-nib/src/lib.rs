@@ -10,4 +10,6 @@ mod proposal;
 pub use proposal::*;
 
 mod descriptor;
+pub mod boolean;
+pub mod flatten;
 pub use descriptor::descriptor;
