@@ -188,7 +188,7 @@ pub struct TrackIndex {
     pub color: ColorTag,
     /// `pasp` pixel aspect ratio (horizontal, vertical spacing).
     pub pixel_aspect: Option<(u32, u32)>,
-    /// Codec configuration record of the first sample entry (`av1C` payload); empty when absent or when
+    /// Codec configuration record of the first sample entry (`av1C` or `avcC` payload); empty when absent or when
     /// the container reader has none.
     pub codec_config: Vec<u8>,
     /// `fiel` field/frame information of the first sample entry, raw (see `FieldInfo`).
@@ -758,7 +758,7 @@ struct VisualChildren {
 /// Payload bytes of a `clap` box: eight 32-bit fields.
 const CLAP_BYTES: usize = 32;
 
-/// Sample-entry child boxes (`colr`, `pasp`, `av1C`, `fiel`, `clap`). A malformed child ends the scan:
+/// Sample-entry child boxes (`colr`, `pasp`, `av1C`/`avcC`, `fiel`, `clap`). A malformed child ends the scan:
 /// metadata is advisory and does not fail an otherwise indexable track. A `fiel` or `clap` shorter
 /// than its layout is ignored (the field stays `None`) and is not read past its payload (test
 /// `fiel_and_clap_are_raw_and_advisory`).
@@ -800,7 +800,9 @@ fn parse_visual_children(rest: &[u8]) -> VisualChildren {
                     out.pixel_aspect = Some((horizontal, vertical));
                 }
             }
-            b"av1C" if payload.len() <= MAX_CODEC_CONFIG => out.codec_config = payload.to_vec(),
+            b"av1C" | b"avcC" if payload.len() <= MAX_CODEC_CONFIG => {
+                out.codec_config = payload.to_vec()
+            }
             b"fiel" if payload.len() >= 2 => {
                 out.field_info = Some(FieldInfo {
                     fields: payload[0],

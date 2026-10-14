@@ -56,6 +56,11 @@ pub enum VideoCodec {
     ProRes,
     /// VC-3 (SMPTE ST 2019-1; DNxHD/DNxHR) frames. In-process decoder in every build (D24).
     Dnx,
+    /// H.264 / AVC (ISO BMFF `avc1`/`avc3`). Never decoded in process (D24): only an external decoder (the
+    /// Windows Media Foundation worker of `hsk-studio-reel-native`), otherwise `MEDIA_CODEC_UNAVAILABLE`.
+    /// The session receives the `avcC` payload as `config` and the samples as stored (length-prefixed
+    /// NAL units; `h264_config::sample_to_annex_b` converts them).
+    H264,
 }
 
 impl VideoCodec {
@@ -64,6 +69,7 @@ impl VideoCodec {
             Self::Av1 => "av1",
             Self::ProRes => "prores",
             Self::Dnx => "dnx",
+            Self::H264 => "h264",
         }
     }
 }
@@ -231,7 +237,7 @@ fn built_in(codec: VideoCodec) -> bool {
     match codec {
         VideoCodec::Dnx => true,
         VideoCodec::ProRes => crate::codec_adapters::PRORES_COMPILED_IN,
-        VideoCodec::Av1 => false,
+        VideoCodec::Av1 | VideoCodec::H264 => false,
     }
 }
 
@@ -497,6 +503,19 @@ pub(crate) fn decode_video_track_with(
         VideoCodec::Av1 => {}
         // Both carry everything in each frame header; the sample entry has no configuration record.
         VideoCodec::ProRes | VideoCodec::Dnx => {}
+        // `avc1` keeps its parameter sets in the record only; `avc3` may carry them in band. A track
+        // without an `avcC` cannot be configured.
+        VideoCodec::H264 => {
+            if video.config.is_empty() {
+                return Err(ReelError::Corrupt {
+                    what: "avcc-missing",
+                });
+            }
+            let config = crate::h264_config::parse_avcc(video.config)?;
+            if video.codec_label == "avc1" {
+                config.require_parameter_sets()?;
+            }
+        }
     }
     // Export is exact or it fails: everything an export of this range can be refused for before a
     // picture exists is refused HERE, before a decoder session exists, so a refused export spawns no

@@ -101,6 +101,9 @@ pub(crate) fn route_for_sample_entry(code: [u8; 4]) -> Option<SampleEntryRoute> 
         b"ap4h" | b"ap4x" => Some(SampleEntryRoute::Codec(VideoCodec::ProRes)),
         b"aprn" | b"aprh" => Some(SampleEntryRoute::Refused("prores-raw")),
         b"AVdn" | b"AVdh" => Some(SampleEntryRoute::Codec(VideoCodec::Dnx)),
+        // H.264 in ISO BMFF: `avc1` (parameter sets in `avcC`) and `avc3` (parameter sets may be in band).
+        // Reached only through an external decoder (D24); `MEDIA_CODEC_UNAVAILABLE` without one.
+        b"avc1" | b"avc3" => Some(SampleEntryRoute::Codec(VideoCodec::H264)),
         _ => None,
     }
 }

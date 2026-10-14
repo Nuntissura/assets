@@ -40,6 +40,7 @@ mod codec_adapters;
 #[cfg(test)]
 mod delivery_tests;
 mod error;
+mod h264_config;
 mod idct8;
 mod identity;
 mod isobmff;
@@ -66,6 +67,10 @@ pub use codec_adapters::{
     dnx_descriptor, prores_descriptor, video_codec_descriptors,
 };
 pub use error::{DecoderFault, ReelError};
+pub use h264_config::{
+    H264_DECODER_ID, H264_DISPLAY_NAME, H264_LICENCE, H264Config, START_CODE as H264_START_CODE,
+    h264_descriptor, nal_unit_type as h264_nal_unit_type, parse_avcc, sample_to_annex_b,
+};
 pub use identity::{
     IdentityParams, RelinkConfidence, RelinkMatch, RelinkOutcome, RelinkQuery, SourceIdentity,
     full_digest, hex, relink, sampled_identity,
