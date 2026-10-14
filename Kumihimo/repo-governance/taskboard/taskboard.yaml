@@ -178,7 +178,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-state.yaml
-  next_action: Prepare phase04 all-feature all-target check on current coherent checkpoint and unchanged69 inputs;
-    require exact primary reservation/full original gate; do not rerun valid phase03 Cargo0
+  next_action: Publish scoped E0510 source repair and actual phase04 failure/closure checkpoint; bind new69 inputs
+    and unchanged proof argv in fresh one-shot caller for Primary review; no default03 rerun or implicit05
   blockers:
-  - Next exact primary phase04 reservation required; all-feature compile/tests/native/pixel acceptance OPEN
+  - Changed-source phase04 all-feature check requires exact Primary reservation after new candidate bindings; all-feature
+    tests/native/pixel acceptance OPEN

@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 13
+generation: 14
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -142,12 +142,60 @@ proof:
     independent_reviewer: 01a13ad0-112c-7c51-9dac-b19da4d01c76
   original_caller_status: FAILED_STOP
   independent_controller: 01a139f5-dc34-7af3-a3ed-e486ec461fb9
+- kind: phase04_all_feature_compile
+  status: COMPILER_FAILED_WITH_INDEPENDENT_LATE_OWNED_CLOSURE
+  attempt: 1
+  input_head: 2bb4ad74c58c72f2fda4c3fc1bbb4e243929dbe5
+  input_manifest_sha256: 56b54252e8b53b788b4b12bfac6171307fd37df4a476dd0de8e9070702728ba9
+  launcher_sha256: 641a683231b21f712f8d9871bd4ff52c021a3cbf5f1bdad71358b967b7e59f6b
+  cargo_pid: 4984
+  cargo_birth_utc: '2026-10-14T22:15:40.5277869Z'
+  cargo_exit: 101
+  outer_host_pid: 49588
+  outer_tool_exit: 1
+  original_caller_status: FAILED_STOP
+  phase_record: .local/wp022-proof/04-all-feature-check.phase.json
+  phase_record_sha256: 48ce0419cbae86185a80de3e24719b4a66586d7bd95f737a3f2e6fc06750d673
+  stderr_sha256: 25544e1028a5b5f6f05f94f977112c5a117b553086b3e09d5d8c10fe611ac562
+  source_diagnostic: Eight E0510 errors in native_probe eframe step match guards; mutable self calls while matching
+    self.phase
+  source_inputs: All69 captured files and all3 locks unchanged through actual compile and closure
+  late_owned_settlement:
+    receipt: .local/wp022-proof/04-owned-settlement.json
+    receipt_sha256: f279e8d09de8051674f550be216493ec1dca297c79d3a7f45d6312478e95180c
+    target_pid: 34496
+    native_birth_utc: '2026-10-14T22:15:45.7333632Z'
+    cim_birth_utc: '2026-10-14T22:15:45.7333630Z'
+    target_exit: -1
+    operation_tool_exit: 0
+    raw_parent_edge_chain_serialized: true
+    canonical_observation: All129 recorded owned plus host absent; candidate children and compilers absent; warm
+      cache4820 unchanged
+    review: PRIMARY_AND_DIAGNOSTICS_INDEPENDENTLY_RECONCILED
+    process_purpose: UNVERIFIED
+  retry: Original attempt retained; only a changed-source phase04 invocation may follow a fresh exact Primary reservation
+  native: NOT_RUN
+- kind: phase04_E0510_source_remediation
+  status: SOURCE_REPAIRED_COMPILE_NOT_RUN
+  file: product/kumihimo-egui/examples/native_probe.rs
+  sha256: 9497ec15f4b760339c158e1ad59599db44d0a44685a017859e835bee95468b0b
+  change: Copy u8 self.phase into local phase before match; preserve all eight guards, pending results, error propagation,
+    phase updates and native assertions
+  diagnostics_owner: 01a13ad0-112c-7c51-9dac-b19da4d01c76
+  source_writer: native_source
+  dependency_checker: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
+  proof_mapping: Only cfg(native-eframe,windows) example logic changed; phase04 all-feature all-target proof required;
+    default03 compiler0 and historical wrapper failure retained without rerun
+  manifests_and_locks: UNCHANGED
+  independent_source_review: sdk_frame independently opened exact actual9497ec15 file/diff; all eight guards/pending/error/assertion/phase
+    semantics preserved; no source concern found; no compile claim
 blockers:
-- Next exact primary phase04 reservation required; all-feature compile/tests/native/pixel acceptance OPEN
-next_action: Prepare phase04 all-feature all-target check on current coherent checkpoint and unchanged69 inputs;
-  require exact primary reservation/full original gate; do not rerun valid phase03 Cargo0
+- Changed-source phase04 all-feature check requires exact Primary reservation after new candidate bindings; all-feature
+  tests/native/pixel acceptance OPEN
+next_action: Publish scoped E0510 source repair and actual phase04 failure/closure checkpoint; bind new69 inputs
+  and unchanged proof argv in fresh one-shot caller for Primary review; no default03 rerun or implicit05
 source_freeze:
-  native_worker: frozen_after_sealed_eframe_consumer_and_actual_viewport_probe_source
+  native_worker: frozen_after_phase04_u8_phase_snapshot_remediation
   theme_worker: frozen
   adapter_version: 0.2.0
   inputs:
@@ -165,12 +213,12 @@ source_freeze:
     product/kumihimo-egui/tests/manual_sample_contracts.rs: 6abe06a96fa101de3e7cfffeabec0c344322d592c04b9aa88fcbfd5e1ee6b82f
     product/README.md: 34461a7c621398ab8d664f58f878e64f65914451cc98b1b110fdf73681a23e66
     product/kumihimo-egui/tests/native_app_contracts.rs: c43f8ef1a5d35b08fffbc7f6b3debe32f1a9f139eb5164fb19f69aeb2d09d1b0
-    product/kumihimo-egui/examples/native_probe.rs: 8af751f7ede34a79a0724c5ce699cc4f94d6de972ff528865b70c077983cc738
+    product/kumihimo-egui/examples/native_probe.rs: 9497ec15f4b760339c158e1ad59599db44d0a44685a017859e835bee95468b0b
   runtime: NOT_RUN
-  compiler: PHASE03_DEFAULT_ALL_TARGET_CARGO_0_HISTORICAL_WRAPPER_FAILED_LATE_OWNED_SETTLEMENT
+  compiler: PHASE04_ORIGINAL_CARGO_101_RECONCILED_CLOSURE_SOURCE_REPAIR_NOT_COMPILED
   eframe_producer: SOURCE_IMPLEMENTED_NATIVE_PROOF_PENDING
   sdk_expansion: FROZEN_SOURCE_WITH_RESOLVED_PHASE01_LOCK_OUTPUT
   sdk_frame_worker: frozen
   sdk_producer_worker: frozen_after_byte_lease_and_cancelled_map_polling_repairs
   provenance: All 45 original SDK files reread; only six admitted sources changed; other 39 hashes retained
-  input_manifest: .local/wp022-phase02-input.json
+  input_manifest: .local/wp022-phase04-repair-input.json

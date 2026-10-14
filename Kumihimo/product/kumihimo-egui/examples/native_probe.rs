@@ -329,7 +329,8 @@ mod eframe_probe {
         fn step(&mut self, ctx: &egui::Context) -> kumihimo_egui::Result<()> {
             if self.started.elapsed() >= self.timeout { return Err(AdapterError::Host("eframe probe deadline".into())); }
             let handle = self.handle.as_ref().unwrap().clone();
-            match self.phase {
+            let phase = self.phase;
+            match phase {
                 0 => {
                     let mut queued = Vec::new();
                     loop {
