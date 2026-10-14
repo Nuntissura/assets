@@ -259,7 +259,8 @@ impl Parser {
                 if !array && !seen.insert(name.clone()) {
                     return Err(format!("duplicate_table:{name}"));
                 }
-                if tables.len() >= 512 {
+                // 1024 since the eframe accesskit closure (2026-10-15): Cargo.lock holds 536 [[package]] tables.
+                if tables.len() >= 1024 {
                     return Err("table_limit".into());
                 }
                 tables.push((name, Table::new()));
