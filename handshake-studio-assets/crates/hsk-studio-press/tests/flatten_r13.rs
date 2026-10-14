@@ -2755,6 +2755,7 @@ fn descriptor_states_the_structure_tree_rule() {
         "removes the whole structure tree",
         "identified by its role and reachability",
         "structure_strip_follows_the_tree_and_structure_destinations",
+        "through structure-tree keys, /K /P /Ref /ParentTree",
     ] {
         assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
     }
@@ -3318,7 +3319,9 @@ fn structure_strip_keeps_multimedia_of_kept_pages() {
 /// optional-content group (X7) were removed while the save read proven with `accessibility_tags_removed`; a `/StructTreeRoot` naming
 /// no object reported the loss too (X6). Red at 13534f8. The unlink only (DIAG-PRESS-R27) removes the catalog entry and deletes no
 /// object: each kept object stays (reachable from what keeps it), the save reads flattened, and the loss is reported only for X3,
-/// where a real tree was unlinked.
+/// where a real tree was unlinked. X3 since DIAG-PRESS-R29 (key-based closed set, no type or shape exclusion): the URI action the
+/// root's `/K` names is in the closed set and the kept link still writes it, so X3 reads NotProven (over-count on an object a kept
+/// path shares with the tree, fail closed; the same shape as R29-S3 input C3); the action and the loss stay as before.
 #[test]
 fn structure_strip_unlinks_and_keeps_what_anything_kept_reaches() {
     // X7: page two names the optional-content group 40 in its own /Properties and draws inside /OC /OC1 BDC .. EMC (objects 5 and 7
@@ -3375,7 +3378,9 @@ fn structure_strip_unlinks_and_keeps_what_anything_kept_reaches() {
                 red.push(format!("{name}: {text} was removed from the kept page"));
             }
         }
-        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || !read_as_flattened(&out) {
+        // DIAG-PRESS-R29: X3's action is a closed-set member the kept link still writes (counted).
+        let verdict_ok = if name.starts_with("X3") { reported_for_the_tree(&out) } else { read_as_flattened(&out) };
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || !verdict_ok {
             red.push(format!("{name}: region_flattened {} residual {} reasons {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
         }
         let expected: &[hsk_studio_press::RedactionLoss] = if loss { &[hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] } else { &[] };
@@ -3608,6 +3613,134 @@ fn ancestor_property_lists_of_a_flattened_page_are_counted() {
         }
         if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || gone(&out.bytes, "KEPT-PROP-TEXT") {
             red.push(format!("{name}: SECRET-ALPHA gone {}, kept page text kept {}", gone(&out.bytes, "SECRET-ALPHA"), !gone(&out.bytes, "Page two")));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R29-S1, R29-S2, R29-S3 (validation/R29-prereview-press-narrow.json, probes C1, C1t, C1u, C1c, C1e, C2, C2d, C3; red at 18ebacf):
+/// the closed set of DIAG-PRESS-R28 left out any tree dictionary with `/Subtype` or an outside `/Type` (an attribute object, a
+/// `UserProperties` attribute, a `/ClassMap` object, an element with `/Subtype`, a `/Type /Annot` dictionary named as an attribute,
+/// R29-S1), cut the walk at the depth cap without a signal (an element first met deep in a chain was never expanded, R29-S2), and
+/// did not take a root kid without `/P`, `/K` and `/Type` (R29-S3); a private catalog key kept their text with the save read proven.
+/// Lead diagnosis DIAG-PRESS-R29: the closed set follows every key from the original `/StructTreeRoot` except `/Pg`, `/Obj`, `/Stm`
+/// and `/StmOwn`, with no type, shape or depth exclusion, bounded only by an object-count budget (exhaustion reads NotProven). Each
+/// case reads NotProven with its text kept by the private key. Controls: the R29 probe C7 (a Word-like tagged file: a Document
+/// element, a heading with `/Alt` on the flattened page, inline attributes, `/RoleMap`, `/ClassMap`, a parent tree and an `OBJR`
+/// naming a kept link annotation) reads flattened with the heading's text gone and the loss reported (no over-count), and the C1
+/// and C2d trees without the private key read flattened.
+#[test]
+fn structure_tree_closed_set_follows_every_key_without_a_depth_cap() {
+    let tagged = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";
+    let a2 = |attr: &str| -> Vec<(u32, String)> {
+        vec![
+            (80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()),
+            (81, "<< /Type /StructElem /S /Table /P 80 0 R /Pg 3 0 R /A 86 0 R /K 0 >>".to_string()),
+            (86, attr.to_string()),
+        ]
+    };
+    let chain = |n: u32, x_in_root: bool| -> Vec<(u32, String)> {
+        let root_k = if x_in_root { "[81 0 R 101 0 R]" } else { "[101 0 R]" };
+        let mut v = vec![(80, format!("<< /Type /StructTreeRoot /K {root_k} >>"))];
+        for k in 1..=n {
+            let num = 100 + k;
+            let kid = if k == n { "81 0 R".to_string() } else { format!("[{} 0 R]", num + 1) };
+            v.push((num, format!("<< /Type /StructElem /S /Div /P 80 0 R /K {kid} >>")));
+        }
+        v.push((81, "<< /Type /StructElem /S /Table /P 80 0 R /Pg 3 0 R /A 86 0 R /K 0 >>".to_string()));
+        v.push((86, "<< /O /Table /Summary (ATTR-SECRET) >>".to_string()));
+        v
+    };
+    let attr_cat = format!("{tagged} /HskAttr 86 0 R");
+    // (name, catalog, page one extra, page two extra, objects, text, expected reported (true) or flattened with the loss (false))
+    type Case = (&'static str, String, &'static str, &'static str, Vec<(u32, String)>, &'static str, bool);
+    let cases: Vec<Case> = vec![
+        ("C1: attribute object with /Subtype", attr_cat.clone(), "/StructParents 0", "", a2("<< /O /Table /Subtype /HskX /Summary (ATTR-SECRET) >>"), "ATTR-SECRET", true),
+        ("C1t: attribute object with /Type /Annot", attr_cat.clone(), "/StructParents 0", "", a2("<< /Type /Annot /O /Table /Summary (ATTR-SECRET) >>"), "ATTR-SECRET", true),
+        ("C1u: UserProperties attribute with /Subtype", attr_cat.clone(), "/StructParents 0", "", a2("<< /O /UserProperties /Subtype /HskX /P [<< /N (n) /V (ATTR-SECRET) >>] >>"), "ATTR-SECRET", true),
+        (
+            "C1c: class map object with /Subtype",
+            format!("{tagged} /HskCM 85 0 R"),
+            "",
+            "/StructParents 0",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R] /ClassMap 85 0 R >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /C /C1 /K 0 >>".to_string()),
+                (85, "<< /Subtype /HskX /C1 << /O /UserProperties /P [<< /N (n) /V (CLASSMAP-SECRET) >>] >> >>".to_string()),
+            ],
+            "CLASSMAP-SECRET",
+            true,
+        ),
+        (
+            "C1e: element with /Subtype names the attribute object",
+            attr_cat.clone(),
+            "/StructParents 0",
+            "",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()),
+                (81, "<< /Type /StructElem /Subtype /HskX /S /Table /P 80 0 R /Pg 3 0 R /A 86 0 R /K 0 >>".to_string()),
+                (86, "<< /O /Table /Summary (ATTR-SECRET) >>".to_string()),
+            ],
+            "ATTR-SECRET",
+            true,
+        ),
+        ("C2: element in the root's /K and at the end of a 10-element chain", attr_cat.clone(), "/StructParents 0", "", chain(10, true), "ATTR-SECRET", true),
+        ("C2d: element only at the end of a 12-element chain", attr_cat.clone(), "/StructParents 0", "", chain(12, false), "ATTR-SECRET", true),
+        ("C2e: element only at the end of a 40-element chain", attr_cat.clone(), "/StructParents 0", "", chain(40, false), "ATTR-SECRET", true),
+        (
+            "C3: root kid without /P, /K and /Type",
+            format!("{tagged} /HskE 81 0 R"),
+            "",
+            "/StructParents 0",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R 81 0 R] >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+                (81, "<< /S /Figure /Alt (NOP-ALT-SECRET) >>".to_string()),
+            ],
+            "NOP-ALT-SECRET",
+            true,
+        ),
+        ("C1 control: the same tree, no private key", tagged.to_string(), "/StructParents 0", "", a2("<< /O /Table /Subtype /HskX /Summary (ATTR-SECRET) >>"), "ATTR-SECRET", false),
+        ("C2d control: the 12-element chain, no private key", tagged.to_string(), "/StructParents 0", "", chain(12, false), "ATTR-SECRET", false),
+        (
+            "C7 control: Word-like tagged file",
+            tagged.to_string(),
+            "/StructParents 0",
+            "/StructParents 1 /Annots [71 0 R]",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [90 0 R] /ParentTree 84 0 R /ParentTreeNextKey 2 /RoleMap << /Heading1 /H1 >> /ClassMap << /C1 << /O /Layout /Placement /Block >> >> >>".to_string()),
+                (90, "<< /Type /StructElem /S /Document /P 80 0 R /K [81 0 R 82 0 R 83 0 R] >>".to_string()),
+                (81, "<< /Type /StructElem /S /Heading1 /P 90 0 R /Pg 3 0 R /Alt (EL-ALT-SECRET) /A << /O /Layout /SpaceAfter 4 >> /K 0 >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 90 0 R /Pg 5 0 R /C /C1 /K 0 >>".to_string()),
+                (83, "<< /Type /StructElem /S /Link /P 90 0 R /Pg 5 0 R /K [<< /Type /OBJR /Obj 71 0 R /Pg 5 0 R >>] >>".to_string()),
+                (84, "<< /Nums [0 [81 0 R] 1 [82 0 R] 2 83 0 R] >>".to_string()),
+                (71, "<< /Type /Annot /Subtype /Link /Rect [10 10 20 20] /P 5 0 R /StructParent 2 /A << /S /URI /URI (https://example.invalid/) >> >>".to_string()),
+            ],
+            "EL-ALT-SECRET",
+            false,
+        ),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog, one, two, objects, text, reported) in cases {
+        let pdf = pages_pdf(&catalog, one, two, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        let state = format!("region_flattened {} residual {} reasons {:?} losses {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons(), out.losses);
+        if reported {
+            if gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} is gone (the case needs it to survive)"));
+            }
+            if !reported_for_the_tree(&out) {
+                red.push(format!("{name}: {state}, expected reported"));
+            }
+        } else if !gone(&out.bytes, text) || !read_as_flattened(&out) || out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] {
+            red.push(format!("{name}: {text} gone {} {state}, expected flattened with the loss", gone(&out.bytes, text)));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || find(&out.bytes, b"StructTreeRoot").is_some() {
+            red.push(format!("{name}: region text, kept page text or /StructTreeRoot wrong"));
+        }
+        if name.starts_with("C7") && find(&out.bytes, b"/Link").is_none() {
+            red.push(format!("{name}: the kept link annotation was removed"));
         }
     }
     assert!(red.is_empty(), "{red:#?}");

@@ -9,9 +9,11 @@
 //! `accessibility_tags_removed`; what anything kept still reaches stays and is reported (tests
 //! `default_redaction_strips_the_structure_tree`, `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`,
 //! `structure_strip_keeps_multimedia_of_kept_pages`); structure objects still written after the strip are reported NotProven
-//! (closed set from the original tree, lead diagnosis DIAG-PRESS-R28: [`strip_structure`] records every object the original tree
-//! reaches through structure-tree keys and `check_document` counts each one the save still writes, whatever its shape; test
-//! `structure_objects_still_written_after_the_strip_are_reported`); with the opt-out
+//! (key-based closed set from the original tree, lead diagnoses DIAG-PRESS-R28 and DIAG-PRESS-R29: [`strip_structure`] records every
+//! object the original tree reaches through every key except `/Pg`, `/Obj`, `/Stm` and `/StmOwn`, with no type, shape or depth
+//! exclusion, and `check_document` counts each one the save still writes, whatever its shape; budget exhaustion fails closed; tests
+//! `structure_objects_still_written_after_the_strip_are_reported`, `structure_tree_closed_set_follows_every_key_without_a_depth_cap`,
+//! unit test `closed_set_budget_exhaustion_is_counted`); with the opt-out
 //! (`StructureTreePolicy::KeepNotProven`), in a structure tree whose root is an indirect object, the structure elements that
 //! the purge reads and that point at it stay with their text removed (best effort). Whatever the policy, when a save flattens at
 //! least one region and the saved document still has a structure tree (or a dictionary with the shape of a structure element,
@@ -692,18 +694,21 @@ fn root_shaped(doc: &PdfDoc, d: &Dict) -> bool {
 /// (R26-S4, R27-S3; tests `structure_strip_reports_no_loss_without_structure`,
 /// `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`).
 ///
-/// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1): before the unlink, [`structure_tree_objects`] records every object reachable
-/// from the original catalog `/StructTreeRoot` through structure-tree keys ([`Stripped::tree`]); `check_document` counts each one
-/// the saved file still holds (NotProven), whatever its shape (test `structure_objects_still_written_after_the_strip_are_reported`).
-/// A `GoTo` whose `/S` is a reference resolving to the name `GoTo` is a `GoTo` too (R28-S2, test
-/// `structure_destinations_of_goto_actions_named_through_references_are_unlinked`).
+/// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and without a depth cap since DIAG-PRESS-R29): before the unlink,
+/// [`structure_tree_objects`] records every object reachable from the original catalog `/StructTreeRoot` through every key except
+/// the outward pointers `/Pg`, `/Obj`, `/Stm` and `/StmOwn` ([`Stripped::tree`]); `check_document` counts each one the saved file
+/// still holds (NotProven), whatever its shape (tests `structure_objects_still_written_after_the_strip_are_reported`,
+/// `structure_tree_closed_set_follows_every_key_without_a_depth_cap`). The walk is bounded by an object-count budget
+/// (`Limits::max_objects`); when the budget runs out the set is incomplete and `check_document` counts that (fail closed, unit test
+/// `closed_set_budget_exhaustion_is_counted`). A `GoTo` whose `/S` is a reference resolving to the name `GoTo` is a `GoTo` too
+/// (R28-S2, test `structure_destinations_of_goto_actions_named_through_references_are_unlinked`).
 pub(crate) fn strip_structure(doc: &mut PdfDoc, cancel: &CancellationToken) -> Result<Stripped> {
     check_cancel(cancel)?;
     let root = catalog_num(doc)?;
     let cap = doc.limits.depth_cap();
-    let tree = match doc.dict_of(root).and_then(|c| c.get("StructTreeRoot")) {
-        Some(v) => structure_tree_objects(doc, root, v, cancel)?,
-        None => BTreeSet::new(),
+    let (tree, incomplete) = match doc.dict_of(root).and_then(|c| c.get("StructTreeRoot")) {
+        Some(v) => structure_tree_objects(doc, root, v, doc.limits.max_objects, cancel)?,
+        None => (BTreeSet::new(), false),
     };
     // R28-S2: the objects that resolve to the name `GoTo` (an action's `/S` may name one, through alias objects too).
     let gotos: BTreeSet<u32> =
@@ -740,178 +745,84 @@ pub(crate) fn strip_structure(doc: &mut PdfDoc, cancel: &CancellationToken) -> R
             touch(e);
         }
     }
-    Ok(Stripped { removed, tree })
+    Ok(Stripped { removed, tree, incomplete })
 }
 
-/// What [`strip_structure`] did: `removed` (the typed loss `accessibility_tags_removed`) and `tree`, the closed set of the original
-/// structure tree's objects (DIAG-PRESS-R28) that `check_document` counts when the saved file still holds one.
+/// What [`strip_structure`] did: `removed` (the typed loss `accessibility_tags_removed`), `tree`, the closed set of the original
+/// structure tree's objects (DIAG-PRESS-R28, DIAG-PRESS-R29) that `check_document` counts when the saved file still holds one, and
+/// `incomplete`: the walk ran out of its object-count budget before the set was closed (`check_document` counts it, fail closed).
 #[derive(Default)]
 pub(crate) struct Stripped {
     pub removed: bool,
     pub tree: BTreeSet<u32>,
+    pub incomplete: bool,
 }
 
-/// Where a value sits in the structure tree, as [`structure_tree_objects`] follows it (DIAG-PRESS-R28).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TreeRole {
-    /// The structure tree root (`/K`, `/ParentTree`, `/IDTree`, `/ClassMap`, `/RoleMap`, `/Namespaces`).
-    Root,
-    /// A structure element (`/P`, `/Ref`, parent-tree and id-tree values): `/K`, `/A`, `/C`, `/NS`, its text values.
-    Element,
-    /// A `/K` kid: an element, a marked-content reference (`/Type /MCR`) or an object reference (`/Type /OBJR`).
-    Kid,
-    /// A number-tree node of `/ParentTree` (`/Kids`, `/Nums`).
-    NumTree,
-    /// A name-tree node of `/IDTree` (`/Kids`, `/Names`).
-    NameTree,
-    /// The `/ClassMap`: every value is an attribute object or an array of them.
-    ClassMap,
-    /// An attribute object, a `/RoleMap`, a namespace, or a value inside one: everything it names is the tree's.
-    Owned,
-    /// A plain value of a tree object (a text string, a name, a number, an array of them): a dictionary or stream is not followed.
-    Leaf,
-}
+/// Keys of a structure-tree object that point OUT of the tree (lead diagnosis DIAG-PRESS-R29): the page of an element or reference
+/// (`/Pg`), the annotation or XObject of an object reference (`/Obj`) and the content stream of a marked-content reference (`/Stm`,
+/// `/StmOwn`). [`structure_tree_objects`] follows every other key.
+const TREE_OUTWARD_KEYS: [&[u8]; 4] = [b"Pg", b"Obj", b"Stm", b"StmOwn"];
 
-/// `d` is something the structure tree points OUT to, never a structure object: a page or page-tree node, the catalog, an
-/// annotation, an XObject, a font, an optional-content group, an action, a file specification or embedded file, metadata, an
-/// outline, an object or cross-reference stream, or any dictionary with `/Subtype`.
-fn outside_tree(doc: &PdfDoc, d: &Dict) -> bool {
-    const OUTSIDE: [&str; 15] =
-        ["Page", "Pages", "Catalog", "Annot", "XObject", "Font", "OCG", "OCMD", "Action", "Filespec", "EmbeddedFile", "Metadata", "Outlines", "ObjStm", "XRef"];
-    d.get("Subtype").is_some() || d.get("Type").map(|t| doc.resolve(t)).is_some_and(|t| OUTSIDE.iter().any(|n| t.is_name(n)))
+/// The catalog's `/StructTreeRoot` value names a structure tree root by its keys: `/Type /StructTreeRoot`, or `/K` or a root key
+/// ([`STRUCT_ROOT_KEYS`]), whatever its other keys. A value that resolves to a dictionary without them (an `/AcroForm`, an
+/// annotation, an optional-content group, R27-S1 inputs X1, X2, X7) names no tree; any other value is walked.
+fn names_tree_root(doc: &PdfDoc, value: &Object) -> bool {
+    match doc.resolve(value).as_dict() {
+        Some(d) => type_is(doc, d, "StructTreeRoot") || holds(d, "K") || STRUCT_ROOT_KEYS.iter().any(|k| holds(d, k)),
+        None => true,
+    }
 }
 
 fn type_is(doc: &PdfDoc, d: &Dict, name: &str) -> bool {
     d.get("Type").map(|t| doc.resolve(t)).is_some_and(|t| t.is_name(name))
 }
 
-/// `d` is a structure element: `/Type` is the name `StructElem`, or there is no `/Type`, `/S` is a name and `/P` or `/K` is held.
-/// A `/Type`-less dictionary with only an `/S` name, as an action has (R27-S2 input X3: a URI action listed in the root's `/K`), is
-/// not one.
-fn element_like(doc: &PdfDoc, d: &Dict) -> bool {
-    match d.get("Type") {
-        Some(t) => doc.resolve(t).is_name("StructElem"),
-        None => d.get("S").map(|s| doc.resolve(s)).is_some_and(|s| matches!(s, Object::Name(_))) && (holds(d, "P") || holds(d, "K")),
-    }
-}
-
-/// `o` (an object a reference names, or a dictionary written inline) belongs to the structure tree in `role`: never a stream or an
-/// [`outside_tree`] dictionary; in `Root` role a dictionary with the keys of a root ([`root_shaped`]: a catalog `/StructTreeRoot`
-/// naming an `/AcroForm`, an annotation or an optional-content group is not a tree, R27-S1); as an element an [`element_like`]
-/// dictionary or a root (an element's `/P`); as a kid an element or a `/Type /MCR` or `/Type /OBJR` dictionary; no dictionary as a
-/// `Leaf`; any other dictionary in the other roles; and every non-dictionary value (a string, a name, an array, an alias object).
-fn tree_admits(doc: &PdfDoc, o: &Object, role: TreeRole) -> bool {
-    match o {
-        Object::Stream(_) => false,
-        Object::Dict(d) => {
-            !outside_tree(doc, d)
-                && match role {
-                    TreeRole::Root => root_shaped(doc, d),
-                    TreeRole::Element => element_like(doc, d) || type_is(doc, d, "StructTreeRoot"),
-                    TreeRole::Kid => element_like(doc, d) || type_is(doc, d, "MCR") || type_is(doc, d, "OBJR"),
-                    TreeRole::Leaf => false,
-                    TreeRole::NumTree | TreeRole::NameTree | TreeRole::ClassMap | TreeRole::Owned => true,
-                }
-        }
-        _ => true,
-    }
-}
-
-/// The role of the value of `key` in a dictionary of `role` (`None`: not followed). `/Pg`, `/Obj`, `/Stm`, `/StmOwn` and `/AF` point
-/// out of the tree (pages, annotations, content streams, files) and are not followed.
-fn tree_child(role: TreeRole, key: &[u8]) -> Option<TreeRole> {
-    match role {
-        TreeRole::Root => match key {
-            b"K" => Some(TreeRole::Kid),
-            b"ParentTree" => Some(TreeRole::NumTree),
-            b"IDTree" => Some(TreeRole::NameTree),
-            b"ClassMap" => Some(TreeRole::ClassMap),
-            b"RoleMap" | b"Namespaces" => Some(TreeRole::Owned),
-            b"AF" | b"PronunciationLexicon" => None,
-            _ => Some(TreeRole::Leaf),
-        },
-        TreeRole::Element => match key {
-            b"K" => Some(TreeRole::Kid),
-            b"P" | b"Ref" => Some(TreeRole::Element),
-            b"A" | b"NS" => Some(TreeRole::Owned),
-            b"Pg" | b"AF" | b"Obj" | b"Stm" | b"StmOwn" => None,
-            _ => Some(TreeRole::Leaf),
-        },
-        TreeRole::Kid => match key {
-            b"Pg" | b"Obj" | b"Stm" | b"StmOwn" => None,
-            _ => Some(TreeRole::Leaf),
-        },
-        TreeRole::NumTree => Some(match key {
-            b"Kids" => TreeRole::NumTree,
-            b"Nums" => TreeRole::Element,
-            _ => TreeRole::Leaf,
-        }),
-        TreeRole::NameTree => Some(match key {
-            b"Kids" => TreeRole::NameTree,
-            b"Names" => TreeRole::Element,
-            _ => TreeRole::Leaf,
-        }),
-        TreeRole::ClassMap | TreeRole::Owned => Some(TreeRole::Owned),
-        TreeRole::Leaf => None,
-    }
-}
-
-/// The closed set of the structure tree (lead diagnosis DIAG-PRESS-R28, R28-S1): every object reachable from `value` (the catalog's
-/// `/StructTreeRoot`, as written) through structure-tree keys ([`tree_child`]) that [`tree_admits`] in its role: the root, the
-/// elements (through `/K`, `/P`, `/Ref`, the parent tree and the id tree, whatever page they are on), the number-tree and
-/// name-tree nodes, the `/ClassMap`, `/RoleMap` and namespace objects, the attribute objects (`/A`, the class map's values) and what
-/// they name, marked-content and object-reference dictionaries, alias objects and the text objects the tree's values name. Pages,
-/// annotations, XObjects, content streams and the other [`outside_tree`] objects that `/Pg`, `/Obj` or `/Stm` point at are not in
-/// it, and neither is the catalog nor any page. Each object is read once; a value nested deeper than `Limits::depth_cap` is not
-/// followed.
-fn structure_tree_objects(doc: &PdfDoc, catalog: u32, value: &Object, cancel: &CancellationToken) -> Result<BTreeSet<u32>> {
+/// The closed set of the structure tree (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and cap-free since DIAG-PRESS-R29,
+/// R29-S1 S2 S3): every object reachable from `value` (the catalog's `/StructTreeRoot`, as written) through every key of every
+/// dictionary and stream dictionary on the way except [`TREE_OUTWARD_KEYS`], and through every array element: the root, the
+/// elements (through `/K`, `/P`, `/Ref`, the parent tree and the id tree), the number-tree and name-tree nodes, the `/ClassMap`,
+/// `/RoleMap` and namespace objects, the attribute objects and what they name, alias objects and whatever else a tree value names,
+/// with no type, `/Subtype` or shape exclusion and no depth cap. Only the catalog and the pages are not entered (their own keys
+/// are judged by the page and catalog rules; entering them would reach the whole document). A value naming no tree root
+/// ([`names_tree_root`]) gives the empty set. Each object is entered once (visited set); the walk is iterative. The second value
+/// is `true` when the walk stopped because the set grew past `budget` objects (the set is then incomplete; fail closed).
+/// Over-count on an object a kept path shares with the tree is accepted (fail closed).
+fn structure_tree_objects(doc: &PdfDoc, catalog: u32, value: &Object, budget: usize, cancel: &CancellationToken) -> Result<(BTreeSet<u32>, bool)> {
     let mut set: BTreeSet<u32> = BTreeSet::new();
+    if !names_tree_root(doc, value) {
+        return Ok((set, false));
+    }
     let outside: BTreeSet<u32> = doc.pages.iter().copied().chain([catalog]).collect();
-    let cap = doc.limits.depth_cap();
-    let mut stack: Vec<(&Object, TreeRole, usize)> = vec![(value, TreeRole::Root, 0)];
+    let mut stack: Vec<&Object> = vec![value];
     let mut steps = 0usize;
-    while let Some((o, role, depth)) = stack.pop() {
+    while let Some(o) = stack.pop() {
         steps = steps.saturating_add(1);
         if steps & 1023 == 0 {
             check_cancel(cancel)?;
         }
-        if depth > cap {
-            continue;
-        }
-        let next = depth.saturating_add(1);
         match o {
             Object::Ref(r) => {
                 if outside.contains(&r.num) {
                     continue;
                 }
                 if let Some(e) = doc.objects.get(&r.num)
-                    && tree_admits(doc, &e.obj, role)
                     && set.insert(r.num)
                 {
-                    stack.push((&e.obj, role, next));
+                    if set.len() > budget {
+                        return Ok((set, true));
+                    }
+                    stack.push(&e.obj);
                 }
             }
-            Object::Array(a) => stack.extend(a.iter().map(|x| (x, role, next))),
-            Object::Dict(d) => {
-                if !tree_admits(doc, o, role) {
-                    continue;
-                }
-                // An element's `/P` may name the root; a kid may be an element.
-                let role = match role {
-                    TreeRole::Element if type_is(doc, d, "StructTreeRoot") => TreeRole::Root,
-                    TreeRole::Kid if element_like(doc, d) => TreeRole::Element,
-                    r => r,
-                };
-                for (k, v) in &d.entries {
-                    if let Some(child) = tree_child(role, k) {
-                        stack.push((v, child, next));
-                    }
-                }
+            Object::Array(a) => stack.extend(a.iter()),
+            Object::Dict(_) | Object::Stream(_) => {
+                let Some(d) = o.as_dict() else { continue };
+                stack.extend(d.entries.iter().filter(|(k, _)| !TREE_OUTWARD_KEYS.contains(&k.as_slice())).map(|(_, v)| v));
             }
             _ => {}
         }
     }
-    Ok(set)
+    Ok((set, false))
 }
 
 // ------------------------------------------------------------------------------- painted sources (F6)
@@ -1890,11 +1801,15 @@ impl Scan<'_> {
 /// reader's hop bound reads as null counts as a shape; a stream with `/N` and `/First` is read as an object stream whatever its
 /// `/Type`, and its bytes that are not white space, comments, the header pairs or members count; the saved trailer's values
 /// (`/ID` is copied from the source) are read too.
-/// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1): `tree` is the set of the objects the original structure tree reached
-/// (`Stripped::tree`, empty unless the default strip ran); when `flattens`, any of them the saved file still holds (as an object or
-/// as a member of an object stream it holds as a stream) counts, whatever its shape; the shape rules above stay as a further net
-/// (test `structure_objects_still_written_after_the_strip_are_reported`).
-pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flattens: bool, tree: &BTreeSet<u32>) -> u32 {
+/// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and cap-free, DIAG-PRESS-R29): `stripped.tree` is the set of the
+/// objects the original structure tree reached through every key except `/Pg`, `/Obj`, `/Stm` and `/StmOwn` (`Stripped::tree`,
+/// empty unless the default strip ran); when `flattens`, any of them the saved file still holds (as an object or as a member of an
+/// object stream it holds as a stream) counts, whatever its shape, and so does a set the walk could not close within its object
+/// budget (`Stripped::incomplete`, fail closed); the shape rules above stay as a further net (tests
+/// `structure_objects_still_written_after_the_strip_are_reported`, `structure_tree_closed_set_follows_every_key_without_a_depth_cap`,
+/// unit test `closed_set_budget_exhaustion_is_counted`).
+pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flattens: bool, stripped: &Stripped) -> u32 {
+    let tree = &stripped.tree;
     let mut scan = Scan {
         saved,
         flat_pages,
@@ -1902,7 +1817,7 @@ pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flatten
         structure_rules: flattens,
         depth_cap: saved.limits.depth_cap(),
         bad: 0,
-        structure: flattens && (catalog_names_structure_tree(saved) || tree.iter().any(|n| saved.objects.contains_key(n))),
+        structure: flattens && (catalog_names_structure_tree(saved) || stripped.incomplete || tree.iter().any(|n| saved.objects.contains_key(n))),
     };
     if let Ok(c) = saved.catalog() {
         if c.get("NeedsRendering").is_some() {
@@ -1929,4 +1844,72 @@ pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flatten
         scan.value(v);
     }
     scan.bad.saturating_add(u32::from(scan.structure))
+}
+
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
+mod tests {
+    use super::*;
+
+    /// A classic-xref PDF of `objects` (number, body); object 1 is the catalog.
+    fn pdf(objects: &[(u32, String)]) -> Vec<u8> {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets: BTreeMap<u32, usize> = BTreeMap::new();
+        for (n, body) in objects {
+            offsets.insert(*n, out.len());
+            out.extend(format!("{n} 0 obj\n{body}\nendobj\n").into_bytes());
+        }
+        let size = offsets.keys().max().copied().unwrap_or(0) + 1;
+        let xref = out.len();
+        out.extend(format!("xref\n0 {size}\n0000000000 65535 f \n").into_bytes());
+        for n in 1..size {
+            match offsets.get(&n) {
+                Some(o) => out.extend(format!("{o:010} 00000 n \n").into_bytes()),
+                None => out.extend_from_slice(b"0000000000 00001 f \n"),
+            }
+        }
+        out.extend(format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").into_bytes());
+        out
+    }
+
+    fn doc(tagged: bool) -> PdfDoc {
+        let catalog_extra = if tagged { "/StructTreeRoot 10 0 R" } else { "" };
+        let mut objects = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>")),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string()),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".to_string()),
+            (4, "<< /Length 3 >>\nstream\nq Q\nendstream".to_string()),
+        ];
+        if tagged {
+            objects.extend([
+                (10, "<< /Type /StructTreeRoot /K [11 0 R] >>".to_string()),
+                (11, "<< /Type /StructElem /Subtype /X /S /Div /P 10 0 R /K [12 0 R] >>".to_string()),
+                (12, "<< /Type /StructElem /S /Table /P 11 0 R /Pg 3 0 R /A 13 0 R /K [<< /Type /OBJR /Obj 20 0 R >>] >>".to_string()),
+                (13, "<< /Type /Annot /O /Table /Summary (ATTR) >>".to_string()),
+                (20, "<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] >>".to_string()),
+            ]);
+        }
+        PdfDoc::open(&pdf(&objects), &Limits::default(), &CancellationToken::default()).expect("open")
+    }
+
+    /// DIAG-PRESS-R29: the closed set follows every key but `/Pg`, `/Obj`, `/Stm`, `/StmOwn` (no type or `/Subtype` exclusion), and
+    /// a walk that outgrows its object-count budget returns an incomplete set that `check_document` counts (fail closed); an
+    /// untagged document with a complete (empty) set counts nothing.
+    #[test]
+    fn closed_set_budget_exhaustion_is_counted() {
+        let tagged = doc(true);
+        let cancel = CancellationToken::default();
+        let root = Object::Ref(ObjRef { num: 10, generation: 0 });
+        let (set, incomplete) = structure_tree_objects(&tagged, 1, &root, 100, &cancel).expect("walk");
+        assert!(!incomplete);
+        assert_eq!(set.into_iter().collect::<Vec<_>>(), vec![10, 11, 12, 13], "page 3 (/Pg) and annotation 20 (/Obj) stay out");
+        let (set, incomplete) = structure_tree_objects(&tagged, 1, &root, 2, &cancel).expect("walk");
+        assert!(incomplete && set.len() == 3, "the walk stops when the set outgrows the budget");
+        let untagged = doc(false);
+        let none = BTreeSet::new();
+        assert_eq!(check_document(&untagged, &none, true, &Stripped::default()), 0);
+        let stopped = Stripped { removed: true, tree: BTreeSet::new(), incomplete: true };
+        assert_eq!(check_document(&untagged, &none, true, &stopped), 1, "an incomplete closed set counts");
+        assert_eq!(check_document(&untagged, &none, false, &stopped), 0, "structure rules apply only when a region is flattened");
+    }
 }
