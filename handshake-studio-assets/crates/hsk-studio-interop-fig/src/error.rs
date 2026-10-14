@@ -65,7 +65,9 @@ impl FigError {
     pub const fn failure_code(&self) -> Option<FailureCode> {
         match self {
             Self::Canceled => None,
-            Self::UnsupportedVersion { .. } | Self::UnsupportedKind { .. } | Self::NotFig(_) => Some(FailureCode::Unsupported),
+            Self::UnsupportedVersion { .. } | Self::UnsupportedKind { .. } | Self::NotFig(_) => {
+                Some(FailureCode::Unsupported)
+            }
             Self::DecoderUnavailable { .. } | Self::EditableDecoderBlocked { .. } => {
                 Some(FailureCode::Unavailable)
             }

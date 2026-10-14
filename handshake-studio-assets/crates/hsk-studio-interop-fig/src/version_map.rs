@@ -38,7 +38,8 @@ impl VersionPolicy {
         &self.supported
     }
     pub fn admits(&self, kind: FigKind, version: u32) -> bool {
-        !matches!(kind, FigKind::Unknown(_) | FigKind::Diff) && self.supported.contains(&(kind, version))
+        !matches!(kind, FigKind::Unknown(_) | FigKind::Diff)
+            && self.supported.contains(&(kind, version))
     }
 }
 

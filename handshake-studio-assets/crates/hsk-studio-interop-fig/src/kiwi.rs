@@ -11,12 +11,12 @@
 //! asserts no census for an unknown field id and a truncated message).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::container::{CANVAS_PART, FigContainer, Limits};
-use hsk_studio_package::{InflateFail, inflate_exact};
 use crate::import::{
     Census, DefinitionSummary, FieldSummary, LossEntry, LossKind, SchemaSummary, SourceId,
 };
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_package::{InflateFail, inflate_exact};
 use std::collections::BTreeMap;
 
 pub(crate) type R<T> = std::result::Result<T, &'static str>;
@@ -441,8 +441,8 @@ pub(crate) fn census(
         },
         max_depth: limits.max_depth,
     };
-    let file_version_f = find_field(root, "fileVersion")
-        .filter(|f| f.ty == Ty::Native(Native::Uint) && !f.is_array);
+    let file_version_f =
+        find_field(root, "fileVersion").filter(|f| f.ty == Ty::Native(Native::Uint) && !f.is_array);
     let mut file_version = None;
     let mut field_histogram = BTreeMap::<String, u32>::new();
     let (mut histogram, mut node_count) = (BTreeMap::<String, u32>::new(), 0u32);
@@ -483,12 +483,11 @@ pub(crate) fn census(
                     }
                 } else if std::ptr::eq(f, type_f) {
                     let v = w.r.var_uint().map_err(FigError::MessageInvalid)?;
-                    type_name = Some(
-                        ty.fields
-                            .iter()
-                            .find(|e| e.value == v)
-                            .map_or_else(|| "(unknown_enum_value)".to_owned(), |e| e.name.to_string()),
-                    );
+                    type_name =
+                        Some(ty.fields.iter().find(|e| e.value == v).map_or_else(
+                            || "(unknown_enum_value)".to_owned(),
+                            |e| e.name.to_string(),
+                        ));
                 } else {
                     w.skip_field(f, 2)?;
                 }

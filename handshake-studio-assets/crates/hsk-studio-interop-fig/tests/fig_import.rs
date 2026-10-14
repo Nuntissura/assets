@@ -816,7 +816,11 @@ fn real_fig_fixtures_container_facts() {
     for name in REAL_FIXTURES {
         let bytes = real_fixture(name);
         let entry = listed.iter().find(|f| f["name"] == name).unwrap();
-        assert_eq!(entry["sha256"], hex(&sha(&bytes)), "{name} provenance sha256");
+        assert_eq!(
+            entry["sha256"],
+            hex(&sha(&bytes)),
+            "{name} provenance sha256"
+        );
         assert_eq!(entry["size"], bytes.len(), "{name} provenance size");
 
         let c = open_fig(&bytes, &Limits::default(), &CancellationToken::default()).unwrap();
@@ -830,8 +834,16 @@ fn real_fig_fixtures_container_facts() {
         let end = c.chunks[1].offset + c.chunks[1].len;
         assert_eq!(end, c.canvas().bytes.len());
         // chunk 1 is a zstd frame; chunk 0 (schema) is raw DEFLATE, proven by the schema summary.
-        assert!(c.chunk_bytes(1).unwrap().starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
-        assert!(!c.chunk_bytes(0).unwrap().starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
+        assert!(
+            c.chunk_bytes(1)
+                .unwrap()
+                .starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
+        );
+        assert!(
+            !c.chunk_bytes(0)
+                .unwrap()
+                .starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
+        );
 
         let imp = real_import(name);
         let schema = imp.schema_summary.as_ref().expect("schema decodes");
@@ -948,7 +960,10 @@ fn fig_diff_is_known_unsupported_and_file_version_is_recorded() {
         Some(106)
     );
     assert_eq!(
-        imported(&fig_zip(SYNTH_VERSION)).census.unwrap().file_version,
+        imported(&fig_zip(SYNTH_VERSION))
+            .census
+            .unwrap()
+            .file_version,
         None
     );
 }
@@ -964,9 +979,9 @@ fn actual_fig_instance_variable_prototype_edit_reopen() {
         }
     );
 
-    // Real Figma-authored files: what decodes is the Kiwi census (node types, source ids, which
-    // NodeChange fields are present). Property values, the node tree and instance/variable/prototype
-    // semantics are not decoded, so editable import stays NOT_PROVEN on every real file.
+    // Real Figma-authored files: the census (node types, source ids, NodeChange field presence) and,
+    // since SMB-INTEROP-FIG-NODES, the typed node tree (tests/fig_nodes.rs) decode; nothing is mapped
+    // into the Studio native document yet, so editable import stays NOT_PROVEN on every real file.
     let count = |imp: &FigImport, ty: &str| {
         imp.census
             .as_ref()
@@ -1023,7 +1038,7 @@ fn actual_fig_instance_variable_prototype_edit_reopen() {
             "editable_decoder_blocked"
         );
         eprintln!(
-            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen file={name} decoded=census_only(node types, source ids, NodeChange field presence) editable_import=not_decoded(tree, properties, instances, variables, prototypes)"
+            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen file={name} decoded=census+typed_node_tree editable_import=not_mapped(no native-document mapping, no edit/reopen round trip)"
         );
     }
 }

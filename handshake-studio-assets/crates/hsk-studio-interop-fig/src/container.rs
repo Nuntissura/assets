@@ -22,8 +22,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
-use sha2::{Digest, Sha256};
 use hsk_studio_package::{ZipLimits, ZipReadError, read_zip as read_zip_bounded};
+use sha2::{Digest, Sha256};
 
 pub const CANVAS_PART: &str = "canvas.fig";
 pub const META_PART: &str = "meta.json";

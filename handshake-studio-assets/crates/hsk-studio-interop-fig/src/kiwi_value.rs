@@ -31,7 +31,10 @@ pub enum KiwiValue {
     Int64(i64),
     Uint64(u64),
     /// Enum value with its member name from the file's schema (`None`: value not in the enum).
-    Enum { value: u32, name: Option<Arc<str>> },
+    Enum {
+        value: u32,
+        name: Option<Arc<str>>,
+    },
     /// `byte[]`.
     Bytes(Vec<u8>),
     Array(Vec<KiwiValue>),
@@ -173,7 +176,9 @@ impl Decoder<'_> {
 
     fn string(&mut self) -> Result<String> {
         let rest = self.r.data.get(self.r.at..).unwrap_or_default();
-        let window = &rest[..rest.len().min(self.limits.max_string_bytes.saturating_add(1))];
+        let window = &rest[..rest
+            .len()
+            .min(self.limits.max_string_bytes.saturating_add(1))];
         let Some(n) = window.iter().position(|b| *b == 0) else {
             return if rest.len() > self.limits.max_string_bytes {
                 Err(FigError::BudgetExceeded("string_bytes"))
@@ -184,7 +189,9 @@ impl Decoder<'_> {
         let s = std::str::from_utf8(&rest[..n])
             .map_err(|_| FigError::MessageInvalid("string_encoding"))?
             .to_owned();
-        self.r.skip(n.saturating_add(1)).map_err(FigError::MessageInvalid)?;
+        self.r
+            .skip(n.saturating_add(1))
+            .map_err(FigError::MessageInvalid)?;
         Ok(s)
     }
 
@@ -251,7 +258,11 @@ impl Decoder<'_> {
         match d.kind {
             Kind::Enum => {
                 let v = self.r.var_uint().map_err(FigError::MessageInvalid)?;
-                let name = d.fields.iter().find(|f| f.value == v).map(|f| f.name.clone());
+                let name = d
+                    .fields
+                    .iter()
+                    .find(|f| f.value == v)
+                    .map(|f| f.name.clone());
                 Ok(KiwiValue::Enum { value: v, name })
             }
             Kind::Struct => {
@@ -308,7 +319,8 @@ impl Decoder<'_> {
             self.tick(1)?;
             return Ok(KiwiValue::Bytes(self.r.data[start..self.r.at].to_vec()));
         }
-        let zero_width = matches!(ty, Ty::Def(j) if self.zero_width.get(j).copied().unwrap_or(false));
+        let zero_width =
+            matches!(ty, Ty::Def(j) if self.zero_width.get(j).copied().unwrap_or(false));
         if !zero_width && count > self.remaining() {
             // Every non-zero-width element needs at least one input byte.
             return bad("array_len_exceeds_input");
