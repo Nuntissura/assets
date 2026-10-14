@@ -6,6 +6,22 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+job-caps = ["dep:windows-sys"]
+test-faults = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"], optional = true }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "hsk-worker-testbin"
+path = "src/bin/hsk-worker-testbin.rs"
+required-features = ["test-faults"]
+
+[[test]]
+name = "supervision"
+path = "tests/supervision.rs"
+required-features = ["test-faults"]
