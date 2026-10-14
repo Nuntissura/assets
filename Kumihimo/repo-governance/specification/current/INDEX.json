@@ -1,13 +1,13 @@
 {
   "kind": "derived_spec_index",
   "specification_id": "SPEC-KUMIHIMO-v1",
-  "revision": 24,
+  "revision": 25,
   "documents": [
     {
       "document_id": "DOC-KUM-MASTER-v1",
       "path": "spec-modules/master-spec.md",
-      "revision": 24,
-      "digest": "sha256:23197049e1045595f885fd9ab02816e7c0e36650472060067a94fdf2e1c15721",
+      "revision": 25,
+      "digest": "sha256:89a9abeef5782cc05fabab44d60cd190cefd0bc90e3136bbedd01e56e774ca09",
       "semantic_entity_refs": [
         "TOPIC-KUM-WORKSPACE",
         "REQ-KUM-WORKSPACE-001",
@@ -340,8 +340,8 @@
     {
       "document_id": "DOC-KUM-ROADMAP-v1",
       "path": "spec-modules/roadmap.md",
-      "revision": 22,
-      "digest": "sha256:e8bd9923a3a19f3b76d6484ef4d4434cc20b753409f83902ef78a68d2ddb40f5",
+      "revision": 23,
+      "digest": "sha256:51f71d0d996766e165378b478684e7b355f534163e1d69fd09951f2c7b51e0e7",
       "semantic_entity_refs": [
         "TOPIC-KUM-ROADMAP"
       ]

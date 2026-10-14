@@ -39,7 +39,8 @@ nodes:
   responsibility: No-context API use, diagnostics and recovery
 - id: KUM-INTERNAL-USER-MANUAL-v1
   path: product/INTERNAL-MANUAL.md
-  responsibility: Consumer and model introduction to current capabilities, host boundaries, examples and recovery; documentation only, no default GUI exposure
+  responsibility: Consumer and model introduction to current capabilities, host boundaries, examples and recovery;
+    documentation only, no default GUI exposure
 - id: KUM-LAYOUT-CONTRACTS
   path: product/kumihimo-core/tests/layout_contracts.rs
   responsibility: Executed public consumer packing, geometry, tool docking, preview, float and admission assertions
@@ -174,3 +175,9 @@ nodes:
 - id: KUM-RENDER-COMPOSE
   path: product/kumihimo-render-bridge/examples/compose.rs
   responsibility: Canonical plan and actual accepted-engine-byte DX12 composition, picks and recovery
+- id: KUM-EXTERNAL-APPS
+  manifest_ref: product/kumihimo-external-apps/Cargo.toml
+  entrypoint: product/kumihimo-external-apps/src/lib.rs
+  status: scoped_windows_x64_vlc_tiling_proven
+  responsibility: Explicit selected-window identity, canonical projection positioning, original-placement restore
+    and semantic recovery; optional Windows backend

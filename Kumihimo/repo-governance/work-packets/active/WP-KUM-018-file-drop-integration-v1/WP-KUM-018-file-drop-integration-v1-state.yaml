@@ -1,10 +1,29 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-018-file-drop-integration-v1
-generation: 1
-phase: planned
-owner: fresh_implementation_lead_pending_dispatch
+generation: 2
+phase: active
+owner: dev_lead_resume_2026_10_14
 changed_files: []
-proof: []
+proof:
+- kind: dependency_readiness_source_only
+  observed: Pinned egui-winit0.33.3 receives winit file events; winit0.30.13 discards native POINTL; no native pointer
+    fallback admitted. Browser requires synchronous File retention at drop, protected metadata hover
+  sources:
+  - https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idroptarget-dragover
+  - https://html.spec.whatwg.org/multipage/dnd.html#the-drag-data-store
+  - https://doc.qt.io/qt-6.11/dnd.html
+  selected: Host owns receiver, payload tokens, File/paths, IO and outcomes; optional coordinator validates target
+    generation/epoch/permission and reuses existing request ACK
+  rejected:
+  - Last egui pointer as native drop position
+  - Reading browser File bytes during hover
+  - Filesystem engine in portable Core
+  risks_controls:
+  - 'Delayed pointer: use native callback POINTL; reject unavailable coordinates'
+  - 'Async stale target: retain token then revalidate target/incarnation/generation/permission'
+  - 'Duplicate effects: one native receiver/dispatch path'
+  validation: Focused owning failure cases plus actual native/browser drop host content and visual proof; no synthetic
+    proof replacement
 blockers: []
-next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-  packet after predecessor publication
+next_action: Coder implements optional metadata/target coordination and browser/sample host drops; root owns exact
+  native callback-coordinate receiver; host owns IO

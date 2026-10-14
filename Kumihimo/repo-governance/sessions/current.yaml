@@ -1,13 +1,13 @@
 schema_version: kumihimo.session.v1
 session_id: SESSION-KUM-2026-10-11-v1
 phase: active
-dev_lead: 01a1320b-8fbf-71d1-b742-39d9f761ea04
+dev_lead: 01a13753-c445-7060-85bf-3453ec40f581
 git:
   workspace_relative_root: ..
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: null
+active_wp: WP-KUM-019-external-app-tiling-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -118,7 +118,24 @@ roles:
     thread_id: 01a1320b-8fbf-71d1-b742-39d9f761ea04
     assignment: Exclusive WP018-021 implementation coordination after published release; create fresh role/team
       leader chats and helpers
-    status: ready_pending_release
+    status: interrupted_superseded_by_operator_resume
+  resume_dependencies:
+    role_id: ROLE-KUM-DEPENDENCIES-RESUME
+    agent_path: /root/dependencies
+    status: wp019_source_ready_other_packets_inspecting
+    assignment: WP018–021 source/runtime readiness
+  resume_evaluation:
+    role_id: ROLE-KUM-EVALUATION-RESUME
+    agent_path: /root/evaluation
+    status: acceptance_prepared
+    assignment: Focused actual OS/provider/drop proof; no completion verdict yet
+  resume_coder:
+    role_id: ROLE-KUM-CODER-05
+    agent_path: /root/external_apps_coder
+    status: implementing_owned_source
+    model: gpt-6.1-sol
+    reasoning: high
+    assignment: WP019 new external-apps package only; no Cargo ownership
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -131,7 +148,7 @@ build_lane:
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
-  gameplan_relative_git_root: .local/kumihimo-servo/gameplan.yaml
+  gameplan_relative_git_root: .local/kumihimo-external-apps/gameplan.yaml
   last_resource_observation:
     observed_utc: '2026-10-12T12:41:52.7674560Z'
     cpu_percent: 23
@@ -149,8 +166,8 @@ tick:
   operator_request: remove the tick
   observed_result: automation_update delete returned deleteStatus=deleted for kumihimo-dev-lead-tick
   automatic_restart_authorized: false
-next_action: Fresh lead awaits explicit original-lead release, then records transfer accepted, creates fresh role/coding
-  leader chats, obtains dependency readiness and begins WP018-021; tick stays deleted
+next_action: Obtain fresh WP019 dependency readiness and admit owned source; host-native WP018 sample boundary retained;
+  single Cargo lane and deleted tick
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
@@ -213,3 +230,11 @@ coordination_transfer:
   original_lead_git_session_build_lane_released: true
   release_condition: Original lead sends explicit release only after this transfer commit is independently verified
     on origin
+resume_2026_10_14:
+  operator_request: then lets do the wps we created previously; nesting stock behaviour accepted; asks best practice
+    for host native drops
+  previous_lead: 01a1320b-8fbf-71d1-b742-39d9f761ea04
+  observed_previous_turn: interrupted after transfer read; no source changes
+  drop_boundary: Host receives native/browser drops and owns payload/file effects; optional adapter target/preview
+    coordination; WP018 retained
+  coordination_owner: 01a13753-c445-7060-85bf-3453ec40f581

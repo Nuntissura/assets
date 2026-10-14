@@ -1,10 +1,56 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-019-external-app-tiling-v1
-generation: 1
-phase: planned
-owner: fresh_implementation_lead_pending_dispatch
-changed_files: []
-proof: []
+generation: 3
+phase: active
+owner: dev_lead_resume_2026_10_14
+changed_files:
+- product/kumihimo-external-apps/Cargo.toml
+- product/kumihimo-external-apps/examples/selected_window.rs
+- product/kumihimo-external-apps/src/identity.rs
+- product/kumihimo-external-apps/src/lib.rs
+- product/kumihimo-external-apps/src/recovery.rs
+- product/kumihimo-external-apps/src/tiling.rs
+- product/kumihimo-external-apps/src/windows.rs
+- product/kumihimo-external-apps/tests/selected_contracts.rs
+- product/Cargo.toml
+- product/Cargo.lock
+- product/README.md
+- product/INTERNAL-MANUAL.md
+proof:
+- kind: dependency_readiness_source_only
+  observed: 'Fresh dependency agent source/runtime inventory: Blender/VLC executable hashes inspected, windows-sys0.61.2
+    and Cargo/rustc/sccache resolved; admitted source only, app compatibility not proven'
+  sources:
+  - https://raw.githubusercontent.com/LGUG2Z/komorebi/master/komorebi/src/windows_api.rs
+  - https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos
+  - https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
+  selected: Optional Windows platform package; retained process creation identity; quiet positioning; independently
+    observed bounds; original-placement restore
+  rejected:
+  - Native handles in portable Core
+  - OS request success as proof of applied geometry
+  - Title-only window identity
+  risks_controls:
+  - 'HWND/PID reuse: revalidate live window owner and process start'
+  - 'Async or refused geometry: bounded observed status and retained restore state'
+  validation: Owning failure cases plus real selected owned installed-app bounds/pixels/restore; one serial affected
+    Cargo batch
+- kind: focused_contracts
+  observed: 'Windows feature locked/offline tests: seven passed; identity/lifetime replacement rejection, pending
+    async restoration, partial compensation, failed compensation, semantic recovery'
+- kind: actual_windows_x64_vlc
+  artifact_ref: .local/external-apps/proof-2026-10-14-qt-visible/independent-observation.json
+  artifact_sha256: 73f3b47368e50d02f2fa6d0c035bbe6914e0bf96791a6b8de4c646dc843ba439
+  observed: Owned PID349528/HWND89790284; independently queried 900x600 and1000x650; original3840x2160 restored;
+    all four exact PNGs opened by lead and evaluation; real VLC controls rendered; unselected/foreground unchanged
+  cleanup: Owned process exit1 from test cleanup; later Get-Process349528 returned absent. selected_window explicit
+    rebind rejected process_open87. No unowned process stop
+  limitations:
+  - Windows x64 VLC scenario only
+  - No foreign-window hosting/Blender/other platform claim
+  - Replacement and partial-effect failure logic covered by focused fake backend, not synthetic GUI acceptance
+- kind: independent_evaluation
+  observed: Scoped runtime PASS after all four exact PNGs and OS identity/bounds read; source adversarial findings
+    corrected and seven owning cases passed
 blockers: []
-next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-  packet after predecessor publication
+next_action: Publish owned implementation/manual/spec status and verify remote containment; then mark packet done

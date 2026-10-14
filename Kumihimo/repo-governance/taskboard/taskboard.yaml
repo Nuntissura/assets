@@ -4,7 +4,8 @@ project_id: KUMIHIMO
 source: WP contracts and state
 counts:
   done: 17
-  planned: 4
+  active: 2
+  planned: 2
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -136,19 +137,18 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-018-file-drop-integration-v1
   title: Host-owned file and asset drop integration for desktop and web
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-018-file-drop-integration-v1/WP-KUM-018-file-drop-integration-v1-state.yaml
-  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-    packet after predecessor publication
+  next_action: Coder implements optional metadata/target coordination and browser/sample host drops; root owns exact
+    native callback-coordinate receiver; host owns IO
   blockers: []
 - wp_id: WP-KUM-019-external-app-tiling-v1
   title: Optional selected external desktop-application tiling
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-019-external-app-tiling-v1/WP-KUM-019-external-app-tiling-v1-state.yaml
-  next_action: Fresh lead runs session-start, creates role chats, obtains dependency readiness and activates this
-    packet after predecessor publication
+  next_action: Publish owned implementation/manual/spec status and verify remote containment; then mark packet done
   blockers: []
 - wp_id: WP-KUM-020-foreign-window-hosting-v1
   title: Optional supported foreign-application window hosting

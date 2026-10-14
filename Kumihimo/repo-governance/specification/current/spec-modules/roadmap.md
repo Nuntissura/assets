@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 22
+revision: 23
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -24,7 +24,7 @@ content_blocks:
 
 ```markdown
 
-Authorized extension sequence (not implemented): WP018 real file-drop integration; WP019 selected external desktop-app tiling; WP020 supported foreign-window hosting; WP021 a live combined desktop sample using Servo and an installed application. Handshake is not required; Blender is an optional example. All six new requirement acceptances remain open.
+Authorized extension sequence: WP018 real file-drop integration is active; WP019 selected external desktop-app tiling has scoped Windows x64/VLC placement, resize and original-placement restore proof; WP020 supported foreign-window hosting and WP021 a live combined desktop sample using Servo and an installed application remain planned. Handshake is not required; Blender is an optional example. All six new requirement acceptances remain open.
 
 Current inspectable surfaces are the desktop sample, the Rust/WASM Portal-style pilot and the separate browser/graphics experiment. Their appearance and sample content are demonstrations of the reusable module; actual Handshake modules remain separate integrations.
 

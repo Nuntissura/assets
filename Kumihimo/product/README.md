@@ -1,7 +1,7 @@
 ---
 file_id: KUM-PRODUCT-MANUAL-v1
 file_kind: product-and-model-manual
-updated_at: '2026-10-12'
+updated_at: '2026-10-14'
 ---
 
 <topic id="purpose-and-boundaries">
@@ -120,6 +120,40 @@ cargo run --manifest-path product/Cargo.toml -p kumihimo-render-bridge --feature
 PNG paths stay relative beneath the manifest directory. Do not use `--now-ms` to make stale data pass; normal operation uses actual UTC and original accepted receipt times. Outputs include PNG/JSON scenes and `composition-evidence.json` with engine PNG/RGBA provenance, canonical slots, mapped picks, upload/depth counts, recovery and support limits. Open every output image and compare it to its actual engine source before accepting rendering. A static mismatch writes the rejected frame and causal counter/first-pixel diagnostic.
 
 Default bounds are message4MiB, PNG/raw RGBA16MiB, side2048, one pending capture per view, coalesced dirty work and a240s scenario. Startup30s, request15s and graceful shutdown10s are product timers; no outer Cargo kill timer. On failure, inspect the named engine log, structured event and independent ownership record; retain good pixels or the logical placeholder. Resolve the exact cause before retry (maximum3), reconcile uncertain lifecycle outcomes, and stop only exact session-owned PID/starttime-validated processes. EOF does not certify cleanup. Preserve unrelated processes and caches. `inspect`, `visibility`, `policy`, `resize`, `input`, `mutate`, `capture`, `unload` and `reconcile` expose bounded model routes; actual CPU ticks/RSS are observations, not general savings promises.
+
+</topic>
+
+<topic id="external-app-tiling" ingestable="true">
+
+## Optional selected external-app tiling
+
+`kumihimo-external-apps` 0.1 is independently selectable; its default has no native Windows dependency. Enable `windows` on Windows to use `windows::WindowsBackend`. Core/content acquire no OS handles. This package positions explicitly selected compatible top-level application windows beside the host; it does not embed them, launch applications or control the whole desktop.
+
+Create `ExternalApps::new(backend)`, then `bind(WindowTarget { hwnd, pid, expected_creation_time }, semantic_reference)`. The returned `SelectedWindow` retains the process handle, creation time, original placement and a unique window-scoped property token. Ownership, process lifetime and that token are checked before each effect, so removal or replacement invalidates the selection even inside the same process/thread. Installing/removing the token is a reversible selected-window metadata effect; a denied installation rejects binding. Native identities stay live-only.
+
+Use `tile(&selected, &GeometryOutput, FrameId, DesktopMapping, ObserveBudget)` with the host's canonical Core geometry projection. The mapping supplies physical desktop origin and pixels per DIP; it is not another arrangement store. `inspect` reports physical placement, current monitor work area, DPI, minimum sizing and resize support. Normal visible top-level windows, compatible sizes and the current monitor/scale are supported; minimized/maximized initial state, unsupported sizing or cross-monitor/DPI allocations reject explicitly. `restore(&selected, budget)` targets the captured original normal placement.
+
+Receipts separate requested bounds, independently observed placement, request/observation errors, compensation and `pending`. Asynchronous dispatch is not placement proof. An unchanged poll timeout remains `Unknown`; an unsettled request blocks a new effect or successful detach until reconciliation. Known completed partial effects permit one bounded compensation; partial effects without completion proof retain their obligation. Default observation is twenty attempts, 25 ms apart. `RecoveryRecord::from_selection` saves schema 1, a semantic reference, original placement and optional pending placement, with no HWND/PID. After restart, explicitly select the intended live instance and call `record.apply_to(&mut selected)` before restore. A mismatched reference/schema or an attempt to erase a live pending request rejects; missing windows stay an actionable binding failure.
+
+From the project root, after preparing the serial Cargo lane and supplying the explicitly selected owned instance's `$SelectedPid`, `$SelectedHwnd` and `$SemanticReference`:
+
+```powershell
+cargo run --manifest-path product/Cargo.toml -p kumihimo-external-apps --features windows --example selected_window --target-dir .local/cargo-target --locked --offline -j 2 -- --pid $SelectedPid --hwnd $SelectedHwnd --semantic $SemanticReference
+```
+
+Optional `--created FILETIME` checks the host's expected decimal process creation time; `--hwnd` accepts decimal or `0x` hexadecimal. The CLI emits a flushed `bound` JSON line, then accepts one JSON command per stdin line (maximum 65,536 bytes):
+
+```jsonl
+{"op":"inspect"}
+{"op":"tile","x":30,"y":30,"width":900,"height":600}
+{"op":"restore"}
+{"op":"recovery"}
+{"op":"exit"}
+```
+
+Choose tile bounds from the inspected capabilities. `recover` accepts `{"op":"recover","record":...}` using the exact saved recovery object. Read each response before the next effect. Restore and inspect the original bounds before cleanup; `exit` refuses success while pending, and premature EOF emits `unresolved_dispatch` plus recovery and exits with failure. The CLI only releases its own lease; the host owns application startup and cleanup and must preserve unresolved obligations.
+
+The 2026-10-14 Windows x64 VLC demonstration used one fresh owned instance: independent OS reads matched 900×600 placement, 1000×650 resize and restoration to its original bounds. Inspected captures show the VLC interface at the tiled and restored sizes. The sampled foreground window and the independently observed unselected window remained unchanged; the controller cleaned up its owned instance and CLI. This establishes that scoped VLC path, not universal application compatibility, Blender, media playback, mixed-DPI behavior or another platform. WP019's state/evaluation and eventual publication remain the packet acceptance authority.
 
 </topic>
 

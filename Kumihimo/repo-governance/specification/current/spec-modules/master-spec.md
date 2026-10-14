@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 24
+revision: 25
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -946,6 +946,8 @@ A popout is a handoff: prepare the destination, move the view only when it is us
 External desktop tiling and foreign-window hosting are separate optional integrations. Tiling arranges explicitly selected app windows on the desktop. Hosting places a supported app window inside a Kumihimo frame/tab while the application remains its own process. Neither means that Kumihimo owns the application document or exposes its internal editing tools. Keep Win32 handles and process effects behind an independently selectable platform adapter.
 
 The adapter validates window/process identity, preserves original placement for detach, reports partial OS effects honestly and declares DPI, focus, dialog, clipping/stacking and fullscreen limitations. Unsupported combinations keep an external-window fallback; hidden tabs do not certify suspension or memory release. Use fresh owned test instances and never disrupt existing user app processes. WP019 covers tiling and WP020 covers hosting. Blender is an example, not a required product dependency or universal compatibility claim.
+
+WP019 scoped Windows x64 implementation adds the independently selectable kumihimo-external-apps package. Canonical geometry drives explicit selected-window positioning; retained process creation identity and a per-window lifetime witness reject stale selections. Original normal placement and semantic recovery are retained; unsettled asynchronous requests remain Unknown and block conflicting effects. Seven owning identity, partial-effect and recovery cases pass. A fresh owned VLC instance visibly renders at 900x600, then 1000x650, and restores its original 3840x2160 placement; independent OS reads agree, the observed unselected window and foreground remain unchanged, and the owned process is absent after cleanup. Rebinding the missing process rejects with process_open. This proves the recorded Windows x64/VLC tiling scenario, not foreign-window hosting, Blender or other platforms. Full requirement acceptance remains open.
 
 ```
 

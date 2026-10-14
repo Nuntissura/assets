@@ -1,7 +1,7 @@
 ---
 file_id: KUM-INTERNAL-USER-MANUAL-v1
 file_kind: internal-user-manual
-updated_at: '2026-10-12'
+updated_at: '2026-10-14'
 ---
 
 <topic id="start-here">
@@ -51,6 +51,7 @@ The following are existing building blocks. A host or adapter decides which cont
 | Navigation | Optional scrollbar, always-visible minimap, both, or a temporary minimap while scrubbing. Comfortable visible and hit sizes are configurable. | The host supplies document measurements, overview data and confirmed scroll positions. |
 | Backgrounds | Optional visual settings and typed media-policy requests; still backgrounds in the desktop sample. | Working video/audio playback and decoder integration are not demonstrated. |
 | Resource coordination | Bounded requests, capability negotiation, lifecycle observations, scheduling and declared cache reservations. | A request or hidden tab is not proof that CPU/GPU work stopped or memory was released. |
+| Selected external apps | Optional Windows placement, resize and original-placement restore for explicitly bound compatible application windows. | Scoped Windows x64 VLC observations; arbitrary apps, Blender and foreign-window embedding remain unproven. |
 
 The Windows x64 desktop adapter has scoped native-window, rendering and accessibility observations. The Rust/WASM plain-DOM pilot has scoped Chrome observations. The optional rendering experiment has combined real Servo-produced pixels, a 2D provider and depth-tested 3D geometry. These are bounded demonstrations, not blanket compatibility or performance guarantees.
 
@@ -103,7 +104,7 @@ Kumihimo owns arrangement records and validates arrangement commands. The host o
 
 **File dragging:** moving an existing tab or frame is available. Typed host asset-action requests are also available, with linked-edit, independent-copy and domain-change modes. The current adapters do not implement a general file-drop pipeline. Dragging a disk file into a frame, dropping a browser file object, or transferring an asset between applications still needs host/platform integration. No arrangement action moves or copies a physical file.
 
-**Other applications:** current native popouts contain Kumihimo-owned surfaces. There is no implemented facility to tile arbitrary desktop apps or wrap a running Blender window inside a frame. Those are separate possible integrations, not capabilities of the download.
+**Other applications:** native popouts contain Kumihimo-owned surfaces. The optional external-app package can position explicitly selected compatible Windows application windows beside the host and restore their original placement. It has scoped VLC observations; it does not wrap a running Blender window inside a frame or establish arbitrary-app compatibility. See [selected external-app tiling](#selected-external-app-tiling).
 
 **Rendering speed:** the content and rendering bridge can bound and coalesce requested work and carry lifecycle information. Actual performance improvements and physical resource release require host implementation and measurement. Keeping many logical tabs does not require keeping all their engines alive, but the host must implement that policy.
 
@@ -121,6 +122,7 @@ Kumihimo owns arrangement records and validates arrangement commands. The host o
 | [kumihimo-egui](kumihimo-egui/Cargo.toml) | Replaceable desktop controls. Optional `native` adds the sample native runner; `capture` adds raster capture. |
 | [kumihimo-web](kumihimo-web/Cargo.toml) | Rust browser adapter and Portal-style pilot. Optional `wasm` exports its browser bindings. |
 | [kumihimo-render-bridge](kumihimo-render-bridge/Cargo.toml) | Bounded pixel/identity/lifecycle contracts and the optional `desktop` composition experiment. |
+| [kumihimo-external-apps](kumihimo-external-apps/Cargo.toml) | Explicit selected-window placement and recovery. Optional `windows` enables the native backend. |
 
 Add the selected package as a Cargo path dependency relative to your host's manifest. Keep the package's sibling dependencies with it. Use one canonical arrangement owner: when using the content Controller, adapters borrow that Controller instead of maintaining a second arrangement.
 
@@ -172,6 +174,30 @@ The pilot has Cards, Details, Depth and live-record-budget inputs. Drag frame he
 The optional bridge has demonstrated two Linux x64 Servo processes under WSL supplying copied pixels to Windows x64 DX12 composition, beside 2D and 3D content. This is an experiment with a host-owned process and capture protocol, not a ready embedded browser. Native Windows Servo, zero-copy sharing, video/YouTube/audio and raw engine-context popout transfer are unproven or unsupported.
 
 Its launch, network isolation, receipt and cleanup requirements are substantial; use the [exact experiment procedure](README.md#optional-browser-and-graphics-experiment). Do not start Servo from this overview or interpret hiding a view as suspending it.
+
+</topic>
+
+<topic id="selected-external-app-tiling" ingestable="true">
+
+## Selected external-app tiling
+
+Choose `kumihimo-external-apps` with its `windows` feature when your host needs to arrange a compatible installed application's window beside its workspace. The host explicitly supplies the selected PID/HWND; the package launches no app and never selects a desktop set. Bind while the window is visible and in normal state. Core's canonical geometry supplies the allocation, while the native adapter checks minimum sizing, work area and DPI. Unsupported states, sizes and monitor/scale combinations return a reason.
+
+The live binding retains the process handle/start identity and a window-scoped property token; each effect rechecks both lifetime and ownership. Saved recovery records contain semantic references and original/pending placement, never raw handles or PIDs. `restore` returns the selected window to its captured original normal placement. A successful OS request alone is insufficient: inspect the receipt's observed placement, errors and `pending` field. `Unknown` or pending work must be reconciled before detach or another effect; a recovery record cannot erase that obligation. After restart or a missing window, explicitly reselect the intended instance before applying its matching recovery record.
+
+The [technical reference](README.md#optional-selected-external-app-tiling) provides the Rust API and exact Cargo entry. Its `selected_window` example takes `--pid PID --hwnd HWND --semantic REF`, with optional `--created FILETIME`, and reads one JSON command per stdin line:
+
+```jsonl
+{"op":"inspect"}
+{"op":"tile","x":30,"y":30,"width":900,"height":600}
+{"op":"restore"}
+{"op":"recovery"}
+{"op":"exit"}
+```
+
+Use tile bounds that fit the reported capabilities, read each response, then verify restoration before ending the session. `recover` accepts the exact saved object as `{"op":"recover","record":...}`. Exit is refused while dispatch remains pending; EOF with pending work emits recovery and exits with failure. Your host owns startup and cleanup of its own selected instance; the example does not stop applications.
+
+On 2026-10-14, one fresh owned VLC instance on Windows x64 was tiled to 900×600, resized to 1000×650 and restored, with matching independent OS bounds and inspected VLC captures. The sampled foreground window and observed unselected window stayed unchanged, and the proof controller cleaned up its owned app/CLI. This is a scoped VLC result; it does not establish Blender, arbitrary application compatibility, playback or foreign-window embedding. Packet completion and publication are tracked separately.
 
 </topic>
 

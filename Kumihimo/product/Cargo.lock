@@ -1230,6 +1230,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kumihimo-external-apps"
+version = "0.1.0"
+dependencies = [
+ "kumihimo-core",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "kumihimo-layout-json"
 version = "0.1.0"
 dependencies = [

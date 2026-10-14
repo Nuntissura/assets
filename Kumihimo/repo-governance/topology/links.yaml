@@ -216,3 +216,11 @@ edges:
   from: EVAL-KUM-014-v1
   to: KUM-RENDER-BRIDGE
   relation: evaluates
+- id: KUM-LINK-WP019-EXTERNAL
+  from: WP-KUM-019-external-app-tiling-v1
+  to: KUM-EXTERNAL-APPS
+  relation: implements
+- id: KUM-LINK-EXTERNAL-CORE
+  from: KUM-EXTERNAL-APPS
+  to: KUM-CORE
+  relation: borrows_canonical_geometry

@@ -1,0 +1,132 @@
+{
+  "kind": "derived_primitive_feature_matrix",
+  "spec_revision": 24,
+  "relations": [
+    {
+      "relation_id": "REL-KUM-WORKSPACE",
+      "primitive_ref": "PRIM-KUM-WORKSPACE",
+      "feature_ref": "FEAT-KUM-WORKSPACE",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-BOUNDARIES",
+      "primitive_ref": "PRIM-KUM-BOUNDARIES",
+      "feature_ref": "FEAT-KUM-BOUNDARIES",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-LAYOUT",
+      "primitive_ref": "PRIM-KUM-LAYOUT",
+      "feature_ref": "FEAT-KUM-LAYOUT",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-TABS",
+      "primitive_ref": "PRIM-KUM-TABS",
+      "feature_ref": "FEAT-KUM-TABS",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-POPOUTS",
+      "primitive_ref": "PRIM-KUM-POPOUTS",
+      "feature_ref": "FEAT-KUM-POPOUTS",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-CHROME",
+      "primitive_ref": "PRIM-KUM-CHROME",
+      "feature_ref": "FEAT-KUM-CHROME",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-CONTENT",
+      "primitive_ref": "PRIM-KUM-CONTENT",
+      "feature_ref": "FEAT-KUM-CONTENT",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-RENDER",
+      "primitive_ref": "PRIM-KUM-RENDER",
+      "feature_ref": "FEAT-KUM-RENDER",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-PERFORMANCE",
+      "primitive_ref": "PRIM-KUM-PERFORMANCE",
+      "feature_ref": "FEAT-KUM-PERFORMANCE",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-TEXT",
+      "primitive_ref": "PRIM-KUM-TEXT",
+      "feature_ref": "FEAT-KUM-TEXT",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-NAVIGATION",
+      "primitive_ref": "PRIM-KUM-NAVIGATION",
+      "feature_ref": "FEAT-KUM-NAVIGATION",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-BACKGROUNDS",
+      "primitive_ref": "PRIM-KUM-BACKGROUNDS",
+      "feature_ref": "FEAT-KUM-BACKGROUNDS",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-LIFECYCLE",
+      "primitive_ref": "PRIM-KUM-LIFECYCLE",
+      "feature_ref": "FEAT-KUM-LIFECYCLE",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-SERVO",
+      "primitive_ref": "PRIM-KUM-SERVO",
+      "feature_ref": "FEAT-KUM-SERVO",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-RECOVERY",
+      "primitive_ref": "PRIM-KUM-RECOVERY",
+      "feature_ref": "FEAT-KUM-RECOVERY",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-INPUT",
+      "primitive_ref": "PRIM-KUM-INPUT",
+      "feature_ref": "FEAT-KUM-INPUT",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-MODEL",
+      "primitive_ref": "PRIM-KUM-MODEL",
+      "feature_ref": "FEAT-KUM-MODEL",
+      "relationship": "implements",
+      "constraint_refs": []
+    },
+    {
+      "relation_id": "REL-KUM-PLATFORMS",
+      "primitive_ref": "PRIM-KUM-PLATFORMS",
+      "feature_ref": "FEAT-KUM-PLATFORMS",
+      "relationship": "implements",
+      "constraint_refs": []
+    }
+  ]
+}
