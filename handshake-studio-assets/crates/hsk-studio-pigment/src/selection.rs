@@ -274,7 +274,10 @@ pub fn combine(
             let b = new.at(x, y);
             data.push(match mode {
                 CombineMode::Replace => b,
-                CombineMode::Extend => a.saturating_add(b).saturating_sub(mul_unit(a, b)),
+                CombineMode::Extend => {
+                    let sum = u32::from(a).saturating_add(u32::from(b));
+                    u16::try_from(sum.saturating_sub(u32::from(mul_unit(a, b)))).unwrap_or(FULL)
+                }
                 CombineMode::Diminish => a.saturating_sub(mul_unit(a, b)),
                 CombineMode::Intersect => mul_unit(a, b),
             });

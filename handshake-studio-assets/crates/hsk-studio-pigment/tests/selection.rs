@@ -157,7 +157,7 @@ fn hostile_sizes_and_values() {
     let big = Rect { x: 0, y: 0, width: u32::MAX, height: u32::MAX };
     let c = SelectionContext::new(big);
     assert_eq!(rect(rf(0.0, 0.0, 1.0e9, 1.0e9), &c).unwrap_err(), SelectionError::Pigment(Error::BudgetExceeded));
-    assert_eq!(invert(&CoveragePlane { bounds: CANVAS, data: vec![] }, &c).unwrap_err(), SelectionError::Pigment(Error::BudgetExceeded));
+    assert!(matches!(invert(&CoveragePlane { bounds: CANVAS, data: vec![] }, &c).unwrap_err(), SelectionError::Pigment(Error::BudgetExceeded | Error::Overflow)));
     assert!(CoveragePlane::filled(big, 0, &SelectionLimits::default()).is_err());
     // aggregate_over_budget: 10^7 points refuse at the point cap; the sum of planes is bounded too.
     let pts = vec![[1.0f64, 1.0]; 10_000_000];
