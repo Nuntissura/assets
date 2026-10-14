@@ -181,7 +181,16 @@ impl Manifest {
                 EntryKind::Preview => {
                     entry.name.strip_prefix(PREVIEW_PREFIX) == Some(&entry.sha256_hex)
                 }
-                EntryKind::Opaque => entry.name != DOCUMENT_NAME,
+                EntryKind::Opaque => {
+                    // A reserved `import/` name is checked before any body is read.
+                    crate::import::check_import(
+                        &entry.name,
+                        &entry.sha256_hex,
+                        entry.raw_len.unwrap_or(entry.len),
+                        limits,
+                    )?;
+                    entry.name != DOCUMENT_NAME
+                }
             };
             let raw_ok = |n: u64| n <= limits.max_entry_bytes;
             let codec_ok = match (entry.codec, entry.kind) {

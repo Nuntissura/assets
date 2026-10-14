@@ -215,6 +215,8 @@ pub fn write_package_streaming<W: Write + Seek>(
         });
     }
     for held in extras.quarantined {
+        let sha = sha256_hex(&held.bytes, cancel)?;
+        crate::import::check_import(&held.name, &sha, held.bytes.len() as u64, limits)?;
         parts.push(Planned {
             name: held.name.clone(),
             kind: EntryKind::Opaque,
@@ -222,7 +224,7 @@ pub fn write_package_streaming<W: Write + Seek>(
             raw_len: None,
             elem_size: None,
             preview: None,
-            sha: sha256_hex(&held.bytes, cancel)?,
+            sha,
             stored_len: held.bytes.len() as u64,
             body: Body::Memory(Cow::Borrowed(held.bytes.as_slice())),
         });

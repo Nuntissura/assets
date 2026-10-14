@@ -10,6 +10,7 @@ use crate::{
     shuffle::byte_unshuffle,
     zip::{EntryMeta, SliceSource, Source, StreamSource, preflight_source, stream_range},
 };
+use crate::import::{ImportEntry, ImportRole, parse_import_name};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use ruzstd::decoding::StreamingDecoder;
@@ -66,6 +67,9 @@ pub struct Opened {
     pub loss: Vec<LossNote>,
     /// Optional previews, declared only: bodies are never read or decoded by `read_package`.
     pub previews: Vec<PreviewRef>,
+    /// Typed import entries (`import/<role>.<sha256hex>`), hash-verified, sorted by name. They are not
+    /// quarantined and add no loss note; [`Opened::preserved_entries`] re-emits them on save.
+    pub imports: Vec<ImportEntry>,
 }
 
 impl Opened {
@@ -75,6 +79,20 @@ impl Opened {
             folio::Inspection::Editable(s) => Some(s),
             folio::Inspection::ReadOnly(_) => None,
         }
+    }
+
+    /// Every entry a re-save must carry verbatim: the quarantined entries and the typed import
+    /// entries, as opaque entries for [`crate::Extras::quarantined`], sorted by name.
+    pub fn preserved_entries(&self) -> Vec<Quarantined> {
+        let mut all = self.quarantined.clone();
+        all.extend(self.imports.iter().map(ImportEntry::to_opaque));
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        all
+    }
+
+    /// The first import entry with `role`, if any.
+    pub fn import(&self, role: ImportRole) -> Option<&ImportEntry> {
+        self.imports.iter().find(|e| e.role == role)
     }
 }
 
@@ -399,6 +417,7 @@ impl<S: Source> Container<S> {
         let mut assets = BTreeMap::new();
         let mut held: Vec<(Quarantined, LossReason)> = Vec::new();
         let mut previews: Vec<PreviewRef> = Vec::new();
+        let mut imports: Vec<ImportEntry> = Vec::new();
         let mut listed: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             listed.insert(entry.name.clone());
@@ -430,7 +449,19 @@ impl<S: Source> Container<S> {
                     continue;
                 }
                 EntryKind::Preview => continue,
-                EntryKind::Opaque => LossReason::Opaque,
+                EntryKind::Opaque => {
+                    // The manifest validation already held a reserved name to its grammar, digest and
+                    // bound; the body hash was verified by `process_entry`.
+                    if let Some((role, _)) = parse_import_name(&entry.name)? {
+                        imports.push(ImportEntry {
+                            role,
+                            sha256_hex: entry.sha256_hex.clone(),
+                            bytes: data,
+                        });
+                        continue;
+                    }
+                    LossReason::Opaque
+                }
             };
             held.push((
                 Quarantined {
@@ -498,6 +529,7 @@ impl<S: Source> Container<S> {
             quarantined,
             loss,
             previews,
+            imports,
         })
     }
 }

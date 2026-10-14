@@ -319,10 +319,12 @@ pub fn write_package_with<W: Write>(
         });
     }
     for held in extras.quarantined {
+        let sha = sha256_hex(&held.bytes, cancel)?;
+        crate::import::check_import(&held.name, &sha, held.bytes.len() as u64, limits)?;
         parts.push(Part::raw(
             held.name.clone(),
             EntryKind::Opaque,
-            sha256_hex(&held.bytes, cancel)?,
+            sha,
             Cow::Borrowed(held.bytes.as_slice()),
         ));
     }
