@@ -24,4 +24,6 @@ name = "render-cpu-consumer"
 path = "examples/render-cpu-consumer.rs"
 
 [dev-dependencies]
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
