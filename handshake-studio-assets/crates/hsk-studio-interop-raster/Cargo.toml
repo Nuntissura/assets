@@ -13,5 +13,8 @@ hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", defau
 png = { version = "=0.18.1", default-features = false, features = [] }
 zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
 
+[dev-dependencies]
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+
 [lib]
 path = "src/lib.rs"
