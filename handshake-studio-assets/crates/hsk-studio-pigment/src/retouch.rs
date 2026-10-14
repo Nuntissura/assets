@@ -450,6 +450,327 @@ pub fn clone_stamp(
     })
 }
 
+/// Over-relaxation factor of the healing solver (successive over-relaxation, row-major order).
+pub const HEAL_SOR_OMEGA: f64 = 1.9;
+/// The solver stops when the largest update of a sweep is at most this (premultiplied units).
+pub const HEAL_TOLERANCE: f64 = 1.0e-9;
+/// Working bytes per pixel of the healing region (destination, guide, correction in binary64 RGBA
+/// plus the domain flag and coverage), charged before allocation.
+pub const HEAL_BYTES_PER_PIXEL: u64 = 112;
+
+/// How a healing solve ended (never a silent partial result: `converged` is reported).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HealReceipt {
+    /// Sweeps run.
+    pub iterations: u32,
+    /// The largest update of the last sweep fell to [`HEAL_TOLERANCE`].
+    pub converged: bool,
+    /// Largest update of the last sweep.
+    pub residual: f64,
+    /// Spot healing: the source displacement chosen (destination pixel `p` reads `p + offset`).
+    pub source_offset: Option<(i64, i64)>,
+}
+
+/// Result of a healing stroke.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealResult {
+    pub result: RetouchResult,
+    pub receipt: HealReceipt,
+}
+
+fn premul(p: [f32; 4]) -> [f64; 4] {
+    let a = f64::from(p[3]);
+    [f64::from(p[0]) * a, f64::from(p[1]) * a, f64::from(p[2]) * a, a]
+}
+
+fn straight(p: [f64; 4]) -> [f32; 4] {
+    let a = p[3].clamp(0.0, 1.0);
+    if a <= 0.0 || a.is_nan() {
+        return [0.0; 4];
+    }
+    let c = |v: f64| {
+        let q = v.clamp(0.0, a) / a;
+        if q.is_nan() { 0.0 } else { q.clamp(0.0, 1.0) as f32 }
+    };
+    [c(p[0]), c(p[1]), c(p[2]), a as f32]
+}
+
+/// `r` grown by `g` pixels on every side.
+fn grow(r: Rect, g: u32) -> Result<Rect, Error> {
+    let gi = i64::from(g);
+    let twice = g.checked_mul(2).ok_or(Error::Overflow)?;
+    let grown = Rect {
+        x: r.x.checked_sub(gi).ok_or(Error::Overflow)?,
+        y: r.y.checked_sub(gi).ok_or(Error::Overflow)?,
+        width: r.width.checked_add(twice).ok_or(Error::Overflow)?,
+        height: r.height.checked_add(twice).ok_or(Error::Overflow)?,
+    };
+    grown.end()?;
+    Ok(grown)
+}
+
+/// `r` grown by `g` pixels on every side, intersected with `within`.
+fn grow_within(r: Rect, g: u32, within: Rect) -> Result<Option<Rect>, Error> {
+    grow(r, g)?.intersect(within)
+}
+
+/// Column and row of index `i` in a row-major grid of width `w` (> 0).
+fn col_row(i: usize, w: usize) -> Result<(usize, usize), Error> {
+    Ok((
+        i.checked_rem(w).ok_or(Error::Overflow)?,
+        i.checked_div(w).ok_or(Error::Overflow)?,
+    ))
+}
+
+/// Healing (gradient-domain) blend over the stroke footprint. With `g` the cloned source and `d`
+/// the destination (premultiplied RGBA, binary64), the healed value inside the domain
+/// `Omega = {coverage > 0}` is `f = g + h`, where `h` solves Laplace's equation `lap(h) = 0` in
+/// `Omega` with the Dirichlet boundary `h = d - g` on the pixels next to `Omega` (4-neighbourhood)
+/// and a Neumann (skipped) neighbour beyond the target bounds. `f` therefore has the Laplacian of
+/// the source (its texture) and matches the destination's colour and lighting at the boundary:
+/// the membrane form of Poisson image editing (Perez, Gangnet, Blake 2003, guidance field = source
+/// gradient). Solved by successive over-relaxation ([`HEAL_SOR_OMEGA`], row-major sweeps, one
+/// thread) until the largest update is at most [`HEAL_TOLERANCE`] or the work budget ends; the
+/// receipt reports which. Output per pixel: premultiplied `d + c (f - d)` with the coverage `c`,
+/// alpha clamped to `[0, 1]`, colour to `[0, alpha]`, un-premultiplied and rounded once to
+/// binary32. Whether Photoshop's healing brush solves this exact equation is UNVERIFIED (D5): a
+/// Studio approximation, class Approximate.
+pub fn heal(
+    target: &RgbaPlane,
+    sample: &RgbaPlane,
+    map: &CloneMap,
+    footprint: &StrokeFootprint<'_>,
+    limits: &RetouchLimits,
+) -> Result<HealResult, RetouchError> {
+    sample.validate()?;
+    let cov = footprint_coverage(target.bounds, footprint, limits)?;
+    heal_with_coverage(target, sample, map, &cov, None, limits)
+}
+
+fn heal_with_coverage(
+    target: &RgbaPlane,
+    sample: &RgbaPlane,
+    map: &CloneMap,
+    cov: &CoveragePlane,
+    source_offset: Option<(i64, i64)>,
+    limits: &RetouchLimits,
+) -> Result<HealResult, RetouchError> {
+    let mut out = copy_plane(target, limits)?;
+    let unchanged = |plane: RgbaPlane| HealResult {
+        result: RetouchResult { plane, damage: None },
+        receipt: HealReceipt { iterations: 0, converged: true, residual: 0.0, source_offset },
+    };
+    if cov.bounds.area() == 0 || cov.data.iter().all(|c| *c == 0) {
+        return Ok(unchanged(out));
+    }
+    let Some(region) = grow_within(cov.bounds, 1, target.bounds)? else {
+        return Ok(unchanged(out));
+    };
+    let n = limits.admit_area(region, HEAL_BYTES_PER_PIXEL)?;
+    let guide = map.sample(sample, region, limits)?;
+    let rw = region.width as usize;
+    let (ex, ey) = region.end()?;
+    let mut d = Vec::with_capacity(n);
+    let mut g = Vec::with_capacity(n);
+    let mut c = Vec::with_capacity(n);
+    for y in region.y..ey {
+        for x in region.x..ex {
+            d.push(premul(target.at(x, y)));
+            c.push(f64::from(cov.at(x, y)) / f64::from(u16::MAX));
+        }
+    }
+    for p in &guide.data {
+        g.push(premul(*p));
+    }
+    // h: Dirichlet values outside Omega, unknowns (start 0) inside.
+    let mut h: Vec<[f64; 4]> = Vec::with_capacity(n);
+    let mut domain: Vec<usize> = Vec::new();
+    for i in 0..n {
+        let (di, gi) = (d.get(i).copied().unwrap_or([0.0; 4]), g.get(i).copied().unwrap_or([0.0; 4]));
+        if c.get(i).copied().unwrap_or(0.0) > 0.0 {
+            h.push([0.0; 4]);
+            domain.push(i);
+        } else {
+            h.push([di[0] - gi[0], di[1] - gi[1], di[2] - gi[2], di[3] - gi[3]]);
+        }
+    }
+    // Iteration budget: the work budget over the domain size, capped by a size-derived maximum.
+    let cells = u64::try_from(domain.len()).map_err(|_| Error::Overflow)?.max(1);
+    let size_cap = u64::from(region.width)
+        .checked_add(u64::from(region.height))
+        .and_then(|s| s.checked_mul(16))
+        .and_then(|s| s.checked_add(256))
+        .ok_or(Error::Overflow)?;
+    let max_iter = limits
+        .max_work
+        .checked_div(cells)
+        .ok_or(Error::Overflow)?
+        .min(size_cap)
+        .min(u64::from(u32::MAX));
+    if max_iter == 0 {
+        return Err(Error::BudgetExceeded.into());
+    }
+    let rh = region.height as usize;
+    let mut iterations = 0u32;
+    let mut residual = f64::INFINITY;
+    while u64::from(iterations) < max_iter {
+        residual = 0.0;
+        for &i in &domain {
+            let (col, row) = col_row(i, rw)?;
+            let mut sum = [0.0f64; 4];
+            let mut k = 0u32;
+            let nbs = [
+                (col > 0).then(|| i.checked_sub(1)).flatten(),
+                (col.checked_add(1).is_some_and(|v| v < rw)).then(|| i.checked_add(1)).flatten(),
+                (row > 0).then(|| i.checked_sub(rw)).flatten(),
+                (row.checked_add(1).is_some_and(|v| v < rh)).then(|| i.checked_add(rw)).flatten(),
+            ];
+            for nb in nbs.into_iter().flatten() {
+                if let Some(v) = h.get(nb) {
+                    for (s, x) in sum.iter_mut().zip(v) {
+                        *s += *x;
+                    }
+                    k = k.saturating_add(1);
+                }
+            }
+            if k == 0 {
+                continue;
+            }
+            let kf = f64::from(k);
+            if let Some(hi) = h.get_mut(i) {
+                for (ch, s) in hi.iter_mut().zip(sum) {
+                    let delta = HEAL_SOR_OMEGA * (s / kf - *ch);
+                    *ch += delta;
+                    residual = residual.max(delta.abs());
+                }
+            }
+        }
+        iterations = iterations.saturating_add(1);
+        if residual <= HEAL_TOLERANCE {
+            break;
+        }
+    }
+    for &i in &domain {
+        let (di, gi, hi) = (
+            d.get(i).copied().unwrap_or([0.0; 4]),
+            g.get(i).copied().unwrap_or([0.0; 4]),
+            h.get(i).copied().unwrap_or([0.0; 4]),
+        );
+        let ci = c.get(i).copied().unwrap_or(0.0);
+        let mut v = [0.0f64; 4];
+        for k in 0..4 {
+            let f = gi[k] + hi[k];
+            v[k] = di[k] + ci * (f - di[k]);
+        }
+        let (col, row) = col_row(i, rw)?;
+        let col = i64::try_from(col).map_err(|_| Error::Overflow)?;
+        let row = i64::try_from(row).map_err(|_| Error::Overflow)?;
+        let (x, y) = (
+            region.x.checked_add(col).ok_or(Error::Overflow)?,
+            region.y.checked_add(row).ok_or(Error::Overflow)?,
+        );
+        if let Some(idx) = out.index(x, y)
+            && let Some(px) = out.data.get_mut(idx)
+        {
+            *px = straight(v);
+        }
+    }
+    Ok(HealResult {
+        result: RetouchResult {
+            plane: out,
+            damage: Some(cov.bounds),
+        },
+        receipt: HealReceipt {
+            iterations,
+            converged: residual <= HEAL_TOLERANCE,
+            residual,
+            source_offset,
+        },
+    })
+}
+
+/// Ring width (pixels) around the stroke used to score spot-healing source candidates.
+pub const SPOT_RING_PX: u32 = 2;
+
+/// Spot healing (no source point): the source is chosen automatically by proximity match, then
+/// healed like [`heal`]. Candidates are displacements of the footprint bounds `B` (`w x h`) by
+/// `m (w + 2 ring + 1)` horizontally and `m (h + 2 ring + 1)` vertically for `m = 1, 2` in the
+/// fixed direction order E, W, S, N, SE, SW, NE, NW; a candidate whose `B` grown by
+/// [`SPOT_RING_PX`] does not lie inside the sample plane is skipped. Score = sum over the ring
+/// pixels (inside `B` grown by the ring and inside the target, coverage 0) of the squared
+/// premultiplied RGBA difference between the target pixel and the candidate source pixel; the
+/// lowest score wins, ties go to the earlier candidate. No candidate: typed
+/// [`RetouchError::SpotHealNoSource`]. Photoshop's spot healing ("Proximity Match" type) is the
+/// behavioural reference; its candidate search is UNVERIFIED (D5), class Approximate. The
+/// "Content-Aware" type is out of scope ([`content_aware_fill`]).
+pub fn spot_heal(
+    target: &RgbaPlane,
+    sample: &RgbaPlane,
+    footprint: &StrokeFootprint<'_>,
+    limits: &RetouchLimits,
+) -> Result<HealResult, RetouchError> {
+    sample.validate()?;
+    target.validate()?;
+    let cov = footprint_coverage(target.bounds, footprint, limits)?;
+    if cov.bounds.area() == 0 || cov.data.iter().all(|c| *c == 0) {
+        let plane = copy_plane(target, limits)?;
+        return Ok(HealResult {
+            result: RetouchResult { plane, damage: None },
+            receipt: HealReceipt { iterations: 0, converged: true, residual: 0.0, source_offset: None },
+        });
+    }
+    let b = cov.bounds;
+    let ring = grow_within(b, SPOT_RING_PX, target.bounds)?.ok_or(RetouchError::SpotHealNoSource)?;
+    let ring_full = grow(b, SPOT_RING_PX)?;
+    let twice_ring = SPOT_RING_PX.checked_mul(2).ok_or(Error::Overflow)?;
+    let step_x = i64::from(b.width.checked_add(twice_ring).and_then(|v| v.checked_add(1)).ok_or(Error::Overflow)?);
+    let step_y = i64::from(b.height.checked_add(twice_ring).and_then(|v| v.checked_add(1)).ok_or(Error::Overflow)?);
+    let dirs: [(i64, i64); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)];
+    let ring_cells = ring.area();
+    limits.admit_work(ring_cells.checked_mul(16).ok_or(Error::Overflow)?)?;
+    let (rx1, ry1) = ring.end()?;
+    let mut best: Option<((i64, i64), f64)> = None;
+    for m in [1i64, 2] {
+        for (dx, dy) in dirs {
+            let ox = dx.checked_mul(m).and_then(|v| v.checked_mul(step_x)).ok_or(Error::Overflow)?;
+            let oy = dy.checked_mul(m).and_then(|v| v.checked_mul(step_y)).ok_or(Error::Overflow)?;
+            let cand = Rect {
+                x: ring_full.x.checked_add(ox).ok_or(Error::Overflow)?,
+                y: ring_full.y.checked_add(oy).ok_or(Error::Overflow)?,
+                width: ring_full.width,
+                height: ring_full.height,
+            };
+            if !sample.bounds.contains(cand)? {
+                continue;
+            }
+            let mut score = 0.0f64;
+            for y in ring.y..ry1 {
+                for x in ring.x..rx1 {
+                    if cov.at(x, y) > 0 {
+                        continue;
+                    }
+                    let t = premul(target.at(x, y));
+                    let s = premul(sample.at(
+                        x.checked_add(ox).ok_or(Error::Overflow)?,
+                        y.checked_add(oy).ok_or(Error::Overflow)?,
+                    ));
+                    for k in 0..4 {
+                        let e = t[k] - s[k];
+                        score += e * e;
+                    }
+                }
+            }
+            if best.is_none_or(|(_, s)| score < s) {
+                best = Some(((ox, oy), score));
+            }
+        }
+    }
+    let ((ox, oy), _) = best.ok_or(RetouchError::SpotHealNoSource)?;
+    // Destination p reads source p + o: destination = sample - o.
+    let map = CloneMap::offset(-(ox as f64), -(oy as f64), ResampleFilter::NearestNeighbour)?;
+    heal_with_coverage(target, sample, &map, &cov, Some((ox, oy)), limits)
+}
+
 /// Content-aware fill / move / patch / inpaint (STU-RAS-143): not implemented in this lane; always
 /// the typed refusal [`RetouchError::ContentAwareUnsupported`] (never another fill in its place).
 pub fn content_aware_fill(
@@ -460,4 +781,4 @@ pub fn content_aware_fill(
 }
 
 /// Retouch surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"retouch","version":1,"plane":"RgbaPlane{bounds, straight RGBA f32 in [0,1]}","clone_stamp":"CloneSource(source point, CloneOptions{aligned default true, source_rotation_deg -180..180 default 0, sample_scope current_layer|current_and_below|all_layers resolved by the caller, filter}) -> begin_stroke(first dab) -> CloneMap d = R(theta)(s - S) + A (A = first dab of the first stroke when aligned, of each stroke otherwise); sampled through transform_math PreparedTransform::sample_rgba (integer offset, no rotation = exact copy); painted source-over with alpha * stroke coverage (brush::stroke_coverage intersect selection), binary64, one binary32 rounding; zero coverage keeps bytes","content_aware":"content_aware_fill refuses content_aware_unsupported (STU-RAS-143 gap)","class":"approximate","parity":"NOT_PROVEN (Photoshop clone/heal behaviour UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"retouch","version":1,"plane":"RgbaPlane{bounds, straight RGBA f32 in [0,1]}","clone_stamp":"CloneSource(source point, CloneOptions{aligned default true, source_rotation_deg -180..180 default 0, sample_scope current_layer|current_and_below|all_layers resolved by the caller, filter}) -> begin_stroke(first dab) -> CloneMap d = R(theta)(s - S) + A (A = first dab of the first stroke when aligned, of each stroke otherwise); sampled through transform_math PreparedTransform::sample_rgba (integer offset, no rotation = exact copy); painted source-over with alpha * stroke coverage (brush::stroke_coverage intersect selection), binary64, one binary32 rounding; zero coverage keeps bytes","heal":"heal(target, sample, CloneMap, footprint): membrane Poisson blend f = g + h, lap(h) = 0 in coverage>0 domain, h = d - g on its 4-neighbour boundary, Neumann beyond the target; SOR omega 1.9 row-major single thread, tolerance 1e-9, iteration cap min(max_work/domain, 16(w+h)+256); HealReceipt{iterations, converged, residual}; output d + c(f - d) premultiplied","spot_heal":"proximity match: 16 candidate displacements (m=1,2 x E,W,S,N,SE,SW,NE,NW, step = footprint size + 2 ring + 1), candidates fully inside the sample plane, score = squared premultiplied difference over the 2 px ring outside the footprint, lowest wins (ties: earlier), then heal; none = spot_heal_no_source","content_aware":"content_aware_fill refuses content_aware_unsupported (STU-RAS-143 gap)","class":"approximate","parity":"NOT_PROVEN (Photoshop clone/heal behaviour UNVERIFIED, D5)"}"#;

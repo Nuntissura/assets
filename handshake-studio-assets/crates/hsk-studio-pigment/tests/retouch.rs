@@ -129,3 +129,70 @@ fn hostile_clone_inputs_are_typed_refusals_before_allocation() {
     let cov = hsk_studio_pigment::selection::CoveragePlane { bounds: rect(0, 0, 0, 0), data: vec![] };
     assert_eq!(content_aware_fill(&small, &cov).unwrap_err().code(), "content_aware_unsupported");
 }
+
+fn grey(bounds: Rect, f: impl Fn(i64, i64) -> f32) -> RgbaPlane {
+    let mut data = Vec::new();
+    for y in 0..i64::from(bounds.height) {
+        for x in 0..i64::from(bounds.width) {
+            let v = f(bounds.x + x, bounds.y + y);
+            data.push([v, v, v, 1.0]);
+        }
+    }
+    RgbaPlane::new(bounds, data).unwrap()
+}
+
+#[test]
+fn heal_keeps_source_texture_and_takes_destination_lighting() {
+    let canvas = rect(0, 0, 40, 40);
+    let tex = |x: i64, y: i64| 0.2 + 0.1 * ((x * 7 + y * 3).rem_euclid(5) as f32) / 5.0;
+    let sample = grey(canvas, tex);
+    let target = grey(canvas, |x, y| tex(x, y) + 0.4);
+    let d = [dab(20.0, 20.0, 12.0)];
+    let fp = StrokeFootprint { dabs: &d, hardness_pct: 100.0, selection: None };
+    let map = CloneMap::offset(0.0, 0.0, ResampleFilter::NearestNeighbour).unwrap();
+    let limits = RetouchLimits::default();
+    let healed = heal(&target, &sample, &map, &fp, &limits).unwrap();
+    assert!(healed.receipt.converged, "{:?}", healed.receipt);
+    assert!(healed.receipt.iterations > 1);
+    // The boundary difference d - g is the constant 0.4, so the harmonic correction is 0.4 and the
+    // healed core is the source texture lifted to the destination lighting: tex + 0.4.
+    for (x, y) in [(20, 20), (18, 21), (23, 17), (16, 20)] {
+        let p = healed.result.plane.at(x, y);
+        let want = tex(x, y) + 0.4;
+        assert!((p[0] - want).abs() < 1e-5 && p[3] == 1.0, "({x},{y}) {p:?} want {want}");
+    }
+    // The clone stamp of the same stroke copies the source unlifted.
+    let cloned = clone_stamp(&target, &sample, &map, &fp, &limits).unwrap();
+    assert_eq!(cloned.plane.at(20, 20)[0], tex(20, 20));
+    // Outside the footprint nothing changes.
+    assert_eq!(healed.result.plane.at(2, 2), target.at(2, 2));
+    // A work budget too small for one sweep is a typed refusal.
+    let tight = RetouchLimits { max_work: 0, ..limits };
+    assert_eq!(heal(&target, &sample, &map, &fp, &tight).unwrap_err().code(), "budget_exceeded");
+}
+
+#[test]
+fn spot_heal_picks_the_best_matching_neighbourhood_and_removes_the_blemish() {
+    let canvas = rect(0, 0, 64, 64);
+    let blemish = |x: i64, y: i64| (x - 32) * (x - 32) + (y - 32) * (y - 32) <= 4;
+    // Flat field except the blemish: the first candidate (east) scores 0 and wins.
+    let flat = grey(canvas, |x, y| if blemish(x, y) { 0.05 } else { 0.5 });
+    let d = [dab(32.0, 32.0, 8.0)];
+    let fp = StrokeFootprint { dabs: &d, hardness_pct: 100.0, selection: None };
+    let limits = RetouchLimits::default();
+    let r = spot_heal(&flat, &flat, &fp, &limits).unwrap();
+    // Footprint bounds 8x8 at (28, 28); step = 8 + 2*2 + 1 = 13.
+    assert_eq!(r.receipt.source_offset, Some((13, 0)));
+    assert!(r.receipt.converged);
+    assert_eq!(r.result.plane.at(32, 32), [0.5, 0.5, 0.5, 1.0]);
+    // East half brighter: the east candidate's ring mismatches, the west one (score 0) wins.
+    let split = grey(canvas, |x, y| if blemish(x, y) { 0.05 } else if x >= 40 { 0.9 } else { 0.5 });
+    let r = spot_heal(&split, &split, &fp, &limits).unwrap();
+    assert_eq!(r.receipt.source_offset, Some((-13, 0)));
+    assert!((r.result.plane.at(32, 32)[0] - 0.5).abs() < 1e-6);
+    // No candidate inside a tiny sample plane: typed refusal.
+    let tiny = grey(rect(0, 0, 12, 12), |_, _| 0.5);
+    let d = [dab(6.0, 6.0, 8.0)];
+    let fp = StrokeFootprint { dabs: &d, hardness_pct: 100.0, selection: None };
+    assert_eq!(spot_heal(&tiny, &tiny, &fp, &limits).unwrap_err(), RetouchError::SpotHealNoSource);
+}
