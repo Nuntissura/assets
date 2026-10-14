@@ -15,7 +15,7 @@ use crate::{
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
-    self as chronicle, Inverse, RevisionEntry, RevisionUpdate, SourceResult,
+    self as chronicle, Inverse, Property, RevisionEntry, RevisionUpdate, SourceResult,
 };
 use hsk_studio_folio::{self as folio, Resolver, Snapshot, StudioDocument, Unresolved};
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
@@ -363,7 +363,7 @@ struct Entry {
 struct PendingCommit {
     base_revision: u64,
     successor: Snapshot,
-    slots: Vec<(usize, u64)>,
+    slots: Vec<Slot>,
     draft: Applied,
     /// Set when the authority's receipt for this key disagreed (only an operator command clears it; same test).
     diverged: Option<(CommitReceipt, Disagreement)>,
@@ -394,7 +394,15 @@ impl Tally {
 struct Proposed {
     applied: Applied,
     successor: Option<Snapshot>,
-    slots: Vec<(usize, u64)>,
+    slots: Vec<Slot>,
+}
+
+/// A revision update of a proposal: an existing vector entry advanced, or a new entry (the
+/// placement of a layer created by the transaction).
+#[derive(Clone)]
+enum Slot {
+    Existing(usize, u64),
+    New(RevisionEntry),
 }
 
 struct Built {
@@ -1053,18 +1061,37 @@ impl Session {
                 return Err(SessionError::ProposalInconsistent);
             }
             for update in prepared.revision_updates() {
-                let slot = self
+                let Some(slot) = self
                     .revisions
                     .iter()
                     .position(|entry| entry.address == update.address)
-                    .ok_or(SessionError::ProposalInconsistent)?;
+                else {
+                    // A layer the session has never held (chronicle `placement` create): its
+                    // placement starts at revision 0 and gets a new vector entry.
+                    if update.address.property != Property::Placement
+                        || update.previous_revision != 0
+                        || update.revision <= update.previous_revision
+                        || slots
+                            .iter()
+                            .any(|s| matches!(s, Slot::New(e) if e.address == update.address))
+                    {
+                        return Err(SessionError::ProposalInconsistent);
+                    }
+                    slots.push(Slot::New(RevisionEntry {
+                        address: update.address.clone(),
+                        revision: update.revision,
+                    }));
+                    continue;
+                };
                 if self.revisions[slot].revision != update.previous_revision
                     || update.revision <= update.previous_revision
-                    || slots.iter().any(|(taken, _)| *taken == slot)
+                    || slots
+                        .iter()
+                        .any(|s| matches!(s, Slot::Existing(taken, _) if *taken == slot))
                 {
                     return Err(SessionError::ProposalInconsistent);
                 }
-                slots.push((slot, update.revision));
+                slots.push(Slot::Existing(slot, update.revision));
             }
             // Lineage: the successor must be the live document advanced by the declared writes.
             if !derives_from(
@@ -1103,10 +1130,37 @@ impl Session {
         })
     }
 
-    /// Everything was checked; this cannot fail.
-    fn publish(&mut self, successor: Snapshot, slots: &[(usize, u64)]) {
-        for (slot, revision) in slots {
-            self.revisions[*slot].revision = *revision;
+    /// Everything was checked; this cannot fail. After a structural edit (a placement update) the
+    /// vector gains a revision-0 entry for every address chronicle seeds on the successor that the
+    /// vector lacks (the properties of a created layer). Entries of deleted layers are kept: an
+    /// undo that re-creates the layer finds its revisions where its inverse expects them (test
+    /// `layer_structure_edits_commit_undo_and_keep_revisions` in tests/structure.rs).
+    fn publish(&mut self, successor: Snapshot, slots: &[Slot]) {
+        let mut structural = false;
+        for slot in slots {
+            match slot {
+                Slot::Existing(at, revision) => {
+                    self.revisions[*at].revision = *revision;
+                    structural |= self.revisions[*at].address.property == Property::Placement;
+                }
+                Slot::New(entry) => {
+                    self.revisions.push(entry.clone());
+                    structural = true;
+                }
+            }
+        }
+        if structural {
+            let known: BTreeSet<(String, Property)> = self
+                .revisions
+                .iter()
+                .map(|e| (e.address.target.node_id.clone(), e.address.property))
+                .collect();
+            for entry in chronicle::seed_revisions(successor.document()) {
+                let key = (entry.address.target.node_id.clone(), entry.address.property);
+                if !known.contains(&key) {
+                    self.revisions.push(entry);
+                }
+            }
         }
         self.snapshot = successor;
     }

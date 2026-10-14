@@ -82,6 +82,8 @@ fn patch(property: Property, value: PropertyValue) -> Patch {
         Property::Opacity => PropertyValue::Number(100.into()),
         Property::BlendMode => PropertyValue::Number(1.into()),
         Property::Tiles => PropertyValue::Tiles(TileList(Vec::new())),
+        // Layer 1 has no graph operation, so it has no placement (refused invalid_target).
+        Property::Placement => PropertyValue::Placement(None),
     };
     Patch {
         transport_version: 1,
@@ -1209,6 +1211,7 @@ fn exported_table_is_the_table_prepare_enforces() {
                 Property::Opacity => 2,
                 Property::BlendMode => 3,
                 Property::Tiles => 4,
+                Property::Placement => 5,
             }
         }
         for (i, p) in PROPERTIES.into_iter().enumerate() {
@@ -1220,7 +1223,9 @@ fn exported_table_is_the_table_prepare_enforces() {
         // The unsupported layer is read-only; the fixture has no raster layer, so `tiles` (a raster
         // layer's property) is refused on every layer and seeded for none.
         let supported = |a: &PropertyAddress| {
-            a.target.node_id != id("SLYR", 3) && a.property != Property::Tiles
+            a.target.node_id != id("SLYR", 3)
+                && a.property != Property::Tiles
+                && a.property != Property::Placement
         };
 
         // Every (node, property) pair of every node kind: prepare itself decides acceptance, with
@@ -1247,6 +1252,9 @@ fn exported_table_is_the_table_prepare_enforces() {
                         PropertyValue::Tiles(TileList(Vec::new())),
                         PropertyValue::Tiles(TileList(Vec::new())),
                     ),
+                    // The fixture graph is empty: no layer has a stack slot, so placement is
+                    // refused on every layer and seeded for none (tests/structure.rs covers it).
+                    Property::Placement => (PropertyValue::Placement(None), PropertyValue::Placement(None)),
                 };
                 let mut p = patch(Property::Name, PropertyValue::String("x".into()));
                 p.reads = vec![PropertyRead {
@@ -1279,7 +1287,7 @@ fn exported_table_is_the_table_prepare_enforces() {
             }
         }
         // Layer 1 (name, visible, opacity, blend_mode), the artboard and the page spread (name):
-        // 6 of 20 pairs.
+        // 6 of 24 pairs.
         assert_eq!((accepted, seeded.len()), (6, 6));
         // The unsupported layer and visibility of artboards and page spreads are refused with the
         // dimension that explains it.

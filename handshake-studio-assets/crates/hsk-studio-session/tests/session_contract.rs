@@ -2777,6 +2777,8 @@ fn value_at(document: &folio::StudioDocument, address: &PropertyAddress) -> Prop
         (NodeKind::Artboard | NodeKind::PageSpread, Property::Tiles) => {
             PropertyValue::Tiles(chronicle::TileList(Vec::new()))
         }
+        // Structure edits have their own proofs (tests/structure.rs); the table loop skips them.
+        (_, Property::Placement) => PropertyValue::Placement(None),
     }
 }
 
@@ -2801,6 +2803,7 @@ impl ProposalProvider for ProbePair {
             }
             // An empty tile list needs no new asset (every remaining tile is in the source).
             (PropertyValue::Tiles(_), _) => PropertyValue::Tiles(chronicle::TileList(Vec::new())),
+            (PropertyValue::Placement(_), _) => PropertyValue::Placement(None),
         };
         let mut base = request.snapshot.clone();
         if self.smuggle {
@@ -2918,6 +2921,11 @@ fn session_consumes_the_chronicle_addressability_table() {
             let (mut committed, mut refused, mut probe) = (0u64, 0usize, 0usize);
             for (kind, node_id) in &nodes {
                 for property in chronicle::PROPERTIES {
+                    // Placement (create/move/delete) is proven in tests/structure.rs, where the
+                    // fixture has a layer graph; this fixture's counts cover the five property kinds.
+                    if property == Property::Placement {
+                        continue;
+                    }
                     let address = PropertyAddress {
                         target: NodeRef {
                             node_kind: kind.clone(),
