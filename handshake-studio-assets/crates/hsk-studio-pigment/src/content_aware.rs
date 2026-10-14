@@ -40,7 +40,8 @@
 //!    if the weights vanish); the LAST vote of level 0 instead takes the pixel proposed by the
 //!    covering patch of least mean error (first in scan order on ties), so the final texture is a
 //!    copy of exemplar pixels, not an average that blurs it. Votes read only source pixels, never
-//!    hole pixels.
+//!    hole pixels (test `fill_continues_stripes_and_checker_with_a_quality_receipt`: the hole's
+//!    own red content never reaches the fill).
 //! 5. Blend (`colour_adaptation`): `none` writes `d + c (f - d)` (premultiplied, `c` the hole
 //!    coverage, `f` the synthesized value); `default` runs the healing solver of
 //!    [`crate::retouch::heal`] (membrane Poisson, Perez/Gangnet/Blake 2003) with the guide = the
@@ -56,7 +57,8 @@
 //! against `max_hole_pixels`; the working bytes of the whole pyramid (upper bound) are charged
 //! against [`RetouchLimits::max_bytes`] before any allocation; the work (patch-pixel visits of
 //! every sweep, recompute and vote) is computed with checked arithmetic and charged against
-//! [`RetouchLimits::max_work`] before synthesis starts. Typed refusals, never partial results.
+//! [`RetouchLimits::max_work`] before synthesis starts. Typed refusals, never partial results
+//! (tests `hostile_fill_inputs_are_typed_refusals`, `hostile_patch_and_move_inputs_are_typed_refusals`).
 //!
 //! Spec controls (STU-RAS-143) implemented: `sampling_area_mode` auto | rectangular | custom,
 //! `colour_adaptation` none | default (high and very_high refused
@@ -134,7 +136,8 @@ impl RotationAdaptation {
 
 /// STU-RAS-143 `sampling_area_mode`: `auto` samples every pixel outside the hole; `rectangular`
 /// only pixels inside the rectangle; `custom` only pixels whose coverage is at least
-/// [`SAMPLING_THRESHOLD`]. The hole is never sampled.
+/// [`SAMPLING_THRESHOLD`]. The hole is never sampled (test
+/// `fill_continues_stripes_and_checker_with_a_quality_receipt`).
 #[derive(Clone, Copy, Debug, Default)]
 pub enum SamplingArea<'a> {
     #[default]
@@ -517,7 +520,8 @@ impl Level {
     }
 
     /// Squared premultiplied RGBA difference between the patch at `q` (pixels inside the plane)
-    /// and the patch at source `s` (always inside); stops early once at least `cap`.
+    /// and the patch at source `s` (a valid source centre, so its patch is inside the plane);
+    /// stops early once at least `cap`.
     fn dist(&self, r: i64, q: (i64, i64), s: (i64, i64), cap: f64) -> f64 {
         let mut sum = 0.0f64;
         for oy in r.wrapping_neg()..=r {
@@ -1305,7 +1309,8 @@ pub struct MoveResult {
 
 /// Content-aware move (STU-RAS-026 row): move (or extend) the selected object by `offset`
 /// (destination pixel `p` shows the original pixel `p - offset`). `Move` first fills the vacated
-/// selection like [`fill`], never sampling the destination footprint; then the object is placed:
+/// selection like [`fill`] with the destination footprint excluded from the sampling area (test
+/// `hostile_patch_and_move_inputs_are_typed_refusals`); then the object is placed:
 /// `colour_adaptation = none` paints it source-over with its selection coverage, `default` heals it
 /// in (membrane Poisson, guide = the moved original, so it keeps its texture and takes the new
 /// surroundings' colour at its edge). A destination outside the target places nothing. Integer

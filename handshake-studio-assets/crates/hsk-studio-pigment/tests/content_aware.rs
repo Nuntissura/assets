@@ -400,6 +400,12 @@ fn hostile_patch_and_move_inputs_are_typed_refusals() {
     assert_eq!(mcode(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &mirror, &limits)), "content_aware_option_unsupported");
     let tight = RetouchLimits { max_work: 1_000, ..limits };
     assert_eq!(mcode(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &d, &tight)), "budget_exceeded");
+    // The destination footprint is excluded from the sampling area: a sampling rectangle whose
+    // every patch overlaps the footprint has no source; the same rectangle with the destination
+    // elsewhere does.
+    let around = SamplingArea::Rectangular(rect(20, 4, 14, 14));
+    assert_eq!(mcode(content_aware_move(&target, &region, (16, 0), MoveMode::Move, around, &d, &limits)), "content_aware_no_source");
+    assert!(content_aware_move(&target, &region, (0, 16), MoveMode::Move, around, &d, &limits).is_ok());
     // A destination entirely outside the target: the vacated area is filled, nothing is placed.
     let gone = content_aware_move(&target, &region, (1000, 0), MoveMode::Move, auto, &d, &limits).unwrap();
     assert!(gone.paste.is_none() && gone.fill.is_some());
