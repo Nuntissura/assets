@@ -571,10 +571,12 @@ fn painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R16 (P-1): a painted region source that a kept page's drawn object, or a form that only a plain reference
-/// reaches, merely REFERENCES: a plain key of a form the page draws, the `/Alternates` of an image it draws, and
-/// an undrawn form (listed in `/Properties`) whose own content draws the source. None of them is a draw by a
-/// kept page: the source stays and is reported.
+/// R16 (P-1): a painted region source that a kept page's drawn object merely REFERENCES: a plain key of a form the page
+/// draws and the `/Alternates` of an image it draws. None of them is a draw by a kept page: the source stays and is
+/// reported. Changed by PLR-104 (`/Properties` is a gated category): an undrawn form listed in a kept page's `/Properties`
+/// that no `BDC` or `DP` names is not reached, so the image only its content draws is dropped (its entry in the form's
+/// `/XObject` pruned) and nothing is reported; before PLR-104 the `/Properties` entry was a plain reference and the image
+/// stayed, reported.
 #[test]
 fn painted_source_referenced_by_a_key_of_a_drawn_object_is_reported() {
     let own = |extra: &str| format!("/Resources << /Font << /F1 6 0 R >> {extra} >>");
@@ -592,9 +594,19 @@ fn painted_source_referenced_by_a_key_of_a_drawn_object_is_reported() {
             own("/XObject << /Ix 41 0 R >>"),
             vec![(41, image_with_alternate)],
         ),
-        ("an undrawn form (/Properties) whose content draws it", page(""), own("/Properties << /P0 42 0 R >>"), vec![(42, undrawn_form_that_draws_it)]),
     ] {
         reported_kept_image(what, &painted_doc_with("inherited", &content, "", &resources, more), &mut red);
+    }
+    let pdf = painted_doc_with("inherited", &page(""), "", &own("/Properties << /P0 42 0 R >>"), vec![(42, undrawn_form_that_draws_it)]);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if !out.painted_sources_kept.is_empty() || !gone(&out.bytes, "SCAN-PIXELS-SECRET") || !out.region_flattened() {
+        red.push(format!(
+            "an undrawn form (/Properties, no BDC names it) whose content draws it: kept {:?}, image dropped {}, region_flattened {}",
+            out.painted_sources_kept,
+            gone(&out.bytes, "SCAN-PIXELS-SECRET"),
+            out.region_flattened()
+        ));
     }
     assert!(red.is_empty(), "{red:#?}");
 }

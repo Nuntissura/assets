@@ -61,7 +61,9 @@
 //!   (R19; test `a_font_or_graphics_state_that_stays_is_not_a_painted_source`). A painted source is reported when some
 //!   content's usage cannot be determined for it, when a kept object only REFERENCES it (a catalog `/AF`, a `/Names`
 //!   or `/Dests` name tree, the entries of a kept page's `/Resources` outside the five gated categories such as
-//!   `/Properties` and `/ColorSpace`, a plain key of an object a kept page draws such as an image's `/Alternates`, an
+//!   `/ColorSpace`, a `/Properties` entry of a kept page that names it directly and that the purge does not remove (a
+//!   `/Properties` entry is reached only when kept content names it, PLR-104, so an object only an unnamed property list
+//!   reaches is pruned like any unused source), a plain key of an object a kept page draws such as an image's `/Alternates`, an
 //!   object used as a `/Resources` value or as a gated sub-dictionary, any other plain reference), and when a viewer
 //!   draws it through anything but a direct `Do` of the image by a kept page (a form, tiling pattern, Type 3 glyph
 //!   procedure, soft-mask group, mask, shading, annotation appearance, an image listed under another
