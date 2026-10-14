@@ -2916,14 +2916,24 @@ fn marked_content_property_lists_of_flattened_pages_are_purged() {
             red.push(format!("{layout}: region_flattened {} residual {} reasons {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
         }
     }
-    let named = properties_output("shared", "/Span /MC0 BDC EMC", "", &[]);
-    if gone(&named.bytes, "PROP-ALT-SECRET") || !read_as_flattened(&named) {
-        red.push(format!(
-            "control, /MC0 named by the kept page: PROP-ALT-SECRET kept {} region_flattened {} reasons {:?}",
-            !gone(&named.bytes, "PROP-ALT-SECRET"),
-            named.region_flattened(),
-            named.not_proven_reasons()
-        ));
+    // V4-08: the names are read from the parsed operators. A name escape (`/MC#30`) names /MC0 (kept); a comment that holds the
+    // operator and a name in another case (`/mc0`) do not (purged). The DP form names a property list as BDC does.
+    for (what, ops, kept) in [
+        ("/MC0 named by the kept page", "/Span /MC0 BDC EMC", true),
+        ("/MC0 named through a name escape, /MC#30", "/Span /MC#30 BDC EMC", true),
+        ("/MC0 named by DP", "/Note /MC0 DP", true),
+        ("a comment holds /Span /MC0 BDC", "% /Span /MC0 BDC EMC\n", false),
+        ("a name in another case, /mc0", "/Span /mc0 BDC EMC", false),
+    ] {
+        let out = properties_output("shared", ops, "", &[]);
+        if gone(&out.bytes, "PROP-ALT-SECRET") == kept || !read_as_flattened(&out) {
+            red.push(format!(
+                "control, {what}: PROP-ALT-SECRET kept {} (expected {kept}) region_flattened {} reasons {:?}",
+                !gone(&out.bytes, "PROP-ALT-SECRET"),
+                out.region_flattened(),
+                out.not_proven_reasons()
+            ));
+        }
     }
     assert!(red.is_empty(), "{red:#?}");
 }
