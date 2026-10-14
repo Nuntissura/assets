@@ -11,6 +11,7 @@ import-psd = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism"]
 import-raw = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-develop"]
 import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-tiff"]
 import-pdf = ["import", "dep:hsk-studio-press"]
+import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 # Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
 viewer = ["import-psd", "import-raw", "import-tiff", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
@@ -27,6 +28,7 @@ hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0
 hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-interop-tiff = { path = "../hsk-studio-interop-tiff", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false, optional = true }

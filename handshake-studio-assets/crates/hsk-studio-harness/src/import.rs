@@ -34,6 +34,12 @@ pub enum SourceFormat {
     /// A camera raw container that is not plain TIFF by magic (CR2, CR3, ORF, RW2, RAF).
     CameraRaw,
     Pdf,
+    /// PNG (SMB-CONVERT-RASTER; importer `import-raster` through `hsk-studio-interop-raster`).
+    Png,
+    /// JPEG (`FF D8 FF`; importer `import-raster`).
+    Jpeg,
+    /// WebP (`RIFF....WEBP`): recognised; interop-raster refuses `webp_decoder_unavailable`.
+    Webp,
 }
 
 impl SourceFormat {
@@ -44,6 +50,9 @@ impl SourceFormat {
             Self::Tiff => "tiff",
             Self::CameraRaw => "camera_raw",
             Self::Pdf => "pdf",
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::Webp => "webp",
         }
     }
 
@@ -54,6 +63,7 @@ impl SourceFormat {
             Self::Tiff => "import-tiff",
             Self::CameraRaw => "import-raw",
             Self::Pdf => "import-pdf",
+            Self::Png | Self::Jpeg | Self::Webp => "import-raster",
         }
     }
 }
@@ -72,6 +82,16 @@ pub fn sniff(bytes: &[u8]) -> Option<SourceFormat> {
     }
     if at(0, b"%PDF-") {
         return Some(SourceFormat::Pdf);
+    }
+    // Raster interchange magics (PNG signature, JPEG SOI + marker, RIFF/WEBP) never collide with TIFF.
+    if at(0, &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some(SourceFormat::Png);
+    }
+    if at(0, &[0xFF, 0xD8, 0xFF]) {
+        return Some(SourceFormat::Jpeg);
+    }
+    if at(0, b"RIFF") && at(8, b"WEBP") {
+        return Some(SourceFormat::Webp);
     }
     // CR2 is a TIFF container that names itself at byte 8; CR3 is ISO-BMFF with brand `crx `.
     if (at(0, b"II*\0") && at(8, b"CR\x02")) || at(4, b"ftypcrx") {
@@ -144,7 +164,10 @@ mod tiff;
 #[cfg(feature = "import-pdf")]
 mod pdf;
 
-#[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+#[cfg(feature = "import-raster")]
+mod raster;
+
+#[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
 mod colour;
 
 #[cfg(feature = "import")]
@@ -156,7 +179,7 @@ mod with_package {
     use serde_json::Value;
     #[cfg(any(feature = "import-psd", feature = "import-raw"))]
     use hsk_studio_folio as folio;
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
     use {hsk_studio_package::ImportRole, serde_json::json};
 
     /// What an importer produced, ready to be written as a native container.
@@ -202,6 +225,7 @@ mod with_package {
             SourceFormat::Tiff => tiff_family(bytes, resolver, cancel),
             SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel),
             SourceFormat::Pdf => pdf_route(bytes, resolver, cancel),
+            SourceFormat::Png | SourceFormat::Jpeg | SourceFormat::Webp => raster_route(bytes, format, resolver, cancel),
         }
     }
 
@@ -230,6 +254,17 @@ mod with_package {
     #[cfg(not(feature = "import-pdf"))]
     fn pdf_route(_: &[u8], _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format: SourceFormat::Pdf, feature: "import-pdf", reason: "feature_not_enabled" })
+    }
+
+    /// PNG / JPEG / WebP through `hsk-studio-interop-raster` (feature `import-raster`, module `raster`).
+    #[cfg(feature = "import-raster")]
+    fn raster_route(bytes: &[u8], format: SourceFormat, resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        super::raster::import_raster(bytes, format, resolver, cancel)
+    }
+
+    #[cfg(not(feature = "import-raster"))]
+    fn raster_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        Err(ImportError::FormatUnavailable { format, feature: "import-raster", reason: "feature_not_enabled" })
     }
 
     #[cfg(not(feature = "import-raw"))]
@@ -424,7 +459,7 @@ mod with_package {
 
     /// Shared tail of every importer that yields an interop-psd `ImportProposal` (PSD layers, or one
     /// raster through `raster_proposal`): tile assets, records, receipt, original.
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
     pub(crate) fn package_proposal(
         format: SourceFormat,
         importer: &str,
@@ -483,13 +518,13 @@ mod with_package {
     /// Deterministic standalone identity minting for converted documents: UUIDv7-shaped ids whose
     /// first 48 bits are the source digest's and whose tail is a counter. The same source always
     /// converts to the same ids (byte-identical packages); it is a stand-in for a host `IdMint`.
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-pdf"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster", feature = "import-pdf"))]
     pub struct SourceMint {
         seed: String,
         n: u64,
     }
 
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-pdf"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster", feature = "import-pdf"))]
     impl SourceMint {
         pub fn new(sha256: &[u8; 32]) -> Self {
             let hex: String = sha256.iter().take(6).map(|b| format!("{b:02x}")).collect();
@@ -499,7 +534,7 @@ mod with_package {
 
         /// Ids outside the counter range (`ffff` + `k`), for objects that are not document
         /// identities (colour profile and conversion resource ids).
-        #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+        #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
         pub(crate) fn reserved(&self, prefix: &str, k: u32) -> String {
             format!("{prefix}-{}-7000-8000-ffff{k:08x}", self.seed)
         }
@@ -518,7 +553,7 @@ mod with_package {
         }
     }
 
-    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
     impl hsk_studio_interop_psd::IdMint for SourceMint {
         fn document_id(&mut self) -> String {
             self.next("SDOC")
