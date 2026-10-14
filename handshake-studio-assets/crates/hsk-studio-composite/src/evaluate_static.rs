@@ -191,6 +191,46 @@ fn check_applicability(mode: StudioBlendMode, composite: bool) -> Result<(), Com
     }
 }
 
+/// Status of a vector layer or boolean group: Ready with its plane as extent (an empty shape or no
+/// fills: Ready and empty), its typed refusal, or `vector_layer_not_prepared`; the operators its
+/// lowering uses are recorded when it is visible and inked.
+fn vector_status(
+    vectors: Option<&crate::vector::PreparedVectors>,
+    layer_id: &str,
+    visible: bool,
+    ledger: &mut ExactnessLedger,
+) -> (Option<Rect>, StepStatus) {
+    let Some(v) = vectors else {
+        return (None, StepStatus::Unavailable("vector_to_image_conversion".into()));
+    };
+    if let Some(code) = v.refusal(layer_id) {
+        return (None, StepStatus::Unavailable(code.into()));
+    }
+    let Some(plane) = v.plane(layer_id) else {
+        return (None, StepStatus::Unavailable("vector_layer_not_prepared".into()));
+    };
+    let extent = plane.placement.filter(|_| !plane.fills.is_empty());
+    if extent.is_some() && visible {
+        record_operator(ledger, Operator::IsolatedGroup);
+        record_operator(ledger, Operator::Mask(MaskFormat::CoverageU8));
+        for f in &plane.fills {
+            let mode = f.mode.facts();
+            ledger.record(mode.key, mode.exactness);
+            match &f.paint {
+                crate::vector::PreparedPaint::Solid(_) => record_operator(ledger, Operator::Solid),
+                crate::vector::PreparedPaint::Image { .. } => {
+                    record_operator(ledger, Operator::Tile);
+                    record_ext(
+                        ledger,
+                        ExtOperator::Transform(crate::vector::IMAGE_FILTER),
+                    );
+                }
+            }
+        }
+    }
+    (extent, StepStatus::Ready)
+}
+
 /// Record a pigment operator: key and class both come from pigment (CX-CAP-001; R5 composite
 /// literal drift; test `tests/render_plan_lowering.rs`
 /// `evaluation_ledger_keys_and_classes_are_pigments`).
@@ -375,7 +415,7 @@ pub fn evaluate(
     snap: &Snapshot,
     cancel: &CancellationToken,
 ) -> Result<EvalReport, CompositeError> {
-    evaluate_with(plan, snap, None, None, cancel)
+    evaluate_with(plan, snap, None, None, None, cancel)
 }
 
 /// [`evaluate`] with the document's raster records (adjustment layers, mask parameters, Blend-If,
@@ -395,7 +435,7 @@ pub fn evaluate_extended(
             "raster_records_document_mismatch".into(),
         ));
     }
-    evaluate_with(plan, snap, Some(records), None, cancel)
+    evaluate_with(plan, snap, Some(records), None, None, cancel)
 }
 
 pub(crate) fn evaluate_with(
@@ -403,6 +443,7 @@ pub(crate) fn evaluate_with(
     snap: &Snapshot,
     records: Option<&StudioRasterRecords>,
     text: Option<&crate::text::PreparedText>,
+    vectors: Option<&crate::vector::PreparedVectors>,
     cancel: &CancellationToken,
 ) -> Result<EvalReport, CompositeError> {
     cancel.check().map_err(|_| CompositeError::Canceled)?;
@@ -520,6 +561,10 @@ pub(crate) fn evaluate_with(
                     (None, SourceValue::Image, Some(Payload::Raster { tiles })) => {
                         (raster_extent(tiles)?, StepStatus::Ready)
                     }
+                    // Vector layers drawn on the host (crate::vector) when prepared.
+                    (None, SourceValue::Vector, Some(Payload::Vector { .. })) if vectors.is_some() => {
+                        vector_status(vectors, &addr.layer_id, *visible, &mut ledger)
+                    }
                     (None, SourceValue::Vector, _) => (
                         None,
                         StepStatus::Unavailable("vector_to_image_conversion".into()),
@@ -554,6 +599,19 @@ pub(crate) fn evaluate_with(
                     ),
                     _ => (None, StepStatus::Unavailable("unsupported_payload".into())),
                 };
+                StepEval {
+                    addr: addr.clone(),
+                    visible: *visible,
+                    extent,
+                    status,
+                }
+            }
+            // A live boolean group (crate::vector) is drawn as one shape: a leaf, whatever its
+            // inputs.
+            Step::Composite { addr, visible, .. }
+                if vectors.is_some_and(|v| v.knows(&addr.layer_id)) =>
+            {
+                let (extent, status) = vector_status(vectors, &addr.layer_id, *visible, &mut ledger);
                 StepEval {
                     addr: addr.clone(),
                     visible: *visible,

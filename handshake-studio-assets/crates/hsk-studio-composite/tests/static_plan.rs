@@ -211,6 +211,10 @@ fn static_closure_no_temporal_provider() {
             // the coverage-plane SHA-256 (already in pigment's closure).
             "hsk-studio-prism",
             "hsk-studio-type",
+            // SMB-COMPOSITE-NEW-KINDS: vector layers and boolean groups are drawn from nib paths
+            // with kurbo's exact winding (kurbo is already in the closure through nib).
+            "hsk-studio-nib",
+            "kurbo",
             "serde_json",
         ];
         assert!(names.iter().all(|n| allowed.contains(&n.as_str())), "{names:?}");

@@ -251,7 +251,7 @@ pub fn evaluate_with_text(
     text: &PreparedText,
     cancel: &CancellationToken,
 ) -> Result<EvalReport, CompositeError> {
-    evaluate_with(plan, snap, None, Some(text), cancel)
+    evaluate_with(plan, snap, None, Some(text), None, cancel)
 }
 
 /// [`crate::lower_to_render_plan`] where every reachable text layer lowers to an isolated group
@@ -266,11 +266,10 @@ pub fn lower_to_render_plan_with_text(
     info: &dyn TileInfoSource,
     text: &PreparedText,
 ) -> Result<TextRenderLowering, CompositeError> {
-    let (lowering, _, _, text_masks) =
-        lower_inner(plan, report, snap, None, root, target, info, Some(text))?;
+    let lowered = lower_inner(plan, report, snap, None, root, target, info, Some(text), None)?;
     Ok(TextRenderLowering {
-        lowering,
-        text_masks,
+        lowering: lowered.lowering,
+        text_masks: lowered.text_masks,
     })
 }
 

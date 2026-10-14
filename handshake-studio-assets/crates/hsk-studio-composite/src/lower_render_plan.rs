@@ -130,8 +130,22 @@ struct Emitter<'a> {
     sources: SourceTable,
     mask_sources: MaskTable,
     text_masks: crate::text::TextMaskTable,
+    /// `SourceKey` -> vector layer whose coverage plane is that key's mask.
+    vector_masks: Vec<(SourceKey, String)>,
+    /// `SourceKey` -> image paint source id (`VectorPlane` image rows) the caller serves as a tile.
+    image_sources: Vec<(SourceKey, String)>,
     next_key: u32,
     info: &'a dyn TileInfoSource,
+}
+
+/// Everything [`lower_inner`] produces.
+pub(crate) struct Lowered {
+    pub lowering: RenderLowering,
+    pub extensions: PlanExtensions,
+    pub notes: Vec<LoweringNote>,
+    pub text_masks: crate::text::TextMaskTable,
+    pub vector_masks: Vec<(SourceKey, String)>,
+    pub image_sources: Vec<(SourceKey, String)>,
 }
 
 impl Emitter<'_> {
@@ -173,6 +187,117 @@ impl Emitter<'_> {
             }],
         }))?;
         Ok(Some(group))
+    }
+    /// A vector layer's content (crate::vector): `Group[Layer { rows, Normal, mask: coverage }]`,
+    /// `rows` = one layer per fill row with the row's mode and opacity (a `Solid` over the plane,
+    /// or the image `Tile` placed by a layer transform; several copies sit in their own group). The
+    /// transform entries are appended to `entries`. An empty shape or no fills emits nothing.
+    fn vector(
+        &mut self,
+        plane: &crate::vector::VectorPlane,
+        entries: &mut Vec<LayerExtension>,
+    ) -> Result<Option<PlanNodeId>, CompositeError> {
+        use crate::vector::{IMAGE_FILTER, PreparedPaint};
+        use hsk_studio_pigment::transform_math::{EdgeMode, LayerTransform};
+        let Some(rect) = plane.placement else {
+            return Ok(None);
+        };
+        if plane.fills.is_empty() {
+            return Ok(None);
+        }
+        let transform = |a| LayerTransform::new(a, IMAGE_FILTER).with_edge(EdgeMode::Clamp);
+        let mut rows = Vec::with_capacity(plane.fills.len());
+        let mut row_transforms: Vec<(u32, LayerTransform)> = Vec::new();
+        for fill in &plane.fills {
+            let input = match &fill.paint {
+                PreparedPaint::Solid(rgba) => self.push(PlanNode::Solid { rect, rgba: *rgba })?,
+                PreparedPaint::Image {
+                    source_id,
+                    info,
+                    placements,
+                } => {
+                    let key = self.key()?;
+                    self.image_sources.push((key, source_id.clone()));
+                    let tile = self.push(PlanNode::Tile(TileInput {
+                        key,
+                        placement: Rect {
+                            x: 0,
+                            y: 0,
+                            width: info.width,
+                            height: info.height,
+                        },
+                        format: info.format,
+                        alpha: info.alpha,
+                        colour_sha256: info.colour_sha256,
+                        alpha_sha256: info.alpha_sha256,
+                    }))?;
+                    match placements.as_slice() {
+                        [one] => {
+                            let index =
+                                u32::try_from(rows.len()).map_err(|_| CompositeError::Overflow)?;
+                            row_transforms.push((index, transform(*one)));
+                            tile
+                        }
+                        many => {
+                            let copies = self.push(PlanNode::Group(Group {
+                                isolated: true,
+                                layers: many
+                                    .iter()
+                                    .map(|_| Layer {
+                                        input: tile,
+                                        mode: StudioBlendMode::Normal,
+                                        opacity: 1.0,
+                                        fill_opacity: 1.0,
+                                        mask: None,
+                                    })
+                                    .collect(),
+                            }))?;
+                            for (i, a) in many.iter().enumerate() {
+                                let i = u32::try_from(i).map_err(|_| CompositeError::Overflow)?;
+                                entries.push(
+                                    LayerExtension::new(copies, i).with_transform(transform(*a)),
+                                );
+                            }
+                            copies
+                        }
+                    }
+                }
+            };
+            rows.push(Layer {
+                input,
+                mode: fill.mode,
+                opacity: fill.opacity,
+                fill_opacity: 1.0,
+                mask: None,
+            });
+        }
+        let rows_group = self.push(PlanNode::Group(Group {
+            isolated: true,
+            layers: rows,
+        }))?;
+        for (i, t) in row_transforms {
+            entries.push(LayerExtension::new(rows_group, i).with_transform(t));
+        }
+        let key = self.key()?;
+        self.vector_masks.push((key, plane.layer_id.clone()));
+        let content = self.push(PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![Layer {
+                input: rows_group,
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: Some(MaskInput {
+                    key,
+                    placement: rect,
+                    format: MaskFormat::CoverageU8,
+                    sha256: plane.sha256,
+                    inverted: false,
+                    density: 1.0,
+                }),
+            }],
+        }))?;
+        Ok(Some(content))
     }
     fn key(&mut self) -> Result<SourceKey, CompositeError> {
         let key = SourceKey(self.next_key);
@@ -432,8 +557,7 @@ pub fn lower_to_render_plan(
     target: OutputTarget,
     info: &dyn TileInfoSource,
 ) -> Result<RenderLowering, CompositeError> {
-    let (lowering, _, _, _) = lower_inner(plan, report, snap, None, root, target, info, None)?;
-    Ok(lowering)
+    Ok(lower_inner(plan, report, snap, None, root, target, info, None, None)?.lowering)
 }
 
 /// [`lower_to_render_plan`] plus the pigment extension envelope built from `records` (the
@@ -488,15 +612,14 @@ pub fn lower_to_render_plan_extended(
             "raster_records_document_mismatch".into(),
         ));
     }
-    let (lowering, extensions, notes, _) =
-        lower_inner(plan, report, snap, Some(records), root, target, info, None)?;
+    let lowered = lower_inner(plan, report, snap, Some(records), root, target, info, None, None)?;
     Ok(ExtendedLowering {
-        plan: lowering.plan,
-        extensions,
-        sources: lowering.sources,
-        mask_sources: lowering.mask_sources,
-        exactness: lowering.exactness,
-        notes,
+        plan: lowered.lowering.plan,
+        extensions: lowered.extensions,
+        sources: lowered.lowering.sources,
+        mask_sources: lowered.lowering.mask_sources,
+        exactness: lowered.lowering.exactness,
+        notes: lowered.notes,
     })
 }
 
@@ -514,6 +637,8 @@ pub(crate) fn text_root_plan(
         sources: Vec::new(),
         mask_sources: Vec::new(),
         text_masks: Vec::new(),
+        vector_masks: Vec::new(),
+        image_sources: Vec::new(),
         next_key: 0,
         info: &none,
     };
@@ -555,15 +680,8 @@ pub(crate) fn lower_inner(
     target: OutputTarget,
     info: &dyn TileInfoSource,
     text: Option<&crate::text::PreparedText>,
-) -> Result<
-    (
-        RenderLowering,
-        PlanExtensions,
-        Vec<LoweringNote>,
-        crate::text::TextMaskTable,
-    ),
-    CompositeError,
-> {
+    vectors: Option<&crate::vector::PreparedVectors>,
+) -> Result<Lowered, CompositeError> {
     let doc = snap.document();
     for revision in [plan.revision, report.receipt.revision] {
         if revision != doc.revision {
@@ -622,6 +740,10 @@ pub(crate) fn lower_inner(
     let mut stack = vec![root_index];
     while let Some(i) = stack.pop() {
         if !reachable.insert(i) {
+            continue;
+        }
+        // A live boolean group is drawn as one shape: its inputs are not part of the render.
+        if vectors.is_some_and(|v| v.knows(&plan.steps[i].addr().layer_id)) {
             continue;
         }
         if let Step::Composite { inputs, .. } = &plan.steps[i] {
@@ -711,6 +833,8 @@ pub(crate) fn lower_inner(
         sources: Vec::new(),
         mask_sources: Vec::new(),
         text_masks: Vec::new(),
+        vector_masks: Vec::new(),
+        image_sources: Vec::new(),
         next_key: 0,
         info,
     };
@@ -758,6 +882,18 @@ pub(crate) fn lower_inner(
                 );
                 let draws_text = *value == SourceValue::Text
                     || (*value == SourceValue::Image && text_payload);
+                if let (SourceValue::Vector, Some(prepared)) = (value, vectors) {
+                    let plane = prepared.plane(&addr.layer_id).ok_or_else(|| {
+                        CompositeError::Unavailable(format!(
+                            "{}:vector_layer_not_prepared",
+                            addr.text()
+                        ))
+                    })?;
+                    if let Some(id) = out.vector(plane, &mut entries)? {
+                        node_of.insert(i, id);
+                    }
+                    continue;
+                }
                 if let (true, Some(prepared)) = (draws_text, text) {
                     let plane = prepared.plane(&addr.layer_id).ok_or_else(|| {
                         CompositeError::Unavailable(format!(
@@ -822,6 +958,21 @@ pub(crate) fn lower_inner(
                         }))?;
                         node_of.insert(i, id);
                     }
+                }
+            }
+            Step::Composite { addr, .. }
+                if vectors.is_some_and(|v| v.knows(&addr.layer_id)) =>
+            {
+                let plane = vectors
+                    .and_then(|v| v.plane(&addr.layer_id))
+                    .ok_or_else(|| {
+                        CompositeError::Unavailable(format!(
+                            "{}:vector_layer_not_prepared",
+                            addr.text()
+                        ))
+                    })?;
+                if let Some(id) = out.vector(plane, &mut entries)? {
+                    node_of.insert(i, id);
                 }
             }
             Step::Composite { inputs, appearance, .. } => {
@@ -1060,14 +1211,14 @@ pub(crate) fn lower_inner(
         exactness.record(op.key(), op.intrinsic());
     }
     let extensions = PlanExtensions::from_layers(entries);
-    if records.is_some() {
+    if records.is_some() || !extensions.is_empty() {
         record_envelope(&render, &extensions, &mut exactness)?;
         for n in &notes {
             exactness.record(n.key, n.exactness);
         }
     }
-    Ok((
-        RenderLowering {
+    Ok(Lowered {
+        lowering: RenderLowering {
             plan: render,
             sources: out.sources,
             mask_sources: out.mask_sources,
@@ -1075,6 +1226,181 @@ pub(crate) fn lower_inner(
         },
         extensions,
         notes,
-        out.text_masks,
-    ))
+        text_masks: out.text_masks,
+        vector_masks: out.vector_masks,
+        image_sources: out.image_sources,
+    })
+}
+
+/// The optional inputs of a render beyond the snapshot: raster records (envelope features), prepared
+/// text and prepared vector layers.
+#[derive(Clone, Copy, Default)]
+pub struct RenderInputs<'a> {
+    pub records: Option<&'a StudioRasterRecords>,
+    pub text: Option<&'a crate::text::PreparedText>,
+    pub vectors: Option<&'a crate::vector::PreparedVectors>,
+}
+
+/// The lowering of [`lower_with_inputs`]: the plan, its envelope and every key table the caller's
+/// `PlanSources` serves from (raster tiles and masks by Folio record, text and vector coverage
+/// planes by layer id, image paint tiles by source id).
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputsLowering {
+    pub plan: RenderPlan,
+    pub extensions: PlanExtensions,
+    pub sources: SourceTable,
+    pub mask_sources: MaskTable,
+    pub text_masks: crate::text::TextMaskTable,
+    pub vector_masks: Vec<(SourceKey, String)>,
+    pub image_sources: Vec<(SourceKey, String)>,
+    pub exactness: ExactnessLedger,
+    pub notes: Vec<LoweringNote>,
+}
+impl InputsLowering {
+    /// The coverage mask behind `key` when it is a vector mask.
+    pub fn vector_mask<'p>(
+        &self,
+        key: SourceKey,
+        vectors: &'p crate::vector::PreparedVectors,
+    ) -> Option<hsk_studio_pigment::Mask<'p>> {
+        let (_, layer) = self.vector_masks.iter().find(|(k, _)| *k == key)?;
+        vectors.plane(layer)?.mask()
+    }
+    /// The image paint source id behind `key`.
+    pub fn image_source(&self, key: SourceKey) -> Option<&str> {
+        self.image_sources
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, s)| s.as_str())
+    }
+    fn of(lowered: Lowered) -> Self {
+        Self {
+            plan: lowered.lowering.plan,
+            extensions: lowered.extensions,
+            sources: lowered.lowering.sources,
+            mask_sources: lowered.lowering.mask_sources,
+            text_masks: lowered.text_masks,
+            vector_masks: lowered.vector_masks,
+            image_sources: lowered.image_sources,
+            exactness: lowered.lowering.exactness,
+            notes: lowered.notes,
+        }
+    }
+}
+
+/// [`crate::evaluate`] with every optional input ([`RenderInputs`]): raster records as
+/// [`crate::evaluate_extended`], prepared text as [`crate::evaluate_with_text`], prepared vector
+/// layers and boolean groups (crate::vector) Ready with their plane as extent.
+pub fn evaluate_with_inputs(
+    plan: &LoweredPlan,
+    snap: &Snapshot,
+    inputs: &RenderInputs<'_>,
+    cancel: &hsk_studio_accord::CancellationToken,
+) -> Result<EvalReport, CompositeError> {
+    if inputs
+        .records
+        .is_some_and(|r| r.document_id != snap.document().document_id)
+    {
+        return Err(CompositeError::UnsupportedDescriptor(
+            "raster_records_document_mismatch".into(),
+        ));
+    }
+    crate::evaluate_static::evaluate_with(
+        plan,
+        snap,
+        inputs.records,
+        inputs.text,
+        inputs.vectors,
+        cancel,
+    )
+}
+
+/// [`lower_to_render_plan`] with every optional input ([`RenderInputs`]); evaluate with
+/// [`evaluate_with_inputs`] and the same inputs.
+pub fn lower_with_inputs(
+    plan: &LoweredPlan,
+    report: &EvalReport,
+    snap: &Snapshot,
+    inputs: &RenderInputs<'_>,
+    root: &NodeAddr,
+    target: OutputTarget,
+    info: &dyn TileInfoSource,
+) -> Result<InputsLowering, CompositeError> {
+    if inputs
+        .records
+        .is_some_and(|r| r.document_id != snap.document().document_id)
+    {
+        return Err(CompositeError::UnsupportedDescriptor(
+            "raster_records_document_mismatch".into(),
+        ));
+    }
+    lower_inner(
+        plan,
+        report,
+        snap,
+        inputs.records,
+        root,
+        target,
+        info,
+        inputs.text,
+        inputs.vectors,
+    )
+    .map(InputsLowering::of)
+}
+
+/// Folio-free plan of one prepared vector layer as a neutral root: the node layout a document
+/// lowering emits for it (renderer tests execute this; renderers may not depend on Folio).
+/// `Unavailable <layer>:vector_layer_not_prepared | vector_layer_empty`.
+pub fn vector_layer_render_plan(
+    vectors: &crate::vector::PreparedVectors,
+    layer_id: &str,
+    revision: u64,
+    target: OutputTarget,
+) -> Result<InputsLowering, CompositeError> {
+    let plane = vectors.plane(layer_id).ok_or_else(|| {
+        CompositeError::Unavailable(format!("{layer_id}:vector_layer_not_prepared"))
+    })?;
+    let none = |_: &TileRef| None;
+    let mut out = Emitter {
+        nodes: Vec::new(),
+        sources: Vec::new(),
+        mask_sources: Vec::new(),
+        text_masks: Vec::new(),
+        vector_masks: Vec::new(),
+        image_sources: Vec::new(),
+        next_key: 0,
+        info: &none,
+    };
+    let mut entries = Vec::new();
+    let root = out.vector(plane, &mut entries)?.ok_or_else(|| {
+        CompositeError::Unavailable(format!("{layer_id}:vector_layer_empty"))
+    })?;
+    let render = RenderPlan {
+        revision,
+        target,
+        nodes: out.nodes,
+        root,
+    };
+    let operators = render
+        .validate(&PlanLimits::default())
+        .map_err(CompositeError::Plan)?;
+    let mut exactness = ExactnessLedger::default();
+    for op in operators {
+        exactness.record(op.key(), op.intrinsic());
+    }
+    let extensions = PlanExtensions::from_layers(entries);
+    if !extensions.is_empty() {
+        record_envelope(&render, &extensions, &mut exactness)?;
+    }
+    Ok(InputsLowering {
+        plan: render,
+        extensions,
+        sources: out.sources,
+        mask_sources: out.mask_sources,
+        text_masks: out.text_masks,
+        vector_masks: out.vector_masks,
+        image_sources: out.image_sources,
+        exactness,
+        notes: Vec::new(),
+    })
 }
