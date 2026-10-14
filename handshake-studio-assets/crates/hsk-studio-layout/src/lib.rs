@@ -9,12 +9,16 @@
 mod breaker;
 mod folio_input;
 mod geometry;
+mod hyphenate;
 mod paragraph;
 mod threaded_reflow;
 
 pub use breaker::{Composer, KnuthPlassParams};
 pub use folio_input::FrameObstacles;
 pub use geometry::Rect;
+pub use hyphenate::{
+    EN_US_LICENCE, HyphenationError, HyphenationParams, Hyphenator, MAX_WORD_BYTES, hyphenated,
+};
 pub use paragraph::{
     Break, BreakKind, LayoutGlyph, ShapedParagraph, SpaceParams, break_opportunities,
 };
