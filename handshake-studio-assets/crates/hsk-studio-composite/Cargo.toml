@@ -13,6 +13,8 @@ hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
 hsk-studio-motion = { path = "../hsk-studio-motion", version = "=0.1.0", default-features = false, optional = true }
 
 [dev-dependencies]

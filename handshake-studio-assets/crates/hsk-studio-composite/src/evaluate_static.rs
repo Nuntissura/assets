@@ -374,7 +374,7 @@ pub fn evaluate(
     snap: &Snapshot,
     cancel: &CancellationToken,
 ) -> Result<EvalReport, CompositeError> {
-    evaluate_with(plan, snap, None, cancel)
+    evaluate_with(plan, snap, None, None, cancel)
 }
 
 /// [`evaluate`] with the document's raster records (adjustment layers, mask parameters, Blend-If,
@@ -394,13 +394,14 @@ pub fn evaluate_extended(
             "raster_records_document_mismatch".into(),
         ));
     }
-    evaluate_with(plan, snap, Some(records), cancel)
+    evaluate_with(plan, snap, Some(records), None, cancel)
 }
 
-fn evaluate_with(
+pub(crate) fn evaluate_with(
     plan: &LoweredPlan,
     snap: &Snapshot,
     records: Option<&StudioRasterRecords>,
+    text: Option<&crate::text::PreparedText>,
     cancel: &CancellationToken,
 ) -> Result<EvalReport, CompositeError> {
     cancel.check().map_err(|_| CompositeError::Canceled)?;
@@ -515,6 +516,25 @@ fn evaluate_with(
                         None,
                         StepStatus::Unavailable("vector_to_image_conversion".into()),
                     ),
+                    // Text drawn by Type (crate::text); without prepared text it stays unavailable.
+                    (None, SourceValue::Text, Some(Payload::Text { .. })) if text.is_some() => {
+                        match text.and_then(|t| t.plane(&addr.layer_id)) {
+                            Some(plane) => {
+                                if plane.placement.is_some() && *visible {
+                                    record_operator(&mut ledger, Operator::Solid);
+                                    record_operator(
+                                        &mut ledger,
+                                        Operator::Mask(MaskFormat::CoverageU8),
+                                    );
+                                }
+                                (plane.placement, StepStatus::Ready)
+                            }
+                            None => (
+                                None,
+                                StepStatus::Unavailable("text_layer_not_prepared".into()),
+                            ),
+                        }
+                    }
                     (None, SourceValue::Text, _) => (
                         None,
                         StepStatus::Unavailable("text_to_image_conversion".into()),

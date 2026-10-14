@@ -207,6 +207,10 @@ fn static_closure_no_temporal_provider() {
             "hsk-studio-folio",
             "hsk-studio-pigment",
             "hsk-studio-observe",
+            // SMB-COMPOSITE-TEXT: text layers are drawn by Type (STU-TYP-127); prism supplies
+            // the coverage-plane SHA-256 (already in pigment's closure).
+            "hsk-studio-prism",
+            "hsk-studio-type",
             "serde_json",
         ];
         assert!(names.iter().all(|n| allowed.contains(&n.as_str())), "{names:?}");

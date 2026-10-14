@@ -129,6 +129,7 @@ struct Emitter<'a> {
     nodes: Vec<PlanNode>,
     sources: SourceTable,
     mask_sources: MaskTable,
+    text_masks: crate::text::TextMaskTable,
     next_key: u32,
     info: &'a dyn TileInfoSource,
 }
@@ -138,6 +139,40 @@ impl Emitter<'_> {
         let id = u32::try_from(self.nodes.len()).map_err(|_| CompositeError::Overflow)?;
         self.nodes.push(node);
         Ok(PlanNodeId(id))
+    }
+    /// A text layer's content: an isolated group with one Normal layer, a Solid over the plane
+    /// masked by the plane's coverage. An inkless layer emits nothing (like an empty raster).
+    fn text(
+        &mut self,
+        plane: &crate::text::TextPlane,
+    ) -> Result<Option<PlanNodeId>, CompositeError> {
+        let Some(rect) = plane.placement else {
+            return Ok(None);
+        };
+        let key = self.key()?;
+        self.text_masks.push((key, plane.layer_id.clone()));
+        let solid = self.push(PlanNode::Solid {
+            rect,
+            rgba: plane.fill_rgba,
+        })?;
+        let group = self.push(PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![Layer {
+                input: solid,
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: Some(MaskInput {
+                    key,
+                    placement: rect,
+                    format: MaskFormat::CoverageU8,
+                    sha256: plane.sha256,
+                    inverted: false,
+                    density: 1.0,
+                }),
+            }],
+        }))?;
+        Ok(Some(group))
     }
     fn key(&mut self) -> Result<SourceKey, CompositeError> {
         let key = SourceKey(self.next_key);
@@ -391,7 +426,7 @@ pub fn lower_to_render_plan(
     target: OutputTarget,
     info: &dyn TileInfoSource,
 ) -> Result<RenderLowering, CompositeError> {
-    let (lowering, _, _) = lower_inner(plan, report, snap, None, root, target, info)?;
+    let (lowering, _, _, _) = lower_inner(plan, report, snap, None, root, target, info, None)?;
     Ok(lowering)
 }
 
@@ -447,8 +482,8 @@ pub fn lower_to_render_plan_extended(
             "raster_records_document_mismatch".into(),
         ));
     }
-    let (lowering, extensions, notes) =
-        lower_inner(plan, report, snap, Some(records), root, target, info)?;
+    let (lowering, extensions, notes, _) =
+        lower_inner(plan, report, snap, Some(records), root, target, info, None)?;
     Ok(ExtendedLowering {
         plan: lowering.plan,
         extensions,
@@ -459,7 +494,9 @@ pub fn lower_to_render_plan_extended(
     })
 }
 
-fn lower_inner(
+/// `text`: prepared text planes (crate::text); `None` keeps every text layer unsupported.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lower_inner(
     plan: &LoweredPlan,
     report: &EvalReport,
     snap: &Snapshot,
@@ -467,7 +504,16 @@ fn lower_inner(
     root: &NodeAddr,
     target: OutputTarget,
     info: &dyn TileInfoSource,
-) -> Result<(RenderLowering, PlanExtensions, Vec<LoweringNote>), CompositeError> {
+    text: Option<&crate::text::PreparedText>,
+) -> Result<
+    (
+        RenderLowering,
+        PlanExtensions,
+        Vec<LoweringNote>,
+        crate::text::TextMaskTable,
+    ),
+    CompositeError,
+> {
     let doc = snap.document();
     for revision in [plan.revision, report.receipt.revision] {
         if revision != doc.revision {
@@ -609,6 +655,7 @@ fn lower_inner(
         nodes: Vec::new(),
         sources: Vec::new(),
         mask_sources: Vec::new(),
+        text_masks: Vec::new(),
         next_key: 0,
         info,
     };
@@ -647,6 +694,18 @@ fn lower_inner(
                 if records.is_some() && layers.get(addr.layer_id.as_str()).is_some_and(|l| is_adjustment_layer(l)) {
                     // An adjustment layer has no node of its own: its placeholder is emitted in
                     // the group that composites it (it needs that group's extent).
+                    continue;
+                }
+                if let (SourceValue::Text, Some(prepared)) = (value, text) {
+                    let plane = prepared.plane(&addr.layer_id).ok_or_else(|| {
+                        CompositeError::Unavailable(format!(
+                            "{}:text_layer_not_prepared",
+                            addr.text()
+                        ))
+                    })?;
+                    if let Some(id) = out.text(plane)? {
+                        node_of.insert(i, id);
+                    }
                     continue;
                 }
                 let (SourceValue::Image, Some(Payload::Raster { tiles: tile_records })) = (
@@ -941,5 +1000,6 @@ fn lower_inner(
         },
         extensions,
         notes,
+        out.text_masks,
     ))
 }
