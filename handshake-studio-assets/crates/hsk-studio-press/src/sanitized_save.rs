@@ -73,7 +73,7 @@ use crate::content::{Op, inline_dict};
 use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
 use crate::flatten::{FlattenedPage, check_flattened, flatten_region_pages};
-use crate::flatten_purge::{check_document, drop_painted_sources, neutralize_structure, page_annotations, remove_annotations, strip_xfa};
+use crate::flatten_purge::{check_document, drop_painted_sources, neutralize_structure, page_annotations, remove_annotations, strip_structure, strip_xfa};
 use crate::font::Font;
 use crate::norm::{Escapes, normalize, normalized, normalized_str, visual_order};
 use crate::pdf_edit::PdfDoc;
@@ -1311,8 +1311,11 @@ pub struct RedactedOutput {
     /// directly or through a chain of references, or any dictionary of the file holds a `/StructParents` or `/StructParent`
     /// entry, or any dictionary of the file, an object-stream member included, has the shape of a structure element or of an
     /// outline item that names one (PLR-102), however many elements there are and whatever the purge removed of them.
-    /// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN, lead decision 2026-10-12T08:41:40Z: the redaction proof covers untagged
-    /// documents, and for a tagged one the structure tree is neutralized best effort and reported; tests
+    /// Operator decision D28: the default [`StructureTreePolicy::Strip`] removes the tree before the save, so the redaction proof
+    /// covers untagged documents and tagged documents saved with it (test `default_redaction_strips_the_structure_tree`; what the
+    /// strip cannot reach is counted here, test `structure_strip_reports_what_it_cannot_remove`); with the opt-out
+    /// [`StructureTreePolicy::KeepNotProven`] the tree is neutralized best effort and reported (R23 FIX_FIRST -> STRUCTURE TREE =
+    /// NOT PROVEN, lead decision 2026-10-12T08:41:40Z); tests
     /// `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
     /// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
     /// `structure_parents_left_in_the_file_are_reported`, `detached_structure_elements_are_reported`,
@@ -1347,6 +1350,10 @@ pub struct RedactedOutput {
     /// `/AcroForm /XFA` or `/NeedsRendering` was removed (R13-F2; every redaction output is a PDF-page
     /// document; test `xfa_is_stripped_from_redaction_outputs`).
     pub xfa_removed: bool,
+    /// What the save removed from the document beyond the regions, as typed losses (sorted, unique; Operator decision D28:
+    /// [`RedactionLoss::AccessibilityTagsRemoved`] when the default [`StructureTreePolicy::Strip`] removed a structure tree;
+    /// test `default_redaction_strips_the_structure_tree`).
+    pub losses: Vec<RedactionLoss>,
     /// Images, forms, patterns and shadings (object numbers in `bytes`) a flattened page reached that
     /// stay in the saved file and are not silent (R18, the minimal draw set: silent only when the source is an image
     /// XObject stream without an `/OC` that a kept page draws with `Do` directly in its own content stream(s), each
@@ -1438,8 +1445,9 @@ impl RedactedOutput {
     /// Every page carrying a region was flattened (Operator decision D27) and the SAVED bytes hold, for
     /// each, exactly the raster page with every pixel of every region the fill colour, nothing to inherit
     /// on its `/Parent` chain, no annotation or structure item pointing at it, no structure tree and no structure-element
-    /// shaped dictionary (STRUCTURE TREE = NOT PROVEN: a document that has one reads false, so this claim covers untagged
-    /// documents; a save with no region does not apply this rule, PLR-101) and no XFA
+    /// shaped dictionary (a saved document that still has one reads false, so this claim covers untagged documents and tagged
+    /// documents saved with the default strip, Operator decision D28; with the opt-out `StructureTreePolicy::KeepNotProven` a
+    /// tagged document reads false, STRUCTURE TREE = NOT PROVEN; a save with no region does not apply this rule, PLR-101) and no XFA
     /// (`residual_in_region == 0`: `flatten::check_flattened`, `flatten_purge::check_document`), no
     /// painted source of the old page kept that is not silent (`painted_sources_kept` empty), in a file with one
     /// xref section and no unreachable or unlisted objects. This is the by-construction claim; it does
@@ -1488,7 +1496,8 @@ pub fn redact_and_save(
 
 /// [`redact_and_save`], and with `text` also redacts the distinctive removed strings from outline
 /// titles and annotation text (slice 3) before the full save, so the same words no longer survive
-/// as leaks there. `RedactedOutput::text_fields` carries the per-object outcomes.
+/// as leaks there. `RedactedOutput::text_fields` carries the per-object outcomes. The structure tree
+/// follows the default [`StructureTreePolicy::Strip`] (Operator decision D28).
 pub fn redact_and_save_with(
     doc: &mut PdfDoc,
     regions: &[RedactionRegion],
@@ -1496,6 +1505,60 @@ pub fn redact_and_save_with(
     text: Option<&TextFieldPolicy>,
     cancel: &CancellationToken,
 ) -> Result<RedactedOutput> {
+    redact_and_save_opts(doc, regions, policy, &RedactOptions { text, structure_tree: StructureTreePolicy::default() }, cancel)
+}
+
+/// What a redaction save does with the document's structure tree (tagged PDF; Operator decision D28, 2026-10-14).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StructureTreePolicy {
+    /// Default. When the save flattens at least one region, the whole structure tree is removed (`flatten_purge.rs`
+    /// `strip_structure`: the catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`, `/StructParent` and `/SE`
+    /// entry, every dictionary with the shape of a structure element; what only the tree reached, `/ParentTree`, `/IDTree`,
+    /// `/RoleMap` and `/ClassMap` included, is no longer written); marked-content operators in content streams (`BDC` with
+    /// `/MCID`) are kept. The save reports [`RedactionLoss::AccessibilityTagsRemoved`] and a tagged document can read
+    /// `region_flattened` (test `default_redaction_strips_the_structure_tree`).
+    #[default]
+    Strip,
+    /// Opt-out: the structure tree is kept and neutralized best effort, and a save that flattens a region of a document
+    /// that still has one reads `region_flattened` false with `NotProven::ResidualInRegion` (STRUCTURE TREE = NOT PROVEN,
+    /// lead decision 2026-10-12T08:41:40Z; test `tagged_documents_read_not_proven_whatever_the_tree_looks_like`).
+    KeepNotProven,
+}
+
+/// A typed loss of a redaction save: something the save removed from the document beyond the regions
+/// (`RedactedOutput::losses`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RedactionLoss {
+    /// The structure tree (accessibility tags) was removed ([`StructureTreePolicy::Strip`], Operator decision D28).
+    AccessibilityTagsRemoved,
+}
+
+impl RedactionLoss {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::AccessibilityTagsRemoved => "accessibility_tags_removed",
+        }
+    }
+}
+
+/// Options of [`redact_and_save_opts`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RedactOptions<'a> {
+    /// Also redact the removed strings from outline titles and annotation text ([`redact_and_save_with`]).
+    pub text: Option<&'a TextFieldPolicy>,
+    /// The structure tree (Operator decision D28); default [`StructureTreePolicy::Strip`].
+    pub structure_tree: StructureTreePolicy,
+}
+
+/// [`redact_and_save_with`] with every option explicit ([`RedactOptions`]).
+pub fn redact_and_save_opts(
+    doc: &mut PdfDoc,
+    regions: &[RedactionRegion],
+    policy: UnsupportedPolicy,
+    options: &RedactOptions<'_>,
+    cancel: &CancellationToken,
+) -> Result<RedactedOutput> {
+    let text = options.text;
     let backup = doc.objects.clone();
     let result = (|| -> Result<RedactedOutput> {
         let mut reports = Vec::with_capacity(regions.len());
@@ -1539,6 +1602,9 @@ pub fn redact_and_save_with(
         // XFA, their annotations and widgets, the structure elements pointing at them.
         let xfa_removed = strip_xfa(doc)?;
         let annotations = page_annotations(doc, &flats);
+        // Operator decision D28: by default a save that flattens a region removes the whole structure tree (typed loss);
+        // the opt-out keeps it and neutralizes it best effort (then check_document reports it).
+        let tags_removed = options.structure_tree == StructureTreePolicy::Strip && !flats.is_empty() && strip_structure(doc, cancel)?;
         let structure_elements_neutralized = neutralize_structure(doc, &flats, &annotations, cancel)?;
         let flattened_annotations_removed = remove_annotations(doc, &annotations, cancel)?;
         // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every other content stream of the
@@ -1587,6 +1653,7 @@ pub fn redact_and_save_with(
             flattened_annotations_removed,
             structure_elements_neutralized,
             xfa_removed,
+            losses: if tags_removed { vec![RedactionLoss::AccessibilityTagsRemoved] } else { Vec::new() },
             painted_sources_kept,
             region_undetermined,
         })

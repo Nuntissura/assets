@@ -2,12 +2,15 @@
 //! 2026-10-11T20:26:55Z): after `flatten.rs` replaced the page and detached it from inheritance, the
 //! redaction save purges, by category below, what described or drew the OLD page: its annotations and widgets
 //! that no kept page lists are dropped, the painted sources it reached that no kept content names and no kept
-//! object references are dropped (one a kept object references stays and is reported), and, in a structure tree
-//! whose root is an indirect object, the structure elements that the purge reads and that point at it stay with their
-//! text removed (best effort). The structure tree itself is NOT PROVEN (lead decision 2026-10-12T08:41:40Z, R23 FIX_FIRST):
-//! when a save flattens at least one region and the saved document has one (or a dictionary with the shape of a structure
-//! element, PLR-102), `RedactedOutput::residual_in_region` adds 1, `region_flattened` reads false and
-//! `NotProven::ResidualInRegion` is reported, whatever the purge removed; the redaction proof covers untagged documents.
+//! object references are dropped (one a kept object references stays and is reported), and the structure tree: by default
+//! (Operator decision D28, `StructureTreePolicy::Strip`, [`strip_structure`]) the whole tree is removed with the typed loss
+//! `accessibility_tags_removed` (test `default_redaction_strips_the_structure_tree`); with the opt-out
+//! (`StructureTreePolicy::KeepNotProven`), in a structure tree whose root is an indirect object, the structure elements that
+//! the purge reads and that point at it stay with their text removed (best effort). Whatever the policy, when a save flattens at
+//! least one region and the saved document still has a structure tree (or a dictionary with the shape of a structure element,
+//! PLR-102), `RedactedOutput::residual_in_region` adds 1, `region_flattened` reads false and `NotProven::ResidualInRegion` is
+//! reported (lead decision 2026-10-12T08:41:40Z, R23 FIX_FIRST); the redaction proof covers untagged documents and tagged
+//! documents saved with the default strip.
 //! So an image, form, annotation or widget value of a flattened page is not kept in the file by being merely listed
 //! (tests `painted_sources_under_a_region_do_not_survive`, `structure_and_widgets_of_flattened_pages_are_removed`,
 //! `tagged_documents_read_not_proven_whatever_the_tree_looks_like`).
@@ -569,6 +572,151 @@ pub(crate) fn neutralize_structure(doc: &mut PdfDoc, flats: &[Flat], annots: &BT
         }
     }
     Ok(pass.neutralized)
+}
+
+// ------------------------------------------------------------------------------- structure strip (D28)
+
+/// Entries that tie an object to the structure tree (D28 strip): a page's, an annotation's or a form's key into the parent tree,
+/// and an outline item's structure element.
+const STRUCT_LINK_KEYS: [&str; 3] = ["StructParents", "StructParent", "SE"];
+
+fn is_link_key(k: &[u8]) -> bool {
+    STRUCT_LINK_KEYS.iter().any(|s| s.as_bytes() == k)
+}
+
+/// Removes [`STRUCT_LINK_KEYS`] from every dictionary inside `o`, to `cap` levels; true when one was removed.
+fn strip_links(o: &mut Object, depth: usize, cap: usize) -> bool {
+    if depth > cap {
+        return false;
+    }
+    let next = depth.saturating_add(1);
+    match o {
+        Object::Array(a) => a.iter_mut().fold(false, |changed, x| strip_links(x, next, cap) | changed),
+        Object::Dict(_) | Object::Stream(_) => {
+            let d = match o {
+                Object::Dict(d) => d,
+                Object::Stream(s) => &mut s.dict,
+                _ => return false,
+            };
+            let before = d.entries.len();
+            d.entries.retain(|(k, _)| !is_link_key(k));
+            let mut changed = d.entries.len() != before;
+            for (_, v) in d.entries.iter_mut() {
+                changed |= strip_links(v, next, cap);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+/// A direct dictionary with the shape of a structure element is nested inside `o` (`o` itself is not judged), to `cap` levels.
+fn nested_shape(doc: &PdfDoc, o: &Object, depth: usize, cap: usize) -> bool {
+    if depth > cap {
+        return false;
+    }
+    let next = depth.saturating_add(1);
+    let shaped = |x: &Object| matches!(x, Object::Dict(d) if structure_shaped(doc, d));
+    match o {
+        Object::Array(a) => a.iter().any(|x| shaped(x) || nested_shape(doc, x, next, cap)),
+        Object::Dict(_) | Object::Stream(_) => o.as_dict().is_some_and(|d| d.entries.iter().any(|(_, v)| shaped(v) || nested_shape(doc, v, next, cap))),
+        _ => false,
+    }
+}
+
+/// Removes the direct dictionaries with the shape of a structure element nested inside `o` (an array element becomes null, a
+/// dictionary entry is removed), to `cap` levels.
+fn strip_nested_shapes(doc: &PdfDoc, o: &mut Object, depth: usize, cap: usize) {
+    if depth > cap {
+        return;
+    }
+    let next = depth.saturating_add(1);
+    let shaped = |x: &Object| matches!(x, Object::Dict(d) if structure_shaped(doc, d));
+    match o {
+        Object::Array(a) => {
+            for x in a.iter_mut() {
+                if shaped(x) {
+                    *x = Object::Null;
+                } else {
+                    strip_nested_shapes(doc, x, next, cap);
+                }
+            }
+        }
+        Object::Dict(_) | Object::Stream(_) => {
+            let d = match o {
+                Object::Dict(d) => d,
+                Object::Stream(s) => &mut s.dict,
+                _ => return,
+            };
+            d.entries.retain(|(_, v)| !shaped(v));
+            for (_, v) in d.entries.iter_mut() {
+                strip_nested_shapes(doc, v, next, cap);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Operator decision D28 (2026-10-14; the default of a redaction save that flattens a region, `StructureTreePolicy::Strip`):
+/// removes the whole structure tree. The catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`, `/StructParent`
+/// and `/SE` entry of every dictionary, every object with the shape of a structure element (`structure_shaped`, read like
+/// `check_document` reads it) with every direct reference to it (`scrub_references`), and every such dictionary written directly
+/// inside another object. What only the tree reached (`/ParentTree`, `/IDTree`, `/RoleMap`, `/ClassMap`, the elements) is no
+/// longer reachable and is not written. Content streams are not edited: marked-content operators (`BDC` with `/MCID`) stay.
+/// What the strip cannot reach (an element inside an object stream the file keeps as a stream, an alias object of an element
+/// that another object keeps reachable) stays and `check_document` reports it (fail closed). Returns whether anything was
+/// removed (the typed loss `accessibility_tags_removed`). Test `default_redaction_strips_the_structure_tree`.
+pub(crate) fn strip_structure(doc: &mut PdfDoc, cancel: &CancellationToken) -> Result<bool> {
+    check_cancel(cancel)?;
+    let root = catalog_num(doc)?;
+    let cap = doc.limits.depth_cap();
+    // Only what the saved file would hold counts as removed (the writer writes the reachable objects only).
+    let live = reachable(&doc.objects, &trailer_roots(&doc.trailer));
+    let mut removed = false;
+    if let Some(e) = doc.objects.get_mut(&root)
+        && let Object::Dict(c) = &mut e.obj
+    {
+        let hit = c.remove("StructTreeRoot").is_some() | c.remove("MarkInfo").is_some();
+        if hit {
+            touch(e);
+            removed = true;
+        }
+    }
+    for (i, (num, e)) in doc.objects.iter_mut().enumerate() {
+        if i & 1023 == 0 {
+            check_cancel(cancel)?;
+        }
+        if strip_links(&mut e.obj, 0, cap) {
+            touch(e);
+            removed |= live.contains(num);
+        }
+    }
+    let mut shaped: BTreeSet<u32> = BTreeSet::new();
+    let mut nested: Vec<(u32, Object)> = Vec::new();
+    for (i, (num, e)) in doc.objects.iter().enumerate() {
+        if i & 1023 == 0 {
+            check_cancel(cancel)?;
+        }
+        if e.obj.as_dict().is_some_and(|d| structure_shaped(doc, d)) {
+            shaped.insert(*num);
+        } else if nested_shape(doc, &e.obj, 0, cap) {
+            let mut o = e.obj.clone();
+            strip_nested_shapes(doc, &mut o, 0, cap);
+            nested.push((*num, o));
+        }
+    }
+    for (num, o) in nested {
+        if let Some(e) = doc.objects.get_mut(&num) {
+            e.obj = o;
+            touch(e);
+            removed |= live.contains(&num);
+        }
+    }
+    if !shaped.is_empty() {
+        removed |= shaped.iter().any(|n| live.contains(n));
+        scrub_references(&mut doc.objects, &shaped);
+    }
+    Ok(removed)
 }
 
 // ------------------------------------------------------------------------------- painted sources (F6)

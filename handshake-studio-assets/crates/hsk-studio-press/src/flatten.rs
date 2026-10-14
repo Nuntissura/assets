@@ -25,7 +25,8 @@
 //! catalog, directly or through a chain of references, any `/StructParents` or `/StructParent` entry, or a dictionary left in
 //! the file that has the shape of a structure element or of an outline item that names one, PLR-102), it adds 1 to
 //! `RedactedOutput::residual_in_region`, `region_flattened` reads false and `NotProven::ResidualInRegion` is reported, so the
-//! redaction proof covers untagged documents (tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+//! redaction proof covers untagged documents and, since the default strip removes the tree (Operator decision D28,
+//! `flatten_purge::strip_structure`, test `default_redaction_strips_the_structure_tree`), tagged documents saved with it (tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
 //! `untagged_documents_and_stripped_trees_still_read_flattened`, `detached_structure_elements_are_reported`,
 //! `structure_rules_apply_only_when_a_region_is_flattened`). The
 //! painted sources (images, forms, patterns, shadings) and the graphics states and fonts it reached are

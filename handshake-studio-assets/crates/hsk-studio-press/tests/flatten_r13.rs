@@ -1589,6 +1589,7 @@ fn descriptor_states_that_painted_source_silence_is_syntactic() {
 /// flattened page and the value of a widget of that page (outside the region) are gone; the structure of
 /// the other page stays. R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN: the document is tagged, so the save reads not proven
 /// for exactly that tree, counted once (`residual_in_region` 1) although the purge read it all and it holds two elements.
+/// D28: read with the opt-out `StructureTreePolicy::KeepNotProven` (the default strip removes the tree).
 #[test]
 fn structure_and_widgets_of_flattened_pages_are_removed() {
     let pdf = build(&[
@@ -1607,7 +1608,7 @@ fn structure_and_widgets_of_flattened_pages_are_removed() {
         (83, b"<< /Nums [0 [81 0 R] 1 [82 0 R]] >>".to_vec()),
     ]);
     let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
-    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    let out = redact_keeping_tags(&mut doc, &[region(R)]); // D28 opt-out (StructureTreePolicy::KeepNotProven)
     let mut red: Vec<String> = Vec::new();
     for marker in ["ALT-SECRET-PHOTO", "WIDGET-VALUE-SECRET"] {
         if !gone(&out.bytes, marker) {
@@ -1632,6 +1633,7 @@ fn structure_and_widgets_of_flattened_pages_are_removed() {
 /// file and both references to it are removed (key dropped, array element nulled); 71 stays with its appearance. The
 /// structure element of page one is not dropped: it stays in the tree without its `/Alt`, the element of page two keeps its text.
 /// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN: the tagged document reads not proven for the tree (`residual_in_region` 1).
+/// D28: read with the opt-out `StructureTreePolicy::KeepNotProven` (the default strip removes the tree).
 #[test]
 fn flattened_page_annotations_leave_and_structure_elements_stay() {
     let pdf = build(&[
@@ -1652,7 +1654,7 @@ fn flattened_page_annotations_leave_and_structure_elements_stay() {
         (83, b"<< /Nums [0 [81 0 R] 1 [82 0 R]] >>".to_vec()),
     ]);
     let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
-    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    let out = redact_keeping_tags(&mut doc, &[region(R)]); // D28 opt-out (StructureTreePolicy::KeepNotProven)
     let bytes = &out.bytes;
     let mut red: Vec<String> = Vec::new();
     if !gone(bytes, "ANNOT-GONE-SECRET") {
@@ -1732,10 +1734,18 @@ fn tree_output_with(limits: &Limits, tree: &str, objects: &[(u32, String)], nums
 /// The fixture family of the structure tests: page one (index 0, with the region `R` and `SECRET`) is flattened, page two is kept.
 /// `catalog_extra`, `page_one_extra` and `page_two_extra` are appended to the catalog and the two page dictionaries (the structure
 /// keys of a tagged document, or none) and `objects` are further objects of the file.
+/// D28: these structure fixtures read the opt-out (`StructureTreePolicy::KeepNotProven`, today's NotProven behaviour for tagged
+/// documents); the default strip is `default_redaction_strips_the_structure_tree`.
 fn pages_output_with(limits: &Limits, catalog_extra: &str, page_one_extra: &str, page_two_extra: &str, objects: &[(u32, String)]) -> hsk_studio_press::RedactedOutput {
     let pdf = pages_pdf(catalog_extra, page_one_extra, page_two_extra, objects);
     let mut doc = PdfDoc::open(&pdf, limits, &token()).expect("open");
-    redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact")
+    redact_keeping_tags(&mut doc, &[region(R)])
+}
+
+/// A redaction save with the D28 opt-out: the structure tree is kept (neutralized best effort) and reported NotProven.
+fn redact_keeping_tags(doc: &mut PdfDoc, regions: &[RedactionRegion]) -> hsk_studio_press::RedactedOutput {
+    let keep = hsk_studio_press::RedactOptions { text: None, structure_tree: hsk_studio_press::StructureTreePolicy::KeepNotProven };
+    hsk_studio_press::redact_and_save_opts(doc, regions, UnsupportedPolicy::Refuse, &keep, &token()).expect("redact")
 }
 
 /// The input file of `pages_output_with`, for a save with a different set of regions (PLR-101: none).
@@ -2723,12 +2733,13 @@ fn structure_rules_apply_only_when_a_region_is_flattened() {
 #[test]
 fn descriptor_states_the_structure_tree_rule() {
     let descriptor = hsk_studio_press::DESCRIPTOR;
-    let rule_start = "residuals: STRUCTURE TREE = NOT PROVEN (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z): the redaction proof covers untagged documents;";
-    let counted = "and, when the save flattened a region, no structure tree: a /StructTreeRoot in the catalog, any /StructParents or /StructParent entry, or any dictionary with the shape of a structure element or of an outline item that names one (PLR-102), adds 1 together, so region_flattened is true only for an untagged document, or one whose caller stripped the whole tree before the save";
+    let rule_start = "STRUCTURE TREE (Operator decision D28, 2026-10-14): by default (StructureTreePolicy::Strip) a save that flattens at least one region removes the whole structure tree";
+    let d28 = ["so the redaction proof covers untagged documents and tagged documents saved with the default strip (test default_redaction_strips_the_structure_tree)", "residuals: STRUCTURE TREE = NOT PROVEN for the opt-out StructureTreePolicy::KeepNotProven (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z), and the check runs after the strip too:", "reports the typed loss accessibility_tags_removed"];
+    let counted = "and, when the save flattened a region, no structure tree: a /StructTreeRoot in the catalog, any /StructParents or /StructParent entry, or any dictionary with the shape of a structure element or of an outline item that names one (PLR-102), adds 1 together, so region_flattened is true only for an untagged document, a tagged document saved with the default strip (Operator decision D28, redaction.flatten.purge), or one whose caller stripped the whole tree before the save; with the opt-out StructureTreePolicy::KeepNotProven a tagged document reads NOT PROVEN";
     let scope = "when a save flattens at least one region and the saved document has a structure tree, that is a /StructTreeRoot that the catalog holds";
     let shape = "(PLR-102: /Type /StructElem or /StructTreeRoot, or /S as a name together with /P and any of /Alt /ActualText /E /T /Lang /A /C /ID /Ref /AF /Phoneme /PhoneticAlphabet, or an /SE entry as an outline item has), residual_in_region adds 1 for them together (one count, not one per element)";
     let no_region = "a save with no region does not apply these rules (PLR-101)";
-    for needle in [rule_start, counted, scope, shape, no_region] {
+    for needle in [rule_start, counted, scope, shape, no_region].into_iter().chain(d28) {
         assert_eq!(descriptor.matches(needle).count(), 1, "DESCRIPTOR lacks {needle:?}");
     }
     for stale in [
@@ -2740,6 +2751,7 @@ fn descriptor_states_the_structure_tree_rule() {
         "residual_in_region counts 1 for it (one count for the tree, not one per element)",
         "and no structure tree: a /StructTreeRoot in the catalog or any /StructParents or /StructParent entry counts 1",
         "or one whose caller stripped the tree before the save",
+        "residuals: STRUCTURE TREE = NOT PROVEN (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z): the redaction proof covers untagged documents;",
     ] {
         assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
     }
@@ -2762,6 +2774,8 @@ fn descriptor_states_the_structure_tree_rule() {
         "structure_shape_is_read_from_the_parsed_dictionary",
         "structure_rules_apply_only_when_a_region_is_flattened",
         "unreadable_structure_shapes_are_counted",
+        "default_redaction_strips_the_structure_tree",
+        "structure_strip_reports_what_it_cannot_remove",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
@@ -3024,6 +3038,125 @@ fn unreadable_structure_shapes_are_counted() {
     let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
     if !gone(&out.bytes, "ALT-DIRECT-SECRET") && !reported_for_the_tree(&out) {
         red.push(format!("R25-P5 X1: trailer /ID element kept, region_flattened {} reasons {:?}", out.region_flattened(), out.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+// ------------------------------------------------------------------ SMB-PRESS-STRUCT-STRIP (Operator decision D28)
+
+/// The texts of the D28 tagged fixture beyond `DIRECT_TEXTS`: an `/IDTree` key, `/ClassMap` attribute text, and the `/ActualText`
+/// of the kept page's element.
+const STRIP_TEXTS: [&str; 3] = ["STRIP-ID-SECRET", "STRIP-CLASSMAP-SECRET", "KEPT-TAG-TEXT"];
+
+/// D28 (Operator decision 2026-10-14, lane SMB-PRESS-STRUCT-STRIP): by default a redaction save that flattens a region removes the
+/// whole structure tree and reports the typed loss `accessibility_tags_removed`, so a tagged document reads flattened (nothing
+/// counted, no reason). Inputs: a tagged document (indirect root with `/ParentTree`, `/IDTree` key text, `/RoleMap`, `/ClassMap` text,
+/// elements on both pages, `/StructParents` on both pages, `/StructParent` on a kept annotation, `/MarkInfo`), a root written
+/// directly into the catalog, the R24 detached inputs J1 (a root under a private key) and J2b (an outline item `/SE`, the item
+/// stays without it), and an element written directly inside a private dictionary. Every structure text is gone, the kept page keeps
+/// its marked-content operators (`BDC` .. `EMC` with `/MCID`) and text. Controls: the opt-out (`StructureTreePolicy::KeepNotProven`)
+/// reads the same tagged document NOT PROVEN with no loss; an untagged document reports no loss; a save with no region strips nothing.
+#[test]
+fn default_redaction_strips_the_structure_tree() {
+    let annotation = (71, "<< /Type /Annot /Subtype /Square /Rect [10 10 20 20] /P 5 0 R /StructParent 2 >>".to_string());
+    let tagged: Vec<(u32, String)> = vec![
+        (
+            80,
+            "<< /Type /StructTreeRoot /K [81 0 R 82 0 R] /ParentTree 83 0 R /IDTree << /Names [(STRIP-ID-SECRET) 81 0 R] >> /RoleMap << /Chart /Figure >> /ClassMap << /C1 << /O /UserProperties /P [<< /N (n) /V (STRIP-CLASSMAP-SECRET) >>] >> >> >>"
+                .to_string(),
+        ),
+        (81, text_element("/P 80 0 R /Pg 3 0 R /ID (STRIP-ID-SECRET) /C /C1", "0")),
+        (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /ActualText (KEPT-TAG-TEXT) /K [0 << /Type /OBJR /Obj 71 0 R >>] >>".to_string()),
+        (83, "<< /Nums [0 [81 0 R] 1 [82 0 R] 2 82 0 R] >>".to_string()),
+        annotation.clone(),
+    ];
+    let mut j2b = outline_with("<< /Title (Figure) /Parent 70 0 R /SE 81 0 R /Dest [5 0 R /Fit] >>");
+    j2b.extend([(80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()), (81, text_element("/P 80 0 R", "0"))]);
+    type Case = (&'static str, &'static str, &'static str, &'static str, Vec<(u32, String)>);
+    let cases: Vec<Case> = vec![
+        ("a tagged document", "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>", "/StructParents 0", "/StructParents 1 /Annots [71 0 R]", tagged.clone()),
+        (
+            "a root written directly into the catalog",
+            "/StructTreeRoot << /Type /StructTreeRoot /K [81 0 R] /ParentTree << /Nums [1 [81 0 R]] >> >>",
+            "",
+            "/StructParents 1",
+            vec![(81, text_element("/Pg 5 0 R", "1"))],
+        ),
+        ("J1: a root under a private catalog key", "/HskTree 80 0 R", "", "", vec![(80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()), (81, text_element("/P 80 0 R /Pg 5 0 R", "1"))]),
+        ("J2b: an outline item names an element with /SE", "/Outlines 70 0 R", "", "", j2b),
+        ("an element written directly inside a private dictionary", "/HskNote << /A [ << /Type /StructElem /S /Figure /Alt (ALT-DIRECT-SECRET) /ActualText (ACTUAL-DIRECT-SECRET) /E (EXPANSION-DIRECT-SECRET) >> ] >>", "", "", vec![]),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, page_one_extra, page_two_extra, objects) in cases {
+        let pdf = pages_pdf(catalog_extra, page_one_extra, page_two_extra, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        if !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected flattened", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        if out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] || hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved.code() != "accessibility_tags_removed" {
+            red.push(format!("{name}: losses {:?}", out.losses));
+        }
+        for text in DIRECT_TEXTS.iter().chain(&STRIP_TEXTS).chain(&["SECRET-ALPHA"]) {
+            if !gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} survives"));
+            }
+        }
+        let two = page_facts(&out.bytes, 1);
+        if !two.ops.iter().any(|o| o == "BDC") || !two.ops.iter().any(|o| o == "EMC") || gone(&out.bytes, "Page two") {
+            red.push(format!("{name}: the kept page lost its marked content or text: {:?}", two.ops));
+        }
+        for key in ["StructTreeRoot", "MarkInfo", "StructParents", "StructParent", "/SE "] {
+            if find(&out.bytes, key.as_bytes()).is_some() {
+                red.push(format!("{name}: {key} is still written"));
+            }
+        }
+        if name.starts_with("J2b") && find(&out.bytes, b"(Figure)").is_none() {
+            red.push(format!("{name}: the outline item was removed (only its /SE goes)"));
+        }
+    }
+    // The opt-out keeps today's behaviour; an untagged document and a save with no region report no loss.
+    let keep_pdf = pages_pdf("/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>", "/StructParents 0", "/StructParents 1 /Annots [71 0 R]", &tagged);
+    let mut doc = PdfDoc::open(&keep_pdf, &quick(), &token()).expect("open");
+    let kept = redact_keeping_tags(&mut doc, &[region(R)]);
+    if !reported_for_the_tree(&kept) || !kept.losses.is_empty() || gone(&kept.bytes, "KEPT-TAG-TEXT") {
+        red.push(format!("opt-out: region_flattened {} reasons {:?} losses {:?}", kept.region_flattened(), kept.not_proven_reasons(), kept.losses));
+    }
+    let mut doc = PdfDoc::open(&keep_pdf, &quick(), &token()).expect("open");
+    let none = redact_and_save(&mut doc, &[], UnsupportedPolicy::Refuse, &token()).expect("redact with no region");
+    if !none.losses.is_empty() || gone(&none.bytes, "KEPT-TAG-TEXT") {
+        red.push(format!("no region: losses {:?}, tree kept {}", none.losses, !gone(&none.bytes, "KEPT-TAG-TEXT")));
+    }
+    let mut doc = PdfDoc::open(&pages_pdf("", "", "", &[]), &quick(), &token()).expect("open");
+    let untagged = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if !untagged.losses.is_empty() || !read_as_flattened(&untagged) {
+        red.push(format!("untagged: losses {:?} region_flattened {}", untagged.losses, untagged.region_flattened()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// D28, fail closed: what the default strip cannot reach stays in the file and the save reads NOT PROVEN through
+/// `check_document` (`NotProven::ResidualInRegion`, `region_flattened` false): an element that is a member of an object stream the
+/// file keeps as a stream (R24 K1), and an element an alias object keeps reachable (the alias is a reference, not a dictionary).
+#[test]
+fn structure_strip_reports_what_it_cannot_remove() {
+    let el = "<< /Type /StructElem /S /Figure /P 1 0 R /Alt (ALT-DIRECT-SECRET) >>";
+    type Case = (&'static str, &'static str, Vec<(u32, String)>);
+    let cases: Vec<Case> = vec![
+        ("an element in an object stream the catalog references", "/HskJunk 50 0 R", vec![(50, object_stream(&[(60, el)], false))]),
+        ("an element behind an alias object", "/HskNote 84 0 R", vec![(84, "86 0 R".to_string()), (86, el.to_string())]),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, objects) in cases {
+        let pdf = pages_pdf(catalog_extra, "", "", &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        if gone(&out.bytes, "ALT-DIRECT-SECRET") {
+            red.push(format!("{name}: the element text is gone (the case needs it to survive)"));
+        }
+        if !reported_for_the_tree(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected reported", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
     }
     assert!(red.is_empty(), "{red:#?}");
 }
