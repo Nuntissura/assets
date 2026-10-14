@@ -682,8 +682,13 @@ pub(crate) fn lower_inner(
             .filter(|i| matches!(plan.steps[**i], Step::Composite { .. }))
             .map(|i| plan.steps[*i].addr().layer_id.as_str())
             .collect();
+        // The document root (`LoweredPlan::with_document_root`) contains the top-level layers.
+        let document_root = groups.contains(crate::lower_plan::DOCUMENT_ROOT_LAYER);
         for l in &doc.layers {
-            let contained = matches!(&l.parent, Parent::Node(p) if groups.contains(p.node_id.as_str()));
+            let contained = match &l.parent {
+                Parent::Node(p) => groups.contains(p.node_id.as_str()),
+                Parent::Root(()) => document_root,
+            };
             if l.visible && contained && is_adjustment_layer(l) && !in_plan.contains(l.layer_id.as_str())
             {
                 return Err(CompositeError::Unavailable(format!(

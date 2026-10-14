@@ -176,11 +176,77 @@ pub struct LoweredPlan {
     pub outputs: Vec<NodeAddr>,
 }
 
+/// Layer id of the document root ([`LoweredPlan::with_document_root`]). It is not a Folio
+/// identity (`SLYR-<uuid>`), so it never collides with an authored layer, and it is not a prefix
+/// of any document-level issue target.
+pub const DOCUMENT_ROOT_LAYER: &str = "composite.document_root";
+
 impl LoweredPlan {
     pub fn lowest_exactness(&self) -> Exactness {
         self.steps
             .iter()
             .fold(Exactness::Exact, |lowest, s| lowest.lowest_of(s.exactness()))
+    }
+
+    /// Address of the document root step (exists after [`LoweredPlan::with_document_root`]).
+    pub fn document_root(&self) -> NodeAddr {
+        NodeAddr {
+            layer_id: DOCUMENT_ROOT_LAYER.into(),
+            operation_key: "document".into(),
+            port_key: "out".into(),
+        }
+    }
+
+    /// The plan plus ONE composite step that composites every graph output, `outputs[0]`
+    /// bottom-most (the authored `input_ordinal` convention: ordinal 0 composites first), with the
+    /// neutral appearance (normal, 100 percent, no mask, not clipped). Evaluate and lower the
+    /// result like any plan and pass [`LoweredPlan::document_root`] as the root: the whole
+    /// document renders as one isolated group whose layers are the graph outputs with their own
+    /// authored appearance; a hidden output contributes nothing (like a hidden group input). The
+    /// step is plan data only; the snapshot is not changed and nothing is persisted.
+    ///
+    /// Refusals: `Unavailable("<root>:graph_outputs_empty")` without outputs,
+    /// `Unavailable("<root>:graph_output_duplicate:<addr>")` for an output listed twice,
+    /// `DanglingInput` for an output that is no step of the plan, `UnsupportedDescriptor
+    /// ("document_root_present")` when the plan already has the step.
+    pub fn with_document_root(mut self) -> Result<Self, CompositeError> {
+        let root = self.document_root();
+        if self.steps.iter().any(|s| s.addr() == &root) {
+            return Err(CompositeError::UnsupportedDescriptor(
+                "document_root_present".into(),
+            ));
+        }
+        if self.outputs.is_empty() {
+            return Err(CompositeError::Unavailable(format!(
+                "{}:graph_outputs_empty",
+                root.text()
+            )));
+        }
+        let steps: BTreeSet<&NodeAddr> = self.steps.iter().map(Step::addr).collect();
+        let mut seen = BTreeSet::new();
+        for output in &self.outputs {
+            if !steps.contains(output) {
+                return Err(CompositeError::DanglingInput(output.text()));
+            }
+            if !seen.insert(output) {
+                return Err(CompositeError::Unavailable(format!(
+                    "{}:graph_output_duplicate:{}",
+                    root.text(),
+                    output.text()
+                )));
+            }
+        }
+        let mut appearance = StepAppearance::identity(false);
+        appearance.mode = StudioBlendMode::Normal;
+        self.steps.push(Step::Composite {
+            addr: root.clone(),
+            layer_kind: "group".into(),
+            inputs: self.outputs.clone(),
+            visible: true,
+            appearance,
+        });
+        self.outputs = vec![root];
+        Ok(self)
     }
 }
 
