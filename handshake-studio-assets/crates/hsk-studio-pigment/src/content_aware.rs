@@ -85,9 +85,13 @@ pub const CONTENT_AWARE_EXACTNESS: Exactness = Exactness::Approximate;
 pub const VOTE_SIGMA: f64 = 0.1;
 /// A custom sampling plane marks a pixel as sampled when its coverage is at least this (one half).
 pub const SAMPLING_THRESHOLD: u16 = 32768;
-/// Conservative working bytes per pyramid pixel (image, masks, source list, slot map, domain list,
-/// two fields and distances, integral image, vote output), charged before allocation.
-pub const LEVEL_BYTES_PER_PIXEL: u64 = 112;
+/// Conservative working bytes per pyramid pixel (image 16, three masks, source list, slot map,
+/// domain and hole lists, integral image, domain scratch, onion-peel state), charged before
+/// allocation.
+pub const LEVEL_BYTES_PER_PIXEL: u64 = 64;
+/// Conservative working bytes per possible domain centre (nearest-neighbour field entry 32 and
+/// distance 8, sweep output 40, vote 16), charged before allocation.
+pub const CENTRE_BYTES: u64 = 96;
 /// Largest jump exponent of a Jacobi sweep's long-range propagation (jump `2^4 = 16`).
 const MAX_JUMP_SHIFT: u32 = 4;
 const NONE: u32 = u32::MAX;
@@ -110,9 +114,28 @@ impl ColourAdaptation {
             Self::VeryHigh => "very_high",
         }
     }
+    /// The gain/bias-adapted patch distance of `high` and `very_high` (Darabi, Shechtman, Barnes,
+    /// Goldman, Sen 2012 "Image Melding", per-channel gain and bias): `(gain_min, gain_max,
+    /// bias_max)`; `high` = gain `0.9 ..= 1/0.9`, bias `|b| <= 0.1`; `very_high` = gain
+    /// `0.75 ..= 1/0.75`, bias `|b| <= 0.25` (Studio readings); `None` for `none` and `default`.
+    pub const fn gain_bias(self) -> Option<(f64, f64, f64)> {
+        match self {
+            Self::None | Self::Default => None,
+            Self::High => Some((0.9, 1.0 / 0.9, 0.1)),
+            Self::VeryHigh => Some((0.75, 1.0 / 0.75, 0.25)),
+        }
+    }
 }
 
-/// STU-RAS-143 `rotation_adaptation` (closed set); only `none` is implemented.
+/// Rotation adaptation step of the transformed-patch search (degrees).
+pub const ANGLE_STEP_DEG: f64 = 5.0;
+/// Scale adaptation: patch scale factors `2^(k / 8)` for `k` in `-SCALE_STEPS ..= SCALE_STEPS`
+/// (0.771 ..= 1.297).
+pub const SCALE_STEPS: i8 = 3;
+/// Largest patch radius of [`ContentAwareOptions::patch_radius`] (patch `17 x 17`).
+pub const MAX_PATCH_RADIUS: u32 = 8;
+
+/// STU-RAS-143 `rotation_adaptation` (closed set).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RotationAdaptation {
     #[default]
@@ -130,6 +153,17 @@ impl RotationAdaptation {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Full => "full",
+        }
+    }
+    /// Largest rotation the search may give a source patch (degrees, either sign): none 0, low
+    /// 15, medium 45, high 90, full 180 (Studio readings), in steps of [`ANGLE_STEP_DEG`].
+    pub const fn max_degrees(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Low => 15,
+            Self::Medium => 45,
+            Self::High => 90,
+            Self::Full => 180,
         }
     }
 }
@@ -204,8 +238,10 @@ impl Default for ContentAwareOptions {
     }
 }
 impl ContentAwareOptions {
+    /// Range check (never clamped). Every STU-RAS-143 adaptation value is implemented by the
+    /// synthesis; [`patch`] in `PatchMode::Normal` (no search) refuses the search adaptations.
     pub fn validate(&self) -> Result<(), RetouchError> {
-        let ok = (1..=8).contains(&self.patch_radius)
+        let ok = (1..=MAX_PATCH_RADIUS).contains(&self.patch_radius)
             && (1..=64).contains(&self.em_iterations)
             && (1..=32).contains(&self.search_iterations)
             && (1..=16).contains(&self.max_levels)
@@ -213,14 +249,91 @@ impl ContentAwareOptions {
         if !ok {
             return Err(RetouchError::OutOfRange);
         }
-        let supported = matches!(self.colour_adaptation, ColourAdaptation::None | ColourAdaptation::Default)
-            && self.rotation_adaptation == RotationAdaptation::None
-            && !self.scale
-            && !self.mirror;
-        if !supported {
-            return Err(RetouchError::ContentAwareOptionUnsupported);
-        }
         Ok(())
+    }
+    /// The search uses an adaptation beyond the plain patch distance (gain/bias, rotation, scale
+    /// or mirror).
+    pub fn adapts_search(&self) -> bool {
+        self.colour_adaptation.gain_bias().is_some()
+            || self.rotation_adaptation != RotationAdaptation::None
+            || self.scale
+            || self.mirror
+    }
+}
+
+/// The search adaptations of one synthesis (from [`ContentAwareOptions`]).
+#[derive(Clone, Copy, Debug)]
+struct Adapt {
+    /// `(gain_min, gain_max, bias_max)` of the gain/bias-adapted distance.
+    colour: Option<(f64, f64, f64)>,
+    /// Largest rotation in [`ANGLE_STEP_DEG`] steps.
+    max_angle: i8,
+    /// Largest scale step (0 or [`SCALE_STEPS`]).
+    max_scale: i8,
+    mirror: bool,
+}
+impl Adapt {
+    fn new(o: &ContentAwareOptions) -> Self {
+        let deg = o.rotation_adaptation.max_degrees();
+        Self {
+            colour: o.colour_adaptation.gain_bias(),
+            max_angle: i8::try_from(deg.checked_div(ANGLE_STEP_DEG as u32).unwrap_or(0)).unwrap_or(0),
+            max_scale: if o.scale { SCALE_STEPS } else { 0 },
+            mirror: o.mirror,
+        }
+    }
+    fn transforms(&self) -> bool {
+        self.max_angle > 0 || self.max_scale > 0 || self.mirror
+    }
+    /// Patch-pixel visit multiplier of one candidate evaluation (statistics pass, bilinear taps).
+    fn cost_factor(&self) -> u64 {
+        match (self.colour.is_some(), self.transforms()) {
+            (false, false) => 1,
+            (true, false) => 2,
+            (false, true) => 4,
+            (true, true) => 8,
+        }
+    }
+}
+
+/// A nearest-neighbour field entry: source centre, transform (rotation `angle` x
+/// [`ANGLE_STEP_DEG`], scale `2^(scale / 8)`, horizontal mirror before rotation) and the
+/// per-channel gain and bias of the adapted distance (1 and 0 when not adapted).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Match {
+    src: u32,
+    angle: i8,
+    scale: i8,
+    mirror: bool,
+    gain: [f32; 3],
+    bias: [f32; 3],
+}
+impl Match {
+    const fn at(src: u32) -> Self {
+        Self { src, angle: 0, scale: 0, mirror: false, gain: [1.0; 3], bias: [0.0; 3] }
+    }
+    fn identity(&self) -> bool {
+        self.angle == 0 && self.scale == 0 && !self.mirror
+    }
+    fn same_place(&self, o: &Self) -> bool {
+        self.src == o.src && self.angle == o.angle && self.scale == o.scale && self.mirror == o.mirror
+    }
+    /// Offset map `o -> M o` (row-major `[a, b, c, d]`): `M = s R(theta) diag(m, 1)`.
+    fn matrix(&self) -> [f64; 4] {
+        let th = f64::from(self.angle) * ANGLE_STEP_DEG * std::f64::consts::PI / 180.0;
+        let s = (f64::from(self.scale) / 8.0).exp2();
+        let (sn, cs) = th.sin_cos();
+        let m = if self.mirror { -1.0 } else { 1.0 };
+        [s * cs * m, -s * sn, s * sn * m, s * cs]
+    }
+    /// The stored gain and bias applied to a premultiplied source sample (colour channels
+    /// clamped to `[0, alpha]`).
+    fn adjust(&self, v: [f64; 4]) -> [f64; 4] {
+        let mut o = v;
+        for k in 0..3 {
+            o[k] = (f64::from(self.gain[k]) * v[k] + f64::from(self.bias[k])).clamp(0.0, v[3].max(0.0));
+        }
+        o
     }
 }
 
@@ -549,9 +662,141 @@ impl Level {
         sum
     }
 
+    /// Bilinear premultiplied sample at `(px, py)` (pixel centres at integers); `None` when a tap
+    /// of non-zero weight leaves the plane or may not be sampled (so the hole is never read).
+    fn sample(&self, px: f64, py: f64) -> Option<[f64; 4]> {
+        if !(px.is_finite() && py.is_finite()) {
+            return None;
+        }
+        let (x0, y0) = (px.floor(), py.floor());
+        let (fx, fy) = (px - x0, py - y0);
+        let (xi, yi) = (x0 as i64, y0 as i64);
+        let mut out = [0.0f64; 4];
+        for (dx, dy, wt) in [
+            (0i64, 0i64, (1.0 - fx) * (1.0 - fy)),
+            (1, 0, fx * (1.0 - fy)),
+            (0, 1, (1.0 - fx) * fy),
+            (1, 1, fx * fy),
+        ] {
+            if wt == 0.0 {
+                continue;
+            }
+            let i = self.index(xi.wrapping_add(dx), yi.wrapping_add(dy))?;
+            if !self.allowed.get(i).copied().unwrap_or(false) {
+                return None;
+            }
+            let p = self.px(i);
+            for c in 0..4 {
+                out[c] += wt * f64::from(p[c]);
+            }
+        }
+        Some(out)
+    }
+
+    /// The (unadjusted) source sample of match `m` at patch offset `(ox, oy)`; `mat` =
+    /// `m.matrix()`. Identity matches read the exemplar pixel (their centre is a valid source).
+    fn source_px(&self, m: &Match, mat: &[f64; 4], ox: i64, oy: i64) -> Option<[f64; 4]> {
+        let (cx, cy) = self.xy(m.src);
+        if m.identity() {
+            let i = self.index(cx.wrapping_add(ox), cy.wrapping_add(oy))?;
+            return Some(f32x4_to_f64(self.px(i)));
+        }
+        let (u, v) = (ox as f64, oy as f64);
+        self.sample(cx as f64 + mat[0] * u + mat[1] * v, cy as f64 + mat[2] * u + mat[3] * v)
+    }
+
+    /// Distance of domain centre `q` to candidate `m` with the search adaptations (the gain and
+    /// bias are fitted here and returned in the match); `None` when the candidate may not be
+    /// sampled (an identity centre that is not a valid source, or a transformed tap outside the
+    /// sampling area). Stops early once at least `cap`.
+    fn cost(&self, r: i64, q: (i64, i64), m: Match, ad: &Adapt, cap: f64) -> Option<(f64, Match)> {
+        if m.identity() && !self.valid.get(m.src as usize).copied().unwrap_or(false) {
+            return None;
+        }
+        let plain = Match { gain: [1.0; 3], bias: [0.0; 3], ..m };
+        if m.identity() && ad.colour.is_none() {
+            return Some((self.dist(r, q, self.xy(m.src), cap), plain));
+        }
+        let mat = m.matrix();
+        // Pass 1 (gain/bias): per-channel means and variances of the target and source patches
+        // over the patch pixels inside the plane (Image Melding: g = clamp(sd_t / sd_s), b =
+        // clamp(mean_t - g mean_s)); any unsampleable tap refuses the candidate here.
+        let fitted = match ad.colour {
+            None => plain,
+            Some((gmin, gmax, bmax)) => {
+                let mut acc = [[0.0f64; 4]; 3];
+                let mut n = 0.0f64;
+                self.each_pair(r, q, &m, &mat, |s, t| {
+                    for (a, c) in acc.iter_mut().zip(0..3) {
+                        a[0] += s[c];
+                        a[1] += s[c] * s[c];
+                        a[2] += t[c];
+                        a[3] += t[c] * t[c];
+                    }
+                    n += 1.0;
+                    true
+                })?;
+                let cnt = n.max(1.0);
+                let (mut gain, mut bias) = ([1.0f32; 3], [0.0f32; 3]);
+                for (c, a) in acc.iter().enumerate() {
+                    let (ms, mt) = (a[0] / cnt, a[2] / cnt);
+                    let vs = (a[1] / cnt - ms * ms).max(0.0);
+                    let vt = (a[3] / cnt - mt * mt).max(0.0);
+                    let g = if vs > 1e-12 { (vt / vs).sqrt() } else { 1.0 };
+                    let g = g.clamp(gmin, gmax) as f32;
+                    gain[c] = g;
+                    bias[c] = (mt - f64::from(g) * ms).clamp(-bmax, bmax) as f32;
+                }
+                Match { gain, bias, ..m }
+            }
+        };
+        // Pass 2: squared difference of the (adjusted) source and the target, early stop at cap.
+        let mut sum = 0.0f64;
+        let colour = ad.colour.is_some();
+        self.each_pair(r, q, &m, &mat, |s, t| {
+            let s = if colour { fitted.adjust(s) } else { s };
+            for c in 0..4 {
+                let d = s[c] - t[c];
+                sum += d * d;
+            }
+            sum < cap
+        })?;
+        Some((sum, fitted))
+    }
+
+    /// Calls `f(source, target)` for every patch offset of `q` inside the plane (row-major) until it
+    /// returns false; `None` when a source tap may not be sampled.
+    fn each_pair(
+        &self,
+        r: i64,
+        q: (i64, i64),
+        m: &Match,
+        mat: &[f64; 4],
+        mut f: impl FnMut([f64; 4], [f64; 4]) -> bool,
+    ) -> Option<()> {
+        for oy in r.wrapping_neg()..=r {
+            let ty = q.1.wrapping_add(oy);
+            if ty < 0 || ty >= self.h as i64 {
+                continue;
+            }
+            for ox in r.wrapping_neg()..=r {
+                let tx = q.0.wrapping_add(ox);
+                if tx < 0 || tx >= self.w as i64 {
+                    continue;
+                }
+                let s = self.source_px(m, mat, ox, oy)?;
+                let t = f32x4_to_f64(self.px(ix(self.w, tx as usize, ty as usize)));
+                if !f(s, t) {
+                    return Some(());
+                }
+            }
+        }
+        Some(())
+    }
+
     /// Vote of pixel `p` from every domain patch covering it: the weighted mean, or with `best` the
     /// pixel proposed by the covering patch of least mean error (first in scan order on ties).
-    fn vote(&self, r: i64, nnf: &[u32], dist: &[f64], p: (i64, i64), best: bool) -> [f32; 4] {
+    fn vote(&self, r: i64, nnf: &[Match], dist: &[f64], ad: &Adapt, p: (i64, i64), best: bool) -> [f32; 4] {
         let mut sum = [0.0f64; 4];
         let mut best_v: Option<(f64, [f32; 4])> = None;
         let mut usum = [0.0f64; 4];
@@ -566,10 +811,16 @@ impl Level {
                     continue;
                 }
                 let k = k as usize;
-                let Some(&s) = nnf.get(k) else { continue };
-                let (sx, sy) = self.xy(s);
-                let Some(si) = self.index(sx.wrapping_add(ox), sy.wrapping_add(oy)) else { continue };
-                let v = self.px(si);
+                let Some(&m) = nnf.get(k) else { continue };
+                let v = if m.identity() && ad.colour.is_none() {
+                    let (sx, sy) = self.xy(m.src);
+                    let Some(si) = self.index(sx.wrapping_add(ox), sy.wrapping_add(oy)) else { continue };
+                    self.px(si)
+                } else {
+                    let Some(s) = self.source_px(&m, &m.matrix(), ox, oy) else { continue };
+                    let s = if ad.colour.is_some() { m.adjust(s) } else { s };
+                    [s[0] as f32, s[1] as f32, s[2] as f32, s[3] as f32]
+                };
                 let e = dist.get(k).copied().unwrap_or(0.0) / (4.0 * self.patch_count(r, q)).max(1.0);
                 if best_v.is_none_or(|(be, _)| e < be) {
                     best_v = Some((e, v));
@@ -639,7 +890,7 @@ fn par_fill<T: Send, F: Fn(usize) -> T + Sync>(out: &mut [T], threads: usize, f:
 struct Sweep<'a> {
     l: &'a Level,
     r: i64,
-    nnf: &'a [u32],
+    nnf: &'a [Match],
     dist: &'a [f64],
     seed: u64,
     level: usize,
@@ -648,15 +899,21 @@ struct Sweep<'a> {
     jump: i64,
     window: i64,
     guide: Option<(i64, i64)>,
+    adapt: Adapt,
 }
 
+/// Bit set on the draw index of the transform draws (separate SplitMix64 streams from the spatial
+/// draws, so the identity search is unchanged by the adaptations).
+const TRANSFORM_DRAW: u32 = 1 << 31;
+
 impl Sweep<'_> {
-    fn step(&self, k: usize) -> (u32, f64) {
+    fn step(&self, k: usize) -> (Match, f64) {
         let l = self.l;
-        let Some(&qi) = l.domain.get(k) else { return (0, f64::INFINITY) };
+        let Some(&qi) = l.domain.get(k) else { return (Match::at(0), f64::INFINITY) };
         let q = l.xy(qi);
-        let mut best = self.nnf.get(k).copied().unwrap_or(0);
+        let mut best = self.nnf.get(k).copied().unwrap_or(Match::at(0));
         let mut bd = self.dist.get(k).copied().unwrap_or(f64::INFINITY);
+        let ad = self.adapt;
         // Guided (content-aware patch): a candidate must lie within the structure window of the
         // dragged source `q + offset` (Chebyshev), so propagation cannot pull the patch away.
         let in_window = |c: u32| match self.guide {
@@ -669,20 +926,24 @@ impl Sweep<'_> {
                     && cy.wrapping_sub(gy).unsigned_abs() <= self.window.unsigned_abs()
             }
         };
-        let try_cand = |cand: Option<u32>, best: &mut u32, bd: &mut f64| {
+        let try_cand = |cand: Option<Match>, best: &mut Match, bd: &mut f64| {
             if let Some(c) = cand
-                && c != *best
-                && in_window(c)
+                && !c.same_place(best)
+                && in_window(c.src)
+                && let Some((d, m)) = l.cost(self.r, q, c, &ad, *bd)
+                && d < *bd
             {
-                let d = l.dist(self.r, q, l.xy(c), *bd);
-                if d < *bd {
-                    *best = c;
-                    *bd = d;
-                }
+                *best = m;
+                *bd = d;
             }
         };
+        let place = |x: i64, y: i64, like: &Match| -> Option<Match> {
+            let i = u32::try_from(l.index(x, y)?).ok()?;
+            Some(Match { src: i, ..*like })
+        };
+        let ident = Match::at(0);
         if let Some((ox, oy)) = self.guide {
-            try_cand(l.valid_at(q.0.wrapping_add(ox), q.1.wrapping_add(oy)), &mut best, &mut bd);
+            try_cand(place(q.0.wrapping_add(ox), q.1.wrapping_add(oy), &ident), &mut best, &mut bd);
         }
         let mut jumps = [1i64, 0];
         if self.jump > 1 {
@@ -698,46 +959,97 @@ impl Sweep<'_> {
                 if ns == NONE {
                     continue;
                 }
-                let Some(&sn) = self.nnf.get(ns as usize) else { continue };
-                let (sx, sy) = l.xy(sn);
-                try_cand(l.valid_at(sx.wrapping_sub(dx), sy.wrapping_sub(dy)), &mut best, &mut bd);
+                let Some(&mn) = self.nnf.get(ns as usize) else { continue };
+                let (sx, sy) = l.xy(mn.src);
+                // Generalized PatchMatch propagation (Barnes et al. 2010): the neighbour's source
+                // moved back by its transform applied to the step, same transform.
+                let cand = if mn.identity() {
+                    place(sx.wrapping_sub(dx), sy.wrapping_sub(dy), &mn)
+                } else {
+                    let m = mn.matrix();
+                    let (fx, fy) = (dx as f64, dy as f64);
+                    let cx = (sx as f64 - (m[0] * fx + m[1] * fy)).round();
+                    let cy = (sy as f64 - (m[2] * fx + m[3] * fy)).round();
+                    place(cx as i64, cy as i64, &mn)
+                };
+                try_cand(cand, &mut best, &mut bd);
             }
         }
         let mut radius = self.window;
         let mut draw = 0u32;
+        let mut step = 0u32;
         while radius >= 1 {
-            let (bx, by) = l.xy(best);
+            let (bx, by) = l.xy(best.src);
             let span = (radius as u64).wrapping_mul(2).wrapping_add(1);
             let h1 = rng(self.seed, self.level, self.em, self.sweep, qi, draw);
             let h2 = rng(self.seed, self.level, self.em, self.sweep, qi, draw.wrapping_add(1));
             let dx = (h1.checked_rem(span).unwrap_or(0) as i64).wrapping_sub(radius);
             let dy = (h2.checked_rem(span).unwrap_or(0) as i64).wrapping_sub(radius);
-            try_cand(l.valid_at(bx.wrapping_add(dx), by.wrapping_add(dy)), &mut best, &mut bd);
+            let (nx, ny) = (bx.wrapping_add(dx), by.wrapping_add(dy));
+            if ad.transforms() {
+                // Joint search: the new place with the best transform, then with a perturbed one.
+                let keep = best;
+                try_cand(place(nx, ny, &keep), &mut best, &mut bd);
+                try_cand(place(nx, ny, &self.perturb(&keep, qi, draw, step)), &mut best, &mut bd);
+            } else {
+                try_cand(place(nx, ny, &ident), &mut best, &mut bd);
+            }
             radius = radius.checked_div(2).unwrap_or(0);
             draw = draw.wrapping_add(2);
+            step = step.saturating_add(1);
         }
         (best, bd)
     }
+
+    /// Random transform around `best` for random-search step `step`: rotation by up to
+    /// `max(1, max_angle >> step)` steps, scale by up to `max(1, max_scale >> step)` steps (each
+    /// clamped to its adaptation range), mirror drawn uniformly when enabled.
+    fn perturb(&self, best: &Match, qi: u32, draw: u32, step: u32) -> Match {
+        let ad = self.adapt;
+        let h = rng(self.seed, self.level, self.em, self.sweep, qi, draw | TRANSFORM_DRAW);
+        let around = |v: i8, max: i8, bits: u64| -> i8 {
+            if max == 0 {
+                return 0;
+            }
+            let reach = i64::from(max).checked_shr(step).unwrap_or(0).max(1);
+            let span = reach.wrapping_mul(2).wrapping_add(1) as u64;
+            let d = (bits.checked_rem(span).unwrap_or(0) as i64).wrapping_sub(reach);
+            let m = i64::from(max);
+            i8::try_from(i64::from(v).wrapping_add(d).clamp(m.wrapping_neg(), m)).unwrap_or(0)
+        };
+        Match {
+            src: best.src,
+            angle: around(best.angle, ad.max_angle, h & 0xFFFF),
+            scale: around(best.scale, ad.max_scale, (h >> 16) & 0xFFFF),
+            mirror: if ad.mirror { (h >> 32) & 1 == 1 } else { false },
+            gain: [1.0; 3],
+            bias: [0.0; 3],
+        }
+    }
 }
 
-fn level_work(l: &Level, r: usize, options: &ContentAwareOptions, guided: bool) -> Option<u64> {
+fn level_work(l: &Level, r: usize, options: &ContentAwareOptions, guided: bool, ad: &Adapt) -> Option<u64> {
     let a = (r as u64).checked_mul(2)?.checked_add(1)?;
     let a = a.checked_mul(a)?;
+    // One candidate evaluation visits the patch `cost_factor` times (statistics pass, bilinear
+    // taps); the transformed search tries two candidates per random draw.
+    let ca = a.checked_mul(ad.cost_factor())?;
     let d = l.domain.len() as u64;
     let hcount = l.holes.len() as u64;
     let bits = u64::from(usize::BITS.checked_sub(l.w.max(l.h).leading_zeros())?);
-    let cands = 8u64.checked_add(bits)?.checked_add(u64::from(guided))?;
-    let per_sweep = d.checked_mul(cands)?.checked_mul(a)?;
+    let draws = if ad.transforms() { bits.checked_mul(2)? } else { bits };
+    let cands = 8u64.checked_add(draws)?.checked_add(u64::from(guided))?;
+    let per_sweep = d.checked_mul(cands)?.checked_mul(ca)?;
     let per_em = d
-        .checked_mul(a)?
+        .checked_mul(ca)?
         .checked_add(per_sweep.checked_mul(u64::from(options.search_iterations))?)?
-        .checked_add(hcount.checked_mul(a)?)?;
+        .checked_add(hcount.checked_mul(ca)?)?;
     per_em.checked_mul(u64::from(options.em_iterations))
 }
 
 struct Synthesis {
     level0: Level,
-    nnf: Vec<u32>,
+    nnf: Vec<Match>,
     dist: Vec<f64>,
     receipt: ContentAwareReceipt,
 }
@@ -768,12 +1080,19 @@ fn synthesize(
     if hole_pixels == 0 || w == 0 || h == 0 {
         return Ok(None);
     }
-    // Working bytes of the whole pyramid (upper bound) plus the output plane, before allocation.
+    // Working bytes of the whole pyramid (upper bound) plus the output plane, before allocation:
+    // per level, every pixel and every possible domain centre (a coarse hole pixel has a distinct
+    // fine hole child, so a level's domain is at most min(pixels, level-0 hole pixels x patch area)).
+    let ar = u64::from(options.patch_radius).checked_mul(2).and_then(|v| v.checked_add(1)).ok_or(Error::Overflow)?;
+    let patch_area = ar.checked_mul(ar).ok_or(Error::Overflow)?;
+    let max_centres = hole_pixels.checked_mul(patch_area).ok_or(Error::Overflow)?;
     let mut bytes = b.area().checked_mul(RGBA_SAMPLE_BYTES).ok_or(Error::Overflow)?;
     for (lw, lh) in pyramid_dims(w, h, options.max_levels) {
         let px = (lw as u64).checked_mul(lh as u64).ok_or(Error::Overflow)?;
+        let centres = px.min(max_centres);
         bytes = bytes
             .checked_add(px.checked_mul(LEVEL_BYTES_PER_PIXEL).ok_or(Error::Overflow)?)
+            .and_then(|v| v.checked_add(centres.checked_mul(CENTRE_BYTES)?))
             .ok_or(Error::Overflow)?;
     }
     if bytes > limits.max_bytes {
@@ -835,16 +1154,17 @@ fn synthesize(
         levels.push(next);
     }
     // Work budget (checked before synthesis).
+    let ad = Adapt::new(options);
     let mut work = 0u64;
     for l in &levels {
-        let lw = level_work(l, r, options, guide.is_some()).ok_or(Error::Overflow)?;
+        let lw = level_work(l, r, options, guide.is_some(), &ad).ok_or(Error::Overflow)?;
         work = work.checked_add(lw).ok_or(Error::Overflow)?;
     }
     limits.admit_work(work)?;
 
     let top = levels.len().saturating_sub(1);
     let mut receipts: Vec<LevelReceipt> = Vec::new();
-    let mut prev: Option<(Level, Vec<u32>)> = None;
+    let mut prev: Option<(Level, Vec<Match>)> = None;
     let mut total_iters = 0u32;
     let mut final_nnf = Vec::new();
     let mut final_dist = Vec::new();
@@ -858,7 +1178,7 @@ fn synthesize(
             )
         });
         // Initial hole estimate and field.
-        let mut nnf = vec![0u32; l.domain.len()];
+        let mut nnf = vec![Match::at(0); l.domain.len()];
         match &prev {
             None => {
                 onion_peel(&mut l);
@@ -878,9 +1198,10 @@ fn synthesize(
                 for (k, slot) in nnf.iter_mut().enumerate() {
                     let qi = l.domain.get(k).copied().unwrap_or(0);
                     let (qx, qy) = l.xy(qi);
-                    *slot = goff
-                        .and_then(|(ox, oy)| l.valid_at(qx.wrapping_add(ox), qy.wrapping_add(oy)))
-                        .unwrap_or_else(|| random_source(&l, options.seed, li, qi));
+                    *slot = Match::at(
+                        goff.and_then(|(ox, oy)| l.valid_at(qx.wrapping_add(ox), qy.wrapping_add(oy)))
+                            .unwrap_or_else(|| random_source(&l, options.seed, li, qi)),
+                    );
                 }
             }
             Some((coarse, cnnf)) => {
@@ -892,25 +1213,43 @@ fn synthesize(
                         *t = v;
                     }
                 }
-                for (k, slot) in nnf.iter_mut().enumerate() {
-                    let qi = l.domain.get(k).copied().unwrap_or(0);
-                    let (qx, qy) = l.xy(qi);
+                let lr = &l;
+                let mut init = vec![Match::at(0); lr.domain.len()];
+                par_fill(&mut init, threads, |k| {
+                    let qi = lr.domain.get(k).copied().unwrap_or(0);
+                    let (qx, qy) = lr.xy(qi);
+                    // The parent's match doubled (plus the child parity), same transform; a
+                    // transformed match must still be sampleable at this level.
                     let from_parent = coarse
                         .index(qx.checked_div(2).unwrap_or(0), qy.checked_div(2).unwrap_or(0))
                         .and_then(|c| coarse.slot.get(c).copied())
                         .filter(|s| *s != NONE)
                         .and_then(|s| cnnf.get(s as usize).copied())
-                        .and_then(|cs| {
-                            let (sx, sy) = coarse.xy(cs);
-                            l.valid_at(
-                                sx.wrapping_mul(2).wrapping_add(qx.checked_rem(2).unwrap_or(0)),
-                                sy.wrapping_mul(2).wrapping_add(qy.checked_rem(2).unwrap_or(0)),
-                            )
+                        .and_then(|cm| {
+                            let (sx, sy) = coarse.xy(cm.src);
+                            let (px, py) = (qx.checked_rem(2).unwrap_or(0), qy.checked_rem(2).unwrap_or(0));
+                            if cm.identity() {
+                                lr.valid_at(sx.wrapping_mul(2).wrapping_add(px), sy.wrapping_mul(2).wrapping_add(py))
+                                    .map(Match::at)
+                            } else {
+                                // The child parity offset goes through the transform too.
+                                let m = cm.matrix();
+                                let (fx, fy) = (px as f64, py as f64);
+                                let cx = sx.wrapping_mul(2).wrapping_add((m[0] * fx + m[1] * fy).round() as i64);
+                                let cy = sy.wrapping_mul(2).wrapping_add((m[2] * fx + m[3] * fy).round() as i64);
+                                let i = u32::try_from(lr.index(cx, cy)?).ok()?;
+                                let m = Match { src: i, ..cm };
+                                lr.cost(ri, (qx, qy), m, &ad, f64::INFINITY).map(|(_, m)| m)
+                            }
                         });
-                    *slot = from_parent
-                        .or_else(|| goff.and_then(|(ox, oy)| l.valid_at(qx.wrapping_add(ox), qy.wrapping_add(oy))))
-                        .unwrap_or_else(|| random_source(&l, options.seed, li, qi));
-                }
+                    from_parent.unwrap_or_else(|| {
+                        Match::at(
+                            goff.and_then(|(ox, oy)| lr.valid_at(qx.wrapping_add(ox), qy.wrapping_add(oy)))
+                                .unwrap_or_else(|| random_source(lr, options.seed, li, qi)),
+                        )
+                    })
+                });
+                nnf = init;
             }
         }
         let window = match guide {
@@ -922,13 +1261,19 @@ fn synthesize(
         let norm: f64 = l.domain.iter().map(|&q| 4.0 * l.patch_count(ri, l.xy(q))).sum::<f64>().max(1.0);
         for em in 0..options.em_iterations {
             {
+                // Recompute every distance (and refit gain/bias) against the current estimate.
                 let lr = &l;
                 let nf = &nnf;
-                par_fill(&mut dist, threads, |k| {
+                let mut fresh = vec![(Match::at(0), 0.0f64); nnf.len()];
+                par_fill(&mut fresh, threads, |k| {
                     let q = lr.xy(lr.domain.get(k).copied().unwrap_or(0));
-                    let s = lr.xy(nf.get(k).copied().unwrap_or(0));
-                    lr.dist(ri, q, s, f64::INFINITY)
+                    let m = nf.get(k).copied().unwrap_or(Match::at(0));
+                    lr.cost(ri, q, m, &ad, f64::INFINITY).map_or((m, f64::INFINITY), |(d, m)| (m, d))
                 });
+                for ((o, d), (no, nd)) in nnf.iter_mut().zip(dist.iter_mut()).zip(fresh) {
+                    *o = no;
+                    *d = nd;
+                }
             }
             for sw in 0..options.search_iterations {
                 let exp = options.search_iterations.wrapping_sub(1).wrapping_sub(sw).min(MAX_JUMP_SHIFT);
@@ -944,8 +1289,9 @@ fn synthesize(
                     jump: 1i64.checked_shl(exp).unwrap_or(1),
                     window,
                     guide: goff,
+                    adapt: ad,
                 };
-                let mut out = vec![(0u32, 0.0f64); nnf.len()];
+                let mut out = vec![(Match::at(0), 0.0f64); nnf.len()];
                 par_fill(&mut out, threads, |k| ctx.step(k));
                 for ((o, d), (no, nd)) in nnf.iter_mut().zip(dist.iter_mut()).zip(out) {
                     *o = no;
@@ -961,7 +1307,7 @@ fn synthesize(
                 let lr = &l;
                 let (nf, df) = (&nnf, &dist);
                 par_fill(&mut votes, threads, |k| {
-                    lr.vote(ri, nf, df, lr.xy(lr.holes.get(k).copied().unwrap_or(0)), best_vote)
+                    lr.vote(ri, nf, df, &ad, lr.xy(lr.holes.get(k).copied().unwrap_or(0)), best_vote)
                 });
             }
             for (&p, v) in l.holes.iter().zip(votes) {
@@ -1166,7 +1512,7 @@ fn run(
                             straight(f32x4_to_f64(l.px(li)))
                         } else if ring {
                             let (lx, ly) = l.xy(u32::try_from(li).map_err(|_| Error::Overflow)?);
-                            straight(f32x4_to_f64(l.vote(ri, &syn.nnf, &syn.dist, (lx, ly), true)))
+                            straight(f32x4_to_f64(l.vote(ri, &syn.nnf, &syn.dist, &Adapt::new(options), (lx, ly), true)))
                         } else {
                             target.at(x, y)
                         };
@@ -1247,6 +1593,10 @@ pub fn patch(
     options.validate()?;
     target.validate()?;
     let window = match mode {
+        // The healing transfer has no search to adapt: refused, never ignored.
+        PatchMode::Normal if options.adapts_search() => {
+            return Err(RetouchError::ContentAwareOptionUnsupported);
+        }
         PatchMode::Normal => None,
         PatchMode::ContentAware { structure } => {
             if !(1..=7).contains(&structure) {

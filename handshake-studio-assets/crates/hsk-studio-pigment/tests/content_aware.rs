@@ -175,6 +175,24 @@ fn fill_is_thread_count_invariant() {
     assert_eq!(bits(&again.result.plane), bits(&reference.result.plane));
     let other = fill(&target, &h, SamplingArea::Auto, &ContentAwareOptions { seed: 1, ..base }, &limits).unwrap();
     assert_eq!(other.receipt.seed, 1);
+    // SMB-PIGMENT-CONTENT-AWARE-2: with every search adaptation on (gain/bias very_high, full
+    // rotation, scale, mirror) the bytes still do not depend on the thread count.
+    let adapted = ContentAwareOptions {
+        colour_adaptation: ColourAdaptation::VeryHigh,
+        rotation_adaptation: RotationAdaptation::Full,
+        scale: true,
+        mirror: true,
+        em_iterations: 2,
+        search_iterations: 3,
+        ..base
+    };
+    let reference = fill(&target, &h, SamplingArea::Auto, &adapted, &limits).unwrap();
+    for threads in [3u32, 8] {
+        let r = fill(&target, &h, SamplingArea::Auto, &ContentAwareOptions { threads, ..adapted }, &limits).unwrap();
+        assert_eq!(bits(&r.result.plane), bits(&reference.result.plane), "adapted threads {threads}");
+        assert_eq!(r.receipt, reference.receipt, "adapted threads {threads}");
+    }
+    assert_ne!(bits(&reference.result.plane), bits(&again.result.plane), "the adaptations change the synthesis");
 }
 
 #[test]
@@ -228,7 +246,11 @@ fn hostile_fill_inputs_are_typed_refusals() {
         ContentAwareOptions { scale: true, ..d },
         ContentAwareOptions { mirror: true, ..d },
     ] {
-        assert_eq!(code(fill(&target, &h, SamplingArea::Auto, &bad, &limits)), "content_aware_option_unsupported");
+        // Implemented since SMB-PIGMENT-CONTENT-AWARE-2 (was content_aware_option_unsupported);
+        // the healing patch (no search) refuses them instead of ignoring them.
+        assert!(fill(&target, &h, SamplingArea::Auto, &bad, &limits).is_ok(), "{bad:?}");
+        let normal = patch(&target, &h, (8, 0), PatchMode::Normal, SamplingArea::Auto, &bad, &limits);
+        assert_eq!(code(normal), "content_aware_option_unsupported");
     }
     // Hole size bound.
     let few = ContentAwareOptions { max_hole_pixels: 63, ..d };
@@ -396,8 +418,11 @@ fn hostile_patch_and_move_inputs_are_typed_refusals() {
     let bad = CoveragePlane { bounds: rect(0, 0, 4, 4), data: vec![65535; 15] };
     assert_eq!(pcode(patch(&target, &bad, (8, 0), PatchMode::Normal, auto, &d, &limits)), "retouch_shape");
     assert_eq!(mcode(content_aware_move(&target, &bad, (8, 0), MoveMode::Move, auto, &d, &limits)), "retouch_shape");
+    // Mirror is implemented since SMB-PIGMENT-CONTENT-AWARE-2 (was refused); the healing patch
+    // refuses it (no search to adapt).
     let mirror = ContentAwareOptions { mirror: true, ..d };
-    assert_eq!(mcode(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &mirror, &limits)), "content_aware_option_unsupported");
+    assert!(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &mirror, &limits).is_ok());
+    assert_eq!(pcode(patch(&target, &region, (8, 0), PatchMode::Normal, auto, &mirror, &limits)), "content_aware_option_unsupported");
     let tight = RetouchLimits { max_work: 1_000, ..limits };
     assert_eq!(mcode(content_aware_move(&target, &region, (8, 0), MoveMode::Move, auto, &d, &tight)), "budget_exceeded");
     // The destination footprint is excluded from the sampling area: a sampling rectangle whose
