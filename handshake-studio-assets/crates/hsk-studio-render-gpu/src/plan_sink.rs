@@ -26,6 +26,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::device::{DeviceInfo, DeviceOptions, GpuContext};
 use crate::error::{GpuError, Reason};
+use crate::pipeline::PipelineFault;
 use crate::ext::{
     AdjustGpu, BlendIfGpu, EXT_BYTES, FeatherError, FeatherPlane, LUT_BYTES, MIN_LUT_BYTES,
     compile_adjustment, ext_bytes, feather_plane, opcode_of,
@@ -1047,6 +1048,9 @@ struct Inner {
     /// Generation of the most recent device (0 = none yet); the next acquire is `last + 1`.
     last_generation: u64,
     stats: Option<GpuStats>,
+    /// Detail of the most recent pipeline creation failure (acquire, reacquire or the test-faults
+    /// probe); cleared by a successful (re)acquire.
+    pipeline_fault: Option<PipelineFault>,
 }
 
 /// GPU backend over the pigment `RenderBackend` port. Device use is serialised by one mutex.
@@ -1081,18 +1085,25 @@ impl GpuBackend {
             0,
             shader.as_deref(),
         );
+        let mut fault = None;
         let (state, last_generation) = match acquired {
             Ok(ctx) => {
                 let generation = ctx.generation();
                 (State::Ready(Box::new(ctx)), generation)
             }
-            Err(GpuError::Unavailable(reason)) => (State::Unavailable(reason), 0),
-            // A device existed but the backend cannot run (shader/pipeline validation): kept as
-            // its own typed failure, distinct from `Unavailable`.
-            Err(error) => (State::Failed(error), 0),
+            Err(failure) => match failure.error {
+                GpuError::Unavailable(reason) => (State::Unavailable(reason), 0),
+                // A device existed but the backend cannot run (shader/pipeline creation): kept as
+                // its own typed failure, distinct from `Unavailable`, with its detail.
+                error => {
+                    fault = failure.fault;
+                    (State::Failed(error), 0)
+                }
+            },
         };
         let mut backend = Self::with_state(options, state, last_generation);
         backend.shader = shader;
+        backend.lock().pipeline_fault = fault;
         backend
     }
 
@@ -1117,6 +1128,7 @@ impl GpuBackend {
                 residency: Residency::new(options.residency_budget_bytes),
                 last_generation,
                 stats: None,
+                pipeline_fault: None,
             }),
         }
     }
@@ -1166,6 +1178,43 @@ impl GpuBackend {
             _ => None,
         }
     }
+    /// Detail of the most recent shader-module or pipeline creation failure: the code also carried
+    /// by `GpuError::Pipeline`, the failing object's label, the wgpu error class and the backend
+    /// message (lane SMB-RENDER-GPU-PIPELINE-FAULT, tests/gpu_pipeline_fault.rs). `None` when the
+    /// last (re)acquire built every pipeline.
+    pub fn pipeline_fault(&self) -> Option<PipelineFault> {
+        self.lock().pipeline_fault.clone()
+    }
+    /// Fault-injection probe (V4-04: compiled only with the `test-faults` feature): build one
+    /// extra compute pipeline from `wgsl` (automatic layout) on the LIVE device, under the same
+    /// guarded creation as the backend's own pipelines. A failure is the typed
+    /// `GpuError::Pipeline` with its detail in [`GpuBackend::pipeline_fault`]; the backend state is
+    /// unchanged, so the device keeps executing plans. An error that still reached the
+    /// uncaptured-error latch is `GpuError::Gpu("uncaptured_error")` (test
+    /// probe_failure_leaves_the_device_usable).
+    #[cfg(feature = "test-faults")]
+    pub fn probe_pipeline(&self, wgsl: &str, entry_point: &str) -> Result<(), GpuError> {
+        let mut inner = self.lock_refreshed();
+        let probed = match &inner.state {
+            State::Ready(ctx) => {
+                let probed = crate::pipeline::probe(&ctx.device, wgsl, entry_point);
+                if ctx.take_fault() {
+                    return Err(GpuError::Gpu("uncaptured_error"));
+                }
+                probed
+            }
+            State::Lost { generation, .. } => {
+                return Err(GpuError::DeviceLost { generation: *generation });
+            }
+            State::Unavailable(reason) => return Err(GpuError::Unavailable(*reason)),
+            State::Failed(error) => return Err(*error),
+        };
+        probed.map_err(|fault| {
+            let error = fault.error();
+            inner.pipeline_fault = Some(fault);
+            error
+        })
+    }
     /// Generation of the most recent device; 0 before any device existed.
     pub fn generation(&self) -> u64 {
         self.lock().last_generation
@@ -1202,13 +1251,22 @@ impl GpuBackend {
     /// stays lost, so stale generations are still refused).
     pub fn reacquire(&self, cancel: &CancellationToken) -> Result<u64, GpuError> {
         let mut inner = self.lock();
-        let ctx = GpuContext::acquire_with(
+        let ctx = match GpuContext::acquire_with(
             &self.options,
             cancel,
             inner.last_generation,
             self.shader.as_deref(),
-        )?;
+        ) {
+            Ok(ctx) => ctx,
+            Err(failure) => {
+                if failure.fault.is_some() {
+                    inner.pipeline_fault = failure.fault;
+                }
+                return Err(failure.error);
+            }
+        };
         let generation = ctx.generation();
+        inner.pipeline_fault = None;
         inner.state = State::Ready(Box::new(ctx));
         inner.last_generation = generation;
         inner.residency.clear();

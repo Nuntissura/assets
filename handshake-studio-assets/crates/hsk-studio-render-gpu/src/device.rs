@@ -4,6 +4,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{GpuError, Reason};
 use crate::kernel::Kernel;
+use crate::pipeline::PipelineFault;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::render_plan::BackendError;
 use std::future::Future;
@@ -148,6 +149,29 @@ fn buffer_cap(device: &wgpu::Device, options: &DeviceOptions) -> u64 {
         .min(u64::from(limits.max_storage_buffer_binding_size))
 }
 
+/// Failure of [`GpuContext::acquire_with`]: the typed error and, for a pipeline failure, its
+/// detail.
+#[derive(Debug)]
+pub(crate) struct AcquireFailure {
+    pub(crate) error: GpuError,
+    pub(crate) fault: Option<PipelineFault>,
+}
+impl From<GpuError> for AcquireFailure {
+    fn from(error: GpuError) -> Self {
+        Self { error, fault: None }
+    }
+}
+impl From<PipelineFault> for AcquireFailure {
+    fn from(fault: PipelineFault) -> Self {
+        Self { error: fault.error(), fault: Some(fault) }
+    }
+}
+impl From<AcquireFailure> for GpuError {
+    fn from(failure: AcquireFailure) -> Self {
+        failure.error
+    }
+}
+
 /// Latches written by wgpu callbacks (device lost, uncaptured error).
 #[derive(Default)]
 struct Signals {
@@ -180,23 +204,24 @@ impl GpuContext {
         cancel: &CancellationToken,
         previous_generation: u64,
     ) -> Result<Self, GpuError> {
-        Self::acquire_with(options, cancel, previous_generation, None)
+        Self::acquire_with(options, cancel, previous_generation, None).map_err(GpuError::from)
     }
 
     /// `acquire_next` with an optional WGSL override (`None` = the generated shader). The override
     /// exists only for fault injection: a shader that fails validation yields the typed
     /// `GpuError::Pipeline`, not `Unavailable` (test
-    /// pipeline_failure_is_typed_and_fails_the_gpu_gate).
+    /// pipeline_failure_is_typed_and_fails_the_gpu_gate). A pipeline failure carries its
+    /// [`PipelineFault`] detail (label, class, backend message) in the [`AcquireFailure`].
     pub(crate) fn acquire_with(
         options: &DeviceOptions,
         cancel: &CancellationToken,
         previous_generation: u64,
         shader: Option<&str>,
-    ) -> Result<Self, GpuError> {
+    ) -> Result<Self, AcquireFailure> {
         let canceled = |_| GpuError::Backend(BackendError::Canceled);
         cancel.check().map_err(canceled)?;
         let candidates: &[wgpu::Backends] = match options.backend {
-            BackendChoice::None => return Err(GpuError::Unavailable(Reason::NoAdapter)),
+            BackendChoice::None => return Err(GpuError::Unavailable(Reason::NoAdapter).into()),
             // Platform-preferred order, one backend per instance: a single-backend instance
             // initialises in a fraction of the time of a multi-backend one.
             BackendChoice::Auto if cfg!(windows) => &[wgpu::Backends::DX12, wgpu::Backends::VULKAN],
@@ -258,8 +283,24 @@ impl GpuContext {
             fault.fault.store(true, Ordering::Release);
         }));
 
-        let kernel = Kernel::new(&device, shader)?;
-        let info = info_of(adapter.get_info(), previous_generation.saturating_add(1));
+        let generation = previous_generation.saturating_add(1);
+        let kernel = Kernel::new(&device, shader).map_err(AcquireFailure::from)?;
+        // Decided before any dispatch: a loss during the build is the typed loss of this
+        // generation, and an error that bypassed the scopes (the uncaptured latch) is a pipeline
+        // failure, not a later `device_fault`.
+        let _ = device.poll(wgpu::PollType::Poll);
+        if signals.lost.load(Ordering::Acquire) {
+            return Err(GpuError::DeviceLost { generation }.into());
+        }
+        if signals.fault.swap(false, Ordering::AcqRel) {
+            return Err(AcquireFailure::from(PipelineFault {
+                code: "pipeline_create",
+                label: "hsk-studio-render-gpu",
+                class: "uncaptured",
+                message: String::from("an error reached the uncaptured-error handler while the pipelines were built"),
+            }));
+        }
+        let info = info_of(adapter.get_info(), generation);
         let max_buffer_bytes = buffer_cap(&device, options);
         Ok(Self {
             device,
@@ -284,7 +325,7 @@ impl GpuContext {
         adapter: wgpu::AdapterInfo,
         options: &DeviceOptions,
     ) -> Result<Self, GpuError> {
-        let kernel = Kernel::new(&device, None)?;
+        let kernel = Kernel::new(&device, None).map_err(|fault| fault.error())?;
         let max_buffer_bytes = buffer_cap(&device, options);
         Ok(Self {
             device,

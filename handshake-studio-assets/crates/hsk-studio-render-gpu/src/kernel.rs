@@ -19,7 +19,7 @@
 //! a second module (`fx.wgsl`, entry point `fx`, its own bind group layout of one uniform block and
 //! four storage buffers); `fx.rs` lists the passes of each effect.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::error::GpuError;
+use crate::pipeline::{PipelineFault, Stage, guarded};
 use hsk_studio_pigment::adjust_math::AdjustmentKind;
 use hsk_studio_pigment::blend_math::{Applicability, Exactness, Family, MODES, StudioBlendMode};
 
@@ -435,17 +435,55 @@ pub(crate) fn blur_params_bytes(
 }
 
 impl Kernel {
-    /// Build the pipeline from `source` (`None` = the generated [`shader_source`]; `Some` is the
-    /// fault-injection route for a broken shader). Shader/pipeline validation failures surface as
-    /// the typed `GpuError::Pipeline`, not as an uncaptured-error panic and not as
-    /// `Unavailable` (test pipeline_failure_is_typed_and_fails_the_gpu_gate).
-    pub(crate) fn new(device: &wgpu::Device, source: Option<&str>) -> Result<Self, GpuError> {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let wgsl = source.map_or_else(shader_source, str::to_owned);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hsk-studio-render-gpu composite"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(wgsl)),
-        });
+    /// Build the pipelines from `source` (`None` = the generated [`shader_source`]; `Some` is the
+    /// fault-injection route for a broken shader). Every module, layout and pipeline is created
+    /// under [`guarded`] (out-of-memory, internal and validation scopes plus a panic guard), so a
+    /// naga rejection is `shader_validation` and a backend compiler rejection (DX12 FXC, class
+    /// internal) is `pipeline_create`, both with the object's label and the backend message, before
+    /// any dispatch and never through the uncaptured-error handler (tests
+    /// pipeline_failure_is_typed_and_fails_the_gpu_gate, tests/gpu_pipeline_fault.rs). The first
+    /// failure stops the build: no later object is created.
+    pub(crate) fn new(device: &wgpu::Device, source: Option<&str>) -> Result<Self, PipelineFault> {
+        let module = |label: &'static str, wgsl: std::borrow::Cow<'static, str>| {
+            guarded(device, label, Stage::Module, || {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(label),
+                    source: wgpu::ShaderSource::Wgsl(wgsl),
+                })
+            })
+        };
+        let bind_layout = |label: &'static str, entries: &[wgpu::BindGroupLayoutEntry]| {
+            guarded(device, label, Stage::Pipeline, || {
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries,
+                })
+            })
+        };
+        let pipeline_layout = |label: &'static str, layout: &wgpu::BindGroupLayout| {
+            guarded(device, label, Stage::Pipeline, || {
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(label),
+                    bind_group_layouts: &[layout],
+                    push_constant_ranges: &[],
+                })
+            })
+        };
+        let make = |label: &'static str,
+                    layout: &wgpu::PipelineLayout,
+                    module: &wgpu::ShaderModule,
+                    entry_point: &str| {
+            guarded(device, label, Stage::Pipeline, || {
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(layout),
+                    module,
+                    entry_point: Some(entry_point),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                })
+            })
+        };
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -456,180 +494,116 @@ impl Kernel {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu layout"),
-            entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform),
-                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(2, wgpu::BufferBindingType::Storage { read_only: false }),
-                entry(3, wgpu::BufferBindingType::Storage { read_only: true }),
+        let uniform = wgpu::BufferBindingType::Uniform;
+        let read = wgpu::BufferBindingType::Storage { read_only: true };
+        let write = wgpu::BufferBindingType::Storage { read_only: false };
+
+        let wgsl = source.map_or_else(shader_source, str::to_owned);
+        let composite_module = module("hsk-studio-render-gpu composite", std::borrow::Cow::Owned(wgsl))?;
+        let layout = bind_layout(
+            "hsk-studio-render-gpu layout",
+            &[entry(0, uniform), entry(1, read), entry(2, write), entry(3, read)],
+        )?;
+        let layout_main = pipeline_layout("hsk-studio-render-gpu pipeline layout", &layout)?;
+        let layout_ext = bind_layout(
+            "hsk-studio-render-gpu envelope layout",
+            &[
+                entry(0, uniform),
+                entry(1, read),
+                entry(2, write),
+                entry(3, read),
+                entry(4, uniform),
+                entry(5, read),
             ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu pipeline layout"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
-        });
-        let layout_ext = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu envelope layout"),
-            entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform),
-                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(2, wgpu::BufferBindingType::Storage { read_only: false }),
-                entry(3, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(4, wgpu::BufferBindingType::Uniform),
-                entry(5, wgpu::BufferBindingType::Storage { read_only: true }),
-            ],
-        });
-        let pipeline_layout_ext = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu envelope pipeline layout"),
-            bind_group_layouts: &[&layout_ext],
-            push_constant_ranges: &[],
-        });
-        let make = |label, layout: &wgpu::PipelineLayout, entry_point| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                module: &module,
-                entry_point: Some(entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            })
-        };
+        )?;
+        let layout_ext_main =
+            pipeline_layout("hsk-studio-render-gpu envelope pipeline layout", &layout_ext)?;
         let pipeline = make(
             "hsk-studio-render-gpu composite",
-            &pipeline_layout,
+            &layout_main,
+            &composite_module,
             "composite",
-        );
+        )?;
         let pipeline_ext = make(
             "hsk-studio-render-gpu composite envelope",
-            &pipeline_layout_ext,
+            &layout_ext_main,
+            &composite_module,
             "composite_ext",
-        );
+        )?;
         let pipeline_adjust = make(
             "hsk-studio-render-gpu adjust",
-            &pipeline_layout_ext,
+            &layout_ext_main,
+            &composite_module,
             "adjust",
-        );
+        )?;
         // Layer-effect passes: a separate module so the layouts above stay as they were. Bindings:
         // 0 uniform parameter block (with the blur taps), 1-2 read-only planes, 3 the output plane,
         // 4 the content frame; four storage buffers is the device's downlevel limit.
-        let layout_fx = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu effect layout"),
-            entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform),
-                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(3, wgpu::BufferBindingType::Storage { read_only: false }),
-                entry(4, wgpu::BufferBindingType::Storage { read_only: true }),
-            ],
-        });
-        let pipeline_layout_fx = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu effect pipeline layout"),
-            bind_group_layouts: &[&layout_fx],
-            push_constant_ranges: &[],
-        });
-        let fx_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hsk-studio-render-gpu effects"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("fx.wgsl"))),
-        });
-        let pipeline_fx = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hsk-studio-render-gpu effects"),
-            layout: Some(&pipeline_layout_fx),
-            module: &fx_module,
-            entry_point: Some("fx"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let layout_fx = bind_layout(
+            "hsk-studio-render-gpu effect layout",
+            &[entry(0, uniform), entry(1, read), entry(2, read), entry(3, write), entry(4, read)],
+        )?;
+        let layout_fx_main = pipeline_layout("hsk-studio-render-gpu effect pipeline layout", &layout_fx)?;
+        let fx_module = module(
+            "hsk-studio-render-gpu effects",
+            std::borrow::Cow::Borrowed(include_str!("fx.wgsl")),
+        )?;
+        let pipeline_fx = make("hsk-studio-render-gpu effects", &layout_fx_main, &fx_module, "fx")?;
         // Layer-transform resampling: 0 uniform parameters, 1 per-pixel sample sites, 2 the source
         // window, 3 the region-sized output (the composite pass's source buffer).
-        let layout_resample = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu resample layout"),
-            entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform),
-                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(3, wgpu::BufferBindingType::Storage { read_only: false }),
-            ],
-        });
-        let pipeline_layout_resample =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("hsk-studio-render-gpu resample pipeline layout"),
-                bind_group_layouts: &[&layout_resample],
-                push_constant_ranges: &[],
-            });
-        let resample_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hsk-studio-render-gpu resample"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                "resample.wgsl"
-            ))),
-        });
-        let pipeline_resample = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hsk-studio-render-gpu resample"),
-            layout: Some(&pipeline_layout_resample),
-            module: &resample_module,
-            entry_point: Some("resample"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let layout_resample = bind_layout(
+            "hsk-studio-render-gpu resample layout",
+            &[entry(0, uniform), entry(1, read), entry(2, read), entry(3, write)],
+        )?;
+        let layout_resample_main =
+            pipeline_layout("hsk-studio-render-gpu resample pipeline layout", &layout_resample)?;
+        let resample_module = module(
+            "hsk-studio-render-gpu resample",
+            std::borrow::Cow::Borrowed(include_str!("resample.wgsl")),
+        )?;
+        let pipeline_resample = make(
+            "hsk-studio-render-gpu resample",
+            &layout_resample_main,
+            &resample_module,
+            "resample",
+        )?;
         // Blur passes: 0 uniform parameters (with the taps), 1 read-only source, 2 the output, 3 a
         // read-only auxiliary frame (the layer shape of the backdrop mix).
-        let layout_blur = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu blur layout"),
-            entries: &[
-                entry(0, wgpu::BufferBindingType::Uniform),
-                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
-                entry(2, wgpu::BufferBindingType::Storage { read_only: false }),
-                entry(3, wgpu::BufferBindingType::Storage { read_only: true }),
-            ],
-        });
-        let pipeline_layout_blur = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu blur pipeline layout"),
-            bind_group_layouts: &[&layout_blur],
-            push_constant_ranges: &[],
-        });
-        let blur_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hsk-studio-render-gpu blur"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("blur.wgsl"))),
-        });
-        let pipeline_blur = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hsk-studio-render-gpu blur"),
-            layout: Some(&pipeline_layout_blur),
-            module: &blur_module,
-            entry_point: Some("blur"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-        let filter_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hsk-studio-render-gpu filter"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("filter.wgsl"))),
-        });
-        let pipeline_filter = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hsk-studio-render-gpu filter"),
-            layout: Some(&pipeline_layout_blur),
-            module: &filter_module,
-            entry_point: Some("filter_pass"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-        match crate::device::block_on_bounded(device.pop_error_scope(), None) {
-            Some(None) => Ok(Self {
-                pipeline,
-                layout,
-                pipeline_ext,
-                pipeline_adjust,
-                layout_ext,
-                pipeline_fx,
-                layout_fx,
-                pipeline_resample,
-                layout_resample,
-                pipeline_blur,
-                layout_blur,
-                pipeline_filter,
-            }),
-            Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
-            None => Err(GpuError::Pipeline("shader_validation_timeout")),
-        }
+        let layout_blur = bind_layout(
+            "hsk-studio-render-gpu blur layout",
+            &[entry(0, uniform), entry(1, read), entry(2, write), entry(3, read)],
+        )?;
+        let layout_blur_main =
+            pipeline_layout("hsk-studio-render-gpu blur pipeline layout", &layout_blur)?;
+        let blur_module = module(
+            "hsk-studio-render-gpu blur",
+            std::borrow::Cow::Borrowed(include_str!("blur.wgsl")),
+        )?;
+        let pipeline_blur = make("hsk-studio-render-gpu blur", &layout_blur_main, &blur_module, "blur")?;
+        let filter_module = module(
+            "hsk-studio-render-gpu filter",
+            std::borrow::Cow::Borrowed(include_str!("filter.wgsl")),
+        )?;
+        let pipeline_filter = make(
+            "hsk-studio-render-gpu filter",
+            &layout_blur_main,
+            &filter_module,
+            "filter_pass",
+        )?;
+        Ok(Self {
+            pipeline,
+            layout,
+            pipeline_ext,
+            pipeline_adjust,
+            layout_ext,
+            pipeline_fx,
+            layout_fx,
+            pipeline_resample,
+            layout_resample,
+            pipeline_blur,
+            layout_blur,
+            pipeline_filter,
+        })
     }
 
     /// Bind group of the envelope entry points: the v1 bindings plus `ext` (4) and `lut` (5).

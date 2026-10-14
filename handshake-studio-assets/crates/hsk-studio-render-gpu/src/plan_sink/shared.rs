@@ -92,75 +92,77 @@ struct OutputPipeline {
 }
 
 impl OutputPipeline {
+    /// Built under `pipeline::guarded` (out-of-memory, internal and validation scopes plus a panic
+    /// guard): the host's device has no handler of ours, so an unscoped backend compiler error
+    /// would reach wgpu's default handler, which panics (lane SMB-RENDER-GPU-PIPELINE-FAULT).
     fn new(device: &wgpu::Device) -> Result<Self, GpuError> {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hsk-studio-render-gpu shared output"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER)),
-        });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu shared output"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        const LABEL: &str = "hsk-studio-render-gpu shared output";
+        crate::pipeline::guarded(device, LABEL, crate::pipeline::Stage::Pipeline, || {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER)),
+            });
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: TARGET_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: TARGET_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hsk-studio-render-gpu shared output"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hsk-studio-render-gpu shared output"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hsk-studio-render-gpu shared output params"),
-            size: PARAMS_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        match crate::device::block_on_bounded(device.pop_error_scope(), None) {
-            Some(None) => Ok(Self {
+                ],
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                bind_group_layouts: &[&layout],
+                push_constant_ranges: &[],
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("hsk-studio-render-gpu shared output"),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+            let params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared output params"),
+                size: PARAMS_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            Self {
                 pipeline,
                 layout,
                 params,
-            }),
-            Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
-            None => Err(GpuError::Pipeline("shader_validation_timeout")),
-        }
+            }
+        })
+        .map_err(|fault| fault.error())
     }
 }
 
