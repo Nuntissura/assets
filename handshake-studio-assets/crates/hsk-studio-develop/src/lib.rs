@@ -23,7 +23,6 @@ pub mod recipe;
 pub mod ljpeg;
 mod nef;
 mod par;
-mod tiff;
 mod tiffep;
 
 use hsk_studio_accord::CancellationToken;

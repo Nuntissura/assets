@@ -19,7 +19,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, VendorFrame};
-use crate::tiff::Tiff;
+use crate::tiffep::Tiff;
 use crate::tiffep;
 
 pub const UNAPPLIED: [&str; 3] = [

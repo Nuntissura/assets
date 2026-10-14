@@ -12,7 +12,87 @@
 use crate::DevelopError;
 use crate::dng::MAX_DNG_PIXELS;
 use crate::pipeline::{Bayer, CfaPattern, XTRANS};
-use crate::tiff::{Entry, Ifd, Tiff};
+pub use hsk_studio_interop_tiff::{Ifd, IfdEntry as Entry};
+use hsk_studio_interop_tiff::{ByteOrder, Container, Limits, TiffError};
+
+/// Develop's bounded budgets for the TIFF container walk (the previous private reader's limits).
+const MAX_ENTRIES_PER_IFD: u32 = 1024;
+const MAX_IFDS: u32 = 64;
+
+fn map_err(error: TiffError) -> DevelopError {
+    match error {
+        TiffError::Corrupt("non_finite") => DevelopError::NonFinite,
+        _ => DevelopError::InvalidContainer,
+    }
+}
+
+/// Develop's view of a TIFF container: the shared interop-tiff container facade with develop's error
+/// vocabulary and u32 narrowing (classic TIFF offsets and counts).
+pub struct Tiff<'a> {
+    container: Container<'a>,
+}
+
+impl<'a> Tiff<'a> {
+    /// Validate the header; returns the reader and the first IFD offset. BigTIFF is refused.
+    pub fn parse(data: &'a [u8]) -> Result<(Self, u32), DevelopError> {
+        let limits = Limits { max_ifd_entries: MAX_ENTRIES_PER_IFD, max_pages: MAX_IFDS, ..Limits::default() };
+        let container = Container::parse(data, &limits).map_err(map_err)?;
+        if container.is_big_tiff() {
+            return Err(DevelopError::UnsupportedContainer);
+        }
+        let first = u32::try_from(container.first_ifd_offset()).map_err(|_| DevelopError::InvalidContainer)?;
+        Ok((Self { container }, first))
+    }
+
+    pub fn is_big_endian(&self) -> bool {
+        self.container.byte_order() == ByteOrder::Big
+    }
+
+    pub fn u32(&self, offset: usize) -> Result<u32, DevelopError> {
+        let raw: [u8; 4] = self
+            .region(u64::try_from(offset).map_err(|_| DevelopError::InvalidContainer)?, 4)?
+            .try_into()
+            .map_err(|_| DevelopError::InvalidContainer)?;
+        Ok(if self.is_big_endian() { u32::from_be_bytes(raw) } else { u32::from_le_bytes(raw) })
+    }
+
+    pub fn ifd(&self, offset: u32) -> Result<Ifd, DevelopError> {
+        self.container.ifd(u64::from(offset)).map_err(map_err)
+    }
+
+    /// All IFDs reachable from the first one through next-pointers and SubIFDs (tag 330), without
+    /// revisiting an offset.
+    pub fn walk(&self, _first: u32) -> Result<Vec<Ifd>, DevelopError> {
+        self.container.walk().map_err(map_err)
+    }
+
+    pub fn bytes(&self, e: &Entry) -> Result<&'a [u8], DevelopError> {
+        self.container.bytes(e).map_err(map_err)
+    }
+
+    pub fn ascii(&self, e: &Entry) -> Result<String, DevelopError> {
+        self.container.ascii(e).map_err(map_err)
+    }
+
+    /// Unsigned integer values (BYTE, SHORT, LONG, IFD).
+    pub fn u32s(&self, e: &Entry) -> Result<Vec<u32>, DevelopError> {
+        if matches!(e.field_type, 16 | 18) {
+            return Err(DevelopError::InvalidContainer);
+        }
+        let values = self.container.uints(e).map_err(map_err)?;
+        values.into_iter().map(|v| u32::try_from(v).map_err(|_| DevelopError::InvalidContainer)).collect()
+    }
+
+    /// Any numeric type as binary64 (RATIONAL/SRATIONAL divide; zero denominator refuses).
+    pub fn f64s(&self, e: &Entry) -> Result<Vec<f64>, DevelopError> {
+        self.container.f64s(e).map_err(map_err)
+    }
+
+    /// Raw bytes of a region of the file (strip/tile payloads).
+    pub fn region(&self, offset: u64, len: u64) -> Result<&'a [u8], DevelopError> {
+        self.container.region(offset, len).map_err(map_err)
+    }
+}
 
 pub const NEW_SUBFILE_TYPE: u16 = 254;
 pub const WIDTH: u16 = 256;

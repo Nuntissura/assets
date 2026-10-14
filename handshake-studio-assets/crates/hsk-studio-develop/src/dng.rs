@@ -15,7 +15,7 @@ use crate::color::{self, CameraSolution, DngColor, Mat3};
 use crate::ljpeg;
 use crate::pipeline::{Cfa, CfaPattern, CfaPlane, Limits, PlaneInit, XTRANS};
 use crate::recipe::{DevelopRecipe, ProfileBinding, as_shot_gain};
-use crate::tiff::{Entry, Ifd, Tiff};
+use crate::tiffep::{Entry, Ifd, Tiff};
 use sha2::{Digest, Sha256};
 
 pub const MAX_DNG_PIXELS: u64 = 1 << 28;

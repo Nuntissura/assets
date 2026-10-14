@@ -25,7 +25,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, VendorFrame};
-use crate::tiff::{Ifd, Tiff};
+use crate::tiffep::{Ifd, Tiff};
 use crate::tiffep;
 
 const COMPRESSION_CRAW: u32 = 32767;

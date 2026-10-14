@@ -120,10 +120,10 @@ fn container_identity_over_the_corpus() {
             let bytes = std::fs::read(&path).unwrap();
             let got = ident(&bytes);
             println!("IDENT {sub}/{name} {got}");
-            if let Some((_, _, want)) = PINNED.iter().find(|(s, n, _)| *s == sub && *n == name) {
-                if *want != got {
-                    mismatches.push(format!("{sub}/{name}: want {want} got {got}"));
-                }
+            if let Some((_, _, want)) = PINNED.iter().find(|(s, n, _)| *s == sub && *n == name)
+                && *want != got
+            {
+                mismatches.push(format!("{sub}/{name}: want {want} got {got}"));
             }
         }
     }

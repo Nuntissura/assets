@@ -25,7 +25,7 @@ use crate::DevelopError;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::ljpeg;
 use crate::pipeline::{Bayer, CfaPattern};
-use crate::tiff::Tiff;
+use crate::tiffep::Tiff;
 
 const TAG_COMPRESSION: u16 = 259;
 const TAG_MODEL: u16 = 272;
