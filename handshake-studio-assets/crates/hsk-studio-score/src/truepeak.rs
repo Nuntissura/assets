@@ -1,75 +1,50 @@
 //! 4x oversampling true-peak estimator shared by the lookahead limiter and the loudness meter.
 //!
-//! Design (own, no third-party coefficients): a 49-tap Kaiser-windowed sinc low-pass
-//! (`h[n] = sinc(n / 4) * kaiser(n / 24, beta = 7)`, `n = -24..=24`) split into four polyphase
-//! branches. Branch 0 has a single non-zero tap (the centre), so the original samples pass
-//! through bit-exactly; branches 1..=3 have 12 taps each and are normalised to unit DC gain.
-//! Group delay is [`TRUE_PEAK_DELAY`] original samples. ITU-R BS.1770-4 Annex 2 only requires
-//! oversampling and offers a 48-tap filter as an example; this filter is a different, documented
-//! design, and its accuracy is measured in `tests/loudness.rs`, not claimed identical.
-use std::f64::consts::PI;
+//! Filter: the 48-tap, 4-phase FIR interpolator given as the example in ITU-R BS.1770-5
+//! Annex 2 (identical to the BS.1770-4 Annex 2 example; fetched from
+//! `https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1770-5-202311-I!!PDF-E.pdf`; the -4
+//! PDF path returned HTTP 404). Coefficients are transcribed exactly (dyadic rationals; per-phase DC
+//! gain is 1.0016 / 0.9730 / 0.9730 / 1.0016, as given by the standard). Phase `p` tap `k` multiplies `x[m - k]` and yields the
+//! 4x sample at position `m - 5.875 + p / 4` (the filter centre is between taps 23 and 24), so a
+//! value pushed at time `m` describes the region `[m - 6, m - 5)` ([`TRUE_PEAK_DELAY`] = 6).
+//! Annex 2 states the example "would satisfy the requirements"; accuracy is measured in
+//! `tests/truepeak.rs`.
 use std::sync::OnceLock;
 
 /// Oversampling factor.
 pub(crate) const OVERSAMPLE: usize = 4;
 /// Taps per interpolating polyphase branch.
 pub(crate) const BRANCH_TAPS: usize = 12;
-/// Delay of the interpolator in original-rate samples: a value pushed at time `m` describes the
-/// signal region `[m - 6, m - 5)`.
+/// Delay of the interpolator in original-rate samples.
 pub(crate) const TRUE_PEAK_DELAY: usize = 6;
 
-const HALF_SPAN: i32 = 24;
-const KAISER_BETA: f64 = 7.0;
+/// BS.1770-5 Annex 2 coefficients, one row per phase (phase 0..=3), 12 taps each.
+const ITU_PHASES: [[f64; BRANCH_TAPS]; OVERSAMPLE] = [
+    [
+        0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000, -0.0594482421875, 0.1373291015625,
+        0.9721679687500, -0.1022949218750, 0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500,
+    ],
+    [
+        -0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250, -0.1665039062500, 0.4650878906250,
+        0.7797851562500, -0.2003173828125, 0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375,
+    ],
+    [
+        -0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000, -0.2003173828125, 0.7797851562500,
+        0.4650878906250, -0.1665039062500, 0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875,
+    ],
+    [
+        -0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750, -0.1022949218750, 0.9721679687500,
+        0.1373291015625, -0.0594482421875, 0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750,
+    ],
+];
 
-fn bessel_i0(x: f64) -> f64 {
-    let (mut sum, mut term) = (1.0_f64, 1.0_f64);
-    let q = x * x / 4.0;
-    for k in 1..60 {
-        term *= q / (f64::from(k) * f64::from(k));
-        sum += term;
-        if term < sum * 1e-17 {
-            break;
-        }
-    }
-    sum
-}
-
-fn sinc(x: f64) -> f64 {
-    if x == 0.0 {
-        1.0
-    } else {
-        (PI * x).sin() / (PI * x)
-    }
-}
-
-/// Branches 1..=3 (index 0..=2), tap `k` multiplies `x[m - k]`.
-fn branches() -> &'static [[f64; BRANCH_TAPS]; 3] {
-    static TABLE: OnceLock<[[f64; BRANCH_TAPS]; 3]> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let denom = bessel_i0(KAISER_BETA);
-        let h = |i: usize| -> f64 {
-            let n = i as i32 - HALF_SPAN;
-            let r = f64::from(n) / f64::from(HALF_SPAN);
-            let window = bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) / denom;
-            sinc(f64::from(n) / OVERSAMPLE as f64) * window
-        };
-        let mut table = [[0.0; BRANCH_TAPS]; 3];
-        for (b, row) in table.iter_mut().enumerate() {
-            let phase = b + 1;
-            for (k, tap) in row.iter_mut().enumerate() {
-                *tap = h(OVERSAMPLE * k + phase);
-            }
-            let sum: f64 = row.iter().sum();
-            for tap in row.iter_mut() {
-                *tap /= sum;
-            }
-        }
-        table
-    })
+fn branches() -> &'static [[f64; BRANCH_TAPS]; OVERSAMPLE] {
+    static TABLE: OnceLock<[[f64; BRANCH_TAPS]; OVERSAMPLE]> = OnceLock::new();
+    TABLE.get_or_init(|| ITU_PHASES)
 }
 
 /// Per-channel streaming estimator. `push` returns the largest magnitude among the four
-/// oversampled values that describe the region `[m - 6, m - 5)`.
+/// oversampled values and the original sample that describe the region `[m - 6, m - 5)`.
 #[derive(Clone, Debug)]
 pub(crate) struct TruePeakFilter {
     history: [f64; BRANCH_TAPS],
@@ -87,7 +62,8 @@ impl TruePeakFilter {
     pub(crate) fn push(&mut self, x: f64) -> f64 {
         self.history.copy_within(0..BRANCH_TAPS - 1, 1);
         self.history[0] = x;
-        // Branch 0 is the centre tap: x[m - 6].
+        // The Annex 2 phase-0 branch is not an identity, so the raw sample is included: the
+        // true peak can never be below the sample peak (also keeps the limiter clamp idle).
         let mut peak = self.history[TRUE_PEAK_DELAY].abs();
         for row in branches() {
             let mut acc = 0.0;
