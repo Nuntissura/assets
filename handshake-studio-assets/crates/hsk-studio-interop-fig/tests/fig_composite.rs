@@ -68,7 +68,6 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 struct Mapped {
-    doc: FigDocument,
     proposal: NativeProposal,
 }
 
@@ -91,7 +90,7 @@ fn mapped(name: &str) -> Mapped {
         resolver: &Host,
     };
     let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), &cancel).unwrap();
-    Mapped { doc, proposal }
+    Mapped { proposal }
 }
 
 fn loss(p: &NativeProposal, path: &str) -> BTreeMap<&'static str, u32> {
@@ -374,7 +373,8 @@ fn real_layer_graph_shape_and_losses_are_pinned() {
     // (operations, edges, outputs, native.graph losses) per fixture. Edges exist only where a group
     // holds image-typed content (text sources, boolean leaves); every vector layer with paths is a
     // vector source listed as an output, so vector content is never a group input.
-    let pins: [(&str, (usize, usize, usize), &[(&str, u32)]); 3] = [
+    type Pin<'a> = (&'a str, (usize, usize, usize), &'a [(&'a str, u32)]);
+    let pins: [Pin<'_>; 3] = [
         ("fig-basic-shapes.fig", (12, 0, 12), &[("group_flattened_vector_not_group_input", 3)]),
         (
             "fig-components-autolayout.fig",
@@ -473,8 +473,8 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     for p in [(710usize, 420usize), (650, 460)] {
         let o = ((p.1 - origin.1) * png.0 + (p.0 - origin.0)) * 4;
         let ours = over_bg(&r, p.0, p.1, [png.2[0], png.2[1], png.2[2]]);
-        for c in 0..3 {
-            let multiplied = ours[c] * f64::from(png.2[c]) / 255.0;
+        for (c, v) in ours.iter().enumerate() {
+            let multiplied = v * f64::from(png.2[c]) / 255.0;
             assert!((multiplied - f64::from(png.2[o + c])).abs() <= 2.0, "{p:?} channel {c}");
         }
     }
