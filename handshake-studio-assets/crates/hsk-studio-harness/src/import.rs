@@ -154,8 +154,10 @@ mod with_package {
     use hsk_studio_folio::{Resolver, Snapshot};
     use hsk_studio_package::{Extras, ImportEntry, Limits as PackageLimits, MemoryAssetSource, WriteOptions, write_package_with};
     use serde_json::Value;
+    #[cfg(any(feature = "import-psd", feature = "import-raw"))]
+    use hsk_studio_folio as folio;
     #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
-    use {hsk_studio_folio as folio, hsk_studio_package::ImportRole, serde_json::json};
+    use {hsk_studio_package::ImportRole, serde_json::json};
 
     /// What an importer produced, ready to be written as a native container.
     pub struct ImportedDocument {
@@ -236,23 +238,46 @@ mod with_package {
     }
 
     /// TIFF-family bytes: with `import-raw`, `hsk-studio-develop` decides first (DNG, CR2, NEF, ARW;
-    /// its typed refusals pass through); only its `unsupported_container` (a TIFF that is not a
-    /// camera raw it knows, e.g. no DNGVersion) continues as plain TIFF. Without `import-raw` the
-    /// camera raw check is not in the build, so a TIFF-based raw would import its first IFD as a
-    /// plain page; the receipt records `camera_raw_check: not_in_build` (never silent).
+    /// its typed refusals pass through). A camera raw never falls through to the plain TIFF route
+    /// (SMB-CONVERT-FOLLOWUPS slice 2): before it, the interop-tiff container walk (IFD chain and
+    /// SubIFDs) looks for DNGVersion (50706) or a CFA (32803) / LinearRaw (34892) photometric
+    /// (`tiff::camera_raw_marker`). With `import-raw`, develop's `unsupported_container` continues as
+    /// plain TIFF only when no marker is present (otherwise develop's refusal stands); without
+    /// `import-raw` a marked file is `format_unavailable` (format `camera_raw`, feature `import-raw`).
+    /// Tests: `tests/import_tiff.rs` `camera_raw_never_imports_as_plain_tiff_without_import_raw`.
     fn tiff_family(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
         #[cfg(feature = "import-raw")]
         {
             let not_raw = hsk_studio_develop::DevelopError::UnsupportedContainer.code();
             match raw_route(bytes, SourceFormat::Tiff, resolver, cancel) {
-                Err(ImportError::Importer { code, .. }) if code == not_raw => {
+                Err(ImportError::Importer { code, .. }) if code == not_raw && camera_raw_marker(bytes).is_none() => {
                     plain_tiff(bytes, resolver, cancel, "develop_unsupported_container")
                 }
                 other => other,
             }
         }
         #[cfg(not(feature = "import-raw"))]
-        plain_tiff(bytes, resolver, cancel, "not_in_build")
+        {
+            if camera_raw_marker(bytes).is_some() {
+                return Err(ImportError::FormatUnavailable {
+                    format: SourceFormat::CameraRaw,
+                    feature: "import-raw",
+                    reason: "feature_not_enabled",
+                });
+            }
+            plain_tiff(bytes, resolver, cancel, "container_markers_absent")
+        }
+    }
+
+    #[cfg(feature = "import-tiff")]
+    fn camera_raw_marker(bytes: &[u8]) -> Option<&'static str> {
+        super::tiff::camera_raw_marker(bytes)
+    }
+
+    /// Without interop-tiff no container walk is in the build; the plain TIFF route is unavailable too.
+    #[cfg(not(feature = "import-tiff"))]
+    fn camera_raw_marker(_: &[u8]) -> Option<&'static str> {
+        None
     }
 
     #[cfg(not(feature = "import-tiff"))]

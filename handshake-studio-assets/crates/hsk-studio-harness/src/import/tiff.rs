@@ -37,7 +37,8 @@ fn importer(code: &'static str) -> ImportError {
 }
 
 /// Imports the first page of a plain TIFF. `camera_raw_check` names who decided this is not a
-/// camera raw (`develop_unsupported_container`) or that no check is in the build (`not_in_build`).
+/// camera raw: `develop_unsupported_container` (develop refused and [`camera_raw_marker`] found no
+/// marker) or `container_markers_absent` (no `import-raw`; [`camera_raw_marker`] found no marker).
 pub(crate) fn import_tiff(
     bytes: &[u8],
     resolver: &dyn Resolver,
@@ -115,6 +116,34 @@ pub(crate) fn import_tiff(
         },
     });
     package_proposal(FORMAT, "hsk-studio-interop-tiff + hsk-studio-interop-psd", bytes, proposal, extra)
+}
+
+/// Why a TIFF container is a camera raw, or `None`: DNGVersion (tag 50706) in any walked IFD, or a
+/// CFA (32803) / LinearRaw (34892) PhotometricInterpretation in any IFD of the bounded walk (IFD
+/// chain plus SubIFDs, where TIFF/EP raws such as NEF and ARW keep the sensor image behind a
+/// reduced-resolution IFD0 with NewSubfileType 1). An unwalkable chain falls back to IFD0 alone; an
+/// unparseable header is no marker (the plain decoder then refuses with its own code).
+pub(crate) fn camera_raw_marker(bytes: &[u8]) -> Option<&'static str> {
+    const DNG_VERSION: u16 = 50706;
+    const PHOTOMETRIC: u16 = 262;
+    const CFA: u64 = 32803;
+    const LINEAR_RAW: u64 = 34892;
+    let container = tiff::Container::parse(bytes, &tiff::Limits::default()).ok()?;
+    let ifds = match container.walk() {
+        Ok(ifds) => ifds,
+        Err(_) => vec![container.ifd(container.first_ifd_offset()).ok()?],
+    };
+    if ifds.iter().any(|ifd| ifd.find(DNG_VERSION).is_some()) {
+        return Some("dng_version");
+    }
+    ifds.iter().find_map(|ifd| {
+        let entry = ifd.find(PHOTOMETRIC)?;
+        match container.uints(entry).ok()?.first().copied()? {
+            CFA => Some("cfa_photometric"),
+            LINEAR_RAW => Some("linear_raw_photometric"),
+            _ => None,
+        }
+    })
 }
 
 fn order(o: tiff::ByteOrder) -> &'static str {

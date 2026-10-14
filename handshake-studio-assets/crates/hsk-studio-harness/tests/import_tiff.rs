@@ -228,6 +228,76 @@ fn tiff_corpus_files_import_with_typed_losses_or_pass_through_refusals() {
     println!("TIFF corpus checked={checked}/4");
 }
 
+/// SMB-CONVERT-FOLLOWUPS slice 2: a TIFF-based camera raw never imports as a plain TIFF. A hand-built
+/// 2x2 RGB page carrying DNGVersion (50706), and the same page with a CFA photometric, are raws by the
+/// container walk; corpus DNG, NEF and ARW files (sha256-pinned, `NOT_PROVEN:` when absent) are too,
+/// and the CR2 is a raw by its magic. Without `import-raw` each is `format_unavailable` (format
+/// `camera_raw`, feature `import-raw`); with `import-raw` develop decides and its result is never a
+/// plain `tiff` import.
+#[test]
+fn camera_raw_never_imports_as_plain_tiff_without_import_raw() {
+    let cancel = CancellationToken::default();
+    let rgb = |photometric: u16, extra: Option<(u16, u16, u32, Vec<u8>)>| {
+        let mut entries = vec![
+            (256, SHORT, 1, short(2)),
+            (257, SHORT, 1, short(2)),
+            (258, SHORT, 3, [8u16, 8, 8].iter().flat_map(|v| v.to_le_bytes()).collect()),
+            (259, SHORT, 1, short(1)),
+            (262, SHORT, 1, short(photometric)),
+            (273, LONG, 1, Vec::new()),
+            (277, SHORT, 1, short(3)),
+            (278, SHORT, 1, short(2)),
+            (279, LONG, 1, 12u32.to_le_bytes().to_vec()),
+        ];
+        entries.extend(extra);
+        // Pixel data follows the IFD and the 6-byte BitsPerSample value.
+        let pixel_at = 8 + 2 + 12 * entries.len() + 4 + 6;
+        entries[5].3 = (pixel_at as u32).to_le_bytes().to_vec();
+        tiff_le(&entries).into_iter().chain([7u8; 12]).collect::<Vec<u8>>()
+    };
+    let plain = rgb(2, None);
+    let plain_import = import(&plain, &TrustAllResolver, &cancel).expect("control: an unmarked page imports as plain TIFF");
+    assert_eq!(plain_import.receipt["source_format"], "tiff");
+    let dng = rgb(2, Some((50706, 1, 4, vec![1, 4, 0, 0])));
+    let cfa = rgb(32803, None);
+    let mut cases: Vec<(String, Vec<u8>)> = vec![("synthetic DNGVersion".into(), dng), ("synthetic CFA".into(), cfa)];
+    match corpus_root() {
+        None => println!("NOT_PROVEN: camera_raw_never_plain corpus reason=corpus_root_absent"),
+        Some(root) => {
+            for (name, sha256) in [
+                ("dng/canon-eos-5d3-mlv-14bit-lossless.dng", "1d77dcc6cdb839b10c1948f0b4471984ab48cf15e973fb77520584cee72b603e"),
+                ("raw-vendor/nikon-d1h-12bit-uncompressed.nef", "d110b80a8b10a3a67b5cd1c15ef33f1a6397557b73d5d3f4e565739f0c072571"),
+                ("raw-vendor/sony-ilce-7s-14bit-compressed.arw", "a35ebb2fbec929daa5beb20d1ce5c15a8aac7b1a7a231455387f3df8a7442e07"),
+                ("raw-vendor/canon-eos-350d-raw.cr2", "4b47ba27c0090efa091aaf99babc76d9a3e6f6f121b443d6c58c3ce7275cd770"),
+            ] {
+                match std::fs::read(root.join(name)) {
+                    Ok(bytes) if hsk_studio_package::sha256_hex_of(&bytes) == sha256 => cases.push((name.into(), bytes)),
+                    Ok(_) => println!("NOT_PROVEN: camera_raw_never_plain {name} reason=sha256_mismatch"),
+                    Err(_) => println!("NOT_PROVEN: camera_raw_never_plain {name} reason=file_absent"),
+                }
+            }
+        }
+    }
+    for (name, bytes) in &cases {
+        let result = import(bytes, &TrustAllResolver, &cancel);
+        if cfg!(feature = "import-raw") {
+            match &result {
+                Ok(imported) => assert_ne!(imported.receipt["source_format"], "tiff", "{name}: imported as plain TIFF"),
+                Err(e) => assert!(matches!(e, ImportError::Importer { .. } | ImportError::FormatUnavailable { .. }), "{name}: {e:?}"),
+            }
+        } else {
+            assert_eq!(
+                result.err(),
+                Some(ImportError::FormatUnavailable { format: SourceFormat::CameraRaw, feature: "import-raw", reason: "feature_not_enabled" }),
+                "{name}"
+            );
+        }
+        // Evidence of the failure class: whether interop-tiff alone would have decoded a first page.
+        let ifd0_decodes = tiff::decode(bytes, &tiff::Limits::default(), &cancel).is_ok();
+        println!("CAMERA_RAW {name}: never plain TIFF (interop-tiff alone decodes a page: {ifd0_decodes})");
+    }
+}
+
 struct TrustAllResolver;
 impl folio::Resolver for TrustAllResolver {
     fn primitive(&self, _: &str, _: &str) -> folio::Resolution {
