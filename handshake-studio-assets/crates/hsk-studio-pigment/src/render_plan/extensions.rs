@@ -21,6 +21,10 @@ use crate::effect_math::{
     EFFECT_EXACTNESS, EffectError, EffectKind, EffectOp, MAX_EFFECTS_PER_LAYER,
     MAX_EFFECTS_PER_PLAN,
 };
+use crate::transform_math::{
+    LayerTransform, MAX_TRANSFORM_AREA_PER_PLAN, MAX_TRANSFORMS_PER_PLAN, PreparedTransform,
+    ResampleFilter, TRANSFORM_EXACTNESS,
+};
 use hsk_studio_accord::CancellationToken;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -70,6 +74,15 @@ impl Knockout {
 ///   [`ExtOperator::EffectsNested`], which a backend must declare through
 ///   [`RenderBackend::extension_exactness`]. Empty = no effects (and absent from the digest).
 ///
+/// - `transform`: an affine layer transform with a resampling filter ([`crate::transform_math`],
+///   lane SMB-PIGMENT-TRANSFORM). The layer's input must be a `Tile` node; its content is the tile
+///   resampled through the transform (destination bounds `PreparedTransform::bounds`), and with
+///   `transform_mask` its coverage mask is resampled the same way (zero coverage outside the
+///   transformed plane, before invert and density). Refused with layer effects on the same layer
+///   and, for a transformed mask, with a mask feather or without a coverage mask
+///   ([`PlanError::TransformCombination`]); reported as [`ExtOperator::Transform`] (Approximate).
+///   `None` = no transform (and absent from the digest).
+///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
 #[non_exhaustive]
@@ -83,6 +96,8 @@ pub struct LayerExtension {
     pub knockout: Knockout,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<EffectOp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<LayerTransform>,
 }
 impl LayerExtension {
     /// An extension that changes nothing (fill in the fields you need).
@@ -95,6 +110,7 @@ impl LayerExtension {
             mask_feather_px: 0.0,
             knockout: Knockout::None,
             effects: Vec::new(),
+            transform: None,
         }
     }
     pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
@@ -115,6 +131,10 @@ impl LayerExtension {
     }
     pub fn with_effects(mut self, effects: Vec<EffectOp>) -> Self {
         self.effects = effects;
+        self
+    }
+    pub fn with_transform(mut self, transform: LayerTransform) -> Self {
+        self.transform = Some(transform);
         self
     }
 }
@@ -182,6 +202,10 @@ pub enum ExtOperator {
     /// effects use are admitted separately by [`admit_extended`] through the backend's v1
     /// [`Operator::Blend`] classes.
     Effect(EffectKind),
+    /// A transformed layer resampled with this filter ([`LayerExtension::transform`],
+    /// [`crate::transform_math`]); class [`TRANSFORM_EXACTNESS`] (Approximate). A transformed mask
+    /// uses the same operator.
+    Transform(ResampleFilter),
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -198,6 +222,11 @@ impl ExtOperator {
             Self::MaskFeather => "mask_feather",
             Self::Knockout(k) => k.key(),
             Self::Effect(k) => k.key(),
+            Self::Transform(f) => match f {
+                ResampleFilter::NearestNeighbour => "transform_nearest_neighbour",
+                ResampleFilter::Bilinear => "transform_bilinear",
+                ResampleFilter::Bicubic => "transform_bicubic",
+            },
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -213,6 +242,7 @@ impl ExtOperator {
             Self::Knockout(_) => Exactness::Unsupported,
             Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
             Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
+            Self::Transform(_) => TRANSFORM_EXACTNESS,
         }
     }
 }
@@ -297,6 +327,8 @@ impl PlanExtensions {
         let mut ops: Vec<ExtOperator> = Vec::new();
         let mut seen = BTreeSet::new();
         let mut total_effects = 0usize;
+        let mut total_transforms = 0usize;
+        let mut transform_area = 0u64;
         let reachable = plan.reachable_nodes();
         let holding_effects = self.nodes_holding_effects(plan, &reachable);
         for e in &self.layers {
@@ -394,6 +426,33 @@ impl PlanExtensions {
                 {
                     add(ExtOperator::EffectsNested);
                 }
+            }
+            if let Some(t) = &e.transform {
+                let Some(PlanNode::Tile(tile)) = plan.nodes.get(layer.input.0 as usize) else {
+                    return Err(PlanError::TransformTarget { node });
+                };
+                if !e.effects.is_empty() {
+                    return Err(PlanError::TransformCombination { node });
+                }
+                if t.transform_mask
+                    && (e.mask_feather_px != 0.0
+                        || !layer.mask.as_ref().is_some_and(|m| m.format != MaskFormat::BaseAlpha))
+                {
+                    return Err(PlanError::TransformCombination { node });
+                }
+                let prepared = PreparedTransform::new(t, tile.placement)
+                    .map_err(|error| PlanError::TransformMatrix { node, error })?;
+                let bounds = prepared.bounds();
+                total_transforms = total_transforms.saturating_add(1);
+                transform_area = transform_area.saturating_add(
+                    u64::from(bounds.width).saturating_mul(u64::from(bounds.height)),
+                );
+                if total_transforms > MAX_TRANSFORMS_PER_PLAN
+                    || transform_area > MAX_TRANSFORM_AREA_PER_PLAN
+                {
+                    return Err(PlanError::TransformLimit { node });
+                }
+                add(ExtOperator::Transform(t.filter));
             }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {

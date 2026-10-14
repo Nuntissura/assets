@@ -11,6 +11,7 @@ pub mod masked_patch;
 pub mod render_plan;
 pub mod selection;
 pub mod tile;
+pub mod transform_math;
 pub mod wire;
 use hsk_studio_observe::ResourceCode;
 pub use masked_patch::*;
