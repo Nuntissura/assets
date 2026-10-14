@@ -102,6 +102,7 @@ const WHATS: [&str; 36] = [
     "mf-worker-no-open",
     "mf-open-config",
     "mf-frame-bytes",
+    // Retired (SMB-REEL-BFRAME-ORDER: B-frame streams decode, no worker emits it); kept so indices hold.
     "mf-reorder-needs-packet-timing",
     "mf-output-time-unknown",
     "mf-dxva-unavailable",

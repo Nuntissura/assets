@@ -86,6 +86,10 @@ struct Fake {
     plan: Plan,
     supports: bool,
     hold: bool,
+    /// `Some((order, declares))`: a reordering decoder that releases pictures in this tag order, each as
+    /// soon as its packet and every picture before it in `order` have arrived (pictures the plan drops are
+    /// skipped); `declares` is what its sessions answer to `reorders_output`.
+    release: Option<(&'static [u64], bool)>,
 }
 
 impl Fake {
@@ -97,6 +101,7 @@ impl Fake {
                 plan,
                 supports: true,
                 hold: false,
+                release: None,
             },
             seen,
         )
@@ -108,6 +113,12 @@ impl Fake {
         self.hold = true;
         self
     }
+
+    /// A decoder that releases its pictures in `order` (see `Fake::release`).
+    fn releasing(mut self, order: &'static [u64], declares: bool) -> Self {
+        self.release = Some((order, declares));
+        self
+    }
 }
 
 struct FakeSession {
@@ -115,6 +126,56 @@ struct FakeSession {
     plan: Plan,
     hold: bool,
     held: Vec<u64>,
+    /// Release order still to go, and the reorder declaration (`Fake::release`).
+    order: Option<(Vec<u64>, bool)>,
+}
+
+impl FakeSession {
+    fn drops(&self, tag: u64) -> bool {
+        matches!(self.plan, Plan::DropPicture(at) if at == tag)
+            || matches!(self.plan, Plan::DropFrom(from) if tag >= from)
+    }
+
+    /// Releases the pictures of `order` whose packets arrived, in order, up to the first whose packet has
+    /// not (at `finish`, everything left); dropped pictures are skipped.
+    fn release_ordered(
+        &mut self,
+        finish: bool,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), ReelError> {
+        let Some((mut order, declares)) = self.order.take() else {
+            return Ok(());
+        };
+        let arrived: Vec<u64> = self
+            .seen
+            .lock()
+            .unwrap()
+            .packets
+            .iter()
+            .map(|p| p.0)
+            .collect();
+        let mut result = Ok(());
+        while let Some(&next) = order.first() {
+            if !(finish || arrived.contains(&next)) {
+                break;
+            }
+            order.remove(0);
+            if self.drops(next) || !arrived.contains(&next) {
+                continue;
+            }
+            result = out.accept(DecodedPicture {
+                tag: next,
+                format: picture_format(),
+                film_grain_applied: false,
+                planes: vec![vec![next as u8; 256], vec![0x80; 64], vec![0x81; 64]],
+            });
+            if result.is_err() {
+                break;
+            }
+        }
+        self.order = Some((order, declares));
+        result
+    }
 }
 
 impl ExternalVideoDecoder for Fake {
@@ -143,6 +204,9 @@ impl ExternalVideoDecoder for Fake {
             plan: self.plan,
             hold: self.hold,
             held: Vec::new(),
+            order: self
+                .release
+                .map(|(order, declares)| (order.to_vec(), declares)),
         }))
     }
 }
@@ -167,9 +231,14 @@ impl VideoDecodeSession for FakeSession {
             }
             _ => {}
         }
-        if matches!(self.plan, Plan::DropPicture(at) if at == tag)
-            || matches!(self.plan, Plan::DropFrom(from) if tag >= from)
-        {
+        if self.order.is_some() {
+            // A holding reordering decoder releases its whole order inside `finish`.
+            if self.hold {
+                return Ok(());
+            }
+            return Ok(self.release_ordered(false, out)?);
+        }
+        if self.drops(tag) {
             return Ok(());
         }
         if self.hold {
@@ -222,6 +291,7 @@ impl VideoDecodeSession for FakeSession {
         out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError> {
         self.seen.lock().unwrap().finished += 1;
+        self.release_ordered(true, out)?;
         for tag in std::mem::take(&mut self.held) {
             self.seen.lock().unwrap().released_at_finish.push(tag);
             out.accept(DecodedPicture {
@@ -235,6 +305,10 @@ impl VideoDecodeSession for FakeSession {
             Plan::FaultOnFinish(fault) => Err(fault.into()),
             _ => Ok(()),
         }
+    }
+
+    fn reorders_output(&self) -> bool {
+        self.order.as_ref().is_some_and(|(_, declares)| *declares)
     }
 }
 
@@ -1693,6 +1767,183 @@ fn a_negative_presentation_time_never_reaches_a_delivered_picture() {
                 "{label}"
             );
             assert_eq!(receipt.actual.end_pts.value(), want_end * UNIT, "{label}");
+        }
+    }
+}
+
+/// One row of the presentation-order table: (plan, release order, declared, holds until finish, request
+/// (start in units, count), delivered tags, their presentation times in units, complete, expected (start,
+/// end) of the actual span in units).
+type ReleaseCase = (
+    Plan,
+    &'static [u64],
+    bool,
+    bool,
+    (u64, u64),
+    &'static [u64],
+    &'static [u64],
+    bool,
+    (u64, u64),
+);
+
+/// SMB-REEL-BFRAME-ORDER: a decoder that releases pictures in PRESENTATION order (as the Media Foundation
+/// H.264 decoder does for B-frames) and declares `reorders_output` has every picture matched to its own
+/// packet. On the I P B clip (decode tags 0 1 2, presentation I 0, B 20, P 40 units) it releases 0, 2, 1 and
+/// all three reach the sink in presentation order; the receipt equals the packet receipt. Control row: the
+/// same release WITHOUT the declaration loses P (decode-order matching passes over packet 1 when B, tag 2,
+/// arrives) and the receipt reports the shortfall. Dropped pictures, a range that is the B picture alone (I
+/// and P are pre-roll, P presented after it) and a picture released after a later-presented one (passed
+/// over, not delivered, reported Partial) keep receipts that cover exactly the delivered pictures.
+#[test]
+fn pictures_released_in_presentation_order_are_matched_by_tag() {
+    let clip = av01_clip(&[40, 60, 20], vec![(60, 40)]);
+    let source = (&clip[..], ISOBMFF_PROVIDER_ID);
+    let shown: &'static [u64] = &[0, 2, 1];
+    let cases: [ReleaseCase; 8] = [
+        (
+            Plan::Works,
+            shown,
+            true,
+            false,
+            (0, 3),
+            &[0, 2, 1],
+            &[0, 20, 40],
+            true,
+            (0, 60),
+        ),
+        (
+            Plan::Works,
+            shown,
+            true,
+            true,
+            (0, 3),
+            &[0, 2, 1],
+            &[0, 20, 40],
+            true,
+            (0, 60),
+        ),
+        // Control: the same decoder without the declaration loses the late P picture.
+        (
+            Plan::Works,
+            shown,
+            false,
+            false,
+            (0, 3),
+            &[0, 2],
+            &[0, 20],
+            false,
+            (0, 40),
+        ),
+        (
+            Plan::DropPicture(2),
+            shown,
+            true,
+            false,
+            (0, 3),
+            &[0, 1],
+            &[0, 40],
+            false,
+            (0, 60),
+        ),
+        (
+            Plan::DropPicture(0),
+            shown,
+            true,
+            false,
+            (0, 3),
+            &[2, 1],
+            &[20, 40],
+            false,
+            (20, 60),
+        ),
+        (
+            Plan::DropPicture(1),
+            shown,
+            true,
+            false,
+            (0, 3),
+            &[0, 2],
+            &[0, 20],
+            false,
+            (0, 40),
+        ),
+        // The B picture alone: I (decoded first) and P (decoded before B, presented after) are pre-roll.
+        (
+            Plan::Works,
+            shown,
+            true,
+            false,
+            (20, 1),
+            &[2],
+            &[20],
+            true,
+            (20, 40),
+        ),
+        // Released out of presentation order (P before B, both after the last packet): B is passed over.
+        (
+            Plan::Works,
+            &[0, 1, 2],
+            true,
+            true,
+            (0, 3),
+            &[0, 1],
+            &[0, 40],
+            false,
+            (0, 60),
+        ),
+    ];
+    let probe = Registry::standard();
+    for (n, row) in cases.into_iter().enumerate() {
+        let (
+            plan,
+            order,
+            declares,
+            hold,
+            (start, count),
+            delivered,
+            at,
+            complete,
+            (want_start, want_end),
+        ) = row;
+        let label = format!("presentation order case {n}");
+        let (fake, seen) = Fake::new(plan);
+        let fake = fake.releasing(order, declares);
+        let fake = if hold { fake.holding() } else { fake };
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let range = (start * UNIT, count);
+        let (result, sink) = run_video(
+            &registry,
+            source,
+            range,
+            Purpose::Preview,
+            OutputMode::Decoded,
+        );
+        let receipt = result.unwrap();
+        let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+        assert_eq!(tags, delivered, "{label}");
+        let times: Vec<u64> = sink.chunks.iter().map(|c| c.1 as u64 / UNIT).collect();
+        assert_eq!(times, at, "{label}");
+        // Every picture carries its own bytes (the fake's picture is a function of its tag).
+        for chunk in &sink.chunks {
+            assert_eq!(chunk.4, packed(chunk.2 as u8), "{label}");
+        }
+        let sent: Vec<u64> = seen.lock().unwrap().packets.iter().map(|p| p.0).collect();
+        assert_eq!(sent, [0, 1, 2], "{label}");
+        assert_eq!(receipt.actual.units, delivered.len() as u64, "{label}");
+        assert_eq!(receipt.complete, complete, "{label}");
+        assert_eq!(
+            receipt.actual.start_pts.value(),
+            want_start * UNIT,
+            "{label}"
+        );
+        assert_eq!(receipt.actual.end_pts.value(), want_end * UNIT, "{label}");
+        let packets = packet_receipt(&probe, source, range);
+        assert_eq!(receipt.requested, packets.requested, "{label}");
+        if complete {
+            assert_eq!(receipt.actual, packets.actual, "{label}");
+            assert_eq!(receipt.disposition, packets.disposition, "{label}");
+        } else {
+            assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
         }
     }
 }

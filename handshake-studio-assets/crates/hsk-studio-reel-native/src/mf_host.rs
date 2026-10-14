@@ -17,10 +17,10 @@
 //!
 //! Packets: the host converts every ISO BMFF sample (length-prefixed NAL units) into Annex B and puts the
 //! `avcC` SPS/PPS in front of the first packet of a segment and of every packet holding an IDR slice (the
-//! Microsoft decoder needs Annex B and skips input until it has an SPS and a PPS). Pictures must leave the
-//! decoder in packet order: a stream whose decoder releases pictures in another order (B-frame reordering)
-//! is refused with `Unsupported mf-reorder-needs-packet-timing` (reel's pump matches pictures to packets in
-//! decode order; presentation-order delivery needs packet timing, reel prerequisite P2).
+//! Microsoft decoder needs Annex B and skips input until it has an SPS and a PPS). The packet tag is the
+//! input sample time; the decoder keeps it on the picture and releases pictures in PRESENTATION order
+//! (spike S1 strategy A), so the session declares reel's `reorders_output`: reel matches each picture to
+//! its own packet and B-frame streams decode exactly (test `h264_bframe_streams_decode_exact_in_presentation_order`).
 //!
 //! Paths (`MfPath`): `Software` (default; the decoder MFT without a Direct3D manager), `Hardware` (DXVA: the
 //! worker creates a headless Direct3D 11 video device and hands it to the decoder through a DXGI device
@@ -57,8 +57,6 @@ pub const MF_WORKER_PROGRAM: &str = "reel-native-mf-worker";
 pub const MF_MIN_SIDE: u32 = 48;
 pub const MF_MAX_WIDTH: u32 = 4096;
 pub const MF_MAX_HEIGHT: u32 = 2304;
-/// Reason a reordering stream is refused until reel gives sessions packet timing (P2).
-pub const MF_REORDER_REFUSAL: &str = "mf-reorder-needs-packet-timing";
 
 pub(crate) const MF_SPEC: WorkerSpec = WorkerSpec {
     decoder_id: MF_H264_PROVIDER_ID,
@@ -349,7 +347,7 @@ impl WorkerMfProvider {
                 declared: (spec.width, spec.height),
                 max_packet_bytes: spec.limits.max_chunk_bytes,
                 prep: Some(annex_b_prep(config)),
-                decode_order_only: Some(MF_REORDER_REFUSAL),
+                reorders_output: true,
                 replay_cap: (self.replay_bytes > 0).then_some(self.replay_bytes),
             },
             None,

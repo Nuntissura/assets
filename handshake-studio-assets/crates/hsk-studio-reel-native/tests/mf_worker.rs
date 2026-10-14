@@ -17,6 +17,11 @@ const BASELINE: &[u8] = include_bytes!("fixtures/h264/h264-baseline-128x72-24f.m
 const BASELINE_HASH: &str = include_str!("fixtures/h264/h264-baseline-128x72-24f.framehash");
 const HIGH_BF2: &[u8] = include_bytes!("fixtures/h264/h264-high-bf2-128x72-24f.mp4");
 const HIGH_BF2_HASH: &str = include_str!("fixtures/h264/h264-high-bf2-128x72-24f.framehash");
+const MAIN_BF3: &[u8] = include_bytes!("fixtures/h264/h264-main-bf3-128x72-24f.mp4");
+const MAIN_BF3_HASH: &str = include_str!("fixtures/h264/h264-main-bf3-128x72-24f.framehash");
+const HIGH_BF3_PYRAMID: &[u8] = include_bytes!("fixtures/h264/h264-high-bf3-pyramid-128x72-24f.mp4");
+const HIGH_BF3_PYRAMID_HASH: &str =
+    include_str!("fixtures/h264/h264-high-bf3-pyramid-128x72-24f.framehash");
 const HIGH422: &[u8] = include_bytes!("fixtures/h264/h264-high422-10bit-128x72-12f.mp4");
 const MAIN_NOB: &[u8] = include_bytes!("fixtures/h264/h264-main-nob-128x72-24f.mp4");
 const MAIN_NOB_HASH: &str = include_str!("fixtures/h264/h264-main-nob-128x72-24f.framehash");
@@ -181,43 +186,97 @@ fn h264_baseline_software_decode_exact_vs_oracle() {
     });
 }
 
-/// Spike S1 and the reorder policy: High profile with two B-frames (`max_num_reorder_frames = 2`). The
-/// result is either the exact oracle in presentation order or the typed refusal
-/// `Unsupported mf-reorder-needs-packet-timing` with a `NOT_PROVEN:` line (never a silent partial decode).
+/// B-frame streams (SMB-REEL-BFRAME-ORDER): the decoder releases pictures in presentation order with the
+/// input sample time (= packet tag) of their own packet, the session declares reel's `reorders_output`, and
+/// reel matches each picture to its packet. High with 2 B-frames (negative composition offsets, no edit
+/// shift), Main with 3 B-frames (edit list) and High with 3 B-frames and b-pyramid (B used as reference):
+/// every frame equals ffmpeg's decode byte for byte, in presentation order, PTS exactly `n * frame`, each
+/// picture once; random access that starts on or inside a B run (pre-roll from the previous IDR, pictures
+/// decoded before the range but presented after it) gives the same frames; a crash mid-GOP replays from the
+/// IDR and still delivers every picture exactly once; DXVA gives the same bytes where a Direct3D 11 video
+/// device exists (else `NOT_PROVEN:`).
 #[test]
-fn h264_high_bf2_reorder_spike_and_policy() {
-    bounded_case("h264_high_bf2", || {
-        let worker = provider(MfWorkerOptions::default());
+fn h264_bframe_streams_decode_exact_in_presentation_order() {
+    bounded_case("h264_bframes", || {
         let limits = Limits::default();
-        let expected = oracle(HIGH_BF2_HASH);
-        assert!(expected[0].starts_with("79c95135ab274e5c"));
-        match decode(&worker, HIGH_BF2, 0, 24, &limits) {
-            Ok((receipt, sink)) => {
-                println!("SPIKE S1: decoder kept input times and released in packet order");
-                assert!(receipt.complete);
+        let software = provider(MfWorkerOptions::default());
+        let streams = [
+            ("high-bf2", HIGH_BF2, HIGH_BF2_HASH),
+            ("main-bf3", MAIN_BF3, MAIN_BF3_HASH),
+            ("high-bf3-pyramid", HIGH_BF3_PYRAMID, HIGH_BF3_PYRAMID_HASH),
+        ];
+        assert!(oracle(HIGH_BF2_HASH)[0].starts_with("79c95135ab274e5c"));
+        let exact = |worker: &WorkerMfProvider, label: &str| {
+            for (name, bytes, hash) in streams {
+                let expected = oracle(hash);
+                assert_eq!(expected.len(), 24, "{name}");
+                let (receipt, sink) = decode(worker, bytes, 0, 24, &limits).unwrap();
+                assert!(receipt.complete, "{label} {name}: {receipt:?}");
+                assert_eq!(receipt.actual.units, 24, "{label} {name}");
+                let pts: Vec<i64> = sink.chunks.iter().map(|c| c.0).collect();
+                let want: Vec<i64> = (0..24).map(|n| (n * FRAME_TICKS) as i64).collect();
+                assert_eq!(pts, want, "{label} {name}: presentation order and PTS");
+                let mut indices: Vec<u64> = sink.chunks.iter().map(|c| c.1).collect();
+                assert_ne!(indices, (0..24).collect::<Vec<_>>(), "{name}: decode order differs");
+                indices.sort_unstable();
+                assert_eq!(indices, (0..24).collect::<Vec<_>>(), "{label} {name}: each packet once");
                 let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
-                assert_eq!(got, expected);
+                assert_eq!(got, expected, "{label} {name} differs from the ffmpeg oracle");
             }
+        };
+        match decode(&software, HIGH_BF2, 0, 1, &limits) {
             Err(error) if unavailable(&error) => {
                 println!("NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?})");
+                return;
             }
-            Err(error) => {
-                // The refusal names the spike result: `mf-reorder-needs-packet-timing` = the decoder kept the
-                // input sample times and released pictures in another (presentation) order (strategy A);
-                // `mf-output-time-unknown` = it released times no packet carried (strategy B).
-                let strategy = match &error {
-                    ReelError::Unsupported { what } if *what == MF_REORDER_REFUSAL => "A (input times kept, released out of packet order)",
-                    ReelError::Unsupported { what: "mf-output-time-unknown" } => "B (output times re-stamped)",
-                    other => panic!("untyped spike outcome {other:?}"),
-                };
-                println!("SPIKE S1: strategy {strategy}");
-                println!(
-                    "NOT_PROVEN: B-frame stream refused ({error:?}); presentation-order delivery needs reel P2 packet timing"
-                );
+            other => {
+                other.unwrap();
             }
         }
-        let stats = worker.stats();
+        exact(&software, "software");
+        // Random access, every stream: starts on a B picture, inside a B run, at the second IDR, at the end.
+        for (name, bytes, hash) in streams {
+            let expected = oracle(hash);
+            for (start, count) in [(1, 1), (2, 3), (5, 4), (10, 5), (12, 4), (21, 3), (23, 1)] {
+                let (receipt, sink) =
+                    decode(&software, bytes, start * FRAME_TICKS, count, &limits).unwrap();
+                assert!(receipt.complete, "{name} {start}+{count}: {receipt:?}");
+                assert_eq!(
+                    (receipt.actual.start_pts.value(), receipt.actual.end_pts.value()),
+                    (start * FRAME_TICKS, (start + count) * FRAME_TICKS),
+                    "{name} {start}+{count}"
+                );
+                let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+                let want = &expected[start as usize..(start + count) as usize];
+                assert_eq!(got, want, "{name} span {start}+{count}");
+            }
+        }
+        let stats = software.stats();
         assert_eq!((stats.crashed, stats.protocol_faults), (0, 0), "{stats:?}");
+        // Replay mid-GOP: the first worker exits at packet 9 (pictures of earlier packets partly released,
+        // B pictures held by the decoder); the fresh worker resumes from the IDR at 0.
+        let once = provider(MfWorkerOptions {
+            first_worker_exit_at_tag: Some(9),
+            ..MfWorkerOptions::default()
+        });
+        let (receipt, sink) = decode(&once, HIGH_BF3_PYRAMID, 0, 24, &limits).unwrap();
+        assert!(receipt.complete, "{receipt:?}");
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, oracle(HIGH_BF3_PYRAMID_HASH), "replayed B-frame segment");
+        let stats = once.stats();
+        assert_eq!((stats.crashed, stats.replays, stats.replay_failed), (1, 1, 0), "{stats:?}");
+        // DXVA.
+        let hardware = provider(MfWorkerOptions {
+            path: MfPath::Hardware,
+            ..MfWorkerOptions::default()
+        });
+        match decode(&hardware, HIGH_BF2, 0, 1, &limits) {
+            Ok(_) => exact(&hardware, "dxva"),
+            Err(error) => {
+                println!("NOT_PROVEN: DXVA B-frame parity, path unavailable on this host ({error:?})");
+                assert_eq!(error, ReelError::Unsupported { what: MF_DXVA_UNAVAILABLE });
+            }
+        }
     });
 }
 

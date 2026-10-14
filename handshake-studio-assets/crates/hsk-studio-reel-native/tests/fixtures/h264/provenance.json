@@ -33,7 +33,20 @@
       "sha256": "036cb023f99893c618474fd20559efe87de64ac29a2268e2a3e77b14d337947e",
       "command": "same with -profile:v high",
       "facts": "High profile level 1.0, no B-frames"
+    },
+    "h264-main-bf3-128x72-24f.mp4": {
+      "bytes": 14549,
+      "sha256": "ff85391b1d4dec3d530a3738eddf2f2ed0ea50b9d45b134dfbbe15bf326494b6",
+      "command": "ffmpeg -nostdin -y -f lavfi -i testsrc2=size=128x72:rate=30000/1001 -frames:v 24 -c:v libx264 -preset veryfast -profile:v main -pix_fmt yuv420p -bf 3 -g 12 -x264-params $X:b-pyramid=none $BX h264-main-bf3-128x72-24f.mp4 (generated 2026-10-14 by lane SMB-REEL-BFRAME-ORDER)",
+      "facts": "Main profile level 1.0, CABAC, up to 3 consecutive B-frames, no B reference (b-pyramid none), has_b_frames 1, default ISO BMFF muxing (edit list, ctts v0), keyframes at 0 and 12"
+    },
+    "h264-high-bf3-pyramid-128x72-24f.mp4": {
+      "bytes": 14366,
+      "sha256": "c4986d938a5124f1af6165288c7d3c1704911bd52652ede0e8bdba07a608336d",
+      "command": "same with -profile:v high and -x264-params $X:b-pyramid=normal (generated 2026-10-14 by lane SMB-REEL-BFRAME-ORDER)",
+      "facts": "High profile level 1.0, up to 3 consecutive B-frames with a B reference (b-pyramid normal), has_b_frames 2, default ISO BMFF muxing (edit list, ctts v0), keyframes at 0 and 12"
     }
   },
-  "oracle": "*.framehash = ffmpeg -nostdin -v error -i FILE.mp4 -f framehash -hash sha256 - (sha256 of each decoded yuv420p / yuv422p10le frame, presentation order), generated 2026-10-14 with the same ffmpeg build"
+  "oracle": "*.framehash = ffmpeg -nostdin -v error -i FILE.mp4 -f framehash -hash sha256 - (sha256 of each decoded yuv420p / yuv422p10le frame, presentation order), generated 2026-10-14 with the same ffmpeg build",
+  "generation_dir_smb_reel_bframe_order": "Handshake_Artifacts/WP-KERNEL-STUDIO/engine-video-oracle/smb-reel-bframe-order (same ffmpeg build, sha256 re-verified 2026-10-14)"
 }

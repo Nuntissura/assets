@@ -11,10 +11,11 @@
 //! OPEN: the `config` bytes are the host's MF open record: `u32 LE width, u32 LE height` (container-declared,
 //! 0 = unknown). PACKET: one Annex B access unit (the host converted it from the ISO BMFF sample and put the
 //! SPS/PPS in front of IDR units); its sample time is the packet tag. Pictures are released with the tag
-//! equal to their output sample time, which must be the tag of a packet this segment sent and still
-//! waits for: a picture of a packet whose turn has passed is `Unsupported mf-reorder-needs-packet-timing`
-//! (the decoder keeps input times but releases in another order), a time no packet carried is
-//! `Unsupported mf-output-time-unknown` (spike S1, test `h264_high_bf2_reorder_spike_and_policy`). FINISH drains the decoder.
+//! equal to their output sample time, in presentation order (the decoder keeps input times, spike S1
+//! strategy A); that time must be the tag of a packet this segment sent whose picture is still owed: a
+//! time no packet carried, or one already released, is `Unsupported mf-output-time-unknown`. The host
+//! matches pictures to packets in presentation order (reel `reorders_output`, test
+//! `h264_bframe_streams_decode_exact_in_presentation_order`). FINISH drains the decoder.
 //!
 //! Output: NV12 is copied out of the decoder buffer and cropped/deinterleaved by the pure `nv12` module to
 //! tight 8-bit 4:2:0 planes of the container-declared size (else the display aperture, else the frame
@@ -29,7 +30,7 @@ use crate::test_fault::WorkerTestFault;
 use crate::wire::{self, OpenRequest, Request, WireFrame};
 use hsk_studio_reel::{ChromaFormat, ColorInfo, ColorOrigin, ColorTag, ReelError, VideoFormat};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     io::{self, Write},
     sync::mpsc,
     thread,
@@ -102,12 +103,10 @@ struct Segment {
     declared: (u32, u32),
     color: ColorTag,
     max_frame_bytes: u64,
-    /// Tags of packets sent and not yet released, in send (decode) order.
-    waiting: VecDeque<u64>,
-    /// Every tag sent in this segment (bounded by the segment's packets): tells a decoder that releases a
-    /// picture of an earlier packet late (it keeps input times, spike S1 strategy A) from one that invents
-    /// output times (strategy B).
-    sent: HashSet<u64>,
+    /// Tags of packets sent whose picture has not been released (bounded by the segment's packets; a
+    /// packet that yields no picture stays). Pictures leave in presentation order, so any of them may be
+    /// next; a released tag leaves the set and cannot be released twice.
+    waiting: HashSet<u64>,
     released: bool,
     /// Decode progress counter (advanced at every decoder call) and when it was last reported.
     progress: u64,
@@ -160,16 +159,9 @@ impl Segment {
         }
         let unknown = || unsupported("mf-output-time-unknown");
         let tag = u64::try_from(raw.time).map_err(|_| unknown())?;
-        let at = match self.waiting.iter().position(|waiting| *waiting == tag) {
-            Some(at) => at,
-            // A picture of a packet whose turn has passed: released out of packet order with its input time.
-            None if self.sent.contains(&tag) => {
-                return Err(unsupported("mf-reorder-needs-packet-timing"));
-            }
-            None => return Err(unknown()),
-        };
-        // Packets before it released nothing (configuration-only units, dropped pictures).
-        self.waiting.drain(..=at);
+        if !self.waiting.remove(&tag) {
+            return Err(unknown());
+        }
         let (width, height) = self.crop(raw);
         // NV12 rows: luma rows = frame height; stride from the buffer size when it divides exactly, else
         // the type's default stride.
@@ -255,10 +247,9 @@ impl Segment {
 
     /// One PACKET: feed, pulling whenever the decoder refuses input, then release what is ready.
     fn packet(&mut self, out: &mut impl Write, id: u64, tag: u64, bytes: &[u8]) -> Result<(bool, u32), ReelError> {
-        let time = i64::try_from(tag).map_err(|_| unsupported("mf-reorder-needs-packet-timing"))?;
+        let time = i64::try_from(tag).map_err(|_| unsupported("mf-output-time-unknown"))?;
         let mut count = 0_u32;
-        self.waiting.push_back(tag);
-        self.sent.insert(tag);
+        self.waiting.insert(tag);
         let mut attempts = 0_u32;
         loop {
             let accepted = self.decoder.push(bytes, time).map_err(decode_error)?;
@@ -377,8 +368,7 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                                 declared,
                                 color: open.color,
                                 max_frame_bytes: open.max_chunk_bytes,
-                                waiting: VecDeque::new(),
-                                sent: HashSet::new(),
+                                waiting: HashSet::new(),
                                 progress: 0,
                                 last_beat: None,
                                 released: false,

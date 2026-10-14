@@ -16,7 +16,8 @@
 //! `extern "C"` function cannot be caught), so untrusted media must be decoded behind a process boundary.
 //!
 //! Both hosts run through ONE packet pump (`decode_video_track`): frame-accurate start and pre-roll come
-//! from the container, pictures are matched to packets by tag, pre-roll pictures are dropped, a mid-segment
+//! from the container, pictures are matched to packets by tag (released in decode order, or in presentation
+//! order by a session that declares `reorders_output`), pre-roll pictures are dropped, a mid-segment
 //! format change, any picture whose planes disagree with its declared format and any picture larger than
 //! the size the container declares for the track (`within_declared_size`: the declared size is the
 //! sequence maximum) are refused before the picture is packed, and the receipt names the decoder that
@@ -146,7 +147,8 @@ impl From<DecoderFault> for VideoDecodeError {
 }
 
 /// One open decode of one segment. Packets arrive in decode order; pictures leave through `out` in the
-/// order the decoder releases them (each carrying the tag of its packet).
+/// order the decoder releases them (each carrying the tag of its packet): decode order, or presentation
+/// order for a session whose `reorders_output` is true.
 pub trait VideoDecodeSession {
     fn send(
         &mut self,
@@ -161,6 +163,15 @@ pub trait VideoDecodeSession {
         cancel: &CancellationToken,
         out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError>;
+    /// True when this session releases pictures in PRESENTATION order, which differs from packet (decode)
+    /// order for a reordered stream (H.264 with B-frames). The route then matches each picture to its own
+    /// packet and passes over only the packets presented before it; with `false` (the default) a picture
+    /// also passes over every earlier packet in decode order, so a reordering session that does not
+    /// declare it loses the pictures it releases late (test
+    /// `pictures_released_in_presentation_order_are_matched_by_tag`).
+    fn reorders_output(&self) -> bool {
+        false
+    }
 }
 
 /// A decoder that lives outside the caller's process (or otherwise behind the embedder's own isolation).
@@ -299,7 +310,11 @@ struct PacketMeta {
 /// BEFORE the picture is packed (packing copies the planes into `packed`); a refused picture is not
 /// copied (test `oversize_decoded_picture_is_refused_before_it_is_copied` measures the largest allocation).
 struct Forward<'a> {
+    /// Packets sent and not yet matched or passed over, in decode order.
     pending: VecDeque<PacketMeta>,
+    /// The session releases in presentation order (`VideoDecodeSession::reorders_output`): a picture passes
+    /// over only the pending packets presented before it, not every packet decoded before it.
+    presentation_order: bool,
     sink: &'a mut dyn ChunkSink,
     max_chunk_bytes: usize,
     /// `(width, height)` the container declares for the track; 0 = that side is not declared.
@@ -374,8 +389,21 @@ impl PictureSink for Forward<'_> {
         let Some(at) = self.pending.iter().position(|m| m.index == picture.tag) else {
             return Ok(()); // configuration units and dropped packets carry no presentable frame
         };
-        let meta = self.pending[at];
-        self.pending.drain(..=at);
+        let meta = if self.presentation_order {
+            // Presentation order: the packets decoded before this one but presented after it still wait
+            // for their pictures; only packets presented before it are passed over (their pictures were
+            // dropped or carry no frame).
+            let Some(meta) = self.pending.remove(at) else {
+                return Ok(());
+            };
+            self.pending.retain(|m| m.pts >= meta.pts);
+            meta
+        } else {
+            // Decode order: every packet before this one released nothing (configuration units, drops).
+            let meta = self.pending[at];
+            self.pending.drain(..=at);
+            meta
+        };
         if meta.preroll {
             return Ok(()); // decoded only to reach the requested frames
         }
@@ -579,10 +607,12 @@ pub(crate) fn decode_video_track_with(
             (session, external.identity())
         }
     };
+    let presentation_order = session.reorders_output();
     let mut pump = Pump {
         session,
         fwd: Forward {
             pending: VecDeque::new(),
+            presentation_order,
             sink,
             max_chunk_bytes: limits.max_chunk_bytes,
             declared: (video.width, video.height),

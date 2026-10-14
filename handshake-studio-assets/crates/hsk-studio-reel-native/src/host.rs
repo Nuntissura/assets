@@ -824,11 +824,12 @@ pub(crate) struct WorkerSession {
     /// Packet rewrite before it is sent (none for AV1) and its scratch buffer.
     prep: Option<PacketPrep>,
     prepared: Vec<u8>,
-    /// `Some(reason)`: pictures must leave the worker in packet (decode) order; a picture whose tag is below
-    /// one already released is refused with `Unsupported reason` (reel's pump matches pictures to packets in
-    /// decode order, so a reordering decoder would otherwise lose pictures without a word).
-    decode_order_only: Option<&'static str>,
-    last_tag: Option<u64>,
+    /// The worker's decoder releases pictures in presentation order (`VideoDecodeSession::reorders_output`):
+    /// reel's pump then matches each picture to its own packet instead of passing over earlier packets.
+    reorders_output: bool,
+    /// Tags of the pictures handed to reel in this segment (kept only when replay is on, bounded by the
+    /// segment's packets): a replay drops exactly these, whatever order they were released in.
+    delivered_tags: Option<HashSet<u64>>,
     replay: Option<Replay>,
 }
 
@@ -857,19 +858,14 @@ impl WorkerSession {
         }
     }
 
-    /// Hands a released picture to reel's sink, refusing a picture out of decode order when the session
-    /// requires decode order.
+    /// Hands a released picture to reel's sink and records its tag when replay needs it.
     fn release(
-        decode_order_only: Option<&'static str>,
-        last_tag: &mut Option<u64>,
+        delivered: &mut Option<HashSet<u64>>,
         frame: WireFrame,
         out: &mut dyn PictureSink,
     ) -> Result<(), ReelError> {
-        if let Some(what) = decode_order_only {
-            if last_tag.is_some_and(|last| frame.tag < last) {
-                return Err(ReelError::Unsupported { what });
-            }
-            *last_tag = Some(frame.tag);
+        if let Some(delivered) = delivered.as_mut() {
+            delivered.insert(frame.tag);
         }
         out.accept(to_picture(frame))
     }
@@ -946,24 +942,28 @@ impl WorkerSession {
                 fault: DecoderFault::Protocol,
             })
         })?;
-        let (order, mut last) = (self.decode_order_only, self.last_tag);
-        let delivered = self.last_tag;
+        let mut delivered = self.delivered_tags.take();
+        let mut result = Ok(());
         for (tag, bytes) in &retained {
             let id = self.pool.next_id();
-            self.request_raw(
+            result = self.request_raw(
                 wire::encode_packet(id, *tag, bytes),
                 id,
                 Want::BatchEnd,
                 cancel,
                 &mut |frame| {
-                    if delivered.is_some_and(|done| frame.tag <= done) {
+                    if delivered.as_ref().is_some_and(|done| done.contains(&frame.tag)) {
                         return Ok(()); // delivered before the fault
                     }
-                    Self::release(order, &mut last, frame, out)
+                    Self::release(&mut delivered, frame, out)
                 },
-            )?;
+            );
+            if result.is_err() {
+                break;
+            }
         }
-        self.last_tag = last;
+        self.delivered_tags = delivered;
+        result?;
         if let Some(replay) = self.replay.as_mut() {
             replay.retained = retained;
         }
@@ -978,11 +978,11 @@ impl WorkerSession {
         cancel: &CancellationToken,
         out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError> {
-        let (order, mut last) = (self.decode_order_only, self.last_tag);
+        let mut delivered = self.delivered_tags.take();
         let result = self.request_raw(frame, id, Want::BatchEnd, cancel, &mut |frame| {
-            Self::release(order, &mut last, frame, out)
+            Self::release(&mut delivered, frame, out)
         });
-        self.last_tag = last;
+        self.delivered_tags = delivered;
         let result = match result {
             Err(error)
                 if Self::replayable(&error)
@@ -1046,6 +1046,10 @@ impl VideoDecodeSession for WorkerSession {
     ) -> Result<(), VideoDecodeError> {
         let id = self.pool.next_id();
         self.batch_with_replay(wire::encode_finish(id), id, cancel, out)
+    }
+
+    fn reorders_output(&self) -> bool {
+        self.reorders_output
     }
 }
 
@@ -1280,7 +1284,7 @@ impl WorkerAv1Provider {
                 declared: (spec.width, spec.height),
                 max_packet_bytes: spec.limits.max_chunk_bytes,
                 prep: None,
-                decode_order_only: None,
+                reorders_output: false,
                 replay_cap: None,
             },
             faults,
@@ -1298,7 +1302,8 @@ pub(crate) struct OpenPlan {
     /// The caller's packet limit (capped at the request frame).
     pub max_packet_bytes: usize,
     pub prep: Option<PacketPrep>,
-    pub decode_order_only: Option<&'static str>,
+    /// The decoder releases pictures in presentation order (reported to reel by `reorders_output`).
+    pub reorders_output: bool,
     /// `Some(cap)`: retain up to `cap` prepared bytes since the last sync packet for one replay.
     pub replay_cap: Option<usize>,
 }
@@ -1316,7 +1321,7 @@ pub(crate) fn open_worker(
         declared,
         max_packet_bytes,
         prep,
-        decode_order_only,
+        reorders_output,
         replay_cap,
     } = plan;
     let replay = replay_cap.map(|cap| Replay::new(open.clone(), cap));
@@ -1332,8 +1337,8 @@ pub(crate) fn open_worker(
             faults,
             prep,
             prepared: Vec::new(),
-            decode_order_only,
-            last_tag: None,
+            reorders_output,
+            delivered_tags: replay.is_some().then(HashSet::new),
             replay,
         };
         match pool.checkout(cancel) {
