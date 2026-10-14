@@ -13,7 +13,7 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 # Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
-viewer = ["import-psd", "import-raw", "import-tiff", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu"]
+viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
 desktop = ["viewer", "dep:eframe"]
 

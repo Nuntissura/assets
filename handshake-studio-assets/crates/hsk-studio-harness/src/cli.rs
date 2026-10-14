@@ -38,6 +38,9 @@ struct Parsed {
     edits: Vec<EditOp>,
     expect_names: Vec<(String, String)>,
     expect_visible: Vec<(String, bool)>,
+    png: bool,
+    jpeg: bool,
+    quality: Option<u8>,
 }
 
 fn boolean(s: &str) -> Result<bool, String> {
@@ -76,6 +79,17 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--overwrite" => p.overwrite = true,
             "--cancel" => p.cancel = true,
             "--json" => p.json = true,
+            "--png" => p.png = true,
+            "--jpeg" => p.jpeg = true,
+            "--quality" => {
+                p.quality = Some(
+                    take(&mut i, "quality")?
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|q| (1..=100).contains(q))
+                        .ok_or_else(|| "quality must be an integer in 1..=100".to_string())?,
+                )
+            }
             "--rename" => {
                 let layer = take(&mut i, "layer id")?;
                 p.edits.push(EditOp::Rename(layer, take(&mut i, "name")?));
@@ -168,6 +182,22 @@ pub fn run(args: &[String]) -> CliOutput {
             }
             with_harness(command, &parsed, |h| execute_import(h, &parsed, &input))
         }
+        "export" => {
+            let [source, output] = parsed.positional.as_slice() else {
+                return usage("export needs SOURCE and OUT paths");
+            };
+            let format = match (parsed.png, parsed.jpeg, parsed.quality) {
+                (true, false, None) => ExportChoice::Png,
+                (true, false, Some(_)) => return usage("--quality applies to --jpeg only"),
+                (false, true, q) => ExportChoice::Jpeg(q.unwrap_or(DEFAULT_JPEG_QUALITY)),
+                _ => return usage("export needs exactly one of --png, --jpeg"),
+            };
+            let (source, output) = (PathBuf::from(source), PathBuf::from(output));
+            if !parsed.overwrite && same_file(&output, &source) {
+                return usage("OUT names the SOURCE file; pass --overwrite to replace it, or export to another path");
+            }
+            execute_export(&source, &output, format, parsed.overwrite)
+        }
         other => usage(&format!("unknown command `{other}`")),
     }
 }
@@ -224,6 +254,45 @@ fn execute_import(_: &Harness, _: &Parsed, input: &Path) -> CliOutput {
         Some(f) => ("format_unavailable", json!({"format":f.name(),"feature":f.feature(),"reason":"feature_not_enabled"})),
     };
     out(1, &json!({"schema":crate::SCHEMA,"command":"import","ok":false,"verdict":"fail","error":error,"detail":{"import":detail}}))
+}
+
+/// Default JPEG quality of `export --jpeg` (the viewer button uses the same value).
+const DEFAULT_JPEG_QUALITY: u8 = 90;
+
+#[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+enum ExportChoice {
+    Png,
+    Jpeg(u8),
+}
+
+/// `export SOURCE --png|--jpeg [--quality N] OUT`: open like the viewer (import or native package), render
+/// with render-cpu, encode through interop-raster, decode back, write atomically to exactly OUT.
+#[cfg(feature = "viewer")]
+fn execute_export(source: &Path, output: &Path, format: ExportChoice, overwrite: bool) -> CliOutput {
+    use crate::view::{Viewer, export::ExportFormat, render::Prefer};
+    let format = match format {
+        ExportChoice::Png => ExportFormat::Png,
+        ExportChoice::Jpeg(quality) => ExportFormat::Jpeg { quality },
+    };
+    let fail = |error: &str, detail: String| {
+        out(1, &json!({"schema":crate::SCHEMA,"command":"export","ok":false,"verdict":"fail","error":error,"detail":detail}))
+    };
+    let mut viewer = Viewer::new(Prefer::Cpu);
+    if let Err(detail) = viewer.open(source) {
+        return fail("open_failed", detail);
+    }
+    match viewer.export(output, format, overwrite) {
+        Ok(report) => out(
+            0,
+            &json!({"schema":crate::SCHEMA,"command":"export","ok":true,"verdict":"pass","source":source.to_string_lossy(),"export":report,"receipt_source_format":viewer.receipt().map(|r| r["source_format"].clone())}),
+        ),
+        Err(detail) => fail("export_failed", detail),
+    }
+}
+
+#[cfg(not(feature = "viewer"))]
+fn execute_export(_: &Path, _: &Path, _: ExportChoice, _: bool) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":"export","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}}))
 }
 
 fn with_harness(command: &str, parsed: &Parsed, f: impl FnOnce(&Harness) -> CliOutput) -> CliOutput {

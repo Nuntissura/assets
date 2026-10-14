@@ -16,6 +16,7 @@
 //! [`Viewer::drawn`], and [`Viewer::state_json`] is a structured projection of the whole state.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod export;
 pub mod render;
 
 use crate::harness::{Harness, References, Run, Selection};
@@ -23,6 +24,7 @@ use crate::panel::{self, PanelValues, Route};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Parent, StudioLayer};
 use hsk_studio_package::ImportRole;
+use export::ExportFormat;
 use render::{Assets, Frame, Prefer, RenderFail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -34,6 +36,9 @@ pub mod widget {
     pub const SAVE_FIELD: &str = "save.path";
     pub const SAVE_OVERWRITE: &str = "save.overwrite";
     pub const SAVE_BUTTON: &str = "save.button";
+    /// Export the composite as PNG / JPEG next to the save path (extension replaced).
+    pub const EXPORT_PNG_BUTTON: &str = "export.png";
+    pub const EXPORT_JPEG_BUTTON: &str = "export.jpeg";
     pub const RENDER_BACKEND: &str = "render.prefer_gpu";
     pub const FIT_BUTTON: &str = "view.fit";
     pub const ACTUAL_SIZE_BUTTON: &str = "view.actual_size";
@@ -246,14 +251,52 @@ impl Viewer {
         }
     }
 
+    fn is_source(&self, path: &Path) -> bool {
+        self.source.as_deref().is_some_and(|source| match (std::fs::canonicalize(source), std::fs::canonicalize(path)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => source == path,
+        })
+    }
+
+    /// Exports the current composite (rendered first when the document changed) as PNG or JPEG through
+    /// [`export::encode_frame`] and writes it atomically. Refuses the opened source path unless
+    /// `overwrite` is set. Returns the export report (format, size, notes, backend, revision, path).
+    pub fn export(&mut self, path: &Path, format: ExportFormat, overwrite: bool) -> Result<Value, String> {
+        let result = self.export_inner(path, format, overwrite);
+        match &result {
+            Ok(report) => self.say(format!("exported {} ({} bytes, {})", path.display(), report["bytes"], format.name())),
+            Err(e) => self.say(e.clone()),
+        }
+        result
+    }
+
+    fn export_inner(&mut self, path: &Path, format: ExportFormat, overwrite: bool) -> Result<Value, String> {
+        if path.as_os_str().is_empty() {
+            return Err("export: no output path".into());
+        }
+        if self.is_source(path) && !overwrite {
+            return Err(format!("export {}: refused, it is the opened source (tick overwrite to replace it)", path.display()));
+        }
+        self.render_if_dirty();
+        let Some(frame) = self.frame.as_ref() else {
+            let why = self.render_error.as_ref().map_or_else(|| "nothing open".to_string(), ToString::to_string);
+            return Err(format!("export {}: no rendered frame ({why})", path.display()));
+        };
+        let exported = export::encode_frame(frame, format).map_err(|code| format!("export {}: {code}", path.display()))?;
+        export::write_atomic(path, &exported.bytes).map_err(|code| format!("export {}: {code}", path.display()))?;
+        let mut report = exported.report();
+        report["path"] = json!(path.to_string_lossy());
+        report["backend"] = json!(frame.backend);
+        report["revision"] = json!(frame.revision);
+        report["render_notes"] = json!(frame.notes);
+        Ok(report)
+    }
+
     /// Saves the working session as a native package. Refuses the opened source path unless
     /// `overwrite` is set (the same guard as the CLI's `--save`).
     pub fn save(&mut self, path: &Path, overwrite: bool) -> Result<(), String> {
-        if let Some(source) = &self.source {
-            let same = match (std::fs::canonicalize(source), std::fs::canonicalize(path)) {
-                (Ok(a), Ok(b)) => a == b,
-                _ => source == path,
-            };
+        if self.source.is_some() {
+            let same = self.is_source(path);
             if same && !overwrite {
                 let e = format!("save {}: refused, it is the opened source (tick overwrite to replace it)", path.display());
                 self.say(e.clone());
@@ -353,10 +396,11 @@ impl Viewer {
         self.drawn.clear();
         let mut open_request = None;
         let mut save_request = None;
+        let mut export_request = None;
         egui::TopBottomPanel::top(widget::id("toolbar")).show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("File");
-                ui.add(egui::TextEdit::singleline(&mut self.path_input).id(widget::id(widget::PATH_FIELD)).hint_text("path to .psd .psb .tif .dng .cr2 .pdf .handshake").desired_width(360.0));
+                ui.add(egui::TextEdit::singleline(&mut self.path_input).id(widget::id(widget::PATH_FIELD)).hint_text("path to .psd .psb .tif .dng .cr2 .png .jpg .pdf .handshake").desired_width(360.0));
                 self.drawn.push(widget::PATH_FIELD.into());
                 if ui.add(egui::Button::new("Open")).on_hover_text("Import or open the file named in the path field").clicked() {
                     open_request = Some(PathBuf::from(self.path_input.trim()));
@@ -372,6 +416,15 @@ impl Viewer {
                     save_request = Some(PathBuf::from(self.save_input.trim()));
                 }
                 self.drawn.push(widget::SAVE_BUTTON.into());
+                let exportable = self.frame.is_some();
+                if ui.add_enabled(exportable, egui::Button::new("Export PNG")).on_hover_text("Composite as PNG at the save path with extension .png").clicked() {
+                    export_request = Some(ExportFormat::Png);
+                }
+                self.drawn.push(widget::EXPORT_PNG_BUTTON.into());
+                if ui.add_enabled(exportable, egui::Button::new("Export JPEG")).on_hover_text("Composite as JPEG (quality 90, transparency flattened on white) at the save path with extension .jpg").clicked() {
+                    export_request = Some(ExportFormat::Jpeg { quality: export::DEFAULT_JPEG_QUALITY });
+                }
+                self.drawn.push(widget::EXPORT_JPEG_BUTTON.into());
                 ui.separator();
                 let mut gpu = self.prefer == Prefer::Gpu;
                 if ui.checkbox(&mut gpu, "GPU").on_hover_text("render-gpu with render-cpu fallback; off = render-cpu only").changed() {
@@ -390,6 +443,11 @@ impl Viewer {
         if let Some(path) = save_request {
             let overwrite = self.overwrite;
             let _ = self.save(&path, overwrite);
+        }
+        if let Some(format) = export_request {
+            let path = PathBuf::from(self.save_input.trim()).with_extension(if format == ExportFormat::Png { "png" } else { "jpg" });
+            let overwrite = self.overwrite;
+            let _ = self.export(&path, format, overwrite);
         }
         self.render_if_dirty();
 
