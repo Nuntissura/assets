@@ -9,7 +9,10 @@
 //! overlaps the line box (narrower gaps are not used); a baseline with no gap is skipped; hanging
 //! trailing whitespace is part of the line's glyph range but not of `width_pt`; an empty
 //! paragraph occupies one empty line; paragraphs have no space before or after.
-use crate::breaker::{Composer, Sums, first_fit, knuth_plass, line_start};
+use crate::breaker::{Composer, HyphenRules, Sums, first_fit, knuth_plass, line_start};
+use crate::hyphenate::Hyphenator;
+use crate::styles::{Alignment, ParagraphStyling};
+use crate::typeset::{Justification, TypesetOptions, justify_metrics};
 use crate::folio_input::{Frame, FrameObstacles, resolve};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
 use crate::{LayoutError, SourceSpan};
@@ -72,6 +75,10 @@ pub struct Line {
     pub overfull: bool,
     /// Knuth-Plass adjustment ratio (negative = shrunk, positive = stretched); `None` for first-fit.
     pub ratio: Option<f64>,
+    /// The line ends in a hyphenation break; `width_pt` includes the hyphen advance.
+    pub hyphenated: bool,
+    /// Set by `reflow_typeset` for justified lines; `None` otherwise (also the last line).
+    pub justification: Option<Justification>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,7 +200,17 @@ pub fn reflow(
     req: &ReflowRequest<'_>,
     cancel: &CancellationToken,
 ) -> Result<LayoutProposal, LayoutError> {
+    reflow_typeset(req, &TypesetOptions::default(), cancel)
+}
+
+/// `reflow` with justification, hyphenation, alignment and Folio type styles (see `typeset`).
+pub fn reflow_typeset(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    cancel: &CancellationToken,
+) -> Result<LayoutProposal, LayoutError> {
     canceled(cancel)?;
+    opts.validate()?;
     if req.expected_revision != req.document.revision {
         return Err(LayoutError::StaleRevision {
             expected: req.expected_revision,
@@ -219,13 +236,31 @@ pub fn reflow(
     {
         return Err(LayoutError::BudgetExceeded);
     }
-    if req.paragraphs.iter().any(|p| p.font_missing) {
+    let styled;
+    let (paragraphs, stylings): (&[ShapedParagraph], Vec<Option<ParagraphStyling>>) =
+        if let Some(src) = opts.styles {
+            let (a, b) = crate::styles::apply(src, req.story, req.paragraphs, opts.alignment)?;
+            styled = a;
+            (&styled, b.into_iter().map(Some).collect())
+        } else {
+            (req.paragraphs, vec![None; req.paragraphs.len()])
+        };
+    let jp = opts.justify.unwrap_or_default();
+    let space = if opts.justify.is_some() { jp.space_params() } else { req.space };
+    let hyphenator = opts.hyphenator.unwrap_or_else(|| Hyphenator::en_us());
+    let hyph = opts.hyphenation.as_ref().map(|h| (hyphenator, h));
+    let rules = opts.hyphenation.as_ref().map_or(HyphenRules::NONE, |h| HyphenRules {
+        limit: h.consecutive_limit,
+        double_demerits: h.double_hyphen_demerits,
+    });
+    let hyphen_w = opts.hyphenation.as_ref().map_or(0.0, |h| h.hyphen_advance_pt);
+    if paragraphs.iter().any(|p| p.font_missing) {
         return Err(LayoutError::MissingFont);
     }
-    if req.paragraphs.iter().any(|p| p.right_to_left || !p.latin_only) {
+    if paragraphs.iter().any(|p| p.right_to_left || !p.latin_only) {
         return Err(LayoutError::UnsupportedComposition);
     }
-    if req.paragraphs.iter().any(|p| {
+    if paragraphs.iter().any(|p| {
         !(p.line_height_pt.is_finite() && p.ascent_pt.is_finite())
             || p.line_height_pt <= 0.0
             || p.ascent_pt < 0.0
@@ -245,11 +280,11 @@ pub fn reflow(
             lines: Vec::new(),
         })
         .collect();
-    let story_end = req.paragraphs.last().map_or(0, |p| p.source.end);
+    let story_end = paragraphs.last().map_or(0, |p| p.source.end);
     let (mut cursor, mut placed, mut overset) = (Cursor { pos: 0, line: 0 }, 0usize, None);
-    for (pi, p) in req.paragraphs.iter().enumerate() {
+    for (pi, p) in paragraphs.iter().enumerate() {
         canceled(cancel)?;
-        let items = build_items(p, text, req.space)?;
+        let items = build_items(p, text, space, hyph)?;
         let sums = Sums::new(&items);
         let remaining = limits.max_lines.saturating_sub(placed);
         let slot_cap = items.len().min(remaining.saturating_add(1));
@@ -282,8 +317,8 @@ pub fn reflow(
         let last_width = slots[slots.len() - 1].width_pt;
         let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
         let breaks = match req.composer {
-            Composer::FirstFit => first_fit(&items, &sums, &width, cancel)?,
-            Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, cancel)?,
+            Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
+            Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
         };
         let n = p.glyphs.len();
         let mut starts = vec![0usize];
@@ -328,13 +363,40 @@ pub fn reflow(
                 break;
             }
             let slot = &slots[k];
-            let width_pt = advance(range.start..content_end);
+            let hyphenated = items[b.item].flagged;
+            let width_pt = advance(range.start..content_end) + if hyphenated { hyphen_w } else { 0.0 };
+            let alignment = stylings[pi].as_ref().map_or(opts.alignment, |s| s.alignment);
+            let is_last = k + 1 == breaks.len();
+            let mut x_start_pt = slot.x_start_pt;
+            let mut justification = None;
+            if !b.overfull {
+                match alignment {
+                    Alignment::Left => {}
+                    Alignment::Center => x_start_pt += (slot.width_pt - width_pt).max(0.0) / 2.0,
+                    Alignment::Right => x_start_pt += (slot.width_pt - width_pt).max(0.0),
+                    Alignment::Justified if !is_last => {
+                        let spaces: f64 = items[item_starts[k]..b.item]
+                            .iter()
+                            .filter(|it| {
+                                it.kind == crate::paragraph::Kind::Glue
+                                    && !it.trailing
+                                    && !it.inf_stretch
+                                    && it.end <= content_end
+                            })
+                            .map(|it| it.w)
+                            .sum();
+                        let gaps = content_end.saturating_sub(range.start).saturating_sub(1);
+                        justification = Some(justify_metrics(width_pt, slot.width_pt, spaces, gaps, &jp));
+                    }
+                    Alignment::Justified => {}
+                }
+            }
             lines_here.push((
                 slot.pos,
                 Line {
                     paragraph: pi,
                     baseline_y_pt: slot.baseline_y_pt,
-                    x_start_pt: slot.x_start_pt,
+                    x_start_pt,
                     width_pt,
                     available_pt: slot.width_pt,
                     hang_pt: advance(content_end..range.end),
@@ -342,6 +404,8 @@ pub fn reflow(
                     glyph_range: range,
                     overfull: b.overfull,
                     ratio: b.ratio,
+                    hyphenated,
+                    justification,
                 },
             ));
         }

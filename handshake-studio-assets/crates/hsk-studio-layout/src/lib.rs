@@ -11,7 +11,10 @@ mod folio_input;
 mod geometry;
 mod hyphenate;
 mod paragraph;
+mod parents;
+mod styles;
 mod threaded_reflow;
+mod typeset;
 
 pub use breaker::{Composer, KnuthPlassParams};
 pub use folio_input::FrameObstacles;
@@ -22,7 +25,17 @@ pub use hyphenate::{
 pub use paragraph::{
     Break, BreakKind, LayoutGlyph, ShapedParagraph, SpaceParams, break_opportunities,
 };
-pub use threaded_reflow::{FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow};
+pub use parents::{
+    ItemOverride, ItemSource, PageBinding, ParentItem, ParentItemKind, ParentPage, ParentSet,
+    ResolvedItem,
+};
+pub use styles::{
+    Alignment, ParagraphStyling, ResolvedStyle, StyleSource, length_pt, resolve_style,
+};
+pub use threaded_reflow::{
+    FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow, reflow_typeset,
+};
+pub use typeset::{JustifyParams, Justification, Spacing, TypesetOptions, justify_metrics};
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};

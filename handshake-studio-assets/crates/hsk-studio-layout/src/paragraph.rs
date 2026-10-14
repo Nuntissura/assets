@@ -1,6 +1,7 @@
 //! Shaped-paragraph input, UAX #14 break opportunities and the box/glue/penalty item model that
 //! both line breakers consume. Shaping is Type's capability (STU-ARC-007): layout only reads the
 //! glyph advances and source clusters Type produced.
+use crate::hyphenate::{HyphenationParams, Hyphenator};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_type as ty;
 use unicode_linebreak::{BreakOpportunity, linebreaks};
@@ -158,6 +159,8 @@ pub(crate) struct Item {
     pub breakable: bool,
     /// Width ignored in line sums (hanging space before a forced break or the paragraph end).
     pub trailing: bool,
+    /// Flagged penalty = a hyphenation break (the line gets a hyphen of width `w`).
+    pub flagged: bool,
 }
 impl Item {
     fn penalty(p: f64, at: usize) -> Self {
@@ -172,6 +175,7 @@ impl Item {
             end: at,
             breakable: true,
             trailing: false,
+            flagged: false,
         }
     }
     fn fill(at: usize) -> Self {
@@ -186,6 +190,7 @@ impl Item {
             end: at,
             breakable: false,
             trailing: false,
+            flagged: false,
         }
     }
 }
@@ -201,6 +206,7 @@ pub(crate) fn build_items(
     p: &ShapedParagraph,
     text: &str,
     space: SpaceParams,
+    hyph: Option<(&Hyphenator, &HyphenationParams)>,
 ) -> Result<Vec<Item>, LayoutError> {
     let (s, e) = (
         usize::try_from(p.source.start).map_err(|_| LayoutError::InvalidInput)?,
@@ -281,20 +287,54 @@ pub(crate) fn build_items(
                 end: j,
                 breakable: after == Some(BreakKind::Allowed),
                 trailing: false,
+                flagged: false,
             });
         } else {
-            items.push(Item {
-                kind: Kind::Box,
-                w,
-                y: 0.0,
-                z: 0.0,
-                inf_stretch: false,
-                p: 0.0,
-                first: i,
-                end: j,
-                breakable: false,
-                trailing: false,
-            });
+            // Glyph indices (inside the run) where a hyphen may follow the previous glyph.
+            let mut cuts: Vec<usize> = Vec::new();
+            if let Some((h, hp)) = hyph
+                && j - i >= 2
+            {
+                let (a, b) = (g[i].cluster.start as usize, g[j - 1].cluster.end as usize);
+                if let Some(word) = text.get(a..b) {
+                    for (_, bytes) in h.hyphenate_text(word, hp) {
+                        for byte in bytes {
+                            let abs = a + byte;
+                            if let Some(k) = (i + 1..j).find(|k| {
+                                g[*k].cluster.start as usize == abs
+                                    && g[*k - 1].cluster.end as usize == abs
+                            }) && !cuts.contains(&k)
+                            {
+                                cuts.push(k);
+                            }
+                        }
+                    }
+                    cuts.sort_unstable();
+                }
+            }
+            let mut from = i;
+            for &cut in cuts.iter().chain(std::iter::once(&j)) {
+                items.push(Item {
+                    kind: Kind::Box,
+                    w: adv(from, cut),
+                    y: 0.0,
+                    z: 0.0,
+                    inf_stretch: false,
+                    p: 0.0,
+                    first: from,
+                    end: cut,
+                    breakable: false,
+                    trailing: false,
+                    flagged: false,
+                });
+                if cut != j {
+                    let mut pen = Item::penalty(hyph.map_or(0.0, |x| x.1.hyphen_penalty), cut);
+                    pen.w = hyph.map_or(0.0, |x| x.1.hyphen_advance_pt);
+                    pen.flagged = true;
+                    items.push(pen);
+                }
+                from = cut;
+            }
         }
         if j < n {
             match after {

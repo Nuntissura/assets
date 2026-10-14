@@ -38,6 +38,20 @@ pub enum Composer {
     KnuthPlass(KnuthPlassParams),
 }
 
+/// Hyphenation rules the breakers enforce on flagged penalties.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HyphenRules {
+    /// Maximum consecutive hyphenated line ends (0 = unlimited).
+    pub limit: u8,
+    pub double_demerits: f64,
+}
+impl HyphenRules {
+    pub const NONE: Self = Self {
+        limit: 0,
+        double_demerits: 0.0,
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LineBreak {
     pub item: usize,
@@ -128,9 +142,11 @@ pub(crate) fn first_fit(
     items: &[Item],
     sums: &Sums,
     width: &dyn Fn(usize) -> f64,
+    rules: &HyphenRules,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
     let (mut breaks, mut start, mut best, mut work) = (Vec::new(), 0usize, None::<usize>, 0u32);
+    let mut run = 0u8;
     let mut i = 0;
     while i < items.len() {
         check(cancel, &mut work)?;
@@ -148,10 +164,15 @@ pub(crate) fn first_fit(
                 });
                 start = line_start(items, i);
                 best = None;
+                run = 0;
             } else {
-                best = Some(i);
+                // A hyphenation break past the consecutive-hyphen limit is not a candidate.
+                if !(items[i].flagged && rules.limit > 0 && run >= rules.limit) {
+                    best = Some(i);
+                }
             }
         } else if let Some(b) = best.take() {
+            run = if items[b].flagged { run + 1 } else { 0 };
             breaks.push(LineBreak {
                 item: b,
                 overfull: false,
@@ -166,6 +187,7 @@ pub(crate) fn first_fit(
                 ratio: None,
             });
             start = line_start(items, i);
+            run = 0;
         }
         i += 1;
     }
@@ -196,6 +218,7 @@ struct Node {
     ratio: f64,
     overfull: bool,
     has_successor: bool,
+    run: u8,
 }
 struct Candidate {
     total: f64,
@@ -204,11 +227,13 @@ struct Candidate {
     overfull: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn knuth_plass_pass(
     items: &[Item],
     sums: &Sums,
     width: &dyn Fn(usize) -> f64,
     params: &KnuthPlassParams,
+    rules: &HyphenRules,
     tolerance: f64,
     allow_overfull: bool,
     cancel: &CancellationToken,
@@ -222,6 +247,7 @@ fn knuth_plass_pass(
         ratio: 0.0,
         overfull: false,
         has_successor: false,
+        run: 0,
     }];
     let mut active = vec![0usize];
     let mut work = 0u32;
@@ -236,7 +262,7 @@ fn knuth_plass_pass(
         } else {
             0.0
         };
-        let mut candidates: BTreeMap<(usize, u8), Candidate> = BTreeMap::new();
+        let mut candidates: BTreeMap<(usize, u8, u8), Candidate> = BTreeMap::new();
         let mut retained = Vec::with_capacity(active.len());
         for &ai in &active {
             let s = if arena[ai].pos == NONE {
@@ -269,7 +295,11 @@ fn knuth_plass_pass(
                 0.0
             };
             let overfull = r < -1.0 - EPS;
-            let take = if overfull {
+            let flagged = items[i].flagged;
+            let run = if flagged { arena[ai].run.saturating_add(1) } else { 0 };
+            let take = if rules.limit > 0 && flagged && run > rules.limit {
+                false
+            } else if overfull {
                 allow_overfull && !arena[ai].has_successor
             } else {
                 badness(r) <= tolerance
@@ -289,8 +319,11 @@ fn knuth_plass_pass(
                 if class.abs_diff(arena[ai].class) > 1 {
                     d += params.adjacent_fitness_demerits;
                 }
+                if flagged && arena[ai].run > 0 {
+                    d += rules.double_demerits;
+                }
                 let total = arena[ai].demerits + d;
-                let key = (line + 1, class);
+                let key = (line + 1, class, run);
                 if candidates.get(&key).is_none_or(|c| total < c.total) {
                     candidates.insert(
                         key,
@@ -309,13 +342,13 @@ fn knuth_plass_pass(
         }
         active = retained;
         let mut minimum: BTreeMap<usize, f64> = BTreeMap::new();
-        for ((line, _), c) in &candidates {
+        for ((line, _, _), c) in &candidates {
             minimum
                 .entry(*line)
                 .and_modify(|m| *m = m.min(c.total))
                 .or_insert(c.total);
         }
-        for ((line, class), c) in candidates {
+        for ((line, class, run), c) in candidates {
             if c.total <= minimum[&line] + params.adjacent_fitness_demerits {
                 arena.push(Node {
                     pos: i,
@@ -326,6 +359,7 @@ fn knuth_plass_pass(
                     ratio: c.ratio,
                     overfull: c.overfull,
                     has_successor: false,
+                    run,
                 });
                 active.push(arena.len() - 1);
             }
@@ -363,6 +397,7 @@ pub(crate) fn knuth_plass(
     sums: &Sums,
     width: &dyn Fn(usize) -> f64,
     params: &KnuthPlassParams,
+    rules: &HyphenRules,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
     for (tolerance, overfull) in [
@@ -370,9 +405,9 @@ pub(crate) fn knuth_plass(
         (params.second_pass_tolerance, false),
         (params.second_pass_tolerance, true),
     ] {
-        if let Some(b) = knuth_plass_pass(items, sums, width, params, tolerance, overfull, cancel)? {
+        if let Some(b) = knuth_plass_pass(items, sums, width, params, rules, tolerance, overfull, cancel)? {
             return Ok(b);
         }
     }
-    first_fit(items, sums, width, cancel)
+    first_fit(items, sums, width, rules, cancel)
 }
