@@ -122,7 +122,8 @@ fn gpu_renders_lowered_text_like_cpu() {
         }
     }
     let mut image = Image { px: vec![[f32::NAN; 4]; 64 * 64] };
-    let request = ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Exact, deadline: None, max_working_bytes: 64 << 20 };
+    // The GPU declares its float blend Fitted (tests/gpu_plan.rs parity class); Exact is refused.
+    let request = ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Fitted, deadline: None, max_working_bytes: 64 << 20 };
     backend
         .execute(&low.lowering.plan, &request, &Sources { low: &low, text: &text }, &CancellationToken::default(), &mut image)
         .unwrap_or_else(|e| panic!("GPU execute of the text plan refused: {e:?}"));
