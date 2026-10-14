@@ -5,7 +5,9 @@ mod descriptor;
 mod engine;
 mod finalization;
 mod fonts;
+mod outline;
 mod provider;
+mod raster;
 mod readset;
 mod result;
 mod serialize;
@@ -18,6 +20,8 @@ pub use contract::*;
 pub use descriptor::descriptor;
 pub use engine::TextEngine;
 pub use finalization::*;
+pub use outline::*;
+pub use raster::*;
 pub use result::*;
 pub use validate::COMPOSITION_VERSION;
 
