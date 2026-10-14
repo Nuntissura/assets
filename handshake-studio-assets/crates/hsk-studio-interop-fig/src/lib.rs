@@ -12,6 +12,7 @@ mod descriptor;
 mod error;
 mod import;
 mod kiwi;
+mod kiwi_value;
 mod semantic_decode;
 mod version_map;
 
@@ -26,5 +27,6 @@ pub use import::{
     LossKind, PartName, SanitizePolicy, SchemaSummary, SourceId, import_fig, report,
     sanitized_summary,
 };
+pub use kiwi_value::{KiwiField, KiwiValue, decode_kiwi, decode_message_tree};
 pub use semantic_decode::{EditableStatus, decode_semantic};
 pub use version_map::{OBSERVED_VERSIONS, VersionPolicy, check_version};

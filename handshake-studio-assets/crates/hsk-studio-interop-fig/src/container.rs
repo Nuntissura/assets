@@ -114,8 +114,15 @@ pub struct Limits {
     pub max_depth: usize,
     /// Decoded values (array elements and fields) per message; bounds zero-width element loops.
     pub max_values: u64,
-    /// `nodeChanges` elements in the census.
+    /// `nodeChanges` elements in the census and in the typed node tree.
     pub max_nodes: u32,
+    /// Aggregate decoded values of one value tree (`decode_kiwi`, `decode_message_tree`), plus the
+    /// decoded geometry items (path commands, vector-network records) of one typed node tree.
+    pub max_tree_values: u64,
+    /// Elements of one Kiwi array.
+    pub max_array_len: u32,
+    /// Bytes of one Kiwi string.
+    pub max_string_bytes: usize,
 }
 
 impl Default for Limits {
@@ -136,6 +143,9 @@ impl Default for Limits {
             max_depth: 32,
             max_values: 64 << 20,
             max_nodes: 4_000_000,
+            max_tree_values: 16 << 20,
+            max_array_len: 16 << 20,
+            max_string_bytes: 16 << 20,
         }
     }
 }

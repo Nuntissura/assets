@@ -19,17 +19,17 @@ use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
 use std::collections::BTreeMap;
 
-type R<T> = std::result::Result<T, &'static str>;
+pub(crate) type R<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     Enum,
     Struct,
     Message,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Native {
+pub(crate) enum Native {
     Bool,
     Byte,
     Int,
@@ -51,52 +51,52 @@ const NATIVES: [(Native, &str); 8] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ty {
+pub(crate) enum Ty {
     Native(Native),
     Def(usize),
 }
 
 #[derive(Debug)]
-struct Field {
-    name: String,
-    ty: Ty,
-    is_array: bool,
-    value: u32,
+pub(crate) struct Field {
+    pub(crate) name: std::sync::Arc<str>,
+    pub(crate) ty: Ty,
+    pub(crate) is_array: bool,
+    pub(crate) value: u32,
 }
 
 #[derive(Debug)]
-struct Def {
-    name: String,
-    kind: Kind,
-    fields: Vec<Field>,
+pub(crate) struct Def {
+    pub(crate) name: String,
+    pub(crate) kind: Kind,
+    pub(crate) fields: Vec<Field>,
 }
 
 #[derive(Debug)]
 pub(crate) struct Schema {
-    defs: Vec<Def>,
+    pub(crate) defs: Vec<Def>,
 }
 
-struct Reader<'a> {
-    data: &'a [u8],
-    at: usize,
+pub(crate) struct Reader<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) at: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data, at: 0 }
     }
-    fn byte(&mut self) -> R<u8> {
+    pub(crate) fn byte(&mut self) -> R<u8> {
         let b = *self.data.get(self.at).ok_or("truncated")?;
         self.at = self.at.checked_add(1).ok_or("truncated")?;
         Ok(b)
     }
-    fn skip(&mut self, n: usize) -> R<()> {
+    pub(crate) fn skip(&mut self, n: usize) -> R<()> {
         let end = self.at.checked_add(n).filter(|e| *e <= self.data.len());
         self.at = end.ok_or("truncated")?;
         Ok(())
     }
     /// 32-bit varuint: little-endian 7-bit groups, at most 5 bytes.
-    fn var_uint(&mut self) -> R<u32> {
+    pub(crate) fn var_uint(&mut self) -> R<u32> {
         let (mut value, mut shift) = (0u32, 0u32);
         loop {
             let b = self.byte()?;
@@ -110,7 +110,7 @@ impl<'a> Reader<'a> {
             }
         }
     }
-    fn var_int(&mut self) -> R<i32> {
+    pub(crate) fn var_int(&mut self) -> R<i32> {
         let u = self.var_uint()?;
         Ok(((u >> 1) as i32) ^ ((u & 1) as i32).wrapping_neg())
     }
@@ -218,7 +218,7 @@ pub(crate) fn decode_schema(bytes: &[u8], limits: &Limits) -> Result<Schema> {
                 return Err(bad("duplicate_field_id"));
             }
             out.push(Field {
-                name: fname.clone(),
+                name: std::sync::Arc::from(fname.as_str()),
                 ty,
                 is_array: *is_array,
                 value: *value,
@@ -258,7 +258,7 @@ impl Schema {
                         .fields
                         .iter()
                         .map(|f| FieldSummary {
-                            name: f.name.clone(),
+                            name: f.name.to_string(),
                             id: f.value,
                             type_name: if d.kind == Kind::Enum {
                                 String::new()
@@ -275,7 +275,7 @@ impl Schema {
         }
     }
 
-    fn def(&self, name: &str, kind: Kind) -> Option<(usize, &Def)> {
+    pub(crate) fn def(&self, name: &str, kind: Kind) -> Option<(usize, &Def)> {
         self.defs
             .iter()
             .enumerate()
@@ -384,8 +384,8 @@ impl Walker<'_> {
     }
 }
 
-fn find_field<'d>(d: &'d Def, name: &str) -> Option<&'d Field> {
-    d.fields.iter().find(|f| f.name == name)
+pub(crate) fn find_field<'d>(d: &'d Def, name: &str) -> Option<&'d Field> {
+    d.fields.iter().find(|f| &*f.name == name)
 }
 
 /// Walks the whole message once and counts `nodeChanges` elements by their `type` enum name; ids are
@@ -465,7 +465,7 @@ pub(crate) fn census(
                 .ok_or(FigError::BudgetExceeded("nodes"))?;
             let (mut id, mut type_name) = (None::<SourceId>, None::<String>);
             while let Some(f) = w.next_field(node)? {
-                let seen = field_histogram.entry(f.name.clone()).or_insert(0u32);
+                let seen = field_histogram.entry(f.name.to_string()).or_insert(0u32);
                 *seen = seen.saturating_add(1);
                 if std::ptr::eq(f, guid_f) {
                     let (mut session, mut local) = (None, None);
@@ -487,7 +487,7 @@ pub(crate) fn census(
                         ty.fields
                             .iter()
                             .find(|e| e.value == v)
-                            .map_or_else(|| "(unknown_enum_value)".to_owned(), |e| e.name.clone()),
+                            .map_or_else(|| "(unknown_enum_value)".to_owned(), |e| e.name.to_string()),
                     );
                 } else {
                     w.skip_field(f, 2)?;
@@ -685,4 +685,51 @@ pub(crate) fn decode_canvas(
         census,
         loss,
     })
+}
+
+/// Schema and inflated message of an admitted container, for the value-tree decoder: the same chunk
+/// rules as [`decode_canvas`], but every failure is a typed error (no soft loss, no partial tree).
+pub(crate) fn schema_and_message(
+    container: &FigContainer,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<(Schema, Vec<u8>)> {
+    let mut found = None;
+    for index in 0..container.chunks.len().min(2) {
+        cancel.check().map_err(|_| FigError::Canceled)?;
+        let data = container.chunk_bytes(index).unwrap_or_default();
+        match inflate_raw(
+            data,
+            limits.max_schema_bytes,
+            "schema_bytes",
+            FigError::SchemaInvalid("schema_inflate_failed"),
+            FigError::SchemaInvalid("schema_chunk_trailing_bytes"),
+        ) {
+            Ok(raw) => {
+                found = Some((index, decode_schema(&raw, limits)?));
+                break;
+            }
+            Err(FigError::SchemaInvalid("schema_inflate_failed")) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let Some((schema_index, schema)) = found else {
+        return Err(FigError::SchemaInvalid("schema_chunk_not_found"));
+    };
+    let message = match container.chunk_bytes(schema_index.saturating_add(1)) {
+        None => return Err(FigError::MessageInvalid("message_chunk_missing")),
+        Some(data) if data.starts_with(&ZSTD_MAGIC) => {
+            zstd_decode(data, limits.max_message_bytes, cancel)?
+        }
+        Some(data) => inflate_raw(
+            data,
+            limits.max_message_bytes,
+            "message_bytes",
+            FigError::DecoderUnavailable {
+                stage: "message_compression_unrecognized",
+            },
+            FigError::MessageInvalid("message_chunk_trailing_bytes"),
+        )?,
+    };
+    Ok((schema, message))
 }
