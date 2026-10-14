@@ -370,8 +370,8 @@ fn open_edit_undo_save_reopen_round_trip() {
         assert_eq!(session.loss().len(), 1, "the opaque entry is a loss note");
         assert_eq!(
             session.revisions().len(),
-            10,
-            "group (name, visible, opacity, blend_mode) + raster (the same + tiles) + artboard name"
+            11,
+            "group (name, visible, opacity, blend_mode, placement: it fills a root output) + raster (name, visible, opacity, blend_mode, tiles; no placement: its parent is the root but it feeds the group) + artboard name"
         );
         assert!(session.revisions().iter().all(|e| e.revision == 0));
         assert_eq!(
