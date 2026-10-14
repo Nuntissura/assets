@@ -104,9 +104,11 @@ fn photoshop_tiff_imports_its_composite_exactly_and_records_the_layers_as_typed_
     assert_eq!(receipt["source_format"], "tiff");
     assert_eq!(receipt["tiff"]["image_source_data"]["envelope"], "valid");
     assert_eq!(receipt["tiff"]["image_source_data"]["byte_order"], "little");
-    // Little-endian (`MIB8`) records are refused by interop-psd and recorded, never misread.
+    // interop-psd parses little-endian (`MIB8`) runs since 68cba91; this envelope-only fixture's run
+    // is not a valid little-endian block (`8BIM` signature with a big-endian key `Lr16`), so the
+    // reader's typed refusal is recorded and the composite is the fallback, never a misread layer.
     let parse_error = receipt["tiff"]["image_source_data"]["parse_error"].as_str().unwrap_or_default();
-    assert!(parse_error.contains("image_source_little_endian"), "{parse_error}");
+    assert_eq!(parse_error, "psd_tagged_block_limit", "{receipt}");
     let codes = codes(receipt);
     for code in ["tiff_photoshop_layers_not_imported", "tiff_orientation_not_applied", "profile_assumed_srgb"] {
         assert!(codes.iter().any(|c| c == code), "{code} missing from {codes:?}");
@@ -293,8 +295,8 @@ fn photoshop_tiff_imports_its_layers_through_interop_psd() {
     assert!(fallback.receipt["tiff"]["image_source_data"]["parse_error"].as_str().is_some());
 
     // A real Photoshop-written layered TIFF (Pillow test image, Photoshop CS Windows, sha256-pinned in
-    // oracle-corpus/tiff-layered): its records are little-endian (`MIB8ryaL`), which interop-psd
-    // refuses, so the composite imports with the typed loss and real-Photoshop parity stays NOT_PROVEN.
+    // oracle-corpus/tiff-layered): its records are little-endian (`MIB8ryaL`); interop-psd parses them
+    // (68cba91, import-only, 8-bit only), so the 2 layers import and the composite page is the typed loss.
     let Some(root) = corpus_root() else {
         println!("NOT_PROVEN: tiff_layered_photoshop reason=corpus_root_absent");
         return;
@@ -308,13 +310,29 @@ fn photoshop_tiff_imports_its_layers_through_interop_psd() {
         println!("NOT_PROVEN: tiff_layered_photoshop {name} reason=sha256_mismatch");
         return;
     }
-    let imported = import(&real, &TrustAllResolver, &cancel).expect("real layered TIFF imports its composite");
+    let imported = import(&real, &TrustAllResolver, &cancel).expect("real layered TIFF imports its layers");
     let isd = &imported.receipt["tiff"]["image_source_data"];
-    assert_eq!((isd["envelope"].as_str(), isd["byte_order"].as_str()), (Some("valid"), Some("little")), "{isd}");
-    assert!(isd["parse_error"].as_str().unwrap_or_default().contains("image_source_little_endian"), "{isd}");
-    assert_eq!(imported.receipt["layers"], 1);
-    assert!(codes(&imported.receipt).iter().any(|c| c == "tiff_photoshop_layers_not_imported"));
-    println!("NOT_PROVEN: tiff_layered_photoshop_parity {name} reason=little_endian_layer_records_unsupported (composite imported, typed loss recorded)");
+    assert_eq!((isd["envelope"].as_str(), isd["byte_order"].as_str(), isd["layers"].as_str()), (Some("valid"), Some("little"), Some("imported")), "{isd}");
+    assert_eq!(isd["layer_records"], 2, "{isd}");
+    assert!(isd.get("parse_error").is_none(), "{isd}");
+    assert_eq!(imported.receipt["layers"], 2);
+    let found = codes(&imported.receipt);
+    assert!(found.iter().any(|c| c == "tiff_composite_not_imported"), "{found:?}");
+    assert!(!found.iter().any(|c| c == "tiff_photoshop_layers_not_imported"), "{found:?}");
+    let names: Vec<&str> = imported.snapshot.document().layers.iter().map(|l| l.name.as_str()).collect();
+    // Folio lists layers top-first (interop-psd to_proposal order); the records are bottom-first.
+    assert_eq!(names, ["Layer 1", "Background"]);
+    // The records the harness imported: Background (R,G,B) and Layer 1 (alpha,R,G,B), both 0,0,374,278.
+    let page = &tiff::decode(&real, &tiff::Limits::default(), &cancel).expect("decodes").pages[0];
+    let run = tiff::image_source_data(page.image_source_data.as_ref().expect("tag 37724")).expect("envelope");
+    let mut tagged = b"MIB8".to_vec();
+    tagged.extend_from_slice(&run.blocks);
+    let canvas = psd::ImageSourceCanvas { width: page.width, height: page.height, depth: 8, colour_mode: psd::ColorMode::Rgb, icc: page.icc.clone() };
+    let doc = psd::image_source_document(&tagged, canvas, &psd::Limits::default(), &cancel).expect("little-endian records parse");
+    let records: Vec<(&str, Vec<i16>, [i32; 4])> =
+        doc.layers().iter().map(|l| (l.name.as_str(), l.channels.iter().map(|c| c.id).collect(), [l.rect.top, l.rect.left, l.rect.bottom, l.rect.right])).collect();
+    assert_eq!(records, [("Background", vec![0, 1, 2], [0, 0, 374, 278]), ("Layer 1", vec![-1, 0, 1, 2], [0, 0, 374, 278])]);
+    println!("NOT_PROVEN: tiff_layered_photoshop_parity {name} reason=no_independent_photoshop_oracle (layers parsed from file bytes only)");
 }
 
 /// The one corpus-root convention (`.config/oracle-corpus.toml`): walk up from the workspace root.
