@@ -1,5 +1,6 @@
 //! Decoded samples. Planes keep the file's big-endian sample bytes; conversion to numbers is
 //! explicit so colour decisions stay with the caller (decode is a conversion boundary).
+#![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
 
@@ -27,21 +28,23 @@ impl Plane {
             return None;
         }
         let row = row_bytes(self.width, self.depth).ok()?;
-        let base = y as usize * row;
+        let base = usize::try_from(y).ok()?.checked_mul(row)?;
+        let column = usize::try_from(x).ok()?;
+        let at = |per: usize| base.checked_add(column.checked_mul(per)?);
         match self.depth {
             1 => {
-                let byte = *self.bytes.get(base + (x / 8) as usize)?;
-                Some(u32::from((byte >> (7 - x % 8)) & 1))
+                let byte = *self.bytes.get(base.checked_add(column / 8)?)?;
+                Some(u32::from((byte >> (7_u32.saturating_sub(x % 8))) & 1))
             }
-            8 => self.bytes.get(base + x as usize).map(|&v| u32::from(v)),
+            8 => self.bytes.get(at(1)?).map(|&v| u32::from(v)),
             16 => {
-                let i = base + x as usize * 2;
-                let b = self.bytes.get(i..i + 2)?;
+                let i = at(2)?;
+                let b = self.bytes.get(i..i.checked_add(2)?)?;
                 Some(u32::from(u16::from_be_bytes([b[0], b[1]])))
             }
             32 => {
-                let i = base + x as usize * 4;
-                let b = self.bytes.get(i..i + 4)?;
+                let i = at(4)?;
+                let b = self.bytes.get(i..i.checked_add(4)?)?;
                 Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
             }
             _ => None,
@@ -54,11 +57,13 @@ impl Plane {
         let raw = match self.depth {
             8 => u32::from(*self.bytes.get(index)?),
             16 => {
-                let b = self.bytes.get(index * 2..index * 2 + 2)?;
+                let start = index.checked_mul(2)?;
+                let b = self.bytes.get(start..start.checked_add(2)?)?;
                 u32::from(u16::from_be_bytes([b[0], b[1]]))
             }
             32 => {
-                let b = self.bytes.get(index * 4..index * 4 + 4)?;
+                let start = index.checked_mul(4)?;
+                let b = self.bytes.get(start..start.checked_add(4)?)?;
                 u32::from_be_bytes([b[0], b[1], b[2], b[3]])
             }
             _ => return None,
@@ -104,7 +109,11 @@ impl PsdLayer {
         if rect.area() > limits.max_pixels {
             return Err(PsdError::PixelLimit);
         }
-        let bytes = channel.decode(rect.width(), rect.height(), header, limits, cancel)?;
+        if self.little_endian && header.depth != 8 {
+            // 16/32-bit ImageSourceData samples are little-endian; the sample consumers read big-endian.
+            return Err(PsdError::UnsupportedMode("image_source_little_endian_depth"));
+        }
+        let bytes = channel.decode_ordered(rect.width(), rect.height(), header, self.little_endian, limits, cancel)?;
         Ok(Some(Plane { width: rect.width(), height: rect.height(), depth: header.depth, bytes }))
     }
 }

@@ -1,5 +1,6 @@
 //! Whole-file model and the bounded reader. The model keeps every section's raw bytes next to
 //! the parsed views so an unmodified document re-emits identically (see `writer`).
+#![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
 
@@ -112,7 +113,7 @@ impl MergedImage {
                 16 => Ok(plane
                     .bytes
                     .chunks_exact(2)
-                    .map(|p| ((u32::from(u16::from_be_bytes([p[0], p[1]])) * 255 + 32767) / 65535) as u8)
+                    .map(|p| u8::try_from(u32::from(u16::from_be_bytes([p[0], p[1]])).saturating_mul(255).saturating_add(32767) / 65535).unwrap_or(255))
                     .collect()),
                 _ => Err(PsdError::UnsupportedMode("merged_depth")),
             }
@@ -315,13 +316,13 @@ fn read_layer_section(
     let mut r = Reader::new(bytes);
     let info_len = r.length(psb, "layer_info")?;
     let info_bytes = r.bytes(info_len, "layer_info")?;
-    let mut layer_info = if info_len > 0 { Some(read_layer_info(info_bytes, header, limits, cancel)?) } else { None };
+    let mut layer_info = if info_len > 0 { Some(read_layer_info(info_bytes, header, false, limits, cancel)?) } else { None };
 
     let mut section = LayerSection::default();
     if r.remaining() >= 4 {
         let mask_len = r.length(false, "global_mask")?;
         section.global_mask = Some(r.bytes(mask_len, "global_mask")?.to_vec());
-        let (blocks, trailing) = layers::parse_tagged_blocks(r.rest(), psb, true, limits)?;
+        let (blocks, trailing) = layers::parse_tagged_blocks(r.rest(), psb, true, false, limits)?;
         section.blocks = blocks;
         section.trailing = trailing;
     } else {
@@ -332,7 +333,7 @@ fn read_layer_section(
         && let Some(at) = section.blocks.iter().position(|b| LAYER_INFO_KEYS.contains(&b.key))
     {
         let block = section.blocks.remove(at);
-        let mut info = read_layer_info(&block.data, header, limits, cancel)?;
+        let mut info = read_layer_info(&block.data, header, false, limits, cancel)?;
         info.location =
             LayerInfoLocation::Tagged { signature: block.signature, key: block.key, insert_at: at, pad: block.pad };
         layer_info = Some(info);
@@ -341,8 +342,15 @@ fn read_layer_section(
     Ok(section)
 }
 
-pub(crate) fn read_layer_info(bytes: &[u8], header: &Header, limits: &Limits, cancel: &CancellationToken) -> Result<LayerInfo> {
-    let mut r = Reader::new(bytes);
+/// `little` reads the byte-swapped ImageSourceData layout through the same record readers.
+pub(crate) fn read_layer_info(
+    bytes: &[u8],
+    header: &Header,
+    little: bool,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<LayerInfo> {
+    let mut r = Reader::with_order(bytes, little);
     let count = r.i16("layer_count")?;
     let merged_alpha = count < 0;
     let count = usize::from(count.unsigned_abs());

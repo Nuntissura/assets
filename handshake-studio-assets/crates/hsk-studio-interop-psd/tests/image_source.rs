@@ -138,12 +138,13 @@ fn image_source_layer_records_parse_like_the_same_records_in_a_psd() {
 fn image_source_refusals_are_typed() {
     let info = layer_info(&layers(), false, false);
     let layr = global_block(b"Layr", &info, false);
-    // Little-endian runs (byte-swapped signature and key) are refused, never misread.
-    let mut le = b"MIB8ryaL".to_vec();
-    le.extend((info.len() as u32).to_le_bytes());
-    le.extend(&info);
-    assert_eq!(parse(&le, canvas()).err(), Some(PsdError::UnsupportedMode("image_source_little_endian")));
-    assert_eq!(parse(b"46B8", canvas()).err(), Some(PsdError::UnsupportedMode("image_source_little_endian")));
+    // A little-endian signature over big-endian numbers is not misread as a valid run
+    // (little-endian runs proper: tests/image_source_le.rs).
+    let mut mixed = b"MIB8ryaL".to_vec();
+    mixed.extend((info.len() as u32).to_be_bytes());
+    mixed.extend(&info);
+    assert!(parse(&mixed, canvas()).is_err());
+    assert_eq!(parse(b"46B8", canvas()).err(), Some(PsdError::Proposal("image_source_no_layer_info")));
     // No layer-info block.
     assert_eq!(parse(&global_block(b"Patt", &[1], false), canvas()).err(), Some(PsdError::Proposal("image_source_no_layer_info")));
     assert_eq!(parse(b"", canvas()).err(), Some(PsdError::Truncated("image_source_data")));

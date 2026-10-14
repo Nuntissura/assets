@@ -153,7 +153,7 @@ fn layer_entries(i: usize, layer: &PsdLayer, limits: &Limits, report: &mut LossR
     // A `luni` block the reader cannot take (over `max_name_units`, truncated) leaves the Pascal
     // (Latin-1) name as the display name; the block itself stays byte-exact.
     if let Some(block) = layer.block(&crate::layers::KEY_UNICODE_NAME)
-        && read_unicode(&mut Reader::new(&block.data), limits.max_name_units).is_err()
+        && read_unicode(&mut Reader::with_order(&block.data, layer.little_endian), limits.max_name_units).is_err()
     {
         report.push(at("name"), LossKind::Transformed, "layer_name_unicode_unreadable");
     }

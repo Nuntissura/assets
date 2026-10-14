@@ -1,5 +1,6 @@
 //! Image resources section: a sequence of `8BIM` blocks. Every byte (names, data, padding,
 //! unparsed tail) is kept so an unmodified section re-emits identically.
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PsdError, Result};
 use crate::limits::Limits;
@@ -143,14 +144,17 @@ impl ImageResources {
 
 /// Unicode string: u32 UTF-16 code-unit count, then that many big-endian units.
 pub(crate) fn read_unicode(r: &mut Reader<'_>, max_units: usize) -> Result<String> {
+    let little = r.is_little();
     let units = usize::try_from(r.u32("unicode")?).map_err(|_| PsdError::Overflow)?;
     if units > max_units {
         return Err(PsdError::NameLimit);
     }
     let raw = r.bytes(units.checked_mul(2).ok_or(PsdError::Overflow)?, "unicode")?;
-    let decoded = char::decode_utf16(raw.chunks_exact(2).map(|p| u16::from_be_bytes([p[0], p[1]])))
-        .map(|c| c.unwrap_or('\u{fffd}'))
-        .collect::<String>();
+    let decoded = char::decode_utf16(raw.chunks_exact(2).map(|p| {
+        if little { u16::from_le_bytes([p[0], p[1]]) } else { u16::from_be_bytes([p[0], p[1]]) }
+    }))
+    .map(|c| c.unwrap_or('\u{fffd}'))
+    .collect::<String>();
     // Photoshop terminates most strings with a NUL unit; it is not part of the name.
     Ok(decoded.trim_end_matches('\0').to_owned())
 }

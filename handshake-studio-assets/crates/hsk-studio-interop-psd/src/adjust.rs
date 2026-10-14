@@ -477,7 +477,7 @@ pub(crate) fn mask_parameters(
             Some(18) => 36,
             _ => 18,
         };
-        let mut r = Reader::new(layer.mask_raw.get(at..).ok_or(R)?);
+        let mut r = Reader::with_order(layer.mask_raw.get(at..).ok_or(R)?, layer.little_endian);
         let present = truncated(r.u8("mask"), R)?;
         if present & 0xF0 != 0 {
             notes.push((LossKind::PreservedOpaque, "mask_parameters_flags_unknown"));

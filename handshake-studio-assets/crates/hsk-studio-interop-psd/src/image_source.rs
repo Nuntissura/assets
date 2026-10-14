@@ -11,10 +11,14 @@
 //! second layer parser. The result is a header-only [`PsdDocument`] (no image-data section; the
 //! composite is the TIFF page) that [`crate::to_proposal`] maps like any PSD.
 //!
-//! Big-endian blocks (`8BIM`, `8B64` = PSB-style 8-byte lengths for the wide keys) are parsed.
-//! Little-endian blocks (`MIB8`, `46B8`: byte-swapped signatures, keys and numbers) are refused with
-//! `UnsupportedMode("image_source_little_endian")`: every reader in this crate is big-endian (test
-//! `little_endian_image_source_data_is_a_typed_refusal`).
+//! Big-endian blocks (`8BIM`, `8B64` = PSB-style 8-byte lengths for the wide keys) and
+//! little-endian blocks (`MIB8`, `46B8`: byte-swapped signatures, keys and numbers, as a
+//! little-endian TIFF writer such as Photoshop-CS-era files emits) go through the SAME readers; the
+//! byte order is a [`crate::reader::Reader`] mode, not a second parser. Little-endian documents are
+//! import-only and limited to 8-bit samples; layers carrying adjustment, fill or effect payloads
+//! (big-endian descriptor and curve parsers) are refused with a typed
+//! `UnsupportedMode("image_source_little_endian_*")`, never misread (tests in
+//! `tests/image_source.rs`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
@@ -23,6 +27,7 @@ use crate::document::{LAYER_INFO_KEYS, LayerInfoLocation, LayerSection, PsdDocum
 use crate::error::{PsdError, Result};
 use crate::header::{ColorMode, Header};
 use crate::layers::parse_tagged_blocks;
+use crate::proposal::{ADJUSTMENT_KEYS, CACHED_PIXEL_KEYS, FILL_KEYS};
 use crate::limits::Limits;
 use crate::resources::ImageResources;
 
@@ -45,7 +50,7 @@ pub struct ImageSourceCanvas {
 ///
 /// `tagged` starts at the first block signature, i.e. the tag value after the 36-byte document
 /// signature. Checked before use: the input against `Limits::max_input_bytes`, the signature
-/// (`8BIM`/`8B64`; `MIB8`/`46B8` refused as little-endian), the canvas (depth, mode, dimensions,
+/// (`8BIM`/`8B64`, or byte-swapped `MIB8`/`46B8`), the canvas (depth, mode, dimensions,
 /// `Limits::max_pixels`), and every block, record and channel length by the PSD readers. A run
 /// without a layer-info block is `Proposal("image_source_no_layer_info")`. The `LMsk` block becomes
 /// the global mask; other blocks stay as global tagged blocks (typed `tagged_block_opaque` loss).
@@ -59,16 +64,20 @@ pub fn image_source_document(
     if tagged.len() > limits.max_input_bytes {
         return Err(PsdError::InputTooLarge);
     }
-    let psb = match tagged.get(..4) {
-        Some(b"8BIM") => false,
-        Some(b"8B64") => true,
-        Some(b"MIB8" | b"46B8") => return Err(PsdError::UnsupportedMode("image_source_little_endian")),
+    let (psb, little) = match tagged.get(..4) {
+        Some(b"8BIM") => (false, false),
+        Some(b"8B64") => (true, false),
+        Some(b"MIB8") => (false, true),
+        Some(b"46B8") => (true, true),
         Some(_) => return Err(PsdError::BadSignature),
         None => return Err(PsdError::Truncated("image_source_data")),
     };
     let ImageSourceCanvas { width, height, depth, colour_mode, icc } = canvas;
     if !matches!(depth, 8 | 16 | 32) {
         return Err(PsdError::BadDepth);
+    }
+    if little && depth != 8 {
+        return Err(PsdError::UnsupportedMode("image_source_little_endian_depth"));
     }
     let channels: u16 = match colour_mode {
         ColorMode::Rgb | ColorMode::Lab => 3,
@@ -85,13 +94,19 @@ pub fn image_source_document(
     }
     let header = Header { version: if psb { 2 } else { 1 }, channels, height, width, depth, color_mode: colour_mode };
 
-    let (mut blocks, trailing) = parse_tagged_blocks(tagged, psb, true, limits)?;
+    let (mut blocks, trailing) = parse_tagged_blocks(tagged, psb, true, little, limits)?;
     let at = blocks
         .iter()
         .position(|b| LAYER_INFO_KEYS.contains(&b.key))
         .ok_or(PsdError::Proposal("image_source_no_layer_info"))?;
     let block = blocks.remove(at);
-    let mut info = read_layer_info(&block.data, &header, limits, cancel)?;
+    let mut info = read_layer_info(&block.data, &header, little, limits, cancel)?;
+    if little && info.layers.iter().any(|l| l.blocks.iter().any(|b| ADJUSTMENT_KEYS.contains(&&b.key) || FILL_KEYS.contains(&&b.key))) {
+        return Err(PsdError::UnsupportedMode("image_source_little_endian_adjustment"));
+    }
+    if little && info.layers.iter().any(|l| l.blocks.iter().any(|b| CACHED_PIXEL_KEYS.contains(&&b.key))) {
+        return Err(PsdError::UnsupportedMode("image_source_little_endian_effects"));
+    }
     info.location = LayerInfoLocation::Tagged { signature: block.signature, key: block.key, insert_at: at, pad: block.pad };
     let global_mask = blocks.iter().position(|b| b.key == KEY_GLOBAL_MASK).map(|i| blocks.remove(i).data);
     let layer_section = LayerSection { layer_info: Some(info), global_mask, blocks, trailing };

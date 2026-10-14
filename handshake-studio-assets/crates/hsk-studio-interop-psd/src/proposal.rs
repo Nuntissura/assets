@@ -76,12 +76,12 @@ pub(crate) const MASK_FORMAT_U8: &str = "coverage_u8";
 pub(crate) const MASK_FORMAT_U16: &str = "coverage_u16le";
 const MAX_EMBEDDED_OPAQUE_BYTES: usize = 65_536;
 
-const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
+pub(crate) const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
     b"levl", b"curv", b"brit", b"blnc", b"blwh", b"hue ", b"hue2", b"selc", b"mixr", b"grdm", b"phfl", b"expA",
     b"thrs", b"nvrt", b"post", b"vibA", b"clrL",
 ];
-const FILL_KEYS: [&[u8; 4]; 3] = [b"SoCo", b"GdFl", b"PtFl"];
-const CACHED_PIXEL_KEYS: [&[u8; 4]; 8] = [b"TySh", b"tySh", b"SoLd", b"SoLE", b"PlLd", b"plLd", b"lfx2", b"lrFX"];
+pub(crate) const FILL_KEYS: [&[u8; 4]; 3] = [b"SoCo", b"GdFl", b"PtFl"];
+pub(crate) const CACHED_PIXEL_KEYS: [&[u8; 4]; 8] = [b"TySh", b"tySh", b"SoLd", b"SoLE", b"PlLd", b"plLd", b"lfx2", b"lrFX"];
 
 /// Host-owned identity and handle minting. Every identity in a proposal comes from this trait.
 pub trait IdMint {
