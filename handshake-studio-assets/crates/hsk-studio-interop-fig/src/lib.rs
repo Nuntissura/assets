@@ -37,9 +37,9 @@ pub use import::{
 };
 pub use kiwi_value::{KiwiField, KiwiValue, decode_kiwi, decode_message_tree};
 pub use native::{
-    FigImagePaint, FigVectorPath, IdMapEntry, IdMint, NATIVE_NOT_PROVEN, NativeConfig,
-    NativeProposal, NativeRecords, RecordMapEntry, SequentialIdMint, id_index, read_native_records,
-    to_native,
+    FigImagePaint, FigTextStyle, FigVectorPath, IdMapEntry, IdMint, NATIVE_NOT_PROVEN,
+    NativeConfig, NativeProposal, NativeRecords, RecordMapEntry, SequentialIdMint, id_index,
+    read_native_records, to_native,
 };
 pub use nodes::{
     AutoLayout, COMMON_NODE_FIELDS, Color, ComponentPropDef, Effect, FigDocument, FigNode,

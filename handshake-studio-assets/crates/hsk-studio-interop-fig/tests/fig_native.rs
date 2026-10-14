@@ -628,6 +628,7 @@ fn real_native_package_round_trip() {
         assert_eq!(records.raster_records, m.proposal.raster_records, "{name}");
         assert_eq!(records.vector_records, m.proposal.vector_records, "{name}");
         assert_eq!(records.image_paints, m.proposal.image_paints, "{name}");
+        assert_eq!(records.text_styles, m.proposal.text_styles, "{name}");
         assert_eq!(records.record_map, m.proposal.record_map, "{name}");
         let texts = m.doc.nodes.iter().filter(|n| n.type_name == "TEXT").count();
         assert_eq!(

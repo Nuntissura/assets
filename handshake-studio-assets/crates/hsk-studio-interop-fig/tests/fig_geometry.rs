@@ -498,3 +498,78 @@ fn real_effects_masks_image_paints_pinned() {
     assert_eq!(receipt["effect_stacks"], 1);
     assert_eq!(receipt["masks"], 1);
 }
+
+#[test]
+fn real_text_fonts_bound_as_styles() {
+    // (fixture, style values, text losses): Inter Regular/Bold with solid fills, one paragraph
+    // style (100% line height, 0% letter spacing, top, width-and-height) per fixture.
+    for (name, styles) in [
+        ("fig-basic-shapes.fig", 3usize),
+        ("fig-components-autolayout.fig", 3),
+        ("fig-prototype-pages.fig", 3),
+    ] {
+        let m = mapped(name);
+        let p = &m.proposal;
+        assert_eq!(p.text_styles.len(), styles, "{name}");
+        let c = loss_counts(p);
+        assert!(
+            !c.keys().any(|(path, _)| path.starts_with("native.text")),
+            "{name}: no text losses"
+        );
+        // Every STYS binding of a story names a carried style of the right kind.
+        for s in &p.stories {
+            for r in &s.character_ranges {
+                let st = p
+                    .text_styles
+                    .iter()
+                    .find(|t| Some(&t.style_ref) == r.style_ref.as_ref())
+                    .expect("character style carried");
+                assert_eq!(st.kind, "character");
+                assert_eq!(st.font_family.as_deref(), Some("Inter"));
+                assert!(st.font_size.is_some() && st.fill.is_some());
+            }
+            for para in &s.paragraphs {
+                let st = p
+                    .text_styles
+                    .iter()
+                    .find(|t| Some(&t.style_ref) == para.style_ref.as_ref())
+                    .expect("paragraph style carried");
+                assert_eq!(st.kind, "paragraph");
+                assert_eq!(st.line_height, Some((100.0, "PERCENT".to_owned())));
+            }
+        }
+        // Folio holds no style record: the host resolver (absent here) is told every binding.
+        assert!(!p.unresolved_text_styles.is_empty(), "{name}");
+        assert!(
+            p.unresolved_text_styles
+                .iter()
+                .all(|t| t.contains("/style/STYS-"))
+        );
+    }
+    // mixed-style-text: "Regular text + " (15 bytes) Inter Regular 26, "bold text" Inter Bold 26.
+    let m = mapped("fig-basic-shapes.fig");
+    let p = &m.proposal;
+    let layer = p
+        .snapshot
+        .document()
+        .layers
+        .iter()
+        .find(|l| l.name == "mixed-style-text")
+        .unwrap();
+    let Payload::Text { story_id } = &layer.payload else {
+        panic!("text layer")
+    };
+    let story = p.stories.iter().find(|s| &s.story_id == story_id).unwrap();
+    let style_of = |i: usize| {
+        let r = &story.character_ranges[i];
+        let st = p
+            .text_styles
+            .iter()
+            .find(|t| Some(&t.style_ref) == r.style_ref.as_ref())
+            .unwrap();
+        (r.start, r.end, st.font_style.clone().unwrap(), st.font_size)
+    };
+    assert_eq!(story.character_ranges.len(), 2);
+    assert_eq!(style_of(0), (0, 15, "Regular".to_owned(), Some(26.0)));
+    assert_eq!(style_of(1), (15, 24, "Bold".to_owned(), Some(26.0)));
+}

@@ -147,6 +147,74 @@ pub struct FigImagePaint {
     pub visible: bool,
 }
 
+/// The font and layout values bound to one `STYS` id of a text story (`kind` is `character` for a
+/// range binding, `paragraph` for a paragraph binding). Folio stores only the `STYS` reference of
+/// a story (the style record is host-resolved, `SCHEMA_STUDIO_TYPE_STYLE`), so the values live in
+/// the records entry; the host creates the style records from them. Font references are by
+/// Figma family and style name; no font file is resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigTextStyle {
+    pub style_ref: String,
+    pub kind: &'static str,
+    pub font_family: Option<String>,
+    pub font_style: Option<String>,
+    pub font_size: Option<f64>,
+    /// First visible solid fill (r, g, b, a in 0..=1).
+    pub fill: Option<[f64; 4]>,
+    pub line_height: Option<(f64, String)>,
+    pub letter_spacing: Option<(f64, String)>,
+    pub align_horizontal: Option<String>,
+    pub align_vertical: Option<String>,
+    pub auto_resize: Option<String>,
+}
+
+impl FigTextStyle {
+    fn to_json(&self) -> Value {
+        json!({
+            "style_ref": self.style_ref, "kind": self.kind,
+            "font_family": self.font_family, "font_style": self.font_style,
+            "font_size": self.font_size, "fill": self.fill,
+            "line_height": self.line_height.as_ref().map(|(v, u)| json!([v, u])),
+            "letter_spacing": self.letter_spacing.as_ref().map(|(v, u)| json!([v, u])),
+            "align_horizontal": self.align_horizontal,
+            "align_vertical": self.align_vertical,
+            "auto_resize": self.auto_resize,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let s = |k: &str| v[k].as_str().map(str::to_owned);
+        let pair = |k: &str| {
+            let a = v[k].as_array()?;
+            Some((a.first()?.as_f64()?, a.get(1)?.as_str()?.to_owned()))
+        };
+        let fill = match v["fill"].as_array() {
+            Some(a) => {
+                let n: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                Some(<[f64; 4]>::try_from(n).ok()?)
+            }
+            None => None,
+        };
+        Some(Self {
+            style_ref: s("style_ref")?,
+            kind: match v["kind"].as_str()? {
+                "character" => "character",
+                "paragraph" => "paragraph",
+                _ => return None,
+            },
+            font_family: s("font_family"),
+            font_style: s("font_style"),
+            font_size: v["font_size"].as_f64(),
+            fill,
+            line_height: pair("line_height"),
+            letter_spacing: pair("letter_spacing"),
+            align_horizontal: s("align_horizontal"),
+            align_vertical: s("align_vertical"),
+            auto_resize: s("auto_resize"),
+        })
+    }
+}
+
 /// One mapped node: Figma source id -> Folio node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdMapEntry {
@@ -165,6 +233,10 @@ pub struct NativeProposal {
     pub stories: Vec<StudioTextStory>,
     /// Vector geometry of the vector layers, in document px (transforms baked in).
     pub paths: Vec<FigVectorPath>,
+    /// Font and layout values behind the `STYS` bindings of the stories.
+    pub text_styles: Vec<FigTextStyle>,
+    /// `STYS` bindings the caller's resolver did not resolve (host-owned style records pending).
+    pub unresolved_text_styles: Vec<String>,
     /// Shadow effects per layer (`hsk.studio.raster_records@1`), validated.
     pub raster_records: StudioRasterRecords,
     /// Masks and their attachments (`hsk.studio.vector_records@1`), validated.
@@ -230,6 +302,9 @@ struct Mapper<'a> {
     paths: Vec<FigVectorPath>,
     fx: Vec<StudioRasterLayerRecord>,
     image_paints: Vec<FigImagePaint>,
+    text_styles: Vec<FigTextStyle>,
+    /// Canonical style JSON (without the id) -> minted `STYS` id.
+    text_style_ids: HashMap<String, String>,
     /// Node index -> mapped node, for sibling mask resolution.
     node_refs: HashMap<usize, NodeRef>,
     /// Mask source layer id and the layer ids it masks (later siblings in the same parent).
@@ -621,7 +696,7 @@ impl Mapper<'_> {
     /// Inline story of a TEXT node: paragraphs end after each `\n`, one character range per style
     /// run (byte offsets). Run fonts, sizes, line height, letter spacing and alignment have no
     /// Folio record (type styles are host-resolved `STYS` references): typed losses.
-    fn story(&mut self, t: &crate::nodes::TextPayload, story_id: String) {
+    fn story(&mut self, t: &crate::nodes::TextPayload, story_id: String, node_fills: &[Paint]) {
         let text = &t.characters;
         let len = text.len() as u64;
         let mut paragraphs = Vec::new();
@@ -643,49 +718,51 @@ impl Mapper<'_> {
             .chain(std::iter::once(len))
             .collect();
         let at = |k: u32| offsets.get(k as usize).copied().unwrap_or(len);
-        let mut ranges = Vec::new();
+        // Character styles: one `STYS` binding per distinct (family, style, size, fill) of a run;
+        // a story without runs binds the node's base values.
+        let base_fills = node_fills;
+        let mut ranges: Vec<(u64, u64, Option<String>)> = Vec::new();
         for r in &t.runs {
             let (a, b) = (at(r.start), at(r.end));
             if a < b {
-                ranges.push((a, b));
+                let fills = if r.fills.is_empty() {
+                    base_fills
+                } else {
+                    &r.fills
+                };
+                let style = self.character_style(&r.font_family, &r.font_style, r.font_size, fills);
+                ranges.push((a, b, style));
             }
         }
         if ranges.is_empty() && len > 0 {
-            ranges.push((0, len));
+            let style =
+                self.character_style(&t.font_family, &t.font_style, t.font_size, base_fills);
+            ranges.push((0, len, style));
         }
-        let fonts: std::collections::BTreeSet<_> = t
-            .runs
-            .iter()
-            .map(|r| {
-                (
-                    r.font_family.clone(),
-                    r.font_style.clone(),
-                    r.font_size.map(f32::to_bits),
-                )
-            })
-            .collect();
-        if t.font_family.is_some() || t.font_size.is_some() {
-            self.lose("native.text.font", "text_font_no_folio_home");
-        }
-        if fonts.len() > 1 {
-            self.lose("native.text.run_styles", "text_run_style_no_folio_home");
-        }
-        if t.runs.iter().any(|r| r.fills != t.runs[0].fills) {
-            self.lose("native.text.run_fills", "text_run_fill_no_folio_home");
-        }
-        for (field, present) in [
-            ("line_height", t.line_height.is_some()),
-            ("letter_spacing", t.letter_spacing.is_some()),
-            (
-                "align",
-                t.align_horizontal.is_some() || t.align_vertical.is_some(),
-            ),
-            ("auto_resize", t.auto_resize.is_some()),
-        ] {
-            if present {
-                self.lose(format!("native.text.{field}"), "text_layout_no_folio_home");
-            }
-        }
+        // Paragraph style: line height, letter spacing, alignment and auto-resize of the node.
+        let paragraph_style = if t.line_height.is_some()
+            || t.letter_spacing.is_some()
+            || t.align_horizontal.is_some()
+            || t.align_vertical.is_some()
+            || t.auto_resize.is_some()
+        {
+            let pair = |p: &Option<(f32, String)>| p.as_ref().map(|(v, u)| (wide(*v), u.clone()));
+            Some(self.text_style(FigTextStyle {
+                style_ref: String::new(),
+                kind: "paragraph",
+                font_family: None,
+                font_style: None,
+                font_size: None,
+                fill: None,
+                line_height: pair(&t.line_height),
+                letter_spacing: pair(&t.letter_spacing),
+                align_horizontal: t.align_horizontal.clone(),
+                align_vertical: t.align_vertical.clone(),
+                auto_resize: t.auto_resize.clone(),
+            }))
+        } else {
+            None
+        };
         self.stories.push(StudioTextStory {
             schema_id: TextStorySchema::V1,
             story_id,
@@ -699,20 +776,72 @@ impl Mapper<'_> {
                 .map(|(start, end)| StoryParagraph {
                     start,
                     end,
-                    style_ref: None,
+                    style_ref: paragraph_style.clone(),
                     paragraph_direction: None,
                 })
                 .collect(),
             character_ranges: ranges
                 .into_iter()
-                .map(|(start, end)| StoryRange {
+                .map(|(start, end, style_ref)| StoryRange {
                     start,
                     end,
-                    style_ref: None,
+                    style_ref,
                     applied_language: None,
                 })
                 .collect(),
         });
+    }
+
+    /// The `STYS` id of a style value set (one id per distinct set within the document).
+    fn text_style(&mut self, mut st: FigTextStyle) -> String {
+        let key = st.to_json().to_string();
+        if let Some(id) = self.text_style_ids.get(&key) {
+            return id.clone();
+        }
+        let id = self.mint.mint("STYS");
+        st.style_ref = id.clone();
+        self.text_style_ids.insert(key, id.clone());
+        self.text_styles.push(st);
+        id
+    }
+
+    /// Character style of one run; solid fills only (any other fill kind is a typed loss).
+    fn character_style(
+        &mut self,
+        family: &Option<String>,
+        style: &Option<String>,
+        size: Option<f32>,
+        fills: &[Paint],
+    ) -> Option<String> {
+        let mut fill = None;
+        for p in fills {
+            match &p.kind {
+                PaintKind::Solid { color: Some(c) } if p.visible != Some(false) => {
+                    if fill.is_none() {
+                        let a = wide(c.a) * wide(p.opacity.unwrap_or(1.0));
+                        fill = Some([wide(c.r), wide(c.g), wide(c.b), tidy(a)]);
+                    }
+                }
+                PaintKind::Solid { .. } => {}
+                _ => self.lose("native.text.run_fills", "text_fill_kind_not_carried"),
+            }
+        }
+        if family.is_none() && style.is_none() && size.is_none() && fill.is_none() {
+            return None;
+        }
+        Some(self.text_style(FigTextStyle {
+            style_ref: String::new(),
+            kind: "character",
+            font_family: family.clone(),
+            font_style: style.clone(),
+            font_size: size.map(wide),
+            fill,
+            line_height: None,
+            letter_spacing: None,
+            align_horizontal: None,
+            align_vertical: None,
+            auto_resize: None,
+        }))
     }
 
     fn publishing(key: Option<&str>, fallback: String) -> StudioPublishing {
@@ -1626,7 +1755,7 @@ impl Mapper<'_> {
                     ("vector".to_owned(), Payload::Vector { path_ids }, false)
                 } else if let NodePayload::Text(text) = &n.payload {
                     let story_id = self.mint.mint("STXT");
-                    self.story(text, story_id.clone());
+                    self.story(text, story_id.clone(), &n.fills);
                     ("text".to_owned(), Payload::Text { story_id }, false)
                 } else {
                     // Every kind without a Folio layer kind.
@@ -1786,6 +1915,8 @@ pub fn to_native(
         paths: Vec::new(),
         fx: Vec::new(),
         image_paints: Vec::new(),
+        text_styles: Vec::new(),
+        text_style_ids: HashMap::new(),
         node_refs: HashMap::new(),
         mask_plans: Vec::new(),
         artboards: Vec::new(),
@@ -1824,6 +1955,7 @@ pub fn to_native(
         paths,
         fx,
         image_paints,
+        text_styles,
         mask_plans,
         components,
         component_sets,
@@ -1885,8 +2017,11 @@ pub fn to_native(
     design_records.component_instances = component_instances;
     design_records.variable_collections = collections;
     design_records.variables = variables;
+    let mut unresolved_text_styles = Vec::new();
     for story in &stories {
-        validate_text_story(story, cfg.budget, cancel, cfg.resolver).map_err(folio_error)?;
+        let issues =
+            validate_text_story(story, cfg.budget, cancel, cfg.resolver).map_err(folio_error)?;
+        unresolved_text_styles.extend(issues.into_iter().map(|i| i.target));
     }
     validate_design_records(
         &design_records,
@@ -1951,6 +2086,8 @@ pub fn to_native(
         design: design_records,
         stories,
         paths,
+        text_styles,
+        unresolved_text_styles,
         raster_records,
         vector_records,
         image_paints,
@@ -1986,6 +2123,7 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "editable_import (names, ids, mapped records, vector geometry, shadow effects and masks survive a save and reopen; image paints are bindings only, blurs and text fonts are losses)",
     "effect_conventions (shadow size = radius px, offset as distance + Photoshop light angle, colour alpha as opacity percent, inner-shadow spread as choke percent; not compared with Figma rendering)",
     "mask_semantics (a mask node masks its later siblings, written as ALPHA masks with the source layer hidden; Figma maskType is not decoded)",
+    "text_styles (font family/style/size, solid fill, line height, letter spacing and alignment are carried as STYS-bound values in the records entry; Folio has no style record, so the host resolves the STYS ids, and no font file is resolved)",
     "geometry_space (paths are baked into canvas px with every node transform composed; artboard-local coordinates are path minus artboard bounds)",
     "figma_render_parity (no comparison against Figma's rendering)",
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
@@ -2011,6 +2149,7 @@ impl NativeProposal {
                 "layer_id": p.layer_id,
                 "geometry": p.geometry.to_canonical_json(),
             })).collect::<Vec<_>>(),
+            "text_styles": self.text_styles.iter().map(FigTextStyle::to_json).collect::<Vec<_>>(),
             "raster_records": serde_json::to_value(&self.raster_records).map_err(enc)?,
             "vector_records": serde_json::to_value(&self.vector_records).map_err(enc)?,
             "image_paints": self.image_paints.iter().map(|p| json!({
@@ -2050,6 +2189,8 @@ impl NativeProposal {
             "paint_styles": self.design.paint_styles.len(),
             "text_stories": self.stories.len(),
             "vector_paths": self.paths.len(),
+            "text_styles": self.text_styles.len(),
+            "unresolved_text_styles": self.unresolved_text_styles.len(),
             "effect_stacks": self.raster_records.layers.len(),
             "masks": self.vector_records.masks.len(),
             // Image bytes stay byte-identical in the original entry; identity of each part here.
@@ -2085,6 +2226,7 @@ pub struct NativeRecords {
     pub design: StudioDesignRecords,
     pub stories: Vec<StudioTextStory>,
     pub paths: Vec<FigVectorPath>,
+    pub text_styles: Vec<FigTextStyle>,
     pub raster_records: StudioRasterRecords,
     pub vector_records: StudioVectorRecords,
     pub image_paints: Vec<FigImagePaint>,
@@ -2119,6 +2261,10 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
             layer_id: layer_id.to_owned(),
             geometry,
         });
+    }
+    let mut text_styles = Vec::new();
+    for e in v["text_styles"].as_array().ok_or_else(|| bad.clone())? {
+        text_styles.push(FigTextStyle::from_json(e).ok_or_else(|| bad.clone())?);
     }
     let raster_records: StudioRasterRecords =
         serde_json::from_value(v["raster_records"].clone()).map_err(|_| bad.clone())?;
@@ -2219,6 +2365,7 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
         design,
         stories,
         paths,
+        text_styles,
         raster_records,
         vector_records,
         image_paints,
