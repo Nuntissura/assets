@@ -22,6 +22,7 @@ mod mix;
 mod ramp;
 mod report;
 mod resample;
+mod reverb;
 mod spectrum;
 mod src_bounce;
 mod stage;
@@ -61,6 +62,10 @@ pub use mix::{MAX_SENDS, SendRoute};
 pub use ramp::RampedGain;
 pub use report::{outcome_of, report};
 pub use resample::{ClipResampler, MIN_CHUNK_FRAMES, ResampleReceipt, SINC_LEN};
+pub use reverb::{
+    REVERB_DAMPING, REVERB_LEVEL, REVERB_PRE_DELAY_MS, REVERB_RT60_S, REVERB_WIDTH, Reverb,
+    ReverbParams,
+};
 pub use spectrum::{MAX_FFT_SIZE, MIN_FFT_SIZE, SpectrumAnalyzer};
 pub use src_bounce::{ResampledBounce, ResampledBounceReceipt, StageFacts, StageKind};
 pub use stream_resample::{StreamEmit, StreamReceipt};
