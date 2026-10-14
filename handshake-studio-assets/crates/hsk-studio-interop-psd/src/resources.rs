@@ -101,6 +101,24 @@ impl ImageResources {
         out.extend_from_slice(&self.trailing);
     }
 
+    /// Resources holding only `icc` as resource 1039 (even-padded), or none: the header-only
+    /// documents of [`crate::raster_proposal`] and [`crate::image_source_document`].
+    pub(crate) fn with_icc_profile(icc: Option<Vec<u8>>) -> Self {
+        let mut resources = Self::default();
+        if let Some(icc) = icc {
+            let pad = if icc.len() % 2 == 1 { vec![0] } else { Vec::new() };
+            resources.blocks.push(ImageResource {
+                signature: *b"8BIM",
+                id: RESOURCE_ICC_PROFILE,
+                name: Vec::new(),
+                name_pad: vec![0],
+                data: icc,
+                data_pad: pad,
+            });
+        }
+        resources
+    }
+
     /// Embedded ICC profile bytes (resource 1039), byte-exact.
     pub fn icc_profile(&self) -> Option<&[u8]> {
         self.find(RESOURCE_ICC_PROFILE).map(|b| b.data.as_slice())

@@ -16,6 +16,7 @@ mod effects;
 mod error;
 mod export;
 mod header;
+mod image_source;
 mod layers;
 mod limits;
 mod loss;
@@ -43,6 +44,7 @@ pub use document::{
 pub use error::{PsdError, Result};
 pub use export::{ExportOptions, ExportReport, apply_edits, export_psd};
 pub use header::{ColorMode, HEADER_BYTES, Header};
+pub use image_source::{ImageSourceCanvas, image_source_document};
 pub use layers::{BlendRanges, GroupRole, LayerMask, PsdChannel, PsdLayer, Rect, TaggedBlock};
 pub use limits::Limits;
 pub use loss::{LossEntry, LossKind, LossReport, key_text};
@@ -66,7 +68,7 @@ pub const DESCRIPTOR: &str = concat!(
     "\"compressions\":{\"raw\":\"spec\",\"rle_packbits\":\"spec\",\"zip\":\"zlib,behaviour-reference\",\"zip_prediction\":\"depth8,behaviour-reference;depth16_32:unverified\"},",
     "\"limits\":{\"max_input_bytes\":536870912,\"max_layers\":8192,\"max_pixels\":268435456,\"max_decoded_bytes\":1073741824,",
     "\"max_tagged_block_bytes\":268435456,\"max_tagged_blocks\":16384,\"max_name_units\":1024,\"max_resources\":65536,\"max_group_depth\":128},",
-    "\"api\":\"read_psd / write_psd / to_proposal / raster_proposal / export_psd / apply_edits / report; PsdDocument::{tree,loss_report,decode_merged,merged_oracle_rgba8}\",",
+    "\"api\":\"read_psd / image_source_document (TIFF tag 37724 layer records, big-endian 8BIM/8B64; little-endian refused) / write_psd / to_proposal / raster_proposal / export_psd / apply_edits / report; PsdDocument::{tree,loss_report,decode_merged,merged_oracle_rgba8}\",",
     "\"capabilities\":[\"layer_records_groups_resources\",\"byte_exact_rewrite\",\"typed_loss_report\",",
     "\"folio_proposal_hierarchy_appearance_masks\",\"layerless_merged_image_as_one_raster_layer\",\"raster_source_proposal_shared_tile_mapping\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
     "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",

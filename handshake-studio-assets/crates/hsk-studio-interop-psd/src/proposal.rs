@@ -1799,18 +1799,7 @@ pub fn raster_proposal(
     let alpha_plane = alpha.is_some().then_some(colour);
     planes.extend(alpha);
     let channels = u16::try_from(planes.len()).map_err(|_| PsdError::BadChannelCount)?;
-    let mut resources = crate::resources::ImageResources::default();
-    if let Some(icc) = icc {
-        let pad = if icc.len() % 2 == 1 { vec![0] } else { Vec::new() };
-        resources.blocks.push(crate::resources::ImageResource {
-            signature: *b"8BIM",
-            id: RESOURCE_ICC_PROFILE,
-            name: Vec::new(),
-            name_pad: vec![0],
-            data: icc,
-            data_pad: pad,
-        });
-    }
+    let resources = crate::resources::ImageResources::with_icc_profile(icc);
     // A header-only document carries the colour mode, depth and profile the shared route reads.
     let version = if width > 30_000 || height > 30_000 { 2 } else { 1 };
     let doc = PsdDocument {

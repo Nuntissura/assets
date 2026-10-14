@@ -7,9 +7,14 @@
 //! What is not imported is a typed loss entry, never dropped silently (test
 //! `tiff_corpus_files_import_with_typed_losses_or_pass_through_refusals`):
 //! - pages after the first: `page[n]` `tiff_pages_not_imported` (held in the original entry);
-//! - Photoshop layers in tag 37724 (ImageSourceData): interop-psd exposes no public layer-record
-//!   parser for that block, so the composite is imported and `tiff_photoshop_layers_not_imported`
-//!   is recorded (the envelope check result goes to the receipt);
+//! - Photoshop layers in tag 37724 (ImageSourceData; SMB-CONVERT-FOLLOWUPS slice 3): the records are
+//!   parsed by interop-psd `image_source_document` (its own PSD layer readers) over this page's
+//!   canvas and mapped by `to_proposal` like a PSD (groups, masks, blend modes and their typed
+//!   losses); the composite page is then `page[0]` `tiff_composite_not_imported` (kept in the
+//!   original). When the envelope, the canvas or the records cannot be used (e.g. little-endian
+//!   `MIB8` runs), the composite is imported and `tiff_photoshop_layers_not_imported` is recorded,
+//!   with the parse error in the receipt (tests `photoshop_tiff_imports_its_layers_through_interop_psd`,
+//!   `photoshop_tiff_imports_its_composite_exactly_and_records_the_layers_as_typed_loss`);
 //! - tag 34377 (Photoshop image resources): `tiff_image_resources_not_imported`;
 //! - orientation other than 1: `tiff_orientation_not_applied` (interop-tiff records, never applies);
 //! - extra samples that are not the alpha: `tiff_extra_samples_not_imported`;
@@ -50,21 +55,10 @@ pub(crate) fn import_tiff(
         other => importer(other.code()),
     })?;
     let page = file.pages.first().ok_or_else(|| importer("tiff_no_pages"))?;
-    let raster = raster_of(page)?;
-    let mut losses: Vec<(String, psd::LossKind, &'static str)> = raster.losses.clone();
+    let mut losses: Vec<(String, psd::LossKind, &'static str)> = Vec::new();
     for index in 1..file.pages.len() {
         losses.push((format!("page[{index}]"), psd::LossKind::PreservedOpaque, "tiff_pages_not_imported"));
     }
-    let image_source = page.image_source_data.as_ref().map(|block| {
-        losses.push(("page[0]/tag/37724".into(), psd::LossKind::PreservedOpaque, "tiff_photoshop_layers_not_imported"));
-        match tiff::image_source_data(block) {
-            Ok(isd) => json!({
-                "envelope": "valid", "byte_order": order(isd.byte_order), "wide_sizes": isd.wide_sizes,
-                "block_bytes": isd.blocks.len(), "layers": "not_imported (no public interop-psd layer-record parser)",
-            }),
-            Err(e) => json!({"envelope": e.code(), "layers": "not_imported"}),
-        }
-    });
     if page.image_resources.is_some() {
         losses.push(("page[0]/tag/34377".into(), psd::LossKind::PreservedOpaque, "tiff_image_resources_not_imported"));
     }
@@ -78,20 +72,57 @@ pub(crate) fn import_tiff(
     let mut converter = super::colour::converter(FORMAT, &mint, &mut frames)?;
     let limits = psd::Limits::default();
     let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), resolver);
+    let psd_error = |e: psd::PsdError| if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) };
     let (width, height) = (page.width, page.height);
-    let raster_source = psd::RasterSource {
-        format: "tiff",
-        name: "Background",
-        width,
-        height,
-        depth: raster.depth,
-        colour_mode: raster.mode,
-        planes: raster.planes,
-        alpha: raster.alpha,
-        icc: page.icc.clone(),
+
+    // Photoshop layers (tag 37724): parsed by interop-psd's own layer readers and mapped like a PSD.
+    // Any parse or mapping failure falls back to the composite with `tiff_photoshop_layers_not_imported`.
+    let mut layered = None;
+    let mut image_source = None;
+    if let Some(block) = page.image_source_data.as_ref() {
+        match layered_document(block, page, &limits, cancel)? {
+            Ok((doc, mut facts)) => match psd::to_proposal(&doc, &source, &cfg, &mut mint, Some(&mut converter), cancel) {
+                Ok(proposal) => {
+                    facts["layers"] = json!("imported");
+                    image_source = Some(facts);
+                    layered = Some(proposal);
+                }
+                Err(psd::PsdError::Canceled) => return Err(ImportError::Canceled),
+                Err(e) => {
+                    facts["parse_error"] = json!(e.to_string());
+                    image_source = Some(facts);
+                }
+            },
+            Err(facts) => image_source = Some(facts),
+        }
+    }
+    let mut proposal = match layered {
+        Some(mut proposal) => {
+            // The header-only document has no PSD image-data section; the TIFF page is the composite.
+            proposal.loss.entries.retain(|e| !matches!(e.code, "merged_image_oracle_unknown" | "image_data_missing"));
+            losses.push(("page[0]".into(), psd::LossKind::PreservedOpaque, "tiff_composite_not_imported"));
+            proposal
+        }
+        None => {
+            if image_source.is_some() {
+                losses.push(("page[0]/tag/37724".into(), psd::LossKind::PreservedOpaque, "tiff_photoshop_layers_not_imported"));
+            }
+            let raster = raster_of(page)?;
+            losses.splice(0..0, raster.losses);
+            let raster_source = psd::RasterSource {
+                format: "tiff",
+                name: "Background",
+                width,
+                height,
+                depth: raster.depth,
+                colour_mode: raster.mode,
+                planes: raster.planes,
+                alpha: raster.alpha,
+                icc: page.icc.clone(),
+            };
+            psd::raster_proposal(raster_source, &source, &cfg, &mut mint, Some(&mut converter), cancel).map_err(psd_error)?
+        }
     };
-    let mut proposal = psd::raster_proposal(raster_source, &source, &cfg, &mut mint, Some(&mut converter), cancel)
-        .map_err(|e| if e == psd::PsdError::Canceled { ImportError::Canceled } else { importer(e.code()) })?;
     drop(converter);
     let colour = super::colour::summary(&proposal, frames.0, "embedded TIFF profile (tag 34675) -> working space");
     for (path, kind, code) in losses {
@@ -144,6 +175,67 @@ pub(crate) fn camera_raw_marker(bytes: &[u8]) -> Option<&'static str> {
             _ => None,
         }
     })
+}
+
+/// The layer records of tag 37724 as a header-only PSD document over this page's canvas, with the
+/// receipt facts; `Ok(Err(facts))` when the envelope, the canvas or the records cannot be used (the
+/// composite route then records `tiff_photoshop_layers_not_imported`). Only cancellation is an error.
+fn layered_document(
+    block: &tiff::RawBlock,
+    page: &tiff::TiffPage,
+    limits: &psd::Limits,
+    cancel: &CancellationToken,
+) -> Result<Result<(psd::PsdDocument, serde_json::Value), serde_json::Value>, ImportError> {
+    let isd = match tiff::image_source_data(block) {
+        Ok(isd) => isd,
+        Err(e) => return Ok(Err(json!({"envelope": e.code(), "layers": "not_imported"}))),
+    };
+    let mut facts = json!({
+        "envelope": "valid", "byte_order": order(isd.byte_order), "wide_sizes": isd.wide_sizes,
+        "block_bytes": isd.blocks.len(), "layers": "not_imported",
+    });
+    let depth = match page.pixels() {
+        tiff::Samples::U8(_) => 8,
+        tiff::Samples::U16(_) => 16,
+        tiff::Samples::F32(_) => 32,
+        tiff::Samples::U32(_) | tiff::Samples::F64(_) => {
+            facts["parse_error"] = json!("tiff_sample_type_unmapped");
+            return Ok(Err(facts));
+        }
+    };
+    let colour_mode = match page.photometric {
+        tiff::Photometric::BlackIsZero => psd::ColorMode::Grayscale,
+        tiff::Photometric::Rgb => psd::ColorMode::Rgb,
+        tiff::Photometric::Cmyk => psd::ColorMode::Cmyk,
+        tiff::Photometric::IccLab | tiff::Photometric::CieLab => psd::ColorMode::Lab,
+    };
+    // interop-tiff hands out the run after its first signature; the PSD readers expect the signature.
+    let signature: &[u8; 4] = match (isd.byte_order, isd.wide_sizes) {
+        (tiff::ByteOrder::Big, false) => b"8BIM",
+        (tiff::ByteOrder::Big, true) => b"8B64",
+        (tiff::ByteOrder::Little, false) => b"MIB8",
+        (tiff::ByteOrder::Little, true) => b"46B8",
+    };
+    let mut tagged = Vec::with_capacity(isd.blocks.len().saturating_add(4));
+    tagged.extend_from_slice(signature);
+    tagged.extend_from_slice(&isd.blocks);
+    drop(isd);
+    let canvas = psd::ImageSourceCanvas { width: page.width, height: page.height, depth, colour_mode, icc: page.icc.clone() };
+    match psd::image_source_document(&tagged, canvas, limits, cancel) {
+        Ok(doc) if doc.layers().is_empty() => {
+            facts["parse_error"] = json!("image_source_no_layers");
+            Ok(Err(facts))
+        }
+        Ok(doc) => {
+            facts["layer_records"] = json!(doc.layers().len());
+            Ok(Ok((doc, facts)))
+        }
+        Err(psd::PsdError::Canceled) => Err(ImportError::Canceled),
+        Err(e) => {
+            facts["parse_error"] = json!(e.to_string());
+            Ok(Err(facts))
+        }
+    }
 }
 
 fn order(o: tiff::ByteOrder) -> &'static str {

@@ -13,7 +13,7 @@ use crate::reader::Reader;
 use crate::resources::{ImageResources, VersionInfo};
 use crate::samples::{SixteenBitScale, srgb_to_linear};
 
-const LAYER_INFO_KEYS: [[u8; 4]; 3] = [*b"Lr16", *b"Lr32", *b"Layr"];
+pub(crate) const LAYER_INFO_KEYS: [[u8; 4]; 3] = [*b"Lr16", *b"Lr32", *b"Layr"];
 
 /// Where the layer list was stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -341,7 +341,7 @@ fn read_layer_section(
     Ok(section)
 }
 
-fn read_layer_info(bytes: &[u8], header: &Header, limits: &Limits, cancel: &CancellationToken) -> Result<LayerInfo> {
+pub(crate) fn read_layer_info(bytes: &[u8], header: &Header, limits: &Limits, cancel: &CancellationToken) -> Result<LayerInfo> {
     let mut r = Reader::new(bytes);
     let count = r.i16("layer_count")?;
     let merged_alpha = count < 0;

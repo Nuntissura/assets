@@ -104,6 +104,9 @@ fn photoshop_tiff_imports_its_composite_exactly_and_records_the_layers_as_typed_
     assert_eq!(receipt["source_format"], "tiff");
     assert_eq!(receipt["tiff"]["image_source_data"]["envelope"], "valid");
     assert_eq!(receipt["tiff"]["image_source_data"]["byte_order"], "little");
+    // Little-endian (`MIB8`) records are refused by interop-psd and recorded, never misread.
+    let parse_error = receipt["tiff"]["image_source_data"]["parse_error"].as_str().unwrap_or_default();
+    assert!(parse_error.contains("image_source_little_endian"), "{parse_error}");
     let codes = codes(receipt);
     for code in ["tiff_photoshop_layers_not_imported", "tiff_orientation_not_applied", "profile_assumed_srgb"] {
         assert!(codes.iter().any(|c| c == code), "{code} missing from {codes:?}");
@@ -146,6 +149,148 @@ fn photoshop_tiff_imports_its_composite_exactly_and_records_the_layers_as_typed_
     assert_eq!(report["ops"][0]["detail"]["import"]["format"], "tiff");
     let layers = report["ops"][1]["detail"]["layers"].as_array().unwrap();
     assert_eq!((layers.len(), layers[0]["kind"].as_str()), (1, Some("raster")));
+}
+
+/// Layer info (PSD "layer and mask information" layer-info payload, big-endian, raw channels) for
+/// two RGB 8-bit layers on a 2x2 canvas; assembled here, independently of interop-psd.
+/// name, rect (top, left, bottom, right), blend key, opacity, channels (id, raw samples).
+type TestLayer = (&'static str, [i32; 4], &'static [u8; 4], u8, Vec<(i16, Vec<u8>)>);
+
+fn two_layer_info() -> Vec<u8> {
+    let layers: [TestLayer; 2] = [
+        ("base", [0, 0, 2, 2], b"norm", 255, vec![(0, vec![10; 4]), (1, vec![20; 4]), (2, vec![30; 4])]),
+        ("top", [0, 1, 2, 2], b"mul ", 128, vec![(-1, vec![128, 255]), (0, vec![200, 201]), (1, vec![100, 101]), (2, vec![0, 1])]),
+    ];
+    let mut info = (layers.len() as i16).to_be_bytes().to_vec();
+    for (name, rect, key, opacity, channels) in &layers {
+        for r in rect {
+            info.extend(r.to_be_bytes());
+        }
+        info.extend((channels.len() as u16).to_be_bytes());
+        for (id, data) in channels {
+            info.extend(id.to_be_bytes());
+            info.extend(((2 + data.len()) as u32).to_be_bytes());
+        }
+        info.extend_from_slice(b"8BIM");
+        info.extend_from_slice(*key);
+        info.extend([*opacity, 0, 0x08, 0]);
+        let mut extra = 0u32.to_be_bytes().to_vec();
+        extra.extend(0u32.to_be_bytes());
+        let mut pascal = vec![name.len() as u8];
+        pascal.extend_from_slice(name.as_bytes());
+        while !pascal.len().is_multiple_of(4) {
+            pascal.push(0);
+        }
+        extra.extend(pascal);
+        info.extend((extra.len() as u32).to_be_bytes());
+        info.extend(extra);
+    }
+    for (_, _, _, _, channels) in &layers {
+        for (_, data) in channels {
+            info.extend(0u16.to_be_bytes());
+            info.extend_from_slice(data);
+        }
+    }
+    if info.len() % 2 == 1 {
+        info.push(0);
+    }
+    info
+}
+
+/// 2x2 RGB 8-bit TIFF whose tag 37724 carries big-endian (`8BIM`) Photoshop layer records.
+fn big_endian_layered_tiff(info: &[u8]) -> Vec<u8> {
+    let mut isd = b"Adobe Photoshop Document Data Block\0".to_vec();
+    isd.extend_from_slice(b"8BIMLayr");
+    isd.extend((info.len() as u32).to_be_bytes());
+    isd.extend_from_slice(info);
+    while !isd.len().is_multiple_of(4) {
+        isd.push(0);
+    }
+    let pixel_at = 8 + 2 + 12 * 11 + 4 + 6 + isd.len() + isd.len() % 2;
+    tiff_le(&[
+        (256, SHORT, 1, short(2)),
+        (257, SHORT, 1, short(2)),
+        (258, SHORT, 3, [8u16, 8, 8].iter().flat_map(|v| v.to_le_bytes()).collect()),
+        (259, SHORT, 1, short(1)),
+        (262, SHORT, 1, short(2)),
+        (273, LONG, 1, (pixel_at as u32).to_le_bytes().to_vec()),
+        (277, SHORT, 1, short(3)),
+        (278, SHORT, 1, short(2)),
+        (279, LONG, 1, 12u32.to_le_bytes().to_vec()),
+        (284, SHORT, 1, short(1)),
+        (37724, UNDEFINED, isd.len() as u32, isd),
+    ])
+    .into_iter()
+    .chain([9u8; 12])
+    .collect()
+}
+
+/// SMB-CONVERT-FOLLOWUPS slice 3: Photoshop layer records in tag 37724 import as layers through
+/// interop-psd (`image_source_document` + `to_proposal`): the same records in a PSD give the same
+/// layer names and tile digests. The composite page is a typed loss, the original keeps the bytes.
+#[test]
+fn photoshop_tiff_imports_its_layers_through_interop_psd() {
+    let info = two_layer_info();
+    let bytes = big_endian_layered_tiff(&info);
+    let cancel = CancellationToken::default();
+    let (package, imported) = convert_to_native(&bytes, &TrustAllResolver, &cancel).expect("converted");
+    let receipt = &imported.receipt;
+    assert_eq!(receipt["layers"], 2, "{receipt}");
+    let isd = &receipt["tiff"]["image_source_data"];
+    assert_eq!((isd["envelope"].as_str(), isd["byte_order"].as_str(), isd["layers"].as_str()), (Some("valid"), Some("big"), Some("imported")), "{isd}");
+    assert_eq!(isd["layer_records"], 2);
+    let found = codes(receipt);
+    assert!(found.iter().any(|c| c == "tiff_composite_not_imported"), "{found:?}");
+    assert!(!found.iter().any(|c| c == "tiff_photoshop_layers_not_imported" || c == "image_data_missing"), "{found:?}");
+    let names: Vec<&str> = imported.snapshot.document().layers.iter().map(|l| l.name.as_str()).collect();
+
+    // Reference: the same layer info inside a PSD file, through interop-psd's PSD reader.
+    let mut psd_file = b"8BPS".to_vec();
+    psd_file.extend(1u16.to_be_bytes());
+    psd_file.extend([0u8; 6]);
+    psd_file.extend(3u16.to_be_bytes());
+    psd_file.extend(2u32.to_be_bytes());
+    psd_file.extend(2u32.to_be_bytes());
+    psd_file.extend(8u16.to_be_bytes());
+    psd_file.extend(3u16.to_be_bytes());
+    psd_file.extend(0u32.to_be_bytes());
+    psd_file.extend(0u32.to_be_bytes());
+    let mut section = (info.len() as u32).to_be_bytes().to_vec();
+    section.extend_from_slice(&info);
+    section.extend(0u32.to_be_bytes());
+    psd_file.extend((section.len() as u32).to_be_bytes());
+    psd_file.extend(section);
+    psd_file.extend(0u16.to_be_bytes());
+    psd_file.extend([9u8; 12]);
+    let limits = psd::Limits::default();
+    let doc = psd::read_psd(&psd_file, &limits, &cancel).expect("reference psd");
+    let cfg = psd::ProposalConfig::new(&limits, folio::Budget::default(), &TrustAllResolver);
+    let source = psd::SourceIdentity::of(&bytes);
+    let reference = psd::to_proposal(&doc, &source, &cfg, &mut SourceMint::new(&source.sha256), None, &cancel).unwrap();
+    let ref_names: Vec<&str> = reference.snapshot.document().layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ref_names);
+    let opened = read_package(&package, &Limits::default(), folio::Budget::default(), &TrustAllResolver, &cancel).unwrap();
+    for tile in &reference.tiles {
+        assert!(opened.assets.contains_key(&tile.content_sha256_hex), "tile {} not in the package", tile.content_sha256_hex);
+    }
+    assert_eq!(opened.import_bytes(ImportRole::Original), Some(&bytes[..]));
+
+    // Open directly: two raster layers in a live session.
+    let h = harness();
+    let mut run = h.run(default_actor(), &cancel);
+    assert!(run.open_import(&bytes));
+    assert!(run.summary());
+    let report = run.finish("import");
+    assert_eq!(report["verdict"], "pass", "{report}");
+    assert_eq!(report["ops"][1]["detail"]["layers"].as_array().map(Vec::len), Some(2), "{report}");
+
+    // Records that do not parse fall back to the composite with the typed loss and the parse error.
+    let mut broken = info.clone();
+    broken.truncate(info.len() - 3);
+    let fallback = import(&big_endian_layered_tiff(&broken), &TrustAllResolver, &cancel).expect("composite fallback");
+    assert_eq!(fallback.receipt["layers"], 1);
+    assert!(codes(&fallback.receipt).iter().any(|c| c == "tiff_photoshop_layers_not_imported"));
+    assert!(fallback.receipt["tiff"]["image_source_data"]["parse_error"].as_str().is_some());
 }
 
 /// The one corpus-root convention (`.config/oracle-corpus.toml`): walk up from the workspace root.
