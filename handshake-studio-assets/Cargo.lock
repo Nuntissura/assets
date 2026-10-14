@@ -944,6 +944,7 @@ name = "hsk-studio-develop"
 version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
+ "hsk-studio-interop-tiff",
  "hsk-studio-observe",
  "hsk-studio-pigment",
  "hsk-studio-prism",
@@ -969,8 +970,10 @@ dependencies = [
  "hsk-studio-develop",
  "hsk-studio-folio",
  "hsk-studio-interop-psd",
+ "hsk-studio-interop-tiff",
  "hsk-studio-observe",
  "hsk-studio-package",
+ "hsk-studio-prism",
  "hsk-studio-session",
  "serde_json",
 ]

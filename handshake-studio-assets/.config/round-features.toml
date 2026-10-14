@@ -3,6 +3,9 @@
 # unit with its own build, test run and doctests (results features/CRATE+F1+F2/ and doctest/CRATE+F1+F2.*).
 # A set naming a feature (or crate) the candidate lacks is recorded feature_absent (crate_absent) and the round
 # exits 74 (declared unit absent at the candidate).
+# [ignored]: (crate, feature set) units that run ONLY the crate's #[ignore]d tests (`--run-ignored only`; results
+# ignored/CRATE[+F1...]/): the oracle-corpus tests, NOT_PROVEN when the corpus is absent. [] = default features.
+# Lead decision after R24 (corpus-backed claims must be exercised by rounds).
 # [doctest]: per-test budget for doctests (the per-test runner does not run them; nextest.toml covers the rest).
 schema = "hsk.studio.round-features@2"
 
@@ -19,4 +22,12 @@ hsk-studio-render-gpu = [["test-faults"]]
 hsk-studio-score-device = [["cpal-backend"]]
 hsk-studio-kernel-bindings = [["test-faults"]]
 hsk-studio-worker = [["test-faults"]]
-hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"]]
+hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"]]
+
+[ignored]
+# develop: real_dng, real_raw, container_identity; interop-tiff: real_tiff.
+hsk-studio-develop = [[]]
+hsk-studio-interop-tiff = [[]]
+# harness: psd-tools sweep shards 0-5, DNG convert, vendor RAW refusals (tests/import_psd.rs needs import-psd;
+# the DNG/RAW tests need import-raw).
+hsk-studio-harness = [["import-psd", "import-raw"]]

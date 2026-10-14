@@ -25,7 +25,10 @@
 #   features   per selected crate and feature set declared in .config/round-features.toml: -p CRATE --features SET,
 #              own build + run under features/CRATE+F1+F2/. A set naming a feature (or crate) the candidate lacks is
 #              recorded feature_absent (crate_absent) and fails the round with exit 74 (declared unit absent).
-#   doctest    `cargo test --doc` per selected crate with a doctested lib target, default features and every
+#   ignored    per selected crate and feature set declared in [ignored] of .config/round-features.toml (an empty set =
+#              default features): -p CRATE [--features SET] --run-ignored only, own build + run under
+#              ignored/CRATE[+F1...]/ (the #[ignore]d oracle-corpus tests; absent sets as for features, exit 74).
+#   doctest   `cargo test --doc` per selected crate with a doctested lib target, default features and every
 #              declared set (the per-test runner does not run doctests): doctest/CRATE[+F1...].{stdout,stderr}.txt.
 #              Per-test timeout: doctests run serially (--test-threads=1), so libtest prints "test NAME ... " when a
 #              test starts; a watchdog kills the unit's process tree when one test stays unfinished longer than
@@ -34,7 +37,9 @@
 #              its first doctest is not covered.
 #   fixture    .config/oracle-fixtures.toml, built before the other units when a `needed_by` crate is selected:
 #              cargo build --offline --locked of the standalone fixture package into <target-dir>/fixtures/<id> (the
-#              run's own target), then placed under the oracle corpus root at the content-addressed
+#              run's own target; byte-reproducible across target dirs, export roots and env: --config pins debug=0,
+#              strip="symbols" (no PDB path), incremental=false and, on Windows, link-arg /Brepro (no PE timestamp),
+#              so concurrent owners place the same sha256 and never rewrite MANIFEST.json under each other), then placed under the oracle corpus root at the content-addressed
 #              <dest>/sha256/<library sha256>/<file> (written only when absent or different; never replaces other
 #              bytes) with <dest>/MANIFEST.json (library = that relative path, sha256, source sha256, round sha;
 #              atomic replace), where tests find it via .config/oracle-corpus.toml (no env vars). The corpus is
@@ -357,8 +362,24 @@ for crate in selected:
         if s:
             feature_units.append(("features", crate, ",".join(s), status))
         doc_units.append(("doctest", crate, ",".join(s), status if status != "run" or has_doc else "no_doctest_lib"))
+# [ignored]: (crate, feature set) units that run only the crate's #[ignore]d tests; an empty set = default features.
+ignored = {}
+for crate, sets in doc.get("ignored", {}).items():
+    ok = isinstance(sets, list) and sets and all(
+        isinstance(s, list) and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
+    if not ok:
+        sys.exit(f"run-round: round-features.toml [ignored] {crate}: expected a list of feature-name lists")
+    ignored[crate] = [sorted(set(s)) for s in sets]
+ignored_units = []
+for crate in sorted(ignored):
+    if crate not in members:
+        ignored_units += [("ignored", crate, ",".join(s), "crate_absent") for s in ignored[crate]]
+    elif crate in selected:
+        for s in ignored[crate]:
+            missing = [f for f in s if f not in members[crate].get("features", {})]
+            ignored_units.append(("ignored", crate, ",".join(s), "feature_absent:" + ",".join(missing) if missing else "run"))
 print(f"config\tdoctest-per-test-timeout-s\t{budget}\t-")
-for kind, crate, feats, status in feature_units + doc_units:
+for kind, crate, feats, status in feature_units + ignored_units + doc_units:
     print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
 PY
 
@@ -556,7 +577,13 @@ for fx in cfg.get("fixture", []):
         continue
     manifest = root / fx["manifest"]
     tdir = target / "fixtures" / safe
-    cmd = ["cargo", "build", "--offline", "--locked", "--manifest-path", str(manifest), "--target-dir", str(tdir)]
+    cmd = ["cargo", "build", "--offline", "--locked", "--manifest-path", str(manifest), "--target-dir", str(tdir),
+           # Byte-reproducible library (same sha256 from any target dir, export root or profile env; --config
+           # outranks CARGO_PROFILE_* env): no debuginfo/PDB path, no incremental state, no PE timestamp.
+           "--config", "profile.dev.debug=0", "--config", 'profile.dev.strip="symbols"',
+           "--config", "profile.dev.incremental=false"]
+    if sys.platform == "win32":
+        cmd += ["--config", 'build.rustflags=["-Clink-arg=/Brepro"]']
     with open(res / "fixtures" / f"{safe}.build.stdout.txt", "wb") as so, \
             open(res / "fixtures" / f"{safe}.build.stderr.txt", "wb") as se:
         rc = subprocess.run(cmd, stdout=so, stderr=se, stdin=subprocess.DEVNULL).returncode
@@ -580,11 +607,23 @@ for fx in cfg.get("fixture", []):
                   "sha256": digest, "source_manifest": fx["manifest"],
                   "source_sha256": tree_sha(manifest.parent / "src"), "round_sha": sha,
                   "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        manifest_bytes = (json.dumps(record, indent=1) + "\n").encode("utf-8")
-        tmp = dest / f".MANIFEST.json.tmp-{os.getpid()}"
-        tmp.write_bytes(manifest_bytes)
-        os.replace(tmp, dest / "MANIFEST.json")
-        binding = dict(record, manifest_path=f"{fx['dest']}/MANIFEST.json",
+        # Keep an existing MANIFEST.json that already names these exact library and source bytes (only round_sha and
+        # built_at would differ): a concurrent owner's run then never sees its bound manifest change (exit 76).
+        same = ("id", "library", "sha256", "source_manifest", "source_sha256")
+        try:
+            old_bytes = (dest / "MANIFEST.json").read_bytes()
+            old = json.loads(old_bytes)
+        except (OSError, ValueError):
+            old_bytes, old = None, None
+        if isinstance(old, dict) and old.get("schema") == record["schema"] and all(old.get(k) == record[k] for k in same):
+            record, manifest_bytes, manifest_state = old, old_bytes, "kept"
+        else:
+            manifest_bytes = (json.dumps(record, indent=1) + "\n").encode("utf-8")
+            tmp = dest / f".MANIFEST.json.tmp-{os.getpid()}"
+            tmp.write_bytes(manifest_bytes)
+            os.replace(tmp, dest / "MANIFEST.json")
+            manifest_state = "written"
+        binding = dict(record, manifest_state=manifest_state, manifest_path=f"{fx['dest']}/MANIFEST.json",
                        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
                        library_path=f"{fx['dest']}/{rel}", placed=placed, built_from=built.as_posix())
         (res / "fixtures" / f"{safe}.json").write_text(json.dumps(binding, indent=1) + "\n", encoding="utf-8",
@@ -600,19 +639,24 @@ unlock_unit
 rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
 cat "$results/fixtures/units.tsv" >>"$units"
 default_filter=$U_FILTER
-mkdir -p "$results/features" "$results/doctest"
+mkdir -p "$results/features" "$results/ignored" "$results/doctest"
 while IFS=$'\t' read -r kind crate feats status; do
   status=${status%$'\r'}
   [ "$kind" = config ] && continue
   name=$crate; [ "$feats" != - ] && name="$crate+${feats//,/+}"
   if [ "$status" != run ]; then
-    k=doctest; [ "$kind" = features ] && k=nextest
+    k=doctest; [ "$kind" != doctest ] && k=nextest
     rec "$kind:$name" "$k" "$crate" "$feats" "$status" - - -
   elif [ "$kind" = features ]; then
     lock_unit
     nextest_unit "$results/features/$name" "$feats" -p "$crate"
     unlock_unit
     rec "features:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "features/$name"
+  elif [ "$kind" = ignored ]; then
+    lock_unit
+    nextest_unit "$results/ignored/$name" "$feats" -p "$crate" --run-ignored only
+    unlock_unit
+    rec "ignored:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "ignored/$name"
   else
     fa=(); [ "$feats" != - ] && fa=(--features "$feats")
     lock_unit
