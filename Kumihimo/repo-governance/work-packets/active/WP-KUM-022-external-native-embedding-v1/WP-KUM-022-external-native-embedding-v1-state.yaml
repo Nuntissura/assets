@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 14
+generation: 15
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -176,7 +176,7 @@ proof:
   retry: Original attempt retained; only a changed-source phase04 invocation may follow a fresh exact Primary reservation
   native: NOT_RUN
 - kind: phase04_E0510_source_remediation
-  status: SOURCE_REPAIRED_COMPILE_NOT_RUN
+  status: SOURCE_REPAIR_VERIFIED_BY_CHANGED_PHASE04_COMPILATION
   file: product/kumihimo-egui/examples/native_probe.rs
   sha256: 9497ec15f4b760339c158e1ad59599db44d0a44685a017859e835bee95468b0b
   change: Copy u8 self.phase into local phase before match; preserve all eight guards, pending results, error propagation,
@@ -189,11 +189,73 @@ proof:
   manifests_and_locks: UNCHANGED
   independent_source_review: sdk_frame independently opened exact actual9497ec15 file/diff; all eight guards/pending/error/assertion/phase
     semantics preserved; no source concern found; no compile claim
+- kind: phase04_changed_all_feature_compile
+  status: PRIMARY_AND_DIAGNOSTICS_INDEPENDENTLY_ACCEPTED_COMPILER_PRIMITIVE
+  attempt: 2
+  source_revision: d314813dfc18bdfbc1d142479d4d4035822ff84a
+  input_manifest_sha256: de0330b393e9d392b5c73b3756ff34d17794043508fab84066d4d1ceaf764975
+  launcher_sha256: f6431fda0bbae3050fb5476b7fe98d1fceb5918e9b99518938dc50d2818ad807
+  cargo_pid: 30828
+  cargo_birth_utc: '2026-10-14T22:27:31.5923155Z'
+  cargo_exit: 0
+  outer_host_pid: 8488
+  outer_tool_exit: 0
+  original_caller_status: TERMINAL
+  phase_record: .local/wp022-proof/04-repair-all-feature-check.phase.json
+  phase_record_sha256: 38d26ecb417f81722818a603ccfdbf139c03d2edf15bbf422b91bbce700c4bc4
+  stderr_sha256: 1a686431e809a57360ee931132d9f7debda717223cae891bca06045282fcec74
+  owned_closure: All6 recorded owned plus host7 absent; direct children and compilers absent; original cache4820
+    retained; independently reread by Primary and Diagnostics
+  source_inputs: All69 unchanged after compile; source digest2319084e5fb2481c7900e799a5b0b27b92c6dcebf73833ba1e8ab4c2155195a1
+  original_failed_attempt_retained: true
+  native: NOT_RUN
+- kind: phase05_sdk_native_owning_tests
+  status: DIAGNOSTICS_RECONCILED_FOUR_REAL_TESTS_AND_LATE_OWNED_CLOSURE
+  attempt: 1
+  source_revision: d314813dfc18bdfbc1d142479d4d4035822ff84a
+  input_manifest_sha256: b2776af6ac6c6f7fe738c064215e04bb233eccc6bd1b5a82e61b363ad86a0b53
+  launcher_sha256: e4be594727c476bcda33c328ba7416c030608ce2d93cd7824529e617f74f6fb3
+  cargo_pid: 40628
+  cargo_birth_utc: '2026-10-14T22:33:24.5940328Z'
+  cargo_exit: 0
+  outer_host_pid: 53180
+  outer_tool_exit: 1
+  original_caller_status: FAILED_STOP
+  phase_record: .local/wp022-proof/05-sdk-native-tests.phase.json
+  phase_record_sha256: 4eda57a8680ac774105f6f120cb8f645e86bd3ebb64dde56f865c8ddc7c59f7b
+  stdout_sha256: 66326eeb91c2e400befe8dfc18f03ee741a2f57212667aae76b9c2721473d1e9
+  stderr_sha256: 5c045707595d7e2e22c90d0c2812e7a9f6bbc7c71db9cb43dc6aa8faaa1affee
+  actual_tests:
+    passed: 4
+    failed: 0
+    filtered: 2
+    test_names:
+    - native_capture_allocation_tracks_shared_inflight_and_receipt_lifetime
+    - native_capture_removing_one_target_preserves_siblings
+    - native_capture_polling_outlives_requests_but_stops_before_retained_receipt_release
+    - native_capture_unknown_and_borrowed_targets_cannot_mint_requests
+  independent_test_review: Diagnostics opened exact phase/stdout/stderr hashes and four actual test names/results
+  late_owned_settlement:
+    receipt: .local/wp022-proof/05-owned-settlement.json
+    receipt_sha256: 88c7d1a8896771fa47cda3d302a4158d3ec23599fbc312a829b739a00a09cd3d
+    target_pid: 42080
+    native_birth_utc: '2026-10-14T22:33:27.7534624Z'
+    cim_birth_utc: '2026-10-14T22:33:27.7534620Z'
+    target_exit: -1
+    operation_tool_exit: 0
+    raw_parent_edge_chain_serialized: true
+    canonical_observation: All66 recorded owned plus host67 absent; candidate children and compilers absent; warm
+      cache4820 unchanged
+    review: DIAGNOSTICS_INDEPENDENTLY_RECONCILED
+    process_purpose: UNVERIFIED
+    independent_reviewer: 01a13ad0-112c-7c51-9dac-b19da4d01c76
+  source_inputs: All69 unchanged after actual tests and settlement; original3 locks retained
+  retry: Do not repeat four passing tests to erase historical wrapper failure
+  native: NOT_RUN
 blockers:
-- Changed-source phase04 all-feature check requires exact Primary reservation after new candidate bindings; all-feature
-  tests/native/pixel acceptance OPEN
-next_action: Publish scoped E0510 source repair and actual phase04 failure/closure checkpoint; bind new69 inputs
-  and unchanged proof argv in fresh one-shot caller for Primary review; no default03 rerun or implicit05
+- Exact Primary phase06 reservation required; adapter tests/native/pixel acceptance OPEN
+next_action: Publish actual04 accepted compile and05 owning test/late-closure checkpoint; bind unchanged69 inputs
+  and fresh phase06 one-shot caller; no previous green proof repeats
 source_freeze:
   native_worker: frozen_after_phase04_u8_phase_snapshot_remediation
   theme_worker: frozen
@@ -215,10 +277,11 @@ source_freeze:
     product/kumihimo-egui/tests/native_app_contracts.rs: c43f8ef1a5d35b08fffbc7f6b3debe32f1a9f139eb5164fb19f69aeb2d09d1b0
     product/kumihimo-egui/examples/native_probe.rs: 9497ec15f4b760339c158e1ad59599db44d0a44685a017859e835bee95468b0b
   runtime: NOT_RUN
-  compiler: PHASE04_ORIGINAL_CARGO_101_RECONCILED_CLOSURE_SOURCE_REPAIR_NOT_COMPILED
+  compiler: PHASE04_ALL_FEATURE_ALL_TARGET_CARGO0_OUTER0_INDEPENDENTLY_ACCEPTED
   eframe_producer: SOURCE_IMPLEMENTED_NATIVE_PROOF_PENDING
   sdk_expansion: FROZEN_SOURCE_WITH_RESOLVED_PHASE01_LOCK_OUTPUT
   sdk_frame_worker: frozen
   sdk_producer_worker: frozen_after_byte_lease_and_cancelled_map_polling_repairs
   provenance: All 45 original SDK files reread; only six admitted sources changed; other 39 hashes retained
-  input_manifest: .local/wp022-phase04-repair-input.json
+  input_manifest: .local/wp022-phase06-input.json
+  sdk_owning_tests: PHASE05_FOUR_PASSED_CARGO0_HISTORICAL_WRAPPER_FAILED_INDEPENDENT_LATE_CLOSURE
