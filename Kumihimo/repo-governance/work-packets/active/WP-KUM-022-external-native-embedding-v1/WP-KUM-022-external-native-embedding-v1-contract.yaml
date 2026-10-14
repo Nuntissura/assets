@@ -20,6 +20,10 @@ files:
 - product/INTERNAL-MANUAL.md
 - README.md
 - repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/
+- product/kumihimo-egui/examples/capture_host.rs
+- product/kumihimo-render-bridge/Cargo.toml
+- product/third-party/eframe-0.33.3/
+- product/third-party/egui-wgpu-0.33.3/
 dependencies:
 - Published standalone desktop source 1e37e0aa49ce960306be0ef0fe2e432b73e85589
 spec_refs:
@@ -27,6 +31,7 @@ spec_refs:
 - TOPIC-KUM-POPOUTS
 - TOPIC-KUM-CHROME
 - TOPIC-KUM-BOUNDARIES
+- DEC-KUM-NATIVE-PRODUCER-v1
 requirements:
 - Provide a reusable public optional native embedding coordinator in the ORIGINAL Assets/Kumihimo component. The
   coordinator owns actual renderer binding, private tagged GPU capture/readback and sealed readiness mint. No public
@@ -36,6 +41,17 @@ requirements:
   tokens with defaults derived from caller visuals. Preserve existing tab/provider-veto/semantic-return/quiet behavior.
   No geometry expansion or native runner replacement. Eframe compatibility remains unproven; distinct pinned Handshake
   adoption remains held until standalone proof and canonical GitHub publication.
+- Maintain exact upstream eframe0.33.3 and egui-wgpu0.33.3 original normalized source packages in the Assets component,
+  pinned to upstream44cdd653e2317d300fb8a6c9c36b03f23991e803 with archive and original-file hashes/notices. Add
+  bounded renderer-owned native request/completion delivery available through public Frame before application-mutable
+  Screenshot input. Privately construct immutable receipts only from actual authoritative root/deferred/immediate
+  viewport GPU copy/readback and completed presentation call. Derive window/renderer incarnation, one-shot request,
+  extent, scale and submission internally; reject stale/recreated/mismatched windows, duplicate consumption, cancellation,
+  failed/skipped frames, map/format failures and unverifiable borrowed bindings. Bound pending captures and bytes.
+  Preserve ordinary screenshots, existing0.33.3 runner, sibling surfaces and original asset/host acceptance. No
+  raw receipt/image/callback constructor or Deserialize bypass, offscreen substitute, global surface clear, framework
+  upgrade or Handshake-local copy. Consuming workspace roots explicitly select immutable future source patches;
+  package-local patch declarations do not prove adoption.
 acceptance:
 - A001 Public consumer completes actual asset-owned quiet renderer readback and one canonical detach; no raw Ready/image/event
   constructor
@@ -48,6 +64,12 @@ acceptance:
   independent affected evaluation
 - A006 Meaningful original source/proof commit normally pushed to Nuntissura/assets codex/handpick and immutable
   remote revision reread
+- A007 Private SDK native receipt derives actual renderer/window incarnation, request, extent/scale/submission and
+  presented/readback result for root/deferred/immediate viewports; ordinary screenshots unchanged
+- A008 Actual existing-runner root/deferred/immediate source consumer plus stale/recreate/cancel/replay/raw-Screenshot
+  negative proof; failures explicit; independent provenance and pixels inspected
+- A009 Original normalized SDK package/notices/hash provenance retained; only six producer sources and necessary
+  manifest exports/bindings patched; no unrelated upstream drift
 proof:
 - cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-targets --locked --offline -j 2
 - cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-targets --all-features --locked --offline
@@ -60,6 +82,8 @@ proof:
   -j 2 -- --output <owned-output>
 - Independent opened actual pixels, native/UIA/readiness observations and diff; actual owned process settlement
 - git ls-remote origin refs/heads/codex/handpick; independent immutable source/proof readback
+- Affected exact SDK owning provenance/queue tests and original native_probe existing-runner genuine eframe root/deferred/immediate
+  consumer mode; literal batch fixed before compiler grant
 execution:
   module_change_stage: standalone_source
   source_repository: https://github.com/Nuntissura/assets
@@ -74,6 +98,7 @@ authorization:
   lease_resolution: Root explicitly resolves narrow leases under Operator source assignment despite unavailable
     previous owner; preserve original session and other WP states
   failed_coordination: Previous owner01a13753 unavailable durable host; no handoff claimed
+  producer_decision_id: WP012-KUMIHIMO-NATIVE-PRODUCER-20261014-11
 source_leases:
   lead:
   - src/lib.rs
@@ -102,3 +127,36 @@ non_goals:
 - Geometry or runner replacement
 - Sibling asset or original session ownership changes
 - Eframe runtime compatibility claim
+source_dependency_contract:
+  stage: standalone_source
+  upstream_commit: 44cdd653e2317d300fb8a6c9c36b03f23991e803
+  packages:
+  - package: eframe
+    version: 0.33.3
+    archive_sha256: 457481173e6db5ca9fa2be93a58df8f4c7be639587aeb4853b526c6cf87db4e6
+  - package: egui-wgpu
+    version: 0.33.3
+    archive_sha256: 5e4d209971c84b2352a06174abdba701af1e552ce56b144d96f2bd50a3c91236
+  patch_files:
+    sdk_producer:
+    - egui-wgpu-0.33.3/src/capture.rs
+    - egui-wgpu-0.33.3/src/winit.rs
+    - egui-wgpu-0.33.3/src/lib.rs
+    sdk_frame:
+    - eframe-0.33.3/src/epi.rs
+    - eframe-0.33.3/src/native/epi_integration.rs
+    - eframe-0.33.3/src/native/wgpu_integration.rs
+  leader:
+  - original package import/provenance/notices
+  - necessary normalized manifest and asset workspace dependency bindings
+  - lib/spec/contract/docs/Git
+  asset_native:
+  - native.rs/window_slots.rs/native_app_contracts.rs/native_probe.rs SDK receipt adoption and actual root/deferred/immediate
+    consumer proof
+  theme: existing completed token files/tests preserved; leader capture_host light option only
+  public_boundary: Opaque renderer-owned request/receipt/outcome handle exposed via actual Frame; no application-input
+    or raw-pixel producer
+  readiness: Exact upstream/archive checked metadata; selected existing0.33.3 APIs source verified; package VCS/original
+    digest verification required before patch admission; resolver/build cache PENDING
+  source_materialization: Exact source/archive acquisition is admitted source work, not Cargo fetch; no nested Git
+    or unrelated dependency update

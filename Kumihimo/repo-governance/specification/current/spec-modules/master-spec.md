@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 26
+revision: 27
 title: Kumihimo master specification
 updated_at: '2026-10-14'
 ---
@@ -4462,5 +4462,28 @@ decisions:
   research_source_refs:
   - https://github.com/emilk/egui/blob/0.33.3/crates/egui-wgpu/src/winit.rs
   - https://github.com/Nuntissura/assets/tree/codex/handpick/Kumihimo
+  supersedes: []
+- decision_id: DEC-KUM-NATIVE-PRODUCER-v1
+  anchor_refs:
+  - TOPIC-KUM-POPOUTS
+  - TOPIC-KUM-RENDER
+  - TOPIC-KUM-BOUNDARIES
+  decision: Maintain exact upstream eframe0.33.3 and egui-wgpu0.33.3 original normalized source packages in the
+    Assets component, pinned to upstream44cdd653e2317d300fb8a6c9c36b03f23991e803 with archive and original-file
+    hashes/notices. Add bounded renderer-owned native request/completion delivery available through public Frame
+    before application-mutable Screenshot input. Privately construct immutable receipts only from actual authoritative
+    root/deferred/immediate viewport GPU copy/readback and completed presentation call. Derive window/renderer incarnation,
+    one-shot request, extent, scale and submission internally; reject stale/recreated/mismatched windows, duplicate
+    consumption, cancellation, failed/skipped frames, map/format failures and unverifiable borrowed bindings. Bound
+    pending captures and bytes. Preserve ordinary screenshots, existing0.33.3 runner, sibling surfaces and original
+    asset/host acceptance. No raw receipt/image/callback constructor or Deserialize bypass, offscreen substitute,
+    global surface clear, framework upgrade or Handshake-local copy. Consuming workspace roots explicitly select
+    immutable future source patches; package-local patch declarations do not prove adoption.
+  rationale: The inspected eframe public surface hides genuine capture production; original source dependency integration
+    must expose safe renderer-owned provenance before the host can adopt it.
+  research_source_refs:
+  - https://github.com/emilk/egui/tree/44cdd653e2317d300fb8a6c9c36b03f23991e803
+  - https://crates.io/crates/eframe/0.33.3
+  - https://crates.io/crates/egui-wgpu/0.33.3
   supersedes: []
 ```
