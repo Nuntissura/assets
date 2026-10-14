@@ -65,7 +65,7 @@ const KIND_ERROR: u8 = 8;
 /// Entries 0..=19 are the AV1 worker's (validated wire, never renumbered); 20.. were appended for the
 /// Media Foundation H.264 worker (`mf-worker`). Class 4 (`CodecUnavailable`) carries the codec name as its
 /// `what` (only `h264` is in the table).
-const WHATS: [&str; 34] = [
+const WHATS: [&str; 35] = [
     "av1-worker-error",
     "av1-frame-resources",
     "av1-unsupported-stream-feature",
@@ -100,6 +100,7 @@ const WHATS: [&str; 34] = [
     "mf-open-config",
     "mf-frame-bytes",
     "mf-reorder-needs-packet-timing",
+    "mf-output-time-unknown",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

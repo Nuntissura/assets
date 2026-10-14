@@ -187,14 +187,17 @@ fn h264_high_bf2_reorder_spike_and_policy() {
                 println!("NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?})");
             }
             Err(error) => {
+                // The refusal names the spike result: `mf-reorder-needs-packet-timing` = the decoder kept the
+                // input sample times and released pictures in another (presentation) order (strategy A);
+                // `mf-output-time-unknown` = it released times no packet carried (strategy B).
+                let strategy = match &error {
+                    ReelError::Unsupported { what } if *what == MF_REORDER_REFUSAL => "A (input times kept, released out of packet order)",
+                    ReelError::Unsupported { what: "mf-output-time-unknown" } => "B (output times re-stamped)",
+                    other => panic!("untyped spike outcome {other:?}"),
+                };
+                println!("SPIKE S1: strategy {strategy}");
                 println!(
                     "NOT_PROVEN: B-frame stream refused ({error:?}); presentation-order delivery needs reel P2 packet timing"
-                );
-                assert_eq!(
-                    error,
-                    ReelError::Unsupported {
-                        what: MF_REORDER_REFUSAL
-                    }
                 );
             }
         }
