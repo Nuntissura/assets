@@ -20,6 +20,7 @@
 pub mod display;
 pub mod edit;
 pub mod export;
+pub mod brush_mix;
 pub mod layers;
 pub mod render;
 

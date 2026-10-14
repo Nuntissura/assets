@@ -8,15 +8,16 @@
 //!   ants (the 50 % coverage outline).
 //! - Brush: hsk-studio-pigment `brush` (place_dabs with pen pressure on size, stroke_coverage,
 //!   clip_to_selection) on the selected raster layer; the stroke's new tile bodies are staged in the
-//!   session and committed as chronicle `tiles` (undoable). Painting is limited to the layer's
-//!   existing tiles (no tile creation). The per-pixel mix is pigment `masked_replace`'s formula
-//!   (premultiplied lerp by coverage, `masked_patch.rs`), transcribed because `masked_replace` is a
-//!   port-driven transaction bounded to 4096-pixel rectangles.
+//!   session and committed as chronicle `tiles` (undoable). Painting into an empty 256-pixel cell
+//!   creates its tile (lane SMB-HARNESS-UI-3). The per-pixel mix runs through pigment
+//!   `masked_replace` itself ([`super::brush_mix`], 64 x 64 blocks under its 4096-pixel cap).
 //! - Undo / redo: the run's chronicle inverse history ([`crate::Run::undo`], [`crate::Run::redo`]).
 //! - Text: no transaction creates a layer (chronicle edits properties of existing nodes) and the
 //!   viewer has no type/story/font path, so the text tool is a typed refusal
 //!   ([`TEXT_TOOL_GAP`]).
 use super::Viewer;
+use super::brush_mix::{self, MixTarget};
+use hsk_studio_accord::DomainId;
 use hsk_studio_folio::{Payload, TileRef};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::brush::{
@@ -132,10 +133,6 @@ fn linear(v: u8) -> f32 {
     if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-fn read_f32(bytes: &[u8], at: usize) -> Option<f32> {
-    Some(f32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))
-}
-
 /// Placement of a layer's tiles: a tile (column, row) lies on a grid of the layer's largest tile
 /// size and keeps its own size (composite `tile_rects`, the rule every renderer uses).
 fn tile_rects(tiles: &[TileRef]) -> Option<Vec<Rect>> {
@@ -188,43 +185,6 @@ fn new_tile(layer_id: &str, column: i64, row: i64, profile: &str, digest: &hsk_s
         "content_digest": digest, "artifact_manifest_id": format!("package/{layer_id}/{key}"),
     }))
     .map_err(|e| format!("paint: new tile reference: {e}"))
-}
-
-/// New tile body after painting `colour` (linear, alpha 1) through `coverage` onto `before`
-/// (one `rgb_f32le` cell + one straight `f32le` alpha cell, stride [`CELL`]). pigment
-/// `masked_replace` arithmetic: `a = (1-m) a0 + m`, `c = ((1-m) a0 c0 + m c1) / a`. `None` when the
-/// stroke changes nothing in this tile.
-fn paint_tile(before: &[u8], rect: Rect, coverage: &CoveragePlane, colour: [f32; 3]) -> Option<Vec<u8>> {
-    if before.len() != COLOUR_CELL.checked_add(ALPHA_CELL)? {
-        return None;
-    }
-    let mut out = before.to_vec();
-    let mut changed = false;
-    for ty in 0..rect.height as usize {
-        for tx in 0..rect.width as usize {
-            let x = rect.x.checked_add(i64::try_from(tx).ok()?)?;
-            let y = rect.y.checked_add(i64::try_from(ty).ok()?)?;
-            let cov = coverage.at(x, y);
-            if cov == 0 {
-                continue;
-            }
-            let m = f64::from(cov) / 65535.0;
-            let i = ty.checked_mul(CELL)?.checked_add(tx)?;
-            let c_at = i.checked_mul(12)?;
-            let a_at = COLOUR_CELL.checked_add(i.checked_mul(4)?)?;
-            let a0 = f64::from(read_f32(before, a_at)?);
-            let a = (1.0 - m) * a0 + m;
-            for (ch, c1) in colour.iter().enumerate() {
-                let at = c_at.checked_add(ch.checked_mul(4)?)?;
-                let c0 = f64::from(read_f32(before, at)?);
-                let c = if a > 0.0 { ((1.0 - m) * a0 * c0 + m * f64::from(*c1)) / a } else { 0.0 };
-                out.get_mut(at..at.checked_add(4)?)?.copy_from_slice(&(c as f32).to_le_bytes());
-            }
-            out.get_mut(a_at..a_at.checked_add(4)?)?.copy_from_slice(&(a as f32).to_le_bytes());
-            changed = true;
-        }
-    }
-    (changed && out != before).then_some(out)
 }
 
 /// Outline of the 50 % coverage region as unit pixel edges, merged into runs.
@@ -405,6 +365,9 @@ impl Viewer {
             coverage = clip_to_selection(&coverage, sel, &limits).map_err(|e| format!("paint: {}", e.code()))?;
         }
         let colour = b.rgb8.map(linear);
+        let document = DomainId::parse(&doc.document_id).map_err(|_| "paint: document id")?;
+        let layer_domain = DomainId::parse(layer_id).map_err(|_| "paint: layer id")?;
+        let actor = crate::harness::default_actor();
         let mut edited = tiles.clone();
         let mut staged = Vec::new();
         for (i, (tile, rect)) in tiles.iter().zip(&rects).enumerate() {
@@ -415,7 +378,8 @@ impl Viewer {
                 Some(bytes) => bytes.clone(),
                 None => self.run.render_assets().map_err(|e| format!("paint: tile bytes {e}"))?.remove(&tile.content_digest.digest).ok_or("paint: tile bytes missing")?,
             };
-            let Some(after) = paint_tile(&before, *rect, &coverage, colour) else {
+            let target = MixTarget { document: &document, layer: &layer_domain, profile: &DomainId::parse(&tile.colour_profile_id).map_err(|_| "paint: tile colour profile id")?, actor: &actor };
+            let Some(after) = brush_mix::paint_tile(&target, tile, &before, *rect, &coverage, colour).map_err(|e| format!("paint: {e}"))? else {
                 continue;
             };
             let digest = self.run.stage_tile(after.clone()).map_err(|e| format!("paint: stage {e}"))?;
@@ -432,6 +396,7 @@ impl Viewer {
             let first = |v: i64| v.checked_div_euclid(cell).unwrap_or(0);
             let last = |v: i64| v.checked_sub(1).and_then(|v| v.checked_div_euclid(cell)).unwrap_or(0);
             let empty = vec![0u8; COLOUR_CELL.saturating_add(ALPHA_CELL)];
+            let placeholder = hsk_studio_folio::ContentDigest { algorithm: "sha256".into(), digest: "0".repeat(64) };
             for row in first(coverage.bounds.y)..=last(ey) {
                 for column in first(coverage.bounds.x)..=last(ex) {
                     if tiles.iter().any(|t| t.column == column && t.row == row) {
@@ -441,12 +406,18 @@ impl Viewer {
                         continue;
                     };
                     let rect = Rect { x, y, width: CELL as u32, height: CELL as u32 };
-                    let Some(after) = paint_tile(&empty, rect, &coverage, colour) else {
+                    if rect.intersect(coverage.bounds).ok().flatten().is_none() {
+                        continue;
+                    }
+                    let profile = profile.as_deref().ok_or("paint: no colour profile for new tiles (no raster tile and no assigned RGB working space)")?;
+                    let mut tile = new_tile(layer_id, column, row, profile, &placeholder, &edited)?;
+                    let target = MixTarget { document: &document, layer: &layer_domain, profile: &DomainId::parse(profile).map_err(|_| "paint: colour profile id")?, actor: &actor };
+                    let Some(after) = brush_mix::paint_tile(&target, &tile, &empty, rect, &coverage, colour).map_err(|e| format!("paint: {e}"))? else {
                         continue;
                     };
-                    let profile = profile.as_deref().ok_or("paint: no colour profile for new tiles (no raster tile and no assigned RGB working space)")?;
                     let digest = self.run.stage_tile(after.clone()).map_err(|e| format!("paint: stage {e}"))?;
-                    edited.push(new_tile(layer_id, column, row, profile, &digest, &edited)?);
+                    tile.content_digest = digest.clone();
+                    edited.push(tile);
                     staged.push((digest.digest.clone(), after));
                     created = created.saturating_add(1);
                 }
