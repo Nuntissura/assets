@@ -16,6 +16,8 @@
 //! [`Viewer::drawn`], and [`Viewer::state_json`] is a structured projection of the whole state.
 #![deny(clippy::arithmetic_side_effects)]
 
+#[cfg(feature = "desktop")]
+pub mod display;
 pub mod export;
 pub mod render;
 
@@ -25,7 +27,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Parent, StudioLayer};
 use hsk_studio_package::ImportRole;
 use export::ExportFormat;
-use render::{Assets, Frame, Prefer, RenderFail};
+use render::{Assets, Frame, GpuDisplay, Prefer, RenderFail};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -85,6 +87,9 @@ pub struct Viewer {
     dirty: bool,
     gpu: Option<hsk_studio_render_gpu::GpuBackend>,
     gpu_options: hsk_studio_render_gpu::DeviceOptions,
+    /// Host display path (desktop: eframe's wgpu device); when set, GPU frames render straight into
+    /// the display texture and no own render-gpu device is created.
+    display: Option<Box<dyn GpuDisplay>>,
     selected: Option<String>,
     status: Vec<String>,
     zoom: f32,
@@ -125,6 +130,7 @@ impl Viewer {
             dirty: false,
             gpu: None,
             gpu_options,
+            display: None,
             selected: None,
             status: Vec::new(),
             zoom: 1.0,
@@ -133,6 +139,19 @@ impl Viewer {
             drawn: Vec::new(),
             cancel,
         }
+    }
+
+    /// Uses `display` for GPU frames (lane SMB-RENDER-GPU-SHARED-DEVICE): no read-back, no upload,
+    /// no second device. The read-back path stays the fallback when the display refuses a frame.
+    pub fn set_display(&mut self, display: Box<dyn GpuDisplay>) {
+        self.display = Some(display);
+        self.gpu = None;
+        self.dirty = true;
+    }
+
+    /// Appends a line to the status log (hosts report their own setup there).
+    pub fn status_line(&mut self, line: String) {
+        self.say(line);
     }
 
     fn say(&mut self, line: String) {
@@ -278,9 +297,18 @@ impl Viewer {
             return Err(format!("export {}: refused, it is the opened source (tick overwrite to replace it)", path.display()));
         }
         self.render_if_dirty();
-        let Some(frame) = self.frame.as_ref() else {
+        let Some(shown) = self.frame.as_ref() else {
             let why = self.render_error.as_ref().map_or_else(|| "nothing open".to_string(), ToString::to_string);
             return Err(format!("export {}: no rendered frame ({why})", path.display()));
+        };
+        // A frame that lives only in the display texture is rendered again on the read-back path.
+        let read_back;
+        let frame = if shown.rgba8.is_empty() {
+            let snap = self.run.snapshot().ok_or_else(|| format!("export {}: nothing open", path.display()))?;
+            read_back = render::render(snap, &self.assets, Prefer::Cpu, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
+            &read_back
+        } else {
+            shown
         };
         let exported = export::encode_frame(frame, format).map_err(|code| format!("export {}: {code}", path.display()))?;
         export::write_atomic(path, &exported.bytes).map_err(|code| format!("export {}: {code}", path.display()))?;
@@ -322,10 +350,10 @@ impl Viewer {
         let Some(snap) = self.run.snapshot() else {
             return;
         };
-        if self.prefer == Prefer::Gpu && self.gpu.is_none() {
+        if self.prefer == Prefer::Gpu && self.gpu.is_none() && self.display.is_none() {
             self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options));
         }
-        let result = render::render(snap, &self.assets, self.prefer, self.gpu.as_ref(), self.cancel);
+        let result = render::render_to(snap, &self.assets, self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel);
         match result {
             Ok(frame) => {
                 let line = format!("rendered revision {} with render-{} ({}x{}){}", frame.revision, frame.backend, frame.width, frame.height, if frame.notes.is_empty() { String::new() } else { format!("; {}", frame.notes.join("; ")) });
@@ -380,7 +408,7 @@ impl Viewer {
             "revision": self.run.snapshot().map(|s| s.document().revision),
             "layers": rows,
             "selected": self.selected,
-            "frame": self.frame.as_ref().map(|f| json!({"width": f.width, "height": f.height, "backend": f.backend, "revision": f.revision, "notes": f.notes})),
+            "frame": self.frame.as_ref().map(|f| json!({"width": f.width, "height": f.height, "backend": f.backend, "display_texture": f.texture.is_some(), "revision": f.revision, "notes": f.notes})),
             "render_error": self.render_error.as_ref().map(|e| json!({"code": e.code, "detail": e.detail})),
             "receipt": self.receipt.as_ref().map(|r| json!({"source_format": r["source_format"], "layers": r["layers"], "loss_entries": r["loss"].as_array().map_or(0, Vec::len)})),
             "ops": self.run.ops(),
@@ -611,11 +639,17 @@ impl Viewer {
             return;
         };
         let (w, h) = (frame.width, frame.height);
-        let texture = self.texture.get_or_insert_with(|| {
-            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &frame.rgba8);
-            ui.ctx().load_texture("hsk-studio-ui.view.texture", image, egui::TextureOptions::NEAREST)
-        });
-        let id = texture.id();
+        let id = match frame.texture {
+            // Rendered on the host's device straight into this texture: nothing to upload.
+            Some(id) => id,
+            None => self
+                .texture
+                .get_or_insert_with(|| {
+                    let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &frame.rgba8);
+                    ui.ctx().load_texture("hsk-studio-ui.view.texture", image, egui::TextureOptions::NEAREST)
+                })
+                .id(),
+        };
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         self.drawn.push(widget::CANVAS.into());
         let size = egui::vec2(w as f32, h as f32);

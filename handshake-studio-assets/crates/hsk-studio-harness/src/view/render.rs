@@ -19,8 +19,8 @@ use hsk_studio_composite::{self as composite, BlendSpace, CompositeError, Exactn
 use hsk_studio_folio::{self as folio, Inspection, ProfileBinding, Snapshot, TileRef};
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, ColourTag, ExecuteRequest, OutputTarget, PlanSources, SampleFormat, SinkError, SourceKey, TilePlanes,
-    TileSink,
+    AlphaConvention, ColourTag, ExecuteRequest, NoVector, OutputTarget, PlanSources, RenderPlan, SampleFormat, SinkError,
+    SourceKey, TilePlanes, TileSink,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -43,15 +43,27 @@ pub enum Prefer {
     Cpu,
 }
 
+/// A host GPU display path (lane SMB-RENDER-GPU-SHARED-DEVICE): the plan renders on the host's own
+/// wgpu device straight into the texture the UI draws, with no read-back and no upload. Feature
+/// `desktop` implements it over eframe's wgpu device ([`super::display::WgpuDisplay`]); window-free
+/// callers pass none and keep the read-back path.
+pub trait GpuDisplay {
+    /// Render `plan` into the host's display texture and return its egui texture id.
+    fn present(&mut self, plan: &RenderPlan<NoVector>, request: &ExecuteRequest, sources: &dyn PlanSources, cancel: &CancellationToken) -> Result<egui::TextureId, String>;
+}
+
 /// A rendered view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    /// `width * height * 4` bytes, sRGB-encoded, straight (unmultiplied) alpha.
+    /// `width * height * 4` bytes, sRGB-encoded, straight (unmultiplied) alpha. Empty when the frame
+    /// lives only in the host's display texture (`texture` is set).
     pub rgba8: Vec<u8>,
-    /// `gpu` or `cpu`.
+    /// `gpu`, `gpu-shared` (rendered into the display texture on the host's device) or `cpu`.
     pub backend: &'static str,
+    /// The host display texture holding the frame (`gpu-shared`), `None` for read-back frames.
+    pub texture: Option<egui::TextureId>,
     /// Document revision the frame shows.
     pub revision: u64,
     /// View assumptions and fallbacks (stable codes with detail).
@@ -84,8 +96,21 @@ fn composite_fail(e: CompositeError) -> RenderFail {
 /// Tile bytes by lowercase SHA-256 hex (the package's asset map).
 pub type Assets = BTreeMap<String, Vec<u8>>;
 
-/// Renders the document `snap` with the tile bytes in `assets`.
+/// Renders the document `snap` with the tile bytes in `assets` (read-back path).
 pub fn render(snap: &Snapshot, assets: &Assets, prefer: Prefer, gpu: Option<&hsk_studio_render_gpu::GpuBackend>, cancel: &CancellationToken) -> Result<Frame, RenderFail> {
+    render_to(snap, assets, prefer, gpu, None, cancel)
+}
+
+/// [`render`] that first tries the host display path when `display` is set and `prefer` is
+/// [`Prefer::Gpu`]; a display failure is noted (`gpu_shared_fallback`) and the read-back path runs.
+pub fn render_to(
+    snap: &Snapshot,
+    assets: &Assets,
+    prefer: Prefer,
+    gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
+    display: Option<&mut dyn GpuDisplay>,
+    cancel: &CancellationToken,
+) -> Result<Frame, RenderFail> {
     let mut notes = Vec::new();
     let view = view_snapshot(snap, cancel, &mut notes)?;
     let doc = view.document();
@@ -102,6 +127,16 @@ pub fn render(snap: &Snapshot, assets: &Assets, prefer: Prefer, gpu: Option<&hsk
     let lowering = composite::lower_to_render_plan(&plan, &report, &view, &root, target, &tiles).map_err(composite_fail)?;
     let sources = Sources { tiles: &tiles, table: &lowering.sources, space };
     let request = ExecuteRequest { expected_revision: lowering.plan.revision, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: MAX_WORKING_BYTES };
+    if prefer == Prefer::Gpu
+        && let Some(display) = display
+    {
+        match display.present(&lowering.plan, &request, &sources, cancel) {
+            Ok(texture) => {
+                return Ok(Frame { width: extent.width, height: extent.height, rgba8: Vec::new(), backend: "gpu-shared", texture: Some(texture), revision: doc.revision, notes });
+            }
+            Err(e) => notes.push(format!("gpu_shared_fallback: {e}; read-back path used")),
+        }
+    }
     let mut sink = Canvas::new(extent)?;
 
     let mut backend = "cpu";
@@ -125,7 +160,7 @@ pub fn render(snap: &Snapshot, assets: &Assets, prefer: Prefer, gpu: Option<&hsk
         let cpu = hsk_studio_render_cpu::Renderer::new(hsk_studio_render_cpu::DEFAULT_CHUNK_SIDE).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
         cpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
     }
-    Ok(Frame { width: extent.width, height: extent.height, rgba8: sink.to_rgba8(), backend, revision: doc.revision, notes })
+    Ok(Frame { width: extent.width, height: extent.height, rgba8: sink.to_rgba8(), backend, texture: None, revision: doc.revision, notes })
 }
 
 fn extent_of(bounds: &folio::Bounds) -> Result<Rect, RenderFail> {

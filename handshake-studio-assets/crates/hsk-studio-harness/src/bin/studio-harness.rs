@@ -4,7 +4,7 @@
 //! Optional `--cpu` renders with render-cpu only. All application state lives in
 //! `hsk_studio_harness::view::Viewer`; this file only hosts it in a window. Launching it is a
 //! manual Operator step (`RUN-UI.md`); tests never open this window.
-use hsk_studio_harness::view::{Viewer, render::Prefer};
+use hsk_studio_harness::view::{Viewer, display::WgpuDisplay, render::Prefer};
 
 struct App(Viewer);
 
@@ -38,5 +38,23 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native("hsk-studio-harness", options, Box::new(|_cc| Ok(Box::new(App(viewer)))))
+    eframe::run_native(
+        "hsk-studio-harness",
+        options,
+        Box::new(move |cc| {
+            // Shared device (lane SMB-RENDER-GPU-SHARED-DEVICE): GPU frames render on eframe's own
+            // wgpu device straight into the texture egui draws; the read-back path is the fallback.
+            if prefer == Prefer::Gpu {
+                match cc.wgpu_render_state.as_ref().map(WgpuDisplay::new) {
+                    Some(Ok(display)) => {
+                        viewer.status_line(format!("render-gpu shares the window's device ({})", display.adapter()));
+                        viewer.set_display(Box::new(display));
+                    }
+                    Some(Err(e)) => viewer.status_line(format!("{e}; read-back path used")),
+                    None => viewer.status_line("no wgpu render state; read-back path used".into()),
+                }
+            }
+            Ok(Box::new(App(viewer)))
+        }),
+    )
 }
