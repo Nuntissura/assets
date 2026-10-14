@@ -354,6 +354,46 @@ impl Run<'_> {
         self.finish_open("open", before, opened, false)
     }
 
+    /// Open directly (SMB-CONVERT-NATIVE CN-3): sniffs `bytes`, runs the selected importer, writes the
+    /// native container (document, tile assets, typed import entries) and opens it as the working
+    /// session through `Session::open_bytes`. One record `import`; its detail adds an `import` object
+    /// (format, package bytes, import entry roles, loss entry count). A refusal before the session
+    /// exists is unaddressed with the importer's or the dispatcher's typed code
+    /// (`format_unrecognised`, `format_unavailable`, or the importer's own code).
+    #[cfg(feature = "import")]
+    pub fn open_import(&mut self, bytes: &[u8]) -> bool {
+        let before = self.frames.count();
+        let resolver = self.harness.resolver();
+        let (package, imported) = match crate::import::convert_to_native(bytes, resolver.as_ref(), self.cancel) {
+            Ok(done) => done,
+            Err(e) => {
+                let ok = self.push("import", before, Err(e.code()), None, None);
+                if let Some(record) = self.ops.last_mut() {
+                    record["detail"] = json!({"import": e.detail()});
+                }
+                return ok;
+            }
+        };
+        let summary = json!({
+            "format": imported.format.name(),
+            "package_bytes": package.len(),
+            "entries": imported.imports.iter().map(|e| e.role.token()).collect::<Vec<_>>(),
+            "loss_entries": imported.receipt["loss"].as_array().map_or(0, Vec::len),
+            "layers": imported.receipt["layers"],
+            "not_proven": imported.receipt["not_proven"],
+        });
+        let opened = Session::open_bytes(&package, SessionConfig::new(self.actor.clone()), self.ports(), self.cancel);
+        let ok = self.finish_open("import", before, opened, false);
+        if let Some(record) = self.ops.last_mut() {
+            if record["detail"].is_object() {
+                record["detail"]["import"] = summary;
+            } else {
+                record["detail"] = json!({"import": summary});
+            }
+        }
+        ok
+    }
+
     fn finish_open(&mut self, op: &str, before: usize, opened: Result<Session, Failed>, reopen: bool) -> bool {
         match opened {
             Ok(session) => {

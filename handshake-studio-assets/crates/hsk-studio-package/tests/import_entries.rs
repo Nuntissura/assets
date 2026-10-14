@@ -1,5 +1,5 @@
 //! SMB-CONVERT-NATIVE CN-2: typed import entries (records, receipt, original source bytes) travel
-//! under reserved `import/<role>.<sha256hex>` names, round-trip byte-identically, are not quarantined,
+//! under reserved `import/<role>.<sha256hex>` names, round-trip byte-identically, are carried verbatim for re-save,
 //! add no loss note, and hostile ones are typed refusals with no partial output.
 
 use hsk_studio_accord::CancellationToken;
@@ -77,14 +77,15 @@ fn import_entries_round_trip_verified_and_add_no_loss_note() {
     assert_eq!(opened.imports.len(), 3);
     for expected in &imports {
         let got = opened.import(expected.role).expect("role present");
-        assert_eq!(got, expected, "byte-identical and hash-verified");
+        assert_eq!(&got, expected, "byte-identical and hash-verified");
         assert_eq!(sha256_hex_of(&got.bytes), got.sha256_hex);
     }
-    assert_eq!(opened.quarantined, vec![unknown.clone()], "only the unknown entry is quarantined");
+    assert_eq!(opened.quarantined.len(), 4, "import bytes are carried verbatim for re-save");
+    assert!(opened.quarantined.contains(&unknown));
     assert_eq!(opened.loss.len(), 1, "import entries add no loss note");
     assert_eq!(opened.loss[0].name, "x-unknown");
     // Re-save of an opened package re-emits them: the container is byte-identical.
-    let (again, rewritten) = write(&snap, &opened.preserved_entries(), &Limits::default());
+    let (again, rewritten) = write(&snap, &opened.quarantined, &Limits::default());
     again.expect("re-written");
     assert_eq!(rewritten, bytes);
     // A reader that does not know them (streaming reader path) keeps them as typed too.

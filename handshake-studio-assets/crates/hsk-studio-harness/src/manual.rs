@@ -21,6 +21,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "open", usage: "open PACKAGE [--references unresolved|trust_all]", summary: "Open a .handshake package and print a summary: document, layers, artboards, page spreads, sequences, stories." },
     CommandSpec { name: "panel", usage: "panel PACKAGE --layer ID", summary: "Print the control panel bound to a layer (agent JSON of the controls descriptors, current values, commit route of every control)." },
     CommandSpec { name: "edit", usage: "edit PACKAGE --provider chronicle.patch (--rename LAYER NAME | --visible LAYER true|false | --set LAYER CONTROL VALUE)... [--expect-revision N] [--save OUT [--overwrite]] [--cancel]", summary: "Open, apply edits through the selected provider (revision-checked), save (or checkpoint in memory), reopen in a second session and verify. One record per operation. --save OUT may not name the input PACKAGE unless --overwrite is given (usage error, exit 2)." },
+    CommandSpec { name: "import", usage: "import SOURCE [--references unresolved|trust_all] [--save OUT.handshake [--overwrite]] [--cancel]", summary: "Open directly / convert to native: recognise SOURCE by its magic, run the selected importer (PSD/PSB with feature import-psd; DNG and develop-decodable camera raw with feature import-raw, developed into one linear-light layer; plain TIFF and PDF are typed format_unavailable), write a native package (document, tiles, typed import entries: records, receipt with loss report and provenance, original bytes), open it as a session, then save to OUT (or checkpoint in memory), reopen and verify. Unknown bytes are format_unrecognised." },
     CommandSpec { name: "verify", usage: "verify PACKAGE (--expect-revision N | --expect-name LAYER NAME | --expect-visible LAYER true|false)...", summary: "Open a package and check revision and layer values. At least one expectation is required: a verify that would check nothing is a usage error (exit 2), never a pass." },
 ];
 
@@ -28,7 +29,7 @@ pub const FLAGS: &[(&str, &str)] = &[
     ("--provider ID", "Select a provider explicitly (repeatable). Nothing is selected by default; edits need one. Available: chronicle.patch."),
     ("--references MODE", "unresolved (default, honest: nothing is available) or trust_all (development stand-in, recorded in the output)."),
     ("--cancel", "Run with an already-cancelled token: every operation is refused or canceled and nothing is written."),
-    ("--save OUT", "edit only: write the edited package atomically to exactly OUT. The harness picks no path and restricts no root: the caller owns the destination. OUT equal to the input PACKAGE is refused unless --overwrite is given."),
+    ("--save OUT", "edit and import: write the edited package atomically to exactly OUT. The harness picks no path and restricts no root: the caller owns the destination. OUT equal to the input PACKAGE is refused unless --overwrite is given."),
     ("--overwrite", "edit only: allow --save OUT to replace the input PACKAGE in place."),
 ];
 

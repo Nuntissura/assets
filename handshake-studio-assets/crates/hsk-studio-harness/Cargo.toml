@@ -6,6 +6,9 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+import = ["dep:hsk-studio-package"]
+import-psd = ["import", "dep:hsk-studio-interop-psd"]
+import-raw = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-develop"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
@@ -13,6 +16,9 @@ hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-f
 hsk-studio-session = { path = "../hsk-studio-session", version = "=0.1.0", default-features = false }
 hsk-studio-controls = { path = "../hsk-studio-controls", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-psd = { path = "../hsk-studio-interop-psd", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 
 [lib]

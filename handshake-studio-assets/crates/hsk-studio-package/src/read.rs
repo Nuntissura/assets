@@ -10,7 +10,7 @@ use crate::{
     shuffle::byte_unshuffle,
     zip::{EntryMeta, SliceSource, Source, StreamSource, preflight_source, stream_range},
 };
-use crate::import::{ImportEntry, ImportRole, parse_import_name};
+use crate::import::{ImportEntry, ImportRef, ImportRole, parse_import_name};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use ruzstd::decoding::StreamingDecoder;
@@ -67,9 +67,10 @@ pub struct Opened {
     pub loss: Vec<LossNote>,
     /// Optional previews, declared only: bodies are never read or decoded by `read_package`.
     pub previews: Vec<PreviewRef>,
-    /// Typed import entries (`import/<role>.<sha256hex>`), hash-verified, sorted by name. They are not
-    /// quarantined and add no loss note; [`Opened::preserved_entries`] re-emits them on save.
-    pub imports: Vec<ImportEntry>,
+    /// Typed import entries (`import/<role>.<sha256hex>`), hash-verified, sorted by name. Their bytes
+    /// stay in `quarantined` (so every existing re-save path re-emits them verbatim; no copy is held
+    /// twice), but they add no loss note: they are understood, not unknown.
+    pub imports: Vec<ImportRef>,
 }
 
 impl Opened {
@@ -81,18 +82,17 @@ impl Opened {
         }
     }
 
-    /// Every entry a re-save must carry verbatim: the quarantined entries and the typed import
-    /// entries, as opaque entries for [`crate::Extras::quarantined`], sorted by name.
-    pub fn preserved_entries(&self) -> Vec<Quarantined> {
-        let mut all = self.quarantined.clone();
-        all.extend(self.imports.iter().map(ImportEntry::to_opaque));
-        all.sort_by(|a, b| a.name.cmp(&b.name));
-        all
+    /// Verified bytes of the first import entry with `role`, if any.
+    pub fn import_bytes(&self, role: ImportRole) -> Option<&[u8]> {
+        let reference = self.imports.iter().find(|e| e.role == role)?;
+        self.quarantined.iter().find(|q| q.name == reference.name).map(|q| q.bytes.as_slice())
     }
 
-    /// The first import entry with `role`, if any.
-    pub fn import(&self, role: ImportRole) -> Option<&ImportEntry> {
-        self.imports.iter().find(|e| e.role == role)
+    /// The first import entry with `role` as an owned [`ImportEntry`] (copies its bytes).
+    pub fn import(&self, role: ImportRole) -> Option<ImportEntry> {
+        let reference = self.imports.iter().find(|e| e.role == role)?;
+        let bytes = self.import_bytes(role)?.to_vec();
+        Some(ImportEntry { role, sha256_hex: reference.sha256_hex.clone(), bytes })
     }
 }
 
@@ -415,9 +415,9 @@ impl<S: Source> Container<S> {
         let entries = self.manifest.entries.clone();
         let mut document: Option<Vec<u8>> = None;
         let mut assets = BTreeMap::new();
-        let mut held: Vec<(Quarantined, LossReason)> = Vec::new();
+        let mut held: Vec<(Quarantined, Option<LossReason>)> = Vec::new();
         let mut previews: Vec<PreviewRef> = Vec::new();
-        let mut imports: Vec<ImportEntry> = Vec::new();
+        let mut imports: Vec<ImportRef> = Vec::new();
         let mut listed: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             listed.insert(entry.name.clone());
@@ -452,15 +452,18 @@ impl<S: Source> Container<S> {
                 EntryKind::Opaque => {
                     // The manifest validation already held a reserved name to its grammar, digest and
                     // bound; the body hash was verified by `process_entry`.
-                    if let Some((role, _)) = parse_import_name(&entry.name)? {
-                        imports.push(ImportEntry {
-                            role,
-                            sha256_hex: entry.sha256_hex.clone(),
-                            bytes: data,
-                        });
-                        continue;
+                    // It stays in `quarantined` (re-emitted verbatim by every re-save path) without a loss note.
+                    match parse_import_name(&entry.name)? {
+                        Some((role, _)) => {
+                            imports.push(ImportRef {
+                                role,
+                                name: entry.name.clone(),
+                                sha256_hex: entry.sha256_hex.clone(),
+                            });
+                            None
+                        }
+                        None => Some(LossReason::Opaque),
                     }
-                    LossReason::Opaque
                 }
             };
             held.push((
@@ -491,20 +494,24 @@ impl<S: Source> Container<S> {
                     bytes,
                     sha256_hex,
                 },
-                LossReason::Unlisted,
+                Some(LossReason::Unlisted),
             ));
         }
         held.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-        let (quarantined, loss) = held
+        let mut loss = Vec::new();
+        let quarantined = held
             .into_iter()
             .map(|(q, reason)| {
-                let note = LossNote {
-                    name: q.name.clone(),
-                    reason,
-                };
-                (q, note)
+                if let Some(reason) = reason {
+                    loss.push(LossNote {
+                        name: q.name.clone(),
+                        reason,
+                    });
+                }
+                q
             })
-            .unzip();
+            .collect();
+        imports.sort_by(|a, b| a.name.cmp(&b.name));
 
         let document = document.ok_or(PackageError::MissingEntry)?;
         let inspection = folio::inspect_bytes(&document, folio_budget, cancel, resolver)

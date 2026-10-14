@@ -9,7 +9,8 @@
 //! read before any body is decoded: the name grammar (`manifest_invalid`), the name digest equal to
 //! the entry's SHA-256 (`hash_mismatch`), and records/receipt at most `Limits::max_manifest_bytes`
 //! (`entry_too_large`); the body hash is verified like every entry. A reserved entry that passes is
-//! returned in `Opened::imports`, not in `Opened::quarantined`, and adds no loss note (tests in
+//! listed in `Opened::imports` and adds no loss note; its bytes stay in `Opened::quarantined`, so every
+//! re-save path that carries the quarantined entries re-emits it verbatim (tests in
 //! `tests/import_entries.rs`). The package never interprets the bytes: their schemas belong to the
 //! producer (records: Folio; receipt and original: the importer that wrote them).
 use crate::{
@@ -79,6 +80,15 @@ impl ImportEntry {
     pub fn to_opaque(&self) -> Quarantined {
         Quarantined { name: self.name(), bytes: self.bytes.clone(), sha256_hex: self.sha256_hex.clone() }
     }
+}
+
+/// A typed import entry of an opened package; its verified bytes are the `Opened::quarantined` entry
+/// of the same name (see `Opened::import_bytes`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportRef {
+    pub role: ImportRole,
+    pub name: String,
+    pub sha256_hex: String,
 }
 
 /// `Ok(None)` for a name outside the reserved prefix; `Ok(Some((role, digest)))` for a well-formed

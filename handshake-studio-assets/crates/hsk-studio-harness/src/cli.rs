@@ -153,8 +153,77 @@ pub fn run(args: &[String]) -> CliOutput {
             }
             with_harness(command, &parsed, |h| execute(command, h, &parsed, &package))
         }
+        "import" => {
+            let Some(input) = parsed.positional.first().map(PathBuf::from) else {
+                return usage("missing SOURCE path");
+            };
+            if parsed.positional.len() > 1 {
+                return usage("only one SOURCE path is accepted");
+            }
+            if let Some(save) = &parsed.save
+                && !parsed.overwrite
+                && same_file(save, &input)
+            {
+                return usage("--save names the SOURCE file; pass --overwrite to replace it, or save to another path");
+            }
+            with_harness(command, &parsed, |h| execute_import(h, &parsed, &input))
+        }
         other => usage(&format!("unknown command `{other}`")),
     }
+}
+
+/// Reads a source file within [`crate::import::MAX_SOURCE_BYTES`] (checked before reading).
+fn read_source(command: &str, input: &Path) -> Result<Vec<u8>, CliOutput> {
+    let fail = |code: &str| out(1, &json!({"schema":crate::SCHEMA,"command":command,"ok":false,"verdict":"fail","error":code}));
+    let len = std::fs::metadata(input).map_err(|_| fail("source_unreadable"))?.len();
+    if len > crate::import::MAX_SOURCE_BYTES {
+        return Err(fail("source_too_large"));
+    }
+    std::fs::read(input).map_err(|_| fail("source_unreadable"))
+}
+
+/// `import SOURCE [--save OUT]`: open directly, then save (or checkpoint in memory), reopen in a second
+/// session and verify, exactly like `edit`.
+#[cfg(feature = "import")]
+fn execute_import(harness: &Harness, parsed: &Parsed, input: &Path) -> CliOutput {
+    let bytes = match read_source("import", input) {
+        Ok(b) => b,
+        Err(o) => return o,
+    };
+    let cancel = CancellationToken::default();
+    if parsed.cancel {
+        cancel.cancel();
+    }
+    let mut run = harness.run(default_actor(), &cancel);
+    if run.open_import(&bytes) {
+        run.summary();
+        let reopened = match &parsed.save {
+            Some(path) => run.save_to(path) && run.reopen_path(path),
+            None => match run.checkpoint() {
+                Some(b) => run.reopen_bytes(&b),
+                None => false,
+            },
+        };
+        if reopened {
+            run.verify_reopened();
+        }
+    }
+    let report = run.finish("import");
+    out(i32::from(report["ok"] != true), &report)
+}
+
+/// Without an importer feature the command still recognises the source and says what is missing.
+#[cfg(not(feature = "import"))]
+fn execute_import(_: &Harness, _: &Parsed, input: &Path) -> CliOutput {
+    let bytes = match read_source("import", input) {
+        Ok(b) => b,
+        Err(o) => return o,
+    };
+    let (error, detail) = match crate::import::sniff(&bytes) {
+        None => ("format_unrecognised", json!({})),
+        Some(f) => ("format_unavailable", json!({"format":f.name(),"feature":f.feature(),"reason":"feature_not_enabled"})),
+    };
+    out(1, &json!({"schema":crate::SCHEMA,"command":"import","ok":false,"verdict":"fail","error":error,"detail":{"import":detail}}))
 }
 
 fn with_harness(command: &str, parsed: &Parsed, f: impl FnOnce(&Harness) -> CliOutput) -> CliOutput {
