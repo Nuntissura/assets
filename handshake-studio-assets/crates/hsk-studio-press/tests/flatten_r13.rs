@@ -2749,9 +2749,23 @@ fn descriptor_states_the_structure_tree_rule() {
         "detached_structure_elements_are_reported",
         "structure_shape_is_read_from_the_parsed_dictionary",
         "structure_rules_apply_only_when_a_region_is_flattened",
+        "unreadable_structure_shapes_are_counted",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
+    }
+    // PLR-104 (V4-07): the property-list sentence states the purge and the fail-closed count and cites tests that exist.
+    let props_start = descriptor.find("PLR-104 marked-content property lists").expect("PLR-104 sentence");
+    let props = &descriptor[props_start..props_start + descriptor[props_start..].find("; residuals:").expect("end of the PLR-104 sentence")];
+    for needle in ["the entries that no BDC or DP of the content read names are removed, inline dictionaries and references alike", "residual_in_region counts, fail closed"] {
+        assert!(props.contains(needle), "PLR-104 sentence lacks {needle:?}");
+    }
+    for name in ["marked_content_property_lists_of_flattened_pages_are_purged", "property_lists_the_purge_cannot_clear_are_counted"] {
+        assert!(props.contains(name), "the PLR-104 sentence does not cite {name}");
+        assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
+    }
+    for word in ["never", "always", "guarantee", "proves"] {
+        assert!(!props.contains(word), "the PLR-104 sentence says {word:?}");
     }
 }
 
@@ -2796,6 +2810,198 @@ fn flatten_aggregate_over_budget() {
     let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
     if !out.flattened[0].notes.contains(&FlattenNote::WorkBudget) {
         red.push(format!("200 x 90000 decoded pixels within a 12800000-pixel budget: notes {:?}", out.flattened[0].notes));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+// ------------------------------------------------------------------ SMB-PRESS-PROPERTIES (PLR-104, PLR-105)
+
+/// Texts of the property lists only the flattened page names (PLR-104).
+const PROP_TEXTS: [&str; 4] = ["PROP-ALT-SECRET", "PROP-ACTUAL-SECRET", "PROP-E-SECRET", "PROP-LANG-SECRET"];
+/// The `/Properties` entries of the PLR-104 fixture: `/MC0` (inline) and `/MC2` (object 20) are named only by page one (flattened),
+/// `/MC1` (inline, text `KEPT-PROP-TEXT`) and `/OC1` (the optional-content group 30) by page two (kept).
+const PROPS: &str = "/MC0 << /Alt (PROP-ALT-SECRET) /ActualText (PROP-ACTUAL-SECRET) >> /MC1 << /ActualText (KEPT-PROP-TEXT) >> /MC2 20 0 R /OC1 30 0 R";
+
+/// PLR-104 fixture (R25-P7): an untagged document; page one (flattened, index 0) draws `SECRET` inside `/Span /MC0 BDC .. EMC` and
+/// has `/Note /MC2 DP`; page two (kept) draws its text inside `/Span /MC1 BDC .. EMC` and a square inside `/OC /OC1 BDC .. EMC`,
+/// then `page_two_ops`. `layout` places the property lists: `shared` (one resources object 9 both pages name), `inherited` (an
+/// inline `/Resources` on the `/Pages` node), `inherited-object` (the node names resources object 9), `properties-object` (each
+/// page's own `/Resources` names one `/Properties` object 21), `lists-as-objects` (object 9, every property list an object),
+/// `alias` (object 9's `/Properties` is alias object 24 of object 21: a spelling the purge does not edit).
+fn properties_pdf(layout: &str, page_two_ops: &str, catalog_extra: &str, more: &[(u32, String)]) -> Vec<u8> {
+    let inline_res = format!("<< /Font << /F1 6 0 R >> /Properties << {PROPS} >> >>");
+    let (node, own) = match layout {
+        "shared" => (String::new(), "/Resources 9 0 R".to_string()),
+        "inherited" => (format!("/Resources {inline_res}"), String::new()),
+        "inherited-object" => ("/Resources 9 0 R".to_string(), String::new()),
+        "properties-object" | "alias-own" => (String::new(), "/Resources << /Font << /F1 6 0 R >> /Properties 21 0 R >>".to_string()),
+        _ => (String::new(), "/Resources 9 0 R".to_string()),
+    };
+    let res9 = match layout {
+        "lists-as-objects" => "<< /Font << /F1 6 0 R >> /Properties << /MC0 22 0 R /MC1 23 0 R /MC2 20 0 R /OC1 30 0 R >> >>".to_string(),
+        "alias" => "<< /Font << /F1 6 0 R >> /Properties 24 0 R >>".to_string(),
+        _ => inline_res.clone(),
+    };
+    let page_one = format!("/Span /MC0 BDC {SECRET} EMC /Note /MC2 DP");
+    let page_two = format!("/Span /MC1 BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC /OC /OC1 BDC 0 g 10 10 5 5 re f EMC {page_two_ops}");
+    let mut objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, format!("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [30 0 R] /D << /Order [30 0 R] >> >> {catalog_extra} >>").into_bytes()),
+        (2, format!("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 612 792] {node} >>").into_bytes()),
+        (3, format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {own} >>").into_bytes()),
+        (4, stream_body("", page_one.as_bytes())),
+        (5, format!("<< /Type /Page /Parent 2 0 R /Contents 7 0 R {own} >>").into_bytes()),
+        (6, HELVETICA.to_vec()),
+        (7, stream_body("", page_two.as_bytes())),
+        (9, res9.into_bytes()),
+        (20, b"<< /E (PROP-E-SECRET) /Lang (PROP-LANG-SECRET) >>".to_vec()),
+        (21, format!("<< {PROPS} >>").into_bytes()),
+        (22, b"<< /Alt (PROP-ALT-SECRET) /ActualText (PROP-ACTUAL-SECRET) >>".to_vec()),
+        (23, b"<< /ActualText (KEPT-PROP-TEXT) >>".to_vec()),
+        (24, b"21 0 R".to_vec()),
+        (30, b"<< /Type /OCG /Name (Layer one) >>".to_vec()),
+    ];
+    objs.extend(more.iter().map(|(n, b)| (*n, b.clone().into_bytes())));
+    build(&objs)
+}
+
+fn properties_output(layout: &str, page_two_ops: &str, catalog_extra: &str, more: &[(u32, String)]) -> hsk_studio_press::RedactedOutput {
+    let pdf = properties_pdf(layout, page_two_ops, catalog_extra, more);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact")
+}
+
+/// The `/Properties` names a viewer reads for page `index` of the saved file (hayro-syntax, references followed).
+fn property_names(bytes: &[u8], index: usize) -> Vec<String> {
+    let pdf = Pdf::new(bytes.to_vec()).expect("hayro-syntax opens the saved file");
+    let page = &pdf.pages()[index];
+    page.raw().get::<HDict<'_>>(b"Resources").and_then(|r| r.get::<HDict<'_>>(b"Properties")).map(|p| keys(&p)).unwrap_or_default()
+}
+
+/// PLR-104 (R25-P7; Operator-confirmed plan 2026-10-14, lane SMB-PRESS-PROPERTIES): a marked-content property list of a flattened
+/// page (`/Alt`, `/ActualText`, `/E`, `/Lang`) kept in a resources dictionary another page shares or inherits survived with the save
+/// read proven (red at 1da2453: R25-P7 X2a shared, X2b inherited). `/Properties` is now a gated category: every entry the flattened
+/// page reached that no kept `BDC` or `DP` names is purged (inline dictionaries and references), the entries the kept page names stay
+/// (its own `/Span` text and its optional-content group), and the save reads flattened. Control: when the kept page names `/MC0`
+/// too, `/MC0` stays (kept content invokes it) and the save still reads flattened.
+#[test]
+fn marked_content_property_lists_of_flattened_pages_are_purged() {
+    let mut red: Vec<String> = Vec::new();
+    for layout in ["shared", "inherited", "inherited-object", "properties-object", "lists-as-objects"] {
+        let out = properties_output(layout, "", "", &[]);
+        for text in PROP_TEXTS.iter().chain(&["SECRET-ALPHA"]) {
+            if !gone(&out.bytes, text) {
+                red.push(format!("{layout}: {text} survives"));
+            }
+        }
+        if gone(&out.bytes, "KEPT-PROP-TEXT") {
+            red.push(format!("{layout}: the property list the kept page names was purged"));
+        }
+        let names = property_names(&out.bytes, 1);
+        if names.iter().any(|n| n == "MC0" || n == "MC2") || !names.iter().any(|n| n == "MC1") || !names.iter().any(|n| n == "OC1") {
+            red.push(format!("{layout}: page two /Properties {names:?}, expected MC1 and OC1 only"));
+        }
+        if !read_as_flattened(&out) {
+            red.push(format!("{layout}: region_flattened {} residual {} reasons {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+    }
+    let named = properties_output("shared", "/Span /MC0 BDC EMC", "", &[]);
+    if gone(&named.bytes, "PROP-ALT-SECRET") || !read_as_flattened(&named) {
+        red.push(format!(
+            "control, /MC0 named by the kept page: PROP-ALT-SECRET kept {} region_flattened {} reasons {:?}",
+            !gone(&named.bytes, "PROP-ALT-SECRET"),
+            named.region_flattened(),
+            named.not_proven_reasons()
+        ));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-104, fail closed: a property list of the flattened page that the purge cannot clear is counted (`residual_in_region`,
+/// `NotProven::ResidualInRegion`, `region_flattened` false): (a) its object stays in the file because another object references it
+/// and no kept content names it, while it holds `/E` and `/Lang` text; (b) the `/Properties` value is an alias object (a spelling
+/// the purge does not edit) and an entry no kept content names holds text; (c) the kept page's content cannot be read, so which
+/// entries it names is undetermined (every entry stays).
+#[test]
+fn property_lists_the_purge_cannot_clear_are_counted() {
+    let unreadable = "BT /F1 12 Tf 72 650 Td (more) Tj ET 1 2 hskunknownop";
+    let cases: Vec<(&str, hsk_studio_press::RedactedOutput, &[&str])> = vec![
+        ("(a) the property list object is also referenced by the catalog", properties_output("shared", "", "/HskKeep 20 0 R", &[]), &["PROP-E-SECRET", "PROP-LANG-SECRET"]),
+        ("(b) /Properties is an alias object", properties_output("alias", "", "", &[]), &PROP_TEXTS),
+        ("(c) the kept page's content cannot be read", properties_output("shared", unreadable, "", &[]), &PROP_TEXTS),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, out, survive) in cases {
+        for text in survive {
+            if gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} was removed (the case needs it to survive)"));
+            }
+        }
+        if out.region_flattened() || out.residual_in_region == 0 || !out.not_proven_reasons().contains(&hsk_studio_press::NotProven::ResidualInRegion) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected counted", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") {
+            red.push(format!("{name}: SECRET-ALPHA survives"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-105 (R25-P3, R25-P4, R25-P5; fail closed): the structure-shape scan counts what it cannot read instead of passing it.
+/// `/Type /StructElem` or `/S` behind 15 alias objects (a chain the crate's reader reads as null after 16 hops), an object stream
+/// without `/Type` that has `/N` and `/First`, an object stream whose bytes are not all members by its own header (`/N` too small,
+/// bytes between the header and `/First`, `/N 0` with data), and a structure-element dictionary in the saved trailer's `/ID` each
+/// read `region_flattened` false and `NotProven::ResidualInRegion`. Controls: 14 alias objects is read as before (counted through
+/// the name), an object stream whose members cover its data with no shape reads flattened.
+#[test]
+fn unreadable_structure_shapes_are_counted() {
+    let alias_chain = |first: u32, count: u32, end: &str| -> Vec<(u32, String)> {
+        (0..count).map(|i| (first + i, format!("{} 0 R", first + i + 1))).chain([(first + count, end.to_string())]).collect()
+    };
+    let with = |head: (u32, String), chain: Vec<(u32, String)>| -> Vec<(u32, String)> {
+        let mut v = vec![head];
+        v.extend(chain);
+        v
+    };
+    let raw_stream = |dict: &str, data: &str| String::from_utf8(stream_body(dict, data.as_bytes())).expect("ascii");
+    let el = "<< /Type /StructElem /S /Figure /P 1 0 R /Alt (ALT-DIRECT-SECRET) >>";
+    let note = "/HskNote 81 0 R";
+    let junk = "/HskJunk 50 0 R";
+    type Case = (&'static str, &'static str, Vec<(u32, String)>, bool);
+    let cases: Vec<Case> = vec![
+        ("R25-P3: /Type /StructElem behind 15 alias objects, no /P", note, with((81, "<< /Type 100 0 R /Alt (ALT-DIRECT-SECRET) >>".into()), alias_chain(100, 15, "/StructElem")), true),
+        ("R25-P3: /S behind 15 alias objects, /P and text", note, with((81, "<< /S 100 0 R /P 1 0 R /Alt (ALT-DIRECT-SECRET) >>".into()), alias_chain(100, 15, "/Figure")), true),
+        ("control: /Type /StructElem behind 14 alias objects", note, with((81, "<< /Type 100 0 R >>".into()), alias_chain(100, 14, "/StructElem")), true),
+        ("R25-P4 K4: an object stream without /Type", junk, vec![(50, raw_stream("/N 1 /First 5", &format!("60 0 {el}")))], true),
+        ("R25-P4 K5: /N 1 while the data holds a second member", junk, vec![(50, raw_stream("/Type /ObjStm /N 1 /First 5", &format!("60 0 << >> {el}")))], true),
+        (
+            "R25-P4 K6: the element in the gap between the header and /First",
+            junk,
+            vec![(50, raw_stream(&format!("/Type /ObjStm /N 1 /First {}", format!("60 0 {el} ").len()), &format!("60 0 {el} << >>")))],
+            true,
+        ),
+        ("R25-P4 K11: /N 0 with members present", junk, vec![(50, raw_stream("/Type /ObjStm /N 0 /First 5", &format!("60 0 {el}")))], true),
+        ("control: an object stream whose members cover its data, no shape", junk, vec![(50, raw_stream("/Type /ObjStm /N 2 /First 10", "60 0 61 6 << >> << /Hsk 1 >>"))], false),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, objects, reported) in cases {
+        let out = pages_output_with(&quick(), catalog_extra, "", "", &objects);
+        if reported && !reported_for_the_tree(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected reported", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        if !reported && !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected flattened", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+    }
+    // R25-P5 X1: a structure-element dictionary in the trailer /ID is written into the saved trailer.
+    let pdf = pages_pdf("", "", "", &[]);
+    let at = find(&pdf, b"/Root 1 0 R >>").expect("trailer");
+    let mut x1 = pdf[..at].to_vec();
+    x1.extend_from_slice(format!("/Root 1 0 R /ID [<01> <02> {el}] >>").as_bytes());
+    x1.extend_from_slice(&pdf[at + b"/Root 1 0 R >>".len()..]);
+    let mut doc = PdfDoc::open(&x1, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if !gone(&out.bytes, "ALT-DIRECT-SECRET") && !reported_for_the_tree(&out) {
+        red.push(format!("R25-P5 X1: trailer /ID element kept, region_flattened {} reasons {:?}", out.region_flattened(), out.not_proven_reasons()));
     }
     assert!(red.is_empty(), "{red:#?}");
 }

@@ -83,11 +83,24 @@
 //!   `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
 //!   `painted_sources_rendered_with_a_drawn_image_are_reported`,
 //!   `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`.
+//! - Marked-content property lists ([`drop_painted_sources`], PLR-104, Operator-confirmed plan 2026-10-14): `/Properties` is a
+//!   gated category too. In every `/Properties` dictionary the old page reached (in its own `/Resources` object, a `/Properties`
+//!   object its own `/Resources` named, the `/Resources` a kept page received from a node of its `/Parent` chain, and the
+//!   `/Resources` of every stream and Type 3 font it reached), every entry that no `BDC` or `DP` of the content read names is
+//!   removed, inline dictionaries and references alike; the entries kept content names stay (with their text: kept content
+//!   invokes them), an optional-content group a kept page names among them. Counted in `RedactedOutput::residual_in_region`
+//!   (fail closed, `region_flattened` false, `NotProven::ResidualInRegion`): such a dictionary whose scope's content could not be
+//!   read (usage undetermined: every entry stays) or the usage analysis did not finish, one the purge cannot edit (a
+//!   `/Resources` or `/Properties` value that is a stream or an alias object) holding an entry no kept content names whose
+//!   property list has `/Alt`, `/ActualText`, `/E`, `/T` or `/Lang`, and a property list of a removed or unedited entry that
+//!   stays in the file (another object references it) with one of those keys while no kept content names it. A property list
+//!   written inline in the old page's content left with the page. Tests
+//!   `marked_content_property_lists_of_flattened_pages_are_purged`, `property_lists_the_purge_cannot_clear_are_counted`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
-//! of `Do`, `sh`, `scn`/`SCN`, `gs` and `Tf` mark the entries of `/XObject`, `/Shading`, `/Pattern`,
-//! `/ExtGState` and `/Font` it uses. A used form, tiling pattern, soft-mask group or Type 3 font WITHOUT
+//! of `Do`, `sh`, `scn`/`SCN`, `gs`, `Tf` and the property-list operand of `BDC` and `DP` mark the entries of `/XObject`,
+//! `/Shading`, `/Pattern`, `/ExtGState`, `/Font` and `/Properties` it uses. A used form, tiling pattern, soft-mask group or Type 3 font WITHOUT
 //! its own `/Resources` is read in the same scope; every stream (and Type 3 font) WITH its own
 //! `/Resources`, however it is reached, is a scope of its own. Everything else is followed as a plain
 //! reference (reached, not silent). Content that cannot be decoded or parsed makes every entry of its
@@ -1069,6 +1082,9 @@ enum ResAt {
     Object(u32),
     /// The `/Resources` value written inside object `n` (a page, a stream or a Type 3 font) is the resource dictionary.
     In(u32),
+    /// The old page's own `/Resources` was written inside the page dictionary (replaced by the flatten): only a `/Properties`
+    /// object it names is still in the file (`Flat::old` of the flattened page `n`).
+    Old(u32),
 }
 
 /// Where a `/Properties` dictionary the purge edits lives.
@@ -1111,8 +1127,14 @@ fn reached_resources(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>) -> BT
         _ => None,
     };
     for f in flats {
-        if let Some(Object::Ref(r)) = f.old.get("Resources") {
-            out.insert(ResAt::Object(r.num));
+        match f.old.get("Resources") {
+            Some(Object::Ref(r)) => {
+                out.insert(ResAt::Object(r.num));
+            }
+            Some(Object::Dict(_)) => {
+                out.insert(ResAt::Old(f.page.object));
+            }
+            _ => {}
         }
         for p in &f.heirs {
             if let Some(a) = objs.get(p).and_then(|e| e.obj.as_dict()).and_then(|d| d.get("Resources")).and_then(|v| at(*p, v)) {
@@ -1154,9 +1176,18 @@ fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usa
                 Some(Object::Dict(d)) => (Some(d), true),
                 _ => (None, false),
             },
+            // Not in the file any more: only a `/Properties` value that is a reference is read (and edited) below.
+            ResAt::Old(page) => match flats.iter().find(|f| f.page.object == page).and_then(|f| f.old.get("Resources")) {
+                Some(Object::Dict(d)) => (Some(d), false),
+                _ => (None, false),
+            },
         };
         let Some(rd) = rd else { continue };
         let Some(pv) = rd.get(PROPERTIES) else { continue };
+        if matches!(at, ResAt::Old(_)) && !matches!(pv, Object::Ref(_)) {
+            // Written inside the replaced page dictionary: it left the file with the page.
+            continue;
+        }
         let (props, place) = match pv {
             Object::Dict(p) if editable => (Some(p), Some(PropsAt::Inline(at))),
             Object::Ref(r) => match objs.get(&r.num).map(|e| &e.obj) {
@@ -1197,6 +1228,7 @@ fn apply_properties(doc: &mut PdfDoc, plan: &PropertyPlan) -> u32 {
             PropsAt::Object(n) => (*n, None),
             PropsAt::Inline(ResAt::Object(n)) => (*n, Some(false)),
             PropsAt::Inline(ResAt::In(n)) => (*n, Some(true)),
+            PropsAt::Inline(ResAt::Old(_)) => continue,
         };
         let Some(e) = doc.objects.get_mut(&num) else { continue };
         let holder: Option<&mut Dict> = match &mut e.obj {
@@ -1286,6 +1318,22 @@ fn catalog_names_structure_tree(saved: &PdfDoc) -> bool {
     true
 }
 
+/// `v` is a reference chain that `PdfDoc::resolve` reads as null because of its hop bound (`MAX_REF_HOPS` dereferences without
+/// reaching a direct value), not because it ends in a null or a missing object (PLR-105, R25-P3).
+fn past_hop_bound(saved: &PdfDoc, v: &Object) -> bool {
+    let mut o = v;
+    for _ in 0..MAX_REF_HOPS {
+        match o {
+            Object::Ref(r) => match saved.objects.get(&r.num) {
+                Some(e) => o = &e.obj,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// `d` holds `key` with a value other than the null object (a null value is an absent entry).
 fn holds(d: &Dict, key: &str) -> bool {
     d.get(key).is_some_and(|v| !matches!(v, Object::Null))
@@ -1299,7 +1347,11 @@ fn holds(d: &Dict, key: &str) -> bool {
 /// (the outline item entry that names a structure element).
 fn structure_shaped(saved: &PdfDoc, d: &Dict) -> bool {
     let named = |key: &str, name: &str| d.get(key).map(|v| saved.resolve(v)).is_some_and(|v| v.is_name(name));
-    named("Type", "StructElem")
+    // PLR-105 (R25-P3, fail closed): a `/Type` or `/S` the reader's hop bound reads as null counts, as the catalog rule does.
+    let beyond = |key: &str| d.get(key).is_some_and(|v| past_hop_bound(saved, v));
+    beyond("Type")
+        || beyond("S")
+        || named("Type", "StructElem")
         || named("Type", "StructTreeRoot")
         || (d.get("S").map(|v| saved.resolve(v)).is_some_and(|v| matches!(v, Object::Name(_)))
             && holds(d, "P")
@@ -1365,6 +1417,9 @@ impl Scan<'_> {
         };
         let mut header = Lexer::new(&data, 0, limits.max_depth);
         let mut parsed_bytes = 0usize;
+        // PLR-105 (R25-P4): the bytes each member spans, to check that the members (and white space) cover the data after
+        // `/First` and that only white space follows the header pairs.
+        let mut spans: Vec<(usize, usize)> = Vec::new();
         for _ in 0..n {
             // One header pair ("number offset") and its member at a time: nothing is collected, and the loop ends at the first
             // pair the data does not hold.
@@ -1384,6 +1439,7 @@ impl Scan<'_> {
                         self.structure = true;
                         return;
                     }
+                    spans.push((at, at.saturating_add(used)));
                     self.value(&member);
                 }
                 Err(_) => {
@@ -1391,6 +1447,32 @@ impl Scan<'_> {
                     return;
                 }
             }
+        }
+        // Bytes no reader reads as a member (R25-P4: `/N` smaller than the members the data holds, `/N 0` with data, bytes between
+        // the header pairs and `/First`): they could hold anything, so they count (fail closed). White space and comments do not.
+        let mut header_end = Lexer::new(&data, header.pos, limits.max_depth);
+        header_end.skip_ws();
+        if header_end.pos < first.min(data.len()) || header.pos > first {
+            self.structure = true;
+            return;
+        }
+        spans.sort_unstable();
+        let mut pos = first;
+        for (start, end) in spans {
+            if start > pos {
+                let mut gap = Lexer::new(&data, pos, limits.max_depth);
+                gap.skip_ws();
+                if gap.pos < start {
+                    self.structure = true;
+                    return;
+                }
+            }
+            pos = pos.max(end);
+        }
+        let mut tail = Lexer::new(&data, pos, limits.max_depth);
+        tail.skip_ws();
+        if tail.pos < data.len() {
+            self.structure = true;
         }
     }
 }
@@ -1408,6 +1490,10 @@ impl Scan<'_> {
 /// `structure_parents_left_in_the_file_are_reported`, `detached_structure_elements_are_reported`,
 /// `structure_rules_apply_only_when_a_region_is_flattened`. Every dictionary and stream dictionary of the file is read, to the
 /// depth the parser admits (`Limits::depth_cap`); a value deeper than that counts 1 (fail closed; a parsed file has none).
+/// PLR-105 (fail closed, test `unreadable_structure_shapes_are_counted`): a `/Type` or `/S` value that is a reference chain the
+/// reader's hop bound reads as null counts as a shape; a stream with `/N` and `/First` is read as an object stream whatever its
+/// `/Type`, and its bytes that are not white space, comments, the header pairs or members count; the saved trailer's values
+/// (`/ID` is copied from the source) are read too.
 pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flattens: bool) -> u32 {
     let mut scan = Scan {
         saved,
@@ -1429,12 +1515,17 @@ pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>, flatten
     let mut nodes_left = saved.limits.max_nodes;
     for e in saved.objects.values() {
         scan.value(&e.obj);
+        // PLR-105 (R25-P4): a stream with `/N` and `/First` is read as an object stream whatever its `/Type` says.
         if flattens
             && let Object::Stream(s) = &e.obj
-            && s.dict.get("Type").map(|t| saved.resolve(t)).is_some_and(|t| t.is_name("ObjStm"))
+            && (s.dict.get("Type").map(|t| saved.resolve(t)).is_some_and(|t| t.is_name("ObjStm")) || (s.dict.get("N").is_some() && s.dict.get("First").is_some()))
         {
             scan.object_stream(s, &mut budget, &mut nodes_left);
         }
+    }
+    // PLR-105 (R25-P5): the saved trailer's values (the writer copies the source's `/ID` array as it is).
+    for (_, v) in &saved.trailer.entries {
+        scan.value(v);
     }
     scan.bad.saturating_add(u32::from(scan.structure))
 }

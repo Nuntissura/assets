@@ -1317,7 +1317,12 @@ pub struct RedactedOutput {
     /// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
     /// `structure_parents_left_in_the_file_are_reported`, `detached_structure_elements_are_reported`,
     /// `structure_shape_is_read_from_the_parsed_dictionary`, `structure_rules_apply_only_when_a_region_is_flattened`,
-    /// `kept_annotation_with_a_flattened_p_is_reported`).
+    /// `kept_annotation_with_a_flattened_p_is_reported`). PLR-105: a `/Type` or `/S` past the reader's hop bound, object-stream
+    /// bytes that are not members and the saved trailer are read by that check too (test
+    /// `unreadable_structure_shapes_are_counted`). Also counted, by the purge before the save (PLR-104, `flatten_purge.rs`
+    /// marked-content property lists): a `/Properties` dictionary the old page reached whose usage could not be determined, one
+    /// the purge cannot edit with an unnamed entry holding `/Alt` `/ActualText` `/E` `/T` or `/Lang`, and such a property list
+    /// of the old page left in the file that no kept content names (test `property_lists_the_purge_cannot_clear_are_counted`).
     pub residual_in_region: u32,
     /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
     /// text policy); `None` when it was not requested.
