@@ -22,12 +22,14 @@ hsk-studio-render-gpu = [["test-faults"]]
 hsk-studio-score-device = [["cpal-backend"]]
 hsk-studio-kernel-bindings = [["test-faults"]]
 hsk-studio-worker = [["test-faults"]]
-hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"]]
+hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"]]
+hsk-studio-composite = [["motion"]]
 
 [ignored]
 # develop: real_dng, real_raw, container_identity; interop-tiff: real_tiff.
 hsk-studio-develop = [[]]
 hsk-studio-interop-tiff = [[]]
+hsk-studio-interop-raster = [[]]
 # harness: psd-tools sweep (16 size-balanced shards, 0-15), DNG convert, vendor RAW refusals (tests/import_psd.rs needs import-psd;
 # the DNG/RAW tests need import-raw).
 hsk-studio-harness = [["import-psd", "import-raw"]]
