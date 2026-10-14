@@ -1,6 +1,6 @@
 //! Mapping of a decoded [`FigDocument`] into the Studio native document (Folio): pages, artboards,
-//! layer tree, layer appearance, paint styles (fills and strokes) and the node design records that
-//! bind them. Only Folio's own types are produced (CX-CAP-001); anything without a Folio home is a
+//! layer tree, layer appearance, paint styles (fills and strokes), inline text stories and the node
+//! design records that bind them. Only Folio's own types are produced (CX-CAP-001); anything without a Folio home is a
 //! typed loss entry, never dropped silently (test: fig_native::real_native_losses_accounted).
 //!
 //! Identity: every Folio id comes from the caller's [`IdMint`]; the Figma source id of every mapped
@@ -27,6 +27,10 @@ use hsk_studio_folio::{
     StudioDocument, StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer,
     StudioLayerGraph, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing,
     StudioStrokeStyle, StyleKind, StyleRegistrySchema, validate_design_records, validate_document,
+};
+use hsk_studio_folio::{
+    StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioTextStory,
+    TextStorySchema, validate_text_story,
 };
 use hsk_studio_package::{ImportEntry, ImportRole};
 use serde_json::{Value, json};
@@ -82,6 +86,8 @@ pub struct IdMapEntry {
 pub struct NativeProposal {
     pub snapshot: Snapshot,
     pub design: StudioDesignRecords,
+    /// One inline text story per TEXT node (`hsk.studio.text_story@1`), validated.
+    pub stories: Vec<StudioTextStory>,
     pub id_map: Vec<IdMapEntry>,
     /// Mapping losses only (`native.*` paths), aggregated like [`NodeLoss`].
     pub mapping_loss: Vec<NodeLoss>,
@@ -142,6 +148,7 @@ struct Mapper<'a> {
     mint: &'a mut dyn IdMint,
     cancel: &'a CancellationToken,
     layers: Vec<StudioLayer>,
+    stories: Vec<StudioTextStory>,
     artboards: Vec<StudioArtboard>,
     styles: Vec<StudioPaintStyle>,
     designs: Vec<StudioNodeDesign>,
@@ -461,6 +468,103 @@ impl Mapper<'_> {
         Ok(())
     }
 
+    /// Inline story of a TEXT node: paragraphs end after each `\n`, one character range per style
+    /// run (byte offsets). Run fonts, sizes, line height, letter spacing and alignment have no
+    /// Folio record (type styles are host-resolved `STYS` references): typed losses.
+    fn story(&mut self, t: &crate::nodes::TextPayload, story_id: String) {
+        let text = &t.characters;
+        let len = text.len() as u64;
+        let mut paragraphs = Vec::new();
+        let mut start = 0u64;
+        for (i, ch) in text.char_indices() {
+            if ch == '\n' {
+                let end = (i as u64).saturating_add(1);
+                paragraphs.push((start, end));
+                start = end;
+            }
+        }
+        if start < len {
+            paragraphs.push((start, len));
+        }
+        // Run boundaries are Unicode scalar indices; convert them to byte offsets.
+        let offsets: Vec<u64> = text
+            .char_indices()
+            .map(|(i, _)| i as u64)
+            .chain(std::iter::once(len))
+            .collect();
+        let at = |k: u32| offsets.get(k as usize).copied().unwrap_or(len);
+        let mut ranges = Vec::new();
+        for r in &t.runs {
+            let (a, b) = (at(r.start), at(r.end));
+            if a < b {
+                ranges.push((a, b));
+            }
+        }
+        if ranges.is_empty() && len > 0 {
+            ranges.push((0, len));
+        }
+        let fonts: std::collections::BTreeSet<_> = t
+            .runs
+            .iter()
+            .map(|r| {
+                (
+                    r.font_family.clone(),
+                    r.font_style.clone(),
+                    r.font_size.map(f32::to_bits),
+                )
+            })
+            .collect();
+        if t.font_family.is_some() || t.font_size.is_some() {
+            self.lose("native.text.font", "text_font_no_folio_home");
+        }
+        if fonts.len() > 1 {
+            self.lose("native.text.run_styles", "text_run_style_no_folio_home");
+        }
+        if t.runs.iter().any(|r| r.fills != t.runs[0].fills) {
+            self.lose("native.text.run_fills", "text_run_fill_no_folio_home");
+        }
+        for (field, present) in [
+            ("line_height", t.line_height.is_some()),
+            ("letter_spacing", t.letter_spacing.is_some()),
+            (
+                "align",
+                t.align_horizontal.is_some() || t.align_vertical.is_some(),
+            ),
+            ("auto_resize", t.auto_resize.is_some()),
+        ] {
+            if present {
+                self.lose(format!("native.text.{field}"), "text_layout_no_folio_home");
+            }
+        }
+        self.stories.push(StudioTextStory {
+            schema_id: TextStorySchema::V1,
+            story_id,
+            text_kind: StoryTextKind::Point,
+            story_direction: StoryDirection::LeftToRight,
+            content: StoryContent::Inline {
+                text_utf8: text.clone(),
+            },
+            paragraphs: paragraphs
+                .into_iter()
+                .map(|(start, end)| StoryParagraph {
+                    start,
+                    end,
+                    style_ref: None,
+                    paragraph_direction: None,
+                })
+                .collect(),
+            character_ranges: ranges
+                .into_iter()
+                .map(|(start, end)| StoryRange {
+                    start,
+                    end,
+                    style_ref: None,
+                    applied_language: None,
+                })
+                .collect(),
+        });
+    }
+
     /// Losses for decoded node data this slice does not map.
     fn unmapped(&mut self, n: &FigNode, artboard: bool) {
         if !artboard && n.type_name != "CANVAS" {
@@ -641,8 +745,12 @@ impl Mapper<'_> {
                     },
                     false,
                 )
+            } else if let NodePayload::Text(text) = &n.payload {
+                let story_id = self.mint.mint("STXT");
+                self.story(text, story_id.clone());
+                ("text".to_owned(), Payload::Text { story_id }, false)
             } else {
-                // TEXT until the text-story slice, and every kind without a Folio layer kind.
+                // Every kind without a Folio layer kind.
                 self.lose(
                     format!("native.node={ty}"),
                     "layer_kind_preserved_unsupported",
@@ -748,6 +856,7 @@ pub fn to_native(
         mint,
         cancel,
         layers: Vec::new(),
+        stories: Vec::new(),
         artboards: Vec::new(),
         styles: Vec::new(),
         designs: Vec::new(),
@@ -768,6 +877,7 @@ pub fn to_native(
     }
     let Mapper {
         layers,
+        stories,
         artboards,
         styles,
         designs,
@@ -803,6 +913,9 @@ pub fn to_native(
     let mut design_records = StudioDesignRecords::new(document_id);
     design_records.paint_styles = styles;
     design_records.nodes = designs;
+    for story in &stories {
+        validate_text_story(story, cfg.budget, cancel, cfg.resolver).map_err(folio_error)?;
+    }
     validate_design_records(
         &design_records,
         snapshot.document(),
@@ -814,6 +927,7 @@ pub fn to_native(
     Ok(NativeProposal {
         snapshot,
         design: design_records,
+        stories,
         id_map,
         mapping_loss: aggregate(loss),
         decode_loss: doc.loss.clone(),
@@ -846,6 +960,7 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "figma_render_parity (no comparison against Figma's rendering)",
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",
+    "text_direction (stories are written left-to-right; Figma stores AUTO directionality)",
 ];
 
 impl NativeProposal {
@@ -857,6 +972,7 @@ impl NativeProposal {
             "records": "fig_native",
             "records_version": 1,
             "design_records": serde_json::to_value(&self.design).map_err(enc)?,
+            "text_stories": serde_json::to_value(&self.stories).map_err(enc)?,
             "id_map": self.id_map.iter().map(|e| json!({
                 "source": e.source.to_string(),
                 "node_kind": node_kind_token(&e.node.node_kind),
@@ -875,6 +991,7 @@ impl NativeProposal {
             "layers": self.snapshot.document().layers.len(),
             "artboards": self.snapshot.document().artboards.len(),
             "paint_styles": self.design.paint_styles.len(),
+            "text_stories": self.stories.len(),
             "mapped_nodes": self.id_map.len(),
             "mapping_loss": loss_json(&self.mapping_loss),
             "decode_loss": loss_json(&self.decode_loss),
@@ -899,6 +1016,7 @@ impl NativeProposal {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeRecords {
     pub design: StudioDesignRecords,
+    pub stories: Vec<StudioTextStory>,
     pub id_map: Vec<IdMapEntry>,
 }
 
@@ -911,6 +1029,8 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
     }
     let design: StudioDesignRecords =
         serde_json::from_value(v["design_records"].clone()).map_err(|_| bad.clone())?;
+    let stories: Vec<StudioTextStory> =
+        serde_json::from_value(v["text_stories"].clone()).map_err(|_| bad.clone())?;
     let mut id_map = Vec::new();
     for e in v["id_map"].as_array().ok_or_else(|| bad.clone())? {
         let (Some(source), Some(kind), Some(node_id)) = (
@@ -939,7 +1059,11 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
             },
         });
     }
-    Ok(NativeRecords { design, id_map })
+    Ok(NativeRecords {
+        design,
+        stories,
+        id_map,
+    })
 }
 
 /// Index of a proposal's id map by source id.

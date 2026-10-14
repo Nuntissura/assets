@@ -199,6 +199,40 @@ fn real_native_mapping_structure() {
         .map(|l| l.name.as_str())
         .collect();
     assert_eq!(kids, ["group-background", "multiply-overlay"]);
+    // Text: a text layer bound to an inline story, one character range per style run (bytes).
+    let t = layer(&m.proposal, "mixed-style-text");
+    let Payload::Text { story_id } = &t.payload else {
+        panic!("text payload")
+    };
+    let story = m
+        .proposal
+        .stories
+        .iter()
+        .find(|s| &s.story_id == story_id)
+        .unwrap();
+    assert_eq!(
+        story.content,
+        hsk_studio_folio::StoryContent::Inline {
+            text_utf8: "Regular text + bold text".into()
+        }
+    );
+    let ranges: Vec<_> = story
+        .character_ranges
+        .iter()
+        .map(|r| (r.start, r.end))
+        .collect();
+    assert_eq!(ranges, [(0, 15), (15, 24)]);
+    assert_eq!(story.paragraphs.len(), 1);
+    let StudioAppearanceRow::Fill {
+        paint: StudioPaint::Solid { colour },
+        ..
+    } = &rows(&m.proposal, &t.layer_id)[0]
+    else {
+        panic!("text fill")
+    };
+    assert!(close(colour.r, 0.1) && close(colour.g, 0.15) && close(colour.b, 0.25));
+    let comps = mapped("fig-components-autolayout.fig");
+    assert_eq!(comps.proposal.stories.len(), 3, "three TEXT nodes");
     // Every mapped node keeps its Figma source id.
     let index = id_index(&m.proposal.id_map);
     let src = m.doc.named("rounded-solid-shadow").next().unwrap().id;
@@ -352,6 +386,13 @@ fn real_native_package_round_trip() {
             read_native_records(opened.import_bytes(ImportRole::Records).unwrap()).unwrap();
         assert_eq!(records.design, m.proposal.design, "{name}");
         assert_eq!(records.id_map, m.proposal.id_map, "{name}");
+        assert_eq!(records.stories, m.proposal.stories, "{name}");
+        let texts = m.doc.nodes.iter().filter(|n| n.type_name == "TEXT").count();
+        assert_eq!(
+            records.stories.len(),
+            texts,
+            "{name}: one story per TEXT node"
+        );
         for e in &records.id_map {
             assert!(
                 m.doc.node(e.source).is_some(),
