@@ -186,8 +186,8 @@ fn vendor_files_route_to_typed_outcomes() {
     const TEST: &str = "vendor_files_route_to_typed_outcomes";
     let cases: [(&str, &str, DevelopError); 7] = [
         ("canon-eos-r6.cr3", "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778", DevelopError::DecoderUnavailable("cr3")),
-        ("nikon-d70s-12bit-lossy-type1.nef", NEF_D70S, DevelopError::UnsupportedCompression),
-        ("nikon-z6-12bit-compressed.nef", NEF_Z6, DevelopError::UnsupportedCompression),
+        ("nikon-d70s-12bit-lossy-type1.nef", NEF_D70S, DevelopError::DecoderUnavailable("nef_compressed")),
+        ("nikon-z6-12bit-compressed.nef", NEF_Z6, DevelopError::DecoderUnavailable("nef_compressed")),
         ("fujifilm-finepix-s5000.raf", RAF_S5000, DevelopError::DecoderUnavailable("raf")),
         ("fujifilm-x-s10-14bit-compressed-xtrans.raf", RAF_XS10, DevelopError::DecoderUnavailable("raf")),
         ("olympus-c5060wz-12bit.orf", ORF_C5060, DevelopError::DecoderUnavailable("orf")),

@@ -11,8 +11,9 @@
 //!   Compression 1, 20-row strips, CFAPattern 2,1,1,0).
 //!
 //! Compression 34713 (Nikon Huffman, D70s/Z6 samples) and 32769 (packed with padding) are typed
-//! `unsupported_compression`: no public documentation of the Huffman trees or the MakerNote curve
-//! layout was found (decision R1: no decoder source), see the lane blockers. Not read (named in
+//! `decoder_unavailable:nef_compressed`: no public documentation of the Huffman trees and no
+//! permissively licensed decoder source were found (decision R1 and its permissive-source
+//! refinement); other compressions are `unsupported_compression`. Not read (named in
 //! `unapplied`): MakerNote black/white levels and any MakerNote linearization curve.
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
@@ -46,8 +47,12 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     let root = ifds.first().ok_or(DevelopError::InvalidContainer)?;
     let raw = tiffep::cfa_ifd(&tiff, &ifds)?.ok_or(DevelopError::UnsupportedContainer)?;
     let (width, height, bits, compression) = tiffep::geometry(&tiff, raw)?;
-    if compression != 1 {
-        return Err(DevelopError::UnsupportedCompression);
+    match compression {
+        1 => {}
+        // Nikon Huffman (34713) and packed-with-padding (32769): no public bit-level documentation
+        // or permissive source exists (searched 2026-10-14, lane SMB-DEVELOP-RAW-ARW notes).
+        34713 | 32769 => return Err(DevelopError::DecoderUnavailable("nef_compressed")),
+        _ => return Err(DevelopError::UnsupportedCompression),
     }
     let cfa_pattern = tiffep::cfa_pattern(&tiff, raw)?;
     let samples = tiffep::uncompressed_strips(&tiff, raw, width, height, bits, bytes.len())?;

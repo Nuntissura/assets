@@ -197,8 +197,9 @@ fn nef_nikon_compressions_and_unverified_variants_are_typed_refusals() {
     let refuse = |spec: Nef, error: DevelopError| {
         assert_eq!(decode_container(&build(&spec)).err(), Some(error));
     };
-    refuse(Nef { compression: 34713, ..Nef::default() }, DevelopError::UnsupportedCompression);
-    refuse(Nef { compression: 32769, ..Nef::default() }, DevelopError::UnsupportedCompression);
+    refuse(Nef { compression: 34713, ..Nef::default() }, DevelopError::DecoderUnavailable("nef_compressed"));
+    refuse(Nef { compression: 32769, ..Nef::default() }, DevelopError::DecoderUnavailable("nef_compressed"));
+    refuse(Nef { compression: 7, ..Nef::default() }, DevelopError::UnsupportedCompression);
     // Little-endian packed 12-bit: bit order not verified, refused.
     refuse(Nef { big_endian: false, ..Nef::default() }, DevelopError::UnsupportedContainer);
     // Not a vendor this crate decodes (Pentax), or a DNG converted from a Nikon file: never decoded
