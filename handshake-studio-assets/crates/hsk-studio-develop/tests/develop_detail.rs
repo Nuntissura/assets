@@ -343,7 +343,7 @@ fn recipe_gating_tile_api_refusals_and_hostile_fields() {
         assert_eq!(calls, 0);
     }
     // Every field is validated even while the group is off.
-    type Hostile = (&static str, fn(&mut Detail), DevelopError);
+    type Hostile = (&'static str, fn(&mut Detail), DevelopError);
     let hostile: [Hostile; 8] = [
         ("texture", |d| d.texture = 100.5, DevelopError::InvalidAdjustment),
         ("dehaze", |d| d.dehaze = f64::NAN, DevelopError::NonFinite),
