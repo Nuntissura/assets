@@ -27,6 +27,22 @@
 //!   `false`) and an optional rectangular `region`.
 //! - `StudioMaskAttachment`: the reference field of a layer: at most one entry per layer naming a
 //!   clip, a mask or both. The consumer applies them; Folio stores and validates only.
+//! - `StudioImagePaint` (added by SMB-FOLIO-PAINT-BLUR-STYLE): the `paint.image` kind (STU-VEC-134
+//!   token `IMAGE`, STU-VEC-139, STU-COL-197). Like `StudioPatternPaint` it binds one row of a
+//!   `PAINT` style to an image; the row's own paint stays the stand-in. The image is named by
+//!   content: a package asset (`assets/<sha256>`, [`StudioImageSource::PackageAsset`]) or one part
+//!   of an import-original entry (`import/original.<sha256>` plus the part name and the part's own
+//!   digest, [`StudioImageSource::ImportOriginal`]); bytes are resolved by the caller (Folio
+//!   depends on Accord alone). A `(style_id, row)` pair carries at most one pattern or image
+//!   binding. STU-VEC-139 bounds are all `unknown`: `rotation` (deg) and `scaling_factor` (ratio)
+//!   are checked for finiteness and their physical domain only; `opacity` is percent `0..=100`. The
+//!   image filter block of STU-COL-197 is not stored.
+//! - `StudioBooleanGroup` (added by SMB-FOLIO-PAINT-BLUR-STYLE): the live boolean result of a
+//!   `group` layer (STU-VEC-013 live mode; the four-member live set `UNION`, `INTERSECT`,
+//!   `SUBTRACT`, `EXCLUDE`): the operator, the ordered operand layers (distinct direct children of
+//!   the group, bottom first) and an optional cached composite outline as `SVPT` path ids (the
+//!   captured derived `fill_geometry`, resolved like a vector layer's paths). No renderer evaluates
+//!   it yet; a consumer that ignores the record draws the operands as a plain group.
 //!
 //! Units: every `Length` is in the document unit (STU-VEC-138 `document_unit`); the validator
 //! refuses another unit as `InvalidUnit`, like artboard bounds. SVG `objectBoundingBox` units are
@@ -67,7 +83,7 @@
 //! V4-01); counts are charged through the checked `Ctx` budget.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
-    Bounds, Budget, Code, GeometryUnit, Length, NodeKind, Parent, Payload, Result,
+    Bounds, Budget, Code, ContentDigest, GeometryUnit, Length, NodeKind, Parent, Payload, Result,
     StudioDesignRecords, StudioDocument, StudioLayer, StudioPaintStyle, Unresolved, bounds,
     canceled, err, finite_length, id, key,
     values::{Ctx, label, percent},
@@ -296,6 +312,77 @@ pub struct StudioMaskAttachment {
     pub mask_id: Option<String>,
 }
 
+/// Where the bytes of an image paint live (content-addressed; never a filesystem path).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "source_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioImageSource {
+    /// A package asset, named by its digest (`sha256`, 64 lowercase hex).
+    PackageAsset { content_digest: ContentDigest },
+    /// A part (for example `images/<hash>` of a `.fig` ZIP) inside the import-original entry whose
+    /// whole-entry digest is `entry_digest`; `content_digest` is the part's own digest.
+    ImportOriginal {
+        entry_digest: ContentDigest,
+        part: String,
+        content_digest: ContentDigest,
+    },
+}
+
+/// STU-VEC-139 image scaling mode; the captured tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StudioImageScale {
+    Fill,
+    Fit,
+    Crop,
+    Tile,
+}
+
+/// The `paint.image` kind: row `row` of `PAINT` style `style_id` paints with an image.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioImagePaint {
+    /// `SSTY` id of a paint style of the design records the set is validated with.
+    pub style_id: String,
+    /// Index into the style's `rows`; the row may be a fill or a stroke.
+    pub row: u32,
+    pub image: StudioImageSource,
+    pub scale_mode: StudioImageScale,
+    /// `[a, b, c, d, e, f]`: point = `[a c e; b d f] * [x y 1]`, finite and invertible; maps the
+    /// unit image square to the unit square of the filled object's bounds (Folio convention; an
+    /// importer converts its source convention, for example Figma's `imageTransform`).
+    pub transform: [f64; 6],
+    /// `image_scaling_factor` (ratio, positive; the tile scale of `TILE`).
+    pub scaling_factor: f64,
+    /// `image_rotation` in degrees (free numeric).
+    pub rotation: f64,
+    /// `image_opacity`, percent `0..=100`.
+    pub opacity: f64,
+}
+
+/// The four live boolean operators (STU-VEC-013; the four-member live capture).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StudioBooleanOperation {
+    Union,
+    Intersect,
+    Subtract,
+    Exclude,
+}
+
+/// Live boolean result of a `group` layer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioBooleanGroup {
+    /// `SLYR` id of a layer with a `group` payload; at most one record per group.
+    pub layer_id: String,
+    pub operation: StudioBooleanOperation,
+    /// Operand layers, bottom first: distinct direct children of the group, at least one.
+    pub operands: Vec<String>,
+    /// Cached composite outline (`SVPT` ids of `hsk.studio.vector_path@1`); empty = not cached.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_geometry_path_ids: Vec<String>,
+}
+
 /// The vector records of one document. Members are optional; an empty member is not encoded.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -314,6 +401,12 @@ pub struct StudioVectorRecords {
     pub masks: Vec<StudioVectorMask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<StudioMaskAttachment>,
+    /// Image paint bindings (absent and empty are the same set; empty is not encoded).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_paints: Vec<StudioImagePaint>,
+    /// Live boolean results of group layers (absent and empty are the same set).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boolean_groups: Vec<StudioBooleanGroup>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -326,7 +419,19 @@ impl StudioVectorRecords {
             clips: Vec::new(),
             masks: Vec::new(),
             attachments: Vec::new(),
+            image_paints: Vec::new(),
+            boolean_groups: Vec::new(),
         }
+    }
+    /// The image binding of row `row` of style `style_id`.
+    pub fn image_paint(&self, style_id: &str, row: u32) -> Option<&StudioImagePaint> {
+        self.image_paints
+            .iter()
+            .find(|p| p.style_id == style_id && p.row == row)
+    }
+    /// The boolean record of a group layer.
+    pub fn boolean_group(&self, layer_id: &str) -> Option<&StudioBooleanGroup> {
+        self.boolean_groups.iter().find(|g| g.layer_id == layer_id)
     }
     /// The pattern with this id.
     pub fn pattern(&self, pattern_id: &str) -> Option<&StudioPattern> {
@@ -387,6 +492,47 @@ fn layer<'a>(
         .get(v)
         .copied()
         .ok_or_else(|| err(Code::DanglingReference, target))
+}
+/// A `sha256` digest: algorithm `sha256`, 64 lowercase hex digits.
+fn sha256(d: &ContentDigest) -> bool {
+    d.algorithm == "sha256"
+        && d.digest.len() == 64
+        && d.digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+/// A container part name: 1..=255 printable ASCII bytes in `/`-separated non-empty segments, no
+/// `.` or `..` segment, no backslash or colon (never a filesystem path).
+fn part_name(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 255
+        && p.bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'\\' && b != b':')
+        && p.split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+fn validate_image_source(i: &StudioImageSource, target: &str) -> Result<()> {
+    match i {
+        StudioImageSource::PackageAsset { content_digest } => check(
+            sha256(content_digest),
+            Code::InvalidField,
+            target,
+            "image/content_digest",
+        ),
+        StudioImageSource::ImportOriginal {
+            entry_digest,
+            part,
+            content_digest,
+        } => {
+            check(
+                sha256(entry_digest) && sha256(content_digest),
+                Code::InvalidField,
+                target,
+                "image/digest",
+            )?;
+            check(part_name(part), Code::InvalidField, target, "image/part")
+        }
+    }
 }
 fn matrix(m: &[f64; 6]) -> bool {
     let [a, b, c, d, _, _] = *m;
@@ -724,6 +870,67 @@ pub fn validate_vector_records(
             "pattern_id",
         )?;
         validate_placement(&pp.placement, unit, &t)?;
+    }
+
+    cx.nodes(r.image_paints.len(), "image_paints")?;
+    for ip in &r.image_paints {
+        cx.tick()?;
+        let t = format!("{}/rows/{}", ip.style_id, ip.row);
+        id(&ip.style_id, "SSTY", &t)?;
+        let style = styles
+            .get(ip.style_id.as_str())
+            .ok_or_else(|| err(Code::DanglingReference, &t))?;
+        let in_range = usize::try_from(ip.row).is_ok_and(|row| row < style.rows.len());
+        check(in_range, Code::DanglingReference, &t, "row")?;
+        // One pattern or image binding per row: the set is shared with the pattern bindings.
+        if !bound.insert((ip.style_id.as_str(), ip.row)) {
+            return Err(err(Code::DuplicateIdentity, t));
+        }
+        validate_image_source(&ip.image, &t)?;
+        check(matrix(&ip.transform), Code::InvalidField, &t, "transform")?;
+        check(
+            ip.scaling_factor.is_finite() && ip.scaling_factor > 0.0,
+            Code::InvalidField,
+            &t,
+            "scaling_factor",
+        )?;
+        check(ip.rotation.is_finite(), Code::InvalidField, &t, "rotation")?;
+        check(percent(ip.opacity), Code::InvalidField, &t, "opacity")?;
+    }
+
+    cx.nodes(r.boolean_groups.len(), "boolean_groups")?;
+    let mut booleans = BTreeSet::new();
+    for g in &r.boolean_groups {
+        cx.tick()?;
+        let t = g.layer_id.as_str();
+        let host = layer(&layers, t, t)?;
+        unique(&mut booleans, t, t)?;
+        check(
+            host.kind == "group" && matches!(host.payload, Payload::Group),
+            Code::PayloadMismatch,
+            t,
+            "layer_id",
+        )?;
+        check(!g.operands.is_empty(), Code::InvalidField, t, "operands")?;
+        cx.nodes(g.operands.len(), t)?;
+        let target = format!("{t}/operands");
+        let mut operands = BTreeSet::new();
+        for o in &g.operands {
+            cx.tick()?;
+            let child = layer(&layers, o, &target)?;
+            unique(&mut operands, o, &target)?;
+            let direct = matches!(&child.parent, Parent::Node(p)
+                if p.node_kind == NodeKind::Layer && p.node_id == g.layer_id);
+            check(direct, Code::IllegalParent, t, "operands")?;
+        }
+        cx.nodes(g.fill_geometry_path_ids.len(), t)?;
+        let target = format!("{t}/fill_geometry_path_ids");
+        let mut paths = BTreeSet::new();
+        for p in &g.fill_geometry_path_ids {
+            cx.tick()?;
+            id(p, "SVPT", &target)?;
+            unique(&mut paths, p, &target)?;
+        }
     }
 
     check_cycles(r, d, design, &cx)?;
