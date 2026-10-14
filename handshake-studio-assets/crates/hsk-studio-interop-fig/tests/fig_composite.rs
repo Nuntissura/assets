@@ -477,18 +477,22 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     // Pixel agreement over the artboard where the composite is opaque: at least 97 % of those pixels
     // are within 8/255 of the PNG (edges and the blur halo are the rest).
     let (mut opaque, mut close) = (0u32, 0u32);
+    let mut misses: BTreeMap<(usize, usize), u32> = BTreeMap::new();
     for y in origin.1..origin.1 + png.1 {
         for x in origin.0..origin.0 + png.0 {
             if r.px[y * r.w + x][3] >= 0.99 {
                 opaque += 1;
                 if diff_at(&r, &png, (x, y), origin) <= 8.0 {
                     close += 1;
+                } else {
+                    let k = (x / 50 * 50, y / 50 * 50);
+                    *misses.entry(k).or_insert(0u32) += 1;
                 }
             }
         }
     }
     assert!(opaque > 20_000, "opaque pixels {opaque}");
-    assert!(f64::from(close) >= 0.97 * f64::from(opaque), "close {close} of {opaque}");
+    assert!(f64::from(close) >= 0.97 * f64::from(opaque), "close {close} of {opaque} {misses:?}");
 }
 
 #[test]
