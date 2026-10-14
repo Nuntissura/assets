@@ -8,7 +8,7 @@ use hsk_studio_composite::{
     VectorResolution, evaluate_with_inputs, lower, lower_with_inputs, prepare_vectors,
 };
 use hsk_studio_folio::{
-    Budget, Inspection, Payload, Resolution, Resolver, Snapshot, StudioImageSource, TileRef,
+    Budget, Inspection, Resolution, Resolver, Snapshot, StudioImageSource, TileRef,
     inspect_bytes,
 };
 use hsk_studio_interop_fig::*;
@@ -199,33 +199,22 @@ fn render(m: &Mapped) -> Render {
     let mut plan = lower(&snap, snap.document().revision, BlendSpace::Encoded, &CLimits::default(), &cancel).unwrap();
     let outputs = plan.outputs.len();
     let mut refused: BTreeMap<String, u32> = BTreeMap::new();
-    let layers: BTreeMap<&str, &Payload> = snap
-        .document()
-        .layers
-        .iter()
-        .map(|l| (l.layer_id.as_str(), &l.payload))
-        .collect();
-    plan.outputs.retain(|o| {
-        if matches!(layers.get(o.layer_id.as_str()), Some(Payload::Text { .. })) {
-            return false;
+    let inputs = RenderInputs { vectors: Some(&vectors), ..RenderInputs::default() };
+    // Outputs that cannot be drawn by this harness (text needs prepared fonts; strokes, gradients and
+    // image paints are composite refusals) stay out of the document root, counted by reason.
+    let probe: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
+    plan.outputs.retain(|o| match probe.step(o).map(|s| &s.status) {
+        Some(StepStatus::Unavailable(reason)) => {
+            *refused.entry(reason.clone()).or_insert(0) += 1;
+            false
         }
-        match vectors.refusal(&o.layer_id) {
-            Some(code) => {
-                *refused.entry(code.to_owned()).or_insert(0) += 1;
-                false
-            }
-            None => true,
-        }
+        _ => true,
     });
     let rendered = plan.outputs.len();
     let mut px = vec![[0.0f32; 4]; W * H];
     if rendered > 0 {
         let plan = plan.with_document_root().unwrap();
-        let inputs = RenderInputs { vectors: Some(&vectors), ..RenderInputs::default() };
         let report: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
-        for s in &report.steps {
-            assert!(!matches!(s.status, StepStatus::Unavailable(_)) || s.addr.layer_id != "x", "{:?}", s.addr);
-        }
         let target = OutputTarget {
             extent: Rect { x: 0, y: 0, width: W as u32, height: H as u32 },
             format: SampleFormat::RgbF32Le,
