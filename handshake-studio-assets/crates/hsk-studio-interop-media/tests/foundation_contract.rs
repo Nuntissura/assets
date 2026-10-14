@@ -721,10 +721,8 @@ fn ticks_to_frames_exact_is_exact_on_every_table_rate_and_refuses_off_frame_tick
 #[test]
 fn tick_frame_and_ratio_math_has_no_local_copy() {
     bounded_case("no_local_tick_frame_math", || {
-        // R3 SMB-INTEROP-MEDIA: ticks_to_frames_exact divided by ticks-per-frame itself and a local
-        // gcd reduced speed ratios, both duplicating Accord. The timecode label arithmetic
-        // (nominal / timecode_to_frames / frames_to_timecode) is the D9 duplicate with pulse and
-        // stays until the Operator decides the interop-media -> pulse edge.
+        // R3 + D9 SMB-INTEROP-MEDIA: tick/frame math is Accord's/Pulse's, timecode labels are
+        // Pulse's (V4-05): no local copy of the label arithmetic remains.
         let time = include_str!("../src/time.rs");
         let body = |signature: &str| {
             let start = time
@@ -734,18 +732,20 @@ fn tick_frame_and_ratio_math_has_no_local_copy() {
             &time[start..start + end]
         };
         let frames = body("pub fn ticks_to_frames_exact");
-        assert!(frames.contains("units_from_ticks"), "{frames}");
+        assert!(frames.contains("pulse::ticks_to_frames_exact"), "{frames}");
         assert!(
             !frames.contains("is_multiple_of") && !frames.contains('%') && !frames.contains(" / "),
             "{frames}"
         );
+        for gone in ["fn nominal", "struct Base", "fn base(", "17_982", "17982", "% 10"] {
+            assert!(!time.contains(gone), "duplicate timecode arithmetic: {gone}");
+        }
+        assert!(body("pub fn frames_to_timecode").contains("pulse::frames_to_timecode"));
+        assert!(body("pub fn timecode_to_frames").contains("pulse::timecode_to_frames"));
+        assert!(!time.contains("D9, OPEN"));
         assert!(body("pub(crate) fn reduce").contains("Timescale::rational"));
         assert!(!time.contains("fn gcd"), "reduced ratios come from Accord");
         let manifest = include_str!("../Cargo.toml");
-        // Update this guard in the commit that adds the edge once D9 is decided.
-        assert!(
-            !manifest.contains("hsk-studio-pulse"),
-            "the pulse edge is blocked (D9)"
-        );
+        assert!(manifest.contains("hsk-studio-pulse"), "D9 edge to pulse");
     });
 }

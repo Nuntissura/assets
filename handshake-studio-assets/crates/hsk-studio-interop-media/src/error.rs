@@ -1,6 +1,7 @@
 //! Closed, stable error vocabulary. Codes never carry project text, reel names or paths.
 use hsk_studio_accord::ValidationError;
 use hsk_studio_observe::FailureCode;
+use hsk_studio_pulse::PulseError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -135,6 +136,20 @@ impl From<ValidationError> for InteropError {
             ValidationError::TickOverflow => ErrorKind::TimecodeOverflow,
             ValidationError::UnsupportedFrameRate => ErrorKind::UnsupportedFrameRate,
             _ => ErrorKind::InvalidFrameRate,
+        })
+    }
+}
+
+impl From<PulseError> for InteropError {
+    fn from(value: PulseError) -> Self {
+        Self::new(match value {
+            PulseError::Canceled => ErrorKind::Canceled,
+            PulseError::Overflow => ErrorKind::TimecodeOverflow,
+            PulseError::UnsupportedFrameRate => ErrorKind::UnsupportedFrameRate,
+            PulseError::NotFrameAligned => ErrorKind::NotFrameAligned,
+            PulseError::TimecodeUnsupported => ErrorKind::TimecodeUnsupported,
+            PulseError::DropFrameUnsupported => ErrorKind::DropFrameUnsupported,
+            _ => ErrorKind::InvalidTimecode,
         })
     }
 }

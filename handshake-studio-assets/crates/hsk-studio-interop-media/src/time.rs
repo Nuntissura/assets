@@ -7,13 +7,11 @@
 //! Tick/frame conversion and rational reduction are Accord's too (`Timescale::units_from_ticks`,
 //! `Timescale::rational`); no local division or gcd remains for them.
 //!
-//! NOTE (D9, OPEN): the timecode label arithmetic here (non-drop and drop-frame: `nominal`,
-//! `timecode_to_frames`, `frames_to_timecode`) deliberately mirrors `hsk-studio-pulse`, which owns
-//! time. The interop-media -> pulse edge is BLOCKED on an Operator decision (it is not in the root
-//! `workspace.metadata.studio.dependencies.hsk-studio-interop-media`), so this crate must not add a
-//! pulse dependency; the minimal copy stays until D9 is decided, then it collapses onto pulse.
+//! Timecode label arithmetic (non-drop and drop-frame), tick/frame exactness and `fps_fraction`
+//! are `hsk-studio-pulse`'s (D9); this module keeps the interchange syntax bound and typed errors.
 use crate::error::{ErrorKind, InteropError, Result};
 use hsk_studio_accord::{FrameRate, Rounding, Ticks, Timescale};
+use hsk_studio_pulse as pulse;
 
 fn fail<T>(kind: ErrorKind) -> Result<T> {
     Err(InteropError::new(kind))
@@ -101,7 +99,7 @@ pub fn parse_frame_rate(text: &str) -> Result<(FrameRate, RateSpelling)> {
 
 /// Reduced frames per second as `(numerator, denominator)`, e.g. 29.97 -> (30000, 1001).
 pub fn fps_fraction(rate: FrameRate) -> (u64, u64) {
-    rate.fps_fraction()
+    pulse::fps_fraction(rate)
 }
 
 /// `value` units at `rate_num/rate_den` units per second to ticks. Exact when the division is
@@ -124,130 +122,51 @@ pub fn rational_to_ticks(value: i64, rate_num: u32, rate_den: u32) -> Result<(Ti
     ))
 }
 
-/// `(nominal fps, NTSC 1001 rate)`; `None` = no integer timecode base (12.5 fps).
-fn nominal(rate: FrameRate) -> Option<(u64, bool)> {
-    Some(match rate.ticks_per_frame() {
-        10_594_584_000 => (24, true),
-        10_584_000_000 => (24, false),
-        10_160_640_000 => (25, false),
-        8_475_667_200 => (30, true),
-        8_467_200_000 => (30, false),
-        5_292_000_000 => (48, false),
-        5_080_320_000 => (50, false),
-        4_237_833_600 => (60, true),
-        4_233_600_000 => (60, false),
-        16_934_400_000 => (15, false),
-        _ => return None,
-    })
-}
-
-#[derive(Clone, Copy)]
-struct Base {
-    nominal: u64,
-    dropped: u64,
-    per_ten_minutes: u64,
-}
-
-/// Drop-frame skips 2 (29.97) or 4 (59.94) frame NUMBERS at each minute not divisible by ten.
-fn base(rate: FrameRate, drop: bool) -> Result<Base> {
-    let (nominal, ntsc) = nominal(rate).ok_or(InteropError::new(ErrorKind::TimecodeUnsupported))?;
-    if drop && !(ntsc && nominal.is_multiple_of(30)) {
-        return fail(ErrorKind::DropFrameUnsupported);
-    }
-    Ok(Base {
-        nominal,
-        dropped: if drop { nominal / 30 * 2 } else { 0 },
-        per_ten_minutes: if drop {
-            nominal / 30 * 17_982
-        } else {
-            nominal * 600
-        },
-    })
+fn timecode_format(rate: FrameRate, drop: bool) -> Result<pulse::TimecodeFormat> {
+    pulse::TimecodeFormat::new(rate, drop).map_err(InteropError::from)
 }
 
 /// `HH:MM:SS:FF` or `HH:MM:SS;FF` to a frame number. `;` is only valid with `drop`; labels the
-/// drop-frame rule skips are refused.
+/// drop-frame rule skips are refused. Label arithmetic is Pulse's; this keeps the interchange
+/// syntax bound and the typed errors.
 pub fn timecode_to_frames(text: &str, rate: FrameRate, drop: bool) -> Result<u64> {
-    let b = base(rate, drop)?;
-    let bytes = text.as_bytes();
-    if text.len() < 11 || text.len() > 13 || !text.is_ascii() {
+    let format = timecode_format(rate, drop)?;
+    if text.len() < 11 || text.len() > 13 {
         return fail(ErrorKind::InvalidTimecode);
     }
-    let parts: Vec<&str> = text.split([':', ';']).collect();
-    let seps: Vec<u8> = bytes
-        .iter()
-        .copied()
-        .filter(|c| matches!(c, b':' | b';'))
-        .collect();
-    if parts.len() != 4
-        || seps.len() != 3
-        || seps[..2].contains(&b';')
-        || parts
-            .iter()
-            .any(|p| p.is_empty() || p.len() > 3 || !p.bytes().all(|c| c.is_ascii_digit()))
-    {
+    if text.split([':', ';']).any(|p| p.len() > 3) {
         return fail(ErrorKind::InvalidTimecode);
     }
-    if seps[2] == b';' && !drop {
+    let mut tc = pulse::parse_timecode(text)?;
+    if tc.drop_frame && !drop {
         return fail(ErrorKind::DropMismatch);
     }
-    let n = |i: usize| parts[i].parse::<u64>().unwrap_or(u64::MAX);
-    let (h, m, s, f) = (n(0), n(1), n(2), n(3));
-    if m >= 60 || s >= 60 || f >= b.nominal {
+    tc.drop_frame = drop;
+    if tc.minutes >= 60 || tc.seconds >= 60 || u64::from(tc.frames) >= format.nominal_fps() {
         return fail(ErrorKind::InvalidTimecode);
     }
-    let minutes = h * 60 + m;
-    if b.dropped > 0 && s == 0 && f < b.dropped && minutes % 10 != 0 {
-        return fail(ErrorKind::DroppedTimecode);
-    }
-    Ok((minutes * 60 + s) * b.nominal + f - b.dropped * (minutes - minutes / 10))
+    // Field ranges are checked above, so the only InvalidTimecode left is a skipped drop label.
+    pulse::timecode_to_frames(tc, format).map_err(|e| match e {
+        pulse::PulseError::InvalidTimecode => InteropError::new(ErrorKind::DroppedTimecode),
+        other => InteropError::from(other),
+    })
 }
 
 /// Frame number to `HH:MM:SS:FF` (`;` before the frames field for drop-frame).
 pub fn frames_to_timecode(frames: u64, rate: FrameRate, drop: bool) -> Result<String> {
-    let b = base(rate, drop)?;
-    let f = u128::from(frames);
-    let (n, d) = (u128::from(b.nominal), u128::from(b.dropped));
-    let labelled = if d == 0 {
-        f
-    } else {
-        let per_ten = u128::from(b.per_ten_minutes);
-        let (blocks, rem) = (f / per_ten, f % per_ten);
-        f + 9 * d * blocks
-            + if rem >= d {
-                d * ((rem - d) / (per_ten / 10))
-            } else {
-                0
-            }
-    };
-    let seconds = labelled / n;
-    let minutes = seconds / 60;
-    let hours = minutes / 60;
-    if hours > 99 {
+    let tc = pulse::frames_to_timecode(frames, timecode_format(rate, drop)?);
+    if tc.hours > 99 {
         return fail(ErrorKind::TimecodeOverflow);
     }
-    Ok(format!(
-        "{:02}:{:02}:{:02}{}{:02}",
-        hours,
-        minutes % 60,
-        seconds % 60,
-        if drop { ';' } else { ':' },
-        labelled % n
-    ))
+    Ok(tc.to_string())
 }
 
 pub fn frames_to_ticks(frames: u64, rate: FrameRate) -> Result<Ticks> {
     Ticks::checked_frames(frames, rate).map_err(InteropError::from)
 }
 
-/// Exact frame count of a frame-aligned tick value: Accord's `units_from_ticks` at the frame
-/// rate; a remainder means the value is not on a frame boundary.
+/// Exact frame count of a frame-aligned tick value (Pulse's conversion); a remainder means the
+/// value is not on a frame boundary.
 pub fn ticks_to_frames_exact(ticks: Ticks, rate: FrameRate) -> Result<u64> {
-    let (num, den) = rate.fps_fraction();
-    let frames = Timescale::rational(num, den)?.units_from_ticks(ticks, Rounding::Floor)?;
-    if frames.exact {
-        Ok(frames.value)
-    } else {
-        fail(ErrorKind::NotFrameAligned)
-    }
+    pulse::ticks_to_frames_exact(ticks, rate).map_err(InteropError::from)
 }
