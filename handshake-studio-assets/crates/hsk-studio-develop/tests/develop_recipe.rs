@@ -381,7 +381,7 @@ fn unsupported_process_version_and_cancel_stale() {
         // is a container error, not a silent success.
         assert_eq!(
             decode_container(b"\0\0\0\x18ftypcrx \0\0\0\0").err(),
-            Some(DevelopError::DecoderUnavailable)
+            Some(DevelopError::DecoderUnavailable("cr3"))
         );
         assert_eq!(decode_container(b"II*\0").err(), Some(DevelopError::InvalidContainer));
         assert_eq!(DevelopError::UnsupportedProcessVersion.code(), "unsupported_process_version");
@@ -406,7 +406,7 @@ fn unsupported_process_version_and_cancel_stale() {
         let ok = run(&plane, &recipe(), 4).0.unwrap();
         assert_eq!(reported(Ok(ok)), Outcome::Success);
         assert_eq!(reported(Err(DevelopError::UnsupportedProcessVersion)), Outcome::Failure(FailureCode::Unsupported));
-        assert_eq!(reported(Err(DevelopError::DecoderUnavailable)), Outcome::Failure(FailureCode::Unavailable));
+        assert_eq!(reported(Err(DevelopError::DecoderUnavailable("cr3"))), Outcome::Failure(FailureCode::Unavailable));
         assert_eq!(reported(Err(DevelopError::SampleOutOfRange)), Outcome::Failure(FailureCode::Validation));
         assert_eq!(reported(Err(DevelopError::Canceled)), Outcome::Canceled);
     });

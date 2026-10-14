@@ -724,7 +724,68 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     })
 }
 
+/// A whole stored CFA frame produced by a proprietary container decoder (`cr2`, ...). The frame
+/// carries no colour, black 0 and the full-scale white of `bits`; every level, crop or pattern
+/// fact the vendor decoder did not read from the file is named in `unapplied`, so
+/// [`DngRaw::require_complete`] refuses it and nothing reads as an authored value.
+pub(crate) struct VendorFrame {
+    pub width: u32,
+    pub height: u32,
+    pub bits: u16,
+    pub cfa_pattern: CfaPattern,
+    pub unique_camera_model: Option<String>,
+    pub unapplied: Vec<&'static str>,
+    pub samples: Vec<u16>,
+}
+
 impl DngRaw {
+    /// Build the immutable raw frame from a vendor decoder's output; `container` is the complete
+    /// file (hashed exactly as for DNG). Dimensions, bit depth and sample count are re-validated.
+    pub(crate) fn from_vendor(frame: VendorFrame, container: &[u8]) -> Result<Self, DevelopError> {
+        let pixels = u64::from(frame.width).saturating_mul(u64::from(frame.height));
+        if frame.width == 0
+            || frame.height == 0
+            || frame.width > 65_535
+            || frame.height > 65_535
+            || pixels > MAX_DNG_PIXELS
+            || frame.samples.len() as u64 != pixels
+        {
+            return Err(DevelopError::InvalidDimensions);
+        }
+        let white_level = 1u32
+            .checked_shl(u32::from(frame.bits))
+            .and_then(|v| v.checked_sub(1))
+            .filter(|v| (1..=u32::from(u16::MAX)).contains(v))
+            .ok_or(DevelopError::UnsupportedContainer)?;
+        if frame.samples.iter().any(|v| u32::from(*v) > white_level) {
+            return Err(DevelopError::InvalidContainer);
+        }
+        Ok(Self {
+            width: frame.width,
+            height: frame.height,
+            bits_per_sample: frame.bits,
+            cfa_pattern: frame.cfa_pattern,
+            active_area: ActiveArea {
+                top: 0,
+                left: 0,
+                bottom: frame.height,
+                right: frame.width,
+            },
+            default_crop: None,
+            black_repeat: (1, 1),
+            black_level: vec![0.0],
+            black_delta_h: Vec::new(),
+            black_delta_v: Vec::new(),
+            white_level,
+            linearized: false,
+            color: DngColor::empty(),
+            unique_camera_model: frame.unique_camera_model,
+            container_sha256: Sha256::digest(container).into(),
+            unapplied: frame.unapplied,
+            samples: frame.samples,
+        })
+    }
+
     /// Raw sample after the optional linearization table (before black subtraction).
     pub fn sample(&self, x: u32, y: u32) -> u16 {
         self.samples[(y as usize).saturating_mul(self.width as usize).saturating_add(x as usize)]

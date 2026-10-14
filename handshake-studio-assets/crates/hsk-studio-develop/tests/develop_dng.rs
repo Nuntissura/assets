@@ -669,7 +669,7 @@ fn dng_refusals() {
         let next_at = good.ifd0_at + 2 + 12 * good.ifd0_entries;
         cyclic[next_at..next_at + 4].copy_from_slice(&(good.ifd0_at as u32).to_le_bytes());
         refuse(&cyclic, DevelopError::InvalidContainer);
-        refuse(b"RIFF....WEBP", DevelopError::DecoderUnavailable);
+        refuse(b"RIFF....WEBP", DevelopError::DecoderUnavailable("unknown"));
         refuse(b"II*\0\x08\0\0\0", DevelopError::InvalidContainer);
         // Hostile tiled DNG (review R2): tile dimensions whose byte product overflows u64 must be a
         // typed refusal in every build profile, never a panic; and no frame is allocated for blocks

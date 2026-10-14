@@ -14,6 +14,7 @@
 
 pub mod color;
 pub mod convert;
+mod cr2;
 pub mod curves;
 pub mod dng;
 pub mod pipeline;
@@ -90,7 +91,9 @@ pub enum DevelopError {
     StaleSource,
     Canceled,
     SinkRejected,
-    DecoderUnavailable,
+    /// A recognised container family without a decoder in this crate; carries the family
+    /// (`orf`, `rw2`, `raf`, `cr3`) or `unknown` for unrecognised bytes.
+    DecoderUnavailable(&'static str),
 }
 
 impl DevelopError {
@@ -138,7 +141,7 @@ impl DevelopError {
             Self::StaleSource => "stale_source",
             Self::Canceled => "canceled",
             Self::SinkRejected => "sink_rejected",
-            Self::DecoderUnavailable => "decoder_unavailable",
+            Self::DecoderUnavailable(_) => "decoder_unavailable",
         }
     }
 
@@ -167,7 +170,7 @@ impl DevelopError {
             | Self::UnsupportedActiveArea
             | Self::UnsupportedIlluminant
             | Self::UnsupportedContribution(_) => Outcome::Failure(FailureCode::Unsupported),
-            Self::DecoderUnavailable | Self::SinkRejected => {
+            Self::DecoderUnavailable(_) | Self::SinkRejected => {
                 Outcome::Failure(FailureCode::Unavailable)
             }
             _ => Outcome::Failure(FailureCode::Validation),
@@ -180,6 +183,7 @@ impl std::fmt::Display for DevelopError {
         match self {
             Self::UnsupportedContribution(name) => write!(f, "unsupported_contribution:{name}"),
             Self::Prism(code) => write!(f, "prism_refused:{code}"),
+            Self::DecoderUnavailable(format) => write!(f, "decoder_unavailable:{format}"),
             other => f.write_str(other.code()),
         }
     }
@@ -195,17 +199,39 @@ impl From<hsk_studio_accord::ValidationError> for DevelopError {
     }
 }
 
-/// Container entry point. DNG (TIFF header + DNGVersion) decodes to an immutable raw frame; any
-/// other container is the explicit "missing RAW decoder" outcome (STU-CON-042: typed refusal).
+/// Container entry point. Classic TIFF with the Canon `CR\x02` marker decodes as CR2 (stored CFA
+/// frame, colour caller-supplied); other TIFF-family bytes go to the DNG reader (no DNGVersion =
+/// `unsupported_container`, e.g. NEF/ARW today). ORF, RW2, RAF and CR3 are recognised by their
+/// magic and refused as `decoder_unavailable` naming the family; anything else is
+/// `decoder_unavailable:unknown` (STU-CON-042: typed refusal).
 pub fn decode_container(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // TIFF family (classic + BigTIFF magic); BigTIFF is then refused by the reader, not mislabeled.
     if [&b"II*\0"[..], b"MM\0*", b"II+\0", b"MM\0+"]
         .iter()
         .any(|magic| bytes.starts_with(magic))
     {
-        dng::decode(bytes)
+        if cr2::is_cr2(bytes) {
+            cr2::decode(bytes)
+        } else {
+            dng::decode(bytes)
+        }
     } else {
-        Err(DevelopError::DecoderUnavailable)
+        Err(DevelopError::DecoderUnavailable(recognise(bytes)))
+    }
+}
+
+/// Name of a recognised non-TIFF raw family (magic bytes only; nothing else is read).
+fn recognise(bytes: &[u8]) -> &'static str {
+    if [&b"IIRO"[..], b"IIRS", b"MMOR"].iter().any(|m| bytes.starts_with(m)) {
+        "orf"
+    } else if bytes.starts_with(b"IIU\0") {
+        "rw2"
+    } else if bytes.starts_with(b"FUJIFILMCCD-RAW") {
+        "raf"
+    } else if bytes.get(4..12) == Some(&b"ftypcrx "[..]) {
+        "cr3"
+    } else {
+        "unknown"
     }
 }
 
@@ -236,4 +262,4 @@ pub fn report(
     )
 }
 
-pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit or lossless JPEG, strips or tiles, ColorMatrix/ForwardMatrix); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":{"identity":"working equals output (inspected when a converter is supplied)","prism_admitted_wide":"develop_with + PrismConverter; both profiles inspected through the admitted Prism route (linear-light RGB profiles only), pixels converted by a Prism AdmittedWideEngine job (prepare_job; one band per tile, a tile above 262144 pixels is several bands, limit 2097152 per band and 65536 bands per job) that the tile workers share and convert in place between stage A and stage C (the plan is resolved once per job; each profile is parsed once per cached plan; receipt profile_stats = plan hits/misses/parses per job, profile_calls = bands); working RGB must be finite in 0..1 else prism refuses it as channel_range with no tile delivered (tests/develop_profile.rs: profile_transform_admitted); relative colorimetric, BPC off; output unclamped, destination values outside 0..1 counted in profile_stats.clip (tests/develop_profile.rs: wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip); exposure and curves run after conversion; every wide-path allocation (engine, then at prepare: work, receipt, plan and transient build leases; band conversion allocates nothing, Prism tests/wide_chunks.rs: chunk_accounting_is_bounded_deterministic_and_allocation_free) is charged to the caller admission ledger first and a denial is prism_refused:admission_denied before any parse (tests/develop_profile.rs: short_admission_budget_is_refused_before_any_work)","chunking":"the STU-CON-044 64-pixel chunks are Prism's, not develop's: every band is converted inside Prism in chunks of at most 64 pixels (hsk_studio_prism::ADMITTED_CHUNK_PIXELS), each chunk starting with a cancellation check, recorded in Prism's band and job receipts (test names checked against Prism 3312f72: Prism tests/wide_chunks.rs chunk_accounting_is_bounded_deterministic_and_allocation_free, admitted_transform_and_job_report_their_chunks, a_canceled_token_stops_a_band_before_its_first_chunk; Prism src/wide_job/tests.rs a_band_canceled_at_a_chunk_edge_leaves_exactly_the_chunks_before_it, an_in_place_band_canceled_mid_band_is_partly_overwritten); a develop band is a whole tile (cut only above 262144 pixels), one band call per tile and not one admitted call per 64 pixels (the literal reading, not adopted); develop neither reads nor reports the chunk records (DevelopReceipt has no chunk field) and no develop test asserts a chunk count or cancels between the chunks of a real Prism band; develop tests run its bands through the chunked code and require bit identity with the serial admitted transform (tests/develop_profile.rs: job_conversion_equals_the_serial_wide_transform_for_every_thread_count) and an already cancelled token to stop a Prism band (tests/develop_profile.rs: job_contract_violations_keep_their_prism_codes); the reading is provisional (the Operator may require the literal reading or enrich the spec)"},"curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"],"threads":{"api":"develop_with_threads / develop_to_image_threads / demosaic_normalized_threads (Threads)","default":"min(available_parallelism, 16)","max":64,"unit":"normalisation row bands and output tiles (std scoped threads, no unsafe)","deterministic":"tiles, receipt and refusals are identical for every thread count; the lowest failing tile decides the error; cancellation between normalisation row bands and between tiles returns canceled with no partial output (tests/develop_parallel.rs: output_is_identical_for_every_thread_count, lowest_failing_tile_decides_the_error_for_every_thread_count, cancellation_returns_canceled_and_no_partial_output, which cancels from inside a stand-in converter band); the token is also passed to every converter band, where Prism checks it per 64-pixel chunk (profile_transform.chunking)","converter":"one converter job per window of tiles is prepared before any tile is computed; each worker converts its own tile bands in place between stage A and stage C and the job is finished once on the calling thread (tests/develop_parallel.rs: converter_bands_run_once_each_on_the_tile_workers)"}},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["spec STU-CON-044 64-pixel chunk text: read provisionally as met by Prism's 64-pixel chunking inside every band (profile_transform.chunking); develop itself makes one band call per tile, so the Operator may still require one admitted call per 64 pixels or enrich the spec","SIMD route","non-linear (encoded) profiles (refused by the linear-light admitted inspection, typed unsupported_profile for the encoded fixture in tests/develop_profile.rs: profile_transform_admitted; Prism's wide route can convert them) and BPC or an intent other than relative colorimetric (the converter fixes relative colorimetric with BPC off; Prism's wide route has both)","host grants and publication","DNG compressions other than none and lossless JPEG (deflate, lossy JPEG)","proprietary RAW containers (decoder_unavailable)"]}"#;
+pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit or lossless JPEG, strips or tiles, ColorMatrix/ForwardMatrix) and an own Canon CR2 reader (CR 2.0, one lossless-JPEG strip, RawImageSegmentation column slices reassembled; stored CFA frame with masked borders, black 0 and full-scale white as placeholders named in unapplied, RGGB at the stored origin UNVERIFIED, no colour: develop needs a caller-supplied DngColor else missing_colour_data; tests/develop_cr2.rs); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":{"identity":"working equals output (inspected when a converter is supplied)","prism_admitted_wide":"develop_with + PrismConverter; both profiles inspected through the admitted Prism route (linear-light RGB profiles only), pixels converted by a Prism AdmittedWideEngine job (prepare_job; one band per tile, a tile above 262144 pixels is several bands, limit 2097152 per band and 65536 bands per job) that the tile workers share and convert in place between stage A and stage C (the plan is resolved once per job; each profile is parsed once per cached plan; receipt profile_stats = plan hits/misses/parses per job, profile_calls = bands); working RGB must be finite in 0..1 else prism refuses it as channel_range with no tile delivered (tests/develop_profile.rs: profile_transform_admitted); relative colorimetric, BPC off; output unclamped, destination values outside 0..1 counted in profile_stats.clip (tests/develop_profile.rs: wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip); exposure and curves run after conversion; every wide-path allocation (engine, then at prepare: work, receipt, plan and transient build leases; band conversion allocates nothing, Prism tests/wide_chunks.rs: chunk_accounting_is_bounded_deterministic_and_allocation_free) is charged to the caller admission ledger first and a denial is prism_refused:admission_denied before any parse (tests/develop_profile.rs: short_admission_budget_is_refused_before_any_work)","chunking":"the STU-CON-044 64-pixel chunks are Prism's, not develop's: every band is converted inside Prism in chunks of at most 64 pixels (hsk_studio_prism::ADMITTED_CHUNK_PIXELS), each chunk starting with a cancellation check, recorded in Prism's band and job receipts (test names checked against Prism 3312f72: Prism tests/wide_chunks.rs chunk_accounting_is_bounded_deterministic_and_allocation_free, admitted_transform_and_job_report_their_chunks, a_canceled_token_stops_a_band_before_its_first_chunk; Prism src/wide_job/tests.rs a_band_canceled_at_a_chunk_edge_leaves_exactly_the_chunks_before_it, an_in_place_band_canceled_mid_band_is_partly_overwritten); a develop band is a whole tile (cut only above 262144 pixels), one band call per tile and not one admitted call per 64 pixels (the literal reading, not adopted); develop neither reads nor reports the chunk records (DevelopReceipt has no chunk field) and no develop test asserts a chunk count or cancels between the chunks of a real Prism band; develop tests run its bands through the chunked code and require bit identity with the serial admitted transform (tests/develop_profile.rs: job_conversion_equals_the_serial_wide_transform_for_every_thread_count) and an already cancelled token to stop a Prism band (tests/develop_profile.rs: job_contract_violations_keep_their_prism_codes); the reading is provisional (the Operator may require the literal reading or enrich the spec)"},"curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"],"threads":{"api":"develop_with_threads / develop_to_image_threads / demosaic_normalized_threads (Threads)","default":"min(available_parallelism, 16)","max":64,"unit":"normalisation row bands and output tiles (std scoped threads, no unsafe)","deterministic":"tiles, receipt and refusals are identical for every thread count; the lowest failing tile decides the error; cancellation between normalisation row bands and between tiles returns canceled with no partial output (tests/develop_parallel.rs: output_is_identical_for_every_thread_count, lowest_failing_tile_decides_the_error_for_every_thread_count, cancellation_returns_canceled_and_no_partial_output, which cancels from inside a stand-in converter band); the token is also passed to every converter band, where Prism checks it per 64-pixel chunk (profile_transform.chunking)","converter":"one converter job per window of tiles is prepared before any tile is computed; each worker converts its own tile bands in place between stage A and stage C and the job is finished once on the calling thread (tests/develop_parallel.rs: converter_bands_run_once_each_on_the_tile_workers)"}},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["spec STU-CON-044 64-pixel chunk text: read provisionally as met by Prism's 64-pixel chunking inside every band (profile_transform.chunking); develop itself makes one band call per tile, so the Operator may still require one admitted call per 64 pixels or enrich the spec","SIMD route","non-linear (encoded) profiles (refused by the linear-light admitted inspection, typed unsupported_profile for the encoded fixture in tests/develop_profile.rs: profile_transform_admitted; Prism's wide route can convert them) and BPC or an intent other than relative colorimetric (the converter fixes relative colorimetric with BPC off; Prism's wide route has both)","host grants and publication","DNG compressions other than none and lossless JPEG (deflate, lossy JPEG)","proprietary RAW: NEF, ARW (TIFF without DNGVersion: unsupported_container) and ORF, RW2, RAF, CR3 (recognised by magic: decoder_unavailable naming the family); CR2 camera colour, MakerNote black/white levels, sensor borders and a verified CFA phase (named in DngRaw.unapplied: cr2_black_level_unread, cr2_white_level_unread, cr2_sensor_borders_unread, cr2_cfa_pattern_unverified)"]}"#;
