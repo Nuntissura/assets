@@ -2757,6 +2757,7 @@ fn descriptor_states_the_structure_tree_rule() {
         "structure_strip_follows_the_tree_and_structure_destinations",
         "through structure-tree keys, /K /P /Ref /ParentTree",
         "through every key except the outward pointers /Pg /Obj /Stm /StmOwn",
+        "(R30-S1, R30-S2: /Pg of a structure element, /Pg /Stm /StmOwn of a marked-content reference, /Pg /Obj of an object reference,",
     ] {
         assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
     }
@@ -2787,6 +2788,7 @@ fn descriptor_states_the_structure_tree_rule() {
         "structure_destinations_of_goto_actions_named_through_references_are_unlinked",
         "structure_tree_closed_set_follows_every_key_without_a_depth_cap",
         "structure_tree_outward_keys_are_skipped_only_where_they_point_out",
+        "structure_tree_follows_pg_but_not_the_real_pages",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
@@ -3760,6 +3762,106 @@ fn structure_tree_closed_set_follows_every_key_without_a_depth_cap() {
 /// Each case reads NotProven with its text kept by the private key. Controls: N1o and N3ns without the private key read flattened
 /// with the loss; N4 (an `MCR` whose `/Stm` names the kept page's content stream) reads flattened (no over-count); the Word-like
 /// file C7 of `structure_tree_closed_set_follows_every_key_without_a_depth_cap` stays green.
+/// R31-P1 hardening (SMB-PRESS-PG-HARDEN): `/Pg` is followed like every other key; the real pages are excluded from the closed
+/// set by object number, so a `/Pg` that names a page of the page tree adds nothing (control G0, and N4/C7 elsewhere), while a
+/// `/Pg` that names a non-page dictionary is a closed-set member and its text, kept by a private catalog key, reads NotProven
+/// (G1 element, G2 root typed by `/S` without `/Type`, G3 `MCR`, G4 `OBJR`). `/Stm`, `/StmOwn` and `/Obj` stay skipped.
+#[test]
+fn structure_tree_follows_pg_but_not_the_real_pages() {
+    let tagged = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";
+    let private = "/HskP 95 0 R";
+    let np = (95, "<< /HskT (PG-SECRET) >>".to_string());
+    // (name, catalog, page one extra, page two extra, objects, expected reported (true) or flattened with the loss (false))
+    type Case = (&'static str, String, &'static str, &'static str, Vec<(u32, String)>, bool);
+    let cases: Vec<Case> = vec![
+        (
+            "G1: element /Pg names a non-page dictionary",
+            format!("{tagged} {private}"),
+            "",
+            "/StructParents 0",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R] >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 95 0 R /K 0 >>".to_string()),
+                np.clone(),
+            ],
+            true,
+        ),
+        (
+            "G2: root without /Type but with /S, /Pg names a non-page dictionary",
+            format!("{tagged} {private}"),
+            "",
+            "/StructParents 0",
+            vec![
+                (80, "<< /S /Root /K [82 0 R] /Pg 95 0 R >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+                np.clone(),
+            ],
+            true,
+        ),
+        (
+            "G3: MCR /Pg names a non-page dictionary",
+            format!("{tagged} {private}"),
+            "",
+            "",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R] >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /K [<< /Type /MCR /Pg 95 0 R /MCID 0 >>] >>".to_string()),
+                np.clone(),
+            ],
+            true,
+        ),
+        (
+            "G4: OBJR /Pg names a non-page dictionary",
+            format!("{tagged} {private}"),
+            "",
+            "",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R] >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /K [<< /Type /OBJR /Pg 95 0 R /Obj 83 0 R >>] >>".to_string()),
+                (83, "<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>".to_string()),
+                np.clone(),
+            ],
+            true,
+        ),
+        (
+            "G0 control: element /Pg names the real pages, Word-like",
+            tagged.to_string(),
+            "/StructParents 0",
+            "/StructParents 1",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [81 0 R 82 0 R] >>".to_string()),
+                (81, "<< /Type /StructElem /S /Figure /P 80 0 R /Pg 3 0 R /Alt (PG-ALT-SECRET) /K 0 >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+            ],
+            false,
+        ),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog, one, two, objects, reported) in cases {
+        let pdf = pages_pdf(&catalog, one, two, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        let state = format!("region_flattened {} residual {} reasons {:?} losses {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons(), out.losses);
+        if reported {
+            if gone(&out.bytes, "PG-SECRET") {
+                red.push(format!("{name}: PG-SECRET is gone (the case needs it to survive)"));
+            }
+            if !reported_for_the_tree(&out) {
+                red.push(format!("{name}: {state}, expected reported"));
+            }
+        } else if !gone(&out.bytes, "PG-ALT-SECRET") || !read_as_flattened(&out) || out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] {
+            red.push(format!("{name}: {state}, expected flattened with the loss and PG-ALT-SECRET gone"));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || find(&out.bytes, b"StructTreeRoot").is_some() {
+            red.push(format!("{name}: region text, kept page text or /StructTreeRoot wrong"));
+        }
+        if PdfDoc::open(&out.bytes, &quick(), &token()).is_err() {
+            red.push(format!("{name}: the saved file does not open"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
 #[test]
 fn structure_tree_outward_keys_are_skipped_only_where_they_point_out() {
     let tagged = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";

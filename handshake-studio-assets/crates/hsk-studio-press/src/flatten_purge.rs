@@ -10,8 +10,8 @@
 //! `default_redaction_strips_the_structure_tree`, `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`,
 //! `structure_strip_keeps_multimedia_of_kept_pages`); structure objects still written after the strip are reported NotProven
 //! (key-based closed set from the original tree, lead diagnoses DIAG-PRESS-R28 and DIAG-PRESS-R29: [`strip_structure`] records every
-//! object the original tree reaches through every key except the outward keys where they point out of the tree (`/Pg` of an
-//! element, `/Pg` `/Stm` `/StmOwn` of an `MCR`, `/Pg` `/Obj` of an `OBJR`, reached as structure; R30-S1 S2), with no type, shape or
+//! object the original tree reaches through every key except the outward keys where they point out of the tree (`/Stm` `/StmOwn`
+//! of an `MCR`, `/Obj` of an `OBJR`, reached as structure; R30-S1 S2; `/Pg` is followed, the pages are excluded by number), with no type, shape or
 //! depth exclusion, and `check_document` counts each one the save still writes, whatever its shape; budget exhaustion fails closed; tests
 //! `structure_objects_still_written_after_the_strip_are_reported`, `structure_tree_closed_set_follows_every_key_without_a_depth_cap`,
 //! `structure_tree_outward_keys_are_skipped_only_where_they_point_out`, unit test `closed_set_budget_exhaustion_is_counted`); with
@@ -704,8 +704,8 @@ fn root_shaped(doc: &PdfDoc, d: &Dict) -> bool {
 ///
 /// Closed set (lead diagnosis DIAG-PRESS-R28, R28-S1; key-based and without a depth cap since DIAG-PRESS-R29): before the unlink,
 /// [`structure_tree_objects`] records every object reachable from the original catalog `/StructTreeRoot` through every key except
-/// the outward keys where they point out of the tree ([`outward_keys`]: `/Pg` of an element, `/Pg` `/Stm` `/StmOwn` of an `MCR`,
-/// `/Pg` `/Obj` of an `OBJR`, each reached as structure; a class map, role map, attribute object or namespace is walked on every
+/// the outward keys where they point out of the tree ([`outward_keys`]: `/Stm` `/StmOwn` of an `MCR`,
+/// `/Obj` of an `OBJR`, each reached as structure; a class map, role map, attribute object or namespace is walked on every
 /// key, R30-S1 S2) ([`Stripped::tree`]); `check_document` counts each one the saved file still holds (NotProven), whatever its
 /// shape (tests `structure_objects_still_written_after_the_strip_are_reported`,
 /// `structure_tree_closed_set_follows_every_key_without_a_depth_cap`, `structure_tree_outward_keys_are_skipped_only_where_they_point_out`). The walk is bounded by an object-count budget
@@ -769,14 +769,15 @@ pub(crate) struct Stripped {
 }
 
 /// Keys of the structure tree that point OUT of it where they have their ISO 32000 meaning (lead diagnosis DIAG-PRESS-R29, narrowed
-/// after R30-S1 and R30-S2): `/Pg` (the page) of a structure element; `/Pg`, `/Stm` and `/StmOwn` (the page and the content streams)
-/// of a marked-content reference (`/Type /MCR`); `/Pg` and `/Obj` (the page and the annotation or XObject) of an object reference
-/// (`/Type /OBJR`). [`outward_keys`] gives them for a dictionary that [`structure_tree_objects`] reaches as structure; every other
+/// after R30-S1 and R30-S2; `/Pg` followed since R31-P1 hardening, SMB-PRESS-PG-HARDEN): `/Stm` and `/StmOwn` (the content streams)
+/// of a marked-content reference (`/Type /MCR`); `/Obj` (the annotation or XObject) of an object reference (`/Type /OBJR`). `/Pg`
+/// is followed everywhere: the real pages are excluded from the set by object number, so only a `/Pg` that names a non-page
+/// dictionary adds to it (fail closed). [`outward_keys`] gives them for a dictionary that [`structure_tree_objects`] reaches as structure; every other
 /// dictionary (a class map, a role map, an attribute object of any owner, a namespace, an associated file) is walked on every key,
 /// a class, role or attribute named `Obj`, `Pg`, `Stm` or `StmOwn` included.
-const MCR_OUTWARD_KEYS: [&[u8]; 3] = [b"Pg", b"Stm", b"StmOwn"];
-const OBJR_OUTWARD_KEYS: [&[u8]; 2] = [b"Pg", b"Obj"];
-const ELEMENT_OUTWARD_KEYS: [&[u8]; 1] = [b"Pg"];
+const MCR_OUTWARD_KEYS: [&[u8]; 2] = [b"Stm", b"StmOwn"];
+const OBJR_OUTWARD_KEYS: [&[u8]; 1] = [b"Obj"];
+const ELEMENT_OUTWARD_KEYS: [&[u8]; 0] = [];
 
 /// Keys through which a structure node names further structure nodes: `/K` (kids), `/P` (parent), `/Ref` (referenced elements),
 /// `/ParentTree` and `/IDTree` of the root, and `/Kids`, `/Nums` and `/Names` of their number-tree and name-tree nodes. A value
@@ -823,7 +824,7 @@ fn type_is(doc: &PdfDoc, d: &Dict, name: &str) -> bool {
 /// alias objects and whatever else a tree value names, with no type, `/Subtype` or shape exclusion and no depth cap. Each value
 /// carries whether it is reached as structure: the root is; a value a structure node names through [`TREE_STRUCT_KEYS`] or an
 /// array element of a structure value is; anything else (a class map, a role map, an attribute object, a namespace, a private key's
-/// value, and everything they reach) is data and is walked on every key, `/Pg`, `/Obj`, `/Stm` and `/StmOwn` included (R30-S1,
+/// value, and everything they reach) is data and is walked on every key, `/Obj`, `/Stm` and `/StmOwn` included (R30-S1,
 /// R30-S2). Only the catalog and the pages are not entered (their own keys are judged by the page and catalog rules; entering them
 /// would reach the whole document). A value naming no tree root ([`names_tree_root`]) gives the empty set. An object is expanded
 /// the first time it is entered and once more if it is later entered as data after being expanded as structure (the data walk
