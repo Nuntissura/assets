@@ -176,6 +176,7 @@ struct Render {
     refused: BTreeMap<String, u32>,
     outputs: usize,
     rendered: usize,
+    ids: Vec<String>,
 }
 
 const W: usize = 1400;
@@ -211,6 +212,7 @@ fn render(m: &Mapped) -> Render {
         _ => true,
     });
     let rendered = plan.outputs.len();
+    let ids: Vec<String> = plan.outputs.iter().map(|o| o.layer_id.clone()).collect();
     let mut px = vec![[0.0f32; 4]; W * H];
     if rendered > 0 {
         let plan = plan.with_document_root().unwrap();
@@ -240,9 +242,139 @@ fn render(m: &Mapped) -> Render {
             .unwrap();
         px = grid.px;
     }
-    Render { w: W, px, refused, outputs, rendered }
+    Render { w: W, px, refused, outputs, rendered, ids }
 }
 
+/// Layer bbox in canvas px (union of its paths and, for boolean groups, its operands).
+fn bbox_of(m: &Mapped, layer_id: &str) -> Option<[f64; 4]> {
+    let mut ids = vec![layer_id.to_owned()];
+    let doc = m.proposal.snapshot.document();
+    ids.extend(doc.layers.iter().filter(|l| matches!(&l.parent, hsk_studio_folio::Parent::Node(p) if p.node_id == layer_id)).map(|l| l.layer_id.clone()));
+    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    for p in m.proposal.paths.iter().filter(|p| ids.contains(&p.layer_id)) {
+        let r = kurbo_bbox(&p.geometry);
+        b = [b[0].min(r[0]), b[1].min(r[1]), b[2].max(r[2]), b[3].max(r[3])];
+    }
+    (b[0] <= b[2]).then_some(b)
+}
+fn kurbo_bbox(p: &OwnedPath) -> [f64; 4] {
+    use hsk_studio_nib::PathElement as E;
+    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    let mut put = |q: &hsk_studio_nib::PathPoint| {
+        b = [b[0].min(q.x), b[1].min(q.y), b[2].max(q.x), b[3].max(q.y)];
+    };
+    for e in &p.elements {
+        match e {
+            E::MoveTo(a) | E::LineTo(a) => put(a),
+            E::QuadTo(a, c) => { put(a); put(c) }
+            E::CubicTo(a, c, d) => { put(a); put(c); put(d) }
+            E::Close => {}
+        }
+    }
+    b
+}
+
+fn decode_png(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
+    assert_eq!(&bytes[..8], b"PNG
+
+");
+    let (mut at, mut idat) = (8usize, Vec::new());
+    let (mut w, mut h, mut ct) = (0usize, 0usize, 0u8);
+    while at + 8 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        let kind = &bytes[at + 4..at + 8];
+        let body = &bytes[at + 8..at + 8 + len];
+        match kind {
+            b"IHDR" => {
+                w = u32::from_be_bytes(body[0..4].try_into().unwrap()) as usize;
+                h = u32::from_be_bytes(body[4..8].try_into().unwrap()) as usize;
+                assert_eq!((body[8], body[12]), (8, 0), "8-bit, not interlaced");
+                ct = body[9];
+            }
+            b"IDAT" => idat.extend_from_slice(body),
+            _ => {}
+        }
+        at += 12 + len;
+    }
+    let bpp = match ct {
+        2 => 3,
+        6 => 4,
+        other => panic!("colour type {other}"),
+    };
+    let raw = miniz_oxide::inflate::decompress_to_vec_zlib(&idat).expect("inflate");
+    let stride = w * bpp;
+    let mut out = vec![0u8; h * stride];
+    for y in 0..h {
+        let f = raw[y * (stride + 1)];
+        let line = &raw[y * (stride + 1) + 1..(y + 1) * (stride + 1)];
+        for x in 0..stride {
+            let a = if x >= bpp { out[y * stride + x - bpp] } else { 0 };
+            let b = if y > 0 { out[(y - 1) * stride + x] } else { 0 };
+            let c = if y > 0 && x >= bpp { out[(y - 1) * stride + x - bpp] } else { 0 };
+            let pred = match f {
+                0 => 0,
+                1 => a,
+                2 => b,
+                3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+                4 => {
+                    let (pa, pb, pc) = (
+                        (i32::from(b) - i32::from(c)).abs(),
+                        (i32::from(a) - i32::from(c)).abs(),
+                        (i32::from(a) + i32::from(b) - 2 * i32::from(c)).abs(),
+                    );
+                    if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c }
+                }
+                other => panic!("filter {other}"),
+            };
+            out[y * stride + x] = line[x].wrapping_add(pred);
+        }
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for px in out.chunks(bpp) {
+        rgba.extend_from_slice(&[px[0], px[1], px[2], if bpp == 4 { px[3] } else { 255 }]);
+    }
+    (w, h, rgba)
+}
+
+/// Our pixel at canvas (x, y) over the PNG background, 0..=255 per channel.
+fn over_bg(r: &Render, x: usize, y: usize, bg: [u8; 3]) -> [f64; 3] {
+    let p = r.px[y * r.w + x];
+    let a = f64::from(p[3]);
+    [0, 1, 2].map(|c| f64::from(p[c]) * 255.0 * a + f64::from(bg[c]) * (1.0 - a))
+}
+
+#[test]
+fn discover2() {
+    let m = mapped("fig-basic-shapes.fig");
+    let r = render(&m);
+    let png = decode_png(&fixture("fig-basic-shapes.png"));
+    let bg = [png.2[0], png.2[1], png.2[2]];
+    println!("bg {bg:?}");
+    let doc = m.proposal.snapshot.document();
+    for id in &r.ids {
+        let l = doc.layers.iter().find(|l| &l.layer_id == id).unwrap();
+        let b = bbox_of(&m, id).unwrap();
+        let (cx, cy) = (((b[0] + b[2]) / 2.0) as usize, ((b[1] + b[3]) / 2.0) as usize);
+        let ours = over_bg(&r, cx, cy, bg);
+        let o = ((cy - 100) * png.0 + (cx - 100)) * 4;
+        println!("{} bbox {:?} centre ({cx},{cy}) ours {:?} png {:?}", l.name, b, ours.map(|v| v.round()), &png.2[o..o + 3]);
+    }
+    let name = "fig-prototype-pages.fig";
+    let m = mapped(name);
+    let r = render(&m);
+    for id in &r.ids {
+        let l = m.proposal.snapshot.document().layers.iter().find(|l| &l.layer_id == id).unwrap();
+        let b = bbox_of(&m, id).unwrap();
+        println!("{} bbox {:?}", l.name, b);
+    }
+    for n in m.doc.nodes.iter().filter(|n| matches!(n.name.as_deref(), Some("start-screen" | "detail-screen" | "animated-screen" | "animated-orb"))) {
+        println!("node {:?} {} t={:?} size={:?}", n.name, n.type_name, n.transform.map(|t| (t.m02, t.m12)), n.size);
+    }
+    for f in ["start", "detail", "animated"] {
+        let p = decode_png(&fixture(&format!("fig-prototype-pages-{f}.png")));
+        println!("png {f} {}x{} corner {:?}", p.0, p.1, &p.2[..3]);
+    }
+}
 #[test]
 fn discover() {
     for name in ["fig-basic-shapes.fig", "fig-components-autolayout.fig", "fig-prototype-pages.fig"] {
