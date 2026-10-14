@@ -18,6 +18,20 @@ const BASELINE_HASH: &str = include_str!("fixtures/h264/h264-baseline-128x72-24f
 const HIGH_BF2: &[u8] = include_bytes!("fixtures/h264/h264-high-bf2-128x72-24f.mp4");
 const HIGH_BF2_HASH: &str = include_str!("fixtures/h264/h264-high-bf2-128x72-24f.framehash");
 const HIGH422: &[u8] = include_bytes!("fixtures/h264/h264-high422-10bit-128x72-12f.mp4");
+const MAIN_NOB: &[u8] = include_bytes!("fixtures/h264/h264-main-nob-128x72-24f.mp4");
+const MAIN_NOB_HASH: &str = include_str!("fixtures/h264/h264-main-nob-128x72-24f.framehash");
+const HIGH_NOB: &[u8] = include_bytes!("fixtures/h264/h264-high-nob-128x72-24f.mp4");
+const HIGH_NOB_HASH: &str = include_str!("fixtures/h264/h264-high-nob-128x72-24f.framehash");
+
+/// Main and High profile (CABAC; High adds 8x8 transforms), no B-frames: every frame exact.
+fn assert_profiles_exact(worker: &WorkerMfProvider, limits: &Limits, label: &str) {
+    for (name, bytes, hash) in [("main", MAIN_NOB, MAIN_NOB_HASH), ("high", HIGH_NOB, HIGH_NOB_HASH)] {
+        let (receipt, sink) = decode(worker, bytes, 0, 24, limits).unwrap();
+        assert!(receipt.complete, "{label} {name}");
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, oracle(hash), "{label} {name} differs from the ffmpeg oracle");
+    }
+}
 /// One frame at 30000/1001 fps in Pulse ticks (254,016,000 per millisecond).
 const FRAME_TICKS: u64 = 8_475_667_200;
 /// 128 x 72 4:2:0 8-bit, tight planes.
@@ -152,6 +166,7 @@ fn h264_baseline_software_decode_exact_vs_oracle() {
             assert_eq!(*pts, (n as u64 * FRAME_TICKS) as i64, "frame {n} pts");
             assert_eq!(digest, &expected[n], "frame {n} differs from the ffmpeg oracle");
         }
+        assert_profiles_exact(&worker, &limits, "software");
         // Random access: frame 5 (pre-roll from the sync sample at 0) and frames 12..15 (sync at 12).
         for (start, count) in [(5, 1), (12, 4), (20, 4)] {
             let (receipt, sink) = decode(&worker, BASELINE, start * FRAME_TICKS, count, &limits).unwrap();
@@ -370,6 +385,7 @@ fn mf_dxva_parity_with_software() {
                 assert!(receipt.complete);
                 let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
                 assert_eq!(got, expected, "DXVA output differs from software/ffmpeg");
+                assert_profiles_exact(&hardware, &limits, "dxva");
                 let stats = hardware.hardware_stats().unwrap();
                 assert_eq!((stats.crashed, stats.protocol_faults), (0, 0), "{stats:?}");
             }

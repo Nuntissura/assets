@@ -21,6 +21,18 @@
       "sha256": "fee69bc1a70cbae6dabdbc083d8d5b00b9df6c7b18911c2794dac733173aca4e",
       "command": "ffmpeg -y -f lavfi -i testsrc2=size=128x72:rate=30000/1001 -frames:v 12 -c:v libx264 -preset veryfast -profile:v high422 -pix_fmt yuv422p10le -g 12 -x264-params $X $BX h264-high422-10bit-128x72-12f.mp4",
       "facts": "High 4:2:2 (profile_idc 122), 10-bit: refused before any worker starts"
+    },
+    "h264-main-nob-128x72-24f.mp4": {
+      "bytes": 16358,
+      "sha256": "3b6e750bbb7350dc424f4bbc45d58523a833995c8c29582fb6f6d0bcfc709456",
+      "command": "ffmpeg -nostdin -y -f lavfi -i testsrc2=size=128x72:rate=30000/1001 -frames:v 24 -c:v libx264 -preset veryfast -profile:v main -pix_fmt yuv420p -bf 0 -g 12 -x264-params $X $BX h264-main-nob-128x72-24f.mp4 (generated 2026-10-14 by lane SMB-REEL-NATIVE-ENG-1)",
+      "facts": "Main profile level 1.0, CABAC, no B-frames"
+    },
+    "h264-high-nob-128x72-24f.mp4": {
+      "bytes": 16220,
+      "sha256": "036cb023f99893c618474fd20559efe87de64ac29a2268e2a3e77b14d337947e",
+      "command": "same with -profile:v high",
+      "facts": "High profile level 1.0, no B-frames"
     }
   },
   "oracle": "*.framehash = ffmpeg -nostdin -v error -i FILE.mp4 -f framehash -hash sha256 - (sha256 of each decoded yuv420p / yuv422p10le frame, presentation order), generated 2026-10-14 with the same ffmpeg build"
