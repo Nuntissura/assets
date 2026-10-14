@@ -67,7 +67,6 @@ fn document() -> Value {
             "outputs":[common::address(1,"mix","out")]}
     });
     common::assign_all_profiles(&mut v);
-    v["blending_space"] = json!(null);
     v
 }
 fn f(frame: u64) -> u64 {
