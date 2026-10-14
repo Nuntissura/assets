@@ -503,10 +503,12 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-web", &["html5ever", "sha2"]),
     ("hsk-studio-score-device", &["cpal"]),
     ("hsk-studio-score-plugin", &["clack-host", "sha2"]),
+    ("hsk-studio-reel-native", &["windows"]),
     ("hsk-studio-interop-lrcat", &["sha2"]),
     ("hsk-studio-motion-js", &["rquickjs"]),
     ("hsk-studio-worker", &["windows-sys"]),
     ("hsk-studio-interop-tiff", &["sha2", "tiff"]),
+    ("hsk-studio-interop-raster", &["png", "zune-jpeg"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
@@ -520,20 +522,28 @@ const NATIVE_OWNERS: &[&str] = &[
     // limited by steward review to the motion-js job_object.rs feature set (Foundation, Security,
     // System_Diagnostics_Debug, System_IO, System_JobObjects, System_Threading).
     "hsk-studio-worker",
+    // D11 (Operator 2026-10-14): standalone harness desktop window through eframe 0.33.3 (wgpu backend); its closure
+    // holds windows-sys (winit) and renderdoc-sys (wgpu-hal).
+    "hsk-studio-harness",
 ];
 // Restricted libraries allowed only in their designated owner's registry closure.
+// D11: eframe and its window/GUI stack (winit, egui-winit, egui-wgpu; `image` is a non-optional eframe dependency on
+// native targets) only in hsk-studio-harness; engines stay window-free.
 const DESIGNATED: &[(&str, &[&str])] = &[
-    ("wgpu", &["hsk-studio-render-gpu"]),
-    ("egui", &["hsk-studio-controls"]),
+    ("wgpu", &["hsk-studio-render-gpu", "hsk-studio-harness"]),
+    ("egui", &["hsk-studio-controls", "hsk-studio-harness"]),
     ("ffmpeg-sys-next", &["hsk-studio-reel-native"]),
+    ("eframe", &["hsk-studio-harness"]),
+    ("winit", &["hsk-studio-harness"]),
+    ("egui-winit", &["hsk-studio-harness"]),
+    ("egui-wgpu", &["hsk-studio-harness"]),
+    ("image", &["hsk-studio-harness"]),
 ];
 const ALWAYS_FORBIDDEN: &[&str] = &[
     "handshake_core",
     "handshake_native",
     "surrealdb",
     "rocksdb",
-    "eframe",
-    "image",
     "libsqlite3-sys",
 ];
 fn native_name(name: &str) -> bool {

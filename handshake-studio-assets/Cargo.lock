@@ -565,6 +565,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "fearless_simd"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,7 +598,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
 
@@ -988,7 +997,7 @@ dependencies = [
  "hsk-studio-folio",
  "hsk-studio-observe",
  "hsk-studio-package",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "ruzstd",
  "serde_json",
  "sha2 0.10.9",
@@ -1003,7 +1012,7 @@ dependencies = [
  "hsk-studio-layout",
  "hsk-studio-observe",
  "hsk-studio-package",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "roxmltree",
  "serde_json",
  "sha2 0.10.9",
@@ -1037,8 +1046,18 @@ dependencies = [
  "hsk-studio-observe",
  "hsk-studio-pigment",
  "hsk-studio-prism",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "serde_json",
+]
+
+[[package]]
+name = "hsk-studio-interop-raster"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-observe",
+ "png",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1060,7 +1079,7 @@ dependencies = [
  "hsk-studio-nib",
  "hsk-studio-observe",
  "hsk-studio-package",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "roxmltree",
  "svgtypes",
 ]
@@ -1132,7 +1151,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-folio",
  "hsk-studio-observe",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "ruzstd",
  "serde",
  "serde_json",
@@ -1159,7 +1178,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
  "kurbo",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "sha2 0.10.9",
 ]
 
@@ -1189,7 +1208,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
  "libc",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "rav1d",
  "sha2 0.10.9",
 ]
@@ -1201,6 +1220,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-reel",
  "hsk-studio-worker",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1521,6 +1541,16 @@ dependencies = [
  "log",
  "objc",
  "paste",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
 ]
 
 [[package]]
@@ -1926,6 +1956,19 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
 
 [[package]]
 name = "polycool"
