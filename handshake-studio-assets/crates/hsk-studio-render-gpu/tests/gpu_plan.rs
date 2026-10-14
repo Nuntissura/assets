@@ -449,6 +449,16 @@ fn not_proven_line(what: &str) -> String {
 /// `NOT_PROVEN:` line is printed. Strict mode, an adapter whose device, shader or pipeline failed, a
 /// timeout and a lost device are `Err`: the calling test FAILS, never skips.
 fn gate(backend: &GpuBackend, what: &str, strict: bool) -> Result<Option<DeviceInfo>, String> {
+    gate_with(backend, what, strict, &mut |line| eprintln!("{line}"))
+}
+/// `gate` with the NOT_PROVEN line handed to `emit` (the regression probe captures it instead of
+/// printing, so the probe itself is not counted as a NOT_PROVEN by the round).
+fn gate_with(
+    backend: &GpuBackend,
+    what: &str,
+    strict: bool,
+    emit: &mut dyn FnMut(String),
+) -> Result<Option<DeviceInfo>, String> {
     if let Some(info) = backend.device_info() {
         return Ok(Some(info));
     }
@@ -459,7 +469,7 @@ fn gate(backend: &GpuBackend, what: &str, strict: bool) -> Result<Option<DeviceI
     }
     match backend.unavailable_reason() {
         Some(Reason::NoAdapter) if !strict => {
-            eprintln!("{}", not_proven_line(what));
+            emit(not_proven_line(what));
             Ok(None)
         }
         Some(Reason::NoAdapter) => Err(format!(
@@ -523,11 +533,14 @@ fn no_adapter_is_not_a_green_gpu_proof_when_the_gpu_is_required() {
         strict.as_ref().map(|d| d.is_some())
     );
     // opt-out route: not an error, and the line it prints is the one the round counts
+    // (captured, not printed: the probe must not add a NOT_PROVEN line to the round output)
+    let mut emitted = Vec::new();
     assert!(matches!(
-        gate(&backend, "regression probe", false),
+        gate_with(&backend, "regression probe", false, &mut |l| emitted.push(l)),
         Ok(None)
     ));
-    let line = not_proven_line("regression probe");
+    assert_eq!(emitted, vec![not_proven_line("regression probe")]);
+    let line = emitted.remove(0);
     assert!(line.starts_with("NOT_PROVEN: no adapter;"), "{line}");
     assert!(line.contains("regression probe"));
     // the gate every GPU proof uses follows the committed policy (env can only add strictness)
