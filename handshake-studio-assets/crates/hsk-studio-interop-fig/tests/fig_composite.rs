@@ -467,6 +467,10 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
         assert!(r.px[centre.1 * r.w + centre.0][3] > 0.4, "{node}: painted at {centre:?}");
     }
     // The multiply overlap region of group-background (x 570..700) and multiply-overlay (610..720).
+    for p in [(710usize, 420usize), (650, 460), (605, 450), (705, 395)] {
+        let o = ((p.1 - origin.1) * png.0 + (p.0 - origin.0)) * 4;
+        eprintln!("PROBE {p:?} ours {:?} a={} png {:?}", over_bg(&r, p.0, p.1, [png.2[0], png.2[1], png.2[2]]), r.px[p.1 * r.w + p.0][3], &png.2[o..o + 3]);
+    }
     let d = diff_at(&r, &png, (650, 420), origin);
     assert!(d <= 4.0, "overlap differs by {d}");
     // Positions: just outside the union box and the star box nothing is composited; the hidden mask
