@@ -3,9 +3,11 @@
 //! redaction save purges, by category below, what described or drew the OLD page: its annotations and widgets
 //! that no kept page lists are dropped, the painted sources it reached that no kept content names and no kept
 //! object references are dropped (one a kept object references stays and is reported), and the structure tree: by default
-//! (Operator decision D28, `StructureTreePolicy::Strip`, [`strip_structure`]) the whole tree, identified by role and
-//! reachability rather than by shape (R26-S1), is removed with the typed loss `accessibility_tags_removed` (tests
-//! `default_redaction_strips_the_structure_tree`, `structure_strip_follows_the_tree_and_structure_destinations`,
+//! (Operator decision D28, `StructureTreePolicy::Strip`, [`strip_structure`]) the tree is UNLINKED (lead diagnosis
+//! DIAG-PRESS-R27: the catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`, `/StructParent` and `/SE`, every
+//! `GoTo` `/SD`; no object is deleted) and the save's unreachable-object drop leaves the tree out, with the typed loss
+//! `accessibility_tags_removed`; what anything kept still reaches stays and is reported (tests
+//! `default_redaction_strips_the_structure_tree`, `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`,
 //! `structure_strip_keeps_multimedia_of_kept_pages`); with the opt-out
 //! (`StructureTreePolicy::KeepNotProven`), in a structure tree whose root is an indirect object, the structure elements that
 //! the purge reads and that point at it stay with their text removed (best effort). Whatever the policy, when a save flattens at
@@ -622,332 +624,94 @@ fn strip_links(o: &mut Object, depth: usize, cap: usize) -> bool {
     }
 }
 
-/// The objects the structure links inside `o` name (to `cap` levels), read before [`strip_links`] removes them: the element of
-/// an outline item's `/SE`, and the first element of a `GoTo` action's structure destination `/SD` (R26-S2: a structure element
-/// by the action's definition, whatever keys it has).
-fn link_targets(doc: &PdfDoc, o: &Object, depth: usize, cap: usize, out: &mut BTreeSet<u32>) {
+/// The values of the structure links inside `o` (to `cap` levels): every [`STRUCT_LINK_KEYS`] entry and the `/SD` of every
+/// `GoTo` action, as [`strip_links`] removes them.
+fn link_values<'a>(o: &'a Object, depth: usize, cap: usize, out: &mut Vec<&'a Object>) {
     if depth > cap {
         return;
     }
     let next = depth.saturating_add(1);
     match o {
-        Object::Array(a) => a.iter().for_each(|x| link_targets(doc, x, next, cap, out)),
+        Object::Array(a) => a.iter().for_each(|x| link_values(x, next, cap, out)),
         Object::Dict(_) | Object::Stream(_) => {
             let Some(d) = o.as_dict() else { return };
-            if let Some(r) = d.get("SE").and_then(Object::as_ref) {
-                out.insert(r.num);
-            }
-            if is_goto(d)
-                && let Some(r) = d.get("SD").map(|v| doc.resolve(v)).and_then(Object::as_array).and_then(|a| a.first()).and_then(Object::as_ref)
-            {
-                out.insert(r.num);
-            }
-            d.entries.iter().for_each(|(_, v)| link_targets(doc, v, next, cap, out));
-        }
-        _ => {}
-    }
-}
-
-/// `/Type` is the name `StructElem` or `StructTreeRoot`.
-fn typed_structure(doc: &PdfDoc, d: &Dict) -> bool {
-    d.get("Type").map(|v| doc.resolve(v)).is_some_and(|t| t.is_name("StructElem") || t.is_name("StructTreeRoot"))
-}
-
-/// A structure element by its own keys, read only where the structure tree (or a structure link) names an element: `/S` is a
-/// name and `/Type`, when present, is `StructElem`; or `/Type` is `StructElem`. A dictionary with `/S` that sits anywhere else (a
-/// media rendition `/S /MR`, a media clip `/S /MCD`, an action) is not one (R26-S1).
-fn element_like(doc: &PdfDoc, d: &Dict) -> bool {
-    let typ = d.get("Type").map(|t| doc.resolve(t));
-    typ.is_some_and(|t| t.is_name("StructElem")) || (typ.is_none() && d.get("S").map(|v| doc.resolve(v)).is_some_and(|v| matches!(v, Object::Name(_))))
-}
-
-/// A content item of an element's `/K` written as an object: a marked-content reference or an object reference dictionary.
-fn content_item(doc: &PdfDoc, d: &Dict) -> bool {
-    d.get("Type").map(|t| doc.resolve(t)).is_some_and(|t| t.is_name("MCR") || t.is_name("OBJR"))
-}
-
-/// The role in which the structure tree names a value ([`structure_objects`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Role {
-    /// A structure tree root: its `/K`, `/ParentTree`, `/IDTree`, `/ClassMap` and `/RoleMap` are followed.
-    Root,
-    /// A structure element (or an array of them, or a content item): its `/K`, `/A` and `/Ref` are followed.
-    Element,
-    /// A node of the `/ParentTree` number tree (or a `/Kids` array of them).
-    NumberTree,
-    /// A node of the `/IDTree` name tree (or a `/Kids` array of them).
-    NameTree,
-    /// A `/Nums` or `/Names` array: every second value is an element.
-    Pairs,
-    /// The `/ClassMap`: every value is an attribute object or an array of them.
-    ClassMap,
-    /// An attribute object (a dictionary with `/O`) or an array of them.
-    Attribute,
-    /// The `/RoleMap`: the dictionary itself.
-    Whole,
-}
-
-/// A value [`structure_objects`] reads: written inside an object, or object `n`.
-#[derive(Clone, Copy)]
-enum Item<'a> {
-    Val(&'a Object),
-    Num(u32),
-}
-
-/// The objects of the structure tree, identified by their role and reachability (R26-S1, R26-S2, R26-S3), not by their shape:
-/// starting from the catalog's `/StructTreeRoot` (`root`, read before the strip), every object whose `/Type` is `StructTreeRoot`
-/// or `StructElem`, and the elements the structure links name (`links`: `/SE`, the first element of a `GoTo` action's `/SD`), it
-/// follows a root's `/K` (elements), `/ParentTree` (number-tree nodes, `/Nums` arrays, the elements and element arrays they hold),
-/// `/IDTree` (name-tree nodes, `/Names` arrays, elements), `/ClassMap` (the map and its attribute objects) and `/RoleMap`, an
-/// element's `/K` (child elements, arrays of them, marked-content and object reference dictionaries), `/A` (attribute objects) and
-/// `/Ref` (elements), and every element whose `/P` is an object of the tree. An object the tree names where an element belongs is
-/// taken only when it is one by its keys ([`element_like`], [`content_item`]); the pages, annotations, streams and files an element
-/// points at (`/Pg`, `/Obj`, `/Stm`, `/AF`) are not followed. An alias object (an object that is a reference) passes the role on
-/// to its target and is not taken itself.
-fn structure_objects(doc: &PdfDoc, root: Option<&Object>, links: &BTreeSet<u32>, cancel: &CancellationToken) -> Result<BTreeSet<u32>> {
-    let objs = &doc.objects;
-    let cap = doc.limits.depth_cap();
-    // The elements that name each object as their parent (`/P`): a detached element belongs to the tree when its parent does.
-    let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    for (num, e) in objs {
-        if let Some(d) = e.obj.as_dict()
-            && element_like(doc, d)
-            && let Some(p) = d.get("P").and_then(Object::as_ref)
-        {
-            children.entry(p.num).or_default().push(*num);
-        }
-    }
-    let mut work: Vec<(Item<'_>, Role, usize)> = Vec::new();
-    if let Some(r) = root {
-        work.push((Item::Val(r), Role::Root, 0));
-    }
-    for (num, e) in objs {
-        if let Some(d) = e.obj.as_dict()
-            && typed_structure(doc, d)
-        {
-            let role = if d.get("Type").map(|t| doc.resolve(t)).is_some_and(|t| t.is_name("StructTreeRoot")) { Role::Root } else { Role::Element };
-            work.push((Item::Num(*num), role, 0));
-        }
-    }
-    work.extend(links.iter().map(|n| (Item::Num(*n), Role::Element, 0)));
-    let mut tree: BTreeSet<u32> = BTreeSet::new();
-    let mut visited: BTreeSet<(u32, Role)> = BTreeSet::new();
-    let mut steps = 0usize;
-    while let Some((item, role, depth)) = work.pop() {
-        steps = steps.saturating_add(1);
-        if steps & 255 == 0 {
-            check_cancel(cancel)?;
-        }
-        if depth > cap {
-            continue;
-        }
-        let next = depth.saturating_add(1);
-        let (num, value) = match item {
-            Item::Num(n) => match objs.get(&n) {
-                Some(e) => (Some(n), &e.obj),
-                None => continue,
-            },
-            Item::Val(Object::Ref(r)) => match objs.get(&r.num) {
-                Some(e) => (Some(r.num), &e.obj),
-                None => continue,
-            },
-            Item::Val(v) => (None, v),
-        };
-        if let Some(n) = num {
-            if !visited.insert((n, role)) {
-                continue;
-            }
-            if matches!(value, Object::Ref(_)) {
-                work.push((Item::Val(value), role, next));
-                continue;
-            }
-        }
-        let mut take = false;
-        match (role, value) {
-            (Role::Root, Object::Dict(d)) => {
-                take = true;
-                for (key, r) in [("K", Role::Element), ("ParentTree", Role::NumberTree), ("IDTree", Role::NameTree), ("ClassMap", Role::ClassMap), ("RoleMap", Role::Whole)] {
-                    if let Some(v) = d.get(key) {
-                        work.push((Item::Val(v), r, next));
-                    }
+            let goto = is_goto(d);
+            for (k, v) in &d.entries {
+                if is_link_key(k) || (goto && k.as_slice() == b"SD") {
+                    out.push(v);
                 }
-            }
-            (Role::Element | Role::Attribute | Role::NumberTree | Role::NameTree, Object::Array(a)) => {
-                take = true;
-                work.extend(a.iter().map(|x| (Item::Val(x), role, next)));
-            }
-            (Role::Pairs, Object::Array(a)) => {
-                take = true;
-                work.extend(a.iter().skip(1).step_by(2).map(|x| (Item::Val(x), Role::Element, next)));
-            }
-            (Role::Element, o) => {
-                let Some(d) = o.as_dict() else { continue };
-                if content_item(doc, d) {
-                    take = true;
-                } else if element_like(doc, d) {
-                    take = true;
-                    for (key, r) in [("K", Role::Element), ("A", Role::Attribute), ("Ref", Role::Element)] {
-                        if let Some(v) = d.get(key) {
-                            work.push((Item::Val(v), r, next));
-                        }
-                    }
-                }
-            }
-            (Role::NumberTree | Role::NameTree, Object::Dict(d)) => {
-                take = true;
-                if let Some(v) = d.get("Kids") {
-                    work.push((Item::Val(v), role, next));
-                }
-                for key in ["Nums", "Names"] {
-                    if let Some(v) = d.get(key) {
-                        work.push((Item::Val(v), Role::Pairs, next));
-                    }
-                }
-            }
-            (Role::ClassMap, Object::Dict(d)) => {
-                take = true;
-                work.extend(d.entries.iter().map(|(_, v)| (Item::Val(v), Role::Attribute, next)));
-            }
-            (Role::Attribute, Object::Dict(d)) => take = holds(d, "O"),
-            (Role::Whole, Object::Dict(_)) => take = true,
-            _ => {}
-        }
-        if take && let Some(n) = num {
-            tree.insert(n);
-            if let Some(kids) = children.get(&n) {
-                work.extend(kids.iter().map(|c| (Item::Num(*c), Role::Element, next)));
-            }
-        }
-    }
-    Ok(tree)
-}
-
-/// `d` is a structure dictionary the strip removes where it is written inside another object: `/Type` `StructElem` or
-/// `StructTreeRoot`, or an element ([`element_like`]) whose `/P` is an object of the tree.
-fn strip_target(doc: &PdfDoc, tree: &BTreeSet<u32>, d: &Dict) -> bool {
-    typed_structure(doc, d) || (element_like(doc, d) && d.get("P").and_then(Object::as_ref).is_some_and(|p| tree.contains(&p.num)))
-}
-
-/// A direct dictionary the strip removes ([`strip_target`]) is nested inside `o` (`o` itself is not judged), to `cap` levels.
-fn nested_shape(doc: &PdfDoc, tree: &BTreeSet<u32>, o: &Object, depth: usize, cap: usize) -> bool {
-    if depth > cap {
-        return false;
-    }
-    let next = depth.saturating_add(1);
-    let shaped = |x: &Object| matches!(x, Object::Dict(d) if strip_target(doc, tree, d));
-    match o {
-        Object::Array(a) => a.iter().any(|x| shaped(x) || nested_shape(doc, tree, x, next, cap)),
-        Object::Dict(_) | Object::Stream(_) => o.as_dict().is_some_and(|d| d.entries.iter().any(|(_, v)| shaped(v) || nested_shape(doc, tree, v, next, cap))),
-        _ => false,
-    }
-}
-
-/// Removes the direct dictionaries the strip removes ([`strip_target`]) nested inside `o` (an array element becomes null, a
-/// dictionary entry is removed), to `cap` levels.
-fn strip_nested_shapes(doc: &PdfDoc, tree: &BTreeSet<u32>, o: &mut Object, depth: usize, cap: usize) {
-    if depth > cap {
-        return;
-    }
-    let next = depth.saturating_add(1);
-    let shaped = |x: &Object| matches!(x, Object::Dict(d) if strip_target(doc, tree, d));
-    match o {
-        Object::Array(a) => {
-            for x in a.iter_mut() {
-                if shaped(x) {
-                    *x = Object::Null;
-                } else {
-                    strip_nested_shapes(doc, tree, x, next, cap);
-                }
-            }
-        }
-        Object::Dict(_) | Object::Stream(_) => {
-            let d = match o {
-                Object::Dict(d) => d,
-                Object::Stream(s) => &mut s.dict,
-                _ => return,
-            };
-            d.entries.retain(|(_, v)| !shaped(v));
-            for (_, v) in d.entries.iter_mut() {
-                strip_nested_shapes(doc, tree, v, next, cap);
+                link_values(v, next, cap, out);
             }
         }
         _ => {}
     }
 }
 
-/// Operator decision D28 (2026-10-14; the default of a redaction save that flattens a region, `StructureTreePolicy::Strip`):
-/// removes the whole structure tree. The catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`, `/StructParent`
-/// and `/SE` entry of every dictionary and the `/SD` of every `GoTo` action, every object of the structure tree identified by its
-/// role and reachability ([`structure_objects`]: the root, the elements, the parent-tree and id-tree nodes, the class map and
-/// role map, attribute objects, content-item dictionaries, the elements `/SE` and `/SD` name, the elements whose `/P` is in the
-/// tree) with every direct reference to it (`scrub_references`), and every structure dictionary written directly inside another
-/// object ([`strip_target`]). A dictionary is not removed for its shape alone (R26-S1: a media rendition or media clip with `/S`,
-/// `/P` and a text key stays; `check_document` still reads such a shape and reports it, test
-/// `structure_strip_keeps_multimedia_of_kept_pages`). What only the tree reached is no longer reachable and is not written.
-/// Content streams are not edited: marked-content operators (`BDC` with `/MCID`) stay. What the strip cannot reach (an element
-/// inside an object stream the file keeps as a stream, an alias object of an element that another object keeps reachable) stays
-/// and `check_document` reports it (fail closed). Returns whether a structure tree or a structure entry the saved file would hold
-/// was removed (the typed loss `accessibility_tags_removed`); `/MarkInfo` alone is not one (R26-S4). Tests
-/// `default_redaction_strips_the_structure_tree`, `structure_strip_follows_the_tree_and_structure_destinations`,
-/// `structure_strip_reports_no_loss_without_structure`.
+/// Keys that only a structure tree root holds (ISO 32000-1 Table 322 as the R24-R27 pre-review inputs use it; the standard's
+/// text not re-read here, UNVERIFIED): `check_document` reads a dictionary holding one of them as a root (R26-S3).
+const STRUCT_ROOT_KEYS: [&str; 5] = ["ParentTree", "IDTree", "ClassMap", "RoleMap", "ParentTreeNextKey"];
+
+/// `d` has the keys of a structure tree root: `/Type` is the name `StructTreeRoot`, or there is no `/Type` and it holds `/K`
+/// or one of [`STRUCT_ROOT_KEYS`]. Only the typed loss of [`strip_structure`] reads it (R27-S1, R27-S3): a catalog
+/// `/StructTreeRoot` that names an `/AcroForm`, an annotation or an optional-content group is unlinked, but no loss is reported.
+fn root_shaped(doc: &PdfDoc, d: &Dict) -> bool {
+    match d.get("Type").map(|t| doc.resolve(t)) {
+        Some(t) => t.is_name("StructTreeRoot"),
+        None => holds(d, "K") || STRUCT_ROOT_KEYS.iter().any(|k| holds(d, k)),
+    }
+}
+
+/// Operator decision D28 (2026-10-14; the default of a redaction save that flattens a region, `StructureTreePolicy::Strip`), changed
+/// approach of the lead diagnosis DIAG-PRESS-R27 (2026-10-14, after the R26 and R27 pre-reviews found structure-object deletion by
+/// shape and then by role removing kept objects): UNLINK ONLY. The strip removes the catalog's `/StructTreeRoot` and `/MarkInfo`,
+/// every `/StructParents`, `/StructParent` and `/SE` entry of every dictionary and the `/SD` of every `GoTo` action, and deletes
+/// no object. The save writes only the objects reachable from the trailer (`writer::write_document` over `writer::reachable`), so
+/// the tree objects that only these entries reached are not written, `/ParentTree`, `/IDTree`, `/RoleMap` and `/ClassMap`
+/// included; an object that anything kept still reaches (an `/AcroForm`, an annotation, an optional-content group, an action, an
+/// outline item, a private key) stays as it is, structure-shaped or not (tests `default_redaction_strips_the_structure_tree`,
+/// `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`, `structure_strip_keeps_multimedia_of_kept_pages`). Structure
+/// that stays reachable is read by `check_document` and reported (NotProven, `structure_strip_reports_what_it_cannot_remove`).
+/// Content streams are not edited: marked-content operators (`BDC` with `/MCID`) stay. Returns whether a structure entry was
+/// unlinked from a dictionary the saved file would hold with a value that resolves (the typed loss `accessibility_tags_removed`):
+/// the catalog's `/StructTreeRoot` when it resolves to a dictionary with the keys of a root ([`root_shaped`]), or a link entry
+/// whose value is not null (a reference to an object the file does not hold reads as null); `/MarkInfo` alone is not one
+/// (R26-S4, R27-S3; tests `structure_strip_reports_no_loss_without_structure`,
+/// `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`).
 pub(crate) fn strip_structure(doc: &mut PdfDoc, cancel: &CancellationToken) -> Result<bool> {
     check_cancel(cancel)?;
     let root = catalog_num(doc)?;
     let cap = doc.limits.depth_cap();
-    // Only what the saved file would hold counts as removed (the writer writes the reachable objects only).
+    // Only what the saved file would hold counts (the writer writes the reachable objects only).
     let live = reachable(&doc.objects, &trailer_roots(&doc.trailer));
-    // Read before any edit: the root the catalog names and the elements the structure links name.
-    let tree_root = doc.dict_of(root).and_then(|c| c.get("StructTreeRoot")).cloned();
-    let mut links: BTreeSet<u32> = BTreeSet::new();
-    for (i, e) in doc.objects.values().enumerate() {
-        if i & 1023 == 0 {
-            check_cancel(cancel)?;
-        }
-        link_targets(doc, &e.obj, 0, cap, &mut links);
-    }
-    let tree = structure_objects(doc, tree_root.as_ref(), &links, cancel)?;
-    let mut removed = false;
-    if let Some(e) = doc.objects.get_mut(&root)
-        && let Object::Dict(c) = &mut e.obj
-    {
-        // R26-S4: the loss is a structure tree removed; `/MarkInfo` is removed too but does not count on its own.
-        let had_tree = c.remove("StructTreeRoot").is_some_and(|v| !matches!(v, Object::Null));
-        let had_mark = c.remove("MarkInfo").is_some();
-        if had_tree || had_mark {
-            touch(e);
-        }
-        removed |= had_tree;
-    }
-    for (i, (num, e)) in doc.objects.iter_mut().enumerate() {
-        if i & 1023 == 0 {
-            check_cancel(cancel)?;
-        }
-        if strip_links(&mut e.obj, 0, cap) {
-            touch(e);
-            removed |= live.contains(num);
-        }
-    }
-    let mut nested: Vec<(u32, Object)> = Vec::new();
+    let mut removed = live.contains(&root)
+        && doc.dict_of(root).and_then(|c| c.get("StructTreeRoot")).map(|v| doc.resolve(v)).and_then(Object::as_dict).is_some_and(|d| root_shaped(doc, d));
+    let mut linked: Vec<u32> = Vec::new();
     for (i, (num, e)) in doc.objects.iter().enumerate() {
         if i & 1023 == 0 {
             check_cancel(cancel)?;
         }
-        if !tree.contains(num) && nested_shape(doc, &tree, &e.obj, 0, cap) {
-            let mut o = e.obj.clone();
-            strip_nested_shapes(doc, &tree, &mut o, 0, cap);
-            nested.push((*num, o));
+        let mut values: Vec<&Object> = Vec::new();
+        link_values(&e.obj, 0, cap, &mut values);
+        if !values.is_empty() {
+            linked.push(*num);
+            removed |= live.contains(num) && values.iter().any(|v| !matches!(doc.resolve(v), Object::Null));
         }
     }
-    for (num, o) in nested {
-        if let Some(e) = doc.objects.get_mut(&num) {
-            e.obj = o;
+    if let Some(e) = doc.objects.get_mut(&root)
+        && let Object::Dict(c) = &mut e.obj
+    {
+        let had_tree = c.remove("StructTreeRoot").is_some();
+        let had_mark = c.remove("MarkInfo").is_some();
+        if had_tree || had_mark {
             touch(e);
-            removed |= live.contains(&num);
         }
     }
-    if !tree.is_empty() {
-        removed |= tree.iter().any(|n| live.contains(n));
-        scrub_references(&mut doc.objects, &tree);
+    for num in linked {
+        if let Some(e) = doc.objects.get_mut(&num)
+            && strip_links(&mut e.obj, 0, cap)
+        {
+            touch(e);
+        }
     }
     Ok(removed)
 }
@@ -1736,7 +1500,8 @@ fn holds(d: &Dict, key: &str) -> bool {
 /// dictionary (names decoded; comments and strings are not read as keys), a value that is a reference is followed (`resolve`, at most
 /// `MAX_REF_HOPS` hops): `/Type` is the name `StructElem` or `StructTreeRoot`; or `/S` is a name and `/P` is held together with
 /// any key of `STRUCT_TEXT_KEYS` (a dictionary with only `/S`, as an action or a border style has, is not one); or `/SE` is held
-/// (the outline item entry that names a structure element).
+/// (the outline item entry that names a structure element); or one of [`STRUCT_ROOT_KEYS`] is held (a structure tree root without
+/// `/Type` that a kept object still reaches after the D28 unlink, R26-S3; test `structure_strip_reports_what_it_cannot_remove`).
 fn structure_shaped(saved: &PdfDoc, d: &Dict) -> bool {
     let named = |key: &str, name: &str| d.get(key).map(|v| saved.resolve(v)).is_some_and(|v| v.is_name(name));
     // PLR-105 (R25-P3, fail closed): a `/Type` or `/S` the reader's hop bound reads as null counts, as the catalog rule does.
@@ -1749,6 +1514,7 @@ fn structure_shaped(saved: &PdfDoc, d: &Dict) -> bool {
             && holds(d, "P")
             && STRUCT_TEXT_KEYS.iter().any(|k| holds(d, k)))
         || holds(d, "SE")
+        || STRUCT_ROOT_KEYS.iter().any(|k| holds(d, k))
 }
 
 /// What `check_document` has found so far. `structure` is the one count of the structure rules (tree, `/StructParents`,

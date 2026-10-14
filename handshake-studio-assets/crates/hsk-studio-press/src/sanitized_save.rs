@@ -1512,13 +1512,14 @@ pub fn redact_and_save_with(
 /// What a redaction save does with the document's structure tree (tagged PDF; Operator decision D28, 2026-10-14).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StructureTreePolicy {
-    /// Default. When the save flattens at least one region, the whole structure tree is removed (`flatten_purge.rs`
-    /// `strip_structure`: the catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`, `/StructParent` and `/SE`
-    /// entry and the `/SD` of every `GoTo` action, every object of the structure tree identified by its role and reachability,
-    /// not by its shape (R26-S1: a media rendition or clip stays); what only the tree reached, `/ParentTree`, `/IDTree`,
-    /// `/RoleMap` and `/ClassMap` included, is no longer written); marked-content operators in content streams (`BDC` with
-    /// `/MCID`) are kept. The save reports [`RedactionLoss::AccessibilityTagsRemoved`] and a tagged document can read
-    /// `region_flattened` (test `default_redaction_strips_the_structure_tree`).
+    /// Default. When the save flattens at least one region, the structure tree is unlinked (`flatten_purge.rs`
+    /// `strip_structure`, lead diagnosis DIAG-PRESS-R27: the catalog's `/StructTreeRoot` and `/MarkInfo`, every `/StructParents`,
+    /// `/StructParent` and `/SE` entry and the `/SD` of every `GoTo` action are removed; no object is deleted) and the save, which
+    /// writes only the objects reachable from the trailer, no longer writes what only the tree reached, `/ParentTree`, `/IDTree`,
+    /// `/RoleMap` and `/ClassMap` included; an object anything kept still reaches stays (and structure that stays is reported);
+    /// marked-content operators in content streams (`BDC` with `/MCID`) are kept. The save reports
+    /// [`RedactionLoss::AccessibilityTagsRemoved`] and a tagged document can read `region_flattened` (tests
+    /// `default_redaction_strips_the_structure_tree`, `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`).
     #[default]
     Strip,
     /// Opt-out: the structure tree is kept and neutralized best effort, and a save that flattens a region of a document

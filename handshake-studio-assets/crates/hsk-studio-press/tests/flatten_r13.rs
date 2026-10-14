@@ -2733,11 +2733,11 @@ fn structure_rules_apply_only_when_a_region_is_flattened() {
 #[test]
 fn descriptor_states_the_structure_tree_rule() {
     let descriptor = hsk_studio_press::DESCRIPTOR;
-    let rule_start = "STRUCTURE TREE (Operator decision D28, 2026-10-14): by default (StructureTreePolicy::Strip) a save that flattens at least one region removes the whole structure tree";
+    let rule_start = "STRUCTURE TREE (Operator decision D28, 2026-10-14): by default (StructureTreePolicy::Strip) a save that flattens at least one region unlinks the structure tree (lead diagnosis DIAG-PRESS-R27, unlink only";
     let d28 = ["so the redaction proof covers untagged documents and tagged documents saved with the default strip (test default_redaction_strips_the_structure_tree)", "residuals: STRUCTURE TREE = NOT PROVEN for the opt-out StructureTreePolicy::KeepNotProven (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z), and the check runs after the strip too:", "reports the typed loss accessibility_tags_removed"];
     let counted = "and, when the save flattened a region, no structure tree: a /StructTreeRoot in the catalog, any /StructParents or /StructParent entry, or any dictionary with the shape of a structure element or of an outline item that names one (PLR-102), adds 1 together, so region_flattened is true only for an untagged document, a tagged document saved with the default strip (Operator decision D28, redaction.flatten.purge), or one whose caller stripped the whole tree before the save; with the opt-out StructureTreePolicy::KeepNotProven a tagged document reads NOT PROVEN";
     let scope = "when a save flattens at least one region and the saved document has a structure tree, that is a /StructTreeRoot that the catalog holds";
-    let shape = "(PLR-102: /Type /StructElem or /StructTreeRoot, or /S as a name together with /P and any of /Alt /ActualText /E /T /Lang /A /C /ID /Ref /AF /Phoneme /PhoneticAlphabet, or an /SE entry as an outline item has), residual_in_region adds 1 for them together (one count, not one per element)";
+    let shape = "(PLR-102: /Type /StructElem or /StructTreeRoot, or /S as a name together with /P and any of /Alt /ActualText /E /T /Lang /A /C /ID /Ref /AF /Phoneme /PhoneticAlphabet, or an /SE entry as an outline item has, or a key only a structure tree root holds: /ParentTree /IDTree /ClassMap /RoleMap /ParentTreeNextKey), residual_in_region adds 1 for them together (one count, not one per element)";
     let no_region = "a save with no region does not apply these rules (PLR-101)";
     for needle in [rule_start, counted, scope, shape, no_region].into_iter().chain(d28) {
         assert_eq!(descriptor.matches(needle).count(), 1, "DESCRIPTOR lacks {needle:?}");
@@ -2752,6 +2752,9 @@ fn descriptor_states_the_structure_tree_rule() {
         "and no structure tree: a /StructTreeRoot in the catalog or any /StructParents or /StructParent entry counts 1",
         "or one whose caller stripped the tree before the save",
         "residuals: STRUCTURE TREE = NOT PROVEN (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z): the redaction proof covers untagged documents;",
+        "removes the whole structure tree",
+        "identified by its role and reachability",
+        "structure_strip_follows_the_tree_and_structure_destinations",
     ] {
         assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
     }
@@ -2776,6 +2779,8 @@ fn descriptor_states_the_structure_tree_rule() {
         "unreadable_structure_shapes_are_counted",
         "default_redaction_strips_the_structure_tree",
         "structure_strip_reports_what_it_cannot_remove",
+        "structure_strip_unlinks_and_keeps_what_anything_kept_reaches",
+        "structure_strip_keeps_multimedia_of_kept_pages",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
@@ -3080,9 +3085,10 @@ const STRIP_TEXTS: [&str; 3] = ["STRIP-ID-SECRET", "STRIP-CLASSMAP-SECRET", "KEP
 /// whole structure tree and reports the typed loss `accessibility_tags_removed`, so a tagged document reads flattened (nothing
 /// counted, no reason). Inputs: a tagged document (indirect root with `/ParentTree`, `/IDTree` key text, `/RoleMap`, `/ClassMap` text,
 /// elements on both pages, `/StructParents` on both pages, `/StructParent` on a kept annotation, `/MarkInfo`), a root written
-/// directly into the catalog, the R24 detached inputs J1 (a root under a private key) and J2b (an outline item `/SE`, the item
-/// stays without it), and an element written directly inside a private dictionary. Every structure text is gone, the kept page keeps
-/// its marked-content operators (`BDC` .. `EMC` with `/MCID`) and text. Controls: the opt-out (`StructureTreePolicy::KeepNotProven`)
+/// directly into the catalog, and the R24 detached input J2b (an outline item `/SE`, the item stays without it). The strip unlinks
+/// (DIAG-PRESS-R27) and the save does not write what only the unlinked entries reached: every structure text is gone, the kept page
+/// keeps its marked-content operators (`BDC` .. `EMC` with `/MCID`) and text. J1 (a root under a private key) and an element written
+/// inside a private dictionary stay reachable from the catalog, so they are reported (`structure_strip_reports_what_it_cannot_remove`). Controls: the opt-out (`StructureTreePolicy::KeepNotProven`)
 /// reads the same tagged document NOT PROVEN with no loss; an untagged document reports no loss; a save with no region strips nothing.
 #[test]
 fn default_redaction_strips_the_structure_tree() {
@@ -3110,9 +3116,7 @@ fn default_redaction_strips_the_structure_tree() {
             "/StructParents 1",
             vec![(81, text_element("/Pg 5 0 R", "1"))],
         ),
-        ("J1: a root under a private catalog key", "/HskTree 80 0 R", "", "", vec![(80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()), (81, text_element("/P 80 0 R /Pg 5 0 R", "1"))]),
         ("J2b: an outline item names an element with /SE", "/Outlines 70 0 R", "", "", j2b),
-        ("an element written directly inside a private dictionary", "/HskNote << /A [ << /Type /StructElem /S /Figure /Alt (ALT-DIRECT-SECRET) /ActualText (ACTUAL-DIRECT-SECRET) /E (EXPANSION-DIRECT-SECRET) >> ] >>", "", "", vec![]),
     ];
     let mut red: Vec<String> = Vec::new();
     for (name, catalog_extra, page_one_extra, page_two_extra, objects) in cases {
@@ -3163,24 +3167,42 @@ fn default_redaction_strips_the_structure_tree() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// D28, fail closed: what the default strip cannot reach stays in the file and the save reads NOT PROVEN through
-/// `check_document` (`NotProven::ResidualInRegion`, `region_flattened` false): an element that is a member of an object stream the
-/// file keeps as a stream (R24 K1), and an element an alias object keeps reachable (the alias is a reference, not a dictionary).
+/// D28, fail closed: the default strip unlinks and deletes no object (DIAG-PRESS-R27), so structure that anything kept still
+/// reaches stays in the file and the save reads NOT PROVEN through `check_document` (`NotProven::ResidualInRegion`,
+/// `region_flattened` false): an element that is a member of an object stream the file keeps as a stream (R24 K1), an element an
+/// alias object keeps reachable (the alias is a reference, not a dictionary), R24 J1 (a root under a private catalog key), an element
+/// written directly inside a private dictionary, and the R26-S3 input S2 (a root without `/Type` that a private catalog key also
+/// names, holding `/IDTree` and `/ClassMap` text), also with nothing but `/IDTree` text (read through the root keys, R26-S3).
 #[test]
 fn structure_strip_reports_what_it_cannot_remove() {
     let el = "<< /Type /StructElem /S /Figure /P 1 0 R /Alt (ALT-DIRECT-SECRET) >>";
-    type Case = (&'static str, &'static str, Vec<(u32, String)>);
+    let typeless_root = "<< /K [82 0 R] /IDTree << /Names [(IDTREE-SECRET) 82 0 R] >> /ClassMap << /C1 << /O /UserProperties /P [<< /N (n) /V (CLASSMAP-SECRET) >>] >> >> >>";
+    type Case = (&'static str, &'static str, Vec<(u32, String)>, &'static str);
     let cases: Vec<Case> = vec![
-        ("an element in an object stream the catalog references", "/HskJunk 50 0 R", vec![(50, object_stream(&[(60, el)], false))]),
-        ("an element behind an alias object", "/HskNote 84 0 R", vec![(84, "86 0 R".to_string()), (86, el.to_string())]),
+        ("an element in an object stream the catalog references", "/HskJunk 50 0 R", vec![(50, object_stream(&[(60, el)], false))], "ALT-DIRECT-SECRET"),
+        ("an element behind an alias object", "/HskNote 84 0 R", vec![(84, "86 0 R".to_string()), (86, el.to_string())], "ALT-DIRECT-SECRET"),
+        (
+            "J1: a root under a private catalog key",
+            "/HskTree 80 0 R",
+            vec![(80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()), (81, text_element("/P 80 0 R /Pg 5 0 R", "1"))],
+            "ALT-DIRECT-SECRET",
+        ),
+        ("an element written directly inside a private dictionary", "/HskNote << /A [ << /Type /StructElem /S /Figure /Alt (ALT-DIRECT-SECRET) >> ] >>", vec![], "ALT-DIRECT-SECRET"),
+        (
+            "R26-S3 S2: a typeless root also under a private key",
+            "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >> /HskTree 80 0 R",
+            vec![(80, typeless_root.to_string()), (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /C /C1 /ID (IDTREE-SECRET) /K 0 >>".to_string())],
+            "CLASSMAP-SECRET",
+        ),
+        ("R26-S3: a typeless root with /IDTree text only, under a private key", "/HskTree 80 0 R", vec![(80, "<< /IDTree << /Names [(IDTREE-SECRET) null] >> >>".to_string())], "IDTREE-SECRET"),
     ];
     let mut red: Vec<String> = Vec::new();
-    for (name, catalog_extra, objects) in cases {
+    for (name, catalog_extra, objects, text) in cases {
         let pdf = pages_pdf(catalog_extra, "", "", &objects);
         let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
         let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
-        if gone(&out.bytes, "ALT-DIRECT-SECRET") {
-            red.push(format!("{name}: the element text is gone (the case needs it to survive)"));
+        if gone(&out.bytes, text) {
+            red.push(format!("{name}: {text} is gone (the case needs it to survive)"));
         }
         if !reported_for_the_tree(&out) {
             red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected reported", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
@@ -3228,14 +3250,92 @@ fn structure_strip_keeps_multimedia_of_kept_pages() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R26-S2 (PLR-103 under D28, input S1) and R26-S3 (input S2): the strip follows the structure tree by role. (a) A tagged document
-/// whose kept-page link names, through a PDF 2.0 structure destination (`/SD` of a `GoTo` action), an element with `/S` and `/Alt`
-/// but no `/P` and no `/Type`: the element is a structure object by role, so it is removed and the action loses `/SD` (it keeps
-/// `/D`); red at ade85a0 (`SD-ALT-SECRET` survived with the save read proven). (b) A structure tree root without `/Type` that a
-/// private catalog key also names, holding `/IDTree` and `/ClassMap` text: the root is removed with every reference to it. Both
-/// read flattened with the loss `accessibility_tags_removed`, the link annotation and the kept page's text stay.
+/// R27-S1, R27-S2, R27-S3 (validation/R27-prereview-press-narrow.json, inputs X1, X2, X3, X6, X7): the role-based strip at 13534f8
+/// took the catalog's `/StructTreeRoot` value as a root whatever it was, and a `/Type`-less dictionary with an `/S` name in a `/K`
+/// as an element, and deleted them with every reference: a kept page's `/AcroForm` (X1), text annotation (X2), link action (X3) and
+/// optional-content group (X7) were removed while the save read proven with `accessibility_tags_removed`; a `/StructTreeRoot` naming
+/// no object reported the loss too (X6). Red at 13534f8. The unlink only (DIAG-PRESS-R27) removes the catalog entry and deletes no
+/// object: each kept object stays (reachable from what keeps it), the save reads flattened, and the loss is reported only for X3,
+/// where a real tree was unlinked.
 #[test]
-fn structure_strip_follows_the_tree_and_structure_destinations() {
+fn structure_strip_unlinks_and_keeps_what_anything_kept_reaches() {
+    // X7: page two names the optional-content group 40 in its own /Properties and draws inside /OC /OC1 BDC .. EMC (objects 5 and 7
+    // of `pages_pdf` are written again; the cross-reference table names the later ones).
+    let x7_page_two = vec![
+        (5, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> /Properties << /OC1 40 0 R >> >> >>".to_string()),
+        (7, String::from_utf8(stream_body("", b"/OC /OC1 BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC")).expect("ascii")),
+        (40, "<< /Type /OCG /Name (OCG-KEEP) >>".to_string()),
+    ];
+    type Case = (&'static str, &'static str, &'static str, Vec<(u32, String)>, &'static [&'static str], bool);
+    let cases: Vec<Case> = vec![
+        (
+            "X1: /StructTreeRoot names the /AcroForm dictionary",
+            "/StructTreeRoot 30 0 R /AcroForm 30 0 R",
+            "/Annots [31 0 R]",
+            vec![
+                (30, "<< /Fields [31 0 R] /DA (/Helv 0 Tf 0 g) >>".to_string()),
+                (31, "<< /Type /Annot /Subtype /Widget /FT /Tx /T (FIELD-KEEP) /V (FIELD-VAL-KEEP) /Rect [300 300 400 320] /P 5 0 R >>".to_string()),
+            ],
+            &["FIELD-KEEP", "FIELD-VAL-KEEP", "/AcroForm", "/Fields"],
+            false,
+        ),
+        (
+            "X2: /StructTreeRoot names a kept text annotation",
+            "/StructTreeRoot 71 0 R",
+            "/Annots [71 0 R]",
+            vec![(71, "<< /Type /Annot /Subtype /Text /Rect [300 300 320 320] /Contents (ANNOT-KEEP) /P 5 0 R >>".to_string())],
+            &["ANNOT-KEEP"],
+            false,
+        ),
+        (
+            "X3: the root's /K names a kept link's URI action",
+            "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>",
+            "/Annots [71 0 R]",
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R 72 0 R] >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+                (72, "<< /S /URI /URI (http://uri-keep.example) >>".to_string()),
+                (71, "<< /Type /Annot /Subtype /Link /Rect [10 10 20 20] /P 5 0 R /A 72 0 R >>".to_string()),
+            ],
+            &["uri-keep", "/Link"],
+            true,
+        ),
+        ("X6: /StructTreeRoot names no object", "/StructTreeRoot 99 0 R", "", vec![], &[], false),
+        ("X7: /StructTreeRoot names the kept page's optional-content group", "/StructTreeRoot 40 0 R /OCProperties << /OCGs [40 0 R] /D << /ON [40 0 R] >> >>", "", x7_page_two, &["OCG-KEEP", "/OC1"], false),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, page_two_extra, objects, kept, loss) in cases {
+        let pdf = pages_pdf(catalog_extra, "", page_two_extra, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        for text in kept {
+            if gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} was removed from the kept page"));
+            }
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        let expected: &[hsk_studio_press::RedactionLoss] = if loss { &[hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] } else { &[] };
+        if out.losses != expected {
+            red.push(format!("{name}: losses {:?}, expected {expected:?}", out.losses));
+        }
+        if find(&out.bytes, b"StructTreeRoot").is_some() {
+            red.push(format!("{name}: /StructTreeRoot is still written"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R26-S2 (PLR-103 under D28, input S1) and the R26-S3 control S3: the unlink (DIAG-PRESS-R27) leaves out what only the structure
+/// links reached. (a) A tagged document whose kept-page link names, through a PDF 2.0 structure destination (`/SD` of a `GoTo`
+/// action), an element with `/S` and `/Alt` but no `/P` and no `/Type`: the action loses `/SD` (it keeps `/D`) and the element,
+/// reached by nothing else, is not written; red at ade85a0 (`SD-ALT-SECRET` survived with the save read proven). (b) A structure
+/// tree root without `/Type` that only the catalog names, holding `/IDTree` and `/ClassMap` text: not written once `/StructTreeRoot`
+/// is unlinked (the same root under a private key too stays and is reported, `structure_strip_reports_what_it_cannot_remove`).
+/// Both read flattened with the loss `accessibility_tags_removed`, the link annotation and the kept page's text stay.
+#[test]
+fn structure_strip_unlinks_structure_destinations() {
     let tagged_cat = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";
     let sd: Vec<(u32, String)> = vec![
         (80, "<< /Type /StructTreeRoot /K [82 0 R] /ParentTree << /Nums [0 [82 0 R] 1 [82 0 R]] >> >>".to_string()),
@@ -3250,7 +3350,7 @@ fn structure_strip_follows_the_tree_and_structure_destinations() {
     type Case = (&'static str, String, &'static str, &'static str, Vec<(u32, String)>, &'static [&'static str]);
     let cases: Vec<Case> = vec![
         ("(a) /SD names an element without /P and /Type", tagged_cat.to_string(), "/StructParents 0", "/StructParents 1 /Annots [71 0 R]", sd, &["SD-ALT-SECRET"]),
-        ("(b) a typeless root also under a private key", format!("{tagged_cat} /HskTree 80 0 R"), "", "", typeless, &["IDTREE-SECRET", "CLASSMAP-SECRET"]),
+        ("(b) a typeless root only the catalog names", tagged_cat.to_string(), "", "", typeless, &["IDTREE-SECRET", "CLASSMAP-SECRET"]),
     ];
     let mut red: Vec<String> = Vec::new();
     for (name, catalog, one, two, objects, secrets) in cases {
