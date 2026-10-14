@@ -1307,6 +1307,8 @@ fn exported_table_is_the_table_prepare_enforces() {
             [
                 node(NodeKind::Layer, id("SLYR", 1), Property::Name),
                 node(NodeKind::Layer, id("SLYR", 1), Property::Visible),
+                node(NodeKind::Layer, id("SLYR", 1), Property::Opacity),
+                node(NodeKind::Layer, id("SLYR", 1), Property::BlendMode),
                 node(NodeKind::Artboard, id("SART", 1), Property::Name),
                 node(NodeKind::PageSpread, id("SPGS", 1), Property::Name),
             ]
