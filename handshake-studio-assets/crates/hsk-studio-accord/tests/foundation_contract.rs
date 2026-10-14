@@ -261,8 +261,18 @@ fn unsupported_identity_mapping_is_not_guessed() {
             decode(&INPUT.replace("document@1", "gradient@1")).unwrap_err(),
             ValidationError::UnsupportedIdentityMapping
         );
-        assert_eq!(CANONICAL_SCHEMAS.len(), 37);
+        assert_eq!(CANONICAL_SCHEMAS.len(), 38);
         assert!(CANONICAL_SCHEMAS.contains(&SCHEMA_STUDIO_LAYER_GRAPH));
         assert!(CANONICAL_SCHEMAS.contains(&SCHEMA_STUDIO_RASTER_TILE));
     });
+}
+
+#[test]
+fn composition_identity_prefix_is_registered() {
+    let schema = SchemaId::parse(SCHEMA_STUDIO_COMPOSITION).unwrap();
+    assert_eq!(schema.identity_prefix(), Ok("SCOM"));
+    let id = "SCOM-019abcde-0000-7000-8000-000000000001";
+    assert!(DomainId::for_schema(id, &schema).is_ok());
+    let other = SchemaId::parse(SCHEMA_STUDIO_MOTION_TIMELINE).unwrap();
+    assert_eq!(DomainId::for_schema(id, &other), Err(ValidationError::PrefixMismatch));
 }

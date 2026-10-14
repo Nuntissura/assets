@@ -29,6 +29,7 @@ pub const SCHEMA_STUDIO_CONSTRAINT: &str = "hsk.studio.constraint@1";
 pub const SCHEMA_STUDIO_LAYOUT_GRID: &str = "hsk.studio.layout_grid@1";
 pub const SCHEMA_STUDIO_PROTOTYPE_FLOW: &str = "hsk.studio.prototype_flow@1";
 pub const SCHEMA_STUDIO_MOTION_TIMELINE: &str = "hsk.studio.motion_timeline@1";
+pub const SCHEMA_STUDIO_COMPOSITION: &str = "hsk.studio.composition@1";
 pub const SCHEMA_STUDIO_RAW_DEVELOP: &str = "hsk.studio.raw_develop@1";
 pub const SCHEMA_STUDIO_EXPORT_RECIPE: &str = "hsk.studio.export_recipe@1";
 pub const SCHEMA_STUDIO_IMPORT_PROFILE: &str = "hsk.studio.import_profile@1";
@@ -67,6 +68,7 @@ pub const CANONICAL_SCHEMAS: &[&str] = &[
     "hsk.studio.layout_grid@1",
     "hsk.studio.prototype_flow@1",
     "hsk.studio.motion_timeline@1",
+    SCHEMA_STUDIO_COMPOSITION,
     "hsk.studio.raw_develop@1",
     "hsk.studio.export_recipe@1",
     "hsk.studio.import_profile@1",
@@ -216,6 +218,7 @@ impl SchemaId {
             SCHEMA_STUDIO_STYLE_REGISTRY => Ok("SSTY"),
             SCHEMA_STUDIO_PROTOTYPE_FLOW => Ok("SPTF"),
             SCHEMA_STUDIO_MOTION_TIMELINE => Ok("SMTL"),
+            SCHEMA_STUDIO_COMPOSITION => Ok("SCOM"),
             SCHEMA_STUDIO_EXPORT_RECIPE => Ok("SXPR"),
             SCHEMA_STUDIO_IMPORT_PROFILE => Ok("SIMP"),
             SCHEMA_STUDIO_HISTORY_ENTRY => Ok("SHIS"),
@@ -233,7 +236,7 @@ impl DomainId {
         if ![
             "SDOC", "SLYR", "SART", "SPGS", "SMSK", "SVPT", "STXT", "STYS", "SCPF", "SSWT", "SEFX",
             "SCMP", "SCIN", "SVAR", "SVCL", "SSTY", "SPTF", "SMTL", "SXPR", "SIMP", "SHIS", "SEPR",
-            "STRK", "SCLP",
+            "STRK", "SCLP", "SCOM",
         ]
         .contains(&prefix)
         {
