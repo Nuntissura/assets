@@ -18,6 +18,7 @@ use crate::blur_math::{BLUR_EXACTNESS, BlurScope, LayerBlur};
 use crate::coverage_math::{
     BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
 };
+use crate::filter_math::{FILTER_EXACTNESS, FilterKind, LayerFilter, MAX_FILTERS_PER_LAYER};
 use crate::effect_math::{
     EFFECT_EXACTNESS, EffectError, EffectKind, EffectOp, MAX_EFFECTS_PER_LAYER,
     MAX_EFFECTS_PER_PLAN,
@@ -92,6 +93,14 @@ impl Knockout {
 ///   own result. Reported as [`ExtOperator::Blur`] (Approximate). `None` = no blur (and absent
 ///   from the digest).
 ///
+/// - `filters`: core pixel filters ([`crate::filter_math`], lane SMB-PIGMENT-RETOUCH: Gaussian
+///   blur, unsharp mask, high pass, median, seeded add noise) applied to the layer's content in
+///   list order before the layer composites (at most [`MAX_FILTERS_PER_LAYER`]). Refused
+///   ([`PlanError::FilterCombination`]) on an adjustment layer, a pass-through layer, a clipped
+///   layer or a clip base, and together with effects, a transform or a blur on the same layer; a
+///   parameter outside its range or too many filters is [`PlanError::FilterParameter`]. Reported
+///   as [`ExtOperator::Filter`] (Approximate). Empty = no filters (and absent from the digest).
+///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
 #[non_exhaustive]
@@ -109,6 +118,8 @@ pub struct LayerExtension {
     pub transform: Option<LayerTransform>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blur: Option<LayerBlur>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<LayerFilter>,
 }
 impl LayerExtension {
     /// An extension that changes nothing (fill in the fields you need).
@@ -123,6 +134,7 @@ impl LayerExtension {
             effects: Vec::new(),
             transform: None,
             blur: None,
+            filters: Vec::new(),
         }
     }
     pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
@@ -151,6 +163,10 @@ impl LayerExtension {
     }
     pub fn with_blur(mut self, blur: LayerBlur) -> Self {
         self.blur = Some(blur);
+        self
+    }
+    pub fn with_filters(mut self, filters: Vec<LayerFilter>) -> Self {
+        self.filters = filters;
         self
     }
 }
@@ -225,6 +241,9 @@ pub enum ExtOperator {
     /// A layer blur or backdrop blur ([`LayerExtension::blur`], [`crate::blur_math`]); class
     /// [`BLUR_EXACTNESS`] (Approximate). Keys `blur_layer`, `blur_backdrop`.
     Blur(BlurScope),
+    /// A core pixel filter on the layer content ([`LayerExtension::filters`],
+    /// [`crate::filter_math`]); class [`FILTER_EXACTNESS`] (Approximate). Keys `filter_*`.
+    Filter(FilterKind),
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -247,6 +266,7 @@ impl ExtOperator {
                 ResampleFilter::Bicubic => "transform_bicubic",
             },
             Self::Blur(scope) => scope.key(),
+            Self::Filter(kind) => kind.key(),
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -264,6 +284,7 @@ impl ExtOperator {
             Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
             Self::Transform(_) => TRANSFORM_EXACTNESS,
             Self::Blur(_) => BLUR_EXACTNESS,
+            Self::Filter(_) => FILTER_EXACTNESS,
         }
     }
 }
@@ -495,6 +516,27 @@ impl PlanExtensions {
                     return Err(PlanError::BlurCombination { node });
                 }
                 add(ExtOperator::Blur(b.scope));
+            }
+            if !e.filters.is_empty() {
+                if e.filters.len() > MAX_FILTERS_PER_LAYER {
+                    return Err(PlanError::FilterParameter { node });
+                }
+                for f in &e.filters {
+                    f.validate().map_err(|_| PlanError::FilterParameter { node })?;
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::FilterCombination { node });
+                }
+                for f in &e.filters {
+                    add(ExtOperator::Filter(f.kind()));
+                }
             }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {

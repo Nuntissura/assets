@@ -9,6 +9,7 @@ pub mod caller;
 pub mod canvas_ops;
 pub mod coverage_math;
 pub mod effect_math;
+pub mod filter_math;
 pub mod masked_patch;
 pub mod render_plan;
 pub mod retouch;

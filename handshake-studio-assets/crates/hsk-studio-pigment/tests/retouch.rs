@@ -307,3 +307,211 @@ mod canvas {
         assert_eq!(trim(&empty, TrimBasis::TransparentPixels, TrimEdges::ALL, &limits).unwrap_err(), RetouchError::TrimEverything);
     }
 }
+
+mod filters {
+    use super::rect;
+    use hsk_studio_accord::CancellationToken;
+    use hsk_studio_pigment::Rect;
+    use hsk_studio_pigment::blur_math::{BlurLimits, BlurScope, LayerBlur, blur_window};
+    use hsk_studio_pigment::filter_math::*;
+    use hsk_studio_pigment::render_plan::*;
+    use hsk_studio_pigment::retouch::RgbaPlane;
+
+    const WIDE: FilterLimits = FilterLimits { max_bytes: 1 << 30, max_work: 1 << 40 };
+
+    fn plane(bounds: Rect, f: impl Fn(i64, i64) -> [f32; 4]) -> RgbaPlane {
+        let mut data = Vec::new();
+        for y in bounds.y..bounds.y + i64::from(bounds.height) {
+            for x in bounds.x..bounds.x + i64::from(bounds.width) {
+                data.push(f(x, y));
+            }
+        }
+        RgbaPlane::new(bounds, data).unwrap()
+    }
+
+    fn varied(x: i64, y: i64) -> [f32; 4] {
+        let v = ((x * 37 + y * 11).rem_euclid(17)) as f32 / 16.0;
+        [v, 1.0 - v, 0.5, if (x + y).rem_euclid(7) == 0 { 0.0 } else { 0.25 + 0.75 * v }]
+    }
+
+    fn all_kinds() -> Vec<LayerFilter> {
+        vec![
+            LayerFilter::GaussianBlur { radius_px: 2.5 },
+            LayerFilter::UnsharpMask { amount_pct: 150.0, radius_px: 1.5, threshold_levels: 2 },
+            LayerFilter::HighPass { radius_px: 3.0 },
+            LayerFilter::Median { radius_px: 2 },
+            LayerFilter::AddNoise { amount_pct: 40.0, distribution: NoiseDistribution::Gaussian, monochromatic: false, seed: 7 },
+            LayerFilter::AddNoise { amount_pct: 25.0, distribution: NoiseDistribution::Uniform, monochromatic: true, seed: 9 },
+        ]
+    }
+
+    #[test]
+    fn filters_follow_their_documented_formulas() {
+        let b = rect(0, 0, 9, 9);
+        // Median r=1 (plus-shaped disc of 5) removes an impulse and keeps a step edge exactly.
+        let impulse = plane(b, |x, y| if (x, y) == (4, 4) { [1.0; 4] } else { [0.0, 0.0, 0.0, 1.0] });
+        let m = filter_plane(&impulse, &LayerFilter::Median { radius_px: 1 }, WIDE).unwrap();
+        assert_eq!(m.at(4, 4), [0.0, 0.0, 0.0, 1.0]);
+        let step = plane(b, |x, _| if x >= 4 { [1.0; 4] } else { [0.0, 0.0, 0.0, 1.0] });
+        let m = filter_plane(&step, &LayerFilter::Median { radius_px: 1 }, WIDE).unwrap();
+        for y in 1..8 {
+            assert_eq!((m.at(3, y), m.at(4, y)), (step.at(3, y), step.at(4, y)), "row {y}");
+        }
+        // Gaussian blur is the blur_math window.
+        let src = plane(b, varied);
+        let taps = LayerBlur::new(BlurScope::Layer, 2.5).taps().unwrap();
+        let want = blur_window(&src.data, b, b, &taps, BlurLimits { max_bytes: 1 << 30, max_work: 1 << 40 }).unwrap();
+        assert_eq!(filter_plane(&src, &LayerFilter::GaussianBlur { radius_px: 2.5 }, WIDE).unwrap().data, want);
+        // High pass of a flat plane is mid grey; unsharp mask above the threshold changes nothing
+        // there, and on a step edge pushes the dark side darker and the bright side brighter.
+        let flat = plane(rect(0, 0, 20, 20), |_, _| [0.3, 0.6, 0.9, 1.0]);
+        let hp = filter_plane(&flat, &LayerFilter::HighPass { radius_px: 2.0 }, WIDE).unwrap();
+        let p = hp.at(10, 10);
+        assert!(p[..3].iter().all(|c| (c - 0.5).abs() < 1e-6) && p[3] == 1.0, "{p:?}");
+        let usm = LayerFilter::UnsharpMask { amount_pct: 100.0, radius_px: 1.0, threshold_levels: 1 };
+        assert_eq!(filter_plane(&flat, &usm, WIDE).unwrap().at(10, 10), flat.at(10, 10));
+        let grey_step = plane(b, |x, _| if x >= 4 { [0.8, 0.8, 0.8, 1.0] } else { [0.2, 0.2, 0.2, 1.0] });
+        let u = filter_plane(&grey_step, &usm, WIDE).unwrap();
+        assert!(u.at(3, 4)[0] < 0.2 && u.at(4, 4)[0] > 0.8, "{:?} {:?}", u.at(3, 4), u.at(4, 4));
+        assert_eq!(u.at(3, 4)[3], 1.0);
+        // Add noise: monochromatic shifts R, G, B by one value; uniform stays within +-A (A = 0.1
+        // at 20 %); the gaussian (Irwin-Hall) has mean near 0; transparent stays transparent; the
+        // seed decides the pattern.
+        let mid = plane(rect(0, 0, 64, 64), |x, y| if x == 0 && y == 0 { [0.0; 4] } else { [0.5, 0.5, 0.5, 1.0] });
+        let mono = LayerFilter::AddNoise { amount_pct: 20.0, distribution: NoiseDistribution::Uniform, monochromatic: true, seed: 1 };
+        let n = filter_plane(&mid, &mono, WIDE).unwrap();
+        assert_eq!(n.at(0, 0), [0.0; 4]);
+        let mut changed = 0;
+        for p in &n.data[1..] {
+            assert!(p[0] == p[1] && p[1] == p[2] && (p[0] - 0.5).abs() <= 0.1 + 1e-7, "{p:?}");
+            changed += usize::from(p[0] != 0.5);
+        }
+        assert!(changed > 4000);
+        let gauss = |seed| LayerFilter::AddNoise { amount_pct: 20.0, distribution: NoiseDistribution::Gaussian, monochromatic: false, seed };
+        let g1 = filter_plane(&mid, &gauss(3), WIDE).unwrap();
+        let mean: f64 = g1.data[1..].iter().map(|p| f64::from(p[0]) - 0.5).sum::<f64>() / 4095.0;
+        assert!(mean.abs() < 0.005, "mean {mean}");
+        assert_eq!(g1, filter_plane(&mid, &gauss(3), WIDE).unwrap());
+        assert_ne!(g1, filter_plane(&mid, &gauss(4), WIDE).unwrap());
+    }
+
+    #[test]
+    fn filters_are_chunk_and_thread_count_independent() {
+        let src = plane(rect(-5, 3, 23, 17), varied);
+        for f in all_kinds() {
+            let whole = filter_plane(&src, &f, WIDE).unwrap();
+            for (band, threads) in [(1, 1), (3, 2), (5, 4), (7, 8), (17, 3), (100, 16)] {
+                let chunked = filter_plane_chunked(&src, &f, WIDE, band, threads).unwrap();
+                let bits = |p: &RgbaPlane| p.data.iter().map(|q| q.map(f32::to_bits)).collect::<Vec<_>>();
+                assert_eq!(bits(&chunked), bits(&whole), "{:?} band {band} threads {threads}", f.kind());
+            }
+        }
+        assert_eq!(filter_plane_chunked(&src, &all_kinds()[0], WIDE, 0, 1).unwrap_err(), FilterError::Parameter);
+    }
+
+    #[test]
+    fn hostile_filter_parameters_and_sizes_are_refused_before_allocation() {
+        for f in [
+            LayerFilter::UnsharpMask { amount_pct: f32::NAN, radius_px: 1.0, threshold_levels: 0 },
+            LayerFilter::UnsharpMask { amount_pct: 501.0, radius_px: 1.0, threshold_levels: 0 },
+            LayerFilter::HighPass { radius_px: 0.0 },
+            LayerFilter::Median { radius_px: 0 },
+            LayerFilter::Median { radius_px: 501 },
+            LayerFilter::AddNoise { amount_pct: f32::INFINITY, distribution: NoiseDistribution::Uniform, monochromatic: false, seed: 0 },
+            LayerFilter::GaussianBlur { radius_px: -1.0 },
+        ] {
+            assert_eq!(f.validate(), Err(FilterError::Parameter), "{f:?}");
+        }
+        // dims_u32_max: overflow or over budget, never an allocation.
+        let huge = rect(0, 0, u32::MAX, u32::MAX);
+        for f in all_kinds() {
+            let r = filter_window(&[], rect(0, 0, 0, 0), huge, &f, WIDE);
+            assert!(matches!(r, Err(FilterError::OverBudget { .. } | FilterError::Overflow)), "{:?} {r:?}", f.kind());
+        }
+        // aggregate_over_budget: the exact predicted cost passes, one less is refused.
+        let src = plane(rect(0, 0, 6, 6), varied);
+        let out = rect(0, 0, 6, 6);
+        let f = LayerFilter::Median { radius_px: 2 };
+        let (bytes, work) = filter_window_cost(&f, out).unwrap();
+        let exact = FilterLimits { max_bytes: bytes, max_work: work };
+        assert!(filter_window(&src.data, src.bounds, out, &f, exact).is_ok());
+        assert_eq!(
+            filter_window(&src.data, src.bounds, out, &f, FilterLimits { max_work: work - 1, ..exact }),
+            Err(FilterError::OverBudget { needed: work, limit: work - 1 })
+        );
+        assert_eq!(filter_window(&src.data, rect(0, 0, 5, 6), out, &f, WIDE), Err(FilterError::Shape));
+        assert_eq!(filter_window(&[[2.0, 0.0, 0.0, 1.0]], rect(0, 0, 1, 1), rect(0, 0, 1, 1), &f, WIDE), Err(FilterError::OutOfDomain));
+    }
+
+    fn plan() -> RenderPlan {
+        let r = rect(0, 0, 4, 4);
+        let layer = |input: u32, mode: StudioBlendMode| Layer { input: PlanNodeId(input), mode, opacity: 1.0, fill_opacity: 1.0, mask: None };
+        RenderPlan {
+            revision: 1,
+            target: OutputTarget {
+                extent: r,
+                format: SampleFormat::RgbF32Le,
+                alpha: AlphaConvention::Straight,
+                space: ColourTag { profile_sha256: [7; 32], blend_space: BlendSpace::Encoded },
+            },
+            nodes: vec![
+                PlanNode::Solid { rect: r, rgba: [0.2, 0.4, 0.6, 1.0] },
+                PlanNode::Solid { rect: rect(1, 1, 2, 2), rgba: [1.0, 1.0, 1.0, 0.5] },
+                PlanNode::Group(Group { isolated: true, layers: vec![layer(0, StudioBlendMode::Normal), layer(1, StudioBlendMode::Normal)] }),
+            ],
+            root: PlanNodeId(2),
+        }
+    }
+
+    struct Backend {
+        declares_filters: bool,
+    }
+    impl RenderBackend for Backend {
+        fn identity(&self) -> BackendIdentity {
+            BackendIdentity { name: "retouch-test", version: "0", device: DeviceClass::Cpu, adapter: String::new(), generation: 0 }
+        }
+        fn exactness(&self, _: Operator) -> Exactness {
+            Exactness::Exact
+        }
+        fn extension_exactness(&self, op: ExtOperator) -> Exactness {
+            if self.declares_filters { op.intrinsic() } else { Exactness::Unsupported }
+        }
+        fn execute(&self, _: &RenderPlan, _: &ExecuteRequest, _: &dyn PlanSources, _: &CancellationToken, _: &mut dyn TileSink) -> Result<RenderReceipt, BackendError> {
+            Err(BackendError::Unavailable("retouch_test_execute"))
+        }
+    }
+
+    #[test]
+    fn filter_envelope_entries_validate_report_and_admission_refuses_undeclared() {
+        let usm = LayerFilter::UnsharpMask { amount_pct: 120.0, radius_px: 2.0, threshold_levels: 0 };
+        let noise = LayerFilter::AddNoise { amount_pct: 10.0, distribution: NoiseDistribution::Gaussian, monochromatic: true, seed: 42 };
+        let entry = || LayerExtension::new(PlanNodeId(2), 1).with_filters(vec![usm, noise]);
+        let ext = PlanExtensions::from_layers(vec![entry()]);
+        assert_eq!(ext.validate(&plan()), Ok(vec![ExtOperator::Filter(FilterKind::UnsharpMask), ExtOperator::Filter(FilterKind::AddNoise)]));
+        assert_eq!(ExtOperator::Filter(FilterKind::Median).key(), "filter_median");
+        assert_eq!(ExtOperator::Filter(FilterKind::HighPass).intrinsic(), Exactness::Approximate);
+        // Combination and parameter refusals.
+        let with_blur = PlanExtensions::from_layers(vec![entry().with_blur(LayerBlur::new(BlurScope::Layer, 2.0))]);
+        assert_eq!(with_blur.validate(&plan()), Err(PlanError::FilterCombination { node: 2 }));
+        assert_eq!(PlanError::FilterCombination { node: 2 }.code(), "plan_filter_combination");
+        let bad = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_filters(vec![LayerFilter::Median { radius_px: 0 }])]);
+        assert_eq!(bad.validate(&plan()), Err(PlanError::FilterParameter { node: 2 }));
+        let many = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_filters(vec![usm; MAX_FILTERS_PER_LAYER + 1])]);
+        assert_eq!(many.validate(&plan()), Err(PlanError::FilterParameter { node: 2 }));
+        // Admission: a backend that does not declare filters is refused under the filter key
+        // before any sink call; one that declares them admits with the Approximate class.
+        let cancel = CancellationToken::default();
+        let req = ExecuteRequest { expected_revision: 1, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 20 };
+        assert_eq!(
+            admit_extended(&plan(), &ext, &Backend { declares_filters: false }, &req, &cancel),
+            Err(BackendError::Unsupported { operator: "filter_unsharp_mask", exactness: Exactness::Unsupported })
+        );
+        let ledger = admit_extended(&plan(), &ext, &Backend { declares_filters: true }, &req, &cancel).unwrap();
+        assert_eq!(ledger.lowest, Exactness::Approximate);
+        assert!(ledger.operators.iter().any(|o| o.key == "filter_add_noise"));
+        // Entries without filters serialise without the member (existing digests unchanged).
+        let plain = serde_json::to_string(&LayerExtension::new(PlanNodeId(2), 1)).unwrap();
+        assert!(!plain.contains("filters"), "{plain}");
+        assert!(serde_json::to_string(&entry()).unwrap().contains("\"filters\""));
+    }
+}
