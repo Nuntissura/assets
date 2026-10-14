@@ -687,8 +687,35 @@ fn working_pixel(
     Ok(working)
 }
 
+/// Stage C with adjustments: exposure, white balance shift + basic tone + parametric regions, point
+/// curves, then vibrance/saturation/mixer, one f32 round (see `adjust.rs`).
+fn finish_pixel_adjusted(prepared: &PreparedRecipe, converted: [f32; 3]) -> Result<[f32; 3], DevelopError> {
+    let mut v = [0.0f64; 3];
+    for (slot, c) in v.iter_mut().zip(converted) {
+        *slot = mul_checked(f64::from(c), prepared.exposure_gain)?;
+    }
+    v = prepared.adjust.pre(v)?;
+    for (channel, slot) in v.iter_mut().enumerate() {
+        if let Some(curve) = &prepared.curves[0] {
+            *slot = curve.eval(*slot)?;
+        }
+        if let Some(curve) = &prepared.curves[1 + channel] {
+            *slot = curve.eval(*slot)?;
+        }
+    }
+    v = prepared.adjust.colour(v)?;
+    let mut out = [0.0f32; 3];
+    for (slot, c) in out.iter_mut().zip(v) {
+        *slot = to_f32_checked(c)?;
+    }
+    Ok(out)
+}
+
 /// Stage C (after any working -> output profile conversion): exposure, then curves, one f32 round.
 fn finish_pixel(prepared: &PreparedRecipe, converted: [f32; 3]) -> Result<[f32; 3], DevelopError> {
+    if prepared.adjust.pixel_active() {
+        return finish_pixel_adjusted(prepared, converted);
+    }
     let mut out = [0.0f32; 3];
     for channel in 0..3 {
         let mut v = mul_checked(f64::from(converted[channel]), prepared.exposure_gain)?;
@@ -918,10 +945,24 @@ pub fn develop_with(
 /// serial run.
 pub fn develop_with_threads(
     request: &DevelopRequest<'_>,
+    converter: Option<&mut dyn ProfileConverter>,
+    threads: Threads,
+    cancel: &CancellationToken,
+    sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
+) -> Result<DevelopReceipt, DevelopError> {
+    develop_core(request, converter, threads, cancel, sink, false)
+}
+
+/// Shared body of the tile API and the whole-frame image API. Stages that need the whole frame
+/// (clarity) are refused here as `unsupported_contribution:clarity_whole_frame` unless
+/// `whole_frame` is set, which only [`develop_to_image_threads`] does (it runs them afterwards).
+fn develop_core(
+    request: &DevelopRequest<'_>,
     mut converter: Option<&mut dyn ProfileConverter>,
     threads: Threads,
     cancel: &CancellationToken,
     sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
+    whole_frame: bool,
 ) -> Result<DevelopReceipt, DevelopError> {
     cancel.check()?;
     let plane = request.plane;
@@ -929,6 +970,9 @@ pub fn develop_with_threads(
         return Err(DevelopError::StaleSource);
     }
     let prepared = request.recipe.prepare()?;
+    if prepared.adjust.clarity != 0.0 && !whole_frame {
+        return Err(DevelopError::UnsupportedContribution("clarity_whole_frame"));
+    }
     if request.execution_hint == ExecutionHint::Sse2 {
         return Err(DevelopError::UnsupportedExecution);
     }
@@ -993,7 +1037,9 @@ pub fn develop_with_threads(
         demosaic: &demosaic,
         prepared: &prepared,
         stage_a_total: stage_a_is_total(&prepared),
-        identity_finish: prepared.exposure_gain == 1.0 && prepared.curves.iter().all(Option::is_none),
+        identity_finish: prepared.exposure_gain == 1.0
+            && prepared.curves.iter().all(Option::is_none)
+            && !prepared.adjust.pixel_active(),
         grid,
         output,
         source_origin: (x0 as usize, y0 as usize),
@@ -1116,7 +1162,7 @@ pub fn develop_to_image_threads(
 ) -> Result<(DevelopedImage, DevelopReceipt), DevelopError> {
     let edge = plane.limits.max_tile_edge;
     let mut tiles = Vec::new();
-    let receipt = develop_with_threads(
+    let receipt = develop_core(
         &DevelopRequest {
             plane,
             recipe,
@@ -1138,6 +1184,7 @@ pub fn develop_to_image_threads(
             tiles.push(tile);
             Ok(())
         },
+        true,
     )?;
     let (width, height) = (receipt.output.width as usize, receipt.output.height as usize);
     let edge = edge as usize;
@@ -1166,12 +1213,31 @@ pub fn develop_to_image_threads(
         }
         Ok(())
     })?;
-    Ok((
-        DevelopedImage {
-            width: receipt.output.width,
-            height: receipt.output.height,
-            rgb,
-        },
-        receipt,
-    ))
+    let mut image = DevelopedImage {
+        width: receipt.output.width,
+        height: receipt.output.height,
+        rgb,
+    };
+    postprocess(&mut image, recipe, cancel)?;
+    Ok((image, receipt))
+}
+
+/// Whole-frame stages after the tiles: clarity (when `enable_detail` and the slider is nonzero).
+fn postprocess(
+    image: &mut DevelopedImage,
+    recipe: &DevelopRecipe,
+    cancel: &CancellationToken,
+) -> Result<(), DevelopError> {
+    let prepared = recipe.prepare()?;
+    cancel.check()?;
+    if prepared.adjust.clarity != 0.0 {
+        crate::adjust::clarity(
+            &mut image.rgb,
+            image.width,
+            image.height,
+            recipe.adjust.presence.clarity,
+            prepared.adjust.luma,
+        )?;
+    }
+    Ok(())
 }

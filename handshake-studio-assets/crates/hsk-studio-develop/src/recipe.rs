@@ -1,6 +1,7 @@
 //! Typed, validated develop recipe (STU-CON-042/044). The recipe is an immutable value: develop
 //! never rewrites it, original labels stay as authored, disabled groups stay intact.
 use crate::DevelopError;
+use crate::adjust::{Adjustments, PreparedAdjust};
 use crate::curves::{Curve, PreparedCurve};
 use hsk_studio_accord::DomainId;
 
@@ -52,12 +53,11 @@ impl Enables {
         }
     }
 
-    /// First enabled group that this slice cannot execute (spec order), if any.
+    /// First enabled group that this build cannot execute (spec order), if any. Colour adjustments
+    /// (vibrance, saturation, mixer), detail (clarity) and the tone curve run in `adjust.rs`.
     fn first_unsupported(&self) -> Option<&'static str> {
         [
             (self.enable_calibration, "calibration"),
-            (self.enable_colour_adjustments, "colour_adjustments"),
-            (self.enable_detail, "detail"),
             (self.enable_effects, "effects"),
             (self.enable_grayscale_mix, "grayscale_mix"),
             (self.enable_lens_corrections, "lens_corrections"),
@@ -197,6 +197,9 @@ pub struct DevelopRecipe {
     /// Exactly 100 is supported.
     pub curve_refine_saturation: u32,
     pub crop: NormalizedCrop,
+    /// Basic panel, colour mixer and parametric regions (lane SMB-DEVELOP-CONTROLS); identity by
+    /// default, retained as authored while a group is disabled.
+    pub adjust: Adjustments,
 }
 
 /// As-shot white-balance gains (STU-CON-044): r = 1/neutral, m = min(r), gain = r/m.
@@ -231,6 +234,7 @@ pub(crate) struct PreparedRecipe {
     pub curves: [Option<PreparedCurve>; 4],
     /// Working and output profiles differ: a converter (Prism admitted route) is required.
     pub profile_transform: bool,
+    pub adjust: PreparedAdjust,
 }
 
 impl DevelopRecipe {
@@ -256,6 +260,7 @@ impl DevelopRecipe {
             curves: ResolvedCurves::identity(),
             curve_refine_saturation: 100,
             crop: NormalizedCrop::full(),
+            adjust: Adjustments::default(),
         }
     }
 
@@ -330,6 +335,12 @@ impl DevelopRecipe {
             matrix: *c,
             curves,
             profile_transform: self.working_profile != self.output_profile,
+            adjust: PreparedAdjust::prepare(
+                &self.adjust,
+                self.enables.enable_colour_adjustments,
+                self.enables.enable_tone_curve,
+                self.enables.enable_detail,
+            )?,
         })
     }
 }

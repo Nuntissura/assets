@@ -12,6 +12,7 @@
 //! `lowest_failing_tile_decides_the_error_for_every_thread_count`).
 #![forbid(unsafe_code)]
 
+pub mod adjust;
 mod arw;
 pub mod color;
 pub mod convert;
@@ -28,6 +29,10 @@ mod tiffep;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, SinkPort};
 
+pub use adjust::{
+    ADJUST_VERSION, apply_pixel, clarity, planck_xy, Adjustments, BAND_CENTRES, BAND_NAMES, BasicTone, ColourMixer, HslBand, ParametricCurve,
+    Presence, WhiteBalanceShift,
+};
 pub use color::{CameraSolution, DngColor};
 pub use convert::{
     BandLimits, ConversionJob, ConversionStats, IccProfile, PrismContext, PrismConverter,
@@ -72,6 +77,8 @@ pub enum DevelopError {
     NotInvertibleMatrix,
     InvalidProfile,
     InvalidCurve,
+    /// An adjustment parameter outside its documented range or an unusable split/matrix.
+    InvalidAdjustment,
     CurveDomain,
     InvalidDimensions,
     InvalidStride,
@@ -122,6 +129,7 @@ impl DevelopError {
             Self::NotInvertibleMatrix => "not_invertible_matrix",
             Self::InvalidProfile => "invalid_profile",
             Self::InvalidCurve => "invalid_curve",
+            Self::InvalidAdjustment => "invalid_adjustment",
             Self::CurveDomain => "curve_domain",
             Self::InvalidDimensions => "invalid_dimensions",
             Self::InvalidStride => "invalid_stride",

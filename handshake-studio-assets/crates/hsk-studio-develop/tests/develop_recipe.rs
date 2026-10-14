@@ -264,7 +264,7 @@ fn disabled_group_preserves_recipe_and_pixels() {
 
         // an enabled unsupported group refuses before any tile is emitted.
         let mut detail = recipe();
-        detail.enables.enable_detail = true;
+        detail.enables.enable_effects = true;
         let mut calls = 0;
         let (result, tiles) = run_with(
             &plane,
@@ -278,7 +278,7 @@ fn disabled_group_preserves_recipe_and_pixels() {
                 Ok(())
             },
         );
-        assert_eq!(result, Err(DevelopError::UnsupportedContribution("detail")));
+        assert_eq!(result, Err(DevelopError::UnsupportedContribution("effects")));
         assert_eq!((calls, tiles.len()), (0, 0));
     });
 }
