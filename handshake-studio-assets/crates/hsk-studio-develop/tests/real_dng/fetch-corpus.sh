@@ -7,7 +7,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CRATE="$(cd "$HERE/../.." && pwd)"
-# Identical to CORPUS_RELATIVE in tests/real_dng.rs (guard test fetch_script_default_matches_test_default):
+# Fetch destination (tests/real_dng.rs locates the same dir through .config/oracle-corpus.toml):
 # the sibling Handshake_Artifacts root next to the worktrees, outside the git worktree. Override: STUDIO_DNG_CORPUS.
 CORPUS_RELATIVE="../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng"
 DEST="${STUDIO_DNG_CORPUS:-$(realpath -m "$CRATE/$CORPUS_RELATIVE")}"
