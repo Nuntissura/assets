@@ -73,7 +73,7 @@ use crate::content::{Op, inline_dict};
 use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
 use crate::flatten::{FlattenedPage, check_flattened, flatten_region_pages};
-use crate::flatten_purge::{check_document, drop_painted_sources, neutralize_structure, page_annotations, remove_annotations, strip_structure, strip_xfa};
+use crate::flatten_purge::{Stripped, check_document, drop_painted_sources, neutralize_structure, page_annotations, remove_annotations, strip_structure, strip_xfa};
 use crate::font::Font;
 use crate::norm::{Escapes, normalize, normalized, normalized_str, visual_order};
 use crate::pdf_edit::PdfDoc;
@@ -1609,7 +1609,9 @@ pub fn redact_and_save_opts(
         let annotations = page_annotations(doc, &flats);
         // Operator decision D28: by default a save that flattens a region removes the whole structure tree (typed loss);
         // the opt-out keeps it and neutralizes it best effort (then check_document reports it).
-        let tags_removed = options.structure_tree == StructureTreePolicy::Strip && !flats.is_empty() && strip_structure(doc, cancel)?;
+        // DIAG-PRESS-R28: the strip also returns the closed set of the tree's objects; check_document counts any the save still writes.
+        let stripped = if options.structure_tree == StructureTreePolicy::Strip && !flats.is_empty() { strip_structure(doc, cancel)? } else { Stripped::default() };
+        let tags_removed = stripped.removed;
         let structure_elements_neutralized = neutralize_structure(doc, &flats, &annotations, cancel)?;
         let flattened_annotations_removed = remove_annotations(doc, &annotations, cancel)?;
         // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every other content stream of the
@@ -1645,7 +1647,7 @@ pub fn redact_and_save_opts(
         let flat_objects: BTreeSet<u32> =
             flattened.iter().filter_map(|f| saved.pages.get(usize::try_from(f.page_index).unwrap_or(usize::MAX)).copied()).collect();
         // The structure rules of check_document apply only when a region was flattened (PLR-101).
-        residual = residual.saturating_add(check_document(&saved, &flat_objects, !flattened.is_empty()));
+        residual = residual.saturating_add(check_document(&saved, &flat_objects, !flattened.is_empty(), &stripped.tree));
         Ok(RedactedOutput {
             bytes,
             reports,

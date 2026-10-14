@@ -3456,3 +3456,156 @@ fn structure_strip_reports_no_loss_without_structure() {
     }
     assert!(red.is_empty(), "{red:#?}");
 }
+
+/// R28-S1 (validation/R28-prereview-press-narrow.json, inputs A1, A2, A2b, control A0; red at 8b11939): the unlink-only strip
+/// relied on the shape rule of `check_document` for structure a kept path still reaches, and a `/ClassMap` object (A1) or an
+/// attribute object (`/A`, A2; also named only inside a private array, A2b) has no element or root shape, so a private catalog key
+/// kept their text with the save read proven. Closed-set rule (lead diagnosis DIAG-PRESS-R28): every object reachable from the
+/// original catalog `/StructTreeRoot` through structure-tree keys is recorded before the unlink; one the saved file still holds is
+/// counted (NotProven), whatever its shape. A0: the same tree without the private key reads flattened with the text gone.
+#[test]
+fn structure_objects_still_written_after_the_strip_are_reported() {
+    let tagged = "/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>";
+    let a1 = |extra: &str| -> (String, Vec<(u32, String)>) {
+        (
+            format!("{tagged} {extra}"),
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [82 0 R] /ClassMap 85 0 R >>".to_string()),
+                (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /C /C1 /K 0 >>".to_string()),
+                (85, "<< /C1 << /O /UserProperties /P [<< /N (n) /V (CLASSMAP-SECRET) >>] >> >>".to_string()),
+            ],
+        )
+    };
+    let a2 = |extra: &str| -> (String, Vec<(u32, String)>) {
+        (
+            format!("{tagged} {extra}"),
+            vec![
+                (80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()),
+                (81, "<< /Type /StructElem /S /Table /P 80 0 R /Pg 3 0 R /A 86 0 R /K 0 >>".to_string()),
+                (86, "<< /O /Table /Summary (ATTR-SUMMARY-SECRET) >>".to_string()),
+            ],
+        )
+    };
+    type Case = (&'static str, (String, Vec<(u32, String)>), &'static str, &'static str, bool);
+    let cases: Vec<Case> = vec![
+        ("A1: a private catalog key names the /ClassMap object", a1("/HskCM 85 0 R"), "", "/StructParents 0", true),
+        ("A2: a private catalog key names an attribute object of an element on the flattened page", a2("/HskAttr 86 0 R"), "/StructParents 0", "", true),
+        ("A2b: the attribute object is named inside a private array", a2("/HskArr [86 0 R]"), "/StructParents 0", "", true),
+        ("A0 control: only the tree names the /ClassMap object", a1(""), "", "/StructParents 0", false),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, (catalog, objects), one, two, kept) in cases {
+        let pdf = pages_pdf(&catalog, one, two, &objects);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        let text = if name.starts_with("A2") { "ATTR-SUMMARY-SECRET" } else { "CLASSMAP-SECRET" };
+        if kept {
+            if gone(&out.bytes, text) {
+                red.push(format!("{name}: {text} is gone (the case needs it to survive)"));
+            }
+            if !reported_for_the_tree(&out) {
+                red.push(format!("{name}: region_flattened {} residual {} reasons {:?} losses {:?}, expected reported", out.region_flattened(), out.residual_in_region, out.not_proven_reasons(), out.losses));
+            }
+        } else if !gone(&out.bytes, text) || !read_as_flattened(&out) || out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] {
+            red.push(format!("{name}: {text} gone {} region_flattened {} residual {} losses {:?}", gone(&out.bytes, text), out.region_flattened(), out.residual_in_region, out.losses));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || find(&out.bytes, b"StructTreeRoot").is_some() {
+            red.push(format!("{name}: region text, kept page text or /StructTreeRoot wrong"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R28-S2 (input A3; red at 8b11939): a `GoTo` action whose `/S` is an indirect reference to the name `GoTo` (A3; through an alias
+/// object, A3b) kept its structure destination `/SD`, so the element it names (`/S` and `/Alt`, no `/P`, no `/Type`: no shape) stayed
+/// with the save read proven. `/S` is resolved: `/SD` is unlinked, the element is not written, the link and its `/D` stay.
+#[test]
+fn structure_destinations_of_goto_actions_named_through_references_are_unlinked() {
+    let objects = |s_objects: Vec<(u32, String)>| -> Vec<(u32, String)> {
+        let mut v = vec![
+            (80, "<< /Type /StructTreeRoot /K [82 0 R] >>".to_string()),
+            (82, "<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /K 0 >>".to_string()),
+            (81, "<< /S /Figure /Alt (SD-ALT-SECRET) /K 0 >>".to_string()),
+            (71, "<< /Type /Annot /Subtype /Link /Rect [10 10 20 20] /P 5 0 R /A << /S 90 0 R /D [5 0 R /Fit] /SD [81 0 R /Fit] >> >>".to_string()),
+        ];
+        v.extend(s_objects);
+        v
+    };
+    let cases: Vec<(&str, Vec<(u32, String)>)> = vec![
+        ("A3: /S 90 0 R, 90 = /GoTo", objects(vec![(90, "/GoTo".to_string())])),
+        ("A3b: /S 90 0 R, 90 = 91 0 R, 91 = /GoTo", objects(vec![(90, "91 0 R".to_string()), (91, "/GoTo".to_string())])),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, objs) in cases {
+        let pdf = pages_pdf("/StructTreeRoot 80 0 R /MarkInfo << /Marked true >>", "/StructParents 0", "/StructParents 1 /Annots [71 0 R]", &objs);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        if !gone(&out.bytes, "SD-ALT-SECRET") || find(&out.bytes, b"/SD").is_some() {
+            red.push(format!("{name}: /SD or SD-ALT-SECRET still written"));
+        }
+        if !read_as_flattened(&out) || out.losses != [hsk_studio_press::RedactionLoss::AccessibilityTagsRemoved] {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?} losses {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons(), out.losses));
+        }
+        if find(&out.bytes, b"/Link").is_none() || find(&out.bytes, b"/Fit").is_none() || gone(&out.bytes, "Page two") {
+            red.push(format!("{name}: the link, its /D or the kept page text was removed"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R28-P1 (inputs B1, B1b, B1c, B1-control; red at 8b11939): the flattened page has its OWN `/Resources` (B1, B1c) or inherits a
+/// nearer node's (B1b), while a `/Pages` node further up holds `/Resources` whose `/Properties` names a text-bearing property list
+/// (`/MC0` = object 22 with `/Alt` and `/ActualText`) that the kept page's own `/Properties` lists unnamed. A viewer that merges
+/// the ancestors' `/Resources` (the crate's usage model, pdf.js) reads `/MC0` of the flattened page as 22; the purge read only the
+/// nearest `/Resources`, so the list stayed uncounted with the save read proven. Fail closed (lead diagnosis DIAG-PRESS-R28, ISO
+/// nearest-only reading UNVERIFIED): an ancestor `/Resources` beyond the one the old page read that holds a text-bearing property
+/// list is counted. B1-control (the list in page one's own `/Properties`) was already counted.
+#[test]
+fn ancestor_property_lists_of_a_flattened_page_are_counted() {
+    let font = "/Font << /F1 6 0 R >>";
+    let page_one_ops = format!("/Span /MC0 BDC {SECRET} EMC");
+    let page_two = format!("<< /Type /Page /Parent 2 0 R /Contents 7 0 R /Resources << {font} /Properties << /MC0 22 0 R /MC1 23 0 R >> >> >>");
+    let common = |node: &str, page_one: String, extra: Vec<(u32, Vec<u8>)>, kids: &str| -> Vec<u8> {
+        let mut objs: Vec<(u32, Vec<u8>)> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, format!("<< /Type /Pages /Kids [{kids} 5 0 R] /Count 2 /MediaBox [0 0 612 792] {node} >>").into_bytes()),
+            (3, page_one.into_bytes()),
+            (4, stream_body("", page_one_ops.as_bytes())),
+            (5, page_two.clone().into_bytes()),
+            (6, HELVETICA.to_vec()),
+            (7, stream_body("", b"/Span /MC1 BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC")),
+            (9, b"<< /Properties << /MC0 22 0 R >> >>".to_vec()),
+            (22, b"<< /Alt (PROP-ALT-SECRET) /ActualText (PROP-ACTUAL-SECRET) >>".to_vec()),
+            (23, b"<< /ActualText (KEPT-PROP-TEXT) >>".to_vec()),
+        ];
+        objs.extend(extra);
+        build(&objs)
+    };
+    let own = |parent: u32, props: &str| format!("<< /Type /Page /Parent {parent} 0 R /Contents 4 0 R /Resources << {font} {props} >> >>");
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("B1: own /Resources, the node names /Resources 9", common("/Resources 9 0 R", own(2, ""), vec![], "3 0 R")),
+        ("B1c: own /Resources, the node's /Resources inline", common("/Resources << /Properties << /MC0 22 0 R >> >>", own(2, ""), vec![], "3 0 R")),
+        (
+            "B1b: page one inherits a mid node's /Resources, the root node names /Resources 9",
+            common(
+                "/Resources 9 0 R",
+                "<< /Type /Page /Parent 10 0 R /Contents 4 0 R >>".to_string(),
+                vec![(10, format!("<< /Type /Pages /Parent 2 0 R /Kids [3 0 R] /Count 1 /Resources << {font} >> >>").into_bytes())],
+                "10 0 R",
+            ),
+        ),
+        ("B1-control: page one's own /Properties names 22", common("", own(2, "/Properties << /MC0 22 0 R >>"), vec![], "3 0 R")),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, pdf) in cases {
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        if !reported_for_the_tree(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected counted", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") || gone(&out.bytes, "Page two") || gone(&out.bytes, "KEPT-PROP-TEXT") {
+            red.push(format!("{name}: SECRET-ALPHA gone {}, kept page text kept {}", gone(&out.bytes, "SECRET-ALPHA"), !gone(&out.bytes, "Page two")));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
