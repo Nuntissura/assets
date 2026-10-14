@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 15
+generation: 16
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -252,10 +252,70 @@ proof:
   source_inputs: All69 unchanged after actual tests and settlement; original3 locks retained
   retry: Do not repeat four passing tests to erase historical wrapper failure
   native: NOT_RUN
+- kind: phase06_three_owning_contract_suites
+  status: DIAGNOSTICS_RECONCILED_42_REAL_TESTS_AND_LATE_OWNED_CLOSURE
+  attempt: 1
+  source_revision: d314813dfc18bdfbc1d142479d4d4035822ff84a
+  proof_checkpoint: f0e5b6c0182ee9d6f3fccd77c4f8f216a7f32fad
+  input_manifest_sha256: 88726e84bf224a3aac9e983de89d6c370cfea813d332ef1e7e8e48212bb77c8c
+  launcher_sha256: c217b0384e5837053c2ece983abede570fc96c04bed9bfd27ae0f54b23d84036
+  cargo_pid: 43120
+  cargo_birth_utc: '2026-10-14T22:44:47.6888366Z'
+  cargo_exit: 0
+  outer_host_pid: 37984
+  outer_tool_exit: 1
+  original_caller_status: FAILED_STOP
+  phase_record: .local/wp022-proof/06-adapter-contract-tests.phase.json
+  phase_record_sha256: 81025eb429421c792be4187f1d0b2cb192fd405f7ea22e3feceb6e22e4f7b09a
+  stdout_sha256: 592e0cca8345308af70345353357c3859f7700fc20267fecf9b50871ecaa4e47
+  stderr_sha256: fee4d0f5d4b5c51739798f2a9c5569cb607d4368bbc575fe88c5bcac7447cfe1
+  actual_tests:
+    adapter_contracts:
+      passed: 32
+      failed: 0
+      filtered: 0
+    manual_sample_contracts:
+      passed: 3
+      failed: 0
+      filtered: 0
+    native_app_contracts:
+      passed: 7
+      failed: 0
+      filtered: 0
+  independent_test_review: Diagnostics opened exact phase/stdout/stderr hashes, three actual test binaries and all42
+    passing results
+  late_owned_settlement:
+    receipt: .local/wp022-proof/06-owned-settlement.json
+    receipt_sha256: 80366dd5bfbba13bc19d5bd6b32abe9adb74431551fca233ee50836c0be86563
+    target_pid: 34180
+    native_birth_utc: '2026-10-14T22:44:56.9266087Z'
+    cim_birth_utc: '2026-10-14T22:44:56.9266080Z'
+    target_exit: -1
+    operation_tool_exit: 0
+    raw_parent_edge_chain_serialized: true
+    canonical_observation: All129 recorded original PID+birth identities plus original host130 absent; no original
+      surviving child chain; warm cache4820 unchanged
+    review: DIAGNOSTICS_INDEPENDENTLY_RECONCILED
+    process_purpose: UNVERIFIED
+  pid_reuse_observation:
+    original_identities_closed: true
+    later_reused_pid_numbers:
+    - 19060
+    - 53424
+    later_process: Unrelated node.exe processes born22:48:27.777074Z and22:48:27.797327Z; parent33484 differs from
+      recorded original Cargo43120
+    diagnostic_observed_at_utc: '2026-10-14T22:48:48.8881152Z'
+    correction: A later lead PID-number-only gauge failed; retract raw PID-absence claim and compare original PID+birth
+      identity with matching capture API; unrelated reused-parent children are not original owned descendants
+    unrelated_processes_touched: false
+    preparation_step: GP-016
+  source_inputs: All69 unchanged after actual tests and settlement; original3 locks retained
+  retry: Do not repeat42 passing tests to erase historical wrapper failure
+  native: NOT_RUN
 blockers:
-- Exact Primary phase06 reservation required; adapter tests/native/pixel acceptance OPEN
-next_action: Publish actual04 accepted compile and05 owning test/late-closure checkpoint; bind unchanged69 inputs
-  and fresh phase06 one-shot caller; no previous green proof repeats
+- Exact Primary phase07 reservation required; generated dark/light captures/native/pixel acceptance OPEN
+next_action: Publish actual06 contract-test and independent original-identity closure checkpoint; prepare fresh
+  phase07 capture binding; retain prior proof and no green test repeats
 source_freeze:
   native_worker: frozen_after_phase04_u8_phase_snapshot_remediation
   theme_worker: frozen
@@ -283,5 +343,6 @@ source_freeze:
   sdk_frame_worker: frozen
   sdk_producer_worker: frozen_after_byte_lease_and_cancelled_map_polling_repairs
   provenance: All 45 original SDK files reread; only six admitted sources changed; other 39 hashes retained
-  input_manifest: .local/wp022-phase06-input.json
+  input_manifest: .local/wp022-phase07-reviewed-input.json
   sdk_owning_tests: PHASE05_FOUR_PASSED_CARGO0_HISTORICAL_WRAPPER_FAILED_INDEPENDENT_LATE_CLOSURE
+  adapter_contracts: PHASE06_32_ADAPTER_3_MANUAL_7_NATIVE_APP_PASSED_CARGO0_INDEPENDENT_LATE_CLOSURE

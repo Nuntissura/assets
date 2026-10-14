@@ -172,7 +172,7 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-022-external-native-embedding-v1/WP-KUM-022-external-native-embedding-v1-state.yaml
-  next_action: Publish actual04 accepted compile and05 owning test/late-closure checkpoint; bind unchanged69 inputs
-    and fresh phase06 one-shot caller; no previous green proof repeats
+  next_action: Publish actual06 contract-test and independent original-identity closure checkpoint; prepare fresh
+    phase07 capture binding; retain prior proof and no green test repeats
   blockers:
-  - Exact Primary phase06 reservation required; adapter tests/native/pixel acceptance OPEN
+  - Exact Primary phase07 reservation required; generated dark/light captures/native/pixel acceptance OPEN
