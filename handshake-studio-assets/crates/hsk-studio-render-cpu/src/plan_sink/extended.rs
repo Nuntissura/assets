@@ -32,6 +32,7 @@ use hsk_studio_pigment::effect_math::{EffectError, EffectOp};
 use hsk_studio_pigment::render_plan::{
     BackendError, ExtOperator, PlanExtensions, SAMPLE_RANGE_OPERATOR,
 };
+use hsk_studio_pigment::transform_math::LayerTransform;
 use std::collections::BTreeMap;
 
 /// Resident bound charged per prepared adjustment: four curve channels of at most 19 points with
@@ -43,6 +44,8 @@ const BLEND_ENTRY_BYTES: u64 = 40;
 const SAMPLE_BYTES: u64 = 4;
 /// Resident bytes charged per effect instance (the `EffectOp` record).
 const EFFECT_OP_BYTES: u64 = 64;
+/// Resident bytes charged per layer transform (the record plus its prepared inverse and bounds).
+const TRANSFORM_STATE_BYTES: u64 = 256;
 /// Bytes the window arrays of one effect call hold next to pigment's own peak: the backdrop plane
 /// (colour 12 + alpha 4 per pixel) and the content colour (12 per pixel).
 const WINDOW_INPUT_BYTES_PER_PIXEL: u64 = 28;
@@ -61,6 +64,8 @@ pub(super) struct LayerFx {
     pub(super) blend_if: Option<usize>,
     pub(super) feather: Option<usize>,
     pub(super) effect: Option<usize>,
+    /// Layer transform (pigment `transform_math`): index into [`ExtPrep::transform`].
+    pub(super) transform: Option<usize>,
 }
 
 /// The effects of one layer (list order), the margin around its content they read
@@ -86,6 +91,7 @@ pub(super) struct ExtPrep {
     blend_sets: Vec<Vec<BlendRangeEntry>>,
     kernels: Vec<Kernel>,
     effects: Vec<EffectLayer>,
+    transforms: Vec<LayerTransform>,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -253,6 +259,11 @@ impl ExtPrep {
                     bounds: None,
                 });
             }
+            if let Some(t) = &e.transform {
+                prep.charge(TRANSFORM_STATE_BYTES, limit)?;
+                fx.transform = Some(prep.transforms.len());
+                prep.transforms.push(*t);
+            }
             if e.mask_feather_px > 0.0 {
                 let px = e.mask_feather_px;
                 let index = if let Some(index) = kernel_of.get(&px.to_bits()) {
@@ -287,6 +298,11 @@ impl ExtPrep {
             prep.layers.insert((e.group.0, e.layer), fx);
         }
         Ok(prep)
+    }
+
+    /// Layer transform `index` (see [`LayerFx::transform`]).
+    pub(super) fn transform(&self, index: usize) -> Option<LayerTransform> {
+        self.transforms.get(index).copied()
     }
 
     /// Envelope state of layer `layer` of group node `group` (none when it has no entry).

@@ -41,6 +41,7 @@ use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::coverage_math::mask_coverage;
 use hsk_studio_pigment::effect_math::EffectKind;
+use hsk_studio_pigment::transform_math::{LayerTransform, PreparedTransform};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MASK_DENSITY_OPERATOR, MaskFormat,
@@ -202,8 +203,24 @@ struct MaskView<'a> {
     inverted: bool,
     /// `MaskInput.density`; below 1 only on the envelope path (`ExtPrep::allow_density`).
     density: f32,
+    /// A linked mask of a transformed layer (`LayerTransform::transform_mask`): the plane is
+    /// resampled through the layer transform by pigment's reference sampler.
+    xform: Option<PreparedTransform>,
 }
 impl MaskView<'_> {
+    /// Stored coverage at plan pixel `(x, y)`: [`MaskView::raw`], or for a transformed mask
+    /// pigment's `PreparedTransform::sample_coverage` over the plane (zero outside it).
+    fn stored(&self, x: i64, y: i64) -> Result<f32, RenderError> {
+        let Some(t) = &self.xform else {
+            return self.raw(x, y);
+        };
+        let (bx, by) = (self.bounds.x, self.bounds.y);
+        t.sample_coverage(x, y, |i, j| {
+            let px = bx.checked_add(i64::from(i)).ok_or_else(overflow)?;
+            let py = by.checked_add(i64::from(j)).ok_or_else(overflow)?;
+            self.raw(px, py)
+        })
+    }
     /// Stored coverage at plan pixel `(x, y)` (before invert and density); a pixel outside the
     /// plane is a typed `Overflow` (prepare checked that every pixel a layer touches is inside).
     fn raw(&self, x: i64, y: i64) -> Result<f32, RenderError> {
@@ -261,7 +278,7 @@ fn mask_value(
     };
     let raw = match plane {
         Some(plane) => *plane.get(at).ok_or_else(overflow)?,
-        None => mask.raw(x, y)?,
+        None => mask.stored(x, y)?,
     };
     mask.effective(raw)
 }
@@ -321,10 +338,38 @@ enum PNode<'a> {
         layers: Vec<PLayer<'a>>,
         isolated: bool,
     },
+    /// A tile resampled through a layer transform (envelope `LayerExtension::transform`): a node of
+    /// [`Prepared::extra`], read with pigment's reference sampler (bytes are pigment's).
+    Transformed {
+        planes: TilePlanes<'a>,
+        prep: PreparedTransform,
+    },
+}
+/// Straight RGBA at plan pixel `(x, y)` of a transformed tile: pigment's
+/// `PreparedTransform::sample_rgba` over the verified planes.
+fn transformed_at(
+    planes: &TilePlanes<'_>,
+    prep: &PreparedTransform,
+    x: i64,
+    y: i64,
+) -> Result<[f32; 4], RenderError> {
+    prep.sample_rgba(x, y, |i, j| {
+        tile_pixel(
+            planes,
+            crate::px::to_usize(u64::from(i))?,
+            crate::px::to_usize(u64::from(j))?,
+        )
+    })
+}
+fn transform_invalid(node: u32, error: hsk_studio_pigment::transform_math::TransformError) -> RenderError {
+    RenderError::Backend(BackendError::InvalidPlan(PlanError::TransformMatrix { node, error }))
 }
 struct Prepared<'a> {
     nodes: Vec<PNode<'a>>,
     bounds: Vec<Option<Rect>>,
+    /// Transformed-tile nodes, addressed as `nodes.len() + k` by the layers that use them.
+    extra: Vec<PNode<'a>>,
+    extra_bounds: Vec<Option<Rect>>,
     /// Scratch buffers an evaluation of the node needs below its own destination.
     need: Vec<usize>,
     root: usize,
@@ -332,6 +377,24 @@ struct Prepared<'a> {
     seed: u64,
     /// Envelope tables (adjustments, Blend-If sets, feather kernels); empty on the v1 path.
     ext: ExtPrep,
+}
+
+impl<'a> Prepared<'a> {
+    /// Node `index` of the plan, or transformed-tile node `index - nodes.len()`.
+    fn node(&self, index: usize) -> Result<&PNode<'a>, RenderError> {
+        match index.checked_sub(self.nodes.len()) {
+            None => self.nodes.get(index),
+            Some(k) => self.extra.get(k),
+        }
+        .ok_or_else(|| unsupported("plan_shape"))
+    }
+    /// Bounds of [`Prepared::node`] `index` (`None` when empty or out of range).
+    fn bound(&self, index: usize) -> Option<Rect> {
+        match index.checked_sub(self.bounds.len()) {
+            None => self.bounds.get(index).copied().flatten(),
+            Some(k) => self.extra_bounds.get(k).copied().flatten(),
+        }
+    }
 }
 
 fn unit_rgb(rgba: [f32; 4]) -> Result<(), RenderError> {
@@ -487,6 +550,8 @@ fn prepare<'a, V: VectorSource>(
     let mut need: Vec<usize> = Vec::with_capacity(n);
     // Does the node's subtree hold a layer with effects? (An effect layer's content may not.)
     let mut has_effects: Vec<bool> = Vec::with_capacity(n);
+    let mut extra: Vec<PNode<'a>> = Vec::new();
+    let mut extra_bounds: Vec<Option<Rect>> = Vec::new();
     for (i, node) in plan.nodes.iter().enumerate() {
         let mut group_has_effects = false;
         if !reach[i] {
@@ -587,10 +652,45 @@ fn prepare<'a, V: VectorSource>(
                         }
                     }
                     let layer_fx = ext.layer(i, li);
+                    let node_id = u32::try_from(i).map_err(|_| overflow())?;
+                    // Layer transform: the layer reads a transformed-tile node of `extra` instead
+                    // of its tile (pigment validated the tile input, the combinations and the
+                    // matrix; kept as defence in depth with pigment's error values).
+                    let mut mask_transform: Option<LayerTransform> = None;
+                    let (source_index, content_bounds) = match layer_fx.transform {
+                        None => (input, bounds[input]),
+                        Some(index) => {
+                            let t = ext.transform(index).ok_or_else(|| unsupported("plan_shape"))?;
+                            let PNode::Tile { planes, rect } = &nodes[input] else {
+                                return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                    PlanError::TransformTarget { node: node_id },
+                                )));
+                            };
+                            if layer_fx.effect.is_some()
+                                || (t.transform_mask && layer_fx.feather.is_some())
+                            {
+                                return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                    PlanError::TransformCombination { node: node_id },
+                                )));
+                            }
+                            let prep = PreparedTransform::new(&t, *rect)
+                                .map_err(|error| transform_invalid(node_id, error))?;
+                            if t.transform_mask {
+                                mask_transform = Some(t);
+                            }
+                            let at = add_u(n, extra.len())?;
+                            extra.push(PNode::Transformed {
+                                planes: *planes,
+                                prep,
+                            });
+                            extra_bounds.push(Some(prep.bounds()));
+                            (at, Some(prep.bounds()))
+                        }
+                    };
                     // Layer effects (waves 1 and 2): the layer is evaluated per chunk window (the content
                     // bounds grown by the stack margin, clipped to the chunk) and composed by
                     // pigment's `render_layer_window`.
-                    let mut layer_bounds = bounds[input];
+                    let mut layer_bounds = content_bounds;
                     if let Some(index) = layer_fx.effect {
                         let margin = ext
                             .effect(index)
@@ -609,7 +709,7 @@ fn prepare<'a, V: VectorSource>(
                         // The shadow and stroke reach beyond the content bounds by the margin.
                         layer_bounds = layer_bounds.map(|b| grow_rect(b, margin)).transpose()?;
                         ext.frame_depth = ext.frame_depth.max(need[input]);
-                        ext.set_effect_bounds(index, bounds[input]);
+                        ext.set_effect_bounds(index, content_bounds);
                     }
                     group_effects |= layer_fx.effect.is_some() || has_effects[input];
                     let mask = match &l.mask {
@@ -656,8 +756,11 @@ fn prepare<'a, V: VectorSource>(
                                     },
                                 )
                             })?;
-                            if let Some(region) = bounds[input]
-                                .and_then(|b| intersect(b, target.extent).ok().flatten())
+                            // A transformed (linked) mask has zero coverage outside its resampled
+                            // plane by definition, so it has no gap to check.
+                            if mask_transform.is_none()
+                                && let Some(region) = content_bounds
+                                    .and_then(|b| intersect(b, target.extent).ok().flatten())
                                 && !plane
                                     .bounds
                                     .contains(region)
@@ -672,6 +775,10 @@ fn prepare<'a, V: VectorSource>(
                                 stride: plane.stride_bytes as usize,
                                 inverted: m.inverted,
                                 density: m.density,
+                                xform: mask_transform
+                                    .map(|t| PreparedTransform::new(&t, plane.bounds))
+                                    .transpose()
+                                    .map_err(|error| transform_invalid(node_id, error))?,
                             })
                         }
                     };
@@ -694,7 +801,7 @@ fn prepare<'a, V: VectorSource>(
                         }
                     }
                     layers.push(PLayer {
-                        input,
+                        input: source_index,
                         mode: l.mode,
                         opacity: l.opacity * l.fill_opacity,
                         mask,
@@ -726,6 +833,8 @@ fn prepare<'a, V: VectorSource>(
     Ok(Prepared {
         nodes,
         bounds,
+        extra,
+        extra_bounds,
         need,
         root,
         reachable: reach.iter().filter(|r| **r).count() as u64,
@@ -784,7 +893,7 @@ impl Eval<'_, '_> {
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
         // Outside the base nothing of the run is visible.
-        let Some(region) = self.prepared.bounds[base.input]
+        let Some(region) = self.prepared.bound(base.input)
             .map(|b| intersect(b, chunk))
             .transpose()?
             .flatten()
@@ -831,7 +940,7 @@ impl Eval<'_, '_> {
         deeper: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
-        match &self.prepared.nodes[base.input] {
+        match self.prepared.node(base.input)? {
             PNode::Group { isolated: true, .. } => {
                 self.group(base.input, chunk, run, deeper, fx)?;
                 self.seal_base(base, region, chunk, run, fx, |_, _, current| {
@@ -841,6 +950,11 @@ impl Eval<'_, '_> {
             PNode::Tile { planes, rect } => {
                 self.seal_base(base, region, chunk, run, fx, |x, y, _| {
                     Ok((tile_at(planes, *rect, x, y)?, 1.0))
+                })?;
+            }
+            PNode::Transformed { planes, prep } => {
+                self.seal_base(base, region, chunk, run, fx, |x, y, _| {
+                    Ok((transformed_at(planes, prep, x, y)?, 1.0))
                 })?;
             }
             PNode::Solid { rgba } => {
@@ -869,7 +983,7 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
-        let Some(region) = self.prepared.bounds[layer.input]
+        let Some(region) = self.prepared.bound(layer.input)
             .map(|b| intersect(b, chunk))
             .transpose()?
             .flatten()
@@ -880,7 +994,7 @@ impl Eval<'_, '_> {
         if layer.fx.adjustment.is_some() {
             return self.adjust(layer, region, chunk, run, fx);
         }
-        match &self.prepared.nodes[layer.input] {
+        match self.prepared.node(layer.input)? {
             PNode::Group { isolated: true, .. } => {
                 let count = area(chunk)?;
                 let (buffer, deeper) = spare
@@ -897,6 +1011,11 @@ impl Eval<'_, '_> {
             PNode::Tile { planes, rect } => {
                 self.composite_clipped(layer, region, chunk, run, |x, y, _| {
                     Ok((tile_at(planes, *rect, x, y)?, 1.0))
+                })
+            }
+            PNode::Transformed { planes, prep } => {
+                self.composite_clipped(layer, region, chunk, run, |x, y, _| {
+                    Ok((transformed_at(planes, prep, x, y)?, 1.0))
                 })
             }
             PNode::Solid { rgba } => {
@@ -974,7 +1093,7 @@ impl Eval<'_, '_> {
         if layer.fx.effect.is_some() {
             return self.effect_layer(layer, chunk, dst, fx);
         }
-        let Some(region) = self.prepared.bounds[layer.input]
+        let Some(region) = self.prepared.bound(layer.input)
             .map(|b| intersect(b, chunk))
             .transpose()?
             .flatten()
@@ -986,7 +1105,7 @@ impl Eval<'_, '_> {
         if layer.fx.adjustment.is_some() {
             return self.adjust(layer, region, chunk, dst, fx);
         }
-        match &self.prepared.nodes[layer.input] {
+        match self.prepared.node(layer.input)? {
             PNode::Group {
                 isolated: false, ..
             } => self.group(layer.input, chunk, dst, spare, fx),
@@ -1006,6 +1125,11 @@ impl Eval<'_, '_> {
             PNode::Tile { planes, rect } => {
                 self.composite(layer, region, chunk, dst, fx, |x, y, _| {
                     Ok((tile_at(planes, *rect, x, y)?, 1.0))
+                })
+            }
+            PNode::Transformed { planes, prep } => {
+                self.composite(layer, region, chunk, dst, fx, |x, y, _| {
+                    Ok((transformed_at(planes, prep, x, y)?, 1.0))
                 })
             }
             PNode::Solid { rgba } => {
@@ -1789,6 +1913,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // and refuses the nesting), and a premultiplied alpha convention at the target or a
             // tile input (this backend works on straight alpha and does not convert).
             ExtOperator::EffectsNested | ExtOperator::AlphaPremultiplied => Exactness::Unsupported,
+            // Layer transforms (lane SMB-PIGMENT-TRANSFORM): every filter is evaluated by pigment's
+            // binary64 reference sampler, so the bytes are pigment's (tests/cpu_transform.rs).
+            ExtOperator::Transform(_) => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

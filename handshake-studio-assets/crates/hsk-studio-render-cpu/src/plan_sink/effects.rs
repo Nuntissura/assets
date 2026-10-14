@@ -32,7 +32,9 @@
 //! effects, are typed refusals as well (see `prepare`).
 #![deny(clippy::arithmetic_side_effects)]
 use super::extended::{Frame, Fx, window_error};
-use super::{Eval, PLayer, PNode, RenderError, mask_value_clamped, tile_at, unsupported};
+use super::{
+    Eval, PLayer, PNode, RenderError, mask_value_clamped, tile_at, transformed_at, unsupported,
+};
 use crate::px::{area, end, grow_rect, index_in, intersect, overflow};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::effect_math::window::{
@@ -112,7 +114,7 @@ impl Eval<'_, '_> {
             .effect
             .and_then(|i| self.prepared.ext.effect(i))
             .ok_or_else(|| unsupported("plan_shape"))?;
-        let Some(bounds) = self.prepared.bounds[layer.input] else {
+        let Some(bounds) = self.prepared.bound(layer.input) else {
             return Ok(());
         };
         if area(bounds)? == 0 {
@@ -244,16 +246,23 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
-        let Some(region) = self.prepared.bounds[layer.input]
+        let Some(region) = self
+            .prepared
+            .bound(layer.input)
             .map(|b| intersect(b, frame_rect))
             .transpose()?
             .flatten()
         else {
             return Ok(());
         };
-        match &self.prepared.nodes[layer.input] {
+        match self.prepared.node(layer.input)? {
             PNode::Group { isolated: true, .. } => {
                 self.group(layer.input, frame_rect, content, spare, fx)?;
+            }
+            PNode::Transformed { planes, prep } => {
+                fill_region(content, frame_rect, region, |x, y| {
+                    transformed_at(planes, prep, x, y)
+                })?;
             }
             PNode::Tile { planes, rect } => {
                 fill_region(content, frame_rect, region, |x, y| {
