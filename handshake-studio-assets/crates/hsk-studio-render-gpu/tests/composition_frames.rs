@@ -67,14 +67,13 @@ fn gpu_composition_frames_match_the_shared_oracle() {
         space: scenes::space(),
         limits: SceneLimits::default(),
     };
-    for frame in scenes::FRAMES {
-        let scene = scenes::expected_scene(frame, &pixels);
+    for (label, scene) in scenes::cases(&pixels) {
         let want = scenes::oracle(&scene, &pixels);
         let got = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
         let delta = scenes::max_delta(&got, &want);
-        println!("frame {frame}: gpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&got.digest()));
-        assert!(delta <= GPU_TOLERANCE, "frame {frame}: {delta}");
+        println!("{label}: gpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&got.digest()));
+        assert!(delta <= GPU_TOLERANCE, "{label}: {delta}");
         let again = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
-        assert_eq!(again.digest(), got.digest(), "frame {frame}: GPU frames are repeatable");
+        assert_eq!(again.digest(), got.digest(), "{label}: GPU frames are repeatable");
     }
 }

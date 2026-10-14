@@ -279,10 +279,10 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         assert_eq!(unsupported(e), COMPOSITION_TRACK_MATTE);
         let e = edit(&|r| {
             let mut nested = r["compositions"][0].clone();
-            nested["composition_id"] = json!(identity("SCOM", 2));
+            nested["composition_id"] = json!(identity("SCOM", 4));
             nested["layers"] = json!([{"layer_id":identity("SLYR",4),"timing":timing(0,1)}]);
             r["compositions"].as_array_mut().unwrap().push(nested);
-            r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":identity("SCOM",2),"collapse_transformations":false});
+            r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":identity("SCOM",4),"collapse_transformations":false});
         }).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP);
         // Content other than raster tiles or a null layer.
