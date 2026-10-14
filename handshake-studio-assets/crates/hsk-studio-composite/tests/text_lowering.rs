@@ -23,7 +23,7 @@ use shaping::{FontFile, Seg, shape};
 /// Same inputs as hsk-studio-type tests/glyph_render.rs (Inter "Hi", 32 px/em, origin
 /// (10.25, 40.0)): composite must pass Type's plane through unchanged.
 const TYPE_HI_DIGEST: &str = "2b66ea525d0abc933ff810dc5d5be4016d0837a745c633ffae52271d74bc47ac";
-const PLAN_DIGEST: &str = "UNSET";
+const PLAN_DIGEST: &str = "b0cce052d6eb290bfdc42185a76eaa9bb00984e8bf7036e5d46f7190efb9ddbd";
 const FILL: [f32; 4] = [0.8, 0.1, 0.2, 1.0];
 
 fn hex(b: &[u8]) -> String {
