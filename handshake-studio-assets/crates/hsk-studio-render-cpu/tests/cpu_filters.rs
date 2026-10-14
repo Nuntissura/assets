@@ -215,13 +215,19 @@ fn hostile_radii_and_parameters_are_typed_before_any_sink_call() {
     assert_eq!(grid.calls, 0);
     // The largest admitted median (radius 500): predicted work above the window limit.
     let huge = envelope(vec![one_layer(3, 1).with_filters(vec![LayerFilter::Median { radius_px: 500 }])]);
-    let (result, grid) = run_ext(&renderer, &plan, &huge, Exactness::Approximate, 1 << 40, &sources);
+    // 20 x 16 window = 320 px x 785349 disc samples x 4 channels = 1.005e9 > MAX_EFFECT_WINDOW_WORK.
+    let (result, grid) = run_ext(&Renderer::with_threads(64, 1).unwrap(), &plan, &huge, Exactness::Approximate, 1 << 40, &sources);
     assert!(matches!(result, Err(BackendError::Unsupported { operator: "filter_work_limit", .. })), "{result:?}");
     assert_eq!(grid.calls, 0);
-    // A wide blur (radius 1000) whose frame does not fit the budget.
-    let wide = envelope(vec![one_layer(3, 1).with_filters(vec![LayerFilter::HighPass { radius_px: 1000.0 }])]);
-    let (result, grid) = run_ext(&renderer, &plan, &wide, Exactness::Approximate, 1 << 20, &sources);
-    assert!(result.is_err(), "{result:?}");
+    // The widest blur (radius 1000) on a point filter: the output stays inside the content, so it
+    // renders and equals the reference; one byte less than its peak is BudgetExceeded.
+    let wide_filters = vec![LayerFilter::HighPass { radius_px: 1000.0 }];
+    let wide = envelope(vec![one_layer(3, 1).with_filters(wide_filters.clone())]);
+    let (result, grid) = run_ext(&renderer, &plan, &wide, Exactness::Approximate, 1 << 26, &sources);
+    let peak = result.unwrap().peak_working_bytes;
+    assert_eq!(bits(&grid), expected(&wide_filters, None));
+    let (result, grid) = run_ext(&renderer, &plan, &wide, Exactness::Approximate, peak - 1, &sources);
+    assert!(matches!(result, Err(BackendError::BudgetExceeded { .. })), "{result:?}");
     assert_eq!(grid.calls, 0);
 }
 
