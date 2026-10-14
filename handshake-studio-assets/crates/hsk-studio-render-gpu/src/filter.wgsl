@@ -38,6 +38,15 @@ struct FilterP {
 const MED_MAX_RADIUS: i32 = 7;
 const MED_MAX_N: u32 = 160u;
 
+// filter_math unsharp mask, one colour channel: o + amount * (o - b) where |o - b| * 255 >= threshold.
+fn usm_ch(o: f32, b: f32) -> f32 {
+    let d = o - b;
+    if (abs(d) * 255.0 >= p.threshold) {
+        return clamp(o + p.amount * d, 0.0, 1.0);
+    }
+    return o;
+}
+
 fn sample_at(x: i32, y: i32) -> vec4<f32> {
     if (x < 0 || y < 0 || x >= i32(p.fw) || y >= i32(p.fh)) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -129,6 +138,48 @@ fn noise_value(x: i32, y: i32, channel: u32) -> f32 {
     return (s - 2.0) * p.amount;
 }
 
+// Median of one channel over the disc (premultiplied; channel 3 is alpha): the values are kept in a
+// sorted prefix by insertion and the middle one is read, as the reference's sort by total order.
+fn median_channel(x: i32, y: i32, c: u32) -> f32 {
+    let r = i32(p.radius);
+    let r2 = r * r;
+    var vals: array<f32, 160>;
+    var n = 0u;
+    for (var iy: i32 = 0; iy <= 2 * r; iy = iy + 1) {
+        for (var ix: i32 = 0; ix <= 2 * r; ix = ix + 1) {
+            let dx = ix - r;
+            let dy = iy - r;
+            if (dx * dx + dy * dy <= r2) {
+                let q = sample_at(x + dx, y + dy);
+                var v = q.w;
+                if (c == 0u) {
+                    v = q.x * q.w;
+                } else if (c == 1u) {
+                    v = q.y * q.w;
+                } else if (c == 2u) {
+                    v = q.z * q.w;
+                }
+                var pos = n;
+                for (var j: u32 = n; j > 0u; j = j - 1u) {
+                    if (vals[j - 1u] <= v) {
+                        break;
+                    }
+                    vals[j] = vals[j - 1u];
+                    pos = j - 1u;
+                }
+                vals[pos] = v;
+                n = n + 1u;
+            }
+        }
+    }
+    return vals[n / 2u];
+}
+
+fn median_at(x: i32, y: i32) -> vec4<f32> {
+    let m = vec4<f32>(median_channel(x, y, 0u), median_channel(x, y, 1u), median_channel(x, y, 2u), median_channel(x, y, 3u));
+    return unpremul(m);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= p.fw || gid.y >= p.fh) {
@@ -144,14 +195,7 @@ fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (o.w == 0.0) {
                 dst[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
             } else {
-                var c = o.xyz;
-                let d = o.xyz - b.xyz;
-                for (var k: u32 = 0u; k < 3u; k = k + 1u) {
-                    if (abs(d[k]) * 255.0 >= p.threshold) {
-                        c[k] = clamp(o[k] + p.amount * d[k], 0.0, 1.0);
-                    }
-                }
-                dst[i] = vec4<f32>(c, o.w);
+                dst[i] = vec4<f32>(usm_ch(o.x, b.x), usm_ch(o.y, b.y), usm_ch(o.z, b.z), o.w);
             }
         }
         case 1u: {
@@ -167,40 +211,7 @@ fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
             dst[i] = src[i];
         }
         case 3u: {
-            let r = i32(p.radius);
-            let r2 = r * r;
-            var m = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-            var n = 0u;
-            for (var c: u32 = 0u; c < 4u; c = c + 1u) {
-                var vals: array<f32, 160>;
-                n = 0u;
-                for (var iy: i32 = 0; iy <= 2 * r; iy = iy + 1) {
-                    for (var ix: i32 = 0; ix <= 2 * r; ix = ix + 1) {
-                        let dx = ix - r;
-                        let dy = iy - r;
-                        if (dx * dx + dy * dy <= r2) {
-                            let q = sample_at(x + dx, y + dy);
-                            var v = q.w;
-                            if (c < 3u) {
-                                v = q[c] * q.w;
-                            }
-                            // Insertion into the sorted prefix.
-                            var j = n;
-                            loop {
-                                if (j == 0u || vals[j - 1u] <= v) {
-                                    break;
-                                }
-                                vals[j] = vals[j - 1u];
-                                j = j - 1u;
-                            }
-                            vals[j] = v;
-                            n = n + 1u;
-                        }
-                    }
-                }
-                m[c] = vals[n / 2u];
-            }
-            dst[i] = unpremul(m);
+            dst[i] = median_at(x, y);
         }
         case 4u: {
             let o = src[i];
@@ -209,15 +220,17 @@ fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
             } else {
                 let gx = p.origin_x + x;
                 let gy = p.origin_y + y;
-                var c = o.xyz;
-                for (var k: u32 = 0u; k < 3u; k = k + 1u) {
-                    var channel = k;
-                    if (p.mono == 1u) {
-                        channel = 0u;
-                    }
-                    c[k] = clamp(o[k] + noise_value(gx, gy, channel), 0.0, 1.0);
+                var ch1 = 1u;
+                var ch2 = 2u;
+                if (p.mono == 1u) {
+                    ch1 = 0u;
+                    ch2 = 0u;
                 }
-                dst[i] = vec4<f32>(c, o.w);
+                dst[i] = vec4<f32>(
+                    clamp(o.x + noise_value(gx, gy, 0u), 0.0, 1.0),
+                    clamp(o.y + noise_value(gx, gy, ch1), 0.0, 1.0),
+                    clamp(o.z + noise_value(gx, gy, ch2), 0.0, 1.0),
+                    o.w);
             }
         }
         default: {
