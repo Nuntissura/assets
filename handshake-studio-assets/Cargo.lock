@@ -966,8 +966,11 @@ version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
  "hsk-studio-controls",
+ "hsk-studio-develop",
  "hsk-studio-folio",
+ "hsk-studio-interop-psd",
  "hsk-studio-observe",
+ "hsk-studio-package",
  "hsk-studio-session",
  "serde_json",
 ]
