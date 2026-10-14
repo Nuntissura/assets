@@ -272,7 +272,7 @@ pub fn place_dabs(
     let Some(&(x0, y0, p0)) = pts.first() else {
         return Ok(Vec::new());
     };
-    let step_of = |d: &Dab| tip.spacing_pct / 100.0 * d.diameter;
+    let step_of = |d: &Dab| d.diameter * tip.spacing_pct / 100.0;
     let mut out = Vec::new();
     out.push(dab_at(tip, dyn_, x0, y0, p0));
     if !tip.spacing_enabled {
@@ -304,12 +304,13 @@ pub fn place_dabs(
             let remaining = len - pos;
             if to_next <= remaining + 1e-9 {
                 pos += to_next;
-                let t = (pos / len).min(1.0);
+                let q = pos.min(len);
+                let t = q / len;
                 let d = dab_at(
                     tip,
                     dyn_,
-                    ax + t * (bx - ax),
-                    ay + t * (by - ay),
+                    ax + (bx - ax) * q / len,
+                    ay + (by - ay) * q / len,
                     ap + t * (bp - ap),
                 );
                 if out.len() >= limits.max_dabs {
