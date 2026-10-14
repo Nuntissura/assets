@@ -63,9 +63,12 @@ fn jpeg_decode_matches_pillow_for_gray_420_progressive_cmyk_and_exif() {
         assert_eq!(sniff(file), Some(RasterFormat::Jpeg));
         let img = decode(file, &lim, &live()).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(img.colour, colour, "{name}");
+        // T.81 does not specify the IDCT bit-exactly (decoders differ by rounding); measured 2026-10-14:
+        // gray 1, 4:2:0 2, progressive 3 (libjpeg-turbo islow vs zune-jpeg scalar). Mean must stay below 1.
         let d = max_diff(u8s(&img), oracle);
-        println!("JPEG {name}: max abs diff vs Pillow {d}");
-        assert!(d <= 2, "{name}: max diff {d} > 2");
+        let mean = u8s(&img).iter().zip(oracle).map(|(a, b)| f64::from(a.abs_diff(*b))).sum::<f64>() / oracle.len() as f64;
+        println!("JPEG {name}: max abs diff vs Pillow {d}, mean {mean:.3}");
+        assert!(d <= 3 && mean < 1.0, "{name}: max diff {d}, mean {mean}");
         let meta = img.jpeg.as_ref().unwrap();
         assert_eq!(meta.process, process, "{name}");
         assert!(meta.jfif, "{name}");
