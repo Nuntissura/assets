@@ -4,7 +4,7 @@
 //! in-process fallback.
 //!
 //! All process handling (spawn with an empty environment and no window, admission permits, ledger,
-//! deadline/cancel/crash classification, kill and reap) lives in `supervisor.rs`; this file only gives
+//! deadline/cancel/crash classification, kill and reap) lives in `hsk-studio-worker`; this file only gives
 //! the plugin meaning to it: authorization, the plugin wire protocol, lifecycle, state versioning and
 //! the typed errors.
 //!
@@ -14,11 +14,6 @@
 use crate::error::{PluginError, ProtocolFault};
 use crate::hashing;
 use crate::stage_root::StageRoot;
-use crate::supervisor::{
-    Classified, Failure, Permit, ReadFailure, SpawnError, SpawnRequest, Supervisor,
-    SupervisorConfig, Terminated, discover_program,
-};
-pub use crate::supervisor::{ProcessLedgerEntry, SupervisorStats as HostStats};
 use crate::types::{
     ApprovedPlugin, Arch, Completeness, FaultReport, LifecycleState, MAX_DEADLINE, Parameter,
     PluginDescriptor, PluginFormat, PluginGrant, PluginInstance, PluginProvider, ProcessConfig,
@@ -28,6 +23,11 @@ use crate::wire::{self, ConfigureSpec, Frame, Hello, PluginSpec, Reply, WireErro
 use crate::worker::{BACKEND_UNAVAILABLE_EXIT_CODE, WORKER_PROGRAM};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_score::{ChannelLayout, InputBlock, OutputBlock};
+use hsk_studio_worker::{
+    Classified, Failure, Permit, ReadFailure, SpawnError, StartRequest, Supervisor,
+    SupervisorConfig, Terminated, discover_program,
+};
+pub use hsk_studio_worker::{ProcessLedgerEntry, SupervisorStats as HostStats};
 use std::{
     path::PathBuf,
     process::ChildStdout,
@@ -121,7 +121,7 @@ struct Shared {
     stage: Option<Arc<StageRoot>>,
 }
 
-type WorkerSession = crate::supervisor::Session<Frame, ProtocolFault>;
+type WorkerSession = hsk_studio_worker::Session<Frame, ProtocolFault>;
 type WorkerFailure = Failure<ProtocolFault>;
 
 fn mismatch() -> WorkerFailure {
@@ -217,7 +217,7 @@ fn start_worker(
     };
     let (mut session, first) = match shared.supervisor.spawn(
         permit,
-        SpawnRequest {
+        StartRequest {
             owner_session,
             extra_args: &extra_args,
             keepalive,
@@ -373,9 +373,13 @@ impl IsolatedHost {
         let supervisor = Supervisor::new(SupervisorConfig {
             program,
             args,
+            env: Vec::new(),
             max_workers: options.limits.max_workers,
             max_in_flight_bytes: options.limits.max_in_flight_bytes,
             spawn_timeout: options.limits.spawn_timeout,
+            os_limits: None,
+            reply_buffer: None,
+            io_thread_name: "score-plugin-worker-io".to_owned(),
         });
         Ok(Self {
             shared: Arc::new(Shared {
