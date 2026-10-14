@@ -402,6 +402,7 @@ fn rasterise_brush(brush: &Brush, width: usize, height: usize) -> Result<Vec<f32
     Ok(plane)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn geometry_at(g: &Geometry, planes: &[Vec<f32>], x: usize, y: usize, width: usize, height: usize, pixel: [f64; 3], luma: &[f64; 3]) -> f64 {
     let px = (x as f64 + 0.5) / width as f64;
     let py = (y as f64 + 0.5) / height as f64;
