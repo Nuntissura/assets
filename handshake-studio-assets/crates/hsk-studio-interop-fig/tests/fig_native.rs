@@ -263,12 +263,11 @@ fn real_native_losses_accounted() {
                 .map(|(_, n)| *n)
                 .sum::<u32>()
         };
-        // Every node except the DOCUMENT root is mapped (id map) or reported as not a layer.
-        let non_layer = get("native.node=VARIABLE", "variables_not_mapped")
-            + get("native.node=VARIABLE_SET", "variables_not_mapped");
+        // Every node except the DOCUMENT root is mapped: a document node (id map) or a design
+        // record (record map: variable collections and variables).
         assert_eq!(
-            m.proposal.id_map.len() as u32 + non_layer,
-            m.doc.nodes.len() as u32 - 1,
+            m.proposal.id_map.len() + m.proposal.record_map.len(),
+            m.doc.nodes.len() - 1,
             "{name}"
         );
         // Geometry has no Folio home without the nib edge: one loss per node carrying geometry.
@@ -471,6 +470,141 @@ fn real_native_components_instances_overrides() {
 }
 
 #[test]
+fn real_native_auto_layout_reactions_variables() {
+    let m = mapped("fig-components-autolayout.fig");
+    let p = &m.proposal;
+    let index = id_index(&p.id_map);
+    let node_of = |name: &str| index[&m.doc.named(name).next().unwrap().id].node_id.clone();
+    let design = |id: &str| {
+        p.design
+            .nodes
+            .iter()
+            .find(|d| d.node.node_id == id)
+            .cloned()
+    };
+    // Auto layout on group layers (symbol, component set, nested frame) and on an artboard.
+    use hsk_studio_folio::LayoutMode::{Horizontal, Vertical};
+    for (name, mode, spacing) in [
+        ("state=default", Horizontal, 8.0),
+        ("fixture-button", Horizontal, 24.0),
+        ("horizontal-stack", Horizontal, 18.0),
+        ("component-instances-artboard", Vertical, 24.0),
+    ] {
+        let a = design(&node_of(name))
+            .and_then(|d| d.auto_layout)
+            .unwrap_or_else(|| panic!("{name} auto layout"));
+        assert_eq!((a.layout_mode, a.item_spacing), (mode, spacing), "{name}");
+    }
+    // Instances carry stack fields too, but an instance layer is no container: typed loss.
+    let c = counts(&p.mapping_loss);
+    assert_eq!(
+        c[&(
+            "native.auto_layout".to_owned(),
+            "auto_layout_on_non_container_no_folio_home"
+        )],
+        3
+    );
+    // Variables: one collection with the single Figma mode, three colour variables.
+    assert_eq!(p.design.variable_collections.len(), 1);
+    let k = &p.design.variable_collections[0];
+    assert_eq!((k.name.as_str(), k.modes.len()), ("fixture-theme", 1));
+    assert_eq!(
+        (k.modes[0].mode_id.as_str(), k.modes[0].name.as_str()),
+        ("4:0", "light")
+    );
+    assert_eq!(k.variable_ids.len(), 3);
+    let fill = p
+        .design
+        .variables
+        .iter()
+        .find(|v| v.name == "button-fill")
+        .unwrap();
+    assert_eq!(fill.scopes, ["FRAME_FILL"]);
+    let hsk_studio_folio::StudioValue::Color { value } = &fill.values_by_mode["4:0"] else {
+        panic!("colour value")
+    };
+    assert_eq!(
+        (value.r, value.g, value.b, value.a),
+        (0.15, 0.35, 0.85, 1.0)
+    );
+    assert_eq!(p.record_map.len(), 4);
+    assert!(
+        c[&(
+            "native.paint.color_variable".to_owned(),
+            "paint_variable_binding_no_folio_home"
+        )] >= 2
+    );
+
+    // Reactions: click -> navigate (instant), click -> smart animate 350 ms, click -> back.
+    let m = mapped("fig-prototype-pages.fig");
+    let p = &m.proposal;
+    let index = id_index(&p.id_map);
+    let node_of = |name: &str| index[&m.doc.named(name).next().unwrap().id].node_id.clone();
+    let reaction = |name: &str| {
+        let id = node_of(name);
+        let d = p
+            .design
+            .nodes
+            .iter()
+            .find(|d| d.node.node_id == id)
+            .unwrap();
+        assert_eq!(d.reactions.len(), 1, "{name}");
+        d.reactions[0].clone()
+    };
+    let r = reaction("Click: navigate to details");
+    assert_eq!(r.trigger, Some(hsk_studio_folio::StudioTrigger::OnClick {}));
+    let hsk_studio_folio::StudioAction::Node {
+        destination_id,
+        navigation,
+        transition,
+        ..
+    } = &r.actions[0]
+    else {
+        panic!("node action")
+    };
+    assert_eq!(
+        destination_id.as_deref(),
+        Some(node_of("detail-screen").as_str())
+    );
+    assert_eq!(*navigation, hsk_studio_folio::Navigation::Navigate);
+    assert!(transition.is_none(), "instant transition");
+    let r = reaction("Click: smart animate");
+    let hsk_studio_folio::StudioAction::Node {
+        destination_id,
+        transition: Some(t),
+        ..
+    } = &r.actions[0]
+    else {
+        panic!("animated action")
+    };
+    assert_eq!(
+        destination_id.as_deref(),
+        Some(node_of("animated-screen").as_str())
+    );
+    assert_eq!(
+        t.transition_type,
+        hsk_studio_folio::TransitionType::SmartAnimate
+    );
+    assert_eq!(t.duration, 350);
+    let r = reaction("Click: back to start");
+    let hsk_studio_folio::StudioAction::Node { destination_id, .. } = &r.actions[0] else {
+        panic!("node action")
+    };
+    assert_eq!(
+        destination_id.as_deref(),
+        Some(node_of("start-screen").as_str())
+    );
+    let c = counts(&p.mapping_loss);
+    assert_eq!(
+        c[&(
+            "native.interactions.easing=INOUT_CUBIC".to_owned(),
+            "easing_curve_unverified_linear_used"
+        )],
+        1
+    );
+}
+
+#[test]
 fn real_native_package_round_trip() {
     let cancel = CancellationToken::default();
     for name in FIXTURES {
@@ -494,6 +628,7 @@ fn real_native_package_round_trip() {
         assert_eq!(records.design, m.proposal.design, "{name}");
         assert_eq!(records.id_map, m.proposal.id_map, "{name}");
         assert_eq!(records.stories, m.proposal.stories, "{name}");
+        assert_eq!(records.record_map, m.proposal.record_map, "{name}");
         let texts = m.doc.nodes.iter().filter(|n| n.type_name == "TEXT").count();
         assert_eq!(
             records.stories.len(),

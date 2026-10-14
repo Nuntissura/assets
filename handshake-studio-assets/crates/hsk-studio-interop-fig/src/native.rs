@@ -1,20 +1,26 @@
 //! Mapping of a decoded [`FigDocument`] into the Studio native document (Folio): pages, artboards,
-//! layer tree, layer appearance, paint styles (fills and strokes), inline text stories and the node
-//! design records that bind them. Only Folio's own types are produced (CX-CAP-001); anything without a Folio home is a
-//! typed loss entry, never dropped silently (test: fig_native::real_native_losses_accounted).
+//! layer tree, layer appearance, paint styles (fills and strokes), inline text stories, components,
+//! component sets, instances and overrides (instance layers through `hsk-studio-components`),
+//! auto layout, prototype reactions, variable collections and variables, plus the node design
+//! records that bind them. Only Folio's own types are produced (CX-CAP-001); anything without a
+//! Folio home is a typed loss entry, never dropped silently (tests:
+//! fig_native::real_native_losses_accounted, real_native_components_instances_overrides,
+//! real_native_auto_layout_reactions_variables).
 //!
 //! Identity: every Folio id comes from the caller's [`IdMint`]; the Figma source id of every mapped
-//! node is kept in [`NativeProposal::id_map`] and in the records import entry, so a saved and
-//! reopened package still names the source node of every layer (test:
-//! fig_native::real_native_package_round_trip).
+//! node is kept in [`NativeProposal::id_map`] (document nodes) or [`NativeProposal::record_map`]
+//! (variables) and in the records import entry, so a saved and reopened package still names the
+//! source node of every layer and record (test: fig_native::real_native_package_round_trip).
 //!
-//! Not mapped here (typed losses): vector path geometry (Folio layers list `hsk.studio.vector_path@1`
-//! ids whose geometry is owned by `hsk-studio-nib`; interop-fig has no edge to nib), layer
-//! transforms of non-artboard nodes (Folio layers carry no transform), image paints, effects,
-//! masks. Editable import stays NOT_PROVEN (`FigImport::editable`).
+//! Not mapped (typed losses): vector path geometry and shape parameters (Folio vector layers list
+//! `hsk.studio.vector_path@1` ids whose geometry is owned by `hsk-studio-nib`; interop-fig has no
+//! edge to nib), layer transforms of non-artboard nodes (Folio layers carry no transform), image
+//! paints, effects, masks, text fonts and run styles, paint-to-variable bindings, flow starts,
+//! scroll behaviour. Editable import stays NOT_PROVEN (`FigImport::editable`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::container::hex;
 use crate::import::{FigImport, SourceId};
+use crate::nodes::VariableValue;
 use crate::nodes::{FigDocument, FigNode, NodeLoss, NodePayload, Paint, PaintKind};
 use crate::semantic_decode::EditableStatus;
 use crate::{FigError, Result};
@@ -28,6 +34,14 @@ use hsk_studio_folio::{
     StudioDocument, StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer,
     StudioLayerGraph, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing,
     StudioStrokeStyle, StyleKind, StyleRegistrySchema, validate_design_records, validate_document,
+};
+use hsk_studio_folio::{
+    AutoLayoutSchema, AxisSizingMode, CounterAxisAlign, CounterAxisAlignContent, CubicBezier,
+    LayoutMode, LayoutWrap, MAX_DURATION_MS, Navigation, PADDING_MAX, PrimaryAxisAlign,
+    SPACING_MAX, SPACING_MIN, StudioAction, StudioAutoLayout, StudioEasing, StudioMode,
+    StudioReaction, StudioRgba, StudioTransition, StudioTrigger, StudioVariable,
+    StudioVariableCollection, TransitionType, VARIABLE_SCOPES, VariableCollectionSchema,
+    VariableSchema, VariableType,
 };
 use hsk_studio_folio::{
     StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioTextStory,
@@ -76,6 +90,13 @@ pub struct NativeConfig<'a> {
     pub resolver: &'a dyn Resolver,
 }
 
+/// One Figma node mapped to a design record (`SVCL`/`SVAR` id) instead of a document node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordMapEntry {
+    pub source: SourceId,
+    pub record_id: String,
+}
+
 /// One mapped node: Figma source id -> Folio node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdMapEntry {
@@ -93,6 +114,8 @@ pub struct NativeProposal {
     /// One inline text story per TEXT node (`hsk.studio.text_story@1`), validated.
     pub stories: Vec<StudioTextStory>,
     pub id_map: Vec<IdMapEntry>,
+    /// Figma nodes that became design records rather than document nodes (variables).
+    pub record_map: Vec<RecordMapEntry>,
     /// Mapping losses only (`native.*` paths), aggregated like [`NodeLoss`].
     pub mapping_loss: Vec<NodeLoss>,
     /// The decode losses of the source [`FigDocument`].
@@ -160,6 +183,9 @@ struct Mapper<'a> {
     components: Vec<StudioComponent>,
     component_sets: Vec<StudioComponentSet>,
     component_instances: Vec<StudioComponentInstance>,
+    collections: Vec<StudioVariableCollection>,
+    variables: Vec<StudioVariable>,
+    record_map: Vec<RecordMapEntry>,
 }
 
 fn px(value: f64) -> Length {
@@ -467,9 +493,9 @@ impl Mapper<'_> {
             },
             rows,
         });
-        let mut d = design(node);
-        d.style_refs.insert("fill_style_id".into(), style_id);
-        self.designs.push(d);
+        self.design_for(&node)
+            .style_refs
+            .insert("fill_style_id".into(), style_id);
         Ok(())
     }
 
@@ -798,6 +824,425 @@ impl Mapper<'_> {
         Ok(())
     }
 
+    /// The node design entry of `node` (one per node; Folio refuses duplicates).
+    fn design_for(&mut self, node: &NodeRef) -> &mut StudioNodeDesign {
+        let at = match self.designs.iter().position(|d| &d.node == node) {
+            Some(i) => i,
+            None => {
+                self.designs.push(design(node.clone()));
+                self.designs.len().saturating_sub(1)
+            }
+        };
+        &mut self.designs[at]
+    }
+
+    /// Figma stack fields -> `StudioAutoLayout` on a container (group layer or artboard). Padding
+    /// keeps the stored names: stackHorizontalPadding = left, stackVerticalPadding = top (Figma
+    /// plugin naming; UNVERIFIED for files without right/bottom, which then reuse them). Sizing,
+    /// alignment, wrap and border inclusion are not decoded: defaults with a typed loss.
+    fn auto_layout(&mut self, f: &crate::nodes::FramePayload, node: &NodeRef, container: bool) {
+        let Some(a) = &f.auto_layout else {
+            return;
+        };
+        if !container {
+            self.lose(
+                "native.auto_layout",
+                "auto_layout_on_non_container_no_folio_home",
+            );
+            return;
+        }
+        let mode = match a.mode.as_str() {
+            "HORIZONTAL" => LayoutMode::Horizontal,
+            "VERTICAL" => LayoutMode::Vertical,
+            "GRID" => LayoutMode::Grid,
+            "NONE" => return,
+            _ => {
+                self.lose(
+                    format!("native.auto_layout.mode={}", a.mode),
+                    "auto_layout_mode_unknown",
+                );
+                return;
+            }
+        };
+        let spacing = a.spacing.map_or(0.0, wide);
+        let left = a.horizontal_padding.map_or(0.0, wide);
+        let top = a.vertical_padding.map_or(0.0, wide);
+        let right = a.padding_right.map_or(left, wide);
+        let bottom = a.padding_bottom.map_or(top, wide);
+        let pad_ok = |v: f64| (0.0..=PADDING_MAX).contains(&v);
+        if !(SPACING_MIN..=SPACING_MAX).contains(&spacing)
+            || ![left, top, right, bottom].iter().all(|v| pad_ok(*v))
+        {
+            self.lose("native.auto_layout", "auto_layout_value_out_of_range");
+            return;
+        }
+        self.lose(
+            "native.auto_layout.sizing_alignment",
+            "auto_layout_defaults_for_undecoded_fields",
+        );
+        self.design_for(node).auto_layout = Some(StudioAutoLayout {
+            schema_id: AutoLayoutSchema::V1,
+            layout_mode: mode,
+            layout_wrap: LayoutWrap::NoWrap,
+            primary_axis_sizing_mode: AxisSizingMode::Fixed,
+            counter_axis_sizing_mode: AxisSizingMode::Fixed,
+            primary_axis_align_items: PrimaryAxisAlign::Min,
+            counter_axis_align_items: CounterAxisAlign::Min,
+            counter_axis_align_content: CounterAxisAlignContent::Auto,
+            item_spacing: spacing,
+            counter_axis_spacing: None,
+            padding_top: top,
+            padding_right: right,
+            padding_bottom: bottom,
+            padding_left: left,
+            strokes_included_in_layout: false,
+            item_reverse_z_index: false,
+        });
+    }
+
+    /// Prototype interactions -> ordered `StudioReaction`s on the node's design entry. Destinations
+    /// resolve through the id map (after the walk). Easing: only LINEAR has a verified curve; other
+    /// easings keep type and duration with a linear curve and a typed loss.
+    fn reactions(&mut self) {
+        let doc = self.doc;
+        let nodes: HashMap<SourceId, NodeRef> = self
+            .id_map
+            .iter()
+            .map(|e| (e.source, e.node.clone()))
+            .collect();
+        let entries: Vec<(SourceId, NodeRef)> = self
+            .id_map
+            .iter()
+            .map(|e| (e.source, e.node.clone()))
+            .collect();
+        for (source, node_ref) in entries {
+            let Some(n) = doc.node(source) else {
+                continue;
+            };
+            if n.interactions.is_empty() {
+                continue;
+            }
+            self.current = Some(source);
+            let mut reactions = Vec::new();
+            for it in &n.interactions {
+                if it.deleted == Some(true) {
+                    self.lose("native.interactions", "interaction_deleted_skipped");
+                    continue;
+                }
+                let trigger = match it.trigger.as_deref() {
+                    Some("ON_CLICK") => StudioTrigger::OnClick {},
+                    Some("ON_HOVER") => StudioTrigger::OnHover {},
+                    Some("ON_PRESS") => StudioTrigger::OnPress {},
+                    Some("MOUSE_ENTER") => StudioTrigger::MouseEnter {},
+                    Some("MOUSE_LEAVE") => StudioTrigger::MouseLeave {},
+                    Some("MOUSE_DOWN") => StudioTrigger::MouseDown {},
+                    Some("MOUSE_UP") => StudioTrigger::MouseUp {},
+                    other => {
+                        self.lose(
+                            format!("native.interactions.trigger={}", other.unwrap_or("?")),
+                            "trigger_not_mapped",
+                        );
+                        continue;
+                    }
+                };
+                let mut actions = Vec::new();
+                for a in &it.actions {
+                    match a.connection.as_deref() {
+                        Some("BACK") => actions.push(StudioAction::Back {}),
+                        Some("CLOSE") => actions.push(StudioAction::Close {}),
+                        Some("INTERNAL_NODE") | None => {
+                            let navigation = match a.navigation.as_deref() {
+                                Some("NAVIGATE") | None => Navigation::Navigate,
+                                Some("OVERLAY") => Navigation::Overlay,
+                                Some("SWAP") => Navigation::Swap,
+                                Some("SCROLL_TO") => Navigation::ScrollTo,
+                                Some("CHANGE_TO") => Navigation::ChangeTo,
+                                Some(other) => {
+                                    self.lose(
+                                        format!("native.interactions.navigation={other}"),
+                                        "navigation_not_mapped",
+                                    );
+                                    continue;
+                                }
+                            };
+                            let destination_id = match a.destination {
+                                Some(d) => match nodes.get(&d) {
+                                    Some(r) => Some(r.node_id.clone()),
+                                    None => {
+                                        self.lose(
+                                            "native.interactions.destination",
+                                            "destination_not_mapped",
+                                        );
+                                        continue;
+                                    }
+                                },
+                                None => None,
+                            };
+                            let transition = match a.transition.as_deref() {
+                                None | Some("INSTANT_TRANSITION") => None,
+                                Some(t) => {
+                                    let transition_type = match t {
+                                        "DISSOLVE" => TransitionType::Dissolve,
+                                        "SMART_ANIMATE" => TransitionType::SmartAnimate,
+                                        "SCROLL_ANIMATE" => TransitionType::ScrollAnimate,
+                                        other => {
+                                            self.lose(
+                                                format!("native.interactions.transition={other}"),
+                                                "transition_not_mapped",
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let ms = a.duration.map_or(0.0, |d| wide(d) * 1000.0).round();
+                                    if !(0.0..=f64::from(MAX_DURATION_MS)).contains(&ms) {
+                                        self.lose(
+                                            "native.interactions.duration",
+                                            "transition_duration_out_of_range",
+                                        );
+                                        continue;
+                                    }
+                                    let bezier = match a.easing.as_deref() {
+                                        Some("LINEAR") => (0.0, 0.0, 1.0, 1.0),
+                                        other => {
+                                            self.lose(
+                                                format!(
+                                                    "native.interactions.easing={}",
+                                                    other.unwrap_or("?")
+                                                ),
+                                                "easing_curve_unverified_linear_used",
+                                            );
+                                            (0.0, 0.0, 1.0, 1.0)
+                                        }
+                                    };
+                                    Some(StudioTransition {
+                                        transition_type,
+                                        direction: None,
+                                        match_layers: None,
+                                        easing: StudioEasing {
+                                            easing_function_cubic_bezier: Some(CubicBezier {
+                                                x1: bezier.0,
+                                                y1: bezier.1,
+                                                x2: bezier.2,
+                                                y2: bezier.3,
+                                            }),
+                                            easing_function_spring: None,
+                                        },
+                                        duration: ms as u32,
+                                    })
+                                }
+                            };
+                            actions.push(StudioAction::Node {
+                                destination_id,
+                                navigation,
+                                transition,
+                                preserve_scroll_position: false,
+                                overlay_relative_position: None,
+                                reset_video_position: false,
+                                reset_scroll_position: false,
+                                reset_interactive_components: false,
+                            });
+                        }
+                        Some(other) => {
+                            self.lose(
+                                format!("native.interactions.connection={other}"),
+                                "action_not_mapped",
+                            );
+                        }
+                    }
+                }
+                reactions.push(StudioReaction {
+                    trigger: Some(trigger),
+                    actions,
+                });
+            }
+            if !reactions.is_empty() {
+                self.design_for(&node_ref).reactions = reactions;
+            }
+        }
+    }
+
+    /// VARIABLE_SET -> `StudioVariableCollection` (Figma mode ids kept as `session:local`, first mode
+    /// the default), VARIABLE -> `StudioVariable` with a value per mode (colour, float, boolean,
+    /// string, alias). Paint bindings to variables have no Folio field: typed loss.
+    fn variables(&mut self) {
+        let doc = self.doc;
+        let sets: Vec<usize> = doc
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.type_name == "VARIABLE_SET")
+            .map(|(i, _)| i)
+            .collect();
+        let vars: Vec<usize> = doc
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.type_name == "VARIABLE")
+            .map(|(i, _)| i)
+            .collect();
+        let mut collection_of: HashMap<SourceId, (String, Vec<String>)> = HashMap::new();
+        for &i in &sets {
+            let n = &doc.nodes[i];
+            self.current = Some(n.id);
+            let NodePayload::VariableSet { modes } = &n.payload else {
+                continue;
+            };
+            if modes.is_empty() {
+                self.lose("native.variable_set", "variable_set_without_modes");
+                continue;
+            }
+            let id = self.mint.mint("SVCL");
+            let mode_ids: Vec<String> = modes.iter().map(|m| m.id.to_string()).collect();
+            collection_of.insert(n.id, (id.clone(), mode_ids));
+            self.record_map.push(RecordMapEntry {
+                source: n.id,
+                record_id: id.clone(),
+            });
+            self.collections.push(StudioVariableCollection {
+                schema_id: VariableCollectionSchema::V1,
+                collection_id: id,
+                name: n.name.clone().unwrap_or_default(),
+                hidden_from_publishing: false,
+                publishing: Self::publishing(None, format!("fig-import/{}", n.id)),
+                is_extension: false,
+                modes: modes
+                    .iter()
+                    .map(|m| StudioMode {
+                        mode_id: m.id.to_string(),
+                        name: m.name.clone().unwrap_or_else(|| m.id.to_string()),
+                    })
+                    .collect(),
+                default_mode_id: modes[0].id.to_string(),
+                variable_ids: Vec::new(),
+            });
+        }
+        // Ids first: aliases may point forward.
+        let mut var_ids: HashMap<SourceId, (String, VariableType)> = HashMap::new();
+        for &i in &vars {
+            let n = &doc.nodes[i];
+            let NodePayload::Variable(v) = &n.payload else {
+                continue;
+            };
+            let ty = match v.resolved_type.as_deref() {
+                Some("COLOR") => VariableType::Color,
+                Some("FLOAT") => VariableType::Float,
+                Some("BOOLEAN") => VariableType::Boolean,
+                Some("STRING") => VariableType::String,
+                other => {
+                    self.current = Some(n.id);
+                    self.lose(
+                        format!("native.variable.type={}", other.unwrap_or("?")),
+                        "variable_type_not_mapped",
+                    );
+                    continue;
+                }
+            };
+            var_ids.insert(n.id, (self.mint.mint("SVAR"), ty));
+        }
+        for &i in &vars {
+            let n = &doc.nodes[i];
+            self.current = Some(n.id);
+            let NodePayload::Variable(v) = &n.payload else {
+                continue;
+            };
+            let Some((variable_id, ty)) = var_ids.get(&n.id).cloned() else {
+                continue;
+            };
+            let Some((collection_id, modes)) =
+                v.set_id.and_then(|s| collection_of.get(&s)).cloned()
+            else {
+                self.lose("native.variable.set", "variable_collection_not_mapped");
+                continue;
+            };
+            let mut values = BTreeMap::new();
+            for (mode, value) in &v.values {
+                let mapped = match value {
+                    VariableValue::Color(c) => Some(StudioValue::Color {
+                        value: StudioRgba {
+                            r: wide(c.r).clamp(0.0, 1.0),
+                            g: wide(c.g).clamp(0.0, 1.0),
+                            b: wide(c.b).clamp(0.0, 1.0),
+                            a: wide(c.a).clamp(0.0, 1.0),
+                            colour_profile_id: ProfileBinding::Unassigned(()),
+                        },
+                    }),
+                    VariableValue::Float(f) => Some(StudioValue::Float { value: wide(*f) }),
+                    VariableValue::Bool(b) => Some(StudioValue::Boolean { value: *b }),
+                    VariableValue::Text(t) => Some(StudioValue::String { value: t.clone() }),
+                    VariableValue::Alias(target) => {
+                        var_ids
+                            .get(target)
+                            .map(|(id, t)| StudioValue::VariableAlias {
+                                id: id.clone(),
+                                resolved_type: *t,
+                            })
+                    }
+                    VariableValue::Unsupported(_) => None,
+                };
+                match mapped {
+                    Some(m) => {
+                        values.insert(mode.to_string(), m);
+                    }
+                    None => self.lose("native.variable.value", "variable_value_not_mapped"),
+                }
+            }
+            if modes.iter().any(|m| !values.contains_key(m)) || values.len() != modes.len() {
+                self.lose(
+                    "native.variable.values_by_mode",
+                    "variable_mode_coverage_incomplete",
+                );
+                continue;
+            }
+            let scopes: Vec<String> = v
+                .scopes
+                .iter()
+                .filter(|s| VARIABLE_SCOPES.contains(&s.as_str()))
+                .cloned()
+                .collect();
+            if scopes.len() != v.scopes.len() {
+                self.lose("native.variable.scopes", "variable_scope_not_in_folio_set");
+            }
+            if let Some(k) = self
+                .collections
+                .iter_mut()
+                .find(|k| k.collection_id == collection_id)
+            {
+                k.variable_ids.push(variable_id.clone());
+            }
+            self.record_map.push(RecordMapEntry {
+                source: n.id,
+                record_id: variable_id.clone(),
+            });
+            self.variables.push(StudioVariable {
+                schema_id: VariableSchema::V1,
+                variable_id,
+                name: n.name.clone().unwrap_or_default(),
+                hidden_from_publishing: false,
+                publishing: Self::publishing(None, format!("fig-import/{}", n.id)),
+                variable_collection_id: collection_id,
+                resolved_type: ty,
+                values_by_mode: values,
+                scopes,
+                code_syntax: BTreeMap::new(),
+            });
+        }
+        // Paints bound to variables (colorVar): no Folio field binds a paint row to a variable.
+        let bound = doc
+            .nodes
+            .iter()
+            .flat_map(|n| n.fills.iter().chain(&n.strokes).map(move |p| (n.id, p)))
+            .filter(|(_, p)| p.color_variable.is_some())
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in bound {
+            self.current = Some(id);
+            self.lose(
+                "native.paint.color_variable",
+                "paint_variable_binding_no_folio_home",
+            );
+        }
+    }
+
     /// Losses for decoded node data this slice does not map.
     fn unmapped(&mut self, n: &FigNode, artboard: bool) {
         if !artboard && n.type_name != "CANVAS" {
@@ -818,9 +1263,6 @@ impl Mapper<'_> {
         }
         if !n.fill_geometry.is_empty() || !n.stroke_geometry.is_empty() {
             self.lose("native.geometry", "vector_geometry_needs_nib_edge");
-        }
-        if !n.interactions.is_empty() {
-            self.lose("native.interactions", "reactions_not_mapped");
         }
         if n.flow_start.is_some() {
             self.lose("native.flow_start", "flow_start_not_mapped");
@@ -847,9 +1289,6 @@ impl Mapper<'_> {
                 }
                 if f.mask_disabled == Some(false) {
                     self.lose("native.clips_content", "frame_clip_not_mapped");
-                }
-                if f.auto_layout.is_some() {
-                    self.lose("native.auto_layout", "auto_layout_not_mapped");
                 }
                 if f.scroll_direction.is_some() {
                     self.lose("native.scroll_direction", "scroll_not_mapped");
@@ -895,7 +1334,7 @@ impl Mapper<'_> {
         let ty = n.type_name.as_str();
         let name = n.name.clone().unwrap_or_default();
         if NON_LAYER_KINDS.contains(&ty) {
-            self.lose(format!("native.node={ty}"), "variables_not_mapped");
+            // Variable records, built after the walk (`variables`).
             return Ok(());
         }
         let is_artboard = parent_is_canvas
@@ -1050,6 +1489,13 @@ impl Mapper<'_> {
         if ty != "CANVAS" {
             self.style(n, node_ref.clone())?;
         }
+        if let NodePayload::Frame(f)
+        | NodePayload::Symbol { frame: f, .. }
+        | NodePayload::Instance { frame: f, .. } = &n.payload
+        {
+            let container = is_artboard || CONTAINER_KINDS.contains(&ty);
+            self.auto_layout(f, &node_ref, container);
+        }
         let is_container = ty == "CANVAS" || is_artboard || CONTAINER_KINDS.contains(&ty);
         let children = n.children.clone();
         if !is_container && !children.is_empty() {
@@ -1127,6 +1573,9 @@ pub fn to_native(
         components: Vec::new(),
         component_sets: Vec::new(),
         component_instances: Vec::new(),
+        collections: Vec::new(),
+        variables: Vec::new(),
+        record_map: Vec::new(),
     };
     for &root in &doc.roots {
         let r = &doc.nodes[root];
@@ -1140,12 +1589,17 @@ pub fn to_native(
         }
     }
     m.components()?;
+    m.variables();
+    m.reactions();
     let Mapper {
         layers,
         stories,
         components,
         component_sets,
         component_instances,
+        collections,
+        variables,
+        record_map,
         artboards,
         styles,
         designs,
@@ -1184,6 +1638,8 @@ pub fn to_native(
     design_records.components = components;
     design_records.component_sets = component_sets;
     design_records.component_instances = component_instances;
+    design_records.variable_collections = collections;
+    design_records.variables = variables;
     for story in &stories {
         validate_text_story(story, cfg.budget, cancel, cfg.resolver).map_err(folio_error)?;
     }
@@ -1200,6 +1656,7 @@ pub fn to_native(
         design: design_records,
         stories,
         id_map,
+        record_map,
         mapping_loss: aggregate(loss),
         decode_loss: doc.loss.clone(),
         editable: EditableStatus::NotProven,
@@ -1232,6 +1689,8 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",
     "text_direction (stories are written left-to-right; Figma stores AUTO directionality)",
+    "auto_layout_fields (stackHorizontalPadding/stackVerticalPadding read as left/top; sizing, alignment, wrap and border inclusion are defaults)",
+    "transition_easing (only LINEAR has a verified curve; other easings are written linear with a loss entry)",
 ];
 
 impl NativeProposal {
@@ -1248,6 +1707,10 @@ impl NativeProposal {
                 "source": e.source.to_string(),
                 "node_kind": node_kind_token(&e.node.node_kind),
                 "node_id": e.node.node_id,
+            })).collect::<Vec<_>>(),
+            "record_map": self.record_map.iter().map(|e| json!({
+                "source": e.source.to_string(),
+                "record_id": e.record_id,
             })).collect::<Vec<_>>(),
         });
         let original_entry = ImportEntry::new(ImportRole::Original, original.to_vec());
@@ -1289,6 +1752,7 @@ pub struct NativeRecords {
     pub design: StudioDesignRecords,
     pub stories: Vec<StudioTextStory>,
     pub id_map: Vec<IdMapEntry>,
+    pub record_map: Vec<RecordMapEntry>,
 }
 
 /// Parses a records import entry written by [`NativeProposal::import_entries`].
@@ -1330,10 +1794,26 @@ pub fn read_native_records(bytes: &[u8]) -> Result<NativeRecords> {
             },
         });
     }
+    let mut record_map = Vec::new();
+    for e in v["record_map"].as_array().ok_or_else(|| bad.clone())? {
+        let (Some(source), Some(record_id)) = (e["source"].as_str(), e["record_id"].as_str())
+        else {
+            return Err(bad);
+        };
+        let (s, l) = source.split_once(':').ok_or_else(|| bad.clone())?;
+        record_map.push(RecordMapEntry {
+            source: SourceId {
+                session: s.parse().map_err(|_| bad.clone())?,
+                local: l.parse().map_err(|_| bad.clone())?,
+            },
+            record_id: record_id.to_owned(),
+        });
+    }
     Ok(NativeRecords {
         design,
         stories,
         id_map,
+        record_map,
     })
 }
 

@@ -979,9 +979,9 @@ fn actual_fig_instance_variable_prototype_edit_reopen() {
         }
     );
 
-    // Real Figma-authored files: the census (node types, source ids, NodeChange field presence) and,
-    // since SMB-INTEROP-FIG-NODES, the typed node tree (tests/fig_nodes.rs) decode; nothing is mapped
-    // into the Studio native document yet, so editable import stays NOT_PROVEN on every real file.
+    // Real Figma-authored files: census, typed node tree (tests/fig_nodes.rs) and the Folio
+    // mapping (tests/fig_native.rs) decode; geometry, transforms, effects, images and masks are
+    // still losses, so editable import stays NOT_PROVEN on every real file.
     let count = |imp: &FigImport, ty: &str| {
         imp.census
             .as_ref()
@@ -1038,7 +1038,7 @@ fn actual_fig_instance_variable_prototype_edit_reopen() {
             "editable_decoder_blocked"
         );
         eprintln!(
-            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen file={name} decoded=census+typed_node_tree editable_import=not_mapped(no native-document mapping, no edit/reopen round trip)"
+            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen file={name} decoded=census+typed_node_tree editable_import=not_proven(tests/fig_native.rs maps into Folio and proves save+reopen identity and a rename; geometry, transforms, effects, images and masks are losses)"
         );
     }
 }
