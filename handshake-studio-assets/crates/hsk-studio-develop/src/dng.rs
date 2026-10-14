@@ -960,17 +960,25 @@ impl DngRaw {
         baseline: BaselineExposure,
     ) -> Result<(DevelopRecipe, CameraSolution), DevelopError> {
         let solution = self.solve_colour()?;
-        let gain = as_shot_gain(solution.neutral)?;
-        let to_profile = color::mul(xyz_d50_to_profile, &solution.camera_to_xyz_d50);
-        let matrix = color::mul(
-            &to_profile,
-            &color::diag([1.0 / gain[0], 1.0 / gain[1], 1.0 / gain[2]]),
-        );
-        let mut recipe = DevelopRecipe::native(solution.neutral, matrix, profile);
-        if baseline == BaselineExposure::Apply {
-            recipe.exposure_stops = self.color.baseline_exposure;
-        }
+        let recipe = recipe_from_solution(&self.color, &solution, xyz_d50_to_profile, profile, baseline)?;
         Ok((recipe, solution))
+    }
+
+    /// Raw-form white balance (STU-RAW-110): the recipe for an explicit kelvin / tint instead of the
+    /// as-shot white. The target white's chromaticity ([`crate::adjust::white_xy`]) replaces
+    /// AsShotNeutral in the DNG colour solution, so the camera neutral, the iterated CM/FM
+    /// interpolation and the camera -> XYZ matrix are those of that illuminant. The recipe carries
+    /// `WbMode::Temperature` and the request in `adjust.absolute_white_balance`. Kelvin 2000..25000
+    /// (Planckian locus), tint -150..150; the tint scale is UNVERIFIED against Adobe.
+    pub fn recipe_for_white(
+        &self,
+        xyz_d50_to_profile: &Mat3,
+        profile: ProfileBinding,
+        baseline: BaselineExposure,
+        kelvin: f64,
+        tint: f64,
+    ) -> Result<(DevelopRecipe, CameraSolution), DevelopError> {
+        recipe_for_white_point(&self.color, xyz_d50_to_profile, profile, baseline, kelvin, tint)
     }
 
     /// Strict gate: refuse when the file carries features this reader does not apply.
@@ -980,4 +988,44 @@ impl DngRaw {
             None => Ok(()),
         }
     }
+}
+
+fn recipe_from_solution(
+    colour: &DngColor,
+    solution: &CameraSolution,
+    xyz_d50_to_profile: &Mat3,
+    profile: ProfileBinding,
+    baseline: BaselineExposure,
+) -> Result<DevelopRecipe, DevelopError> {
+    let gain = as_shot_gain(solution.neutral)?;
+    let to_profile = color::mul(xyz_d50_to_profile, &solution.camera_to_xyz_d50);
+    let matrix = color::mul(
+        &to_profile,
+        &color::diag([1.0 / gain[0], 1.0 / gain[1], 1.0 / gain[2]]),
+    );
+    let mut recipe = DevelopRecipe::native(solution.neutral, matrix, profile);
+    if baseline == BaselineExposure::Apply {
+        recipe.exposure_stops = colour.baseline_exposure;
+    }
+    Ok(recipe)
+}
+
+/// [`DngRaw::recipe_for_white`] on bare DNG colour tags (usable without a decoded file).
+pub fn recipe_for_white_point(
+    colour: &DngColor,
+    xyz_d50_to_profile: &Mat3,
+    profile: ProfileBinding,
+    baseline: BaselineExposure,
+    kelvin: f64,
+    tint: f64,
+) -> Result<(DevelopRecipe, CameraSolution), DevelopError> {
+    let xy = crate::adjust::white_xy(kelvin, tint)?;
+    let mut target = colour.clone();
+    target.as_shot_neutral = None;
+    target.as_shot_white_xy = Some(xy);
+    let solution = color::solve(&target)?;
+    let mut recipe = recipe_from_solution(colour, &solution, xyz_d50_to_profile, profile, baseline)?;
+    recipe.white_balance_mode = crate::recipe::WbMode::Temperature;
+    recipe.adjust.absolute_white_balance = Some(crate::adjust::AbsoluteWhiteBalance { kelvin, tint });
+    Ok((recipe, solution))
 }

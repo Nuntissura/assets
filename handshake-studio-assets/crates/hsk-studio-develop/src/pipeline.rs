@@ -974,6 +974,9 @@ fn develop_core(
         if prepared.adjust.clarity != 0.0 {
             return Err(DevelopError::UnsupportedContribution("clarity_whole_frame"));
         }
+        if let Some(name) = prepared.adjust.detail.first_active() {
+            return Err(DevelopError::UnsupportedContribution(name));
+        }
         if !prepared.adjust.local.is_empty() {
             return Err(DevelopError::UnsupportedContribution("mask_group_whole_frame"));
         }
@@ -1237,15 +1240,17 @@ fn postprocess(
 ) -> Result<(), DevelopError> {
     let prepared = recipe.prepare()?;
     cancel.check()?;
-    if prepared.adjust.clarity != 0.0 {
-        crate::adjust::clarity(
-            &mut image.rgb,
-            image.width,
-            image.height,
-            recipe.adjust.presence.clarity,
-            prepared.adjust.luma,
-        )?;
-    }
+    let (width, height) = (image.width, image.height);
+    let mut clarity_step = |rgb: &mut [f32]| -> Result<(), DevelopError> {
+        if prepared.adjust.clarity == 0.0 {
+            return Ok(());
+        }
+        crate::adjust::clarity(rgb, width, height, recipe.adjust.presence.clarity, prepared.adjust.luma)
+    };
+    prepared
+        .adjust
+        .detail
+        .apply(&mut image.rgb, width, height, prepared.adjust.luma, &mut clarity_step)?;
     crate::local::apply(
         &mut image.rgb,
         image.width,

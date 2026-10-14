@@ -14,10 +14,12 @@
 
 pub mod adjust;
 mod arw;
+pub mod colour;
 pub mod color;
 pub mod convert;
 mod cr2;
 pub mod curves;
+pub mod detail;
 pub mod local;
 pub mod output;
 pub mod dng;
@@ -32,7 +34,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, SinkPort};
 
 pub use adjust::{
-    ADJUST_VERSION, apply_pixel, clarity, planck_xy, Adjustments, BAND_CENTRES, BAND_NAMES, BasicTone, ColourMixer, HslBand, ParametricCurve,
+    ADJUST_MIN_VERSION, ADJUST_VERSION, AbsoluteWhiteBalance, TINT_UV_PER_COUNT, white_xy, apply_pixel, clarity, planck_xy, Adjustments, BAND_CENTRES, BAND_NAMES, BasicTone, ColourMixer, HslBand, ParametricCurve,
     Presence, WhiteBalanceShift,
 };
 pub use color::{CameraSolution, DngColor};
@@ -43,8 +45,10 @@ pub use convert::{
 pub use local::{
     Brush, Correction, LinearGradient, LocalStack, Mask, MaskBlend, MaskSource, RadialGradient, parse_dab,
 };
+pub use colour::{ColourGrading, GrayscaleMix, MAX_POINT_COLOURS, PointColour, Wheel};
+pub use detail::{Detail, NoiseReduction, Sharpen};
 pub use curves::{Curve, PreparedCurve};
-pub use dng::{ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
+pub use dng::{recipe_for_white_point, ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
 pub use output::{
     ClipReport, MAX_ICC_BYTES, OutputDepth, OutputImage, check_icc_header, develop_to_output, render_output,
 };

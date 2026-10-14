@@ -1,7 +1,7 @@
 //! Typed, validated develop recipe (STU-CON-042/044). The recipe is an immutable value: develop
 //! never rewrites it, original labels stay as authored, disabled groups stay intact.
 use crate::DevelopError;
-use crate::adjust::{Adjustments, PreparedAdjust};
+use crate::adjust::{Adjustments, Gates, PreparedAdjust};
 use crate::curves::{Curve, PreparedCurve};
 use hsk_studio_accord::DomainId;
 
@@ -59,7 +59,6 @@ impl Enables {
         [
             (self.enable_calibration, "calibration"),
             (self.enable_effects, "effects"),
-            (self.enable_grayscale_mix, "grayscale_mix"),
             (self.enable_lens_corrections, "lens_corrections"),
             (self.enable_red_eye, "red_eye"),
             (self.enable_retouch, "retouch"),
@@ -274,8 +273,10 @@ impl DevelopRecipe {
         if self.demosaic_algorithm != DEMOSAIC_ALGORITHM {
             return Err(DevelopError::UnsupportedDemosaic);
         }
-        if self.white_balance_mode != WbMode::AsShot {
-            return Err(DevelopError::UnsupportedWhiteBalance);
+        match (self.white_balance_mode, self.adjust.absolute_white_balance.is_some()) {
+            (WbMode::AsShot, false) | (WbMode::Temperature, true) => {}
+            (WbMode::AsShot, true) => return Err(DevelopError::InvalidAdjustment),
+            _ => return Err(DevelopError::UnsupportedWhiteBalance),
         }
         if let Some(name) = self.enables.first_unsupported() {
             return Err(DevelopError::UnsupportedContribution(name));
@@ -331,13 +332,7 @@ impl DevelopRecipe {
             matrix: *c,
             curves,
             profile_transform: self.working_profile != self.output_profile,
-            adjust: PreparedAdjust::prepare(
-                &self.adjust,
-                self.enables.enable_colour_adjustments,
-                self.enables.enable_tone_curve,
-                self.enables.enable_detail,
-                self.enables.enable_mask_group_based_corrections,
-            )?,
+            adjust: PreparedAdjust::prepare(&self.adjust, Gates::from_enables(&self.enables))?,
         })
     }
 }

@@ -25,7 +25,9 @@ use crate::DevelopError;
 use crate::color::{self, D50_XYZ, Mat3, SRGB_TO_XYZ_D50};
 
 /// Version of the adjustment maths. Bump when any mapping below changes.
-pub const ADJUST_VERSION: (u32, u32) = (1, 0);
+pub const ADJUST_VERSION: (u32, u32) = (1, 1);
+/// Oldest recipe version still read: 1.0 recipes lack the 1.1 families, which are identity.
+pub const ADJUST_MIN_VERSION: (u32, u32) = (1, 0);
 
 /// Soft range of every count-scale slider (STU-RAW-110/111/112/115).
 pub const COUNT_LIMIT: f64 = 100.0;
@@ -123,6 +125,74 @@ pub struct Adjustments {
     /// Local corrections (gradient and brush masks); applied after the global stages by
     /// `develop_to_image` when `enable_mask_group_based_corrections` is set. Whole-frame only.
     pub local: Vec<crate::local::Correction>,
+    /// Absolute (raw form) white balance request that produced the recipe's resolved neutral and
+    /// matrix; must be `Some` exactly when `white_balance_mode` is `Temperature` (STU-RAW-110).
+    pub absolute_white_balance: Option<AbsoluteWhiteBalance>,
+    pub point_colours: Vec<crate::colour::PointColour>,
+    pub grayscale: crate::colour::GrayscaleMix,
+    pub grading: crate::colour::ColourGrading,
+    pub detail: crate::detail::Detail,
+}
+
+/// Raw-form white balance (STU-RAW-110): kelvin 2000..25000 (the Kim Planckian approximation ends at
+/// 25000; the spec's soft maximum 50000 is NOT reached, refused) and tint -150..150.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AbsoluteWhiteBalance {
+    pub kelvin: f64,
+    pub tint: f64,
+}
+
+/// uv distance of the illuminant from the Planckian locus per tint count (UNVERIFIED scale).
+pub const TINT_UV_PER_COUNT: f64 = 1.0 / 3000.0;
+
+/// Illuminant chromaticity for a kelvin / tint request: the Planckian point, displaced along the
+/// locus normal toward green for tint > 0 (a greener illuminant is corrected with magenta).
+pub fn white_xy(kelvin: f64, tint: f64) -> Result<[f64; 2], DevelopError> {
+    if !kelvin.is_finite() || !tint.is_finite() {
+        return Err(DevelopError::NonFinite);
+    }
+    if !(2000.0..=25000.0).contains(&kelvin) || tint.abs() > 150.0 {
+        return Err(DevelopError::InvalidAdjustment);
+    }
+    let mired = 1.0e6 / kelvin;
+    let at = |m: f64| planck_xy(1.0e6 / m).map(xy_to_uv);
+    let uv = at(mired)?;
+    let (a, b) = (at((mired - 5.0).max(40.0))?, at(mired + 5.0)?);
+    let (tu, tv) = (b[0] - a[0], b[1] - a[1]);
+    let len = tu.hypot(tv);
+    if !len.is_finite() || len == 0.0 {
+        return Err(DevelopError::ColorNoConvergence);
+    }
+    let (mut nu, mut nv) = (-tv / len, tu / len);
+    if nv < 0.0 {
+        nu = -nu;
+        nv = -nv;
+    }
+    Ok(uv_to_xy([uv[0] + tint * TINT_UV_PER_COUNT * nu, uv[1] + tint * TINT_UV_PER_COUNT * nv]))
+}
+
+/// Which adjustment groups are enabled (the STU-RAW-105 booleans this module reads).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Gates {
+    pub colour: bool,
+    pub curve: bool,
+    pub detail: bool,
+    pub mask: bool,
+    pub grayscale: bool,
+}
+
+impl Gates {
+    pub(crate) const ALL_PIXEL: Self = Self { colour: true, curve: true, detail: true, mask: false, grayscale: true };
+
+    pub(crate) fn from_enables(e: &crate::recipe::Enables) -> Self {
+        Self {
+            colour: e.enable_colour_adjustments,
+            curve: e.enable_tone_curve,
+            detail: e.enable_detail,
+            mask: e.enable_mask_group_based_corrections,
+            grayscale: e.enable_grayscale_mix,
+        }
+    }
 }
 
 impl Default for Adjustments {
@@ -137,6 +207,11 @@ impl Default for Adjustments {
             working_to_xyz_d50: SRGB_TO_XYZ_D50,
             luma: REC709_LUMA,
             local: Vec::new(),
+            absolute_white_balance: None,
+            point_colours: Vec::new(),
+            grayscale: crate::colour::GrayscaleMix::default(),
+            grading: crate::colour::ColourGrading::default(),
+            detail: crate::detail::Detail::default(),
         }
     }
 }
@@ -401,7 +476,7 @@ fn white_balance_matrix(wb: &WhiteBalanceShift, working_to_xyz: &Mat3) -> Result
 // ---------------------------------------------------------------------------------------------
 // Colour stage: vibrance, saturation, mixer (HSV on the encoded value).
 
-fn rgb_to_hsv(e: [f64; 3]) -> (f64, f64, f64) {
+pub(crate) fn rgb_to_hsv(e: [f64; 3]) -> (f64, f64, f64) {
     let mx = e[0].max(e[1]).max(e[2]);
     let mn = e[0].min(e[1]).min(e[2]);
     let d = mx - mn;
@@ -418,7 +493,7 @@ fn rgb_to_hsv(e: [f64; 3]) -> (f64, f64, f64) {
     (h * 60.0, d / mx, mx)
 }
 
-fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [f64; 3] {
+pub(crate) fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [f64; 3] {
     let h6 = h.rem_euclid(360.0) / 60.0;
     let sector = h6.floor();
     let f = h6 - sector;
@@ -435,14 +510,14 @@ fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [f64; 3] {
     }
 }
 
-fn smoothstep(t: f64) -> f64 {
+pub(crate) fn smoothstep(t: f64) -> f64 {
     let c = t.clamp(0.0, 1.0);
     (c * c) * (3.0 - 2.0 * c)
 }
 
 /// Band weights for a hue: the two neighbouring centres share the hue by a smoothstep, so the
 /// weights always sum to 1 and a hue at a centre belongs to that band alone.
-fn band_weights(hue: f64) -> [f64; 8] {
+pub(crate) fn band_weights(hue: f64) -> [f64; 8] {
     let h = hue.rem_euclid(360.0);
     let mut w = [0.0; 8];
     let mut i = 7;
@@ -465,7 +540,6 @@ fn skin_weight(hue: f64) -> f64 {
     1.0 - 0.5 * (1.0 - d / 25.0)
 }
 
-#[derive(Clone, Debug, PartialEq)]
 struct ColourStage {
     vibrance: f64,
     saturation: f64,
@@ -473,6 +547,7 @@ struct ColourStage {
     /// Second and third luma weights divided by the weight sum; the luma of `e` is then
     /// `e0 + k1 (e1 - e0) + k2 (e2 - e0)`, which is exactly `e0` for a grey (greys are fixed points).
     luma_diff: [f64; 2],
+    extras: crate::colour::ColourExtras,
 }
 
 impl ColourStage {
@@ -504,6 +579,9 @@ impl ColourStage {
             let v2 = mx2 * (1.0 + 0.5 * dl * s2);
             e = hsv_to_rgb(h + dh * BAND_HUE_DEGREES, s2, v2);
         }
+        if self.extras.is_active() {
+            self.extras.apply(&mut e);
+        }
         [dec(e[0]), dec(e[1]), dec(e[2])]
     }
 }
@@ -520,19 +598,21 @@ pub(crate) struct PreparedAdjust {
     pub(crate) clarity: f64,
     pub(crate) luma: [f64; 3],
     pub(crate) local: crate::local::PreparedLocal,
+    pub(crate) detail: crate::detail::PreparedDetail,
 }
 
 impl PreparedAdjust {
     /// Validates every parameter of every family (even a disabled one) and derives the active parts.
     pub(crate) fn prepare(
         adjust: &Adjustments,
-        colour_on: bool,
-        curve_on: bool,
-        detail_on: bool,
-        mask_on: bool,
+        gates: Gates,
     ) -> Result<Self, DevelopError> {
-        if adjust.version != ADJUST_VERSION {
+        let Gates { colour: colour_on, curve: curve_on, detail: detail_on, mask: mask_on, grayscale: gray_on } = gates;
+        if adjust.version < ADJUST_MIN_VERSION || adjust.version > ADJUST_VERSION {
             return Err(DevelopError::InvalidAdjustment);
+        }
+        if let Some(a) = &adjust.absolute_white_balance {
+            white_xy(a.kelvin, a.tint)?;
         }
         let luma = adjust.luma;
         if luma.iter().any(|v| !v.is_finite() || *v < 0.0) || ((luma[0] + luma[1]) + luma[2] - 1.0).abs() > 1.0e-3 {
@@ -560,11 +640,21 @@ impl PreparedAdjust {
             adjust.local.iter().try_for_each(crate::local::Correction::validate)?;
             crate::local::PreparedLocal::default()
         };
-        let colour = (colour_on && (vibrance != 0.0 || saturation != 0.0 || mixer_active)).then_some(ColourStage {
-            vibrance,
-            saturation,
-            mixer: mixer_active.then_some(bands),
+        let extras = crate::colour::ColourExtras::prepare(
+            &adjust.point_colours,
+            &adjust.grayscale,
+            &adjust.grading,
+            luma,
+            colour_on,
+            gray_on,
+        )?;
+        let detail = crate::detail::PreparedDetail::prepare(&adjust.detail, detail_on)?;
+        let colour = (extras.is_active() || (colour_on && (vibrance != 0.0 || saturation != 0.0 || mixer_active))).then_some(ColourStage {
+            vibrance: if colour_on { vibrance } else { 0.0 },
+            saturation: if colour_on { saturation } else { 0.0 },
+            mixer: (colour_on && mixer_active).then_some(bands),
             luma_diff: [luma[1] / (luma[0] + luma[1] + luma[2]), luma[2] / (luma[0] + luma[1] + luma[2])],
+            extras,
         });
         Ok(Self {
             wb,
@@ -574,6 +664,7 @@ impl PreparedAdjust {
             clarity: if detail_on { clarity } else { 0.0 },
             luma,
             local,
+            detail,
         })
     }
 
@@ -621,7 +712,7 @@ pub fn apply_pixel(adjust: &Adjustments, rgb: [f64; 3]) -> Result<[f64; 3], Deve
     if rgb.iter().any(|v| !v.is_finite()) {
         return Err(DevelopError::NonFinite);
     }
-    let prepared = PreparedAdjust::prepare(adjust, true, true, true, false)?;
+    let prepared = PreparedAdjust::prepare(adjust, Gates::ALL_PIXEL)?;
     prepared.colour(prepared.pre(rgb)?)
 }
 
@@ -650,7 +741,7 @@ fn box_blur_line(src: &[f32], dst: &mut [f32], radius: usize) {
     }
 }
 
-fn box_blur_3(plane: &mut [f32], width: usize, height: usize, radius: usize) {
+pub(crate) fn box_blur_3(plane: &mut [f32], width: usize, height: usize, radius: usize) {
     let mut tmp = vec![0.0f32; plane.len()];
     for _ in 0..3 {
         for (src, dst) in plane.chunks_exact(width).zip(tmp.chunks_exact_mut(width)) {

@@ -286,7 +286,10 @@ impl PreparedLocal {
                 luma: global.luma,
                 ..Adjustments::default()
             };
-            let prepared = PreparedAdjust::prepare(&adjust, true, true, false, false)?;
+            let prepared = PreparedAdjust::prepare(
+                &adjust,
+                crate::adjust::Gates { colour: true, curve: true, detail: false, mask: false, grayscale: false },
+            )?;
             let exposure_gain = (s.exposure * a * LOCAL_EXPOSURE_STOPS).exp2();
             if !exposure_gain.is_finite() || exposure_gain <= 0.0 {
                 return Err(DevelopError::StageOverflow);
