@@ -234,6 +234,12 @@ pub(crate) struct Flat {
     /// of its `/Parent` chain that has one, as written there (a reference, or a dictionary written inside the node). A kept page
     /// that has its own `/Resources` naming the same object is not an heir, so `flatten_purge.rs` reads this too (PLR-104).
     pub inherited_resources: Option<Object>,
+    /// R28-P1 (lead diagnosis DIAG-PRESS-R28, fail closed): the `/Resources` values of the nodes of the old page's `/Parent` chain
+    /// beyond the one it read (every node's when the page had its own `/Resources`; every node's after the nearest one that has
+    /// one when it inherited), as written there. A viewer that merges the ancestors' `/Resources` (pdf.js; ISO 32000 reads the
+    /// nearest only, UNVERIFIED) resolves the old page's names in them too, so `flatten_purge.rs` counts a text-bearing property
+    /// list they hold.
+    pub ancestor_resources: Vec<Object>,
 }
 
 /// `v` resolves to something other than null: an entry with a null value (or a reference to an object the file does not hold) is
@@ -254,6 +260,21 @@ fn inherited_raw(doc: &PdfDoc, page: u32, key: &str) -> Option<Object> {
         num = d.get("Parent")?.as_ref()?.num;
     }
     None
+}
+
+/// The present ([`present`]) values of `key` on every node of `page`'s `/Parent` chain (not the page itself), nearest first, as
+/// written there; the walk ends at a node without a `/Parent` reference or after `Limits::depth_cap` nodes.
+fn ancestor_values(doc: &PdfDoc, page: u32, key: &str) -> Vec<Object> {
+    let mut out = Vec::new();
+    let mut next = doc.dict_of(page).and_then(|d| d.get("Parent")).and_then(Object::as_ref).map(|r| r.num);
+    for _ in 0..doc.limits.depth_cap() {
+        let Some(d) = next.and_then(|n| doc.dict_of(n)) else { break };
+        if let Some(v) = d.get(key).filter(|v| present(doc, v)) {
+            out.push(v.clone());
+        }
+        next = d.get("Parent").and_then(Object::as_ref).map(|r| r.num);
+    }
+    out
 }
 
 fn refuse(c: FlattenCause) -> PressError {
@@ -620,6 +641,11 @@ pub(crate) fn flatten_region_pages(doc: &mut PdfDoc, regions: &[RedactionRegion]
         let old = doc.dict_of(page).cloned().ok_or(PressError::Malformed("page_node"))?;
         // R27-P2: a `/Resources` that resolves to null is absent, so the page inherits (as `PdfDoc::inherited` renders it).
         let inherited_resources = if old.get("Resources").is_none_or(|v| !present(doc, v)) { inherited_raw(doc, page, "Resources") } else { None };
+        // R28-P1: the ancestors' `/Resources` beyond the one the old page read (the nearest is `inherited_resources` when it inherited).
+        let mut ancestor_resources = ancestor_values(doc, page, "Resources");
+        if inherited_resources.is_some() && !ancestor_resources.is_empty() {
+            ancestor_resources.remove(0);
+        }
         let annots = viewer_annotations(doc, page);
         if !annots.is_empty() {
             notes.insert(FlattenNote::Annotations);
@@ -672,7 +698,7 @@ pub(crate) fn flatten_region_pages(doc: &mut PdfDoc, regions: &[RedactionRegion]
         let generation = doc.objects.get(&page).map(|e| e.generation).unwrap_or(0);
         doc.objects.insert(page, Entry { generation, obj: Object::Dict(p), span: None, data_at: None });
         let page_out = FlattenedPage { page_index: index, object: page, width_px: w, height_px: h, notes: notes.into_iter().collect() };
-        out.push(Flat { page: page_out, old, annots, sources, heirs: BTreeSet::new(), inherited_resources });
+        out.push(Flat { page: page_out, old, annots, sources, heirs: BTreeSet::new(), inherited_resources, ancestor_resources });
     }
     let flat: BTreeSet<u32> = out.iter().map(|f| f.page.object).collect();
     let heirs = detach_from_page_tree(doc, &flat)?;

@@ -2781,6 +2781,8 @@ fn descriptor_states_the_structure_tree_rule() {
         "structure_strip_reports_what_it_cannot_remove",
         "structure_strip_unlinks_and_keeps_what_anything_kept_reaches",
         "structure_strip_keeps_multimedia_of_kept_pages",
+        "structure_objects_still_written_after_the_strip_are_reported",
+        "structure_destinations_of_goto_actions_named_through_references_are_unlinked",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
@@ -2800,6 +2802,7 @@ fn descriptor_states_the_structure_tree_rule() {
         "property_lists_the_purge_cannot_clear_are_counted",
         "property_lists_a_kept_page_reaches_are_counted",
         "inherited_property_lists_shared_with_a_kept_pages_own_resources_are_counted",
+        "ancestor_property_lists_of_a_flattened_page_are_counted",
     ] {
         assert!(props.contains(name), "the PLR-104 sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");

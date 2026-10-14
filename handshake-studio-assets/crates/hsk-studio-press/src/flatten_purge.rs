@@ -8,7 +8,10 @@
 //! `GoTo` `/SD`; no object is deleted) and the save's unreachable-object drop leaves the tree out, with the typed loss
 //! `accessibility_tags_removed`; what anything kept still reaches stays and is reported (tests
 //! `default_redaction_strips_the_structure_tree`, `structure_strip_unlinks_and_keeps_what_anything_kept_reaches`,
-//! `structure_strip_keeps_multimedia_of_kept_pages`); with the opt-out
+//! `structure_strip_keeps_multimedia_of_kept_pages`); structure objects still written after the strip are reported NotProven
+//! (closed set from the original tree, lead diagnosis DIAG-PRESS-R28: [`strip_structure`] records every object the original tree
+//! reaches through structure-tree keys and `check_document` counts each one the save still writes, whatever its shape; test
+//! `structure_objects_still_written_after_the_strip_are_reported`); with the opt-out
 //! (`StructureTreePolicy::KeepNotProven`), in a structure tree whose root is an indirect object, the structure elements that
 //! the purge reads and that point at it stay with their text removed (best effort). Whatever the policy, when a save flattens at
 //! least one region and the saved document still has a structure tree (or a dictionary with the shape of a structure element,
@@ -106,7 +109,10 @@
 //!   (one written inline in the replaced page or the emptied node included, R27-P1) and that stays in the file with one of those
 //!   keys while no kept content names it; a dictionary whose scope's content could not be read (usage undetermined: every entry
 //!   stays) or the usage analysis did not finish; and one the purge cannot edit (a `/Resources` or `/Properties` value that is a
-//!   stream or an alias object) holding an entry no kept content names whose property list has one of those keys. A property list
+//!   stream or an alias object) holding an entry no kept content names whose property list has one of those keys; and (R28-P1,
+//!   lead diagnosis DIAG-PRESS-R28) a `/Resources` of a `/Pages` node beyond the one the old page read whose `/Properties` holds a
+//!   property list with one of those keys (`Flat::ancestor_resources`; a viewer that merges ancestor `/Resources` reads the old
+//!   page's names there; test `ancestor_property_lists_of_a_flattened_page_are_counted`). A property list
 //!   written inline in the old page's content left with the page. Tests `marked_content_property_lists_of_flattened_pages_are_purged`,
 //!   `property_lists_a_kept_page_reaches_are_counted`, `inherited_property_lists_shared_with_a_kept_pages_own_resources_are_counted`,
 //!   `property_lists_the_purge_cannot_clear_are_counted`.
@@ -1369,7 +1375,7 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         // The analysis did not finish: nothing is dropped; every painted source still in the file is
         // reported, and a property list the old page reached is undetermined (PLR-104, fail closed).
         let live = reachable(&doc.objects, &trailer_roots(&doc.trailer));
-        let property_residual = u32::from(plan.lists > 0);
+        let property_residual = u32::from(plan.lists > 0 || plan.counted > 0);
         return Ok(Purged { painted_kept: painted.iter().filter(|n| live.contains(n)).copied().collect(), property_residual });
     }
     let property_residual = apply_properties(doc, &plan);
@@ -1584,6 +1590,18 @@ fn plan_properties(objs: &Objs, flats: &[Flat], sources: &BTreeSet<u32>, u: &Usa
                 if unnamed.iter().any(|(_, v)| property_text(objs, v)) {
                     plan.counted = plan.counted.saturating_add(1);
                 }
+            }
+        }
+    }
+    // R28-P1 (lead diagnosis DIAG-PRESS-R28, fail closed): a `/Resources` of a node of the old page's `/Parent` chain beyond the one
+    // it read (`Flat::ancestor_resources`) whose `/Properties` holds a property list with a text key is counted, named or not: a
+    // viewer that merges the ancestors' `/Resources` resolves the old page's names in it (test
+    // `ancestor_property_lists_of_a_flattened_page_are_counted`).
+    for f in flats {
+        for v in &f.ancestor_resources {
+            let props = res(objs, v).as_dict().and_then(|rd| rd.get(PROPERTIES)).map(|p| res(objs, p)).and_then(Object::as_dict);
+            if props.is_some_and(|p| p.entries.iter().any(|(_, x)| property_text(objs, x))) {
+                plan.counted = plan.counted.saturating_add(1);
             }
         }
     }
