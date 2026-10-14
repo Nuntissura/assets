@@ -217,10 +217,19 @@ fn static_closure_no_temporal_provider() {
         assert_eq!(d["version"], 3);
         assert!(d["model"]["owner_of_blend_maths"].as_str().unwrap().contains("hsk_studio_pigment::blend_math"));
         // CX-CAP-001: composite keeps no second copy of the blend enumeration or maths.
-        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
-            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
-            for banned in ["enum StudioBlendMode", "enum BlendMode", "MODE_TABLE", "fn blend_rgb", "fn composite_over"] {
-                assert!(!text.contains(banned), "second blend owner: {banned}");
+        // Every source file, sub-module directories included (src/temporal/).
+        let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let text = std::fs::read_to_string(path).unwrap();
+                for banned in ["enum StudioBlendMode", "enum BlendMode", "MODE_TABLE", "fn blend_rgb", "fn composite_over"] {
+                    assert!(!text.contains(banned), "second blend owner: {banned}");
+                }
             }
         }
     });
