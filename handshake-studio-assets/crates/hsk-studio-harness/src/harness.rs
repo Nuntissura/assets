@@ -12,7 +12,7 @@
 
 use crate::panel::{self, PanelValues, Route};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
-use hsk_studio_folio::{self as folio, Resolution, Resolver, StudioLayer, TileRef};
+use hsk_studio_folio::{self as folio, Parent, Resolution, Resolver, StudioLayer, TileRef};
 use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_session::{
     Applied, CHRONICLE_PROVIDER_ID, ChronicleProvider, Failed, ProviderRegistry, ReportStatus, Session, SessionConfig,
@@ -676,6 +676,96 @@ impl Run<'_> {
         self.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None)
     }
 
+    /// Stack parent and index (0 = bottom-most) of a layer of the working revision (chronicle
+    /// `placement` through the session); `None` when absent, unstacked or nothing is open.
+    pub fn placement(&self, layer_id: &str) -> Option<(Parent, u64)> {
+        self.session.as_ref()?.layer_placement(layer_id)
+    }
+
+    /// Structure edit (lane SMB-HARNESS-UI-3): one chronicle transaction of `placement` writes,
+    /// applied in order (create, delete, move: new layer, duplicate, delete, reorder, group,
+    /// ungroup). Undoable as one step. One record `op`.
+    pub fn restructure(&mut self, op: &str, writes: &[PlacementWrite]) -> bool {
+        let before = self.frames.count();
+        let n = self.op_no();
+        match self.submit_structure(writes, n) {
+            Ok(applied) => {
+                if applied.changed
+                    && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
+                {
+                    let first = writes.first().map_or("", |w| w.layer_id.as_str());
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse });
+                    self.redo_stack.clear();
+                }
+                let detail = json!({
+                    "layers": writes.iter().map(|w| w.layer_id.clone()).collect::<Vec<_>>(),
+                    "provider": applied.provider, "command": applied.command_id,
+                    "previous_revision": applied.previous_revision, "revision": applied.revision,
+                    "changed": applied.changed, "has_inverse": applied.inverse.is_some(),
+                });
+                self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+            }
+            Err(Fail::Refused(code)) => {
+                if self.session.is_some() {
+                    self.own_op(op, before, Err(code))
+                } else {
+                    self.push(op, before, Err(code), None, None)
+                }
+            }
+            Err(Fail::Session(f)) => {
+                let revision = self.revision();
+                self.push(op, before, Err(f.code()), Some(f.report), revision)
+            }
+        }
+    }
+
+    fn submit_structure(&mut self, writes: &[PlacementWrite], n: u64) -> Result<Applied, Fail> {
+        if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
+            return Err(Fail::Refused("provider_not_selected"));
+        }
+        if writes.is_empty() {
+            return Err(Fail::Refused("nothing_to_change"));
+        }
+        let cancel = self.cancel;
+        let actor = actor_json(&self.actor);
+        let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
+        let mut reads = Vec::new();
+        let mut wire = Vec::new();
+        for (i, w) in writes.iter().enumerate() {
+            if writes[..i].iter().any(|o| o.layer_id == w.layer_id) {
+                return Err(Fail::Refused("duplicate_layer"));
+            }
+            let exists = session.snapshot().document().layers.iter().any(|l| l.layer_id == w.layer_id);
+            let current = session.layer_placement(&w.layer_id);
+            if exists && current.is_none() {
+                return Err(Fail::Refused("layer_not_stacked"));
+            }
+            let address = json!({"target":{"node_kind":"layer","node_id":w.layer_id},"property":"placement"});
+            // A layer the session never held is at revision 0 (chronicle); every other address
+            // quotes the session's vector.
+            let revision = session
+                .revisions()
+                .iter()
+                .find(|e| serde_json::to_value(&e.address).ok().as_ref() == Some(&address))
+                .map_or(0, |e| e.revision);
+            reads.push(json!({"address": address, "expected_revision": revision, "expected_value": placement_wire(current.as_ref(), None)}));
+            wire.push(json!({"address": address, "value": placement_wire(w.to.as_ref(), w.create.as_ref())}));
+        }
+        let patch = json!({
+            "transport_version": 1,
+            "document_id": session.snapshot().document().document_id,
+            "base_revision": session.document_revision(),
+            "command_id": format!("harness-op-{n}"),
+            "correlation_id": n,
+            "actor": actor,
+            "reads": reads,
+            "writes": wire,
+        });
+        let params = serde_json::to_vec(&patch).map_err(|_| Fail::Refused("patch_encoding"))?;
+        let revision = session.document_revision();
+        session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel).map_err(Fail::Session)
+    }
+
     /// Stages a tile body in the working session (no record; nothing changes until a
     /// [`Run::set_tiles`] names it). `None` without a session or when the session refuses it.
     pub fn stage_tile(&mut self, bytes: Vec<u8>) -> Result<folio::ContentDigest, &'static str> {
@@ -768,6 +858,21 @@ impl Run<'_> {
         let cancel = self.cancel;
         let actor = actor_json(&self.actor);
         let session = self.session.as_mut().ok_or(Fail::Refused("not_open"))?;
+        // The history is last-in first-out: every later step was undone before this one, and
+        // those undos advanced the revisions this inverse quotes. Its reads are refreshed to the
+        // session's current vector; their expected values still guard the step (chronicle
+        // recovery: invert only while the conditional reads hold). Without this, two edits of one
+        // property could not both be undone (test `multi_step_history_undoes_every_step` in
+        // tests/viewer_layers.rs).
+        let mut reads = inverse["reads"].clone();
+        for read in reads.as_array_mut().into_iter().flatten() {
+            let revision = session
+                .revisions()
+                .iter()
+                .find(|e| serde_json::to_value(&e.address).ok().as_ref() == Some(&read["address"]))
+                .map_or(0, |e| e.revision);
+            read["expected_revision"] = json!(revision);
+        }
         // Inverse::invocation in wire form: fresh command, correlation and actor identity.
         let patch = json!({
             "transport_version": 1,
@@ -776,7 +881,7 @@ impl Run<'_> {
             "command_id": format!("harness-op-{n}"),
             "correlation_id": n,
             "actor": actor,
-            "reads": inverse["reads"],
+            "reads": reads,
             "writes": inverse["writes"],
         });
         let params = serde_json::to_vec(&patch).map_err(|_| Fail::Refused("patch_encoding"))?;
@@ -969,6 +1074,28 @@ fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Pro
         "writes": [{"address": address, "value": wanted}],
     });
     serde_json::to_vec(&patch).map_err(|_| "patch_encoding")
+}
+
+/// One `placement` write of [`Run::restructure`].
+#[derive(Clone, Debug)]
+pub struct PlacementWrite {
+    pub layer_id: String,
+    /// Parent and stack index (0 = bottom-most); `None` deletes the layer.
+    pub to: Option<(Parent, u64)>,
+    /// Record and graph operation of a layer this write creates.
+    pub create: Option<(StudioLayer, folio::Operation)>,
+}
+
+/// The chronicle `placement` value in wire form.
+fn placement_wire(to: Option<&(Parent, u64)>, create: Option<&(StudioLayer, folio::Operation)>) -> Value {
+    let value = to.map(|(parent, index)| {
+        let mut v = json!({"parent": serde_json::to_value(parent).unwrap_or(Value::Null), "index": index});
+        if let Some((layer, operation)) = create {
+            v["create"] = json!({"layer": serde_json::to_value(layer).unwrap_or(Value::Null), "operation": serde_json::to_value(operation).unwrap_or(Value::Null)});
+        }
+        v
+    });
+    json!({"value_kind": "placement", "value": value})
 }
 
 /// The chronicle `Actor` wire form of the run's attribution.

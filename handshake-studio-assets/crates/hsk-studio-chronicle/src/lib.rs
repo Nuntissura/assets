@@ -7,6 +7,12 @@ use hsk_studio_folio::{
 };
 mod structure;
 use structure::{capture, placement_of, remove_layer, set_placement};
+/// The current [`Property::Placement`] of a layer: its parent and stack index (0 = bottom-most),
+/// `None` when the layer is absent or not stacked (no single graph operation filling exactly one
+/// slot under the root or a group layer). The rule `prepare` reads; consumers need no copy of it.
+pub fn placement(document: &StudioDocument, layer_id: &str) -> Option<(Parent, u64)> {
+    placement_of(document, layer_id)
+}
 use hsk_studio_observe::{Observation, Observe, Outcome, SinkPort};
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{

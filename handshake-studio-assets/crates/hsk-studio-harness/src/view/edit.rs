@@ -153,6 +153,43 @@ fn tile_rects(tiles: &[TileRef]) -> Option<Vec<Rect>> {
         .collect()
 }
 
+/// Smallest rectangle holding both.
+fn union(a: Rect, b: Rect) -> Rect {
+    let (x0, y0) = (a.x.min(b.x), a.y.min(b.y));
+    let x1 = a.x.saturating_add(i64::from(a.width)).max(b.x.saturating_add(i64::from(b.width)));
+    let y1 = a.y.saturating_add(i64::from(a.height)).max(b.y.saturating_add(i64::from(b.height)));
+    Rect { x: x0, y: y0, width: u32::try_from(x1.saturating_sub(x0)).unwrap_or(u32::MAX), height: u32::try_from(y1.saturating_sub(y0)).unwrap_or(u32::MAX) }
+}
+
+/// The colour profile new tiles are written in: the layer's own tiles', else any raster tile of
+/// the document (the importers write one working profile), else the assigned RGB working space.
+fn new_tile_profile(doc: &hsk_studio_folio::StudioDocument, tiles: &[TileRef]) -> Option<String> {
+    tiles
+        .first()
+        .or_else(|| doc.layers.iter().find_map(|l| if let Payload::Raster { tiles } = &l.payload { tiles.first() } else { None }))
+        .map(|t| t.colour_profile_id.clone())
+        .or_else(|| match &doc.working_space_rgb {
+            hsk_studio_folio::ProfileBinding::Assigned(id) => Some(id.clone()),
+            hsk_studio_folio::ProfileBinding::Unassigned(()) => None,
+        })
+}
+
+/// A tile reference for a new 256-pixel cell of `layer_id` (format `rgb_f32le` + straight alpha,
+/// the importers' layout), with an object key unique in the layer.
+fn new_tile(layer_id: &str, column: i64, row: i64, profile: &str, digest: &hsk_studio_folio::ContentDigest, existing: &[TileRef]) -> Result<TileRef, String> {
+    let mut key = format!("t_{column}_{row}");
+    if existing.iter().any(|t| t.object_key == key) {
+        key = format!("p_{column}_{row}");
+    }
+    serde_json::from_value(json!({
+        "object_key": key, "layer_id": layer_id, "column": column, "row": row,
+        "width": {"value": CELL, "unit": "px"}, "height": {"value": CELL, "unit": "px"},
+        "format": "rgb_f32le", "colour_profile_id": profile, "schema_id": "hsk.studio.raster_tile@1",
+        "content_digest": digest, "artifact_manifest_id": format!("package/{layer_id}/{key}"),
+    }))
+    .map_err(|e| format!("paint: new tile reference: {e}"))
+}
+
 /// New tile body after painting `colour` (linear, alpha 1) through `coverage` onto `before`
 /// (one `rgb_f32le` cell + one straight `f32le` alpha cell, stride [`CELL`]). pigment
 /// `masked_replace` arithmetic: `a = (1-m) a0 + m`, `c = ((1-m) a0 c0 + m c1) / a`. `None` when the
@@ -340,20 +377,19 @@ impl Viewer {
 
     fn paint_inner(&mut self, layer_id: &str, samples: &[StrokeSample]) -> Result<u64, String> {
         let snap = self.run.snapshot().ok_or("paint: nothing open")?;
-        let layer = snap.document().layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("paint: unknown layer {layer_id}"))?;
+        let doc = snap.document();
+        let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("paint: unknown layer {layer_id}"))?;
         let Payload::Raster { tiles } = &layer.payload else {
             return Err(format!("paint: {layer_id} is not a raster layer ({})", layer.kind));
         };
         let tiles = tiles.clone();
         let rects = tile_rects(&tiles).ok_or("paint: tile sizes are not whole pixels up to 256")?;
-        let Some(area) = rects.iter().copied().reduce(|a, b| {
-            let (x0, y0) = (a.x.min(b.x), a.y.min(b.y));
-            let x1 = a.x.saturating_add(i64::from(a.width)).max(b.x.saturating_add(i64::from(b.width)));
-            let y1 = a.y.saturating_add(i64::from(a.height)).max(b.y.saturating_add(i64::from(b.height)));
-            Rect { x: x0, y: y0, width: u32::try_from(x1.saturating_sub(x0)).unwrap_or(u32::MAX), height: u32::try_from(y1.saturating_sub(y0)).unwrap_or(u32::MAX) }
-        }) else {
-            return Err("paint: the layer has no tiles (painting creates no tiles)".into());
-        };
+        // New tiles go on the importers' 256-pixel grid, so only an empty layer or one on that
+        // grid grows; a layer on another grid paints inside its existing tiles only.
+        let on_cell_grid = tiles.iter().all(|t| t.width.value == CELL as f64 && t.height.value == CELL as f64);
+        let profile = new_tile_profile(doc, &tiles);
+        let canvas = self.canvas()?;
+        let area = rects.iter().copied().fold(canvas, union);
         let b = self.edit.brush;
         let tip = BrushTip::round(b.diameter_px, b.hardness_pct, b.spacing_pct);
         // Pen pressure scales the tip size (mouse samples carry pressure 1).
@@ -388,8 +424,36 @@ impl Viewer {
                 slot.content_digest = digest;
             }
         }
+        // Painting into empty areas creates tiles: every 256-pixel cell the stroke covers that the
+        // layer has no tile for starts transparent (colour 0, alpha 0) and is painted the same way.
+        let mut created = 0usize;
+        if on_cell_grid && let Ok((ex, ey)) = coverage.bounds.end() {
+            let cell = i64::try_from(CELL).unwrap_or(256);
+            let first = |v: i64| v.checked_div_euclid(cell).unwrap_or(0);
+            let last = |v: i64| v.checked_sub(1).and_then(|v| v.checked_div_euclid(cell)).unwrap_or(0);
+            let empty = vec![0u8; COLOUR_CELL.saturating_add(ALPHA_CELL)];
+            for row in first(coverage.bounds.y)..=last(ey) {
+                for column in first(coverage.bounds.x)..=last(ex) {
+                    if tiles.iter().any(|t| t.column == column && t.row == row) {
+                        continue;
+                    }
+                    let (Some(x), Some(y)) = (column.checked_mul(cell), row.checked_mul(cell)) else {
+                        continue;
+                    };
+                    let rect = Rect { x, y, width: CELL as u32, height: CELL as u32 };
+                    let Some(after) = paint_tile(&empty, rect, &coverage, colour) else {
+                        continue;
+                    };
+                    let profile = profile.as_deref().ok_or("paint: no colour profile for new tiles (no raster tile and no assigned RGB working space)")?;
+                    let digest = self.run.stage_tile(after.clone()).map_err(|e| format!("paint: stage {e}"))?;
+                    edited.push(new_tile(layer_id, column, row, profile, &digest, &edited)?);
+                    staged.push((digest.digest.clone(), after));
+                    created = created.saturating_add(1);
+                }
+            }
+        }
         if staged.is_empty() {
-            return Err("paint: the stroke changed no pixel (outside the layer's tiles or the selection)".into());
+            return Err("paint: the stroke changed no pixel (outside the canvas, the layer tiles or the selection)".into());
         }
         let count = staged.len();
         self.assets.extend(staged);
@@ -398,7 +462,7 @@ impl Viewer {
         }
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
         self.dirty = true;
-        self.say(format!("painted {} dabs on {layer_id} ({count} tile(s), revision {revision})", dabs.len()));
+        self.say(format!("painted {} dabs on {layer_id} ({count} tile(s), {created} new, revision {revision})", dabs.len()));
         Ok(revision)
     }
 
@@ -432,7 +496,7 @@ impl Viewer {
         Err(TEXT_TOOL_GAP.into())
     }
 
-    fn after_edit(&mut self, ok: bool, what: String) -> Result<u64, String> {
+    pub(super) fn after_edit(&mut self, ok: bool, what: String) -> Result<u64, String> {
         if ok {
             let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
             self.dirty = true;

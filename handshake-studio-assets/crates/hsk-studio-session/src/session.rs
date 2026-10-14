@@ -2036,6 +2036,12 @@ impl Session {
         &self.revisions
     }
 
+    /// Stack parent and index (0 = bottom-most) of a layer of the current revision, as chronicle's
+    /// `placement` property reads it; `None` for an absent or unstacked layer.
+    pub fn layer_placement(&self, layer_id: &str) -> Option<(folio::Parent, u64)> {
+        chronicle::placement(self.snapshot.document(), layer_id)
+    }
+
     pub fn actor(&self) -> &ActorContext {
         &self.config.actor
     }

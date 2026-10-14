@@ -19,7 +19,7 @@ pub mod panel;
 pub mod view;
 
 pub use harness::{
-    AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, References, Run, SCHEMA, Selection, default_actor,
+    AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, PlacementWrite, References, Run, SCHEMA, Selection, default_actor,
 };
 
 /// Machine-readable crate descriptor (same convention as the other Studio crates).

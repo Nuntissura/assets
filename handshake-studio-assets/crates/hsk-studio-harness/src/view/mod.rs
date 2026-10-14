@@ -20,6 +20,7 @@
 pub mod display;
 pub mod edit;
 pub mod export;
+pub mod layers;
 pub mod render;
 
 use crate::harness::{Harness, References, Run, Selection};
@@ -63,6 +64,14 @@ pub mod widget {
     pub const BRUSH_HARDNESS: &str = "brush.hardness";
     pub const BRUSH_OPACITY: &str = "brush.opacity";
     pub const BRUSH_COLOUR: &str = "brush.colour";
+    /// Layer management (lane SMB-HARNESS-UI-3), acting on the selected layer.
+    pub const LAYER_NEW: &str = "layers.new";
+    pub const LAYER_DUPLICATE: &str = "layers.duplicate";
+    pub const LAYER_DELETE: &str = "layers.delete";
+    pub const LAYER_UP: &str = "layers.up";
+    pub const LAYER_DOWN: &str = "layers.down";
+    pub const LAYER_GROUP: &str = "layers.group";
+    pub const LAYER_UNGROUP: &str = "layers.ungroup";
     pub fn tool(key: &str) -> String {
         format!("tool.{key}")
     }
@@ -249,14 +258,29 @@ impl Viewer {
         Ok(())
     }
 
-    /// The layer tree, top-first, depth-first.
+    /// The layer tree in stack order, top-first, depth-first (the stack is Folio's graph: group
+    /// inputs by ordinal, the root by graph outputs); layers outside any stack (no graph operation)
+    /// follow their stacked siblings in document order.
     pub fn layers(&self) -> Vec<LayerRow> {
         let Some(snap) = self.run.snapshot() else {
             return Vec::new();
         };
-        let layers = &snap.document().layers;
+        let doc = snap.document();
+        let children = |parent: Option<&str>| -> Vec<&StudioLayer> {
+            let stacked = layers::stack(doc, parent);
+            let mut out: Vec<&StudioLayer> = stacked.iter().rev().filter_map(|id| doc.layers.iter().find(|l| &l.layer_id == id)).collect();
+            out.extend(doc.layers.iter().filter(|l| {
+                let under = match (&l.parent, parent) {
+                    (Parent::Root(()), None) => true,
+                    (Parent::Node(n), Some(p)) => n.node_id == p,
+                    _ => false,
+                };
+                under && !stacked.contains(&l.layer_id)
+            }));
+            out
+        };
         let mut rows = Vec::new();
-        let mut stack: Vec<(&StudioLayer, usize)> = layers.iter().filter(|l| matches!(l.parent, Parent::Root(()))).rev().map(|l| (l, 0)).collect();
+        let mut stack: Vec<(&StudioLayer, usize)> = children(None).into_iter().rev().map(|l| (l, 0)).collect();
         while let Some((layer, depth)) = stack.pop() {
             rows.push(LayerRow {
                 layer_id: layer.layer_id.clone(),
@@ -266,9 +290,8 @@ impl Viewer {
                 visible: layer.visible,
                 opacity: layer.effective_appearance().opacity,
             });
-            let children = layers.iter().filter(|c| matches!(&c.parent, Parent::Node(n) if n.node_id == layer.layer_id));
             let next = depth.saturating_add(1);
-            stack.extend(children.rev().map(|c| (c, next)));
+            stack.extend(children(Some(&layer.layer_id)).into_iter().rev().map(|c| (c, next)));
         }
         rows
     }
@@ -514,8 +537,28 @@ impl Viewer {
         self.drawn.push(widget::STATUS_PANEL.into());
 
         let mut toggles = Vec::new();
+        let mut layer_action: Option<&'static str> = None;
         egui::SidePanel::left(widget::id(widget::LAYER_PANEL)).resizable(true).default_width(240.0).show(ctx, |ui| {
             ui.heading("Layers");
+            let open = self.run.snapshot().is_some();
+            let has_selection = self.selected.is_some();
+            ui.horizontal_wrapped(|ui| {
+                for (name, label, hover, needs_selection) in [
+                    (widget::LAYER_NEW, "New", "New empty raster layer above the selected layer", false),
+                    (widget::LAYER_DUPLICATE, "Dup", "Duplicate the selected layer (a group with its contents)", true),
+                    (widget::LAYER_DELETE, "Del", "Delete the selected layer (a group with its contents)", true),
+                    (widget::LAYER_UP, "Up", "Move the selected layer one step up", true),
+                    (widget::LAYER_DOWN, "Down", "Move the selected layer one step down", true),
+                    (widget::LAYER_GROUP, "Group", "Put the selected layer into a new group", true),
+                    (widget::LAYER_UNGROUP, "Ungroup", "Move the selected group's layers out and delete the group", true),
+                ] {
+                    let enabled = open && (has_selection || !needs_selection);
+                    if ui.push_id(widget::id(name), |ui| ui.add_enabled(enabled, egui::Button::new(label))).inner.on_hover_text(hover).clicked() {
+                        layer_action = Some(name);
+                    }
+                    self.drawn.push(name.into());
+                }
+            });
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for row in self.layers() {
                     ui.horizontal(|ui| {
@@ -540,6 +583,9 @@ impl Viewer {
         self.drawn.push(widget::LAYER_PANEL.into());
         for (layer, visible) in toggles {
             let _ = self.set_visible(&layer, visible);
+        }
+        if let Some(action) = layer_action {
+            self.layer_action(action);
         }
 
         let mut commits = Vec::new();
@@ -858,6 +904,24 @@ impl Viewer {
             let _ = self.redo();
         }
         self.drawn.push(widget::REDO_BUTTON.into());
+    }
+
+    /// Runs a layer-panel button (a widget name of [`widget`]) on the selected layer.
+    pub fn layer_action(&mut self, action: &str) {
+        let selected = self.selected.clone();
+        let result = match (action, selected.as_deref()) {
+            (widget::LAYER_NEW, _) => self.new_raster_layer("Layer").map(|_| ()),
+            (widget::LAYER_DUPLICATE, Some(id)) => self.duplicate_layer(id).map(|_| ()),
+            (widget::LAYER_DELETE, Some(id)) => self.delete_layer(id).map(|_| ()),
+            (widget::LAYER_UP, Some(id)) => self.shift_layer(id, true).map(|_| ()),
+            (widget::LAYER_DOWN, Some(id)) => self.shift_layer(id, false).map(|_| ()),
+            (widget::LAYER_GROUP, Some(id)) => self.group_layers(&[id.to_string()], "Group").map(|_| ()),
+            (widget::LAYER_UNGROUP, Some(id)) => self.ungroup(id).map(|_| ()),
+            _ => Err(format!("{action}: select a layer first")),
+        };
+        if let Err(e) = result {
+            self.say(e);
+        }
     }
 
     /// Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y when no text field has keyboard focus.
