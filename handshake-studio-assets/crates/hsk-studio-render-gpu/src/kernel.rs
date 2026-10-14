@@ -341,6 +341,55 @@ pub(crate) struct Kernel {
     /// Layer and backdrop blur passes (`blur.wgsl`, lane SMB-COMPOSITE-NEW-KINDS).
     pipeline_blur: wgpu::ComputePipeline,
     layout_blur: wgpu::BindGroupLayout,
+    /// Layer filter passes (`filter.wgsl`, lane SMB-RENDER-FILTERS), over the blur bind layout.
+    pipeline_filter: wgpu::ComputePipeline,
+}
+
+/// Bytes of the uniform block `FilterP` in `filter.wgsl`: 12 words. It is written into the blur
+/// parameter block (`BLURP_BYTES`, at least this size).
+pub(crate) const FILTERP_BYTES: u64 = 48;
+
+/// One pass of `filter.wgsl` (the op codes of the shader header).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FilterOp {
+    Unsharp { amount: f32, threshold: f32 },
+    HighPass,
+    Copy,
+    Median { radius: u32 },
+    Noise { amount: f32, gaussian: bool, mono: bool, seed: u64, origin: (i32, i32) },
+}
+
+/// The `FilterP` block of `op` over a `frame_w x frame_h` frame.
+pub(crate) fn filter_params_bytes(op: FilterOp, frame_w: u32, frame_h: u32) -> Vec<u8> {
+    // fw, fh, op, radius, origin_x, origin_y, seed_lo, seed_hi, amount, threshold, dist, mono
+    let (code, radius, origin, seed, amount, threshold, dist, mono) = match op {
+        FilterOp::Unsharp { amount, threshold } => (0u32, 0u32, (0i32, 0i32), 0u64, amount, threshold, 0u32, 0u32),
+        FilterOp::HighPass => (1, 0, (0, 0), 0, 0.0, 0.0, 0, 0),
+        FilterOp::Copy => (2, 0, (0, 0), 0, 0.0, 0.0, 0, 0),
+        FilterOp::Median { radius } => (3, radius, (0, 0), 0, 0.0, 0.0, 0, 0),
+        FilterOp::Noise { amount, gaussian, mono, seed, origin } => {
+            (4, 0, origin, seed, amount, 0.0, u32::from(gaussian), u32::from(mono))
+        }
+    };
+    let words = [
+        frame_w,
+        frame_h,
+        code,
+        radius,
+        origin.0 as u32,
+        origin.1 as u32,
+        seed as u32,
+        (seed >> 32) as u32,
+        amount.to_bits(),
+        threshold.to_bits(),
+        dist,
+        mono,
+    ];
+    let mut out = Vec::with_capacity(FILTERP_BYTES as usize);
+    for w in words {
+        out.extend_from_slice(&w.to_ne_bytes());
+    }
+    out
 }
 
 /// Bytes of the uniform block `BlurP` in `blur.wgsl`: 8 header words and 751 vec4 of taps.
@@ -551,6 +600,18 @@ impl Kernel {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        let filter_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hsk-studio-render-gpu filter"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("filter.wgsl"))),
+        });
+        let pipeline_filter = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("hsk-studio-render-gpu filter"),
+            layout: Some(&pipeline_layout_blur),
+            module: &filter_module,
+            entry_point: Some("filter_pass"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
         match crate::device::block_on_bounded(device.pop_error_scope(), None) {
             Some(None) => Ok(Self {
                 pipeline,
@@ -564,6 +625,7 @@ impl Kernel {
                 layout_resample,
                 pipeline_blur,
                 layout_blur,
+                pipeline_filter,
             }),
             Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
             None => Err(GpuError::Pipeline("shader_validation_timeout")),
@@ -698,6 +760,18 @@ impl Kernel {
         height: u32,
     ) {
         Self::dispatch_with(&self.pipeline_blur, encoder, bind, width, height);
+    }
+
+    /// One filter pass over `width` x `height` texels (bind group from [`Kernel::bind_blur`]: the
+    /// filter module shares the blur bind group layout).
+    pub(crate) fn dispatch_filter(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_filter, encoder, bind, width, height);
     }
 
     /// One resample pass over `width` x `height` texels (bind group from [`Kernel::bind_resample`]).

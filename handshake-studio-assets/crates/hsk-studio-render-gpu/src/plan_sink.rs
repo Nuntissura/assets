@@ -35,11 +35,12 @@ use crate::fx::{
     margin_of, params_bytes,
 };
 use crate::kernel::{
-    BLUR_MAX_TAPS, BLURP_BYTES, BlurOp, LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES,
-    RESAMPLE_PARAMS_BYTES, SITE_BYTES, SourceKind, TEXEL_BYTES, blur_params_bytes,
+    BLUR_MAX_TAPS, BLURP_BYTES, BlurOp, FilterOp, LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES,
+    RESAMPLE_PARAMS_BYTES, SITE_BYTES, SourceKind, TEXEL_BYTES, blur_params_bytes, filter_params_bytes,
     gpu_adjust_supported, gpu_blend_supported,
 };
-use hsk_studio_pigment::blur_math::BlurScope;
+use hsk_studio_pigment::blur_math::{BlurScope, LayerBlur};
+use hsk_studio_pigment::filter_math::{LayerFilter, MAX_FILTERS_PER_LAYER, NoiseDistribution};
 use crate::residency::{Residency, ResidentKey};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
@@ -181,6 +182,104 @@ struct PLayer<'a> {
     fx: Option<Box<FxLayer>>,
     /// Layer or backdrop blur of the envelope (pigment `blur_math`, radius above 0).
     blur: Option<Box<BlurGpu>>,
+    /// Layer filters of the envelope (pigment `filter_math`, lane SMB-RENDER-FILTERS).
+    filter: Option<Box<FilterGpu>>,
+}
+
+/// Largest median radius the shader sorts in registers (a disc of at most 149 samples per channel).
+/// Pigment admits 1..=500; a larger radius is the typed refusal `filter_median_radius`.
+const MEDIAN_GPU_MAX_RADIUS: u32 = 7;
+
+/// A filter chain compiled for the passes of `filter.wgsl` and `blur.wgsl`.
+struct FilterGpu {
+    stages: Vec<FilterStageGpu>,
+    /// Pixels the output of the whole chain reaches beyond the content bounds (blur support, median
+    /// radius; point filters add none).
+    growth: u32,
+    /// Pixels the chain reads beyond a kept pixel: the frame margin it needs (sum over the stages).
+    reach: u32,
+}
+enum FilterStageGpu {
+    Gaussian(BlurGpu),
+    Unsharp { blur: BlurGpu, amount: f32, threshold: f32 },
+    HighPass { blur: BlurGpu },
+    Median { radius: u32 },
+    Noise { amount: f32, gaussian: bool, mono: bool, seed: u64 },
+}
+
+/// Compiles the filters of one layer; every refusal is typed and happens before any device work.
+fn compile_filters(filters: &[LayerFilter], node: u32) -> Result<(FilterGpu, u64), GpuError> {
+    let parameter = || {
+        GpuError::Backend(BackendError::InvalidPlan(PlanError::FilterParameter { node }))
+    };
+    if filters.len() > MAX_FILTERS_PER_LAYER {
+        return Err(parameter());
+    }
+    let blur_of = |radius_px: f32| -> Result<BlurGpu, GpuError> {
+        let b = LayerBlur::new(BlurScope::Layer, radius_px);
+        let taps = b.taps().map_err(|_| parameter())?;
+        if taps.len() > BLUR_MAX_TAPS {
+            return Err(unsupported("blur_parameter"));
+        }
+        let support = b.support_px().map_err(|_| parameter())?;
+        Ok(BlurGpu {
+            scope: BlurScope::Layer,
+            taps,
+            support,
+        })
+    };
+    let (mut stages, mut growth, mut reach, mut pass_ops) = (Vec::new(), 0u32, 0u32, 1u64);
+    let add = |total: u32, n: u32| total.checked_add(n).ok_or_else(overflow);
+    for f in filters {
+        f.validate().map_err(|_| parameter())?;
+        let stage = match *f {
+            LayerFilter::GaussianBlur { radius_px } => {
+                let b = blur_of(radius_px)?;
+                growth = add(growth, b.support)?;
+                reach = add(reach, b.support)?;
+                pass_ops = pass_ops.max(u64::try_from(b.taps.len()).map_err(|_| overflow())?);
+                FilterStageGpu::Gaussian(b)
+            }
+            LayerFilter::UnsharpMask { amount_pct, radius_px, threshold_levels } => {
+                let blur = blur_of(radius_px)?;
+                reach = add(reach, blur.support)?;
+                pass_ops = pass_ops.max(u64::try_from(blur.taps.len()).map_err(|_| overflow())?);
+                FilterStageGpu::Unsharp {
+                    blur,
+                    amount: (f64::from(amount_pct) / 100.0) as f32,
+                    threshold: f32::from(threshold_levels),
+                }
+            }
+            LayerFilter::HighPass { radius_px } => {
+                let blur = blur_of(radius_px)?;
+                reach = add(reach, blur.support)?;
+                pass_ops = pass_ops.max(u64::try_from(blur.taps.len()).map_err(|_| overflow())?);
+                FilterStageGpu::HighPass { blur }
+            }
+            LayerFilter::Median { radius_px } => {
+                if radius_px > MEDIAN_GPU_MAX_RADIUS {
+                    return Err(unsupported("filter_median_radius"));
+                }
+                growth = add(growth, radius_px)?;
+                reach = add(reach, radius_px)?;
+                // Disc samples n; the insertion sort costs about n * n / 2 per channel.
+                let side = u64::from(radius_px).saturating_mul(2).saturating_add(1);
+                let n = side.saturating_mul(side);
+                pass_ops = pass_ops.max(n.saturating_mul(n).saturating_mul(2));
+                FilterStageGpu::Median { radius: radius_px }
+            }
+            LayerFilter::AddNoise { amount_pct, distribution, monochromatic, seed } => {
+                FilterStageGpu::Noise {
+                    amount: (f64::from(amount_pct) / 100.0 * 0.5) as f32,
+                    gaussian: distribution == NoiseDistribution::Gaussian,
+                    mono: monochromatic,
+                    seed,
+                }
+            }
+        };
+        stages.push(stage);
+    }
+    Ok((FilterGpu { stages, growth, reach }, pass_ops))
 }
 
 /// A blur compiled for the passes of `blur.wgsl`: the scope, pigment's taps and their half width.
@@ -771,6 +870,28 @@ fn prepare<'a>(
                         }
                         None => None,
                     };
+                    // Layer filters (pigment `filter_math`). Pigment validated the combinations
+                    // (`FilterCombination`); kept as defence in depth with pigment's error value.
+                    let filter = match layer_ext {
+                        Some(x) if !x.filters.is_empty() => {
+                            if fx.is_some()
+                                || blur.is_some()
+                                || adjust.is_some()
+                                || x.transform.is_some()
+                                || pass_through
+                                || clipped
+                            {
+                                return Err(GpuError::Backend(BackendError::InvalidPlan(
+                                    PlanError::FilterCombination { node: node_id },
+                                )));
+                            }
+                            let (compiled, pass_ops) = compile_filters(&x.filters, node_id)?;
+                            has_blur = true;
+                            blur_taps = blur_taps.max(pass_ops);
+                            Some(Box::new(compiled))
+                        }
+                        _ => None,
+                    };
                     // The layer's bounds grow by its effect margin (and a layer blur's support);
                     // the margin of the node is the largest chain sum of effect margins through
                     // nested groups. A backdrop blur reads the backdrop of the layers below up to
@@ -779,7 +900,11 @@ fn prepare<'a>(
                         .as_ref()
                         .filter(|b| b.scope == BlurScope::Layer)
                         .map_or(0, |b| b.support);
-                    let layer_margin = fx.as_ref().map_or(0, |f| f.margin).max(layer_blur);
+                    let layer_margin = fx
+                        .as_ref()
+                        .map_or(0, |f| f.margin)
+                        .max(layer_blur)
+                        .max(filter.as_ref().map_or(0, |f| f.reach));
                     let layer_bounds = match content_bounds {
                         Some(b) if layer_margin > 0 => Some(grow_rect(b, layer_margin)?),
                         b => b,
@@ -810,6 +935,7 @@ fn prepare<'a>(
                         adjust,
                         fx,
                         blur,
+                        filter,
                     });
                 }
                 // Destination levels below this group's own: a plain layer needs its isolated child's
@@ -826,7 +952,10 @@ fn prepare<'a>(
                         Some(PlanNode::Group(_)) => need.get(input).copied().unwrap_or(0),
                         _ => 0,
                     };
-                    if layers[k].fx.is_some() || layers[k].blur.is_some() {
+                    if layers[k].fx.is_some()
+                        || layers[k].blur.is_some()
+                        || layers[k].filter.is_some()
+                    {
                         below.saturating_add(1)
                     } else {
                         below
@@ -1294,7 +1423,8 @@ impl RenderBackend<NoVector> for GpuBackend {
             | ExtOperator::MaskFeather
             | ExtOperator::EffectsNested
             | ExtOperator::Transform(_)
-            | ExtOperator::Blur(_) => true,
+            | ExtOperator::Blur(_)
+            | ExtOperator::Filter(_) => true,
             ExtOperator::AlphaPremultiplied => false,
             ExtOperator::Adjustment(kind) => gpu_adjust_supported(kind),
             ExtOperator::Effect(kind) => matches!(
@@ -2035,6 +2165,9 @@ fn eval_layer(
     if let Some(blur) = layer.blur.as_ref().filter(|b| b.scope == BlurScope::Layer) {
         return eval_blur_layer(ex, prep, layer, blur, chunk, level);
     }
+    if let Some(filter) = &layer.filter {
+        return eval_filter_layer(ex, prep, layer, filter, chunk, level);
+    }
     if layer.opacity <= 0.0 {
         return Ok(());
     }
@@ -2245,8 +2378,20 @@ fn render_shape(
     chunk: Rect,
     content: usize,
 ) -> Result<(), GpuError> {
+    render_content(ex, prep, layer, layer.mask.as_ref(), region, chunk, content)
+}
+
+/// [`render_shape`] with the mask chosen by the caller (`None` = the content before the mask).
+fn render_content(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    mask: Option<&MaskView<'_>>,
+    region: Rect,
+    chunk: Rect,
+    content: usize,
+) -> Result<(), GpuError> {
     ex.clear(content, texel_bytes(chunk.width, chunk.height));
-    let mask = layer.mask.as_ref();
     let normal = |ex: &mut Exec<'_>, src: Src<'_, '_>| {
         ex.composite(
             StudioBlendMode::Normal,
@@ -2319,6 +2464,57 @@ fn eval_blur_layer(
     )
 }
 
+/// A layer with filters (pigment `filter_math`): the content WITHOUT the layer mask one level
+/// below, run through the filter passes over the whole frame (the frame margin carries the sum of
+/// the stage reaches, so every kept pixel reads real content), then composited with the layer's
+/// mask, Blend-If, mode and `opacity * fill` over the content bounds grown by the chain growth.
+/// The composite covers only the mask plane (render-cpu does the same: the part of the filtered
+/// result beyond the plane is not composited).
+fn eval_filter_layer(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    filter: &FilterGpu,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    if layer.opacity <= 0.0 {
+        return Ok(());
+    }
+    let Some(bounds) = prep.bound(layer.input) else {
+        return Ok(());
+    };
+    let Some(content_region) = intersect(bounds, chunk)? else {
+        return Ok(());
+    };
+    let Some(mut region) = intersect(grow_rect(bounds, filter.growth)?, chunk)? else {
+        return Ok(());
+    };
+    if let Some(mask) = layer.mask.as_ref() {
+        region = match intersect(region, mask.bounds)? {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+    }
+    let content = level.saturating_add(1);
+    render_content(ex, prep, layer, None, content_region, chunk, content)?;
+    for stage in &filter.stages {
+        ex.check()?;
+        ex.filter_stage(stage, chunk, content)?;
+    }
+    ex.composite(
+        layer.mode,
+        layer.opacity,
+        layer.mask.as_ref(),
+        layer.blend_if.as_ref(),
+        Pass::Normal,
+        region,
+        chunk,
+        level,
+        Src::Chunk,
+    )
+}
+
 /// Backdrop blur of `layer` before it composites: the running backdrop `levels[level]` is blurred
 /// (horizontal into scratch A, vertical into scratch B) and mixed into the backdrop inside the
 /// layer's shape (rendered one level below) with `k = shape alpha * layer opacity`.
@@ -2370,7 +2566,102 @@ enum BlurIo {
     MixInto { level: usize, shape: usize },
 }
 
+/// A buffer of the filter passes.
+#[derive(Clone, Copy)]
+enum FilterBuf {
+    Level(usize),
+    A,
+    B,
+}
+
 impl Exec<'_> {
+    /// One stage of a filter chain over the whole frame `chunk`, in place on `levels[content]`.
+    fn filter_stage(
+        &mut self,
+        stage: &FilterStageGpu,
+        chunk: Rect,
+        content: usize,
+    ) -> Result<(), GpuError> {
+        let level = FilterBuf::Level(content);
+        match stage {
+            FilterStageGpu::Gaussian(b) => {
+                self.blur_pass(BlurOp::Horizontal, b, 0.0, chunk, BlurIo::LevelToA(content))?;
+                self.blur_pass(BlurOp::Vertical, b, 0.0, chunk, BlurIo::AToLevel(content))
+            }
+            FilterStageGpu::Unsharp { blur, amount, threshold } => {
+                self.blur_pass(BlurOp::Horizontal, blur, 0.0, chunk, BlurIo::LevelToA(content))?;
+                self.blur_pass(BlurOp::Vertical, blur, 0.0, chunk, BlurIo::AToB)?;
+                let op = FilterOp::Unsharp { amount: *amount, threshold: *threshold };
+                self.filter_pass(op, chunk, level, FilterBuf::A, FilterBuf::B)?;
+                self.filter_pass(FilterOp::Copy, chunk, FilterBuf::A, level, FilterBuf::B)
+            }
+            FilterStageGpu::HighPass { blur } => {
+                self.blur_pass(BlurOp::Horizontal, blur, 0.0, chunk, BlurIo::LevelToA(content))?;
+                self.blur_pass(BlurOp::Vertical, blur, 0.0, chunk, BlurIo::AToB)?;
+                self.filter_pass(FilterOp::HighPass, chunk, level, FilterBuf::A, FilterBuf::B)?;
+                self.filter_pass(FilterOp::Copy, chunk, FilterBuf::A, level, FilterBuf::B)
+            }
+            FilterStageGpu::Median { radius } => {
+                let op = FilterOp::Median { radius: *radius };
+                self.filter_pass(op, chunk, level, FilterBuf::A, FilterBuf::B)?;
+                self.filter_pass(FilterOp::Copy, chunk, FilterBuf::A, level, FilterBuf::B)
+            }
+            FilterStageGpu::Noise { amount, gaussian, mono, seed } => {
+                // The hash takes plan coordinates; the shader keeps them in i32.
+                let end_x = chunk.x.checked_add(i64::from(chunk.width)).ok_or_else(overflow)?;
+                let end_y = chunk.y.checked_add(i64::from(chunk.height)).ok_or_else(overflow)?;
+                let origin = match (i32::try_from(chunk.x), i32::try_from(chunk.y)) {
+                    (Ok(x), Ok(y)) if i32::try_from(end_x).is_ok() && i32::try_from(end_y).is_ok() => (x, y),
+                    _ => return Err(unsupported("filter_coordinates")),
+                };
+                let op = FilterOp::Noise {
+                    amount: *amount,
+                    gaussian: *gaussian,
+                    mono: *mono,
+                    seed: *seed,
+                    origin,
+                };
+                self.filter_pass(op, chunk, level, FilterBuf::A, FilterBuf::B)?;
+                self.filter_pass(FilterOp::Copy, chunk, FilterBuf::A, level, FilterBuf::B)
+            }
+        }
+    }
+
+    /// One pass of `filter.wgsl` over the whole frame `chunk`; `src`, `dst` and `aux` are three
+    /// distinct buffers (the output never aliases a read-only binding).
+    fn filter_pass(
+        &mut self,
+        op: FilterOp,
+        chunk: Rect,
+        src: FilterBuf,
+        dst: FilterBuf,
+        aux: FilterBuf,
+    ) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let Some(bb) = self.blur.as_ref() else {
+            return Err(unsupported("plan_shape"));
+        };
+        let pick = |b: FilterBuf| match b {
+            FilterBuf::Level(l) => self.levels.get(l).ok_or_else(|| unsupported("plan_shape")),
+            FilterBuf::A => Ok(&bb.a),
+            FilterBuf::B => Ok(&bb.b),
+        };
+        let (src, dst, aux) = (pick(src)?, pick(dst)?, pick(aux)?);
+        let bytes = filter_params_bytes(op, chunk.width, chunk.height);
+        ctx.queue.write_buffer(&bb.params, 0, &bytes);
+        let bind = ctx.kernel.bind_blur(&ctx.device, &bb.params, src, dst, aux);
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu filter pass"),
+            });
+        ctx.kernel
+            .dispatch_filter(&mut encoder, &bind, chunk.width, chunk.height);
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+
     /// One pass of `blur.wgsl` over the whole frame `chunk`.
     fn blur_pass(
         &mut self,
@@ -2811,6 +3102,7 @@ fn run(
         adjust: None,
         fx: None,
         blur: None,
+        filter: None,
     };
     let mut colour: Vec<u8> = Vec::new();
     let mut alpha: Vec<u8> = Vec::new();

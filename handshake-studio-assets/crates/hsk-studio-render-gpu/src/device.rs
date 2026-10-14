@@ -254,7 +254,7 @@ impl GpuContext {
             lost.lost.store(true, Ordering::Release);
         });
         let fault = Arc::clone(&signals);
-        device.on_uncaptured_error(Arc::new(move |_error: wgpu::Error| {
+        device.on_uncaptured_error(Arc::new(move |_error: wgpu::Error| { eprintln!("UNCAPTURED {_error}");
             fault.fault.store(true, Ordering::Release);
         }));
 
