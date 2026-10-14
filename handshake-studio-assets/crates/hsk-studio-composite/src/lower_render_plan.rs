@@ -745,7 +745,14 @@ pub(crate) fn lower_inner(
                     // the group that composites it (it needs that group's extent).
                     continue;
                 }
-                if let (SourceValue::Text, Some(prepared)) = (value, text) {
+                // A text source, text-typed or image-typed (Folio G1), draws its prepared plane.
+                let text_payload = matches!(
+                    layers.get(addr.layer_id.as_str()).map(|l| &l.payload),
+                    Some(Payload::Text { .. })
+                );
+                let draws_text = *value == SourceValue::Text
+                    || (*value == SourceValue::Image && text_payload);
+                if let (true, Some(prepared)) = (draws_text, text) {
                     let plane = prepared.plane(&addr.layer_id).ok_or_else(|| {
                         CompositeError::Unavailable(format!(
                             "{}:text_layer_not_prepared",

@@ -517,7 +517,11 @@ pub(crate) fn evaluate_with(
                         StepStatus::Unavailable("vector_to_image_conversion".into()),
                     ),
                     // Text drawn by Type (crate::text); without prepared text it stays unavailable.
-                    (None, SourceValue::Text, Some(Payload::Text { .. })) if text.is_some() => {
+                    // A text source whose `out` port is image-typed (Folio G1: rasterised text that
+                    // feeds a group's image inputs) is drawn the same way.
+                    (None, SourceValue::Text | SourceValue::Image, Some(Payload::Text { .. }))
+                        if text.is_some() =>
+                    {
                         match text.and_then(|t| t.plane(&addr.layer_id)) {
                             Some(plane) => {
                                 if plane.placement.is_some() && *visible {
@@ -535,7 +539,8 @@ pub(crate) fn evaluate_with(
                             ),
                         }
                     }
-                    (None, SourceValue::Text, _) => (
+                    (None, SourceValue::Text, _)
+                    | (None, SourceValue::Image, Some(Payload::Text { .. })) => (
                         None,
                         StepStatus::Unavailable("text_to_image_conversion".into()),
                     ),
