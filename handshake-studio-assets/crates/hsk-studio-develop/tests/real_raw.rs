@@ -138,6 +138,38 @@ fn nef_d1h_uncompressed_decodes_deterministically() {
     println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
 }
 
+/// ILCE-7S facts: raw SubIFD read by byte inspection (2026-10-14): 2816 x 1872, BitsPerSample 14,
+/// Compression 32767, one byte per pixel, CFAPattern 0,1,1,2 (RGGB), SonyToneCurve
+/// 8000,10400,12900,14100 (curve maximum at code 0x7ff: 17204), IFD0 Model "ILCE-7S".
+#[test]
+#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+fn arw_7s_craw_decodes_deterministically() {
+    const TEST: &str = "arw_7s_craw_decodes_deterministically";
+    let Some(bytes) = read(TEST, "sony-ilce-7s-14bit-compressed.arw", ARW_7S) else {
+        return;
+    };
+    let raw = decode_container(&bytes).unwrap();
+    assert_eq!((raw.width, raw.height, raw.bits_per_sample, raw.white_level), (2816, 1872, 14, 17204));
+    assert_eq!(raw.cfa_pattern, CfaPattern::Bayer(Bayer::Rggb));
+    assert_eq!(raw.unique_camera_model.as_deref(), Some("ILCE-7S"));
+    assert_eq!(raw.solve_colour().err(), Some(DevelopError::MissingColourData));
+    let digest = samples_digest(&raw);
+    assert_eq!(digest, samples_digest(&decode_container(&bytes).unwrap()), "decode is deterministic");
+    // Group/interleave check on real data: same-colour neighbours two columns apart (inside one
+    // 16-pixel group or across groups) and two rows apart differ comparably; a wrong interleave
+    // or bit layout makes the horizontal step explode.
+    let (mut hstep, mut vstep) = (0u64, 0u64);
+    for y in (0..raw.height - 2).step_by(7) {
+        for x in (0..raw.width - 2).step_by(5) {
+            hstep += u64::from(raw.sample(x, y).abs_diff(raw.sample(x + 2, y)));
+            vstep += u64::from(raw.sample(x, y).abs_diff(raw.sample(x, y + 2)));
+        }
+    }
+    assert!(hstep < vstep.max(1) * 3 && vstep < hstep.max(1) * 3, "hstep {hstep} vstep {vstep}");
+    println!("arw 7s: 2816x1872 bits 14 samples_sha256={digest} hstep={hstep} vstep={vstep}");
+    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
+}
+
 fn samples_digest(raw: &DngRaw) -> String {
     let mut h = Sha256::new();
     for y in 0..raw.height {
@@ -152,11 +184,10 @@ fn samples_digest(raw: &DngRaw) -> String {
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn vendor_files_route_to_typed_outcomes() {
     const TEST: &str = "vendor_files_route_to_typed_outcomes";
-    let cases: [(&str, &str, DevelopError); 8] = [
+    let cases: [(&str, &str, DevelopError); 7] = [
         ("canon-eos-r6.cr3", "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778", DevelopError::DecoderUnavailable("cr3")),
         ("nikon-d70s-12bit-lossy-type1.nef", NEF_D70S, DevelopError::UnsupportedCompression),
         ("nikon-z6-12bit-compressed.nef", NEF_Z6, DevelopError::UnsupportedCompression),
-        ("sony-ilce-7s-14bit-compressed.arw", ARW_7S, DevelopError::UnsupportedContainer),
         ("fujifilm-finepix-s5000.raf", RAF_S5000, DevelopError::DecoderUnavailable("raf")),
         ("fujifilm-x-s10-14bit-compressed-xtrans.raf", RAF_XS10, DevelopError::DecoderUnavailable("raf")),
         ("olympus-c5060wz-12bit.orf", ORF_C5060, DevelopError::DecoderUnavailable("orf")),

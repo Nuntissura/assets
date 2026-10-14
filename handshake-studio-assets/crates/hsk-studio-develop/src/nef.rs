@@ -60,6 +60,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             unique_camera_model: tiffep::ascii(&tiff, root, tiffep::MODEL)?,
             unapplied: UNAPPLIED.to_vec(),
             samples,
+            white_level: VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?,
         },
         bytes,
     )

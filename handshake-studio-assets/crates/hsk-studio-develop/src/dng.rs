@@ -737,7 +737,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
 }
 
 /// A whole stored CFA frame produced by a proprietary container decoder (`cr2`, ...). The frame
-/// carries no colour, black 0 and the full-scale white of `bits`; every level, crop or pattern
+/// carries no colour, black 0 and a placeholder white (`white_level`, default
+/// [`VendorFrame::full_scale`]); every level, crop or pattern
 /// fact the vendor decoder did not read from the file is named in `unapplied`, so
 /// [`DngRaw::require_complete`] refuses it and nothing reads as an authored value.
 pub(crate) struct VendorFrame {
@@ -748,6 +749,17 @@ pub(crate) struct VendorFrame {
     pub unique_camera_model: Option<String>,
     pub unapplied: Vec<&'static str>,
     pub samples: Vec<u16>,
+    /// Largest code value the frame may hold (every sample is checked against it).
+    pub white_level: u32,
+}
+
+impl VendorFrame {
+    /// Full-scale white of `bits` (`2^bits - 1`), `None` outside 1..=16 bits.
+    pub fn full_scale(bits: u16) -> Option<u32> {
+        1u32.checked_shl(u32::from(bits))
+            .and_then(|v| v.checked_sub(1))
+            .filter(|v| (1..=u32::from(u16::MAX)).contains(v))
+    }
 }
 
 impl DngRaw {
@@ -764,11 +776,10 @@ impl DngRaw {
         {
             return Err(DevelopError::InvalidDimensions);
         }
-        let white_level = 1u32
-            .checked_shl(u32::from(frame.bits))
-            .and_then(|v| v.checked_sub(1))
-            .filter(|v| (1..=u32::from(u16::MAX)).contains(v))
-            .ok_or(DevelopError::UnsupportedContainer)?;
+        let white_level = frame.white_level;
+        if !(1..=u32::from(u16::MAX)).contains(&white_level) || !(1..=16).contains(&frame.bits) {
+            return Err(DevelopError::UnsupportedContainer);
+        }
         if frame.samples.iter().any(|v| u32::from(*v) > white_level) {
             return Err(DevelopError::InvalidContainer);
         }

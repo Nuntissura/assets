@@ -223,6 +223,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             unique_camera_model,
             unapplied: UNAPPLIED.to_vec(),
             samples,
+            white_level: VendorFrame::full_scale(u16::from(precision)).ok_or(DevelopError::InvalidContainer)?,
         },
         bytes,
     )

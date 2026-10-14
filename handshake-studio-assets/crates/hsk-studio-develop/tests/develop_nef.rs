@@ -201,8 +201,9 @@ fn nef_nikon_compressions_and_unverified_variants_are_typed_refusals() {
     refuse(Nef { compression: 32769, ..Nef::default() }, DevelopError::UnsupportedCompression);
     // Little-endian packed 12-bit: bit order not verified, refused.
     refuse(Nef { big_endian: false, ..Nef::default() }, DevelopError::UnsupportedContainer);
-    // Not Nikon, or a DNG converted from a Nikon file: never decoded as NEF (DNG reader decides).
-    refuse(Nef { make: b"SONY\0\0\0\0", ..Nef::default() }, DevelopError::UnsupportedContainer);
+    // Not a vendor this crate decodes (Pentax), or a DNG converted from a Nikon file: never decoded
+    // as NEF (DNG reader decides).
+    refuse(Nef { make: b"PENTAX\0\0", ..Nef::default() }, DevelopError::UnsupportedContainer);
     assert!(decode_container(&build(&Nef { dng_version: true, ..Nef::default() })).is_err());
     // A strip shorter than its rows.
     let mut short = build(&Nef::default());
