@@ -34,11 +34,13 @@
 #[cfg(feature = "av1")]
 pub mod av1;
 mod av1_config;
+mod bitreader;
 mod cache;
 mod codec_adapters;
 #[cfg(test)]
 mod delivery_tests;
 mod error;
+mod idct8;
 mod identity;
 mod isobmff;
 mod matroska;
@@ -49,6 +51,7 @@ mod mxf;
 mod registry;
 mod report;
 mod time;
+mod vc3;
 mod video;
 mod wav;
 mod y4m;
@@ -85,6 +88,7 @@ pub use mxf::{
 };
 pub use registry::{ProxySource, Registry, detect_type};
 pub use report::{outcome_for, report};
+pub use vc3::decode_vc3_frame;
 pub use video::{
     DecodedPicture, DecoderIdentity, ExternalVideoDecoder, PictureSink, SourceTrust, VideoCodec,
     VideoDecodeError, VideoDecodeSession, VideoRoute, VideoStreamSpec,

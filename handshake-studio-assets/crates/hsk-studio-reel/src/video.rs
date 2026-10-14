@@ -220,15 +220,31 @@ impl std::fmt::Debug for VideoRoute<'_> {
 enum Chosen<'a> {
     #[cfg(feature = "av1")]
     InProcess,
+    /// A Studio-owned pure-Rust decoder compiled into this build (VC-3 always, ProRes with feature
+    /// `prores`): safe code with typed refusals for hostile input, so it runs whatever the trust.
+    BuiltIn,
     External(&'a dyn ExternalVideoDecoder),
 }
 
-/// The policy in one place: trusted + compiled in -> in-process; otherwise the external decoder when it
-/// supports the codec; otherwise nobody.
+/// True when this build contains a Studio-owned pure-Rust decoder for `codec`.
+fn built_in(codec: VideoCodec) -> bool {
+    match codec {
+        VideoCodec::Dnx => true,
+        VideoCodec::ProRes => crate::codec_adapters::PRORES_COMPILED_IN,
+        VideoCodec::Av1 => false,
+    }
+}
+
+/// The policy in one place: trusted + compiled in -> in-process (AV1); a codec with a Studio-owned
+/// pure-Rust decoder in this build -> that decoder for any trust (it is safe Rust with typed refusals,
+/// unlike the rav1d C ABI); otherwise the external decoder when it supports the codec; otherwise nobody.
 fn choose<'a>(route: &VideoRoute<'a>, codec: VideoCodec) -> Option<Chosen<'a>> {
     #[cfg(feature = "av1")]
     if route.trust == SourceTrust::Trusted && codec == VideoCodec::Av1 {
         return Some(Chosen::InProcess);
+    }
+    if built_in(codec) {
+        return Some(Chosen::BuiltIn);
     }
     route
         .external
@@ -501,6 +517,28 @@ pub(crate) fn decode_video_track_with(
                 version: crate::av1::decoder_version(),
             },
         ),
+        Chosen::BuiltIn => {
+            let spec = VideoStreamSpec {
+                codec: video.codec,
+                container: video.container,
+                config: video.config,
+                color: video.color,
+                width: video.width,
+                height: video.height,
+                limits: *limits,
+            };
+            match video.codec {
+                VideoCodec::Dnx => (
+                    Box::new(crate::vc3::open_session(&spec)) as Box<dyn VideoDecodeSession>,
+                    crate::vc3::IDENTITY,
+                ),
+                _ => {
+                    return Err(ReelError::CodecUnavailable {
+                        codec: video.codec_label,
+                    });
+                }
+            }
+        }
         Chosen::External(external) => {
             let spec = VideoStreamSpec {
                 codec: video.codec,

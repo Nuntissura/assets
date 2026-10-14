@@ -1,0 +1,22 @@
+{
+  "fixture_set": "dnx",
+  "purpose": "VC-3 (DNxHR) decode oracle for tests/vc3_decode.rs",
+  "generator_tool": "ffmpeg 8.1.1-full_build-www.gyan.dev (ffmpeg.exe sha256 09948d4cdd0650da6ff5a87577469f2a218dc2615ae379f8f734d24c49de0f73); encoder dnxhd (-profile:v dnxhr_lb|dnxhr_hq|dnxhr_hqx), -fflags +bitexact -flags:v +bitexact; ffmpeg is a generator and black-box oracle only, never a product or test-time dependency",
+  "generator_script": "generate-dnx.sh (run once offline under the artifact root on D:)",
+  "source_content": "synthetic ffmpeg lavfi color+geq pattern, 264x120 (width and height not multiples of 16: augmentation samples and lines are exercised), 25 fps, 3 frames; no third-party media, no personal data",
+  "source_expressions": {
+    "8bit": "color=c=gray:size=264x120:rate=25,format=yuv422p,geq=lum='clip(20+X*2+Y*1+N*9+2*sin(X*Y/9+N),16,235)':cb='clip(128+X/2-N,16,240)':cr='clip(128-Y/2+N,16,240)'",
+    "10bit": "color=c=gray:size=264x120:rate=25,format=yuv422p10le,geq=lum='clip(80+X*9+Y*5+N*37+8*sin(X*Y/9+N),64,940)':cb='clip(512+2*X-3*N,64,960)':cr='clip(512-2*Y+5*N,64,960)'"
+  },
+  "reference": "ffmpeg -i FILE.mov -f rawvideo FILE.ref.yuv (native planar output: yuv422p or yuv422p10le), stored zlib-compressed as FILE.ref.yuv.zz; source-*.yuv.zz is the encoder input (-f rawvideo of the lavfi source), zlib-compressed",
+  "observed": "sample entry AVdh for all three DNxHR files; CIDs 1274 (lb), 1272 (hq), 1271 (hqx); header version 3, header size 640, CBR coding units 8192 / 16384 / 16384 bytes, EOF signature 600DC0DE",
+  "files": {
+    "dnxhr-lb-264x120.mov": {"bytes": 25335, "sha256": "129bba73a139b007a5d380825fa90a7ec12e0939f926f14d072d6452b1711b1f"},
+    "dnxhr-hq-264x120.mov": {"bytes": 49911, "sha256": "0ba714ab012d0a2838acc5bdea933052bf8fe58344abe49a90453ea5dc05b4aa"},
+    "dnxhr-hqx-264x120.mov": {"bytes": 49911, "sha256": "b6a2ac26cffb77dcd15e1a7df4962230e67a8f0df4c17444c07c70f109286ba3"},
+    "dnxhr-lb-264x120.ref.yuv (uncompressed)": {"bytes": 190080, "sha256": "61541e83201c6b13aa12b0617de6f979e55c2b8038f29618a3cdbe1e92c1567f"},
+    "dnxhr-hq-264x120.ref.yuv (uncompressed)": {"bytes": 190080, "sha256": "18f56aded4f196b9b8dd95a4ad961aee6ad5f98e1edcf1ef1b585fc59e3406e8"},
+    "dnxhr-hqx-264x120.ref.yuv (uncompressed)": {"bytes": 380160, "sha256": "53388b695c6297e5789f744597711147b999d4148baa7d45191e2a38fdbb47d7"}
+  },
+  "tables": "src/vc3/tables.rs is generated from the text of SMPTE ST 2019-1:2016 by gen_vc3_tables.py (this directory)"
+}
