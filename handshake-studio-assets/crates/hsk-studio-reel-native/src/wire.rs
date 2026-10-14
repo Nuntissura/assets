@@ -59,6 +59,9 @@ const KIND_OPENED: u8 = 5;
 const KIND_FRAME: u8 = 6;
 const KIND_BATCH_END: u8 = 7;
 const KIND_ERROR: u8 = 8;
+/// MF worker only (the host accepts it only from a pool with a heartbeat timeout): decode progress counter,
+/// advanced by the decode loop, never by a timer.
+const KIND_HEARTBEAT: u8 = 9;
 
 /// Fixed table of the `what` strings a decoder error can carry: errors cross the wire as an index, so a
 /// peer can never make the host invent or leak a new static string. Index 0 is the catch-all.
@@ -406,11 +409,19 @@ pub(crate) enum Reply {
     Frame(WireFrame),
     BatchEnd(u32),
     Error(ReelError),
+    Heartbeat(u64),
 }
 
 #[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_opened(id: u64) -> Vec<u8> {
     Out::header(KIND_OPENED, id).0
+}
+
+#[cfg(any(test, feature = "mf-worker"))]
+pub(crate) fn encode_heartbeat(id: u64, counter: u64) -> Vec<u8> {
+    let mut out = Out::header(KIND_HEARTBEAT, id);
+    out.u64(counter);
+    out.0
 }
 
 #[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
@@ -569,6 +580,11 @@ pub(crate) fn decode_reply(frame: &[u8], id: u64) -> Res<Reply> {
             let frames = reader.u32()?;
             reader.done()?;
             Ok(Reply::BatchEnd(frames))
+        }
+        KIND_HEARTBEAT => {
+            let counter = reader.u64()?;
+            reader.done()?;
+            Ok(Reply::Heartbeat(counter))
         }
         KIND_ERROR => {
             let class = reader.u8()?;
@@ -815,6 +831,21 @@ mod tests {
             })
         );
         assert!(is_terminal(&encode_batch_end(1, 0)) && !is_terminal(&encoded));
+    }
+
+    /// MF heartbeat frames: round trip, id check, never terminal, every truncation and a trailing byte refused.
+    #[test]
+    fn heartbeat_roundtrip_and_bounds() {
+        let beat = encode_heartbeat(5, 7);
+        assert_eq!(decode_reply(&beat, 5), Ok(Reply::Heartbeat(7)));
+        assert_eq!(decode_reply(&beat, 6), Err(WireError::Malformed));
+        assert!(!is_terminal(&beat));
+        for cut in 0..beat.len() {
+            assert_eq!(decode_reply(&beat[..cut], 5), Err(WireError::Malformed), "cut {cut}");
+        }
+        let mut long = beat.clone();
+        long.push(0);
+        assert_eq!(decode_reply(&long, 5), Err(WireError::Malformed));
     }
 
     /// R5: a lying worker FRAME declaring u32::MAX x u32::MAX at 10 or 12 bit is a few dozen bytes, so it

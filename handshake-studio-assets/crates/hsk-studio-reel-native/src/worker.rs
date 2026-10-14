@@ -184,7 +184,8 @@ impl Faults {
             | WorkerTestFault::ExitBeforeHello
             | WorkerTestFault::ShortHello
             | WorkerTestFault::CutHello
-            | WorkerTestFault::OpenedOnFinish => None,
+            | WorkerTestFault::OpenedOnFinish
+            | WorkerTestFault::RepeatHeartbeat => None,
         }
     }
 }

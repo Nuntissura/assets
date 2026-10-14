@@ -77,6 +77,10 @@ pub(crate) const MF_DXVA_SPEC: WorkerSpec = WorkerSpec {
     ..MF_SPEC
 };
 
+/// Worker argument of the first-worker exit fault (test-faults; the worker's `FIRST_WORKER_EXIT_ARG`).
+#[cfg(feature = "test-faults")]
+const FIRST_WORKER_EXIT_ARG: &str = "--test-exit-at-tag=";
+
 /// Worker argument of the DXVA pool (the worker's `DXVA_ARG`).
 const DXVA_ARG: &str = "--dxva";
 /// Refusal of a hardware pool that cannot accelerate (no device, or the decoder refused the manager).
@@ -107,6 +111,16 @@ pub struct MfWorkerOptions {
     pub segment_deadline: Duration,
     /// Decode path (default `Software`).
     pub path: MfPath,
+    /// A worker whose HEARTBEAT counter (advanced by its decode loop, never by a timer) does not advance for
+    /// this long is killed (`decoder_deadline`, counted in `killed_heartbeat`). Default 2 s.
+    pub heartbeat_timeout: Duration,
+    /// Bytes of prepared packets retained since the last IDR packet for one replay on a fresh worker after a
+    /// crash or deadline (0 = no replay). Default 64 MiB.
+    pub replay_bytes: usize,
+    /// Fault only the FIRST worker of a pool injects: it exits when it receives the packet with this tag
+    /// (`test-faults` only; replay tests).
+    #[cfg(feature = "test-faults")]
+    pub first_worker_exit_at_tag: Option<u64>,
     /// Fault the spawned workers inject (`test-faults` feature only).
     #[cfg(feature = "test-faults")]
     pub test_fault: WorkerTestFault,
@@ -124,6 +138,10 @@ impl Default for MfWorkerOptions {
             batch_deadline: base.batch_deadline,
             segment_deadline: base.segment_deadline,
             path: MfPath::Software,
+            heartbeat_timeout: Duration::from_secs(2),
+            replay_bytes: 64 << 20,
+            #[cfg(feature = "test-faults")]
+            first_worker_exit_at_tag: None,
             #[cfg(feature = "test-faults")]
             test_fault: WorkerTestFault::None,
         }
@@ -134,6 +152,18 @@ impl MfWorkerOptions {
     pub fn with_worker_program(mut self, program: impl Into<PathBuf>) -> Self {
         self.program = Some(program.into());
         self
+    }
+
+    /// The MF-only pool settings: heartbeat watch and the first-worker test fault.
+    fn finish_pool(&self, pool: Pool) -> Pool {
+        let pool = pool.with_heartbeat(self.heartbeat_timeout);
+        #[cfg(feature = "test-faults")]
+        let pool = pool.with_first_spawn_args(
+            self.first_worker_exit_at_tag
+                .map(|tag| vec![format!("{FIRST_WORKER_EXIT_ARG}{tag}")])
+                .unwrap_or_default(),
+        );
+        pool
     }
 
     fn pool_options(&self) -> Av1WorkerOptions {
@@ -162,6 +192,8 @@ pub struct WorkerMfProvider {
     /// Software pool (`Software`, `Auto`) and DXVA pool (`Hardware`, `Auto`); at least one exists.
     software: Option<Arc<Pool>>,
     hardware: Option<Arc<Pool>>,
+    /// Replay retention cap per segment (0 = no replay).
+    replay_bytes: usize,
 }
 
 thread_local! {
@@ -198,6 +230,7 @@ impl WorkerMfProvider {
             || options.spawn_timeout.is_zero()
             || options.batch_deadline.is_zero()
             || options.segment_deadline.is_zero()
+            || options.heartbeat_timeout.is_zero()
         {
             return Err(Av1ConfigError::PolicyInvalid);
         }
@@ -206,24 +239,28 @@ impl WorkerMfProvider {
         let pool_options = options.pool_options();
         let software = matches!(options.path, MfPath::Software | MfPath::Auto)
             .then(|| {
-                Arc::new(Pool::new(
+                Arc::new(options.finish_pool(Pool::new(
                     &MF_SPEC,
                     program.clone(),
                     Vec::new(),
                     Vec::new(),
                     &pool_options,
-                ))
+                )))
             });
         let hardware = matches!(options.path, MfPath::Hardware | MfPath::Auto).then(|| {
-            Arc::new(Pool::new(
+            Arc::new(options.finish_pool(Pool::new(
                 &MF_DXVA_SPEC,
                 program,
                 vec![DXVA_ARG.to_owned()],
                 dxva_env(),
                 &pool_options,
-            ))
+            )))
         });
-        Ok(Self { software, hardware })
+        Ok(Self {
+            software,
+            hardware,
+            replay_bytes: options.replay_bytes,
+        })
     }
 
     /// The pool `identity()` and `descriptor()` describe: the one that served this thread's last open,
@@ -265,7 +302,7 @@ impl WorkerMfProvider {
         cancel: &CancellationToken,
     ) -> Result<WorkerSession, VideoDecodeError> {
         if let Some(hardware) = &self.hardware {
-            match Self::open_on(hardware, spec, cancel) {
+            match self.open_on(hardware, spec, cancel) {
                 Ok(session) => {
                     LAST_HARDWARE.with(|last| last.set(true));
                     return Ok(session);
@@ -277,12 +314,13 @@ impl WorkerMfProvider {
         let software = self.software.as_ref().ok_or(ReelError::Unsupported {
             what: MF_DXVA_UNAVAILABLE,
         })?;
-        let session = Self::open_on(software, spec, cancel)?;
+        let session = self.open_on(software, spec, cancel)?;
         LAST_HARDWARE.with(|last| last.set(false));
         Ok(session)
     }
 
     fn open_on(
+        &self,
         pool: &Arc<Pool>,
         spec: &VideoStreamSpec<'_>,
         cancel: &CancellationToken,
@@ -312,6 +350,7 @@ impl WorkerMfProvider {
                 max_packet_bytes: spec.limits.max_chunk_bytes,
                 prep: Some(annex_b_prep(config)),
                 decode_order_only: Some(MF_REORDER_REFUSAL),
+                replay_cap: (self.replay_bytes > 0).then_some(self.replay_bytes),
             },
             None,
             cancel,
@@ -405,7 +444,9 @@ fn annex_b_prep(config: H264Config) -> PacketPrep {
             with_sets.then_some(&config),
             MAX_PACKET_BYTES,
             out,
-        )
+        )?;
+        // A packet carrying the parameter sets (segment start or IDR) is where a fresh decoder can start.
+        Ok(with_sets)
     })
 }
 

@@ -406,3 +406,73 @@ fn mf_dxva_parity_with_software() {
         assert_eq!(got, expected);
     });
 }
+
+/// Slice 3: bounded replay and the heartbeat watch. (1) The first worker of the pool dies at packet 9; the
+/// segment resumes on a fresh worker from the last IDR (packet 0), pictures already delivered are dropped,
+/// and the output is still exactly the oracle. (2) Every worker dies on its first packet: one replay, it
+/// fails, the typed crash stands. (3) A worker that hangs sends no HEARTBEAT and is killed after the 1 s
+/// heartbeat timeout although the batch deadline is 30 s. (4) A HEARTBEAT counter that does not advance is a
+/// protocol fault.
+#[test]
+fn mf_heartbeat_and_replay() {
+    bounded_case("mf_heartbeat_and_replay", || {
+        let limits = Limits::default();
+        let clean = provider(MfWorkerOptions::default());
+        if let Err(error) = decode(&clean, BASELINE, 0, 2, &limits)
+            && unavailable(&error)
+        {
+            println!("NOT_PROVEN: no Media Foundation H.264 software decoder on this host ({error:?})");
+            return;
+        }
+        let expected = oracle(BASELINE_HASH);
+        // (1) replay cures a one-off crash.
+        let once = provider(MfWorkerOptions {
+            first_worker_exit_at_tag: Some(9),
+            ..MfWorkerOptions::default()
+        });
+        let (receipt, sink) = decode(&once, BASELINE, 0, 24, &limits).unwrap();
+        assert!(receipt.complete);
+        let got: Vec<String> = sink.chunks.iter().map(|c| sha256_hex(&c.2)).collect();
+        assert_eq!(got, expected, "replayed segment differs from the oracle");
+        let indices: Vec<u64> = sink.chunks.iter().map(|c| c.1).collect();
+        assert_eq!(indices, (0..24).collect::<Vec<_>>(), "no picture lost or repeated");
+        let stats = once.stats();
+        assert_eq!(
+            (stats.spawned, stats.crashed, stats.replays, stats.replay_failed),
+            (2, 1, 1, 0),
+            "{stats:?}"
+        );
+        // (2) replay that fails again.
+        let always = provider(MfWorkerOptions {
+            test_fault: WorkerTestFault::ExitOnPacket,
+            ..MfWorkerOptions::default()
+        });
+        let error = decode(&always, BASELINE, 0, 24, &limits).unwrap_err();
+        assert_eq!(error, ReelError::DecoderFault { fault: DecoderFault::Crashed });
+        let stats = always.stats();
+        assert_eq!((stats.replays, stats.replay_failed, stats.alive), (1, 1, 0), "{stats:?}");
+        // (3) heartbeat watch kills a hung decode long before the batch deadline.
+        let hung = provider(MfWorkerOptions {
+            test_fault: WorkerTestFault::HangOnPacket,
+            batch_deadline: Duration::from_secs(30),
+            heartbeat_timeout: Duration::from_secs(1),
+            replay_bytes: 0,
+            ..MfWorkerOptions::default()
+        });
+        let started = std::time::Instant::now();
+        let error = decode(&hung, BASELINE, 0, 24, &limits).unwrap_err();
+        let elapsed = started.elapsed();
+        assert_eq!(error, ReelError::DecoderFault { fault: DecoderFault::Deadline });
+        assert!(elapsed < Duration::from_secs(10), "killed after {elapsed:?}");
+        let stats = hung.stats();
+        assert_eq!((stats.killed_heartbeat, stats.replays, stats.alive), (1, 0, 0), "{stats:?}");
+        // (4) a counter that does not advance.
+        let stuck = provider(MfWorkerOptions {
+            test_fault: WorkerTestFault::RepeatHeartbeat,
+            ..MfWorkerOptions::default()
+        });
+        let error = decode(&stuck, BASELINE, 0, 24, &limits).unwrap_err();
+        assert_eq!(error, ReelError::DecoderFault { fault: DecoderFault::Protocol });
+        assert_eq!(stuck.stats().protocol_faults, 1, "{:?}", stuck.stats());
+    });
+}

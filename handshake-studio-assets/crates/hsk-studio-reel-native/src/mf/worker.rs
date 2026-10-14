@@ -33,7 +33,12 @@ use std::{
     io::{self, Write},
     sync::mpsc,
     thread,
+    time::{Duration, Instant},
 };
+
+/// Least time between two HEARTBEATs (the counter advances at every decoder call; a heartbeat is written
+/// at a progress point when this much time has passed since the last one, so a hung call writes none).
+const BEAT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Decoder id this worker names in HELLO.
 pub const MF_DECODER_ID: &str = "mf-h264";
@@ -104,6 +109,9 @@ struct Segment {
     /// output times (strategy B).
     sent: HashSet<u64>,
     released: bool,
+    /// Decode progress counter (advanced at every decoder call) and when it was last reported.
+    progress: u64,
+    last_beat: Option<Instant>,
 }
 
 impl Segment {
@@ -206,6 +214,20 @@ impl Segment {
         })
     }
 
+    /// Advances the progress counter and writes a HEARTBEAT when `BEAT_INTERVAL` has passed since the last
+    /// one. Returns false when the host is gone.
+    fn beat(&mut self, out: &mut impl Write, id: u64) -> bool {
+        self.progress = self.progress.saturating_add(1);
+        if self
+            .last_beat
+            .is_some_and(|last| last.elapsed() < BEAT_INTERVAL)
+        {
+            return true;
+        }
+        self.last_beat = Some(Instant::now());
+        reply(out, &wire::encode_heartbeat(id, self.progress))
+    }
+
     /// Pulls every picture the decoder releases now and writes it; returns the frames written, or the
     /// typed refusal (the batch then ends with ERROR instead of BATCH_END).
     fn flush(&mut self, out: &mut impl Write, id: u64, count: &mut u32) -> Result<bool, ReelError> {
@@ -217,6 +239,9 @@ impl Segment {
                 pictures.len() <= wire::MAX_FRAMES_PER_BATCH
             })
             .map_err(decode_error)?;
+        if !self.beat(out, id) {
+            return Ok(false);
+        }
         for raw in &pictures {
             let frame = self.frame_of(raw)?;
             self.released = true;
@@ -236,7 +261,11 @@ impl Segment {
         self.sent.insert(tag);
         let mut attempts = 0_u32;
         loop {
-            if self.decoder.push(bytes, time).map_err(decode_error)? {
+            let accepted = self.decoder.push(bytes, time).map_err(decode_error)?;
+            if !self.beat(out, id) {
+                return Ok((false, count));
+            }
+            if accepted {
                 break;
             }
             // Not accepting: release output first (bounded; a decoder that never accepts is stalled).
@@ -254,6 +283,9 @@ impl Segment {
 
     fn finish(&mut self, out: &mut impl Write, id: u64) -> Result<(bool, u32), ReelError> {
         self.decoder.drain().map_err(decode_error)?;
+        if !self.beat(out, id) {
+            return Ok((false, 0));
+        }
         let mut count = 0_u32;
         let alive = self.flush(out, id, &mut count)?;
         Ok((alive, count))
@@ -276,6 +308,12 @@ fn end_batch(out: &mut impl Write, id: u64, result: Result<(bool, u32), ReelErro
 fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
     #[cfg(feature = "test-faults")]
     let fault = WorkerTestFault::from_env();
+    // First-worker-only fault (the host passes it to the first worker of a pool): exit at this packet tag.
+    #[cfg(feature = "test-faults")]
+    let exit_at_tag: Option<u64> = std::env::args()
+        .find_map(|arg| arg.strip_prefix("--test-exit-at-tag=").and_then(|tag| tag.parse().ok()));
+    #[cfg(feature = "test-faults")]
+    let mut repeat_beat_pending = fault == WorkerTestFault::RepeatHeartbeat;
     let runtime = Runtime::start();
     let dxva_requested = std::env::args().any(|arg| arg == DXVA_ARG);
     let gpu_result: Option<Result<Gpu, i32>> = match (&runtime, dxva_requested) {
@@ -341,6 +379,8 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                                 max_frame_bytes: open.max_chunk_bytes,
                                 waiting: VecDeque::new(),
                                 sent: HashSet::new(),
+                                progress: 0,
+                                last_beat: None,
                                 released: false,
                             })
                     }),
@@ -368,6 +408,18 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                         continue;
                     }
                     _ => {}
+                }
+                #[cfg(feature = "test-faults")]
+                if exit_at_tag == Some(tag) {
+                    std::process::exit(86);
+                }
+                #[cfg(feature = "test-faults")]
+                if repeat_beat_pending {
+                    repeat_beat_pending = false;
+                    let beat = wire::encode_heartbeat(id, 1);
+                    if !(reply(&mut out, &beat) && reply(&mut out, &beat)) {
+                        return 1;
+                    }
                 }
                 match segment.as_mut() {
                     None => reply(&mut out, &wire::encode_error(id, &unsupported("mf-worker-no-open"))),

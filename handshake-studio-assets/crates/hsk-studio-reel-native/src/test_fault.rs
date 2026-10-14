@@ -56,6 +56,9 @@ pub enum WorkerTestFault {
     /// First PACKET: answer one more FRAME than a batch may hold (`MAX_FRAMES_PER_BATCH` + 1), each within the
     /// declared size and carrying the tag of that PACKET, so only the count of FRAMEs is wrong.
     ManyFrames,
+    /// MF worker, first PACKET: two HEARTBEATs with the same counter (a counter that does not advance), then
+    /// the normal answer.
+    RepeatHeartbeat,
 }
 
 impl WorkerTestFault {
@@ -84,6 +87,7 @@ impl WorkerTestFault {
             Self::OpenedOnPacket => Some("opened_on_packet"),
             Self::OpenedOnFinish => Some("opened_on_finish"),
             Self::ManyFrames => Some("many_frames"),
+            Self::RepeatHeartbeat => Some("repeat_heartbeat"),
         }
     }
 
@@ -110,6 +114,7 @@ impl WorkerTestFault {
             Ok("opened_on_packet") => Self::OpenedOnPacket,
             Ok("opened_on_finish") => Self::OpenedOnFinish,
             Ok("many_frames") => Self::ManyFrames,
+            Ok("repeat_heartbeat") => Self::RepeatHeartbeat,
             _ => Self::None,
         }
     }

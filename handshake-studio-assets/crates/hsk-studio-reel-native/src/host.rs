@@ -337,6 +337,13 @@ pub struct Av1WorkerStats {
     pub alive: u64,
     /// Exit code of the most recent crashed worker (platform value; 70 is the panic-hook exit).
     pub last_crash_exit_code: Option<i32>,
+    /// Workers killed because their HEARTBEAT counter did not advance for the pool's heartbeat timeout
+    /// (also counted in `killed_deadline`; always 0 for the AV1 pool, which has no heartbeat).
+    pub killed_heartbeat: u64,
+    /// Segments resumed on a fresh worker from the last sync packet after a crash or deadline (MF pool).
+    pub replays: u64,
+    /// Replays that failed again (the segment then ends with the replay's error).
+    pub replay_failed: u64,
 }
 
 #[derive(Default)]
@@ -350,6 +357,9 @@ struct Counters {
     killed_deadline: AtomicU64,
     killed_canceled: AtomicU64,
     killed_oversize: AtomicU64,
+    killed_heartbeat: AtomicU64,
+    replays: AtomicU64,
+    replay_failed: AtomicU64,
     last_crash_exit_code: Mutex<Option<i32>>,
 }
 
@@ -456,7 +466,16 @@ pub(crate) struct Pool {
     idle: Mutex<Vec<Proc>>,
     request_ids: AtomicU64,
     counters: Counters,
+    /// `Some(t)`: the worker sends HEARTBEATs and is killed when its counter does not advance for `t`.
+    heartbeat_timeout: Option<Duration>,
+    /// Arguments only the FIRST worker of the pool gets (test-faults: a fault that a replacement worker
+    /// must not repeat).
+    #[cfg(feature = "test-faults")]
+    first_spawn_args: Vec<String>,
 }
+
+/// Most HEARTBEAT replies one request may carry before it is a protocol fault.
+const MAX_HEARTBEATS_PER_REQUEST: usize = 1 << 16;
 
 impl Pool {
     fn next_id(&self) -> u64 {
@@ -505,7 +524,7 @@ impl Pool {
             permit,
             StartRequest {
                 owner_session: self.spec.owner_session,
-                extra_args: &[],
+                extra_args: self.first_args(),
                 keepalive: None,
                 hello_cap: u32::try_from(wire::HELLO_CAP).unwrap_or(u32::MAX),
             },
@@ -552,6 +571,20 @@ impl Pool {
             }
             Err(_) => Err(self.fail(&mut session, Failure::Protocol)),
         }
+    }
+
+    #[cfg(feature = "test-faults")]
+    fn first_args(&self) -> &[String] {
+        if self.counters.spawned.load(Ordering::Acquire) == 0 {
+            &self.first_spawn_args
+        } else {
+            &[]
+        }
+    }
+
+    #[cfg(not(feature = "test-faults"))]
+    fn first_args(&self) -> &[String] {
+        &[]
     }
 
     fn checkout(&self, cancel: &CancellationToken) -> Result<Proc, Av1Error> {
@@ -636,11 +669,19 @@ impl Pool {
         }
         bump(&self.counters.requests);
         let mut frames = 0_usize;
+        // Heartbeat watch: the worker must advance its counter within `heartbeat_timeout`, from the request
+        // on and after every HEARTBEAT; a stall is killed like a deadline (and counted in killed_heartbeat).
+        let mut beat_wall = self.heartbeat_timeout.map(after);
+        let (mut last_beat, mut beats) = (None::<u64>, 0_usize);
         loop {
-            let bytes = match session.wait(clock.cancel, wall) {
+            let until = beat_wall.map_or(wall, |beat| beat.min(wall));
+            let bytes = match session.wait(clock.cancel, until) {
                 Waited::Frame(bytes) => bytes,
                 Waited::Canceled => return Err(self.fail(session, Failure::Canceled)),
                 Waited::TimedOut | Waited::CpuCap => {
+                    if beat_wall.is_some_and(|beat| beat < wall) {
+                        bump(&self.counters.killed_heartbeat);
+                    }
                     return Err(self.fail(session, Failure::Deadline));
                 }
                 Waited::Failed(ReadFailure::Failed(WireError::TooLarge)) => {
@@ -680,6 +721,17 @@ impl Pool {
                     return Ok(());
                 }
                 Ok(Reply::Error(error)) => return Err(Av1Error::Reel(error)),
+                // Untrusted progress: only a pool with a heartbeat watch accepts it, the counter must
+                // strictly increase and one request may carry at most MAX_HEARTBEATS_PER_REQUEST of them.
+                Ok(Reply::Heartbeat(counter))
+                    if self.heartbeat_timeout.is_some()
+                        && last_beat.is_none_or(|last| counter > last)
+                        && beats < MAX_HEARTBEATS_PER_REQUEST =>
+                {
+                    last_beat = Some(counter);
+                    beats = beats.saturating_add(1);
+                    beat_wall = self.heartbeat_timeout.map(after);
+                }
                 _ => return Err(self.fail(session, Failure::Protocol)),
             }
         }
@@ -703,7 +755,59 @@ fn to_picture(frame: WireFrame) -> DecodedPicture {
 /// worker to the idle pool when dropped, unless a failure made it unusable.
 /// Rewrites one container packet into the bytes the worker decodes (H.264: length-prefixed NAL units to
 /// Annex B with the parameter sets in front of IDR access units), into the scratch buffer.
-pub(crate) type PacketPrep = Box<dyn FnMut(&[u8], &mut Vec<u8>) -> Result<(), ReelError> + Send>;
+/// Returns true when the packet is a sync point (a fresh decode can start there: replay retains from it).
+pub(crate) type PacketPrep = Box<dyn FnMut(&[u8], &mut Vec<u8>) -> Result<bool, ReelError> + Send>;
+
+/// Bounded replay (MF pool): the prepared packets since the last sync packet, resent to a fresh worker
+/// once per segment after a crash or deadline; pictures already delivered are dropped.
+pub(crate) struct Replay {
+    open: OpenRequest,
+    retained: Vec<(u64, Vec<u8>)>,
+    retained_bytes: usize,
+    cap: usize,
+    /// The retained run since the last sync packet outgrew `cap`: no replay until the next sync packet.
+    overflow: bool,
+    used: bool,
+}
+
+impl Replay {
+    pub(crate) fn new(open: OpenRequest, cap: usize) -> Self {
+        Self {
+            open,
+            retained: Vec::new(),
+            retained_bytes: 0,
+            cap,
+            overflow: false,
+            used: false,
+        }
+    }
+
+    fn retain(&mut self, tag: u64, bytes: &[u8], sync: bool) {
+        if sync {
+            self.retained.clear();
+            self.retained_bytes = 0;
+            self.overflow = false;
+        }
+        if self.overflow {
+            return;
+        }
+        match self.retained_bytes.checked_add(bytes.len()) {
+            Some(total) if total <= self.cap => {
+                self.retained_bytes = total;
+                self.retained.push((tag, bytes.to_vec()));
+            }
+            _ => {
+                self.overflow = true;
+                self.retained.clear();
+                self.retained_bytes = 0;
+            }
+        }
+    }
+
+    fn possible(&self) -> bool {
+        !self.used && !self.overflow && !self.retained.is_empty()
+    }
+}
 
 pub(crate) struct WorkerSession {
     pool: Arc<Pool>,
@@ -725,6 +829,7 @@ pub(crate) struct WorkerSession {
     /// decode order, so a reordering decoder would otherwise lose pictures without a word).
     decode_order_only: Option<&'static str>,
     last_tag: Option<u64>,
+    replay: Option<Replay>,
 }
 
 impl Drop for WorkerSession {
@@ -777,11 +882,22 @@ impl WorkerSession {
         cancel: &CancellationToken,
         on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
     ) -> Result<(), VideoDecodeError> {
+        self.request_raw(frame, id, want, cancel, on_frame)
+            .map_err(|error| Self::convert(self.faults.as_ref(), self.pool.spec, error))
+    }
+
+    fn request_raw(
+        &mut self,
+        frame: Vec<u8>,
+        id: u64,
+        want: Want,
+        cancel: &CancellationToken,
+        on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
+    ) -> Result<(), Av1Error> {
         let Some(session) = self.session.as_mut().filter(|session| session.is_usable()) else {
-            return Err(ReelError::Unsupported {
+            return Err(Av1Error::Reel(ReelError::Unsupported {
                 what: self.pool.spec.session_ended,
-            }
-            .into());
+            }));
         };
         let call = Call {
             id,
@@ -795,9 +911,90 @@ impl WorkerSession {
             cancel,
             segment_wall: self.segment_wall,
         };
-        self.pool
-            .exchange(session, call, &clock, on_frame)
-            .map_err(|error| Self::convert(self.faults.as_ref(), self.pool.spec, error))
+        self.pool.exchange(session, call, &clock, on_frame)
+    }
+
+    /// True for the contained faults a replay may cure (the worker died or stalled).
+    fn replayable(error: &Av1Error) -> bool {
+        matches!(
+            error,
+            Av1Error::Worker(Av1WorkerFault::DecoderCrashed { .. } | Av1WorkerFault::DecoderDeadline)
+        )
+    }
+
+    /// Resumes the segment on a fresh worker: OPEN with the segment's request, then every retained packet
+    /// since the last sync packet; pictures whose tag was already delivered are dropped. Once per segment.
+    fn run_replay(
+        &mut self,
+        cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), Av1Error> {
+        let Some(replay) = self.replay.as_mut() else {
+            return Ok(());
+        };
+        replay.used = true;
+        let open = replay.open.clone();
+        let retained = std::mem::take(&mut replay.retained);
+        bump(&self.pool.counters.replays);
+        if let Some(mut dead) = self.session.take() {
+            dead.terminate(Duration::ZERO);
+        }
+        self.session = Some(self.pool.checkout(cancel)?);
+        let id = self.pool.next_id();
+        self.request_raw(wire::encode_open(id, &open), id, Want::Opened, cancel, &mut |_| {
+            Err(ReelError::DecoderFault {
+                fault: DecoderFault::Protocol,
+            })
+        })?;
+        let (order, mut last) = (self.decode_order_only, self.last_tag);
+        let delivered = self.last_tag;
+        for (tag, bytes) in &retained {
+            let id = self.pool.next_id();
+            self.request_raw(
+                wire::encode_packet(id, *tag, bytes),
+                id,
+                Want::BatchEnd,
+                cancel,
+                &mut |frame| {
+                    if delivered.is_some_and(|done| frame.tag <= done) {
+                        return Ok(()); // delivered before the fault
+                    }
+                    Self::release(order, &mut last, frame, out)
+                },
+            )?;
+        }
+        self.last_tag = last;
+        if let Some(replay) = self.replay.as_mut() {
+            replay.retained = retained;
+        }
+        Ok(())
+    }
+
+    /// Runs one batch request; after a crash or deadline, replays once when the session retains a run.
+    fn batch_with_replay(
+        &mut self,
+        frame: Vec<u8>,
+        id: u64,
+        cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        let (order, mut last) = (self.decode_order_only, self.last_tag);
+        let result = self.request_raw(frame, id, Want::BatchEnd, cancel, &mut |frame| {
+            Self::release(order, &mut last, frame, out)
+        });
+        self.last_tag = last;
+        let result = match result {
+            Err(error)
+                if Self::replayable(&error)
+                    && self.replay.as_ref().is_some_and(Replay::possible) =>
+            {
+                self.run_replay(cancel, out).inspect_err(|_| {
+                    bump(&self.pool.counters.replay_failed);
+                })
+            }
+            other => other,
+        };
+        result.map_err(|error| Self::convert(self.faults.as_ref(), self.pool.spec, error))
     }
 }
 
@@ -824,10 +1021,13 @@ impl VideoDecodeSession for WorkerSession {
             Some(prep) => {
                 let prepared_ok = prep(packet, &mut prepared);
                 let frame = match prepared_ok {
-                    Ok(()) if prepared.len() <= self.max_packet_bytes => {
+                    Ok(sync) if prepared.len() <= self.max_packet_bytes => {
+                        if let Some(replay) = self.replay.as_mut() {
+                            replay.retain(tag, &prepared, sync);
+                        }
                         Ok(wire::encode_packet(id, tag, &prepared))
                     }
-                    Ok(()) => Err(packet_bytes),
+                    Ok(_) => Err(packet_bytes),
                     Err(error) => Err(error),
                 };
                 self.prepared = prepared;
@@ -836,12 +1036,7 @@ impl VideoDecodeSession for WorkerSession {
             None => wire::encode_packet(id, tag, packet),
         };
         self.sent_tags.insert(tag);
-        let (order, mut last) = (self.decode_order_only, self.last_tag);
-        let result = self.request(frame, id, Want::BatchEnd, cancel, &mut |frame| {
-            Self::release(order, &mut last, frame, out)
-        });
-        self.last_tag = last;
-        result
+        self.batch_with_replay(frame, id, cancel, out)
     }
 
     fn finish(
@@ -850,12 +1045,7 @@ impl VideoDecodeSession for WorkerSession {
         out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError> {
         let id = self.pool.next_id();
-        let (order, mut last) = (self.decode_order_only, self.last_tag);
-        let result = self.request(wire::encode_finish(id), id, Want::BatchEnd, cancel, &mut |frame| {
-            Self::release(order, &mut last, frame, out)
-        });
-        self.last_tag = last;
-        result
+        self.batch_with_replay(wire::encode_finish(id), id, cancel, out)
     }
 }
 
@@ -961,7 +1151,23 @@ impl Pool {
             idle: Mutex::new(Vec::new()),
             request_ids: AtomicU64::new(1),
             counters: Counters::default(),
+            heartbeat_timeout: None,
+            #[cfg(feature = "test-faults")]
+            first_spawn_args: Vec::new(),
         }
+    }
+
+    /// Turns on the heartbeat watch (MF pool).
+    pub(crate) fn with_heartbeat(mut self, timeout: Duration) -> Self {
+        self.heartbeat_timeout = Some(timeout);
+        self
+    }
+
+    /// Arguments for the first worker only (test-faults).
+    #[cfg(feature = "test-faults")]
+    pub(crate) fn with_first_spawn_args(mut self, args: Vec<String>) -> Self {
+        self.first_spawn_args = args;
+        self
     }
 
     pub(crate) fn stats(&self) -> Av1WorkerStats {
@@ -978,6 +1184,9 @@ impl Pool {
             killed_oversize: c.killed_oversize.load(Ordering::Acquire),
             alive: self.supervisor.stats().workers_live,
             last_crash_exit_code: *lock(&c.last_crash_exit_code),
+            killed_heartbeat: c.killed_heartbeat.load(Ordering::Acquire),
+            replays: c.replays.load(Ordering::Acquire),
+            replay_failed: c.replay_failed.load(Ordering::Acquire),
         }
     }
 }
@@ -1072,6 +1281,7 @@ impl WorkerAv1Provider {
                 max_packet_bytes: spec.limits.max_chunk_bytes,
                 prep: None,
                 decode_order_only: None,
+                replay_cap: None,
             },
             faults,
             cancel,
@@ -1089,6 +1299,8 @@ pub(crate) struct OpenPlan {
     pub max_packet_bytes: usize,
     pub prep: Option<PacketPrep>,
     pub decode_order_only: Option<&'static str>,
+    /// `Some(cap)`: retain up to `cap` prepared bytes since the last sync packet for one replay.
+    pub replay_cap: Option<usize>,
 }
 
 /// Checks a worker out of `pool`, sends OPEN and returns the session (shared by every worker kind).
@@ -1105,7 +1317,9 @@ pub(crate) fn open_worker(
         max_packet_bytes,
         prep,
         decode_order_only,
+        replay_cap,
     } = plan;
+    let replay = replay_cap.map(|cap| Replay::new(open.clone(), cap));
     {
         let mut worker = WorkerSession {
             pool: Arc::clone(pool),
@@ -1120,6 +1334,7 @@ pub(crate) fn open_worker(
             prepared: Vec::new(),
             decode_order_only,
             last_tag: None,
+            replay,
         };
         match pool.checkout(cancel) {
             Ok(session) => worker.session = Some(session),
