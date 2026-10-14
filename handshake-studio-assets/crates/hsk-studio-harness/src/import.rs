@@ -2,8 +2,10 @@
 //! `source bytes -> sniff -> importer -> ImportedDocument -> package bytes -> Session::open_bytes`.
 //!
 //! Each importer is an explicitly selected provider behind its own feature (no default features):
-//! `import-psd` (PSD/PSB through `hsk-studio-interop-psd`). A detected format whose importer is not in
-//! this build, or does not exist yet (TIFF, camera raw, PDF in this slice), is the typed refusal
+//! `import-psd` (PSD/PSB through `hsk-studio-interop-psd`), `import-raw` (DNG and the camera raw
+//! containers `hsk-studio-develop` decodes) and `import-tiff` (plain TIFF through
+//! `hsk-studio-interop-tiff`, SMB-CONVERT-TIFF). A detected format whose importer is not in this
+//! build, or does not exist yet (PDF in this slice), is the typed refusal
 //! `format_unavailable` naming the format, the feature and the reason; unknown bytes are
 //! `format_unrecognised`. Nothing is reported as imported that was not (tests in `tests/import_psd.rs`).
 //!
@@ -139,6 +141,9 @@ fn not_implemented(format: SourceFormat) -> ImportError {
 #[cfg(feature = "import")]
 pub use with_package::*;
 
+#[cfg(feature = "import-tiff")]
+mod tiff;
+
 #[cfg(feature = "import")]
 mod with_package {
     use super::*;
@@ -189,7 +194,8 @@ mod with_package {
         let format = sniff(bytes).ok_or(ImportError::FormatUnrecognised)?;
         match format {
             SourceFormat::Psd | SourceFormat::Psb => psd_route(bytes, format, resolver, cancel),
-            SourceFormat::Tiff | SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel),
+            SourceFormat::Tiff => tiff_family(bytes, resolver, cancel),
+            SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel),
             SourceFormat::Pdf => Err(not_implemented(format)),
         }
     }
@@ -212,11 +218,42 @@ mod with_package {
 
     #[cfg(not(feature = "import-raw"))]
     fn raw_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
-        Err(match format {
-            // Plain TIFF has no importer yet (interop-tiff); a DNG needs `import-raw`.
-            SourceFormat::Tiff => not_implemented(format),
-            _ => ImportError::FormatUnavailable { format, feature: format.feature(), reason: "feature_not_enabled" },
-        })
+        Err(ImportError::FormatUnavailable { format, feature: "import-raw", reason: "feature_not_enabled" })
+    }
+
+    /// TIFF-family bytes: with `import-raw`, `hsk-studio-develop` decides first (DNG, CR2, NEF, ARW;
+    /// its typed refusals pass through); only its `unsupported_container` (a TIFF that is not a
+    /// camera raw it knows, e.g. no DNGVersion) continues as plain TIFF. Without `import-raw` the
+    /// camera raw check is not in the build, so a TIFF-based raw would import its first IFD as a
+    /// plain page; the receipt records `camera_raw_check: not_in_build` (never silent).
+    fn tiff_family(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        #[cfg(feature = "import-raw")]
+        {
+            let not_raw = hsk_studio_develop::DevelopError::UnsupportedContainer.code();
+            match raw_route(bytes, SourceFormat::Tiff, resolver, cancel) {
+                Err(ImportError::Importer { code, .. }) if code == not_raw => {
+                    plain_tiff(bytes, resolver, cancel, "develop_unsupported_container")
+                }
+                other => other,
+            }
+        }
+        #[cfg(not(feature = "import-raw"))]
+        plain_tiff(bytes, resolver, cancel, "not_in_build")
+    }
+
+    #[cfg(not(feature = "import-tiff"))]
+    fn plain_tiff(_: &[u8], _: &dyn Resolver, _: &CancellationToken, _: &'static str) -> Result<ImportedDocument, ImportError> {
+        Err(ImportError::FormatUnavailable { format: SourceFormat::Tiff, feature: "import-tiff", reason: "feature_not_enabled" })
+    }
+
+    #[cfg(feature = "import-tiff")]
+    fn plain_tiff(
+        bytes: &[u8],
+        resolver: &dyn Resolver,
+        cancel: &CancellationToken,
+        camera_raw_check: &'static str,
+    ) -> Result<ImportedDocument, ImportError> {
+        super::tiff::import_tiff(bytes, resolver, cancel, camera_raw_check)
     }
 
     /// Camera raw through `hsk-studio-develop` (feature `import-raw`): `decode_container` decides the
@@ -236,7 +273,6 @@ mod with_package {
         use hsk_studio_interop_psd as psd;
         let refusal = |e: develop::DevelopError| match e {
             develop::DevelopError::Canceled => ImportError::Canceled,
-            develop::DevelopError::UnsupportedContainer if format == SourceFormat::Tiff => not_implemented(format),
             other => ImportError::Importer { format, code: other.code() },
         };
         let raw = develop::decode_container(bytes).map_err(refusal)?;
@@ -334,8 +370,8 @@ mod with_package {
 
     /// Shared tail of every importer that yields an interop-psd `ImportProposal` (PSD layers, or one
     /// raster through `raster_proposal`): tile assets, records, receipt, original.
-    #[cfg(any(feature = "import-psd", feature = "import-raw"))]
-    fn package_proposal(
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
+    pub(crate) fn package_proposal(
         format: SourceFormat,
         importer: &str,
         bytes: &[u8],
@@ -393,13 +429,13 @@ mod with_package {
     /// Deterministic standalone identity minting for converted documents: UUIDv7-shaped ids whose
     /// first 48 bits are the source digest's and whose tail is a counter. The same source always
     /// converts to the same ids (byte-identical packages); it is a stand-in for a host `IdMint`.
-    #[cfg(any(feature = "import-psd", feature = "import-raw"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
     pub struct SourceMint {
         seed: String,
         n: u64,
     }
 
-    #[cfg(any(feature = "import-psd", feature = "import-raw"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
     impl SourceMint {
         pub fn new(sha256: &[u8; 32]) -> Self {
             let hex: String = sha256.iter().take(6).map(|b| format!("{b:02x}")).collect();
@@ -413,7 +449,7 @@ mod with_package {
         }
     }
 
-    #[cfg(any(feature = "import-psd", feature = "import-raw"))]
+    #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff"))]
     impl hsk_studio_interop_psd::IdMint for SourceMint {
         fn document_id(&mut self) -> String {
             self.next("SDOC")

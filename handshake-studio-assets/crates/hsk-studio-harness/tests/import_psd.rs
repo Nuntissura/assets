@@ -162,13 +162,19 @@ fn unknown_and_not_yet_importable_formats_are_typed_refusals() {
     ] {
         let (code, detail) = code(bytes).expect("refused, never a fake success");
         assert_eq!(detail["format"], format, "{code}");
-        if cfg!(feature = "import-raw") && format != "pdf" {
-            // Camera raw and TIFF-family bytes reach develop's container reader: its typed refusal of
-            // these stubs passes through (or plain TIFF stays format_unavailable).
+        let reaches_importer = match format {
+            "camera_raw" => cfg!(feature = "import-raw"),
+            "tiff" => cfg!(feature = "import-raw") || cfg!(feature = "import-tiff"),
+            _ => false,
+        };
+        if reaches_importer {
+            // Camera raw and TIFF-family stubs reach develop's container reader or interop-tiff: their
+            // typed refusal passes through (a TIFF develop does not claim without import-tiff stays
+            // format_unavailable).
             assert!(code == "format_unavailable" || detail["importer_code"] == code, "{format}: {code}");
         } else {
             assert_eq!(code, "format_unavailable", "{format}");
-            let reason = if format == "camera_raw" { "feature_not_enabled" } else { "importer_not_implemented" };
+            let reason = if format == "pdf" { "importer_not_implemented" } else { "feature_not_enabled" };
             assert_eq!(detail["reason"], reason, "{format}");
         }
     }
