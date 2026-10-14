@@ -38,11 +38,11 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_components::instance_layer;
 use hsk_studio_folio::{
     ArtboardSchema, BLEND_NORMAL, BLEND_PASS_THROUGH, Bounds, Budget, DocumentSchema, GeometryUnit,
-    GradientInterpolation, GradientSpread, GraphSchema, Isolation, LayerAppearance, LayerSchema,
+    GradientInterpolation, GradientSpread, Isolation, LayerAppearance, LayerSchema,
     Length, NodeKind, NodeRef, Parent, Payload, ProfileBinding, Resolver, Snapshot, StrokeAlign,
     StrokeCap, StrokeJoin, StudioAppearanceRow, StudioArtboard, StudioColor, StudioDesignRecords,
     StudioDocument, StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer,
-    StudioLayerGraph, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing,
+    StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing,
     StudioStrokeStyle, StyleKind, StyleRegistrySchema, validate_design_records, validate_document,
 };
 use hsk_studio_folio::{
@@ -2089,6 +2089,14 @@ pub fn to_native(
             l.visible = false;
         }
     }
+    let booleans: std::collections::HashSet<String> =
+        boolean_groups.iter().map(|g| g.layer_id.clone()).collect();
+    let order: Vec<NodeRef> = id_map.iter().map(|e| e.node.clone()).collect();
+    let built = crate::graph::build(&layers, &artboards, &order, &booleans);
+    for ((path, code), count) in built.loss {
+        let slot = loss.entry((path.to_owned(), code)).or_insert((0, None));
+        slot.0 = slot.0.saturating_add(count);
+    }
     let document = StudioDocument {
         schema_id: DocumentSchema::V1,
         document_id: document_id.clone(),
@@ -2104,12 +2112,7 @@ pub fn to_native(
         artboards,
         page_spreads: Vec::new(),
         layers,
-        graph: StudioLayerGraph {
-            schema_id: GraphSchema::V1,
-            operations: Vec::new(),
-            edges: Vec::new(),
-            outputs: Vec::new(),
-        },
+        graph: built.graph,
         sequences: Vec::new(),
     };
     let snapshot =

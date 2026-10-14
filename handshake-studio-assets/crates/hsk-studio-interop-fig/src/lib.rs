@@ -16,6 +16,7 @@ mod descriptor;
 mod effects;
 mod error;
 mod geometry;
+mod graph;
 mod import;
 mod kiwi;
 mod kiwi_value;
