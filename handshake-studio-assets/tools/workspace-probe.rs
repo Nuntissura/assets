@@ -452,7 +452,9 @@ fn inherited_text<'a>(d: &'a Document, w: &'a Document, key: &str) -> Result<&'a
     }
 }
 const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
-const MAX_REGISTRY_RECORDS: usize = 256;
+// 512 since D11 (2026-10-14): hsk-studio-harness's eframe closure is 316 lock records (Cargo.lock is
+// platform-agnostic, so winit's macOS/Linux/Android crates are pinned too); every other owner stays under 128.
+const MAX_REGISTRY_RECORDS: usize = 512;
 // Records observed across one whole selection: per-owner bound times the 35-package closure bound.
 const MAX_OBSERVED_RECORDS: usize = MAX_REGISTRY_RECORDS * 35;
 // Stable semver core X.Y.Z, optionally with build metadata (`+1.3.281`, as crates.io publishes for
@@ -497,7 +499,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-interop-layout", &["miniz_oxide", "roxmltree", "serde_json", "sha2"]),
     ("hsk-studio-controls", &["egui", "serde", "serde_json"]),
     ("hsk-studio-session", &["serde_json"]),
-    ("hsk-studio-harness", &["serde_json"]),
+    ("hsk-studio-harness", &["eframe", "egui", "serde_json"]),
     ("hsk-studio-kernel-bindings", &["serde", "serde_json"]),
     ("hsk-studio-press", &["hayro-interpret", "kurbo", "miniz_oxide", "sha2"]),
     ("hsk-studio-web", &["html5ever", "sha2"]),
@@ -508,7 +510,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-motion-js", &["rquickjs"]),
     ("hsk-studio-worker", &["windows-sys"]),
     ("hsk-studio-interop-tiff", &["sha2", "tiff"]),
-    ("hsk-studio-interop-raster", &["png", "zune-jpeg"]),
+    ("hsk-studio-interop-raster", &["png", "sha2", "zune-jpeg"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
@@ -971,7 +973,16 @@ fn inspect(args: &[String]) -> Result<String> {
             &format!("workspace.metadata.studio.dependencies.{package}"),
             "allowed",
         )?;
+        // Lead decision B1 (2026-10-14): optional `dev-allowed` path edges, accepted only in [dev-dependencies].
+        let dev_allowed = match manifest
+            .table(&format!("workspace.metadata.studio.dependencies.{package}"))?
+            .get("dev-allowed")
+        {
+            Some(v) => v.list()?,
+            None => Vec::new(),
+        };
         for (section, table) in &d.tables {
+            let dev_section = section == "dev-dependencies" || section.ends_with(".dev-dependencies");
             if section == "dependencies"
                 || section == "build-dependencies"
                 || section == "dev-dependencies"
@@ -1049,7 +1060,10 @@ fn inspect(args: &[String]) -> Result<String> {
                             return Err("dependency_outside_workspace".into());
                         }
                         let expected = available.get(dep).ok_or("undeclared_dependency")?;
-                        if actual != inside(&root, expected)? || !allowed.iter().any(|s| s == dep) {
+                        if actual != inside(&root, expected)?
+                            || !(allowed.iter().any(|s| s == dep)
+                                || (dev_section && dev_allowed.iter().any(|s| s == dep)))
+                        {
                             return Err("dependency_outside_declared_dag".into());
                         }
                         let mut forward = forwarded.get(alias).cloned().unwrap_or_default();

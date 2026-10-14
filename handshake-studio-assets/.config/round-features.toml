@@ -28,6 +28,6 @@ hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tif
 # develop: real_dng, real_raw, container_identity; interop-tiff: real_tiff.
 hsk-studio-develop = [[]]
 hsk-studio-interop-tiff = [[]]
-# harness: psd-tools sweep shards 0-5, DNG convert, vendor RAW refusals (tests/import_psd.rs needs import-psd;
+# harness: psd-tools sweep (16 size-balanced shards, 0-15), DNG convert, vendor RAW refusals (tests/import_psd.rs needs import-psd;
 # the DNG/RAW tests need import-raw).
 hsk-studio-harness = [["import-psd", "import-raw"]]

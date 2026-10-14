@@ -7,6 +7,12 @@ retries = 0
 # Per-test cap 120 s (CX-EXEC-005): flagged slow at 30 s, terminated after 4 periods.
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+# Lead decision 2026-10-14: the psd-tools sweep shard_0 holds a single 99 s corpus file (size-balanced 16-shard
+# sweep, c4c6d4d), so this ONE test gets 240 s (60 s x 4); every other test keeps the 120 s cap.
+[[profile.default.overrides]]
+filter = 'package(hsk-studio-harness) & test(=psd_tools_sweep_shard_0)'
+slow-timeout = { period = "60s", terminate-after = 4 }
+
 [profile.default.junit]
 # Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into each unit's results dir.
 # Full results: every test is a <testcase> (passing names included), passing tests' stdout/stderr stored
