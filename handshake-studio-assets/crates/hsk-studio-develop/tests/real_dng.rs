@@ -87,6 +87,27 @@ const CORPUS: &[Facts] = &[
             "listed_download_is_a_jfif_rendering_not_a_dng",
         )),
     },
+    // Canon EOS 5D Mark III via Adobe DNG Converter (raw.pixls.us id 1022, CC0): uncompressed 16-bit CFA in a
+    // SubIFD (IFD0 = thumbnail). Exiv2 table of the listing: BlackLevel 524032/256 x3 + 524288/256, WhiteLevel
+    // 15000, ActiveArea 80 122 3950 5918, DefaultCrop 18,16 5760x3840, illuminants 17/21.
+    Facts {
+        file: "adobe-dng-converter-canon-eos-5d3-16bit-uncompressed.dng",
+        sha256: "95dc76a2f255e623acaa5149b320389f7da7c995da890c3e0d511c0ff681b2e1",
+        width: 5920,
+        height: 3950,
+        bits: 16,
+        compression: 1,
+        cfa: Bayer::Rggb,
+        black: &[2047.0, 2047.0, 2047.0, 2048.0],
+        white: 15000,
+        active: (80, 122, 3950, 5918),
+        default_crop: Some((18, 16, 5760, 3840)),
+        linearized: false,
+        illuminants: (Some(17), Some(21)),
+        unapplied: &[],
+        clamp_pct_max: 1,
+        refusal: None,
+    },
     // Nikon D80: raw in a SubIFD (IFD0 = thumbnail), 256x240 lossless-JPEG tiles, LinearizationTable.
     Facts {
         file: "nikon-d80-16bit-lossless-tiled-linearized.dng",
