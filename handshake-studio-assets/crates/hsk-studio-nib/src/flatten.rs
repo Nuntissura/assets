@@ -82,8 +82,15 @@ impl Polyline {
     }
 }
 
+/// Euclidean norm through `sqrt` only: IEEE 754 requires `sqrt` to be correctly rounded, whereas
+/// `hypot`, `sin`, `cos` and `acos` come from the platform maths library and may differ between
+/// hosts (STU-VEC-179 byte-identical geometry). Inputs are bounded (|v| <= 4e9), so no overflow.
+pub(crate) fn norm(x: f64, y: f64) -> f64 {
+    (x * x + y * y).sqrt()
+}
+
 pub(crate) fn distance(a: PathPoint, b: PathPoint) -> f64 {
-    (b.x - a.x).hypot(b.y - a.y)
+    norm(b.x - a.x, b.y - a.y)
 }
 
 /// Flattens `path` into polylines (one per subpath with at least one point). Open subpaths stay open
@@ -193,7 +200,7 @@ fn steps(scaled: f64, tolerance: f64, budget: &mut Budget) -> Result<u32, Error>
 }
 
 fn second_difference(a: PathPoint, b: PathPoint, c: PathPoint) -> f64 {
-    (a.x - 2.0 * b.x + c.x).hypot(a.y - 2.0 * b.y + c.y)
+    norm(a.x - 2.0 * b.x + c.x, a.y - 2.0 * b.y + c.y)
 }
 
 pub(crate) fn quad_at(p0: PathPoint, p1: PathPoint, p2: PathPoint, t: f64) -> PathPoint {
