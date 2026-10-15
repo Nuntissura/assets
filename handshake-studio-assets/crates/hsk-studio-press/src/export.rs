@@ -419,23 +419,55 @@ pub enum GradientGeometry {
     Radial { from: [f64; 2], from_radius: f64, to: [f64; 2], to_radius: f64 },
 }
 
-/// One colour stop: offset 0..=1 along the gradient, colour components 0..=1.
+/// One colour stop: offset 0..=1 along the gradient, colour components 0..=1, opacity 0..=1 and
+/// an optional midpoint (0 < m < 1: the fraction of the way to the next stop where the colour is
+/// the even mix; the piece is the power curve x^N with m^N = 1/2).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GradientStop {
     pub offset: f64,
     pub colour: [f64; 3],
+    pub opacity: f64,
+    pub midpoint: Option<f64>,
+}
+impl GradientStop {
+    /// An opaque stop without a midpoint.
+    pub const fn new(offset: f64, colour: [f64; 3]) -> Self {
+        Self { offset, colour, opacity: 1.0, midpoint: None }
+    }
 }
 
-/// A gradient fill: geometry, stops (non-decreasing offsets), `/Extend`, the gradient-to-user
-/// matrix and the colour space (`None` = DeviceRGB, else a 3-component ICC profile).
+/// What a gradient does past its first and last stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GradientSpread {
+    /// The end colours continue (`/Extend` as given).
+    Pad,
+    /// The stops repeat.
+    Repeat,
+    /// The stops repeat, every other cycle mirrored.
+    Reflect,
+}
+
+/// A gradient fill: geometry, stops (non-decreasing offsets), `/Extend` (used by `Pad`), spread,
+/// the gradient-to-user matrix and the colour space (`None` = DeviceRGB, else a 3-component ICC
+/// profile). Stop opacity below 1 becomes a luminosity soft mask of the same geometry (a gray
+/// shading of the opacities).
 #[derive(Clone, Copy, Debug)]
 pub struct Gradient<'a> {
     pub geometry: GradientGeometry,
     pub stops: &'a [GradientStop],
     pub extend: [bool; 2],
+    pub spread: GradientSpread,
     pub matrix: [f64; 6],
     pub profile: Option<IccHandle>,
 }
+
+/// One run of a text clip: font, size and `(glyph id, x, y)` placements in points.
+pub type TextClipRun<'a> = (FontHandle, f64, &'a [(u16, f64, f64)]);
+
+/// Most repeat / reflect cycles one gradient fill expands to.
+pub const MAX_GRADIENT_CYCLES: i64 = 256;
+/// Most linear pieces of one gradient function after expansion.
+pub const MAX_GRADIENT_PIECES: usize = 4096;
 
 /// Constant alpha and blend mode of the drawings that follow on a page (an `/ExtGState` with
 /// `/ca`, `/CA`, `/BM` set after each drawing's `q`).
@@ -451,12 +483,19 @@ impl Default for DrawState {
     }
 }
 
-/// A luminosity soft mask (ISO 32000-2 11.6.5.2): a `DeviceGray` image (8 or 16 bits, no alpha)
-/// drawn through `placement` into the mask group; outside the image the mask is 0 (`/BC [0]`).
+/// One image of a soft-mask group, drawn through `placement`.
 #[derive(Clone, Copy, Debug)]
-pub struct SoftMask<'a> {
+pub struct MaskImage<'a> {
     pub image: ImageSpec<'a>,
     pub placement: [f64; 6],
+}
+
+/// A soft mask (ISO 32000-1 11.6.5): a transparency group drawing `images` (with their own alpha,
+/// any colour space); luminosity masks read the group's luminosity over `/BC`, alpha masks its
+/// alpha. Outside the images a luminosity mask is the backdrop and an alpha mask 0.
+#[derive(Clone, Copy, Debug)]
+pub struct SoftMask<'a> {
+    pub images: &'a [MaskImage<'a>],
     /// `/S`: luminosity (default) or alpha (the mask group's alpha).
     pub alpha: bool,
     /// `/BC` gray backdrop of a luminosity mask (0 = black, the ISO default).
@@ -466,10 +505,17 @@ pub struct SoftMask<'a> {
 }
 impl<'a> SoftMask<'a> {
     /// A luminosity mask on a black backdrop with no transfer function.
-    pub fn luminosity(image: ImageSpec<'a>, placement: [f64; 6]) -> Self {
-        Self { image, placement, alpha: false, backdrop: 0.0, transfer_exponent: None }
+    pub fn luminosity(images: &'a [MaskImage<'a>]) -> Self {
+        Self { images, alpha: false, backdrop: 0.0, transfer_exponent: None }
+    }
+    /// An alpha mask (the images' alpha, 0 outside them).
+    pub fn alpha(images: &'a [MaskImage<'a>]) -> Self {
+        Self { images, alpha: true, backdrop: 0.0, transfer_exponent: None }
     }
 }
+
+/// Most images one soft mask may draw.
+pub const MAX_MASK_IMAGES: usize = 256;
 
 /// How a closed group is painted: constant opacity, blend mode, isolated / knockout flags of the
 /// transparency group and an optional soft mask.
@@ -517,6 +563,8 @@ struct FontBuild {
 /// A font program subset at `finish`: its bytes, the glyphs used by every font sharing it, its
 /// object number and the (descriptor, CIDFont, Type0, base name) objects whose names get the tag.
 struct SubsetFile {
+    /// A CID-keyed CFF program (`cff::subset_cid`, `/Subtype /CIDFontType0C`) instead of TrueType.
+    cff: bool,
     bytes: Vec<u8>,
     num: u32,
     used: BTreeSet<u16>,
@@ -843,14 +891,12 @@ impl PdfExport {
             return Err(ExportError::AlphaOutOfRange);
         }
         let media = p.spec.media_box_pt;
-        let mask_params = style.soft_mask.map(|m| (m.alpha, m.backdrop, m.transfer_exponent));
         let mask = match style.soft_mask {
             None => None,
             Some(m) => {
-                if m.image.colour != ImageColour::DeviceGray || m.image.alpha.is_some() {
+                if m.images.is_empty() || m.images.len() > MAX_MASK_IMAGES {
                     return Err(ExportError::InvalidMask);
                 }
-                finite(&m.placement)?;
                 finite(&[m.backdrop])?;
                 if !(0.0..=1.0).contains(&m.backdrop) {
                     return Err(ExportError::ColourOutOfRange);
@@ -861,7 +907,12 @@ impl PdfExport {
                         return Err(ExportError::ValueOutOfRange);
                     }
                 }
-                Some((self.image_objects(m.image)?, m.placement))
+                let mut imgs = Vec::with_capacity(m.images.len());
+                for mi in m.images {
+                    finite(&mi.placement)?;
+                    imgs.push((self.image_objects(mi.image)?, mi.placement));
+                }
+                Some((m, imgs))
             }
         };
         let level = self.top(page)?;
@@ -890,17 +941,18 @@ impl PdfExport {
             d.set("Resources", Object::Dict(resources));
             flate_stream(d, &content)
         };
-        // Mask group content: the mask image through its placement.
+        // Mask group content: every mask image through its placement.
         let mask_content = match &mask {
-            Some((_, placement)) => Some(write_ops(
-                &[
-                    op("q", vec![]),
-                    op("cm", placement.iter().map(|v| real(*v)).collect()),
-                    op("Do", vec![name_obj("MIm0")]),
-                    op("Q", vec![]),
-                ],
-                &[],
-            )?),
+            Some((_, imgs)) => {
+                let mut ops = Vec::with_capacity(imgs.len().saturating_mul(4));
+                for (i, (_, placement)) in imgs.iter().enumerate() {
+                    ops.push(op("q", vec![]));
+                    ops.push(op("cm", placement.iter().map(|v| real(*v)).collect()));
+                    ops.push(op("Do", vec![name_obj(&format!("MIm{i}"))]));
+                    ops.push(op("Q", vec![]));
+                }
+                Some(write_ops(&ops, &[])?)
+            }
             None => None,
         };
         // Parent level must take q / gs / Do / Q.
@@ -909,13 +961,16 @@ impl PdfExport {
             Some(n) if n <= self.limits.max_content_ops => {}
             _ => return Err(ExportError::TooManyOperations),
         }
-        let objects = 2u32.saturating_add(if mask.is_some() { 3 } else { 0 });
+        let image_objects: u32 = mask.as_ref().map_or(0, |(_, imgs)| imgs.iter().map(|((_, sm, _, _), _)| if sm.is_some() { 2u32 } else { 1 }).fold(0u32, |a, b| a.saturating_add(b)));
+        let objects = 2u32.saturating_add(if mask.is_some() { 1 } else { 0 }).saturating_add(image_objects);
         self.reserve(objects)?;
         let mut raw = content.len();
         let mut written = form_len;
-        if let Some(((_, _, img_raw, img_written), _)) = &mask {
-            raw = raw.checked_add(*img_raw).ok_or(ExportError::AggregateOverBudget)?;
-            written = written.checked_add(*img_written).ok_or(ExportError::AggregateOverBudget)?;
+        if let Some((_, imgs)) = &mask {
+            for ((_, _, img_raw, img_written), _) in imgs {
+                raw = raw.checked_add(*img_raw).ok_or(ExportError::AggregateOverBudget)?;
+                written = written.checked_add(*img_written).ok_or(ExportError::AggregateOverBudget)?;
+            }
         }
         let mask_form = mask_content.map(|c| {
             let mut d = Dict::default();
@@ -930,10 +985,9 @@ impl PdfExport {
             let len = c.len();
             (flate_stream(d, &c), len)
         });
-        if let Some(((s, l), c)) = &mask_form {
+        if let Some(((_, l), c)) = &mask_form {
             raw = raw.checked_add(*c).ok_or(ExportError::AggregateOverBudget)?;
             written = written.checked_add(*l).ok_or(ExportError::AggregateOverBudget)?;
-            let _ = s;
         }
         self.charge(raw, written)?;
         // Everything is checked and charged: build objects.
@@ -944,44 +998,29 @@ impl PdfExport {
         gs.set("ca", real(style.opacity));
         gs.set("CA", real(style.opacity));
         gs.set("BM", name(style.blend.pdf_name()));
-        if let (Some(((img, smask, _, _), _)), Some(((mut mform, _), _))) = (mask, mask_form) {
-            let inum = self.alloc();
-            let mut img = img;
-            if let Some(sm) = smask {
-                let snum = self.alloc();
-                self.insert(snum, sm);
-                if let Object::Stream(st) = &mut img {
-                    st.dict.set("SMask", rf(snum));
+        if let (Some((m, imgs)), Some(((mut mform, _), _))) = (mask, mask_form) {
+            let mut x = Dict::default();
+            for (i, ((img, smask, _, _), _)) in imgs.into_iter().enumerate() {
+                let mut img = img;
+                if let Some(sm) = smask {
+                    let snum = self.alloc();
+                    self.insert(snum, sm);
+                    if let Object::Stream(st) = &mut img {
+                        st.dict.set("SMask", rf(snum));
+                    }
                 }
+                let inum = self.alloc();
+                self.insert(inum, img);
+                x.set_key(format!("MIm{i}").as_bytes(), rf(inum));
             }
-            self.insert(inum, img);
             if let Object::Stream(st) = &mut mform {
-                let mut x = Dict::default();
-                x.set("MIm0", rf(inum));
                 let mut r = Dict::default();
                 r.set("XObject", Object::Dict(x));
                 st.dict.set("Resources", Object::Dict(r));
             }
             let mnum = self.alloc();
             self.insert(mnum, mform);
-            let mut sm = Dict::default();
-            sm.set("Type", name("Mask"));
-            let (alpha_mask, backdrop, tr) = mask_params.unwrap_or((false, 0.0, None));
-            sm.set("S", name(if alpha_mask { "Alpha" } else { "Luminosity" }));
-            sm.set("G", rf(mnum));
-            if !alpha_mask {
-                sm.set("BC", Object::Array(vec![real(backdrop)]));
-            }
-            if let Some(n) = tr {
-                let mut f = Dict::default();
-                f.set("FunctionType", int(2));
-                f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
-                f.set("C0", Object::Array(vec![real(0.0)]));
-                f.set("C1", Object::Array(vec![real(1.0)]));
-                f.set("N", real(n));
-                sm.set("TR", Object::Dict(f));
-            }
-            gs.set("SMask", Object::Dict(sm));
+            gs.set("SMask", Object::Dict(mask_dict(mnum, m.alpha, m.backdrop, m.transfer_exponent)));
         }
         let gnum = self.alloc();
         self.insert(gnum, Object::Dict(gs));
@@ -1194,40 +1233,193 @@ impl PdfExport {
     }
 
     /// Fills `path` with an axial (type 2) or radial (type 3) shading (ISO 32000-1 8.7.4.5.3/4):
-    /// `q path W n cm /Sh sh Q`, the stops as a stitching function (type 3) of linear (type 2)
-    /// pieces, padded to offsets 0 and 1 with the end colours; `extend` is `/Extend`.
+    /// `q [mask gs] path W n cm /Sh sh Q`. The stops become a stitching function (type 3) of type-2
+    /// pieces (exponent from the stop's midpoint, else linear), padded to offsets 0 and 1 with the end
+    /// colours. `Repeat` / `Reflect` expand the function over the integer cycles the path's bounds
+    /// reach in gradient space (at most [`MAX_GRADIENT_CYCLES`]) and move the shading's end points to
+    /// the first and last cycle; stop opacity below 1 adds a luminosity soft mask whose group draws the
+    /// same shading geometry in DeviceGray with the opacities.
     pub fn fill_path_gradient(&mut self, page: PageHandle, path: &[PathCommand], rule: FillRule, g: &Gradient<'_>) -> Result<()> {
         self.page(page)?;
         finite(&g.matrix)?;
-        let [a, b, c, d, _, _] = g.matrix;
-        if (a * d - b * c).abs() < 1e-12 {
+        let [a, b, c, d, e, f] = g.matrix;
+        let det = a * d - b * c;
+        if det.abs() < 1e-12 {
             return Err(ExportError::InvalidGradient);
         }
         if g.stops.is_empty() || g.stops.len() > MAX_GRADIENT_STOPS {
             return Err(ExportError::InvalidGradient);
         }
-        for s in g.stops {
-            finite(&[s.offset])?;
-            finite(&s.colour)?;
-            if !(0.0..=1.0).contains(&s.offset) || !s.colour.iter().all(|v| (0.0..=1.0).contains(v)) {
+        for st in g.stops {
+            finite(&[st.offset, st.opacity])?;
+            finite(&st.colour)?;
+            if let Some(m) = st.midpoint {
+                finite(&[m])?;
+                if !(m > 0.0 && m < 1.0) {
+                    return Err(ExportError::InvalidGradient);
+                }
+            }
+            if !(0.0..=1.0).contains(&st.offset) || !(0.0..=1.0).contains(&st.opacity) || !st.colour.iter().all(|v| (0.0..=1.0).contains(v)) {
                 return Err(ExportError::InvalidGradient);
             }
         }
         if g.stops.windows(2).any(|w| w[1].offset < w[0].offset) {
             return Err(ExportError::InvalidGradient);
         }
-        let (coords, kind) = match g.geometry {
+        let (p0, r0, p1, r1, kind) = match g.geometry {
             GradientGeometry::Axial { from, to } => {
                 finite(&[from[0], from[1], to[0], to[1]])?;
-                (vec![from[0], from[1], to[0], to[1]], 2)
+                (from, 0.0, to, 0.0, 2)
             }
             GradientGeometry::Radial { from, from_radius, to, to_radius } => {
                 finite(&[from[0], from[1], from_radius, to[0], to[1], to_radius])?;
                 if from_radius < 0.0 || to_radius < 0.0 {
                     return Err(ExportError::InvalidGradient);
                 }
-                (vec![from[0], from[1], from_radius, to[0], to[1], to_radius], 3)
+                (from, from_radius, to, to_radius, 3)
             }
+        };
+        let path_ops = Self::path_ops(path)?;
+        // Cycles: the parameter range the path's bounds reach in gradient space.
+        let (k0, k1) = if g.spread == GradientSpread::Pad {
+            (0i64, 1i64)
+        } else {
+            let pts: Vec<(f64, f64)> = path
+                .iter()
+                .flat_map(|cmd| match *cmd {
+                    PathCommand::MoveTo(x, y) | PathCommand::LineTo(x, y) => vec![(x, y)],
+                    PathCommand::CubicTo(x1, y1, x2, y2, x3, y3) => vec![(x1, y1), (x2, y2), (x3, y3)],
+                    PathCommand::Close => vec![],
+                })
+                .collect();
+            let (mut lo, mut hi) = (0.0f64, 1.0f64);
+            // Corners of the bounds, mapped back to gradient space.
+            let xs = pts.iter().map(|p| p.0);
+            let ys = pts.iter().map(|p| p.1);
+            let (x0, x1) = (xs.clone().fold(f64::MAX, f64::min), xs.fold(f64::MIN, f64::max));
+            let (y0, y1) = (ys.clone().fold(f64::MAX, f64::min), ys.fold(f64::MIN, f64::max));
+            for (ux, uy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                let (tx, ty) = (ux - e, uy - f);
+                let gx = (d * tx - c * ty) / det;
+                let gy = (-b * tx + a * ty) / det;
+                let sv = if kind == 2 {
+                    let (dx, dy) = (p1[0] - p0[0], p1[1] - p0[1]);
+                    let len2 = dx * dx + dy * dy;
+                    if len2 <= 0.0 { 0.0 } else { ((gx - p0[0]) * dx + (gy - p0[1]) * dy) / len2 }
+                } else {
+                    // Largest s with the point on circle s (no clipping to [0, 1]).
+                    let (cdx, cdy, dr) = (p1[0] - p0[0], p1[1] - p0[1], r1 - r0);
+                    let (pdx, pdy) = (gx - p0[0], gy - p0[1]);
+                    let qa = cdx * cdx + cdy * cdy - dr * dr;
+                    let qb = pdx * cdx + pdy * cdy + r0 * dr;
+                    let qc = pdx * pdx + pdy * pdy - r0 * r0;
+                    if qa.abs() < 1e-12 {
+                        if qb.abs() > 1e-12 { qc / (2.0 * qb) } else { 1.0 }
+                    } else {
+                        let disc = (qb * qb - qa * qc).max(0.0);
+                        ((qb + disc.sqrt()) / qa).max((qb - disc.sqrt()) / qa)
+                    }
+                };
+                if sv.is_finite() {
+                    lo = lo.min(sv);
+                    hi = hi.max(sv);
+                }
+            }
+            if kind == 3 {
+                // Radii must stay non-negative: no cycle below the parameter where r(s) = 0.
+                let dr = r1 - r0;
+                if dr > 0.0 {
+                    lo = lo.max(-r0 / dr);
+                }
+            }
+            let (k0, k1) = (lo.floor(), hi.ceil());
+            if !(k0.is_finite() && k1.is_finite()) || k1 - k0 > MAX_GRADIENT_CYCLES as f64 {
+                return Err(ExportError::InvalidGradient);
+            }
+            (k0 as i64, k1 as i64)
+        };
+        let cycles = k1.saturating_sub(k0).max(1);
+        let mut stops: Vec<GradientStop> = g.stops.to_vec();
+        if let Some(first) = stops.first().copied()
+            && first.offset > 0.0
+        {
+            stops.insert(0, GradientStop { offset: 0.0, midpoint: None, ..first });
+        }
+        if let Some(last) = stops.last().copied()
+            && last.offset < 1.0
+        {
+            stops.push(GradientStop { offset: 1.0, midpoint: None, ..last });
+        }
+        if stops.len() == 1 {
+            stops.push(stops[0]);
+        }
+        let pieces_per_cycle = stops.len().saturating_sub(1);
+        if usize::try_from(cycles).unwrap_or(usize::MAX).saturating_mul(pieces_per_cycle) > MAX_GRADIENT_PIECES {
+            return Err(ExportError::InvalidGradient);
+        }
+        let opacity = stops.iter().any(|st| st.opacity < 1.0);
+        // One function over t in [0, 1] covering cycles k0..k1; `value` picks colour or opacity.
+        let build = |value: &dyn Fn(&GradientStop) -> Vec<f64>| -> Object {
+            let piece = |c0: Vec<f64>, c1: Vec<f64>, n: f64| {
+                let mut fd = Dict::default();
+                fd.set("FunctionType", int(2));
+                fd.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
+                fd.set("C0", Object::Array(c0.iter().map(|v| real(*v)).collect()));
+                fd.set("C1", Object::Array(c1.iter().map(|v| real(*v)).collect()));
+                fd.set("N", real(n));
+                Object::Dict(fd)
+            };
+            let exponent = |m: Option<f64>| m.map_or(1.0, |m| 0.5f64.ln() / m.ln());
+            let mut functions = Vec::new();
+            let mut bounds = Vec::new();
+            let span = cycles as f64;
+            for cyc in 0..cycles {
+                let reversed = g.spread == GradientSpread::Reflect && (k0.saturating_add(cyc)).rem_euclid(2) == 1;
+                for i in 0..pieces_per_cycle {
+                    let (sa, sb) = (stops[i], stops[i.saturating_add(1)]);
+                    let (from_off, to_off, c_from, c_to, n) = if reversed {
+                        // Mirrored: walk the stops backwards; the midpoint is measured from the other end.
+                        let (ra, rb) = (stops[pieces_per_cycle.saturating_sub(i)], stops[pieces_per_cycle.saturating_sub(i).saturating_sub(1)]);
+                        (1.0 - ra.offset, 1.0 - rb.offset, value(&ra), value(&rb), exponent(rb.midpoint.map(|m| 1.0 - m)))
+                    } else {
+                        (sa.offset, sb.offset, value(&sa), value(&sb), exponent(sa.midpoint))
+                    };
+                    let _ = from_off;
+                    functions.push(piece(c_from, c_to, n));
+                    let is_last = cyc.saturating_add(1) == cycles && i.saturating_add(1) == pieces_per_cycle;
+                    if !is_last {
+                        bounds.push(real((cyc as f64 + to_off) / span));
+                    }
+                }
+            }
+            if functions.len() == 1 {
+                return functions.pop().unwrap_or(Object::Null);
+            }
+            let mut fd = Dict::default();
+            fd.set("FunctionType", int(3));
+            fd.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
+            let count = functions.len();
+            fd.set("Functions", Object::Array(functions));
+            fd.set("Bounds", Object::Array(bounds));
+            fd.set("Encode", Object::Array((0..count).flat_map(|_| [real(0.0), real(1.0)]).collect()));
+            Object::Dict(fd)
+        };
+        let at = |k: i64| -> ([f64; 2], f64) {
+            let k = k as f64;
+            ([p0[0] + k * (p1[0] - p0[0]), p0[1] + k * (p1[1] - p0[1])], r0 + k * (r1 - r0))
+        };
+        let ((q0, qr0), (q1, qr1)) = (at(k0), at(k1));
+        let coords: Vec<f64> = if kind == 2 { vec![q0[0], q0[1], q1[0], q1[1]] } else { vec![q0[0], q0[1], qr0.max(0.0), q1[0], q1[1], qr1.max(0.0)] };
+        finite(&coords)?;
+        let extend = if g.spread == GradientSpread::Pad { g.extend } else { [true, true] };
+        let shading = |space: Object, function: Object| {
+            let mut sd = Dict::default();
+            sd.set("ShadingType", int(kind));
+            sd.set("ColorSpace", space);
+            sd.set("Coords", Object::Array(coords.iter().map(|v| real(*v)).collect()));
+            sd.set("Extend", Object::Array(vec![Object::Bool(extend[0]), Object::Bool(extend[1])]));
+            sd.set("Function", function);
+            Object::Dict(sd)
         };
         let space = match g.profile {
             Some(h) => {
@@ -1239,64 +1431,122 @@ impl PdfExport {
             }
             None => name("DeviceRGB"),
         };
-        let mut stops: Vec<GradientStop> = g.stops.to_vec();
-        if let Some(first) = stops.first().copied()
-            && first.offset > 0.0
-        {
-            stops.insert(0, GradientStop { offset: 0.0, ..first });
-        }
-        if let Some(last) = stops.last().copied()
-            && last.offset < 1.0
-        {
-            stops.push(GradientStop { offset: 1.0, ..last });
-        }
-        if stops.len() == 1 {
-            stops.push(stops[0]);
-        }
-        let piece = |c0: [f64; 3], c1: [f64; 3]| {
-            let mut f = Dict::default();
-            f.set("FunctionType", int(2));
-            f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
-            f.set("C0", Object::Array(c0.iter().map(|v| real(*v)).collect()));
-            f.set("C1", Object::Array(c1.iter().map(|v| real(*v)).collect()));
-            f.set("N", real(1.0));
-            Object::Dict(f)
-        };
-        let function = if stops.len() == 2 {
-            piece(stops[0].colour, stops[1].colour)
-        } else {
-            let mut f = Dict::default();
-            f.set("FunctionType", int(3));
-            f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
-            f.set("Functions", Object::Array(stops.windows(2).map(|w| piece(w[0].colour, w[1].colour)).collect()));
-            let inner = stops.get(1..stops.len().saturating_sub(1)).unwrap_or(&[]);
-            f.set("Bounds", Object::Array(inner.iter().map(|s| real(s.offset)).collect()));
-            f.set("Encode", Object::Array(stops.windows(2).flat_map(|_| [real(0.0), real(1.0)]).collect()));
-            Object::Dict(f)
-        };
-        let mut sd = Dict::default();
-        sd.set("ShadingType", int(kind));
-        sd.set("ColorSpace", space);
-        sd.set("Coords", Object::Array(coords.iter().map(|v| real(*v)).collect()));
-        sd.set("Extend", Object::Array(vec![Object::Bool(g.extend[0]), Object::Bool(g.extend[1])]));
-        sd.set("Function", function);
+        let colour_shading = shading(space, build(&|st: &GradientStop| st.colour.to_vec()));
         let sh_name = format!("Sh{}", self.shadings);
-        let mut body = Self::path_ops(path)?;
+        let mut body = Vec::new();
+        let mut mask_objects = None;
+        if opacity {
+            let gray = shading(name("DeviceGray"), build(&|st: &GradientStop| vec![st.opacity]));
+            let mut mops = vec![op("q", vec![])];
+            mops.extend(path_ops.iter().cloned());
+            mops.push(op(if rule == FillRule::EvenOdd { "W*" } else { "W" }, vec![]));
+            mops.push(op("n", vec![]));
+            mops.push(op("cm", g.matrix.iter().map(|v| real(*v)).collect()));
+            mops.push(op("sh", vec![name_obj("MSh0")]));
+            mops.push(op("Q", vec![]));
+            let content = write_ops(&mops, &[])?;
+            let media = self.page(page)?.spec.media_box_pt;
+            mask_objects = Some((gray, content, media));
+            body.push(op("gs", vec![name_obj(&format!("GSm{}", self.shadings))]));
+        }
+        body.extend(path_ops);
         body.push(op(if rule == FillRule::EvenOdd { "W*" } else { "W" }, vec![]));
         body.push(op("n", vec![]));
         body.push(op("cm", g.matrix.iter().map(|v| real(*v)).collect()));
         body.push(op("sh", vec![name_obj(&sh_name)]));
-        match self.top(page)?.ops.len().checked_add(body.len()).and_then(|n| n.checked_add(3)) {
+        match self.top(page)?.ops.len().checked_add(body.len()).and_then(|n| n.checked_add(4)) {
             Some(n) if n <= self.limits.max_content_ops => {}
             _ => return Err(ExportError::TooManyOperations),
         }
-        self.reserve(1)?;
+        self.reserve(if mask_objects.is_some() { 4 } else { 1 })?;
+        let mask_gs = match mask_objects {
+            None => None,
+            Some((gray, content, media)) => {
+                let len = content.len();
+                let mut fd = Dict::default();
+                fd.set("Type", name("XObject"));
+                fd.set("Subtype", name("Form"));
+                fd.set("BBox", rect(&media));
+                let mut grp = Dict::default();
+                grp.set("Type", name("Group"));
+                grp.set("S", name("Transparency"));
+                grp.set("CS", name("DeviceGray"));
+                fd.set("Group", Object::Dict(grp));
+                let (stream, written) = flate_stream(fd, &content);
+                self.charge(len, written)?;
+                let gray_num = self.alloc();
+                self.insert(gray_num, gray);
+                let mut stream = stream;
+                if let Object::Stream(st) = &mut stream {
+                    let mut shd = Dict::default();
+                    shd.set("MSh0", rf(gray_num));
+                    let mut r = Dict::default();
+                    r.set("Shading", Object::Dict(shd));
+                    st.dict.set("Resources", Object::Dict(r));
+                }
+                let form = self.alloc();
+                self.insert(form, stream);
+                let mut gs = Dict::default();
+                gs.set("Type", name("ExtGState"));
+                gs.set("SMask", Object::Dict(mask_dict(form, false, 0.0, None)));
+                let gnum = self.alloc();
+                self.insert(gnum, Object::Dict(gs));
+                Some((format!("GSm{}", self.shadings), gnum))
+            }
+        };
         let num = self.alloc();
-        self.insert(num, Object::Dict(sd));
+        self.insert(num, colour_shading);
         self.shadings = self.shadings.saturating_add(1);
         let icc = g.profile.map(|h| h.0);
         self.draw(page, body, icc)?;
-        self.top_mut(page)?.shadings.push((sh_name, num));
+        let l = self.top_mut(page)?;
+        l.shadings.push((sh_name, num));
+        if let Some(gsm) = mask_gs {
+            l.gstates.push(gsm);
+        }
+        Ok(())
+    }
+
+    /// Clips the drawings that follow on `page` to the union of glyph outlines (text rendering mode
+    /// 7, ISO 32000-1 9.3.6): one text object holding every run `(font, size, [(glyph id, x, y)])`;
+    /// ended by [`Self::pop_clip`].
+    pub fn push_clip_text(&mut self, page: PageHandle, runs: &[TextClipRun<'_>]) -> Result<()> {
+        let mut ops = vec![op("q", vec![]), op("BT", vec![]), op("Tr", vec![int(7)])];
+        let mut used = Vec::new();
+        for (font, size, glyphs) in runs {
+            let fb = self.fonts.get(font.0).ok_or(ExportError::NoSuchFont)?;
+            finite(&[*size])?;
+            if *size <= 0.0 {
+                return Err(ExportError::InvalidSize);
+            }
+            if glyphs.iter().any(|(gid, ..)| *gid >= fb.num_glyphs) {
+                return Err(ExportError::FontGlyphOutOfRange);
+            }
+            let map = fb.gid_to_cid.clone();
+            ops.push(op("Tf", vec![Object::Name(format!("F{}", font.0).into_bytes()), real(*size)]));
+            for (gid, x, y) in glyphs.iter() {
+                finite(&[*x, *y])?;
+                let code = map.as_ref().and_then(|m| m.get(usize::from(*gid)).copied()).unwrap_or(*gid);
+                ops.push(op("Tm", vec![int(1), int(0), int(0), int(1), real(*x), real(*y)]));
+                ops.push(op("Tj", vec![Object::Str(code.to_be_bytes().to_vec())]));
+            }
+            used.push(font.0);
+        }
+        ops.push(op("ET", vec![]));
+        if self.top(page)?.clips >= MAX_GROUP_DEPTH {
+            return Err(ExportError::UnbalancedGroup);
+        }
+        self.push_ops(page, ops)?;
+        let l = self.top_mut(page)?;
+        l.clips = l.clips.saturating_add(1);
+        l.fonts.extend(used);
+        for (font, _, glyphs) in runs {
+            if let Some(i) = self.fonts.get(font.0).and_then(|fb| fb.file)
+                && let Some(file) = self.subset_files.get_mut(i)
+            {
+                file.used.extend(glyphs.iter().map(|(g, ..)| *g));
+            }
+        }
         Ok(())
     }
 
@@ -1448,7 +1698,7 @@ impl PdfExport {
                 Some(i) => (self.subset_files.get(i).map_or(0, |f| f.num), Some(i)),
                 None => {
                     let num = self.alloc();
-                    self.subset_files.push(SubsetFile { bytes: bytes.to_vec(), num, used: BTreeSet::new(), members: Vec::new() });
+                    self.subset_files.push(SubsetFile { cff: false, bytes: bytes.to_vec(), num, used: BTreeSet::new(), members: Vec::new() });
                     let i = self.subset_files.len().saturating_sub(1);
                     self.subset_by_hash.insert(sha, i);
                     (num, Some(i))
@@ -1536,7 +1786,8 @@ impl PdfExport {
     /// program (`/FontFile3 /Subtype /CIDFontType0C`), codes are CIDs from the CFF charset and
     /// `/W` / `/ToUnicode` are keyed by CID; a name-keyed CFF is embedded as the whole OpenType font
     /// (`/FontFile3 /Subtype /OpenType`) with codes = glyph ids (ISO 32000-2 9.7.4.2 and 9.9; wording
-    /// UNVERIFIED). CFF programs are not subset (`ExportOptions::subset_fonts` applies to TrueType).
+    /// UNVERIFIED). CID-keyed CFF programs are subset at finish (`cff::subset_cid`, glyph ids kept)
+    /// when `ExportOptions::subset_fonts` is on; name-keyed OpenType-CFF is embedded whole.
     /// `widths` and `to_unicode` take glyph ids in both cases.
     pub fn embed_font(&mut self, bytes: &[u8], face_index: u32, widths: &[(u16, u16)], to_unicode: &[(u16, &str)]) -> Result<FontHandle> {
         let facts = sfnt::read(bytes, face_index)?;
@@ -1557,15 +1808,24 @@ impl PdfExport {
         let cid_widths: Vec<(u16, u16)> = widths.iter().map(|(g, w)| (code(*g), *w)).collect();
         let cid_text: Vec<(u16, &str)> = to_unicode.iter().map(|(g, t)| (code(*g), *t)).collect();
         let embedded: &[u8] = if cf.cid_keyed { program } else { bytes };
+        // CID-keyed CFF programs are subset at finish (cff::subset_cid) when subsetting is on.
+        let deferred = self.subset && cf.cid_keyed;
+        if deferred {
+            cff::subset_cid(program, &BTreeSet::new())?;
+        }
         self.precheck_raw(embedded.len())?;
         self.reserve(5)?;
         let cmap = to_unicode_cmap(&cid_text);
         let (tu_stream, tu_len) = flate_stream(Dict::default(), cmap.as_bytes());
-        let mut ffd = Dict::default();
-        ffd.set("Subtype", name(if cf.cid_keyed { "CIDFontType0C" } else { "OpenType" }));
-        let (ff_stream, ff_len) = flate_stream(ffd, embedded);
+        let ff = if deferred {
+            None
+        } else {
+            let mut ffd = Dict::default();
+            ffd.set("Subtype", name(if cf.cid_keyed { "CIDFontType0C" } else { "OpenType" }));
+            Some(flate_stream(ffd, embedded))
+        };
         let raw = cmap.len().checked_add(embedded.len()).ok_or(ExportError::AggregateOverBudget)?;
-        let written = tu_len.checked_add(ff_len).ok_or(ExportError::AggregateOverBudget)?;
+        let written = tu_len.checked_add(ff.as_ref().map_or(0, |f| f.1)).ok_or(ExportError::AggregateOverBudget)?;
         self.charge(raw, written)?;
         let base = facts.ps_name.clone().unwrap_or_else(|| format!("HskFont-{}", &sha256_hex(bytes)[..12]));
         let scale = |v: i16| f64::from(v) * 1000.0 / f64::from(facts.units_per_em);
@@ -1599,12 +1859,23 @@ impl PdfExport {
         t0.set("Encoding", name("Identity-H"));
         t0.set("DescendantFonts", Object::Array(vec![rf(cid_num)]));
         t0.set("ToUnicode", rf(tu_num));
-        self.insert(ff_num, ff_stream);
+        let file = match ff {
+            Some((ff_stream, _)) => {
+                self.insert(ff_num, ff_stream);
+                None
+            }
+            None => {
+                let mut used: BTreeSet<u16> = widths.iter().map(|(g, _)| *g).collect();
+                used.extend(to_unicode.iter().map(|(g, _)| *g));
+                self.subset_files.push(SubsetFile { cff: true, bytes: program.to_vec(), num: ff_num, used, members: vec![(fd_num, cid_num, type0, base.clone())] });
+                Some(self.subset_files.len().saturating_sub(1))
+            }
+        };
         self.insert(fd_num, Object::Dict(fd));
         self.insert(cid_num, Object::Dict(cid));
         self.insert(tu_num, tu_stream);
         self.insert(type0, Object::Dict(t0));
-        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: map, file: None });
+        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: map, file });
         Ok(FontHandle(self.fonts.len().saturating_sub(1)))
     }
 
@@ -1738,8 +2009,16 @@ impl PdfExport {
     fn write_subsets(&mut self) -> Result<()> {
         let files = std::mem::take(&mut self.subset_files);
         for f in &files {
-            let keep = subset::closure(&f.bytes, &f.used)?;
-            let data = subset::subset(&f.bytes, &keep)?;
+            let (keep, data) = if f.cff {
+                let mut keep = f.used.clone();
+                keep.insert(0);
+                let data = cff::subset_cid(&f.bytes, &keep)?;
+                (keep, data)
+            } else {
+                let keep = subset::closure(&f.bytes, &f.used)?;
+                let data = subset::subset(&f.bytes, &keep)?;
+                (keep, data)
+            };
             let mut h = Sha256::new();
             h.update(Sha256::digest(&f.bytes));
             for g in &keep {
@@ -1747,7 +2026,11 @@ impl PdfExport {
             }
             let tag = subset::tag(&h.finalize().into());
             let mut d = Dict::default();
-            d.set("Length1", int(i64::try_from(data.len()).map_err(|_| ExportError::StreamOverBudget)?));
+            if f.cff {
+                d.set("Subtype", name("CIDFontType0C"));
+            } else {
+                d.set("Length1", int(i64::try_from(data.len()).map_err(|_| ExportError::StreamOverBudget)?));
+            }
             let (stream, len) = flate_stream(d, &data);
             // Raw bytes were charged for the whole font at embedding; the written bytes now.
             self.charge(0, len)?;
@@ -1810,6 +2093,27 @@ impl PdfExport {
             conformance: EXPORT_CONFORMANCE,
         })
     }
+}
+
+/// A soft-mask dictionary over the transparency group `group` (ISO 32000-1 11.6.5.2).
+fn mask_dict(group: u32, alpha: bool, backdrop: f64, transfer_exponent: Option<f64>) -> Dict {
+    let mut sm = Dict::default();
+    sm.set("Type", name("Mask"));
+    sm.set("S", name(if alpha { "Alpha" } else { "Luminosity" }));
+    sm.set("G", rf(group));
+    if !alpha {
+        sm.set("BC", Object::Array(vec![real(backdrop)]));
+    }
+    if let Some(n) = transfer_exponent {
+        let mut f = Dict::default();
+        f.set("FunctionType", int(2));
+        f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
+        f.set("C0", Object::Array(vec![real(0.0)]));
+        f.set("C1", Object::Array(vec![real(1.0)]));
+        f.set("N", real(n));
+        sm.set("TR", Object::Dict(f));
+    }
+    sm
 }
 
 /// `/W` with runs of consecutive glyph ids grouped: `[g [w1 w2 ...] ...]` (ISO 32000 9.7.4.3).

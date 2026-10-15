@@ -251,7 +251,8 @@ fn soft_mask_structure_reads_back() {
     ex.begin_group(p).unwrap();
     ex.fill_path(p, &square(0.0, 0.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
     let px = [10u8, 20, 30, 40];
-    let mask = SoftMask::luminosity(ImageSpec { width: 2, height: 2, bits: 8, colour: ImageColour::DeviceGray, samples: &px, alpha: None }, [100.0, 0.0, 0.0, 100.0, 0.0, 0.0]);
+    let imgs = [MaskImage { image: ImageSpec { width: 2, height: 2, bits: 8, colour: ImageColour::DeviceGray, samples: &px, alpha: None }, placement: [100.0, 0.0, 0.0, 100.0, 0.0, 0.0] }];
+    let mask = SoftMask::luminosity(&imgs);
     ex.end_group(p, GroupStyle { opacity: 0.25, blend: BlendMode::Screen, isolated: true, knockout: false, soft_mask: Some(mask) }).unwrap();
     let (bytes, _) = ex.finish(&cancel).unwrap();
     let doc = PdfDoc::open(&bytes, &Limits::default(), &cancel).unwrap();

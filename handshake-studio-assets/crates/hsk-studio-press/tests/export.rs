@@ -311,10 +311,11 @@ fn transparency_through_extgstate_groups_and_soft_masks() {
     ex.begin_group(p).unwrap();
     ex.fill_path(p, &rect_path(300.0, 0.0, 400.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
     let mask_px = [255u8, 0];
-    let mask = SoftMask::luminosity(
-        ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &mask_px, alpha: None },
-        [100.0, 0.0, 0.0, 100.0, 300.0, 0.0],
-    );
+    let mask_imgs = [MaskImage {
+        image: ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &mask_px, alpha: None },
+        placement: [100.0, 0.0, 0.0, 100.0, 300.0, 0.0],
+    }];
+    let mask = SoftMask::luminosity(&mask_imgs);
     ex.end_group(p, GroupStyle { soft_mask: Some(mask), opacity: 1.0, ..plain }).unwrap();
     let (bytes, _) = ex.finish(&cancel).unwrap();
     let r = render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap();
@@ -337,8 +338,9 @@ fn transparency_through_extgstate_groups_and_soft_masks() {
     ex.fill_path(p, &rect_path(0.0, 0.0, 5.0, 5.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
     assert_eq!(ex.end_group(p, GroupStyle { opacity: -0.1, ..plain }), Err(ExportError::AlphaOutOfRange));
     let rgb = [0u8; 6];
-    let bad = SoftMask::luminosity(ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceRgb, samples: &rgb, alpha: None }, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    let bad = SoftMask::luminosity(&[]);
     assert_eq!(ex.end_group(p, GroupStyle { soft_mask: Some(bad), ..plain }), Err(ExportError::InvalidMask));
+    let _ = rgb;
     // One group is still open (the refused end_group calls left it); 31 more reach the 32 cap.
     for _ in 0..31 {
         ex.begin_group(p).unwrap();
@@ -406,7 +408,8 @@ fn paint_device_renders_groups_and_soft_masks() {
         ex.begin_group(p).unwrap();
         ex.fill_path(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, black).unwrap();
         let image = ImageSpec { width: 1, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: mask_px, alpha: None };
-        let mask = SoftMask { image, placement: [50.0, 0.0, 0.0, 100.0, 0.0, 0.0], alpha, backdrop, transfer_exponent: tr };
+        let imgs = [MaskImage { image, placement: [50.0, 0.0, 0.0, 100.0, 0.0, 0.0] }];
+        let mask = SoftMask { images: &imgs, alpha, backdrop, transfer_exponent: tr };
         ex.end_group(p, GroupStyle { soft_mask: Some(mask), ..plain }).unwrap();
         render(ex)
     };
@@ -436,7 +439,8 @@ fn paint_device_renders_groups_and_soft_masks() {
     ex.begin_group(p).unwrap();
     ex.fill_path(p, &rect_path(0.0, 0.0, 5.0, 5.0), FillRule::NonZero, black).unwrap();
     let image = ImageSpec { width: 1, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &[0], alpha: None };
-    let bad = |backdrop, tr| GroupStyle { soft_mask: Some(SoftMask { image, placement: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], alpha: false, backdrop, transfer_exponent: tr }), ..plain };
+    let one = [MaskImage { image, placement: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] }];
+    let bad = |backdrop, tr| GroupStyle { soft_mask: Some(SoftMask { images: &one, alpha: false, backdrop, transfer_exponent: tr }), ..plain };
     assert_eq!(ex.end_group(p, bad(2.0, None)), Err(ExportError::ColourOutOfRange));
     assert_eq!(ex.end_group(p, bad(0.0, Some(0.0))), Err(ExportError::ValueOutOfRange));
     assert_eq!(ex.end_group(p, bad(0.0, Some(f64::NAN))), Err(ExportError::NonFinite));
@@ -521,19 +525,19 @@ fn cff_fonts_clipping_gradients_and_pdfx4() {
         ex.fill_path_gradient(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, &g).unwrap();
         render_page(&ex.finish(&cancel).unwrap().0, 0, 1.0, &lim, &cancel).unwrap()
     };
-    let bw = [GradientStop { offset: 0.0, colour: [0.0; 3] }, GradientStop { offset: 1.0, colour: [1.0; 3] }];
-    let r = gradient_page(Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [100.0, 0.0] }, stops: &bw, extend: [true, true], matrix: id, profile: None });
+    let bw = [GradientStop::new(0.0, [0.0; 3]), GradientStop::new(1.0, [1.0; 3])];
+    let r = gradient_page(Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [100.0, 0.0] }, stops: &bw, extend: [true, true], spread: GradientSpread::Pad, matrix: id, profile: None });
     assert!(near(r.pixel(25, 50).unwrap(), [64; 3], 4) && near(r.pixel(75, 50).unwrap(), [191; 3], 4), "{:?} {:?}", r.pixel(25, 50), r.pixel(75, 50));
     assert!(r.notes.is_empty(), "{:?}", r.notes);
     let rgb = [
-        GradientStop { offset: 0.0, colour: [1.0, 0.0, 0.0] },
-        GradientStop { offset: 0.5, colour: [0.0, 1.0, 0.0] },
-        GradientStop { offset: 1.0, colour: [0.0, 0.0, 1.0] },
+        GradientStop::new(0.0, [1.0, 0.0, 0.0]),
+        GradientStop::new(0.5, [0.0, 1.0, 0.0]),
+        GradientStop::new(1.0, [0.0, 0.0, 1.0]),
     ];
-    let r = gradient_page(Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [100.0, 0.0] }, stops: &rgb, extend: [true, true], matrix: id, profile: None });
+    let r = gradient_page(Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [100.0, 0.0] }, stops: &rgb, extend: [true, true], spread: GradientSpread::Pad, matrix: id, profile: None });
     assert!(near(r.pixel(50, 50).unwrap(), [0, 255, 0], 6) && near(r.pixel(1, 50).unwrap(), [252, 3, 0], 8), "{:?} {:?}", r.pixel(50, 50), r.pixel(1, 50));
-    let wb = [GradientStop { offset: 0.0, colour: [1.0; 3] }, GradientStop { offset: 1.0, colour: [0.0; 3] }];
-    let r = gradient_page(Gradient { geometry: GradientGeometry::Radial { from: [50.0, 50.0], from_radius: 0.0, to: [50.0, 50.0], to_radius: 50.0 }, stops: &wb, extend: [true, true], matrix: id, profile: None });
+    let wb = [GradientStop::new(0.0, [1.0; 3]), GradientStop::new(1.0, [0.0; 3])];
+    let r = gradient_page(Gradient { geometry: GradientGeometry::Radial { from: [50.0, 50.0], from_radius: 0.0, to: [50.0, 50.0], to_radius: 50.0 }, stops: &wb, extend: [true, true], spread: GradientSpread::Pad, matrix: id, profile: None });
     assert!(near(r.pixel(50, 50).unwrap(), [255; 3], 6), "centre {:?}", r.pixel(50, 50));
     assert!(near(r.pixel(75, 50).unwrap(), [128; 3], 6), "r 25 {:?}", r.pixel(75, 50));
     assert!(near(r.pixel(2, 2).unwrap(), [0; 3], 3), "outside, extended {:?}", r.pixel(2, 2));
@@ -542,13 +546,13 @@ fn cff_fonts_clipping_gradients_and_pdfx4() {
     let p = ex.add_page(page([0.0, 0.0, 10.0, 10.0])).unwrap();
     let sq = rect_path(0.0, 0.0, 5.0, 5.0);
     let axial = GradientGeometry::Axial { from: [0.0, 0.0], to: [1.0, 0.0] };
-    let g = |stops, geometry, matrix| Gradient { geometry, stops, extend: [false, false], matrix, profile: None };
-    let down = [GradientStop { offset: 0.8, colour: [0.0; 3] }, GradientStop { offset: 0.2, colour: [1.0; 3] }];
+    let g = |stops, geometry, matrix| Gradient { geometry, stops, extend: [false, false], spread: GradientSpread::Pad, matrix, profile: None };
+    let down = [GradientStop::new(0.8, [0.0; 3]), GradientStop::new(0.2, [1.0; 3])];
     let negative = GradientGeometry::Radial { from: [0.0, 0.0], from_radius: -1.0, to: [1.0, 1.0], to_radius: 2.0 };
     for bad in [g(&[], axial, id), g(&down, axial, id), g(&bw, negative, id), g(&bw, axial, [0.0; 6])] {
         assert_eq!(ex.fill_path_gradient(p, &sq, FillRule::NonZero, &bad), Err(ExportError::InvalidGradient));
     }
-    let nan = [GradientStop { offset: f64::NAN, colour: [0.0; 3] }];
+    let nan = [GradientStop::new(f64::NAN, [0.0; 3])];
     assert_eq!(ex.fill_path_gradient(p, &sq, FillRule::NonZero, &g(&nan, axial, id)), Err(ExportError::NonFinite));
     // PDF/X-4: identification written and self-checked; requirements refused when unmet.
     let x4 = PdfX4 { created: "D:20261015000000Z", modified: "D:20261015010000Z", trapped: false };

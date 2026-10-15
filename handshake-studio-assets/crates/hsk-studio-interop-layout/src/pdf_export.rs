@@ -56,13 +56,13 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     BLEND_PASS_THROUGH, GeometryUnit, Isolation, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
     StrokeAlign, StrokeCap, StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords,
-    GradientInterpolation, GradientSpread, StudioDocument, StudioGradient, StudioGradientGeometry, StudioLayer, StudioPaint, StudioRgba, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
+    GradientInterpolation, GradientSpread as StudioGradientSpread, StudioDocument, StudioGradient, StudioGradientGeometry, StudioLayer, StudioPaint, StudioRgba, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
 };
 use hsk_studio_layout::{FramePlacement, LayoutProposal, ShapedParagraph, resolve_style};
 use hsk_studio_nib::{OwnedPath, PathElement, PathLimits};
 use hsk_studio_pigment::{Grid, Mask, ResolvedTile};
 use hsk_studio_press::{
-    BlendMode, Colour, DrawState, ExportError, Gradient, GradientGeometry, GradientStop, ExportOptions, ExportReceipt, FillRule, FontHandle, GroupStyle, IccHandle,
+    BlendMode, Colour, DrawState, ExportError, Gradient, GradientGeometry, GradientSpread as PressSpread, GradientStop, MaskImage, TextClipRun, ExportOptions, ExportReceipt, FillRule, FontHandle, GroupStyle, IccHandle,
     ImageColour, ImageSpec, Limits, LineCap, LineJoin, PageHandle, PageSpec, PathCommand, PdfExport, SoftMask, StrokeStyle,
 };
 use std::collections::BTreeMap;
@@ -450,48 +450,144 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// The clipping path of a clipped layer: the paths of its base (a vector layer: all its paths in
-    /// one clipping path under the first path's fill rule). A missing or non-vector base is reported
-    /// and the layer is drawn unclipped.
-    fn clip_to_base(&mut self, layer: &StudioLayer, base: Option<&StudioLayer>, by_id: &BTreeMap<&str, &StudioLayer>) -> Result<Option<(usize, Vec<OwnedPath>)>> {
+    /// How a clipped layer is clipped to its base (the nearest unclipped layer painted before it at
+    /// the same level): a vector base by its paths (one clipping path under the first path's fill
+    /// rule), a text base by its glyph outlines (text clipping mode 7), a raster base by its tiles'
+    /// alpha (an alpha soft mask over a group). A missing or unresolved base is reported and the layer
+    /// is drawn unclipped.
+    fn clip_to_base(&mut self, layer: &StudioLayer, base: Option<&StudioLayer>, by_id: &BTreeMap<&str, &StudioLayer>) -> Result<Option<ClipPlan>> {
         let Some(base) = base else {
             self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "clip_base_missing");
             return Ok(None);
         };
-        let Payload::Vector { path_ids } = &base.payload else {
-            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "clip_base_not_vector");
-            return Ok(None);
-        };
         let Some(spread) = spread_of(self.doc, by_id, base) else { return Ok(None) };
         let assets = self.input.assets;
-        let paths: Option<Vec<OwnedPath>> = path_ids.iter().map(|id| assets.path(id).filter(|p| p.validate(&PathLimits::default()).is_ok())).collect();
-        match paths {
-            Some(p) if !p.is_empty() => Ok(Some((spread, p))),
+        let unresolved = |cx: &mut Self| {
+            cx.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "clip_base_unresolved");
+            Ok(None)
+        };
+        match &base.payload {
+            Payload::Vector { path_ids } => {
+                let paths: Option<Vec<OwnedPath>> = path_ids.iter().map(|id| assets.path(id).filter(|p| p.validate(&PathLimits::default()).is_ok())).collect();
+                match paths {
+                    Some(p) if !p.is_empty() => Ok(Some(ClipPlan::Paths(spread, p))),
+                    _ => unresolved(self),
+                }
+            }
+            Payload::Text { story_id } => {
+                let Some(story) = self.input.stories.iter().find(|s| s.story.story_id == *story_id).copied() else { return unresolved(self) };
+                let Some(frame) = story.placement.frames.iter().find(|f| f.frame_id == base.layer_id) else { return unresolved(self) };
+                let Some(pi) = self.page_index(frame.spread, frame.page) else { return unresolved(self) };
+                let mut runs: Vec<GlyphRun> = Vec::new();
+                for (at, g) in self.glyph_layout(&story, frame, pi) {
+                    if self.fonts.get(g.font).copied().flatten().is_none() {
+                        continue;
+                    }
+                    let Some(page) = self.pages.get(pi) else { continue };
+                    let (x, y) = page.map(at.x, at.y);
+                    match runs.last_mut() {
+                        Some((f, size, list)) if *f == g.font && size.to_bits() == g.size_pt.to_bits() => list.push((g.glyph_id, x, y)),
+                        _ => runs.push((g.font, g.size_pt, vec![(g.glyph_id, x, y)])),
+                    }
+                }
+                if runs.is_empty() {
+                    return unresolved(self);
+                }
+                Ok(Some(ClipPlan::Text(pi, runs)))
+            }
+            Payload::Raster { .. } => {
+                let Some(raster) = assets.raster(&base.layer_id) else { return unresolved(self) };
+                if !(raster.pt_per_px.is_finite() && raster.pt_per_px > 0.0 && raster.origin_pt.iter().all(|v| v.is_finite())) {
+                    return unresolved(self);
+                }
+                let mut tiles = Vec::new();
+                for tile in &raster.tiles {
+                    if tile.validate_shape(raster.grid).is_err() || tile.validate_hashes().is_err() {
+                        continue;
+                    }
+                    let (_, alpha) = quantise(tile, &self.input.limits)?;
+                    let b = tile.bounds;
+                    let k = raster.pt_per_px;
+                    let x0 = raster.origin_pt[0] + b.x as f64 * k;
+                    let y0 = raster.origin_pt[1] + b.y as f64 * k;
+                    let gray = vec![0u8; alpha.len()];
+                    tiles.push(ClipTile { width: b.width, height: b.height, gray, alpha, rect: [x0, y0, x0 + f64::from(b.width) * k, y0 + f64::from(b.height) * k] });
+                }
+                if tiles.is_empty() {
+                    return unresolved(self);
+                }
+                Ok(Some(ClipPlan::Raster(spread, tiles)))
+            }
             _ => {
-                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "clip_base_unresolved");
+                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "clip_base_kind_unsupported");
                 Ok(None)
             }
         }
     }
 
-    fn open_clip(&mut self, clip: Option<&(usize, Vec<OwnedPath>)>) -> Result<()> {
-        let Some((spread, paths)) = clip else { return Ok(()) };
-        for i in 0..self.pages.len() {
-            let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) else { continue };
-            let h = page.handle;
-            let cmds: Vec<PathCommand> = paths.iter().flat_map(|p| commands(p, page)).collect();
-            let rule = paths.first().map_or(FillRule::NonZero, fill_rule);
-            self.ex.push_clip(h, &cmds, rule)?;
+    fn open_clip(&mut self, clip: Option<&ClipPlan>) -> Result<()> {
+        match clip {
+            None => {}
+            Some(ClipPlan::Paths(spread, paths)) => {
+                for i in 0..self.pages.len() {
+                    let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) else { continue };
+                    let h = page.handle;
+                    let cmds: Vec<PathCommand> = paths.iter().flat_map(|p| commands(p, page)).collect();
+                    let rule = paths.first().map_or(FillRule::NonZero, fill_rule);
+                    self.ex.push_clip(h, &cmds, rule)?;
+                }
+            }
+            Some(ClipPlan::Text(pi, runs)) => {
+                let Some(h) = self.pages.get(*pi).map(|p| p.handle) else { return Ok(()) };
+                let handles: Vec<TextClipRun<'_>> =
+                    runs.iter().filter_map(|(f, size, list)| Some((self.fonts.get(*f).copied().flatten()?, *size, list.as_slice()))).collect();
+                self.ex.push_clip_text(h, &handles)?;
+            }
+            Some(ClipPlan::Raster(spread, _)) => {
+                for i in 0..self.pages.len() {
+                    if let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) {
+                        let h = page.handle;
+                        self.ex.begin_group(h)?;
+                    }
+                }
+            }
         }
         Ok(())
     }
 
-    fn close_clip(&mut self, clip: Option<&(usize, Vec<OwnedPath>)>) -> Result<()> {
-        let Some((spread, _)) = clip else { return Ok(()) };
-        for i in 0..self.pages.len() {
-            if let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) {
-                let h = page.handle;
-                self.ex.pop_clip(h)?;
+    fn close_clip(&mut self, clip: Option<&ClipPlan>) -> Result<()> {
+        match clip {
+            None => {}
+            Some(ClipPlan::Paths(spread, _)) => {
+                for i in 0..self.pages.len() {
+                    if let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) {
+                        let h = page.handle;
+                        self.ex.pop_clip(h)?;
+                    }
+                }
+            }
+            Some(ClipPlan::Text(pi, _)) => {
+                if let Some(h) = self.pages.get(*pi).map(|p| p.handle) {
+                    self.ex.pop_clip(h)?;
+                }
+            }
+            Some(ClipPlan::Raster(spread, tiles)) => {
+                for i in 0..self.pages.len() {
+                    let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) else { continue };
+                    let h = page.handle;
+                    let images: Vec<MaskImage<'_>> = tiles
+                        .iter()
+                        .map(|t| {
+                            let (px, py) = page.map(t.rect[0], t.rect[3]);
+                            MaskImage {
+                                image: ImageSpec { width: t.width, height: t.height, bits: 16, colour: ImageColour::DeviceGray, samples: &t.gray, alpha: Some(&t.alpha) },
+                                placement: [t.rect[2] - t.rect[0], 0.0, 0.0, t.rect[3] - t.rect[1], px, py],
+                            }
+                        })
+                        .collect();
+                    let style = GroupStyle { opacity: 1.0, blend: BlendMode::Normal, isolated: true, knockout: false, soft_mask: Some(SoftMask::alpha(&images)) };
+                    self.ex.end_group(h, style)?;
+                }
             }
         }
         Ok(())
@@ -500,17 +596,8 @@ impl Cx<'_> {
     /// A Folio gradient as a press gradient (module docs); unsupported parts are reported.
     fn gradient(&mut self, layer: &StudioLayer, g: &StudioGradient) -> Result<Option<MappedGradient>> {
         let note = |cx: &mut Self, code: &'static str| cx.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, code);
-        if g.spread != GradientSpread::Pad {
-            note(self, "gradient_spread_padded");
-        }
         if g.interpolation != GradientInterpolation::Classic {
             note(self, "gradient_interpolation_classic");
-        }
-        if g.stops.iter().any(|s| s.opacity < 100.0) {
-            note(self, "gradient_stop_opacity_ignored");
-        }
-        if g.stops.iter().any(|s| s.midpoint.is_some()) {
-            note(self, "gradient_midpoint_ignored");
         }
         let geometry = match g.geometry {
             StudioGradientGeometry::Linear { x1, y1, x2, y2 } => GradientGeometry::Axial { from: [x1, y1], to: [x2, y2] },
@@ -531,13 +618,28 @@ impl Cx<'_> {
         if profile.is_none() {
             note(self, "paint_colour_untagged");
         }
-        let mut stops: Vec<GradientStop> = g.stops.iter().map(|s| GradientStop { offset: (s.position / 100.0).clamp(0.0, 1.0), colour: [s.colour.r, s.colour.g, s.colour.b] }).collect();
+        let mut stops: Vec<GradientStop> = g
+            .stops
+            .iter()
+            .map(|s| GradientStop {
+                offset: (s.position / 100.0).clamp(0.0, 1.0),
+                colour: [s.colour.r, s.colour.g, s.colour.b],
+                opacity: (s.opacity / 100.0).clamp(0.0, 1.0),
+                // Folio midpoint: percent of the way to the next stop (13..=87).
+                midpoint: s.midpoint.map(|m| (m / 100.0).clamp(0.01, 0.99)),
+            })
+            .collect();
         stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
         if stops.is_empty() {
             self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "gradient_without_stops");
             return Ok(None);
         }
-        Ok(Some((geometry, stops, true, profile)))
+        let spread = match g.spread {
+            StudioGradientSpread::Pad => PressSpread::Pad,
+            StudioGradientSpread::Repeat => PressSpread::Repeat,
+            StudioGradientSpread::Reflect => PressSpread::Reflect,
+        };
+        Ok(Some((geometry, stops, spread, profile)))
     }
 
     fn draw_layer(&mut self, layer: &StudioLayer, by_id: &BTreeMap<&str, &StudioLayer>) -> Result<()> {
@@ -595,7 +697,7 @@ impl Cx<'_> {
 
     /// The layer mask as a DeviceGray image and its spread rectangle; unresolved or invalid masks
     /// are reported and the layer is drawn unmasked.
-    fn mask_image(&mut self, layer: &StudioLayer) -> Result<Option<MaskImage>> {
+    fn mask_image(&mut self, layer: &StudioLayer) -> Result<Option<LayerMask>> {
         let assets = self.input.assets;
         let Some(m) = assets.mask(&layer.layer_id) else {
             self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_mask_unresolved");
@@ -630,7 +732,7 @@ impl Cx<'_> {
         let k = m.pt_per_px;
         let x0 = m.origin_pt[0] + b.x as f64 * k;
         let y0 = m.origin_pt[1] + b.y as f64 * k;
-        Ok(Some(MaskImage {
+        Ok(Some(LayerMask {
             samples,
             width: b.width,
             height: b.height,
@@ -659,29 +761,52 @@ impl Cx<'_> {
             let h = page.handle;
             let soft_mask = g.mask.as_ref().map(|m| {
                 let (px, py) = page.map(m.rect[0], m.rect[3]);
-                SoftMask::luminosity(
-                    ImageSpec { width: m.width, height: m.height, bits: m.bits, colour: ImageColour::DeviceGray, samples: &m.samples, alpha: None },
-                    [m.rect[2] - m.rect[0], 0.0, 0.0, m.rect[3] - m.rect[1], px, py],
-                )
+                [MaskImage {
+                    image: ImageSpec { width: m.width, height: m.height, bits: m.bits, colour: ImageColour::DeviceGray, samples: &m.samples, alpha: None },
+                    placement: [m.rect[2] - m.rect[0], 0.0, 0.0, m.rect[3] - m.rect[1], px, py],
+                }]
             });
-            self.ex.end_group(h, GroupStyle { opacity: g.opacity, blend: g.blend, isolated: g.isolated, knockout: false, soft_mask })?;
+            self.ex.end_group(h, GroupStyle { opacity: g.opacity, blend: g.blend, isolated: g.isolated, knockout: false, soft_mask: soft_mask.as_ref().map(|a| SoftMask::luminosity(a)) })?;
         }
         Ok(())
     }
 }
 
 /// A Folio gradient mapped for press: geometry, stops, pad flag and ICC profile.
-type MappedGradient = (GradientGeometry, Vec<GradientStop>, bool, Option<IccHandle>);
+type MappedGradient = (GradientGeometry, Vec<GradientStop>, PressSpread, Option<IccHandle>);
+
+/// Font index, size and page-space `(glyph id, x, y)` placements of one run.
+type GlyphRun = (usize, f64, Vec<(u16, f64, f64)>);
+
+/// How a clipped layer is clipped to its base.
+enum ClipPlan {
+    /// Spread index and the base's paths.
+    Paths(usize, Vec<OwnedPath>),
+    /// Page index and glyph runs (font index, size, page-space placements).
+    Text(usize, Vec<GlyphRun>),
+    /// Spread index and the base's tiles as alpha.
+    Raster(usize, Vec<ClipTile>),
+}
+
+/// One raster tile of a clip base: 16-bit gray samples (unused by an alpha mask) and alpha, and its
+/// spread rectangle.
+struct ClipTile {
+    width: u32,
+    height: u32,
+    gray: Vec<u8>,
+    alpha: Vec<u8>,
+    rect: [f64; 4],
+}
 
 /// The authored appearance of one layer as a PDF transparency group.
 struct GroupPlan {
     opacity: f64,
     blend: BlendMode,
     isolated: bool,
-    mask: Option<MaskImage>,
+    mask: Option<LayerMask>,
 }
 
-struct MaskImage {
+struct LayerMask {
     samples: Vec<u8>,
     width: u32,
     height: u32,
@@ -888,10 +1013,10 @@ impl Cx<'_> {
         Ok((colour.unwrap_or(story.default_fill), alpha))
     }
 
-    fn frame_lines(&mut self, story: &PdfStory<'_>, frame: &FramePlacement, pi: usize) -> Result<()> {
-        // Pending glyph run on this frame and its key (font, size, fill, alpha).
-        let mut run: Vec<(u16, f64, f64)> = Vec::new();
-        let mut run_key: Option<RunKey> = None;
+    /// Every glyph of a frame in drawing order with its spread position (the hyphen of a hyphenated
+    /// line included).
+    fn glyph_layout(&mut self, story: &PdfStory<'_>, frame: &FramePlacement, pi: usize) -> Vec<(Placed, PdfGlyph)> {
+        let mut out = Vec::new();
         for line in &frame.lines {
             let (Some(glyphs), Some(para)) = (story.glyphs.get(line.paragraph), story.paragraphs.get(line.paragraph)) else {
                 continue;
@@ -907,8 +1032,7 @@ impl Cx<'_> {
                     .zip(usize::try_from(lg.cluster.end).ok())
                     .and_then(|(a, b)| story.text.get(a..b))
                     .is_some_and(|t| !t.is_empty() && t.chars().all(char::is_whitespace));
-                let at = Placed { para: line.paragraph, at: lg.cluster.start, page: pi, x: x + g.x_offset_pt, y: y - g.y_offset_pt };
-                self.place(&mut run, &mut run_key, story, at, *g)?;
+                out.push((Placed { para: line.paragraph, at: lg.cluster.start, page: pi, x: x + g.x_offset_pt, y: y - g.y_offset_pt }, *g));
                 x += lg.advance_pt * if space { scale } else { 1.0 };
                 if idx.checked_add(1).is_some_and(|n| n < line.glyph_range.end) {
                     x += gap;
@@ -919,12 +1043,21 @@ impl Cx<'_> {
                 match last.and_then(|(g, at)| self.input.fonts.get(g.font).and_then(|f| f.hyphen).map(|h| (g, at, h))) {
                     Some((g, at, (hid, _))) => {
                         let hy = PdfGlyph { glyph_id: hid, x_offset_pt: 0.0, y_offset_pt: 0.0, ..g };
-                        let at = Placed { para: line.paragraph, at, page: pi, x, y };
-                        self.place(&mut run, &mut run_key, story, at, hy)?;
+                        out.push((Placed { para: line.paragraph, at, page: pi, x, y }, hy));
                     }
                     None => self.loss.note(&story.story.story_id, "text", LossKind::Approximated, "hyphen_glyph_missing"),
                 }
             }
+        }
+        out
+    }
+
+    fn frame_lines(&mut self, story: &PdfStory<'_>, frame: &FramePlacement, pi: usize) -> Result<()> {
+        // Pending glyph run on this frame and its key (font, size, fill, alpha).
+        let mut run: Vec<(u16, f64, f64)> = Vec::new();
+        let mut run_key: Option<RunKey> = None;
+        for (at, g) in self.glyph_layout(story, frame, pi) {
+            self.place(&mut run, &mut run_key, story, at, g)?;
         }
         self.flush(&mut run, run_key, pi)
     }
@@ -1072,7 +1205,7 @@ impl Cx<'_> {
                         self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "stroke_gradient_not_exported");
                         continue;
                     }
-                    let Some((geometry, stops, _, profile)) = self.gradient(layer, gradient)? else { continue };
+                    let Some((geometry, stops, gspread, profile)) = self.gradient(layer, gradient)? else { continue };
                     for pi in 0..self.pages.len() {
                         let Some(page) = self.pages.get(pi).filter(|p| p.spread == spread && p.overlaps_x(x0, x1)) else { continue };
                         let handle = page.handle;
@@ -1083,7 +1216,7 @@ impl Cx<'_> {
                         let mapped: Vec<(Vec<PathCommand>, FillRule)> = paths.iter().map(|p| (commands(p, page), fill_rule(p))).collect();
                         self.ex.set_draw_state(handle, row_state)?;
                         for (cmds, rule) in &mapped {
-                            let g = Gradient { geometry, stops: &stops, extend: [true, true], matrix, profile };
+                            let g = Gradient { geometry, stops: &stops, extend: [true, true], spread: gspread, matrix, profile };
                             match self.ex.fill_path_gradient(handle, cmds, *rule, &g) {
                                 Ok(()) => self.paths = self.paths.saturating_add(1),
                                 Err(ExportError::InvalidGradient) => self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "gradient_invalid"),
