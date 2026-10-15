@@ -25,7 +25,7 @@ use crate::DevelopError;
 use crate::color::{self, D50_XYZ, Mat3, SRGB_TO_XYZ_D50};
 
 /// Version of the adjustment maths. Bump when any mapping below changes.
-pub const ADJUST_VERSION: (u32, u32) = (1, 3);
+pub const ADJUST_VERSION: (u32, u32) = (1, 4);
 /// Oldest recipe version still read: 1.0 recipes lack the 1.1 families and 1.0/1.1 recipes the 1.2
 /// families (optics, geometry), which are identity.
 pub const ADJUST_MIN_VERSION: (u32, u32) = (1, 0);
@@ -141,6 +141,8 @@ pub struct Adjustments {
     pub effects: crate::effects::Effects,
     /// STU-RAW-120 calibration (gated by `enable_calibration`; per pixel, first in stage C).
     pub calibration: crate::effects::Calibration,
+    /// STU-RAW-126 creative look (a `.cube` table with an amount); per pixel, after calibration.
+    pub look: Option<crate::look::CreativeLook>,
 }
 
 /// Raw-form white balance (STU-RAW-110): kelvin 2000..25000 (the Kim Planckian approximation ends at
@@ -236,6 +238,7 @@ impl Default for Adjustments {
             geometry: crate::geometry::Geometry::default(),
             effects: crate::effects::Effects::default(),
             calibration: crate::effects::Calibration::default(),
+            look: None,
         }
     }
 }
@@ -627,6 +630,7 @@ pub(crate) struct PreparedAdjust {
     pub(crate) geometry: Option<crate::geometry::PreparedGeometry>,
     pub(crate) effects: crate::effects::PreparedEffects,
     calibration: Option<crate::effects::PreparedCalibration>,
+    look: Option<crate::look::PreparedLook>,
 }
 
 impl PreparedAdjust {
@@ -681,6 +685,7 @@ impl PreparedAdjust {
         let geometry = crate::geometry::PreparedGeometry::prepare(&adjust.geometry, transform_on)?;
         let effects = crate::effects::PreparedEffects::prepare(&adjust.effects, effects_on)?;
         let calibration = crate::effects::PreparedCalibration::prepare(&adjust.calibration, &adjust.working_to_xyz_d50, luma, calibration_on)?;
+        let look = crate::look::PreparedLook::prepare(&adjust.look)?;
         let colour = (extras.is_active() || (colour_on && (vibrance != 0.0 || saturation != 0.0 || mixer_active))).then_some(ColourStage {
             vibrance: if colour_on { vibrance } else { 0.0 },
             saturation: if colour_on { saturation } else { 0.0 },
@@ -701,12 +706,13 @@ impl PreparedAdjust {
             geometry,
             effects,
             calibration,
+            look,
         })
     }
 
     /// True when the per-pixel stages (everything but clarity and local corrections) do anything.
     pub(crate) fn pixel_active(&self) -> bool {
-        self.wb.is_some() || self.tone.is_some() || self.regions.is_some() || self.colour.is_some() || self.calibration.is_some()
+        self.wb.is_some() || self.tone.is_some() || self.regions.is_some() || self.colour.is_some() || self.calibration.is_some() || self.look.is_some()
     }
 
     /// White balance shift, basic tone, parametric regions (before the point curves).
@@ -715,6 +721,9 @@ impl PreparedAdjust {
             Some(c) => c.apply(v),
             None => v,
         };
+        if let Some(l) = &self.look {
+            v = l.apply(v);
+        }
         if let Some(m) = &self.wb {
             v = color::mul_vec(m, &v);
         }

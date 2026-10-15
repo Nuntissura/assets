@@ -30,6 +30,8 @@ pub mod lens_profile;
 pub mod optics;
 pub mod upright;
 pub mod local;
+pub mod look;
+pub mod preset;
 mod levels;
 pub mod output;
 pub mod dng;
@@ -71,6 +73,8 @@ pub use lens_profile::{
     PerspectiveModel,
 };
 pub use optics::{Defringe, Optics};
+pub use look::{CreativeLook, LookDomain};
+pub use preset::{DevelopPreset, FLAG_FIELDS, MAX_PRESET_BYTES, MAX_PRESET_SETTINGS, META_FIELDS, PresetValue, Snapshot, preset_keys};
 pub use upright::{DetectedLine, UprightAnalysis, analyse as analyse_upright};
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{recipe_for_white_point, ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};

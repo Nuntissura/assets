@@ -25,6 +25,8 @@ pub use view_transform::{
     VIEW_TRANSFORM_DESCRIPTOR, VIEW_WGSL, ViewSelectError, ViewTransform, ViewTransformId, WORKING_TO_ACESCG,
     aces1_sdr_video_from_aces2065, select_view, view_gpu_params,
 };
+mod lut;
+pub use lut::{CubeLut, LutError, MAX_CUBE_BYTES, MAX_LUT_1D_SIZE, MAX_LUT_3D_SIZE, MAX_LUT_VALUES, parse_cube};
 mod working;
 pub use working::{
     WORKING_PROFILE_LINEAR_SRGB, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, WORKING_PROFILE_LINEAR_SRGB_ADMITTED_SHA256_HEX,
