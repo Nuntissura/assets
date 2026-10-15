@@ -1,4 +1,4 @@
-//! Nikon NEF container decode, uncompressed variant only (clean-room from public documentation; no
+//! Nikon NEF container decode, uncompressed and Huffman-compressed (uncompressed path clean-room from public documentation; no
 //! LGPL/GPL decoder source read). Sources:
 //! - libopenraw NEF notes: https://libopenraw.pages.freedesktop.org/formats/nef ("a TIFF file, close
 //!   to TIFF/EP or DNG"; "D1 files are not compressed"; Compression 34713 = Huffman tree plus a
@@ -10,17 +10,28 @@
 //!   big-endian, raw in a SubIFD (NewSubfileType 0, Photometric 32803, 2012 x 1324, 12-bit,
 //!   Compression 1, 20-row strips, CFAPattern 2,1,1,0).
 //!
-//! Compression 34713 (Nikon Huffman, D70s/Z6 samples) and 32769 (packed with padding) are typed
-//! `decoder_unavailable:nef_compressed`: no public documentation of the Huffman trees and no
-//! permissively licensed decoder source were found (decision R1 and its permissive-source
-//! refinement); other compressions are `unsupported_compression`. Not read (named in
-//! `unapplied`): MakerNote black/white levels and any MakerNote linearization curve.
+//! Compression 34713 (Nikon Huffman, lossless and lossy) is decoded by `nefc` (adapted from the
+//! MIT OR Apache-2.0 LightCraft decoder, see that module) with the decode table read from the
+//! Nikon maker note (Exif IFD 0x8769 -> MakerNote 0x927C: `Nikon\0` + 4 version bytes + an
+//! embedded TIFF whose IFD holds tag 0x0096, ExifTool NEFLinearizationTable). 32769 (packed with
+//! padding) stays `decoder_unavailable:nef_compressed`; other compressions are
+//! `unsupported_compression`. Not read (named in `unapplied`): MakerNote black/white levels, and
+//! for uncompressed files any MakerNote linearization curve.
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, VendorFrame};
-use crate::tiffep::Tiff;
+use crate::nefc;
+use crate::tiffep::{Ifd, Tiff};
 use crate::tiffep;
+
+const EXIF_IFD: u16 = 0x8769;
+const MAKER_NOTE: u16 = 0x927C;
+const LINEARIZATION_TABLE: u16 = 0x0096;
+const COMPRESSION_NIKON_HUFFMAN: u32 = 34713;
+
+/// Compressed frames apply the maker-note decode table (curve) but still read no levels.
+pub const UNAPPLIED_COMPRESSED: [&str; 2] = ["nef_black_level_unread", "nef_white_level_unread"];
 
 pub const UNAPPLIED: [&str; 3] = [
     "nef_black_level_unread",
@@ -47,15 +58,21 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     let root = ifds.first().ok_or(DevelopError::InvalidContainer)?;
     let raw = tiffep::cfa_ifd(&tiff, &ifds)?.ok_or(DevelopError::UnsupportedContainer)?;
     let (width, height, bits, compression) = tiffep::geometry(&tiff, raw)?;
-    match compression {
-        1 => {}
-        // Nikon Huffman (34713) and packed-with-padding (32769): no public bit-level documentation
-        // or permissive source exists (searched 2026-10-14, lane SMB-DEVELOP-RAW-ARW notes).
-        34713 | 32769 => return Err(DevelopError::DecoderUnavailable("nef_compressed")),
-        _ => return Err(DevelopError::UnsupportedCompression),
-    }
     let cfa_pattern = tiffep::cfa_pattern(&tiff, raw)?;
-    let samples = tiffep::uncompressed_strips(&tiff, raw, width, height, bits, bytes.len())?;
+    let (samples, white_level, unapplied) = match compression {
+        1 => (
+            tiffep::uncompressed_strips(&tiff, raw, width, height, bits, bytes.len())?,
+            VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?,
+            UNAPPLIED.to_vec(),
+        ),
+        COMPRESSION_NIKON_HUFFMAN => {
+            let (samples, white) = compressed(&tiff, root, raw, width, height, bits)?;
+            (samples, white, UNAPPLIED_COMPRESSED.to_vec())
+        }
+        // Packed-with-padding (32769): no permissive source or public bit-level documentation.
+        32769 => return Err(DevelopError::DecoderUnavailable("nef_compressed")),
+        _ => return Err(DevelopError::UnsupportedCompression),
+    };
     DngRaw::from_vendor(
         VendorFrame {
             width,
@@ -63,10 +80,57 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             bits,
             cfa_pattern,
             unique_camera_model: tiffep::ascii(&tiff, root, tiffep::MODEL)?,
-            unapplied: UNAPPLIED.to_vec(),
+            unapplied,
             samples,
-            white_level: VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?,
+            white_level,
         },
         bytes,
     )
+}
+
+/// Maker note tag 0x0096 bytes and the maker note's byte order (`true` = big-endian). A compressed
+/// file without the table (e.g. a High Efficiency NEF) is `decoder_unavailable:nef_compressed`.
+fn linearization_table<'a>(tiff: &Tiff<'a>, root: &Ifd) -> Result<(&'a [u8], bool), DevelopError> {
+    let unavailable = DevelopError::DecoderUnavailable("nef_compressed");
+    let exif = tiffep::first_u32(tiff, root.find(EXIF_IFD).ok_or(unavailable)?)?;
+    let exif = tiff.ifd(exif)?;
+    let note = tiff.bytes(exif.find(MAKER_NOTE).ok_or(unavailable)?)?;
+    // Nikon type-3 maker note: "Nikon\0", 4 version bytes, then a TIFF with note-relative offsets.
+    if !note.starts_with(b"Nikon\0") {
+        return Err(unavailable);
+    }
+    let embedded = note.get(10..).ok_or(DevelopError::InvalidContainer)?;
+    let (mn, mn_first) = Tiff::parse(embedded)?;
+    let ifd = mn.ifd(mn_first)?;
+    let table = mn.bytes(ifd.find(LINEARIZATION_TABLE).ok_or(unavailable)?)?;
+    Ok((table, mn.is_big_endian()))
+}
+
+/// One Huffman strip through `nefc`; returns the samples and the white level (full scale, or the
+/// lossy curve's largest output).
+fn compressed(
+    tiff: &Tiff<'_>,
+    root: &Ifd,
+    raw: &Ifd,
+    width: u32,
+    height: u32,
+    bits: u16,
+) -> Result<(Vec<u16>, u32), DevelopError> {
+    let (table, big_endian) = linearization_table(tiff, root)?;
+    let table = nefc::parse_table(table, big_endian, bits)?;
+    let offsets = tiff.u32s(raw.find(tiffep::STRIP_OFFSETS).ok_or(DevelopError::InvalidContainer)?)?;
+    let counts = tiff.u32s(raw.find(tiffep::STRIP_BYTE_COUNTS).ok_or(DevelopError::InvalidContainer)?)?;
+    let ([offset], [count]) = (offsets.as_slice(), counts.as_slice()) else {
+        return Err(DevelopError::UnsupportedContainer);
+    };
+    let src = tiff.region(u64::from(*offset), u64::from(*count))?;
+    let samples = nefc::decode(src, width as usize, height as usize, bits, &table)?;
+    let white = match &table.encoding {
+        nefc::Encoding::Lossless => VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?,
+        nefc::Encoding::Lossy(curve) => u32::from(curve.iter().copied().max().unwrap_or(0)),
+    };
+    if white == 0 {
+        return Err(DevelopError::InvalidContainer);
+    }
+    Ok((samples, white))
 }

@@ -27,6 +27,7 @@ pub mod pipeline;
 pub mod recipe;
 pub mod ljpeg;
 mod nef;
+mod nefc;
 mod par;
 mod tiffep;
 

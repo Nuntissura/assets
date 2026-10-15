@@ -28,3 +28,41 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+----------------------------------------------------------------------------
+
+src/nefc.rs (Nikon Huffman-compressed NEF) and the later compressed vendor
+decoders of lane SMB-DEVELOP-RAW-COMPRESSED (each module header names its
+source files) are adapted from LightCraft
+(https://github.com/storytold/lightcraft, crates/raw, commit
+af4c5e102c9f97529f582003b99c21b89067e906): src/vendor/nefc.rs and the
+Bits/Huffman/diff helpers of src/vendor/pef.rs.
+LightCraft is licensed MIT OR Apache-2.0 (root Cargo.toml license field,
+NOTICE, LICENSE-MIT, LICENSE-APACHE); the MIT terms are reproduced below.
+LightCraft states that its raw decoders are clean-room (no darktable,
+RawTherapee, LibRaw, rawspeed or dcraw source read) and that the Nikon
+Huffman tables were recovered by black-box analysis of CC0 raw.pixls.us
+samples. The adaptations in this crate were modified by the Handshake
+Studio contributors (2026): checked arithmetic and typed refusals.
+
+MIT License
+
+Copyright (c) 2026 ArtCraft Team and the LightCraft contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

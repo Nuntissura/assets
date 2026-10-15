@@ -184,10 +184,9 @@ fn samples_digest(raw: &DngRaw) -> String {
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn vendor_files_route_to_typed_outcomes() {
     const TEST: &str = "vendor_files_route_to_typed_outcomes";
-    let cases: [(&str, &str, DevelopError); 7] = [
+    // Compressed NEF (D70s, Z6) decodes since SMB-DEVELOP-RAW-COMPRESSED (tests/real_raw_compressed.rs).
+    let cases: [(&str, &str, DevelopError); 5] = [
         ("canon-eos-r6.cr3", "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778", DevelopError::DecoderUnavailable("cr3")),
-        ("nikon-d70s-12bit-lossy-type1.nef", NEF_D70S, DevelopError::DecoderUnavailable("nef_compressed")),
-        ("nikon-z6-12bit-compressed.nef", NEF_Z6, DevelopError::DecoderUnavailable("nef_compressed")),
         ("fujifilm-finepix-s5000.raf", RAF_S5000, DevelopError::DecoderUnavailable("raf")),
         ("fujifilm-x-s10-14bit-compressed-xtrans.raf", RAF_XS10, DevelopError::DecoderUnavailable("raf")),
         ("olympus-c5060wz-12bit.orf", ORF_C5060, DevelopError::DecoderUnavailable("orf")),
@@ -200,8 +199,6 @@ fn vendor_files_route_to_typed_outcomes() {
     }
 }
 
-const NEF_D70S: &str = "6c46f9854033e7623ebbb5de8c951df6762ca44f05d45035ccc5cb7e9f4e5692";
-const NEF_Z6: &str = "f0ab08da469ee205f2bc08efd9005778c64cdcb064893cee03768e32e5da1a36";
 const ARW_7S: &str = "a35ebb2fbec929daa5beb20d1ce5c15a8aac7b1a7a231455387f3df8a7442e07";
 const RAF_S5000: &str = "dabd5e74521a6980156be9fd4b88d0c37b0fe4d0e0e6f5c12db8cffff1b76297";
 const RAF_XS10: &str = "9419d1408ebf850395e5dd563beb96309466546252caf541466034c9cb7e9724";
