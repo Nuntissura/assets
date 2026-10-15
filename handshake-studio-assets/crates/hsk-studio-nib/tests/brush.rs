@@ -108,7 +108,10 @@ fn calligraphic_and_bristle_brushes_sweep_the_spine() {
     let half = 10.0 / 32.0 / 2.0;
     let bristles = bristle_brush(&across, &BristleBrush { size: 10.0, length: 100.0, density: 100.0 }).unwrap();
     let b = path_bounds(&bristles).unwrap();
-    assert!((b.min[1] + 5.0 + half).abs() < 0.01 && (b.max[1] - 5.0 - half).abs() < 0.01 && (b.max[0] - 100.0 - half).abs() < 0.01, "{b:?}");
+    // The bristle sides are straight (exact extremes across); the round caps are polygons within
+    // the stroker's 0.1 px chord tolerance, so the tip lies in (100, 100 + half].
+    assert!((b.min[1] + 5.0 + half).abs() < 1e-6 && (b.max[1] - 5.0 - half).abs() < 1e-6, "{b:?}");
+    assert!(b.max[0] > 100.0 && b.max[0] <= 100.0 + half + 1e-9, "{b:?}");
     // Hostile: zero roundness, non-finite size, density out of range.
     assert_eq!(calligraphic_brush(&across, &CalligraphicBrush { roundness: 0.0, ..round }), Err(Error::InvalidRequest));
     assert_eq!(calligraphic_brush(&across, &CalligraphicBrush { size: f64::NAN, ..round }), Err(Error::InvalidRequest));
