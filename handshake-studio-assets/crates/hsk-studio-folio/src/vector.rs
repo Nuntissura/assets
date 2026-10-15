@@ -25,6 +25,10 @@
 //! - `StudioVectorMask`: a mask of one layer's content with a `mode` (STU-VEC-053 tokens `ALPHA`,
 //!   `VECTOR`, `LUMINANCE`), the STU-VEC-153 `mask_clip` and `invert_mask` booleans (default
 //!   `false`) and an optional rectangular `region`.
+//! - `StudioVectorMaskParameters` (lane SMB-COMPOSITE-VECTOR-MASK-2): per-mask STU-RAS-016 density
+//!   percent `0..=100` (default 100), feather px `0..=10000` (default 0), `linked` (default true) and
+//!   Illustrator's unclipped reading `reveal_outside` (default false), each skipped at its default,
+//!   in a sidecar list keyed by `mask_id` (at most one entry per mask).
 //! - `StudioMaskAttachment`: the reference field of a layer: at most one entry per layer naming a
 //!   clip, a mask or both. The consumer applies them; Folio stores and validates only.
 //! - `StudioImagePaint` (added by SMB-FOLIO-PAINT-BLUR-STYLE): the `paint.image` kind (STU-VEC-134
@@ -299,6 +303,52 @@ pub struct StudioVectorMask {
 fn is_false(v: &bool) -> bool {
     !*v
 }
+fn is_true(v: &bool) -> bool {
+    *v
+}
+fn yes() -> bool {
+    true
+}
+fn full_density() -> f64 {
+    100.0
+}
+fn is_full_density(v: &f64) -> bool {
+    *v == 100.0
+}
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// Parameters of one vector mask beyond its STU-VEC-053/153 fields (lane
+/// SMB-COMPOSITE-VECTOR-MASK-2): STU-RAS-016 density, feather and link, and Illustrator's
+/// unclipped opacity-mask reading. A sidecar keyed by `mask_id` (like the paint bindings), so a
+/// record set without it, and every literal `StudioVectorMask`, stays byte-identical; every field
+/// is skipped at its default.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioVectorMaskParameters {
+    /// The `StudioVectorMask` these parameters belong to (at most one entry per mask).
+    pub mask_id: String,
+    /// STU-RAS-016 density, percent, hard `0..=100`; default `100`.
+    #[serde(default = "full_density", skip_serializing_if = "is_full_density")]
+    #[schemars(range(min = 0.0, max = 100.0))]
+    pub density: f64,
+    /// STU-RAS-016 feather: Gaussian radius in pixels, hard `0..=10000` (like
+    /// `StudioMaskParameters.feather`); default `0` (none).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[schemars(range(min = 0.0, max = 10000.0))]
+    pub feather: f64,
+    /// STU-RAS-016 link: `true` (default) = the mask moves with the masked layer's transform;
+    /// `false` = it stays fixed in the document while the layer moves.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub linked: bool,
+    /// Illustrator's opacity mask with Clip off (STU-VEC-153 `mask_clip` in Illustrator's own
+    /// reading): the `LUMINANCE` content is read over a white background, so the area outside the
+    /// mask art is revealed. `false` (default) = the SVG / Figma / Illustrator Clip reading (zero
+    /// outside the content). Only meaningful for `LUMINANCE`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reveal_outside: bool,
+}
 
 /// The clip/mask reference of one layer. At least one of `clip_id` and `mask_id` is present.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -407,6 +457,10 @@ pub struct StudioVectorRecords {
     /// Live boolean results of group layers (absent and empty are the same set).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boolean_groups: Vec<StudioBooleanGroup>,
+    /// Vector mask parameters (absent and empty are the same set; empty is not encoded, so record
+    /// sets written before them are byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mask_parameters: Vec<StudioVectorMaskParameters>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -421,7 +475,12 @@ impl StudioVectorRecords {
             attachments: Vec::new(),
             image_paints: Vec::new(),
             boolean_groups: Vec::new(),
+            mask_parameters: Vec::new(),
         }
+    }
+    /// The parameters of mask `mask_id` (`None` = every default).
+    pub fn mask_parameters(&self, mask_id: &str) -> Option<&StudioVectorMaskParameters> {
+        self.mask_parameters.iter().find(|p| p.mask_id == mask_id)
     }
     /// The image binding of row `row` of style `style_id`.
     pub fn image_paint(&self, style_id: &str, row: u32) -> Option<&StudioImagePaint> {
@@ -838,6 +897,27 @@ pub fn validate_vector_records(
                 "mask_id",
             )?;
         }
+    }
+
+    cx.nodes(r.mask_parameters.len(), "mask_parameters")?;
+    let mut parameterised = BTreeSet::new();
+    for p in &r.mask_parameters {
+        cx.tick()?;
+        let t = p.mask_id.as_str();
+        check(masks.contains(t), Code::DanglingReference, t, "mask_parameters/mask_id")?;
+        unique(&mut parameterised, t, t)?;
+        check(
+            p.density.is_finite() && (0.0..=100.0).contains(&p.density),
+            Code::InvalidField,
+            t,
+            "mask_parameters/density",
+        )?;
+        check(
+            p.feather.is_finite() && (0.0..=crate::raster::MAX_MASK_FEATHER).contains(&p.feather),
+            Code::InvalidField,
+            t,
+            "mask_parameters/feather",
+        )?;
     }
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;
