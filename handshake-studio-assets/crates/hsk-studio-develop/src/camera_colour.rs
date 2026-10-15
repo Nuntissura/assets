@@ -24,6 +24,9 @@ use crate::color::{self, D50_XYZ, DngColor, Mat3, SRGB_TO_XYZ_D50};
 #[path = "camera_table.rs"]
 mod table;
 
+/// Loss note of an opted-in single-illuminant colour route (lane SMB-DEVELOP-CAMERA-COLOUR-2).
+pub const APPROXIMATE_COLOUR_LOSS: &str = "approximate_colour_single_illuminant";
+
 /// DNG CalibrationIlluminant codes of the table matrices: Standard light A, D65.
 const TABLE_ILLUMINANTS: [u16; 2] = [17, 21];
 /// D65 white (XYZ, Y = 1), the white of the file-matrix calibration.
@@ -115,6 +118,12 @@ impl ColourRoute {
             Self::SpectralTable { .. } => "spectral_table",
             Self::None => "none",
         }
+    }
+
+    /// A single calibration illuminant (the vendor file matrix): below STU-COL-218's two, so
+    /// develop refuses it unless the caller opts in ([`crate::DngRaw::allow_approximate_colour`]).
+    pub fn single_illuminant(&self) -> bool {
+        matches!(self, Self::FileMatrix { .. })
     }
 
     /// The assumption a route makes beyond the file's numbers (`None` when it makes none).
@@ -218,6 +227,44 @@ mod tests {
             for cm in c.color_matrix {
                 assert!(color::invert(&cm).is_ok(), "{}", c.model);
             }
+        }
+    }
+
+    /// STU-COL-218: the two table calibrations (A, D65) are interpolated by the estimated scene
+    /// CCT, linear in mired, for ColorMatrix and ForwardMatrix alike.
+    #[test]
+    fn table_profiles_interpolate_between_their_two_illuminants_by_cct() {
+        let (r6, _) = spectral_camera("Canon", "Canon EOS R6").unwrap();
+        let neutral_under = |cm: &Mat3, xy: [f64; 2]| {
+            let n = color::mul_vec(cm, &color::xy_to_xyz(xy));
+            [n[0] / n[1], 1.0, n[2] / n[1]]
+        };
+        let (a_xy, d65_xy) = ([0.44757, 0.40745], [0.31271, 0.32902]);
+        let solve = |n: [f64; 3]| {
+            let vendor = VendorColour { make: Some("Canon".into()), as_shot_neutral: Some(n), ..Default::default() };
+            color::solve(&resolve(&vendor, Some("EOS R6")).0).unwrap()
+        };
+        let na = neutral_under(&r6.color_matrix[0], a_xy);
+        let nd = neutral_under(&r6.color_matrix[1], d65_xy);
+        let (sa, sd) = (solve(na), solve(nd));
+        assert!(sa.weight < 1e-3 && (sa.cct - 2856.0).abs() < 15.0, "A: w {} cct {}", sa.weight, sa.cct);
+        assert!(sd.weight > 1.0 - 1e-3 && (sd.cct - 6504.0).abs() < 15.0, "D65: w {} cct {}", sd.weight, sd.cct);
+        // Between: weight strictly inside, mired-linear in the solved CCT, and the camera matrix is
+        // the weight's blend of the two ForwardMatrices times the white-balance diagonal.
+        let mut last_cct = sa.cct;
+        for t in [0.2, 0.4, 0.6, 0.8] {
+            let n = [na[0].powf(1.0 - t) * nd[0].powf(t), 1.0, na[2].powf(1.0 - t) * nd[2].powf(t)];
+            let s = solve(n);
+            assert!(s.weight > 0.0 && s.weight < 1.0 && s.cct > last_cct, "t {t}: w {} cct {}", s.weight, s.cct);
+            last_cct = s.cct;
+            let w = (1.0 / s.cct - 1.0 / 2856.0) / (1.0 / 6504.0 - 1.0 / 2856.0);
+            assert!((w - s.weight).abs() < 1e-9, "t {t}: {w} vs {}", s.weight);
+            let mut fm = [0.0; 9];
+            for (i, v) in fm.iter_mut().enumerate() {
+                *v = (1.0 - s.weight) * r6.forward_matrix[0][i] + s.weight * r6.forward_matrix[1][i];
+            }
+            let want = color::mul(&fm, &color::diag([1.0 / n[0], 1.0, 1.0 / n[2]]));
+            assert!(want.iter().zip(s.camera_to_xyz_d50).all(|(a, b)| (a - b).abs() < 1e-9), "t {t}");
         }
     }
 

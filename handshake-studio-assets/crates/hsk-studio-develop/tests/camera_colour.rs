@@ -295,7 +295,15 @@ const FILES: &[Expect] = &[
 fn check(test: &str, e: &Expect) -> Vec<String> {
     let mut bad = Vec::new();
     let Some(bytes) = read(test, e.file, e.sha256) else { return bad };
-    let raw = decode_container(&bytes).unwrap_or_else(|err| panic!("{}: {err}", e.file));
+    let mut raw = decode_container(&bytes).unwrap_or_else(|err| panic!("{}: {err}", e.file));
+    // A single-illuminant route is refused by default (SMB-DEVELOP-CAMERA-COLOUR-2); this oracle
+    // measures it opted in.
+    if raw.colour_route.single_illuminant() {
+        if raw.solve_colour().err() != Some(DevelopError::ApproximateColourNotAllowed) {
+            bad.push(format!("{}: single-illuminant route not refused by default", e.file));
+        }
+        raw.allow_approximate_colour();
+    }
     let route = raw.colour_route.key();
     println!("COLOUR {} route={:?} neutral={:?}", e.file, raw.colour_route, raw.color.as_shot_neutral);
     if route != e.route {
@@ -352,7 +360,11 @@ fn check(test: &str, e: &Expect) -> Vec<String> {
     };
     let chroma: Vec<f64> = neutral_cells.iter().map(|c| { let l = raw_lab(c); l[1].hypot(l[2]) }).collect();
     let (med, p90) = (median(chroma.clone()), { let mut v = chroma.clone(); v.sort_by(f64::total_cmp); v[v.len() * 9 / 10] });
-    println!("COLOUR {} neutral cells: CIE76 to neutral median {med:.2} p90 {p90:.2} (cct {:.0} K, white {:?})", e.file, s.cct, s.white_xy);
+    println!("COLOUR {} neutral cells: CIE76 to neutral median {med:.2} p90 {p90:.2} (cct {:.0} K, illuminant weight {:.3}, white {:?})", e.file, s.cct, s.weight, s.white_xy);
+    // STU-COL-218: a two-calibration route interpolates (the R6's as-shot light lies between A and D65).
+    if e.route == "spectral_table" && !(s.weight > 0.0 && s.weight < 1.0) {
+        bad.push(format!("{}: illuminant weight {} not strictly between the two calibrations", e.file, s.weight));
+    }
     if med > e.neutral_de {
         bad.push(format!("{}: neutral median dE76 {med:.2} > {}", e.file, e.neutral_de));
     }

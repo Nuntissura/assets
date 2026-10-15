@@ -11,7 +11,7 @@
 // bounded by an explicit validation above it.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
-use crate::camera_colour::{self, ColourRoute, VendorColour};
+use crate::camera_colour::{self, APPROXIMATE_COLOUR_LOSS, ColourRoute, VendorColour};
 use crate::color::{self, CameraSolution, DngColor, Mat3};
 use crate::ljpeg;
 use crate::pipeline::{Cfa, CfaPattern, CfaPlane, Limits, PlaneInit, XTRANS};
@@ -138,6 +138,9 @@ pub struct DngRaw {
     /// Where `color` came from: the DNG tags, a vendor matrix tag, the spectral table, or none
     /// (lane SMB-DEVELOP-CAMERA-COLOUR, [`crate::camera_colour`]).
     pub colour_route: ColourRoute,
+    /// Opt-in to a single-illuminant colour route ([`DngRaw::allow_approximate_colour`]); `false`
+    /// at decode.
+    pub approximate_colour: bool,
     pub unique_camera_model: Option<String>,
     /// SHA-256 of the complete container bytes.
     pub container_sha256: [u8; 32],
@@ -734,6 +737,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         linearized,
         colour_route: if color.color_matrix.iter().any(Option::is_some) { ColourRoute::DngTags } else { ColourRoute::None },
         color,
+        approximate_colour: false,
         unique_camera_model,
         unapplied,
         container_sha256: Sha256::digest(bytes).into(),
@@ -826,6 +830,7 @@ impl DngRaw {
             linearized: false,
             color,
             colour_route,
+            approximate_colour: false,
             unique_camera_model: frame.unique_camera_model,
             container_sha256: Sha256::digest(container).into(),
             unapplied: frame.unapplied,
@@ -977,8 +982,33 @@ impl DngRaw {
         Ok((plane, report))
     }
 
+    /// Camera -> XYZ D50 for the as-shot white. Two-illuminant profiles (DNG tags, the spectral
+    /// table) interpolate ColorMatrix and ForwardMatrix by the estimated scene CCT
+    /// ([`color::solve`], STU-COL-218). A single-illuminant approximation (a vendor file matrix)
+    /// refuses `approximate_colour_not_allowed` unless [`DngRaw::allow_approximate_colour`] was
+    /// called (lead decision 2026-10-15, lane SMB-DEVELOP-CAMERA-COLOUR-2).
     pub fn solve_colour(&self) -> Result<CameraSolution, DevelopError> {
+        self.colour_gate()?;
         color::solve(&self.color)
+    }
+
+    /// Explicit opt-in to an approximate (single-illuminant) colour route; the host records it in
+    /// its develop receipt and as the loss note [`DngRaw::colour_loss`].
+    pub fn allow_approximate_colour(&mut self) {
+        self.approximate_colour = true;
+    }
+
+    /// The loss note of the colour this frame develops with: `approximate_colour_single_illuminant`
+    /// when an opted-in approximate route is used, else `None`.
+    pub fn colour_loss(&self) -> Option<&'static str> {
+        (self.colour_route.single_illuminant() && self.approximate_colour).then_some(APPROXIMATE_COLOUR_LOSS)
+    }
+
+    fn colour_gate(&self) -> Result<(), DevelopError> {
+        if self.colour_route.single_illuminant() && !self.approximate_colour {
+            return Err(DevelopError::ApproximateColourNotAllowed);
+        }
+        Ok(())
     }
 
     /// Native 1.0 recipe from the DNG colour tags: as-shot neutral + `xyz_d50_to_profile *
@@ -1011,6 +1041,7 @@ impl DngRaw {
         kelvin: f64,
         tint: f64,
     ) -> Result<(DevelopRecipe, CameraSolution), DevelopError> {
+        self.colour_gate()?;
         recipe_for_white_point(&self.color, xyz_d50_to_profile, profile, baseline, kelvin, tint)
     }
 
