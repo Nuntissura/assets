@@ -66,10 +66,12 @@ impl OutputStage {
 
 /// Operator key of an extended-range plan (`ExtOperator::ExtendedRange`).
 pub const EXTENDED_RANGE_OPERATOR: &str = "sample_range_extended";
-/// Operator key of a layer whose mode is undefined above 1 in an extended-range plan.
+/// Prefix of the per-mode refusal keys (`blend_math::extended_mode_key`): a mode undefined above 1
+/// is refused as `sample_range_extended_mode_<mode key>` (lane SMB-PIGMENT-EXTENDED-RANGE-2); this
+/// bare key itself is no longer reported.
 pub const EXTENDED_RANGE_MODE_OPERATOR: &str = "sample_range_extended_mode";
-/// Operator key of an envelope layer entry (adjustment, Blend-If, effects, feather, transform,
-/// blur, filters, content-aware fill) in an extended-range plan: their maths are unit-domain.
+/// Retired key of `ExtOperator::ExtendedRangeCombination` (envelope entries are now reported per
+/// operation as [`ExtendedOp`]; never reported).
 pub const EXTENDED_RANGE_COMBINATION_OPERATOR: &str = "sample_range_extended_combination";
 /// Operator key of the stage-6a clip (`ExtOperator::DisplayClip`).
 pub const DISPLAY_CLIP_OPERATOR: &str = "display_clip";
