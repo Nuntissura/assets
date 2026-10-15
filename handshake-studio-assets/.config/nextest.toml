@@ -7,6 +7,17 @@ retries = 0
 # Per-test cap 120 s (CX-EXEC-005): flagged slow at 30 s, terminated after 4 periods.
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+# F-R32-3 (lead-approved 2026-10-15): render-gpu's GPU tests slow each other down when many run at once (R32 union
+# 77-91 s per test against the 120 s cap). Measured on the steward export of 673baba (58 render-gpu tests, a round
+# running concurrently): 32 threads = 25 timed out, max 122 s; 8 threads = all pass, max 23.7 s, wall 64 s;
+# 4 threads = all pass, max 22.9 s, wall 86 s. At most 8 render-gpu tests run at once; other crates are unaffected.
+[[profile.default.overrides]]
+filter = 'package(hsk-studio-render-gpu)'
+test-group = 'render-gpu'
+
+[test-groups]
+render-gpu = { max-threads = 8 }
+
 [profile.default.junit]
 # Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into each unit's results dir.
 # Full results: every test is a <testcase> (passing names included), passing tests' stdout/stderr stored
