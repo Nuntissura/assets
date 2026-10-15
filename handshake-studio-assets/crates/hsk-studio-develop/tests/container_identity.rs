@@ -13,7 +13,9 @@ const PINNED: &[(&str, &str, &str)] = &[
     ("dng", "adobe-dng-converter-canon-eos-5d3-16bit-uncompressed.dng", "5920x3950|16|cfa=d4f894f5e3414125ffa2b8a94637ab44034f9de931a6ca3ef6025c97cbd28a8d|dev=5760x3840:(5133, 2322):7332f8cafcebb9b56f707f8f01e6deca8e9ea8e2bc2d8ddc9709a4b64e981185"),
     ("dng", "canon-eos-5d3-mlv-14bit-lossless.dng", "1920x818|14|cfa=786415ab4fd024a1a066f13b7b900e99b0f2fcb4cfefd462511d2ea98934aa4e|dev=1920x818:(176919, 0):df7fe25d0ac83a989502df40ec85251242fa9af2983070842f46b031d9cabf3b"),
     ("dng", "nikon-d80-16bit-lossless-tiled-linearized.dng", "3900x2611|16|cfa=01504457f9724ba97d9a6795f920148d5ac153a68f48c88dc830ed8556a5e625|dev=3872x2592:(0, 57267):a93a3adf24dea932e9ed6f357b6c1b616ff828c0428725f6d1f991f7043217e1"),
-    ("dng", "samsung-sm-g973u-16bit-uncompressed.dng", "decode_err=DecoderUnavailable(\"jpeg\")"),
+    // raw.pixls.us id 1815 (lane SMB-DNG-CORPUS-REPLACE): first decode at 2026-10-15, pinned from that run.
+    ("dng", "samsung-sm-g950u-16bit-uncompressed.dng", "4032x2268|16|cfa=ae7f8e1f45b0458f7f8d493efc88719f3b56b699843af7e4d917ef073e370454|dev=4032x2268:(0, 0):892662340a7743c4ccc880dc907d69484980087905b2f51344f3e8160c0a4987"),
+    ("dng", "samsung-sm-g973u-16bit-uncompressed.dng.jfif-preview", "decode_err=DecoderUnavailable(\"jpeg\")"),
     ("raw-vendor", "canon-eos-350d-raw.cr2", "3516x2328|12|cfa=29f020448207b8283fab983dc6e200d7acf569883940524003973edfc1015756|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "canon-eos-r6.cr3", "decode_err=DecoderUnavailable(\"cr3\")"),
     ("raw-vendor", "fujifilm-finepix-s5000.raf", "decode_err=DecoderUnavailable(\"raf\")"),

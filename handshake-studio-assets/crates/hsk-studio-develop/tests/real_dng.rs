@@ -60,9 +60,32 @@ const CORPUS: &[Facts] = &[
         clamp_pct_max: 15,
         refusal: None,
     },
-    // Samsung SM-G973U: uncompressed 16-bit, one-row strips, 2x2 black repeat, GainMap opcode list 2.
+    // Samsung SM-G950U (raw.pixls.us id 1815, CC0; replaces the id 3839 JFIF below as the real
+    // uncompressed-strip sample, lane SMB-DNG-CORPUS-REPLACE): IFD0 raw, DNG 1.4, 4032x2268 16-bit,
+    // Compression 1, one-row strips, CFA [1,0,2,1], 2x2 black repeat 0, white 1023, illuminants 1/3,
+    // OpcodeList2. Values from the Exiv2 dump raw.pixls.us publishes (getfile.php/1815/exif/...).
     Facts {
-        file: "samsung-sm-g973u-16bit-uncompressed.dng",
+        file: "samsung-sm-g950u-16bit-uncompressed.dng",
+        sha256: "7b0327cf015270ec98627ed1dee02ff39a47d1a6d6ff1ecfe164586e7dc7a749",
+        width: 4032,
+        height: 2268,
+        bits: 16,
+        compression: 1,
+        cfa: Bayer::Grbg,
+        black: &[0.0, 0.0, 0.0, 0.0],
+        white: 1023,
+        active: (0, 0, 2268, 4032),
+        default_crop: Some((0, 0, 4032, 2268)),
+        linearized: false,
+        illuminants: (Some(1), Some(3)),
+        unapplied: &["opcode_list_2"],
+        clamp_pct_max: 1,
+        refusal: None,
+    },
+    // Samsung SM-G973U listed download (raw.pixls.us id 3839), renamed `.jfif-preview` in the corpus:
+    // uncompressed 16-bit per the listing, one-row strips, 2x2 black repeat, GainMap opcode list 2.
+    Facts {
+        file: "samsung-sm-g973u-16bit-uncompressed.dng.jfif-preview",
         sha256: "6492b7e0ac8e012524c0c83606a104cc9bf3b68f30fa60c7b73ffbe4dc584ab1",
         width: 4032,
         height: 1908,
@@ -80,7 +103,7 @@ const CORPUS: &[Facts] = &[
         // The CC0 download (raw.pixls.us id 3839, sha256 = the listing checksum) is a baseline JFIF
         // rendering (SOF0 4016x1892x3, 8-bit) whose Exif APP1 carries this DNG's IFD0 tags but no
         // raw strips (byte inspection, lane SMB-DEVELOP-DNG-MLV 2026-10-14): not a DNG. The facts
-        // above stay as the published Exiv2 values for a replacement sample.
+        // above are the published Exiv2 values; id 1815 above is the real replacement sample.
         refusal: Some((
             DevelopError::DecoderUnavailable("jpeg"),
             "listed_download_is_a_jfif_rendering_not_a_dng",

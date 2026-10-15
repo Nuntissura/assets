@@ -11,11 +11,13 @@ CRATE="$(cd "$HERE/../.." && pwd)"
 # the sibling Handshake_Artifacts root next to the worktrees, outside the git worktree. Override: STUDIO_DNG_CORPUS.
 CORPUS_RELATIVE="../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng"
 DEST="${STUDIO_DNG_CORPUS:-$(realpath -m "$CRATE/$CORPUS_RELATIVE")}"
-# NOTE: id 3839 (samsung) is a JFIF JPEG, not a DNG (kept only for the typed-refusal case); id 1022 replaces it as the uncompressed-strip sample.
+# NOTE: id 3839 (samsung g973u) is a JFIF JPEG, not a DNG: stored as <name>.jfif-preview, kept only for the typed-refusal case;
+# ids 1815 (samsung g950u, IFD0 one-row strips) and 1022 (SubIFD) are the real uncompressed 16-bit strip samples.
 # id | local name | sha256 | bytes (approx MB) | remote name (as served by getfile.php/<id>/nice/)
 SAMPLES=(
   "2204|canon-eos-5d3-mlv-14bit-lossless.dng|1d77dcc6cdb839b10c1948f0b4471984ab48cf15e973fb77520584cee72b603e|1.47MB|Canon%20-%20EOS%205D%20Mark%20III%20-%2014bit%2014bit%20%282.3471882640587%29.dng"
-  "3839|samsung-sm-g973u-16bit-uncompressed.dng|6492b7e0ac8e012524c0c83606a104cc9bf3b68f30fa60c7b73ffbe4dc584ab1|1.26MB|Samsung%20-%20SM-G973U%20-%2016bit%2016bit%20%282.1132075471698%29.dng"
+  "1815|samsung-sm-g950u-16bit-uncompressed.dng|7b0327cf015270ec98627ed1dee02ff39a47d1a6d6ff1ecfe164586e7dc7a749|17.86MB|Samsung%20-%20SM-G950U%20-%2016bit%20%2816%3A9%29.dng"
+  "3839|samsung-sm-g973u-16bit-uncompressed.dng.jfif-preview|6492b7e0ac8e012524c0c83606a104cc9bf3b68f30fa60c7b73ffbe4dc584ab1|1.26MB|Samsung%20-%20SM-G973U%20-%2016bit%2016bit%20%282.1132075471698%29.dng"
   "1022|adobe-dng-converter-canon-eos-5d3-16bit-uncompressed.dng|95dc76a2f255e623acaa5149b320389f7da7c995da890c3e0d511c0ff681b2e1|46.14MB|Adobe%20DNG%20Converter%20-%20Canon%20EOS%205D%20Mark%20III%20-%2016bit%2016bit%20uncompressed%20%283%3A2%29.DNG"
   "1988|nikon-d80-16bit-lossless-tiled-linearized.dng|5095ca264e763624cd3aa62940286dd1bcff4504eefa1ce61cbb72f50f8426bb|7.90MB|Nikon%20-%20D80%20-%2016bit%20%283%3A2%29.dng"
 )
