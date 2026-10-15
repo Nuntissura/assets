@@ -1,6 +1,7 @@
 //! Instance-owned, enumerable provider registry plus proxy/original arbitration.
 //! There is no process-global factory: two registries never share providers.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::audio::AudioFileProvider;
 use crate::error::{ReelError, check_cancel};
 use crate::isobmff::IsobmffProvider;
 use crate::matroska::MatroskaProvider;
@@ -110,6 +111,21 @@ impl Registry {
         registry
     }
 
+    /// Register every standalone compressed-audio file provider (`AudioFileProvider::all`), opt-in like
+    /// `MxfProvider`: `standard()` keeps its provider list.
+    pub fn register_audio_codecs(&mut self) -> Result<(), ReelError> {
+        for provider in AudioFileProvider::all() {
+            self.register(Box::new(provider))?;
+        }
+        Ok(())
+    }
+
+    /// Builder form of `register_audio_codecs` (a registry that already holds one of the ids refuses).
+    pub fn with_audio_codecs(mut self) -> Result<Self, ReelError> {
+        self.register_audio_codecs()?;
+        Ok(self)
+    }
+
     pub fn register(&mut self, provider: Box<dyn MediaProvider>) -> Result<(), ReelError> {
         let id = provider.descriptor().id;
         if self.providers.iter().any(|p| p.descriptor().id == id) {
@@ -130,6 +146,12 @@ impl Registry {
     /// licence and certification status (STU-VID-051, D23). Same list for every registry.
     pub fn video_codec_descriptors(&self) -> Vec<CodecDescriptor> {
         crate::codec_adapters::video_codec_descriptors()
+    }
+
+    /// Descriptors of the audio codec adapters (FLAC, ...): decoder id, version, licence, certification
+    /// and whether this build decodes / encodes each (STU-VID-051, D23). Same list for every registry.
+    pub fn audio_codec_descriptors(&self) -> Vec<CodecDescriptor> {
+        crate::audio::audio_codec_descriptors()
     }
 
     pub fn descriptors_json(&self) -> String {
