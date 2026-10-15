@@ -21,7 +21,9 @@ mod wide_plan;
 pub use wide::*;
 mod view_transform;
 pub use view_transform::{
-    DisplayEncoding, VIEW_TRANSFORM_DESCRIPTOR, ViewTransformId, aces1_sdr_video_from_aces2065,
+    ACES2065_1_TO_ACESCG, ACESCG_TO_ACES2065_1, ACESCG_TO_WORKING, DisplayEncoding, SceneInput, VIEW_GPU_PARAMS,
+    VIEW_TRANSFORM_DESCRIPTOR, VIEW_WGSL, ViewSelectError, ViewTransform, ViewTransformId, WORKING_TO_ACESCG,
+    aces1_sdr_video_from_aces2065, select_view, view_gpu_params,
 };
 mod working;
 pub use working::{

@@ -40,41 +40,177 @@ use std::sync::OnceLock;
 
 type M3 = [[f64; 3]; 3];
 
-/// A Prism view transform (stage 6a). `non_exhaustive`: more views (HDR, other displays) can be
-/// added without breaking callers.
+/// Scene-referred input of a view (STU-COL-311, STU-COL-312).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ViewTransformId {
-    /// ACES 1.x RRT + ODT, SDR video, 100 nits, dim surround, Rec.709 / sRGB primaries, from the
-    /// Prism working space (linear-light sRGB, [`crate::WORKING_PROFILE_LINEAR_SRGB`]).
-    Aces1SdrVideo,
+pub enum SceneInput {
+    /// The Prism working space: linear-light sRGB (Rec.709 primaries, D65 white,
+    /// [`crate::WORKING_PROFILE_LINEAR_SRGB`]); to ACES2065-1 through a Bradford adaptation D65 ->
+    /// ACES white (CTL `calculate_rgb_to_rgb_matrix` default).
+    LinearSrgb,
+    /// ACEScg (AP1 primaries, ACES white, linear; the STU-COL-312 `scene_linear` binding); to
+    /// ACES2065-1 through the published matrix [`ACESCG_TO_ACES2065_1`].
+    AcesCg,
+    /// ACES2065-1 (AP0 primaries, linear; the STU-COL-316 interchange anchor); no conversion.
+    Aces2065_1,
 }
-impl ViewTransformId {
-    /// Every view, in declaration order.
-    pub const ALL: &'static [Self] = &[Self::Aces1SdrVideo];
-    /// Stable key (plan digests and receipts).
+impl SceneInput {
+    pub const ALL: &'static [Self] = &[Self::LinearSrgb, Self::AcesCg, Self::Aces2065_1];
     pub const fn key(self) -> &'static str {
         match self {
-            Self::Aces1SdrVideo => "aces1_sdr_video_100nits_dim",
+            Self::LinearSrgb => "linear_srgb",
+            Self::AcesCg => "acescg",
+            Self::Aces2065_1 => "aces2065_1",
         }
     }
     pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|v| v.key() == key)
     }
-    /// Working-space linear RGB -> display-referred linear RGB in `[0, 1]` (display primaries).
+    fn to_ap0_matrix(self) -> M3 {
+        match self {
+            Self::LinearSrgb => tables().rec709_to_ap0,
+            Self::AcesCg => ACESCG_TO_ACES2065_1,
+            Self::Aces2065_1 => [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        }
+    }
+    fn to_ap0(self, x: [f64; 3]) -> [f64; 3] {
+        match self {
+            Self::Aces2065_1 => x,
+            _ => mv(&self.to_ap0_matrix(), x),
+        }
+    }
+}
+
+/// ACEScg -> ACES2065-1 as published in the ACEScg specification (Academy S-2014-004; aces-docs
+/// `docs/encodings/acescg.md`, matrix TRA_2, SMPTE RP 177 method), row-major for column vectors.
+pub const ACESCG_TO_ACES2065_1: [[f64; 3]; 3] = [
+    [0.695_452_241_4, 0.140_678_696_5, 0.163_869_062_2],
+    [0.044_794_563_4, 0.859_671_118_5, 0.095_534_318_2],
+    [-0.005_525_882_6, 0.004_025_210_3, 1.001_500_672_3],
+];
+/// ACES2065-1 -> ACEScg as published in the ACEScg specification (matrix TRA_1).
+pub const ACES2065_1_TO_ACESCG: [[f64; 3]; 3] = [
+    [1.451_439_316_1, -0.236_510_746_9, -0.214_928_569_3],
+    [-0.076_553_773_4, 1.176_229_699_8, -0.099_675_926_4],
+    [0.008_316_148_4, -0.006_032_449_8, 0.997_716_301_4],
+];
+/// ACEScg (AP1, ACES white) -> Prism working space (linear sRGB, D65): AP1 -> XYZ, Bradford ACES
+/// white -> D65, XYZ -> Rec.709 (primaries from ACESlib.Utilities_Color.ctl, SMPTE RP 177 method).
+pub const ACESCG_TO_WORKING: [[f64; 3]; 3] = mul(XYZ_TO_REC709, mul(cat(AP1[3], REC709[3]), AP1_TO_XYZ));
+/// Prism working space -> ACEScg (the inverse construction of [`ACESCG_TO_WORKING`]).
+pub const WORKING_TO_ACESCG: [[f64; 3]; 3] = mul(XYZ_TO_AP1, mul(cat(REC709[3], AP1[3]), REC709_TO_XYZ));
+
+/// A Prism view transform (stage 6a). `non_exhaustive`: more views can be added without breaking
+/// callers. SDR views output display-referred linear RGB in `[0, 1]` (the ODT's clamped linear code
+/// values); HDR views output display-referred linear RGB in units of 100 cd/m2 (1.0 = 100 nits,
+/// `[0, peak / 100]`), the stretched-black linear values of the CTL before its PQ encoding.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ViewTransformId {
+    /// ACES 1.x RRT + ODT, SDR video, 100 nits, dim surround, Rec.709 / sRGB primaries
+    /// (ODT.Academy.sRGB_100nits_dim / Rec709_100nits_dim, linear part).
+    Aces1SdrVideo,
+    /// ACES 1.x RRT + ODT.Academy.DisplayP3_dim: SDR video, 100 nits, dim surround, P3 primaries
+    /// on D65 (linear part).
+    Aces1SdrVideoDisplayP3,
+    /// ACES 1.x RRTODT.Academy.Rec2020_1000nits_15nits_ST2084: SSTS tone scale Y_MIN 0.0001,
+    /// Y_MID 15, Y_MAX 1000 nits, dark surround, Rec.2020 limiting and encoding primaries,
+    /// stretched black (linear part, before ST 2084).
+    Aces1HdrVideo1000Nits,
+    /// As [`ViewTransformId::Aces1HdrVideo1000Nits`] with Y_MAX 2000 nits
+    /// (RRTODT.Academy.Rec2020_2000nits_15nits_ST2084).
+    Aces1HdrVideo2000Nits,
+    /// As [`ViewTransformId::Aces1HdrVideo1000Nits`] with Y_MAX 4000 nits
+    /// (RRTODT.Academy.Rec2020_4000nits_15nits_ST2084).
+    Aces1HdrVideo4000Nits,
+}
+impl ViewTransformId {
+    /// Every view, in declaration order.
+    pub const ALL: &'static [Self] = &[
+        Self::Aces1SdrVideo,
+        Self::Aces1SdrVideoDisplayP3,
+        Self::Aces1HdrVideo1000Nits,
+        Self::Aces1HdrVideo2000Nits,
+        Self::Aces1HdrVideo4000Nits,
+    ];
+    /// Stable key (plan digests and receipts).
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Aces1SdrVideo => "aces1_sdr_video_100nits_dim",
+            Self::Aces1SdrVideoDisplayP3 => "aces1_sdr_video_100nits_dim_display_p3",
+            Self::Aces1HdrVideo1000Nits => "aces1_hdr_video_1000nits_15nits_rec2020",
+            Self::Aces1HdrVideo2000Nits => "aces1_hdr_video_2000nits_15nits_rec2020",
+            Self::Aces1HdrVideo4000Nits => "aces1_hdr_video_4000nits_15nits_rec2020",
+        }
+    }
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|v| v.key() == key)
+    }
+    /// Peak luminance of the view in cd/m2 (100 for the SDR views).
+    pub const fn peak_nits(self) -> u32 {
+        match self {
+            Self::Aces1SdrVideo | Self::Aces1SdrVideoDisplayP3 => 100,
+            Self::Aces1HdrVideo1000Nits => 1000,
+            Self::Aces1HdrVideo2000Nits => 2000,
+            Self::Aces1HdrVideo4000Nits => 4000,
+        }
+    }
+    pub const fn is_hdr(self) -> bool {
+        self.peak_nits() > 100
+    }
+    /// Primaries of the output values: `rec709`, `p3_d65` or `rec2020` (all D65 white).
+    pub const fn output_primaries(self) -> &'static str {
+        match self {
+            Self::Aces1SdrVideo => "rec709",
+            Self::Aces1SdrVideoDisplayP3 => "p3_d65",
+            Self::Aces1HdrVideo1000Nits | Self::Aces1HdrVideo2000Nits | Self::Aces1HdrVideo4000Nits => {
+                "rec2020"
+            }
+        }
+    }
+    /// Working-space linear RGB -> display-referred linear RGB (see the type docs for the range).
     /// Any finite channel, negative included, is admitted; NaN or an infinity is
     /// [`Error::NonfiniteChannel`]. Allocates nothing.
     pub fn apply(self, rgb: [f32; 3]) -> Result<[f32; 3], Error> {
+        self.apply_from(SceneInput::LinearSrgb, rgb)
+    }
+    /// [`ViewTransformId::apply`] from the given scene input.
+    pub fn apply_from(self, input: SceneInput, rgb: [f32; 3]) -> Result<[f32; 3], Error> {
+        let ap0 = input.to_ap0(finite(rgb)?);
+        Ok(to_f32(self.eval_ap0(ap0)))
+    }
+    fn eval_ap0(self, ap0: [f64; 3]) -> [f64; 3] {
+        let t = tables();
         match self {
-            Self::Aces1SdrVideo => {
-                let x = finite(rgb)?;
-                Ok(to_f32(aces1_sdr_video(mv(&tables().rec709_to_ap0, x))))
-            }
+            Self::Aces1SdrVideo => aces1_sdr_video(ap0, &t.xyz_d60_to_rec709),
+            Self::Aces1SdrVideoDisplayP3 => aces1_sdr_video(ap0, &t.xyz_d60_to_p3d65),
+            Self::Aces1HdrVideo1000Nits => aces1_hdr_video(ap0, &t.ssts1000, 1000.0),
+            Self::Aces1HdrVideo2000Nits => aces1_hdr_video(ap0, &t.ssts2000, 2000.0),
+            Self::Aces1HdrVideo4000Nits => aces1_hdr_video(ap0, &t.ssts4000, 4000.0),
         }
     }
     /// [`ViewTransformId::apply`] over interleaved RGB triples in place; a length that is not a
     /// multiple of 3 is [`Error::ChannelRange`]. On error, triples before the failing one are
     /// already transformed.
+    pub fn apply_in_place(self, rgb: &mut [f32]) -> Result<(), Error> {
+        ViewTransform::new(self, SceneInput::LinearSrgb).apply_in_place(rgb)
+    }
+}
+
+/// A view together with its scene input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ViewTransform {
+    pub view: ViewTransformId,
+    pub input: SceneInput,
+}
+impl ViewTransform {
+    pub const fn new(view: ViewTransformId, input: SceneInput) -> Self {
+        Self { view, input }
+    }
+    pub fn apply(self, rgb: [f32; 3]) -> Result<[f32; 3], Error> {
+        self.view.apply_from(self.input, rgb)
+    }
+    /// Interleaved RGB triples in place (see [`ViewTransformId::apply_in_place`]).
     pub fn apply_in_place(self, rgb: &mut [f32]) -> Result<(), Error> {
         if !rgb.len().is_multiple_of(3) {
             return Err(Error::ChannelRange);
@@ -90,10 +226,10 @@ impl ViewTransformId {
 /// [`ViewTransformId::Aces1SdrVideo`] with ACES2065-1 (AP0) input instead of the working space:
 /// exactly RRT + ODT Rec.709/sRGB 100 nits dim up to the clamped linear code values.
 pub fn aces1_sdr_video_from_aces2065(ap0: [f32; 3]) -> Result<[f32; 3], Error> {
-    Ok(to_f32(aces1_sdr_video(finite(ap0)?)))
+    ViewTransformId::Aces1SdrVideo.apply_from(SceneInput::Aces2065_1, ap0)
 }
 
-/// Second stage of STU-COL-313: display-referred linear `[0, 1]` -> display code values.
+/// Second stage of STU-COL-313: display-referred linear values -> display code values.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DisplayEncoding {
@@ -101,38 +237,87 @@ pub enum DisplayEncoding {
     Srgb,
     /// ITU-R BT.1886 inverse EOTF with L_W 1, L_B 0 (CTL `bt1886_r`): `L^(1/2.4)`.
     Bt1886,
+    /// Pure 2.2 power (STU-COL-313 `gamma22_rec709_display`): `L^(1/2.2)`.
+    Gamma22,
+    /// SMPTE ST 2084 (PQ) of linear values in units of 100 cd/m2 (CTL `Y_2_ST2084` of `L * 100`).
+    Pq,
 }
 impl DisplayEncoding {
     pub const fn key(self) -> &'static str {
         match self {
             Self::Srgb => "srgb_piecewise",
             Self::Bt1886 => "bt1886_gamma24",
+            Self::Gamma22 => "gamma22",
+            Self::Pq => "st2084_pq",
         }
     }
-    /// Encode linear values; inputs are clamped into `[0, 1]` first (the ODT's own clamp).
+    /// Encode linear values. SDR encodings clamp into `[0, 1]` first (the ODT's own clamp); PQ
+    /// clamps into `[0, 100]` (0 .. 10000 cd/m2).
     pub fn encode(self, linear: [f32; 3]) -> Result<[f32; 3], Error> {
         let x = finite(linear)?;
-        let f = |v: f64| {
-            let v = v.clamp(0.0, 1.0);
-            match self {
-                Self::Srgb => moncurve_r(v, 2.4, 0.055),
-                Self::Bt1886 => pow(v, 1.0 / 2.4),
-            }
+        let f = |v: f64| match self {
+            Self::Srgb => moncurve_r(v.clamp(0.0, 1.0), 2.4, 0.055),
+            Self::Bt1886 => pow(v.clamp(0.0, 1.0), 1.0 / 2.4),
+            Self::Gamma22 => pow(v.clamp(0.0, 1.0), 1.0 / 2.2),
+            Self::Pq => y_2_st2084(v.clamp(0.0, 100.0) * 100.0),
         };
         Ok(to_f32([f(x[0]), f(x[1]), f(x[2])]))
     }
 }
 
+/// Typed refusal of [`select_view`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewSelectError {
+    /// Not a STU-COL-313 display target key.
+    UnknownDisplay,
+    /// A STU-COL-313 display target (or peak) for which Prism carries no ACES transform.
+    NotBuilt,
+}
+impl ViewSelectError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::UnknownDisplay => "view_unknown_display",
+            Self::NotBuilt => "view_not_built",
+        }
+    }
+}
+
+/// The tone-mapped view and display encoding Prism uses for a STU-COL-313 display target at a peak
+/// luminance (`aces_view.peak_luminance`, 100 for the SDR targets). Built: `srgb_display`,
+/// `rec1886_rec709_display`, `gamma22_rec709_display` (one shared Rec.709 view, three encodings),
+/// `display_p3_display` (ODT.Academy.DisplayP3_dim, sRGB curve) and `rec2100_pq_display` at
+/// 1000, 2000 and 4000 nits. `p3_d65_display`, `rec2100_hlg_display`, other PQ peaks (500) and
+/// SDR targets at a peak other than 100 are [`ViewSelectError::NotBuilt`]; any other key is
+/// [`ViewSelectError::UnknownDisplay`].
+pub fn select_view(display: &str, peak_nits: u32) -> Result<(ViewTransformId, DisplayEncoding), ViewSelectError> {
+    use DisplayEncoding as E;
+    use ViewTransformId as V;
+    let sdr = |v: V, e: E| if peak_nits == 100 { Ok((v, e)) } else { Err(ViewSelectError::NotBuilt) };
+    match display {
+        "srgb_display" => sdr(V::Aces1SdrVideo, E::Srgb),
+        "rec1886_rec709_display" => sdr(V::Aces1SdrVideo, E::Bt1886),
+        "gamma22_rec709_display" => sdr(V::Aces1SdrVideo, E::Gamma22),
+        "display_p3_display" => sdr(V::Aces1SdrVideoDisplayP3, E::Srgb),
+        "rec2100_pq_display" => match peak_nits {
+            1000 => Ok((V::Aces1HdrVideo1000Nits, E::Pq)),
+            2000 => Ok((V::Aces1HdrVideo2000Nits, E::Pq)),
+            4000 => Ok((V::Aces1HdrVideo4000Nits, E::Pq)),
+            _ => Err(ViewSelectError::NotBuilt),
+        },
+        "p3_d65_display" | "rec2100_hlg_display" => Err(ViewSelectError::NotBuilt),
+        _ => Err(ViewSelectError::UnknownDisplay),
+    }
+}
+
 /// Machine-readable description of the view transforms (manual / model surface).
-pub const VIEW_TRANSFORM_DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","path":"view_transform","lane":"SMB-PRISM-VIEW-TRANSFORM","stage":"STU-COL-161 6a display transform","api":"ViewTransformId::apply([f32;3]) -> Result<[f32;3], Error>, apply_in_place(&mut [f32]); aces1_sdr_video_from_aces2065; DisplayEncoding::encode","views":[{"key":"aces1_sdr_video_100nits_dim","input":"Prism working space, linear-light sRGB (Rec.709 primaries, D65), converted to ACES2065-1 with a Bradford adaptation D65 -> ACES white (CTL calculate_rgb_to_rgb_matrix default)","transform":"ACES 1.x RRT + ODT Rec709/sRGB 100 nits dim, aces-dev v1.3.1 CTL","output":"display-referred linear RGB, Rec.709 primaries, clamped to [0,1] (ODT linearCV)","proven_by":"tests/view_transform.rs"}],"encodings":["srgb_piecewise","bt1886_gamma24"],"hostile":"NaN or infinite channel -> nonfinite_channel; negative channels admitted (RRT clamps them)","determinism":"binary64, IEEE basic operations and Prism's own ln/exp/atan, no libm, no FMA; allocation-free","not_in_scope":["OCIO configuration runtime","HDR views","Reinhard or other curves the spec does not name"],"licence":"ACES (A.M.P.A.S.) permissive terms, LICENSE-ACES.txt"}"#;
+pub const VIEW_TRANSFORM_DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","path":"view_transform","lanes":["SMB-PRISM-VIEW-TRANSFORM","SMB-PRISM-VIEW-TRANSFORM-2"],"stage":"STU-COL-161 6a display transform","api":"ViewTransformId::apply([f32;3]) (working space) / apply_from(SceneInput, [f32;3]) -> Result<[f32;3], Error>; ViewTransform{view,input}::apply / apply_in_place; aces1_sdr_video_from_aces2065; DisplayEncoding::encode; select_view(display_target, peak_nits) -> (view, encoding) | ViewSelectError view_unknown_display | view_not_built; view_gpu_params + VIEW_WGSL (SDR views on the GPU)","inputs":{"linear_srgb":"Prism working space, Bradford D65 -> ACES white to ACES2065-1","acescg":"AP1, published ACEScg TRA_2 matrix to ACES2065-1 (S-2014-004)","aces2065_1":"AP0, unchanged"},"views":[{"key":"aces1_sdr_video_100nits_dim","ctl":"RRT + ODT.Academy.sRGB_100nits_dim / Rec709_100nits_dim","output":"linear Rec.709 [0,1]","displays":["srgb_display (srgb_piecewise)","rec1886_rec709_display (bt1886_gamma24)","gamma22_rec709_display (gamma22)"]},{"key":"aces1_sdr_video_100nits_dim_display_p3","ctl":"RRT + ODT.Academy.DisplayP3_dim","output":"linear P3-D65 [0,1]","displays":["display_p3_display (srgb_piecewise)"]},{"key":"aces1_hdr_video_{1000,2000,4000}nits_15nits_rec2020","ctl":"RRTODT.Academy.Rec2020_{1000,2000,4000}nits_15nits_ST2084 (ACESlib.OutputTransforms, SSTS)","output":"linear Rec.2020 in units of 100 cd/m2, stretched black","displays":["rec2100_pq_display at aces_view.peak_luminance 1000, 2000, 4000 (st2084_pq)"]}],"not_built":["p3_d65_display","rec2100_hlg_display","rec2100_pq_display at other peaks (500)","SDR targets at a peak other than 100","HDR views on the GPU (view_gpu_params None)","OCIO configuration runtime","curves the spec does not name"],"proven_by":["tests/view_transform.rs","tests/view_transform_2.rs"],"hostile":"NaN or infinite channel -> nonfinite_channel; negative channels admitted (RRT clamps them)","determinism":"binary64, IEEE basic operations and Prism's own ln/exp/atan, no libm, no FMA; allocation-free; the WGSL form is binary32","licence":"ACES (A.M.P.A.S.) permissive terms, LICENSE-ACES.txt"}"#;
 
-// ------------------------------------------------------------------ ACES 1.x SDR video pipeline
+// ------------------------------------------------------------------ ACES 1.x pipelines
 
-/// RRT + ODT (100 nits dim, Rec.709 primaries) on finite ACES2065-1 input; output linear code
-/// values in `[0, 1]`.
-fn aces1_sdr_video(aces_in: [f64; 3]) -> [f64; 3] {
+/// RRT sweeteners (rrt/RRT.ctl up to the tone scale; ACESlib.RRT_Common.ctl `rrt_sweeteners`):
+/// glow, red modifier, AP0 -> AP1 with the CTL clamps, global desaturation.
+fn rrt_sweeteners(aces_in: [f64; 3]) -> [f64; 3] {
     let t = tables();
-    // ---- RRT (rrt/RRT.ctl) ----
     let mut aces = aces_in;
     // Glow module.
     let saturation = rgb_2_saturation(aces);
@@ -149,13 +334,18 @@ fn aces1_sdr_video(aces_in: [f64; 3]) -> [f64; 3] {
     aces = aces.map(|v| v.max(0.0));
     let rgb_pre = mv(&t.ap0_to_ap1, aces).map(|v| v.clamp(0.0, HALF_MAX));
     // Global desaturation.
-    let rgb_pre = mv(&t.rrt_sat, rgb_pre);
-    // Tonescale per channel.
-    let rgb_post = rgb_pre.map(|v| spline(v, &t.c5));
-    // RGB rendering space to OCES.
-    let oces = mv(&t.ap1_to_ap0, rgb_post);
+    mv(&t.rrt_sat, rgb_pre)
+}
 
-    // ---- ODT (odt/rec709 and odt/sRGB ODT.Academy.*_100nits_dim.ctl, linear part) ----
+/// RRT + SDR video ODT (100 nits dim) on finite ACES2065-1 input; `xyz_d60_to_display` is the
+/// display's `XYZ_2_DISPLAY_PRI_MAT * D60_2_D65_CAT`. Output linear code values in `[0, 1]`.
+fn aces1_sdr_video(aces_in: [f64; 3], xyz_d60_to_display: &M3) -> [f64; 3] {
+    let t = tables();
+    // ---- RRT (rrt/RRT.ctl) ----
+    let rgb_pre = rrt_sweeteners(aces_in);
+    let rgb_post = rgb_pre.map(|v| spline(v, &t.c5));
+    let oces = mv(&t.ap1_to_ap0, rgb_post);
+    // ---- ODT (ODT.Academy.{sRGB,Rec709}_100nits_dim, DisplayP3_dim; linear part) ----
     let rgb_pre = mv(&t.ap0_to_ap1, oces);
     let rgb_post = rgb_pre.map(|v| spline(v, &t.c9));
     // Scale luminance to linear code value.
@@ -165,8 +355,23 @@ fn aces1_sdr_video(aces_in: [f64; 3]) -> [f64; 3] {
     // Desaturation for the luminance difference.
     let lin = mv(&t.odt_sat, lin);
     // Rendering space -> XYZ -> D60 to D65 CAT -> display primaries.
-    let xyz = mv(&t.d60_to_d65, mv(&AP1_TO_XYZ, lin));
-    mv(&XYZ_TO_REC709, xyz).map(|v| v.clamp(0.0, 1.0))
+    mv(xyz_d60_to_display, mv(&AP1_TO_XYZ, lin)).map(|v| v.clamp(0.0, 1.0))
+}
+
+/// RRTODT Rec.2020 ST 2084 (ACESlib.OutputTransforms.ctl `outputTransform` with Y_MIN 0.0001,
+/// Y_MID 15, DISPLAY_PRI = LIMITING_PRI = Rec.2020, dark surround, stretched black, no D60 sim):
+/// output linear Rec.2020 in units of 100 cd/m2.
+fn aces1_hdr_video(aces_in: [f64; 3], ssts: &Spline, y_max: f64) -> [f64; 3] {
+    let t = tables();
+    let rgb_pre = rrt_sweeteners(aces_in);
+    let rgb_post = rgb_pre.map(|v| spline(v, ssts));
+    let lin = rgb_post.map(|y| (y - HDR_Y_MIN) / (y_max - HDR_Y_MIN));
+    let xyz = mv(&AP1_TO_XYZ, lin);
+    // limit_to_primaries(Rec.2020): to the limiting primaries, clamp [0, 1], back to XYZ.
+    let limited = mv(&XYZ_TO_REC2020, xyz).map(|v| v.clamp(0.0, 1.0));
+    let xyz = mv(&t.d60_to_d65, mv(&REC2020_TO_XYZ, limited));
+    // Display primaries, clamp at 0, stretched black: Y = linearCV * Y_MAX, here / 100.
+    mv(&XYZ_TO_REC2020, xyz).map(|v| v.max(0.0) * (y_max / 100.0))
 }
 
 // RRT parameters (ACESlib.RRT_Common.ctl).
@@ -181,6 +386,9 @@ const RRT_SAT_FACTOR: f64 = 0.96;
 const CINEMA_WHITE: f64 = 48.0;
 const DIM_SURROUND_GAMMA: f64 = 0.9811;
 const ODT_SAT_FACTOR: f64 = 0.93;
+// HDR output transform parameters (RRTODT.Academy.Rec2020_*nits_15nits_ST2084.ctl).
+const HDR_Y_MIN: f64 = 0.0001;
+const HDR_Y_MID: f64 = 15.0;
 // CTL constants (ACESlib.Transform_Common.ctl, CTL half limits).
 const TINY: f64 = 1e-10;
 const HALF_MAX: f64 = 65504.0;
@@ -190,6 +398,8 @@ const HALF_MIN: f64 = 5.960_464_477_539_063e-8;
 const AP0: [[f64; 2]; 4] = [[0.7347, 0.2653], [0.0, 1.0], [0.0001, -0.077], [0.32168, 0.33767]];
 const AP1: [[f64; 2]; 4] = [[0.713, 0.293], [0.165, 0.830], [0.128, 0.044], [0.32168, 0.33767]];
 const REC709: [[f64; 2]; 4] = [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06], [0.3127, 0.3290]];
+const P3D65: [[f64; 2]; 4] = [[0.680, 0.320], [0.265, 0.690], [0.150, 0.060], [0.3127, 0.3290]];
+const REC2020: [[f64; 2]; 4] = [[0.708, 0.292], [0.170, 0.797], [0.131, 0.046], [0.3127, 0.3290]];
 /// Bradford cone response (CTL `CONE_RESP_MAT_BRADFORD`, which stores it transposed for row
 /// vectors; here column-vector form).
 const BRADFORD: M3 = [
@@ -204,16 +414,20 @@ const AP1_TO_XYZ: M3 = npm(AP1);
 const XYZ_TO_AP1: M3 = inv(AP1_TO_XYZ);
 const REC709_TO_XYZ: M3 = npm(REC709);
 const XYZ_TO_REC709: M3 = inv(REC709_TO_XYZ);
+const XYZ_TO_P3D65: M3 = inv(npm(P3D65));
+const REC2020_TO_XYZ: M3 = npm(REC2020);
+const XYZ_TO_REC2020: M3 = inv(REC2020_TO_XYZ);
 
 struct Spline {
-    coefs_low: &'static [f64],
-    coefs_high: &'static [f64],
+    coefs_low: [f64; 10],
+    coefs_high: [f64; 10],
     knots_low: f64,
     knots_high: f64,
     log_min_x: f64,
     log_mid_x: f64,
     log_max_x: f64,
     log_min_y: f64,
+    log_mid_y: f64,
     log_max_y: f64,
     slope_low: f64,
     slope_high: f64,
@@ -226,9 +440,14 @@ struct Tables {
     rrt_sat: M3,
     odt_sat: M3,
     d60_to_d65: M3,
+    xyz_d60_to_rec709: M3,
+    xyz_d60_to_p3d65: M3,
     cinema_black: f64,
     c5: Spline,
     c9: Spline,
+    ssts1000: Spline,
+    ssts2000: Spline,
+    ssts4000: Spline,
 }
 
 // ACESlib.Tonescales.ctl RRT_PARAMS (c5) and ODT_48nits (c9).
@@ -259,51 +478,352 @@ const C9_HIGH: [f64; 10] = [
     1.687_873_339,
 ];
 
+fn pad10(c: [f64; 6]) -> [f64; 10] {
+    [c[0], c[1], c[2], c[3], c[4], c[5], 0.0, 0.0, 0.0, 0.0]
+}
+
+/// CTL builtin `interpolate1D` over a two-row table: linear inside, clamped outside.
+fn interpolate1d(t: [[f64; 2]; 2], p: f64) -> f64 {
+    if p <= t[0][0] {
+        t[0][1]
+    } else if p >= t[1][0] {
+        t[1][1]
+    } else {
+        t[0][1] + (p - t[0][0]) / (t[1][0] - t[0][0]) * (t[1][1] - t[0][1])
+    }
+}
+
+/// ACESlib.SSTS.ctl `init_TsParams(minLum, maxLum, expShift)` as a [`Spline`] (`ssts` has the
+/// same quadratic B-spline form as the c5 spline: 4 knots per half, slopes 0 at both ends).
+fn init_ts(min_lum: f64, max_lum: f64, exp_shift: f64) -> Spline {
+    let ln2 = std::f64::consts::LN_2;
+    let log2 = |x: f64| ln(x) / ln2;
+    let pow2 = |v: f64| exp(v * ln2);
+    let min_x0 = 0.18 * pow2(interpolate1d([[log10(0.0001), -15.0], [log10(0.02), -6.5]], log10(min_lum)));
+    let max_x0 = 0.18 * pow2(interpolate1d([[log10(48.0), 6.5], [log10(10000.0), 18.0]], log10(max_lum)));
+    let (mid_x0, mid_y, mid_slope) = (0.18, 4.8, 1.55);
+    // init_coefsLow (MIN slope 0).
+    let k_low = (log10(mid_x0) - log10(min_x0)) / 3.0;
+    let mid_line = |x: f64| mid_slope * x + (log10(mid_y) - mid_slope * log10(mid_x0));
+    let pct_low = interpolate1d([[-15.0, 0.18], [-6.5, 0.35]], log2(min_x0 / 0.18));
+    let low = [
+        log10(min_lum),
+        log10(min_lum),
+        log10(min_lum) + pct_low * (log10(mid_y) - log10(min_lum)),
+        mid_line(log10(mid_x0) - 0.5 * k_low),
+        mid_line(log10(mid_x0) + 0.5 * k_low),
+    ];
+    // init_coefsHigh (MAX slope 0).
+    let k_high = (log10(max_x0) - log10(mid_x0)) / 3.0;
+    let pct_high = interpolate1d([[6.5, 0.89], [18.0, 0.90]], log2(max_x0 / 0.18));
+    let high = [
+        mid_line(log10(mid_x0) - 0.5 * k_high),
+        mid_line(log10(mid_x0) + 0.5 * k_high),
+        log10(mid_y) + pct_high * (log10(max_lum) - log10(mid_y)),
+        log10(max_lum),
+        log10(max_lum),
+    ];
+    let shift = |x: f64| pow2(log2(x) - exp_shift);
+    Spline {
+        coefs_low: pad10([low[0], low[1], low[2], low[3], low[4], low[4]]),
+        coefs_high: pad10([high[0], high[1], high[2], high[3], high[4], high[4]]),
+        knots_low: 4.0,
+        knots_high: 4.0,
+        log_min_x: log10(shift(min_x0)),
+        log_mid_x: log10(shift(mid_x0)),
+        log_max_x: log10(shift(max_x0)),
+        log_min_y: log10(min_lum),
+        log_mid_y: log10(mid_y),
+        log_max_y: log10(max_lum),
+        slope_low: 0.0,
+        slope_high: 0.0,
+    }
+}
+
+/// `outputTransform`'s tone scale for Y_MAX: `expShift = log2(inv_ssts(Y_MID)) - log2(0.18)` on the
+/// unshifted parameters, then the shifted parameters.
+fn hdr_ssts(y_max: f64) -> Spline {
+    let ln2 = std::f64::consts::LN_2;
+    let default = init_ts(HDR_Y_MIN, y_max, 0.0);
+    let exp_shift = ln(inv_spline(HDR_Y_MID, &default)) / ln2 - ln(0.18) / ln2;
+    init_ts(HDR_Y_MIN, y_max, exp_shift)
+}
+
 fn tables() -> &'static Tables {
     static T: OnceLock<Tables> = OnceLock::new();
     T.get_or_init(|| {
         let ap0_to_ap1 = mul(XYZ_TO_AP1, AP0_TO_XYZ);
         let ap1_y = AP1_TO_XYZ[1];
         let c5 = Spline {
-            coefs_low: &C5_LOW,
-            coefs_high: &C5_HIGH,
+            coefs_low: pad10(C5_LOW),
+            coefs_high: pad10(C5_HIGH),
             knots_low: 4.0,
             knots_high: 4.0,
             log_min_x: log10(0.18 * pow(2.0, -15.0)),
             log_mid_x: log10(0.18),
             log_max_x: log10(0.18 * pow(2.0, 18.0)),
             log_min_y: log10(0.0001),
+            log_mid_y: log10(4.8),
             log_max_y: log10(10000.0),
             slope_low: 0.0,
             slope_high: 0.0,
         };
         let c9 = Spline {
-            coefs_low: &C9_LOW,
-            coefs_high: &C9_HIGH,
+            coefs_low: C9_LOW,
+            coefs_high: C9_HIGH,
             knots_low: 8.0,
             knots_high: 8.0,
             log_min_x: log10(spline(0.18 * pow(2.0, -6.5), &c5)),
             log_mid_x: log10(spline(0.18, &c5)),
             log_max_x: log10(spline(0.18 * pow(2.0, 6.5), &c5)),
             log_min_y: log10(0.02),
+            log_mid_y: log10(4.8),
             log_max_y: log10(48.0),
             slope_low: 0.0,
             slope_high: 0.04,
         };
+        let d60_to_d65 = cat(AP0[3], REC709[3]);
         Tables {
             rec709_to_ap0: mul(XYZ_TO_AP0, mul(cat(REC709[3], AP0[3]), REC709_TO_XYZ)),
             ap0_to_ap1,
             ap1_to_ap0: mul(XYZ_TO_AP0, AP1_TO_XYZ),
             rrt_sat: sat_matrix(RRT_SAT_FACTOR, ap1_y),
             odt_sat: sat_matrix(ODT_SAT_FACTOR, ap1_y),
-            d60_to_d65: cat(AP0[3], REC709[3]),
+            d60_to_d65,
+            xyz_d60_to_rec709: mul(XYZ_TO_REC709, d60_to_d65),
+            xyz_d60_to_p3d65: mul(XYZ_TO_P3D65, d60_to_d65),
             // CTL: pow10(log10(0.02)).
             cinema_black: pow10(log10(0.02)),
             c5,
             c9,
+            ssts1000: hdr_ssts(1000.0),
+            ssts2000: hdr_ssts(2000.0),
+            ssts4000: hdr_ssts(4000.0),
         }
     })
 }
+
+/// `inv_ssts` / `segmented_spline_c*_rev` for the knot y of 4-knot splines (used for the HDR
+/// exposure shift only).
+fn inv_spline(y: f64, c: &Spline) -> f64 {
+    let logy = log10(y.max(1e-10));
+    let solve = |coefs: &[f64; 10], log_x0: f64, inc: f64, first_inclusive: bool| {
+        let knot = |i: usize| (coefs[i] + coefs[i.saturating_add(1)]) / 2.0;
+        let mut j = 2usize;
+        for i in 0..3usize {
+            let lo = knot(i);
+            let hi = knot(i.saturating_add(1));
+            let above = if first_inclusive && i == 0 { logy >= lo } else { logy > lo };
+            if above && logy <= hi {
+                j = i;
+                break;
+            }
+        }
+        let (c0, c1, c2) = (coefs[j], coefs[j.saturating_add(1)], coefs[j.saturating_add(2)]);
+        let a = 0.5 * c0 - c1 + 0.5 * c2;
+        let b = c1 - c0;
+        let cc = 0.5 * c0 + 0.5 * c1 - logy;
+        let d = (b * b - 4.0 * a * cc).max(0.0).sqrt();
+        let t = (2.0 * cc) / (-d - b);
+        log_x0 + (t + j as f64) * inc
+    };
+    let logx = if logy <= c.log_min_y {
+        c.log_min_x
+    } else if logy <= c.log_mid_y {
+        solve(&c.coefs_low, c.log_min_x, (c.log_mid_x - c.log_min_x) / (c.knots_low - 1.0), false)
+    } else if logy < c.log_max_y {
+        solve(&c.coefs_high, c.log_mid_x, (c.log_max_x - c.log_mid_x) / (c.knots_high - 1.0), true)
+    } else {
+        c.log_max_x
+    };
+    pow10(logx)
+}
+
+/// CTL `Y_2_ST2084` (cd/m2 -> PQ code value, full range).
+fn y_2_st2084(c: f64) -> f64 {
+    const M1: f64 = 0.159_301_757_812_5;
+    const M2: f64 = 78.843_75;
+    const C1: f64 = 0.835_937_5;
+    const C2: f64 = 18.851_562_5;
+    const C3: f64 = 18.6875;
+    let lm = pow(c / 10000.0, M1);
+    pow((C1 + C2 * lm) / (1.0 + C3 * lm), M2)
+}
+
+// ------------------------------------------------------------------ GPU form (SDR views)
+
+/// Number of `f32` parameters of [`view_gpu_params`].
+pub const VIEW_GPU_PARAMS: usize = 117;
+
+/// The SDR view's parameters for [`VIEW_WGSL`], in binary32 (row-major 3x3 matrices for column
+/// vectors): `[0..9)` input -> AP0, `[9..18)` AP0 -> AP1, `[18..27)` RRT_SAT, `[27..36)` AP1 -> AP0,
+/// `[36..45)` ODT_SAT, `[45..54)` AP1 -> XYZ, `[54..63)` XYZ -> AP1, `[63..72)` XYZ (D60) ->
+/// display (`XYZ_2_DISPLAY_PRI_MAT * D60_2_D65_CAT`), `[72..78)` c5 low, `[78..84)` c5 high,
+/// `[84..94)` c9 low, `[94..104)` c9 high, `[104..110)` c5 log min x, log mid x, log max x, log min
+/// y, log max y, high slope, `[110..116)` the same for c9, `[116]` cinema black. `None` for the HDR
+/// views (no GPU form: the shared-texture target is 8-bit SDR).
+pub fn view_gpu_params(view: ViewTransform) -> Option<[f32; VIEW_GPU_PARAMS]> {
+    let t = tables();
+    let display = match view.view {
+        ViewTransformId::Aces1SdrVideo => t.xyz_d60_to_rec709,
+        ViewTransformId::Aces1SdrVideoDisplayP3 => t.xyz_d60_to_p3d65,
+        _ => return None,
+    };
+    let mut p = [0.0f32; VIEW_GPU_PARAMS];
+    let mut at = 0usize;
+    let mut put = |v: f64| {
+        if let Some(slot) = p.get_mut(at) {
+            *slot = v as f32;
+        }
+        at = at.saturating_add(1);
+    };
+    for m in [
+        view.input.to_ap0_matrix(),
+        t.ap0_to_ap1,
+        t.rrt_sat,
+        t.ap1_to_ap0,
+        t.odt_sat,
+        AP1_TO_XYZ,
+        XYZ_TO_AP1,
+        display,
+    ] {
+        m.iter().flatten().for_each(|v| put(*v));
+    }
+    C5_LOW.iter().chain(C5_HIGH.iter()).chain(C9_LOW.iter()).chain(C9_HIGH.iter()).for_each(|v| put(*v));
+    for c in [&t.c5, &t.c9] {
+        for v in [c.log_min_x, c.log_mid_x, c.log_max_x, c.log_min_y, c.log_max_y, c.slope_high] {
+            put(v);
+        }
+    }
+    put(t.cinema_black);
+    Some(p)
+}
+
+/// WGSL form of the SDR views (binary32), entry `vt_view(rgb: vec3<f32>) -> vec3<f32>` (scene
+/// input -> display-referred linear `[0, 1]`), reading [`view_gpu_params`] through a host-provided
+/// `fn vp(i: u32) -> f32`. Same steps as the binary64 path; the neutral case (undefined hue) skips
+/// the red modifier explicitly instead of relying on NaN comparisons.
+pub const VIEW_WGSL: &str = r"
+fn vt_m3(o: u32, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        vp(o) * v.x + vp(o + 1u) * v.y + vp(o + 2u) * v.z,
+        vp(o + 3u) * v.x + vp(o + 4u) * v.y + vp(o + 5u) * v.z,
+        vp(o + 6u) * v.x + vp(o + 7u) * v.y + vp(o + 8u) * v.z);
+}
+fn vt_log10(x: f32) -> f32 {
+    return log2(x) * 0.30102999566398120;
+}
+fn vt_pow10(y: f32) -> f32 {
+    return exp2(y * 3.3219280948873623);
+}
+fn vt_seg(o: u32, kc: f32, last: f32) -> f32 {
+    let jf = min(floor(kc), last);
+    let t = kc - jf;
+    let j = o + u32(max(jf, 0.0));
+    let c0 = vp(j);
+    let c1 = vp(j + 1u);
+    let c2 = vp(j + 2u);
+    return t * t * (0.5 * c0 - c1 + 0.5 * c2) + t * (c1 - c0) + 0.5 * (c0 + c1);
+}
+fn vt_spline(x: f32, lo: u32, hi: u32, n: f32, g: u32) -> f32 {
+    let logx = vt_log10(max(x, 5.9604645e-8));
+    var logy: f32;
+    if logx <= vp(g) {
+        logy = vp(g + 3u);
+    } else if logx < vp(g + 1u) {
+        logy = vt_seg(lo, (n - 1.0) * (logx - vp(g)) / (vp(g + 1u) - vp(g)), n - 2.0);
+    } else if logx < vp(g + 2u) {
+        logy = vt_seg(hi, (n - 1.0) * (logx - vp(g + 1u)) / (vp(g + 2u) - vp(g + 1u)), n - 2.0);
+    } else {
+        logy = logx * vp(g + 5u) + (vp(g + 4u) - vp(g + 5u) * vp(g + 2u));
+    }
+    return vt_pow10(logy);
+}
+fn vt_cubic(x: f32, w: f32) -> f32 {
+    if !(x > -w / 2.0 && x < w / 2.0) {
+        return 0.0;
+    }
+    let kc = (x + w / 2.0) * 4.0 / w;
+    let jf = floor(kc);
+    let t = kc - jf;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    var y = 0.0;
+    if jf == 3.0 {
+        y = -t3 / 6.0 + t2 / 2.0 - t / 2.0 + 1.0 / 6.0;
+    } else if jf == 2.0 {
+        y = t3 / 2.0 - t2 + 2.0 / 3.0;
+    } else if jf == 1.0 {
+        y = -t3 / 2.0 + t2 / 2.0 + t / 2.0 + 1.0 / 6.0;
+    } else if jf == 0.0 {
+        y = t3 / 6.0;
+    }
+    return y * 1.5;
+}
+fn vt_view(rgb: vec3<f32>) -> vec3<f32> {
+    var a = vt_m3(0u, rgb);
+    // Glow.
+    let mx = max(a.r, max(a.g, a.b));
+    let mn = min(a.r, min(a.g, a.b));
+    let sat = (max(mx, 1e-10) - max(mn, 1e-10)) / max(mx, 0.01);
+    let chroma = sqrt(max(a.b * (a.b - a.g) + a.g * (a.g - a.r) + a.r * (a.r - a.b), 0.0));
+    let yc = (a.b + a.g + a.r + 1.75 * chroma) / 3.0;
+    let sx = (sat - 0.4) / 0.2;
+    let st = max(1.0 - abs(sx / 2.0), 0.0);
+    let s = (1.0 + sign(sx) * (1.0 - st * st)) / 2.0;
+    let gain = 0.05 * s;
+    var glow = 0.0;
+    if yc <= 2.0 / 3.0 * 0.08 {
+        glow = gain;
+    } else if yc < 0.16 {
+        glow = gain * (0.08 / yc - 0.5);
+    }
+    a = a * (1.0 + glow);
+    // Red modifier (hue undefined for a neutral: weight 0).
+    var w = 0.0;
+    if !(a.r == a.g && a.g == a.b) {
+        var h = degrees(atan2(1.7320508075688772 * (a.g - a.b), 2.0 * a.r - a.g - a.b));
+        if h < 0.0 {
+            h = h + 360.0;
+        }
+        if h > 180.0 {
+            h = h - 360.0;
+        }
+        w = vt_cubic(h, 135.0);
+    }
+    a.r = a.r + w * sat * (0.03 - a.r) * (1.0 - 0.82);
+    a = max(a, vec3<f32>(0.0));
+    var pre = clamp(vt_m3(9u, a), vec3<f32>(0.0), vec3<f32>(65504.0));
+    pre = vt_m3(18u, pre);
+    let post = vec3<f32>(
+        vt_spline(pre.r, 72u, 78u, 4.0, 104u),
+        vt_spline(pre.g, 72u, 78u, 4.0, 104u),
+        vt_spline(pre.b, 72u, 78u, 4.0, 104u));
+    // ODT.
+    let pre9 = vt_m3(9u, vt_m3(27u, post));
+    let post9 = vec3<f32>(
+        vt_spline(pre9.r, 84u, 94u, 8.0, 110u),
+        vt_spline(pre9.g, 84u, 94u, 8.0, 110u),
+        vt_spline(pre9.b, 84u, 94u, 8.0, 110u));
+    let cb = vp(116u);
+    var lin = (post9 - vec3<f32>(cb)) / (48.0 - cb);
+    let xyz = vt_m3(45u, lin);
+    var d = xyz.x + xyz.y + xyz.z;
+    if d == 0.0 {
+        d = 1e-10;
+    }
+    let cx = xyz.x / d;
+    let cy = xyz.y / d;
+    var yy = 0.0;
+    if xyz.y > 0.0 {
+        yy = pow(xyz.y, 0.9811);
+    }
+    let yd = max(cy, 1e-10);
+    lin = vt_m3(54u, vec3<f32>(cx * yy / yd, yy, (1.0 - cx - cy) * yy / yd));
+    lin = vt_m3(36u, lin);
+    return clamp(vt_m3(63u, vt_m3(45u, lin)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+";
 
 /// `segmented_spline_c5_fwd` / `segmented_spline_c9_fwd`: quadratic B-spline in log-log space with
 /// linear extensions.
@@ -313,10 +833,10 @@ fn spline(x: f64, c: &Spline) -> f64 {
         logx * c.slope_low + (c.log_min_y - c.slope_low * c.log_min_x)
     } else if logx < c.log_mid_x {
         let kc = (c.knots_low - 1.0) * (logx - c.log_min_x) / (c.log_mid_x - c.log_min_x);
-        segment(c.coefs_low, kc)
+        segment(&c.coefs_low, kc)
     } else if logx < c.log_max_x {
         let kc = (c.knots_high - 1.0) * (logx - c.log_mid_x) / (c.log_max_x - c.log_mid_x);
-        segment(c.coefs_high, kc)
+        segment(&c.coefs_high, kc)
     } else {
         logx * c.slope_high + (c.log_max_y - c.slope_high * c.log_max_x)
     };
