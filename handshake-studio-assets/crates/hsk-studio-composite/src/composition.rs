@@ -1091,6 +1091,8 @@ fn adjustment_bounds_plane(
 
 /// The coverage plane of one track matte of `scene` with fresh charges (the document-graph path,
 /// `temporal::composition`).
+// Only the document-graph path (feature motion) calls it.
+#[cfg_attr(not(feature = "motion"), allow(dead_code))]
 pub(crate) fn matte_coverage(
     scene: &SceneComposition,
     layer_id: &str,
