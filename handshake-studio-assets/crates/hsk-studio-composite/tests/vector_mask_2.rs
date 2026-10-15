@@ -104,7 +104,10 @@ struct Run {
     low: Result<InputsLowering, CompositeError>,
 }
 fn run(recs: &StudioVectorRecords, resolve: impl FnOnce(&mut PreparedVectors, &LoweredPlan, &Snapshot)) -> Run {
-    let snap = open(&document());
+    run_doc(&document(), recs, resolve)
+}
+fn run_doc(doc: &Value, recs: &StudioVectorRecords, resolve: impl FnOnce(&mut PreparedVectors, &LoweredPlan, &Snapshot)) -> Run {
+    let snap = open(doc);
     let token = CancellationToken::default();
     let res = VectorResolution { coverage: VectorCoverage::Exact, ..VectorResolution::default() };
     let mut vectors = prepare_vectors(&snap, &design(), recs, &Assets, BlendSpace::Encoded, &res, &token).unwrap();
@@ -223,3 +226,43 @@ fn mask_parameters_pass_through_clips_rendered_sources_and_unlinked_mattes() {
         assert!(e.to_string().contains("vector_mask_unlinked_density"), "{e}");
     });
 }
+
+/// Pigment DESCRIPTOR `pass_through_mask_isolation` on composite (R32 F-R32-1): a vector mask and
+/// a vector clip on the pass-through group 1 lower through `RenderPlan::isolate_masked_pass_through`
+/// to exactly the plan of the same document with group 1 authored isolated and Normal (the W3C
+/// Compositing 1 section 3.2 reading), noted and ledgered `mask_isolates_pass_through`
+/// Approximate; the authored plan carries no such note. Pigment's own cases (misuse, reference
+/// count over every group): `hsk-studio-pigment` `tests/admit_parity.rs` `pass_through_mask_isolation`.
+#[test]
+fn pass_through_mask_isolation() {
+    bounded_case("pass_through_mask_isolation", || {
+        let none = |_: &mut PreparedVectors, _: &LoweredPlan, _: &Snapshot| {};
+        let mut authored = document();
+        authored["layers"][0]["appearance"] =
+            json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":2,"clipped":false,"isolation":"isolated"});
+        let mask = records(att(&[(1, "m-vec")]), json!([]));
+        let mut clip = records(json!([]), json!([]));
+        clip.attachments.push(serde_json::from_value(json!({"layer_id":identity("SLYR",1),"clip_id":"c0"})).unwrap());
+        for (what, recs) in [("vector mask", mask), ("vector clip", clip)] {
+            let low = run(&recs, none).low.unwrap();
+            let want = run_doc(&authored, &recs, none).low.unwrap();
+            assert_eq!(low.plan, want.plan, "{what}: the authored isolated Normal group");
+            assert_eq!(low.extensions, want.extensions, "{what}");
+            let PlanNode::Group(wrap) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("{what}: root") };
+            assert_eq!(wrap.layers[0].mode, StudioBlendMode::Normal, "{what}");
+            assert!(wrap.layers[0].mask.is_some_and(|m| !m.is_clip_to_base()), "{what}: the cut stays on the layer");
+            let PlanNode::Group(inner) = &low.plan.nodes[wrap.layers[0].input.0 as usize] else { panic!("{what}: inner") };
+            assert!(inner.isolated, "{what}");
+            assert!(!low.plan.has_pass_through_mask(), "{what}");
+            low.plan.validate(&hsk_studio_pigment::render_plan::PlanLimits::default()).unwrap();
+            let noted = |l: &InputsLowering| l.notes.iter().any(|n| n.key == PASS_THROUGH_MASK_ISOLATED_NOTE);
+            assert!(noted(&low) && !noted(&want), "{what}: only the rewrite is noted");
+            assert_eq!(
+                low.exactness.operators.iter().find(|o| o.key == PASS_THROUGH_MASK_ISOLATED_NOTE).map(|o| o.exactness),
+                Some(Exactness::Approximate),
+                "{what}"
+            );
+        }
+    });
+}
+const PASS_THROUGH_MASK_ISOLATED_NOTE: &str = hsk_studio_pigment::render_plan::PASS_THROUGH_MASK_ISOLATED;

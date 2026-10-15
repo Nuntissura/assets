@@ -294,6 +294,112 @@ fn pass_through_mask_counterfactuals_are_admitted() {
         }))
     );
 }
+/// `RenderPlan::isolate_masked_pass_through` (lane SMB-COMPOSITE-VECTOR-MASK-2, pigment DESCRIPTOR
+/// `pass_through_mask_isolation`): the W3C Compositing 1 section 3.2 reading of a masked
+/// pass-through group. The rewritten plan is exactly the plan that authors the same mask on a
+/// Normal layer over the same group made isolated, and every backend admits it where the
+/// pass-through original is refused `mask_on_pass_through`. Misuse is `PlanError::OutOfRange`
+/// on the named group and leaves the plan untouched; the input group's references are counted
+/// over every group of the plan, reachable from the root or not.
+#[test]
+fn pass_through_mask_isolation() {
+    let plain = mask(MaskFormat::CoverageU8, false, 1.0);
+    // Inverted with density 0.75 (an envelope operator): the rewrite keeps every mask field.
+    let m = mask(MaskFormat::CoverageU16Le, true, 0.75);
+    let before = pass_through_plan(with_mask(m));
+    let mut p = before.clone();
+    assert_eq!(p.isolate_masked_pass_through(PlanNodeId(2), 0), Ok(()));
+    // The reading: node 1 isolated, the layer Normal, input and mask unchanged.
+    let authored = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(true, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::Normal, m)]),
+    ]);
+    assert_eq!(p, authored);
+    assert!(before.has_pass_through_mask() && !p.has_pass_through_mask());
+    assert_eq!(PASS_THROUGH_MASK_ISOLATED, "mask_isolates_pass_through");
+    let plain_before = pass_through_plan(with_mask(plain));
+    let mut q = plain_before.clone();
+    q.isolate_masked_pass_through(PlanNodeId(2), 0).unwrap();
+    for backend in all_backends() {
+        assert_eq!(
+            v1(&plain_before, &backend, Exactness::Approximate).map(|_| ()),
+            refusal("mask_on_pass_through", Exactness::Unsupported)
+        );
+        assert!(v1(&q, &backend, Exactness::Approximate).is_ok());
+        assert_eq!(
+            extended(&before, &PlanExtensions::default(), &backend, Exactness::Approximate)
+                .map(|_| ()),
+            refusal("mask_on_pass_through", Exactness::Unsupported)
+        );
+        assert!(
+            extended(&p, &PlanExtensions::default(), &backend, Exactness::Approximate).is_ok()
+        );
+    }
+
+    // Misuse: (what, plan, group, layer); the error names `group`.
+    let shared_in_unreachable = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        // Node 2 is not reachable from the root (node 3) but reads node 1 as well.
+        group(true, vec![layer(1, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::PassThrough, plain)]),
+    ]);
+    let shared_in_same_group = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(
+            true,
+            vec![
+                masked(1, StudioBlendMode::PassThrough, plain),
+                layer(1, StudioBlendMode::PassThrough),
+            ],
+        ),
+    ]);
+    let not_pass_through = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::Normal, plain)]),
+    ]);
+    let over_solid = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(true, vec![masked(0, StudioBlendMode::PassThrough, plain)]),
+    ]);
+    let cases: Vec<(&str, RenderPlan, u32, usize)> = vec![
+        ("not a group", before.clone(), 0, 0),
+        ("no such node", before.clone(), 99, 0),
+        ("no such layer", before.clone(), 2, 1),
+        ("not pass-through", not_pass_through, 2, 0),
+        ("no mask", pass_through_plan(|l| l), 2, 0),
+        (
+            "clip-to-base route",
+            pass_through_plan(with_mask(MaskInput::clip_to_base())),
+            2,
+            0,
+        ),
+        ("input is not a group", over_solid, 1, 0),
+        ("input also read by an unreachable group", shared_in_unreachable, 3, 0),
+        ("input read twice in the same group", shared_in_same_group, 2, 0),
+    ];
+    for (what, plan, g, li) in cases {
+        let mut rewritten = plan.clone();
+        assert_eq!(
+            rewritten.isolate_masked_pass_through(PlanNodeId(g), li),
+            Err(PlanError::OutOfRange { node: g }),
+            "{what}"
+        );
+        assert_eq!(rewritten, plan, "{what}: the plan is untouched");
+    }
+    // Counterfactual of the reference count: the same plan without the unreachable reader
+    // rewrites.
+    let mut alone = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::PassThrough, plain)]),
+    ]);
+    assert_eq!(alone.isolate_masked_pass_through(PlanNodeId(3), 0), Ok(()));
+}
 fn refusal_unavailable() -> Result<(), BackendError> {
     Err(BackendError::Unavailable("claims_execute"))
 }
