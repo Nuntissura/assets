@@ -24,6 +24,7 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::{levels, sr2};
 use crate::dng::{DngRaw, VendorFrame};
 use crate::tiffep::{Ifd, Tiff};
 use crate::tiffep;
@@ -166,6 +167,25 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         }
         _ => return Err(DevelopError::UnsupportedCompression),
     };
+    // Levels: black = raw IFD 0x7310 (BlackLevel, four values; ExifTool Sony tag names), else the
+    // encrypted SR2SubIFD's 0x7310 (`sr2`, key 11 22 33 44); white = what the frame proves (a
+    // saturation plateau, or >= 16 samples at the code ceiling), else the ceiling with the white unread.
+    let mut applied = Vec::new();
+    let plain = match raw.find(0x7310) {
+        Some(e) => {
+            let v = tiff.u32s(e)?;
+            (v.len() == 4).then(|| v.iter().map(|b| f64::from(*b)).sum::<f64>() / 4.0)
+        }
+        None => None,
+    };
+    let black = plain.or_else(|| sr2::black_level(&tiff, root, bytes));
+    if black.is_some() {
+        applied.push("arw_black_level_unread");
+    }
+    let measured = levels::measured_white(&samples, width, height, levels::Region::whole(width, height), white_level);
+    if measured.is_some() {
+        applied.push("arw_white_level_unread");
+    }
     DngRaw::from_vendor(
         VendorFrame {
             width,
@@ -173,11 +193,11 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             bits,
             cfa_pattern,
             unique_camera_model: model,
-            unapplied: UNAPPLIED.to_vec(),
+            unapplied: levels::remaining(&UNAPPLIED, &applied),
             samples,
-            white_level,
+            white_level: measured.unwrap_or(white_level),
             black_repeat: (1, 1),
-            black_level: vec![0.0],
+            black_level: vec![black.unwrap_or(0.0)],
         },
         bytes,
     )

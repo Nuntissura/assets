@@ -37,6 +37,7 @@ mod par;
 mod raf;
 mod rafc;
 mod rw2;
+mod sr2;
 mod tiffep;
 
 use hsk_studio_accord::CancellationToken;
