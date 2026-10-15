@@ -55,6 +55,24 @@
       "name": "fig-prototype-pages.fig",
       "size": 43400,
       "sha256": "8c86ec5d622ddf4a82d42c4a138f9f39a0f22d2e40d40a6268e68d2b020daf0b"
+    },
+    {
+      "name": "Inter-Bold.ttf",
+      "size": 420428,
+      "sha256": "288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f",
+      "role": "test font, unmodified (static Inter Bold, family 'Inter', style 'Bold')",
+      "source": "rsms/inter release v4.1: https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip (zip sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e), member extras/ttf/Inter-Bold.ttf, byte-identical to the zip member",
+      "licence": "OFL-1.1 (Inter-4.1-OFL.txt, the release's LICENSE.txt; Reserved Font Name rules apply to modified versions only, this file is unmodified)",
+      "added": "2026-10-15, lane SMB-INTEROP-FIG-PAINTS-2; downloaded by the lead under the Operator grant, added under the Operator answer 'Yes, add it' (START_LOG 2026-10-15)"
+    },
+    {
+      "name": "Inter-4.1-OFL.txt",
+      "size": 4380,
+      "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+      "role": "licence of Inter-Bold.ttf, unmodified",
+      "source": "LICENSE.txt of the same Inter-4.1.zip, byte-identical to the zip member",
+      "licence": "OFL-1.1 text",
+      "added": "2026-10-15, lane SMB-INTEROP-FIG-PAINTS-2"
     }
   ]
 }

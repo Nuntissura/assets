@@ -123,9 +123,8 @@ fn instance_override_renders_overridden_value() {
     // Instances are no longer graph losses: they composite through their expansions.
     assert_eq!(loss(&p, "native.graph", "layer_kind_not_composited"), 0);
 
-    // Render. Inter Bold is not in the repository: the test grants Inter Regular for the
-    // requested Inter/Bold (a caller grant, stated here; glyph shapes differ, positions do not).
-    let files = [FontFile::inter_regular()];
+    // Render with the Inter Bold fixture (rsms/inter v4.1, OFL-1.1, tests/fixtures/provenance.json).
+    let files = [FontFile::inter_bold()];
     let out = resolve_text_outputs(&p, &[grant_inter(&files[0], "Bold")]);
     assert!(out.missing_fonts.is_empty(), "{:?}", out.missing_fonts);
     let text = prepare_outputs(&p, &out.outputs, &files);
@@ -149,9 +148,9 @@ fn instance_override_renders_overridden_value() {
     let (ol, or) = (ours[0] as i64 - 100, ours[2] as i64 - 100);
     let (tl, tr) = (theirs[0] as i64, theirs[2] as i64);
     eprintln!("instance 3 label x: ours {ol}..{or} png {tl}..{tr}; red box {red_box:?}");
-    // Measured: left edge equal (287), right edge 4 px short (386 vs 390: the Regular stand-in is
-    // narrower than Bold); the definition's "Button" would end near 335.
-    assert!(ol == tl && or <= tr && tr - or <= 4, "label extent ours {ol}..{or} png {tl}..{tr}");
+    // Measured with the Inter Bold fixture: left edge equal (287), right edge 389 vs 390 (Inter
+    // 4.1 vs Figma's Inter build); the definition's "Button" would end near 335.
+    assert!(ol == tl && or <= tr && tr - or <= 1, "label extent ours {ol}..{or} png {tl}..{tr}");
     // The instance fill itself (button blue) at a point of instance 3 left of the label.
     let p3 = over(&r, 372, 385, bg);
     let o = ((385 - 320) * png.0 + (372 - 100)) * 4;

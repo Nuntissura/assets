@@ -135,7 +135,7 @@ fn effect_style_shadow_renders_under_instances() {
         assert_eq!(g.appearance.as_ref().unwrap().blend_mode, hsk_studio_folio::BLEND_NORMAL);
     }
     assert_eq!(loss(&p, "native.effects.style", "effect_style_not_in_file"), 0);
-    let files = [FontFile::inter_regular()];
+    let files = [FontFile::inter_bold()];
     let out = resolve_text_outputs(&p, &[FigFontGrant { family: "Inter", style: "Bold", resource: files[0].resource() }]);
     let text = prepare_outputs(&p, &out.outputs, &files);
     let r = render(&p, Some(&text));

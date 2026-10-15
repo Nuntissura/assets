@@ -111,6 +111,13 @@ impl FontFile {
         let hash = hsk_studio_prism::profile_hash(&bytes);
         Self { identity: "Inter-Regular", bytes, hash }
     }
+    /// Inter Bold (rsms/inter v4.1, OFL-1.1, unmodified; tests/fixtures/provenance.json).
+    pub fn inter_bold() -> Self {
+        let path = format!("{}/tests/fixtures/Inter-Bold.ttf", env!("CARGO_MANIFEST_DIR"));
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture font {path}: {e}"));
+        let hash = hsk_studio_prism::profile_hash(&bytes);
+        Self { identity: "Inter-Bold", bytes, hash }
+    }
     pub fn resource(&self) -> FontResource<'_> {
         FontResource {
             identity: self.identity,
