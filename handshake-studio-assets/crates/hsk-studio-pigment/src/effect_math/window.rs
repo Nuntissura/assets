@@ -456,7 +456,20 @@ enum Plan {
     Overlay,
     Chain(ChainPlan),
     Stroke { halves: Vec<HalfPlan>, centre: bool },
+    /// Satin and bevel (module `style`): the style function on the window grown by `support`,
+    /// clipped to the domain (see [`run_local`]). `klen` is the blur kernel length.
+    Local {
+        op: EffectOp,
+        support: u32,
+        klen: u64,
+    },
+    /// Gradient overlay: alpha x stop opacity, with a colour per pixel.
+    Gradient(super::GradientOverlayOp),
 }
+
+/// Bytes per pixel of the grown window reserved for the style function's own buffers (satin keeps
+/// at most four planes alive plus one blur pass buffer, bevel three; six is the bound charged).
+const LOCAL_INTERNAL_BYTES: u64 = 24;
 
 fn half(w: f32, outside: bool) -> HalfPlan {
     let kd = if w > 0.0 { w.ceil() as u32 } else { 0 };
@@ -467,6 +480,20 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
     op.validate()?;
     Ok(match op {
         EffectOp::ColourOverlay(_) => Plan::Overlay,
+        EffectOp::GradientOverlay(o) => Plan::Gradient(*o),
+        EffectOp::Satin(_) | EffectOp::BevelEmboss(_) => {
+            let size = match op {
+                EffectOp::Satin(o) => o.size_px,
+                EffectOp::BevelEmboss(o) => o.shape.size_px,
+                _ => 0.0,
+            };
+            let kernel = feather_kernel(size).map_err(|_| EffectError::SizeOutOfRange)?;
+            Plan::Local {
+                op: *op,
+                support: effect_support_px(op)?,
+                klen: u64::try_from(kernel.len()).map_err(|_| WindowError::Overflow)?,
+            }
+        }
         EffectOp::DropShadow(o) => Plan::Chain(ChainPlan::new(
             false,
             shadow_split(o.size_px, o.spread),
@@ -592,6 +619,21 @@ impl Plan {
                 work: aw,
             }),
             Self::Chain(c) => c.cost(ww, wh),
+            // Upper bound (equal when the grown window lies inside the domain): sub-plane alpha
+            // (4) + internal buffers (LOCAL_INTERNAL_BYTES) per grown pixel, plus the window
+            // result; work = read + two blur passes + four per-pixel stages + the crop.
+            Self::Local { support, klen, .. } => {
+                let ag = area(grow(window, *support)?)?;
+                Ok(Cost {
+                    peak: addu(mulu(ag, addu(4, LOCAL_INTERNAL_BYTES)?)?, mulu(aw, 4)?)?,
+                    work: addu(mulu(ag, addu(mulu(*klen, 2)?, 5)?)?, aw)?,
+                })
+            }
+            // Matte (4) and the per-pixel colours (12); read, opacity and colour passes.
+            Self::Gradient(_) => Ok(Cost {
+                peak: mulu(aw, 16)?,
+                work: mulu(aw, 3)?,
+            }),
             Self::Stroke { halves, centre } => {
                 let mut costs = Vec::with_capacity(halves.len());
                 for h in halves {
@@ -999,6 +1041,81 @@ fn run_half<S: AlphaSource + ?Sized>(
     Ok(d)
 }
 
+/// The layer bounds as `(x, y, width, height)` for the gradient geometry.
+fn layer_bounds(g: &WindowGeometry) -> (i64, i64, u32, u32) {
+    (g.layer.x, g.layer.y, g.layer.width, g.layer.height)
+}
+
+/// Per-pixel gradient colours over the window (12 bytes per pixel, charged).
+fn gradient_colours(
+    g: &WindowGeometry,
+    o: &super::GradientOverlayOp,
+    meter: &mut Meter,
+) -> WResult<Vec<[f32; 3]>> {
+    let n = count(g.window)?;
+    meter.reserve(mulu(area(g.window)?, 12)?)?;
+    meter.charge_work(area(g.window)?)?;
+    let mut out: Vec<[f32; 3]> = Vec::new();
+    out.try_reserve_exact(n)
+        .map_err(|_| WindowError::AllocationFailed)?;
+    let bounds = layer_bounds(g);
+    let (ex, ey) = ends(g.window)?;
+    for y in g.window.y..ey {
+        for x in g.window.x..ex {
+            out.push(super::style::gradient_at(o, x, y, bounds).0);
+        }
+    }
+    Ok(out)
+}
+
+/// Satin and bevel over the window: the style function of module `style` runs on the window grown
+/// by the effect support and clipped to the domain (alpha beyond the layer is 0, beyond the
+/// sub-plane every stage reads its neutral 0), then the window is cut out. Every window sample
+/// depends only on alpha within the support, so the result equals the reference on the domain
+/// bit for bit (same function, same arithmetic order).
+fn run_local<S: AlphaSource + ?Sized>(
+    src: &S,
+    g: &WindowGeometry,
+    op: &EffectOp,
+    support: u32,
+    klen: u64,
+    meter: &mut Meter,
+) -> WResult<Vec<f32>> {
+    let grown = grow(g.window, support)?;
+    let sub = intersect(grown, g.domain)?.ok_or(WindowError::Geometry)?;
+    let ag = area(grown)?;
+    let mut alpha = meter.take(count(sub)?, 0.0)?;
+    meter.charge_work(ag)?;
+    read_alpha_into(src, g, sub, &mut alpha, |a| a)?;
+    let internal = mulu(ag, LOCAL_INTERNAL_BYTES)?;
+    meter.reserve(internal)?;
+    meter.charge_work(mulu(ag, addu(mulu(klen, 2)?, 4)?)?)?;
+    let grid = super::Grid {
+        w: i64::from(sub.width),
+        h: i64::from(sub.height),
+    };
+    let m = match op {
+        EffectOp::Satin(o) => super::style::satin_matte(&alpha, grid, o)?,
+        EffectOp::BevelEmboss(o) => super::style::bevel_matte(&alpha, grid, o)?,
+        _ => return Err(WindowError::Geometry),
+    };
+    let mut out = meter.take(count(g.window)?, 0.0)?;
+    meter.charge_work(area(g.window)?)?;
+    let (ex, ey) = ends(g.window)?;
+    for y in g.window.y..ey {
+        let from = m
+            .get(span(sub, y, g.window.x, ex)?)
+            .ok_or(WindowError::Geometry)?;
+        out.get_mut(span(g.window, y, g.window.x, ex)?)
+            .ok_or(WindowError::Geometry)?
+            .copy_from_slice(from);
+    }
+    drop(m);
+    meter.release(internal);
+    meter.give(alpha);
+    Ok(out)
+}
+
 fn run_matte<S: AlphaSource + ?Sized>(
     src: &S,
     g: &WindowGeometry,
@@ -1007,6 +1124,24 @@ fn run_matte<S: AlphaSource + ?Sized>(
 ) -> WResult<Vec<f32>> {
     match plan {
         Plan::Overlay => alpha_window(src, g, meter),
+        Plan::Local { op, support, klen } => run_local(src, g, op, *support, *klen, meter),
+        Plan::Gradient(o) => {
+            let mut m = alpha_window(src, g, meter)?;
+            meter.charge_work(area(g.window)?)?;
+            let bounds = layer_bounds(g);
+            let (ex, ey) = ends(g.window)?;
+            let mut i = 0usize;
+            for y in g.window.y..ey {
+                for x in g.window.x..ex {
+                    let (_, opacity) = super::style::gradient_at(o, x, y, bounds);
+                    if let Some(v) = m.get_mut(i) {
+                        *v *= opacity;
+                    }
+                    i = i.checked_add(1).ok_or(WindowError::Overflow)?;
+                }
+            }
+            Ok(m)
+        }
         Plan::Chain(c) => run_chain(src, g, c, meter),
         Plan::Stroke { halves, centre } => {
             let mut it = halves.iter();
@@ -1293,18 +1428,29 @@ pub fn render_layer_window_in<S: AlphaSource + ?Sized>(
                 continue;
             }
             let matte = run_matte(src, geometry, plan, &mut meter)?;
+            let per_pixel = match plan {
+                Plan::Gradient(o) => Some(gradient_colours(geometry, o, &mut meter)?),
+                _ => None,
+            };
+            let colours = match &per_pixel {
+                Some(c) => Colours::Pixels(c),
+                None => Colours::Uniform(op.colour()),
+            };
             pass(
                 &mut rgb,
                 &mut alpha,
                 geometry,
                 op.mode(),
                 op.opacity() * layer.opacity,
-                &Colours::Uniform(op.colour()),
+                &colours,
                 &matte,
                 true,
                 range,
                 &mut meter,
             )?;
+            if per_pixel.is_some() {
+                meter.release(mulu(area(window)?, 12)?);
+            }
             meter.give(matte);
         }
     }

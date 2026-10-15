@@ -407,7 +407,11 @@ fn glow_refusals_envelope_admission_and_budget() {
             "stroke",
             "inner_shadow",
             "outer_glow",
-            "inner_glow"
+            "inner_glow",
+            // lane SMB-PS-ADJUST-STYLES (effect_math::style)
+            "satin",
+            "bevel_emboss",
+            "gradient_overlay"
         ]
     );
 }

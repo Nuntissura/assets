@@ -37,6 +37,13 @@ use std::fmt;
 /// arbitrarily large layer (bit-identical to the reference below; see the module doc there).
 pub mod window;
 
+/// Satin, bevel & emboss and gradient overlay (lane SMB-PS-ADJUST-STYLES).
+pub mod style;
+pub use style::{
+    BevelEmbossOp, BevelPart, BevelShape, BevelStyle, BevelTechnique, GradientOverlayOp,
+    GradientStopOp, GradientStyle, MAX_GRADIENT_STOPS, SatinOp,
+};
+
 /// Class of every effect operator in this module (see module doc).
 pub const EFFECT_EXACTNESS: Exactness = Exactness::Approximate;
 /// Largest blur size, spread distance or stroke size in pixels. STU-RAS-157 declares no hard maximum
@@ -70,6 +77,14 @@ pub enum EffectFeature {
     GlowJitter,
     /// The Precise glow technique (Photoshop uses a distance transform there; Softer only).
     GlowTechniquePrecise,
+    /// Chisel hard / chisel soft bevel techniques (smooth only).
+    BevelChisel,
+    /// Stroke emboss (needs a stroke effect on the same layer).
+    BevelStrokeEmboss,
+    /// Bevel soften above 0.
+    BevelSoften,
+    /// More gradient stops than [`MAX_GRADIENT_STOPS`].
+    GradientStops,
 }
 impl EffectFeature {
     pub const fn key(self) -> &'static str {
@@ -78,6 +93,10 @@ impl EffectFeature {
             Self::GlowRange => "glow_range",
             Self::GlowJitter => "glow_jitter",
             Self::GlowTechniquePrecise => "glow_technique_precise",
+            Self::BevelChisel => "bevel_chisel",
+            Self::BevelStrokeEmboss => "bevel_stroke_emboss",
+            Self::BevelSoften => "bevel_soften",
+            Self::GradientStops => "gradient_stops",
         }
     }
 }
@@ -151,6 +170,10 @@ pub enum EffectKind {
     InnerShadow,
     OuterGlow,
     InnerGlow,
+    // Lane SMB-PS-ADJUST-STYLES (module `style`).
+    Satin,
+    BevelEmboss,
+    GradientOverlay,
 }
 
 /// Static facts of one kind: key, formula-provenance class and reference.
@@ -162,13 +185,16 @@ pub struct EffectFacts {
     pub reference: &'static str,
 }
 impl EffectKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::DropShadow,
         Self::ColourOverlay,
         Self::Stroke,
         Self::InnerShadow,
         Self::OuterGlow,
         Self::InnerGlow,
+        Self::Satin,
+        Self::BevelEmboss,
+        Self::GradientOverlay,
     ];
     pub const fn facts(self) -> EffectFacts {
         let (key, reference) = match self {
@@ -195,6 +221,18 @@ impl EffectKind {
             Self::InnerGlow => (
                 "inner_glow",
                 "colour glow over the content, clipped to the layer alpha: source edge = the inner-shadow chain with zero offset (inverted matte, choke grown, blurred); source centre = 1 - that edge matte (Krita inverts the selection again after the blur for a centre source); technique Softer only; gradient, range other than 100 % and jitter refused. Tuts+: edge radiates inward from the outline, centre radiates from the middle; choke 100 % is a hard-edged inner stroke. UNVERIFIED (D5 17)",
+            ),
+            Self::Satin => (
+                "satin",
+                "|B(x - o) - B(x + o)| of the Gaussian-blurred shape alpha B (size) at the whole-pixel shadow offset o (angle, distance), inverted when invert, times the alpha (effect_math::style); two offset blurred copies as in Krita's satin (behaviour reference, GPL, no code copied); Photoshop combination UNVERIFIED (D5)",
+            ),
+            Self::BevelEmboss => (
+                "bevel_emboss",
+                "smooth technique: height depth/100 * size * Gaussian(alpha, size), central-difference normal, Lambert shading against the flat sin(altitude), highlight (s - s0)/(1 - s0) and shadow (s0 - s)/s0 as two ops; inner/outer/emboss/pillow regions; chisel, stroke emboss and soften refused (effect_math::style); Photoshop maths UNVERIFIED (D5)",
+            ),
+            Self::GradientOverlay => (
+                "gradient_overlay",
+                "gradient over the layer bounds (linear box-projection length, radial and diamond half the larger side, angle one turn, reflected), linear stop interpolation, matte = alpha x stop opacity (effect_math::style); Photoshop geometry and smoothness UNVERIFIED (D5)",
             ),
         };
         EffectFacts {
@@ -502,8 +540,11 @@ impl InnerGlowOp {
     }
 }
 
-/// One effect instance of the envelope (waves 1 and 2).
+/// One effect instance of the envelope (waves 1 and 2, and the styles of `style`). The gradient
+/// overlay carries its stops inline (at most [`MAX_GRADIENT_STOPS`]) so the op stays `Copy`, which
+/// makes it the largest variant; ops are few per layer ([`MAX_EFFECTS_PER_LAYER`]).
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum EffectOp {
     DropShadow(DropShadowOp),
@@ -512,6 +553,9 @@ pub enum EffectOp {
     InnerShadow(InnerShadowOp),
     OuterGlow(OuterGlowOp),
     InnerGlow(InnerGlowOp),
+    Satin(SatinOp),
+    BevelEmboss(BevelEmbossOp),
+    GradientOverlay(GradientOverlayOp),
 }
 
 fn unit(v: f32) -> bool {
@@ -546,6 +590,9 @@ impl EffectOp {
             Self::InnerShadow(_) => EffectKind::InnerShadow,
             Self::OuterGlow(_) => EffectKind::OuterGlow,
             Self::InnerGlow(_) => EffectKind::InnerGlow,
+            Self::Satin(_) => EffectKind::Satin,
+            Self::BevelEmboss(_) => EffectKind::BevelEmboss,
+            Self::GradientOverlay(_) => EffectKind::GradientOverlay,
         }
     }
     /// Fixed by the kind: the drop shadow and outer glow sit behind the content, overlays, strokes,
@@ -558,7 +605,10 @@ impl EffectOp {
             Self::ColourOverlay(_)
             | Self::Stroke(_)
             | Self::InnerShadow(_)
-            | Self::InnerGlow(_) => EffectOrder::OverContent,
+            | Self::InnerGlow(_)
+            | Self::Satin(_)
+            | Self::BevelEmboss(_)
+            | Self::GradientOverlay(_) => EffectOrder::OverContent,
         }
     }
     pub const fn mode(&self) -> StudioBlendMode {
@@ -569,6 +619,9 @@ impl EffectOp {
             Self::InnerShadow(o) => o.mode,
             Self::OuterGlow(o) => o.mode,
             Self::InnerGlow(o) => o.mode,
+            Self::Satin(o) => o.mode,
+            Self::BevelEmboss(o) => o.mode,
+            Self::GradientOverlay(o) => o.mode,
         }
     }
     pub const fn opacity(&self) -> f32 {
@@ -579,8 +632,14 @@ impl EffectOp {
             Self::InnerShadow(o) => o.opacity,
             Self::OuterGlow(o) => o.opacity,
             Self::InnerGlow(o) => o.opacity,
+            Self::Satin(o) => o.opacity,
+            Self::BevelEmboss(o) => o.opacity,
+            Self::GradientOverlay(o) => o.opacity,
         }
     }
+    /// The uniform colour of the effect. A gradient overlay has a colour per pixel
+    /// (`style::gradient_at`); this returns its first stop's colour, which only parameter
+    /// validation reads.
     pub const fn colour(&self) -> [f32; 3] {
         match self {
             Self::DropShadow(o) => o.colour,
@@ -589,6 +648,9 @@ impl EffectOp {
             Self::InnerShadow(o) => o.colour,
             Self::OuterGlow(o) => o.colour,
             Self::InnerGlow(o) => o.colour,
+            Self::Satin(o) => o.colour,
+            Self::BevelEmboss(o) => o.colour,
+            Self::GradientOverlay(o) => o.stops[0].colour,
         }
     }
     /// Parameter validation shared by the envelope and the reference.
@@ -642,6 +704,9 @@ impl EffectOp {
                 }
                 glow_ok(o.fill, o.technique, o.range, o.jitter)?;
             }
+            Self::Satin(o) => style::validate_satin(o)?,
+            Self::BevelEmboss(o) => style::validate_bevel(o)?,
+            Self::GradientOverlay(o) => style::validate_gradient(o)?,
         }
         Ok(())
     }
@@ -723,7 +788,9 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
         EffectOp::InnerShadow(o) => grown_support(o.size_px, o.choke, ceil(o.distance_px)),
         EffectOp::OuterGlow(o) => grown_support(o.size_px, o.spread, 0),
         EffectOp::InnerGlow(o) => grown_support(o.size_px, o.choke, 0),
-        EffectOp::ColourOverlay(_) => Ok(0),
+        EffectOp::ColourOverlay(_) | EffectOp::GradientOverlay(_) => Ok(0),
+        EffectOp::Satin(o) => style::satin_support(o),
+        EffectOp::BevelEmboss(o) => style::bevel_support(o),
         EffectOp::Stroke(o) => Ok(match o.position {
             StrokePosition::Centre => ceil(o.size_px / 2.0),
             _ => ceil(o.size_px),
@@ -1007,6 +1074,21 @@ pub fn reference_matte(plane: &EffectPlane, op: &EffectOp) -> Result<Vec<f32>, E
     let alpha = plane.alpha();
     match op {
         EffectOp::ColourOverlay(_) => Ok(alpha.to_vec()),
+        EffectOp::Satin(o) => style::satin_matte(alpha, g, o),
+        EffectOp::BevelEmboss(o) => style::bevel_matte(alpha, g, o),
+        EffectOp::GradientOverlay(o) => {
+            let mut out = alpha.to_vec();
+            let bounds = (0, 0, plane.width, plane.height);
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let (_, opacity) = style::gradient_at(o, x, y, bounds);
+                    if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
+                        *slot *= opacity;
+                    }
+                }
+            }
+            Ok(out)
+        }
         EffectOp::DropShadow(o) => {
             let split = shadow_split(o.size_px, o.spread);
             let offset = shadow_offset(o.angle_deg, o.distance_px)?;
@@ -1111,10 +1193,13 @@ pub fn render_layer_reference(
                 let (Some(op), Some(m)) = (effects.get(k), mattes.get(k)) else {
                     return Err(EffectError::PlaneShape);
                 };
-                let src = Rgba::new(
-                    op.colour(),
-                    m.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0),
-                );
+                let colour = match op {
+                    EffectOp::GradientOverlay(o) => {
+                        style::gradient_at(o, x, y, (0, 0, content.width, content.height)).0
+                    }
+                    _ => op.colour(),
+                };
+                let src = Rgba::new(colour, m.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0));
                 Ok(composite_over(
                     op.mode(),
                     px,
