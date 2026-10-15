@@ -13,7 +13,10 @@ mod svg_adapter;
 mod svg_export;
 
 pub use ai_adapter::{AiKind, identify_ai, import_ai};
-pub use ai_import::{ARTBOARD_GAP_PT, PdfDrawItem, PdfDrawingPage, PdfDrawingProvider, PdfEl, PdfPaint, PdfStroke, import_ai_with};
+pub use ai_import::{
+    ARTBOARD_GAP_PT, AiFontFace, AiImport, AiTextLayer, MAX_TEXT_LAYERS, MAX_TEXT_RUN_BYTES, PdfColour, PdfDrawItem, PdfDrawing, PdfDrawingPage, PdfDrawingProvider, PdfEl,
+    PdfFont, PdfGlyph, PdfIcc, PdfLayer, PdfPaint, PdfSpace, PdfStroke, PdfTextRun, import_ai_document, import_ai_with,
+};
 pub use error::{PreservedBlob, Result, VectorError};
 pub use gzip::gzip_svg;
 pub use ids::{IdMint, SequentialIdMint};
