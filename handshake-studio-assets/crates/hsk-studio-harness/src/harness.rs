@@ -246,6 +246,8 @@ enum Prop {
     Opacity,
     BlendMode,
     Tiles,
+    /// A vector layer's path ids (chronicle `vector_paths`, lane SMB-ILLUSTRATOR-PEN-2).
+    VectorPaths,
 }
 
 impl Prop {
@@ -256,6 +258,7 @@ impl Prop {
             Prop::Opacity => "opacity",
             Prop::BlendMode => "blend_mode",
             Prop::Tiles => "tiles",
+            Prop::VectorPaths => "vector_paths",
         }
     }
 }
@@ -265,6 +268,7 @@ enum PropValue {
     Bool(bool),
     Number(f64),
     Tiles(Vec<TileRef>),
+    PathIds(Vec<String>),
 }
 
 impl PropValue {
@@ -278,6 +282,7 @@ impl PropValue {
             PropValue::Number(n) if n.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(n) => json!({"value_kind":"number","value":*n as u64}),
             PropValue::Number(n) => json!({"value_kind":"number","value":n}),
             PropValue::Tiles(t) => json!({"value_kind":"tiles","value":t}),
+            PropValue::PathIds(ids) => json!({"value_kind":"path_ids","value":ids}),
         }
     }
 }
@@ -625,7 +630,7 @@ impl Run<'_> {
                     PropValue::Text(t) => Some(json!(t)),
                     PropValue::Bool(b) => Some(json!(b)),
                     PropValue::Number(n) => Some(json!(n)),
-                    PropValue::Tiles(_) => None,
+                    PropValue::Tiles(_) | PropValue::PathIds(_) => None,
                 };
                 if let Some(expected) = expected {
                     self.expectations.push(Expectation { layer_id: layer_id.to_string(), field, expected });
@@ -683,6 +688,13 @@ impl Run<'_> {
     /// `missing_asset`.
     pub fn set_tiles(&mut self, op: &str, layer_id: &str, tiles: Vec<TileRef>) -> bool {
         self.property_edit(op, layer_id, Prop::Tiles, PropValue::Tiles(tiles), None)
+    }
+
+    /// Replaces a vector layer's path id list through chronicle `vector_paths` (lane
+    /// SMB-ILLUSTRATOR-PEN-2; undoable, the layer keeps its id). The caller makes the new path
+    /// records available first (the viewer's `vector` document entry).
+    pub fn set_vector_paths(&mut self, op: &str, layer_id: &str, path_ids: Vec<String>) -> bool {
+        self.property_edit(op, layer_id, Prop::VectorPaths, PropValue::PathIds(path_ids), None)
     }
 
     /// Stack parent and index (0 = bottom-most) of a layer of the working revision (chronicle
@@ -1164,6 +1176,10 @@ fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Pro
         Prop::Tiles => match &layer.payload {
             folio::Payload::Raster { tiles } => PropValue::Tiles(tiles.clone()),
             _ => return Err("not_a_raster_layer"),
+        },
+        Prop::VectorPaths => match &layer.payload {
+            folio::Payload::Vector { path_ids } => PropValue::PathIds(path_ids.clone()),
+            _ => return Err("not_a_vector_layer"),
         },
     }
     .wire();

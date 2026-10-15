@@ -15,10 +15,8 @@
 //! (undoable as one step, re-validated by Folio). A new path or shape creates a vector layer above
 //! the selected layer. An edit of an existing path (pen extension, anchor or handle drag, segment
 //! bend, anchor convert / delete / insert, scissors, join, reverse, live parameter change, expand,
-//! outline stroke) creates the successor layer directly above the old one and deletes the old one in
-//! the same transaction: chronicle has no property for a vector layer's paths and refuses two
-//! writes to one address in a patch, so the successor carries a new layer id (SPEC GAP, recorded
-//! in the lane; the name, parent, stack slot, visibility and appearance are kept). Pathfinder
+//! outline stroke) is one chronicle `vector_paths` write of the layer's new path id (lane
+//! SMB-ILLUSTRATOR-PEN-2): the layer keeps its id. Pathfinder
 //! creates its result layers above the topmost operand and deletes the operands, in one
 //! transaction; offset path creates a copy (STU-VEC-006 "numeric inset/outset copy").
 //!
@@ -30,7 +28,7 @@
 //! Studio choices (Illustrator parity UNVERIFIED, D5): new pen paths have no fill and a 2 px stroke
 //! in the brush colour; shapes are filled with the brush colour and have no stroke; the pen closes
 //! a path when the click lands within the hit radius of its first anchor; a direct edit of a live
-//! shape expands it (its record is not carried to the successor).
+//! shape expands it (its live record no longer applies to the new path).
 #![deny(clippy::arithmetic_side_effects)]
 use super::Viewer;
 use super::edit::Tool;
@@ -653,39 +651,27 @@ impl Viewer {
         Ok(id)
     }
 
-    /// The successor of vector layer `old` with `path` (and `live`, when the shape stays live): one
-    /// transaction creating it directly above `old` and deleting `old`; selects it.
-    fn replace_vector_layer(&mut self, op: &str, old: &str, path: AnchorPath, style: Option<VectorStyle>, live: Option<StudioShapeParameters>) -> Result<String, String> {
+    /// Replaces the geometry of vector layer `layer` with `path` (and `live`, when the shape stays
+    /// live): the new path record is stored, then ONE chronicle `vector_paths` write commits the new
+    /// path id (lane SMB-ILLUSTRATOR-PEN-2): the layer keeps its id, name, place and appearance and
+    /// the edit undoes as one step. Selects the layer and returns its id.
+    fn replace_vector_layer(&mut self, op: &str, layer: &str, path: AnchorPath, style: Option<VectorStyle>, live: Option<StudioShapeParameters>) -> Result<String, String> {
         path.validate().map_err(|e| format!("{op}: {}", e.code()))?;
-        let record = self.vector_path(old)?;
-        let doc = self.vdoc()?;
-        let old_layer = doc.layers.iter().find(|l| l.layer_id == old).cloned().ok_or_else(|| format!("no layer {old}"))?;
-        self.run.placement(old).ok_or_else(|| format!("{op}: {old} is not in a layer stack"))?;
+        let record = self.vector_path(layer)?;
         let mut entry = self.vector_entry()?;
         if entry.paths.len() >= MAX_PATHS {
             return Err(format!("{op}: vector_entry_over_budget"));
         }
-        let id = super::layers::mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
-        let path_id = mint_path_id(doc, &entry);
+        let path_id = mint_path_id(self.vdoc()?, &entry);
         entry.paths.push(PathRecord { path_id: path_id.clone(), path, style: style.unwrap_or(record.style) });
         if let Some(shape) = live {
-            entry.live.push(StudioLiveShape { layer_id: id.clone(), path_id: path_id.clone(), shape });
+            entry.live.push(StudioLiveShape { layer_id: layer.to_string(), path_id: path_id.clone(), shape });
         }
-        let mut layer = old_layer;
-        layer.layer_id.clone_from(&id);
-        layer.payload = Payload::Vector { path_ids: vec![path_id] };
-        let operation = super::layers::operation_for(&id, false)?;
         self.store_entry(&entry)?;
-        let writes = vec![
-            PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(old.to_string())), create: Some((layer, operation)) },
-            PlacementWrite { layer_id: old.to_string(), to: None, create: None },
-        ];
-        self.structure(op, writes, format!("{op} {old} -> {id}"))?;
-        if self.edit.vector.pen_layer.as_deref() == Some(old) {
-            self.edit.vector.pen_layer = Some(id.clone());
-        }
-        self.selected = Some(id.clone());
-        Ok(id)
+        let ok = self.run.set_vector_paths(op, layer, vec![path_id]);
+        self.after_edit(ok, format!("{op} {layer}"))?;
+        self.selected = Some(layer.to_string());
+        Ok(layer.to_string())
     }
 
     fn report<T>(&mut self, result: Result<T, String>) -> Result<T, String> {
@@ -780,7 +766,7 @@ impl Viewer {
     /// Direct-selection drag from `from` to `to` (document pixels): moves the anchor (with its
     /// handles), sets the handle end (mirroring per the anchor; `break_mirroring` = Alt) or bends the
     /// segment so the grabbed point follows (STU-VEC-003). Shift = `Constraint::Angle45`. One
-    /// transaction; a live shape is expanded. Returns the successor layer id.
+    /// transaction; a live shape is expanded. Returns the layer id (unchanged).
     pub fn direct_drag(&mut self, from: [f64; 2], to: [f64; 2], constraint: Constraint, break_mirroring: bool, radius: f64) -> Result<String, String> {
         let r = self.direct_drag_inner(from, to, constraint, break_mirroring, radius);
         self.report(r)
@@ -805,7 +791,7 @@ impl Viewer {
     }
 
     /// One path edit of the model surface on vector layer `layer_id` (one transaction; a live shape
-    /// is expanded). Returns the successor layer id.
+    /// is expanded). Returns the layer id (unchanged).
     pub fn edit_path(&mut self, layer_id: &str, edit: PathEdit) -> Result<String, String> {
         let r = self.edit_path_inner(layer_id, edit, "edit_path");
         self.report(r)
@@ -846,7 +832,7 @@ impl Viewer {
     }
 
     /// Changes the parameters of a live shape (STU-VEC-010): new geometry from the same Nib builder,
-    /// record kept live. One transaction. Returns the successor layer id.
+    /// record kept live. One transaction. Returns the layer id (unchanged).
     pub fn set_live_shape(&mut self, layer_id: &str, params: StudioShapeParameters) -> Result<String, String> {
         let r = (|| {
             self.live_shape(layer_id)?.ok_or_else(|| format!("live_shape: {layer_id} is not a live shape"))?;
@@ -942,7 +928,7 @@ impl Viewer {
     }
 
     /// Outline stroke (STU-VEC-006): replaces the layer by the filled outline of its stroke (fill =
-    /// the stroke colour, no stroke). One transaction. Returns the successor layer id.
+    /// the stroke colour, no stroke). One transaction. Returns the layer id (unchanged).
     pub fn outline_stroke_layer(&mut self, layer_id: &str) -> Result<String, String> {
         let r = (|| {
             let record = self.vector_path(layer_id)?;

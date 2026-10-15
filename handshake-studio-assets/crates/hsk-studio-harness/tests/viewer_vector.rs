@@ -104,6 +104,8 @@ fn direct_selection_moves_anchors_bends_segments_and_drags_handles() {
     let r0 = revision(&v);
     let moved = v.direct_drag([50.0, 40.0], [70.0, 40.0], Constraint::Free, false, 3.0).unwrap();
     assert_eq!(revision(&v), r0 + 1);
+    assert_eq!(moved, rect, "a path edit keeps the layer id (chronicle vector_paths)");
+    assert_eq!(v.layers().iter().filter(|r| r.kind == "vector").count(), 1);
     assert_eq!(v.vector_path(&moved).unwrap().path.contours[0].anchors[2].position, PathPoint::new(70.0, 40.0));
     assert_eq!(v.live_shape(&moved).unwrap(), None, "direct edit expands the live shape");
     assert!(r(&frame(&mut v), 62, 38) < 10, "the moved corner widens the fill");
