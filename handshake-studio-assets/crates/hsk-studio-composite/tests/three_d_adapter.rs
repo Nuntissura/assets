@@ -404,3 +404,38 @@ fn three_d_masks_and_track_mattes_from_records() {
     let e = source(&records(bad), &pixels).and_then(|s| s.scene_at(0, &CancellationToken::default()).map(|_| ()));
     assert!(e.is_err(), "an empty mask path is refused: {e:?}");
 }
+
+#[test]
+fn three_d_planes_and_object_ids_from_records() {
+    // Lane SMB-AE-3D-2 (STU-CMP-050): the planes the auxiliary channels are taken from: every 3D
+    // content layer across the run break, bottom first, object id = 1-based stack index (camera 1,
+    // light 2, tf 3, tb 4, te 5); cameras, lights and 2D layers are not planes.
+    let pixels = Pixels::fixture();
+    let src = source(&records(layers()), &pixels).expect("source");
+    let (planes, ids, cam) = src.three_d_planes_at(0, &CancellationToken::default()).expect("planes");
+    assert_eq!(planes.iter().map(|p| p.layer_id.clone()).collect::<Vec<_>>(), vec![identity("SLYR", 10), identity("SLYR", 11)]);
+    assert_eq!(ids, vec![5, 3]);
+    assert_eq!(cam, three_d::camera([10.0, 4.0, -60.0], [0.0; 3], 0.0, 0.0, 0.0, Some([16.0, 12.0, 0.0]), 50.0, 32, 24).unwrap());
+    // Synthetic opaque content: the channels are exact against an independent per-pixel ray cast
+    // in render-cpu `composition_three_d`; here the shape and refusals.
+    let alphas: Vec<Vec<f32>> = planes.iter().map(|p| vec![1.0; (p.bounds.width * p.bounds.height) as usize]).collect();
+    let aux = three_d::aux_channels(&planes, &alphas, &ids, &cam, 32, 24).expect("channels");
+    assert_eq!(aux.ids, vec![(3, identity("SLYR", 11)), (5, identity("SLYR", 10))]);
+    let names: Vec<&str> = aux.channels().iter().map(|c| c.0).collect();
+    assert_eq!(names, three_d::AUX_CHANNEL_NAMES.to_vec(), "channel identifier");
+    let covered = aux.coverage.iter().filter(|c| **c == 1.0).count();
+    assert!(covered > 100 && aux.object_id.contains(&3.0) && aux.object_id.contains(&5.0), "{covered}");
+    for i in 0..aux.depth.len() {
+        let hit = aux.coverage[i] == 1.0;
+        assert_eq!(hit, aux.depth[i].is_finite(), "Z is +inf exactly where nothing is hit");
+        let n = (0..3).map(|k| f64::from(aux.normal[k][i]).powi(2)).sum::<f64>();
+        assert!(if hit { (n - 1.0).abs() < 1e-6 } else { n == 0.0 }, "unit normals on hits: {n}");
+    }
+    // Hostile inputs are refused before any work.
+    assert!(three_d::aux_channels(&planes, &alphas[..1], &ids, &cam, 32, 24).is_err(), "alpha planes per plane");
+    assert!(three_d::aux_channels(&planes, &alphas, &[0, 3], &cam, 32, 24).is_err(), "object id 0 is the background");
+    assert!(matches!(
+        three_d::aux_channels(&planes, &alphas, &ids, &cam, 30_000, 30_000),
+        Err(TemporalError::Composite(hsk_studio_composite::CompositeError::BudgetExceeded))
+    ));
+}

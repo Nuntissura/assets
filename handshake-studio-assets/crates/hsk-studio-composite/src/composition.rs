@@ -1481,6 +1481,33 @@ fn apply_layer_mask(id: &str, surface: &mut Surface, mask: Option<&[f32]>) -> Re
     Ok(())
 }
 
+/// STU-CMP-050 auxiliary channels of 3D planes (lane SMB-AE-3D-2): every plane's content rendered
+/// over its rectangle by the context's backend (layer mask applied), then
+/// [`crate::three_d::aux_channels`] per pixel centre. Surfaces are charged before allocation.
+#[allow(clippy::too_many_arguments)]
+pub fn three_d_aux_channels(
+    planes: &[crate::three_d::Plane3d],
+    ids: &[u32],
+    cam: &crate::three_d::Camera,
+    width: u32,
+    height: u32,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+) -> Result<crate::three_d::AuxChannels, TemporalError> {
+    let mut charges = Charges::default();
+    let mut ledger = ExactnessLedger::default();
+    let mut alphas = Vec::with_capacity(planes.len());
+    for p in planes {
+        cancel.check().map_err(|_| canceled())?;
+        let mut s = content_surface(&p.layer_id, &p.content, p.bounds, filter, ctx, cancel, 0, &mut charges, &mut ledger)?;
+        apply_layer_mask(&p.layer_id, &mut s, p.layer_mask.as_deref())?;
+        let n = usize::try_from(u64::from(s.width).checked_mul(u64::from(s.height)).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+        alphas.push((0..n).map(|i| f32_at(&s.alpha, i)).collect::<Vec<f32>>());
+    }
+    crate::three_d::aux_channels(planes, &alphas, ids, cam, width, height)
+}
+
 /// The lit plane's surface: its content rendered over `lit.rect`, every texel shaded by
 /// [`crate::three_d::shade`] with the casters' rendered alpha (nearest texel).
 #[allow(clippy::too_many_arguments)]

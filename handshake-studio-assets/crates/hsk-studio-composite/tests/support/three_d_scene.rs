@@ -647,3 +647,103 @@ fn oracle_full(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool, masks: &[O
     }
     (out, crossing, max_radius)
 }
+
+/// Lane SMB-AE-3D-2 (STU-CMP-050): the planes and camera of [`three_d_scene`].
+pub fn aux_inputs(pixels: &Pixels) -> (Vec<Plane3d>, hsk_studio_composite::three_d::Camera) {
+    (planes(pixels), camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera"))
+}
+/// Per pixel (row-major): the nearest plane whose nearest texel under the camera ray has
+/// `alpha x opacity > 0` (exact content rectangle): its camera depth, its camera-space unit normal
+/// facing the camera, and its object id (3, 2, 1 for tg, tf, te); `(inf, 0, 0)` where none.
+pub fn aux_oracle(pixels: &Pixels) -> Vec<(f64, [f64; 3], f32)> {
+    let (r, d, f) = basis();
+    let specs = specs();
+    let mut out = Vec::new();
+    for y in 0..H {
+        for x in 0..W {
+            let (sx, sy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let dir = add(add(scale(r, (sx - f64::from(W) / 2.0) / ZOOM), scale(d, (sy - f64::from(H) / 2.0) / ZOOM)), f);
+            let mut best: Option<(f64, usize)> = None;
+            for (i, s) in specs.iter().enumerate() {
+                let Some((t, lx, ly)) = hit_any(s, CAMERA_POSITION, dir) else { continue };
+                let t3 = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+                if !(t > 1e-3 && lx >= 0.0 && ly >= 0.0 && lx < f64::from(t3.width) && ly < f64::from(t3.height)) {
+                    continue;
+                }
+                if f64::from(t3.at(lx.floor() as u32, ly.floor() as u32)[3]) * s.opacity <= 0.0 {
+                    continue;
+                }
+                if best.is_none_or(|(b, _)| t <= b) {
+                    best = Some((t, i));
+                }
+            }
+            out.push(match best {
+                None => (f64::INFINITY, [0.0; 3], 0.0),
+                Some((t, i)) => {
+                    let n = rotate(&specs[i], [0.0, 0.0, 1.0]);
+                    let mut nc = [dot(n, r), dot(n, d), dot(n, f)];
+                    let qc = [t * (sx - f64::from(W) / 2.0) / ZOOM, t * (sy - f64::from(H) / 2.0) / ZOOM, t];
+                    if dot(nc, qc) > 0.0 {
+                        nc = scale(nc, -1.0);
+                    }
+                    (t, unit(nc), (3 - i) as f32)
+                }
+            });
+        }
+    }
+    out
+}
+/// An independent minimal OpenEXR reader for the writer's subset (single part, scanline,
+/// uncompressed, FLOAT channels): parses the header attribute by attribute and returns every
+/// channel's plane.
+pub fn read_exr_f32(b: &[u8]) -> Vec<(String, Vec<f32>)> {
+    let i32_at = |o: usize| i32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(i32_at(0), 20000630, "magic");
+    assert_eq!(i32_at(4), 2, "version 2, single part scanline");
+    let cstr = |o: usize| -> (String, usize) {
+        let e = o + b[o..].iter().position(|c| *c == 0).unwrap();
+        (String::from_utf8(b[o..e].to_vec()).unwrap(), e + 1)
+    };
+    let (mut o, mut names, mut window) = (8usize, Vec::new(), [0i32; 4]);
+    loop {
+        if b[o] == 0 {
+            o += 1;
+            break;
+        }
+        let (name, n) = cstr(o);
+        let (kind, n) = cstr(n);
+        let size = i32_at(n) as usize;
+        let v = n + 4;
+        match (name.as_str(), kind.as_str()) {
+            ("channels", "chlist") => {
+                let mut c = v;
+                while b[c] != 0 {
+                    let (ch, n) = cstr(c);
+                    assert_eq!(i32_at(n), 2, "FLOAT");
+                    assert_eq!((i32_at(n + 8), i32_at(n + 12)), (1, 1), "sampling");
+                    names.push(ch);
+                    c = n + 16;
+                }
+            }
+            ("compression", _) => assert_eq!(b[v], 0, "uncompressed"),
+            ("dataWindow", "box2i") => window = [i32_at(v), i32_at(v + 4), i32_at(v + 8), i32_at(v + 12)],
+            _ => {}
+        }
+        o = v + size;
+    }
+    let (w, h) = ((window[2] - window[0] + 1) as usize, (window[3] - window[1] + 1) as usize);
+    let mut planes: Vec<(String, Vec<f32>)> = names.iter().map(|n| (n.clone(), Vec::new())).collect();
+    for y in 0..h {
+        let at = u64::from_le_bytes(b[o + 8 * y..o + 8 * y + 8].try_into().unwrap()) as usize;
+        assert_eq!(i32_at(at), y as i32);
+        assert_eq!(i32_at(at + 4) as usize, w * 4 * names.len());
+        let mut p = at + 8;
+        for plane in &mut planes {
+            for _ in 0..w {
+                plane.1.push(f32::from_le_bytes(b[p..p + 4].try_into().unwrap()));
+                p += 4;
+            }
+        }
+    }
+    planes
+}

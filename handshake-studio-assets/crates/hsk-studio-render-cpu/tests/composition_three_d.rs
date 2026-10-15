@@ -6,6 +6,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::{RenderedScene, SceneComposition, SceneContext, SceneLimits, render_scene};
 use hsk_studio_pigment::render_plan::{Exactness, ExecuteRequest};
+use hsk_studio_pigment::transform_math::ResampleFilter;
 use hsk_studio_render_cpu::Renderer;
 
 #[path = "../../hsk-studio-composite/tests/support/composition_scenes.rs"]
@@ -115,4 +116,58 @@ fn masked_and_matted_three_d_run_matches_the_oracle() {
     assert_ne!(plain.digest(), base.digest(), "the mask and the matte change the frame");
     let other = render(&Renderer::with_threads(5, 3).unwrap(), &scene, &pixels);
     assert_eq!(other.digest(), base.digest());
+}
+
+#[test]
+fn three_d_aux_channels_match_the_ray_cast_oracle() {
+    // Lane SMB-AE-3D-2 (STU-CMP-050): Z depth, camera-space normals, object id and coverage of the
+    // run, alpha-tested on the rendered content (nearest texel), against the oracle's own ray cast.
+    let pixels = scenes::Pixels::fixture();
+    let ctx = SceneContext {
+        backend: &Renderer::new(64).unwrap(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let (planes, cam) = three_d::aux_inputs(&pixels);
+    let aux = hsk_studio_composite::composition::three_d_aux_channels(&planes, &[3, 2, 1], &cam, three_d::W, three_d::H, ResampleFilter::Bilinear, &ctx, &CancellationToken::default()).expect("channels");
+    let want = three_d::aux_oracle(&pixels);
+    let mut worst = [0.0f64; 2];
+    for (i, w) in want.iter().enumerate() {
+        assert_eq!((aux.object_id[i], aux.coverage[i]), (w.2, if w.2 > 0.0 { 1.0 } else { 0.0 }), "pixel {i}");
+        if w.2 > 0.0 {
+            worst[0] = worst[0].max((f64::from(aux.depth[i]) - w.0).abs() / w.0);
+            for k in 0..3 {
+                worst[1] = worst[1].max((f64::from(aux.normal[k][i]) - w.1[k]).abs());
+            }
+        } else {
+            assert!(aux.depth[i] == f32::INFINITY && aux.normal.iter().all(|n| n[i] == 0.0));
+        }
+    }
+    let hits = want.iter().filter(|w| w.2 > 0.0).count();
+    println!("three_d aux: {hits} hit pixels, Z relative error {:e}, normal error {:e}", worst[0], worst[1]);
+    assert!(hits > 150 && worst[0] <= 1e-7 && worst[1] <= 1e-6, "{worst:?}");
+    // Depth matte (2D insertion between 3D objects) and fog from the Z plane, exact by definition.
+    let slice = hsk_studio_composite::three_d::depth_matte(&aux.depth, 55.0, 62.0, 2.0).unwrap();
+    for (c, z) in slice.iter().zip(&aux.depth) {
+        let z = f64::from(*z);
+        let want = if (55.0..=62.0).contains(&z) { 1.0 } else if z < 55.0 { (1.0 - (55.0 - z) / 2.0).max(0.0) } else { (1.0 - (z - 62.0) / 2.0).max(0.0) };
+        assert!((f64::from(*c) - want).abs() < 1e-6, "{c} vs {want} at {z}");
+    }
+    let ids = hsk_studio_composite::three_d::id_matte(&aux.object_id, &[2]);
+    assert_eq!(ids.iter().filter(|v| **v == 1.0).count(), aux.object_id.iter().filter(|v| **v == 2.0).count());
+    // One EXR file carries every channel, readable back by name (independent minimal reader).
+    let exr = aux.to_exr().expect("exr");
+    let planes_back = three_d::read_exr_f32(&exr);
+    for (name, plane) in aux.channels() {
+        let back = planes_back.iter().find(|p| p.0 == name).unwrap_or_else(|| panic!("channel {name}"));
+        assert!(back.1.iter().zip(plane).all(|(a, b)| a.to_bits() == b.to_bits()), "{name} round-trips bit for bit");
+    }
+    // For an external reader check (ffprobe / ffmpeg on the files, recorded in the lane notes): the
+    // channel file and the normals as R, G, B, written under cargo's per-target scratch dir.
+    let rgb = hsk_studio_composite::three_d::exr::encode_exr_f32(three_d::W, three_d::H, &[("R", &aux.normal[0]), ("G", &aux.normal[1]), ("B", &aux.normal[2])]).unwrap();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(dir.join("three_d_aux.exr"), &exr).unwrap();
+    std::fs::write(dir.join("three_d_aux_normals_rgb.exr"), &rgb).unwrap();
 }

@@ -1441,6 +1441,35 @@ impl CompositionTemporalSource {
         Ok(out)
     }
 
+    /// The 3D planes of the root composition at `tick` (bottom first: every visible 3D content layer
+    /// in its window that is not a matte source), their object ids (the layer's 1-based stack
+    /// index, STU-MOT-009: 1 = topmost) and the active camera (lane SMB-AE-3D-2; STU-CMP-050).
+    pub fn three_d_planes_at(&self, tick: i64, cancel: &CancellationToken) -> Result<(Vec<crate::three_d::Plane3d>, Vec<u32>, crate::three_d::Camera), TemporalError> {
+        let comp = self.root()?;
+        let sources = Self::matte_sources(comp);
+        let (mut planes, mut ids) = (Vec::new(), Vec::new());
+        for (k, l) in comp.layers.iter().enumerate().rev() {
+            cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
+            let Some(d) = l.three_d.as_deref() else { continue };
+            if !l.visible || sources.contains(l.layer_id.as_str()) || d.camera.is_some() || d.light.is_some() || matches!(l.content, Content::None) {
+                continue;
+            }
+            let Some(layer) = self.layer_at(comp, l, tick, 0, 0, cancel)? else { continue };
+            planes.push(Self::plane(comp, l, layer, tick, cancel)?);
+            ids.push(u32::try_from(k.checked_add(1).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?);
+        }
+        Ok((planes, ids, Self::camera_at(comp, tick, cancel)?))
+    }
+
+    /// STU-CMP-050 auxiliary channels of the root composition at `tick` (`crate::three_d`
+    /// [`crate::three_d::AuxChannels`]): every 3D plane of [`Self::three_d_planes_at`], across run
+    /// breaks (2D layers write no auxiliary values and do not occlude them; Studio reading).
+    pub fn three_d_aux_channels(&self, tick: i64, ctx: &SceneContext<'_>, cancel: &CancellationToken) -> Result<crate::three_d::AuxChannels, TemporalError> {
+        let comp = self.root()?;
+        let (planes, ids, cam) = self.three_d_planes_at(tick, cancel)?;
+        crate::composition::three_d_aux_channels(&planes, &ids, &cam, comp.width, comp.height, self.filter, ctx, cancel)
+    }
+
     /// The layers some layer uses as its track matte (they do not render on their own).
     fn matte_sources(comp: &Comp) -> std::collections::BTreeSet<&str> {
         comp.layers.iter().filter_map(|l| l.matte.as_ref().map(|m| m.source_layer_id.as_str())).collect()

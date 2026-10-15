@@ -54,7 +54,14 @@
 //! piece of the plane carries its rank matte, whose own matte is the track matte (coverage = rank
 //! x track matte). A 3D matte SOURCE is projected through the active camera, unlit, alone
 //! ([`expand_run`] of that one plane). Masks and a track matte combine on one 3D layer.
+//!
+//! Auxiliary channels (lane SMB-AE-3D-2; STU-CMP-050 "Studio consumes 3D-render auxiliary channels
+//! as first-class compositing inputs"): [`aux_channels`] writes the run's Z depth, camera-space
+//! normals, object id and coverage planes ([`AuxChannels`], names [`AUX_CHANNEL_NAMES`]), which
+//! export as one OpenEXR file ([`exr`]) and feed [`depth_matte`], [`id_matte`] and [`depth_fog`].
 #![deny(clippy::arithmetic_side_effects)]
+
+pub mod exr;
 
 use crate::CompositeError;
 use crate::composition::{PinnedContent, SceneContent, SceneLayer};
@@ -988,4 +995,218 @@ pub struct ShadowDiagnostic {
     pub caster: String,
     pub receiver: String,
     pub off: Vec<&'static str>,
+}
+
+// ---- Auxiliary channels (lane SMB-AE-3D-2; STU-CMP-050) ----
+
+/// Channel names of [`AuxChannels`] in the order [`AuxChannels::channels`] lists them (the
+/// STU-CMP-050 "channel identifier": what a model can discover instead of guessing).
+pub const AUX_CHANNEL_NAMES: [&str; 6] = ["Z", "N.X", "N.Y", "N.Z", "objectId", "coverage"];
+/// The planes of a run's auxiliary channels are bounded by `pixels x planes`.
+pub const MAX_AUX_WORK: u64 = 1 << 28;
+
+/// The 3D renderer's auxiliary planes of one frame (module docs of this section), row-major over
+/// the composition rect. Per pixel centre, the FRONT-MOST plane whose content texel under the
+/// camera ray has `alpha x opacity > 0` (nearest texel, after the layer mask) defines:
+/// `Z` its camera depth (`+inf` where no plane is hit), `N.X N.Y N.Z` its unit normal in camera
+/// space (x right, y down, z forward) turned to face the camera (`0` where nothing is hit),
+/// `objectId` the plane's object id ([`AuxChannels::ids`]; `0` = nothing) and `coverage` 1 / 0.
+/// Studio readings (STU-CMP-050 names the channels, not their conventions; UNVERIFIED, D5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuxChannels {
+    pub width: u32,
+    pub height: u32,
+    pub depth: Vec<f32>,
+    pub normal: [Vec<f32>; 3],
+    pub object_id: Vec<f32>,
+    pub coverage: Vec<f32>,
+    /// Object id -> layer id, ascending.
+    pub ids: Vec<(u32, String)>,
+}
+impl AuxChannels {
+    /// `(name, plane)` for every channel of [`AUX_CHANNEL_NAMES`].
+    pub fn channels(&self) -> Vec<(&'static str, &[f32])> {
+        vec![
+            (AUX_CHANNEL_NAMES[0], &self.depth[..]),
+            (AUX_CHANNEL_NAMES[1], &self.normal[0][..]),
+            (AUX_CHANNEL_NAMES[2], &self.normal[1][..]),
+            (AUX_CHANNEL_NAMES[3], &self.normal[2][..]),
+            (AUX_CHANNEL_NAMES[4], &self.object_id[..]),
+            (AUX_CHANNEL_NAMES[5], &self.coverage[..]),
+        ]
+    }
+    /// The plane of channel `name`, `None` for an unknown name.
+    pub fn channel(&self, name: &str) -> Option<&[f32]> {
+        self.channels().into_iter().find(|(n, _)| *n == name).map(|(_, p)| p)
+    }
+    /// Every channel as one OpenEXR file ([`exr::encode_exr_f32`]).
+    pub fn to_exr(&self) -> Result<Vec<u8>, &'static str> {
+        exr::encode_exr_f32(self.width, self.height, &self.channels())
+    }
+}
+
+/// The auxiliary channels of `planes` (stack order, bottom first) seen by `cam`. `alphas[i]` is
+/// plane `i`'s rendered content alpha over its `bounds` (row-major, layer mask applied) and
+/// `ids[i]` its object id (non-zero). Refused: mismatched inputs (`InvalidState`), a plane
+/// crossing the camera plane, more than [`MAX_AUX_WORK`] pixel-plane tests (`BudgetExceeded`,
+/// before allocation).
+pub fn aux_channels(planes: &[Plane3d], alphas: &[Vec<f32>], ids: &[u32], cam: &Camera, width: u32, height: u32) -> Result<AuxChannels, TemporalError> {
+    let invalid = |id: &str| TemporalError::InvalidState { layer_id: id.to_owned(), field: "aux_channels" };
+    if alphas.len() != planes.len() || ids.len() != planes.len() || ids.contains(&0) {
+        return Err(invalid(planes.first().map_or("", |p| p.layer_id.as_str())));
+    }
+    let px = u64::from(width).checked_mul(u64::from(height)).ok_or(CompositeError::Overflow)?;
+    let work = px.checked_mul(u64::try_from(planes.len()).map_err(|_| CompositeError::Overflow)?).ok_or(CompositeError::Overflow)?;
+    if work > MAX_AUX_WORK {
+        return Err(CompositeError::BudgetExceeded.into());
+    }
+    let n = usize::try_from(px).map_err(|_| CompositeError::Overflow)?;
+    struct Prep {
+        inverse: Projective2,
+        x0: f64,
+        y0: f64,
+        w: usize,
+        h: usize,
+        normal: Vec3,
+    }
+    let rc_t = transpose(&cam.rotation);
+    let mut preps = Vec::with_capacity(planes.len());
+    for (p, a) in planes.iter().zip(alphas) {
+        let (w, h) = (usize::try_from(p.bounds.width).map_err(|_| CompositeError::Overflow)?, usize::try_from(p.bounds.height).map_err(|_| CompositeError::Overflow)?);
+        if a.len() != w.checked_mul(h).ok_or(CompositeError::Overflow)? {
+            return Err(invalid(&p.layer_id));
+        }
+        let to_layer = Projective2::from_affine(&Affine2::translate(-p.origin[0], -p.origin[1]));
+        let pin = to_layer.then(&plane_homography(&p.transform, cam));
+        #[allow(clippy::cast_precision_loss)]
+        let (x0, y0) = (p.bounds.x as f64, p.bounds.y as f64);
+        let (x1, y1) = (x0 + f64::from(p.bounds.width), y0 + f64::from(p.bounds.height));
+        let front = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].iter().filter(|(x, y)| pin.apply_h(*x, *y).2 > NEAR_DEPTH).count();
+        if front != 0 && front != 4 {
+            return Err(TemporalError::Unsupported { layer_id: p.layer_id.clone(), feature: COMPOSITION_3D_CROSSES_CAMERA });
+        }
+        if front == 0 {
+            preps.push(None);
+            continue;
+        }
+        let inverse = pin.inverse().map_err(|_| TemporalError::Unsupported { layer_id: p.layer_id.clone(), feature: COMPOSITION_3D_CROSSES_CAMERA })?;
+        let normal = normalize(mat_vec(&rc_t, p.transform.normal())).unwrap_or([0.0, 0.0, -1.0]);
+        preps.push(Some(Prep { inverse, x0, y0, w, h, normal }));
+    }
+    let mut out = AuxChannels {
+        width,
+        height,
+        depth: vec![f32::INFINITY; n],
+        normal: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
+        object_id: vec![0.0; n],
+        coverage: vec![0.0; n],
+        ids: {
+            let mut v: Vec<(u32, String)> = ids.iter().copied().zip(planes.iter().map(|p| p.layer_id.clone())).collect();
+            v.sort();
+            v
+        },
+    };
+    let mut at = 0usize;
+    for y in 0..height {
+        for x in 0..width {
+            let (sx, sy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let mut best: Option<(f64, usize)> = None;
+            for (i, pr) in preps.iter().enumerate() {
+                let Some(pr) = pr else { continue };
+                let (lx, ly, w) = pr.inverse.apply_h(sx, sy);
+                if !(w.is_finite() && w > 0.0) {
+                    continue;
+                }
+                let depth = 1.0 / w;
+                let (u, v) = (lx / w - pr.x0, ly / w - pr.y0);
+                if !(depth > NEAR_DEPTH && u >= 0.0 && v >= 0.0) {
+                    continue;
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let (iu, iv) = (u.floor() as usize, v.floor() as usize);
+                if iu >= pr.w || iv >= pr.h {
+                    continue;
+                }
+                let alpha = iv.checked_mul(pr.w).and_then(|r| r.checked_add(iu)).and_then(|k| alphas.get(i)?.get(k)).copied().unwrap_or(0.0);
+                let opacity = planes.get(i).map_or(0.0, |p| p.opacity);
+                if f64::from(alpha) * opacity <= 0.0 {
+                    continue;
+                }
+                // Nearest wins; equal depth: the later (upper) plane.
+                if best.is_none_or(|(d, _)| depth <= d) {
+                    best = Some((depth, i));
+                }
+            }
+            if let Some((depth, Some(Some(pr)), i)) = best.map(|(d, i)| (d, preps.get(i), i)) {
+                let q = [depth * (sx - cam.centre[0]) / cam.zoom, depth * (sy - cam.centre[1]) / cam.zoom, depth];
+                let nn = if dot(pr.normal, q) > 0.0 { scale(pr.normal, -1.0) } else { pr.normal };
+                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                {
+                    out.depth[at] = depth as f32;
+                    for (plane, v) in out.normal.iter_mut().zip(nn) {
+                        plane[at] = v as f32;
+                    }
+                    out.object_id[at] = ids.get(i).copied().unwrap_or(0) as f32;
+                    out.coverage[at] = 1.0;
+                }
+            }
+            at = at.checked_add(1).ok_or(CompositeError::Overflow)?;
+        }
+    }
+    Ok(out)
+}
+
+/// STU-CMP-050 depth matte: coverage 1 where `near <= z <= far`, falling linearly to 0 over
+/// `feather` outside the slice (hard edge for `feather` 0); `z = +inf` (nothing hit) is beyond any
+/// finite `far`. Refused: non-finite `near` / `feather`, `near > far`, negative `feather`.
+#[allow(clippy::cast_possible_truncation)]
+pub fn depth_matte(z: &[f32], near: f64, far: f64, feather: f64) -> Result<Vec<f32>, &'static str> {
+    if !(near.is_finite() && !far.is_nan() && feather.is_finite() && near <= far && feather >= 0.0) {
+        return Err(AUX_MATTE_PARAMETER);
+    }
+    Ok(z
+        .iter()
+        .map(|v| {
+            let v = f64::from(*v);
+            let outside = if v < near { near - v } else if v > far { v - far } else { 0.0 };
+            let c: f64 = if outside == 0.0 { 1.0 } else if feather > 0.0 { (1.0 - outside / feather).max(0.0) } else { 0.0 };
+            c as f32
+        })
+        .collect())
+}
+/// STU-CMP-050 ID matte: coverage 1 where the object id is one of `wanted`, else 0 (no feather:
+/// the planar renderer's id plane is not anti-aliased).
+#[allow(clippy::cast_precision_loss)]
+pub fn id_matte(object_id: &[f32], wanted: &[u32]) -> Vec<f32> {
+    let wanted: Vec<f32> = wanted.iter().map(|w| *w as f32).collect();
+    object_id.iter().map(|v| if *v != 0.0 && wanted.contains(v) { 1.0 } else { 0.0 }).collect()
+}
+/// STU-CMP-050 depth fog on straight RGB (`rgb.len() == 3 z.len()`): `f = clamp((z - start) /
+/// (end - start), 0, 1)`, `rgb = rgb (1 - f) + colour f`. Refused: non-finite bounds,
+/// `end <= start`, a length mismatch.
+#[allow(clippy::cast_possible_truncation)]
+pub fn depth_fog(rgb: &mut [f32], z: &[f32], colour: [f32; 3], start: f64, end: f64) -> Result<(), &'static str> {
+    if !(start.is_finite() && end.is_finite() && end > start) || z.len().checked_mul(3) != Some(rgb.len()) {
+        return Err(AUX_MATTE_PARAMETER);
+    }
+    for (px, d) in rgb.chunks_exact_mut(3).zip(z) {
+        let f = ((f64::from(*d) - start) / (end - start)).clamp(0.0, 1.0);
+        for (c, k) in px.iter_mut().zip(colour) {
+            *c = (f64::from(*c) * (1.0 - f) + f64::from(k) * f) as f32;
+        }
+    }
+    Ok(())
+}
+/// A depth-matte, ID-matte or depth-fog parameter the contract refuses.
+pub const AUX_MATTE_PARAMETER: &str = "composition_3d_aux_parameter";
+/// The STU-CMP-050 capabilities this renderer does not build, refused by name: Cryptomatte (no
+/// hashed-id channels), depth of field from a depth channel (the camera lens is the planar
+/// renderer's defocus) and channel extraction from imported multi-channel files (an import-path
+/// requirement, STU-CMP-050a).
+pub const AUX_UNSUPPORTED: &str = "composition_3d_aux_capability_unsupported";
+pub fn aux_capability(name: &str) -> Result<(), TemporalError> {
+    match name {
+        "auxiliary_channel_extract" | "channel_identifier" | "depth_matte" | "id_matte" | "depth_fog" => Ok(()),
+        _ => Err(TemporalError::Unsupported { layer_id: name.to_owned(), feature: AUX_UNSUPPORTED }),
+    }
 }
