@@ -77,7 +77,7 @@ const SPEC: PlanarSpec = PlanarSpec {
     search_radius: 8,
     min_spacing_px: 8,
     ransac_iterations: 200,
-    inlier_px: 0.75,
+    inlier_px: 0.25,
     seed: 7,
 };
 
