@@ -454,7 +454,8 @@ fn snapshot_lowers_to_pdf() {
     assert!(content.contains(&format!("<{:04X}> <0048>", h)), "ToUnicode H");
     // Losses: the untagged red fill and the story that was not supplied.
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
-    assert_eq!(codes, ["paint_colour_untagged", "story_not_supplied"], "{:?}", out.loss);
+    // No graph outputs: document order, reported.
+    assert_eq!(codes, ["paint_colour_untagged", "story_not_supplied", "composition_graph_absent"], "{:?}", out.loss);
 }
 
 #[test]
@@ -508,4 +509,104 @@ fn misaligned_stale_and_refused_inputs() {
     let tripped = CancellationToken::default();
     tripped.cancel();
     assert_eq!(run(&b.glyphs, &place, &tripped).unwrap_err(), PdfExportError::Canceled);
+}
+
+fn vector_in_group(n: u32, path: u32) -> StudioLayer {
+    let mut l = layer(n, "vector", Payload::Vector { path_ids: vec![id("SVPT", path)] }, None);
+    l.parent = Parent::Node(NodeRef { node_kind: NodeKind::Layer, node_id: id("SLYR", 10) });
+    l
+}
+
+/// Group 10 (on the spread) composites vector 12 (ordinal 0, bottom) under vector 11 (ordinal 1);
+/// the document lists 11 before 12, and raster 3 is outside the graph.
+fn graph_document() -> StudioDocument {
+    let mut d = document();
+    let src = |n: u32| -> Operation {
+        serde_json::from_value(serde_json::json!({"layer_id": id("SLYR", n), "operation_key": "source", "operation_kind": "source", "inputs": [],
+            "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "source"}]})).unwrap()
+    };
+    let edge = |n: u32, ordinal: u64| -> Edge {
+        serde_json::from_value(serde_json::json!({"source": {"layer_id": id("SLYR", n), "operation_key": "source", "port_key": "out"},
+            "target": {"layer_id": id("SLYR", 10), "operation_key": "composite", "port_key": "inputs"}, "dependency_kind": "data", "input_ordinal": ordinal})).unwrap()
+    };
+    d.layers = vec![
+        layer(10, "group", Payload::Group, None),
+        vector_in_group(11, 11),
+        vector_in_group(12, 12),
+        layer(3, "raster", Payload::Raster { tiles: vec![tile_ref()] }, None),
+    ];
+    d.graph = serde_json::from_value(serde_json::json!({"schema_id": "hsk.studio.layer_graph@1",
+        "operations": [
+            {"layer_id": id("SLYR", 10), "operation_key": "composite", "operation_kind": "composite",
+             "inputs": [{"port_key": "inputs", "value_type": "image", "cardinality": "many", "semantic": "ordered_composite"}],
+             "outputs": [{"port_key": "out", "value_type": "image", "cardinality": "one", "semantic": "composite_result"}]}],
+        "edges": [], "outputs": [{"layer_id": id("SLYR", 10), "operation_key": "composite", "port_key": "out"}]})).unwrap();
+    d.graph.operations.push(src(11));
+    d.graph.operations.push(src(12));
+    d.graph.edges = vec![edge(12, 0), edge(11, 1)];
+    d
+}
+
+struct GraphAssets;
+impl PdfAssets for GraphAssets {
+    fn path(&self, path_id: &str) -> Option<OwnedPath> {
+        let x = if path_id == id("SVPT", 11) { 350.0 } else if path_id == id("SVPT", 12) { 360.0 } else { return None };
+        Some(OwnedPath {
+            elements: vec![
+                PathElement::MoveTo(PathPoint::new(x, 50.0)),
+                PathElement::LineTo(PathPoint::new(x + 50.0, 50.0)),
+                PathElement::LineTo(PathPoint::new(x + 50.0, 100.0)),
+                PathElement::Close,
+            ],
+            fill_rule: NibRule::NonZero,
+        })
+    }
+    fn raster(&self, _: &str) -> Option<PlacedRaster<'_>> {
+        None
+    }
+    fn profile(&self, _: &str) -> Option<&[u8]> {
+        None
+    }
+}
+
+#[test]
+fn layer_graph_decides_the_paint_order() {
+    let cancel = CancellationToken::default();
+    let snapshot = validate_document(graph_document(), Budget::default(), &cancel, &Everything).unwrap();
+    let mut design = StudioDesignRecords::new(id("SDOC", 1));
+    let fill = |n: u32, rgb: [f64; 3]| {
+        paint_style(n, StudioAppearanceRow::Fill {
+            paint: StudioPaint::Solid { colour: StudioColor { r: rgb[0], g: rgb[1], b: rgb[2], colour_profile_id: ProfileBinding::Unassigned(()) } },
+            opacity: 100.0,
+            blend_mode: 2,
+            visible: true,
+        })
+    };
+    design.paint_styles.push(fill(11, [1.0, 0.0, 0.0]));
+    design.paint_styles.push(fill(12, [0.0, 0.0, 1.0]));
+    for n in [11u32, 12] {
+        let mut node: StudioNodeDesign = serde_json::from_value(serde_json::json!({"node": {"node_kind": "layer", "node_id": id("SLYR", n)}})).unwrap();
+        node.style_refs.insert("fill_style_id".into(), id("SSTY", n));
+        design.nodes.push(node);
+    }
+    let out = export_pdf(
+        &PdfExportInput {
+            snapshot: &snapshot,
+            design: Some(&design),
+            stories: &[],
+            fonts: &[],
+            assets: &GraphAssets,
+            options: ExportOptions::default(),
+            limits: Limits::default(),
+        },
+        &cancel,
+    )
+    .unwrap();
+    let content: String = streams(&out.bytes).iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    let (blue, red) = (content.find("0.0 0.0 1.0 rg").unwrap(), content.find("1.0 0.0 0.0 rg").unwrap());
+    assert!(blue < red, "ordinal 0 (blue, listed second) is painted first");
+    assert_eq!(out.paths_drawn, 2);
+    let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
+    assert!(codes.contains(&"layer_not_in_composition_graph"), "{codes:?}");
+    assert!(!codes.contains(&"composition_graph_absent"), "{codes:?}");
 }

@@ -8,9 +8,12 @@
 //!   right-hand or single-sided page and the right edge of a left-hand page); TrimBox = the page;
 //!   BleedBox = the media box when the page declares a bleed. Spread coordinates (pages side by side,
 //!   y down, the convention of hsk-studio-layout's `folio_input`) map to PDF user space (y up).
-//! - Layers draw in `StudioDocument::layers` order, bottom first (the document graph's compositing
-//!   order is not consulted: CONVENTION, UNVERIFIED against InDesign/Illustrator stacking). A layer
-//!   is drawn on every page of its spread its geometry overlaps.
+//! - Layers draw in layer-graph order, bottom first (`StudioLayerGraph` outputs in order, each
+//!   composite operation's inputs by `input_ordinal`, 0 = bottom: composite's convention, UNVERIFIED
+//!   against InDesign/Illustrator stacking). A document without graph outputs (IDML imports build
+//!   none) draws in `StudioDocument::layers` order and reports `composition_graph_absent`; with a
+//!   graph, layers it does not reach are reported, not drawn. A layer is drawn on every page of its
+//!   spread its geometry overlaps.
 //! - Text layers: the frame's lines from the story's `LayoutProposal`; each glyph is the caller's
 //!   glyph id (Type's `Glyph::glyph_id`, never re-shaped here, STU-TYP-127) placed at the line start
 //!   plus the advances layout used, with the line's justification (`word_scale` on whitespace
@@ -37,7 +40,7 @@ use crate::idml_decode::LossBook;
 use crate::model::{LossEntry, LossKind};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    GeometryUnit, Length, NodeKind, PageSide, Parent, Payload, ProfileBinding, Snapshot,
+    GeometryUnit, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
     StrokeAlign, StrokeCap, StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords,
     StudioDocument, StudioLayer, StudioPaint,
 };
@@ -243,25 +246,8 @@ pub fn export_pdf(input: &PdfExportInput<'_>, cancel: &CancellationToken) -> Res
     let page_ids = cx.add_pages()?;
     cx.embed_fonts()?;
     let by_id: BTreeMap<&str, &StudioLayer> = doc.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
-    for layer in &doc.layers {
-        canceled(cancel)?;
-        if !layer.visible || matches!(layer.payload, Payload::Group) {
-            continue;
-        }
-        let Some(spread) = spread_of(doc, &by_id, layer) else {
-            cx.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_not_on_page_spread");
-            continue;
-        };
-        if layer.appearance.is_some() {
-            cx.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_appearance_ignored");
-        }
-        match &layer.payload {
-            Payload::Text { story_id } => cx.text_layer(layer, story_id)?,
-            Payload::Vector { path_ids } => cx.vector_layer(layer, spread, path_ids)?,
-            Payload::Raster { .. } => cx.raster_layer(layer, spread)?,
-            _ => cx.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_kind_not_exported"),
-        }
-    }
+    let order = paint_order(input.snapshot, &mut cx.loss);
+    cx.draw_nodes(&order, &by_id, cancel)?;
     let Cx { ex, loss, glyphs, paths, tiles, .. } = cx;
     let (bytes, receipt) = ex.finish(cancel)?;
     Ok(PdfExportOutput {
@@ -304,6 +290,120 @@ fn check_stories(input: &PdfExportInput<'_>, doc: &StudioDocument) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// One entry of the paint order: a layer, or a composite (group) layer with its ordered inputs.
+enum Node {
+    Layer(usize),
+    Group(usize, Vec<Node>),
+}
+
+/// Bottom-first paint order from the layer graph (Folio `StudioLayerGraph`, composite convention:
+/// `outputs[0]` bottom-most, a composite operation's inputs by `input_ordinal`, 0 = bottom). A
+/// document whose graph has no output is drawn in `StudioDocument::layers` order and reported
+/// (`composition_graph_absent`, as IDML imports build no graph); with a graph, a layer it never
+/// reaches is not drawn and is reported (`layer_not_in_composition_graph`), like composite.
+fn paint_order(snap: &Snapshot, loss: &mut LossBook) -> Vec<Node> {
+    let doc = snap.document();
+    if doc.graph.outputs.is_empty() {
+        if !doc.layers.is_empty() {
+            loss.note("document", "graph", LossKind::Approximated, "composition_graph_absent");
+        }
+        return (0..doc.layers.len()).map(Node::Layer).collect();
+    }
+    let index: BTreeMap<&str, usize> = doc.layers.iter().enumerate().map(|(i, l)| (l.layer_id.as_str(), i)).collect();
+    let mut seen = vec![false; doc.layers.len()];
+    let mut out = Vec::new();
+    for addr in &doc.graph.outputs {
+        if let Some(n) = visit(snap, &index, &mut seen, addr, 0) {
+            out.push(n);
+        }
+    }
+    for (i, l) in doc.layers.iter().enumerate() {
+        if !seen.get(i).copied().unwrap_or(true) && !matches!(l.payload, Payload::Group) {
+            loss.note(&l.layer_id, &l.kind, LossKind::Unsupported, "layer_not_in_composition_graph");
+        }
+    }
+    out
+}
+
+fn visit(snap: &Snapshot, index: &BTreeMap<&str, usize>, seen: &mut [bool], addr: &PortAddress, depth: usize) -> Option<Node> {
+    if depth > MAX_PARENT_DEPTH {
+        return None;
+    }
+    let i = *index.get(addr.layer_id.as_str())?;
+    let slot = seen.get_mut(i)?;
+    if *slot {
+        return None;
+    }
+    *slot = true;
+    let op = snap
+        .document()
+        .graph
+        .operations
+        .iter()
+        .find(|o| o.layer_id == addr.layer_id && o.operation_key == addr.operation_key)?;
+    if op.operation_kind != OperationKind::Composite {
+        return Some(Node::Layer(i));
+    }
+    let mut children = Vec::new();
+    for port in &op.inputs {
+        let at = PortAddress { layer_id: op.layer_id.clone(), operation_key: op.operation_key.clone(), port_key: port.port_key.clone() };
+        for src in snap.ordered_inputs(&at) {
+            if let Some(n) = visit(snap, index, seen, src, depth.saturating_add(1)) {
+                children.push(n);
+            }
+        }
+    }
+    Some(Node::Group(i, children))
+}
+
+impl Cx<'_> {
+    fn draw_nodes(&mut self, nodes: &[Node], by_id: &BTreeMap<&str, &StudioLayer>, cancel: &CancellationToken) -> Result<()> {
+        let doc = self.doc;
+        for node in nodes {
+            canceled(cancel)?;
+            match node {
+                Node::Group(i, children) => {
+                    let Some(layer) = doc.layers.get(*i) else { continue };
+                    if !layer.visible {
+                        continue;
+                    }
+                    if layer.appearance.is_some() {
+                        self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_appearance_ignored");
+                    }
+                    self.draw_nodes(children, by_id, cancel)?;
+                }
+                Node::Layer(i) => {
+                    let Some(layer) = doc.layers.get(*i) else { continue };
+                    self.draw_layer(layer, by_id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_layer(&mut self, layer: &StudioLayer, by_id: &BTreeMap<&str, &StudioLayer>) -> Result<()> {
+        if !layer.visible || matches!(layer.payload, Payload::Group) {
+            return Ok(());
+        }
+        let Some(spread) = spread_of(self.doc, by_id, layer) else {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_not_on_page_spread");
+            return Ok(());
+        };
+        if layer.appearance.is_some() {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_appearance_ignored");
+        }
+        match &layer.payload {
+            Payload::Text { story_id } => self.text_layer(layer, story_id),
+            Payload::Vector { path_ids } => self.vector_layer(layer, spread, path_ids),
+            Payload::Raster { .. } => self.raster_layer(layer, spread),
+            _ => {
+                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_kind_not_exported");
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Index of the page spread a layer belongs to (through group parents).
