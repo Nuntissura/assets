@@ -23,6 +23,7 @@ pub mod export;
 pub mod brush_mix;
 pub mod layers;
 pub mod selection_store;
+pub mod text;
 pub mod render;
 
 use crate::harness::{Harness, References, Run, Selection};
@@ -119,6 +120,10 @@ pub struct Viewer {
     display: Option<Box<dyn GpuDisplay>>,
     /// Tools, selection, brush (module `edit`).
     edit: EditState,
+    /// Fonts the text tool draws with (module `text`; the bundled `Ubuntu-Light` first).
+    fonts: Vec<text::FontFile>,
+    /// Size of new text layers in points (1 pt = 1 document pixel).
+    pub text_size_pt: f64,
     selected: Option<String>,
     status: Vec<String>,
     zoom: f32,
@@ -161,6 +166,8 @@ impl Viewer {
             gpu_options,
             display: None,
             edit: EditState::default(),
+            fonts: text::FontFile::bundled().into_iter().collect(),
+            text_size_pt: 24.0,
             selected: None,
             status: Vec::new(),
             zoom: 1.0,
@@ -359,7 +366,8 @@ impl Viewer {
         let read_back;
         let frame = if shown.rgba8.is_empty() {
             let snap = self.run.snapshot().ok_or_else(|| format!("export {}: nothing open", path.display()))?;
-            read_back = render::render(snap, &self.assets, Prefer::Cpu, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
+            let text = self.prepared_text().map_err(|e| format!("export {}: {e}", path.display()))?;
+            read_back = render::render_inner(snap, &self.assets, Some(&text), Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
             &read_back
         } else {
             shown
@@ -408,13 +416,21 @@ impl Viewer {
             return;
         }
         self.dirty = false;
-        let Some(snap) = self.run.snapshot() else {
+        if self.run.snapshot().is_none() {
             return;
-        };
+        }
         if self.prefer == Prefer::Gpu && self.gpu.is_none() && self.display.is_none() {
             self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options));
         }
-        let result = render::render_to(snap, &self.assets, self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel);
+        let result = match self.prepared_text() {
+            Ok(text) => {
+                let Some(snap) = self.run.snapshot() else {
+                    return;
+                };
+                render::render_inner(snap, &self.assets, Some(&text), self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel)
+            }
+            Err(e) => Err(RenderFail { code: "text", detail: e }),
+        };
         match result {
             Ok(frame) => {
                 let line = format!("rendered revision {} with render-{} ({}x{}){}", frame.revision, frame.backend, frame.width, frame.height, if frame.notes.is_empty() { String::new() } else { format!("; {}", frame.notes.join("; ")) });
@@ -872,7 +888,7 @@ impl Viewer {
                 Tool::EllipseSelect => "Drag an elliptical selection",
                 Tool::Lasso => "Drag a freehand selection",
                 Tool::Brush => "Paint on the selected raster layer (clipped to the selection)",
-                Tool::Text => edit::TEXT_TOOL_GAP,
+                Tool::Text => "Click the canvas to place a point-text layer (size and colour from the text size and brush colour)",
             };
             if ui.push_id(widget::id(&name), |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).inner.on_hover_text(hover).clicked() {
                 self.set_tool(tool);

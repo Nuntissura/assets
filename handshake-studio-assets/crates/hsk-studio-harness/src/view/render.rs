@@ -15,7 +15,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_composite::{self as composite, BlendSpace, CompositeError, Exactness, NodeAddr, TileInfo};
+use hsk_studio_composite::{self as composite, BlendSpace, CompositeError, Exactness, NodeAddr, PreparedText, TileInfo};
 use hsk_studio_folio::{self as folio, Inspection, ProfileBinding, Snapshot, TileRef};
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_pigment::render_plan::{
@@ -104,11 +104,30 @@ pub fn render(snap: &Snapshot, assets: &Assets, prefer: Prefer, gpu: Option<&hsk
     render_to(snap, assets, prefer, gpu, None, cancel)
 }
 
+/// [`render`] with the document's text layers drawn from `text` (lane SMB-HARNESS-UI-3: composite
+/// `evaluate_with_text` + `lower_to_render_plan_with_text`, the text masks served to the backend).
+pub fn render_with_text(snap: &Snapshot, assets: &Assets, text: &PreparedText, prefer: Prefer, gpu: Option<&hsk_studio_render_gpu::GpuBackend>, cancel: &CancellationToken) -> Result<Frame, RenderFail> {
+    render_inner(snap, assets, Some(text), prefer, gpu, None, cancel)
+}
+
 /// [`render`] that first tries the host display path when `display` is set and `prefer` is
 /// [`Prefer::Gpu`]; a display failure is noted (`gpu_shared_fallback`) and the read-back path runs.
 pub fn render_to(
     snap: &Snapshot,
     assets: &Assets,
+    prefer: Prefer,
+    gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
+    display: Option<&mut dyn GpuDisplay>,
+    cancel: &CancellationToken,
+) -> Result<Frame, RenderFail> {
+    render_inner(snap, assets, None, prefer, gpu, display, cancel)
+}
+
+/// [`render_to`] with optional prepared text.
+pub fn render_inner(
+    snap: &Snapshot,
+    assets: &Assets,
+    text: Option<&PreparedText>,
     prefer: Prefer,
     gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
     display: Option<&mut dyn GpuDisplay>,
@@ -124,11 +143,20 @@ pub fn render_to(
     let target = OutputTarget { extent, format: SampleFormat::RgbF32Le, alpha: AlphaConvention::Straight, space };
 
     let plan = composite::lower(&view, doc.revision, BlendSpace::LinearLight, &composite::Limits::default(), cancel).map_err(composite_fail)?;
-    let report = composite::evaluate(&plan, &view, cancel).map_err(composite_fail)?;
     let root = NodeAddr { layer_id: VIEW_ROOT_LAYER.to_string(), operation_key: "mix".into(), port_key: "out".into() };
     let tiles = TileTable::new(assets);
-    let lowering = composite::lower_to_render_plan(&plan, &report, &view, &root, target, &tiles).map_err(composite_fail)?;
-    let sources = Sources { tiles: &tiles, table: &lowering.sources, space };
+    let empty = PreparedText::default();
+    let has_text = doc.layers.iter().any(|l| matches!(l.payload, folio::Payload::Text { .. }));
+    let (lowering, text_masks) = if has_text {
+        let prepared = text.unwrap_or(&empty);
+        let report = composite::evaluate_with_text(&plan, &view, prepared, cancel).map_err(composite_fail)?;
+        let lowered = composite::lower_to_render_plan_with_text(&plan, &report, &view, &root, target, &tiles, prepared).map_err(composite_fail)?;
+        (lowered.lowering, Some((lowered.text_masks, prepared)))
+    } else {
+        let report = composite::evaluate(&plan, &view, cancel).map_err(composite_fail)?;
+        (composite::lower_to_render_plan(&plan, &report, &view, &root, target, &tiles).map_err(composite_fail)?, None)
+    };
+    let sources = Sources { tiles: &tiles, table: &lowering.sources, space, text: text_masks.as_ref().map(|(m, p)| (m, *p)) };
     let request = ExecuteRequest { expected_revision: lowering.plan.revision, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: MAX_WORKING_BYTES };
     if prefer == Prefer::Gpu
         && let Some(display) = display
@@ -313,6 +341,8 @@ struct Sources<'a> {
     tiles: &'a TileTable<'a>,
     table: &'a composite::SourceTable,
     space: ColourTag,
+    /// Text masks of the lowering and the prepared planes behind them.
+    text: Option<(&'a composite::TextMaskTable, &'a PreparedText)>,
 }
 
 impl PlanSources for Sources<'_> {
@@ -334,8 +364,10 @@ impl PlanSources for Sources<'_> {
             space: self.space,
         })
     }
-    fn mask(&self, _: SourceKey) -> Option<Mask<'_>> {
-        None
+    fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
+        let (masks, prepared) = self.text?;
+        let (_, layer) = masks.iter().find(|(k, _)| *k == key)?;
+        prepared.plane(layer)?.mask()
     }
 }
 

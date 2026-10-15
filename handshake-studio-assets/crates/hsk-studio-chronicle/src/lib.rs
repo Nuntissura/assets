@@ -6,7 +6,7 @@ use hsk_studio_folio::{
     Resolver, Snapshot, StudioDocument, StudioLayer, TileRef,
 };
 mod structure;
-use structure::{capture, placement_of, remove_layer, set_placement};
+use structure::{capture, placement_of, remove_layer, resolve, restore_command, set_placement};
 /// The current [`Property::Placement`] of a layer: its parent and stack index (0 = bottom-most),
 /// `None` when the layer is absent or not stacked (no single graph operation filling exactly one
 /// slot under the root or a group layer). The rule `prepare` reads; consumers need no copy of it.
@@ -93,10 +93,13 @@ pub enum Property {
     /// Where a layer sits in the layer stack (lane SMB-HARNESS-UI-3): its parent (the document
     /// root or a group layer) and its stack index there (0 = bottom-most: the composite input
     /// ordinal, or for the root the position in `graph.outputs`), or absent when the layer does not
-    /// exist. Value `Placement`. A write from absent to present creates the layer (the value carries
-    /// [`LayerCreate`]), from present to absent deletes it, between two placements moves it
-    /// (reorder, group, ungroup). Writes of one patch apply in order, each index measured on the
-    /// stack as the previous writes left it; the inverse lists the restoring writes in reverse.
+    /// exist. Reads quote the state value `Placement`; writes are the command value `Place`, an
+    /// enumerated placement ([STU-RAS-114]: `place_inside`, `place_at_beginning`, `place_at_end`,
+    /// `place_before`, `place_after`; index-only placement writes are refused `InvalidInput`), or
+    /// `Place(None)` to delete. A command on an absent layer creates it (it carries [`LayerCreate`]);
+    /// on a present layer it moves it (reorder, group, ungroup). Writes of one patch apply in order,
+    /// each command resolved on the stack as the previous writes left it; the inverse lists the
+    /// restoring commands in reverse.
     /// Seeded only for a layer with exactly one graph operation whose single output fills exactly
     /// one stack slot under the root or a group layer. A layer that neither the vector nor the
     /// document holds reads as absent at revision 0 (a caller that deletes layers keeps their
@@ -124,23 +127,50 @@ pub enum PropertyValue {
     Number(serde_json::Number),
     /// A raster layer's complete tile list.
     Tiles(TileList),
-    /// A layer's stack placement; `None` = the layer does not exist ([`Property::Placement`]).
+    /// A layer's stack placement (state, for reads); `None` = the layer does not exist
+    /// ([`Property::Placement`]).
     Placement(Option<Placement>),
+    /// A placement command (writes of [`Property::Placement`]); `None` deletes the layer.
+    Place(Option<PlaceCommand>),
 }
-/// Stack placement of a layer: parent and index (0 = bottom-most).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// Stack placement of a layer (state): parent and index (0 = bottom-most).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Placement {
     #[serde(deserialize_with = "required")]
     pub parent: Parent,
     pub index: u64,
-    /// Only on a write that creates the layer (absent -> present): its record and its graph
-    /// operation. Refused on reads (`WrongType`) and on any other write (`InvalidInput`).
+}
+/// The enumerated placement of [STU-RAS-114] (wire discriminants 0..=4). Studio reading of the
+/// directions (the spec names the members only; this follows the Photoshop document model, where
+/// a layer list runs top-first; UNVERIFIED, D5): `place_at_beginning` = top of the container,
+/// `place_at_end` = bottom, `place_before` = directly above the anchor, `place_after` = directly
+/// below it, `place_inside` = top of the anchor group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceMode {
+    PlaceInside,
+    PlaceAtBeginning,
+    PlaceAtEnd,
+    PlaceBefore,
+    PlaceAfter,
+}
+/// A placement command. `anchor`: the group (`place_inside`; the container of
+/// `place_at_beginning`/`place_at_end`, absent = the document root) or the sibling layer
+/// (`place_before`/`place_after`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlaceCommand {
+    pub mode: PlaceMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// Only on a command that creates the layer (absent -> present): its record and its graph
+    /// operation; refused on a command that moves an existing layer (`InvalidInput`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create: Option<Box<LayerCreate>>,
 }
 /// Folio admits only finite numbers and JSON has no NaN, so equality is reflexive (`Eq`).
-impl Eq for Placement {}
+impl Eq for PlaceCommand {}
 /// The record and graph operation of a layer that a placement write creates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -521,7 +551,6 @@ impl ValueRef<'_> {
                 PropertyValue::Placement(p.as_ref().map(|(parent, index)| Placement {
                     parent: parent.clone(),
                     index: *index,
-                    create: None,
                 }))
             }
         }
@@ -592,7 +621,7 @@ fn value_type(a: &PropertyAddress, v: &PropertyValue) -> Result<()> {
             n.as_u64().is_some_and(|d| u16::try_from(d).is_ok())
         }
         (Property::Tiles, PropertyValue::Tiles(_)) => true,
-        (Property::Placement, PropertyValue::Placement(_)) => true,
+        (Property::Placement, PropertyValue::Placement(_) | PropertyValue::Place(_)) => true,
         _ => false,
     };
     if !ok {
@@ -620,7 +649,8 @@ fn size(v: &PropertyValue) -> usize {
         }),
         // A placement is two numbers and a parent id (a fixed 128); a create also carries its
         // record and operation, counted by their encoded length.
-        PropertyValue::Placement(p) => p.as_ref().map_or(0, |p| {
+        PropertyValue::Placement(p) => p.as_ref().map_or(0, |_| 128),
+        PropertyValue::Place(p) => p.as_ref().map_or(0, |p| {
             p.create.as_ref().map_or(128, |c| {
                 serde_json::to_vec(c).map_or(usize::MAX, |v| v.len().saturating_add(128))
             })
@@ -654,8 +684,11 @@ fn set_appearance(l: &mut StudioLayer, property: Property, n: &serde_json::Numbe
 }
 fn set(d: &mut StudioDocument, a: &PropertyAddress, v: &PropertyValue) -> Result<()> {
     value_type(a, v)?;
-    if let PropertyValue::Placement(p) = v {
-        return set_placement(d, a, p.as_ref());
+    match v {
+        PropertyValue::Place(p) => return set_placement(d, a, p.as_ref()),
+        // [STU-RAS-114]: index-only placement writes are forbidden.
+        PropertyValue::Placement(_) => return Err(failure(Code::InvalidInput, Some(a))),
+        _ => {}
     }
     match a.target.node_kind {
         NodeKind::Layer => {
@@ -672,7 +705,9 @@ fn set(d: &mut StudioDocument, a: &PropertyAddress, v: &PropertyValue) -> Result
                     Payload::Raster { tiles } => tiles.clone_from(&list.0),
                     _ => return Err(failure(Code::InvalidTarget, Some(a))),
                 },
-                PropertyValue::Placement(_) => return Err(failure(Code::WrongType, Some(a))),
+                PropertyValue::Placement(_) | PropertyValue::Place(_) => {
+                    return Err(failure(Code::WrongType, Some(a)));
+                }
             }
         }
         NodeKind::Artboard => {
@@ -845,6 +880,7 @@ fn scalar_size(v: &PropertyValue, t: &CancellationToken) -> Result<usize> {
         PropertyValue::Number(n) => encoded_size(n, t),
         PropertyValue::Tiles(list) => encoded_size(list, t),
         PropertyValue::Placement(p) => encoded_size(p, t),
+        PropertyValue::Place(p) => encoded_size(p, t),
     }
 }
 /// Stateless preparation. The caller serializes a fresh current read plus publication.
@@ -919,8 +955,8 @@ pub fn prepare(
         if reads.insert(key.clone(), read).is_some() {
             return Err(failure(Code::DuplicateAddress, Some(&read.address)));
         }
-        if matches!(&read.expected_value, PropertyValue::Placement(Some(p)) if p.create.is_some())
-        {
+        // Reads quote state; a command value is not a state.
+        if matches!(&read.expected_value, PropertyValue::Place(_)) {
             return Err(failure(Code::WrongType, Some(&read.address)));
         }
         let actual = value(current.document(), &read.address)?;
@@ -1065,10 +1101,43 @@ fn prepare_structure(
     for write in &p.writes {
         check(t)?;
         let before = value(&d, &write.address)?;
-        if before.equals(&write.value) {
-            if matches!(&write.value, PropertyValue::Placement(Some(p)) if p.create.is_some()) {
+        let (unchanged, restore) = if write.address.property == Property::Placement {
+            let id = write.address.target.node_id.as_str();
+            let PropertyValue::Place(command) = &write.value else {
+                // [STU-RAS-114]: index-only placement writes are forbidden.
+                return Err(failure(Code::InvalidInput, Some(&write.address)));
+            };
+            let target = match command {
+                None => None,
+                Some(c) => Some(resolve(&d, id, c, &write.address)?),
+            };
+            let now = placement_of(&d, id);
+            let unchanged = d.layers.iter().any(|l| l.layer_id == id) == target.is_some()
+                && now == target;
+            if unchanged && command.as_ref().is_some_and(|c| c.create.is_some()) {
                 return Err(failure(Code::InvalidInput, Some(&write.address)));
             }
+            // The restoring command: re-create a deleted layer exactly, move a moved one back,
+            // delete a created one.
+            let restore = match (now.is_some(), &target) {
+                (false, _) => PropertyValue::Place(None),
+                (true, None) => PropertyValue::Place(Some(PlaceCommand {
+                    create: Some(Box::new(capture(&d, id).ok_or_else(|| {
+                        failure(Code::InvalidTarget, Some(&write.address))
+                    })?)),
+                    ..restore_command(&d, id)
+                        .ok_or_else(|| failure(Code::InvalidTarget, Some(&write.address)))?
+                })),
+                (true, Some(_)) => PropertyValue::Place(Some(
+                    restore_command(&d, id)
+                        .ok_or_else(|| failure(Code::InvalidTarget, Some(&write.address)))?,
+                )),
+            };
+            (unchanged, restore)
+        } else {
+            (before.equals(&write.value), before.owned())
+        };
+        if unchanged {
             continue;
         }
         let previous_revision = revision_at(vector, &write.address, current.document())?;
@@ -1080,16 +1149,6 @@ fn prepare_structure(
             previous_revision,
             revision,
         });
-        let mut restore = before.owned();
-        // Undoing a delete re-creates the layer exactly as it was.
-        if let (PropertyValue::Placement(Some(old)), PropertyValue::Placement(None)) =
-            (&mut restore, &write.value)
-        {
-            old.create = Some(Box::new(
-                capture(&d, &write.address.target.node_id)
-                    .ok_or_else(|| failure(Code::InvalidTarget, Some(&write.address)))?,
-            ));
-        }
         inverse_writes.push(PropertyWrite {
             address: write.address.clone(),
             value: restore,
@@ -1551,4 +1610,4 @@ pub fn result_schema() -> schemars::Schema {
         .into_generator()
         .into_root_schema_for::<SourceResult>()
 }
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver / addressability table: PROPERTIES, addressable(kind, property), seed_revisions(document), mask_property(document, address)","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes of layer name, visible, opacity (percent number), blend_mode (StudioBlendMode discriminant number; a group write also sets its isolation) or tiles (a raster layer's complete tile list, seeded only for raster layers; new digests must be made available by the caller, e.g. session staging), placement (a layer's stack parent and index, absent = no such layer: create with a LayerCreate record+operation, delete, move/reorder/group/ungroup; writes of one patch apply in order and the inverse restores in reverse, a delete's inverse re-creates the record; a never-seen layer is at revision 0; tests/structure.rs create_reorder_delete_and_undo_restore_the_stack, group_and_ungroup_apply_in_order_and_invert_exactly, hostile_structure_edits_are_typed_and_change_nothing), artboard/page-spread name; an appearance equal to the kind identity is stored absent so a write and its inverse restore the original document (tests appearance_properties_transact_and_invert_to_the_original_document, tiles_property_is_raster_only_and_inverts); caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address (name and visible only: observe has no opacity/blend_mode/tiles property, so those failures report the code without an address)/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input are not telemetry (test actual_detail_changed_nochange_inverse_conflict_and_privacy); missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver / addressability table: PROPERTIES, addressable(kind, property), seed_revisions(document), mask_property(document, address)","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes of layer name, visible, opacity (percent number), blend_mode (StudioBlendMode discriminant number; a group write also sets its isolation) or tiles (a raster layer's complete tile list, seeded only for raster layers; new digests must be made available by the caller, e.g. session staging), placement (a layer's stack parent and index, absent = no such layer, read as state Placement; written as the enumerated command Place of STU-RAS-114 - place_inside, place_at_beginning, place_at_end, place_before, place_after (directions read like the Photoshop document model, UNVERIFIED) - index-only writes refused invalid_input; create with a LayerCreate record+operation, Place(None) deletes, move/reorder/group/ungroup; writes of one patch apply in order and the inverse restores in reverse, a delete's inverse re-creates the record; a never-seen layer is at revision 0; tests/structure.rs create_reorder_delete_and_undo_restore_the_stack, group_and_ungroup_apply_in_order_and_invert_exactly, hostile_structure_edits_are_typed_and_change_nothing), artboard/page-spread name; an appearance equal to the kind identity is stored absent so a write and its inverse restore the original document (tests appearance_properties_transact_and_invert_to_the_original_document, tiles_property_is_raster_only_and_inverts); caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address (name and visible only: observe has no opacity/blend_mode/tiles property, so those failures report the code without an address)/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input are not telemetry (test actual_detail_changed_nochange_inverse_conflict_and_privacy); missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;

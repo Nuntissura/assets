@@ -1,5 +1,6 @@
 //! Layer-stack structure through `Property::Placement` (lane SMB-HARNESS-UI-3): create, delete,
-//! reorder, group and ungroup as chronicle transactions whose inverses restore the stack exactly.
+//! reorder, group and ungroup as chronicle transactions of enumerated placement commands
+//! ([STU-RAS-114]) whose inverses restore the stack exactly.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_chronicle::*;
 use hsk_studio_folio::{
@@ -63,7 +64,7 @@ fn in_group(n: u8) -> Parent {
     Parent::Node(NodeRef { node_kind: NodeKind::Layer, node_id: id("SLYR", n) })
 }
 fn place(parent: Parent, index: u64) -> PropertyValue {
-    PropertyValue::Placement(Some(Placement { parent, index, create: None }))
+    PropertyValue::Placement(Some(Placement { parent, index }))
 }
 /// A session-like holder: snapshot plus revision vector (new placement entries appended, deleted
 /// layers' entries kept, seeds merged after each structural change).
@@ -177,14 +178,20 @@ fn full(d: &hsk_studio_folio::StudioDocument) -> Full {
     ops.sort();
     (shape(d), layers, ops)
 }
-fn new_raster(n: u8, parent: Parent, index: u64) -> PropertyValue {
+fn cmd(mode: PlaceMode, anchor: Option<u8>) -> PropertyValue {
+    PropertyValue::Place(Some(PlaceCommand { mode, anchor: anchor.map(|n| id("SLYR", n)), create: None }))
+}
+fn delete() -> PropertyValue {
+    PropertyValue::Place(None)
+}
+fn new_layer(n: u8, kind: &str, parent: Parent, mode: PlaceMode, anchor: Option<u8>) -> PropertyValue {
     let pj = match &parent {
         Parent::Root(()) => Value::Null,
         Parent::Node(r) => json!({"node_kind":"layer","node_id":r.node_id}),
     };
-    let layer: StudioLayer = serde_json::from_value(layer_json(n, "raster", pj)).unwrap();
-    let operation: Operation = serde_json::from_value(op_json(n, "raster")).unwrap();
-    PropertyValue::Placement(Some(Placement { parent, index, create: Some(Box::new(LayerCreate { layer, operation })) }))
+    let layer: StudioLayer = serde_json::from_value(layer_json(n, kind, pj)).unwrap();
+    let operation: Operation = serde_json::from_value(op_json(n, kind)).unwrap();
+    PropertyValue::Place(Some(PlaceCommand { mode, anchor: anchor.map(|a| id("SLYR", a)), create: Some(Box::new(LayerCreate { layer, operation })) }))
 }
 
 #[test]
@@ -195,23 +202,23 @@ fn create_reorder_delete_and_undo_restore_the_stack() {
     for n in 1..=5 {
         assert!(doc.vector.iter().any(|e| e.address == at(n) && e.revision == 0));
     }
-    // Create L6 at root index 1 (between L1 and L2): never seen, so revision 0, no vector entry.
-    let p = doc.patch(vec![(at(6), new_raster(6, root(), 1))]);
+    // Create L6 directly above L1 (root index 1): never seen, so revision 0, no vector entry.
+    let p = doc.patch(vec![(at(6), new_layer(6, "raster", root(), PlaceMode::PlaceBefore, Some(1)))]);
     let undo_create = doc.apply(&p);
     assert_eq!(doc.placement(6), place(root(), 1));
     assert_eq!(doc.placement(2), place(root(), 2), "siblings above move up");
     assert_eq!(doc.revision(&at(6)), 1);
     assert!(doc.vector.iter().any(|e| e.address.target.node_id == id("SLYR", 6) && e.address.property == Property::Name), "created layer's properties are seeded");
-    // Reorder L1 to the top of the root stack (index 4 of 5 after its own removal).
-    let p = doc.patch(vec![(at(1), place(root(), 4))]);
+    // Reorder L1 to the beginning (top) of the root stack.
+    let p = doc.patch(vec![(at(1), cmd(PlaceMode::PlaceAtBeginning, None))]);
     let undo_move = doc.apply(&p);
     assert_eq!(doc.placement(1), place(root(), 4));
     assert_eq!(doc.placement(6), place(root(), 0));
-    // Delete L2: the inverse carries its record and operation.
-    let p = doc.patch(vec![(at(2), PropertyValue::Placement(None))]);
+    // Delete L2: the inverse is a command that re-creates its record and operation.
+    let p = doc.patch(vec![(at(2), delete())]);
     let undo_delete = doc.apply(&p);
     assert_eq!(doc.placement(2), PropertyValue::Placement(None));
-    let PropertyValue::Placement(Some(restore)) = &undo_delete.writes[0].value else { panic!("delete inverse") };
+    let PropertyValue::Place(Some(restore)) = &undo_delete.writes[0].value else { panic!("delete inverse") };
     assert!(restore.create.as_ref().is_some_and(|c| c.layer.layer_id == id("SLYR", 2)));
     // Undo in reverse order restores the original stack and records exactly.
     doc.undo(&undo_delete);
@@ -226,31 +233,37 @@ fn create_reorder_delete_and_undo_restore_the_stack() {
 fn group_and_ungroup_apply_in_order_and_invert_exactly() {
     let mut doc = Doc::new();
     let original = full(doc.snap.document());
-    // Group L2 and L3 into a new group G7 at root index 1, in one transaction: create the group,
-    // then move each child in (each index measured after the previous write).
-    let group: StudioLayer = serde_json::from_value(layer_json(7, "group", Value::Null)).unwrap();
-    let mix: Operation = serde_json::from_value(op_json(7, "group")).unwrap();
-    let create_group = PropertyValue::Placement(Some(Placement { parent: root(), index: 1, create: Some(Box::new(LayerCreate { layer: group, operation: mix })) }));
-    let p = doc.patch(vec![(at(7), create_group), (at(2), place(in_group(7), 0)), (at(3), place(in_group(7), 1))]);
+    // Group L2 and L3 into a new group G7 directly above L1, in one transaction: create the
+    // group, then move each child to the top of it (each command resolved after the previous).
+    let p = doc.patch(vec![
+        (at(7), new_layer(7, "group", root(), PlaceMode::PlaceBefore, Some(1))),
+        (at(2), cmd(PlaceMode::PlaceInside, Some(7))),
+        (at(3), cmd(PlaceMode::PlaceInside, Some(7))),
+    ]);
     let undo_group = doc.apply(&p);
     assert_eq!(doc.placement(7), place(root(), 1));
     assert_eq!(doc.placement(2), place(in_group(7), 0));
     assert_eq!(doc.placement(3), place(in_group(7), 1));
     assert_eq!(doc.placement(4), place(root(), 2));
-    // Ungroup: move the children out where the group was, then delete the group.
-    let p = doc.patch(vec![(at(3), place(root(), 2)), (at(2), place(root(), 2)), (at(7), PropertyValue::Placement(None))]);
+    // Ungroup: the children move directly above the group, top child first, then the group goes.
+    let p = doc.patch(vec![(at(3), cmd(PlaceMode::PlaceBefore, Some(7))), (at(2), cmd(PlaceMode::PlaceBefore, Some(7))), (at(7), delete())]);
     let undo_ungroup = doc.apply(&p);
     assert_eq!(full(doc.snap.document()).0, original.0, "ungroup restores the original stack");
     doc.undo(&undo_ungroup);
     assert_eq!(doc.placement(2), place(in_group(7), 0));
     doc.undo(&undo_group);
     assert_eq!(full(doc.snap.document()), original);
-    // Sequential semantics: moving two layers where the first move shifts the second's index.
+    // Sequential semantics: the first move shifts the second's anchor positions.
     let mut doc = Doc::new();
-    let p = doc.patch(vec![(at(3), place(root(), 0)), (at(1), place(root(), 3))]);
+    let p = doc.patch(vec![(at(3), cmd(PlaceMode::PlaceAtEnd, None)), (at(1), cmd(PlaceMode::PlaceAtBeginning, None))]);
     let inverse = doc.apply(&p);
+    assert_eq!((doc.placement(3), doc.placement(1)), (place(root(), 0), place(root(), 3)));
     doc.undo(&inverse);
     assert_eq!(full(doc.snap.document()), original);
+    // place_after = directly below the anchor.
+    let p = doc.patch(vec![(at(3), cmd(PlaceMode::PlaceAfter, Some(1)))]);
+    doc.apply(&p);
+    assert_eq!((doc.placement(3), doc.placement(1)), (place(root(), 0), place(root(), 1)));
 }
 
 #[test]
@@ -261,36 +274,38 @@ fn hostile_structure_edits_are_typed_and_change_nothing() {
         let p = doc.patch(writes);
         assert_eq!(doc.prepare(&p).unwrap_err().code, code, "{p:?}");
     };
-    // Index past the end of the stack.
-    refuse(&mut doc, vec![(at(1), place(root(), 9))], Code::InvalidTarget);
-    refuse(&mut doc, vec![(at(6), new_raster(6, root(), 99))], Code::InvalidTarget);
-    // A create whose record names another layer, or a move that carries a record.
-    refuse(&mut doc, vec![(at(6), new_raster(8, root(), 0))], Code::InvalidInput);
-    let PropertyValue::Placement(Some(mut carried)) = new_raster(1, root(), 3) else { unreachable!() };
-    carried.index = 3;
-    refuse(&mut doc, vec![(at(1), PropertyValue::Placement(Some(carried)))], Code::InvalidInput);
-    // Creating without a record.
-    refuse(&mut doc, vec![(at(6), place(root(), 0))], Code::InvalidInput);
-    // Parent that is not a group (a raster layer), or a group moved into its own child.
-    refuse(&mut doc, vec![(at(1), place(in_group(2), 0))], Code::InvalidTarget);
-    refuse(&mut doc, vec![(at(1), place(in_group(9), 0))], Code::InvalidTarget);
-    // Deleting a group that still has children leaves a dangling parent: Folio refuses it.
-    refuse(&mut doc, vec![(at(4), PropertyValue::Placement(None))], Code::FolioRejected);
-    // A read may not carry a create record.
-    let mut p = doc.patch(vec![(at(6), new_raster(6, root(), 0))]);
-    p.reads[0].expected_value = new_raster(6, root(), 0);
+    // [STU-RAS-114]: an index-only placement write is refused.
+    refuse(&mut doc, vec![(at(1), place(root(), 2))], Code::InvalidInput);
+    // Anchors: absent, the layer itself, a raster layer as a container, a missing container.
+    refuse(&mut doc, vec![(at(1), cmd(PlaceMode::PlaceBefore, Some(9)))], Code::InvalidTarget);
+    refuse(&mut doc, vec![(at(1), cmd(PlaceMode::PlaceBefore, Some(1)))], Code::InvalidTarget);
+    refuse(&mut doc, vec![(at(1), cmd(PlaceMode::PlaceInside, Some(2)))], Code::InvalidTarget);
+    refuse(&mut doc, vec![(at(1), cmd(PlaceMode::PlaceAtBeginning, Some(9)))], Code::InvalidTarget);
+    refuse(&mut doc, vec![(at(1), cmd(PlaceMode::PlaceInside, None))], Code::InvalidInput);
+    refuse(&mut doc, vec![(at(1), cmd(PlaceMode::PlaceBefore, None))], Code::InvalidInput);
+    // A create whose record names another layer, a move that carries a record, a create without one.
+    refuse(&mut doc, vec![(at(6), new_layer(8, "raster", root(), PlaceMode::PlaceAtEnd, None))], Code::InvalidInput);
+    refuse(&mut doc, vec![(at(1), new_layer(1, "raster", root(), PlaceMode::PlaceAtBeginning, None))], Code::InvalidInput);
+    refuse(&mut doc, vec![(at(6), cmd(PlaceMode::PlaceAtEnd, None))], Code::InvalidInput);
+    // A group moved into its own child, and a group deleted with children: Folio refuses both.
+    refuse(&mut doc, vec![(at(6), new_layer(6, "group", in_group(4), PlaceMode::PlaceInside, Some(4))), (at(4), cmd(PlaceMode::PlaceInside, Some(6)))], Code::FolioRejected);
+    refuse(&mut doc, vec![(at(4), delete())], Code::FolioRejected);
+    // A read may not carry a command.
+    let mut p = doc.patch(vec![(at(6), new_layer(6, "raster", root(), PlaceMode::PlaceAtEnd, None))]);
+    p.reads[0].expected_value = cmd(PlaceMode::PlaceAtEnd, None);
     assert_eq!(doc.prepare(&p).unwrap_err().code, Code::WrongType);
     // A stale expected placement conflicts.
-    let mut p = doc.patch(vec![(at(1), place(root(), 2))]);
+    let mut p = doc.patch(vec![(at(1), cmd(PlaceMode::PlaceAtBeginning, None))]);
     p.reads[0].expected_value = place(root(), 1);
     assert_eq!(doc.prepare(&p).unwrap_err().code, Code::ValueConflict);
     // A layer the document holds but the vector does not name is unavailable (no default zero).
-    let p = doc.patch(vec![(at(1), place(root(), 2))]);
+    let p = doc.patch(vec![(at(1), cmd(PlaceMode::PlaceAtBeginning, None))]);
     doc.vector.retain(|e| e.address != at(1));
     assert_eq!(doc.prepare(&p).unwrap_err().code, Code::RevisionUnavailable);
     assert_eq!(doc.snap.encoded_bytes(), before.as_slice());
     // The wire form decodes through the bounded decoder (tile lists inside a create record).
-    let p = Doc::new().patch(vec![(at(6), new_raster(6, root(), 0))]);
+    let p = Doc::new().patch(vec![(at(6), new_layer(6, "raster", root(), PlaceMode::PlaceAtEnd, None))]);
     let bytes = serde_json::to_vec(&p).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("\"mode\":\"place_at_end\""));
     assert_eq!(decode_patch(&bytes, Budget::default(), &CancellationToken::default()).unwrap(), p);
 }

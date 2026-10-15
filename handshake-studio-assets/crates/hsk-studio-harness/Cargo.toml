@@ -13,7 +13,7 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 # Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
-viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu"]
+viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
 desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
 
@@ -34,6 +34,8 @@ hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", d
 hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-render-gpu = { path = "../hsk-studio-render-gpu", version = "=0.1.0", default-features = false, optional = true }
+# Text tool shaping (lane SMB-HARNESS-UI-3; edge harness -> type approved by the coordinator 2026-10-14).
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }

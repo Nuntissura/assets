@@ -1,7 +1,8 @@
 # Studio harness desktop viewer: how to launch (manual Operator step)
 
 The window is never opened by tests or agents (CX-SAFE-002). Tests drive the same state
-headlessly: `tests/viewer_headless.rs`, `tests/viewer_edit.rs`, `tests/viewer_shared_display.rs`.
+headlessly: `tests/viewer_headless.rs`, `tests/viewer_edit.rs`, `tests/viewer_shared_display.rs`,
+`tests/viewer_layers.rs`, `tests/viewer_brush_parity.rs`, `tests/viewer_selection.rs`, `tests/viewer_text.rs`.
 
 ## Build and launch
 
@@ -27,13 +28,17 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
 - Tool row: Hand (drag pans), Rect / Ellipse / Lasso (drag a selection; the combine box chooses
   replace, extend, diminish or intersect; Deselect clears; the selection shows marching ants),
   Brush (select a raster layer in the layer panel, then drag; size, hardness, opacity and colour
-  in the row; painting is clipped to the selection and stays inside the layer's existing tiles;
-  a tablet's touch force scales the tip size, the mouse is full pressure), Text (not available:
-  no transaction creates a text layer yet, the hover text says why). Undo / Redo buttons and
-  Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y undo and redo every committed edit (visibility, name, opacity,
-  blend mode, paint).
-- Left: layer tree. The checkbox shows/hides a layer through the session (chronicle commit,
-  new document revision, re-render). Click a name to select it.
+  in the row; painting is clipped to the selection, runs through pigment `masked_replace`, and
+  creates 256-pixel tiles where the layer has none; a tablet's touch force scales the tip size,
+  the mouse is full pressure), Text (click the canvas: a point-text layer at the click, size
+  `text_size_pt`, colour = brush colour, font Ubuntu-Light bundled with egui). Undo / Redo
+  buttons and Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y undo and redo every committed edit (visibility, name,
+  opacity, blend mode, paint, layer structure, text layers).
+- Left: layer tree in stack order. Buttons New (empty raster layer above the selection), Dup,
+  Del (a group with its contents), Up, Down, Group, Ungroup: each is one undoable chronicle
+  transaction (`placement` property). The checkbox shows/hides a layer through the session
+  (chronicle commit, new document revision, re-render). Click a name to select it; rename it in
+  the properties panel.
 - Right: properties of the selected layer, built from hsk-studio-controls descriptors. Name,
   Visible, Opacity and Blend mode commit (undoable); Fill opacity, Clipped and Isolation are
   read-only (no chronicle property). Below: the import receipt (source format, loss entries,
@@ -47,9 +52,13 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
 Every window action is a `hsk_studio_harness::view::Viewer` method: `open`, `set_visible`,
 `set_opacity`, `set_blend_mode`, `select_rect`, `select_ellipse`, `select_lasso`,
 `set_combine`, `clear_selection`, `set_brush`, `paint(layer_id, samples)`, `undo`, `redo`,
-`save`, `export`, `place_text` (typed refusal). `Viewer::state_json()` projects the document,
-frame, receipt, run operations and `edit` (tool, combine, brush, selection bounds, undo/redo
-history, text tool availability). Widget ids are stable (`view::widget`, tools `tool.<key>`).
+`save`, `export`, `new_raster_layer`, `duplicate_layer`, `delete_layer`, `move_layer`,
+`shift_layer`, `rename_layer`, `group_layers`, `ungroup`, `layer_action(widget name)`,
+`place_text` / `place_text_with_font`, `add_font`, `text_entry`. `Viewer::state_json()` projects
+the document, frame, receipt, run operations and `edit` (tool, combine, brush, selection bounds,
+undo/redo history, text tool fonts). Widget ids are stable (`view::widget`, tools `tool.<key>`,
+layer buttons `layers.<action>`). The active selection is saved with the document (session entry
+`selection`) and restored on open; text stories and styles are the session entry `text`.
 
 ## Known limits
 
@@ -57,5 +66,11 @@ history, text tool availability). Widget ids are stable (`view::widget`, tools `
 - Effects and adjustment layers (raster records) are not applied by the viewer.
 - Packages converted before the blending-space binding keep an unassigned blending profile; the
   viewer binds it to the RGB working profile for display only and says so (nothing is written).
-- Painting creates no tiles (a stroke outside the layer's tiles changes nothing) and no layers.
+- Tiles are created only on the 256-pixel grid (an empty layer or one on that grid); a layer on
+  another grid paints inside its existing tiles.
+- Text: one line per layer, no line breaking, 1 pt = 1 document pixel; fonts are not stored in
+  the package (the family name is; only registered fonts draw). Folio stores no point-text origin
+  (SPEC GAP): the origin lives in the `text` entry.
+- A duplicated raster layer carries its whole tile list in one chronicle value (64 KiB value
+  budget, about 150-200 tiles; larger layers are refused `budget_exceeded`).
 - Large documents render synchronously (the window pauses while rendering).

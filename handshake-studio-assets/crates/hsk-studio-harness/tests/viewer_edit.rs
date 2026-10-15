@@ -152,9 +152,8 @@ fn opacity_and_blend_mode_edits_with_undo_redo_survive_save() {
     assert!(again.layers().iter().any(|r| r.layer_id == top && r.opacity == 50.0), "{}", again.state_json());
     again.render_if_dirty();
     assert_eq!(pixel(&again, 1, 1), half);
-    // The text tool is a typed refusal, visible to models.
-    assert!(again.place_text(0.0, 0.0, "x").unwrap_err().starts_with("text_layer_unavailable"));
-    assert_eq!(again.state_json()["edit"]["text_tool"]["available"], false);
+    // The text tool is available (SMB-HARNESS-UI-3 slice 4; proofs in tests/viewer_text.rs).
+    assert_eq!(again.state_json()["edit"]["text_tool"]["available"], true);
 }
 
 #[test]

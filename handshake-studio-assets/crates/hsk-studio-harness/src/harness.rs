@@ -748,8 +748,8 @@ impl Run<'_> {
                 .iter()
                 .find(|e| serde_json::to_value(&e.address).ok().as_ref() == Some(&address))
                 .map_or(0, |e| e.revision);
-            reads.push(json!({"address": address, "expected_revision": revision, "expected_value": placement_wire(current.as_ref(), None)}));
-            wire.push(json!({"address": address, "value": placement_wire(w.to.as_ref(), w.create.as_ref())}));
+            reads.push(json!({"address": address, "expected_revision": revision, "expected_value": placement_state_wire(current.as_ref())}));
+            wire.push(json!({"address": address, "value": place_wire(w.to.as_ref(), w.create.as_ref())}));
         }
         let patch = json!({
             "transport_version": 1,
@@ -1089,26 +1089,62 @@ fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Pro
     serde_json::to_vec(&patch).map_err(|_| "patch_encoding")
 }
 
-/// One `placement` write of [`Run::restructure`].
+/// An enumerated placement ([STU-RAS-114], chronicle `PlaceMode`): containers are a group layer
+/// id or `None` for the document root; directions follow the Photoshop document model (top-first
+/// list; Studio reading, UNVERIFIED): beginning = top, end = bottom, before = directly above,
+/// after = directly below, inside = top of the group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    Inside(String),
+    AtBeginning(Option<String>),
+    AtEnd(Option<String>),
+    Before(String),
+    After(String),
+}
+
+impl Place {
+    fn wire(&self) -> Value {
+        let (mode, anchor) = match self {
+            Place::Inside(g) => ("place_inside", Some(g)),
+            Place::AtBeginning(c) => ("place_at_beginning", c.as_ref()),
+            Place::AtEnd(c) => ("place_at_end", c.as_ref()),
+            Place::Before(a) => ("place_before", Some(a)),
+            Place::After(a) => ("place_after", Some(a)),
+        };
+        let mut v = json!({"mode": mode});
+        if let Some(anchor) = anchor {
+            v["anchor"] = json!(anchor);
+        }
+        v
+    }
+}
+
+/// One `placement` command of [`Run::restructure`].
 #[derive(Clone, Debug)]
 pub struct PlacementWrite {
     pub layer_id: String,
-    /// Parent and stack index (0 = bottom-most); `None` deletes the layer.
-    pub to: Option<(Parent, u64)>,
-    /// Record and graph operation of a layer this write creates.
+    /// Where the layer goes; `None` deletes it.
+    pub to: Option<Place>,
+    /// Record and graph operation of a layer this command creates.
     pub create: Option<(StudioLayer, folio::Operation)>,
 }
 
-/// The chronicle `placement` value in wire form.
-fn placement_wire(to: Option<&(Parent, u64)>, create: Option<&(StudioLayer, folio::Operation)>) -> Value {
-    let value = to.map(|(parent, index)| {
-        let mut v = json!({"parent": serde_json::to_value(parent).unwrap_or(Value::Null), "index": index});
+/// The chronicle placement state (reads) in wire form.
+fn placement_state_wire(at: Option<&(Parent, u64)>) -> Value {
+    let value = at.map(|(parent, index)| json!({"parent": serde_json::to_value(parent).unwrap_or(Value::Null), "index": index}));
+    json!({"value_kind": "placement", "value": value})
+}
+
+/// The chronicle placement command (writes) in wire form.
+fn place_wire(to: Option<&Place>, create: Option<&(StudioLayer, folio::Operation)>) -> Value {
+    let value = to.map(|place| {
+        let mut v = place.wire();
         if let Some((layer, operation)) = create {
             v["create"] = json!({"layer": serde_json::to_value(layer).unwrap_or(Value::Null), "operation": serde_json::to_value(operation).unwrap_or(Value::Null)});
         }
         v
     });
-    json!({"value_kind": "placement", "value": value})
+    json!({"value_kind": "place", "value": value})
 }
 
 /// The chronicle `Actor` wire form of the run's attribution.

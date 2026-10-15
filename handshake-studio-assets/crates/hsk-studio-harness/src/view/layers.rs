@@ -5,7 +5,7 @@
 //! bottom-most input of the parent (a group's composite inputs, or the document's graph outputs);
 //! the layer panel lists it top-first.
 use super::Viewer;
-use crate::PlacementWrite;
+use crate::{Place, PlacementWrite};
 use hsk_studio_folio::{NodeKind, NodeRef, Operation, Parent, Payload, StudioDocument, StudioLayer};
 use serde_json::{Value, json};
 
@@ -48,7 +48,7 @@ pub(super) fn stack(doc: &StudioDocument, group: Option<&str>) -> Vec<String> {
 
 /// A fresh `SLYR` id: the document id's time fields, a fixed version/variant block and the first
 /// unused counter (never an id the document holds).
-fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
+pub(super) fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
     let mut n = salt;
@@ -62,7 +62,7 @@ fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
 }
 
 /// The graph operation of a new leaf (image source) or group (ordered composite).
-fn operation_for(layer_id: &str, group: bool) -> Result<Operation, String> {
+pub(super) fn operation_for(layer_id: &str, group: bool) -> Result<Operation, String> {
     let op = if group {
         json!({"layer_id": layer_id, "operation_key": "mix", "operation_kind": "composite",
             "inputs": [{"port_key": "inputs", "value_type": "image", "cardinality": "many", "semantic": "ordered_composite"}],
@@ -74,7 +74,7 @@ fn operation_for(layer_id: &str, group: bool) -> Result<Operation, String> {
     serde_json::from_value(op).map_err(|e| format!("operation: {e}"))
 }
 
-fn new_layer(layer_id: &str, name: &str, parent: &Parent, kind: &str, payload: Value) -> Result<StudioLayer, String> {
+pub(super) fn new_layer(layer_id: &str, name: &str, parent: &Parent, kind: &str, payload: Value) -> Result<StudioLayer, String> {
     serde_json::from_value(json!({
         "schema_id": "hsk.studio.layer@1", "layer_id": layer_id, "name": name,
         "parent": serde_json::to_value(parent).unwrap_or(Value::Null),
@@ -88,30 +88,31 @@ impl Viewer {
         self.run.snapshot().map(|s| s.document()).ok_or_else(|| "nothing open".to_string())
     }
 
-    fn structure(&mut self, op: &str, writes: Vec<PlacementWrite>, what: String) -> Result<u64, String> {
+    pub(super) fn structure(&mut self, op: &str, writes: Vec<PlacementWrite>, what: String) -> Result<u64, String> {
         let ok = self.run.restructure(op, &writes);
         self.after_edit(ok, what)
     }
 
-    /// Where a new layer goes: just above the selected layer in its stack, else the top of the root.
-    fn insertion_point(&self) -> Result<(Parent, u64), String> {
-        let doc = self.doc()?;
+    /// Where a new layer goes: directly above the selected layer in its stack, else the top of the
+    /// document root (the parent the new record names, and the placement command).
+    pub(super) fn insertion_point(&self) -> Result<(Parent, Place), String> {
+        self.doc()?;
         if let Some(sel) = self.selected.as_deref()
-            && let Some((parent, index)) = self.run.placement(sel)
+            && let Some((parent, _)) = self.run.placement(sel)
         {
-            return Ok((parent, index.saturating_add(1)));
+            return Ok((parent, Place::Before(sel.to_string())));
         }
-        Ok((Parent::Root(()), u64::try_from(doc.graph.outputs.len()).unwrap_or(u64::MAX)))
+        Ok((Parent::Root(()), Place::AtBeginning(None)))
     }
 
     /// A new, empty raster layer above the selected layer (painting creates its tiles). Selects it
     /// and returns its id.
     pub fn new_raster_layer(&mut self, name: &str) -> Result<String, String> {
-        let (parent, index) = self.insertion_point()?;
+        let (parent, place) = self.insertion_point()?;
         let doc = self.doc()?;
         let id = mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
         let layer = new_layer(&id, name, &parent, "raster", json!({"payload_kind": "raster", "tiles": []}))?;
-        let write = PlacementWrite { layer_id: id.clone(), to: Some((parent, index)), create: Some((layer, operation_for(&id, false)?)) };
+        let write = PlacementWrite { layer_id: id.clone(), to: Some(place), create: Some((layer, operation_for(&id, false)?)) };
         self.structure("new_layer", vec![write], format!("new raster layer {id}"))?;
         self.selected = Some(id.clone());
         Ok(id)
@@ -121,17 +122,17 @@ impl Viewer {
     /// bodies (by digest), name + " copy". Selects the copy and returns its id.
     pub fn duplicate_layer(&mut self, layer_id: &str) -> Result<String, String> {
         let doc = self.doc()?.clone();
-        let (parent, index) = self.run.placement(layer_id).ok_or_else(|| format!("duplicate: {layer_id} is not in a layer stack"))?;
+        let (parent, _) = self.run.placement(layer_id).ok_or_else(|| format!("duplicate: {layer_id} is not in a layer stack"))?;
         let mut writes = Vec::new();
         let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
-        let copy = self.copy_subtree(&doc, layer_id, parent, index.saturating_add(1), true, &mut salt, &mut writes)?;
+        let copy = self.copy_subtree(&doc, layer_id, parent, Place::Before(layer_id.to_string()), true, &mut salt, &mut writes)?;
         self.structure("duplicate_layer", writes, format!("duplicated {layer_id} as {copy}"))?;
         self.selected = Some(copy.clone());
         Ok(copy)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn copy_subtree(&self, doc: &StudioDocument, source: &str, parent: Parent, index: u64, top: bool, salt: &mut u64, writes: &mut Vec<PlacementWrite>) -> Result<String, String> {
+    fn copy_subtree(&self, doc: &StudioDocument, source: &str, parent: Parent, place: Place, top: bool, salt: &mut u64, writes: &mut Vec<PlacementWrite>) -> Result<String, String> {
         let layer = doc.layers.iter().find(|l| l.layer_id == source).ok_or_else(|| format!("duplicate: unknown layer {source}"))?;
         if matches!(layer.payload, Payload::Unsupported { .. }) {
             return Err(format!("duplicate: {source} has an unsupported payload (read-only)"));
@@ -168,11 +169,12 @@ impl Viewer {
         let op = doc.graph.operations.iter().find(|o| o.layer_id == source).ok_or_else(|| format!("duplicate: {source} has no graph operation"))?;
         let mut op = op.clone();
         op.layer_id.clone_from(&id);
-        writes.push(PlacementWrite { layer_id: id.clone(), to: Some((parent, index)), create: Some((copy, op)) });
+        writes.push(PlacementWrite { layer_id: id.clone(), to: Some(place), create: Some((copy, op)) });
         if is_group(layer) {
+            // Bottom-first, each to the top of the copy: the stack order is kept.
             let inner = parent_of(Some(&id));
-            for (k, child) in stack(doc, Some(source)).iter().enumerate() {
-                self.copy_subtree(doc, child, inner.clone(), u64::try_from(k).unwrap_or(u64::MAX), false, salt, writes)?;
+            for child in stack(doc, Some(source)) {
+                self.copy_subtree(doc, &child, inner.clone(), Place::Inside(id.clone()), false, salt, writes)?;
             }
         }
         Ok(id)
@@ -203,23 +205,25 @@ impl Viewer {
         Ok(revision)
     }
 
-    /// Moves `layer_id` into `group` (`None` = the document root) at stack `index` (0 = bottom-most,
-    /// measured after the layer left its old place).
-    pub fn move_layer(&mut self, layer_id: &str, group: Option<&str>, index: u64) -> Result<u64, String> {
-        let write = PlacementWrite { layer_id: layer_id.to_string(), to: Some((parent_of(group), index)), create: None };
-        self.structure("move_layer", vec![write], format!("moved {layer_id} to {} #{index}", group.unwrap_or("root")))
+    /// Moves `layer_id` by an enumerated placement ([STU-RAS-114]).
+    pub fn move_layer(&mut self, layer_id: &str, place: Place) -> Result<u64, String> {
+        let what = format!("moved {layer_id} {place:?}");
+        let write = PlacementWrite { layer_id: layer_id.to_string(), to: Some(place), create: None };
+        self.structure("move_layer", vec![write], what)
     }
 
-    /// One step up (`up`) or down in its own stack.
+    /// One step up (`up`: directly above the sibling above) or down (directly below the sibling
+    /// below) in its own stack.
     pub fn shift_layer(&mut self, layer_id: &str, up: bool) -> Result<u64, String> {
         let (parent, index) = self.run.placement(layer_id).ok_or_else(|| format!("reorder: {layer_id} is not in a layer stack"))?;
-        let len = u64::try_from(stack(self.doc()?, parent_id(&parent)).len()).unwrap_or(0);
-        let to = if up { index.saturating_add(1) } else { index.checked_sub(1).ok_or("reorder: already at the bottom")? };
-        if to >= len {
-            return Err("reorder: already at the top".into());
-        }
-        let group = parent_id(&parent).map(str::to_string);
-        self.move_layer(layer_id, group.as_deref(), to)
+        let siblings = stack(self.doc()?, parent_id(&parent));
+        let index = usize::try_from(index).map_err(|_| "reorder: index")?;
+        let place = if up {
+            Place::Before(siblings.get(index.saturating_add(1)).cloned().ok_or("reorder: already at the top")?)
+        } else {
+            Place::After(index.checked_sub(1).and_then(|i| siblings.get(i)).cloned().ok_or("reorder: already at the bottom")?)
+        };
+        self.move_layer(layer_id, place)
     }
 
     /// Renames a layer (chronicle `name`, undoable).
@@ -243,14 +247,15 @@ impl Viewer {
             return Err("group: the layers are not siblings of one stack".into());
         }
         placed.sort_by_key(|(_, (_, i))| *i);
-        let top = placed.last().map_or(0, |(_, (_, i))| *i);
+        let top = placed.last().map(|(id, _)| id.clone()).ok_or("group: no layers")?;
         let doc = self.doc()?;
         let gid = mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
         let group = new_layer(&gid, name, &parent, "group", json!({"payload_kind": "group"}))?;
-        // The group enters just above the topmost member; the members then move in bottom-first.
-        let mut writes = vec![PlacementWrite { layer_id: gid.clone(), to: Some((parent, top.saturating_add(1))), create: Some((group, operation_for(&gid, true)?)) }];
-        for (k, (id, _)) in placed.iter().enumerate() {
-            writes.push(PlacementWrite { layer_id: id.clone(), to: Some((parent_of(Some(&gid)), u64::try_from(k).unwrap_or(u64::MAX))), create: None });
+        // The group enters directly above the topmost member; the members then move in
+        // bottom-first, each to the top of the group (their order is kept).
+        let mut writes = vec![PlacementWrite { layer_id: gid.clone(), to: Some(Place::Before(top)), create: Some((group, operation_for(&gid, true)?)) }];
+        for (id, _) in &placed {
+            writes.push(PlacementWrite { layer_id: id.clone(), to: Some(Place::Inside(gid.clone())), create: None });
         }
         self.structure("group_layers", writes, format!("grouped {} layer(s) into {gid}", placed.len()))?;
         self.selected = Some(gid.clone());
@@ -264,12 +269,13 @@ impl Viewer {
         if !doc.layers.iter().any(|l| l.layer_id == group_id && is_group(l)) {
             return Err(format!("ungroup: {group_id} is not a group"));
         }
-        let (parent, index) = self.run.placement(group_id).ok_or_else(|| format!("ungroup: {group_id} is not in a layer stack"))?;
+        self.run.placement(group_id).ok_or_else(|| format!("ungroup: {group_id} is not in a layer stack"))?;
         let children = stack(doc, Some(group_id));
+        // Top child first, each directly above the group: the order is kept, then the group goes.
         let mut writes: Vec<PlacementWrite> = children
             .iter()
-            .enumerate()
-            .map(|(k, id)| PlacementWrite { layer_id: id.clone(), to: Some((parent.clone(), index.saturating_add(1).saturating_add(u64::try_from(k).unwrap_or(u64::MAX)))), create: None })
+            .rev()
+            .map(|id| PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(group_id.to_string())), create: None })
             .collect();
         writes.push(PlacementWrite { layer_id: group_id.to_string(), to: None, create: None });
         let revision = self.structure("ungroup", writes, format!("ungrouped {group_id}"))?;

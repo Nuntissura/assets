@@ -10,6 +10,7 @@ use common::{Scratch, solid_psd};
 use hsk_studio_folio::Payload;
 use hsk_studio_harness::view::edit::BrushSettings;
 use hsk_studio_harness::view::render::Prefer;
+use hsk_studio_harness::Place;
 use hsk_studio_harness::view::{Viewer, widget};
 use hsk_studio_pigment::brush::StrokeSample;
 
@@ -129,8 +130,9 @@ fn layer_management_through_chronicle_with_undo_and_save() {
 
     // Typed refusals change nothing.
     let before = v.run().snapshot().unwrap().encoded_bytes().to_vec();
-    assert!(v.move_layer(&copy, Some(&paper), 0).is_err(), "a raster layer is not a stack");
-    assert!(v.move_layer(&g, Some(&copy), 0).is_err(), "not into a raster layer");
+    assert!(v.move_layer(&copy, Place::Inside(paper.clone())).is_err(), "a raster layer is not a stack");
+    assert!(v.move_layer(&g, Place::Before(g.clone())).is_err(), "not relative to itself");
+    assert!(v.move_layer(&g, Place::After("SLYR-00000000-0000-7000-8000-000000000000".into())).is_err(), "absent anchor");
     assert!(v.duplicate_layer("SLYR-00000000-0000-7000-8000-000000000000").is_err());
     assert_eq!(v.run().snapshot().unwrap().encoded_bytes(), before.as_slice());
 }

@@ -12,9 +12,7 @@
 //!   creates its tile (lane SMB-HARNESS-UI-3). The per-pixel mix runs through pigment
 //!   `masked_replace` itself ([`super::brush_mix`], 64 x 64 blocks under its 4096-pixel cap).
 //! - Undo / redo: the run's chronicle inverse history ([`crate::Run::undo`], [`crate::Run::redo`]).
-//! - Text: no transaction creates a layer (chronicle edits properties of existing nodes) and the
-//!   viewer has no type/story/font path, so the text tool is a typed refusal
-//!   ([`TEXT_TOOL_GAP`]).
+//! - Text: [`super::text`] (lane SMB-HARNESS-UI-3): a click places a point-text layer.
 use super::Viewer;
 use super::brush_mix::{self, MixTarget};
 use hsk_studio_accord::DomainId;
@@ -26,8 +24,6 @@ use hsk_studio_pigment::brush::{
 use hsk_studio_pigment::selection::{self, CombineMode, CoveragePlane, FillRule, RectF, SelectionContext};
 use serde_json::{Value, json};
 
-/// Why the text tool refuses (stable code first).
-pub const TEXT_TOOL_GAP: &str = "text_layer_unavailable: no Studio transaction creates a layer (chronicle edits properties of existing nodes) and the viewer has no type/story/font path; composite text lowering exists (lower_to_render_plan_with_text) but needs a text layer + story record + font bytes";
 
 /// Pixel edge of the importers' tile cells (`hsk_studio_interop_psd::TILE_EDGE`).
 const CELL: usize = 256;
@@ -252,7 +248,7 @@ impl Viewer {
         self.edit.tool = tool;
         self.edit.gesture.clear();
         if tool == Tool::Text {
-            self.say(format!("text tool: {TEXT_TOOL_GAP}"));
+            self.say("text tool: click the canvas to place a text layer".into());
         }
     }
 
@@ -471,12 +467,6 @@ impl Viewer {
         self.after_edit(ok, "redo".into())
     }
 
-    /// The text tool's typed refusal ([`TEXT_TOOL_GAP`]).
-    pub fn place_text(&mut self, _x: f64, _y: f64, _text: &str) -> Result<(), String> {
-        self.say(format!("text: {TEXT_TOOL_GAP}"));
-        Err(TEXT_TOOL_GAP.into())
-    }
-
     pub(super) fn after_edit(&mut self, ok: bool, what: String) -> Result<u64, String> {
         if ok {
             let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
@@ -500,7 +490,7 @@ impl Viewer {
             "brush": {"diameter_px": e.brush.diameter_px, "hardness_pct": e.brush.hardness_pct, "spacing_pct": e.brush.spacing_pct, "opacity_pct": e.brush.opacity_pct, "rgb8": e.brush.rgb8},
             "selection": e.selection.as_ref().map(|s| json!({"bounds": [s.bounds.x, s.bounds.y, s.bounds.width, s.bounds.height], "coverage_sum": s.area_sum(), "ant_segments": e.ants.len(), "ants_truncated": e.ants_truncated})),
             "history": self.run.history(),
-            "text_tool": {"available": false, "reason": TEXT_TOOL_GAP},
+            "text_tool": {"available": true, "size_pt": self.text_size_pt, "fonts": self.fonts.iter().map(|f| f.family.clone()).collect::<Vec<_>>()},
         })
     }
 }

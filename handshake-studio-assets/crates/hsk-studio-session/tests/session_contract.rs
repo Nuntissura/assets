@@ -2803,7 +2803,7 @@ impl ProposalProvider for ProbePair {
             }
             // An empty tile list needs no new asset (every remaining tile is in the source).
             (PropertyValue::Tiles(_), _) => PropertyValue::Tiles(chronicle::TileList(Vec::new())),
-            (PropertyValue::Placement(_), _) => PropertyValue::Placement(None),
+            (PropertyValue::Placement(_) | PropertyValue::Place(_), _) => PropertyValue::Place(None),
         };
         let mut base = request.snapshot.clone();
         if self.smuggle {

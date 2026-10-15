@@ -7,9 +7,10 @@
 //! deleted group) is re-validated by Folio on the successor, so surgery that would leave a broken
 //! graph is refused there (`FolioRejected`), never published.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::{Code, LayerCreate, Placement, PropertyAddress, Result, failure, layer_addressable};
+use crate::{Code, LayerCreate, PlaceCommand, PlaceMode, PropertyAddress, Result, failure, layer_addressable};
 use hsk_studio_folio::{
-    DependencyKind, Edge, NodeKind, OperationKind, Parent, Payload, PortAddress, StudioDocument,
+    DependencyKind, Edge, NodeKind, NodeRef, OperationKind, Parent, Payload, PortAddress,
+    StudioDocument,
 };
 use std::collections::BTreeSet;
 
@@ -80,6 +81,111 @@ pub(crate) fn placement_of(d: &StudioDocument, layer_id: &str) -> Option<(Parent
     Some((layer.parent.clone(), index))
 }
 
+/// Layer ids of a stack, bottom-most first; `None` when the parent holds no stack.
+fn stack_ids(d: &StudioDocument, parent: &Parent) -> Option<Vec<String>> {
+    Some(match stack_of(d, parent)? {
+        None => d.graph.outputs.iter().map(|o| o.layer_id.clone()).collect(),
+        Some(port) => {
+            let mut inputs: Vec<(u64, String)> = d
+                .graph
+                .edges
+                .iter()
+                .filter(|e| e.target == port)
+                .map(|e| (e.input_ordinal, e.source.layer_id.clone()))
+                .collect();
+            inputs.sort();
+            inputs.into_iter().map(|(_, id)| id).collect()
+        }
+    })
+}
+
+fn container(anchor: Option<&String>) -> Parent {
+    match anchor {
+        None => Parent::Root(()),
+        Some(id) => Parent::Node(NodeRef {
+            node_kind: NodeKind::Layer,
+            node_id: id.clone(),
+        }),
+    }
+}
+
+fn count(n: usize, a: &PropertyAddress) -> Result<u64> {
+    u64::try_from(n).map_err(|_| failure(Code::BudgetExceeded, Some(a)))
+}
+
+/// Where `command` puts layer `id` in `d`: parent and stack index, measured on the stack without
+/// the layer itself. Refusals: an anchor that is the layer itself, absent, not stacked, or (for
+/// a container) not a group layer (`InvalidTarget`); an anchor where the mode needs none or
+/// none where it needs one (`InvalidInput`).
+pub(crate) fn resolve(
+    d: &StudioDocument,
+    id: &str,
+    command: &PlaceCommand,
+    a: &PropertyAddress,
+) -> Result<(Parent, u64)> {
+    let target = |e| failure(e, Some(a));
+    if command.anchor.as_deref() == Some(id) {
+        return Err(target(Code::InvalidTarget));
+    }
+    let others = |parent: &Parent| -> Result<Vec<String>> {
+        let mut ids = stack_ids(d, parent).ok_or_else(|| target(Code::InvalidTarget))?;
+        ids.retain(|l| l != id);
+        Ok(ids)
+    };
+    match command.mode {
+        PlaceMode::PlaceInside | PlaceMode::PlaceAtBeginning | PlaceMode::PlaceAtEnd => {
+            if command.mode == PlaceMode::PlaceInside && command.anchor.is_none() {
+                return Err(target(Code::InvalidInput));
+            }
+            let parent = container(command.anchor.as_ref());
+            let ids = others(&parent)?;
+            let index = if command.mode == PlaceMode::PlaceAtEnd {
+                0
+            } else {
+                count(ids.len(), a)?
+            };
+            Ok((parent, index))
+        }
+        PlaceMode::PlaceBefore | PlaceMode::PlaceAfter => {
+            let anchor = command.anchor.as_deref().ok_or_else(|| target(Code::InvalidInput))?;
+            let (parent, _) = placement_of(d, anchor).ok_or_else(|| target(Code::InvalidTarget))?;
+            let ids = others(&parent)?;
+            let at = ids.iter().position(|l| l == anchor).ok_or_else(|| target(Code::InvalidTarget))?;
+            let index = if command.mode == PlaceMode::PlaceBefore {
+                at.checked_add(1).ok_or_else(|| target(Code::BudgetExceeded))?
+            } else {
+                at
+            };
+            Ok((parent, count(index, a)?))
+        }
+    }
+}
+
+/// The command that puts layer `id` back where it is in `d` once it has left (the inverse of a
+/// move or delete): the top or bottom of its container, else directly above its lower neighbour.
+pub(crate) fn restore_command(d: &StudioDocument, id: &str) -> Option<PlaceCommand> {
+    let (parent, index) = placement_of(d, id)?;
+    let mut ids = stack_ids(d, &parent)?;
+    ids.retain(|l| l != id);
+    let anchor_of = |p: &Parent| match p {
+        Parent::Root(()) => None,
+        Parent::Node(n) => Some(n.node_id.clone()),
+    };
+    let index = usize::try_from(index).ok()?;
+    let (mode, anchor) = if index == 0 {
+        (PlaceMode::PlaceAtEnd, anchor_of(&parent))
+    } else if index >= ids.len() {
+        (PlaceMode::PlaceAtBeginning, anchor_of(&parent))
+    } else {
+        (PlaceMode::PlaceBefore, ids.get(index.checked_sub(1)?).cloned())
+    };
+    Some(PlaceCommand {
+        mode,
+        anchor,
+        create: None,
+    })
+}
+
 /// Renumbers the inputs of `ports` densely (0..n) in their current ordinal order.
 fn compact(d: &mut StudioDocument, ports: &BTreeSet<PortAddress>) {
     for port in ports {
@@ -126,8 +232,9 @@ pub(crate) fn remove_layer(d: &mut StudioDocument, layer_id: &str) {
 }
 
 /// Puts `out` at `index` of the parent's stack (siblings at or above move up by one).
-fn attach(d: &mut StudioDocument, a: &PropertyAddress, out: PortAddress, p: &Placement) -> Result<()> {
-    let stack = stack_of(d, &p.parent).ok_or_else(|| failure(Code::InvalidTarget, Some(a)))?;
+fn attach(d: &mut StudioDocument, a: &PropertyAddress, out: PortAddress, p: &(Parent, u64)) -> Result<()> {
+    let p = Target { parent: &p.0, index: p.1 };
+    let stack = stack_of(d, p.parent).ok_or_else(|| failure(Code::InvalidTarget, Some(a)))?;
     match stack {
         None => {
             let index = usize::try_from(p.index)
@@ -160,11 +267,16 @@ fn attach(d: &mut StudioDocument, a: &PropertyAddress, out: PortAddress, p: &Pla
     Ok(())
 }
 
-/// Applies one placement write to `d` (create, delete, move or nothing).
+struct Target<'a> {
+    parent: &'a Parent,
+    index: u64,
+}
+
+/// Applies one placement command to `d` (create, delete, move or nothing).
 pub(crate) fn set_placement(
     d: &mut StudioDocument,
     a: &PropertyAddress,
-    value: Option<&Placement>,
+    value: Option<&PlaceCommand>,
 ) -> Result<()> {
     let id = a.target.node_id.as_str();
     let exists = d.layers.iter().find(|l| l.layer_id == id);
@@ -172,17 +284,18 @@ pub(crate) fn set_placement(
         return Err(failure(Code::InvalidTarget, Some(a)));
     }
     let exists = exists.is_some();
-    match (exists, value) {
-        (false, None) => Ok(()),
-        (false, Some(p)) => {
-            let create = p
+    let target = value.map(|c| resolve(d, id, c, a)).transpose()?;
+    match (exists, value, target) {
+        (false, None, _) => Ok(()),
+        (false, Some(c), Some(p)) => {
+            let create = c
                 .create
                 .as_ref()
                 .ok_or_else(|| failure(Code::InvalidInput, Some(a)))?;
             let LayerCreate { layer, operation } = &**create;
             if layer.layer_id != id
                 || operation.layer_id != id
-                || layer.parent != p.parent
+                || layer.parent != p.0
                 || matches!(layer.payload, Payload::Unsupported { .. })
             {
                 return Err(failure(Code::InvalidInput, Some(a)));
@@ -190,25 +303,26 @@ pub(crate) fn set_placement(
             d.layers.push(layer.clone());
             d.graph.operations.push(operation.clone());
             let out = out_port(d, id).ok_or_else(|| failure(Code::InvalidInput, Some(a)))?;
-            attach(d, a, out, p)
+            attach(d, a, out, &p)
         }
-        (true, None) => {
+        (true, None, _) => {
             placement_of(d, id).ok_or_else(|| failure(Code::InvalidTarget, Some(a)))?;
             remove_layer(d, id);
             Ok(())
         }
-        (true, Some(p)) => {
-            if p.create.is_some() {
+        (true, Some(c), Some(p)) => {
+            if c.create.is_some() {
                 return Err(failure(Code::InvalidInput, Some(a)));
             }
             placement_of(d, id).ok_or_else(|| failure(Code::InvalidTarget, Some(a)))?;
             let out = out_port(d, id).ok_or_else(|| failure(Code::InvalidTarget, Some(a)))?;
             detach(d, id);
             if let Some(layer) = d.layers.iter_mut().find(|l| l.layer_id == id) {
-                layer.parent = p.parent.clone();
+                layer.parent = p.0.clone();
             }
-            attach(d, a, out, p)
+            attach(d, a, out, &p)
         }
+        (_, Some(_), None) => Err(failure(Code::InvalidInput, Some(a))),
     }
 }
 
