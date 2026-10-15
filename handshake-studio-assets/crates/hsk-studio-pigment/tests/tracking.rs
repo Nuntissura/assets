@@ -176,7 +176,7 @@ fn pyramid_reaches_large_motion_and_the_search_region_bounds_it() {
         worst = worst.max(err(s.position, [30.0 + d[0] * t, 30.0 + d[1] * t]));
         assert!(s.status.is_tracked(), "{s:?}");
     }
-    println!("large motion (10, 6) px/frame: worst error {worst:.5} px");
+    println!("large motion (10.3, 6.4) px/frame: worst error {worst:.5} px");
     assert!(worst < 0.05);
     // The same motion with an 8 px search region: lost on the first step, and it stays lost.
     let tracks = run(&frames, 0, TrackDirection::Forward, &[spec(30.0, 30.0, 6, 8)]);
