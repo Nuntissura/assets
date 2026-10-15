@@ -97,17 +97,33 @@ fn transformed_search_matches_rotated_scaled_and_mirrored_sources() {
     let scale = ContentAwareOptions { scale: true, ..none };
     let mirror = ContentAwareOptions { mirror: true, ..none };
     let saw = |x: i64| 0.2 + 0.6 * x.rem_euclid(8) as f64 / 7.0;
-    let cases: [(&str, Field, Field, ContentAwareOptions, f64); 3] = [
+    let cases: [(&str, Field, Field, ContentAwareOptions, f64); 4] = [
         // Waves at 30 degrees vs vertical waves: rotation 30 = 6 steps (medium allows 9).
         ("rotation", Box::new(wave(8.0, 30.0)), Box::new(wave(8.0, 0.0)), rotation, 0.05),
         // Period 8 * 2^(3/8) vs 8: scale step 3.
         ("scale", Box::new(wave(8.0 * 2f64.powf(0.375), 0.0)), Box::new(wave(8.0, 0.0)), scale, 0.05),
-        // Rising vs falling sawtooth: a horizontal mirror (integer taps, exact).
-        ("mirror", Box::new(move |x, _| saw(x)), Box::new(move |x, _| saw(-x)), mirror, 0.01),
+        // Rising vs falling sawtooth, mirror axis on a pixel boundary (survives the 2x pyramid):
+        // a horizontal mirror with integer taps, exact.
+        ("mirror", Box::new(move |x, _| saw(x)), Box::new(move |x, _| saw(-x - 1)), mirror, 0.01),
+        // Mirror axis on a pixel centre: the coarse level has no mirrored match (the 2x average
+        // pairs differ), so level 0 needs more EM iterations (4 leave 0.108; 16 converge).
+        (
+            "mirror_centre",
+            Box::new(move |x, _| saw(x)),
+            Box::new(move |x, _| saw(-x)),
+            ContentAwareOptions { em_iterations: 16, ..mirror },
+            0.01,
+        ),
     ];
     for (name, src, dst, adapted, bound) in cases {
         let target = scene(&src, &dst);
-        let plain = fill(&target, &h, SOURCE, &none, &limits).unwrap();
+        let control = ContentAwareOptions {
+            rotation_adaptation: RotationAdaptation::None,
+            scale: false,
+            mirror: false,
+            ..adapted
+        };
+        let plain = fill(&target, &h, SOURCE, &control, &limits).unwrap();
         let fitted = fill(&target, &h, SOURCE, &adapted, &limits).unwrap();
         let (e0, e1) = (hole_error(&plain.result.plane, &h, &dst), hole_error(&fitted.result.plane, &h, &dst));
         println!(

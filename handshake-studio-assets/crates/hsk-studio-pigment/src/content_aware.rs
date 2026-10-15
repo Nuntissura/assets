@@ -22,11 +22,26 @@
 //!    patch overlaps the hole (the hole dilated by `r`, Chebyshev); its nearest-neighbour field
 //!    (NNF) maps each domain centre to a valid source centre. Patch distance = sum of squared
 //!    premultiplied RGBA differences over the patch pixels inside the plane (binary64).
+//!    Search adaptations (lane SMB-PIGMENT-CONTENT-AWARE-2, after Darabi, Shechtman, Barnes,
+//!    Goldman, Sen 2012 "Image Melding" and Barnes, Shechtman, Goldman, Finkelstein 2010 "The
+//!    Generalized PatchMatch Correspondence Algorithm"): a match also carries a transform
+//!    `M = s R(theta) diag(mirror ? -1 : 1, 1)` (`theta` in [`ANGLE_STEP_DEG`] steps up to
+//!    [`RotationAdaptation::max_degrees`], `s = 2^(k/8)` for `|k| <= `[`SCALE_STEPS`] when
+//!    `scale`, horizontal mirror when `mirror`); a transformed source patch samples the level
+//!    bilinearly at `c + M o` and is admissible only when every tap of non-zero weight may be
+//!    sampled. `colour_adaptation` high / very_high fit a per-channel gain and bias
+//!    ([`ColourAdaptation::gain_bias`]: `g = clamp(sd_t / sd_s)`, `b = clamp(mean_t - g mean_s)`
+//!    over the patch) and compare `g s + b` (clamped to `[0, alpha]`); the vote applies the same.
+//!    Propagation moves the neighbour's source by its transform applied to the step (same
+//!    transform); random search tries each new place with the best transform and with a perturbed
+//!    one (rotation within `max >> step`, scale within `max >> step`, random mirror); transform
+//!    draws use their own SplitMix64 streams, so with no adaptation the search is the plain one.
 //! 3. Coarsest level: hole pixels start from an onion peel (each pass, every unknown hole pixel
 //!    with a known 4-neighbour takes the mean of its known 4-neighbours as they were before the
 //!    pass); the NNF starts at seeded random valid sources. Finer levels: hole pixels start from
 //!    the parent's estimate (nearest) and the NNF from the parent's match doubled (plus the child
-//!    parity) when that is a valid source, else a seeded random valid source.
+//!    parity through the match's transform) when that is still admissible, else a seeded random
+//!    valid source.
 //! 4. Each level runs `em_iterations` of: recompute distances; `search_iterations` PatchMatch
 //!    sweeps; vote. A sweep is JACOBI (every centre reads only the previous sweep's field):
 //!    candidates are the current match, the propagated matches of the 4-neighbours at distance 1
@@ -54,16 +69,21 @@
 //! and the Poisson solve are single-threaded. Same binary, same inputs, same seed: same bytes.
 //!
 //! Bounds (V4-01/02): option ranges are checked (never clamped); the hole pixel count is checked
-//! against `max_hole_pixels`; the working bytes of the whole pyramid (upper bound) are charged
-//! against [`RetouchLimits::max_bytes`] before any allocation; the work (patch-pixel visits of
-//! every sweep, recompute and vote) is computed with checked arithmetic and charged against
-//! [`RetouchLimits::max_work`] before synthesis starts. Typed refusals, never partial results
-//! (tests `hostile_fill_inputs_are_typed_refusals`, `hostile_patch_and_move_inputs_are_typed_refusals`).
+//! against `max_hole_pixels`; the working bytes of the whole pyramid (upper bound: every level's
+//! pixels at [`LEVEL_BYTES_PER_PIXEL`] plus at most `min(pixels, hole pixels x patch area)` domain
+//! centres at [`CENTRE_BYTES`], plus the output plane) are charged against
+//! [`RetouchLimits::max_bytes`] before any allocation; the work (patch-pixel visits of every
+//! sweep, recompute and vote, times the adaptations' visit factor) is computed with checked
+//! arithmetic and charged against [`RetouchLimits::max_work`] before synthesis starts. Typed
+//! refusals, never partial results (tests `hostile_fill_inputs_are_typed_refusals`,
+//! `hostile_patch_and_move_inputs_are_typed_refusals`, `content_aware_adapt.rs`
+//! `hostile_adaptation_inputs_are_typed_refusals`).
 //!
 //! Spec controls (STU-RAS-143) implemented: `sampling_area_mode` auto | rectangular | custom,
-//! `colour_adaptation` none | default (high and very_high refused
-//! `content_aware_option_unsupported`), `rotation_adaptation` none (others refused), `scale` and
-//! `mirror` false (true refused). Not modelled here (caller or later lanes): the overlay,
+//! `colour_adaptation` none | default | high | very_high, `rotation_adaptation` none | low |
+//! medium | high | full, `scale`, `mirror` (tests in `content_aware_adapt.rs`; the healing
+//! [`PatchMode::Normal`] has no search and refuses the search adaptations
+//! `content_aware_option_unsupported`). Not modelled here (caller or later lanes): the overlay,
 //! `sample_all_layers` (the caller flattens), `additional_document_source`, output brightness /
 //! contrast / colour balance, `output_to`. Every reading is a Studio reading, class Approximate;
 //! Photoshop's content-aware algorithms and results are UNVERIFIED (oracle list D5).
@@ -1745,4 +1765,4 @@ fn union(a: Rect, b: Rect) -> Result<Rect, Error> {
 }
 
 /// Content-aware surface description (Studio readings, parity NOT_PROVEN).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":1,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)) and a best-patch final vote at level 0, levels need source centres >= domain centres, coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default (high, very_high refused content_aware_option_unsupported)","rotation_adaptation":"none only","scale":"false only","mirror":"false only"},"receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","patch":"patch(target, region, source_offset (p reads p + offset), PatchMode normal = retouch heal along the offset | content_aware{structure 1..7} = fill guided by q + offset (coarsest hole starts from the dragged pixels, every candidate within the window 2^(10 - structure) px of q + offset at level 0, halved per level); source rect must lie inside the target (retouch_out_of_range)","move":"content_aware_move(target, selection, offset (p shows p - offset), MoveMode move|extend): move fills the vacated selection (destination footprint never sampled), then places the object: colour_adaptation none = source-over with selection coverage, default = retouch heal with the moved original as guide; integer offsets only","not_modelled":["transform-on-drop","sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"content_aware","version":2,"spec":"STU-RAS-143 native on-device content-aware fill (STU-RAS-030); STU-RAS-026 patch and content-aware move rows","fill":"fill(target, hole CoveragePlane coverage>0, SamplingArea auto|rectangular|custom(coverage>=32768), options, limits): pyramid (halve while hole bbox > patch, next level >= 2 patches, sources exist, <= max_levels), PatchMatch NNF (Jacobi sweeps: propagation at distance 1 and 2^min(4,S-1-s), random search radii max(w,h)/2^k, SplitMix64(seed, level, em, sweep, centre, draw)), EM with weighted voting exp(-e/(2*0.1^2)) and a best-patch final vote at level 0, levels need source centres >= domain centres, coarsest init onion peel, finer init from parent; blend colour_adaptation none = d + c(f - d), default = membrane Poisson (retouch heal solver) with guide = synthesized hole + NNF votes on the 4-neighbour ring","options":{"patch_radius":"1..8 default 3","em_iterations":"1..64 default 4","search_iterations":"1..32 default 4","max_levels":"1..16 default 8","threads":"1..64 (bytes independent)","max_hole_pixels":"default 1048576","colour_adaptation":"none|default|high (gain 0.9..1/0.9, |bias|<=0.1)|very_high (gain 0.75..1/0.75, |bias|<=0.25)","rotation_adaptation":"none 0|low 15|medium 45|high 90|full 180 degrees, 5 degree steps","scale":"patch scale 2^(k/8), |k|<=3","mirror":"horizontal mirror before rotation"},"adaptations":"Image Melding gain/bias per channel (g = clamp(sd_t/sd_s), b = clamp(mean_t - g mean_s)); Generalized PatchMatch transformed patches c + s R(theta) diag(+-1,1) o, bilinear taps all sampleable; propagation moves the source by the transformed step; random search tries the best transform and a perturbed one; patch normal refuses adaptations content_aware_option_unsupported","receipt":"ContentAwareReceipt{seed, patch_radius, levels[{width,height,hole_pixels,domain_centres,source_centres,em_iterations,search_iterations,energies}], iterations, final_energy, work, guided, blend HealReceipt}","refusals":["retouch_out_of_range","retouch_shape","retouch_out_of_domain","budget_exceeded","overflow","content_aware_hole_too_large","content_aware_no_source","content_aware_option_unsupported"],"determinism":"pure per-centre/per-pixel updates: bytes independent of threads; fixed seed = fixed bytes","patch":"patch(target, region, source_offset (p reads p + offset), PatchMode normal = retouch heal along the offset | content_aware{structure 1..7} = fill guided by q + offset (coarsest hole starts from the dragged pixels, every candidate within the window 2^(10 - structure) px of q + offset at level 0, halved per level); source rect must lie inside the target (retouch_out_of_range)","move":"content_aware_move(target, selection, offset (p shows p - offset), MoveMode move|extend): move fills the vacated selection (destination footprint never sampled), then places the object: colour_adaptation none = source-over with selection coverage, default = retouch heal with the moved original as guide; integer offsets only","not_modelled":["transform-on-drop","sampling overlay","sample_all_layers (caller flattens)","additional_document_source","output brightness/contrast/colour balance","output_to"],"class":"approximate","parity":"NOT_PROVEN (Photoshop content-aware fill/patch/move UNVERIFIED, D5)"}"#;
