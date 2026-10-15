@@ -323,7 +323,8 @@ pub enum ExtOperator {
     ExtendedEnvelope(ExtendedOp),
     /// The stage-6a clip ([`DisplayTransform::Clip`]); class Exact. Key `display_clip`.
     DisplayClip,
-    /// A stage-6a view transform ([`DisplayTransform::View`], Prism's ACES 1.x RRT + ODT from the
+    /// A stage-6a view transform ([`DisplayTransform::View`] or [`DisplayTransform::ViewFrom`],
+    /// Prism's ACES 1.x RRT + ODT / RRTODT from the
     /// published CTL, evaluated per pixel by `hsk_studio_prism::ViewTransformId::apply`); class
     /// Exact. Key `display_view_transform`.
     DisplayView,
@@ -786,7 +787,7 @@ impl PlanExtensions {
         if self.output.display == Some(DisplayTransform::Clip) {
             ops.push(ExtOperator::DisplayClip);
         }
-        if matches!(self.output.display, Some(DisplayTransform::View(_))) {
+        if self.output.display.and_then(|d| d.view()).is_some() {
             ops.push(ExtOperator::DisplayView);
         }
         Ok(ops)

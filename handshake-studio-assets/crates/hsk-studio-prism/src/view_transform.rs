@@ -22,6 +22,13 @@
 //! piecewise curve or BT.1886 with L_W 1, L_B 0) is the separate second stage
 //! [`DisplayEncoding`], so a sink that encodes linear values for its display keeps doing so.
 //!
+//! Lane SMB-PRISM-VIEW-TRANSFORM-2 adds the scene inputs [`SceneInput`] (ACEScg through the
+//! published ACEScg matrix), the Display P3 SDR view (`odt/displayp3/ODT.Academy.DisplayP3_dim.ctl`),
+//! the PQ HDR views (`outputTransform/rec2020/RRTODT.Academy.Rec2020_{1000,2000,4000}nits_15nits_ST2084.ctl`
+//! over `ACESlib.OutputTransforms` and `ACESlib.SSTS`), [`select_view`] for the STU-COL-313 display
+//! targets with a typed refusal for the ones not built, and the binary32 WGSL form of the SDR views
+//! ([`VIEW_WGSL`], [`view_gpu_params`]) that render-gpu's shared-texture output runs.
+//!
 //! ACES licence: portions derived from the Academy Color Encoding System reference
 //! implementation, Copyright (c) 2015 Academy of Motion Picture Arts and Sciences (A.M.P.A.S.),
 //! used under the ACES licence terms reproduced with their conditions and Disclaimer of Warranty in

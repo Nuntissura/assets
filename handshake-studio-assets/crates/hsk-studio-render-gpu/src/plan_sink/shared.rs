@@ -59,12 +59,18 @@ struct Params {
     frame_width: u32,
     margin: u32,
     extended: u32,
-    pad1: u32,
+    view: u32,
 };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> level: array<vec4<f32>>;
 @group(0) @binding(2) var target_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var<storage, read_write> overflow_flag: array<atomic<u32>, 1>;
+// Stage-6a view transform parameters (hsk_studio_prism::view_gpu_params; lane
+// SMB-PRISM-VIEW-TRANSFORM-2), read by Prism's VIEW_WGSL through vp().
+@group(0) @binding(4) var<storage, read> view_params: array<f32>;
+fn vp(i: u32) -> f32 {
+    return view_params[i];
+}
 
 fn unit(v: f32) -> f32 {
     // NaN compares unequal to itself: map it to 0 like the CPU encoder.
@@ -95,8 +101,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             return;
         }
     }
+    var rgb = p.rgb;
+    if params.view != 0u {
+        // Stage 6a: Prism's SDR view (display-referred linear [0, 1]) before the display encoding.
+        rgb = vt_view(rgb);
+    }
     let a8 = byte(p.a);
-    let c8 = vec3<f32>(byte(encode(p.r)), byte(encode(p.g)), byte(encode(p.b)));
+    let c8 = vec3<f32>(byte(encode(rgb.r)), byte(encode(rgb.g)), byte(encode(rgb.b)));
     let pre = floor(c8 * a8 / 255.0 + vec3<f32>(0.5));
     textureStore(target_tex, vec2<u32>(params.dst.x + id.x, params.dst.y + id.y), vec4<f32>(pre / 255.0, a8 / 255.0));
 }
@@ -111,6 +122,9 @@ struct OutputPipeline {
     /// SMB-RENDER-GPU-EXTENDED-ENVELOPE); cleared before every execution.
     flag: wgpu::Buffer,
     flag_readback: wgpu::Buffer,
+    /// Stage-6a view parameters (`hsk_studio_prism::view_gpu_params`), written per chunk when the
+    /// plan declares an SDR view (lane SMB-PRISM-VIEW-TRANSFORM-2).
+    view_params: wgpu::Buffer,
 }
 
 impl OutputPipeline {
@@ -122,7 +136,11 @@ impl OutputPipeline {
         crate::pipeline::guarded(device, LABEL, crate::pipeline::Stage::Pipeline, || {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("hsk-studio-render-gpu shared output"),
-                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER)),
+                // The output pass plus Prism's WGSL view transform (colour maths stay Prism's).
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "{SHADER}{}",
+                    hsk_studio_prism::VIEW_WGSL
+                ))),
             });
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("hsk-studio-render-gpu shared output"),
@@ -167,6 +185,16 @@ impl OutputPipeline {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -196,6 +224,12 @@ impl OutputPipeline {
                     | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            let view_params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared output view params"),
+                size: VIEW_PARAMS_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
             let flag_readback = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("hsk-studio-render-gpu shared overflow flag readback"),
                 size: FLAG_BYTES,
@@ -208,11 +242,14 @@ impl OutputPipeline {
                 params,
                 flag,
                 flag_readback,
+                view_params,
             }
         })
     }
 }
 
+/// Bytes of the view-transform parameter block (`hsk_studio_prism::VIEW_GPU_PARAMS` binary32).
+const VIEW_PARAMS_BYTES: u64 = (hsk_studio_prism::VIEW_GPU_PARAMS as u64) * 4;
 /// Bytes of the overflow flag (one `atomic<u32>`).
 const FLAG_BYTES: u64 = 4;
 /// Longest wait for the overflow-flag read-back.
@@ -226,6 +263,8 @@ pub(in crate::plan_sink) struct TextureOut<'a> {
     view: wgpu::TextureView,
     origin_x: i64,
     origin_y: i64,
+    /// Stage-6a SDR view parameters (`None`: no view in the plan's output stage).
+    view_params: Option<[f32; hsk_studio_prism::VIEW_GPU_PARAMS]>,
 }
 
 impl TextureOut<'_> {
@@ -245,10 +284,15 @@ impl TextureOut<'_> {
             .map_err(|_| overflow())?;
         let mut params = Vec::with_capacity(32);
         let ext = u32::from(extended);
-        for word in [dst_x, dst_y, rect.width, rect.height, frame_width, margin, ext, 0] {
+        let view = u32::from(self.view_params.is_some());
+        for word in [dst_x, dst_y, rect.width, rect.height, frame_width, margin, ext, view] {
             params.extend_from_slice(&word.to_le_bytes());
         }
         self.queue.write_buffer(&self.pipeline.params, 0, &params);
+        if let Some(values) = &self.view_params {
+            let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+            self.queue.write_buffer(&self.pipeline.view_params, 0, &bytes);
+        }
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hsk-studio-render-gpu shared output"),
             layout: &self.pipeline.layout,
@@ -268,6 +312,10 @@ impl TextureOut<'_> {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.pipeline.flag.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.pipeline.view_params.as_entire_binding(),
                 },
             ],
         });
@@ -417,6 +465,14 @@ impl SharedDevice {
             view: target.create_view(&wgpu::TextureViewDescriptor::default()),
             origin_x: extent.x,
             origin_y: extent.y,
+            // The executed envelope's view (deprecated backend alias included); an HDR view has no
+            // GPU form and is refused by execute_inner before any device work.
+            view_params: super::display::aliased(extensions, self.backend.display)
+                .as_ref()
+                .or(extensions)
+                .and_then(|e| e.output.display)
+                .and_then(|d| d.view())
+                .and_then(hsk_studio_prism::view_gpu_params),
         };
         // A fresh overflow flag for this execution (ordered before every pass on the queue).
         self.queue.write_buffer(&self.output.flag, 0, &[0u8; FLAG_BYTES as usize]);

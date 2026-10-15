@@ -66,12 +66,12 @@ pub(crate) fn sample_ok(extended: bool, v: f32) -> bool {
 }
 
 /// Stage 6a, view transform (lane SMB-PRISM-VIEW-TRANSFORM): every colour triple of a delivered
-/// chunk (`rgb_f32le`) through Prism's `ViewTransformId::apply` (alpha is a separate plane and
+/// chunk (`rgb_f32le`) through Prism's `ViewTransform::apply` (alpha is a separate plane and
 /// untouched). The composite reaching this point is finite (extended composites refuse a
 /// non-finite result typed), so a non-finite triple is refused as `sample_range_outside_unit`.
 pub(crate) fn view_chunk(
     colour: &mut [u8],
-    view: hsk_studio_prism::ViewTransformId,
+    view: hsk_studio_prism::ViewTransform,
 ) -> Result<(), RenderError> {
     let mut at = 0usize;
     while at < colour.len() {

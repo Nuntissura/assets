@@ -1373,11 +1373,15 @@ impl GpuBackend {
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
         let alias = display::aliased(extensions, self.display);
         let extensions = alias.as_ref().or(extensions);
-        // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM) runs on the host after the
-        // read-back; the shared-texture output never reads back, so it refuses the view typed,
-        // before admission and before any device work.
+        // Stage-6a view transform (lanes SMB-PRISM-VIEW-TRANSFORM, -2): on the read-back path the
+        // host applies it after the read-back; the shared-texture output runs Prism's WGSL form,
+        // which exists for the SDR views only, so an HDR view is refused typed there, before
+        // admission and before any device work.
         if texture.is_some()
-            && extensions.is_some_and(|e| matches!(e.output.display, Some(DisplayTransform::View(_))))
+            && extensions
+                .and_then(|e| e.output.display)
+                .and_then(|d| d.view())
+                .is_some_and(|v| hsk_studio_prism::view_gpu_params(v).is_none())
         {
             return Err(unsupported(ExtOperator::DisplayView.key()));
         }
@@ -1572,7 +1576,7 @@ impl RenderBackend<NoVector> for GpuBackend {
             ExtOperator::ExtendedRange | ExtOperator::DisplayClip => true,
             // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM): Prism's view applied on
             // the host to the read-back (tests/gpu_view_transform.rs); the shared-texture output
-            // refuses it (execute_inner).
+            // runs Prism's WGSL form for the SDR views and refuses the HDR views (execute_inner).
             ExtOperator::DisplayView => true,
             // Envelope operations in the extended range (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE):
             // every one pigment defines except content-aware fill, which this backend does not run
@@ -3239,10 +3243,7 @@ fn run(
         })?;
 
     let clip = prepared.output.display == Some(DisplayTransform::Clip);
-    let view_transform = match prepared.output.display {
-        Some(DisplayTransform::View(id)) => Some(id),
-        _ => None,
-    };
+    let view_transform = prepared.output.display.and_then(|d| d.view());
     let extended = prepared.output.is_extended();
     let mut ex = Exec {
         ctx,

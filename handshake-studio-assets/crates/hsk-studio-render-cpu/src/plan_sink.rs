@@ -1900,10 +1900,7 @@ impl Renderer {
         let clip = prepared.ext.output.display == Some(DisplayTransform::Clip);
         // Stage 6a view transform (output stage `display: Some(View(id))`, lane
         // SMB-PRISM-VIEW-TRANSFORM): Prism's per-pixel view on the composite's colour.
-        let view = match prepared.ext.output.display {
-            Some(DisplayTransform::View(id)) => Some(id),
-            _ => None,
-        };
+        let view = prepared.ext.output.display.and_then(|d| d.view());
         let compute = |rect: Rect, scratch: &mut Scratch| {
             compute_chunk(&eval, rect, scratch)?;
             if clip {

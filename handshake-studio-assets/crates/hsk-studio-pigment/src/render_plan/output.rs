@@ -31,8 +31,32 @@ pub enum DisplayTransform {
     Clip,
     /// A Prism view transform (lane SMB-PRISM-VIEW-TRANSFORM, STU-COL-313): every composite
     /// colour goes through `hsk_studio_prism::ViewTransformId::apply` (scene-referred working
-    /// space -> display-referred linear `[0, 1]`), alpha untouched. Serialised as the view's key.
+    /// space, linear sRGB -> display-referred linear: `[0, 1]` for the SDR views, units of
+    /// 100 cd/m2 for the HDR views), alpha untouched. Serialised as the view's key.
     View(#[serde(serialize_with = "serialize_view")] hsk_studio_prism::ViewTransformId),
+    /// A Prism view transform from an explicit scene input (lane SMB-PRISM-VIEW-TRANSFORM-2,
+    /// STU-COL-311/312: ACEScg or ACES2065-1 composite data, or linear sRGB stated explicitly).
+    /// Serialised as `"<view key>@<input key>"`.
+    ViewFrom(#[serde(serialize_with = "serialize_view_from")] hsk_studio_prism::ViewTransform),
+}
+impl DisplayTransform {
+    /// The view of a `View` / `ViewFrom` stage (`View(id)` reads linear sRGB); `None` for `Clip`.
+    pub fn view(&self) -> Option<hsk_studio_prism::ViewTransform> {
+        match self {
+            Self::Clip => None,
+            Self::View(id) => Some(hsk_studio_prism::ViewTransform::new(
+                *id,
+                hsk_studio_prism::SceneInput::LinearSrgb,
+            )),
+            Self::ViewFrom(view) => Some(*view),
+        }
+    }
+}
+fn serialize_view_from<S: serde::Serializer>(
+    view: &hsk_studio_prism::ViewTransform,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&format_args!("{}@{}", view.view.key(), view.input.key()))
 }
 fn serialize_view<S: serde::Serializer>(
     view: &hsk_studio_prism::ViewTransformId,

@@ -1,9 +1,11 @@
 //! Stage-6a view transform on render-gpu (lane SMB-PRISM-VIEW-TRANSFORM): the read-back path
 //! applies Prism's `ViewTransformId::apply` on the host, so the GPU result is Prism's view of the
 //! GPU composite; parity against the CPU reference (pigment `composite_over_extended`, then the
-//! same view) within TOLERANCE. The shared-texture output never reads back and refuses the view
-//! typed before any device work (feature `shared-device`). The refusal half runs on the `none`
-//! backend; the execution half follows `tests/gpu-proof.toml` (V4-03).
+//! same view) within TOLERANCE. The shared-texture output (feature `shared-device`) runs Prism's
+//! WGSL form of the SDR views in its output pass (lane SMB-PRISM-VIEW-TRANSFORM-2): parity with
+//! the CPU reference encoded the shared way is +-1 per 8-bit channel; an HDR view has no GPU form
+//! and is refused typed before any device work. The refusal half runs on the `none` backend; the
+//! execution half follows `tests/gpu-proof.toml` (V4-03).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over_extended};
 use hsk_studio_pigment::render_plan::{
@@ -143,6 +145,9 @@ fn plan(tile: &Tile) -> RenderPlan<NoVector> {
 }
 /// CPU reference: pigment's extended composite, then Prism's view.
 fn reference(x: i64, y: i64) -> [f32; 4] {
+    reference_with(x, y, hsk_studio_prism::ViewTransform::new(VIEW, hsk_studio_prism::SceneInput::LinearSrgb))
+}
+fn reference_with(x: i64, y: i64, view: hsk_studio_prism::ViewTransform) -> [f32; 4] {
     let site = PixelSite { x, y, seed: 0 };
     let s = scene_pixel(x as u32, y as u32);
     let mut out =
@@ -151,7 +156,7 @@ fn reference(x: i64, y: i64) -> [f32; 4] {
     if x >= 5 {
         out = composite_over_extended(StudioBlendMode::Multiply, out, Rgba::new([0.8, 0.9, 1.0], 1.0), 0.75, site).unwrap();
     }
-    let v = VIEW.apply(out.rgb).unwrap();
+    let v = view.apply(out.rgb).unwrap();
     [v[0], v[1], v[2], out.a]
 }
 fn request() -> ExecuteRequest {
@@ -169,9 +174,11 @@ fn strict() -> bool {
 /// call. Live adapter, chunk sides 2 and 64: every pixel within TOLERANCE of the CPU reference,
 /// receipt ledger names `display_view_transform`. Shared-texture output (feature
 /// `shared-device`): the view stage is refused `display_view_transform` Unsupported before any
-/// device work (no residency, no stats).
+/// device work (no residency, no stats); since lane SMB-PRISM-VIEW-TRANSFORM-2 only an HDR view is
+/// refused there and the SDR views run Prism's WGSL form (+-1 per 8-bit channel against the CPU
+/// reference for linear sRGB and ACEScg input and the Display P3 view).
 #[test]
-fn gpu_view_stage_matches_the_cpu_reference_and_the_texture_path_refuses_it() {
+fn gpu_view_stage_matches_the_cpu_reference_and_the_texture_path_runs_the_wgsl_view() {
     let tile = Tile::new();
     let p = plan(&tile);
     let src = Sources(tile.planes());
@@ -222,7 +229,7 @@ fn gpu_view_stage_matches_the_cpu_reference_and_the_texture_path_refuses_it() {
     }
 
     #[cfg(feature = "shared-device")]
-    shared::texture_path_refuses_the_view(&p, &src, &stage);
+    shared::texture_path_runs_the_sdr_views_and_refuses_hdr(&p, &src);
 }
 
 #[cfg(feature = "shared-device")]
@@ -244,7 +251,47 @@ mod shared {
         }
     }
 
-    pub(super) fn texture_path_refuses_the_view(p: &RenderPlan<NoVector>, src: &Sources<'_>, stage: &PlanExtensions) {
+    fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+        let (w, h) = (texture.width(), texture.height());
+        let row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test readback"),
+            size: u64::from(row * h),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit(Some(encoder.finish()));
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(30)) }).expect("poll");
+        let view = buffer.slice(..).get_mapped_range();
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            let start = (y * row) as usize;
+            out.extend_from_slice(&view[start..start + (w * 4) as usize]);
+        }
+        out
+    }
+    /// The shared output encoding (shared.rs module docs) on the CPU.
+    fn display(px: [f32; 4]) -> [u8; 4] {
+        let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+        let enc = |v: f32| {
+            let c = unit(v);
+            if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+        };
+        let byte = |v: f32| (unit(v) * 255.0 + 0.5).floor();
+        let a8 = byte(px[3]);
+        let pre = |c: f32| ((byte(enc(c)) * a8 / 255.0) + 0.5).floor() as u8;
+        [pre(px[0]), pre(px[1]), pre(px[2]), a8 as u8]
+    }
+
+    pub(super) fn texture_path_runs_the_sdr_views_and_refuses_hdr(p: &RenderPlan<NoVector>, src: &Sources<'_>) {
+        use hsk_studio_prism::{SceneInput, ViewTransform};
         let backends = if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::PRIMARY };
         let instance =
             wgpu::Instance::new(&wgpu::InstanceDescriptor { backends, flags: wgpu::InstanceFlags::empty(), ..Default::default() });
@@ -254,9 +301,9 @@ mod shared {
             compatible_surface: None,
         })) {
             Ok(a) => a,
-            Err(_) if strict() => panic!("NOT_PROVEN: no adapter; shared-texture view refusal requires a GPU"),
+            Err(_) if strict() => panic!("NOT_PROVEN: no adapter; shared-texture view requires a GPU"),
             Err(_) => {
-                println!("NOT_PROVEN: no adapter; shared-texture view refusal not run");
+                println!("NOT_PROVEN: no adapter; shared-texture view not run");
                 return;
             }
         };
@@ -266,7 +313,9 @@ mod shared {
             ..Default::default()
         }))
         .expect("adapter present but no device");
-        let shared = SharedDevice::new(&device, &queue, adapter.get_info(), DeviceOptions::default()).unwrap();
+        let shared =
+            SharedDevice::new(&device, &queue, adapter.get_info(), DeviceOptions { chunk_side: 4, ..DeviceOptions::default() })
+                .unwrap();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("test target"),
             size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
@@ -274,20 +323,50 @@ mod shared {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: TARGET_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let err = shared
-            .render_to_texture(p, Some(stage), &request(), src, &CancellationToken::default(), &texture)
-            .unwrap_err();
-        assert_eq!(
-            err,
-            GpuError::Backend(BackendError::Unsupported { operator: VIEW_KEY, exactness: Exactness::Unsupported })
-        );
-        assert_eq!(shared.backend().resident_bytes(), 0);
-        assert!(shared.backend().last_stats().is_none());
-        // The clip stage still renders on the texture path.
-        let clip = PlanExtensions::default().with_output(OutputStage::new(SampleRange::Extended, Some(DisplayTransform::Clip)));
-        shared.render_to_texture(p, Some(&clip), &request(), src, &CancellationToken::default(), &texture).unwrap();
+        let cancel = CancellationToken::default();
+        // SDR views: Prism's WGSL form in the output pass, +-1 per 8-bit channel.
+        for vt in [
+            ViewTransform::new(ViewTransformId::Aces1SdrVideo, SceneInput::LinearSrgb),
+            ViewTransform::new(ViewTransformId::Aces1SdrVideo, SceneInput::AcesCg),
+            ViewTransform::new(ViewTransformId::Aces1SdrVideoDisplayP3, SceneInput::LinearSrgb),
+        ] {
+            let stage = PlanExtensions::default()
+                .with_output(OutputStage::new(SampleRange::Extended, Some(DisplayTransform::ViewFrom(vt))));
+            let (receipt, _) = shared.render_to_texture(p, Some(&stage), &request(), src, &cancel, &texture).unwrap();
+            assert!(receipt.exactness.operators.iter().any(|o| o.key == VIEW_KEY));
+            let bytes = read_texture(&device, &queue, &texture);
+            let (mut max, mut exact) = (0u8, 0usize);
+            for y in 0..H as i64 {
+                for x in 0..W as i64 {
+                    let want = display(reference_with(x, y, vt));
+                    let at = ((y * W as i64 + x) * 4) as usize;
+                    for c in 0..4 {
+                        let d = bytes[at + c].abs_diff(want[c]);
+                        max = max.max(d);
+                        exact += usize::from(d == 0);
+                    }
+                }
+            }
+            println!(
+                "shared texture {} from {}: max |delta| {max} LSB, {exact}/{} channels exact",
+                vt.view.key(),
+                vt.input.key(),
+                W * H * 4
+            );
+            assert!(max <= 1, "{} {}: {max} LSB", vt.view.key(), vt.input.key());
+        }
+        // HDR view: no GPU form, refused before any device work.
+        let fresh = SharedDevice::new(&device, &queue, adapter.get_info(), DeviceOptions::default()).unwrap();
+        let hdr = PlanExtensions::default().with_output(OutputStage::new(
+            SampleRange::Extended,
+            Some(DisplayTransform::View(ViewTransformId::Aces1HdrVideo1000Nits)),
+        ));
+        let err = fresh.render_to_texture(p, Some(&hdr), &request(), src, &cancel, &texture).unwrap_err();
+        assert_eq!(err, GpuError::Backend(BackendError::Unsupported { operator: VIEW_KEY, exactness: Exactness::Unsupported }));
+        assert_eq!(fresh.backend().resident_bytes(), 0);
+        assert!(fresh.backend().last_stats().is_none());
     }
 }
