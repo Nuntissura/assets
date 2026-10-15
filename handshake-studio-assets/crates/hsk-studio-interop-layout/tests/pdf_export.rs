@@ -5,6 +5,8 @@
 //! checked against the written bytes: press's strict reader for the page boxes and an independent
 //! scan of the decoded content streams (miniz_oxide inflate + line tokens) for glyph positions,
 //! paths and 16-bit samples.
+mod common;
+use common::text_shaping::{FontFile, Seg, shape};
 use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_folio::*;
 use hsk_studio_interop_layout::layout::{
@@ -390,18 +392,19 @@ fn snapshot_lowers_to_pdf() {
     let assets = assets();
     let design = design();
     let stories = [PdfStory {
-        story_id: &b.story.story_id,
+        story: &b.story,
         text: TEXT,
         placement: &place,
         paragraphs: &b.paragraphs,
         glyphs: &b.glyphs,
-        fill: Colour::DeviceGray(0.0),
+        default_fill: Colour::DeviceGray(0.0),
     }];
     let fonts = [PdfFont { bytes: INTER, face_index: 0, hyphen: None }];
     let out = export_pdf(
         &PdfExportInput {
             snapshot: &b.snapshot,
             design: Some(&design),
+            type_styles: None,
             stories: &stories,
             fonts: &fonts,
             assets: &assets,
@@ -466,11 +469,12 @@ fn misaligned_stale_and_refused_inputs() {
     let assets = assets();
     let fonts = [PdfFont { bytes: INTER, face_index: 0, hyphen: None }, PdfFont { bytes: b"not a font", face_index: 0, hyphen: None }];
     let run = |glyphs: &[Vec<PdfGlyph>], place: &hsk_studio_interop_layout::layout::LayoutProposal, token: &CancellationToken| {
-        let stories = [PdfStory { story_id: &b.story.story_id, text: TEXT, placement: place, paragraphs: &b.paragraphs, glyphs, fill: Colour::DeviceGray(0.0) }];
+        let stories = [PdfStory { story: &b.story, text: TEXT, placement: place, paragraphs: &b.paragraphs, glyphs, default_fill: Colour::DeviceGray(0.0) }];
         export_pdf(
             &PdfExportInput {
                 snapshot: &b.snapshot,
                 design: None,
+                type_styles: None,
                 stories: &stories,
                 fonts: &fonts,
                 assets: &assets,
@@ -593,6 +597,7 @@ fn layer_graph_decides_the_paint_order() {
         &PdfExportInput {
             snapshot: &snapshot,
             design: Some(&design),
+            type_styles: None,
             stories: &[],
             fonts: &[],
             assets: &GraphAssets,
@@ -609,4 +614,104 @@ fn layer_graph_decides_the_paint_order() {
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
     assert!(codes.contains(&"layer_not_in_composition_graph"), "{codes:?}");
     assert!(!codes.contains(&"composition_graph_absent"), "{codes:?}");
+}
+
+fn type_style(n: u32, scope: TypeStyleScope, fill: StudioRgba) -> StudioTypeStyle {
+    StudioTypeStyle {
+        schema_id: TypeStyleSchema::V1,
+        style_id: id("STYS", n),
+        scope,
+        name: format!("style/{n}"),
+        based_on: None,
+        next_style: None,
+        font_family: None,
+        font_style: None,
+        font_size: None,
+        fill: Some(fill),
+        line_height: None,
+        letter_spacing: None,
+        align: None,
+    }
+}
+
+/// Type shapes the story (Inter, 20 pt, through the TextEngine double), layout composes the
+/// flattened paragraph, `pdf_glyphs_from_type` supplies the ids; the paragraph style's fill (green,
+/// bound to profile SCPF-1) colours the text and the character style on "PDF" (red, half alpha,
+/// unassigned) colours those three glyphs.
+#[test]
+fn type_shaped_story_takes_its_fill_from_folio_styles() {
+    let cancel = CancellationToken::default();
+    let b = build();
+    let mut st = b.story.clone();
+    st.paragraphs[0].style_ref = Some(id("STYS", 1));
+    st.character_ranges = vec![
+        StoryRange { start: 0, end: 3, style_ref: None, applied_language: Some("en-US".into()) },
+        StoryRange { start: 3, end: 6, style_ref: Some(id("STYS", 2)), applied_language: Some("en-US".into()) },
+        StoryRange { start: 6, end: TEXT.len() as u64, style_ref: None, applied_language: Some("en-US".into()) },
+    ];
+    let mut styles = StudioTypeStyleRecords::new(id("SDOC", 1));
+    styles.styles = vec![
+        type_style(1, TypeStyleScope::Paragraph, StudioRgba { r: 0.0, g: 0.5, b: 0.0, a: 1.0, colour_profile_id: ProfileBinding::Assigned(id("SCPF", 1)) }),
+        type_style(2, TypeStyleScope::Character, StudioRgba { r: 1.0, g: 0.0, b: 0.0, a: 0.5, colour_profile_id: ProfileBinding::Unassigned(()) }),
+    ];
+    let files = [FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let segs = [Seg { start: 0, end: TEXT.len() as u64, font: 0, script: *b"Latn", language: "en", axes: vec![] }];
+    let (paragraphs, glyphs) = shape(&files, TEXT, &segs, false, SIZE, |prepared| {
+        let p = &prepared.paragraphs()[0];
+        (vec![ShapedParagraph::from_type(p, 24.0, 16.0)], vec![pdf_glyphs_from_type(p, &fonts).unwrap()])
+    });
+    assert_eq!(glyphs[0].len(), paragraphs[0].glyphs.len());
+    assert_eq!(glyphs[0][0], PdfGlyph { glyph_id: glyph('H').0, font: 0, size_pt: SIZE, x_offset_pt: 0.0, y_offset_pt: 0.0 });
+    let snapshot = &b.snapshot;
+    let doc = snapshot.document();
+    let place = reflow_typeset(
+        &ReflowRequest {
+            document: doc,
+            story: &st,
+            resolved_text: None,
+            paragraphs: &paragraphs,
+            obstacles: &[],
+            composer: Composer::FirstFit,
+            space: SpaceParams::default(),
+            expected_revision: doc.revision,
+            limits: ReflowLimits::default(),
+        },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    let stories = [PdfStory { story: &st, text: TEXT, placement: &place, paragraphs: &paragraphs, glyphs: &glyphs, default_fill: Colour::DeviceGray(0.0) }];
+    let assets = assets();
+    let out = export_pdf(
+        &PdfExportInput {
+            snapshot,
+            design: None,
+            type_styles: Some(&styles),
+            stories: &stories,
+            fonts: &fonts,
+            assets: &assets,
+            options: ExportOptions::default(),
+            limits: Limits::default(),
+        },
+        &cancel,
+    )
+    .unwrap();
+    let decoded = streams(&out.bytes);
+    let content: String = decoded.iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    // Three runs in order: green (ICC) "Hi ", red "PDF", green " world" (layout places them on one or
+    // two lines; each colour change starts a new BT block).
+    let green = "/CS0 cs\n0.0 0.5 0.0 sc\nBT\n";
+    let red = "1.0 0.0 0.0 rg\nBT\n";
+    let (g1, r1) = (content.find(green).unwrap(), content.find(red).unwrap());
+    let g2 = content[r1..].find(green).map(|i| i + r1).unwrap();
+    assert!(g1 < r1 && r1 < g2, "fills follow the character ranges");
+    let shown_ids: Vec<u16> = shown(&decoded).iter().map(|g| g.0).collect();
+    assert_eq!(shown_ids, glyphs[0].iter().map(|g| g.glyph_id).collect::<Vec<_>>(), "Type's ids, in order");
+    let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
+    assert!(codes.contains(&"paint_colour_untagged") && codes.contains(&"text_fill_alpha_ignored"), "{codes:?}");
+    // A run whose font is not supplied is refused by the adapter.
+    let other = [PdfFont { bytes: INTER, face_index: 1, hyphen: None }];
+    let refused = shape(&files, TEXT, &segs, false, SIZE, |prepared| pdf_glyphs_from_type(&prepared.paragraphs()[0], &other));
+    assert_eq!(refused, Err(PdfExportError::InvalidInput("font_not_supplied")));
 }

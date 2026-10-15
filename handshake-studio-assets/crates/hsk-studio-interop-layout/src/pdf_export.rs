@@ -14,12 +14,13 @@
 //!   none) draws in `StudioDocument::layers` order and reports `composition_graph_absent`; with a
 //!   graph, layers it does not reach are reported, not drawn. A layer is drawn on every page of its
 //!   spread its geometry overlaps.
-//! - Text layers: the frame's lines from the story's `LayoutProposal`; each glyph is the caller's
-//!   glyph id (Type's `Glyph::glyph_id`, never re-shaped here, STU-TYP-127) placed at the line start
+//! - Text layers: the frame's lines from the story's `LayoutProposal`; each glyph is Type's glyph id
+//!   ([`pdf_glyphs_from_type`] maps a Type paragraph; never re-shaped here, STU-TYP-127) placed at the line start
 //!   plus the advances layout used, with the line's justification (`word_scale` on whitespace
 //!   glyphs, `letter_gap_pt` between glyphs) and the glyph's own offsets. A hyphenated line ends with
 //!   the font's hyphen glyph. Fonts are embedded once each, `/W` from the advances and `/ToUnicode`
-//!   from the story text of each glyph cluster.
+//!   from the story text of each glyph cluster. The fill is the Folio type style's: the character
+//!   style of the glyph's range, else the paragraph style, else `PdfStory::default_fill`.
 //! - Vector layers: `SVPT` paths from [`PdfAssets::path`] (points, spread coordinates); the solid
 //!   fill and stroke rows of the layer's `fill_style_id` / `stroke_style_id` paint styles. Colours
 //!   bound to a profile are written ICCBased with the caller's profile bytes; unassigned colours are
@@ -42,9 +43,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     GeometryUnit, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
     StrokeAlign, StrokeCap, StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords,
-    StudioDocument, StudioLayer, StudioPaint,
+    StudioDocument, StudioLayer, StudioPaint, StudioRgba, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
 };
-use hsk_studio_layout::{FramePlacement, LayoutProposal, ShapedParagraph};
+use hsk_studio_layout::{FramePlacement, LayoutProposal, ShapedParagraph, resolve_style};
 use hsk_studio_nib::{OwnedPath, PathElement, PathLimits};
 use hsk_studio_pigment::{Grid, ResolvedTile};
 use hsk_studio_press::{
@@ -84,8 +85,8 @@ pub struct PdfGlyph {
 /// One story with its layout placement and the glyph runs it was composed from.
 #[derive(Clone, Copy, Debug)]
 pub struct PdfStory<'a> {
-    /// Folio `STXT` id.
-    pub story_id: &'a str,
+    /// The Folio story (its character and paragraph style references give the text fill).
+    pub story: &'a StudioTextStory,
     /// The whole story text (cluster byte ranges index into it).
     pub text: &'a str,
     pub placement: &'a LayoutProposal,
@@ -93,8 +94,8 @@ pub struct PdfStory<'a> {
     pub paragraphs: &'a [ShapedParagraph],
     /// Per paragraph, one entry per shaped glyph.
     pub glyphs: &'a [Vec<PdfGlyph>],
-    /// Text colour (Folio type styles carry no lowered fill here; the caller resolves it).
-    pub fill: Colour,
+    /// Fill of glyphs whose character and paragraph styles state none (or with no type styles).
+    pub default_fill: Colour,
 }
 
 /// A raster layer's tiles and where pixel (0, 0) of its grid sits.
@@ -119,6 +120,8 @@ pub trait PdfAssets {
 pub struct PdfExportInput<'a> {
     pub snapshot: &'a Snapshot,
     pub design: Option<&'a StudioDesignRecords>,
+    /// Folio type styles: the `fill` of a glyph's character style, else its paragraph style.
+    pub type_styles: Option<&'a StudioTypeStyleRecords>,
     pub stories: &'a [PdfStory<'a>],
     pub fonts: &'a [PdfFont<'a>],
     pub assets: &'a dyn PdfAssets,
@@ -212,6 +215,25 @@ fn canceled(cancel: &CancellationToken) -> Result<()> {
     cancel.check().map_err(|_| PdfExportError::Canceled)
 }
 
+/// What a glyph run shares: font, size, fill and fill alpha.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RunKey {
+    font: usize,
+    size: u64,
+    fill: Colour,
+    alpha: u64,
+}
+
+/// Where one glyph goes: its paragraph and story byte (for the fill), page and spread position.
+#[derive(Clone, Copy)]
+struct Placed {
+    para: usize,
+    at: u64,
+    page: usize,
+    x: f64,
+    y: f64,
+}
+
 struct Cx<'a> {
     input: &'a PdfExportInput<'a>,
     doc: &'a StudioDocument,
@@ -220,6 +242,8 @@ struct Cx<'a> {
     fonts: Vec<Option<FontHandle>>,
     profiles: BTreeMap<[u8; 32], Option<IccHandle>>,
     loss: LossBook,
+    /// Resolved type-style fills by (style id, character scope).
+    style_fills: BTreeMap<(String, bool), Option<StudioRgba>>,
     glyphs: u64,
     paths: u64,
     tiles: u64,
@@ -239,6 +263,7 @@ pub fn export_pdf(input: &PdfExportInput<'_>, cancel: &CancellationToken) -> Res
         fonts: Vec::new(),
         profiles: BTreeMap::new(),
         loss: LossBook::default(),
+        style_fills: BTreeMap::new(),
         glyphs: 0,
         paths: 0,
         tiles: 0,
@@ -485,7 +510,7 @@ impl Cx<'_> {
                             Some(t) if !t.is_empty() && t.chars().count() <= MAX_CLUSTER_CHARS => {
                                 u.entry(g.glyph_id).or_insert_with(|| t.to_owned());
                             }
-                            _ => self.loss.note(s.story_id, "text", LossKind::Approximated, "to_unicode_cluster_skipped"),
+                            _ => self.loss.note(&s.story.story_id, "text", LossKind::Approximated, "to_unicode_cluster_skipped"),
                         }
                     }
                 }
@@ -527,7 +552,7 @@ impl Cx<'_> {
     }
 
     fn text_layer(&mut self, layer: &StudioLayer, story_id: &str) -> Result<()> {
-        let Some(story) = self.input.stories.iter().find(|s| s.story_id == story_id) else {
+        let Some(story) = self.input.stories.iter().find(|s| s.story.story_id == story_id) else {
             self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "story_not_supplied");
             return Ok(());
         };
@@ -542,10 +567,47 @@ impl Cx<'_> {
         self.frame_lines(&story, frame, pi)
     }
 
+    /// The Folio fill of the glyph at story byte `at` of paragraph `para`: the character style of
+    /// the range holding it, else the paragraph style, else `PdfStory::default_fill`. Returns the
+    /// colour and its alpha.
+    fn text_fill(&mut self, story: &PdfStory<'_>, para: usize, at: u64) -> Result<(Colour, f64)> {
+        let st = story.story;
+        let char_style = st.character_ranges.iter().find(|r| r.start <= at && at < r.end).and_then(|r| r.style_ref.clone());
+        let para_style = st.paragraphs.get(para).and_then(|p| p.style_ref.clone());
+        let mut fill = None;
+        for (id, scope) in [(char_style, TypeStyleScope::Character), (para_style, TypeStyleScope::Paragraph)] {
+            let Some(id) = id else { continue };
+            let key = (id, scope == TypeStyleScope::Character);
+            let resolved = match self.style_fills.get(&key) {
+                Some(f) => f.clone(),
+                None => {
+                    let f = match self.input.type_styles {
+                        Some(records) => resolve_style(records, &key.0, scope).map(|r| r.fill).map_err(|_| ()),
+                        None => Err(()),
+                    };
+                    if f.is_err() {
+                        self.loss.note(&st.story_id, "text", LossKind::Approximated, "type_style_unresolved");
+                    }
+                    let f = f.ok().flatten();
+                    self.style_fills.insert(key, f.clone());
+                    f
+                }
+            };
+            if resolved.is_some() {
+                fill = resolved;
+                break;
+            }
+        }
+        let Some(rgba) = fill else { return Ok((story.default_fill, 1.0)) };
+        let colour = self.colour_of(&st.story_id, "text", [rgba.r, rgba.g, rgba.b], &rgba.colour_profile_id)?;
+        let alpha = if rgba.a.is_finite() { rgba.a.clamp(0.0, 1.0) } else { 1.0 };
+        Ok((colour.unwrap_or(story.default_fill), alpha))
+    }
+
     fn frame_lines(&mut self, story: &PdfStory<'_>, frame: &FramePlacement, pi: usize) -> Result<()> {
-        // (font, size bits) -> pending glyph run on this frame.
+        // Pending glyph run on this frame and its key (font, size, fill, alpha).
         let mut run: Vec<(u16, f64, f64)> = Vec::new();
-        let mut run_key: Option<(usize, u64)> = None;
+        let mut run_key: Option<RunKey> = None;
         for line in &frame.lines {
             let (Some(glyphs), Some(para)) = (story.glyphs.get(line.paragraph), story.paragraphs.get(line.paragraph)) else {
                 continue;
@@ -553,7 +615,7 @@ impl Cx<'_> {
             let (scale, gap) = line.justification.map_or((1.0, 0.0), |j| (j.word_scale, j.letter_gap_pt));
             let mut x = frame.origin_x_pt + line.x_start_pt;
             let y = frame.origin_y_pt + line.baseline_y_pt;
-            let mut last: Option<PdfGlyph> = None;
+            let mut last: Option<(PdfGlyph, u64)> = None;
             for idx in line.glyph_range.clone() {
                 let (Some(g), Some(lg)) = (glyphs.get(idx), para.glyphs.get(idx)) else { continue };
                 let space = usize::try_from(lg.cluster.start)
@@ -561,54 +623,61 @@ impl Cx<'_> {
                     .zip(usize::try_from(lg.cluster.end).ok())
                     .and_then(|(a, b)| story.text.get(a..b))
                     .is_some_and(|t| !t.is_empty() && t.chars().all(char::is_whitespace));
-                self.place(&mut run, &mut run_key, story, pi, *g, x + g.x_offset_pt, y - g.y_offset_pt)?;
+                let at = Placed { para: line.paragraph, at: lg.cluster.start, page: pi, x: x + g.x_offset_pt, y: y - g.y_offset_pt };
+                self.place(&mut run, &mut run_key, story, at, *g)?;
                 x += lg.advance_pt * if space { scale } else { 1.0 };
                 if idx.checked_add(1).is_some_and(|n| n < line.glyph_range.end) {
                     x += gap;
                 }
-                last = Some(*g);
+                last = Some((*g, lg.cluster.start));
             }
             if line.hyphenated {
-                match last.and_then(|g| self.input.fonts.get(g.font).and_then(|f| f.hyphen).map(|h| (g, h))) {
-                    Some((g, (hid, _))) => {
+                match last.and_then(|(g, at)| self.input.fonts.get(g.font).and_then(|f| f.hyphen).map(|h| (g, at, h))) {
+                    Some((g, at, (hid, _))) => {
                         let hy = PdfGlyph { glyph_id: hid, x_offset_pt: 0.0, y_offset_pt: 0.0, ..g };
-                        self.place(&mut run, &mut run_key, story, pi, hy, x, y)?;
+                        let at = Placed { para: line.paragraph, at, page: pi, x, y };
+                        self.place(&mut run, &mut run_key, story, at, hy)?;
                     }
-                    None => self.loss.note(story.story_id, "text", LossKind::Approximated, "hyphen_glyph_missing"),
+                    None => self.loss.note(&story.story.story_id, "text", LossKind::Approximated, "hyphen_glyph_missing"),
                 }
             }
         }
-        self.flush(&mut run, run_key, story, pi)
+        self.flush(&mut run, run_key, pi)
     }
 
-    /// Adds one glyph (spread coordinates) to the pending run, flushing on a font or size change.
-    #[allow(clippy::too_many_arguments)]
-    fn place(&mut self, run: &mut Vec<(u16, f64, f64)>, key: &mut Option<(usize, u64)>, story: &PdfStory<'_>, pi: usize, g: PdfGlyph, x: f64, y: f64) -> Result<()> {
+    /// Adds one glyph (spread coordinates) to the pending run, flushing when the font, size or fill
+    /// changes.
+    fn place(&mut self, run: &mut Vec<(u16, f64, f64)>, key: &mut Option<RunKey>, story: &PdfStory<'_>, at: Placed, g: PdfGlyph) -> Result<()> {
         if self.fonts.get(g.font).copied().flatten().is_none() {
-            self.loss.note(story.story_id, "text", LossKind::Unsupported, "glyph_font_not_embedded");
+            self.loss.note(&story.story.story_id, "text", LossKind::Unsupported, "glyph_font_not_embedded");
             return Ok(());
         }
-        let k = (g.font, g.size_pt.to_bits());
+        let (fill, alpha) = self.text_fill(story, at.para, at.at)?;
+        let k = RunKey { font: g.font, size: g.size_pt.to_bits(), fill, alpha: alpha.to_bits() };
         if *key != Some(k) {
-            self.flush(run, *key, story, pi)?;
+            self.flush(run, *key, at.page)?;
             *key = Some(k);
         }
-        let Some(page) = self.pages.get(pi) else { return Err(PdfExportError::InvalidInput("frame_page")) };
-        let (px, py) = page.map(x, y);
+        let Some(page) = self.pages.get(at.page) else { return Err(PdfExportError::InvalidInput("frame_page")) };
+        let (px, py) = page.map(at.x, at.y);
         run.push((g.glyph_id, px, py));
         Ok(())
     }
 
-    fn flush(&mut self, run: &mut Vec<(u16, f64, f64)>, key: Option<(usize, u64)>, story: &PdfStory<'_>, pi: usize) -> Result<()> {
+    fn flush(&mut self, run: &mut Vec<(u16, f64, f64)>, key: Option<RunKey>, pi: usize) -> Result<()> {
         if run.is_empty() {
             return Ok(());
         }
-        let Some((font, bits)) = key else { return Ok(()) };
-        let (Some(Some(handle)), Some(page)) = (self.fonts.get(font).copied(), self.pages.get(pi)) else {
+        let Some(k) = key else { return Ok(()) };
+        let (Some(Some(handle)), Some(page)) = (self.fonts.get(k.font).copied(), self.pages.get(pi)) else {
             run.clear();
             return Ok(());
         };
-        self.ex.show_glyphs(page.handle, handle, f64::from_bits(bits), [0.0, 0.0], story.fill, run)?;
+        let page = page.handle;
+        if f64::from_bits(k.alpha) < 1.0 {
+            self.loss.note("document", "text", LossKind::Approximated, "text_fill_alpha_ignored");
+        }
+        self.ex.show_glyphs(page, handle, f64::from_bits(k.size), [0.0, 0.0], k.fill, run)?;
         self.glyphs = self.glyphs.saturating_add(u64::try_from(run.len()).unwrap_or(u64::MAX));
         run.clear();
         Ok(())
@@ -630,14 +699,19 @@ impl Cx<'_> {
     }
 
     fn colour(&mut self, layer: &StudioLayer, c: &StudioColor) -> Result<Option<Colour>> {
-        let rgb = [c.r, c.g, c.b];
+        self.colour_of(&layer.layer_id, &layer.kind, [c.r, c.g, c.b], &c.colour_profile_id)
+    }
+
+    /// A Folio colour as a press colour: ICCBased with the bound profile, DeviceRGB (reported) when
+    /// unassigned or unresolved; `None` (reported) when out of range.
+    fn colour_of(&mut self, owner: &str, element: &str, rgb: [f64; 3], binding: &ProfileBinding) -> Result<Option<Colour>> {
         if !rgb.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
-            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "paint_colour_out_of_range");
+            self.loss.note(owner, element, LossKind::Unsupported, "paint_colour_out_of_range");
             return Ok(None);
         }
-        match &c.colour_profile_id {
+        match binding {
             ProfileBinding::Unassigned(()) => {
-                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "paint_colour_untagged");
+                self.loss.note(owner, element, LossKind::Approximated, "paint_colour_untagged");
                 Ok(Some(Colour::DeviceRgb(rgb)))
             }
             ProfileBinding::Assigned(id) => {
@@ -649,7 +723,7 @@ impl Cx<'_> {
                 match handle {
                     Some(h) => Ok(Some(Colour::IccBased(h, [rgb[0], rgb[1], rgb[2], 0.0]))),
                     None => {
-                        self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "paint_profile_unresolved");
+                        self.loss.note(owner, element, LossKind::Approximated, "paint_profile_unresolved");
                         Ok(Some(Colour::DeviceRgb(rgb)))
                     }
                 }
@@ -793,6 +867,35 @@ impl Cx<'_> {
         }
         Ok(())
     }
+}
+
+/// Type adapter: the [`PdfGlyph`]s of one Type-shaped paragraph, one per glyph in the order
+/// `ShapedParagraph::from_type` flattens them (runs in order, glyphs in order), so the result lines
+/// up with the paragraph layout composed. Each run's font is found in `fonts` by Type's
+/// `FontResource::content_hash` (SHA-256 of the bytes) and face index; the size and glyph offsets
+/// are Type's. Refusals: a run whose font is not in `fonts` (`font_not_supplied`), a glyph id
+/// above `u16::MAX` (`glyph_id_range`: CID fonts address 65536 glyphs).
+pub fn pdf_glyphs_from_type(paragraph: &hsk_studio_type::ParagraphResult<'_>, fonts: &[PdfFont<'_>]) -> Result<Vec<PdfGlyph>> {
+    let hashes: Vec<[u8; 32]> = fonts.iter().map(|f| hsk_studio_prism::profile_hash(f.bytes)).collect();
+    let mut out = Vec::new();
+    for run in paragraph.runs() {
+        let r = run.resolved();
+        let font = hashes
+            .iter()
+            .zip(fonts)
+            .position(|(h, f)| *h == r.content_hash && f.face_index == r.face_index)
+            .ok_or(PdfExportError::InvalidInput("font_not_supplied"))?;
+        for g in run.glyphs() {
+            out.push(PdfGlyph {
+                glyph_id: u16::try_from(g.glyph_id).map_err(|_| PdfExportError::InvalidInput("glyph_id_range"))?,
+                font,
+                size_pt: run.font_size_pt(),
+                x_offset_pt: g.x_offset_pt,
+                y_offset_pt: g.y_offset_pt,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Linear `rgb_f32le` colour and `f32le` alpha planes (already validated by pigment) to 16-bit

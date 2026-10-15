@@ -25,6 +25,7 @@ pub use indd_adapter::{IndKind, identify_indd, import_indd};
 pub use model::*;
 pub use pdf_export::{
     PdfAssets, PdfExportError, PdfExportInput, PdfExportOutput, PdfFont, PdfGlyph, PdfStory, PlacedRaster, export_pdf,
+    pdf_glyphs_from_type,
 };
 pub use reflow::{
     FixedAdvanceShaper, ParagraphShaper, ReflowOptions, ShapeContext, ThreadReflow, reflow_import,
