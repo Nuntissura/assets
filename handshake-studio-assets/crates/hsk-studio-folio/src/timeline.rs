@@ -24,7 +24,8 @@
 //! in/out span used to scope rendering and export"), the transition parameter values (one per
 //! `param_key` of STU-FX-103; Studio reading: the stored instance holds values, the descriptor
 //! holds bounds) and the declared shortfall choice `repeat_end_frame` (STU-VID-032 "repeat the
-//! end frame"). Every record field is omitted from the wire when empty or false, so documents
+//! end frame") and the STU-FX-137 track `volume` (linear, default 1.0) and `pan` (default 0).
+//! Every record field is omitted from the wire when empty or false, so documents
 //! without them encode byte-identically. Exact
 //! placement around the cut, handles and frame alignment are Pulse's; this module stores and
 //! validates only.
@@ -206,26 +207,20 @@ pub struct TimelineTransition {
 #[serde(deny_unknown_fields)]
 pub struct TransitionParameter {
     pub param_key: String,
-    pub value: TransitionParameterValue,
+    /// Named `param_value` on the wire: an object key `value` is Folio's length shape.
+    pub param_value: TransitionParameterValue,
 }
 
-/// A parameter value; numbers are finite (validated), so equality is reflexive (`Eq`).
+/// A parameter value (`{"number": 0.5}`, `{"boolean": true}`, `{"enumeration": "linear"}`,
+/// `{"ticks": 3}`); numbers are finite (validated), so equality is reflexive (`Eq`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "value_kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TransitionParameterValue {
-    Number {
-        value: f64,
-    },
-    Boolean {
-        value: bool,
-    },
+    Number(f64),
+    Boolean(bool),
     /// An enumeration option key.
-    Enumeration {
-        value: String,
-    },
-    Ticks {
-        value: u64,
-    },
+    Enumeration(String),
+    Ticks(u64),
 }
 impl Eq for TransitionParameterValue {}
 
@@ -367,6 +362,26 @@ pub struct StudioTrack {
     pub soloed: bool,
     /// Ordered by `timeline_start`; clips never overlap (touching is allowed).
     pub clips: Vec<StudioClip>,
+    /// STU-FX-137 track `volume`: linear gain, default 1.0, `0.0..=MAX_TRACK_VOLUME` (omitted at
+    /// the default; lane SMB-PULSE-PLAYBACK).
+    #[serde(default = "unit_gain", skip_serializing_if = "is_unit_gain")]
+    pub volume: f64,
+    /// STU-FX-137 track `pan`: `-1.0` (left) ..= `1.0` (right), default 0 (omitted at the default).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pan: f64,
+}
+/// Largest track volume (linear gain; about +24 dB). Studio bound: the spec gives the default only.
+pub const MAX_TRACK_VOLUME: f64 = 16.0;
+fn unit_gain() -> f64 {
+    1.0
+}
+#[allow(clippy::float_cmp)]
+fn is_unit_gain(v: &f64) -> bool {
+    *v == 1.0
+}
+#[allow(clippy::float_cmp)]
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -534,9 +549,9 @@ fn validate_transition<'a>(
     }
     let mut keys = BTreeSet::new();
     for p in &t.parameters {
-        let value_ok = match &p.value {
-            TransitionParameterValue::Number { value } => value.is_finite(),
-            TransitionParameterValue::Enumeration { value } => key(value),
+        let value_ok = match &p.param_value {
+            TransitionParameterValue::Number(value) => value.is_finite(),
+            TransitionParameterValue::Enumeration(value) => key(value),
             _ => true,
         };
         if !key(&p.param_key) || !keys.insert(p.param_key.as_str()) || !value_ok {
@@ -619,6 +634,10 @@ pub(crate) fn validate_sequences(
             let slot = &mut stack[t.kind.slot()];
             if t.index != *slot {
                 return Err(err(Code::InvalidField, format!("{}/index", t.track_id)));
+            }
+            let gain_ok = t.volume.is_finite() && (0.0..=MAX_TRACK_VOLUME).contains(&t.volume);
+            if !gain_ok || !t.pan.is_finite() || !(-1.0..=1.0).contains(&t.pan) {
+                return Err(err(Code::InvalidField, format!("{}/mix", t.track_id)));
             }
             *slot = slot
                 .checked_add(1)

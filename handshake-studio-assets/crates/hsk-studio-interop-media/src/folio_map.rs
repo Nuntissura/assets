@@ -185,6 +185,8 @@ pub fn build_sequence(
                 targeted: true,
                 muted: false,
                 soloed: false,
+                volume: 1.0,
+                pan: 0.0,
                 clips,
             });
         }

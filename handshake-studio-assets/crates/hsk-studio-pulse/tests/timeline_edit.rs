@@ -98,6 +98,8 @@ fn track(n: u32, kind: TrackKind, index: u32, clips: Vec<StudioClip>) -> StudioT
         targeted: true,
         muted: false,
         soloed: false,
+        volume: 1.0,
+        pan: 0.0,
         clips,
     }
 }

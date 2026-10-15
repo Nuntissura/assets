@@ -106,6 +106,8 @@ fn track(n: i64, kind: TrackKind, targeted: bool, clips: Vec<StudioClip>) -> Stu
         targeted,
         muted: false,
         soloed: false,
+        volume: 1.0,
+        pan: 0.0,
         clips,
     }
 }

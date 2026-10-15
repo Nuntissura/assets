@@ -179,6 +179,53 @@ fn markers_and_transitions_round_trip_and_old_wire_is_unchanged() {
         assert_eq!(round.encoded_bytes(), snap.encoded_bytes());
         let text = String::from_utf8(snap.encoded_bytes().to_vec()).unwrap();
         assert!(text.contains("hsk.studio.transition@1"));
+        // Playback records (lane SMB-PULSE-PLAYBACK): work area, transition parameters, the
+        // repeat-end-frame choice and track volume/pan decode typed and survive the round trip.
+        let rich = inspect(&document(|v| {
+            annotate(v);
+            v["sequences"][0]["work_area"] = json!({"start": 2 * TPF, "end": 40 * TPF});
+            let t = &mut v["sequences"][0]["tracks"][0];
+            t["volume"] = json!(0.5);
+            t["pan"] = json!(-0.25);
+            let tail = &mut t["clips"][0]["transitions"]["tail"];
+            tail["repeat_end_frame"] = json!(true);
+            tail["parameters"] =
+                json!([{"param_key":"curve","param_value":{"enumeration":"linear"}}]);
+        }))
+        .unwrap();
+        let rs = &rich.document().sequences[0];
+        assert_eq!(
+            rs.work_area,
+            Some(WorkArea {
+                start: Ticks::new(2 * TPF),
+                end: Ticks::new(40 * TPF)
+            })
+        );
+        assert_eq!((rs.tracks[0].volume, rs.tracks[0].pan), (0.5, -0.25));
+        let tr = rs.tracks[0].clips[0].transitions.tail.as_ref().unwrap();
+        assert!(tr.repeat_end_frame);
+        assert_eq!(
+            tr.parameters[0].param_value,
+            TransitionParameterValue::Enumeration("linear".into())
+        );
+        let reencoded = validate_document(
+            rich.document().clone(),
+            Budget::default(),
+            &CancellationToken::default(),
+            &Available,
+        )
+        .unwrap();
+        assert_eq!(
+            inspect(&serde_json::from_slice(reencoded.encoded_bytes()).unwrap())
+                .unwrap()
+                .document(),
+            rich.document()
+        );
+        assert!(
+            !old_bytes.contains("\"work_area\"")
+                && !old_bytes.contains("\"volume\"")
+                && !old_bytes.contains("\"pan\"")
+        );
         // Typed values serialize back to the same records (Rust-built documents too).
         let mut built = old.document().clone();
         built.revision = 3;
@@ -293,6 +340,53 @@ fn hostile_timeline_records_are_refused_typed() {
                 Code::InvalidField,
                 format!("{}/transitions", identity("SCLP", 2))
             )
+        );
+        // Playback records: bounds of the work area, track mix and parameter values.
+        let seq0 = |v: &mut Value, key: &str, value: Value| v["sequences"][0][key] = value;
+        let track0 =
+            |v: &mut Value, key: &str, value: Value| v["sequences"][0]["tracks"][0][key] = value;
+        assert_eq!(
+            code(&with(&|v| seq0(
+                v,
+                "work_area",
+                json!({"start": 5, "end": 5})
+            )))
+            .1,
+            "seq-main/work_area"
+        );
+        assert_eq!(
+            code(&with(&|v| track0(v, "volume", json!(-0.5)))).0,
+            Code::InvalidField
+        );
+        assert_eq!(
+            code(&with(&|v| track0(
+                v,
+                "volume",
+                json!(MAX_TRACK_VOLUME + 1.0)
+            )))
+            .0,
+            Code::InvalidField
+        );
+        assert_eq!(
+            code(&with(&|v| track0(v, "pan", json!(1.5)))).0,
+            Code::InvalidField
+        );
+        let dup = json!([{"param_key":"curve","param_value":{"boolean":true}},{"param_key":"curve","param_value":{"ticks":3}}]);
+        assert_eq!(
+            code(&with(&|v| tail(v, "parameters", dup.clone()))).1,
+            "t-ab/parameters"
+        );
+        let many: Vec<Value> = (0..=MAX_TRANSITION_PARAMETERS)
+            .map(|i| json!({"param_key":format!("k{i}"),"param_value":{"boolean":true}}))
+            .collect();
+        assert_eq!(
+            code(&with(&|v| tail(
+                v,
+                "parameters",
+                Value::Array(many.clone())
+            )))
+            .1,
+            "t-ab/parameters"
         );
         // Wire shape: unknown keys and a missing explicit-null role are decoder errors.
         assert!(inspect(&with(&|v| seq_marker(v, "extra", json!(1)))).is_err());

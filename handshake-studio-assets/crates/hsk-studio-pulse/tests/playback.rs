@@ -70,6 +70,8 @@ fn sequence(work_area: Option<(u64, u64)>) -> StudioSequence {
             targeted: true,
             muted: false,
             soloed: false,
+            volume: 1.0,
+            pan: 0.0,
             clips: vec![clip(1, 0, 60), clip(2, 60, 40)],
         }],
         markers: Vec::new(),
