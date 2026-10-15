@@ -626,6 +626,7 @@ impl Mapper<'_> {
         p: &Paint,
         size: Option<crate::nodes::Vec2>,
         what: &str,
+        abs: &Affine,
     ) -> Option<(StudioPaint, f64)> {
         let base = p.opacity.unwrap_or(1.0);
         match &p.kind {
@@ -666,8 +667,9 @@ impl Mapper<'_> {
                     }
                 };
                 // Figma's paint transform maps the node's unit box to gradient space; Folio's maps
-                // gradient space to the layer: node size x inverse(paint transform). UNVERIFIED
-                // beyond the identity transform of the fixture.
+                // gradient space to the layer's geometry, which is baked into document px: the
+                // node's absolute transform x node size x inverse(paint transform). Checked against
+                // the fixture PNG for the identity paint transform (fig_paints).
                 let identity = crate::nodes::Matrix {
                     m00: 1.0,
                     m01: 0.0,
@@ -686,13 +688,23 @@ impl Mapper<'_> {
                     return None;
                 };
                 let (w, h) = (wide(size.x), wide(size.y));
-                let t = [
+                let local = [
                     inv[0] * w,
                     inv[1] * h,
                     inv[2] * w,
                     inv[3] * h,
                     inv[4] * w,
                     inv[5] * h,
+                ];
+                // abs = [m00 m01 m02; m10 m11 m12] after the Folio matrix [a c e; b d f].
+                let [a, b, c, d, e, f] = local;
+                let t = [
+                    abs[0] * a + abs[1] * b,
+                    abs[3] * a + abs[4] * b,
+                    abs[0] * c + abs[1] * d,
+                    abs[3] * c + abs[4] * d,
+                    abs[0] * e + abs[1] * f + abs[2],
+                    abs[3] * e + abs[4] * f + abs[5],
                 ]
                 .map(tidy);
                 if w <= 0.0 || h <= 0.0 {
@@ -829,18 +841,25 @@ impl Mapper<'_> {
 
     /// One PAINT style holding the node's whole appearance stack (fills bottom to top, then
     /// strokes), bound through `fill_style_id`. `None` when the node has no mappable paint.
-    fn style(&mut self, n: &FigNode, node: NodeRef) -> Result<()> {
-        self.style_rows(n, node, true, true)
+    fn style(&mut self, n: &FigNode, node: NodeRef, abs: &Affine) -> Result<()> {
+        self.style_rows(n, node, true, true, abs)
     }
 
     /// [`Self::style`] restricted to the fill rows and/or the stroke rows of the node.
-    fn style_rows(&mut self, n: &FigNode, node: NodeRef, fills: bool, strokes: bool) -> Result<()> {
+    fn style_rows(
+        &mut self,
+        n: &FigNode,
+        node: NodeRef,
+        fills: bool,
+        strokes: bool,
+        abs: &Affine,
+    ) -> Result<()> {
         let mut rows = Vec::new();
         let mut images: Vec<StudioImagePaint> = Vec::new();
         let none: &[Paint] = &[];
         for p in if fills { &n.fills[..] } else { none } {
             self.pending_image = None;
-            if let Some((paint, opacity)) = self.paint(p, n.size, "fills") {
+            if let Some((paint, opacity)) = self.paint(p, n.size, "fills", abs) {
                 if let Some(mut img) = self.pending_image.take() {
                     img.row = u32::try_from(rows.len()).unwrap_or(u32::MAX);
                     images.push(img);
@@ -900,7 +919,7 @@ impl Mapper<'_> {
             }
             for p in &n.strokes {
                 self.pending_image = None;
-                if let Some((paint, opacity)) = self.paint(p, n.size, "strokes") {
+                if let Some((paint, opacity)) = self.paint(p, n.size, "strokes", abs) {
                     if let Some(mut img) = self.pending_image.take() {
                         img.row = u32::try_from(rows.len()).unwrap_or(u32::MAX);
                         images.push(img);
@@ -2360,7 +2379,7 @@ impl Mapper<'_> {
         };
         self.order.push(node.clone());
         if painted {
-            self.style_rows(n, node, true, false)?;
+            self.style_rows(n, node, true, false, abs)?;
         }
         let clip_index = if clip {
             let id = format!("fig-clip-{}", self.clips.len());
@@ -2775,9 +2794,9 @@ impl Mapper<'_> {
         if ty != "CANVAS" {
             if background.is_some() {
                 // The fill rows live on the background layer; strokes stay on the frame.
-                self.style_rows(n, node_ref.clone(), false, true)?;
+                self.style_rows(n, node_ref.clone(), false, true, &abs)?;
             } else {
-                self.style(n, node_ref.clone())?;
+                self.style(n, node_ref.clone(), &abs)?;
             }
         }
         if let NodePayload::Frame(f)
@@ -3244,7 +3263,7 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "strokes (caps NONE/ROUND/SQUARE = butt/round/projecting, marker caps lost; an odd dash pattern is written twice; miter limit as stored; only fixture strokes without caps or dashes are compared with Figma rendering)",
     "effect_styles (styleIdForEffect resolves to a local style node whose effects replace the node's; a group with effects is made isolated Normal; library styles are losses)",
     "text_layout (lines and baselines come from Figma's stored derivedTextData; glyph sizes from its laid-out glyphs; fonts must be granted by the caller per family and style)",
-    "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
+    "gradient_transform (Figma paint transform inverted, scaled by the node size and placed by the node's absolute transform into document px; rendered within 1.5/255 of the fixture PNG for its identity paint transform only; angular and diamond gradients have no Folio geometry)",
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",
     "text_direction (stories are written left-to-right; Figma stores AUTO directionality)",
     "auto_layout_fields (stackHorizontalPadding/stackVerticalPadding read as left/top; sizing, alignment, wrap and border inclusion are defaults)",

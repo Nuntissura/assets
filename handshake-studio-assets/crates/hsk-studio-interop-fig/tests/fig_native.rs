@@ -186,7 +186,9 @@ fn real_native_mapping_structure() {
         panic!("gradient row")
     };
     assert_eq!(gradient.stops.len(), 2);
-    assert_eq!(gradient.transform, [150.0, 0.0, 0.0, 110.0, 0.0, 0.0]);
+    // Gradient space -> document px (the geometry is baked into document px): the node size
+    // and its absolute origin (350, 190) (SMB-INTEROP-FIG-PAINTS; fig_paints renders it vs the PNG).
+    assert_eq!(gradient.transform, [150.0, 0.0, 0.0, 110.0, 350.0, 190.0]);
     // Appearance: star at 50 %, multiply blend (Studio discriminant 5), hidden internal page.
     let star = layer(&m.proposal, "star-half-opacity")
         .appearance

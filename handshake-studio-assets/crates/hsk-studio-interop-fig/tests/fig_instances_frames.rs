@@ -341,12 +341,13 @@ fn whole_fixture_render_matches_operator_png() {
     let within8 = d.iter().filter(|v| **v <= 8.0).count() as f64 / n;
     let mean = d.iter().sum::<f64>() / n;
     eprintln!("basic-shapes: refused {:?} mean {mean:.4} <=8: {within8:.4} <=2: {:.4} p99 {:.4}", r.refused, d.iter().filter(|v| **v <= 2.0).count() as f64 / n, d[(n * 0.99) as usize]);
-    // Exact nib coverage with strokes and the linear gradient drawn (composite 5898a82): measured
-    // mean 6.4212/255, 94.23 % within 8/255 (was 20.251 and 88.61 % before strokes and gradients
-    // rendered). Residue: the image paint (no decoded image here), the text and the drop shadow; Figma
-    // parity of this fixture stays UNVERIFIED, pinned as a regression floor at the measured values.
-    assert!(within8 >= 0.9423, "basic-shapes: {within8:.4} within 8/255");
-    assert!(mean <= 6.43, "basic-shapes: mean {mean:.4}");
+    // Exact nib coverage with strokes and the linear gradient drawn (composite 5898a82; gradient
+    // placed in document px since SMB-INTEROP-FIG-PAINTS): measured mean 5.0056/255, 96.41 % within
+    // 8/255 (20.251 / 88.61 % before strokes and gradients rendered, 6.4212 / 94.23 % with the
+    // gradient misplaced). Residue: the image paint (no decoded image here) and the text with its
+    // bold run; Figma parity of this fixture stays UNVERIFIED, pinned as a regression floor.
+    assert!(within8 >= 0.9641, "basic-shapes: {within8:.4} within 8/255");
+    assert!(mean <= 5.006, "basic-shapes: mean {mean:.4}");
 }
 
 // ---------- hostile instance graphs (synthetic) ----------
