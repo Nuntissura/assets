@@ -7,6 +7,8 @@
 //! Pure compute: no ports, no leases, no Folio writes. Every formula is a documented Studio
 //! reading, class Approximate; Photoshop parity is UNVERIFIED (oracle list D5).
 #![deny(clippy::arithmetic_side_effects)]
+pub mod maxflow;
+pub mod quick;
 pub mod wand;
 
 use crate::brush::BrushError;
@@ -224,6 +226,58 @@ impl RgbaImage {
     }
 }
 
+/// A binary selection over `bounds` as a coverage plane. With `anti_alias` (the document toggle,
+/// STU-RAS-119) a pixel whose 4-neighbourhood holds the other state gets the 3x3 box mean of the
+/// binary selection, `round(hits / 9 * 65535)` (neighbours outside `bounds` repeat the centre);
+/// other pixels are 0 or 65535. Studio reading, Photoshop kernel UNVERIFIED (D5). The caller
+/// admitted `bounds` as a plane.
+pub(crate) fn binary_plane(
+    bounds: Rect,
+    selected: impl Fn(usize) -> bool,
+    anti_alias: bool,
+) -> Result<CoveragePlane, Error> {
+    let n = usize::try_from(bounds.area()).map_err(|_| Error::Overflow)?;
+    let mut data = Vec::with_capacity(n);
+    for i in 0..n {
+        let centre = selected(i);
+        if !anti_alias {
+            data.push(if centre { u16::MAX } else { 0 });
+            continue;
+        }
+        let (x, y) = coords_of(bounds, i);
+        let mut boundary = false;
+        let mut hits = 0u64;
+        for oy in -1i64..=1 {
+            for ox in -1i64..=1 {
+                let v = match index_in(bounds, x.saturating_add(ox), y.saturating_add(oy)) {
+                    Some(j) => selected(j),
+                    None => centre,
+                };
+                if v != centre && (ox == 0 || oy == 0) {
+                    boundary = true;
+                }
+                if v {
+                    hits = hits.saturating_add(1);
+                }
+            }
+        }
+        data.push(if boundary {
+            let q = hits
+                .saturating_mul(65535)
+                .saturating_mul(2)
+                .saturating_add(9)
+                .checked_div(18)
+                .unwrap_or(0);
+            u16::try_from(q).unwrap_or(u16::MAX)
+        } else if centre {
+            u16::MAX
+        } else {
+            0
+        });
+    }
+    Ok(CoveragePlane { bounds, data })
+}
+
 /// Plane bounds tightened to the samples that are not zero (zero-size at `fallback` when empty).
 pub(crate) fn tighten(plane: CoveragePlane) -> Result<CoveragePlane, Error> {
     let b = plane.bounds;
@@ -271,4 +325,4 @@ pub(crate) fn tighten(plane: CoveragePlane) -> Result<CoveragePlane, Error> {
 }
 
 /// Tool surface description (Studio readings; Photoshop parity NOT_PROVEN, UNVERIFIED, D5).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"select_tools","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-017","STU-RAS-018 flood select, quick/selection brush, object select","STU-RAS-019","STU-RAS-119 contiguous, sample_all_layers, anti_alias","STU-RAS-121","STU-RAS-122"],"wand":"magic_wand(layers, active, seed, WandOptions{tolerance 8-bit units, contiguous, sample_merged, sample_size, connectivity}); match = Chebyshev distance of premultiplied RGBA x 255 <= tolerance; contiguous = flood from the seed (4- or 8-connected), else global; anti_alias (document toggle) = 3x3 box mean on boundary pixels","quick":"quick_select strokes (brush engine dabs) -> graph cut: Boykov-Jolly 2001 hard seeds + GrabCut (Rother et al. 2004) n-links gamma exp(-beta |dI|^2), beta = 1 / (2 mean |dI|^2), 4-connected; regional term -ln of Laplace-smoothed 16^3 RGB histograms re-estimated per iteration; Dinic max-flow in integer capacities; grabcut_rect = rectangle-initialised GrabCut; object_select refuses model_unavailable (no model, nothing downloaded)","refine":"see refine::DESCRIPTOR","parity":"NOT_PROVEN (Photoshop tolerance metric, AA kernel, quick-select energy UNVERIFIED, D5)"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"select_tools","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-017","STU-RAS-018 flood select, quick/selection brush, object select","STU-RAS-019","STU-RAS-119 contiguous, sample_all_layers, anti_alias","STU-RAS-121","STU-RAS-122"],"wand":"magic_wand(layers, active, seed, WandOptions{tolerance 8-bit units, contiguous, sample_merged, sample_size, connectivity}); match = Chebyshev distance of premultiplied RGBA x 255 <= tolerance; contiguous = flood from the seed (4- or 8-connected), else global; anti_alias (document toggle) = 3x3 box mean on boundary pixels","quick":"quick_select strokes (brush engine dabs) -> graph cut: Boykov-Jolly 2001 hard seeds + GrabCut (Rother et al. 2004) n-links gamma exp(-beta |dI|^2), beta = 1 / (2 mean |dI|^2), 4-connected; regional term -ln of additively smoothed (0.01 per bin) 16^3 premultiplied-RGB histograms (initial other-side model = ROI ring + band of half the margin), re-estimated per iteration; Dinic max-flow in integer capacities; grabcut_rect = rectangle-initialised GrabCut; object_select refuses model_unavailable (no model, nothing downloaded)","refine":"see refine::DESCRIPTOR","parity":"NOT_PROVEN (Photoshop tolerance metric, AA kernel, quick-select energy UNVERIFIED, D5)"}"#;

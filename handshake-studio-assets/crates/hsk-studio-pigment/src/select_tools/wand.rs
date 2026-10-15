@@ -9,7 +9,7 @@
 //! document anti-alias toggle on, pixels on the selected / unselected boundary get the 3x3 box
 //! mean of the binary selection (pixels outside the canvas repeat the centre); others are 0 or 1.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{Composite, ToolError, ToolLimits, admit_plane, coords_of, index_in, tighten};
+use super::{Composite, ToolError, ToolLimits, admit_plane, binary_plane, coords_of, index_in, tighten};
 use crate::selection::{ColourView, CoveragePlane, SelectionContext};
 use crate::{Error, Rect};
 
@@ -158,48 +158,6 @@ pub fn magic_wand(
         }
     }
 
-    let selected = |i: usize| state.get(i) == Some(&IN);
-    let mut data = Vec::with_capacity(n);
-    for i in 0..n {
-        let centre = selected(i);
-        if !ctx.anti_alias {
-            data.push(if centre { u16::MAX } else { 0 });
-            continue;
-        }
-        let (x, y) = coords_of(canvas, i);
-        let mut boundary = false;
-        let mut hits = 0u64;
-        for oy in -1i64..=1 {
-            for ox in -1i64..=1 {
-                let v = match index_in(canvas, x.saturating_add(ox), y.saturating_add(oy)) {
-                    Some(j) => selected(j),
-                    None => centre,
-                };
-                if v != centre && (ox == 0 || oy == 0) {
-                    boundary = true;
-                }
-                if v {
-                    hits = hits.saturating_add(1);
-                }
-            }
-        }
-        data.push(if boundary {
-            // round(hits / 9 * 65535), round half up.
-            let q = hits
-                .saturating_mul(65535)
-                .saturating_mul(2)
-                .saturating_add(9)
-                .checked_div(18)
-                .unwrap_or(0);
-            u16::try_from(q).unwrap_or(u16::MAX)
-        } else if centre {
-            u16::MAX
-        } else {
-            0
-        });
-    }
-    Ok(tighten(CoveragePlane {
-        bounds: canvas,
-        data,
-    })?)
+    let plane = binary_plane(canvas, |i| state.get(i) == Some(&IN), ctx.anti_alias)?;
+    Ok(tighten(plane)?)
 }
