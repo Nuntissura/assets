@@ -26,8 +26,10 @@
 //!
 //! 4. Digital-silence edges are not clicks: a cluster right after a run of at least `p` exact
 //!    zeros (a signal starting from silence) or a cluster of zeros followed by `p` zeros (a signal
-//!    stopping into silence) is left untouched and counted in `silence_edges`. Near-silence (a
-//!    dithered or noisy floor) is not covered by this rule.
+//!    stopping into silence) is left untouched and counted in `silence_edges`. The same holds on
+//!    a noisy or dithered floor: a cluster where the RMS level of the 256 samples after it is at
+//!    least 20 dB above the 256 before it (onset) or 20 dB below (offset) is an edge, not a click;
+//!    a click leaves the level around it unchanged and is repaired.
 //!
 //! Samples outside repaired gaps are passed through bit-exact. Latency `H + C = 1792` samples.
 //! "Crackle" is dense small clicks: the same detector with a lower `threshold`.
@@ -51,6 +53,10 @@ use hsk_studio_accord::CancellationToken;
 
 /// Analysis window length in samples.
 pub const CLICK_WINDOW: usize = 2048;
+/// Level window (samples each side of a detection) for the floor-edge rule.
+pub const CLICK_EDGE_LEVEL_WINDOW: usize = 256;
+/// Level change that marks an onset or offset rather than a click.
+pub const CLICK_EDGE_RATIO_DB: f64 = 20.0;
 /// Residual-scale segment length (the scale at a sample is the largest of its own and the two
 /// neighbouring segments' robust scales).
 const SEGMENT: usize = 256;
@@ -193,8 +199,8 @@ impl ClickRepair {
     pub fn skipped_gaps(&self) -> u64 {
         self.skipped_gaps
     }
-    /// Detections at the edge of digital silence (a start after or a stop into exact zeros), left
-    /// untouched.
+    /// Detections at the edge of silence (a start after or a stop into exact zeros, or a 20 dB level
+    /// step from or to a noisy or dithered floor), left untouched.
     pub fn silence_edges(&self) -> u64 {
         self.silence_edges
     }
@@ -267,11 +273,28 @@ impl ClickRepair {
 /// True when cluster `[first, last]` is the edge of digital silence: onset = a run of at least `p`
 /// exact zeros ends within the `p` samples before `first`; offset = the cluster and the `p`
 /// samples after it are exact zeros (the residual there is the model predicting a continuation).
+///
+/// Level rule (noisy or dithered floors): with `before` the RMS of up to
+/// [`CLICK_EDGE_LEVEL_WINDOW`] samples before `first` and `after` the RMS of up to as many samples
+/// after `last` (each needing at least `p` samples), the cluster is an onset when `after` exceeds
+/// `before` by [`CLICK_EDGE_RATIO_DB`] or more and an offset when `before` exceeds `after` by as
+/// much. A click leaves the level around it unchanged, so it is never an edge by this rule.
 fn silence_edge(x: &[f64], first: usize, last: usize, p: usize) -> bool {
     let zero_run_ending_at = |j: usize| j + 1 >= p && x[j + 1 - p..=j].iter().all(|v| *v == 0.0);
     let onset = (first.saturating_sub(p)..first).any(zero_run_ending_at);
     let offset = last + 1 + p <= x.len() && x[first..last + 1 + p].iter().all(|v| *v == 0.0);
-    onset || offset
+    if onset || offset {
+        return true;
+    }
+    let lo = first.saturating_sub(CLICK_EDGE_LEVEL_WINDOW);
+    let hi = (last + 1 + CLICK_EDGE_LEVEL_WINDOW).min(x.len());
+    if first - lo < p || hi - (last + 1) < p {
+        return false;
+    }
+    let mean_square = |s: &[f64]| s.iter().map(|v| v * v).sum::<f64>() / s.len() as f64;
+    let (before, after) = (mean_square(&x[lo..first]), mean_square(&x[last + 1..hi]));
+    let ratio = 10f64.powf(CLICK_EDGE_RATIO_DB / 10.0);
+    after >= ratio * before || before >= ratio * after
 }
 
 /// `s.residual[n] = sum_k a_k original[n - k]` for `n >= p`.
