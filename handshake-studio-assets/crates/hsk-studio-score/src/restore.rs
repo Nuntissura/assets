@@ -24,6 +24,11 @@
 //!    model, so the corruption does not bias the model.
 //!    Gaps longer than `max_gap_ms` are left untouched and counted in `skipped_gaps`.
 //!
+//! 4. Digital-silence edges are not clicks: a cluster right after a run of at least `p` exact
+//!    zeros (a signal starting from silence) or a cluster of zeros followed by `p` zeros (a signal
+//!    stopping into silence) is left untouched and counted in `silence_edges`. Near-silence (a
+//!    dithered or noisy floor) is not covered by this rule.
+//!
 //! Samples outside repaired gaps are passed through bit-exact. Latency `H + C = 1792` samples.
 //! "Crackle" is dense small clicks: the same detector with a lower `threshold`.
 //!
@@ -112,6 +117,7 @@ pub struct ClickRepair {
     scratch: Scratch,
     repaired_gaps: u64,
     skipped_gaps: u64,
+    silence_edges: u64,
     identity: String,
 }
 
@@ -168,6 +174,7 @@ impl ClickRepair {
             },
             repaired_gaps: 0,
             skipped_gaps: 0,
+            silence_edges: 0,
             identity,
         })
     }
@@ -186,13 +193,18 @@ impl ClickRepair {
     pub fn skipped_gaps(&self) -> u64 {
         self.skipped_gaps
     }
+    /// Detections at the edge of digital silence (a start after or a stop into exact zeros), left
+    /// untouched.
+    pub fn silence_edges(&self) -> u64 {
+        self.silence_edges
+    }
 
-    /// Repairs `scratch.window` in place; returns (repaired, skipped) gap counts.
-    fn repair_window(s: &mut Scratch, p: usize, threshold: f64, max_gap: usize) -> (u64, u64) {
+    /// Repairs `scratch.window` in place; returns (repaired, skipped, silence edge) gap counts.
+    fn repair_window(s: &mut Scratch, p: usize, threshold: f64, max_gap: usize) -> (u64, u64, u64) {
         let w = CLICK_WINDOW;
         s.original.copy_from_slice(&s.window);
         if !fit_ar(&s.window, &mut s.r, &mut s.a, &mut s.tmp) {
-            return (0, 0);
+            return (0, 0, 0);
         }
         let floor = 1e-5 * (s.r[0] / w as f64).sqrt();
         // Stage 1: autocorrelation model, scale from every residual row.
@@ -200,7 +212,7 @@ impl ClickRepair {
         s.masked.fill(false);
         detect(s, p, threshold, floor);
         if s.gaps.is_empty() {
-            return (0, 0);
+            return (0, 0, 0);
         }
         // Stage 2 (twice): refit by the covariance method over rows that touch no detected
         // sample (Godsill and Rayner: the model must not see the corruption), recompute the
@@ -219,11 +231,20 @@ impl ClickRepair {
         // Counts cover only gaps that start in this window's centre, so a click seen by two
         // overlapping windows is counted once.
         let starts_in_centre = |first: usize| (CLICK_CONTEXT..CLICK_CONTEXT + CLICK_HOP).contains(&first);
-        let mut skipped = 0;
-        // Keep only gaps with p known samples each side and LSAR rows inside the window.
+        let (mut skipped, mut edges) = (0, 0);
+        // Keep only gaps with p known samples each side and LSAR rows inside the window, and never
+        // "repair" the edge of digital silence: a signal starting after silence or stopping into
+        // it is a legitimate discontinuity, not a click (the AR model predicts zeros, or a
+        // continuation, there).
         s.gaps.retain(|&(first, last)| {
             let len = last - first + 1;
             let fits = first >= p && last + 1 + p <= w;
+            if silence_edge(&s.original, first, last, p) {
+                if starts_in_centre(first) {
+                    edges += 1;
+                }
+                return false;
+            }
             if len > max_gap && starts_in_centre(first) {
                 skipped += 1;
             }
@@ -239,8 +260,18 @@ impl ClickRepair {
             }
         }
         let repaired = s.gaps.iter().filter(|(first, _)| starts_in_centre(*first)).count() as u64;
-        (repaired, skipped)
+        (repaired, skipped, edges)
     }
+}
+
+/// True when cluster `[first, last]` is the edge of digital silence: onset = a run of at least `p`
+/// exact zeros ends within the `p` samples before `first`; offset = the cluster and the `p`
+/// samples after it are exact zeros (the residual there is the model predicting a continuation).
+fn silence_edge(x: &[f64], first: usize, last: usize, p: usize) -> bool {
+    let zero_run_ending_at = |j: usize| j + 1 >= p && x[j + 1 - p..=j].iter().all(|v| *v == 0.0);
+    let onset = (first.saturating_sub(p)..first).any(zero_run_ending_at);
+    let offset = last + 1 + p <= x.len() && x[first..last + 1 + p].iter().all(|v| *v == 0.0);
+    onset || offset
 }
 
 /// `s.residual[n] = sum_k a_k original[n - k]` for `n >= p`.
@@ -470,7 +501,8 @@ impl Processor for ClickRepair {
                     for c in 0..self.channels {
                         let h = &mut self.hist[c * CLICK_WINDOW..(c + 1) * CLICK_WINDOW];
                         self.scratch.window.copy_from_slice(h);
-                        let (rep, skip) = Self::repair_window(&mut self.scratch, p, threshold, max_gap);
+                        let (rep, skip, edge) = Self::repair_window(&mut self.scratch, p, threshold, max_gap);
+                        self.silence_edges += edge;
                         self.repaired_gaps += rep;
                         self.skipped_gaps += skip;
                         let centre = &self.scratch.window[CLICK_CONTEXT..CLICK_CONTEXT + CLICK_HOP];
@@ -492,6 +524,7 @@ impl Processor for ClickRepair {
         self.fill = CLICK_WINDOW - CLICK_HOP;
         self.repaired_gaps = 0;
         self.skipped_gaps = 0;
+        self.silence_edges = 0;
     }
 }
 
