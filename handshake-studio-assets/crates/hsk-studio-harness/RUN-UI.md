@@ -3,7 +3,7 @@
 The window is never opened by tests or agents (CX-SAFE-002). Tests drive the same state
 headlessly: `tests/viewer_headless.rs`, `tests/viewer_edit.rs`, `tests/viewer_shared_display.rs`,
 `tests/viewer_layers.rs`, `tests/viewer_brush_parity.rs`, `tests/viewer_selection.rs`, `tests/viewer_text.rs`,
-`tests/viewer_develop.rs`.
+`tests/viewer_develop.rs`, `tests/viewer_develop_2.rs`.
 
 ## Build and launch
 
@@ -47,6 +47,13 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
   (Undo / Ctrl+Z brings back the previous pixels and slider values). "Export developed PNG 16-bit" /
   "Export developed JPEG" write `develop_to_output` with the sRGB-v4 profile embedded next to the
   save path (`.develop.png` / `.develop.jpg`); they export the developed raw only, not other layers.
+  Further sections (lane SMB-HARNESS-DEVELOP-2): White balance ("Kelvin white" switches to raw-form
+  kelvin / tint sliders, "As-shot white" back), Colour grading (four wheels, blending, balance),
+  Point colour ("Add point colour" samples the image centre; shifts and ranges per point; Remove),
+  Detail (texture, dehaze, sharpening amount/radius/detail/masking, noise reduction), Local
+  corrections ("Add luminance mask" / "Add colour mask": a correction masked by a luminance or
+  colour range; amount, the local stack and the mask values; Remove). Saving the document stores
+  the develop edit (session entry `develop`); reopening the package restores it.
 - Right: properties of the selected layer, built from hsk-studio-controls descriptors. Name,
   Visible, Opacity and Blend mode commit (undoable); Fill opacity, Clipped and Isolation are
   read-only (no chronicle property). Below: the import receipt (source format, loss entries,
@@ -63,7 +70,7 @@ Every window action is a `hsk_studio_harness::view::Viewer` method: `open`, `set
 `save`, `export`, `new_raster_layer`, `duplicate_layer`, `delete_layer`, `move_layer`,
 `shift_layer`, `rename_layer`, `group_layers`, `ungroup`, `layer_action(widget name)`,
 `place_text` / `place_text_with_font`, `add_font`, `text_entry`, `set_develop` /
-`set_develop_many`, `set_develop_threads`, `export_develop`, `develop_json` (CLI: `studio-harness develop
+`set_develop_many`, `develop_op`, `set_develop_threads`, `export_develop`, `develop_json`, `develop_edit` (CLI: `studio-harness develop
 SOURCE OUT --png|--jpeg [--adjust CONTROL VALUE]...`). `Viewer::state_json()` projects
 the document, frame, receipt, run operations and `edit` (tool, combine, brush, selection bounds,
 undo/redo history, text tool fonts). Widget ids are stable (`view::widget`, tools `tool.<key>`,
@@ -72,9 +79,9 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
 
 ## Known limits
 
-- Develop: the slider recipe is not saved in the package (a reopened package shows the pixels but
-  not the values); absolute kelvin white balance, local corrections, point colour, grading and
-  grayscale mix are not in the panel; developed values above 1 (strong white-balance gains or
+- Develop: HSL mixer, parametric curve, grayscale mix and gradient / brush masks are not in the
+  panel; a saved develop entry that does not decode or that develop refuses is ignored (the status
+  line and `develop_json().entry` say why); developed values above 1 (strong white-balance gains or
   exposure on highlights) make the composite render fail `sample_range_outside_unit` in render-cpu
   while the develop export clamps and counts them (`clip` in the export report).
 
