@@ -282,6 +282,7 @@ fn whole_fixture_render_matches_operator_png() {
     let text = prepare_outputs(&p, &out.outputs, &files);
     let r = render(&p, Some(&text));
     eprintln!("prototype: outputs {} rendered {} refused {:?}", r.outputs, r.rendered, r.refused);
+    let mut measured = Vec::new();
     for (frame, origin) in [("start", (140usize, 170usize)), ("detail", (540, 170)), ("animated", (940, 170))] {
         let png = decode_png(&fixture(&format!("fig-prototype-pages-{frame}.png")));
         let d = diffs(&r, &png, origin);
@@ -297,12 +298,15 @@ fn whole_fixture_render_matches_operator_png() {
             within(8.0),
             within(32.0)
         );
-        // Tolerances from the measured run (lane notes): >= 99.2 % of pixels within 8/255 (measured
-        // 0.9923 / 0.9931 / 0.9927), mean difference <= 0.72/255 (measured 0.712 / 0.676 /
-        // 0.678), p99 <= 0.51/255 (measured 0.5000 at 4 decimals, f32 residue above it); the residue is glyph antialiasing (Inter 3.019 vs Figma's Inter).
-        assert!(within(8.0) >= 0.992, "{frame}: {:.4} of pixels within 8/255", within(8.0));
-        assert!(mean <= 0.72, "{frame}: mean difference {mean:.3}");
-        assert!(p99 <= 0.51, "{frame}: p99 {p99:.4}");
+        measured.push((frame, within(8.0), mean, p99));
+    }
+    // Tolerances from the measured run with exact nib coverage (lane notes, SMB-INTEROP-FIG-PAINTS):
+    // within 8/255 = 0.9919 / 0.9927 / 0.9925, mean = 0.7192 / 0.6832 / 0.6871, p99 = 0.75 / 0.50 /
+    // 0.87; the residue is glyph antialiasing (Inter 3.019 vs Figma's Inter build).
+    for (frame, within8, mean, p99) in measured {
+        assert!(within8 >= 0.9919, "{frame}: {within8:.4} of pixels within 8/255");
+        assert!(mean <= 0.72, "{frame}: mean difference {mean:.4}");
+        assert!(p99 <= 0.87, "{frame}: p99 {p99:.4}");
     }
     // Basic shapes, whole artboard: strokes, a gradient, an image paint and the bold run are
     // composite refusals or missing fonts; reported, compared at its own measured level.
@@ -313,12 +317,13 @@ fn whole_fixture_render_matches_operator_png() {
     let n = d.len() as f64;
     let within8 = d.iter().filter(|v| **v <= 8.0).count() as f64 / n;
     let mean = d.iter().sum::<f64>() / n;
-    eprintln!("basic-shapes: refused {:?} mean {mean:.3} <=8: {within8:.4}", r.refused);
-    // Large residue (measured mean 20.251/255, 88.61 % within 8/255): Figma parity of this fixture
-    // is UNVERIFIED (strokes, gradient, image paint, bold run and the drop shadow are not drawn).
-    // Pinned as a regression floor at the measured values only.
-    assert!(within8 >= 0.886, "basic-shapes: {within8:.4} within 8/255");
-    assert!(mean <= 20.26, "basic-shapes: mean {mean:.3}");
+    eprintln!("basic-shapes: refused {:?} mean {mean:.4} <=8: {within8:.4} <=2: {:.4} p99 {:.4}", r.refused, d.iter().filter(|v| **v <= 2.0).count() as f64 / n, d[(n * 0.99) as usize]);
+    // Exact nib coverage with strokes and the linear gradient drawn (composite 5898a82): measured
+    // mean 6.4212/255, 94.23 % within 8/255 (was 20.251 and 88.61 % before strokes and gradients
+    // rendered). Residue: the image paint (no decoded image here), the text and the drop shadow; Figma
+    // parity of this fixture stays UNVERIFIED, pinned as a regression floor at the measured values.
+    assert!(within8 >= 0.9423, "basic-shapes: {within8:.4} within 8/255");
+    assert!(mean <= 6.43, "basic-shapes: mean {mean:.4}");
 }
 
 // ---------- hostile instance graphs (synthetic) ----------

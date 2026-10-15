@@ -466,10 +466,12 @@ struct Sources<'a>(
     &'a hsk_studio_composite::InputsLowering,
     &'a hsk_studio_composite::PreparedVectors,
     Option<&'a PreparedText>,
+    ColourTag,
 );
 impl PlanSources for Sources<'_> {
-    fn tile(&self, _: SourceKey) -> Option<TilePlanes<'_>> {
-        None
+    /// Painted (gradient) row tiles of the vector layers.
+    fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        self.0.vector_paint(key, self.1, self.3)
     }
     fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
         if let Some(m) = self.0.vector_mask(key, self.1) {
@@ -519,7 +521,8 @@ pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
         &p.vector_records,
         &Assets(p),
         BlendSpace::Encoded,
-        &VectorResolution::default(),
+        // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
+        &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
         &cancel,
     )
     .unwrap();
@@ -551,6 +554,7 @@ pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
             },
         };
         let no_tiles = |_: &TileRef| None;
+        let space = target.space;
         let low = lower_with_inputs(&plan, &report, &snap, &inputs, &plan.document_root(), target, &no_tiles)
             .unwrap_or_else(|e| panic!("lowering: {e}"));
         let mut grid = Grid { w: W, px: vec![[0.0; 4]; W * H] };
@@ -562,7 +566,7 @@ pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
         };
         Renderer::with_threads(256, 4)
             .unwrap()
-            .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, text), &cancel, &mut grid)
+            .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, text, space), &cancel, &mut grid)
             .unwrap();
         px = grid.px;
     }

@@ -141,10 +141,11 @@ fn reopened(p: &NativeProposal) -> Snapshot {
     }
 }
 
-struct Sources<'a>(&'a hsk_studio_composite::InputsLowering, &'a hsk_studio_composite::PreparedVectors);
+struct Sources<'a>(&'a hsk_studio_composite::InputsLowering, &'a hsk_studio_composite::PreparedVectors, ColourTag);
 impl PlanSources for Sources<'_> {
-    fn tile(&self, _: SourceKey) -> Option<TilePlanes<'_>> {
-        None
+    /// Painted (gradient) row tiles of the vector layers.
+    fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        self.0.vector_paint(key, self.1, self.2)
     }
     fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
         self.0.vector_mask(key, self.1)
@@ -192,7 +193,8 @@ fn render(m: &Mapped) -> Render {
         &m.proposal.vector_records,
         &Assets(&m.proposal),
         BlendSpace::Encoded,
-        &VectorResolution::default(),
+        // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
+        &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
         &cancel,
     )
     .unwrap();
@@ -226,6 +228,7 @@ fn render(m: &Mapped) -> Render {
             },
         };
         let no_tiles = |_: &TileRef| None;
+        let space = target.space;
         let low = lower_with_inputs(&plan, &report, &snap, &inputs, &plan.document_root(), target, &no_tiles)
             .unwrap_or_else(|e| panic!("lowering: {e}"));
         let mut grid = Grid { w: W, px: vec![[f32::NAN; 4]; W * H] };
@@ -237,7 +240,7 @@ fn render(m: &Mapped) -> Render {
         };
         Renderer::with_threads(256, 4)
             .unwrap()
-            .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors), &cancel, &mut grid)
+            .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, space), &cancel, &mut grid)
             .unwrap();
         px = grid.px;
     }
@@ -432,11 +435,11 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     let origin = (100usize, 100usize);
     // Composite refusals of the outputs, pinned (each is one named composite limit, not a graph
     // defect): strokes, a gradient fill, an image fill, plus the text output (no prepared fonts).
+    // Since composite 5898a82 with exact nib coverage, strokes and the linear gradient render: the
+    // image fill (no decoded image in this harness) and the text output (no prepared fonts) remain.
     let want: BTreeMap<String, u32> = [
         ("image_paint_unresolved", 1),
-        ("paint_gradient", 1),
         ("text_to_image_conversion", 1),
-        ("vector_stroke_not_rendered", 3),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -444,7 +447,7 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     assert_eq!(r.refused, want);
     // Since SMB-INTEROP-FIG-INSTANCES-FRAMES the artboard fill is an output (bottom-most) and the two
     // clipping frames without fill add hidden clip-source outputs (group-multiply, mask-group).
-    assert_eq!((r.outputs, r.rendered), (15, 9));
+    assert_eq!((r.outputs, r.rendered), (15, 13));
     let mut names = rendered_names(&m, &r);
     names.sort();
     assert_eq!(
@@ -452,12 +455,16 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
         [
             "basic-shapes-artboard",
             "boolean-union",
+            "ellipse-gradient",
             "group-background",
             "group-multiply",
             "layer-blur",
+            "line-outline",
             "mask-ellipse",
             "mask-group",
             "multiply-overlay",
+            "pen-freeform-bezier",
+            "rounded-solid-shadow",
             "star-half-opacity"
         ]
     );
