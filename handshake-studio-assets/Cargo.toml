@@ -196,7 +196,7 @@ allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe", "hsk-s
 allowed = ["hsk-studio-accord", "hsk-studio-reel", "hsk-studio-observe", "hsk-studio-worker"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-lrcat]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-develop", "hsk-studio-package"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-develop", "hsk-studio-package", "hsk-studio-kernel-bindings"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-motion-js]
 allowed = ["hsk-studio-accord", "hsk-studio-motion", "hsk-studio-observe", "hsk-studio-worker"]
