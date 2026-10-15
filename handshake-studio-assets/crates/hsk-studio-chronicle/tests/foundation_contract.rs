@@ -84,6 +84,8 @@ fn patch(property: Property, value: PropertyValue) -> Patch {
         Property::Tiles => PropertyValue::Tiles(TileList(Vec::new())),
         // Layer 1 has no graph operation, so it has no placement (refused invalid_target).
         Property::Placement => PropertyValue::Placement(None),
+        // Layer 1 is a group, not a vector layer (refused invalid_target).
+        Property::VectorPaths => PropertyValue::PathIds(Vec::new()),
     };
     Patch {
         transport_version: 1,
@@ -1212,6 +1214,7 @@ fn exported_table_is_the_table_prepare_enforces() {
                 Property::BlendMode => 3,
                 Property::Tiles => 4,
                 Property::Placement => 5,
+                Property::VectorPaths => 6,
             }
         }
         for (i, p) in PROPERTIES.into_iter().enumerate() {
@@ -1226,6 +1229,7 @@ fn exported_table_is_the_table_prepare_enforces() {
             a.target.node_id != id("SLYR", 3)
                 && a.property != Property::Tiles
                 && a.property != Property::Placement
+                && a.property != Property::VectorPaths
         };
 
         // Every (node, property) pair of every node kind: prepare itself decides acceptance, with
@@ -1255,6 +1259,8 @@ fn exported_table_is_the_table_prepare_enforces() {
                     // The fixture graph is empty: no layer has a stack slot, so placement is
                     // refused on every layer and seeded for none (tests/structure.rs covers it).
                     Property::Placement => (PropertyValue::Placement(None), PropertyValue::Placement(None)),
+                    // No vector layer in the fixture: refused on every layer, seeded for none.
+                    Property::VectorPaths => (PropertyValue::PathIds(Vec::new()), PropertyValue::PathIds(Vec::new())),
                 };
                 let mut p = patch(Property::Name, PropertyValue::String("x".into()));
                 p.reads = vec![PropertyRead {

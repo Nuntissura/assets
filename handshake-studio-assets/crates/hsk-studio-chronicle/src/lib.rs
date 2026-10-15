@@ -105,6 +105,13 @@ pub enum Property {
     /// document holds reads as absent at revision 0 (a caller that deletes layers keeps their
     /// vector entries, as the session does). Tests `tests/structure.rs`.
     Placement,
+    /// The path ids of a vector layer (`Payload::Vector.path_ids`, lane SMB-ILLUSTRATOR-PEN-2),
+    /// value `PathIds`: a path edit is a new id list whose path records the caller makes
+    /// available (Folio resolves `hsk.studio.vector_path@1` ids through the caller's resolver), so
+    /// the layer keeps its id and the edit inverts as one step. Only vector layers have this
+    /// property (`seed_revisions` seeds it for them alone; any other payload is `InvalidTarget`).
+    /// Test `tests/vector_paths.rs` `vector_paths_property_edits_in_place_and_inverts`.
+    VectorPaths,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +139,8 @@ pub enum PropertyValue {
     Placement(Option<Placement>),
     /// A placement command (writes of [`Property::Placement`]); `None` deletes the layer.
     Place(Option<PlaceCommand>),
+    /// A vector layer's complete path id list ([`Property::VectorPaths`]).
+    PathIds(Vec<String>),
 }
 /// Stack placement of a layer (state): parent and index (0 = bottom-most).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -396,13 +405,14 @@ fn address_valid(a: &PropertyAddress) -> Result<()> {
 /// Adding a `Property` variant fails to compile in `addressable` and `mask_property` until the
 /// table is extended; this list is the one hand-maintained mirror of the enum (compile-time
 /// guard in the test `exported_table_is_the_table_prepare_enforces`).
-pub const PROPERTIES: [Property; 6] = [
+pub const PROPERTIES: [Property; 7] = [
     Property::Name,
     Property::Visible,
     Property::Opacity,
     Property::BlendMode,
     Property::Tiles,
     Property::Placement,
+    Property::VectorPaths,
 ];
 /// The addressability table: whether chronicle can address `property` on a `kind` node.
 ///
@@ -421,7 +431,8 @@ pub fn addressable(kind: &NodeKind, property: Property) -> bool {
             | Property::Opacity
             | Property::BlendMode
             | Property::Tiles
-            | Property::Placement,
+            | Property::Placement
+            | Property::VectorPaths,
         )
         | (NodeKind::Artboard | NodeKind::PageSpread, Property::Name) => true,
         (
@@ -430,7 +441,8 @@ pub fn addressable(kind: &NodeKind, property: Property) -> bool {
             | Property::Opacity
             | Property::BlendMode
             | Property::Tiles
-            | Property::Placement,
+            | Property::Placement
+            | Property::VectorPaths,
         ) => false,
     }
 }
@@ -446,10 +458,13 @@ fn layer_addressable(layer: &StudioLayer) -> bool {
 /// each seeded address. Test: `exported_table_is_the_table_prepare_enforces`.
 pub fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
     let mut vector = Vec::new();
-    let mut seed = |node_kind: NodeKind, node_id: &str, raster: bool, placed: bool| {
+    let mut seed = |node_kind: NodeKind, node_id: &str, payload: Option<&Payload>, placed: bool| {
+        let raster = matches!(payload, Some(Payload::Raster { .. }));
+        let is_vector = matches!(payload, Some(Payload::Vector { .. }));
         for property in PROPERTIES {
             if addressable(&node_kind, property)
                 && (raster || property != Property::Tiles)
+                && (is_vector || property != Property::VectorPaths)
                 && (placed || property != Property::Placement)
             {
                 vector.push(RevisionEntry {
@@ -466,15 +481,14 @@ pub fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
         }
     };
     for layer in document.layers.iter().filter(|l| layer_addressable(l)) {
-        let raster = matches!(layer.payload, Payload::Raster { .. });
         let placed = placement_of(document, &layer.layer_id).is_some();
-        seed(NodeKind::Layer, &layer.layer_id, raster, placed);
+        seed(NodeKind::Layer, &layer.layer_id, Some(&layer.payload), placed);
     }
     for artboard in &document.artboards {
-        seed(NodeKind::Artboard, &artboard.artboard_id, false, false);
+        seed(NodeKind::Artboard, &artboard.artboard_id, None, false);
     }
     for spread in &document.page_spreads {
-        seed(NodeKind::PageSpread, &spread.page_spread_id, false, false);
+        seed(NodeKind::PageSpread, &spread.page_spread_id, None, false);
     }
     vector
 }
@@ -508,6 +522,7 @@ pub fn mask_property(document: &mut StudioDocument, address: &PropertyAddress) -
             PropertyValue::Number(LayerAppearance::identity(group).blend_mode.into())
         }
         Property::Tiles => PropertyValue::Tiles(TileList(Vec::new())),
+        Property::VectorPaths => PropertyValue::PathIds(Vec::new()),
         Property::Placement => return true,
     };
     set(document, address, &neutral).is_ok()
@@ -518,6 +533,7 @@ enum ValueRef<'a> {
     Number(f64),
     Tiles(&'a [TileRef]),
     Placement(Option<(Parent, u64)>),
+    PathIds(&'a [String]),
 }
 impl ValueRef<'_> {
     fn equals(&self, v: &PropertyValue) -> bool {
@@ -526,6 +542,7 @@ impl ValueRef<'_> {
             (Self::Bool(a), PropertyValue::Bool(b)) => a == b,
             (Self::Number(a), PropertyValue::Number(b)) => b.as_f64() == Some(*a),
             (Self::Tiles(a), PropertyValue::Tiles(b)) => *a == b.0.as_slice(),
+            (Self::PathIds(a), PropertyValue::PathIds(b)) => *a == b.as_slice(),
             (Self::Placement(None), PropertyValue::Placement(None)) => true,
             (Self::Placement(Some((parent, index))), PropertyValue::Placement(Some(p))) => {
                 *parent == p.parent && *index == p.index
@@ -547,6 +564,7 @@ impl ValueRef<'_> {
             }
             Self::Number(v) => PropertyValue::number(*v).unwrap_or(PropertyValue::Number(0.into())),
             Self::Tiles(t) => PropertyValue::Tiles(TileList(t.to_vec())),
+            Self::PathIds(p) => PropertyValue::PathIds(p.to_vec()),
             Self::Placement(p) => {
                 PropertyValue::Placement(p.as_ref().map(|(parent, index)| Placement {
                     parent: parent.clone(),
@@ -589,6 +607,10 @@ fn value<'a>(d: &'a StudioDocument, a: &PropertyAddress) -> Result<ValueRef<'a>>
                     Payload::Raster { tiles } => Ok(ValueRef::Tiles(tiles)),
                     _ => Err(failure(Code::InvalidTarget, Some(a))),
                 },
+                Property::VectorPaths => match &l.payload {
+                    Payload::Vector { path_ids } => Ok(ValueRef::PathIds(path_ids)),
+                    _ => Err(failure(Code::InvalidTarget, Some(a))),
+                },
                 Property::Placement => Err(failure(Code::InvalidTarget, Some(a))),
             }
         }
@@ -621,6 +643,8 @@ fn value_type(a: &PropertyAddress, v: &PropertyValue) -> Result<()> {
             n.as_u64().is_some_and(|d| u16::try_from(d).is_ok())
         }
         (Property::Tiles, PropertyValue::Tiles(_)) => true,
+        // Id grammar (SVPT) and resolution are folio's (FolioRejected).
+        (Property::VectorPaths, PropertyValue::PathIds(_)) => true,
         (Property::Placement, PropertyValue::Placement(_) | PropertyValue::Place(_)) => true,
         _ => false,
     };
@@ -650,6 +674,10 @@ fn size(v: &PropertyValue) -> usize {
         // A placement is two numbers and a parent id (a fixed 128); a create also carries its
         // record and operation, counted by their encoded length.
         PropertyValue::Placement(p) => p.as_ref().map_or(0, |_| 128),
+        // Text of every id plus a fixed 16 for its quoting and separator.
+        PropertyValue::PathIds(ids) => ids
+            .iter()
+            .fold(0usize, |n, id| n.saturating_add(id.len()).saturating_add(16)),
         PropertyValue::Place(p) => p.as_ref().map_or(0, |p| {
             p.create.as_ref().map_or(128, |c| {
                 serde_json::to_vec(c).map_or(usize::MAX, |v| v.len().saturating_add(128))
@@ -678,7 +706,11 @@ fn set_appearance(l: &mut StudioLayer, property: Property, n: &serde_json::Numbe
                 };
             }
         }
-        Property::Name | Property::Visible | Property::Tiles | Property::Placement => {}
+        Property::Name
+        | Property::Visible
+        | Property::Tiles
+        | Property::Placement
+        | Property::VectorPaths => {}
     }
     l.appearance = (appearance != LayerAppearance::identity(group)).then_some(appearance);
 }
@@ -703,6 +735,10 @@ fn set(d: &mut StudioDocument, a: &PropertyAddress, v: &PropertyValue) -> Result
                 PropertyValue::Number(n) => set_appearance(l, a.property, n),
                 PropertyValue::Tiles(list) => match &mut l.payload {
                     Payload::Raster { tiles } => tiles.clone_from(&list.0),
+                    _ => return Err(failure(Code::InvalidTarget, Some(a))),
+                },
+                PropertyValue::PathIds(ids) => match &mut l.payload {
+                    Payload::Vector { path_ids } => path_ids.clone_from(ids),
                     _ => return Err(failure(Code::InvalidTarget, Some(a))),
                 },
                 PropertyValue::Placement(_) | PropertyValue::Place(_) => {
@@ -881,6 +917,7 @@ fn scalar_size(v: &PropertyValue, t: &CancellationToken) -> Result<usize> {
         PropertyValue::Tiles(list) => encoded_size(list, t),
         PropertyValue::Placement(p) => encoded_size(p, t),
         PropertyValue::Place(p) => encoded_size(p, t),
+        PropertyValue::PathIds(p) => encoded_size(p, t),
     }
 }
 /// Stateless preparation. The caller serializes a fresh current read plus publication.
@@ -1367,7 +1404,8 @@ pub fn deliver_result(
                         | Property::Opacity
                         | Property::BlendMode
                         | Property::Tiles
-                        | Property::Placement => DiagnosticProperty::Name,
+                        | Property::Placement
+                        | Property::VectorPaths => DiagnosticProperty::Name,
                     };
                     DiagnosticAddress::new(
                         target,

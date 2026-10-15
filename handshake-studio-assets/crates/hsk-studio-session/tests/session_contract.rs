@@ -2779,6 +2779,8 @@ fn value_at(document: &folio::StudioDocument, address: &PropertyAddress) -> Prop
         }
         // Structure edits have their own proofs (tests/structure.rs); the table loop skips them.
         (_, Property::Placement) => PropertyValue::Placement(None),
+        // The fixture has no vector layer: chronicle refuses the pair before it compares a value.
+        (_, Property::VectorPaths) => PropertyValue::PathIds(Vec::new()),
     }
 }
 
@@ -2804,6 +2806,7 @@ impl ProposalProvider for ProbePair {
             // An empty tile list needs no new asset (every remaining tile is in the source).
             (PropertyValue::Tiles(_), _) => PropertyValue::Tiles(chronicle::TileList(Vec::new())),
             (PropertyValue::Placement(_) | PropertyValue::Place(_), _) => PropertyValue::Place(None),
+            (PropertyValue::PathIds(_), _) => PropertyValue::PathIds(Vec::new()),
         };
         let mut base = request.snapshot.clone();
         if self.smuggle {
@@ -2936,6 +2939,8 @@ fn session_consumes_the_chronicle_addressability_table() {
                     let table_says = chronicle::addressable(kind, property);
                     // `tiles` is a raster layer's property: seeded and writable only on layer 2.
                     let raster_only = property != Property::Tiles || *node_id == identity("SLYR", 2);
+                    // `vector_paths` is a vector layer's property; the fixture has none.
+                    let raster_only = raster_only && property != Property::VectorPaths;
                     let expect_commit = table_says && *node_id != unsupported && raster_only;
                     assert_eq!(
                         session.revisions().iter().any(|e| e.address == address),
@@ -2992,8 +2997,9 @@ fn session_consumes_the_chronicle_addressability_table() {
             // Layer 1 (name, visible, opacity, blend_mode), layer 2 (the same + tiles), the artboard
             // and the page spread (name) commit; tiles of the group, the four non-name properties
             // of the artboard and of the page spread, and all five of the unsupported layer are
-            // refused.
-            assert_eq!((committed, refused), (11, 14));
+            // refused; vector_paths (a vector layer's property, lane SMB-ILLUSTRATOR-PEN-2) is refused
+            // on all five nodes (the fixture has no vector layer).
+            assert_eq!((committed, refused), (11, 19));
             assert_eq!(session.document_revision(), 7 + committed);
 
             // The session derives lineage through chronicle's mask: a successor that carries one more
