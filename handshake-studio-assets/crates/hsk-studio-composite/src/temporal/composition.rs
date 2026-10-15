@@ -64,7 +64,9 @@ use crate::composition::{SceneContext, render_scene};
 use crate::{
     Limits, NodeAddr, RenderInputs, StepStatus, evaluate_with_inputs, lower, lower_with_inputs,
 };
-use hsk_studio_pigment::render_plan::{MaskFormat, MaskInput, PlanNode, PlanSources, SourceKey, TilePlanes};
+use hsk_studio_pigment::render_plan::{
+    Group, Layer, LayerExtension, MaskFormat, MaskInput, PlanNode, PlanNodeId, PlanSources, SourceKey, TilePlanes,
+};
 use std::collections::BTreeSet;
 use hsk_studio_pigment::Mask;
 use hsk_studio_pigment::adjust_math::AdjustmentOp;
@@ -1492,16 +1494,26 @@ impl CompositionTemporalSource {
                 .ok_or_else(|| unsupported(&s.layer_id, COMPOSITION_MATTE_TARGET))?;
             let key = SourceKey(next_key);
             next_key = next_key.checked_add(1).ok_or(CompositeError::Overflow)?;
-            let (g, li) = entry;
+            let (mut g, li) = entry;
+            let existing = match frame.lowering.plan.nodes.get(g) {
+                Some(PlanNode::Group(group)) => group.layers.get(li).and_then(|l| l.mask),
+                _ => return Err(CompositeError::Overflow.into()),
+            };
+            if let Some(mask) = existing {
+                // The layer's own coverage mask (a vector clip or mask, a raster mask) moves into
+                // an isolated wrapper so the matte can take the slot (lane
+                // SMB-COMPOSITE-DOCGRAPH-MASKS), as the scene path cuts the static subtree before
+                // the matte. A clip-to-base route or an envelope entry beyond the mask feather
+                // (a transform, effects) stays refused.
+                g = wrap_masked_entry(&mut frame, g, li, mask)
+                    .ok_or_else(|| unsupported(&s.layer_id, COMPOSITION_MATTE_WITH_MASK))?;
+            }
             let Some(PlanNode::Group(group)) = frame.lowering.plan.nodes.get_mut(g) else {
                 return Err(CompositeError::Overflow.into());
             };
             let Some(layer) = group.layers.get_mut(li) else {
                 return Err(CompositeError::Overflow.into());
             };
-            if layer.mask.is_some() {
-                return Err(unsupported(&s.layer_id, COMPOSITION_MATTE_WITH_MASK));
-            }
             layer.mask = Some(MaskInput {
                 key,
                 placement: Rect { x: 0, y: 0, width: plane.width, height: plane.height },
@@ -1596,6 +1608,82 @@ fn own_planes(
         }
     }
     Ok((masks, tiles))
+}
+
+/// Moves the coverage mask of group `g`'s layer `li` into a new isolated wrapper group
+/// `Group[Layer{content, Normal, 1, 1, mask}]` inserted before `g` (the plan stays index-ordered:
+/// every node id at or after the insertion point, the root and the envelope's group ids shift by
+/// one), the layer then reads the wrapper with no mask; a mask feather entry moves to the wrapper's
+/// layer. Returns the new index of `g`, or `None` for a clip-to-base route or an envelope entry of
+/// that layer with anything besides the mask feather (a transform or effects act on the masked
+/// content and cannot be split from it here).
+fn wrap_masked_entry(frame: &mut FrameLowering, g: usize, li: usize, mask: MaskInput) -> Option<usize> {
+    let g32 = u32::try_from(g).ok()?;
+    let li32 = u32::try_from(li).ok()?;
+    let entry = frame
+        .extensions
+        .layers
+        .iter()
+        .position(|e| e.group == PlanNodeId(g32) && e.layer == li32);
+    if mask.is_clip_to_base() {
+        return None;
+    }
+    if let Some(i) = entry {
+        let e = frame.extensions.layers.get(i)?;
+        let feather_only = LayerExtension::new(e.group, e.layer).with_mask_feather(e.mask_feather_px);
+        if *e != feather_only {
+            return None;
+        }
+    }
+    let shift = |id: &mut PlanNodeId| -> Option<()> {
+        if id.0 >= g32 {
+            id.0 = id.0.checked_add(1)?;
+        }
+        Some(())
+    };
+    let plan = &mut frame.lowering.plan;
+    let content = match plan.nodes.get(g) {
+        Some(PlanNode::Group(group)) => group.layers.get(li)?.input,
+        _ => return None,
+    };
+    for node in &mut plan.nodes {
+        if let PlanNode::Group(group) = node {
+            for l in &mut group.layers {
+                shift(&mut l.input)?;
+            }
+        }
+    }
+    shift(&mut plan.root)?;
+    for e in &mut frame.extensions.layers {
+        shift(&mut e.group)?;
+    }
+    plan.nodes.insert(
+        g,
+        PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![Layer {
+                input: content,
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: Some(mask),
+            }],
+        }),
+    );
+    let parent = g.checked_add(1)?;
+    if let Some(PlanNode::Group(group)) = plan.nodes.get_mut(parent)
+        && let Some(l) = group.layers.get_mut(li)
+    {
+        l.input = PlanNodeId(g32);
+        l.mask = None;
+    }
+    if let Some(i) = entry
+        && let Some(e) = frame.extensions.layers.get_mut(i)
+    {
+        e.group = PlanNodeId(g32);
+        e.layer = 0;
+    }
+    Some(parent)
 }
 
 /// One past the largest source key the plan uses (tiles and masks).

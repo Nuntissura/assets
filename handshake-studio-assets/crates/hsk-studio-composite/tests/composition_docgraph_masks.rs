@@ -13,7 +13,7 @@ use hsk_studio_composite::temporal::composition::{CompositionInput, CompositionT
 use hsk_studio_composite::vector::OwnedPath;
 use hsk_studio_composite::*;
 use hsk_studio_folio::{Budget, Snapshot, StudioCompositionRecords, StudioDesignRecords, StudioImageSource, StudioVectorRecords, TileRef};
-use hsk_studio_pigment::render_plan::{AlphaConvention, OutputTarget, SampleFormat};
+use hsk_studio_pigment::render_plan::{AlphaConvention, OutputTarget, PlanNode, SampleFormat};
 use serde_json::{Value, json};
 
 mod common;
@@ -293,5 +293,59 @@ fn unlinked_masks_in_compositions_from_folio_records() {
         let srcs = source_of(&bs, &rec, &pixels).unwrap();
         let e = doc_frame(&bs, &srcs, &pixels).unwrap_err();
         assert!(matches!(e, TemporalError::Unsupported { feature: temporal::TRANSFORM_UNLINKED_MASK_WITH_CLIP, .. }), "{e:?}");
+    });
+}
+
+/// Stretch (DESCRIPTOR refusal only the document path had): a track matte on a layer that already
+/// carries a coverage mask (here the vector clip of layer 2 and the feathered LUMINANCE mask of
+/// layer 7, both matted by layer 11) was `composition_matte_with_mask` on the document graph while
+/// the scene path rendered it. The layer's mask now moves into an isolated wrapper (its feather
+/// with it) and the matte takes the slot; the frame equals the scene path under the reference
+/// executor (`fixture::path_agreement`).
+#[test]
+fn track_mattes_on_masked_layers_on_the_document_graph_equal_the_scene_path() {
+    bounded_case("track_mattes_on_masked_layers_on_the_document_graph_equal_the_scene_path", || {
+        let pixels = Pixels::fixture();
+        let cancel = CancellationToken::default();
+        let mut records = vector_records();
+        records.mask_parameters.retain(|p| p.mask_id != "m-lum");
+        records.mask_parameters.push(serde_json::from_value(json!({"mask_id":"m-lum","reveal_outside":true,"feather":1.0})).unwrap());
+        let b = build(&records);
+        let mut rec = composition_records();
+        for (n, mode, inverted) in [(2u8, "alpha", false), (7, "luma", true)] {
+            let l = rec.compositions[0].layers.iter_mut().find(|l| l.layer_id == identity("SLYR", n)).unwrap();
+            l.track_matte = Some(serde_json::from_value(json!({"source_layer_id":identity("SLYR",11),"mode":mode,"inverted":inverted})).unwrap());
+        }
+        let src = source_of(&b, &rec, &pixels).unwrap();
+        let doc = doc_frame(&b, &src, &pixels).unwrap();
+        assert_eq!(doc.mattes.len(), 2);
+        let plan = &doc.frame.lowering.plan;
+        // Each matted entry reads an isolated wrapper that carries the layer's own mask.
+        let PlanNode::Group(root) = &plan.nodes[plan.root.0 as usize] else { panic!("root group") };
+        let mut wrapped = 0;
+        for (li, l) in root.layers.iter().enumerate() {
+            let Some(m) = l.mask.filter(|m| doc.mattes.contains_key(&m.key)) else { continue };
+            assert_eq!(m.placement, fixture::extent());
+            let PlanNode::Group(w) = &plan.nodes[l.input.0 as usize] else { panic!("layer {li}: wrapper") };
+            assert!(w.isolated && w.layers.len() == 1);
+            let inner = w.layers[0].mask.expect("the layer's own mask");
+            assert!(doc.owned_masks.contains_key(&inner.key));
+            wrapped += 1;
+        }
+        assert_eq!(wrapped, 2);
+        // The feather of layer 7's mask moved with it to the wrapper's layer.
+        let feathers = &doc.frame.extensions.layers;
+        assert!(feathers.iter().any(|e| e.mask_feather_px == 1.0 && e.layer == 0
+            && matches!(&plan.nodes[e.group.0 as usize], PlanNode::Group(w) if w.layers.len() == 1)));
+        let doc_px = fixture::render_frame(&fixture::Ref, &plain(&doc), &pixels).unwrap();
+        let scene_px = fixture::render_scene_px(&fixture::Ref, &src.scene_at(0, &cancel).unwrap(), &pixels);
+        match fixture::path_agreement(&doc_px, &scene_px) {
+            Ok(ulp) => println!("matted masked layers: document graph vs scene path, {ulp} pixels within 1 ULP"),
+            Err(e) => panic!("{}", e.join("\n")),
+        }
+        // The matte cuts something: the frame differs from the unmatted one.
+        let unmatted_src = source_of(&b, &composition_records(), &pixels).unwrap();
+        let unmatted = fixture::render_frame(&fixture::Ref, &plain(&doc_frame(&b, &unmatted_src, &pixels).unwrap()), &pixels).unwrap();
+        assert_ne!(doc_px, unmatted);
     });
 }
