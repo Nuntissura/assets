@@ -28,6 +28,11 @@ pub enum AiffEncoding {
     U8,
     FloatBe32,
     FloatBe64,
+    /// Signed integer, little-endian, 24 or 32 bits (WAV PCM through the same reader).
+    IntLe(u16),
+    /// IEEE float, little-endian (WAV format tag 3).
+    FloatLe32,
+    FloatLe64,
     ULaw,
     ALaw,
 }
@@ -38,8 +43,9 @@ impl AiffEncoding {
             Self::IntBe(bits) => usize::from(bits.div_ceil(8)),
             Self::Int16Le => 2,
             Self::U8 | Self::ULaw | Self::ALaw => 1,
-            Self::FloatBe32 => 4,
-            Self::FloatBe64 => 8,
+            Self::FloatBe32 | Self::FloatLe32 => 4,
+            Self::FloatBe64 | Self::FloatLe64 => 8,
+            Self::IntLe(bits) => usize::from(bits.div_ceil(8)),
         }
     }
 }
@@ -402,6 +408,24 @@ impl FrameSource for AiffReader<'_> {
                     let mut x = [0u8; 8];
                     x.copy_from_slice(s);
                     f64::from_be_bytes(x) as f32
+                }
+                (AiffEncoding::IntLe(_), s) => {
+                    let mut v: i64 = 0;
+                    for b in s.iter().rev() {
+                        v = (v << 8) | i64::from(*b);
+                    }
+                    let total_bits = (s.len() as u32).saturating_mul(8);
+                    let shift = 64u32.saturating_sub(total_bits);
+                    let v = (v << shift) >> shift;
+                    let scale =
+                        2f64.powi(i32::try_from(total_bits).unwrap_or(32).saturating_sub(1));
+                    (v as f64 / scale) as f32
+                }
+                (AiffEncoding::FloatLe32, [a, b, c, d]) => f32::from_le_bytes([*a, *b, *c, *d]),
+                (AiffEncoding::FloatLe64, s) => {
+                    let mut x = [0u8; 8];
+                    x.copy_from_slice(s);
+                    f64::from_le_bytes(x) as f32
                 }
                 (AiffEncoding::ULaw, [a]) => ulaw(*a),
                 (AiffEncoding::ALaw, [a]) => alaw(*a),

@@ -1059,6 +1059,11 @@ pub fn header_bytes(info: &StreamInfo) -> Vec<u8> {
 /// Byte offset of the STREAMINFO body in a stream written by `header_bytes`.
 pub const STREAMINFO_OFFSET: u64 = 8;
 
+/// Byte offset of the STREAMINFO MD5 signature (the last 16 of its 34 bytes) in a stream written by
+/// `header_bytes` or `FlacEncoder::stream_header`: a host that streamed the samples seeks here and
+/// writes the MD5 of the samples (signed little-endian, interleaved, `bits / 8` bytes each).
+pub const STREAMINFO_MD5_OFFSET: u64 = 26; // STREAMINFO_OFFSET (8) + 18
+
 /// UTF-8-like coded frame number (RFC 9639 section 9.1.5): 1 byte below 2^7, else a lead byte with
 /// `extra` leading ones and `extra` continuation bytes of 6 bits each (up to 36 bits).
 #[allow(clippy::arithmetic_side_effects)]

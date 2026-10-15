@@ -20,6 +20,8 @@ pub(crate) mod container;
 pub(crate) mod engine;
 pub mod flac;
 mod md5;
+pub mod speakers;
+mod wav_file;
 pub mod mp3;
 mod mp3_dsp;
 mod mp3_stream;
@@ -43,9 +45,12 @@ pub use ogg_audio::OggCodec;
 pub use opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION};
 pub use provider::{
     AAC_PROVIDER_ID, AIFF_PROVIDER_ID, AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID,
-    MP3_PROVIDER_ID, OGG_PROVIDER_ID,
+    MP3_PROVIDER_ID, OGG_PROVIDER_ID, sniff_audio_file,
 };
+pub use md5::Md5;
+pub use speakers::Speaker;
 pub use vorbis::{VORBIS_DECODER_ID, VORBIS_DECODER_VERSION};
+pub use wav_file::WAV_FILE_DECODER_ID;
 
 /// Highest sample rate any audio header may declare (768 kHz, the highest rate of common DAW hardware);
 /// above it a header is refused as `MEDIA_LIMIT_EXCEEDED` before allocation.
@@ -176,6 +181,9 @@ pub struct DecodedAudio {
     /// Lossless codecs that carry a checksum of the decoded audio (FLAC MD5): whether it matched;
     /// `None` when the stream declares none.
     pub checksum_verified: Option<bool>,
+    /// Loudspeaker of each channel in delivery order, from the codec's channel-order rule or the file's
+    /// channel mask (`speakers::layout_for`); `None` when the format defines no order for this count.
+    pub speakers: Option<Vec<Speaker>>,
 }
 
 impl DecodedAudio {

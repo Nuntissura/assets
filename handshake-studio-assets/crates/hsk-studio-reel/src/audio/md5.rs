@@ -18,7 +18,8 @@ fn k_table() -> [u32; 64] {
     k
 }
 
-pub(crate) struct Md5 {
+/// Streaming MD5 (public for hosts that write a FLAC STREAMINFO signature after streaming the samples).
+pub struct Md5 {
     state: [u32; 4],
     buffer: [u8; 64],
     buffered: usize,
@@ -39,7 +40,7 @@ impl Default for Md5 {
 }
 
 impl Md5 {
-    pub(crate) fn update(&mut self, mut data: &[u8]) {
+    pub fn update(&mut self, mut data: &[u8]) {
         self.length = self
             .length
             .wrapping_add((data.len() as u64).wrapping_mul(8));
@@ -100,7 +101,7 @@ impl Md5 {
         ];
     }
 
-    pub(crate) fn finish(mut self) -> [u8; 16] {
+    pub fn finish(mut self) -> [u8; 16] {
         let bits = self.length;
         let mut pad = vec![0x80u8];
         let used = self.buffered.wrapping_add(1) % 64;

@@ -9,6 +9,8 @@ use super::flac::{FlacEncoder, FlacLimits, StreamInfo};
 use super::mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION};
 use super::native_flac::{NativeFlac, read_header};
 use super::packet::Decode;
+use super::speakers::{self, ChannelOrder};
+use super::wav_file;
 use super::{
     DecodedAudio, FLAC_DECODER_ID, FLAC_DECODER_VERSION, aac_descriptor, flac_descriptor,
     mp3_descriptor, mp3_stream, ogg_audio,
@@ -482,6 +484,12 @@ impl MediaProvider for AudioFileProvider {
 }
 
 /// The audio file kind of a source, from its first bytes.
+/// Whether `head` (a file's first bytes, 16 are enough) is a file `decode_audio_file` takes: WAV or one
+/// of the standalone audio formats.
+pub fn sniff_audio_file(head: &[u8]) -> bool {
+    wav_file::sniff(head) || AudioFileKind::ALL.into_iter().any(|k| k.sniff(head))
+}
+
 pub(crate) fn detect_kind(src: &mut dyn ReadSeek) -> Result<AudioFileKind, ReelError> {
     let mut head = [0u8; 16];
     src.seek(SeekFrom::Start(0))?;
@@ -509,6 +517,9 @@ pub(crate) fn decode_file(
     max_frames: u64,
     cancel: &CancellationToken,
 ) -> Result<DecodedAudio, ReelError> {
+    if let Some(decoded) = decode_wav_file(src, limits, max_frames, cancel)? {
+        return Ok(decoded);
+    }
     let kind = detect_kind(src)?;
     let mut opened = open_stream(kind, src, limits, cancel)?;
     let shape = opened.shape;
@@ -527,7 +538,55 @@ pub(crate) fn decode_file(
         decoder_id: opened.decoder_id,
         decoder_version: opened.decoder_version,
         checksum_verified,
+        speakers: speakers::layout_for(channel_order(opened.decoder_id), shape.channels),
     })
+}
+
+/// Channel-order rule of a decoder's output (see `speakers`).
+fn channel_order(decoder_id: &str) -> ChannelOrder {
+    match decoder_id {
+        FLAC_DECODER_ID => ChannelOrder::Flac,
+        super::VORBIS_DECODER_ID | super::OPUS_DECODER_ID => ChannelOrder::Vorbis,
+        AAC_DECODER_ID => ChannelOrder::Aac,
+        _ => ChannelOrder::MonoStereo,
+    }
+}
+
+/// A RIFF/WAVE file through the whole-file import (`None` when the bytes are not WAV).
+fn decode_wav_file(
+    src: &mut dyn ReadSeek,
+    limits: &Limits,
+    max_frames: u64,
+    cancel: &CancellationToken,
+) -> Result<Option<DecodedAudio>, ReelError> {
+    let len = source_len(src)?;
+    let mut head = [0u8; 12];
+    src.seek(SeekFrom::Start(0))?;
+    let mut n = 0usize;
+    while n < head.len() {
+        let got = std::io::Read::read(src, head.get_mut(n..).unwrap_or(&mut []))?;
+        if got == 0 {
+            break;
+        }
+        n = n.saturating_add(got);
+    }
+    src.seek(SeekFrom::Start(0))?;
+    if !wav_file::sniff(head.get(..n).unwrap_or(&[])) {
+        return Ok(None);
+    }
+    let (info, mask) = wav_file::parse(src, len, limits, cancel)?;
+    let shape = aiff::shape(&info);
+    let mut reader = aiff::AiffReader::open(src, info)?;
+    let interleaved = engine::decode_all(&mut reader, &shape, max_frames, cancel)?;
+    Ok(Some(DecodedAudio {
+        sample_rate: shape.rate,
+        channels: shape.channels,
+        interleaved,
+        decoder_id: wav_file::WAV_FILE_DECODER_ID,
+        decoder_version: "1",
+        checksum_verified: None,
+        speakers: speakers::layout_for(ChannelOrder::Wav(mask), shape.channels),
+    }))
 }
 
 pub(crate) fn decode_flac_integers(
