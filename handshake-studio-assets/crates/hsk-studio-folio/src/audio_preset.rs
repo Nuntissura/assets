@@ -112,7 +112,7 @@ fn text(s: &str) -> bool {
     !s.trim().is_empty() && s.len() <= MAX_AUDIO_PRESET_TEXT && !s.chars().any(char::is_control)
 }
 
-fn instance(e: &StudioAudioEffectInstance, target: &str, cx: &mut Ctx) -> Result<()> {
+pub(crate) fn instance(e: &StudioAudioEffectInstance, target: &str, cx: &mut Ctx) -> Result<()> {
     cx.tick()?;
     if !key(&e.filter_kind) {
         return Err(invalid(target, "filter_kind"));

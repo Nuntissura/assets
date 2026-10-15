@@ -7,6 +7,7 @@
 mod annotate;
 mod assemble;
 mod audio;
+mod bus_mix;
 mod display;
 mod error;
 mod frame_cache;
@@ -21,6 +22,7 @@ mod transition;
 pub use annotate::*;
 pub use assemble::*;
 pub use audio::*;
+pub use bus_mix::{EffectFactory, TimelineBusStream};
 pub use display::*;
 pub use error::{PulseError, Result};
 pub use frame_cache::*;

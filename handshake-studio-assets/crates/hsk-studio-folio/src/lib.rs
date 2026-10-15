@@ -63,6 +63,8 @@ mod smart_filter;
 pub use smart_filter::*;
 mod audio_preset;
 pub use audio_preset::*;
+mod audio_routing;
+pub use audio_routing::*;
 mod vector;
 pub use vector::*;
 mod live_shape;

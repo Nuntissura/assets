@@ -333,7 +333,7 @@ fn graph_seek_matches_the_continuous_render_and_sources_drive_strips() {
             }
             fn render(&mut self, left: &mut [f32], _right: &mut [f32], _: &CancellationToken) -> Result<(), ScoreError> {
                 for (k, v) in left.iter_mut().enumerate() {
-                    *v = if (self.pos + k as u64) % 100 == 0 { 0.5 } else { 0.0 };
+                    *v = if (self.pos + k as u64).is_multiple_of(100) { 0.5 } else { 0.0 };
                 }
                 self.pos += left.len() as u64;
                 Ok(())
