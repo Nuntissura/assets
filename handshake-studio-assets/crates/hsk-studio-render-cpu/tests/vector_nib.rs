@@ -75,3 +75,40 @@ fn nib_vector_layer_matches_the_oracle_on_every_chunking_and_thread_count() {
     }
     assert_eq!(d, GOLDEN, "pinned frame digest");
 }
+
+const GOLDEN_CLIPPED: &str = "pending";
+
+#[test]
+fn clipped_nib_vector_layer_matches_the_oracle() {
+    let cancel = CancellationToken::default();
+    let res = VectorResolution { coverage: VectorCoverage::Exact, ..VectorResolution::default() };
+    let vectors = prepare_vector_layers(&[scenes::spec()], &res, &cancel)
+        .unwrap()
+        .with_clip(scenes::LAYER, Some(scenes::clip_outline()));
+    let plane = vectors.plane(scenes::LAYER).unwrap();
+    let target = OutputTarget {
+        extent: Rect { x: 0, y: 0, width: scenes::W, height: scenes::H },
+        format: SampleFormat::RgbF32Le,
+        alpha: AlphaConvention::Straight,
+        space: scenes::space(),
+    };
+    let low = vector_layer_render_plan(&vectors, scenes::LAYER, 7, target).unwrap();
+    let [(_, clip)] = low.clip_planes.as_slice() else { panic!("one clip plane") };
+    let sources = scenes::Sources { low: &low, vectors: &vectors };
+    let request = ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 };
+    let run = |r: &Renderer| {
+        let mut frame = Frame(vec![[0.0; 4]; (scenes::W * scenes::H) as usize]);
+        r.execute_extended(&low.plan, &low.extensions, &request, &sources, &cancel, &mut frame).expect("renders");
+        frame.0
+    };
+    let base = run(&Renderer::new(64).unwrap());
+    let delta = scenes::max_delta(&base, &scenes::oracle_clipped(plane, clip));
+    let d = digest(&base);
+    println!("clipped cpu digest {d} max |delta| vs oracle {delta:e}");
+    assert!(delta <= CPU_TOLERANCE, "{delta}");
+    assert_ne!(d, digest(&scenes::oracle(plane)), "the clip changes the frame");
+    for (chunk, threads) in [(5, 1), (7, 4), (64, 2)] {
+        assert_eq!(digest(&run(&Renderer::with_threads(chunk, threads).unwrap())), d, "chunk {chunk} threads {threads}");
+    }
+    assert_eq!(d, GOLDEN_CLIPPED, "pinned frame digest");
+}

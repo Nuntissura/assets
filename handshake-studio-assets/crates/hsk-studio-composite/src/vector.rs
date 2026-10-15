@@ -232,6 +232,29 @@ pub struct VectorPlane {
     pub strokes: Vec<StrokePlane>,
 }
 
+/// Largest clip plane in pixels (checked before nib allocates it).
+pub const MAX_CLIP_PIXELS: u64 = 64 << 20;
+
+/// A clipped layer's rasterised clip region (`coverage_u8`, row-major, stride = width).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipPlane {
+    pub layer_id: String,
+    pub placement: Rect,
+    pub coverage: Vec<u8>,
+    pub sha256: [u8; 32],
+}
+impl ClipPlane {
+    pub fn mask(&self) -> Mask<'_> {
+        Mask {
+            bounds: self.placement,
+            sample_format: "coverage_u8",
+            bytes: &self.coverage,
+            stride_bytes: u64::from(self.placement.width),
+            sha256: self.sha256,
+        }
+    }
+}
+
 /// One stroke row's coverage (`coverage_u8` over the layer plane).
 #[derive(Clone, Debug, PartialEq)]
 pub struct StrokePlane {
@@ -277,8 +300,25 @@ impl VectorPlane {
 pub struct PreparedVectors {
     planes: Vec<VectorPlane>,
     refused: Vec<(String, &'static str)>,
+    /// Clipped layer -> its clip outline (`None` = an empty clip region: nothing shows) or the
+    /// refusal code of a clip that could not be resolved.
+    clips: Vec<(String, Result<Option<OwnedPath>, &'static str>)>,
 }
 impl PreparedVectors {
+    /// The clip of `layer_id` (Folio `StudioMaskAttachment::clip_id`, or [`Self::with_clip`]).
+    pub fn clip(&self, layer_id: &str) -> Option<Result<Option<&OwnedPath>, &'static str>> {
+        self.clips
+            .iter()
+            .find(|(l, _)| l == layer_id)
+            .map(|(_, c)| c.as_ref().map(Option::as_ref).map_err(|e| *e))
+    }
+    /// Clip `layer_id` to the region of `outline` (folio-free; the outline's own fill rule). A
+    /// second clip on one layer replaces the first.
+    pub fn with_clip(mut self, layer_id: &str, outline: Option<OwnedPath>) -> Self {
+        self.clips.retain(|(l, _)| l != layer_id);
+        self.clips.push((layer_id.to_owned(), Ok(outline)));
+        self
+    }
     pub fn plane(&self, layer_id: &str) -> Option<&VectorPlane> {
         self.planes.iter().find(|p| p.layer_id == layer_id)
     }
@@ -794,6 +834,10 @@ pub const REFUSE_PAINT_PROFILE: &str = "paint_colour_profile";
 pub const REFUSE_PAINT_LINEAR: &str = "paint_colour_linear_light";
 pub const REFUSE_PAINT_MODE: &str = "paint_blend_mode";
 pub const REFUSE_BOOLEAN_OPERAND: &str = "boolean_operand_kind";
+/// A clip attachment naming a clip the vector records do not hold.
+pub const REFUSE_CLIP_UNRESOLVED: &str = "vector_clip_unresolved";
+/// A clipped layer that also has its own coverage mask or is clipped to a base (one mask slot).
+pub const REFUSE_CLIP_WITH_MASK: &str = "vector_clip_with_mask";
 /// A stroke weight, dash or offset, or a gradient, in a document whose geometry unit is not px
 /// (composite has no document-unit -> plan-pixel scale; paths arrive in plan pixels from the caller).
 pub const REFUSE_GEOMETRY_UNIT: &str = "vector_geometry_unit";
@@ -1138,6 +1182,32 @@ pub fn prepare_vectors(
     let mut out = prepare_vector_layers(&specs, res, cancel)?;
     for (layer, code) in refused {
         out.push_refusal(&layer, code);
+    }
+    // Vector clips (StudioVectorClip, Figma frame clipping): the clipped layer is cut by the
+    // nib outline of the source layer's geometry under the clip rule.
+    for a in &vectors.attachments {
+        cancel.check().map_err(|_| CompositeError::Canceled)?;
+        let Some(clip_id) = &a.clip_id else { continue };
+        let clip = vectors.clip(clip_id).ok_or(REFUSE_CLIP_UNRESOLVED).and_then(|c| {
+            let rule = match c.clip_rule {
+                hsk_studio_folio::StudioClipRule::NonZero => FillRule::NonZero,
+                hsk_studio_folio::StudioClipRule::EvenOdd => FillRule::EvenOdd,
+            };
+            let geometry = match cx.geometry(&c.source_layer_id, 0)? {
+                VectorGeometry::Paths(paths) => VectorGeometry::Paths(
+                    paths
+                        .into_iter()
+                        .map(|mut p| {
+                            p.fill_rule = rule;
+                            p
+                        })
+                        .collect(),
+                ),
+                boolean => boolean,
+            };
+            crate::vector_nib::outline(&geometry, 0)
+        });
+        out.clips.push((a.layer_id.clone(), clip));
     }
     Ok(out)
 }

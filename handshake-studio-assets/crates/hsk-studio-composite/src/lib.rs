@@ -44,7 +44,7 @@ pub use text::{
     text_layer_render_plan,
 };
 pub use vector::{
-    BooleanOp, FillPaint, FillSpec, ImageFill, ImageInfo, ImageScale, PaintedTile, PreparedFill,
+    BooleanOp, ClipPlane, FillPaint, FillSpec, ImageFill, ImageInfo, ImageScale, PaintedTile, PreparedFill,
     PreparedPaint, PreparedVectors, StrokePlane, VectorAssets, VectorCoverage, VectorGeometry,
     VectorLayerSpec, VectorPlane, VectorResolution,
     image_source_id, prepare_vector_layers, prepare_vectors,

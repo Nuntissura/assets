@@ -79,3 +79,31 @@ fn gpu_nib_vector_layer_matches_the_shared_oracle() {
     println!("gpu max |delta| vs oracle {delta:e}");
     assert!(delta <= GPU_TOLERANCE, "{delta}");
 }
+
+#[test]
+fn gpu_clipped_nib_vector_layer_matches_the_shared_oracle() {
+    if !gate("gpu_clipped_nib_vector_layer_matches_the_shared_oracle") {
+        return;
+    }
+    let cancel = CancellationToken::default();
+    let res = VectorResolution { coverage: VectorCoverage::Exact, ..VectorResolution::default() };
+    let vectors = prepare_vector_layers(&[scenes::spec()], &res, &cancel)
+        .unwrap()
+        .with_clip(scenes::LAYER, Some(scenes::clip_outline()));
+    let plane = vectors.plane(scenes::LAYER).unwrap();
+    let target = OutputTarget {
+        extent: Rect { x: 0, y: 0, width: scenes::W, height: scenes::H },
+        format: SampleFormat::RgbF32Le,
+        alpha: AlphaConvention::Straight,
+        space: scenes::space(),
+    };
+    let low = vector_layer_render_plan(&vectors, scenes::LAYER, 7, target).unwrap();
+    let [(_, clip)] = low.clip_planes.as_slice() else { panic!("one clip plane") };
+    let sources = scenes::Sources { low: &low, vectors: &vectors };
+    let request = ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 };
+    let mut frame = Frame(vec![[0.0; 4]; (scenes::W * scenes::H) as usize]);
+    backend().execute_extended(&low.plan, &low.extensions, &request, &sources, &cancel, &mut frame).expect("renders");
+    let delta = scenes::max_delta(&frame.0, &scenes::oracle_clipped(plane, clip));
+    println!("clipped gpu max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "{delta}");
+}

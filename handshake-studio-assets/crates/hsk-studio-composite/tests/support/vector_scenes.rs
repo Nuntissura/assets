@@ -204,6 +204,33 @@ pub fn oracle(plane: &VectorPlane) -> Vec<[f32; 4]> {
     out
 }
 
+/// The clip region of the clipped case (lane SMB-COMPOSITE-CLIP-RECORDS): a diamond that cuts the
+/// layer and its strokes.
+pub fn clip_outline() -> OwnedPath {
+    poly(&[(16.0, 1.5), (30.25, 12.0), (16.0, 22.5), (2.5, 12.0)])
+}
+
+/// [`oracle`] cut by a clip plane (coverage of the clip region over its placement; zero outside).
+pub fn oracle_clipped(plane: &VectorPlane, clip: &hsk_studio_composite::ClipPlane) -> Vec<[f32; 4]> {
+    let r = clip.placement;
+    oracle(plane)
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let (x, y) = ((i % W as usize) as i64, (i / W as usize) as i64);
+            let inside = x >= r.x && y >= r.y && x < r.x + i64::from(r.width) && y < r.y + i64::from(r.height);
+            let c = if inside {
+                (f64::from(clip.coverage[((y - r.y) * i64::from(r.width) + (x - r.x)) as usize]) / 255.0) as f32
+            } else {
+                0.0
+            };
+            let o = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, Rgba::new([p[0], p[1], p[2]], p[3]), c,
+                PixelSite { x, y, seed: 0 }).unwrap();
+            [o.rgb[0], o.rgb[1], o.rgb[2], o.a]
+        })
+        .collect()
+}
+
 /// Largest |delta| of alpha and premultiplied colour.
 pub fn max_delta(got: &[[f32; 4]], want: &[[f32; 4]]) -> f32 {
     let mut worst = 0.0f32;
