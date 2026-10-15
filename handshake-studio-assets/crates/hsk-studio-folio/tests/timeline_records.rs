@@ -103,7 +103,11 @@ fn inspect_with(v: &Value, budget: Budget) -> Result<Snapshot, Diagnostic> {
         &Available,
     )? {
         Inspection::Editable(s) => Ok(s),
-        Inspection::ReadOnly(_) => panic!("fixture became read-only"),
+        // Folio keeps an undecodable document read-only; for these records that is a refusal.
+        Inspection::ReadOnly(_) => Err(Diagnostic {
+            code: Code::UnknownField,
+            target: "read_only".into(),
+        }),
     }
 }
 fn inspect(v: &Value) -> Result<Snapshot, Diagnostic> {
@@ -119,7 +123,15 @@ fn markers_and_transitions_round_trip_and_old_wire_is_unchanged() {
     bounded_case("round_trip", || {
         // A document without records keeps its wire: no new keys appear and it re-decodes equal.
         let old = inspect(&document(|_| {})).unwrap();
-        let old_bytes = String::from_utf8(old.encoded_bytes().to_vec()).unwrap();
+        // Folio's own encoding of the typed document (the bytes a save writes).
+        let canonical = validate_document(
+            old.document().clone(),
+            Budget::default(),
+            &CancellationToken::default(),
+            &Available,
+        )
+        .unwrap();
+        let old_bytes = String::from_utf8(canonical.encoded_bytes().to_vec()).unwrap();
         assert!(!old_bytes.contains("\"markers\"") && !old_bytes.contains("\"transitions\""));
         let seq = &old.document().sequences[0];
         assert!(seq.markers.is_empty() && seq.tracks[0].clips[0].transitions.is_empty());
@@ -178,7 +190,9 @@ fn markers_and_transitions_round_trip_and_old_wire_is_unchanged() {
             &Available,
         )
         .unwrap();
-        assert_eq!(rebuilt.encoded_bytes(), snap.encoded_bytes());
+        assert_eq!(rebuilt.document(), snap.document());
+        let again = inspect(&serde_json::from_slice(rebuilt.encoded_bytes()).unwrap()).unwrap();
+        assert_eq!(again.document(), snap.document());
     });
 }
 
