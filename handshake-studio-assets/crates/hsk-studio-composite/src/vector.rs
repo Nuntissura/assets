@@ -1260,13 +1260,17 @@ pub fn prepare_vectors(
 type MaskResult = Result<std::sync::Arc<crate::vector_mask::VectorMask>, &'static str>;
 
 impl FolioCx<'_> {
-    /// Is `layer` masked or clipped itself (a vector record attachment, an enabled raster mask or
-    /// the clip-to-base route)?
-    fn nested_mask(&self, layer: &hsk_studio_folio::StudioLayer) -> bool {
+    /// Is `layer` masked itself (a vector mask attachment, an enabled raster mask or the
+    /// clip-to-base route), or a group with a vector clip? A vector clip on a leaf (vector layer or
+    /// boolean group) is applied to its content (`crate::vector_mask::mask_content`; e.g. a Figma
+    /// mask shape inside a clipping frame).
+    fn nested_mask(&self, layer: &hsk_studio_folio::StudioLayer, leaf: bool) -> bool {
         let a = layer.effective_appearance();
         a.clipped
             || a.mask.as_ref().is_some_and(|m| m.enabled)
-            || self.records.attachments.iter().any(|t| t.layer_id == layer.layer_id)
+            || self.records.attachments.iter().any(|t| {
+                t.layer_id == layer.layer_id && (t.mask_id.is_some() || (t.clip_id.is_some() && !leaf))
+            })
     }
     /// The visible children of group `layer_id`, Folio layer order (bottom first).
     fn children(&self, layer_id: &str) -> Vec<&hsk_studio_folio::StudioLayer> {
@@ -1338,7 +1342,9 @@ impl FolioCx<'_> {
             .layers
             .get(layer_id)
             .ok_or(crate::vector_mask::REFUSE_MASK_UNRESOLVED)?;
-        if self.nested_mask(layer) {
+        let boolean = self.records.boolean_group(layer_id).is_some();
+        let leaf = boolean || matches!(layer.payload, hsk_studio_folio::Payload::Vector { .. });
+        if self.nested_mask(layer, leaf) {
             return Err(REFUSE_MASK_SOURCE_NESTED);
         }
         let a = layer.effective_appearance();
@@ -1351,15 +1357,14 @@ impl FolioCx<'_> {
         if !(0.0..=1.0).contains(&opacity) {
             return Err(REFUSE_PAINT_MODE);
         }
-        let leaf = || MaskNode::Leaf {
+        let make_leaf = || MaskNode::Leaf {
             layer_id: layer_id.to_owned(),
             mode,
             opacity,
         };
-        let boolean = self.records.boolean_group(layer_id).is_some();
         match &layer.payload {
-            hsk_studio_folio::Payload::Vector { .. } => Ok(leaf()),
-            hsk_studio_folio::Payload::Group if boolean => Ok(leaf()),
+            hsk_studio_folio::Payload::Vector { .. } => Ok(make_leaf()),
+            hsk_studio_folio::Payload::Group if boolean => Ok(make_leaf()),
             hsk_studio_folio::Payload::Group => {
                 let next = depth.checked_add(1).ok_or(REFUSE_MASK_BUDGET)?;
                 let children = self

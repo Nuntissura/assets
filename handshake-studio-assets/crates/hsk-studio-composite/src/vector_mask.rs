@@ -15,7 +15,8 @@
 //!   reading as a luma track matte; the SVG coefficient set and colour space are UNVERIFIED, D5).
 //!
 //! Content (`ALPHA`, `LUMINANCE`) is the source rendered alone: a vector layer is its prepared
-//! plane (fill rows composited, cut by the fill coverage, stroke rows on top), a plain group
+//! plane (fill rows composited, cut by the fill coverage, stroke rows on top, cut by its own vector
+//! clip if it has one, e.g. a Figma mask shape inside a clipping frame), a plain group
 //! composites its visible members bottom first (Folio layer order) with each member's blend mode and
 //! `opacity * fill_opacity` (a pass-through member group is evaluated isolated), and the source's own
 //! opacity applies on top. Every composite is pigment's scalar `composite_over` (the single owner of
@@ -40,7 +41,7 @@
 //! (linked, STU-CMP-010: masks before transform).
 //!
 //! Typed refusals, never silent: unresolved record or source, source kinds composite cannot draw on
-//! the host (raster, text, image paint rows), nested masks or clips inside the source, a region in
+//! the host (raster, text, image paint rows), nested masks inside the source (or a vector clip on a source group), a region in
 //! another unit, a mask on a layer that already has a raster mask or a clip-to-base route, a mask on
 //! an adjustment layer, and the budgets below (V4-02: every plane is charged before allocation).
 #![deny(clippy::arithmetic_side_effects)]
@@ -57,7 +58,7 @@ pub const REFUSE_MASK_SOURCE_KIND: &str = "vector_mask_source_kind";
 pub const REFUSE_MASK_SOURCE: &str = "vector_mask_source_unavailable";
 /// A source member paints an image row (no decoded pixels on the host).
 pub const REFUSE_MASK_SOURCE_IMAGE: &str = "vector_mask_source_image_paint";
-/// A source member carries its own mask, clip or clip-to-base route.
+/// A source member carries its own mask or clip-to-base route, or a source group has a vector clip.
 pub const REFUSE_MASK_SOURCE_NESTED: &str = "vector_mask_source_nested";
 /// The region is not finite, negative, or not in the document's geometry unit.
 pub const REFUSE_MASK_REGION: &str = "vector_mask_region";
@@ -203,8 +204,12 @@ fn leaf_rgba(plane: &VectorPlane, x: i64, y: i64, site: PixelSite) -> Result<Rgb
     Ok(acc)
 }
 
+/// The vector clips of the source's leaves over the content rect: `(layer, coverage_u8)`.
+type LeafClips<'a> = Vec<(&'a str, Vec<u8>)>;
+
 fn node_rgba(
     vectors: &PreparedVectors,
+    clips: &(Rect, LeafClips<'_>),
     node: &MaskNode,
     x: i64,
     y: i64,
@@ -212,13 +217,23 @@ fn node_rgba(
 ) -> Result<Rgba, &'static str> {
     match node {
         MaskNode::Leaf { layer_id, .. } => {
-            leaf_rgba(vectors.plane(layer_id).ok_or(REFUSE_MASK_SOURCE)?, x, y, site)
+            let c = leaf_rgba(vectors.plane(layer_id).ok_or(REFUSE_MASK_SOURCE)?, x, y, site)?;
+            // A leaf with a vector clip (e.g. a Figma mask shape in a clipping frame) is cut by it.
+            match clips.1.iter().find(|(l, _)| l == layer_id) {
+                Some((_, cov)) => {
+                    let i = inside(clips.0, x, y).ok_or(REFUSE_MASK_SOURCE)?;
+                    let k = (f64::from(*cov.get(i).ok_or(REFUSE_MASK_SOURCE)?) / 255.0) as f32;
+                    composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, c, k, site)
+                        .map_err(|_| REFUSE_MASK_SOURCE)
+                }
+                None => Ok(c),
+            }
         }
         MaskNode::Group { children, .. } => {
             let mut acc = Rgba::TRANSPARENT;
             for c in children {
                 let (mode, opacity) = c.blend();
-                let v = node_rgba(vectors, c, x, y, site)?;
+                let v = node_rgba(vectors, clips, c, x, y, site)?;
                 acc = composite_over(mode, acc, v, opacity, site).map_err(|_| REFUSE_MASK_SOURCE)?;
             }
             Ok(acc)
@@ -264,6 +279,15 @@ pub fn mask_content(
         return Err(REFUSE_MASK_BUDGET);
     }
     charge(budget, pixels)?;
+    let mut leaf_clips: LeafClips<'_> = Vec::new();
+    for id in &ids {
+        if let Some(clip) = vectors.clip(id) {
+            let outline = clip.map_err(|_| REFUSE_MASK_SOURCE)?;
+            charge(budget, pixels)?;
+            leaf_clips.push((id, crate::vector_nib::coverage(outline, r, MAX_CLIP_PIXELS)?));
+        }
+    }
+    let clips = (r, leaf_clips);
     let n = usize::try_from(pixels).map_err(|_| REFUSE_MASK_BUDGET)?;
     let (_, own) = node.blend();
     let mut values = Vec::with_capacity(n);
@@ -272,7 +296,7 @@ pub fn mask_content(
     for y in r.y..y1 {
         for x in r.x..x1 {
             let site = PixelSite { x, y, seed: 0 };
-            let c = node_rgba(vectors, node, x, y, site)?;
+            let c = node_rgba(vectors, &clips, node, x, y, site)?;
             let c = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, c, own, site)
                 .map_err(|_| REFUSE_MASK_SOURCE)?;
             values.push(match mode {
