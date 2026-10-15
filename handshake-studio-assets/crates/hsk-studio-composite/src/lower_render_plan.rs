@@ -882,7 +882,15 @@ pub(crate) fn lower_inner(
                 );
                 let draws_text = *value == SourceValue::Text
                     || (*value == SourceValue::Image && text_payload);
-                if let (SourceValue::Vector, Some(prepared)) = (value, vectors) {
+                // A vector source draws its prepared plane, vector-typed or image-typed (Folio
+                // SMB-FOLIO-VECTOR-IMAGE-PORT: a rasterisable vector as a group input).
+                let vector_payload = matches!(
+                    layers.get(addr.layer_id.as_str()).map(|l| &l.payload),
+                    Some(Payload::Vector { .. })
+                );
+                let draws_vector = *value == SourceValue::Vector
+                    || (*value == SourceValue::Image && vector_payload);
+                if let (true, Some(prepared)) = (draws_vector, vectors) {
                     let plane = prepared.plane(&addr.layer_id).ok_or_else(|| {
                         CompositeError::Unavailable(format!(
                             "{}:vector_layer_not_prepared",

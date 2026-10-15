@@ -561,11 +561,18 @@ pub(crate) fn evaluate_with(
                     (None, SourceValue::Image, Some(Payload::Raster { tiles })) => {
                         (raster_extent(tiles)?, StepStatus::Ready)
                     }
-                    // Vector layers drawn on the host (crate::vector) when prepared.
-                    (None, SourceValue::Vector, Some(Payload::Vector { .. })) if vectors.is_some() => {
+                    // Vector layers drawn on the host (crate::vector) when prepared. A vector
+                    // source whose `out` port is image-typed (Folio SMB-FOLIO-VECTOR-IMAGE-PORT:
+                    // a rasterisable vector feeding a group's image inputs) is drawn the same way.
+                    (
+                        None,
+                        SourceValue::Vector | SourceValue::Image,
+                        Some(Payload::Vector { .. }),
+                    ) if vectors.is_some() => {
                         vector_status(vectors, &addr.layer_id, *visible, &mut ledger)
                     }
-                    (None, SourceValue::Vector, _) => (
+                    (None, SourceValue::Vector, _)
+                    | (None, SourceValue::Image, Some(Payload::Vector { .. })) => (
                         None,
                         StepStatus::Unavailable("vector_to_image_conversion".into()),
                     ),
