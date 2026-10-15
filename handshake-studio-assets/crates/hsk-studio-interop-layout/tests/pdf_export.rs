@@ -929,3 +929,86 @@ fn folio_clipping_gradient_and_pdfx4() {
     // Spread (405, 55) -> device (108, 64): the base alone (blue).
     assert!(near(r.pixel(108, 64).unwrap(), [0, 0, 255]), "{:?}", r.pixel(108, 64));
 }
+
+/// Item 3 through Folio (document order, no graph): vector 13 (black, page 1) is clipped to the
+/// text layer 1 before it, whose glyphs are white, so black shows only inside the glyph outlines;
+/// vector 14 (red, page 2) is clipped to raster 3 before it by the tile alpha (1, 0.5 | 0, 1).
+#[test]
+fn folio_clip_to_text_and_raster_bases() {
+    let cancel = CancellationToken::default();
+    let b = build();
+    let place = placement(&b);
+    let mut d = b.snapshot.document().clone();
+    let clipped = || Some(LayerAppearance { opacity: 100.0, fill_opacity: 100.0, blend_mode: 2, clipped: true, isolation: Isolation::Isolated, mask: None });
+    let mut v13 = layer(13, "vector", Payload::Vector { path_ids: vec![id("SVPT", 13)] }, None);
+    v13.appearance = clipped();
+    let mut v14 = layer(14, "vector", Payload::Vector { path_ids: vec![id("SVPT", 14)] }, None);
+    v14.appearance = clipped();
+    let (text, raster) = (d.layers[0].clone(), d.layers[2].clone());
+    d.layers = vec![text, v13, raster, v14];
+    let snapshot = validate_document(d, Budget::default(), &cancel, &Everything).unwrap();
+    let mut design = StudioDesignRecords::new(id("SDOC", 1));
+    for (n, rgb) in [(13u32, [0.0, 0.0, 0.0]), (14, [1.0, 0.0, 0.0])] {
+        design.paint_styles.push(paint_style(n, StudioAppearanceRow::Fill {
+            paint: StudioPaint::Solid { colour: StudioColor { r: rgb[0], g: rgb[1], b: rgb[2], colour_profile_id: ProfileBinding::Unassigned(()) } },
+            opacity: 100.0,
+            blend_mode: 2,
+            visible: true,
+        }));
+        let mut node: StudioNodeDesign = serde_json::from_value(serde_json::json!({"node": {"node_kind": "layer", "node_id": id("SLYR", n)}})).unwrap();
+        node.style_refs.insert("fill_style_id".into(), id("SSTY", n));
+        design.nodes.push(node);
+    }
+    struct Squares(Assets);
+    impl PdfAssets for Squares {
+        fn path(&self, path_id: &str) -> Option<OwnedPath> {
+            let x = if path_id == id("SVPT", 13) { 0.0 } else if path_id == id("SVPT", 14) { 300.0 } else { return None };
+            Some(OwnedPath {
+                elements: vec![
+                    PathElement::MoveTo(PathPoint::new(x, 0.0)),
+                    PathElement::LineTo(PathPoint::new(x + 300.0, 0.0)),
+                    PathElement::LineTo(PathPoint::new(x + 300.0, 400.0)),
+                    PathElement::LineTo(PathPoint::new(x, 400.0)),
+                    PathElement::Close,
+                ],
+                fill_rule: NibRule::NonZero,
+            })
+        }
+        fn raster(&self, layer_id: &str) -> Option<PlacedRaster<'_>> {
+            self.0.raster(layer_id)
+        }
+        fn profile(&self, profile_id: &str) -> Option<&[u8]> {
+            self.0.profile(profile_id)
+        }
+    }
+    let assets = Squares(assets());
+    let stories = [PdfStory { story: &b.story, text: TEXT, placement: &place, paragraphs: &b.paragraphs, glyphs: &b.glyphs, default_fill: Colour::DeviceGray(1.0) }];
+    let fonts = [PdfFont { bytes: INTER, face_index: 0, hyphen: None }];
+    let out = export_pdf(
+        &PdfExportInput {
+            snapshot: &snapshot,
+            design: Some(&design),
+            type_styles: None,
+            stories: &stories,
+            fonts: &fonts,
+            assets: &assets,
+            options: ExportOptions::default(),
+            limits: Limits::default(),
+        },
+        &cancel,
+    )
+    .unwrap();
+    let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
+    assert!(!codes.iter().any(|c| c.starts_with("clip_")), "{codes:?}");
+    let p1 = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();
+    let ink = (43..60).flat_map(|y| (29..129).map(move |x| (x, y))).filter(|(x, y)| p1.pixel(*x, *y).is_some_and(|p| p[0] < 128)).count();
+    assert!(ink > 50, "black inside the glyphs: {ink}");
+    assert_eq!(p1.pixel(200, 300), Some([255, 255, 255]), "outside the text the clipped square is gone");
+    let p2 = render_page(&out.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 6);
+    assert!(near(p2.pixel(108, 314).unwrap(), [255, 0, 0]), "alpha 1 {:?}", p2.pixel(108, 314));
+    assert!(near(p2.pixel(118, 314).unwrap(), [238, 111, 111]), "alpha 0.5 {:?}", p2.pixel(118, 314));
+    assert_eq!(p2.pixel(108, 324), Some([255, 255, 255]), "alpha 0");
+    assert!(near(p2.pixel(118, 324).unwrap(), [255, 0, 0]), "alpha 1 over white {:?}", p2.pixel(118, 324));
+    assert_eq!(p2.pixel(200, 200), Some([255, 255, 255]), "outside the tile");
+}
