@@ -186,11 +186,14 @@ pub trait ExternalVideoDecoder: Send + Sync {
     ) -> Result<Box<dyn VideoDecodeSession>, VideoDecodeError>;
 }
 
-/// The routing inputs of one decode call.
+/// The routing inputs of one decode call: trust, the external video decoder and (lane
+/// SMB-D24A-CODEC-DEFAULTS, Operator decision D24-A) the external audio decoder that compressed audio the
+/// providers cannot decode in process goes to (AAC through the OS decoder in reel-native's worker).
 #[derive(Clone, Copy)]
 pub struct VideoRoute<'a> {
     pub trust: SourceTrust,
     pub external: Option<&'a dyn ExternalVideoDecoder>,
+    pub audio: Option<&'a dyn crate::audio::ExternalAudioDecoder>,
 }
 
 impl Default for VideoRoute<'_> {
@@ -199,6 +202,7 @@ impl Default for VideoRoute<'_> {
         Self {
             trust: SourceTrust::Untrusted,
             external: None,
+            audio: None,
         }
     }
 }
@@ -208,6 +212,7 @@ impl<'a> VideoRoute<'a> {
         Self {
             trust: SourceTrust::Untrusted,
             external: None,
+            audio: None,
         }
     }
 
@@ -216,11 +221,21 @@ impl<'a> VideoRoute<'a> {
         Self {
             trust: SourceTrust::Trusted,
             external: None,
+            audio: None,
         }
     }
 
     pub const fn with_external(mut self, decoder: &'a dyn ExternalVideoDecoder) -> Self {
         self.external = Some(decoder);
+        self
+    }
+
+    /// The external audio decoder (D24-A: AAC through the OS decoder) for this call.
+    pub const fn with_audio_decoder(
+        mut self,
+        decoder: &'a dyn crate::audio::ExternalAudioDecoder,
+    ) -> Self {
+        self.audio = Some(decoder);
         self
     }
 }
@@ -230,6 +245,7 @@ impl std::fmt::Debug for VideoRoute<'_> {
         f.debug_struct("VideoRoute")
             .field("trust", &self.trust)
             .field("external", &self.external.map(|e| e.identity()))
+            .field("audio", &self.audio.map(|a| a.identity()))
             .finish()
     }
 }

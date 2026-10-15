@@ -51,12 +51,15 @@ const FILES: [(&str, u32, usize); 3] = [
 #[test]
 fn opening_mp3_flac_and_opus_lands_in_a_score_mix_of_the_decoded_file() {
     let cancel = CancellationToken::default();
-    // Registry::with_audio is standard() plus the audio file providers; standard() is unchanged.
+    // Registry::with_audio is standard() plus the other audio file providers. Operator decision D24-A
+    // (2026-10-15, lane SMB-D24A-CODEC-DEFAULTS): MP3/MP2/MP1 decode is on by default, so `mpeg-audio` is
+    // part of standard() (this pin asserted it was opt-in before D24-A).
     let ids = |r: reel::Registry| r.descriptors().into_iter().map(|d| d.id).collect::<Vec<_>>();
     let standard = ids(reel::Registry::standard());
     let with_audio = ids(reel::Registry::with_audio());
     assert_eq!(with_audio[..standard.len()], standard[..]);
-    for id in ["flac", "ogg-audio", "mpeg-audio", "aac-adts", "aiff-pcm"] {
+    assert!(standard.contains(&"mpeg-audio"));
+    for id in ["flac", "ogg-audio", "aac-adts", "aiff-pcm"] {
         assert!(with_audio.contains(&id) && !standard.contains(&id), "{id}");
     }
     for (name, rate, frames) in FILES {
@@ -233,6 +236,15 @@ fn wav_and_surround_files_import_with_the_bs775_downmix_and_channel_map() {
     // order[j] = index in the file of FL, FR, C, LFE, BL, BR.
     for (name, order) in [("opus-48k-6ch.opus", [0usize, 2, 1, 5, 3, 4]), ("aac-lc-48k-6ch.aac", [1, 2, 0, 5, 3, 4])] {
         let bytes = std::fs::read(fixture(name)).unwrap();
+        // D24-A (lane SMB-D24A-CODEC-DEFAULTS): Studio's AAC decoder is opt-in (harness feature studio-aac);
+        // without it, and with no OS decoder registered here, AAC is the typed MEDIA_CODEC_UNAVAILABLE.
+        if name.starts_with("aac") && !cfg!(feature = "studio-aac") {
+            let err = reel::decode_audio_file(&mut Cursor::new(&bytes), &reel::Limits::default(), 1 << 24, &cancel).unwrap_err();
+            assert_eq!(err.code(), "MEDIA_CODEC_UNAVAILABLE");
+            assert!(import_audio(&mut Cursor::new(bytes), &limits, &cancel).is_err());
+            println!("NOT_PROVEN: AAC 5.1 downmix needs --features studio-aac (D24-A)");
+            continue;
+        }
         let decoded = reel::decode_audio_file(&mut Cursor::new(&bytes), &reel::Limits::default(), 1 << 24, &cancel).unwrap();
         let a = import_audio(&mut Cursor::new(bytes), &limits, &cancel).unwrap();
         assert_eq!(a.downmix.as_ref().unwrap().layout_source, "decoder", "{name}");

@@ -7,7 +7,8 @@
 //! `A_MPEG/L1|L2|L3`. Any other codec returns `None` so the container keeps its own typed
 //! `MEDIA_CODEC_UNAVAILABLE`.
 #![deny(clippy::arithmetic_side_effects)]
-use super::aac::{AacPacketDecoder, asc_from_esds};
+use super::aac::{aac_decoder, asc_from_esds};
+use super::external::ExternalAudioDecoder;
 use super::engine::{self, Ids, StreamShape};
 use super::flac::{FlacDecoder, FlacLimits, streaminfo_from_config};
 use super::mp3::{
@@ -18,9 +19,7 @@ use super::ogg_audio::FlacPackets;
 use super::opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION, OPUS_RATE, OpusHead, OpusPacketDecoder};
 use super::packet::{Decode, PacketDecoder, PacketSource};
 use super::vorbis::{VORBIS_DECODER_ID, VORBIS_DECODER_VERSION, VorbisDecoder, split_xiph_lacing};
-use super::{
-    AAC_DECODER_ID, AAC_DECODER_VERSION, FLAC_DECODER_ID, FLAC_DECODER_VERSION, MAX_AUDIO_CHANNELS,
-};
+use super::{FLAC_DECODER_ID, FLAC_DECODER_VERSION, MAX_AUDIO_CHANNELS};
 use crate::error::ReelError;
 use crate::isobmff::{SampleEntry, TrackIndex, read_sample};
 use crate::matroska::MkvTrack;
@@ -181,15 +180,25 @@ fn mpeg_audio_codec(first_sample: &[u8]) -> Result<Codec, ReelError> {
     })
 }
 
-fn aac_codec(asc: &[u8]) -> Result<Codec, ReelError> {
+/// AAC-LC through the D24-A decoder choice (`aac::aac_decoder`: external OS decoder, else Studio's with
+/// feature `studio-aac`, else `MEDIA_CODEC_UNAVAILABLE aac-lc`).
+fn aac_codec(asc: &[u8], ext: &Ext<'_>) -> Result<Codec, ReelError> {
     let config = super::aac::parse_audio_specific_config(asc)?;
+    let (decoder, ids) = aac_decoder(asc, ext.audio, ext.limits, ext.cancel)?;
     Ok(Codec {
         rate: config.sample_rate,
         channels: config.channels,
         pre_skip: 0,
-        decoder: Box::new(AacPacketDecoder::new(asc)?),
-        ids: (AAC_DECODER_ID, AAC_DECODER_VERSION),
+        decoder,
+        ids,
     })
+}
+
+/// What a codec choice needs beyond the configuration bytes: the route's external audio decoder.
+struct Ext<'a> {
+    audio: Option<&'a dyn ExternalAudioDecoder>,
+    limits: &'a Limits,
+    cancel: &'a CancellationToken,
 }
 
 fn flac_codec(config: &[u8]) -> Result<Codec, ReelError> {
@@ -235,6 +244,7 @@ fn isobmff_codec(
     src: &mut dyn ReadSeek,
     track: &TrackIndex,
     limits: &Limits,
+    ext: &Ext<'_>,
 ) -> Option<Result<Codec, ReelError>> {
     let config = track.codec_config.as_slice();
     let (tag, payload) = (config.get(..4), config.get(4..).unwrap_or(&[]));
@@ -246,7 +256,7 @@ fn isobmff_codec(
                 return None;
             }
             match asc_from_esds(payload) {
-                Ok((0x40 | 0x66..=0x68, asc)) => aac_codec(&asc),
+                Ok((0x40 | 0x66..=0x68, asc)) => aac_codec(&asc, ext),
                 Ok((0x69 | 0x6B, _)) => {
                     first_sample(src, track, limits).and_then(|s| mpeg_audio_codec(&s))
                 }
@@ -292,8 +302,14 @@ pub(crate) fn decode_isobmff_track(
     limits: &Limits,
     cancel: &CancellationToken,
     sink: &mut dyn ChunkSink,
+    audio: Option<&dyn ExternalAudioDecoder>,
 ) -> Option<Result<SegmentReceipt, ReelError>> {
-    let codec = match isobmff_codec(src, track, limits)? {
+    let ext = Ext {
+        audio,
+        limits,
+        cancel,
+    };
+    let codec = match isobmff_codec(src, track, limits, &ext)? {
         Ok(codec) => codec,
         Err(e) => return Some(Err(e)),
     };
@@ -402,6 +418,7 @@ fn matroska_codec(
     src: &mut dyn ReadSeek,
     track: &MkvTrack,
     limits: &Limits,
+    ext: &Ext<'_>,
 ) -> Option<Result<Codec, ReelError>> {
     let info = &track.info;
     let private = info.codec_private.as_slice();
@@ -423,10 +440,9 @@ fn matroska_codec(
             }),
         }),
         "A_OPUS" => OpusHead::parse(private).and_then(opus_codec),
-        "A_AAC" => aac_codec(private),
-        "A_AAC/MPEG2/LC" | "A_AAC/MPEG4/LC" => {
-            legacy_aac_asc(info.sampling_frequency, info.channels).and_then(|asc| aac_codec(&asc))
-        }
+        "A_AAC" => aac_codec(private, ext),
+        "A_AAC/MPEG2/LC" | "A_AAC/MPEG4/LC" => legacy_aac_asc(info.sampling_frequency, info.channels)
+            .and_then(|asc| aac_codec(&asc, ext)),
         "A_MPEG/L1" | "A_MPEG/L2" | "A_MPEG/L3" => first_sample(src, &track.index, limits)
             .and_then(|s| {
                 // Undo header stripping (mkvmerge strips MPEG audio frame headers) before parsing.
@@ -453,8 +469,14 @@ pub(crate) fn decode_matroska_track(
     limits: &Limits,
     cancel: &CancellationToken,
     sink: &mut dyn ChunkSink,
+    audio: Option<&dyn ExternalAudioDecoder>,
 ) -> Option<Result<SegmentReceipt, ReelError>> {
-    let codec = match matroska_codec(src, track, limits)? {
+    let ext = Ext {
+        audio,
+        limits,
+        cancel,
+    };
+    let codec = match matroska_codec(src, track, limits, &ext)? {
         Ok(codec) => codec,
         Err(e) => return Some(Err(e)),
     };

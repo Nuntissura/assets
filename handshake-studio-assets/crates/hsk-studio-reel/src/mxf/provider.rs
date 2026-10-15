@@ -2,7 +2,7 @@
 //! the essence element of one track per edit unit (decode order, pre-roll from the nearest earlier random
 //! access point), `OutputMode::Decoded` is `CodecUnavailable` naming the essence coding.
 //!
-//! Not part of `Registry::standard()` (that set is pinned at four providers by the foundation tests):
+//! Not part of `Registry::standard()` (that set is pinned by the foundation tests: four container providers plus mpeg-audio since D24-A):
 //! `registry.register(Box::new(MxfProvider))` adds it, after which `Registry::detect` sniffs the header
 //! partition label.
 use super::{

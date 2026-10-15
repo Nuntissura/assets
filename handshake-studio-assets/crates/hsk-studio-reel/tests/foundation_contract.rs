@@ -633,14 +633,16 @@ fn registry_is_enumerable_instance_owned_and_reports() {
     bounded_case("registry_is_enumerable_instance_owned_and_reports", || {
         let registry = Registry::standard();
         let ids: Vec<&str> = registry.descriptors().iter().map(|d| d.id).collect();
-        assert_eq!(ids, ["wav-pcm", "y4m", "isobmff", "matroska"]);
+        // Operator decision D24-A (2026-10-15): MP3/MP2/MP1 decode is on by default, so `mpeg-audio`
+        // joined the standard set (lane SMB-D24A-CODEC-DEFAULTS; this pin was four providers before).
+        assert_eq!(ids, ["wav-pcm", "y4m", "isobmff", "matroska", "mpeg-audio"]);
         assert!(registry.descriptors_json().contains("\"id\":\"y4m\""));
         // Two registries share nothing; registering twice in one is rejected.
         let mut lone = Registry::new();
         lone.register(Box::new(WavProvider)).unwrap();
         assert!(lone.register(Box::new(WavProvider)).is_err());
         assert_eq!(lone.descriptors().len(), 1);
-        assert_eq!(registry.descriptors().len(), 4);
+        assert_eq!(registry.descriptors().len(), 5);
 
         let missing = registry
             .resolve_id("h264")

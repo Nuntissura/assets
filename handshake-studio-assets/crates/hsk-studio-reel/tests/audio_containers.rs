@@ -51,6 +51,19 @@ fn container(
     Ok((receipt, sink.samples))
 }
 
+/// Operator decision D24-A (lane SMB-D24A-CODEC-DEFAULTS): Studio's AAC-LC decoder is opt-in (cargo feature
+/// `studio-aac`); without it and without an external (OS) decoder an AAC track is the typed
+/// MEDIA_CODEC_UNAVAILABLE aac-lc, which this checks instead of the sample comparison (V4-03).
+fn aac_without_studio_decoder(provider: &dyn MediaProvider, id: &str, bytes: &[u8], track: u32) -> bool {
+    if cfg!(feature = "studio-aac") {
+        return false;
+    }
+    let err = container(provider, id, bytes, track, 44_100, 10).unwrap_err();
+    assert_eq!(err, ReelError::CodecUnavailable { codec: "aac-lc".into() });
+    println!("NOT_PROVEN: AAC track sample comparison needs --features studio-aac (D24-A)");
+    true
+}
+
 /// MP4 tracks `mp4a` (AAC, esds 0x40), `fLaC` (dfLa), `Opus` (dOps; edit list media_time 312 = pre-skip)
 /// and `mp4a` (MPEG audio, esds 0x6B; edit list media_time 1105 = LAME delay + 529): each container
 /// decode equals the standalone decode of the same coded bytes sample for sample, and the presented
@@ -65,6 +78,9 @@ fn mp4_audio_tracks_decode_like_their_elementary_streams() {
         (3, "opus", OPUS, 48_000, 12_000),
         (4, "mp3", MP3, 44_100, 13_230),
     ] {
+        if name == "aac" && aac_without_studio_decoder(&provider, ISOBMFF_PROVIDER_ID, MP4, track) {
+            continue;
+        }
         let want = standalone(bytes);
         let (receipt, got) = container(&provider, ISOBMFF_PROVIDER_ID, MP4, track, rate, frames)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -99,6 +115,9 @@ fn matroska_audio_tracks_decode_like_their_elementary_streams() {
         (4, "vorbis", VORBIS, 44_100, 11_000, 0),
         (5, "mp3", MP3, 44_100, 13_000, 1105),
     ] {
+        if name == "aac" && aac_without_studio_decoder(&provider, MATROSKA_PROVIDER_ID, MKV, track) {
+            continue;
+        }
         let want = standalone(bytes);
         let (receipt, got) = container(&provider, MATROSKA_PROVIDER_ID, MKV, track, rate, frames)
             .unwrap_or_else(|e| panic!("{name}: {e}"));

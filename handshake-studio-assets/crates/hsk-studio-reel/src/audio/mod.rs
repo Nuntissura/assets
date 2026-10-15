@@ -12,12 +12,15 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod aac;
+#[cfg(feature = "studio-aac")]
 mod aac_dsp;
+#[cfg(feature = "studio-aac")]
 mod aac_lc;
 pub mod aiff;
 mod bits;
 pub(crate) mod container;
 pub(crate) mod engine;
+pub mod external;
 pub mod flac;
 mod md5;
 pub mod speakers;
@@ -40,6 +43,11 @@ use crate::model::{
 use hsk_studio_accord::CancellationToken;
 
 pub use aac::{AAC_DECODER_ID, AAC_DECODER_VERSION};
+pub use external::{
+    AAC_OS_DECODER_ID, AAC_OS_DISPLAY_NAME, AAC_OS_LICENCE, AudioCodec, AudioDecodeSession,
+    AudioStreamSpec, EXTERNAL_OUTPUT_BOUND, ExternalAudioDecoder, FRAMES_PER_ACCESS_UNIT,
+    MAX_EXTERNAL_BLOCK_FRAMES, aac_os_descriptor,
+};
 pub use mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION, OUTPUT_BOUND as MP3_OUTPUT_BOUND};
 pub use ogg_audio::OggCodec;
 pub use opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION};
@@ -139,7 +147,9 @@ pub fn mp3_descriptor() -> CodecDescriptor {
     }
 }
 
-/// Descriptor of the AAC-LC adapter (Studio-owned decoder, channel configurations 1-7).
+/// Descriptor of Studio's own AAC-LC adapter (channel configurations 1-7). Opt-in since Operator decision
+/// D24-A: `can_decode` only with cargo feature `studio-aac`; by default AAC decodes through the OS decoder
+/// (`aac_os_descriptor`, reel-native's worker).
 pub fn aac_descriptor() -> CodecDescriptor {
     CodecDescriptor {
         id: "aac-lc",
@@ -153,7 +163,7 @@ pub fn aac_descriptor() -> CodecDescriptor {
         decoder_version: AAC_DECODER_VERSION,
         licence: STUDIO_OWNED_LICENCE,
         certification: Certification::NotCertified,
-        can_decode: true,
+        can_decode: cfg!(feature = "studio-aac"),
         can_encode: false,
     }
 }
@@ -216,7 +226,19 @@ pub fn decode_audio_file(
     max_frames: u64,
     cancel: &CancellationToken,
 ) -> Result<DecodedAudio, ReelError> {
-    provider::decode_file(src, limits, max_frames, cancel)
+    provider::decode_file(src, limits, max_frames, cancel, None)
+}
+
+/// `decode_audio_file` with an external audio decoder for the codecs it supports (D24-A: AAC through the
+/// OS decoder in reel-native's worker); `None` is `decode_audio_file`.
+pub fn decode_audio_file_with(
+    src: &mut dyn ReadSeek,
+    limits: &Limits,
+    max_frames: u64,
+    cancel: &CancellationToken,
+    external: Option<&dyn ExternalAudioDecoder>,
+) -> Result<DecodedAudio, ReelError> {
+    provider::decode_file(src, limits, max_frames, cancel, external)
 }
 
 /// Decode a native FLAC stream and also return its integer samples (bit-exact checks, conversions).

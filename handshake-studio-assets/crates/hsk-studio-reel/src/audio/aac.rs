@@ -1,27 +1,33 @@
 //! AAC-LC: ADTS framing (ISO/IEC 13818-7 / 14496-3 subclause 1.A.2), AudioSpecificConfig parsing and the
-//! MP4 `esds` reader, all bounded here; decoding by the Studio-owned LC decoder of `aac_lc` (channel
-//! configurations 1-7). Every decoder call runs behind `packet::guarded`. History: soundkit-aac-lc 0.12.3
+//! MP4 `esds` reader, all bounded here. Decoding (Operator decision D24-A, `aac_decoder`): the registered
+//! external decoder (the OS decoder in reel-native's worker) when there is one, else the Studio-owned LC
+//! decoder of `aac_lc` (channel configurations 1-7) with cargo feature `studio-aac` (default off), else
+//! `MEDIA_CODEC_UNAVAILABLE aac-lc`. Every Studio decoder call runs behind `packet::guarded`. History: soundkit-aac-lc 0.12.3
 //! (MIT) was tried first and rejected on evidence: its intensity-stereo sign is inverted (codebook 14
 //! read as +1, ISO/IEC 14496-3 4.6.8.2.3 gives INTENSITY_HCB2 = 14 the sign -1) and it inverts again
 //! for ms_mask_present == 2, which the standard does not; on an ffmpeg-encoded stereo file this cost
 //! 14-57 dB at the frames using intensity stereo, where libavcodec's float and fixed decoders agree within
 //! 1 LSB. Its Huffman and band tables are reused (MIT, crate NOTICE).
 #![deny(clippy::arithmetic_side_effects)]
-use super::aac_lc::{AacLc, config_channels};
+#[cfg(feature = "studio-aac")]
+use super::aac_lc::AacLc;
 use super::bits::Bits;
 use super::engine::{FrameSource, StreamShape};
-use super::packet::{PacketDecoder, guarded};
+use super::external::{AudioCodec, AudioStreamSpec, Checked, ExternalAudioDecoder};
+use super::packet::PacketDecoder;
+#[cfg(feature = "studio-aac")]
+use super::packet::guarded;
 use super::{MAX_AUDIO_CHANNELS, MAX_SAMPLE_RATE};
 use crate::error::{ReelError, check_cancel};
 use crate::model::{Limits, ReadSeek};
 use hsk_studio_accord::CancellationToken;
 use std::io::SeekFrom;
 
-/// AAC-LC decoder id (receipts carry it as `decoder_id`).
+/// Studio AAC-LC decoder id (receipts carry it as `decoder_id`; cargo feature `studio-aac`).
 pub const AAC_DECODER_ID: &str = "aac-lc-iso14496-3";
 pub const AAC_DECODER_VERSION: &str = "1";
 
-const FRAME: usize = 1024;
+const FRAME: usize = super::external::FRAMES_PER_ACCESS_UNIT;
 /// Largest ADTS frame: the 13-bit frame_length field.
 const MAX_ADTS_FRAME: usize = 8191;
 
@@ -163,16 +169,29 @@ pub fn parse_audio_specific_config(asc: &[u8]) -> Result<AacConfig, ReelError> {
     })
 }
 
+/// Channels of an AAC channel configuration (ISO/IEC 14496-3 channel configuration table: 1-6 channels
+/// for configurations 1-6, eight for configuration 7).
+fn config_channels(config: u8) -> Option<usize> {
+    match config {
+        1..=6 => Some(usize::from(config)),
+        7 => Some(8),
+        _ => None,
+    }
+}
+
 /// Rate and channels of an AudioSpecificConfig (see `parse_audio_specific_config`).
 pub fn check_audio_specific_config(asc: &[u8]) -> Result<(u32, u16), ReelError> {
     parse_audio_specific_config(asc).map(|c| (c.sample_rate, c.channels))
 }
 
+/// Studio's AAC-LC decoder as a `PacketDecoder` (cargo feature `studio-aac`).
+#[cfg(feature = "studio-aac")]
 pub(crate) struct AacPacketDecoder {
     decoder: AacLc,
     poisoned: bool,
 }
 
+#[cfg(feature = "studio-aac")]
 impl AacPacketDecoder {
     pub(crate) fn new(asc: &[u8]) -> Result<Self, ReelError> {
         let config = parse_audio_specific_config(asc)?;
@@ -183,6 +202,7 @@ impl AacPacketDecoder {
     }
 }
 
+#[cfg(feature = "studio-aac")]
 impl PacketDecoder for AacPacketDecoder {
     fn decode(&mut self, packet: &[u8], out: &mut Vec<f32>) -> Result<usize, ReelError> {
         if packet.len() > MAX_ADTS_FRAME {
@@ -201,6 +221,65 @@ impl PacketDecoder for AacPacketDecoder {
             });
         }
         Ok(frames)
+    }
+}
+
+/// A chosen AAC decoder and the `(decoder_id, decoder_version)` its receipts carry.
+pub(crate) type ChosenDecoder = (Box<dyn PacketDecoder>, (&'static str, &'static str));
+
+/// The AAC-LC decoder of a stream (D24-A order): the external decoder when one is registered and supports
+/// AAC-LC, else Studio's decoder (feature `studio-aac`), else `MEDIA_CODEC_UNAVAILABLE aac-lc`. The
+/// AudioSpecificConfig is parsed and checked here, before any decoder (or worker) starts. Returns the decoder
+/// and the `(decoder_id, decoder_version)` its receipts carry.
+pub(crate) fn aac_decoder(
+    asc: &[u8],
+    external: Option<&dyn ExternalAudioDecoder>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<ChosenDecoder, ReelError> {
+    let config = parse_audio_specific_config(asc)?;
+    if let Some(decoder) = external.filter(|d| d.supports(AudioCodec::AacLc)) {
+        let spec = AudioStreamSpec {
+            codec: AudioCodec::AacLc,
+            config: asc,
+            sample_rate: config.sample_rate,
+            channels: config.channels,
+            channel_config: config.channel_config,
+            limits: *limits,
+        };
+        let session = Checked::open(decoder, &spec, cancel)?;
+        let identity = decoder.identity();
+        return Ok((Box::new(Bounded(session)), (identity.id, identity.version)));
+    }
+    #[cfg(feature = "studio-aac")]
+    {
+        Ok((
+            Box::new(AacPacketDecoder::new(asc)?),
+            (AAC_DECODER_ID, AAC_DECODER_VERSION),
+        ))
+    }
+    #[cfg(not(feature = "studio-aac"))]
+    {
+        Err(ReelError::CodecUnavailable {
+            codec: AudioCodec::AacLc.as_str().to_owned(),
+        })
+    }
+}
+
+/// The access-unit size bound in front of an external session (the same bound Studio's decoder applies).
+struct Bounded(Checked);
+
+impl PacketDecoder for Bounded {
+    fn decode(&mut self, packet: &[u8], out: &mut Vec<f32>) -> Result<usize, ReelError> {
+        if packet.len() > MAX_ADTS_FRAME {
+            return Err(ReelError::LimitExceeded {
+                what: "aac-access-unit-size",
+            });
+        }
+        self.0.decode(packet, out)
+    }
+    fn flush(&mut self, out: &mut Vec<f32>) -> Result<usize, ReelError> {
+        self.0.flush(out)
     }
 }
 
@@ -283,20 +362,33 @@ pub(crate) struct AdtsStream<'a> {
     first: AdtsHeader,
     at: u64,
     bytes_read: u64,
-    decoder: AacPacketDecoder,
+    decoder: Box<dyn PacketDecoder>,
     frame: Vec<u8>,
 }
 
 impl<'a> AdtsStream<'a> {
-    pub(crate) fn open(src: &'a mut dyn ReadSeek, info: &AdtsInfo) -> Result<Self, ReelError> {
-        Ok(Self {
+    /// `decoder` comes from `aac_decoder` over the first header's AudioSpecificConfig.
+    pub(crate) fn open(
+        src: &'a mut dyn ReadSeek,
+        info: &AdtsInfo,
+        decoder: Box<dyn PacketDecoder>,
+    ) -> Self {
+        Self {
             src,
             first: info.first,
             at: info.offset,
             bytes_read: 0,
-            decoder: AacPacketDecoder::new(&info.first.audio_specific_config())?,
+            decoder,
             frame: Vec::with_capacity(MAX_ADTS_FRAME),
-        })
+        }
+    }
+
+    /// End of the access units: what the decoder still holds, else the end of the stream.
+    fn end(&mut self, out: &mut Vec<f32>) -> Result<Option<usize>, ReelError> {
+        match self.decoder.flush(out)? {
+            0 => Ok(None),
+            frames => Ok(Some(frames)),
+        }
     }
 }
 
@@ -310,10 +402,10 @@ impl FrameSource for AdtsStream<'_> {
         let mut h = [0u8; 9];
         let got = read_at(self.src, self.at, &mut h)?;
         let Some(header) = AdtsHeader::parse(h.get(..got).unwrap_or(&[])) else {
-            return Ok(None);
+            return self.end(out);
         };
         if !header.continues(&self.first) {
-            return Ok(None);
+            return self.end(out);
         }
         if header.raw_blocks != 0 {
             return Err(ReelError::Unsupported {

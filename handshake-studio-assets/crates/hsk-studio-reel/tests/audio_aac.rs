@@ -2,6 +2,9 @@
 //! native AAC decoder on files written by ffmpeg's native AAC-LC encoder (perceptual noise substitution
 //! off: PNS bands are random noise by definition), stored as raw s16le
 //! (tests/fixtures/audio/provenance.json). Tolerances are stated per test.
+// Studio's own AAC-LC decoder is opt-in since Operator decision D24-A (lane SMB-D24A-CODEC-DEFAULTS):
+// run with `--features studio-aac` (round unit reel [studio-aac]).
+#![cfg(feature = "studio-aac")]
 mod audio_support;
 use audio_support::*;
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};

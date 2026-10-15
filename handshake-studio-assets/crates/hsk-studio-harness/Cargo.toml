@@ -28,6 +28,8 @@ media-native = ["media", "dep:hsk-studio-reel-native", "hsk-studio-reel-native/m
 audio-device = ["viewer", "dep:hsk-studio-score-device"]
 # Audition batch processing (lane SMB-AUDIO-IMPORT-2): import, score effect chain, export.
 audio-batch = ["media", "dep:hsk-studio-score"]
+# Studio's own AAC-LC decoder in reel (opt-in since Operator decision D24-A; the default AAC path is the OS decoder).
+studio-aac = ["media", "hsk-studio-reel/studio-aac"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

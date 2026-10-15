@@ -1,7 +1,7 @@
 //! Instance-owned, enumerable provider registry plus proxy/original arbitration.
 //! There is no process-global factory: two registries never share providers.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::audio::AudioFileProvider;
+use crate::audio::{AudioFileProvider, ExternalAudioDecoder};
 use crate::error::{ReelError, check_cancel};
 use crate::isobmff::IsobmffProvider;
 use crate::matroska::MatroskaProvider;
@@ -17,6 +17,9 @@ pub struct Registry {
     providers: Vec<Box<dyn MediaProvider>>,
     /// Instance-owned external decoder for compressed video (see `crate::video`); none by default.
     video_decoder: Option<Arc<dyn ExternalVideoDecoder>>,
+    /// Instance-owned external decoder for compressed audio (D24-A: AAC through the OS decoder in
+    /// reel-native's worker; see `crate::audio::external`); none by default.
+    audio_decoder: Option<Arc<dyn ExternalAudioDecoder>>,
 }
 
 /// A proxy candidate with its own grant. Used only for preview-purpose requests that prefer a proxy.
@@ -63,7 +66,37 @@ impl Registry {
         Self {
             providers: Vec::new(),
             video_decoder: None,
+            audio_decoder: None,
         }
+    }
+
+    /// Register the external audio decoder (D24-A: reel-native's Media Foundation AAC worker) that AAC of
+    /// every source is decoded by (ADTS files and `mp4a`/`A_AAC` tracks). Builder form of
+    /// `set_audio_decoder`.
+    pub fn with_audio_decoder(mut self, decoder: Arc<dyn ExternalAudioDecoder>) -> Self {
+        self.audio_decoder = Some(decoder);
+        self
+    }
+
+    /// Register the external audio decoder; one per registry (a second one is a determinate refusal).
+    pub fn set_audio_decoder(
+        &mut self,
+        decoder: Arc<dyn ExternalAudioDecoder>,
+    ) -> Result<(), ReelError> {
+        if self.audio_decoder.is_some() {
+            return Err(ReelError::Unsupported {
+                what: "duplicate-audio-decoder",
+            });
+        }
+        self.audio_decoder = Some(decoder);
+        Ok(())
+    }
+
+    /// Identity of the registered external audio decoder, if any.
+    pub fn audio_decoder_identity(&self) -> Option<DecoderIdentity> {
+        self.audio_decoder
+            .as_ref()
+            .map(|decoder| decoder.identity())
     }
 
     /// Register the external (isolated) decoder that compressed video of UNTRUSTED sources is routed to.
@@ -95,7 +128,10 @@ impl Registry {
             .map(|decoder| decoder.identity())
     }
 
-    /// The license-free, pure-Rust provider set shipped by this crate.
+    /// The license-free, pure-Rust provider set shipped by this crate: `wav-pcm`, `y4m`, `isobmff`,
+    /// `matroska` and, since Operator decision D24-A (2026-10-15, "lowest-risk option": MP3/MP2/MP1 decode
+    /// on by default), `mpeg-audio` (MPEG-1/2/2.5 Layers I-III, Studio-owned minimp3 port). It is listed
+    /// last, so detection by magic bytes tries the four container providers first.
     pub fn standard() -> Self {
         let mut registry = Self::new();
         for provider in [
@@ -103,6 +139,7 @@ impl Registry {
             Box::new(Y4mProvider),
             Box::new(IsobmffProvider),
             Box::new(MatroskaProvider),
+            Box::new(AudioFileProvider::mpeg_audio()),
         ] {
             registry
                 .register(provider)
@@ -111,28 +148,36 @@ impl Registry {
         registry
     }
 
-    /// Register every standalone compressed-audio file provider (`AudioFileProvider::all`), opt-in like
-    /// `MxfProvider`: `standard()` keeps its provider list.
+    /// Register every standalone compressed-audio file provider (`AudioFileProvider::all`) this registry
+    /// does not hold yet (opt-in like `MxfProvider`; `mpeg-audio` is already part of `standard()`, D24-A).
+    /// A provider registered under one of those ids by the caller is kept, never replaced.
     pub fn register_audio_codecs(&mut self) -> Result<(), ReelError> {
         for provider in AudioFileProvider::all() {
+            if self.has_id(provider.descriptor().id) {
+                continue;
+            }
             self.register(Box::new(provider))?;
         }
         Ok(())
     }
 
-    /// `standard()` plus every standalone audio file provider (FLAC, Ogg, MPEG audio, ADTS AAC, AIFF):
-    /// the opt-in constructor for hosts that import audio files. `standard()` itself is unchanged
-    /// (whether AAC / MP3 ship by default is an Operator licensing decision, STU-VID-084).
+    /// `standard()` plus every other standalone audio file provider (FLAC, Ogg, ADTS AAC, AIFF): the
+    /// constructor for hosts that import audio files. ADTS AAC decodes through the registered external
+    /// audio decoder (`with_audio_decoder`; D24-A: the OS decoder in reel-native's worker) or, with cargo
+    /// feature `studio-aac`, through Studio's own AAC-LC decoder; otherwise it is `MEDIA_CODEC_UNAVAILABLE`.
     pub fn with_audio() -> Self {
         let mut registry = Self::standard();
-        for provider in AudioFileProvider::all() {
-            // The standard set holds none of the audio ids, so registration cannot collide.
-            registry.providers.push(Box::new(provider));
-        }
+        registry
+            .register_audio_codecs()
+            .expect("standard() holds only the mpeg-audio id of the audio providers");
         registry
     }
 
-    /// Builder form of `register_audio_codecs` (a registry that already holds one of the ids refuses).
+    fn has_id(&self, id: &str) -> bool {
+        self.providers.iter().any(|p| p.descriptor().id == id)
+    }
+
+    /// Builder form of `register_audio_codecs`.
     pub fn with_audio_codecs(mut self) -> Result<Self, ReelError> {
         self.register_audio_codecs()?;
         Ok(self)
@@ -140,7 +185,7 @@ impl Registry {
 
     pub fn register(&mut self, provider: Box<dyn MediaProvider>) -> Result<(), ReelError> {
         let id = provider.descriptor().id;
-        if self.providers.iter().any(|p| p.descriptor().id == id) {
+        if self.has_id(id) {
             return Err(ReelError::Unsupported {
                 what: "duplicate-provider-id",
             });
@@ -277,6 +322,7 @@ impl Registry {
         let route = VideoRoute {
             trust,
             external: self.video_decoder.as_deref(),
+            audio: self.audio_decoder.as_deref(),
         };
         check_cancel(cancel)?;
         let provider = self.resolve(req)?;
@@ -306,6 +352,7 @@ impl Registry {
                         let proxy_route = VideoRoute {
                             trust: proxy_trust,
                             external: route.external,
+                            audio: route.audio,
                         };
                         let mut receipt = provider.decode_segment_routed(
                             reader,

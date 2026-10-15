@@ -71,9 +71,12 @@ impl Container {
 pub enum VideoEntry {
     /// AV1: `av01` + `av1C` (validated with `parse_av1c`).
     Av1 { av1c: Vec<u8> },
-    /// H.264 remux: `avc1` + `avcC` (validated with `parse_avcc`; SPS and PPS required). Reel never
-    /// encodes H.264 (Operator decision D24); this entry only re-wraps existing streams.
+    /// H.264: `avc1` + `avcC` (validated with `parse_avcc`; SPS and PPS required). Reel itself never encodes
+    /// H.264 (Operator decisions D24 / D24-A): the entry re-wraps existing streams or carries the OS encoder's
+    /// output (export recipes `VideoCodecChoice::H264`, reel-native `os-encode`).
     H264Remux { avcc: Vec<u8> },
+    /// HEVC from the OS encoder (D24-A): `hvc1` + `hvcC` (checked with `os_encode::parse_hvcc`).
+    Hevc { hvcc: Vec<u8> },
     /// VC-3: `AVdh` when `dnxhr`, else `AVdn` (QuickTime only).
     Vc3 { dnxhr: bool },
 }
@@ -83,6 +86,7 @@ impl VideoEntry {
         match self {
             Self::Av1 { .. } => *b"av01",
             Self::H264Remux { .. } => *b"avc1",
+            Self::Hevc { .. } => *b"hvc1",
             Self::Vc3 { dnxhr: true } => *b"AVdh",
             Self::Vc3 { dnxhr: false } => *b"AVdn",
         }
@@ -92,6 +96,7 @@ impl VideoEntry {
         match self {
             Self::Av1 { .. } => "av1",
             Self::H264Remux { .. } => "h264",
+            Self::Hevc { .. } => "hevc",
             Self::Vc3 { .. } => "vc3",
         }
     }
@@ -232,6 +237,12 @@ fn check_combination(spec: &MuxSpec, limits: &MuxLimits) -> Result<(), ReelError
                 if config.sps.is_empty() || config.pps.is_empty() {
                     return Err(unsupported("mux-avc1-needs-parameter-sets"));
                 }
+            }
+            VideoEntry::Hevc { hvcc } => {
+                if hvcc.len() > MAX_CONFIG_BYTES {
+                    return Err(limit("mux-config-bytes"));
+                }
+                crate::os_encode::parse_hvcc(hvcc)?;
             }
             VideoEntry::Vc3 { .. } => {
                 if spec.container == Container::Mp4 {
@@ -696,6 +707,9 @@ fn ftyp_box(spec: &MuxSpec) -> Result<Vec<u8>, ReelError> {
             if matches!(spec.video.as_ref().map(|v| &v.entry), Some(VideoEntry::H264Remux { .. })) {
                 p.extend_from_slice(b"avc1");
             }
+            if matches!(spec.video.as_ref().map(|v| &v.entry), Some(VideoEntry::Hevc { .. })) {
+                p.extend_from_slice(b"hvc1");
+            }
         }
         Container::Mov => {
             p.extend_from_slice(b"qt  ");
@@ -852,6 +866,7 @@ fn visual_entry(container: Container, v: &VideoTrackSpec) -> Result<Vec<u8>, Ree
     let label: &[u8] = match &v.entry {
         VideoEntry::Av1 { .. } => b"AV1 (Studio)",
         VideoEntry::H264Remux { .. } => b"H.264 (remux)",
+        VideoEntry::Hevc { .. } => b"HEVC (OS encoder)",
         VideoEntry::Vc3 { .. } => b"VC-3 (Studio)",
     };
     name[0] = u8::try_from(label.len()).map_err(|_| limit("mux"))?;
@@ -862,6 +877,7 @@ fn visual_entry(container: Container, v: &VideoTrackSpec) -> Result<Vec<u8>, Ree
     match &v.entry {
         VideoEntry::Av1 { av1c } => p.extend(boxed(b"av1C", av1c)?),
         VideoEntry::H264Remux { avcc } => p.extend(boxed(b"avcC", avcc)?),
+        VideoEntry::Hevc { hvcc } => p.extend(boxed(b"hvcC", hvcc)?),
         VideoEntry::Vc3 { .. } => {}
     }
     if let Some(c) = v.color {

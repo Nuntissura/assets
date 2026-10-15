@@ -10,6 +10,9 @@ av1 = ["dep:rav1d", "dep:libc"]
 prores = []
 # AV1 encode through rav1e (lane SMB-REEL-ENCODE; lead-approved 2026-10-15, default off).
 av1-encode = ["dep:rav1e"]
+# Studio's own AAC-LC decoder (lane SMB-AUDIO-CODECS), opt-in since Operator decision D24-A (2026-10-15):
+# by default AAC decodes through the OS decoder (Media Foundation, reel-native worker) via ExternalAudioDecoder.
+studio-aac = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

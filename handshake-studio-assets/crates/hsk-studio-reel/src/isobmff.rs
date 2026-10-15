@@ -1934,6 +1934,7 @@ impl IsobmffProvider {
                 limits,
                 cancel,
                 sink,
+                route.audio,
             ) {
                 return result;
             }

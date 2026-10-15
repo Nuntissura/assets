@@ -1580,6 +1580,7 @@ impl MatroskaProvider {
                     limits,
                     cancel,
                     sink,
+                    route.audio,
                 )
             {
                 return result;

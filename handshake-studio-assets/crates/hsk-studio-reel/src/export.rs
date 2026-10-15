@@ -1,7 +1,9 @@
 //! Export queue (lane SMB-REEL-ENCODE; STU-VID-060..064, STU-MOT-120, STU-IO-142/143): frames from a
 //! [`ExportVideoSource`] and samples from an [`ExportAudioSource`] go through an encoder (Studio's VC-3
-//! encoder, or rav1e AV1 with cargo feature `av1-encode`) into the ISO BMFF muxer, into a sibling temp file
-//! that is renamed over the output only when the whole item succeeded.
+//! encoder, rav1e AV1 with cargo feature `av1-encode`, or, Operator decision D24-A, H.264 / HEVC through the
+//! OS encoder registered with [`ExportQueue::with_video_encoder`]: reel-native's `os-encode` worker) into the
+//! ISO BMFF muxer, into a sibling temp file that is renamed over the output only when the whole item
+//! succeeded.
 //!
 //! STU-VID-064: an export is submitted to a queue ([`ExportQueue::submit`]), runs without a window,
 //! reports determinate progress ([`ExportHandle::progress`], frames done of frames declared, readable
@@ -20,9 +22,14 @@
 
 use crate::error::{ReelError, check_cancel};
 use crate::model::{Limits, VideoFormat};
+use crate::model::ChromaFormat;
 use crate::mux::{
     Container, MUXER_ID, MUXER_VERSION, MuxLimits, MuxReceipt, MuxSpec, Muxer, NclxColor, PcmSpec,
     VideoEntry, VideoTrackSpec,
+};
+use crate::os_encode::{
+    EncodedUnit, ExternalVideoEncoder, OS_MAX_BITRATE, OsEncodeSpec, OsVideoCodec, OsVideoSettings,
+    ParameterSets, VideoEncodeSession, annex_b_to_sample, build_avcc, build_hvcc,
 };
 use crate::vc3::encode::{VC3_ENCODER_ID, VC3_ENCODER_VERSION, Vc3Encoder, Vc3Profile};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
@@ -72,6 +79,12 @@ pub enum VideoCodecChoice {
     Vc3(Vc3Profile),
     /// AV1 through rav1e (cargo feature `av1-encode`; else `MEDIA_CODEC_UNAVAILABLE av1`).
     Av1(Av1Settings),
+    /// H.264 through the OS encoder only (D24-A; `ExportQueue::with_video_encoder`, else
+    /// `MEDIA_CODEC_UNAVAILABLE h264`). MP4 or MOV, 8-bit 4:2:0, even sides.
+    H264(OsVideoSettings),
+    /// HEVC through the OS encoder only (D24-A; the Windows HEVC Video Extensions provide it, else the
+    /// encoder's typed `MEDIA_CODEC_UNAVAILABLE hevc`). MP4 or MOV, 8-bit 4:2:0, even sides.
+    Hevc(OsVideoSettings),
 }
 
 /// Linear PCM of a recipe (16/24/32-bit integer or 32-bit float).
@@ -330,11 +343,20 @@ pub struct ExportQueue {
     items: Vec<Item>,
     next_id: u64,
     receipts: Vec<ExportReceipt>,
+    /// The OS encoder for H.264 / HEVC recipes (D24-A); none by default.
+    video_encoder: Option<Arc<dyn ExternalVideoEncoder>>,
 }
 
 impl ExportQueue {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register the external (OS) encoder H.264 and HEVC recipes run through (Operator decision D24-A:
+    /// reel-native's `os-encode` worker). Without one those recipes are `MEDIA_CODEC_UNAVAILABLE`.
+    pub fn with_video_encoder(mut self, encoder: Arc<dyn ExternalVideoEncoder>) -> Self {
+        self.video_encoder = Some(encoder);
+        self
     }
 
     pub fn submit(&mut self, job: ExportJob) -> ExportHandle {
@@ -363,9 +385,10 @@ impl ExportQueue {
     /// Run every item not yet run; returns the receipts of this call.
     pub fn run(&mut self) -> Vec<ExportReceipt> {
         let mut out = Vec::new();
+        let external = self.video_encoder.clone();
         for item in &mut self.items {
             let Some(job) = item.job.take() else { continue };
-            let receipt = run_item(item.handle.id, job, &item.handle);
+            let receipt = run_item(item.handle.id, job, &item.handle, external.as_deref());
             let state = match receipt.outcome {
                 ExportOutcome::Complete => ExportState::Complete,
                 ExportOutcome::Canceled => ExportState::Canceled,
@@ -387,15 +410,27 @@ impl ExportQueue {
     }
 }
 
+/// An OS encoder session (D24-A) and the parameter sets its first units carried.
+struct OsSession {
+    codec: OsVideoCodec,
+    session: Box<dyn VideoEncodeSession>,
+    encoder_id: &'static str,
+    encoder_version: &'static str,
+    sets: ParameterSets,
+    units: Vec<EncodedUnit>,
+}
+
 enum Encoder {
     Vc3(Box<Vc3Encoder>),
     #[cfg(feature = "av1-encode")]
     Av1(Box<crate::av1_encode::Av1Encoder>),
+    Os(Box<OsSession>),
 }
 
 impl Encoder {
     fn identity(&self) -> (&'static str, &'static str, &'static str) {
         match self {
+            Self::Os(os) => (os.codec.as_str(), os.encoder_id, os.encoder_version),
             Self::Vc3(_) => ("vc3", VC3_ENCODER_ID, VC3_ENCODER_VERSION),
             #[cfg(feature = "av1-encode")]
             Self::Av1(_) => (
@@ -414,12 +449,122 @@ struct Sample {
     sync: bool,
 }
 
+/// Frame rate of `ticks_per_frame` as a reduced rational that fits u32 (STU-IO-142 rates do).
+fn frame_rate(ticks_per_frame: u64) -> Result<(u32, u32), ReelError> {
+    let (mut a, mut b) = (TICKS_PER_SECOND, ticks_per_frame);
+    while b != 0 {
+        let r = a.checked_rem(b).unwrap_or(0);
+        a = b;
+        b = r;
+    }
+    let num = TICKS_PER_SECOND.checked_div(a).and_then(|n| u32::try_from(n).ok());
+    let den = ticks_per_frame.checked_div(a).and_then(|d| u32::try_from(d).ok());
+    match (num, den) {
+        (Some(num), Some(den)) if num > 0 && den > 0 => Ok((num, den)),
+        _ => Err(unsupported("os-encode-frame-rate")),
+    }
+}
+
+/// Opens the OS encoder session of an H.264 / HEVC recipe (D24-A) after reel's own checks.
+fn open_os(
+    codec: OsVideoCodec,
+    settings: OsVideoSettings,
+    format: VideoFormat,
+    ticks_per_frame: u64,
+    external: Option<&dyn ExternalVideoEncoder>,
+    cancel: &CancellationToken,
+) -> Result<Encoder, ReelError> {
+    let Some(external) = external.filter(|e| e.supports(codec)) else {
+        return Err(ReelError::CodecUnavailable {
+            codec: codec.as_str().to_owned(),
+        });
+    };
+    if format.bit_depth != 8 || format.chroma != ChromaFormat::Yuv420 {
+        return Err(unsupported("os-encode-pixel-format"));
+    }
+    if format.width == 0
+        || format.height == 0
+        || !format.width.is_multiple_of(2)
+        || !format.height.is_multiple_of(2)
+    {
+        return Err(unsupported("os-encode-dimensions"));
+    }
+    if settings.bitrate == 0 || settings.bitrate > OS_MAX_BITRATE {
+        return Err(limit("os-encode-bitrate"));
+    }
+    let (fps_num, fps_den) = frame_rate(ticks_per_frame)?;
+    let spec = OsEncodeSpec {
+        codec,
+        width: format.width,
+        height: format.height,
+        fps_num,
+        fps_den,
+        bitrate: settings.bitrate,
+        profile: match codec {
+            OsVideoCodec::H264 => settings.profile.profile_idc(),
+            OsVideoCodec::Hevc => 1,
+        },
+    };
+    let session = external.open(&spec, cancel)?;
+    let identity = external.identity(codec);
+    Ok(Encoder::Os(Box::new(OsSession {
+        codec,
+        session,
+        encoder_id: identity.id,
+        encoder_version: identity.version,
+        sets: ParameterSets::default(),
+        units: Vec::new(),
+    })))
+}
+
+/// A provisional sample entry for the muxer's combination check before the first unit (the real record is
+/// built from the first key unit's parameter sets): placeholder parameter sets of one byte each.
+fn provisional_entry(codec: OsVideoCodec) -> Result<VideoEntry, ReelError> {
+    Ok(match codec {
+        OsVideoCodec::H264 => VideoEntry::H264Remux {
+            avcc: build_avcc(&ParameterSets {
+                vps: None,
+                sps: Some(vec![0x67, 100, 0, 40]),
+                pps: Some(vec![0x68]),
+            })?,
+        },
+        OsVideoCodec::Hevc => {
+            let mut hvcc = vec![
+                1, 0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5D, 0xF0, 0x00, 0xFC, 0xFD, 0xF8, 0xF8, 0,
+                0, 0x0F, 3,
+            ];
+            for (kind, nal) in [(0xA0u8, 0x40u8), (0xA1, 0x42), (0xA2, 0x44)] {
+                hvcc.extend_from_slice(&[kind, 0, 1, 0, 1, nal]);
+            }
+            VideoEntry::Hevc { hvcc }
+        }
+    })
+}
+
 fn make_encoder(
     choice: VideoCodecChoice,
     format: VideoFormat,
     ticks_per_frame: u64,
+    external: Option<&dyn ExternalVideoEncoder>,
+    cancel: &CancellationToken,
 ) -> Result<Encoder, ReelError> {
     match choice {
+        VideoCodecChoice::H264(settings) => open_os(
+            OsVideoCodec::H264,
+            settings,
+            format,
+            ticks_per_frame,
+            external,
+            cancel,
+        ),
+        VideoCodecChoice::Hevc(settings) => open_os(
+            OsVideoCodec::Hevc,
+            settings,
+            format,
+            ticks_per_frame,
+            external,
+            cancel,
+        ),
         VideoCodecChoice::Vc3(profile) => Ok(Encoder::Vc3(Box::new(Vc3Encoder::new(profile, format)?))),
         #[cfg(feature = "av1-encode")]
         VideoCodecChoice::Av1(settings) => Ok(Encoder::Av1(Box::new(
@@ -454,7 +599,11 @@ struct Plan {
     audio_frames: u64,
 }
 
-fn plan(job: &ExportJob) -> Result<Plan, ReelError> {
+fn plan(
+    job: &ExportJob,
+    external: Option<&dyn ExternalVideoEncoder>,
+    cancel: &CancellationToken,
+) -> Result<Plan, ReelError> {
     let recipe = &job.recipe;
     if recipe.video.is_none() && recipe.audio.is_none() {
         return Err(unsupported("export-recipe-empty"));
@@ -486,11 +635,12 @@ fn plan(job: &ExportJob) -> Result<Plan, ReelError> {
         {
             return Err(limit("export-frames"));
         }
-        let enc = make_encoder(choice, format, tpf)?;
         if format.frame_bytes().is_none() {
             return Err(limit("export-frame-bytes"));
         }
+        let enc = make_encoder(choice, format, tpf, external, cancel)?;
         let entry = match &enc {
+            Encoder::Os(os) => provisional_entry(os.codec)?,
             Encoder::Vc3(e) => VideoEntry::Vc3 {
                 dnxhr: e.profile().is_dnxhr(),
             },
@@ -585,7 +735,12 @@ fn temp_path(output: &Path, id: u64) -> PathBuf {
     output.with_file_name(format!(".{name}.partial-{}-{id}", std::process::id()))
 }
 
-fn run_item(id: u64, mut job: ExportJob, handle: &ExportHandle) -> ExportReceipt {
+fn run_item(
+    id: u64,
+    mut job: ExportJob,
+    handle: &ExportHandle,
+    external: Option<&dyn ExternalVideoEncoder>,
+) -> ExportReceipt {
     let mut receipt = ExportReceipt {
         item_id: id,
         recipe_id: job.recipe.recipe_id.clone(),
@@ -620,7 +775,7 @@ fn run_item(id: u64, mut job: ExportJob, handle: &ExportHandle) -> ExportReceipt
         audio_written: 0,
         frames_encoded: 0,
     };
-    let result = plan(&job).and_then(|plan| {
+    let result = plan(&job, external, &handle.cancel).and_then(|plan| {
         if let Some(enc) = &plan.encoder {
             let (codec, eid, ever) = enc.identity();
             receipt.video_codec = Some(codec);
@@ -664,11 +819,11 @@ struct Sink {
 }
 
 impl Sink {
-    fn muxer(&mut self, av1c: Option<Vec<u8>>) -> Result<&mut Muxer<BufWriter<File>>, ReelError> {
+    fn muxer(&mut self, entry: Option<VideoEntry>) -> Result<&mut Muxer<BufWriter<File>>, ReelError> {
         if self.muxer.is_none() {
             let mut spec = self.spec.clone();
-            if let (Some(record), Some(v)) = (av1c, spec.video.as_mut()) {
-                v.entry = VideoEntry::Av1 { av1c: record };
+            if let (Some(entry), Some(v)) = (entry, spec.video.as_mut()) {
+                v.entry = entry;
             }
             let w = self.writer.take().ok_or(unsupported("export-internal"))?;
             self.muxer = Some(Muxer::new(w, spec, self.limits)?);
@@ -677,16 +832,47 @@ impl Sink {
     }
 }
 
-/// The `av1C` record for the first sample (AV1 only).
-fn record_for(encoder: &Encoder, first: Option<&Sample>) -> Option<Vec<u8>> {
-    match encoder {
+/// The sample entry built from the first sample (`av1C` for AV1; `avcC` / `hvcC` from the parameter sets
+/// of the OS encoder's first units); `None` keeps the planned entry.
+fn record_for(encoder: &Encoder, first: Option<&Sample>) -> Result<Option<VideoEntry>, ReelError> {
+    Ok(match encoder {
         Encoder::Vc3(_) => {
             let _ = first;
             None
         }
         #[cfg(feature = "av1-encode")]
-        Encoder::Av1(e) => first.map(|s| e.config_record(&s.data)),
+        Encoder::Av1(e) => first.map(|s| VideoEntry::Av1 {
+            av1c: e.config_record(&s.data),
+        }),
+        Encoder::Os(os) if first.is_some() => Some(match os.codec {
+            OsVideoCodec::H264 => VideoEntry::H264Remux {
+                avcc: build_avcc(&os.sets)?,
+            },
+            OsVideoCodec::Hevc => VideoEntry::Hevc {
+                hvcc: build_hvcc(&os.sets)?,
+            },
+        }),
+        Encoder::Os(_) => None,
+    })
+}
+
+/// The OS encoder's units as muxer samples, checked: a unit presents a frame already sent (never a later
+/// one) and the first unit is a key unit.
+fn os_samples(os: &mut OsSession, sent_up_to: u64, samples: &mut Vec<Sample>) -> Result<(), ReelError> {
+    for unit in os.units.drain(..) {
+        if unit.frame_index > sent_up_to || (os.sets.sps.is_none() && !unit.keyframe) {
+            return Err(ReelError::DecoderFault {
+                fault: crate::error::DecoderFault::Protocol,
+            });
+        }
+        let data = annex_b_to_sample(os.codec, &unit.annex_b, &mut os.sets)?;
+        samples.push(Sample {
+            data,
+            pts: unit.frame_index,
+            sync: unit.keyframe,
+        });
     }
+    Ok(())
 }
 
 /// Audio delivery into the muxer in bounded chunks.
@@ -743,6 +929,10 @@ fn encode_frame(
     cancel: &CancellationToken,
 ) -> Result<(), ReelError> {
     match encoder {
+        Encoder::Os(os) => {
+            os.session.encode(planes, index, cancel, &mut os.units)?;
+            os_samples(os, index, samples)?;
+        }
         Encoder::Vc3(e) => {
             let data = e.encode(planes, cancel)?;
             samples.push(Sample {
@@ -766,8 +956,17 @@ fn encode_frame(
 }
 
 /// Drain the encoder at the end of the stream.
-fn finish_encoder(encoder: &mut Encoder, samples: &mut Vec<Sample>) -> Result<(), ReelError> {
+fn finish_encoder(
+    encoder: &mut Encoder,
+    samples: &mut Vec<Sample>,
+    frames: u64,
+    cancel: &CancellationToken,
+) -> Result<(), ReelError> {
     match encoder {
+        Encoder::Os(os) => {
+            os.session.finish(cancel, &mut os.units)?;
+            os_samples(os, frames.saturating_sub(1), samples)?;
+        }
         Encoder::Vc3(_) => {
             let _ = samples;
         }
@@ -822,7 +1021,7 @@ fn execute(
             encode_frame(encoder, &refs, index, &mut samples, &cancel)?;
             run.frames_encoded = run.frames_encoded.saturating_add(1);
             if !samples.is_empty() {
-                let m = sink.muxer(record_for(encoder, samples.first()))?;
+                let m = sink.muxer(record_for(encoder, samples.first())?)?;
                 for s in samples.drain(..) {
                     m.write_video(&s.data, s.pts, s.sync)?;
                 }
@@ -834,8 +1033,8 @@ fn execute(
                 .done
                 .store(run.frames_encoded, Ordering::Release);
         }
-        finish_encoder(encoder, &mut samples)?;
-        let m = sink.muxer(record_for(encoder, samples.first()))?;
+        finish_encoder(encoder, &mut samples, plan.frames, &cancel)?;
+        let m = sink.muxer(record_for(encoder, samples.first())?)?;
         for s in samples.drain(..) {
             m.write_video(&s.data, s.pts, s.sync)?;
         }

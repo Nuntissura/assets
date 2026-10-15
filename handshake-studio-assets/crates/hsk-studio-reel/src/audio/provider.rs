@@ -2,7 +2,8 @@
 //! delivery loop of `engine`. `open_stream` is the one dispatch point from container kind to a decoding
 //! `FrameSource`; probe, segment delivery and whole-file decode all go through it.
 #![deny(clippy::arithmetic_side_effects)]
-use super::aac::{AAC_DECODER_ID, AAC_DECODER_VERSION, AdtsHeader, AdtsStream, probe_adts};
+use super::aac::{AAC_DECODER_ID, AdtsHeader, AdtsStream, aac_decoder, probe_adts};
+use super::external::{AAC_OS_DECODER_ID, ExternalAudioDecoder};
 use super::aiff;
 use super::engine::{self, FrameSource, Ids, StreamShape};
 use super::flac::{FlacEncoder, FlacLimits, StreamInfo};
@@ -17,6 +18,7 @@ use super::{
 };
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
+use crate::video::VideoRoute;
 use hsk_studio_accord::CancellationToken;
 use std::io::{SeekFrom, Write};
 
@@ -189,11 +191,20 @@ impl FrameSource for NoFrames {
     }
 }
 
+/// Why a stream is opened: `Probe` reads headers only (no decoder, no worker starts); `Decode` builds the
+/// decoder, with the external audio decoder of the route when there is one (D24-A: AAC).
+#[derive(Clone, Copy)]
+pub(crate) enum Open<'e> {
+    Probe,
+    Decode(Option<&'e dyn ExternalAudioDecoder>),
+}
+
 pub(crate) fn open_stream<'a>(
     kind: AudioFileKind,
     src: &'a mut dyn ReadSeek,
     limits: &Limits,
     cancel: &CancellationToken,
+    open: Open<'_>,
 ) -> Result<Opened<'a>, ReelError> {
     let len = source_len(src)?;
     match kind {
@@ -234,11 +245,23 @@ pub(crate) fn open_stream<'a>(
         }
         AudioFileKind::AacAdts => {
             let info = probe_adts(src, len, limits, cancel)?;
+            let Open::Decode(external) = open else {
+                return Ok(Opened {
+                    shape: info.shape,
+                    decoder_id: AAC_DECODER_ID,
+                    decoder_version: "probe",
+                    source: Box::new(NoFrames),
+                    flac: None,
+                });
+            };
+            // The AudioSpecificConfig is checked and the decoder chosen (D24-A) before any payload read.
+            let (decoder, (decoder_id, decoder_version)) =
+                aac_decoder(&info.first.audio_specific_config(), external, limits, cancel)?;
             Ok(Opened {
                 shape: info.shape,
-                decoder_id: AAC_DECODER_ID,
-                decoder_version: AAC_DECODER_VERSION,
-                source: Box::new(AdtsStream::open(src, &info)?),
+                decoder_id,
+                decoder_version,
+                source: Box::new(AdtsStream::open(src, &info, decoder)),
                 flac: None,
             })
         }
@@ -317,7 +340,7 @@ impl MediaProvider for AudioFileProvider {
         cancel: &CancellationToken,
     ) -> Result<StreamLayout, ReelError> {
         check_cancel(cancel)?;
-        let shape = open_stream(self.kind, src, limits, cancel)?.shape;
+        let shape = open_stream(self.kind, src, limits, cancel, Open::Probe)?.shape;
         let tps = crate::time::exact_ticks_per_unit(shape.rate).ok_or(ReelError::Unsupported {
             what: "sample-rate-not-tick-exact",
         })?;
@@ -341,6 +364,20 @@ impl MediaProvider for AudioFileProvider {
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
     ) -> Result<SegmentReceipt, ReelError> {
+        self.decode_segment_routed(src, req, limits, cancel, sink, &VideoRoute::untrusted())
+    }
+
+    /// AAC goes to the route's external audio decoder (`VideoRoute::audio`, D24-A), else Studio's decoder
+    /// with feature `studio-aac`, else `MEDIA_CODEC_UNAVAILABLE aac-lc`.
+    fn decode_segment_routed(
+        &self,
+        src: &mut dyn ReadSeek,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+        route: &VideoRoute<'_>,
+    ) -> Result<SegmentReceipt, ReelError> {
         check_cancel(cancel)?;
         if req.codec != self.kind.id() {
             return Err(ReelError::CodecUnavailable {
@@ -353,7 +390,7 @@ impl MediaProvider for AudioFileProvider {
             });
         }
         verify_grant(src, &req.grant, req.expected_revision)?;
-        let mut opened = open_stream(self.kind, src, limits, cancel)?;
+        let mut opened = open_stream(self.kind, src, limits, cancel, Open::Decode(route.audio))?;
         // Range and exactness are checked before the first audio unit is read.
         engine::plan(&opened.shape, req)?;
         let shape = opened.shape;
@@ -516,12 +553,13 @@ pub(crate) fn decode_file(
     limits: &Limits,
     max_frames: u64,
     cancel: &CancellationToken,
+    external: Option<&dyn ExternalAudioDecoder>,
 ) -> Result<DecodedAudio, ReelError> {
     if let Some(decoded) = decode_wav_file(src, limits, max_frames, cancel)? {
         return Ok(decoded);
     }
     let kind = detect_kind(src)?;
-    let mut opened = open_stream(kind, src, limits, cancel)?;
+    let mut opened = open_stream(kind, src, limits, cancel, Open::Decode(external))?;
     let shape = opened.shape;
     let interleaved = engine::decode_all(opened.frame_source(), &shape, max_frames, cancel)?;
     let whole = shape
@@ -547,7 +585,8 @@ fn channel_order(decoder_id: &str) -> ChannelOrder {
     match decoder_id {
         FLAC_DECODER_ID => ChannelOrder::Flac,
         super::VORBIS_DECODER_ID | super::OPUS_DECODER_ID => ChannelOrder::Vorbis,
-        AAC_DECODER_ID => ChannelOrder::Aac,
+        // The OS decoder's session delivers the AAC element order too (reel-native reorders it).
+        AAC_DECODER_ID | AAC_OS_DECODER_ID => ChannelOrder::Aac,
         _ => ChannelOrder::MonoStereo,
     }
 }

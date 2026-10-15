@@ -16,11 +16,20 @@ pub(crate) trait PacketSource {
 pub(crate) trait PacketDecoder {
     /// Decode one packet and append its interleaved samples to `out`; returns the frames appended.
     fn decode(&mut self, packet: &[u8], out: &mut Vec<f32>) -> Result<usize, ReelError>;
+    /// The packets ended: append what the decoder still holds (an external decoder may hold a frame);
+    /// returns the frames appended. Called once per exhausted source, then again only after more packets.
+    fn flush(&mut self, out: &mut Vec<f32>) -> Result<usize, ReelError> {
+        let _ = out;
+        Ok(0)
+    }
 }
 
 impl<T: PacketDecoder + ?Sized> PacketDecoder for Box<T> {
     fn decode(&mut self, packet: &[u8], out: &mut Vec<f32>) -> Result<usize, ReelError> {
         (**self).decode(packet, out)
+    }
+    fn flush(&mut self, out: &mut Vec<f32>) -> Result<usize, ReelError> {
+        (**self).flush(out)
     }
 }
 
@@ -37,7 +46,11 @@ impl<S: PacketSource, D: PacketDecoder> FrameSource for Decode<S, D> {
     ) -> Result<Option<usize>, ReelError> {
         match self.source.next_packet(cancel)? {
             Some(packet) => self.decoder.decode(&packet, out).map(Some),
-            None => Ok(None),
+            // End of the packets: a decoder holding frames releases them once (0 frames ends the stream).
+            None => match self.decoder.flush(out)? {
+                0 => Ok(None),
+                frames => Ok(Some(frames)),
+            },
         }
     }
 
