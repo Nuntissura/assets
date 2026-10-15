@@ -410,3 +410,253 @@ pub fn shape_builder(operands: &[OwnedPath], gesture: &[PathPoint], delete: bool
     }
     Ok(out)
 }
+
+// ---- lane SMB-ILLUSTRATOR-PEN-3: the knife on open paths ------------------------------------------
+
+/// Samples per curved segment when the knife looks for crossings.
+const KNIFE_CURVE_SAMPLES: u32 = 64;
+
+fn lerp(a: PathPoint, b: PathPoint, t: f64) -> PathPoint {
+    PathPoint::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+}
+
+fn cubic_at(c: &[PathPoint; 4], t: f64) -> PathPoint {
+    let u = 1.0 - t;
+    let (a, b, cc, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    PathPoint::new(a * c[0].x + b * c[1].x + cc * c[2].x + d * c[3].x, a * c[0].y + b * c[1].y + cc * c[2].y + d * c[3].y)
+}
+
+fn split(c: [PathPoint; 4], t: f64) -> ([PathPoint; 4], [PathPoint; 4]) {
+    let (p01, p12, p23) = (lerp(c[0], c[1], t), lerp(c[1], c[2], t), lerp(c[2], c[3], t));
+    let (p012, p123) = (lerp(p01, p12, t), lerp(p12, p23, t));
+    let m = lerp(p012, p123, t);
+    ([c[0], p01, p012, m], [m, p123, p23, c[3]])
+}
+
+/// Parameter on `a0-a1` where it crosses `b0-b1` (both inclusive), if it does.
+fn crossing(a0: PathPoint, a1: PathPoint, b0: PathPoint, b1: PathPoint) -> Option<f64> {
+    let (r, s) = (sub(a1, a0), sub(b1, b0));
+    let den = r.x * s.y - r.y * s.x;
+    if den == 0.0 {
+        return None;
+    }
+    let q = sub(b0, a0);
+    let u = (q.x * s.y - q.y * s.x) / den;
+    let v = (q.x * r.y - q.y * r.x) / den;
+    ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)).then_some(u)
+}
+
+/// Knife on strokes (STU-VEC-048 "open endpoints where it crosses strokes only"): every contour of
+/// `path` (open or closed) is cut where the polyline `cut` crosses it; each resulting piece is an
+/// open contour of its own path (same fill rule), its cut ends `NONE` anchors sharing the crossing
+/// point. A contour the cut misses is returned unchanged. Crossings on curves are located on 64
+/// samples per segment (the split itself is exact de Casteljau at the found parameter).
+pub fn knife_strokes(path: &AnchorPath, cut: &[PathPoint]) -> Result<Vec<AnchorPath>, AnchorError> {
+    if cut.len() < 2 {
+        return Err(AnchorError::InvalidParameter);
+    }
+    check_points(cut)?;
+    path.validate()?;
+    let work = path.anchor_count().saturating_mul(usize::try_from(KNIFE_CURVE_SAMPLES).unwrap_or(64)).saturating_mul(cut.len());
+    if work > MAX_SAMPLES.saturating_mul(1024) {
+        return Err(AnchorError::BudgetExceeded);
+    }
+    let mut out = Vec::new();
+    for (ci, c) in path.contours.iter().enumerate() {
+        // The segments as cubics and their sorted interior cut parameters.
+        let mut pieces: Vec<([PathPoint; 4], bool, Mirroring)> = Vec::new(); // (cubic, break after, start mirroring)
+        for si in 0..c.segment_count() {
+            let ctl = path.segment(ci, si)?;
+            let straight = ctl[1] == ctl[0] && ctl[2] == ctl[3];
+            let poly: Vec<(PathPoint, f64)> = if straight {
+                vec![(ctl[0], 0.0), (ctl[3], 1.0)]
+            } else {
+                (0..=KNIFE_CURVE_SAMPLES).map(|k| {
+                    let t = f64::from(k) / f64::from(KNIFE_CURVE_SAMPLES);
+                    (cubic_at(&ctl, t), t)
+                }).collect()
+            };
+            let mut ts: Vec<f64> = Vec::new();
+            for w in poly.windows(2) {
+                for k in cut.windows(2) {
+                    if let Some(u) = crossing(w[0].0, w[1].0, k[0], k[1]) {
+                        let t = w[0].1 + (w[1].1 - w[0].1) * u;
+                        if t > 1e-9 && t < 1.0 - 1e-9 {
+                            ts.push(t);
+                        }
+                    }
+                }
+            }
+            ts.sort_by(f64::total_cmp);
+            ts.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
+            let start_mirroring = c.anchors.get(si).map_or(Mirroring::None, |a| a.mirroring);
+            let mut rest = ctl;
+            let mut from = 0.0;
+            let mut first = true;
+            for t in ts {
+                let local = (t - from) / (1.0 - from);
+                let (left, right) = if straight {
+                    let m = lerp(rest[0], rest[3], local);
+                    ([rest[0], rest[0], m, m], [m, m, rest[3], rest[3]])
+                } else {
+                    split(rest, local)
+                };
+                pieces.push((left, true, if first { start_mirroring } else { Mirroring::None }));
+                first = false;
+                rest = right;
+                from = t;
+            }
+            pieces.push((rest, false, if first { start_mirroring } else { Mirroring::None }));
+        }
+        let breaks = pieces.iter().filter(|p| p.1).count();
+        if breaks == 0 {
+            out.push(AnchorPath { contours: vec![c.clone()], fill_rule: path.fill_rule });
+            continue;
+        }
+        // A closed contour starts after its first break and wraps around.
+        if c.closed {
+            let first_break = pieces.iter().position(|p| p.1).unwrap_or(0);
+            pieces.rotate_left(first_break.saturating_add(1));
+        }
+        let mut current: Vec<([PathPoint; 4], Mirroring)> = Vec::new();
+        let flush = |run: &mut Vec<([PathPoint; 4], Mirroring)>, out: &mut Vec<AnchorPath>| {
+            if run.is_empty() {
+                return;
+            }
+            let mut anchors: Vec<EditAnchor> = Vec::with_capacity(run.len().saturating_add(1));
+            for (k, (cub, m)) in run.iter().enumerate() {
+                if k == 0 {
+                    anchors.push(EditAnchor::corner(cub[0].x, cub[0].y));
+                } else if let Some(last) = anchors.last_mut() {
+                    last.mirroring = *m;
+                }
+                if let Some(last) = anchors.last_mut() {
+                    last.outgoing = sub(cub[1], cub[0]);
+                }
+                anchors.push(EditAnchor { incoming: sub(cub[2], cub[3]), ..EditAnchor::corner(cub[3].x, cub[3].y) });
+            }
+            out.push(AnchorPath { contours: vec![Contour { anchors, closed: false }], fill_rule: path.fill_rule });
+            run.clear();
+        };
+        for (cub, brk, m) in pieces {
+            current.push((cub, m));
+            if brk {
+                flush(&mut current, &mut out);
+            }
+        }
+        flush(&mut current, &mut out);
+    }
+    for p in &out {
+        p.validate()?;
+    }
+    Ok(out)
+}
+
+// ---- lane SMB-ILLUSTRATOR-PEN-3: reshape and blob brush --------------------------------------------
+
+/// Reshape (STU-VEC-007 "Adjust a path region while preserving overall curve continuity"): the point
+/// at parameter `t` of segment `segment` of contour `contour` is dragged by (`dx`, `dy`). Every
+/// anchor of the contour moves by the drag times `(1 - d / radius)^2` (`d` = its arc-length distance
+/// from the grabbed point along the contour, 16 samples per segment; anchors beyond `radius` stay),
+/// carrying its handles, so tangent directions (continuity) are kept; then the grabbed segment is
+/// bent so the grabbed point lands exactly on target. Studio falloff, UNVERIFIED (D5).
+#[allow(clippy::too_many_arguments)]
+pub fn reshape(path: &AnchorPath, contour: usize, segment: usize, t: f64, dx: f64, dy: f64, radius: f64) -> Result<AnchorPath, AnchorError> {
+    if !(t.is_finite() && dx.is_finite() && dy.is_finite() && radius.is_finite()) {
+        return Err(AnchorError::NonFinite);
+    }
+    if t <= 0.0 || t >= 1.0 || radius <= 0.0 {
+        return Err(AnchorError::InvalidParameter);
+    }
+    path.validate()?;
+    let c = path.contour(contour)?;
+    let segs = c.segment_count();
+    if segment >= segs {
+        return Err(AnchorError::PointIndexOutOfBounds);
+    }
+    let target = {
+        let p = crate::anchor_path::point_at(path, contour, segment, t)?;
+        PathPoint::new(p.x + dx, p.y + dy)
+    };
+    // Arc length of every segment and of the grabbed point.
+    let mut seg_len = Vec::with_capacity(segs);
+    let mut grab_len = 0.0;
+    for si in 0..segs {
+        let ctl = path.segment(contour, si)?;
+        let mut l = 0.0;
+        let mut prev = ctl[0];
+        for k in 1..=16_u32 {
+            let tk = f64::from(k) / 16.0;
+            let q = cubic_at(&ctl, tk);
+            let step = len(sub(q, prev));
+            if si == segment && tk <= t {
+                grab_len += step;
+            }
+            l += step;
+            prev = q;
+        }
+        seg_len.push(l);
+    }
+    let before: f64 = seg_len.iter().take(segment).sum();
+    let grab = before + grab_len;
+    let total: f64 = seg_len.iter().sum();
+    let mut out = path.clone();
+    let slot = out.contours.get_mut(contour).ok_or(AnchorError::PathIndexOutOfBounds)?;
+    let mut at = 0.0;
+    for (i, a) in slot.anchors.iter_mut().enumerate() {
+        let mut d = (at - grab).abs();
+        if c.closed {
+            d = d.min(total - d);
+        }
+        let w = (1.0 - d / radius).max(0.0);
+        let w = w * w;
+        a.position = PathPoint::new(a.position.x + dx * w, a.position.y + dy * w);
+        at += seg_len.get(i).copied().unwrap_or(0.0);
+    }
+    out.validate()?;
+    let now = crate::anchor_path::point_at(&out, contour, segment, t)?;
+    let rest = sub(target, now);
+    if rest.x == 0.0 && rest.y == 0.0 {
+        return Ok(out);
+    }
+    crate::anchor_path::bend_segment(&out, contour, segment, t, rest.x, rest.y)
+}
+
+/// Blob brush (STU-VEC-007 "Paint filled unified vector shapes that merge with same-attribute
+/// geometry"): the filled outline of the brush stroke through `samples` (round caps and joins,
+/// `diameter` wide), united with every path of `merge_with` it overlaps. Returns the united outline
+/// and the indices of the merged paths.
+pub fn blob_brush(samples: &[PathPoint], diameter: f64, merge_with: &[OwnedPath], options: &BooleanOptions) -> Result<(OwnedPath, Vec<usize>), Error> {
+    if samples.is_empty() {
+        return Err(Error::InvalidRequest);
+    }
+    check_points(samples).map_err(|e| if e == AnchorError::BudgetExceeded { Error::BudgetExceeded } else { Error::InvalidGeometry })?;
+    if !(diameter.is_finite() && diameter > 0.0) {
+        return Err(Error::UnsupportedOptions);
+    }
+    let mut line = OwnedPath::new(FillRule::NonZero);
+    line.elements.push(PathElement::MoveTo(samples[0]));
+    if samples.len() == 1 {
+        // A dab: a zero-length stroke with round caps is a disc.
+        line.elements.push(PathElement::LineTo(samples[0]));
+    }
+    line.elements.extend(samples.iter().skip(1).map(|p| PathElement::LineTo(*p)));
+    let mut style = StrokeStyle::new(diameter);
+    style.cap = LineCap::Round;
+    style.join = crate::stroke::LineJoin::Round;
+    let stroke = outline_stroke(&line, &style, &StrokeOptions { geometry: *options, ..StrokeOptions::default() })?;
+    let mut merged = Vec::new();
+    let mut operands = vec![stroke.path.clone()];
+    for (i, other) in merge_with.iter().enumerate() {
+        match boolean(&[stroke.path.clone(), other.clone()], BooleanOp::Intersect, options) {
+            Ok(_) => {
+                merged.push(i);
+                operands.push(other.clone());
+            }
+            Err(Error::EmptyPathfinderResult) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let united = if operands.len() == 1 { crate::boolean::normalise_path(&stroke.path, options)?.path } else { boolean(&operands, BooleanOp::Union, options)?.path };
+    Ok((united, merged))
+}

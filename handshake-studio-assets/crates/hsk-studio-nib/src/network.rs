@@ -432,3 +432,223 @@ impl VectorNetwork {
         Ok(faces)
     }
 }
+
+// ---- lane SMB-ILLUSTRATOR-PEN-3: planarize (crossings and T-junctions) ------------------------------
+
+/// Samples per curved segment used to find crossings.
+const CURVE_SAMPLES: u32 = 64;
+/// Most candidate sub-segment comparisons of one planarize call.
+pub const MAX_PLANARIZE_WORK: u64 = 1 << 26;
+
+fn lerp_pt(a: PathPoint, b: PathPoint, t: f64) -> PathPoint {
+    PathPoint::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+}
+
+/// `(left, right)` of cubic `c` split at `t` by de Casteljau.
+fn split_cubic(c: [PathPoint; 4], t: f64) -> ([PathPoint; 4], [PathPoint; 4]) {
+    let (p01, p12, p23) = (lerp_pt(c[0], c[1], t), lerp_pt(c[1], c[2], t), lerp_pt(c[2], c[3], t));
+    let (p012, p123) = (lerp_pt(p01, p12, t), lerp_pt(p12, p23, t));
+    let m = lerp_pt(p012, p123, t);
+    ([c[0], p01, p012, m], [m, p123, p23, c[3]])
+}
+
+fn bez(c: &[PathPoint; 4], t: f64) -> PathPoint {
+    let u = 1.0 - t;
+    let (a, b, cc, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    PathPoint::new(a * c[0].x + b * c[1].x + cc * c[2].x + d * c[3].x, a * c[0].y + b * c[1].y + cc * c[2].y + d * c[3].y)
+}
+
+/// Polyline of a segment: `(point, parameter)`; a straight segment is its two ends.
+fn polyline(net: &VectorNetwork, s: usize) -> Result<Vec<(PathPoint, f64)>, NetworkError> {
+    let seg = net.segment(s)?;
+    let c = net.controls(s, false)?;
+    if zero(seg.tangent_start) && zero(seg.tangent_end) {
+        return Ok(vec![(c[0], 0.0), (c[3], 1.0)]);
+    }
+    Ok((0..=CURVE_SAMPLES).map(|k| {
+        let t = f64::from(k) / f64::from(CURVE_SAMPLES);
+        (bez(&c, t), t)
+    }).collect())
+}
+
+/// Parameters `(u, v)` in `[0, 1]` where segments `a0-a1` and `b0-b1` meet, if they do (not parallel).
+fn hit(a0: PathPoint, a1: PathPoint, b0: PathPoint, b1: PathPoint) -> Option<(f64, f64)> {
+    let (r, s) = (PathPoint::new(a1.x - a0.x, a1.y - a0.y), PathPoint::new(b1.x - b0.x, b1.y - b0.y));
+    let den = r.x * s.y - r.y * s.x;
+    if den == 0.0 {
+        return None;
+    }
+    let q = PathPoint::new(b0.x - a0.x, b0.y - a0.y);
+    let u = (q.x * s.y - q.y * s.x) / den;
+    let v = (q.x * r.y - q.y * r.x) / den;
+    ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)).then_some((u, v))
+}
+
+/// Distance from `p` to segment `a-b` and the parameter of the nearest point.
+fn nearest(p: PathPoint, a: PathPoint, b: PathPoint) -> (f64, f64) {
+    let d = PathPoint::new(b.x - a.x, b.y - a.y);
+    let l2 = d.x * d.x + d.y * d.y;
+    let t = if l2 == 0.0 { 0.0 } else { (((p.x - a.x) * d.x + (p.y - a.y) * d.y) / l2).clamp(0.0, 1.0) };
+    let q = lerp_pt(a, b, t);
+    (((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt(), t)
+}
+
+impl VectorNetwork {
+    /// Planarize (lane SMB-ILLUSTRATOR-PEN-3): splits every segment where it crosses another
+    /// segment (a new vertex shared by both) or where a vertex lies on its interior within
+    /// `tolerance` (a T-junction: split at the existing vertex), so [`VectorNetwork::detect_regions`]
+    /// finds faces without segments having to meet at shared vertices. Curves are located on 64
+    /// samples (crossing parameters are approximate to the sampling; the split vertex is the found
+    /// point and the sub-curves are exact de Casteljau pieces moved to it). Region loops are remapped
+    /// onto the sub-segments in walk order, so fill state is kept. Split points closer than
+    /// `tolerance` merge. Bounded by [`MAX_PLANARIZE_WORK`] comparisons before splitting.
+    pub fn planarize(&self, tolerance: f64) -> Result<Self, NetworkError> {
+        if !tolerance.is_finite() {
+            return Err(NetworkError::NonFinite);
+        }
+        if tolerance <= 0.0 {
+            return Err(NetworkError::OutOfRange);
+        }
+        self.validate()?;
+        let n = self.segments.len();
+        // Pair and vertex-segment scans are bounded before they run.
+        let pairs = u64::try_from(n).unwrap_or(u64::MAX).saturating_mul(u64::try_from(n).unwrap_or(u64::MAX));
+        let vs = u64::try_from(self.vertices.len()).unwrap_or(u64::MAX).saturating_mul(u64::try_from(n).unwrap_or(u64::MAX));
+        if pairs > MAX_PLANARIZE_WORK || vs > MAX_PLANARIZE_WORK {
+            return Err(NetworkError::BudgetExceeded);
+        }
+        let lines = (0..n).map(|s| polyline(self, s)).collect::<Result<Vec<_>, _>>()?;
+        let bbox = |l: &[(PathPoint, f64)]| {
+            l.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, (p, _)| [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)])
+        };
+        let boxes: Vec<[f64; 4]> = lines.iter().map(|l| bbox(l)).collect();
+        let mut vertices = self.vertices.clone();
+        // Split requests: (segment, parameter, vertex).
+        let mut splits: Vec<(usize, f64, usize)> = Vec::new();
+        let vertex_at = |p: PathPoint, vertices: &mut Vec<NetworkVertex>| -> Result<usize, NetworkError> {
+            if let Some(i) = vertices.iter().position(|v| (v.x - p.x).abs() <= tolerance && (v.y - p.y).abs() <= tolerance) {
+                return Ok(i);
+            }
+            if vertices.len() >= MAX_NETWORK_ELEMENTS {
+                return Err(NetworkError::BudgetExceeded);
+            }
+            vertices.push(NetworkVertex::at(p.x, p.y));
+            Ok(vertices.len().saturating_sub(1))
+        };
+        let mut work = 0_u64;
+        let interior = |t: f64| t > 1e-9 && t < 1.0 - 1e-9;
+        for i in 0..n {
+            for j in i.saturating_add(1)..n {
+                let (a, b) = (boxes[i], boxes[j]);
+                if a[2] + tolerance < b[0] || b[2] + tolerance < a[0] || a[3] + tolerance < b[1] || b[3] + tolerance < a[1] {
+                    continue;
+                }
+                let (li, lj) = (&lines[i], &lines[j]);
+                work = work.saturating_add(u64::try_from(li.len().saturating_mul(lj.len())).unwrap_or(u64::MAX));
+                if work > MAX_PLANARIZE_WORK {
+                    return Err(NetworkError::BudgetExceeded);
+                }
+                for wi in li.windows(2) {
+                    for wj in lj.windows(2) {
+                        let Some((u, v)) = hit(wi[0].0, wi[1].0, wj[0].0, wj[1].0) else { continue };
+                        let ti = wi[0].1 + (wi[1].1 - wi[0].1) * u;
+                        let tj = wj[0].1 + (wj[1].1 - wj[0].1) * v;
+                        if !interior(ti) && !interior(tj) {
+                            continue; // meeting at endpoints: already a shared or separate vertex
+                        }
+                        let p = lerp_pt(wi[0].0, wi[1].0, u);
+                        let vtx = vertex_at(p, &mut vertices)?;
+                        if interior(ti) {
+                            splits.push((i, ti, vtx));
+                        }
+                        if interior(tj) {
+                            splits.push((j, tj, vtx));
+                        }
+                    }
+                }
+            }
+        }
+        // Near-miss T-junctions: a vertex within tolerance of a segment's interior.
+        for (s, line) in lines.iter().enumerate() {
+            let seg = self.segment(s)?;
+            for (vi, v) in self.vertices.iter().enumerate() {
+                if vi == seg.start || vi == seg.end {
+                    continue;
+                }
+                let b = boxes[s];
+                if v.x < b[0] - tolerance || v.x > b[2] + tolerance || v.y < b[1] - tolerance || v.y > b[3] + tolerance {
+                    continue;
+                }
+                work = work.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+                if work > MAX_PLANARIZE_WORK {
+                    return Err(NetworkError::BudgetExceeded);
+                }
+                for w in line.windows(2) {
+                    let (d, u) = nearest(v.point(), w[0].0, w[1].0);
+                    let t = w[0].1 + (w[1].1 - w[0].1) * u;
+                    if d <= tolerance && interior(t) && !splits.iter().any(|(ss, _, sv)| *ss == s && *sv == vi) {
+                        splits.push((s, t, vi));
+                        break;
+                    }
+                }
+            }
+        }
+        // Rebuild segments: each original segment becomes a chain of sub-segments.
+        let mut segments = Vec::new();
+        let mut chains: Vec<Vec<usize>> = Vec::with_capacity(n);
+        for s in 0..n {
+            let seg = *self.segment(s)?;
+            let mut cuts: Vec<(f64, usize)> = splits.iter().filter(|(ss, _, _)| *ss == s).map(|(_, t, v)| (*t, *v)).collect();
+            cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+            cuts.dedup_by(|a, b| a.1 == b.1 || (a.0 - b.0).abs() <= 1e-12);
+            let straight = zero(seg.tangent_start) && zero(seg.tangent_end);
+            let mut rest = self.controls(s, false)?;
+            let (mut from_t, mut from_v) = (0.0_f64, seg.start);
+            let mut chain = Vec::with_capacity(cuts.len().saturating_add(1));
+            for (t, v) in cuts.iter().copied().chain(std::iter::once((1.0, seg.end))) {
+                let (piece, right) = if t >= 1.0 { (rest, rest) } else { split_cubic(rest, (t - from_t) / (1.0 - from_t)) };
+                rest = right;
+                if v == from_v {
+                    from_t = t;
+                    continue;
+                }
+                let (pa, pb) = (vertices.get(from_v).ok_or(NetworkError::IndexOutOfBounds)?.point(), vertices.get(v).ok_or(NetworkError::IndexOutOfBounds)?.point());
+                let tangent = |h: PathPoint, at: PathPoint| PathPoint::new(h.x - at.x, h.y - at.y);
+                chain.push(segments.len());
+                segments.push(if straight {
+                    NetworkSegment::line(from_v, v)
+                } else {
+                    NetworkSegment { start: from_v, end: v, tangent_start: Some(tangent(piece[1], pa)), tangent_end: Some(tangent(piece[2], pb)) }
+                });
+                if segments.len() > MAX_NETWORK_ELEMENTS {
+                    return Err(NetworkError::BudgetExceeded);
+                }
+                from_t = t;
+                from_v = v;
+            }
+            chains.push(chain);
+        }
+        // Remap region loops onto the chains in walk order.
+        let mut regions = Vec::with_capacity(self.regions.len());
+        for r in &self.regions {
+            let mut loops = Vec::with_capacity(r.loops.len());
+            for l in &r.loops {
+                let walk = self.loop_vertices(l)?;
+                let mut out = Vec::new();
+                for (s, (_, reversed)) in l.iter().zip(&walk) {
+                    let chain = chains.get(*s).ok_or(NetworkError::IndexOutOfBounds)?;
+                    if *reversed {
+                        out.extend(chain.iter().rev().copied());
+                    } else {
+                        out.extend(chain.iter().copied());
+                    }
+                }
+                loops.push(out);
+            }
+            regions.push(NetworkRegion { loops, ..r.clone() });
+        }
+        let out = Self { vertices, segments, regions };
+        out.validate()?;
+        Ok(out)
+    }
+}

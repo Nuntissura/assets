@@ -20,4 +20,5 @@ pub mod pathfinder;
 pub mod raster;
 pub mod shape;
 pub mod stroke;
+pub mod width;
 pub use descriptor::descriptor;
