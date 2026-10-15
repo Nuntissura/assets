@@ -1017,7 +1017,8 @@ pub const REFUSE_ENVELOPE: &str = "vector_envelope";
 pub const REFUSE_ENVELOPE_PAINT: &str = "vector_envelope_paint";
 /// A brush binding naming no brush, or a brush nib refuses.
 pub const REFUSE_BRUSH: &str = "vector_brush";
-/// A calligraphic or bristle brush on a stroke row (not drawn here).
+/// A brush kind composite does not draw (every STU-VEC-162 kind is drawn since lane
+/// SMB-ILLUSTRATOR-INTEROP; kept for forward compatibility).
 pub const REFUSE_BRUSH_KIND: &str = "vector_brush_kind";
 /// Colorization tints and shades or hue shift, or tints over a non-solid stroke paint.
 pub const REFUSE_BRUSH_COLORIZATION: &str = "vector_brush_colorization";
@@ -1148,6 +1149,8 @@ pub fn image_source_id(source: &hsk_studio_folio::StudioImageSource) -> String {
 }
 
 /// One brush laid along one stroke path: an outline per brush art path.
+/// A nib swept along one stroke path (calligraphic, bristle).
+type Sweep<'a> = Box<dyn Fn(&OwnedPath) -> Result<OwnedPath, hsk_studio_nib::Error> + 'a>;
 type BrushDraw<'a> = Box<dyn Fn(&OwnedPath) -> Result<Vec<OwnedPath>, hsk_studio_nib::Error> + 'a>;
 
 struct FolioCx<'a> {
@@ -1581,6 +1584,33 @@ impl FolioCx<'_> {
             hsk_studio_nib::Error::BudgetExceeded => crate::vector_nib::REFUSE_NIB_BUDGET,
             _ => REFUSE_BRUSH,
         };
+        // Calligraphic and bristle brushes (lane SMB-ILLUSTRATOR-INTEROP) paint one shape with the
+        // stroke row's own paint: nib's swept nib or bristles along every stroke path.
+        let swept: Option<Sweep<'_>> = match &brush.kind {
+            K::Calligraphic { nib_angle, nib_roundness, nib_size } => {
+                let nb = hsk_studio_nib::brush::CalligraphicBrush { angle: nib_angle.value, roundness: nib_roundness.value, size: nib_size.value * k };
+                Some(Box::new(move |spine: &OwnedPath| hsk_studio_nib::brush::calligraphic_brush(spine, &nb)))
+            }
+            K::Bristle { bristle_size, bristle_length, bristle_density } => {
+                // bristle_size is in mm (STU-VEC-152): document px at 96 per inch.
+                let nb = hsk_studio_nib::brush::BristleBrush { size: bristle_size * 96.0 / 25.4 * k, length: *bristle_length, density: *bristle_density };
+                Some(Box::new(move |spine: &OwnedPath| hsk_studio_nib::brush::bristle_brush(spine, &nb)))
+            }
+            _ => None,
+        };
+        if let Some(sweep) = swept {
+            let mut outline = Vec::new();
+            for (spine, _) in bases {
+                if spine.elements.is_empty() {
+                    continue;
+                }
+                let out = sweep(spine).map_err(nib_err)?;
+                if !out.elements.is_empty() {
+                    outline.push(out);
+                }
+            }
+            return Ok(vec![FillSpec { paint: FillPaint::StrokeGeometry { outline, paint: Box::new(row_paint.clone()) }, mode, opacity }]);
+        }
         let (art, draw): (Vec<&hsk_studio_folio::StudioBrushArt>, BrushDraw<'_>) = match &brush.kind {
             K::Art { art_width, art_scale_mode, art_guide_start, art_guide_end, flip_along, flip_across, art } => {
                 let paths = resolve(art)?;
@@ -1633,6 +1663,7 @@ impl FolioCx<'_> {
                 (art, Box::new(move |spine: &OwnedPath| pattern_brush(spine, &list, &nb)))
             }
             K::Calligraphic { .. } | K::Bristle { .. } => return Err(REFUSE_BRUSH_KIND),
+
         };
         let mut outlines: Vec<Vec<OwnedPath>> = vec![Vec::new(); art.len()];
         for (spine, _) in bases {
@@ -2189,4 +2220,92 @@ impl FolioCx<'_> {
         crate::vector_mask::source_bounds(&mask)?;
         Ok(MaskOutcome::Ready(std::sync::Arc::new(mask)))
     }
+}
+
+/// One painted shape of an expanded vector layer: filled `paths` (each under its own fill rule)
+/// painted with `paint` (solid, gradient, pattern or image) under `mode` and `opacity`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpandedRow {
+    pub paths: Vec<OwnedPath>,
+    pub paint: FillPaint,
+    pub mode: StudioBlendMode,
+    pub opacity: f32,
+}
+
+/// The expanded layers and the refused ones (layer id, refusal code).
+pub type Expanded = (Vec<ExpandedLayer>, Vec<(String, &'static str)>);
+
+/// A vector layer as plain filled shapes, bottom first (lane SMB-ILLUSTRATOR-INTEROP, export).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpandedLayer {
+    pub layer_id: String,
+    pub rows: Vec<ExpandedRow>,
+}
+
+/// Every vector layer of `snap` the way [`prepare_vectors`] draws it, expanded into plain filled
+/// shapes for export: fill rows over the layer geometry (a boolean group: its nib outline), stroke
+/// rows as their nib stroke outline, own-geometry rows (networks, region styles, width profiles,
+/// brushes) as their outlines, envelopes applied. Swatch-bound rows carry their stand-in paint.
+/// Vector clips and masks are NOT applied (the caller reports them); a refused layer is listed
+/// with its code instead.
+pub fn expand_vectors(
+    snap: &hsk_studio_folio::Snapshot,
+    design: &hsk_studio_folio::StudioDesignRecords,
+    vectors: &hsk_studio_folio::StudioVectorRecords,
+    assets: &dyn VectorAssets,
+    space: hsk_studio_pigment::blend_math::BlendSpace,
+    res: &VectorResolution,
+    cancel: &CancellationToken,
+) -> Result<Expanded, CompositeError> {
+    let doc = snap.document();
+    for document_id in [&design.document_id, &vectors.document_id] {
+        if *document_id != doc.document_id {
+            return Err(CompositeError::UnsupportedDescriptor("vector_records_document_mismatch".into()));
+        }
+    }
+    let cx = FolioCx {
+        layers: doc.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect(),
+        order: doc.layers.iter().collect(),
+        design,
+        records: vectors,
+        assets,
+        blending: &doc.blending_space,
+        space,
+        unit_px: doc.geometry_unit == hsk_studio_folio::GeometryUnit::Px,
+        nib: res.coverage == VectorCoverage::Exact,
+    };
+    let (mut out, mut refused) = (Vec::new(), Vec::new());
+    for l in &doc.layers {
+        cancel.check().map_err(|_| CompositeError::Canceled)?;
+        let drawn = matches!(l.payload, hsk_studio_folio::Payload::Vector { .. }) || vectors.boolean_group(&l.layer_id).is_some();
+        let consumed = vectors.envelopes.iter().any(|e| matches!(&e.envelope, hsk_studio_folio::StudioEnvelopeShape::TopObject { source_layer_id } if source_layer_id == &l.layer_id));
+        if !drawn || consumed {
+            continue;
+        }
+        let layer = cx
+            .geometry(&l.layer_id, 0)
+            .and_then(|geometry| Ok((geometry, cx.fills(&l.layer_id)?)))
+            .and_then(|(geometry, fills)| cx.own_geometry(&l.layer_id, &l.payload, geometry, fills))
+            .and_then(|(geometry, fills)| {
+                let base: Vec<OwnedPath> = match &geometry {
+                    VectorGeometry::Paths(p) => p.clone(),
+                    VectorGeometry::Boolean { .. } => crate::vector_nib::outline(&geometry, 0)?.into_iter().collect(),
+                };
+                let mut rows = Vec::with_capacity(fills.len());
+                for f in fills {
+                    let (paths, paint) = match f.paint {
+                        FillPaint::Stroke { style, paint } => (crate::vector_nib::stroke_outline(&geometry, &style)?.into_iter().collect(), *paint),
+                        FillPaint::StrokeGeometry { outline, paint } => (outline, *paint),
+                        paint => (base.clone(), paint),
+                    };
+                    rows.push(ExpandedRow { paths, paint, mode: f.mode, opacity: f.opacity });
+                }
+                Ok(rows)
+            });
+        match layer {
+            Ok(rows) => out.push(ExpandedLayer { layer_id: l.layer_id.clone(), rows }),
+            Err(code) => refused.push((l.layer_id.clone(), code)),
+        }
+    }
+    Ok((out, refused))
 }

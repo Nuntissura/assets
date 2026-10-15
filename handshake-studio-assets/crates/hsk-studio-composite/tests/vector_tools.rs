@@ -3,7 +3,7 @@
 //! (`StudioEnvelope` -> nib `envelope_paths`, before or after the appearance). Expected layers are
 //! folio-free specs built from nib directly and prepared by `prepare_vector_layers`.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_composite::vector::{FillRule, OwnedPath, PathElement, PathPoint, REFUSE_BRUSH_COLORIZATION, REFUSE_BRUSH_KIND, REFUSE_ENVELOPE_PAINT, StrokeStyle};
+use hsk_studio_composite::vector::{FillRule, OwnedPath, PathElement, PathPoint, REFUSE_BRUSH_COLORIZATION, REFUSE_ENVELOPE_PAINT, StrokeStyle};
 use hsk_studio_composite::*;
 use hsk_studio_folio::{StudioDesignRecords, StudioImageSource, StudioVectorRecords};
 use hsk_studio_nib::brush::{ArtBrush, ArtScale, Dyn, RotationRelative, ScatterBrush, art_brush, scatter_brush};
@@ -115,9 +115,12 @@ fn brushed_stroke_rows_draw_each_art_path_with_its_colour() {
         vec![own(vec![out[0].clone()], [tint(lr, 0.0), tint(lr, 0.5), tint(lr, 1.0), 1.0]), own(vec![out[1].clone()], [tint(lb, 0.0), tint(lb, 0.5), tint(lb, 1.0), 1.0])],
     );
     assert_eq!(got, want);
-    // Refusals: a calligraphic brush is not drawn; tints need a solid stroke paint.
+    // A calligraphic brush (lane SMB-ILLUSTRATOR-INTEROP) sweeps its nib in the stroke colour.
     let nib = json!({"brush_kind":"calligraphic","nib_angle":{"value":30.0},"nib_roundness":{"value":60.0},"nib_size":{"value":4.0}});
-    assert_eq!(prepare(&design(vec![stroke_row(solid(0.0, 1.0, 0.0))]), &records(brush(nib, "none"))).refusal(&identity("SLYR", 4)), Some(REFUSE_BRUSH_KIND));
+    let got = prepare(&design(vec![stroke_row(solid(0.0, 1.0, 0.0))]), &records(brush(nib, "none")));
+    let swept = hsk_studio_nib::brush::calligraphic_brush(&path(1), &hsk_studio_nib::brush::CalligraphicBrush { angle: 30.0, roundness: 60.0, size: 4.0 }).unwrap();
+    assert_eq!(got, expected(vec![path(1)], vec![own(vec![swept], [0.0, 1.0, 0.0, 1.0])]));
+    // Refusal: tints need a solid stroke paint; hue shift is not drawn.
     let shades = json!({"brush_kind":"art","art_width":{"value":100.0},"art_scale_mode":"proportional","flip_along":false,"flip_across":false,"art":art()});
     assert_eq!(prepare(&design(vec![stroke_row(solid(0.0, 1.0, 0.0))]), &records(brush(shades, "hue_shift"))).refusal(&identity("SLYR", 4)), Some(REFUSE_BRUSH_COLORIZATION));
 }
@@ -148,4 +151,27 @@ fn envelopes_wrap_the_paths_or_the_drawn_appearance() {
     let mut e = env(false);
     e["envelopes"][0]["distort_linear_gradient_fills"] = json!(true);
     assert_eq!(prepare(&design(vec![fill_row(gradient)]), &records(e)).refusal(&identity("SLYR", 4)), Some(REFUSE_ENVELOPE_PAINT));
+}
+
+#[test]
+fn expand_vectors_returns_the_drawn_shapes_for_export() {
+    // Lane SMB-ILLUSTRATOR-INTEROP: fill over the geometry, the stroke as its outline, a bristle
+    // brush as its swept shape (bristle size in mm: 96 / 25.4 px per mm).
+    let mut d = mixed();
+    assign_all_profiles(&mut d);
+    d["geometry_unit"] = json!("px");
+    let snap = open(&d);
+    let design = design(vec![fill_row(solid(1.0, 0.0, 0.0)), stroke_row(solid(0.0, 0.0, 1.0))]);
+    let (layers, refused) = vector::expand_vectors(&snap, &design, &records(json!({})), &Assets, BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+    assert!(refused.is_empty());
+    let outline = outline_stroke(&path(1), &StrokeStyle::new(2.0), &StrokeOptions::default()).unwrap().path;
+    assert_eq!(layers.len(), 1);
+    assert_eq!(layers[0].layer_id, identity("SLYR", 4));
+    assert_eq!(layers[0].rows.iter().map(|r| (r.paths.clone(), r.paint.clone())).collect::<Vec<_>>(), vec![(vec![path(1)], FillPaint::Solid([1.0, 0.0, 0.0, 1.0])), (vec![outline], FillPaint::Solid([0.0, 0.0, 1.0, 1.0]))]);
+    let bristle = json!({"brush_kind":"bristle","bristle_size":1.0,"bristle_length":100.0,"bristle_density":50.0});
+    let mut bound = brush(bristle, "none");
+    bound["brush_strokes"][0]["row"] = json!(1);
+    let (layers, _) = vector::expand_vectors(&snap, &design, &records(bound), &Assets, BlendSpace::Encoded, &VectorResolution::default(), &CancellationToken::default()).unwrap();
+    let swept = hsk_studio_nib::brush::bristle_brush(&path(1), &hsk_studio_nib::brush::BristleBrush { size: 96.0 / 25.4, length: 100.0, density: 50.0 }).unwrap();
+    assert_eq!(layers[0].rows[1].paths, vec![swept]);
 }
