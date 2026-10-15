@@ -381,6 +381,8 @@ pub struct InteractionAction {
     pub destination: Option<SourceId>,
     /// `overlayRelativePosition` of an `OVERLAY` action (document px).
     pub overlay_relative_position: Option<Vec2>,
+    /// `transitionShouldSmartAnimate` (directional transitions: smart-animate matching layers).
+    pub smart_animate: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1553,6 +1555,7 @@ fn interactions(o: &mut Obj, cx: &mut Cx) -> Vec<Interaction> {
                     connection: ao.enum_name(cx, "connectionType"),
                     destination: ao.guid(cx, "transitionNodeID"),
                     overlay_relative_position: ao.vec2(cx, "overlayRelativePosition"),
+                    smart_animate: ao.bool(cx, "transitionShouldSmartAnimate"),
                 });
                 ao.finish(cx);
             }

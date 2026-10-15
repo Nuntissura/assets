@@ -16,6 +16,14 @@
 //! content of changed text inserted beneath, dissolving) rendered through the same `to_native` +
 //! PDF frame export + press route as every screen. Figma parity UNVERIFIED (oracle D5).
 //!
+//! Lane SMB-FIG-SMART-ANIMATE-2: directional transitions (`MOVE_IN`, `MOVE_OUT`, `PUSH`,
+//! `SLIDE_IN`, `SLIDE_OUT`) are drawn by shifting the two screen rasters by
+//! `hsk_studio_components::directional_frame` at the eased progress (spring easings follow the
+//! oscillator solution); with `match_layers` the matched layers smart-animate and the unmatched ones
+//! move with the directional placement instead of dissolving. Gradient fills tween in the synthetic
+//! frame (stops written back as the node's gradient paint). [`PrototypePlay::set_smart_match_options`]
+//! turns on the opt-in Studio text-by-content rule (default off: STU-PRO-117).
+//!
 //! Overlays (STU-PRO-122..124): placed by the destination frame's overlay record
 //! (`hsk_studio_components::overlay_placement`: eight positions, unset = CENTER, MANUAL = the
 //! action's `overlay_relative_position`), drawn over the frame's solid background colour when it has
@@ -30,14 +38,16 @@
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_components::{
-    MAX_SMART_DEPTH, MAX_SMART_LAYERS, PlayerEvent, PlayerInput, PlayerSession, SmartFrame, SmartLayer,
-    SmartProps, SmartSide, interpolate, match_layers, overlay_placement, smart_animate_frame,
+    ActiveTransition, MAX_SMART_DEPTH, MAX_SMART_LAYERS, PlayerEvent, PlayerInput, PlayerSession, SmartFrame,
+    SmartGradient, SmartLayer, SmartMatchOptions, SmartProps, SmartSide, directional_frame, interpolate,
+    match_layers_with, overlay_placement, smart_animate_frame,
 };
 use hsk_studio_folio::{
     Budget, OverlayPosition, Parent, Payload, Resolution, Resolver, StudioOverlayBackground, TileRef,
+    TransitionDirection, TransitionType,
 };
 use hsk_studio_interop_fig::{
-    Color, FigDocument, FigNode, FigOutcome, Geometry, Limits, Matrix, NativeConfig, NativeProposal,
+    Color, FigDocument, FigNode, FigOutcome, Geometry, GradientStop, Limits, Matrix, NativeConfig, NativeProposal,
     NodePayload, PaintKind, PathCommand, SequentialIdMint, SourceId, VersionPolicy, decode_document,
     export_frame_pdf, import_fig, plan_frame_exports, render_frame_export, to_native,
 };
@@ -144,6 +154,24 @@ pub fn smart_props(n: &FigNode) -> SmartProps {
         ]),
         _ => None,
     });
+    let gradient = n.fills.iter().find(|p| p.visible != Some(false)).and_then(|p| match &p.kind {
+        PaintKind::Gradient { gradient, stops, transform } => {
+            let o = f64::from(p.opacity.unwrap_or(1.0));
+            let m = transform.unwrap_or(IDENTITY);
+            Some(SmartGradient {
+                kind: gradient.clone(),
+                stops: stops
+                    .iter()
+                    .map(|s| {
+                        let c = s.color;
+                        (f64::from(s.position), [f64::from(c.r), f64::from(c.g), f64::from(c.b), f64::from(c.a) * o])
+                    })
+                    .collect(),
+                transform: [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12].map(f64::from),
+            })
+        }
+        _ => None,
+    });
     let corner_radius = match &n.payload {
         NodePayload::Rectangle { corner_radius, .. } => corner_radius.map_or(0.0, f64::from),
         NodePayload::Frame(f) | NodePayload::Symbol { frame: f, .. } | NodePayload::Instance { frame: f, .. } => {
@@ -160,6 +188,7 @@ pub fn smart_props(n: &FigNode) -> SmartProps {
         opacity: f64::from(n.opacity.unwrap_or(1.0)),
         fill,
         corner_radius,
+        gradient,
     }
 }
 
@@ -200,6 +229,7 @@ pub fn smart_frame(doc: &FigDocument, frame: SourceId) -> Result<SmartFrame, Pla
             parent,
             implicit_text_style,
             content,
+            is_text: matches!(n.payload, NodePayload::Text(_)),
             props: smart_props(n),
         });
         stack.extend(n.children.iter().rev().map(|&c| (c, depth.saturating_add(1))));
@@ -303,6 +333,22 @@ fn apply_props(n: &mut FigNode, own: &SmartProps, p: &SmartProps) {
         _ => {}
     }
     n.opacity = Some(narrow(p.opacity));
+    if p.gradient != own.gradient
+        && let Some(g) = &p.gradient
+        && let Some(paint) = n.fills.iter_mut().find(|q| q.visible != Some(false))
+    {
+        let t = g.transform.map(narrow);
+        paint.kind = PaintKind::Gradient {
+            gradient: g.kind.clone(),
+            stops: g
+                .stops
+                .iter()
+                .map(|(pos, c)| GradientStop { position: narrow(*pos), color: Color { r: narrow(c[0]), g: narrow(c[1]), b: narrow(c[2]), a: narrow(c[3]) } })
+                .collect(),
+            transform: Some(Matrix { m00: t[0], m01: t[1], m02: t[2], m10: t[3], m11: t[4], m12: t[5] }),
+        };
+        paint.opacity = Some(1.0);
+    }
     if p.fill != own.fill
         && let Some(f) = p.fill
         && let Some(paint) = n.fills.iter_mut().find(|q| q.visible != Some(false))
@@ -350,13 +396,39 @@ fn clone_subtree(doc: &mut FigDocument, src: usize, parent: usize, at: usize, ne
     Ok(root.unwrap_or(src))
 }
 
+/// How the unmatched layers of a smart frame move: dissolve (`SMART_ANIMATE`), or with a
+/// directional transition's placement (`match_layers` on `MOVE_IN`, ...).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmartMode {
+    pub directional: Option<(TransitionType, TransitionDirection)>,
+    pub options: SmartMatchOptions,
+}
+
 /// The `.fig` document of the smart-animate frame between top-level frames `from` and `to` at
 /// eased progress `eased` (see the module text), drawn as frame `to`.
-pub fn smart_document(doc: &FigDocument, from: SourceId, to: SourceId, eased: f64) -> Result<FigDocument, PlayFail> {
+pub fn smart_document(doc: &FigDocument, from: SourceId, to: SourceId, eased: f64, mode: &SmartMode) -> Result<FigDocument, PlayFail> {
     let fa = smart_frame(doc, from)?;
     let fb = smart_frame(doc, to)?;
-    let m = match_layers(&fa, &fb).map_err(|e| fail("smart_match_refused", format!("{e:?}")))?;
-    let draw = smart_animate_frame(&fa, &fb, &m, eased).map_err(|e| fail("smart_frame_refused", format!("{e:?}")))?;
+    let m = match_layers_with(&fa, &fb, &mode.options).map_err(|e| fail("smart_match_refused", format!("{e:?}")))?;
+    let mut draw = smart_animate_frame(&fa, &fb, &m, eased).map_err(|e| fail("smart_frame_refused", format!("{e:?}")))?;
+    // Directional + match_layers: unmatched layers move with the screens instead of dissolving.
+    let size = doc.node(to).and_then(|n| n.size).map_or((0.0, 0.0), |v| (f64::from(v.x), f64::from(v.y)));
+    if let Some((ty, dir)) = mode.directional
+        && let Some(place) = directional_frame(ty, dir, eased, size.0, size.1)
+    {
+        for d in &mut draw {
+            let (layers, offset) = match d.side {
+                SmartSide::FromOnly => (&fa.layers, place.from_offset),
+                SmartSide::ToOnly => (&fb.layers, place.to_offset),
+                _ => continue,
+            };
+            if let Some(own) = layers.iter().find(|l| l.id == d.id)
+                && own.parent.is_none()
+            {
+                d.props = SmartProps { x: own.props.x + offset.0, y: own.props.y + offset.1, ..own.props.clone() };
+            }
+        }
+    }
     let mut out = doc.clone();
     let index: HashMap<String, usize> = out.nodes.iter().enumerate().map(|(i, n)| (key_of(n.id), i)).collect();
     let at = |k: &str| index.get(k).copied().ok_or_else(|| fail("smart_layer_missing", k));
@@ -367,7 +439,7 @@ pub fn smart_document(doc: &FigDocument, from: SourceId, to: SourceId, eased: f6
     // The destination frame's own fill tweens from the source frame's.
     let (fi, ti) = (at(&key_of(from))?, at(&key_of(to))?);
     let (fp, tp) = (smart_props(&doc.nodes[fi]), smart_props(&doc.nodes[ti]));
-    let mut frame_props = tp;
+    let mut frame_props = tp.clone();
     frame_props.fill = interpolate(&fp, &tp, eased).fill;
     apply_props(&mut out.nodes[ti], &tp, &frame_props);
     let mut next = 1u32;
@@ -409,6 +481,23 @@ pub fn smart_document(doc: &FigDocument, from: SourceId, to: SourceId, eased: f6
     Ok(out)
 }
 
+/// Copies `src` onto `base` with its top-left at `at` (clipped).
+fn blit(base: &mut Screen, src: &Screen, at: (i64, i64)) {
+    for y in 0..i64::from(src.height) {
+        for x in 0..i64::from(src.width) {
+            let (bx, by) = (x.saturating_add(at.0), y.saturating_add(at.1));
+            if bx < 0 || by < 0 || bx >= i64::from(base.width) || by >= i64::from(base.height) {
+                continue;
+            }
+            let si = usize::try_from(y.saturating_mul(i64::from(src.width)).saturating_add(x)).unwrap_or(0).saturating_mul(3);
+            let di = usize::try_from(by.saturating_mul(i64::from(base.width)).saturating_add(bx)).unwrap_or(0).saturating_mul(3);
+            if let (Some(s), Some(d)) = (src.rgb.get(si..si.saturating_add(3)), base.rgb.get_mut(di..di.saturating_add(3))) {
+                d.copy_from_slice(s);
+            }
+        }
+    }
+}
+
 /// The play mode over one imported `.fig`.
 pub struct PrototypePlay {
     doc: FigDocument,
@@ -423,7 +512,9 @@ pub struct PrototypePlay {
     hovered: Option<String>,
     rendered: BTreeMap<String, Screen>,
     /// The last smart-animate frame: (from, to, eased progress in 1e-6 steps) -> raster.
-    smart_cache: Option<((String, String, i64), Screen)>,
+    smart_cache: Option<((String, String, i64, String), Screen)>,
+    /// Matching options of the smart frames (default: the spec rule).
+    match_options: SmartMatchOptions,
     events: Vec<PlayerEvent>,
     texture: Option<(egui::TextureHandle, Screen)>,
     cancel: CancellationToken,
@@ -513,10 +604,17 @@ impl PrototypePlay {
             hovered: None,
             rendered: BTreeMap::new(),
             smart_cache: None,
+            match_options: SmartMatchOptions::default(),
             events: Vec::new(),
             texture: None,
             cancel,
         })
+    }
+
+    /// Sets the smart-animate matching options (the opt-in Studio text-by-content rule).
+    pub fn set_smart_match_options(&mut self, options: SmartMatchOptions) {
+        self.match_options = options;
+        self.smart_cache = None;
     }
 
     /// The decoded `.fig` document the play mode runs over.
@@ -677,7 +775,19 @@ impl PrototypePlay {
     /// The smart-animate frame between screens `from` and `to` (Folio layer ids) at eased progress
     /// `eased` (module text), cached for the last progress point.
     pub fn smart_raster(&mut self, from: &str, to: &str, eased: f64) -> Result<Screen, PlayFail> {
-        let key = (from.to_owned(), to.to_owned(), (eased * 1e6).round() as i64);
+        self.smart_raster_mode(from, to, eased, None)
+    }
+
+    /// [`PrototypePlay::smart_raster`] with a directional placement for the unmatched layers.
+    pub fn smart_raster_mode(
+        &mut self,
+        from: &str,
+        to: &str,
+        eased: f64,
+        directional: Option<(TransitionType, TransitionDirection)>,
+    ) -> Result<Screen, PlayFail> {
+        let mode = SmartMode { directional, options: self.match_options };
+        let key = (from.to_owned(), to.to_owned(), (eased * 1e6).round() as i64, format!("{mode:?}"));
         if let Some((k, s)) = &self.smart_cache
             && *k == key
         {
@@ -687,7 +797,7 @@ impl PrototypePlay {
             self.proposal.id_map.iter().find(|e| e.node.node_id == id).map(|e| e.source).ok_or_else(|| fail("frame_not_mapped", id))
         };
         let (fs, ts) = (source(from)?, source(to)?);
-        let doc = smart_document(&self.doc, fs, ts, eased)?;
+        let doc = smart_document(&self.doc, fs, ts, eased, &mode)?;
         let cfg = NativeConfig { budget: Budget::default(), resolver: &Host };
         let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), &self.cancel)
             .map_err(|e| fail("smart_native_refused", e.code()))?;
@@ -703,12 +813,36 @@ impl PrototypePlay {
         Ok(s)
     }
 
+    /// A directional transition without matching: the two screen rasters shifted by
+    /// `directional_frame` at `eased` (offsets rounded to whole px), the moving one on top.
+    pub fn directional_raster(&mut self, t: &ActiveTransition, eased: f64) -> Result<Screen, PlayFail> {
+        let from = self.frame_raster(&t.from)?;
+        let to = self.frame_raster(&t.to)?;
+        let dir = t.direction.ok_or_else(|| fail("transition_not_directional", t.kind.clone()))?;
+        let place = directional_frame(t.transition_type, dir, eased, f64::from(to.width), f64::from(to.height))
+            .ok_or_else(|| fail("transition_not_directional", t.kind.clone()))?;
+        let len = usize::try_from(u64::from(to.width).saturating_mul(u64::from(to.height)).saturating_mul(3)).unwrap_or(usize::MAX);
+        let mut out = Screen { width: to.width, height: to.height, rgb: vec![255; len] };
+        let (low, low_at, high, high_at) = if place.to_on_top {
+            (&from, place.from_offset, &to, place.to_offset)
+        } else {
+            (&to, place.to_offset, &from, place.from_offset)
+        };
+        blit(&mut out, low, (low_at.0.round() as i64, low_at.1.round() as i64));
+        blit(&mut out, high, (high_at.0.round() as i64, high_at.1.round() as i64));
+        Ok(out)
+    }
+
     /// What the play mode shows now: the screen (a running transition: the smart-animate tween when
     /// its layers match, else the eased cross-fade) with the open overlays placed on top.
     pub fn render(&mut self) -> Result<Screen, PlayFail> {
         let state = self.session.state();
         let mut base = match &state.transition {
-            Some((t, _, eased)) if t.match_layers => self.smart_raster(&t.from, &t.to, *eased)?,
+            Some((t, _, eased)) if t.match_layers => {
+                let dir = t.direction.map(|d| (t.transition_type, d));
+                self.smart_raster_mode(&t.from, &t.to, *eased, dir)?
+            }
+            Some((t, _, eased)) if t.direction.is_some() => self.directional_raster(t, *eased)?,
             Some((t, _, eased)) => {
                 let from = self.frame_raster(&t.from)?;
                 let to = self.frame_raster(&t.to)?;
@@ -740,20 +874,7 @@ impl PrototypePlay {
                     }
                 }
             }
-            let (ox, oy) = (off[0].round() as i64, off[1].round() as i64);
-            for y in 0..i64::from(ov.height) {
-                for x in 0..i64::from(ov.width) {
-                    let (bx, by) = (x.saturating_add(ox), y.saturating_add(oy));
-                    if bx < 0 || by < 0 || bx >= i64::from(base.width) || by >= i64::from(base.height) {
-                        continue;
-                    }
-                    let si = usize::try_from(y.saturating_mul(i64::from(ov.width)).saturating_add(x)).unwrap_or(0).saturating_mul(3);
-                    let di = usize::try_from(by.saturating_mul(i64::from(base.width)).saturating_add(bx)).unwrap_or(0).saturating_mul(3);
-                    if let (Some(src), Some(dst)) = (ov.rgb.get(si..si.saturating_add(3)), base.rgb.get_mut(di..di.saturating_add(3))) {
-                        dst.copy_from_slice(src);
-                    }
-                }
-            }
+            blit(&mut base, &ov, (off[0].round() as i64, off[1].round() as i64));
         }
         Ok(base)
     }
@@ -767,6 +888,7 @@ impl PrototypePlay {
             "history_depth": s.history_depth, "scroll_target": s.scroll_target, "clock_ms": s.clock_ms,
             "overlay_positions": s.overlay_positions.iter().map(|p| p.as_ref().map(|p| json!([p.x, p.y]))).collect::<Vec<_>>(),
             "transition": s.transition.as_ref().map(|(t, raw, eased)| json!({"to": t.to, "kind": t.kind, "match_layers": t.match_layers,
+                "direction": t.direction.map(|d| format!("{d:?}")), "spring": t.spring.is_some(),
                 "duration_ms": t.duration_ms, "progress": raw, "eased": eased})),
             "hovered": self.hovered,
         })

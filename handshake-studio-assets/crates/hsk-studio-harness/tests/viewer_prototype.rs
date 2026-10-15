@@ -286,3 +286,142 @@ fn overlays_are_placed_by_their_frame_records_and_close_on_click_outside() {
     assert!(play.session().state().overlays.is_empty());
     assert_eq!(play.render().unwrap(), screen);
 }
+
+fn decoded_fixture() -> hsk_studio_interop_fig::FigDocument {
+    use hsk_studio_interop_fig::{FigOutcome, Limits, VersionPolicy, decode_document, import_fig};
+    let bytes = fig_fixture("fig-prototype-pages.fig");
+    let cancel = Default::default();
+    let Ok(FigOutcome::Imported(import)) = import_fig(&bytes, &Limits::default(), &VersionPolicy::observed(), None, &cancel) else {
+        panic!("imports")
+    };
+    decode_document(&import, &Limits::default(), &cancel).unwrap()
+}
+
+fn node_index(doc: &hsk_studio_interop_fig::FigDocument, name: &str) -> usize {
+    doc.nodes.iter().position(|n| n.name.as_deref() == Some(name)).unwrap()
+}
+
+#[test]
+fn directional_spring_transition_from_the_fig_plays_as_a_push() {
+    // Lane SMB-FIG-SMART-ANIMATE-2: the detail label action becomes PUSH_FROM_RIGHT with a
+    // critically damped CUSTOM_SPRING {mass 1, stiffness 100, damping 20, velocity 0}, 800 ms.
+    let mut doc = decoded_fixture();
+    let label = node_index(&doc, "Click: smart animate");
+    let a = &mut doc.nodes[label].interactions[0].actions[0];
+    a.transition = Some("PUSH_FROM_RIGHT".into());
+    a.duration = Some(0.8);
+    a.easing = Some("CUSTOM_SPRING".into());
+    a.easing_function = vec![1.0, 100.0, 20.0, 0.0];
+    let mut play = PrototypePlay::open_document(doc, None).unwrap();
+    let tr = play
+        .proposal()
+        .design
+        .nodes
+        .iter()
+        .flat_map(|d| d.reactions.iter().flat_map(|r| r.actions.iter()))
+        .find_map(|a| match a {
+            hsk_studio_folio::StudioAction::Node { transition: Some(t), .. } => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (tr.transition_type, tr.direction, tr.match_layers),
+        (hsk_studio_folio::TransitionType::Push, Some(hsk_studio_folio::TransitionDirection::Right), Some(false))
+    );
+    assert_eq!(
+        tr.easing.easing_function_spring,
+        Some(hsk_studio_folio::SpringEasing { mass: 1.0, stiffness: 100.0, damping: 20.0, initial_velocity: 0.0 })
+    );
+    assert!(tr.easing.easing_function_cubic_bezier.is_none() && tr.duration == 800);
+    assert!(play.proposal().mapping_loss.iter().any(|l| l.code == "spring_parameter_order_unverified"));
+    let (x, y) = label_centre(&play, "Click: navigate to details");
+    play.click(x, y).unwrap();
+    let (x, y) = label_centre(&play, "Click: smart animate");
+    play.click(x, y).unwrap();
+    play.advance(100);
+    let (t, raw, eased) = play.session().state().transition.unwrap();
+    // Spring at 0.1 s: x = (1 + 10 t) e^(-10 t) = 2/e; progress 1 - 2/e.
+    assert_eq!(raw, 0.125);
+    assert!((eased - (1.0 - 2.0 * (-1.0f64).exp())).abs() < 1e-12, "{eased}");
+    let mid = play.render().unwrap();
+    let (from, to) = (play.frame_raster(&t.from).unwrap(), play.frame_raster(&t.to).unwrap());
+    // PUSH from the right: destination at 360 (1 - e) = 264.87 -> 265 px, origin at -360 e -> -95 px.
+    let (to_x, from_x) = ((360.0 * (1.0 - eased)).round() as usize, (360.0 * eased).round() as usize);
+    assert_eq!((to_x, from_x), (265, 95));
+    for y in [10usize, 135, 260, 450, 519] {
+        for x in 0..360usize {
+            let want = if x >= to_x { px(&to, x - to_x, y) } else { px(&from, x + from_x, y) };
+            assert_eq!(px(&mid, x, y), want, "({x}, {y})");
+        }
+    }
+    play.advance(700);
+    assert!(play.session().state().transition.is_none());
+    assert_eq!(play.render().unwrap(), to);
+}
+
+#[test]
+fn directional_match_layers_gradient_tween_and_text_rule() {
+    use hsk_studio_components::{SmartMatchOptions, match_layers_with};
+    use hsk_studio_harness::view::prototype::{SmartMode, smart_document};
+    use hsk_studio_interop_fig::{Color, GradientStop, Matrix, PaintKind};
+    let mut doc = decoded_fixture();
+    // MOVE_FROM_BOTTOM with transitionShouldSmartAnimate: matched layers tween, unmatched ones move.
+    let label = node_index(&doc, "Click: smart animate");
+    let a = &mut doc.nodes[label].interactions[0].actions[0];
+    a.transition = Some("MOVE_FROM_BOTTOM".into());
+    a.smart_animate = Some(true);
+    // The orb fill becomes a red -> blue gradient on the detail screen, green -> white on the other.
+    let orbs: Vec<usize> =
+        doc.nodes.iter().enumerate().filter(|(_, n)| n.name.as_deref() == Some("animated-orb")).map(|(i, _)| i).collect();
+    let id = Matrix { m00: 1.0, m01: 0.0, m02: 0.0, m10: 0.0, m11: 1.0, m12: 0.0 };
+    let stop = |position: f32, r: f32, g: f32, b: f32| GradientStop { position, color: Color { r, g, b, a: 1.0 } };
+    let (detail_orb, animated_orb) = (orbs[1], orbs[2]);
+    doc.nodes[detail_orb].fills[0].kind =
+        PaintKind::Gradient { gradient: "GRADIENT_LINEAR".into(), stops: vec![stop(0.0, 1.0, 0.0, 0.0), stop(1.0, 0.0, 0.0, 1.0)], transform: Some(id) };
+    doc.nodes[animated_orb].fills[0].kind =
+        PaintKind::Gradient { gradient: "GRADIENT_LINEAR".into(), stops: vec![stop(0.0, 0.0, 1.0, 0.0), stop(1.0, 1.0, 1.0, 1.0)], transform: Some(id) };
+    let (detail, animated) = (doc.nodes[node_index(&doc, "detail-screen")].id, doc.nodes[node_index(&doc, "animated-screen")].id);
+    let mode = SmartMode {
+        directional: Some((hsk_studio_folio::TransitionType::MoveIn, hsk_studio_folio::TransitionDirection::Bottom)),
+        options: SmartMatchOptions::default(),
+    };
+    let mid = smart_document(&doc, detail, animated, 0.5, &mode).unwrap();
+    let node = |name: &str| mid.nodes.iter().filter(|n| n.name.as_deref() == Some(name)).last().unwrap();
+    // Unmatched destination title moves up from the bottom edge: y 24 + 520 (1 - 0.5) = 284, opaque.
+    let title = node("Animated");
+    assert_eq!((title.transform.unwrap().m12, title.opacity), (284.0, Some(1.0)));
+    // MOVE_IN keeps the unmatched origin title in place and opaque (cloned under the destination).
+    let old = node("Details");
+    assert_eq!((old.transform.unwrap().m12, old.opacity), (24.0, Some(1.0)));
+    // The matched orb tweens position and its gradient stop colours (hand values at 0.5).
+    let orb = &mid.nodes[animated_orb];
+    assert_eq!((orb.transform.unwrap().m02, orb.transform.unwrap().m12), (112.0, 125.0));
+    let PaintKind::Gradient { stops, .. } = &orb.fills[0].kind else { panic!("gradient") };
+    let got: Vec<(f32, [f32; 3])> = stops.iter().map(|s| (s.position, [s.color.r, s.color.g, s.color.b])).collect();
+    assert_eq!(got, [(0.0, [0.5, 0.5, 0.0]), (1.0, [0.5, 0.5, 1.0])]);
+    // The play mode renders it: the player marks the transition match_layers + BOTTOM.
+    let mut play = PrototypePlay::open_document(doc.clone(), None).unwrap();
+    let (x, y) = label_centre(&play, "Click: navigate to details");
+    play.click(x, y).unwrap();
+    let (x, y) = label_centre(&play, "Click: smart animate");
+    play.click(x, y).unwrap();
+    play.advance(175);
+    let (t, _, eased) = play.session().state().transition.unwrap();
+    assert!(t.match_layers && t.direction == Some(hsk_studio_folio::TransitionDirection::Bottom) && (eased - 0.5).abs() < 1e-9);
+    let shown = play.render().unwrap();
+    let centre = px(&shown, 157, 170);
+    eprintln!("gradient orb centre at 0.5: {centre:?}");
+    let _ = centre;
+    // Studio text-by-content rule (opt-in): the fixture's explicitly named texts pair by content.
+    let (fa, fb) = (smart_frame(&doc, detail).unwrap(), smart_frame(&doc, animated).unwrap());
+    let name = |f: &hsk_studio_components::SmartFrame, id: &str| f.layers.iter().find(|l| l.id == id).unwrap().name.clone();
+    assert!(match_layers_with(&fa, &fb, &SmartMatchOptions::default()).unwrap().text_similarity_pairs.is_empty());
+    let m = match_layers_with(&fa, &fb, &SmartMatchOptions { text_content_min_similarity: Some(0.0) }).unwrap();
+    let pairs: Vec<(String, String, f64)> = m.text_similarity_pairs.iter().map(|(x, y, s)| (name(&fa, x), name(&fb, y), *s)).collect();
+    assert_eq!(pairs.len(), 2);
+    assert_eq!((pairs[0].0.as_str(), pairs[0].1.as_str()), ("Click: smart animate", "Click: back to start"));
+    assert!((pairs[0].2 - 0.45).abs() < 1e-12 && (pairs[1].2 - 0.125).abs() < 1e-12);
+    assert_eq!((pairs[1].0.as_str(), pairs[1].1.as_str()), ("Details", "Animated"));
+    play.set_smart_match_options(SmartMatchOptions { text_content_min_similarity: Some(0.0) });
+    play.render().unwrap();
+}

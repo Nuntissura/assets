@@ -60,7 +60,7 @@ use hsk_studio_folio::{
     LayoutMode, LayoutWrap, MAX_DURATION_MS, Navigation, PADDING_MAX, PrimaryAxisAlign,
     SPACING_MAX, SPACING_MIN, StudioAction, StudioAutoLayout, StudioEasing, StudioMode,
     StudioReaction, StudioRgba, StudioTransition, StudioTrigger, StudioVariable,
-    StudioVariableCollection, TransitionType, VARIABLE_SCOPES, VariableCollectionSchema,
+    StudioVariableCollection, TransitionDirection, TransitionType, VARIABLE_SCOPES, VariableCollectionSchema,
     VariableSchema, VariableType,
 };
 use hsk_studio_folio::{
@@ -528,6 +528,28 @@ fn invert(m: &crate::nodes::Matrix) -> Option<[f64; 6]> {
     let ie = -(ia * e + ic * f);
     let if_ = -(ib * e + id * f);
     Some([ia, ib, ic, id, ie, if_])
+}
+
+/// `.fig` directional transition token -> STU-PRO-118 type and direction (the edge the incoming
+/// screen enters from for `*_FROM_*`, the edge the outgoing screen leaves toward for `*_OUT_TO_*`).
+pub(crate) fn directional_transition(token: &str) -> Option<(TransitionType, TransitionDirection)> {
+    let (ty, side) = [
+        ("MOVE_FROM_", TransitionType::MoveIn),
+        ("PUSH_FROM_", TransitionType::Push),
+        ("SLIDE_FROM_", TransitionType::SlideIn),
+        ("MOVE_OUT_TO_", TransitionType::MoveOut),
+        ("SLIDE_OUT_TO_", TransitionType::SlideOut),
+    ]
+    .into_iter()
+    .find_map(|(prefix, ty)| token.strip_prefix(prefix).map(|side| (ty, side)))?;
+    let dir = match side {
+        "LEFT" => TransitionDirection::Left,
+        "RIGHT" => TransitionDirection::Right,
+        "TOP" => TransitionDirection::Top,
+        "BOTTOM" => TransitionDirection::Bottom,
+        _ => return None,
+    };
+    Some((ty, dir))
 }
 
 impl Mapper<'_> {
@@ -1547,18 +1569,30 @@ impl Mapper<'_> {
                             let transition = match a.transition.as_deref() {
                                 None | Some("INSTANT_TRANSITION") => None,
                                 Some(t) => {
-                                    let transition_type = match t {
-                                        "DISSOLVE" => TransitionType::Dissolve,
-                                        "SMART_ANIMATE" => TransitionType::SmartAnimate,
-                                        "SCROLL_ANIMATE" => TransitionType::ScrollAnimate,
-                                        other => {
-                                            self.lose(
-                                                format!("native.interactions.transition={other}"),
-                                                "transition_not_mapped",
-                                            );
-                                            continue;
+                                    // Directional tokens (`MOVE_FROM_LEFT`, `SLIDE_OUT_TO_TOP`, ...)
+                                    // -> STU-PRO-118 type + direction (lane SMB-FIG-SMART-ANIMATE-2;
+                                    // the direction names the edge entered from / left toward, a
+                                    // Studio reading, Figma parity UNVERIFIED).
+                                    let (transition_type, direction) = match t {
+                                        "DISSOLVE" => (TransitionType::Dissolve, None),
+                                        "FADE" => {
+                                            self.lose("native.interactions.transition=FADE", "fade_mapped_as_dissolve");
+                                            (TransitionType::Dissolve, None)
                                         }
+                                        "SMART_ANIMATE" => (TransitionType::SmartAnimate, None),
+                                        "SCROLL_ANIMATE" => (TransitionType::ScrollAnimate, None),
+                                        other => match directional_transition(other) {
+                                            Some((ty, dir)) => (ty, Some(dir)),
+                                            None => {
+                                                self.lose(
+                                                    format!("native.interactions.transition={other}"),
+                                                    "transition_not_mapped",
+                                                );
+                                                continue;
+                                            }
+                                        },
                                     };
+                                    let match_layers = direction.map(|_| a.smart_animate.unwrap_or(false));
                                     let ms = a.duration.map_or(0.0, |d| wide(d) * 1000.0).round();
                                     if !(0.0..=f64::from(MAX_DURATION_MS)).contains(&ms) {
                                         self.lose(
@@ -1589,7 +1623,34 @@ impl Mapper<'_> {
                                         },
                                         _ => None,
                                     };
+                                    // CUSTOM_SPRING: `easingFunction` read in the plugin-API order
+                                    // {mass, stiffness, damping, initialVelocity} (the .fig order
+                                    // is UNVERIFIED: typed note); out-of-range sets fall back.
+                                    let spring = match (a.easing.as_deref(), a.easing_function.as_slice()) {
+                                        (Some("CUSTOM_SPRING"), [m, k, c, rest @ ..]) if rest.len() <= 1 => {
+                                            let sp = hsk_studio_folio::SpringEasing {
+                                                mass: wide(*m),
+                                                stiffness: wide(*k),
+                                                damping: wide(*c),
+                                                initial_velocity: rest.first().map_or(0.0, |v| wide(*v)),
+                                            };
+                                            let ok = sp.mass > 0.0
+                                                && sp.mass <= 100.0
+                                                && sp.stiffness > 0.0
+                                                && sp.stiffness <= 10_000.0
+                                                && (0.0..=1000.0).contains(&sp.damping)
+                                                && (-1000.0..=1000.0).contains(&sp.initial_velocity);
+                                            if ok {
+                                                self.lose("native.interactions.easing=CUSTOM_SPRING", "spring_parameter_order_unverified");
+                                                Some(sp)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    };
                                     let bezier = match preset {
+                                        _ if spring.is_some() => (0.0, 0.0, 1.0, 1.0),
                                         Some(b) => (b.x1, b.y1, b.x2, b.y2),
                                         None => {
                                             self.lose(
@@ -1604,16 +1665,16 @@ impl Mapper<'_> {
                                     };
                                     Some(StudioTransition {
                                         transition_type,
-                                        direction: None,
-                                        match_layers: None,
+                                        direction,
+                                        match_layers,
                                         easing: StudioEasing {
-                                            easing_function_cubic_bezier: Some(CubicBezier {
+                                            easing_function_cubic_bezier: spring.is_none().then_some(CubicBezier {
                                                 x1: bezier.0,
                                                 y1: bezier.1,
                                                 x2: bezier.2,
                                                 y2: bezier.3,
                                             }),
-                                            easing_function_spring: None,
+                                            easing_function_spring: spring,
                                         },
                                         duration: ms as u32,
                                     })
