@@ -134,56 +134,7 @@ pub const PLANAR_TOLERANCE: f64 = 1.0e-6;
 
 /// Nib network of a Folio network record.
 pub fn network_of(n: &folio::StudioVectorNetwork) -> Result<VectorNetwork, String> {
-    use hsk_studio_nib::stroke::{LineCap, LineJoin};
-    let idx = |v: u32| usize::try_from(v).map_err(|_| "network: index".to_string());
-    let net = VectorNetwork {
-        vertices: n
-            .vertices
-            .iter()
-            .map(|v| NetworkVertex {
-                x: v.x,
-                y: v.y,
-                stroke_cap: v.stroke_cap.map(|c| match c {
-                    folio::StudioStrokeCap::Butt => LineCap::Butt,
-                    folio::StudioStrokeCap::Round => LineCap::Round,
-                    folio::StudioStrokeCap::Projecting => LineCap::Square,
-                }),
-                stroke_join: v.stroke_join.map(|j| match j {
-                    folio::StudioStrokeJoin::Miter => LineJoin::Miter,
-                    folio::StudioStrokeJoin::Round => LineJoin::Round,
-                    folio::StudioStrokeJoin::Bevel => LineJoin::Bevel,
-                }),
-                corner_radius: v.corner_radius,
-                handle_mirroring: v.handle_mirroring.map(|m| match m {
-                    folio::StudioHandleMirroring::None => Mirroring::None,
-                    folio::StudioHandleMirroring::Angle => Mirroring::Angle,
-                    folio::StudioHandleMirroring::AngleAndLength => Mirroring::AngleAndLength,
-                }),
-            })
-            .collect(),
-        segments: n
-            .segments
-            .iter()
-            .map(|s| Ok(NetworkSegment { start: idx(s.start)?, end: idx(s.end)?, tangent_start: s.tangent_start.map(|t| PathPoint::new(t[0], t[1])), tangent_end: s.tangent_end.map(|t| PathPoint::new(t[0], t[1])) }))
-            .collect::<Result<_, String>>()?,
-        regions: n
-            .regions
-            .iter()
-            .map(|r| {
-                Ok(NetworkRegion {
-                    winding_rule: match r.winding_rule {
-                        folio::StudioRegionWinding::NonZero => FillRule::NonZero,
-                        folio::StudioRegionWinding::EvenOdd => FillRule::EvenOdd,
-                    },
-                    loops: r.loops.iter().map(|l| l.iter().map(|k| idx(*k)).collect::<Result<Vec<_>, String>>()).collect::<Result<_, String>>()?,
-                    fills: r.fills,
-                    fill_style_id: r.fill_style_id.clone(),
-                })
-            })
-            .collect::<Result<_, String>>()?,
-    };
-    net.validate().map_err(|e| format!("network: {}", e.code()))?;
-    Ok(net)
+    hsk_studio_composite::vector::nib_network(n).map_err(|e| format!("network: {}", e.code()))
 }
 
 /// Folio network record of a nib network (indices saturate at `u32::MAX`, refused by validation).
@@ -765,6 +716,22 @@ fn outline_spec(layer_id: &str, record: &PathRecord) -> Result<VectorLayerSpec, 
     Ok(VectorLayerSpec { layer_id: layer_id.to_string(), geometry: VectorGeometry::Paths(fill_paths), fills })
 }
 
+/// Composite's view of a saved vector entry: path geometry and network records by `SVPT` id
+/// (no image paints).
+struct EntryAssets<'a>(&'a VectorEntry);
+
+impl hsk_studio_composite::VectorAssets for EntryAssets<'_> {
+    fn path(&self, path_id: &str) -> Option<OwnedPath> {
+        self.0.path(path_id)?.path.to_owned_path().ok()
+    }
+    fn image(&self, _source: &folio::StudioImageSource) -> Option<hsk_studio_composite::ImageInfo> {
+        None
+    }
+    fn network(&self, path_id: &str) -> Option<folio::StudioVectorNetwork> {
+        self.0.path(path_id)?.network.clone()
+    }
+}
+
 /// A fresh `SVPT` id (the document id's time fields, never one the entry holds).
 fn mint_path_id(doc: &StudioDocument, entry: &VectorEntry) -> String {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
@@ -1003,6 +970,26 @@ impl Viewer {
             return Err(format!("vector_entry_not_persistable: the session carries no document entry token `{ENTRY}` (session DOCUMENT_ENTRY_TOKENS); vector geometry would be lost"));
         }
         Ok(())
+    }
+
+    /// Renders the open document (render-cpu) with its vector layers prepared by composite's Folio
+    /// adapter ([`hsk_studio_composite::prepare_vectors`]) instead of the viewer's own specs: path
+    /// geometry and `StudioVectorNetwork` records come from the saved vector entry
+    /// (`VectorAssets::network`), paint from the caller's Folio `design` records (the viewer
+    /// authors none: SPEC GAP), plan blend space linear light like [`super::render::render_full`].
+    /// A refused vector layer is an error.
+    pub fn render_folio_vectors(&self, design: &folio::StudioDesignRecords, records: &folio::StudioVectorRecords) -> Result<super::render::Frame, String> {
+        let snap = self.run.snapshot().ok_or("render_folio_vectors: nothing open")?;
+        let entry = self.vector_entry()?;
+        let prepared = hsk_studio_composite::prepare_vectors(snap, design, records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
+            .map_err(|e| format!("vector_prepare: {e:?}"))?;
+        for l in &snap.document().layers {
+            if let Some(code) = prepared.refusal(&l.layer_id) {
+                return Err(format!("vector_refused: {} {code}", l.layer_id));
+            }
+        }
+        let text = self.prepared_text()?;
+        super::render::render_full(snap, &self.assets, Some(&text), Some(&prepared), super::render::Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("render: {e}"))
     }
 
     /// Prepared vector layers of the open document (`None` without vector layers).
