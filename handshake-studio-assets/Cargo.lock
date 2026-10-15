@@ -1725,10 +1725,12 @@ dependencies = [
  "eframe",
  "egui",
  "hsk-studio-accord",
+ "hsk-studio-components",
  "hsk-studio-composite",
  "hsk-studio-controls",
  "hsk-studio-develop",
  "hsk-studio-folio",
+ "hsk-studio-interop-fig",
  "hsk-studio-interop-psd",
  "hsk-studio-interop-raster",
  "hsk-studio-interop-tiff",
@@ -1794,7 +1796,10 @@ name = "hsk-studio-interop-lrcat"
 version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
+ "hsk-studio-develop",
+ "hsk-studio-kernel-bindings",
  "hsk-studio-observe",
+ "hsk-studio-package",
  "sha2 0.10.9",
 ]
 
