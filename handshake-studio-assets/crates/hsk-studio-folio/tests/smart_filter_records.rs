@@ -28,7 +28,7 @@ impl Resolver for Caller {
 }
 fn mask_tile(key: &str) -> Value {
     json!({"object_key":key,"layer_id":identity("SLYR",1),"column":0,"row":0,
-        "width":{"value":64,"unit":"px"},"height":{"value":64,"unit":"px"},"format":"coverage_u8",
+        "width":{"value":64.0,"unit":"px"},"height":{"value":64.0,"unit":"px"},"format":"coverage_u8",
         "colour_profile_id":identity("SCPF",1),"schema_id":"hsk.studio.raster_tile@1",
         "content_digest":{"algorithm":"sha256","digest":"ab12"},"artifact_manifest_id":"manifest-m"})
 }
