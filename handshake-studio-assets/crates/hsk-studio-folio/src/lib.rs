@@ -61,6 +61,8 @@ mod raster;
 pub use raster::*;
 mod smart_filter;
 pub use smart_filter::*;
+mod audio_preset;
+pub use audio_preset::*;
 mod vector;
 pub use vector::*;
 mod live_shape;
