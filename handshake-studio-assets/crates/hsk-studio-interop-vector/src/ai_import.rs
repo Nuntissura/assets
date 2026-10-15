@@ -336,7 +336,8 @@ fn upright(m: &[f64; 6]) -> Option<(f64, [f64; 2])> {
     ok.then_some((size, [m[4], m[5]]))
 }
 
-/// Groups consecutive filled glyphs of one font, size, colour, blend and baseline.
+/// Groups consecutive filled glyphs of one font, size, colour, blend and baseline whose pen
+/// origins advance by at most 1.5 em (a wider gap starts a new run).
 fn units(items: &[PdfDrawItem]) -> Vec<Unit> {
     let mut out = Vec::new();
     let mut run: Vec<usize> = Vec::new();
@@ -353,7 +354,7 @@ fn units(items: &[PdfDrawItem]) -> Vec<Unit> {
             _ => None,
         };
         match glyph {
-            Some((k, x, size)) if key == Some(k) && x >= last_x - 1e-6 && x - last_x <= size * 4.0 => {
+            Some((k, x, size)) if key == Some(k) && x >= last_x - 1e-6 && x - last_x <= size * 1.5 => {
                 run.push(i);
                 last_x = x;
             }
