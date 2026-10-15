@@ -16,6 +16,12 @@ import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism",
 viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
 desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
+# Program monitor decodes real media (lane SMB-PULSE-PLAYBACK-2): reel providers (VC-3, ProRes, Y4M in process).
+media = ["viewer", "dep:hsk-studio-reel", "hsk-studio-reel/prores"]
+# Plus reel-native's isolated H.264 (Media Foundation) and AV1 worker hosts as reel's external decoder.
+media-native = ["media", "dep:hsk-studio-reel-native", "hsk-studio-reel-native/mf", "hsk-studio-reel-native/av1"]
+# Program monitor audio out through score-device (software device in tests; desktop adds the cpal backend).
+audio-device = ["viewer", "dep:hsk-studio-score-device"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
@@ -43,6 +49,10 @@ hsk-studio-pulse = { path = "../hsk-studio-pulse", version = "=0.1.0", default-f
 # Prototype play mode (lane SMB-HARNESS-PROTOTYPE-PLAY; edges harness -> components and harness -> interop-fig lead-approved 2026-10-15, optional under viewer).
 hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-interop-fig = { path = "../hsk-studio-interop-fig", version = "=0.1.0", default-features = false, optional = true }
+# Monitor decode hook and audio out (lane SMB-PULSE-PLAYBACK-2; edges harness -> reel, reel-native, score-device lead-approved 2026-10-15, steward 2390395).
+hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-score-device = { path = "../hsk-studio-score-device", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }
