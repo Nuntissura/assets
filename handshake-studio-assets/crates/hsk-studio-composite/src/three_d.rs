@@ -43,6 +43,17 @@
 //! Z, X/Y rotation and orientation ignored). A camera or light under a parent ([`camera_in`]) moves
 //! with the chain and turns by its rotation part. A camera or light as a parent is refused
 //! ([`COMPOSITION_3D_PARENT`]); a singular chain is [`COMPOSITION_3D_PARENT_DEGENERATE`].
+//!
+//! Masks and track mattes (lane SMB-AE-3D-2; STU-CMP-010 step 2 "Masks. Combine the layer's masks
+//! ... and multiply it into the layer's alpha" before step 5 "Transform", step 7 "Track matte ...
+//! consumes another layer's already-rendered alpha or luminance" after it): a 3D layer's masks are
+//! rasterised in LAYER space over its content rectangle ([`Plane3d::layer_mask`]) and multiply the
+//! content alpha before shading, defocus and the projective resample, so the mask follows the
+//! plane in perspective and a masked-out region casts no shadow. A track matte
+//! ([`Plane3d::track_matte`]) multiplies in SCREEN space after the projection: every depth-rank
+//! piece of the plane carries its rank matte, whose own matte is the track matte (coverage = rank
+//! x track matte). A 3D matte SOURCE is projected through the active camera, unlit, alone
+//! ([`expand_run`] of that one plane). Masks and a track matte combine on one 3D layer.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::CompositeError;
@@ -68,7 +79,8 @@ pub const COMPOSITION_3D_CONTENT: &str = "composition_3d_content";
 pub const COMPOSITION_3D_PARENT: &str = "composition_3d_parent";
 /// A parent chain whose linear part is singular (a zero scale) under a 3D layer, camera or light.
 pub const COMPOSITION_3D_PARENT_DEGENERATE: &str = "composition_3d_parent_degenerate";
-/// A track matte, mask path, corner pin or clipping on a 3D layer (slice 1 of the planar renderer).
+/// A corner pin, clipping or an unlinked vector mask on a 3D layer (lane SMB-AE-3D-2 renders mask
+/// paths and track mattes on 3D layers; these stay refused).
 pub const COMPOSITION_3D_LAYER_OPTION: &str = "composition_3d_layer_option";
 /// More planes in one run than [`MAX_RUN_PLANES`].
 pub const COMPOSITION_3D_RUN_LIMIT: &str = "composition_3d_run_limit";
@@ -437,6 +449,11 @@ pub struct Plane3d {
     pub mode: StudioBlendMode,
     pub opacity: f64,
     pub fill_opacity: f64,
+    /// Layer-space mask coverage over `bounds` (row-major, `0..=1`), `None` = unmasked
+    /// (STU-CMP-025; lane SMB-AE-3D-2).
+    pub layer_mask: Option<Vec<f32>>,
+    /// Screen-space track matte (STU-CMP-030) applied to every depth piece of the plane.
+    pub track_matte: Option<crate::composition::SceneMatte>,
 }
 
 /// Expands one 3D run into 2D scene layers (module docs: depth ranks per pixel, one matted layer
@@ -546,7 +563,10 @@ pub fn expand_run_lit(
                 continue;
             }
             let coverage: Vec<f32> = ranks.iter().map(|r| if *r == k8 { 1.0 } else { 0.0 }).collect();
-            let matte = crate::mask_paths::coverage_matte(&coverage, rect, &p.layer_id, space, revision)?;
+            let mut matte = crate::mask_paths::coverage_matte(&coverage, rect, &p.layer_id, space, revision)?;
+            if let (Some(track), Some(rank_layer)) = (&p.track_matte, matte.layer.as_mut()) {
+                rank_layer.matte = Some(track.clone());
+            }
             out.push(SceneLayer {
                 layer_id: p.layer_id.clone(),
                 content: SceneContent::Pinned(Box::new(PinnedContent { content: lit_content(planes, i, &material, lights, cam), pin: pr.pin })),
@@ -650,6 +670,8 @@ pub struct Caster {
     pub transform: Transform3d,
     pub opacity: f64,
     pub light_transmission: f64,
+    /// The caster's layer-space mask coverage over `bounds`.
+    pub mask: Option<Vec<f32>>,
 }
 
 /// Content shaded by lights before its projective resample ([`SceneContent::Lit`]).
@@ -669,6 +691,8 @@ pub struct LitContent {
     /// Depth of field: the plane's content-plan -> screen homography (its third row is the camera
     /// depth), the camera zoom and the lens (`None` = in focus everywhere).
     pub dof: Option<(Projective2, f64, DepthOfField)>,
+    /// Layer-space mask coverage over `rect` multiplied into the content alpha first.
+    pub mask: Option<Vec<f32>>,
 }
 
 fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Material, lights: &[Light], cam: &Camera) -> SceneContent {
@@ -677,7 +701,7 @@ fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Materia
     };
     let m = material(i);
     let lit = !lights.is_empty() && m.accepts_lights;
-    if !lit && cam.dof.is_none() {
+    if !lit && cam.dof.is_none() && p.layer_mask.is_none() {
         return p.content.clone();
     }
     let lights = if lit { lights } else { &[] };
@@ -695,6 +719,7 @@ fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Materia
             transform: c.transform,
             opacity: c.opacity,
             light_transmission: material(j).light_transmission,
+            mask: c.layer_mask.clone(),
         })
         .collect();
     SceneContent::Lit(Box::new(LitContent {
@@ -707,6 +732,7 @@ fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Materia
         eye: cam.position,
         casters,
         dof,
+        mask: p.layer_mask.clone(),
     }))
 }
 

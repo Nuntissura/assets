@@ -1462,6 +1462,25 @@ fn f32_at(bytes: &[u8], index: usize) -> f32 {
         .map_or(0.0, f32::from_le_bytes)
 }
 
+/// Multiplies a layer-space mask (one coverage per texel, `0..=1`) into a surface's alpha (lane
+/// SMB-AE-3D-2; STU-CMP-010 step 2). A coverage plane of another size is refused `InvalidState`.
+fn apply_layer_mask(id: &str, surface: &mut Surface, mask: Option<&[f32]>) -> Result<(), TemporalError> {
+    let Some(mask) = mask else { return Ok(()) };
+    let n = usize::try_from(u64::from(surface.width).checked_mul(u64::from(surface.height)).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+    if mask.len() != n || surface.alpha.len() != n.checked_mul(4).ok_or(CompositeError::Overflow)? {
+        return Err(invalid(id, "layer_mask"));
+    }
+    for (a, m) in surface.alpha.chunks_exact_mut(4).zip(mask) {
+        if !m.is_finite() {
+            return Err(invalid(id, "layer_mask"));
+        }
+        let v = f32::from_le_bytes([a[0], a[1], a[2], a[3]]) * m.clamp(0.0, 1.0);
+        a.copy_from_slice(&v.to_le_bytes());
+    }
+    surface.alpha_sha256 = hsk_studio_prism::profile_hash(&surface.alpha);
+    Ok(())
+}
+
 /// The lit plane's surface: its content rendered over `lit.rect`, every texel shaded by
 /// [`crate::three_d::shade`] with the casters' rendered alpha (nearest texel).
 #[allow(clippy::too_many_arguments)]
@@ -1476,9 +1495,12 @@ fn lit_surface(
     exactness: &mut ExactnessLedger,
 ) -> Result<Surface, TemporalError> {
     let mut surface = content_surface(id, &lit.content, lit.rect, filter, ctx, cancel, depth, charges, exactness)?;
+    apply_layer_mask(id, &mut surface, lit.mask.as_deref())?;
     let mut casters = Vec::with_capacity(lit.casters.len());
     for c in &lit.casters {
-        casters.push(content_surface(&c.layer_id, &c.content, c.bounds, filter, ctx, cancel, depth, charges, exactness)?);
+        let mut s = content_surface(&c.layer_id, &c.content, c.bounds, filter, ctx, cancel, depth, charges, exactness)?;
+        apply_layer_mask(&c.layer_id, &mut s, c.mask.as_deref())?;
+        casters.push(s);
     }
     let caster_alpha = |i: usize, x: f64, y: f64| -> f32 {
         let (Some(c), Some(s)) = (lit.casters.get(i), casters.get(i)) else { return 0.0 };

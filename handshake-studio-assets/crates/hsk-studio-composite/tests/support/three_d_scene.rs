@@ -17,7 +17,8 @@
 #![allow(dead_code)]
 use crate::scenes::{BACKGROUND, Pixels, space, tile_id};
 use hsk_studio_composite::three_d::{Affine3, DepthOfField, Falloff, Light, LightKind, Material, Plane3d, Transform3d, camera, expand_run, expand_run_lit, layer_rotation};
-use hsk_studio_composite::{SceneComposition, SceneContent};
+use hsk_studio_composite::{SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode};
+use hsk_studio_pigment::transform_math::Affine2;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::transform_math::{LayerTransform, PreparedTransform, Projective2, ResampleFilter};
 
@@ -93,6 +94,8 @@ fn planes_of(pixels: &Pixels, specs: &[Spec]) -> Vec<Plane3d> {
                 mode: StudioBlendMode::Normal,
                 opacity: s.opacity,
                 fill_opacity: 1.0,
+                layer_mask: None,
+                track_matte: None,
             }
         })
         .collect()
@@ -218,6 +221,56 @@ pub fn parented_scene(pixels: &Pixels) -> SceneComposition {
 pub fn parented_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
     let (out, crossing, _) = oracle_of(pixels, &parented_specs(), false, false);
     (out, crossing)
+}
+
+/// Lane SMB-AE-3D-2: "tf" carries a layer-space mask (texels `4..14 x 2..10`, applied before the
+/// projection, so it follows the plane in perspective) and "te" a screen-space alpha track matte
+/// (tile "ta" placed at (12, 8), rendered alone).
+pub fn masked_scene(pixels: &Pixels) -> SceneComposition {
+    let cam = camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera");
+    let mut planes = planes(pixels);
+    planes[1].layer_mask = Some(tf_mask());
+    let ta = pixels.get(&tile_id(2, "ta")).unwrap();
+    planes[2].track_matte = Some(SceneMatte {
+        layer: Some(Box::new(SceneLayer {
+            layer_id: "SLYR-matte".to_owned(),
+            content: SceneContent::Tiles(vec![ta.scene_tile(MATTE_AT.0, MATTE_AT.1)]),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2::IDENTITY,
+            matte: None,
+            clipped: false,
+        })),
+        mode: SceneMatteMode::Alpha,
+        inverted: false,
+    });
+    SceneComposition {
+        composition_id: "three-d-masked".to_owned(),
+        width: W,
+        height: H,
+        background: Some(BACKGROUND),
+        filter: ResampleFilter::Bilinear,
+        layers: expand_run(&planes, &cam, W, H, space(), 7).expect("run expands"),
+    }
+}
+const MATTE_AT: (i64, i64) = (12, 8);
+fn tf_mask() -> Vec<f32> {
+    (0..14).flat_map(|k| (0..20).map(move |i| if (4..14).contains(&i) && (2..10).contains(&k) { 1.0 } else { 0.0 })).collect()
+}
+/// The oracle of [`masked_scene`]: tf's texels masked by its own texel test; te's opacity times the
+/// matte tile's alpha at the pixel, quantised to 16 bits as the matte plane carries it.
+pub fn masked_oracle(pixels: &Pixels) -> Vec<[f32; 4]> {
+    let ta = pixels.get(&tile_id(2, "ta")).unwrap();
+    let mut matte = Vec::new();
+    for y in 0..i64::from(H) {
+        for x in 0..i64::from(W) {
+            let (u, v) = (x - MATTE_AT.0, y - MATTE_AT.1);
+            let a = if u >= 0 && v >= 0 && u < i64::from(ta.width) && v < i64::from(ta.height) { ta.at(u as u32, v as u32)[3] } else { 0.0 };
+            matte.push(((f64::from(a) * 65535.0).round() / 65535.0) as f32);
+        }
+    }
+    oracle_full(pixels, &specs(), false, false, &[None, Some(tf_mask()), None], &[None, None, Some(matte)]).0
 }
 
 /// The lens of [`dof_scene`]: focus near "tf" / "te", "tg" behind it out of focus.
@@ -500,8 +553,20 @@ fn oracle(pixels: &Pixels, lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], 
     oracle_of(pixels, &specs(), lit, dof)
 }
 fn oracle_of(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], f64) {
+    oracle_full(pixels, specs, lit, dof, &[], &[])
+}
+/// `masks[i]`: plane `i`'s layer-space texel coverage (multiplied into its texel alpha before the
+/// sample); `mattes[i]`: plane `i`'s screen coverage (multiplied into its opacity per pixel).
+fn oracle_full(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool, masks: &[Option<Vec<f32>>], mattes: &[Option<Vec<f32>>]) -> (Vec<[f32; 4]>, [usize; 2], f64) {
     let (r, d, f) = basis();
     let mut shaded = texels(pixels, specs, lit);
+    for (i, m) in masks.iter().enumerate() {
+        if let Some(m) = m {
+            for (t, c) in shaded[i].iter_mut().zip(m) {
+                t[3] *= c;
+            }
+        }
+    }
     let mut max_radius = 0.0f64;
     if dof {
         for (i, s) in specs.iter().enumerate() {
@@ -574,7 +639,8 @@ fn oracle_of(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool) -> (Vec<[f32
                 let (tile, prep, _) = &draws[i];
                 let tex = &shaded[i];
                 let s = prep.sample_rgba(x, y, |u, v| Ok::<_, ()>(tex[(v * tile.width + u) as usize])).unwrap();
-                acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([s[0], s[1], s[2]], s[3]), specs[i].opacity as f32, PixelSite { x, y, seed: 0 }).unwrap();
+                let cov = mattes.get(i).and_then(|m| m.as_ref()).map_or(1.0, |m| m[(y * i64::from(W) + x) as usize]);
+                acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([s[0], s[1], s[2]], s[3]), specs[i].opacity as f32 * cov, PixelSite { x, y, seed: 0 }).unwrap();
             }
             out.push([acc.rgb[0], acc.rgb[1], acc.rgb[2], acc.a]);
         }

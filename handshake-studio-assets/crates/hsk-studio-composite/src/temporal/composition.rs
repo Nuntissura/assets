@@ -848,8 +848,9 @@ impl CompositionTemporalSource {
                 three_d: match &l.three_d {
                     None => None,
                     Some(d) => {
-                        // Planar-renderer refusals (lane SMB-AE-3D slice 1; `crate::three_d`).
-                        if l.track_matte.is_some() || !l.masks.is_empty() || l.corner_pin.is_some() || a.clipped {
+                        // Planar-renderer refusals (lane SMB-AE-3D slice 1; masks and track mattes
+                        // render since lane SMB-AE-3D-2).
+                        if l.corner_pin.is_some() || a.clipped || matches!(content, Content::Static { unlinked: Some(_), .. }) {
                             return Err(unsupported(id, crate::three_d::COMPOSITION_3D_LAYER_OPTION));
                         }
                         if matches!(content, Content::Adjustment(_) | Content::Precomp { collapse: true, .. }) {
@@ -1239,6 +1240,21 @@ impl CompositionTemporalSource {
         let (anchor, position, scale, rotation) = Self::own_3d(l, tick, cancel)?;
         let transform = crate::three_d::Transform3d { anchor, position, scale, rotation, parent: Self::parent_3d(comp, l, tick, cancel)? };
         let bounds = l.content.bounds().ok_or_else(|| unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_CONTENT))?;
+        // Masks in layer space over the content rectangle (lane SMB-AE-3D-2; STU-CMP-010 step 2).
+        let layer_mask = match &l.masks {
+            None => None,
+            Some(lm) => {
+                let mut at = Vec::with_capacity(lm.masks.len());
+                for (mode, inverted, closed, p) in &lm.masks {
+                    let path = sample(&l.layer_id, Some(p), p.dimension(), tick, cancel)?.unwrap_or_default();
+                    at.push(crate::mask_paths::MaskAtTick { mode: *mode, inverted: *inverted, closed: *closed, path });
+                }
+                let o = l.content.origin();
+                let px = u64::from(bounds.width).checked_mul(u64::from(bounds.height)).ok_or(CompositeError::Overflow)?;
+                crate::mask_paths::mask_coverage(&at, &Affine2::translate(o[0], o[1]), bounds, px).map_err(|code| unsupported(&l.layer_id, code))?
+            }
+        };
+        let track_matte = layer.matte;
         Ok(crate::three_d::Plane3d {
             layer_id: layer.layer_id,
             content: layer.content,
@@ -1248,6 +1264,8 @@ impl CompositionTemporalSource {
             mode: layer.mode,
             opacity: layer.opacity,
             fill_opacity: layer.fill_opacity,
+            layer_mask,
+            track_matte,
         })
     }
 
@@ -1423,6 +1441,11 @@ impl CompositionTemporalSource {
         Ok(out)
     }
 
+    /// The layers some layer uses as its track matte (they do not render on their own).
+    fn matte_sources(comp: &Comp) -> std::collections::BTreeSet<&str> {
+        comp.layers.iter().filter_map(|l| l.matte.as_ref().map(|m| m.source_layer_id.as_str())).collect()
+    }
+
     /// STU-CMP-045a diagnostics of the root composition: every (light, caster, receiver) triple
     /// of 3D planes in one run with some but not all of the three shadow switches on, naming the
     /// switches that are off (`crate::three_d::shadow_switches_off`). At most 65536 triples are
@@ -1432,8 +1455,10 @@ impl CompositionTemporalSource {
         let lights: Vec<&CompLayer> = comp.layers.iter().filter(|l| l.three_d.as_deref().is_some_and(|d| d.light.is_some())).collect();
         // Runs, bottom first: consecutive visible 3D planes; a 2D or adjustment layer ends a run.
         let mut runs: Vec<Vec<&CompLayer>> = vec![Vec::new()];
+        let sources = Self::matte_sources(comp);
         for l in comp.layers.iter().rev() {
-            if !l.visible || matches!(l.content, Content::None) {
+            // A matte source never renders, so it neither breaks a run nor joins one.
+            if !l.visible || matches!(l.content, Content::None) || sources.contains(l.layer_id.as_str()) {
                 continue;
             }
             match l.three_d.as_deref() {
@@ -1485,10 +1510,13 @@ impl CompositionTemporalSource {
     /// either side cannot intersect).
     pub fn three_d_run_breaks(&self) -> Result<Vec<crate::three_d::RunBreak>, TemporalError> {
         let comp = self.root()?;
+        let sources = Self::matte_sources(comp);
         let is_plane = |l: &CompLayer| {
             l.visible && !matches!(l.content, Content::None) && l.three_d.as_deref().is_some_and(|d| d.camera.is_none() && d.light.is_none())
         };
-        let order: Vec<&CompLayer> = comp.layers.iter().rev().collect();
+        // A matte source never renders (STU-CMP-030 default), so it does not break a run (lane
+        // SMB-AE-3D-2: as `scene_at` composites it).
+        let order: Vec<&CompLayer> = comp.layers.iter().rev().filter(|l| !sources.contains(l.layer_id.as_str())).collect();
         let (Some(first), Some(last)) = (order.iter().position(|l| is_plane(l)), order.iter().rposition(|l| is_plane(l))) else {
             return Ok(Vec::new());
         };
@@ -1579,9 +1607,18 @@ impl CompositionTemporalSource {
                     .find(|o| o.layer_id == m.source_layer_id)
                     .ok_or_else(|| CompositeError::DanglingInput(m.source_layer_id.clone()))?;
                 let next = matte_depth.checked_add(1).ok_or(CompositeError::Overflow)?;
-                let layer = self
-                    .layer_at(comp, source, tick, depth, next, cancel)?
-                    .map(Box::new);
+                let layer = self.layer_at(comp, source, tick, depth, next, cancel)?;
+                // A 3D matte source is projected through the active camera, unlit and alone (lane
+                // SMB-AE-3D-2; `crate::three_d` module docs).
+                let layer = match (layer, source.three_d.as_deref()) {
+                    (Some(layer), Some(d)) if d.camera.is_none() && d.light.is_none() && !matches!(source.content, Content::None) => {
+                        let plane = Self::plane(comp, source, layer, tick, cancel)?;
+                        let cam = Self::camera_at(comp, tick, cancel)?;
+                        crate::three_d::expand_run(&[plane], &cam, comp.width, comp.height, d.space, d.revision)?.into_iter().next()
+                    }
+                    (layer, _) => layer,
+                }
+                .map(Box::new);
                 Some(SceneMatte {
                     layer,
                     mode: match m.mode {
@@ -1594,7 +1631,10 @@ impl CompositionTemporalSource {
         };
         // Mask paths (lane SMB-AE-KEY-TRACK-3): sampled at `tick`, mapped from layer space by the
         // layer's matrix (content origin first) and combined into a composition-space alpha matte.
+        // A 3D layer's masks are layer-space coverage of its plane (`Self::plane`), never a
+        // composition-space matte.
         let matte = match &l.masks {
+            Some(_) if l.three_d.is_some() => matte,
             None => matte,
             Some(lm) => {
                 if matte.is_some() {

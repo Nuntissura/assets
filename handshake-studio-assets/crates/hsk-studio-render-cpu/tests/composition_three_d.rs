@@ -99,3 +99,20 @@ fn parented_three_d_run_matches_the_ray_cast_oracle() {
     let other = render(&Renderer::with_threads(7, 4).unwrap(), &scene, &pixels);
     assert_eq!(other.digest(), base.digest());
 }
+
+#[test]
+fn masked_and_matted_three_d_run_matches_the_oracle() {
+    // Lane SMB-AE-3D-2 (STU-CMP-010 steps 2 and 7): a layer-space mask on "tf" (before the
+    // projection) and a screen-space alpha track matte on "te" (after it, 16-bit coverage).
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::masked_scene(&pixels);
+    let want = three_d::masked_oracle(&pixels);
+    let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
+    let delta = scenes::max_delta(&base, &want);
+    let plain = render(&Renderer::new(64).unwrap(), &three_d::three_d_scene(&pixels), &pixels);
+    println!("three_d masked: cpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&base.digest()));
+    assert!(delta <= 1e-6, "{delta}");
+    assert_ne!(plain.digest(), base.digest(), "the mask and the matte change the frame");
+    let other = render(&Renderer::with_threads(5, 3).unwrap(), &scene, &pixels);
+    assert_eq!(other.digest(), base.digest());
+}

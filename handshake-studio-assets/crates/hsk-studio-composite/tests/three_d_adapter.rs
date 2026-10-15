@@ -127,6 +127,8 @@ fn three_d_runs_camera_breaks_and_refusals() {
             mode: StudioBlendMode::Normal,
             opacity: 1.0,
             fill_opacity: 1.0,
+            layer_mask: None,
+            track_matte: None,
         }
     };
     let below = three_d::expand_run(&[plane(10, "te", 10, 8, [15.0, 13.0, 1.0], 1.4, -40.0, 0.0)], &cam, 32, 24, scenes::space(), 7).unwrap();
@@ -150,7 +152,10 @@ fn three_d_runs_camera_breaks_and_refusals() {
     // Lane SMB-AE-3D-2: 2D and 3D layers parent each other; a camera or light parent is refused.
     at_open(&|l| l[2]["parent"] = json!(identity("SLYR", 6)), three_d::COMPOSITION_3D_PARENT);
     at_open(&|l| l[3]["parent"] = json!(identity("SLYR", 8)), three_d::COMPOSITION_3D_PARENT);
-    at_open(&|l| l[2]["track_matte"] = json!({"source_layer_id":identity("SLYR",3),"mode":"alpha","inverted":false}), three_d::COMPOSITION_3D_LAYER_OPTION);
+    at_open(
+        &|l| l[2]["corner_pin"] = json!({"from":[[0.0,0.0],[20.0,0.0],[20.0,14.0],[0.0,14.0]],"static_value":[0.0,0.0,20.0,0.0,20.0,14.0,0.0,14.0]}),
+        three_d::COMPOSITION_3D_LAYER_OPTION,
+    );
     at_tick(
         &|l| {
             l[0]["streams"] = json!([{"property":"position","static_value":[16.0,-100.0]}]);
@@ -341,4 +346,61 @@ fn three_d_parent_chains_from_records() {
     let chain = three_d::Affine3::layer([1.0, 2.0, 3.0], [16.0, 12.0, 4.0], [1.15, 0.9], &three_d::layer_rotation([0.0; 3], 12.0, -15.0, 6.0));
     let back = chain.inverse().unwrap().apply(chain.apply([3.0, -7.0, 11.0]));
     assert!(back.iter().zip([3.0, -7.0, 11.0]).all(|(a, b)| (a - b).abs() < 1e-12), "{back:?}");
+}
+
+#[test]
+fn three_d_masks_and_track_mattes_from_records() {
+    // Lane SMB-AE-3D-2 (STU-CMP-010 steps 2 and 7): "tf" carries a layer-space mask (rasterised
+    // over its content rectangle, before the projection); "te" an alpha track matte from the 2D
+    // layer "tb", which therefore does not render and no longer breaks the run.
+    let pixels = Pixels::fixture();
+    let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        json!([{"mask_id":"m1","mode":"add","closed":true,
+            "static_value":[x0,y0,0.0,0.0,0.0,0.0, x1,y0,0.0,0.0,0.0,0.0, x1,y1,0.0,0.0,0.0,0.0, x0,y1,0.0,0.0,0.0,0.0]}])
+    };
+    let mut l = layers();
+    l[2]["masks"] = rect(4.0, 2.0, 14.0, 10.0);
+    l[4]["track_matte"] = json!({"source_layer_id":identity("SLYR",3),"mode":"alpha","inverted":true});
+    let src = source(&records(l.clone()), &pixels).expect("source");
+    let scene = src.scene_at(0, &CancellationToken::default()).expect("scene");
+    assert!(scene.layers.iter().all(|x| x.layer_id != identity("SLYR", 3)), "the matte source does not render");
+    assert!(src.three_d_run_breaks().unwrap().is_empty(), "a matte source does not break the run");
+    let pieces = |id: u8| scene.layers.iter().filter(move |x| x.layer_id == identity("SLYR", id)).collect::<Vec<_>>();
+    // tf: the mask is the plane's layer-space coverage (20 x 14 texels, ones on 4..14 x 2..10).
+    let tf = pieces(11);
+    assert!(!tf.is_empty());
+    for p in &tf {
+        let SceneContent::Pinned(pin) = &p.content else { panic!("pinned") };
+        let SceneContent::Lit(lit) = &pin.content else { panic!("masked content goes through the layer-space path: {:?}", pin.content) };
+        let mask = lit.mask.as_ref().expect("mask");
+        assert_eq!(mask.len(), 20 * 14);
+        for (k, c) in mask.iter().enumerate() {
+            let (i, j) = (k % 20, k / 20);
+            let want = if (4..14).contains(&i) && (2..10).contains(&j) { 1.0 } else { 0.0 };
+            assert_eq!(*c, want, "texel ({i}, {j})");
+        }
+        assert!(p.matte.as_ref().is_some_and(|m| m.layer.as_ref().is_some_and(|r| r.matte.is_none())), "rank matte only");
+    }
+    // te: every depth piece's rank matte carries the track matte (coverage = rank x matte).
+    let te = pieces(10);
+    assert!(!te.is_empty());
+    for p in &te {
+        let rank = p.matte.as_ref().and_then(|m| m.layer.as_ref()).expect("rank matte");
+        let track = rank.matte.as_ref().expect("track matte under the rank matte");
+        assert!(track.inverted && track.mode == hsk_studio_composite::SceneMatteMode::Alpha);
+        assert_eq!(track.layer.as_ref().map(|x| x.layer_id.clone()), Some(identity("SLYR", 3)));
+    }
+    // A 3D matte source is projected through the camera (alone, unlit) and does not render.
+    let mut m3 = l.clone();
+    m3[4]["track_matte"] = json!({"source_layer_id":identity("SLYR",11),"mode":"luma","inverted":false});
+    let s3 = source(&records(m3), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap();
+    assert!(s3.layers.iter().all(|x| x.layer_id != identity("SLYR", 11)));
+    let te3 = s3.layers.iter().find(|x| x.layer_id == identity("SLYR", 10)).expect("te");
+    let track = te3.matte.as_ref().and_then(|m| m.layer.as_ref()).and_then(|r| r.matte.as_ref()).expect("track matte");
+    assert!(matches!(track.layer.as_deref().map(|x| &x.content), Some(SceneContent::Pinned(_))), "projected 3D matte source");
+    // Hostile: an empty mask path is refused (never drawn unmasked).
+    let mut bad = layers();
+    bad[2]["masks"] = json!([{"mask_id":"m1","mode":"add","closed":true,"static_value":[]}]);
+    let e = source(&records(bad), &pixels).and_then(|s| s.scene_at(0, &CancellationToken::default()).map(|_| ()));
+    assert!(e.is_err(), "an empty mask path is refused: {e:?}");
 }
