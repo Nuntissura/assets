@@ -1739,6 +1739,7 @@ dependencies = [
  "hsk-studio-render-cpu",
  "hsk-studio-render-gpu",
  "hsk-studio-session",
+ "hsk-studio-type",
  "serde_json",
 ]
 
