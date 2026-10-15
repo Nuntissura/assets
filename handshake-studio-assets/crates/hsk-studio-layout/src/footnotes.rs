@@ -189,6 +189,9 @@ fn compose_note(
         inset_bottom_pt: 0.0,
         first_baseline_pt: first.ascent_pt,
         obstacles: Vec::new(),
+        column_count: 1,
+        gutter_pt: 0.0,
+        balance: false,
     };
     let c = compose(
         std::slice::from_ref(&column),

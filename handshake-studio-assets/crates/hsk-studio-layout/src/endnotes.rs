@@ -251,6 +251,9 @@ pub fn place_sidenotes(
             inset_bottom_pt: 0.0,
             first_baseline_pt: first.ascent_pt,
             obstacles: Vec::new(),
+            column_count: 1,
+            gutter_pt: 0.0,
+            balance: false,
         };
         let stylings = vec![None; n.paragraphs.len()];
         let c = compose(std::slice::from_ref(&column), text, n.paragraphs, &stylings, composer, SpaceParams::default(), opts, limits, cancel)?;

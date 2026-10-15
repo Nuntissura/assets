@@ -675,7 +675,14 @@ fn folio_inputs_select_the_story_thread_and_unsupported_properties_are_refused()
                 refused
             );
             assert_eq!(unsupported(&|c| c.story.text_kind = StoryTextKind::FrameGrid), refused);
-            assert_eq!(unsupported(&|c| c.frame_mut(1).text_column_count = 2), refused);
+            // Columns compose now (SMB-LAYOUT-UI); columns without positive width are refused.
+            assert_eq!(
+                unsupported(&|c| {
+                    c.frame_mut(1).text_column_count = 2;
+                    c.frame_mut(1).text_column_gutter = len(1000.0);
+                }),
+                LayoutError::InvalidGeometry
+            );
             assert_eq!(
                 unsupported(&|c| c.frame_mut(0).vertical_justification = VerticalJustification::Center),
                 refused

@@ -650,6 +650,7 @@ fn footnotes_and_index_export() {
                 ratio: None,
                 hyphenated: false,
                 justification: None,
+                column: 0,
             }],
             ..body_frame.clone()
         }],

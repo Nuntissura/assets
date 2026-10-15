@@ -49,7 +49,7 @@ pub use styles::{
     Alignment, ParagraphStyling, ResolvedStyle, StyleSource, length_pt, resolve_style,
 };
 pub use threaded_reflow::{
-    FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow, reflow_typeset,
+    FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow, reflow_flow, reflow_typeset,
 };
 pub use running::{RunningError, RunningInstance, VariableContext, compose_overlay, resolve_running_texts};
 pub use story_tables::{AnchoredTable, StoryWithTables, reflow_with_tables};

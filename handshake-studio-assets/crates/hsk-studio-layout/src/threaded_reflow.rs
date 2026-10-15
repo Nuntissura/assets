@@ -9,15 +9,32 @@
 //! overlaps the line box (narrower gaps are not used); a baseline with no gap is skipped; hanging
 //! trailing whitespace is part of the line's glyph range but not of `width_pt`; an empty
 //! paragraph occupies one empty line; paragraphs have no space before or after.
+//!
+//! Columns (lane SMB-LAYOUT-UI, STU-LAY-017/118): a frame's inset width is split into
+//! `text_column_count` equal columns with `text_column_gutter` between them; text fills a column top
+//! to bottom, then the next column, then the next frame of the thread. Paragraph overrides from the
+//! Folio layout-flow records (STU-LAY-021): a span paragraph starts a band below the deepest line of
+//! the current band (that band is balanced first) and runs across the whole inset width; the
+//! following text forms a new column band below it (+ space after). A split paragraph is broken at
+//! the sub-column width `(column - 2 * outside - (n - 1) * inside) / n` and its lines fill the
+//! sub-columns column-major over `ceil(lines / n)` rows of its column; a split block that does not
+//! fit its frame moves whole to the next frame. `vertical_balance_columns` balances the band that
+//! ends the story: column c takes lines [c*k, (c+1)*k), k = ceil(L / n) (equal column widths keep
+//! the breaks). Balancing is skipped for frames with wrap obstacles or bands holding split lines;
+//! split paragraphs in frames with obstacles are `unsupported_composition`. InDesign parity of all
+//! of this is UNVERIFIED (D5).
 use crate::breaker::{Composer, HyphenRules, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
 use crate::typeset::{Justification, TypesetOptions, justify_metrics};
-use crate::folio_input::{Frame, FrameObstacles, resolve};
+use crate::folio_input::{Frame, FrameObstacles, pt, resolve_flow};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{StudioDocument, StudioTextStory};
+use hsk_studio_folio::{
+    StudioDocument, StudioLayoutFlowRecords, StudioParagraphFlow, StudioSpanColumn, StudioSpanCount,
+    StudioTextStory,
+};
 use std::ops::Range;
 
 const EPS: f64 = 1e-9;
@@ -79,6 +96,8 @@ pub struct Line {
     pub hyphenated: bool,
     /// Set by `reflow_typeset` for justified lines; `None` otherwise (also the last line).
     pub justification: Option<Justification>,
+    /// Column of the frame the line sits in (0 for single-column frames and span paragraphs).
+    pub column: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -104,22 +123,63 @@ pub struct LayoutProposal {
     pub overset: Option<SourceSpan>,
 }
 
-#[derive(Clone, Copy)]
+/// Position of the flow: frame `pos`, column `col`, line slot `line` of the current band, plus
+/// extra vertical space (`extra`, split paragraphs). `band` is the y of the band top in frame
+/// coordinates (`None` = frame top, whose first baseline is the frame's fixed offset).
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Cursor {
     pos: usize,
+    col: usize,
     line: usize,
+    band: Option<f64>,
+    extra: f64,
 }
+impl Cursor {
+    const fn frame(pos: usize) -> Self {
+        Self {
+            pos,
+            col: 0,
+            line: 0,
+            band: None,
+            extra: 0.0,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
 struct Slot {
     pos: usize,
+    col: usize,
     baseline_y_pt: f64,
     x_start_pt: f64,
     width_pt: f64,
     next: Cursor,
 }
+/// Column slots stay inside one column; span slots run across the frame's whole inset width.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Column,
+    Span,
+}
 
-/// Widest gap of the frame's inset width left by obstacles that overlap the line box.
-fn free_interval(f: &Frame<'_>, top: f64, bottom: f64) -> (f64, f64) {
-    let (lo, hi) = (f.inset_left_pt, f.width_pt - f.inset_right_pt);
+/// Paragraph-level span/split flow (STU-LAY-021), resolved to points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ParaFlow {
+    Single,
+    /// `count = None` spans all columns.
+    Span { count: Option<usize>, before: f64, after: f64 },
+    Split { count: usize, inside: f64, outside: f64, before: f64, after: f64 },
+}
+
+/// Per placed line: what balancing needs to move it.
+#[derive(Clone, Copy)]
+struct Meta {
+    ascent: f64,
+    height: f64,
+    single: bool,
+}
+
+/// Widest gap of `[lo, hi]` left by obstacles that overlap the line box.
+fn free_interval(f: &Frame<'_>, lo: f64, hi: f64, top: f64, bottom: f64) -> (f64, f64) {
     let mut blocked: Vec<(f64, f64)> = f
         .obstacles
         .iter()
@@ -146,12 +206,18 @@ fn free_interval(f: &Frame<'_>, top: f64, bottom: f64) -> (f64, f64) {
     best
 }
 
+fn baseline_of(f: &Frame<'_>, cur: &Cursor, height: f64, ascent: f64) -> f64 {
+    let base = cur.band.map_or(f.first_baseline_pt, |t| t + ascent);
+    base + cur.line as f64 * height + cur.extra
+}
+
 #[allow(clippy::too_many_arguments)]
 fn next_slot(
     thread: &[Frame<'_>],
     mut cur: Cursor,
     height: f64,
     ascent: f64,
+    mode: Mode,
     scans: &mut usize,
     scan_cap: usize,
     cancel: &CancellationToken,
@@ -165,22 +231,35 @@ fn next_slot(
         if (*scans).is_multiple_of(256) {
             cancel.check().map_err(|_| LayoutError::Canceled)?;
         }
-        let baseline = f.first_baseline_pt + cur.line as f64 * height;
+        let columns = if mode == Mode::Span { 1 } else { f.column_count.max(1) };
+        if cur.col >= columns {
+            cur = Cursor::frame(cur.pos + 1);
+            continue;
+        }
+        let baseline = baseline_of(f, &cur, height, ascent);
         if baseline + descent > f.height_pt - f.inset_bottom_pt + EPS {
-            cur = Cursor {
-                pos: cur.pos + 1,
-                line: 0,
+            cur = if cur.col + 1 < columns {
+                Cursor {
+                    col: cur.col + 1,
+                    line: 0,
+                    extra: 0.0,
+                    ..cur
+                }
+            } else {
+                Cursor::frame(cur.pos + 1)
             };
             continue;
         }
-        let (x0, x1) = free_interval(f, baseline - ascent, baseline + descent);
+        let (lo, hi) = if mode == Mode::Span { f.inner_x() } else { f.column_x(cur.col) };
+        let (x0, x1) = free_interval(f, lo, hi, baseline - ascent, baseline + descent);
         let next = Cursor {
-            pos: cur.pos,
             line: cur.line + 1,
+            ..cur
         };
         if x1 - x0 > EPS {
             return Ok(Some(Slot {
                 pos: cur.pos,
+                col: cur.col,
                 baseline_y_pt: baseline,
                 x_start_pt: x0,
                 width_pt: x1 - x0,
@@ -204,9 +283,26 @@ pub fn reflow(
 }
 
 /// `reflow` with justification, hyphenation, alignment and Folio type styles (see `typeset`).
+/// Multi-column frames are composed column by column (no span/split overrides, no balancing:
+/// those come from the Folio layout-flow records, `reflow_flow`).
 pub fn reflow_typeset(
     req: &ReflowRequest<'_>,
     opts: &TypesetOptions<'_>,
+    cancel: &CancellationToken,
+) -> Result<LayoutProposal, LayoutError> {
+    let none = StudioLayoutFlowRecords::new(req.document.document_id.clone());
+    reflow_flow(req, opts, &none, cancel)
+}
+
+/// `reflow_typeset` with the Folio layout-flow records of the document: frame column balancing
+/// (`vertical_balance_columns`) and paragraph span/split overrides (STU-LAY-021). A record set of
+/// another document, or a paragraph override whose start is no paragraph of the story, is
+/// `invalid_input`; a span count N with 1 < N < the frame's column count is
+/// `unsupported_composition` (InDesign's partial-span semantics are UNVERIFIED).
+pub fn reflow_flow(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
     cancel: &CancellationToken,
 ) -> Result<LayoutProposal, LayoutError> {
     canceled(cancel)?;
@@ -217,7 +313,16 @@ pub fn reflow_typeset(
             current: req.document.revision,
         });
     }
-    let input = resolve(req.document, req.story, req.resolved_text, req.obstacles)?;
+    if flow.document_id != req.document.document_id {
+        return Err(LayoutError::InvalidInput);
+    }
+    let input = resolve_flow(
+        req.document,
+        req.story,
+        req.resolved_text,
+        req.obstacles,
+        Some(flow),
+    )?;
     let (text, thread) = (input.text, input.frames);
     if req
         .paragraphs
@@ -236,6 +341,7 @@ pub fn reflow_typeset(
     {
         return Err(LayoutError::BudgetExceeded);
     }
+    let flows = paragraph_flows(req, flow)?;
     let styled;
     let (paragraphs, stylings): (&[ShapedParagraph], Vec<Option<ParagraphStyling>>) =
         if let Some(src) = opts.styles {
@@ -245,11 +351,12 @@ pub fn reflow_typeset(
         } else {
             (req.paragraphs, vec![None; req.paragraphs.len()])
         };
-    let composed = compose(
+    let composed = compose_flow(
         &thread,
         text,
         paragraphs,
         &stylings,
+        &flows,
         req.composer,
         req.space,
         opts,
@@ -276,6 +383,66 @@ pub fn reflow_typeset(
     })
 }
 
+/// One `ParaFlow` per shaped paragraph from the story's overrides (matched by start byte).
+fn paragraph_flows(
+    req: &ReflowRequest<'_>,
+    flow: &StudioLayoutFlowRecords,
+) -> Result<Vec<ParaFlow>, LayoutError> {
+    let story = req.story.story_id.as_str();
+    let mine: Vec<&StudioParagraphFlow> = flow
+        .paragraph_flows
+        .iter()
+        .filter(|p| p.story_id == story)
+        .collect();
+    if mine
+        .iter()
+        .any(|m| !req.paragraphs.iter().any(|p| p.source.start == m.paragraph_start))
+    {
+        return Err(LayoutError::InvalidInput);
+    }
+    let nonneg = |l: &hsk_studio_folio::Length| {
+        let v = pt(l).map_err(|_| LayoutError::InvalidGeometry)?;
+        if v < 0.0 { Err(LayoutError::InvalidGeometry) } else { Ok(v) }
+    };
+    req.paragraphs
+        .iter()
+        .map(|p| {
+            let Some(m) = mine.iter().find(|m| m.paragraph_start == p.source.start) else {
+                return Ok(ParaFlow::Single);
+            };
+            let (before, after) = (nonneg(&m.space_before)?, nonneg(&m.space_after)?);
+            Ok(match m.span_column {
+                StudioSpanColumn::SingleColumn => ParaFlow::Single,
+                StudioSpanColumn::SpanColumns => {
+                    if m.span_column_count == 0 && m.span_count.is_none() {
+                        return Err(LayoutError::InvalidInput);
+                    }
+                    ParaFlow::Span {
+                        count: match m.span_count {
+                            Some(StudioSpanCount::All) => None,
+                            None => Some(m.span_column_count as usize),
+                        },
+                        before,
+                        after,
+                    }
+                }
+                StudioSpanColumn::SplitColumns => {
+                    if !(2..=hsk_studio_folio::MAX_SPLIT_COLUMNS).contains(&m.split_column_count) {
+                        return Err(LayoutError::InvalidInput);
+                    }
+                    ParaFlow::Split {
+                        count: m.split_column_count as usize,
+                        inside: nonneg(&m.inside_gutter)?,
+                        outside: nonneg(&m.outside_gutter)?,
+                        before,
+                        after,
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
 /// Lines per frame of `thread` (same order) and the overset span.
 pub(crate) struct Composition {
     pub lines: Vec<Vec<Line>>,
@@ -297,9 +464,64 @@ pub(crate) fn compose(
     limits: Limits,
     cancel: &CancellationToken,
 ) -> Result<Composition, LayoutError> {
+    let flows = vec![ParaFlow::Single; paragraphs.len()];
+    compose_flow(thread, text, paragraphs, stylings, &flows, composer, req_space, opts, limits, cancel)
+}
+
+/// Moves the lines of one band (all single-column lines, no obstacles in the frame) so that the
+/// columns are balanced: with L lines and n columns, column c takes lines [c*k, (c+1)*k), k =
+/// ceil(L/n). Column widths are equal, so the line breaks stand. Returns false (nothing moved) when
+/// the band cannot be balanced or a moved line would leave the frame.
+fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Meta]) -> bool {
+    let n = f.column_count;
+    if n < 2 || !f.obstacles.is_empty() || lines.is_empty() || meta.iter().any(|m| !m.single) {
+        return false;
+    }
+    let k = lines.len().div_ceil(n);
+    let bottom = f.height_pt - f.inset_bottom_pt + EPS;
+    let mut moved = Vec::with_capacity(lines.len());
+    for (i, (l, m)) in lines.iter().zip(meta).enumerate() {
+        let (col, row) = (i / k, i % k);
+        let cur = Cursor {
+            pos: 0,
+            col,
+            line: row,
+            band,
+            extra: 0.0,
+        };
+        let baseline = baseline_of(f, &cur, m.height, m.ascent);
+        if baseline + (m.height - m.ascent) > bottom {
+            return false;
+        }
+        let dx = f.column_x(col).0 - f.column_x(l.column).0;
+        moved.push((col, baseline, l.x_start_pt + dx));
+    }
+    for (l, (col, baseline, x)) in lines.iter_mut().zip(moved) {
+        l.column = col;
+        l.baseline_y_pt = baseline;
+        l.x_start_pt = x;
+    }
+    true
+}
+
+/// `compose` with one `ParaFlow` per paragraph (span and split columns, band balancing).
+#[allow(clippy::too_many_arguments)]
+fn compose_flow(
+    thread: &[Frame<'_>],
+    text: &str,
+    paragraphs: &[ShapedParagraph],
+    stylings: &[Option<ParagraphStyling>],
+    flows: &[ParaFlow],
+    composer: Composer,
+    req_space: SpaceParams,
+    opts: &TypesetOptions<'_>,
+    limits: Limits,
+    cancel: &CancellationToken,
+) -> Result<Composition, LayoutError> {
     canceled(cancel)?;
     if paragraphs.len() > limits.max_paragraphs
         || stylings.len() != paragraphs.len()
+        || flows.len() != paragraphs.len()
         || paragraphs
             .iter()
             .try_fold(0usize, |n, p| n.checked_add(p.glyphs.len()))
@@ -331,31 +553,133 @@ pub(crate) fn compose(
         return Err(LayoutError::InvalidGeometry);
     }
     let mut frames: Vec<Vec<Line>> = thread.iter().map(|_| Vec::new()).collect();
+    let mut metas: Vec<Vec<Meta>> = thread.iter().map(|_| Vec::new()).collect();
+    // Index of the first line of the current band, per frame (bands start after span paragraphs).
+    let mut band_start: Vec<usize> = vec![0; thread.len()];
+    let mut band_top: Vec<Option<f64>> = vec![None; thread.len()];
     let story_end = paragraphs.last().map_or(0, |p| p.source.end);
-    let (mut cursor, mut placed, mut overset) = (Cursor { pos: 0, line: 0 }, 0usize, None);
+    let (mut cursor, mut placed, mut overset) = (Cursor::frame(0), 0usize, None);
+    let scan_cap_base = limits.max_lines.saturating_add(1);
     for (pi, p) in paragraphs.iter().enumerate() {
         canceled(cancel)?;
         let items = build_items(p, text, space, hyph)?;
         let sums = Sums::new(&items);
         let remaining = limits.max_lines.saturating_sub(placed);
         let slot_cap = items.len().min(remaining.saturating_add(1));
-        let scan_cap = limits.max_lines.saturating_add(items.len()).saturating_add(1);
-        let (mut slots, mut at, mut scans) = (Vec::new(), cursor, 0usize);
-        while slots.len() < slot_cap {
-            match next_slot(
-                thread,
-                at,
-                p.line_height_pt,
-                p.ascent_pt,
-                &mut scans,
-                scan_cap,
-                cancel,
-            )? {
-                Some(s) => {
-                    at = s.next;
-                    slots.push(s);
+        let scan_cap = scan_cap_base.saturating_add(items.len());
+        let (mut slots, mut scans) = (Vec::new(), 0usize);
+        let descent = p.line_height_pt - p.ascent_pt;
+        let flow = flows[pi];
+        let mut breaks = None;
+        let mut after_cursor = None;
+        match flow {
+            ParaFlow::Single => {
+                let mut at = cursor;
+                while slots.len() < slot_cap {
+                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)? {
+                        Some(s) => {
+                            at = s.next;
+                            slots.push(s);
+                        }
+                        None => break,
+                    }
                 }
-                None => break,
+            }
+            ParaFlow::Span { count, before, .. } => {
+                // A span paragraph starts a new band below the deepest line of the current band of
+                // its frame (that band balanced first, like a straddle head; UNVERIFIED, D5).
+                if let Some(f) = thread.get(cursor.pos) {
+                    if let Some(n) = count
+                        && n > 1
+                        && n < f.column_count
+                    {
+                        return Err(LayoutError::UnsupportedComposition);
+                    }
+                    let pos = cursor.pos;
+                    let start = band_start[pos];
+                    if frames[pos].len() > start {
+                        balance_band(f, cursor.band, &mut frames[pos][start..], &metas[pos][start..]);
+                        let bottom = frames[pos][start..]
+                            .iter()
+                            .zip(&metas[pos][start..])
+                            .map(|(l, m)| l.baseline_y_pt + (m.height - m.ascent))
+                            .fold(f64::MIN, f64::max);
+                        cursor = Cursor {
+                            pos,
+                            col: 0,
+                            line: 0,
+                            band: Some(bottom + before),
+                            extra: 0.0,
+                        };
+                    } else {
+                        cursor.col = 0;
+                    }
+                }
+                let mut at = cursor;
+                while slots.len() < slot_cap {
+                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Span, &mut scans, scan_cap, cancel)? {
+                        Some(s) => {
+                            at = s.next;
+                            slots.push(s);
+                        }
+                        None => break,
+                    }
+                }
+            }
+            ParaFlow::Split { count, inside, outside, before, .. } => {
+                if cursor.line > 0 {
+                    cursor.extra += before;
+                }
+                let mut start = cursor;
+                while let Some(probe) =
+                    next_slot(thread, start, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)?
+                {
+                    let f = &thread[probe.pos];
+                    if !f.obstacles.is_empty() {
+                        return Err(LayoutError::UnsupportedComposition);
+                    }
+                    let (c0, c1) = f.column_x(probe.col);
+                    let m = count as f64;
+                    let sub_w = (c1 - c0 - 2.0 * outside - (m - 1.0) * inside) / m;
+                    if sub_w <= EPS {
+                        return Err(LayoutError::InvalidGeometry);
+                    }
+                    let width = |_: usize| sub_w;
+                    let b = match composer {
+                        Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
+                        Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
+                    };
+                    let rows_needed = b.len().div_ceil(count).max(1);
+                    let (mut rows, mut at) = (vec![probe], probe.next);
+                    while rows.len() < rows_needed {
+                        match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)? {
+                            Some(s) if s.pos == probe.pos => {
+                                at = s.next;
+                                rows.push(s);
+                            }
+                            _ => break,
+                        }
+                    }
+                    if rows.len() < rows_needed && probe.pos + 1 < thread.len() {
+                        // The split block does not fit this frame: it moves whole to the next one.
+                        start = Cursor::frame(probe.pos + 1);
+                        continue;
+                    }
+                    let r = rows.len();
+                    for i in 0..(r * count).min(b.len()) {
+                        let (sub, row) = (i / r, i % r);
+                        let s = rows[row];
+                        let x0 = thread[s.pos].column_x(s.col).0 + outside + sub as f64 * (sub_w + inside);
+                        slots.push(Slot {
+                            x_start_pt: x0,
+                            width_pt: sub_w,
+                            ..s
+                        });
+                    }
+                    after_cursor = Some(rows[r - 1].next);
+                    breaks = Some(b);
+                    break;
+                }
             }
         }
         if slots.is_empty() {
@@ -365,11 +689,16 @@ pub(crate) fn compose(
             });
             break;
         }
-        let last_width = slots[slots.len() - 1].width_pt;
-        let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
-        let breaks = match composer {
-            Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
-            Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
+        let breaks = match breaks {
+            Some(b) => b,
+            None => {
+                let last_width = slots[slots.len() - 1].width_pt;
+                let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
+                match composer {
+                    Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
+                    Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
+                }
+            }
         };
         let n = p.glyphs.len();
         let mut starts = vec![0usize];
@@ -460,6 +789,7 @@ pub(crate) fn compose(
                     ratio: b.ratio,
                     hyphenated,
                     justification,
+                    column: slot.col,
                 },
             ));
         }
@@ -468,13 +798,47 @@ pub(crate) fn compose(
             .filter(|n| *n <= limits.max_lines)
             .ok_or(LayoutError::BudgetExceeded)?;
         let used = lines_here.len();
+        let single = flow == ParaFlow::Single;
         for (pos, line) in lines_here {
             frames[pos].push(line);
+            metas[pos].push(Meta {
+                ascent: p.ascent_pt,
+                height: p.line_height_pt,
+                single,
+            });
         }
         if overset.is_some() {
             break;
         }
-        cursor = slots[used - 1].next;
+        cursor = match flow {
+            ParaFlow::Single => slots[used - 1].next,
+            ParaFlow::Span { after, .. } => {
+                let last = &slots[used - 1];
+                let top = last.baseline_y_pt + descent + after;
+                band_start[last.pos] = frames[last.pos].len();
+                band_top[last.pos] = Some(top);
+                Cursor {
+                    pos: last.pos,
+                    col: 0,
+                    line: 0,
+                    band: Some(top),
+                    extra: 0.0,
+                }
+            }
+            ParaFlow::Split { after, .. } => {
+                let mut c = after_cursor.unwrap_or(slots[used - 1].next);
+                c.extra += after;
+                c
+            }
+        };
+    }
+    // Balance the band that ends the story when its frame asks for it.
+    if overset.is_none()
+        && let Some(pos) = frames.iter().rposition(|l| !l.is_empty())
+        && thread[pos].balance
+    {
+        let start = band_start[pos];
+        balance_band(&thread[pos], band_top[pos], &mut frames[pos][start..], &metas[pos][start..]);
     }
     Ok(Composition {
         lines: frames,

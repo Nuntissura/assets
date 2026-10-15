@@ -339,6 +339,9 @@ fn compose_cell(
         inset_bottom_pt: bottom,
         first_baseline_pt: top + first.ascent_pt,
         obstacles: Vec::new(),
+        column_count: 1,
+        gutter_pt: 0.0,
+        balance: false,
     };
     let composed = compose(
         std::slice::from_ref(&frame),

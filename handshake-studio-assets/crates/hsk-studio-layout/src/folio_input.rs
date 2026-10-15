@@ -44,7 +44,30 @@ pub(crate) struct Frame<'a> {
     /// From the frame top.
     pub first_baseline_pt: f64,
     pub obstacles: Vec<Rect>,
+    /// STU-LAY-118 `text_column_count` (1 for single-column callers).
+    pub column_count: usize,
+    /// STU-LAY-118 `text_column_gutter`, pt.
+    pub gutter_pt: f64,
+    /// STU-LAY-118 `vertical_balance_columns` (Folio layout-flow records).
+    pub balance: bool,
 }
+impl Frame<'_> {
+    /// Inset-area x range of column `c` in frame coordinates (equal widths, gutters between).
+    pub fn column_x(&self, c: usize) -> (f64, f64) {
+        let (lo, hi) = (self.inset_left_pt, self.width_pt - self.inset_right_pt);
+        let n = self.column_count.max(1) as f64;
+        let w = (hi - lo - (n - 1.0) * self.gutter_pt) / n;
+        let x0 = lo + c as f64 * (w + self.gutter_pt);
+        (x0, x0 + w)
+    }
+    /// Inset-area x range across all columns.
+    pub fn inner_x(&self) -> (f64, f64) {
+        (self.inset_left_pt, self.width_pt - self.inset_right_pt)
+    }
+}
+
+/// Most columns a frame may declare before the reflow refuses it (`budget_exceeded`).
+pub(crate) const MAX_FRAME_COLUMNS: u32 = 1024;
 
 pub(crate) struct Input<'a> {
     pub text: &'a str,
@@ -87,14 +110,14 @@ pub(crate) fn story_text<'a>(
 
 /// What this slice composes: one column, top-aligned, fixed-size frames, an explicit fixed first
 /// baseline, left-to-right Area stories. Everything else is a typed refusal.
-fn supported(story: &StudioTextStory, f: &StudioTextFrame) -> Result<(), LayoutError> {
+fn supported(story: &StudioTextStory, f: &StudioTextFrame, columns: bool) -> Result<(), LayoutError> {
     let rtl = story.story_direction == StoryDirection::RightToLeft
         || story
             .paragraphs
             .iter()
             .any(|p| p.paragraph_direction == Some(StoryParagraphDirection::RightToLeft));
     if rtl
-        || f.text_column_count != 1
+        || (f.text_column_count != 1 && !columns)
         || f.vertical_justification != VerticalJustification::Top
         || f.auto_sizing_type != AutoSizing::Off
         || f.first_baseline_offset != FirstBaseline::Fixed
@@ -109,6 +132,19 @@ pub(crate) fn resolve<'a>(
     story: &'a StudioTextStory,
     resolved_text: Option<&'a str>,
     obstacles: &[FrameObstacles],
+) -> Result<Input<'a>, LayoutError> {
+    resolve_flow(document, story, resolved_text, obstacles, None)
+}
+
+/// `resolve` that also admits multi-column frames (the threaded reflow) and reads frame flow
+/// options from the Folio layout-flow records. `flow = None` keeps single-column-only callers
+/// (tables, footnotes) on their refusal.
+pub(crate) fn resolve_flow<'a>(
+    document: &'a StudioDocument,
+    story: &'a StudioTextStory,
+    resolved_text: Option<&'a str>,
+    obstacles: &[FrameObstacles],
+    flow: Option<&hsk_studio_folio::StudioLayoutFlowRecords>,
 ) -> Result<Input<'a>, LayoutError> {
     let text = story_text(story, resolved_text)?;
     match story.text_kind {
@@ -219,6 +255,18 @@ pub(crate) fn resolve<'a>(
         if !rects.iter().all(Rect::valid) {
             return Err(LayoutError::InvalidGeometry);
         }
+        let column_count = if flow.is_some() { f.text_column_count } else { 1 };
+        if column_count > MAX_FRAME_COLUMNS {
+            return Err(LayoutError::BudgetExceeded);
+        }
+        let gutter = pt(&f.text_column_gutter)?;
+        let gutters = f64::from(column_count.saturating_sub(1)) * gutter;
+        if column_count == 0 || gutter < 0.0 || w - left - right - gutters <= 0.0 {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        let balance = flow
+            .and_then(|r| r.frame_options(&layer.layer_id))
+            .is_some_and(|o| o.vertical_balance_columns);
         frames.push(Frame {
             id: layer.layer_id.as_str(),
             layer_index,
@@ -234,10 +282,13 @@ pub(crate) fn resolve<'a>(
             inset_bottom_pt: bottom,
             first_baseline_pt: baseline,
             obstacles: rects,
+            column_count: column_count as usize,
+            gutter_pt: if column_count > 1 { gutter } else { 0.0 },
+            balance,
         });
     }
     for (_, _, f) in &chain {
-        supported(story, f)?;
+        supported(story, f, flow.is_some())?;
     }
     Ok(Input { text, frames })
 }
@@ -294,6 +345,9 @@ pub(crate) fn single_frame<'a>(
             inset_bottom_pt: bottom,
             first_baseline_pt: baseline,
             obstacles: Vec::new(),
+            column_count: 1,
+            gutter_pt: 0.0,
+            balance: false,
         },
         loc.page.side,
     ))
