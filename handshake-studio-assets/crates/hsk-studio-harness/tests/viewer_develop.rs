@@ -112,7 +112,7 @@ fn viewer_develop_sliders_undo_and_export_headlessly() {
     assert_eq!(v.run().ops().last().unwrap()["op"], "develop");
     assert!(mean_rgb(&mut v) > dark + 10.0, "exposure +1 brightens the composite");
     let notes = v.frame().unwrap().notes.join(" ");
-    assert!(notes.contains("display_clip_sources"), "values above 1 are shown through the declared Clip: {notes}");
+    assert!(notes.contains("clipped for display"), "values above 1 are shown through the declared Clip: {notes}");
 
     // Two sliders as one step; vibrance switches its group on (develop's gate).
     let r2 = v.set_develop_many(&[("develop.contrast", 30.0), ("develop.vibrance", 25.0)]).unwrap_or_else(|e| panic!("{e}"));
