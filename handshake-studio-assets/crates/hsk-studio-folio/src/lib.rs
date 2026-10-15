@@ -59,6 +59,8 @@ mod raster;
 pub use raster::*;
 mod vector;
 pub use vector::*;
+mod live_shape;
+pub use live_shape::*;
 mod typestyle;
 pub use typestyle::*;
 mod composition;

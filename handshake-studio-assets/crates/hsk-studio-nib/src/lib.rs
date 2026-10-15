@@ -15,5 +15,6 @@ pub mod boolean;
 pub mod edit;
 pub mod flatten;
 pub mod raster;
+pub mod shape;
 pub mod stroke;
 pub use descriptor::descriptor;
