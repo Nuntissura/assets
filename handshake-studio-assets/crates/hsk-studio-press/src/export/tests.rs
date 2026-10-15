@@ -239,3 +239,39 @@ fn dictionaries_read_back_through_the_strict_reader() {
         assert_eq!(sha256_hex(&crate::filters::decode_stream(ff, &Limits::default(), &mut budget).unwrap()), sha256_hex(INTER));
     }
 }
+
+/// The soft-masked group's structure (the render-back device skips soft masks): the form XObject is
+/// a transparency group, its `/ExtGState` carries `/BM`, `/ca` and a luminosity `/SMask` whose `/G`
+/// is a DeviceGray transparency group drawing the mask image (bytes equal the input), `/BC [0]`.
+#[test]
+fn soft_mask_structure_reads_back() {
+    let cancel = CancellationToken::default();
+    let mut ex = PdfExport::new(ExportOptions::default(), &Limits::default()).unwrap();
+    let p = ex.add_page(PageSpec { media_box_pt: [0.0, 0.0, 100.0, 100.0], trim_box_pt: None, bleed_box_pt: None }).unwrap();
+    ex.begin_group(p).unwrap();
+    ex.fill_path(p, &square(0.0, 0.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
+    let px = [10u8, 20, 30, 40];
+    let mask = SoftMask { image: ImageSpec { width: 2, height: 2, bits: 8, colour: ImageColour::DeviceGray, samples: &px, alpha: None }, placement: [100.0, 0.0, 0.0, 100.0, 0.0, 0.0] };
+    ex.end_group(p, GroupStyle { opacity: 0.25, blend: BlendMode::Screen, isolated: true, knockout: false, soft_mask: Some(mask) }).unwrap();
+    let (bytes, _) = ex.finish(&cancel).unwrap();
+    let doc = PdfDoc::open(&bytes, &Limits::default(), &cancel).unwrap();
+    let res = doc.dict_of(doc.pages[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
+    let gs = res.get("ExtGState").and_then(Object::as_dict).unwrap().entries[0].1.clone();
+    let gs = doc.resolve(&gs).as_dict().unwrap();
+    assert!(gs.get("BM").unwrap().is_name("Screen"));
+    assert_eq!(gs.get("ca").and_then(Object::as_f64), Some(0.25));
+    let sm = gs.get("SMask").and_then(Object::as_dict).unwrap();
+    assert!(sm.get("S").unwrap().is_name("Luminosity"));
+    assert_eq!(sm.get("BC").and_then(Object::as_array).map(|a| a.len()), Some(1));
+    let Some(Object::Stream(g)) = sm.get("G").map(|o| doc.resolve(o)) else { panic!() };
+    let grp = g.dict.get("Group").and_then(Object::as_dict).unwrap();
+    assert!(grp.get("CS").unwrap().is_name("DeviceGray"));
+    let img = g.dict.get("Resources").and_then(Object::as_dict).unwrap().get("XObject").and_then(Object::as_dict).unwrap().get("MIm0").unwrap();
+    let Object::Stream(img) = doc.resolve(img) else { panic!() };
+    let mut budget = usize::MAX;
+    assert_eq!(crate::filters::decode_stream(img, &Limits::default(), &mut budget).unwrap(), px);
+    let form = res.get("XObject").and_then(Object::as_dict).unwrap().entries[0].1.clone();
+    let Object::Stream(form) = doc.resolve(&form) else { panic!() };
+    let fg = form.dict.get("Group").and_then(Object::as_dict).unwrap();
+    assert!(fg.get("S").unwrap().is_name("Transparency") && fg.get("I") == Some(&Object::Bool(true)));
+}

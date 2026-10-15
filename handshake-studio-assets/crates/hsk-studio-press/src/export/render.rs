@@ -29,6 +29,9 @@ pub struct RenderedPage {
     pub font_warnings: u32,
     /// hayro `ImageDecodeFailure` warnings.
     pub image_warnings: u32,
+    /// What the paint device did not draw or approximated (`FlattenNote::as_str`, sorted), e.g.
+    /// `soft_mask` (content under a soft mask is skipped) or `blend_mode_approximated`.
+    pub notes: Vec<&'static str>,
 }
 
 impl RenderedPage {
@@ -103,6 +106,7 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
                     rgb: std::mem::take(&mut painter.px),
                     font_warnings: fonts.load(Ordering::Relaxed),
                     image_warnings: images.load(Ordering::Relaxed),
+                    notes: painter.notes.iter().map(|n| n.as_str()).collect(),
                 })
             },
         );

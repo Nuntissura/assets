@@ -272,3 +272,75 @@ fn render_back_reads_the_export() {
     let r = render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap();
     assert_eq!(r.pixel(300, 0), None);
 }
+
+fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<PathCommand> {
+    vec![
+        PathCommand::MoveTo(x0, y0),
+        PathCommand::LineTo(x1, y0),
+        PathCommand::LineTo(x1, y1),
+        PathCommand::LineTo(x0, y1),
+        PathCommand::Close,
+    ]
+}
+
+/// Item 6: constant alpha and blend modes through `/ExtGState`, transparency groups as form
+/// XObjects painted with their own `/ExtGState`, luminosity soft masks; read back by `render_page`.
+/// Region A: red at fill alpha 0.5 over white. B: cyan Multiply over yellow = green. C: a group at
+/// opacity 0.5 holding one opaque black square. D: a soft-masked group (the paint device skips
+/// soft-masked content and says so: soft mask compositing is NOT_PROVEN by this render).
+#[test]
+fn transparency_through_extgstate_groups_and_soft_masks() {
+    let cancel = CancellationToken::default();
+    let lim = Limits::default();
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 400.0, 100.0])).unwrap();
+    ex.set_draw_state(p, DrawState { fill_alpha: 0.5, ..DrawState::default() }).unwrap();
+    ex.fill_path(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, Colour::DeviceRgb([1.0, 0.0, 0.0])).unwrap();
+    ex.set_draw_state(p, DrawState::default()).unwrap();
+    ex.fill_path(p, &rect_path(100.0, 0.0, 200.0, 100.0), FillRule::NonZero, Colour::DeviceRgb([1.0, 1.0, 0.0])).unwrap();
+    ex.set_draw_state(p, DrawState { blend: BlendMode::Multiply, ..DrawState::default() }).unwrap();
+    ex.fill_path(p, &rect_path(100.0, 0.0, 200.0, 100.0), FillRule::NonZero, Colour::DeviceRgb([0.0, 1.0, 1.0])).unwrap();
+    ex.set_draw_state(p, DrawState::default()).unwrap();
+    ex.begin_group(p).unwrap();
+    ex.fill_path(p, &rect_path(200.0, 0.0, 300.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
+    let plain = GroupStyle { opacity: 0.5, blend: BlendMode::Normal, isolated: true, knockout: false, soft_mask: None };
+    ex.end_group(p, plain).unwrap();
+    // An empty group writes nothing.
+    ex.begin_group(p).unwrap();
+    ex.end_group(p, plain).unwrap();
+    ex.begin_group(p).unwrap();
+    ex.fill_path(p, &rect_path(300.0, 0.0, 400.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
+    let mask_px = [255u8, 0];
+    let mask = SoftMask {
+        image: ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &mask_px, alpha: None },
+        placement: [100.0, 0.0, 0.0, 100.0, 300.0, 0.0],
+    };
+    ex.end_group(p, GroupStyle { soft_mask: Some(mask), opacity: 1.0, ..plain }).unwrap();
+    let (bytes, _) = ex.finish(&cancel).unwrap();
+    let r = render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap();
+    let near = |a: [u8; 3], b: [u8; 3], t: u8| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= t);
+    let at = |x: u32| r.pixel(x, 50).unwrap();
+    assert!(near(at(50), [255, 128, 128], 3), "alpha {:?}", at(50));
+    assert!(near(at(150), [0, 255, 0], 3), "multiply {:?}", at(150));
+    assert!(near(at(250), [128, 128, 128], 3), "group opacity {:?}", at(250));
+    assert!(r.notes.contains(&"soft_mask"), "{:?}", r.notes);
+    println!("NOT_PROVEN: soft mask compositing (press paint device skips soft-masked content; structure is checked in src/export/tests.rs)");
+    // Typed refusals.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 10.0, 10.0])).unwrap();
+    assert_eq!(ex.end_group(p, plain), Err(ExportError::UnbalancedGroup));
+    assert_eq!(ex.set_draw_state(p, DrawState { fill_alpha: 1.5, ..DrawState::default() }), Err(ExportError::AlphaOutOfRange));
+    assert_eq!(ex.set_draw_state(p, DrawState { stroke_alpha: f64::NAN, ..DrawState::default() }), Err(ExportError::NonFinite));
+    ex.begin_group(p).unwrap();
+    ex.fill_path(p, &rect_path(0.0, 0.0, 5.0, 5.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
+    assert_eq!(ex.end_group(p, GroupStyle { opacity: -0.1, ..plain }), Err(ExportError::AlphaOutOfRange));
+    let rgb = [0u8; 6];
+    let bad = SoftMask { image: ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceRgb, samples: &rgb, alpha: None }, placement: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] };
+    assert_eq!(ex.end_group(p, GroupStyle { soft_mask: Some(bad), ..plain }), Err(ExportError::InvalidMask));
+    // One group is still open (the refused end_group calls left it); 31 more reach the 32 cap.
+    for _ in 0..31 {
+        ex.begin_group(p).unwrap();
+    }
+    assert_eq!(ex.begin_group(p), Err(ExportError::UnbalancedGroup));
+    assert_eq!(ex.finish(&cancel).err(), Some(ExportError::UnbalancedGroup));
+}

@@ -59,6 +59,8 @@ pub const MAX_EXPORT_TEXT: usize = 4096;
 const MAX_GLYPH_TEXT: usize = 16;
 /// `bfchar` entries per block (Adobe TN 5014: at most 100).
 const BFCHAR_BLOCK: usize = 100;
+/// Deepest nesting of open transparency groups on one page.
+const MAX_GROUP_DEPTH: usize = 32;
 const VERSIONS: [&str; 5] = ["1.4", "1.5", "1.6", "1.7", "2.0"];
 
 /// Typed refusal of the export builder. Stable snake_case [`ExportError::code`].
@@ -120,6 +122,12 @@ pub enum ExportError {
     IccComponentsMismatch,
     /// A text string longer than [`MAX_EXPORT_TEXT`] chars.
     TextTooLong,
+    /// An alpha or opacity outside 0..=1.
+    AlphaOutOfRange,
+    /// `end_group` without an open group, `finish` with one open, or groups deeper than 32.
+    UnbalancedGroup,
+    /// A soft mask image that is not `DeviceGray` without alpha.
+    InvalidMask,
     /// `render_page`: the canvas at the requested scale is over `Limits::max_flatten_pixels`.
     RenderOverBudget,
     /// `render_page`: the interpreter could not open the file or stopped (panic).
@@ -162,6 +170,9 @@ impl ExportError {
             Self::IccUnreadable => "icc_unreadable",
             Self::IccComponentsMismatch => "icc_components_mismatch",
             Self::TextTooLong => "text_too_long",
+            Self::AlphaOutOfRange => "alpha_out_of_range",
+            Self::UnbalancedGroup => "unbalanced_group",
+            Self::InvalidMask => "invalid_mask",
             Self::RenderOverBudget => "render_over_budget",
             Self::RenderRefused => "render_refused",
             Self::Press(_) => "press_refused",
@@ -331,15 +342,101 @@ pub struct ExportReceipt {
     pub conformance: &'static str,
 }
 
+/// PDF blend modes (ISO 32000-2 11.3.5, Tables 134 and 135).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+impl BlendMode {
+    /// The `/BM` name.
+    pub const fn pdf_name(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Multiply => "Multiply",
+            Self::Screen => "Screen",
+            Self::Overlay => "Overlay",
+            Self::Darken => "Darken",
+            Self::Lighten => "Lighten",
+            Self::ColorDodge => "ColorDodge",
+            Self::ColorBurn => "ColorBurn",
+            Self::HardLight => "HardLight",
+            Self::SoftLight => "SoftLight",
+            Self::Difference => "Difference",
+            Self::Exclusion => "Exclusion",
+            Self::Hue => "Hue",
+            Self::Saturation => "Saturation",
+            Self::Color => "Color",
+            Self::Luminosity => "Luminosity",
+        }
+    }
+}
+
+/// Constant alpha and blend mode of the drawings that follow on a page (an `/ExtGState` with
+/// `/ca`, `/CA`, `/BM` set after each drawing's `q`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawState {
+    pub fill_alpha: f64,
+    pub stroke_alpha: f64,
+    pub blend: BlendMode,
+}
+impl Default for DrawState {
+    fn default() -> Self {
+        Self { fill_alpha: 1.0, stroke_alpha: 1.0, blend: BlendMode::Normal }
+    }
+}
+
+/// A luminosity soft mask (ISO 32000-2 11.6.5.2): a `DeviceGray` image (8 or 16 bits, no alpha)
+/// drawn through `placement` into the mask group; outside the image the mask is 0 (`/BC [0]`).
+#[derive(Clone, Copy, Debug)]
+pub struct SoftMask<'a> {
+    pub image: ImageSpec<'a>,
+    pub placement: [f64; 6],
+}
+
+/// How a closed group is painted: constant opacity, blend mode, isolated / knockout flags of the
+/// transparency group and an optional soft mask.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupStyle<'a> {
+    pub opacity: f64,
+    pub blend: BlendMode,
+    pub isolated: bool,
+    pub knockout: bool,
+    pub soft_mask: Option<SoftMask<'a>>,
+}
+
+/// Content of one page or of one open transparency group, with the resources it uses.
+#[derive(Default)]
+struct Level {
+    ops: Vec<Op>,
+    fonts: BTreeSet<usize>,
+    profiles: BTreeSet<usize>,
+    /// (resource name, XObject number) of images and forms.
+    xobjects: Vec<(String, u32)>,
+    gstates: Vec<(String, u32)>,
+    state: DrawState,
+}
+
 struct PageBuild {
     spec: PageSpec,
     page_obj: u32,
     content_obj: u32,
-    ops: Vec<Op>,
-    fonts: BTreeSet<usize>,
-    profiles: BTreeSet<usize>,
-    /// (resource index, XObject number).
-    images: Vec<(usize, u32)>,
+    /// `levels[0]` is the page; the others are open groups, innermost last.
+    levels: Vec<Level>,
 }
 
 struct FontBuild {
@@ -381,6 +478,11 @@ pub struct PdfExport {
     subset_by_hash: BTreeMap<[u8; 32], usize>,
     profiles: Vec<IccBuild>,
     images: usize,
+    forms: usize,
+    /// Shared `/ExtGState` objects of draw states: (fill alpha bits, stroke alpha bits, blend) ->
+    /// (resource name, object).
+    gstates: BTreeMap<(u64, u64, BlendMode), (String, u32)>,
+    unique_gstates: usize,
     raw_total: usize,
     written_total: usize,
 }
@@ -396,6 +498,9 @@ fn rf(num: u32) -> Object {
 }
 fn int<T: Into<i64>>(v: T) -> Object {
     Object::Int(v.into())
+}
+fn name_obj(n: &str) -> Object {
+    Object::Name(n.as_bytes().to_vec())
 }
 fn op(n: &str, operands: Vec<Object>) -> Op {
     Op { name: n.as_bytes().to_vec(), operands, start: 0, end: 0, inline_data: None }
@@ -484,6 +589,9 @@ impl PdfExport {
             subset_by_hash: BTreeMap::new(),
             profiles: Vec::new(),
             images: 0,
+            forms: 0,
+            gstates: BTreeMap::new(),
+            unique_gstates: 0,
             raw_total: 0,
             written_total: 0,
         };
@@ -570,15 +678,247 @@ impl PdfExport {
         self.pages.get(page.0).ok_or(ExportError::NoSuchPage)
     }
 
+    /// The innermost open level (group or page) of `page`.
+    fn top(&self, page: PageHandle) -> Result<&Level> {
+        self.page(page)?.levels.last().ok_or(ExportError::NoSuchPage)
+    }
+    fn top_mut(&mut self, page: PageHandle) -> Result<&mut Level> {
+        self.pages.get_mut(page.0).and_then(|p| p.levels.last_mut()).ok_or(ExportError::NoSuchPage)
+    }
+
     fn push_ops(&mut self, page: PageHandle, ops: Vec<Op>) -> Result<()> {
-        let p = self.pages.get_mut(page.0).ok_or(ExportError::NoSuchPage)?;
-        match p.ops.len().checked_add(ops.len()) {
-            Some(n) if n <= self.limits.max_content_ops => {
-                p.ops.extend(ops);
+        let max = self.limits.max_content_ops;
+        let l = self.top_mut(page)?;
+        match l.ops.len().checked_add(ops.len()) {
+            Some(n) if n <= max => {
+                l.ops.extend(ops);
                 Ok(())
             }
             _ => Err(ExportError::TooManyOperations),
         }
+    }
+
+    /// The shared `/ExtGState` of a draw state (created once).
+    fn gstate_for(&mut self, st: DrawState) -> Result<(String, u32)> {
+        let key = (st.fill_alpha.to_bits(), st.stroke_alpha.to_bits(), st.blend);
+        if let Some(v) = self.gstates.get(&key) {
+            return Ok(v.clone());
+        }
+        self.reserve(1)?;
+        let mut d = Dict::default();
+        d.set("Type", name("ExtGState"));
+        d.set("ca", real(st.fill_alpha));
+        d.set("CA", real(st.stroke_alpha));
+        d.set("BM", name(st.blend.pdf_name()));
+        let num = self.alloc();
+        self.insert(num, Object::Dict(d));
+        let v = (format!("GS{}", self.gstates.len()), num);
+        self.gstates.insert(key, v.clone());
+        Ok(v)
+    }
+
+    /// Alpha and blend mode for the drawings that follow on `page` (in the innermost open group).
+    pub fn set_draw_state(&mut self, page: PageHandle, state: DrawState) -> Result<()> {
+        finite(&[state.fill_alpha, state.stroke_alpha])?;
+        if !((0.0..=1.0).contains(&state.fill_alpha) && (0.0..=1.0).contains(&state.stroke_alpha)) {
+            return Err(ExportError::AlphaOutOfRange);
+        }
+        self.top_mut(page)?.state = state;
+        Ok(())
+    }
+
+    /// Opens a transparency group on `page`: what is drawn until the matching [`Self::end_group`]
+    /// is composited as one (a form XObject with `/Group /S /Transparency`).
+    pub fn begin_group(&mut self, page: PageHandle) -> Result<()> {
+        let p = self.pages.get_mut(page.0).ok_or(ExportError::NoSuchPage)?;
+        if p.levels.len() > MAX_GROUP_DEPTH {
+            return Err(ExportError::UnbalancedGroup);
+        }
+        p.levels.push(Level::default());
+        Ok(())
+    }
+
+    /// Closes the innermost group of `page` and paints it with `style` in the enclosing level. An
+    /// empty group writes nothing.
+    pub fn end_group(&mut self, page: PageHandle, style: GroupStyle<'_>) -> Result<()> {
+        let p = self.page(page)?;
+        if p.levels.len() < 2 {
+            return Err(ExportError::UnbalancedGroup);
+        }
+        finite(&[style.opacity])?;
+        if !(0.0..=1.0).contains(&style.opacity) {
+            return Err(ExportError::AlphaOutOfRange);
+        }
+        let media = p.spec.media_box_pt;
+        let mask = match style.soft_mask {
+            None => None,
+            Some(m) => {
+                if m.image.colour != ImageColour::DeviceGray || m.image.alpha.is_some() {
+                    return Err(ExportError::InvalidMask);
+                }
+                finite(&m.placement)?;
+                Some((self.image_objects(m.image)?, m.placement))
+            }
+        };
+        let level = self.top(page)?;
+        if level.ops.is_empty() {
+            if let Some(p) = self.pages.get_mut(page.0) {
+                p.levels.pop();
+            }
+            return Ok(());
+        }
+        let content = write_ops(&level.ops, &[])?;
+        let resources = self.resources(level)?;
+        let (form_stream, form_len) = {
+            let mut d = Dict::default();
+            d.set("Type", name("XObject"));
+            d.set("Subtype", name("Form"));
+            d.set("BBox", rect(&media));
+            let mut g = Dict::default();
+            g.set("Type", name("Group"));
+            g.set("S", name("Transparency"));
+            g.set("I", Object::Bool(style.isolated));
+            g.set("K", Object::Bool(style.knockout));
+            d.set("Group", Object::Dict(g));
+            d.set("Resources", Object::Dict(resources));
+            flate_stream(d, &content)
+        };
+        // Mask group content: the mask image through its placement.
+        let mask_content = match &mask {
+            Some((_, placement)) => Some(write_ops(
+                &[
+                    op("q", vec![]),
+                    op("cm", placement.iter().map(|v| real(*v)).collect()),
+                    op("Do", vec![name_obj("MIm0")]),
+                    op("Q", vec![]),
+                ],
+                &[],
+            )?),
+            None => None,
+        };
+        // Parent level must take q / gs / Do / Q.
+        let parent_ops = self.page(page)?.levels.iter().rev().nth(1).map_or(0, |l| l.ops.len());
+        match parent_ops.checked_add(4) {
+            Some(n) if n <= self.limits.max_content_ops => {}
+            _ => return Err(ExportError::TooManyOperations),
+        }
+        let objects = 2u32.saturating_add(if mask.is_some() { 3 } else { 0 });
+        self.reserve(objects)?;
+        let mut raw = content.len();
+        let mut written = form_len;
+        if let Some(((_, _, img_raw, img_written), _)) = &mask {
+            raw = raw.checked_add(*img_raw).ok_or(ExportError::AggregateOverBudget)?;
+            written = written.checked_add(*img_written).ok_or(ExportError::AggregateOverBudget)?;
+        }
+        let mask_form = mask_content.map(|c| {
+            let mut d = Dict::default();
+            d.set("Type", name("XObject"));
+            d.set("Subtype", name("Form"));
+            d.set("BBox", rect(&media));
+            let mut g = Dict::default();
+            g.set("Type", name("Group"));
+            g.set("S", name("Transparency"));
+            g.set("CS", name("DeviceGray"));
+            d.set("Group", Object::Dict(g));
+            let len = c.len();
+            (flate_stream(d, &c), len)
+        });
+        if let Some(((s, l), c)) = &mask_form {
+            raw = raw.checked_add(*c).ok_or(ExportError::AggregateOverBudget)?;
+            written = written.checked_add(*l).ok_or(ExportError::AggregateOverBudget)?;
+            let _ = s;
+        }
+        self.charge(raw, written)?;
+        // Everything is checked and charged: build objects.
+        let form = self.alloc();
+        self.insert(form, form_stream);
+        let mut gs = Dict::default();
+        gs.set("Type", name("ExtGState"));
+        gs.set("ca", real(style.opacity));
+        gs.set("CA", real(style.opacity));
+        gs.set("BM", name(style.blend.pdf_name()));
+        if let (Some(((img, smask, _, _), _)), Some(((mut mform, _), _))) = (mask, mask_form) {
+            let inum = self.alloc();
+            let mut img = img;
+            if let Some(sm) = smask {
+                let snum = self.alloc();
+                self.insert(snum, sm);
+                if let Object::Stream(st) = &mut img {
+                    st.dict.set("SMask", rf(snum));
+                }
+            }
+            self.insert(inum, img);
+            if let Object::Stream(st) = &mut mform {
+                let mut x = Dict::default();
+                x.set("MIm0", rf(inum));
+                let mut r = Dict::default();
+                r.set("XObject", Object::Dict(x));
+                st.dict.set("Resources", Object::Dict(r));
+            }
+            let mnum = self.alloc();
+            self.insert(mnum, mform);
+            let mut sm = Dict::default();
+            sm.set("Type", name("Mask"));
+            sm.set("S", name("Luminosity"));
+            sm.set("G", rf(mnum));
+            sm.set("BC", Object::Array(vec![real(0.0)]));
+            gs.set("SMask", Object::Dict(sm));
+        }
+        let gnum = self.alloc();
+        self.insert(gnum, Object::Dict(gs));
+        let gname = format!("GSu{}", self.unique_gstates);
+        self.unique_gstates = self.unique_gstates.saturating_add(1);
+        let fname = format!("Fm{}", self.forms);
+        self.forms = self.forms.saturating_add(1);
+        if let Some(p) = self.pages.get_mut(page.0) {
+            p.levels.pop();
+        }
+        let parent = self.top_mut(page)?;
+        parent.ops.extend([
+            op("q", vec![]),
+            op("gs", vec![name_obj(&gname)]),
+            op("Do", vec![name_obj(&fname)]),
+            op("Q", vec![]),
+        ]);
+        parent.gstates.push((gname, gnum));
+        parent.xobjects.push((fname, form));
+        Ok(())
+    }
+
+    /// The resource dictionary of one level.
+    fn resources(&self, l: &Level) -> Result<Dict> {
+        let mut res = Dict::default();
+        if !l.fonts.is_empty() {
+            let mut d = Dict::default();
+            for f in &l.fonts {
+                let num = self.fonts.get(*f).ok_or(ExportError::NoSuchFont)?.type0;
+                d.set_key(format!("F{f}").as_bytes(), rf(num));
+            }
+            res.set("Font", Object::Dict(d));
+        }
+        if !l.xobjects.is_empty() {
+            let mut d = Dict::default();
+            for (n, num) in &l.xobjects {
+                d.set_key(n.as_bytes(), rf(*num));
+            }
+            res.set("XObject", Object::Dict(d));
+        }
+        if !l.profiles.is_empty() {
+            let mut d = Dict::default();
+            for h in &l.profiles {
+                let space = self.profiles.get(*h).ok_or(ExportError::NoSuchProfile)?.space;
+                d.set_key(format!("CS{h}").as_bytes(), rf(space));
+            }
+            res.set("ColorSpace", Object::Dict(d));
+        }
+        if !l.gstates.is_empty() {
+            let mut d = Dict::default();
+            for (n, num) in &l.gstates {
+                d.set_key(n.as_bytes(), rf(*num));
+            }
+            res.set("ExtGState", Object::Dict(d));
+        }
+        Ok(res)
     }
 
     /// Adds a page; boxes must be finite with positive size, trim and bleed inside the media box.
@@ -599,10 +939,7 @@ impl PdfExport {
             spec,
             page_obj,
             content_obj,
-            ops: Vec::new(),
-            fonts: BTreeSet::new(),
-            profiles: BTreeSet::new(),
-            images: Vec::new(),
+            levels: vec![Level::default()],
         });
         Ok(PageHandle(self.pages.len().saturating_sub(1)))
     }
@@ -673,14 +1010,24 @@ impl PdfExport {
     }
 
     fn draw(&mut self, page: PageHandle, body: Vec<Op>, colour: Option<usize>) -> Result<()> {
-        self.page(page)?;
-        let mut ops = Vec::with_capacity(body.len().saturating_add(2));
+        let state = self.top(page)?.state;
+        let gs = if state == DrawState::default() { None } else { Some(self.gstate_for(state)?) };
+        let mut ops = Vec::with_capacity(body.len().saturating_add(3));
         ops.push(op("q", vec![]));
+        if let Some((n, _)) = &gs {
+            ops.push(op("gs", vec![name_obj(n)]));
+        }
         ops.extend(body);
         ops.push(op("Q", vec![]));
         self.push_ops(page, ops)?;
-        if let (Some(i), Some(p)) = (colour, self.pages.get_mut(page.0)) {
-            p.profiles.insert(i);
+        let l = self.top_mut(page)?;
+        if let Some(i) = colour {
+            l.profiles.insert(i);
+        }
+        if let Some(g) = gs
+            && !l.gstates.contains(&g)
+        {
+            l.gstates.push(g);
         }
         Ok(())
     }
@@ -718,10 +1065,9 @@ impl PdfExport {
         self.draw(page, body, icc)
     }
 
-    /// Draws `image` through the `cm` matrix `placement` (`[a b c d e f]`: the unit square to points).
-    pub fn draw_image(&mut self, page: PageHandle, image: ImageSpec<'_>, placement: [f64; 6]) -> Result<()> {
-        self.page(page)?;
-        finite(&placement)?;
+    /// The image XObject and optional SMask of `image` (checked, not yet charged or inserted) with
+    /// its raw and written byte counts.
+    fn image_objects(&self, image: ImageSpec<'_>) -> Result<(Object, Option<Object>, usize, usize)> {
         let bytes_per = match image.bits {
             8 => 1usize,
             16 => 2,
@@ -755,7 +1101,6 @@ impl PdfExport {
             return Err(ExportError::ImageSamplesLength);
         }
         self.precheck_raw(raw)?;
-        self.reserve(if image.alpha.is_some() { 2 } else { 1 })?;
         let base = |cs: Object| {
             let mut d = Dict::default();
             d.set("Type", name("XObject"));
@@ -769,17 +1114,25 @@ impl PdfExport {
         let mask = image.alpha.map(|a| flate_stream(base(name("DeviceGray")), a));
         let (stream, len) = flate_stream(base(space), image.samples);
         let written = len.checked_add(mask.as_ref().map_or(0, |m| m.1)).ok_or(ExportError::AggregateOverBudget)?;
-        let mut ops = vec![op("cm", placement.iter().map(|v| real(*v)).collect())];
-        let res = self.page(page)?.images.len();
-        ops.push(op("Do", vec![Object::Name(format!("Im{res}").into_bytes())]));
-        // Count the q/cm/Do/Q operations before charging anything.
-        match self.page(page)?.ops.len().checked_add(4) {
+        Ok((stream, mask.map(|m| m.0), raw, written))
+    }
+
+    /// Draws `image` through the `cm` matrix `placement` (`[a b c d e f]`: the unit square to points).
+    pub fn draw_image(&mut self, page: PageHandle, image: ImageSpec<'_>, placement: [f64; 6]) -> Result<()> {
+        self.page(page)?;
+        finite(&placement)?;
+        let (stream, mask, raw, written) = self.image_objects(image)?;
+        let res = format!("Im{}", self.images);
+        let ops = vec![op("cm", placement.iter().map(|v| real(*v)).collect()), op("Do", vec![name_obj(&res)])];
+        // Count the q/gs/cm/Do/Q operations before charging anything.
+        match self.top(page)?.ops.len().checked_add(5) {
             Some(n) if n <= self.limits.max_content_ops => {}
             _ => return Err(ExportError::TooManyOperations),
         }
+        self.reserve(if mask.is_some() { 3 } else { 2 })?;
         self.charge(raw, written)?;
         let mut stream = stream;
-        if let Some((m, _)) = mask {
+        if let Some(m) = mask {
             let mnum = self.alloc();
             self.insert(mnum, m);
             if let Object::Stream(s) = &mut stream {
@@ -789,9 +1142,7 @@ impl PdfExport {
         let num = self.alloc();
         self.insert(num, stream);
         self.draw(page, ops, None)?;
-        if let Some(p) = self.pages.get_mut(page.0) {
-            p.images.push((res, num));
-        }
+        self.top_mut(page)?.xobjects.push((res, num));
         self.images = self.images.saturating_add(1);
         Ok(())
     }
@@ -939,9 +1290,7 @@ impl PdfExport {
         }
         body.push(op("ET", vec![]));
         self.draw(page, body, icc)?;
-        if let Some(p) = self.pages.get_mut(page.0) {
-            p.fonts.insert(font.0);
-        }
+        self.top_mut(page)?.fonts.insert(font.0);
         Ok(())
     }
 
@@ -956,34 +1305,15 @@ impl PdfExport {
         let mut kids = Vec::with_capacity(pages.len());
         for p in &pages {
             check_cancel(cancel)?;
-            let content = write_ops(&p.ops, &[])?;
+            if p.levels.len() != 1 {
+                return Err(ExportError::UnbalancedGroup);
+            }
+            let base = p.levels.first().ok_or(ExportError::UnbalancedGroup)?;
+            let content = write_ops(&base.ops, &[])?;
             let (stream, len) = flate_stream(Dict::default(), &content);
             self.charge(content.len(), len)?;
             self.insert(p.content_obj, stream);
-            let mut res = Dict::default();
-            if !p.fonts.is_empty() {
-                let mut d = Dict::default();
-                for f in &p.fonts {
-                    let num = self.fonts.get(*f).ok_or(ExportError::NoSuchFont)?.type0;
-                    d.set_key(format!("F{f}").as_bytes(), rf(num));
-                }
-                res.set("Font", Object::Dict(d));
-            }
-            if !p.images.is_empty() {
-                let mut d = Dict::default();
-                for (i, num) in &p.images {
-                    d.set_key(format!("Im{i}").as_bytes(), rf(*num));
-                }
-                res.set("XObject", Object::Dict(d));
-            }
-            if !p.profiles.is_empty() {
-                let mut d = Dict::default();
-                for h in &p.profiles {
-                    let space = self.profiles.get(*h).ok_or(ExportError::NoSuchProfile)?.space;
-                    d.set_key(format!("CS{h}").as_bytes(), rf(space));
-                }
-                res.set("ColorSpace", Object::Dict(d));
-            }
+            let res = self.resources(base)?;
             let mut pd = Dict::default();
             pd.set("Type", name("Page"));
             pd.set("Parent", rf(self.pages_root));
