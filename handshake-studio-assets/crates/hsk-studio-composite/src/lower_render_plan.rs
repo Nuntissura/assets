@@ -1518,25 +1518,7 @@ impl InputsLowering {
         key: SourceKey,
         vectors: &'p crate::vector::PreparedVectors,
     ) -> Option<hsk_studio_pigment::Mask<'p>> {
-        if let Some((_, layer)) = self.vector_masks.iter().find(|(k, _)| *k == key) {
-            return vectors.plane(layer)?.mask();
-        }
-        if let Some((_, plane)) = self.clip_planes.iter().find(|(k, _)| *k == key) {
-            return Some(plane.mask());
-        }
-        let (_, layer, row) = self.vector_rows.iter().find(|(k, _, _)| *k == key)?;
-        // A painted stroke row has two keys for one (layer, row): its tile and its stroke mask. The
-        // tile key is not a mask (callers that try the mask first then serve the tile, e.g. the
-        // composition static path, found by lane SMB-COMPOSITE-VECTOR-MASK).
-        if self
-            .plan
-            .nodes
-            .iter()
-            .any(|n| matches!(n, PlanNode::Tile(t) if t.key == key))
-        {
-            return None;
-        }
-        vectors.plane(layer)?.stroke_mask(*row)
+        vector_mask_of(&self.plan, &self.vector_masks, &self.clip_planes, &self.vector_rows, key, vectors)
     }
     /// The painted (gradient or pattern) row tile behind `key`, in the plan's colour tag `space`.
     pub fn vector_paint<'p>(
@@ -1545,24 +1527,7 @@ impl InputsLowering {
         vectors: &'p crate::vector::PreparedVectors,
         space: hsk_studio_pigment::render_plan::ColourTag,
     ) -> Option<hsk_studio_pigment::render_plan::TilePlanes<'p>> {
-        let (_, layer, row) = self.vector_rows.iter().find(|(k, _, _)| *k == key)?;
-        let plane = vectors.plane(layer)?;
-        let crate::vector::PreparedPaint::Painted(t) = &plane.fills.get(*row)?.paint else {
-            return None;
-        };
-        Some(hsk_studio_pigment::render_plan::TilePlanes {
-            width: t.placement.width,
-            height: t.placement.height,
-            colour: &t.colour,
-            colour_stride_bytes: u64::from(t.placement.width).checked_mul(12)?,
-            alpha: &t.alpha,
-            alpha_stride_bytes: u64::from(t.placement.width).checked_mul(4)?,
-            colour_sha256: t.colour_sha256,
-            alpha_sha256: t.alpha_sha256,
-            format: SampleFormat::RgbF32Le,
-            alpha_convention: AlphaConvention::Straight,
-            space,
-        })
+        vector_paint_of(&self.vector_rows, key, vectors, space)
     }
     /// The image paint source id behind `key`.
     pub fn image_source(&self, key: SourceKey) -> Option<&str> {
@@ -1586,6 +1551,63 @@ impl InputsLowering {
             notes: lowered.notes,
         }
     }
+}
+
+/// [`InputsLowering::vector_mask`] over the key tables of a lowering (shared with the frame tables
+/// of `crate::temporal::lower_frame_with_inputs`).
+pub(crate) fn vector_mask_of<'p>(
+    plan: &RenderPlan,
+    vector_masks: &[(SourceKey, String)],
+    clip_planes: &'p [(SourceKey, crate::vector::ClipPlane)],
+    vector_rows: &[(SourceKey, String, usize)],
+    key: SourceKey,
+    vectors: &'p crate::vector::PreparedVectors,
+) -> Option<hsk_studio_pigment::Mask<'p>> {
+    if let Some((_, layer)) = vector_masks.iter().find(|(k, _)| *k == key) {
+        return vectors.plane(layer)?.mask();
+    }
+    if let Some((_, plane)) = clip_planes.iter().find(|(k, _)| *k == key) {
+        return Some(plane.mask());
+    }
+    let (_, layer, row) = vector_rows.iter().find(|(k, _, _)| *k == key)?;
+    // A painted stroke row has two keys for one (layer, row): its tile and its stroke mask. The
+    // tile key is not a mask (callers that try the mask first then serve the tile, e.g. the
+    // composition static path, found by lane SMB-COMPOSITE-VECTOR-MASK).
+    if plan
+        .nodes
+        .iter()
+        .any(|n| matches!(n, PlanNode::Tile(t) if t.key == key))
+    {
+        return None;
+    }
+    vectors.plane(layer)?.stroke_mask(*row)
+}
+
+/// [`InputsLowering::vector_paint`] over a lowering's vector row table.
+pub(crate) fn vector_paint_of<'p>(
+    vector_rows: &[(SourceKey, String, usize)],
+    key: SourceKey,
+    vectors: &'p crate::vector::PreparedVectors,
+    space: hsk_studio_pigment::render_plan::ColourTag,
+) -> Option<hsk_studio_pigment::render_plan::TilePlanes<'p>> {
+    let (_, layer, row) = vector_rows.iter().find(|(k, _, _)| *k == key)?;
+    let plane = vectors.plane(layer)?;
+    let crate::vector::PreparedPaint::Painted(t) = &plane.fills.get(*row)?.paint else {
+        return None;
+    };
+    Some(hsk_studio_pigment::render_plan::TilePlanes {
+        width: t.placement.width,
+        height: t.placement.height,
+        colour: &t.colour,
+        colour_stride_bytes: u64::from(t.placement.width).checked_mul(12)?,
+        alpha: &t.alpha,
+        alpha_stride_bytes: u64::from(t.placement.width).checked_mul(4)?,
+        colour_sha256: t.colour_sha256,
+        alpha_sha256: t.alpha_sha256,
+        format: SampleFormat::RgbF32Le,
+        alpha_convention: AlphaConvention::Straight,
+        space,
+    })
 }
 
 /// [`crate::evaluate`] with every optional input ([`RenderInputs`]): raster records as

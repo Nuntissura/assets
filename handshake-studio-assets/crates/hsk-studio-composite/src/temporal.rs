@@ -26,19 +26,33 @@
 //!    the layer for the frame (nothing is rendered). The integer path above is unchanged and stays
 //!    byte-identical (no envelope entry).
 //!
+//! 6. Optional inputs ([`lower_frame_with_inputs`], lane SMB-COMPOSITE-DOCGRAPH-MASKS): the frame
+//!    document is evaluated and lowered by the static path WITH the caller's [`RenderInputs`]
+//!    (`evaluate_with_inputs` / `lower_with_inputs`: raster records, prepared text, prepared
+//!    vectors), so vector clips and vector masks (VECTOR, ALPHA, LUMINANCE, invert, region,
+//!    density, feather, reveal_outside) cut their layers on this path as on the static and scene
+//!    paths, and vector/text layers draw. A vector clip plane moves with its layer; a vector mask
+//!    plane moves with it unless the mask is unlinked (STU-RAS-016), in which case it stays in plan
+//!    space and is re-rasterised over the plane rect united with the target extent, so it covers
+//!    the moved content (backends refuse a mask that does not cover its layer). The envelope of
+//!    the inputs (mask feather, effects, blur) is carried in [`FrameLowering::extensions`] with
+//!    the transform entries merged into it; the key tables are [`FrameLowering::tables`].
+//!
 //! Refusals, typed and never rounded: a resampling transform whose source declares no filter
 //! ([`TRANSFORM_REQUIRES_RESAMPLING`], the behaviour before the operator existed); a raster layer
 //! lowered to more than one tile ([`TRANSFORM_MULTI_TILE_LAYER`]: resampling tiles one by one
 //! would seam at tile edges); a non-zero translation or a transform of a non-raster layer (a group)
 //! ([`TRANSLATE_NON_RASTER_LAYER`]: the tiles of its members are not addressed by its id); a matrix
-//! pigment refuses (`CompositeError::Plan(PlanError::TransformMatrix)`). Frame documents and plans
+//! pigment refuses (`CompositeError::Plan(PlanError::TransformMatrix)`); a moved layer with a
+//! vector clip AND an unlinked vector mask ([`TRANSFORM_UNLINKED_MASK_WITH_CLIP`]: one plane slot
+//! cannot both move and stay). Frame documents and plans
 //! are disposable and never stored. The motion adapter ([`motion::MotionTemporalSource`], feature `motion`) is the
 //! only motion-aware code in composite; the default build keeps the static closure.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::{
-    CompositeError, Limits, NodeAddr, RenderLowering, TileInfoSource, evaluate, lower,
-    lower_to_render_plan, outcome_of,
+    CompositeError, Limits, LoweringNote, NodeAddr, RenderInputs, RenderLowering, TileInfoSource,
+    evaluate, evaluate_with_inputs, lower, lower_to_render_plan, lower_with_inputs, outcome_of,
 };
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, Payload, Resolver, Snapshot, validate_document};
@@ -64,6 +78,9 @@ pub const TRANSFORM_REQUIRES_RESAMPLING: &str = "transform_requires_resampling";
 pub const TRANSLATE_NON_RASTER_LAYER: &str = "translate_non_raster_layer";
 /// Refusal key: a resampling transform of a raster layer lowered to more than one tile.
 pub const TRANSFORM_MULTI_TILE_LAYER: &str = "transform_multi_tile_layer";
+/// Refusal key: a moved layer with a vector clip (moves) and an unlinked vector mask (stays), which
+/// the lowering combines into one plane.
+pub const TRANSFORM_UNLINKED_MASK_WITH_CLIP: &str = "transform_unlinked_vector_mask_with_clip";
 
 /// One layer's state at one tick. [`LayerFrameState::IDENTITY`] changes nothing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -289,8 +306,79 @@ pub struct FrameLowering {
     /// Layers hidden for this frame by their window or by the source, in document order.
     pub hidden: Vec<String>,
     /// Envelope of the frame: one `LayerExtension::transform` per resampled layer (empty when no
-    /// layer resamples, the plain plan). Validated by pigment against `lowering.plan`.
+    /// layer resamples, the plain plan), merged into the envelope of the inputs
+    /// ([`lower_frame_with_inputs`]). Validated by pigment against `lowering.plan`.
     pub extensions: PlanExtensions,
+    /// Key tables of the inputs (empty for [`lower_frame`]); planes already follow their layer's
+    /// integer move. Serve them with [`FrameLowering::vector_mask`] / [`FrameLowering::vector_paint`].
+    pub tables: FrameTables,
+}
+
+/// The key tables of [`lower_frame_with_inputs`] beyond raster tiles and masks (as
+/// `crate::InputsLowering`): text and vector coverage planes by layer id, image paint tiles by
+/// source id, vector rows, owned clip / vector-mask planes, and the lowering notes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameTables {
+    pub text_masks: crate::text::TextMaskTable,
+    pub vector_masks: Vec<(SourceKey, String)>,
+    pub image_sources: Vec<(SourceKey, String)>,
+    pub vector_rows: Vec<(SourceKey, String, usize)>,
+    pub clip_planes: Vec<(SourceKey, crate::vector::ClipPlane)>,
+    pub notes: Vec<LoweringNote>,
+}
+
+impl FrameLowering {
+    /// The coverage plane behind `key` when it is a vector, stroke, clip or vector-mask plane.
+    pub fn vector_mask<'p>(
+        &'p self,
+        key: SourceKey,
+        vectors: &'p crate::vector::PreparedVectors,
+    ) -> Option<hsk_studio_pigment::Mask<'p>> {
+        let t = &self.tables;
+        crate::lower_render_plan::vector_mask_of(
+            &self.lowering.plan,
+            &t.vector_masks,
+            &t.clip_planes,
+            &t.vector_rows,
+            key,
+            vectors,
+        )
+    }
+    /// The painted vector row tile behind `key`, in the plan's colour tag.
+    pub fn vector_paint<'p>(
+        &self,
+        key: SourceKey,
+        vectors: &'p crate::vector::PreparedVectors,
+    ) -> Option<hsk_studio_pigment::render_plan::TilePlanes<'p>> {
+        crate::lower_render_plan::vector_paint_of(
+            &self.tables.vector_rows,
+            key,
+            vectors,
+            self.lowering.plan.target.space,
+        )
+    }
+}
+
+/// How the vector cut (clip or vector mask plane) of a layer follows the layer's movement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VectorLink {
+    /// A clip, a linked mask, or a mask whose refusal the lowering reports: moves with the layer.
+    Linked,
+    /// An unlinked vector mask without a clip: stays in plan space.
+    Unlinked,
+    /// A clip together with an unlinked mask (one combined plane).
+    Split,
+}
+
+fn vector_link(vectors: Option<&crate::vector::PreparedVectors>, layer_id: &str) -> Option<VectorLink> {
+    let v = vectors?;
+    let clip = v.clip(layer_id).is_some();
+    match v.mask(layer_id) {
+        Some(Ok(m)) if !m.linked && clip => Some(VectorLink::Split),
+        Some(Ok(m)) if !m.linked => Some(VectorLink::Unlinked),
+        Some(_) => Some(VectorLink::Linked),
+        None => clip.then_some(VectorLink::Linked),
+    }
 }
 
 /// Largest magnitude an `f64` translation may have and still convert to `i64` exactly.
@@ -430,6 +518,20 @@ pub fn lower_frame(
     tick: i64,
     cancel: &CancellationToken,
 ) -> Result<FrameLowering, TemporalError> {
+    lower_frame_with_inputs(req, &RenderInputs::default(), source, tick, cancel)
+}
+
+/// [`lower_frame`] with the document's optional inputs (module docs, item 6). With empty inputs it
+/// is [`lower_frame`] (the same lowering calls, byte-identical plans). Besides the refusals of
+/// [`lower_frame`]: [`TRANSFORM_UNLINKED_MASK_WITH_CLIP`], and every refusal of
+/// `evaluate_with_inputs` / `lower_with_inputs` (vector clip and vector mask codes included).
+pub fn lower_frame_with_inputs(
+    req: &FrameRequest<'_>,
+    inputs: &RenderInputs<'_>,
+    source: &dyn TemporalSource,
+    tick: i64,
+    cancel: &CancellationToken,
+) -> Result<FrameLowering, TemporalError> {
     let canceled = || TemporalError::Composite(CompositeError::Canceled);
     cancel.check().map_err(|_| canceled())?;
     let doc = req.snapshot.document();
@@ -466,6 +568,8 @@ pub fn lower_frame(
     let mut hidden = Vec::new();
     let mut moves: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut linked_masks: BTreeSet<String> = BTreeSet::new();
+    // Moved layers whose unlinked vector mask stays in plan space (re-rasterised below).
+    let mut unlinked_moved: BTreeSet<String> = BTreeSet::new();
     let mut resampled: BTreeMap<String, Resampled> = BTreeMap::new();
     for (index, layer) in doc.layers.iter().enumerate() {
         cancel.check().map_err(|_| canceled())?;
@@ -485,11 +589,33 @@ pub fn lower_frame(
                 None => admit_state(id, &s, source.resample_filter(id))?,
             };
             show = s.visible && !matches!(movement, Movement::Collapsed);
-            let linked = layer
-                .appearance
-                .as_ref()
-                .and_then(|a| a.mask.as_ref())
-                .is_some_and(|m| m.linked);
+            // The layer's one mask slot: a vector clip / vector mask plane when the inputs carry
+            // one (lane SMB-COMPOSITE-DOCGRAPH-MASKS), else the Folio raster mask.
+            let vlink = vector_link(inputs.vectors, id);
+            let linked = match vlink {
+                Some(l) => l != VectorLink::Unlinked,
+                None => layer
+                    .appearance
+                    .as_ref()
+                    .and_then(|a| a.mask.as_ref())
+                    .is_some_and(|m| m.linked),
+            };
+            let moves_layer = matches!(movement, Movement::Resample(_))
+                || matches!(movement, Movement::Integer(dx, dy) if (dx, dy) != (0, 0));
+            if show && moves_layer {
+                match vlink {
+                    Some(VectorLink::Split) => {
+                        return Err(TemporalError::Unsupported {
+                            layer_id: id.to_owned(),
+                            feature: TRANSFORM_UNLINKED_MASK_WITH_CLIP,
+                        });
+                    }
+                    Some(VectorLink::Unlinked) => {
+                        unlinked_moved.insert(id.to_owned());
+                    }
+                    _ => {}
+                }
+            }
             if show && let Movement::Resample(filter) = movement {
                 if !matches!(layer.payload, Payload::Raster { .. }) {
                     return Err(TemporalError::Unsupported {
@@ -576,9 +702,38 @@ pub fn lower_frame(
         &req.limits,
         cancel,
     )?;
-    let report = evaluate(&plan, snap, cancel)?;
-    let mut lowering =
-        lower_to_render_plan(&plan, &report, snap, req.root, req.target, req.info)?;
+    let plain = inputs.records.is_none() && inputs.text.is_none() && inputs.vectors.is_none();
+    let (mut lowering, base_extensions, mut tables) = if plain {
+        let report = evaluate(&plan, snap, cancel)?;
+        (
+            lower_to_render_plan(&plan, &report, snap, req.root, req.target, req.info)?,
+            PlanExtensions::default(),
+            FrameTables::default(),
+        )
+    } else {
+        let report = evaluate_with_inputs(&plan, snap, inputs, cancel)?;
+        let low = lower_with_inputs(&plan, &report, snap, inputs, req.root, req.target, req.info)?;
+        (
+            RenderLowering {
+                plan: low.plan,
+                sources: low.sources,
+                mask_sources: low.mask_sources,
+                exactness: low.exactness,
+            },
+            low.extensions,
+            FrameTables {
+                text_masks: low.text_masks,
+                vector_masks: low.vector_masks,
+                image_sources: low.image_sources,
+                vector_rows: low.vector_rows,
+                clip_planes: low.clip_planes,
+                notes: low.notes,
+            },
+        )
+    };
+    if !unlinked_moved.is_empty() {
+        cover_target(&mut lowering, &mut tables, inputs, &unlinked_moved)?;
+    }
 
     if !moves.is_empty() {
         let tile_layer: BTreeMap<SourceKey, &str> = lowering
@@ -586,10 +741,12 @@ pub fn lower_frame(
             .iter()
             .map(|(k, t)| (*k, t.layer_id.as_str()))
             .collect();
+        // Raster masks by Folio record, vector clip / vector mask planes by their layer.
         let mask_layer: BTreeMap<SourceKey, &str> = lowering
             .mask_sources
             .iter()
             .filter_map(|(k, tiles)| tiles.first().map(|t| (*k, t.layer_id.as_str())))
+            .chain(tables.clip_planes.iter().map(|(k, p)| (*k, p.layer_id.as_str())))
             .collect();
         let mut tile_moves = Vec::new();
         let mut mask_moves = Vec::new();
@@ -626,6 +783,10 @@ pub fn lower_frame(
                 && let Some(mask) = g.layers.get_mut(li).and_then(|l| l.mask.as_mut())
             {
                 shift(&mut mask.placement, m)?;
+                // An owned plane is served at its plan placement (backends compare them).
+                if let Some((_, p)) = tables.clip_planes.iter_mut().find(|(k, _)| *k == mask.key) {
+                    p.placement = mask.placement;
+                }
             }
         }
         lowering
@@ -634,9 +795,9 @@ pub fn lower_frame(
             .map_err(CompositeError::Plan)?;
     }
     let extensions = if resampled.is_empty() {
-        PlanExtensions::default()
+        base_extensions
     } else {
-        transform_envelope(&mut lowering, &resampled)?
+        transform_envelope(&mut lowering, &resampled, base_extensions)?
     };
     Ok(FrameLowering {
         lowering,
@@ -644,15 +805,63 @@ pub fn lower_frame(
         applied,
         hidden,
         extensions,
+        tables,
     })
+}
+
+/// Re-rasterises the unlinked vector-mask plane of every layer in `layers` over its rect united
+/// with the target extent (the mask stays in plan space while its layer moves, and backends
+/// refuse a mask that does not cover the layer's content inside the target). The plane value
+/// outside the mask's own rect is the mask's rule (zero, or the content mode's outside value), so
+/// the pixels inside the old rect are unchanged.
+fn cover_target(
+    lowering: &mut RenderLowering,
+    tables: &mut FrameTables,
+    inputs: &RenderInputs<'_>,
+    layers: &BTreeSet<String>,
+) -> Result<(), TemporalError> {
+    let Some(vectors) = inputs.vectors else {
+        return Ok(());
+    };
+    let extent = lowering.plan.target.extent;
+    for (key, p) in &mut tables.clip_planes {
+        if !layers.contains(&p.layer_id) {
+            continue;
+        }
+        let Some(Ok(mask)) = vectors.mask(&p.layer_id) else {
+            continue;
+        };
+        let rect = crate::evaluate_static::union(Some(p.placement), extent)?
+            .ok_or(CompositeError::Overflow)?;
+        if rect == p.placement {
+            continue;
+        }
+        let (coverage, _) = crate::vector_mask::plane(mask, None, rect)
+            .map_err(|code| CompositeError::Unavailable(format!("{}:{code}", p.layer_id)))?;
+        p.sha256 = hsk_studio_prism::profile_hash(&coverage);
+        p.coverage = coverage;
+        p.placement = rect;
+        for node in &mut lowering.plan.nodes {
+            let PlanNode::Group(g) = node else { continue };
+            for l in &mut g.layers {
+                if let Some(m) = l.mask.as_mut().filter(|m| m.key == *key) {
+                    m.placement = rect;
+                    m.sha256 = p.sha256;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The envelope entries of the resampled layers: each layer's single tile node, every group layer
 /// that references it, one `LayerTransform` with the After Effects affine. Records the transform
-/// operator's class in the lowering ledger and validates the envelope with pigment.
+/// operator's class in the lowering ledger and validates the envelope with pigment. The transform
+/// joins an entry `base` already has for the same group layer (mask feather, effects, blur).
 fn transform_envelope(
     lowering: &mut RenderLowering,
     resampled: &BTreeMap<String, Resampled>,
+    base: PlanExtensions,
 ) -> Result<PlanExtensions, TemporalError> {
     let owner: BTreeMap<SourceKey, &str> = lowering
         .sources
@@ -668,7 +877,7 @@ fn transform_envelope(
             tiles.entry(layer).or_default().push(n);
         }
     }
-    let mut entries = Vec::new();
+    let mut extensions = base;
     for (id, nodes) in &tiles {
         let (Some(r), [tile_node]) = (resampled.get(*id), nodes.as_slice()) else {
             return Err(TemporalError::Unsupported {
@@ -710,13 +919,21 @@ fn transform_envelope(
                 let (Ok(g32), Ok(li32)) = (u32::try_from(g), u32::try_from(li)) else {
                     return Err(CompositeError::Overflow.into());
                 };
-                entries.push(LayerExtension::new(PlanNodeId(g32), li32).with_transform(transform));
+                match extensions
+                    .layers
+                    .iter_mut()
+                    .find(|e| e.group == PlanNodeId(g32) && e.layer == li32)
+                {
+                    Some(e) => e.transform = Some(transform),
+                    None => extensions.layers.push(
+                        LayerExtension::new(PlanNodeId(g32), li32).with_transform(transform),
+                    ),
+                }
             }
         }
         let op = ExtOperator::Transform(r.filter);
         lowering.exactness.record(op.key(), op.intrinsic());
     }
-    let extensions = PlanExtensions::from_layers(entries);
     extensions
         .validate(&lowering.plan)
         .map_err(CompositeError::Plan)?;

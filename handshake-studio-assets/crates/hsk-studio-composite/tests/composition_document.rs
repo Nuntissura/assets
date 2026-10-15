@@ -217,7 +217,7 @@ fn both(snap: &hsk_studio_folio::Snapshot, src: &CompositionTemporalSource, tick
             alpha: AlphaConvention::Straight, space: scenes::space() },
         info: &Info(pixels), timings: &timings,
     };
-    let doc = src.lower_document_frame(&req, tick, &ctx(pixels), &cancel).unwrap();
+    let doc = src.lower_document_frame(&req, &RenderInputs::default(), tick, &ctx(pixels), &cancel).unwrap();
     let caller = Caller { pixels, table: &doc.frame.lowering.sources };
     let mut grid = Grid(vec![[0.0; 4]; 32 * 24], 32);
     Ref.execute_extended(&doc.frame.lowering.plan, &doc.frame.extensions, &ctx(pixels).request, &doc.sources(&caller), &cancel, &mut grid).unwrap();
@@ -279,7 +279,7 @@ fn precomposition_on_the_document_graph_equals_the_scene_path() {
                 alpha: AlphaConvention::Straight, space: scenes::space() },
             info: &Info(&pixels), timings: &[],
         };
-        let e = src2.lower_document_frame(&req, 0, &ctx(&pixels), &CancellationToken::default()).unwrap_err();
+        let e = src2.lower_document_frame(&req, &RenderInputs::default(), 0, &ctx(&pixels), &CancellationToken::default()).unwrap_err();
         assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH, .. }), "{e:?}");
     });
 }

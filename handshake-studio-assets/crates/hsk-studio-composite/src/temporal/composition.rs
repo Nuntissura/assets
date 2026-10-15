@@ -59,7 +59,7 @@ use crate::composition::{
     StaticContent, Surface,
 };
 use crate::lower_extensions::{REFUSE_ADJUSTMENT_RECORD, adjustment_for, is_adjustment_layer};
-use super::{FrameLowering, FrameRequest, lower_frame};
+use super::{FrameLowering, FrameRequest, lower_frame_with_inputs};
 use crate::composition::{SceneContext, render_scene};
 use crate::{
     Limits, NodeAddr, RenderInputs, StepStatus, evaluate_with_inputs, lower, lower_with_inputs,
@@ -1144,10 +1144,18 @@ pub struct DocumentFrame {
     pub surfaces: BTreeMap<SourceKey, Surface>,
     /// Plan keys of the track-matte masks -> their coverage planes.
     pub mattes: BTreeMap<SourceKey, crate::composition::MattePlane>,
+    /// Plan keys of the coverage planes composite owns for this frame (vector clips, vector
+    /// masks, vector and stroke coverage, text coverage; lane SMB-COMPOSITE-DOCGRAPH-MASKS), at
+    /// their plan placement.
+    pub owned_masks: BTreeMap<SourceKey, OwnedMask>,
+    /// Plan keys of the painted vector row tiles composite owns for this frame.
+    pub owned_tiles: BTreeMap<SourceKey, Surface>,
 }
 
 impl DocumentFrame {
-    /// `PlanSources` serving the owned surfaces and mattes first, then the caller's sources.
+    /// `PlanSources` serving the owned surfaces, mattes and planes first, then the caller's
+    /// sources (raster tiles and raster masks by Folio record, image paint tiles by the source id
+    /// in `frame.tables.image_sources`).
     pub fn sources<'a>(&'a self, caller: &'a dyn PlanSources) -> DocumentSources<'a> {
         DocumentSources { frame: self, caller }
     }
@@ -1161,7 +1169,7 @@ pub struct DocumentSources<'a> {
 
 impl PlanSources for DocumentSources<'_> {
     fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
-        if let Some(s) = self.frame.surfaces.get(&key) {
+        if let Some(s) = self.frame.surfaces.get(&key).or_else(|| self.frame.owned_tiles.get(&key)) {
             return Some(TilePlanes {
                 width: s.width,
                 height: s.height,
@@ -1185,6 +1193,15 @@ impl PlanSources for DocumentSources<'_> {
                 sample_format: "coverage_u16le",
                 bytes: &m.bytes,
                 stride_bytes: u64::from(m.width).checked_mul(2)?,
+                sha256: m.sha256,
+            });
+        }
+        if let Some(m) = self.frame.owned_masks.get(&key) {
+            return Some(Mask {
+                bounds: m.bounds,
+                sample_format: &m.sample_format,
+                bytes: &m.bytes,
+                stride_bytes: m.stride_bytes,
                 sha256: m.sha256,
             });
         }
@@ -1300,11 +1317,20 @@ impl CompositionTemporalSource {
     ///   layer already has a mask, [`COMPOSITION_MATTE_TARGET`] when it lowers to no tile entry).
     ///   Matte sources never render on their own.
     ///
-    /// The plan is validated again by pigment; execute it with [`DocumentFrame::sources`] over the
-    /// caller's sources. `req.snapshot` must be the snapshot the source was read from.
+    /// - Vector clips, vector masks, clipped layers, vector and text layers (lane
+    ///   SMB-COMPOSITE-DOCGRAPH-MASKS): the frame is lowered with `inputs`
+    ///   (`super::lower_frame_with_inputs`), the same static machinery the scene path's static
+    ///   subtrees use, so a clip or linked mask moves with its layer and an unlinked mask stays in
+    ///   composition (plan) space; the planes are owned by the [`DocumentFrame`].
+    ///
+    /// The plan is validated again by pigment; execute it with `execute_extended`, the frame's
+    /// envelope and [`DocumentFrame::sources`] over the caller's sources. `req.snapshot` and
+    /// `inputs` must be the snapshot and inputs the source was read with
+    /// ([`CompositionInput::inputs`]).
     pub fn lower_document_frame(
         &self,
         req: &FrameRequest<'_>,
+        inputs: &RenderInputs<'_>,
         tick: i64,
         ctx: &SceneContext<'_>,
         cancel: &CancellationToken,
@@ -1427,7 +1453,14 @@ impl CompositionTemporalSource {
             info: &info,
             ..*req
         };
-        let mut frame = lower_frame(&frame_req, &DocumentGraphSource { inner: self }, tick, cancel)?;
+        let mut frame = lower_frame_with_inputs(
+            &frame_req,
+            inputs,
+            &DocumentGraphSource { inner: self },
+            tick,
+            cancel,
+        )?;
+        let (owned_masks, owned_tiles) = own_planes(&frame, inputs)?;
         let mut out_surfaces = BTreeMap::new();
         for (key, t) in &frame.lowering.sources {
             if t.object_key == PRECOMP_TILE_KEY
@@ -1498,8 +1531,66 @@ impl CompositionTemporalSource {
             frame,
             surfaces: out_surfaces,
             mattes,
+            owned_masks,
+            owned_tiles,
         })
     }
+}
+
+/// Owned coverage planes and painted tiles of one document frame (see [`own_planes`]).
+type OwnedPlanes = (BTreeMap<SourceKey, OwnedMask>, BTreeMap<SourceKey, Surface>);
+
+/// The coverage planes and painted tiles a frame lowered with `inputs` reads, owned (as the scene
+/// path's `static_content` owns them): vector, stroke, clip and vector-mask planes at their plan
+/// placement, text coverage by layer.
+fn own_planes(
+    frame: &FrameLowering,
+    inputs: &RenderInputs<'_>,
+) -> Result<OwnedPlanes, TemporalError> {
+    let own = |m: Mask<'_>| OwnedMask {
+        bounds: m.bounds,
+        sample_format: m.sample_format.to_owned(),
+        bytes: m.bytes.to_vec(),
+        stride_bytes: m.stride_bytes,
+        sha256: m.sha256,
+    };
+    let mut masks = BTreeMap::new();
+    let mut tiles = BTreeMap::new();
+    let t = &frame.tables;
+    for (key, layer) in &t.text_masks {
+        let m = inputs
+            .text
+            .and_then(|p| p.plane(layer))
+            .and_then(|p| p.mask())
+            .ok_or_else(|| CompositeError::Unavailable(format!("{layer}:text_layer_not_prepared")))?;
+        masks.insert(*key, own(m));
+    }
+    if let Some(vectors) = inputs.vectors {
+        let keys = t
+            .vector_masks
+            .iter()
+            .map(|(k, _)| *k)
+            .chain(t.vector_rows.iter().map(|(k, _, _)| *k))
+            .chain(t.clip_planes.iter().map(|(k, _)| *k));
+        for key in keys {
+            if let Some(m) = frame.vector_mask(key, vectors) {
+                masks.insert(key, own(m));
+            } else if let Some(p) = frame.vector_paint(key, vectors) {
+                tiles.insert(
+                    key,
+                    Surface {
+                        width: p.width,
+                        height: p.height,
+                        colour: p.colour.to_vec(),
+                        alpha: p.alpha.to_vec(),
+                        colour_sha256: p.colour_sha256,
+                        alpha_sha256: p.alpha_sha256,
+                    },
+                );
+            }
+        }
+    }
+    Ok((masks, tiles))
 }
 
 /// One past the largest source key the plan uses (tiles and masks).
