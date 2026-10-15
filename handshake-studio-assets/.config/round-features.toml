@@ -15,7 +15,7 @@ per-test-timeout-s = 120
 [crates]
 hsk-studio-type = [["harfrust"]]
 hsk-studio-motion-js = [["quickjs"], ["quickjs", "test-faults"]]
-hsk-studio-reel = [["av1"], ["prores"]]
+hsk-studio-reel = [["av1"], ["prores"], ["av1-encode"]]
 hsk-studio-reel-native = [["av1-worker"], ["av1-worker", "test-faults"], ["mf-worker"], ["mf-worker", "test-faults"]]
 hsk-studio-score-plugin = [["test-faults"], ["clap", "test-faults"]]
 hsk-studio-render-gpu = [["test-faults"], ["shared-device"], ["shared-device", "test-faults"]]

@@ -489,7 +489,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-layout", &["unicode-linebreak"]),
     ("hsk-studio-develop", &["sha2", "zune-jpeg"]),
     ("hsk-studio-score", &["rubato"]),
-    ("hsk-studio-reel", &["libc", "miniz_oxide", "rav1d", "sha2"]),
+    ("hsk-studio-reel", &["lewton", "libc", "miniz_oxide", "opus-pure", "rav1d", "rav1e", "sha2"]),
     ("hsk-studio-composite", &["kurbo", "serde_json"]),
     ("hsk-studio-render-cpu", &["kurbo", "serde", "serde_json"]),
     ("hsk-studio-render-gpu", &["wgpu"]),
@@ -590,6 +590,7 @@ fn registry_closure(
     workspace: &Document,
     lock: &BTreeMap<(String, String), Table>,
     observed: &mut BTreeSet<String>,
+    fuzz_skipped: &mut BTreeSet<String>,
 ) -> Result<()> {
     // Narrow permission: only owner/library pairs in APPROVED are authorized direct libraries.
     let approved: &[&str] = APPROVED
@@ -619,7 +620,7 @@ fn registry_closure(
         return Err("registry_implicit_default_features_forbidden".into());
     }
     let policy = workspace.table(&format!("workspace.metadata.studio.registry.{owner}"))?;
-    exact_keys(policy, &["direct", "locked"])?;
+    exact_keys(policy, &["direct", "locked", "fuzzing-edges"])?;
     let direct = as_map(
         policy
             .get("direct")
@@ -664,22 +665,19 @@ fn registry_closure(
     if pins.len() > MAX_REGISTRY_RECORDS {
         return Err("registry_record_limit".into());
     }
+    // Lead decision 2026-10-15 (rav1e, option b): lock edges recorded in `fuzzing-edges` ("parent@v>child@v",
+    // derived by tools/registry-sync.py from the parent's `[target.'cfg(fuzzing)'.dependencies]`) are not walked;
+    // an entry reachable ONLY through such edges is skipped (and reported), one with any other path is gated.
+    let fuzz = fuzzing_edges(policy)?;
     let root = (dep.to_owned(), version.to_owned());
-    let mut graph = RegistryGraph::new();
-    let mut pending = vec![root];
-    let mut visited = BTreeSet::new();
-    while let Some(identity) = pending.pop() {
-        if !visited.insert(identity.clone()) {
-            continue;
-        }
-        if visited.len() > MAX_REGISTRY_RECORDS {
-            return Err("registry_record_limit".into());
-        }
-        let (name, version) = &identity;
+    let (visited, skipped, graph) =
+        registry_walk(&root, &fuzz, &mut |identity| lock_edges(lock, identity))?;
+    for identity in &visited {
+        let (name, version) = identity;
         if !registry_name_allowed(owner, name) || !stable_version(version) {
             return Err("registry_unapproved_native_or_identity".into());
         }
-        let locked = lock.get(&identity).ok_or("registry_package_not_locked")?;
+        let locked = lock.get(identity).ok_or("registry_package_not_locked")?;
         let key = format!("{name}@{version}");
         let pinned = as_map(pins.get(&key).ok_or("registry_transitive_pin_missing")?)?;
         exact_keys(pinned, &["source", "checksum", "kind"])?;
@@ -703,37 +701,9 @@ fn registry_closure(
         if observed.len() > MAX_OBSERVED_RECORDS {
             return Err("registry_record_limit".into());
         }
-        if let Some(dependencies) = locked.get("dependencies") {
-            for edge in dependencies.list()? {
-                let fields: Vec<_> = edge.split_whitespace().collect();
-                let target = match fields.as_slice() {
-                    [name] => {
-                        let candidates: Vec<_> = lock
-                            .keys()
-                            .filter(|(candidate, _)| candidate.as_str() == *name)
-                            .cloned()
-                            .collect();
-                        if candidates.len() != 1 {
-                            return Err("registry_lock_dependency_ambiguous".into());
-                        }
-                        candidates[0].clone()
-                    }
-                    [name, version] => ((*name).to_owned(), (*version).to_owned()),
-                    [name, version, source] if *source == format!("({CRATES_IO_SOURCE})") => {
-                        ((*name).to_owned(), (*version).to_owned())
-                    }
-                    _ => return Err("registry_lock_edge_unsupported_source".into()),
-                };
-                graph
-                    .entry(identity.clone())
-                    .or_default()
-                    .insert(target.clone());
-                pending.push(target);
-                if pending.len() > MAX_REGISTRY_RECORDS {
-                    return Err("registry_edge_limit".into());
-                }
-            }
-        }
+    }
+    for (name, version) in &skipped {
+        fuzz_skipped.insert(format!("{owner}:{name}@{version}"));
     }
     let mut done = BTreeSet::new();
     for identity in &visited {
@@ -743,6 +713,134 @@ fn registry_closure(
 }
 type LockIdentity = (String, String);
 type RegistryGraph = BTreeMap<LockIdentity, BTreeSet<LockIdentity>>;
+type FuzzEdges = BTreeSet<(LockIdentity, LockIdentity)>;
+fn lock_key(identity: &str) -> Result<LockIdentity> {
+    let (name, version) = identity
+        .split_once('@')
+        .ok_or("registry_fuzzing_edge_malformed")?;
+    if name.is_empty() || !stable_version(version) {
+        return Err("registry_fuzzing_edge_malformed".into());
+    }
+    Ok((name.to_owned(), version.to_owned()))
+}
+// Optional per-owner `fuzzing-edges = ["parent@v>child@v", ...]` (written by tools/registry-sync.py).
+fn fuzzing_edges(policy: &Table) -> Result<FuzzEdges> {
+    let mut out = FuzzEdges::new();
+    if let Some(list) = policy.get("fuzzing-edges") {
+        for edge in list.list()? {
+            let (from, to) = edge
+                .split_once('>')
+                .ok_or("registry_fuzzing_edge_malformed")?;
+            out.insert((lock_key(from)?, lock_key(to)?));
+            if out.len() > MAX_REGISTRY_RECORDS {
+                return Err("registry_record_limit".into());
+            }
+        }
+    }
+    Ok(out)
+}
+fn lock_edges(
+    lock: &BTreeMap<(String, String), Table>,
+    identity: &LockIdentity,
+) -> Result<Vec<LockIdentity>> {
+    let locked = lock.get(identity).ok_or("registry_package_not_locked")?;
+    let mut out = Vec::new();
+    if let Some(dependencies) = locked.get("dependencies") {
+        for edge in dependencies.list()? {
+            let fields: Vec<_> = edge.split_whitespace().collect();
+            out.push(match fields.as_slice() {
+                [name] => {
+                    let candidates: Vec<_> = lock
+                        .keys()
+                        .filter(|(candidate, _)| candidate.as_str() == *name)
+                        .cloned()
+                        .collect();
+                    if candidates.len() != 1 {
+                        return Err("registry_lock_dependency_ambiguous".into());
+                    }
+                    candidates[0].clone()
+                }
+                [name, version] => ((*name).to_owned(), (*version).to_owned()),
+                [name, version, source] if *source == format!("({CRATES_IO_SOURCE})") => {
+                    ((*name).to_owned(), (*version).to_owned())
+                }
+                _ => return Err("registry_lock_edge_unsupported_source".into()),
+            });
+        }
+    }
+    Ok(out)
+}
+// Bounded walk from `root` over `edges`, not following edges listed in `fuzz`. Returns the visited identities, the
+// identities reached ONLY through fuzzing edges (skipped; any other path makes them visited and gated) and the
+// walked (non-fuzzing) graph.
+fn registry_walk(
+    root: &LockIdentity,
+    fuzz: &FuzzEdges,
+    edges: &mut dyn FnMut(&LockIdentity) -> Result<Vec<LockIdentity>>,
+) -> Result<(Vec<LockIdentity>, BTreeSet<LockIdentity>, RegistryGraph)> {
+    let mut graph = RegistryGraph::new();
+    let mut pending = vec![root.clone()];
+    let mut visited = BTreeSet::new();
+    let mut order = Vec::new();
+    let mut fuzz_targets = BTreeSet::new();
+    while let Some(identity) = pending.pop() {
+        if !visited.insert(identity.clone()) {
+            continue;
+        }
+        if visited.len() > MAX_REGISTRY_RECORDS {
+            return Err("registry_record_limit".into());
+        }
+        for target in edges(&identity)? {
+            if fuzz.contains(&(identity.clone(), target.clone())) {
+                fuzz_targets.insert(target);
+                continue;
+            }
+            graph
+                .entry(identity.clone())
+                .or_default()
+                .insert(target.clone());
+            pending.push(target);
+            if pending.len() > MAX_REGISTRY_RECORDS {
+                return Err("registry_edge_limit".into());
+            }
+        }
+        order.push(identity);
+    }
+    let skipped = fuzz_targets.difference(&visited).cloned().collect();
+    Ok((order, skipped, graph))
+}
+// `--self-test`: the fuzzing-only rule on a synthetic graph (lead decision 2026-10-15, rav1e option b).
+fn self_test() -> Result<String> {
+    let id = |n: &str| (n.to_owned(), "1.0.0".to_owned());
+    let fuzz: FuzzEdges = [(id("rav1e"), id("libfuzzer-sys"))].into_iter().collect();
+    let run = |extra_normal: bool| -> Result<(Vec<LockIdentity>, BTreeSet<LockIdentity>, RegistryGraph)> {
+        let mut edges = |node: &LockIdentity| -> Result<Vec<LockIdentity>> {
+            Ok(match node.0.as_str() {
+                "app" => vec![id("rav1e")],
+                "rav1e" if extra_normal => vec![id("libfuzzer-sys"), id("v_frame"), id("cc")],
+                "rav1e" => vec![id("libfuzzer-sys"), id("v_frame")],
+                "libfuzzer-sys" => vec![id("cc")],
+                "v_frame" if extra_normal => vec![id("libfuzzer-sys")],
+                _ => vec![],
+            })
+        };
+        registry_walk(&id("app"), &fuzz, &mut edges)
+    };
+    // Case 1: reachable only through the fuzzing edge -> skipped, not walked (its own deps are not reached).
+    let (visited, skipped, _) = run(false)?;
+    let names = |v: &[LockIdentity]| v.iter().map(|i| i.0.clone()).collect::<BTreeSet<_>>();
+    if names(&visited) != ["app", "rav1e", "v_frame"].iter().map(|s| s.to_string()).collect()
+        || skipped != [id("libfuzzer-sys")].into_iter().collect()
+    {
+        return Err("self_test_fuzzing_only_not_skipped".into());
+    }
+    // Case 2: the same entry also has a normal path (v_frame -> libfuzzer-sys) -> visited and gated, not skipped.
+    let (visited, skipped, _) = run(true)?;
+    if !names(&visited).contains("libfuzzer-sys") || !skipped.is_empty() {
+        return Err("self_test_normal_path_not_gated".into());
+    }
+    Ok("{\"schema\":\"hsk.studio.workspace-probe-self-test@1\",\"status\":\"ok\",\"cases\":2}".to_owned())
+}
 fn registry_acyclic(
     node: &LockIdentity,
     graph: &RegistryGraph,
@@ -884,6 +982,7 @@ fn inspect(args: &[String]) -> Result<String> {
     let mut inspections = 0usize;
     let mut locked = BTreeMap::new();
     let mut registry_observed = BTreeSet::new();
+    let mut registry_fuzz_skipped = BTreeSet::new();
     for (section, table) in &lock.tables {
         if section == "package[]" {
             let name = table.get("name").ok_or("lock_package_name")?.text()?;
@@ -1085,6 +1184,7 @@ fn inspect(args: &[String]) -> Result<String> {
                             &manifest,
                             &locked,
                             &mut registry_observed,
+                            &mut registry_fuzz_skipped,
                         )?;
                     }
                 }
@@ -1166,7 +1266,7 @@ fn inspect(args: &[String]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(",");
     Ok(format!(
-        "{{\"schema\":\"hsk.studio.workspace-inspection@1\",\"status\":\"accepted\",\"proof_kind\":\"input_selection_only\",\"compiled_packages\":false,\"revision\":{},\"tree\":{},\"toolchain\":{},\"selected\":{},\"closure\":{},\"closure_features\":{{{}}},\"registry_closure\":{},\"declared_count\":{},\"materialized_member_count\":{},\"provenance_sha256\":{},\"inputs_sha256\":{{{}}}}}",
+        "{{\"schema\":\"hsk.studio.workspace-inspection@1\",\"status\":\"accepted\",\"proof_kind\":\"input_selection_only\",\"compiled_packages\":false,\"revision\":{},\"tree\":{},\"toolchain\":{},\"selected\":{},\"closure\":{},\"closure_features\":{{{}}},\"registry_closure\":{},\"registry_fuzzing_skipped\":{},\"declared_count\":{},\"materialized_member_count\":{},\"provenance_sha256\":{},\"inputs_sha256\":{{{}}}}}",
         quoted(revision),
         quoted(tree),
         quoted(TOOLCHAIN),
@@ -1174,6 +1274,7 @@ fn inspect(args: &[String]) -> Result<String> {
         strings(visited),
         closure_features,
         strings(registry_observed),
+        strings(registry_fuzz_skipped),
         declared.len(),
         members.len(),
         quoted(&sha256(&provenance_bytes)),
@@ -1185,6 +1286,8 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = if args == ["--help"] || args == ["--descriptor"] {
         Ok(HELP.to_owned())
+    } else if args == ["--self-test"] {
+        self_test()
     } else {
         inspect(&args)
     };

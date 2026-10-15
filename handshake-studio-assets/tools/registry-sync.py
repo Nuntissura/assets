@@ -9,7 +9,7 @@ Check mode (default, read-only): exit 0 in sync, 1 when root Cargo.toml registry
 Exit 2 = dependency missing from Cargo.lock or ambiguous lock edge (lock must be derived first).
 Crate spec defects (builder-owned manifests) are reported in "spec_defects", not fatal; the probe rejects them per crate.
 """
-import json, pathlib, re, sys, tomllib
+import glob, json, os, pathlib, re, sys, tarfile, tomllib
 
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -32,8 +32,75 @@ def arr(v):
     return "[" + ", ".join(json.dumps(x) for x in v) + "]"
 
 
+# Lead decision 2026-10-15 (rav1e, option b): a lock edge parent -> child whose child the parent declares ONLY under
+# `[target.'cfg(fuzzing)'.*dependencies]` is a fuzzing edge. Fuzzing edges are not walked; an entry reachable ONLY
+# through them is skipped (never pinned, licence-gated or probed) and reported; any other path gates it. Parent
+# manifests come from the local cargo registry (offline); an unreadable manifest yields no fuzzing edges (fail closed).
+def crate_manifest(n, v):
+    home = os.path.expanduser("~/.cargo/registry")
+    for c in glob.glob(os.path.join(home, "src", "*", f"{n}-{v}", "Cargo.toml")):
+        return tomllib.loads(open(c, encoding="utf-8").read())
+    for a in glob.glob(os.path.join(home, "cache", "*", f"{n}-{v}.crate")):
+        with tarfile.open(a, "r:gz") as tf:
+            m = tf.extractfile(f"{n}-{v}/Cargo.toml")
+            if m:
+                return tomllib.loads(m.read().decode("utf-8"))
+    return None
+
+
+def fuzzing_only_deps(manifest):
+    def names(tables):
+        return {spec.get("package", alias) if isinstance(spec, dict) else alias
+                for t in tables for alias, spec in t.items()}
+    if manifest is None:
+        return set()
+    resolved = ("dependencies", "build-dependencies")  # dev-dependencies of registry packages are not locked
+    other, fuzz = names([manifest.get(s, {}) for s in resolved]), set()
+    for cfg, table in manifest.get("target", {}).items():
+        (fuzz if cfg.replace(" ", "") == "cfg(fuzzing)" else other).update(names([table.get(s, {}) for s in resolved]))
+    return fuzz - other
+
+
+def walk(roots, edges_of, fuzz_only_of):
+    """Closure from roots, not following fuzzing edges. Returns (seen, fuzzing edges met, skipped)."""
+    seen, fuzz_edges, stack = set(), set(), list(roots)
+    while stack:
+        i = stack.pop()
+        if i in seen:
+            continue
+        seen.add(i)
+        only = fuzz_only_of(i)
+        for child in edges_of(i):
+            if child[0] in only:
+                fuzz_edges.add((i, child))
+            else:
+                stack.append(child)
+    return seen, fuzz_edges, {c for _, c in fuzz_edges} - seen
+
+
+def self_test():
+    g = {("app", "1"): [("rav1e", "1")], ("rav1e", "1"): [("libfuzzer-sys", "1"), ("v_frame", "1")],
+         ("libfuzzer-sys", "1"): [("cc", "1")], ("v_frame", "1"): []}
+    fz = {("rav1e", "1"): {"libfuzzer-sys"}}
+    seen, _, skipped = walk([("app", "1")], lambda i: g.get(i, []), lambda i: fz.get(i, set()))
+    ok1 = skipped == {("libfuzzer-sys", "1")} and ("libfuzzer-sys", "1") not in seen and ("cc", "1") not in seen
+    g[("v_frame", "1")] = [("libfuzzer-sys", "1")]  # the same entry with a normal path: gated, not skipped
+    seen, _, skipped = walk([("app", "1")], lambda i: g.get(i, []), lambda i: fz.get(i, set()))
+    ok2 = not skipped and ("libfuzzer-sys", "1") in seen and ("cc", "1") in seen
+    m = tomllib.loads('[dependencies]\nv_frame = "1"\n'
+                      '[target."cfg(fuzzing)".dependencies.libfuzzer-sys]\nversion = "1"\n'
+                      '[target."cfg(fuzzing)".dependencies.v_frame]\nversion = "1"\n')
+    ok3 = fuzzing_only_deps(m) == {"libfuzzer-sys"}  # v_frame is also declared normally -> not fuzzing-only
+    if not (ok1 and ok2 and ok3):
+        fail(3, f"registry-sync self-test failed (fuzzing-only skipped {ok1}, normal path gated {ok2}, rule {ok3})")
+
+
 def main():
     args = sys.argv[1:]
+    self_test()
+    if args == ["--self-test"]:
+        print("REGISTRY_SYNC_SELF_TEST OK (3 checks)")
+        return
     root = pathlib.Path(args[0])
     write, allow = "--write" in args, "--allow-unrequested" in args
     req_path = pathlib.Path(args[args.index("--requests") + 1]) if "--requests" in args else None
@@ -88,17 +155,20 @@ def main():
                     fail(2, f"{where}: {lib}@{entry[0]} not in Cargo.lock (run cargo first)")
                 registry[owner][lib] = entry
 
-    sections, approved = [], []
+    sections, approved, fuzz_skipped = [], [], []
+    fuzz_cache = {}
+
+    def fuzz_only_of(i):
+        if i not in fuzz_cache:
+            fuzz_cache[i] = fuzzing_only_deps(crate_manifest(*i)) if pk[i].get("source") == CRATES_IO else set()
+        return fuzz_cache[i]
     for owner in [m.rsplit("/", 1)[1] for m in manifest["workspace"]["members"]]:
         direct = registry.get(owner)
         if not direct:
             continue
-        seen, stack = set(), [(lib, v) for lib, (v, _) in direct.items()]
-        while stack:
-            i = stack.pop()
-            if i not in seen:
-                seen.add(i)
-                stack.extend(ident(e) for e in pk[i].get("dependencies", []))
+        seen, fuzz_edges, skipped = walk([(lib, v) for lib, (v, _) in direct.items()],
+                                         lambda i: [ident(e) for e in pk[i].get("dependencies", [])], fuzz_only_of)
+        fuzz_skipped += [[owner, f"{n}@{v}"] for n, v in sorted(skipped)]
         locked = []
         for n, v in sorted(seen):
             p = pk[(n, v)]
@@ -112,6 +182,8 @@ def main():
         )
         sections.append(
             f"[workspace.metadata.studio.registry.{owner}]\ndirect = {{ {d} }}\nlocked = {{ {', '.join(locked)} }}\n"
+            + (f"fuzzing-edges = {arr(sorted(f'{a[0]}@{a[1]}>{b[0]}@{b[1]}' for a, b in fuzz_edges))}\n"
+               if fuzz_edges else "")
         )
         approved.append((owner, sorted(direct)))
 
@@ -142,7 +214,7 @@ def main():
                 requested.add((r["crate"], r["dep"]))
     unrequested = [a for a in added if a not in requested]
     print(json.dumps({"owners": [o for o, _ in approved], "approved_added": added, "approved_removed": removed,
-                      "unrequested": unrequested, "spec_defects": defects, "manifest_changed": new_manifest != manifest_text,
+                      "unrequested": unrequested, "spec_defects": defects, "fuzzing_only_skipped": fuzz_skipped, "manifest_changed": new_manifest != manifest_text,
                       "probe_changed": new_probe != probe}))
     if write and unrequested and not allow:
         fail(1, "unrequested new direct libraries; add request lines or pass --allow-unrequested after review")
