@@ -14,6 +14,7 @@ mod paragraph;
 mod parent_adapter;
 mod parents;
 mod styles;
+mod table;
 mod threaded_reflow;
 mod typeset;
 
@@ -39,6 +40,10 @@ pub use styles::{
 };
 pub use threaded_reflow::{
     FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow, reflow_typeset,
+};
+pub use table::{
+    FlowPosition, PieceKind, PlacedCell, PlacedRow, StrokeSegment, TableError, TableLimits,
+    TablePart, TableProposal, TableRequest, layout_table, tint_rgb,
 };
 pub use typeset::{JustifyParams, Justification, Spacing, TypesetOptions, justify_metrics};
 

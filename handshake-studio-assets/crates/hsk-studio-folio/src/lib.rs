@@ -65,6 +65,8 @@ mod composition;
 pub use composition::*;
 mod parentpages;
 pub use parentpages::*;
+mod longdoc;
+pub use longdoc::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]

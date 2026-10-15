@@ -36,6 +36,7 @@ pub(crate) struct Frame<'a> {
     pub origin_y_pt: f64,
     pub width_pt: f64,
     pub height_pt: f64,
+    pub inset_top_pt: f64,
     pub inset_left_pt: f64,
     pub inset_right_pt: f64,
     pub inset_bottom_pt: f64,
@@ -50,7 +51,7 @@ pub(crate) struct Input<'a> {
     pub frames: Vec<Frame<'a>>,
 }
 
-fn pt(l: &Length) -> Result<f64, LayoutError> {
+pub(crate) fn pt(l: &Length) -> Result<f64, LayoutError> {
     if l.unit == GeometryUnit::Pt && l.value.is_finite() {
         Ok(l.value)
     } else {
@@ -72,7 +73,7 @@ fn page_ok(p: &StudioPage) -> Result<(), LayoutError> {
 }
 
 /// Story text: inline content, or the caller-resolved bytes of stored content (exact length).
-fn story_text<'a>(
+pub(crate) fn story_text<'a>(
     story: &'a StudioTextStory,
     resolved_text: Option<&'a str>,
 ) -> Result<&'a str, LayoutError> {
@@ -226,6 +227,7 @@ pub(crate) fn resolve<'a>(
             origin_y_pt: y,
             width_pt: w,
             height_pt: h,
+            inset_top_pt: top,
             inset_left_pt: left,
             inset_right_pt: right,
             inset_bottom_pt: bottom,

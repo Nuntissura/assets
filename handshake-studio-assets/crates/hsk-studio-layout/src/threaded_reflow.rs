@@ -245,8 +245,70 @@ pub fn reflow_typeset(
         } else {
             (req.paragraphs, vec![None; req.paragraphs.len()])
         };
+    let composed = compose(
+        &thread,
+        text,
+        paragraphs,
+        &stylings,
+        req.composer,
+        req.space,
+        opts,
+        limits,
+        cancel,
+    )?;
+    let frames = thread
+        .iter()
+        .zip(composed.lines)
+        .map(|(f, lines)| FramePlacement {
+            frame_id: f.id.to_owned(),
+            frame_index: f.layer_index,
+            spread: f.spread,
+            page: f.page,
+            origin_x_pt: f.origin_x_pt,
+            origin_y_pt: f.origin_y_pt,
+            lines,
+        })
+        .collect();
+    Ok(LayoutProposal {
+        base_revision: req.document.revision,
+        frames,
+        overset: composed.overset,
+    })
+}
+
+/// Lines per frame of `thread` (same order) and the overset span.
+pub(crate) struct Composition {
+    pub lines: Vec<Vec<Line>>,
+    pub overset: Option<SourceSpan>,
+}
+
+/// The composition core shared by `reflow_typeset`, tables and notes: flows already-styled
+/// `paragraphs` (one optional styling each) through the plain-number `thread`. Inputs are checked
+/// here (budgets, fonts, scripts, line metrics) so every caller gets the same typed refusals.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose(
+    thread: &[Frame<'_>],
+    text: &str,
+    paragraphs: &[ShapedParagraph],
+    stylings: &[Option<ParagraphStyling>],
+    composer: Composer,
+    req_space: SpaceParams,
+    opts: &TypesetOptions<'_>,
+    limits: Limits,
+    cancel: &CancellationToken,
+) -> Result<Composition, LayoutError> {
+    canceled(cancel)?;
+    if paragraphs.len() > limits.max_paragraphs
+        || stylings.len() != paragraphs.len()
+        || paragraphs
+            .iter()
+            .try_fold(0usize, |n, p| n.checked_add(p.glyphs.len()))
+            .is_none_or(|n| n > limits.max_glyphs)
+    {
+        return Err(LayoutError::BudgetExceeded);
+    }
     let jp = opts.justify.unwrap_or_default();
-    let space = if opts.justify.is_some() { jp.space_params() } else { req.space };
+    let space = if opts.justify.is_some() { jp.space_params() } else { req_space };
     let hyphenator = opts.hyphenator.unwrap_or_else(|| Hyphenator::en_us());
     let hyph = opts.hyphenation.as_ref().map(|h| (hyphenator, h));
     let rules = opts.hyphenation.as_ref().map_or(HyphenRules::NONE, |h| HyphenRules {
@@ -268,18 +330,7 @@ pub fn reflow_typeset(
     }) {
         return Err(LayoutError::InvalidGeometry);
     }
-    let mut frames: Vec<FramePlacement> = thread
-        .iter()
-        .map(|f| FramePlacement {
-            frame_id: f.id.to_owned(),
-            frame_index: f.layer_index,
-            spread: f.spread,
-            page: f.page,
-            origin_x_pt: f.origin_x_pt,
-            origin_y_pt: f.origin_y_pt,
-            lines: Vec::new(),
-        })
-        .collect();
+    let mut frames: Vec<Vec<Line>> = thread.iter().map(|_| Vec::new()).collect();
     let story_end = paragraphs.last().map_or(0, |p| p.source.end);
     let (mut cursor, mut placed, mut overset) = (Cursor { pos: 0, line: 0 }, 0usize, None);
     for (pi, p) in paragraphs.iter().enumerate() {
@@ -292,7 +343,7 @@ pub fn reflow_typeset(
         let (mut slots, mut at, mut scans) = (Vec::new(), cursor, 0usize);
         while slots.len() < slot_cap {
             match next_slot(
-                &thread,
+                thread,
                 at,
                 p.line_height_pt,
                 p.ascent_pt,
@@ -316,7 +367,7 @@ pub fn reflow_typeset(
         }
         let last_width = slots[slots.len() - 1].width_pt;
         let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
-        let breaks = match req.composer {
+        let breaks = match composer {
             Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
             Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
         };
@@ -365,7 +416,10 @@ pub fn reflow_typeset(
             let slot = &slots[k];
             let hyphenated = items[b.item].flagged;
             let width_pt = advance(range.start..content_end) + if hyphenated { hyphen_w } else { 0.0 };
-            let alignment = stylings[pi].as_ref().map_or(opts.alignment, |s| s.alignment);
+            let alignment = stylings
+                .get(pi)
+                .and_then(Option::as_ref)
+                .map_or(opts.alignment, |s| s.alignment);
             let is_last = k + 1 == breaks.len();
             let mut x_start_pt = slot.x_start_pt;
             let mut justification = None;
@@ -415,16 +469,15 @@ pub fn reflow_typeset(
             .ok_or(LayoutError::BudgetExceeded)?;
         let used = lines_here.len();
         for (pos, line) in lines_here {
-            frames[pos].lines.push(line);
+            frames[pos].push(line);
         }
         if overset.is_some() {
             break;
         }
         cursor = slots[used - 1].next;
     }
-    Ok(LayoutProposal {
-        base_revision: req.document.revision,
-        frames,
+    Ok(Composition {
+        lines: frames,
         overset,
     })
 }
