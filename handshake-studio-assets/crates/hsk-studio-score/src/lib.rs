@@ -9,6 +9,7 @@
 
 mod block;
 mod bounce;
+mod bus;
 mod chain;
 mod delay;
 mod denoise;
@@ -24,6 +25,7 @@ mod loudness;
 mod mix;
 mod modulation;
 mod multiband;
+mod normalize;
 mod ramp;
 mod report;
 mod resample;
@@ -44,6 +46,10 @@ mod varispeed;
 
 pub use block::{InputBlock, OutputBlock};
 pub use bounce::{BounceChunk, BounceReceipt, BounceRequest};
+pub use bus::{
+    BusSpec, Destination, GraphLatency, MAX_BUSES, MAX_SENDS_PER_SOURCE, MasterSpec, MixGraph, SEND_LEVEL_DB, SendSpec,
+    SendTap, StripSpec,
+};
 pub use chain::{Chain, ChainStage, MAX_CHAIN_STAGES};
 pub use delay::{
     DELAY_DAMPING_MIN_HZ, DELAY_FEEDBACK, DELAY_MIX, DELAY_TIME_MS, DelayParams, FeedbackDelay,
@@ -89,6 +95,10 @@ pub use modulation::{
 pub use multiband::{
     CROSSOVER_MIN_HZ, Crossover, MAX_BANDS, MULTIBAND_BANDS, MultibandCompressor, MultibandParams,
 };
+pub use normalize::{
+    MAX_NORMALIZE_PASSES, NORMALIZE_TARGET_LUFS, NORMALIZE_TOLERANCE_LU, NormalizeReceipt, NormalizeRequest, PeakPolicy,
+    loudness_normalize, measure_loudness,
+};
 pub use ramp::{RAMPED_GAIN_AUTOMATION, RampedGain};
 pub use report::{outcome_of, report};
 pub use resample::{ClipResampler, MIN_CHUNK_FRAMES, ResampleReceipt, SINC_LEN};
@@ -102,7 +112,7 @@ pub use reverb::{
     ReverbParams,
 };
 pub use session::{
-    AutomationLane, AutomationParam, Automatable, EffectSlot, Fade, FadeCurve, Interpolation, MAX_AUTOMATION_POINTS,
+    AutomationLane, AutomationParam, Automatable, EffectSlot, FADE_LOG_RANGE_DB, Fade, FadeCurve, Interpolation, MAX_AUTOMATION_POINTS,
     MAX_CLIP_FRAMES, MAX_TRACK_EFFECTS, MAX_TRACK_LATENCY, MAX_TRACKS, Session, TRACK_PAN,
     TRACK_VOLUME_DB, TrackSpec, pan_gains,
 };

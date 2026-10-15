@@ -262,11 +262,24 @@ impl TrackSpec {
 /// Fade shape. With progress `p = k / frames` at the `k`-th frame of the fade: `Linear` gains
 /// `p` (in) and `1 - p` (out), so an abutting out/in pair over the same span is the linear
 /// crossfade `(1 - p) a + p b`; `EqualPower` gains `sin(p pi/2)` (in) and `cos(p pi/2)` (out),
-/// whose squares sum to 1.
+/// whose squares sum to 1. `SCurve` (lane SMB-AUDITION-SESSION) gains `(1 - cos(p pi)) / 2` (in)
+/// and `(1 + cos(p pi)) / 2` (out): slow at both ends, the pair sums to 1 like `Linear`.
+/// `Logarithmic` is linear in decibels over [`FADE_LOG_RANGE_DB`]: in `10^(-R (1 - p) / 20)` for
+/// `p > 0` and exactly 0 at `p = 0`, out `10^(-R p / 20)` for `p < 1` and exactly 0 at `p = 1`, so
+/// the level in dB moves at a constant rate. Adobe parity of both shapes is UNVERIFIED.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FadeCurve {
     Linear,
     EqualPower,
+    SCurve,
+    Logarithmic,
+}
+
+/// Decibel span `R` of [`FadeCurve::Logarithmic`] (authored: -60 dB at the silent end, then 0).
+pub const FADE_LOG_RANGE_DB: f64 = 60.0;
+
+fn log_fade(p: f64) -> f64 {
+    if p <= 0.0 { 0.0 } else { 10f64.powf(-FADE_LOG_RANGE_DB * (1.0 - p) / 20.0) }
 }
 
 /// A clip fade of `frames` samples (1 ..= clip length).
@@ -283,6 +296,8 @@ impl Fade {
         match self.curve {
             FadeCurve::Linear => p,
             FadeCurve::EqualPower => (p * std::f64::consts::FRAC_PI_2).sin(),
+            FadeCurve::SCurve => (1.0 - (p * std::f64::consts::PI).cos()) / 2.0,
+            FadeCurve::Logarithmic => log_fade(p),
         }
     }
     /// Gain of a fade out at progress `k / frames`.
@@ -291,6 +306,8 @@ impl Fade {
         match self.curve {
             FadeCurve::Linear => 1.0 - p,
             FadeCurve::EqualPower => (p * std::f64::consts::FRAC_PI_2).cos(),
+            FadeCurve::SCurve => (1.0 + (p * std::f64::consts::PI).cos()) / 2.0,
+            FadeCurve::Logarithmic => log_fade(1.0 - p),
         }
     }
 }
