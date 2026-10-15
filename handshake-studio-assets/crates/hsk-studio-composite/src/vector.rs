@@ -386,6 +386,7 @@ impl PreparedVectors {
     }
     /// A copy without the vector mask of `layer_id` (an unlinked mask leaves a composition layer's
     /// static subtree, `crate::composition::unlinked_mask_matte`).
+    #[cfg(feature = "motion")]
     pub(crate) fn without_mask(&self, layer_id: &str) -> Self {
         let mut v = self.clone();
         v.masks.retain(|(l, _)| l != layer_id);
