@@ -7,7 +7,9 @@
 //!   miter joins, centred on the cell boundary), then the cell text (`TableProposal::text`, glyphs
 //!   and fills as for any story).
 //! - Overlays: stories whose placement frames name a frame layer they do not own (footnote bodies,
-//!   generated text), drawn after the host frame's text.
+//!   reference markers, generated text), drawn after the host frame's text.
+//! - Rules ([`RuleSegment`] from layout `layout_footnotes`): footnote separator rules stroked in
+//!   their frame (butt caps), before the overlays.
 //! - Placed graphics ([`PlacedGraphic`] from layout `place_graphic`): a raster layer with a graphic
 //!   frame is drawn in its own paint-order position through its fitting transform instead of its
 //!   `PlacedRaster` origin: pigment tiles (validated as for every raster layer) map pixel -> content
@@ -21,7 +23,7 @@
 use super::{Cx, PdfExportError, PdfExportInput, PdfStory, Result, check_story_list};
 use crate::model::LossKind;
 use hsk_studio_folio::{StudioColor, StudioDocument, StudioFrameShape, StudioLayer};
-use hsk_studio_layout::{PlacedGraphic, TableProposal, tint_rgb};
+use hsk_studio_layout::{PlacedGraphic, RuleSegment, TableProposal, tint_rgb};
 use hsk_studio_nib::PathLimits;
 use hsk_studio_press::{FillRule, ImageColour, ImageSpec, LineCap, LineJoin, PathCommand, StrokeStyle};
 
@@ -42,6 +44,8 @@ pub struct PdfLongDoc<'a> {
     pub overlays: &'a [PdfStory<'a>],
     /// Graphic frames of raster layers (layout `place_graphic`), keyed by `layer_id`.
     pub graphics: &'a [PlacedGraphic],
+    /// Footnote separator rules (layout `FootnoteProposal::rules`).
+    pub rules: &'a [RuleSegment],
 }
 impl<'a> PdfLongDoc<'a> {
     /// Every story this content draws.
@@ -52,6 +56,12 @@ impl<'a> PdfLongDoc<'a> {
         self.graphics.iter().find(|g| g.layer_id == layer_id)
     }
     pub(super) fn check(&self, input: &PdfExportInput<'_>, doc: &StudioDocument) -> Result<()> {
+        for r in self.rules {
+            let finite = r.from.iter().chain(&r.to).chain([r.origin_x_pt, r.origin_y_pt, r.weight_pt].iter()).all(|v| v.is_finite());
+            if !finite {
+                return Err(PdfExportError::InvalidInput("rule_placement"));
+            }
+        }
         for g in self.graphics {
             let finite = g.transform.iter().chain(&g.content_size).all(|v| v.is_finite())
                 && [g.frame.x0_pt, g.frame.y0_pt, g.frame.x1_pt, g.frame.y1_pt].iter().all(|v| v.is_finite());
@@ -81,6 +91,22 @@ impl Cx<'_> {
         let longdoc = self.longdoc;
         for t in longdoc.tables {
             self.table_parts(layer, t)?;
+        }
+        for r in longdoc.rules.iter().filter(|r| r.frame_id == layer.layer_id) {
+            let Some(pi) = self.page_index(r.spread, r.page) else {
+                return Err(PdfExportError::InvalidInput("frame_page"));
+            };
+            if !(r.weight_pt.is_finite() && r.weight_pt > 0.0) {
+                continue;
+            }
+            let Some(colour) = self.table_colour(&layer.layer_id, &r.colour, r.tint)? else { continue };
+            let Some(page) = self.pages.get(pi) else { continue };
+            let handle = page.handle;
+            let (a, b) = (page.map(r.origin_x_pt + r.from[0], r.origin_y_pt + r.from[1]), page.map(r.origin_x_pt + r.to[0], r.origin_y_pt + r.to[1]));
+            let cmds = [PathCommand::MoveTo(a.0, a.1), PathCommand::LineTo(b.0, b.1)];
+            let style = StrokeStyle { width_pt: r.weight_pt, cap: LineCap::Butt, join: LineJoin::Miter };
+            self.ex.stroke_path(handle, &cmds, colour, style)?;
+            self.paths = self.paths.saturating_add(1);
         }
         for s in longdoc.overlays {
             for f in s.placement.frames.iter().filter(|f| f.frame_id == layer.layer_id) {

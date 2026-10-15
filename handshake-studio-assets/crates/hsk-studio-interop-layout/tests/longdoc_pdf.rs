@@ -561,3 +561,169 @@ fn sections_and_toc_export_page_labels() {
     let again = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
     assert_eq!(again.text, "Contents\nAlpha i\nBeta ii\nGamma iii");
 }
+
+/// One 300 x 400 page; frame 21 (story 7) at (20, 20) 200 x 200, frame 22 (story 8) at (20, 230)
+/// 200 x 120.
+fn notes_document() -> StudioDocument {
+    let mut doc = book();
+    doc.page_spreads.truncate(1);
+    doc.page_spreads[0].pages[0].height = len(400.0);
+    doc.page_spreads[0].bounds.height = len(400.0);
+    let frame = |n: u32, story: u32, y: f64, h: f64| {
+        let mut l = frame_layer(n, y);
+        l.parent = Parent::Node(NodeRef { node_kind: NodeKind::PageSpread, node_id: id("SPGS", 1) });
+        l.payload = Payload::Text { story_id: id("STXT", story) };
+        let f = l.text_frame.as_mut().unwrap();
+        f.page_id = "b1".into();
+        f.bounds.height = len(h);
+        f.previous_text_frame = None;
+        f.next_text_frame = None;
+        l
+    };
+    doc.layers = vec![frame(21, 7, 20.0, 200.0), frame(22, 8, 230.0, 120.0)];
+    doc
+}
+
+/// Slice 4: body "Body note" (one line, baseline 16 -> PDF y 400 - 36 = 364) with a
+/// footnote at the story end; the note "The footnote." (24 pt) sits at the frame bottom: band top
+/// 200 - 24 = 176, baseline 192 -> PDF y 400 - 212 = 188; the 1 pt rule at band top - 2.5 = 173.5 ->
+/// spread y 193.5 (pixel row 193 dark at x 20..70). The reference marker "1" (12 pt overlay) is
+/// drawn at layout's reference position raised 6 pt. The index generated from marks on "Body"
+/// and "note" ("Index / Body, 1 / Notes / footnote, 1") is composed into frame 22 and drawn line by
+/// line (PDF baselines 154, 130, 106, 82) with exactly its Type glyph ids.
+#[test]
+fn footnotes_and_index_export() {
+    let cancel = CancellationToken::default();
+    let snapshot = validate_document(notes_document(), Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Body note";
+    let (body_story, body_paras, body_glyphs) = shaped_story(7, body, &[(0, 9, None)], &files, &fonts);
+    let note_text = "The footnote.";
+    let (note_story, note_paras, note_glyphs) = shaped_story(9, note_text, &[(0, 13, None)], &files, &fonts);
+    let footnote = StudioFootnote { note_id: "n1".into(), story_id: id("STXT", 7), anchor: 9, note_story_id: id("STXT", 9) };
+    let black = rgb(0.0, 0.0, 0.0);
+    let options = StudioFootnoteOptions {
+        numbering_style: StudioNumberStyle::Arabic,
+        start_at: 1,
+        restart: FootnoteRestart::DontRestart,
+        prefix: String::new(),
+        suffix: String::new(),
+        space_between: len(2.0),
+        spacer: len(6.0),
+        rule: Some(StudioFootnoteRule { weight: len(1.0), colour: black.clone(), tint: 100.0, left_indent: len(0.0), width: len(50.0), offset: len(2.5) }),
+        continuing_rule: None,
+        eos_placement: false,
+        no_splitting: false,
+    };
+    let notes = [hsk_studio_interop_layout::layout::NoteInput { note: &footnote, story: &note_story, resolved_text: None, paragraphs: &note_paras }];
+    let request = hsk_studio_interop_layout::layout::ReflowRequest {
+        document: doc,
+        story: &body_story,
+        resolved_text: None,
+        paragraphs: &body_paras,
+        obstacles: &[],
+        composer: Composer::FirstFit,
+        space: SpaceParams::default(),
+        expected_revision: doc.revision,
+        limits: hsk_studio_interop_layout::layout::Limits::default(),
+    };
+    let fp = hsk_studio_interop_layout::layout::layout_footnotes(
+        &hsk_studio_interop_layout::layout::FootnoteRequest { reflow: request, notes: &notes, options: &options, pages: &[], max_iterations: 8 },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!((fp.iterations, fp.bands.clone()), (2, vec![30.0]));
+    let n = &fp.notes[0];
+    assert_eq!((n.label.as_str(), n.reference_frame), ("1", 0));
+    // The reference marker: Type-shaped "1" at 12 pt on the reference, raised 6 pt.
+    let (marker_story, mut marker_paras, marker_glyphs) = shaped_story(10, "1", &[(0, 1, None)], &files, &fonts);
+    let marker_glyphs: Vec<Vec<PdfGlyph>> = marker_glyphs.into_iter().map(|g| g.into_iter().map(|g| PdfGlyph { size_pt: 12.0, ..g }).collect()).collect();
+    for g in &mut marker_paras[0].glyphs {
+        g.advance_pt *= 0.6;
+    }
+    let body_frame = &fp.body.frames[0];
+    let marker_place = hsk_studio_interop_layout::layout::LayoutProposal {
+        base_revision: doc.revision,
+        frames: vec![hsk_studio_interop_layout::layout::FramePlacement {
+            lines: vec![hsk_studio_interop_layout::layout::Line {
+                paragraph: 0,
+                baseline_y_pt: n.reference[1] - 6.0,
+                x_start_pt: n.reference[0],
+                width_pt: 0.0,
+                available_pt: 0.0,
+                hang_pt: 0.0,
+                source: SourceSpan { start: 0, end: 1 },
+                glyph_range: 0..1,
+                overfull: false,
+                ratio: None,
+                hyphenated: false,
+                justification: None,
+            }],
+            ..body_frame.clone()
+        }],
+        overset: None,
+    };
+    // Index from marks on the body story.
+    let pages = number_pages(doc, &[]).unwrap();
+    let mark = |m: &str, at: u64, topics: &[&str]| StudioIndexMark { mark_id: m.into(), story_id: id("STXT", 7), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None };
+    let index_options = StudioIndexOptions {
+        title: "Index".into(),
+        title_style: None,
+        index_format: IndexFormat::Nested,
+        include_section_headings: false,
+        include_empty_index_sections: false,
+        level_styles: vec![],
+        section_heading_style: None,
+        following_topic_separator: ", ".into(),
+        between_entries_separator: "; ".into(),
+        page_range_separator: "-".into(),
+        between_page_numbers_separator: ", ".into(),
+        before_cross_reference_separator: ". ".into(),
+        entry_end_separator: String::new(),
+    };
+    let index = hsk_studio_interop_layout::layout::generate_index(
+        doc,
+        &index_options,
+        &[mark("m1", 0, &["Body"]), mark("m2", 5, &["Notes", "footnote"])],
+        &[TocSource { story: &body_story, text: body, placement: Some(&fp.body) }],
+        &pages,
+        None,
+        hsk_studio_interop_layout::layout::IndexLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(index.story.text, "Index\nBody, 1\nNotes\nfootnote, 1");
+    let ranges: Vec<(u64, u64, Option<String>)> = index.story.paragraphs.iter().map(|p| (p.start, p.end, None)).collect();
+    let (index_story, index_paras, index_glyphs) = shaped_story(8, &index.story.text, &ranges, &files, &fonts);
+    let index_place = reflow_typeset(
+        &ReflowRequest { story: &index_story, paragraphs: &index_paras, ..request },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    assert!(index_place.overset.is_none());
+    let stories = [
+        PdfStory { story: &body_story, text: body, placement: &fp.body, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &index_story, text: &index.story.text, placement: &index_place, paragraphs: &index_paras, glyphs: &index_glyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let overlays = [
+        PdfStory { story: &note_story, text: note_text, placement: &fp.note_text[0].1, paragraphs: &note_paras, glyphs: &note_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &marker_story, text: "1", placement: &marker_place, paragraphs: &marker_paras, glyphs: &marker_glyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let out = export_pdf_with(&input(&snapshot, &stories, &fonts, &NoAssets), &PdfLongDoc { overlays: &overlays, rules: &fp.rules, ..PdfLongDoc::default() }, &cancel).unwrap();
+    let g = shown(&out.bytes);
+    let at_y = |y: f64| -> Vec<u16> { g.iter().filter(|s| (s.2 - y).abs() < 1e-6).map(|s| s.0).collect() };
+    assert_eq!(at_y(364.0), body_glyphs[0].iter().map(|x| x.glyph_id).collect::<Vec<_>>(), "body line");
+    assert_eq!(at_y(188.0), note_glyphs[0].iter().map(|x| x.glyph_id).collect::<Vec<_>>(), "note at the frame bottom");
+    let marker_y = 400.0 - (20.0 + n.reference[1] - 6.0);
+    let marker: Vec<(u16, f64)> = g.iter().filter(|s| (s.2 - marker_y).abs() < 1e-6).map(|s| (s.0, s.1)).collect();
+    assert_eq!(marker, vec![(marker_glyphs[0][0].glyph_id, 20.0 + n.reference[0])]);
+    let index_ids: Vec<u16> = [154.0, 130.0, 106.0, 82.0].iter().flat_map(|y| at_y(*y)).collect();
+    assert_eq!(index_ids, index_glyphs.iter().flatten().map(|x| x.glyph_id).collect::<Vec<_>>());
+    let page = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();
+    assert!(near(page.pixel(45, 193).unwrap(), [0, 0, 0]), "rule {:?}", page.pixel(45, 193));
+    assert!(near(page.pixel(100, 193).unwrap(), [255, 255, 255]), "rule ends at 70 {:?}", page.pixel(100, 193));
+}

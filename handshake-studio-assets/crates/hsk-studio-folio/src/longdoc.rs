@@ -39,6 +39,22 @@
 //! mapped at most once. Multiple TOC styles per document are carried. Declared gaps: run-in,
 //! bookmarks, anchors, book documents, hidden-layer text, numbered-paragraph modes.
 //!
+//! Footnotes (STU-LAY-046, STU-LAY-150): a footnote names its host story and the host byte its
+//! reference sits at, and the story holding the note text (never the host, never the host of
+//! another note: footnotes in footnotes are refused as `RenderCycle`). Footnote options carry the
+//! numbering style (footnote-legal members), start 1..=400, restart scope, prefix and suffix (0..=100
+//! characters), the space between notes and the spacer above the first note, the first and the
+//! continuing rule (weight 0..=1000 pt, tint 0..=100, colour, left indent, width, offset),
+//! end-of-story placement and no-splitting. Declared gaps: endnotes, sidenotes, straddling, marker
+//! positioning styles, the paragraph-style references.
+//!
+//! Index (STU-LAY-045, STU-LAY-149): index marks name a story byte and a topic path of one to FOUR
+//! levels (the captured maximum; Studio declares four), optional per-level sort-by text and an
+//! optional cross reference (eight captured kinds, custom text for the custom kinds). Index options
+//! carry the title and styles, nested or run-in format, section headings (with empty sections) and
+//! the six independent separators. Declared gaps: page-range scopes other than the current page,
+//! capitalisation commands, book documents, hidden entries.
+//!
 //! Hostile wire JSON: integer arithmetic is denied (workflow V4-01); grids are checked by
 //! `checked_mul` against `MAX_TABLE_CELLS` before any occupancy grid is allocated, and spans by
 //! `checked_add` against the grid edge (span overflow is refused, never clamped).
@@ -600,6 +616,292 @@ pub fn check_toc_style(t: &StudioTocStyle) -> std::result::Result<(), &'static s
     Ok(())
 }
 
+/// STU-LAY-150 `footnote_restart_numbering`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FootnoteRestart {
+    #[default]
+    DontRestart,
+    Page,
+    Spread,
+    Section,
+}
+
+/// One footnote: reference position and note text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioFootnote {
+    /// Document-local key, unique in the set.
+    pub note_id: String,
+    /// `STXT` host story.
+    pub story_id: String,
+    /// Host story byte the reference sits at.
+    pub anchor: u64,
+    /// `STXT` story holding the note text.
+    pub note_story_id: String,
+}
+
+/// A footnote separator rule (STU-LAY-150 rule groups).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioFootnoteRule {
+    /// `pt`, 0..=1000.
+    pub weight: Length,
+    pub colour: StudioColor,
+    /// Percent 0..=100.
+    pub tint: f64,
+    /// `pt` from the column's left inset.
+    pub left_indent: Length,
+    /// `pt`, the rule length.
+    pub width: Length,
+    /// `pt` from the top of the note area up to the rule.
+    pub offset: Length,
+}
+
+/// STU-LAY-150 footnote options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioFootnoteOptions {
+    pub numbering_style: StudioNumberStyle,
+    /// 1..=400.
+    pub start_at: u32,
+    #[serde(default)]
+    pub restart: FootnoteRestart,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub suffix: String,
+    /// Vertical space between notes, `pt`, non-negative.
+    pub space_between: Length,
+    /// Minimum space between the text and the first note, `pt`, non-negative.
+    pub spacer: Length,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<StudioFootnoteRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuing_rule: Option<StudioFootnoteRule>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub eos_placement: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_splitting: bool,
+}
+
+/// STU-LAY-149 cross-reference kinds of an index entry (eight captured members).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexXrefKind {
+    SeeOrAlsoBracket,
+    See,
+    SeeAlso,
+    SeeHerein,
+    SeeAlsoHerein,
+    Custom,
+    CustomBefore,
+    CustomAfter,
+}
+
+/// An index cross reference.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioIndexXref {
+    pub kind: IndexXrefKind,
+    /// Topic path of the referenced topic (1..=4 levels).
+    pub target: Vec<String>,
+    /// Text of the custom kinds (required there, refused elsewhere).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_text: Option<String>,
+}
+
+/// One index mark.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioIndexMark {
+    /// Document-local key, unique in the set.
+    pub mark_id: String,
+    /// `STXT` story holding the mark.
+    pub story_id: String,
+    /// Story byte of the mark.
+    pub at: u64,
+    /// Topic path, 1..=4 levels, each non-empty.
+    pub topics: Vec<String>,
+    /// Per-level sort-by text (same length as `topics` when present; empty = the topic text).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sort_by: Vec<String>,
+    /// A cross reference instead of (or beside) the page number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xref: Option<StudioIndexXref>,
+}
+
+/// STU-LAY-149 `index_format`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexFormat {
+    #[default]
+    Nested,
+    RunIn,
+}
+
+/// STU-LAY-149 index options with the six independent separators.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioIndexOptions {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_style: Option<String>,
+    #[serde(default)]
+    pub index_format: IndexFormat,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_section_headings: bool,
+    /// Valid only with section headings.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_empty_index_sections: bool,
+    /// `STYS` paragraph styles of levels 1..=4 (absent = none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub level_styles: Vec<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_heading_style: Option<String>,
+    pub following_topic_separator: String,
+    pub between_entries_separator: String,
+    pub page_range_separator: String,
+    pub between_page_numbers_separator: String,
+    pub before_cross_reference_separator: String,
+    pub entry_end_separator: String,
+}
+
+/// Index topic levels (the captured model declares exactly four).
+pub const MAX_INDEX_LEVELS: usize = 4;
+/// Footnotes per record set.
+pub const MAX_FOOTNOTES: usize = 65_536;
+/// Index marks per record set.
+pub const MAX_INDEX_MARKS: usize = 262_144;
+
+/// Footnote rules: unique keys, `STXT` references, a note story is neither its host nor the host
+/// of another note (`footnote_in_footnote`) and holds one note only.
+pub fn check_footnotes(notes: &[StudioFootnote]) -> std::result::Result<(), &'static str> {
+    if notes.len() > MAX_FOOTNOTES {
+        return Err("too_many_footnotes");
+    }
+    let hosts: BTreeSet<&str> = notes.iter().map(|n| n.story_id.as_str()).collect();
+    let mut keys = BTreeSet::new();
+    let mut bodies = BTreeSet::new();
+    for n in notes {
+        if !label(&n.note_id) {
+            return Err("note_id");
+        }
+        if !keys.insert(n.note_id.as_str()) {
+            return Err("note_duplicate");
+        }
+        if id(&n.story_id, "STXT", "footnote").is_err() || id(&n.note_story_id, "STXT", "footnote").is_err() {
+            return Err("note_story_ref");
+        }
+        if n.note_story_id == n.story_id || hosts.contains(n.note_story_id.as_str()) {
+            return Err("footnote_in_footnote");
+        }
+        if !bodies.insert(n.note_story_id.as_str()) {
+            return Err("note_story_shared");
+        }
+    }
+    Ok(())
+}
+
+/// Footnote option bounds of STU-LAY-150.
+pub fn check_footnote_options(o: &StudioFootnoteOptions) -> std::result::Result<(), &'static str> {
+    if !o.numbering_style.legal_for_footnotes() {
+        return Err("number_style_not_legal_for_footnotes");
+    }
+    if !(1..=400).contains(&o.start_at) {
+        return Err("footnote_start_at_range");
+    }
+    if o.prefix.chars().count() > 100 || o.suffix.chars().count() > 100 {
+        return Err("footnote_affix_length");
+    }
+    let nonneg = |l: &Length| l.unit == GeometryUnit::Pt && l.value.is_finite() && l.value >= 0.0;
+    if !nonneg(&o.space_between) || !nonneg(&o.spacer) {
+        return Err("footnote_spacing");
+    }
+    for r in [&o.rule, &o.continuing_rule].into_iter().flatten() {
+        let ok = nonneg(&r.weight)
+            && r.weight.value <= 1000.0
+            && percent(r.tint)
+            && [r.colour.r, r.colour.g, r.colour.b].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            && [&r.left_indent, &r.width, &r.offset].iter().all(|l| nonneg(l));
+        if !ok {
+            return Err("footnote_rule");
+        }
+    }
+    Ok(())
+}
+
+/// Index-mark rules: unique keys, `STXT` story, one to four non-empty topic levels, sort-by of the
+/// same length when present, cross references with a valid target and custom text exactly for the
+/// custom kinds.
+pub fn check_index_marks(marks: &[StudioIndexMark]) -> std::result::Result<(), &'static str> {
+    if marks.len() > MAX_INDEX_MARKS {
+        return Err("too_many_index_marks");
+    }
+    let path_ok = |p: &[String]| {
+        (1..=MAX_INDEX_LEVELS).contains(&p.len())
+            && p.iter().all(|t| !t.trim().is_empty() && t.len() <= 1024 && !t.chars().any(char::is_control))
+    };
+    let mut keys = BTreeSet::new();
+    for m in marks {
+        if !label(&m.mark_id) {
+            return Err("mark_id");
+        }
+        if !keys.insert(m.mark_id.as_str()) {
+            return Err("mark_duplicate");
+        }
+        if id(&m.story_id, "STXT", "index").is_err() {
+            return Err("mark_story_ref");
+        }
+        if !path_ok(&m.topics) {
+            return Err("index_topic_levels");
+        }
+        if !m.sort_by.is_empty() && m.sort_by.len() != m.topics.len() {
+            return Err("index_sort_by_levels");
+        }
+        if let Some(x) = &m.xref {
+            if !path_ok(&x.target) {
+                return Err("index_xref_target");
+            }
+            let custom = matches!(x.kind, IndexXrefKind::Custom | IndexXrefKind::CustomBefore | IndexXrefKind::CustomAfter);
+            if custom != x.custom_text.as_deref().is_some_and(|t| !t.is_empty()) {
+                return Err("index_xref_custom_text");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Index-option rules: separators at most 100 characters without line breaks, empty sections only
+/// with headings, at most four level styles, `STYS` references.
+pub fn check_index_options(o: &StudioIndexOptions) -> std::result::Result<(), &'static str> {
+    let seps = [
+        &o.following_topic_separator,
+        &o.between_entries_separator,
+        &o.page_range_separator,
+        &o.between_page_numbers_separator,
+        &o.before_cross_reference_separator,
+        &o.entry_end_separator,
+    ];
+    if seps.iter().any(|s| s.chars().count() > 100 || s.contains('\n')) {
+        return Err("index_separator");
+    }
+    if o.include_empty_index_sections && !o.include_section_headings {
+        return Err("index_empty_sections_without_headings");
+    }
+    if o.level_styles.len() > MAX_INDEX_LEVELS {
+        return Err("index_level_styles");
+    }
+    let style_ok = |s: &Option<String>| s.as_deref().is_none_or(|v| id(v, "STYS", "index").is_ok());
+    if !style_ok(&o.title_style) || !style_ok(&o.section_heading_style) || !o.level_styles.iter().all(style_ok) {
+        return Err("index_style_ref");
+    }
+    if o.title.len() > 1024 || o.title.chars().any(char::is_control) {
+        return Err("index_title");
+    }
+    Ok(())
+}
+
 /// The long-document records of one document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -616,6 +918,14 @@ pub struct StudioLongDocRecords {
     pub sections: Vec<StudioSection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toc_styles: Vec<StudioTocStyle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub footnotes: Vec<StudioFootnote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footnote_options: Option<StudioFootnoteOptions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub index_marks: Vec<StudioIndexMark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_options: Option<StudioIndexOptions>,
 }
 impl StudioLongDocRecords {
     /// An empty set for `document_id`.
@@ -627,6 +937,10 @@ impl StudioLongDocRecords {
             graphic_frames: Vec::new(),
             sections: Vec::new(),
             toc_styles: Vec::new(),
+            footnotes: Vec::new(),
+            footnote_options: None,
+            index_marks: Vec::new(),
+            index_options: None,
         }
     }
     /// The graphic frame of this layer.
@@ -902,6 +1216,44 @@ pub fn validate_longdoc_records(
                 _ => Code::InvalidField,
             };
             err(code, format!("{}/{why}", t.toc_id))
+        })?;
+    }
+    cx.nodes(r.footnotes.len(), "footnotes")?;
+    check_footnotes(&r.footnotes).map_err(|why| {
+        let code = match why {
+            "footnote_in_footnote" => Code::RenderCycle,
+            "note_duplicate" | "note_story_shared" => Code::DuplicateIdentity,
+            "note_story_ref" => Code::InvalidId,
+            "too_many_footnotes" => Code::BudgetExceeded,
+            _ => Code::InvalidField,
+        };
+        err(code, format!("footnotes/{why}"))
+    })?;
+    if let Some(o) = &r.footnote_options {
+        check_footnote_options(o).map_err(|why| err(Code::InvalidField, format!("footnote_options/{why}")))?;
+        for rule in [&o.rule, &o.continuing_rule].into_iter().flatten() {
+            rule.colour.validate("footnote_options", &mut cx)?;
+        }
+    }
+    cx.nodes(r.index_marks.len(), "index_marks")?;
+    for m in &r.index_marks {
+        for t in &m.topics {
+            cx.text(t, "index_marks")?;
+        }
+    }
+    check_index_marks(&r.index_marks).map_err(|why| {
+        let code = match why {
+            "mark_duplicate" => Code::DuplicateIdentity,
+            "mark_story_ref" => Code::InvalidId,
+            "too_many_index_marks" => Code::BudgetExceeded,
+            _ => Code::InvalidField,
+        };
+        err(code, format!("index_marks/{why}"))
+    })?;
+    if let Some(o) = &r.index_options {
+        check_index_options(o).map_err(|why| {
+            let code = if why == "index_style_ref" { Code::InvalidId } else { Code::InvalidField };
+            err(code, format!("index_options/{why}"))
         })?;
     }
     canceled(token)?;

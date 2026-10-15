@@ -239,3 +239,66 @@ fn longdoc_sections_and_toc_styles_round_trip_and_refusals() {
     assert_eq!(with(&|v| v["toc_styles"][0]["title_style"] = json!(identity("SLYR", 1))).0, Code::InvalidId);
     assert_eq!(with(&|v| v["toc_styles"][0]["entries"][0]["level"] = json!(0)).0, Code::InvalidField);
 }
+
+fn notes_and_index() -> Value {
+    let black = json!({"r": 0.0, "g": 0.0, "b": 0.0, "colour_profile_id": null});
+    json!({"schema_id": "hsk.studio.longdoc_records@1", "document_id": identity("SDOC", 1),
+        "footnotes": [
+            {"note_id": "n1", "story_id": identity("STXT", 1), "anchor": 5, "note_story_id": identity("STXT", 2)},
+            {"note_id": "n2", "story_id": identity("STXT", 1), "anchor": 9, "note_story_id": identity("STXT", 3)}
+        ],
+        "footnote_options": {"numbering_style": "symbols", "start_at": 1, "restart": "page", "suffix": ")",
+            "space_between": pt(2.0), "spacer": pt(3.0),
+            "rule": {"weight": pt(0.5), "colour": black, "tint": 100.0, "left_indent": pt(0.0), "width": pt(72.0), "offset": pt(1.0)},
+            "no_splitting": true},
+        "index_marks": [
+            {"mark_id": "m1", "story_id": identity("STXT", 1), "at": 3, "topics": ["Apple", "Green"], "sort_by": ["apple", "green"]},
+            {"mark_id": "m2", "story_id": identity("STXT", 1), "at": 7, "topics": ["Pear"],
+                "xref": {"kind": "custom_after", "target": ["Apple"], "custom_text": "compare"}}
+        ],
+        "index_options": {"title": "Index", "index_format": "run_in", "include_section_headings": true,
+            "level_styles": [identity("STYS", 1), null],
+            "following_topic_separator": ", ", "between_entries_separator": "; ", "page_range_separator": "-",
+            "between_page_numbers_separator": ", ", "before_cross_reference_separator": ". ", "entry_end_separator": ""}
+    })
+}
+
+/// Slice 4 (footnotes, index): round trip (prefix, eos/no-splitting defaults, sort_by and xref
+/// absence are not encoded) and the footnote / index refusals with their Folio codes.
+#[test]
+fn longdoc_footnotes_and_index_round_trip_and_refusals() {
+    let v = notes_and_index();
+    let r: StudioLongDocRecords = serde_json::from_value(v.clone()).unwrap();
+    let back = wire_identical(&r);
+    let wire = serde_json::to_value(&back).unwrap();
+    assert!(wire["footnote_options"].get("prefix").is_none() && wire["footnote_options"].get("eos_placement").is_none());
+    assert_eq!(wire["footnote_options"]["restart"], json!("page"));
+    assert_eq!(back.footnote_options.as_ref().unwrap().numbering_style, StudioNumberStyle::Symbols);
+    assert_eq!(back.index_marks[1].xref.as_ref().unwrap().kind, IndexXrefKind::CustomAfter);
+    assert!(validate(&v).unwrap().is_empty());
+
+    let with = |f: &dyn Fn(&mut Value)| {
+        let mut v = notes_and_index();
+        f(&mut v);
+        code_of(&v)
+    };
+    assert_eq!(with(&|v| v["footnotes"][1]["note_story_id"] = json!(identity("STXT", 1))), (Code::RenderCycle, "footnotes/footnote_in_footnote".into()));
+    assert_eq!(with(&|v| v["footnotes"][1]["story_id"] = json!(identity("STXT", 2))), (Code::RenderCycle, "footnotes/footnote_in_footnote".into()));
+    assert_eq!(with(&|v| v["footnotes"][1]["note_story_id"] = json!(identity("STXT", 2))), (Code::DuplicateIdentity, "footnotes/note_story_shared".into()));
+    assert_eq!(with(&|v| v["footnote_options"]["start_at"] = json!(401)), (Code::InvalidField, "footnote_options/footnote_start_at_range".into()));
+    assert_eq!(with(&|v| v["footnote_options"]["numbering_style"] = json!("triple_leading_zeros")).1, "footnote_options/number_style_not_legal_for_footnotes");
+    assert_eq!(with(&|v| v["footnote_options"]["rule"]["weight"] = pt(1000.5)).1, "footnote_options/footnote_rule");
+    assert_eq!(with(&|v| v["footnote_options"]["prefix"] = json!("x".repeat(101))).1, "footnote_options/footnote_affix_length");
+    assert_eq!(with(&|v| v["index_marks"][0]["topics"] = json!(["a", "b", "c", "d", "e"])).1, "index_marks/index_topic_levels");
+    assert_eq!(with(&|v| v["index_marks"][0]["sort_by"] = json!(["a"])).1, "index_marks/index_sort_by_levels");
+    assert_eq!(with(&|v| v["index_marks"][1]["xref"]["kind"] = json!("see")).1, "index_marks/index_xref_custom_text");
+    assert_eq!(with(&|v| v["index_marks"][1]["mark_id"] = json!("m1")), (Code::DuplicateIdentity, "index_marks/mark_duplicate".into()));
+    assert_eq!(
+        with(&|v| {
+            v["index_options"]["include_section_headings"] = json!(false);
+            v["index_options"]["include_empty_index_sections"] = json!(true);
+        }),
+        (Code::InvalidField, "index_options/index_empty_sections_without_headings".into())
+    );
+    assert_eq!(with(&|v| v["index_options"]["level_styles"] = json!([null, null, null, null, null])).1, "index_options/index_level_styles");
+}
