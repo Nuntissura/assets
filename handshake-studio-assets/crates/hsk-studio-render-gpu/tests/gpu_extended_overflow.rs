@@ -2,8 +2,8 @@
 //! the typed refusal render-cpu returns (`Unsupported { sample_range_outside_unit }`, render-cpu
 //! tests/cpu_extended_range.rs `hostile_values_in_an_extended_plan_are_typed`), never an infinite
 //! pixel, also when the overflow happens inside a nested group and a darken above it would hide an
-//! infinity; screen and exclusion run the Nuke float formulas within TOLERANCE of pigment; envelope
-//! operations are declared unsupported on the GPU and refused per operation before device work.
+//! infinity; screen and exclusion run the Nuke float formulas within TOLERANCE of pigment; an
+//! undefined envelope operation is refused per operation before device work.
 //! The execution half follows `tests/gpu-proof.toml` (V4-03).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
@@ -82,8 +82,8 @@ fn overflow_error() -> GpuError {
     GpuError::Backend(BackendError::Unsupported { operator: SAMPLE_RANGE_OPERATOR, exactness: Exactness::Unsupported })
 }
 
-/// none backend: a gaussian blur in an extended plan is refused `sample_range_extended_filter_gaussian_blur`
-/// (the GPU declares no envelope operation in the extended range). Live adapter, chunk sides 2 and
+/// none backend: a high pass in an extended plan is refused `sample_range_extended_filter_high_pass`
+/// (undefined above 1, refused by pigment for every backend). Live adapter, chunk sides 2 and
 /// 64: 3e38 + 3e38 under linear dodge is `Unsupported { sample_range_outside_unit }`, also when
 /// the sum lies in a nested group that a darken layer of value 1 composites over it; screen of 2.5
 /// over 3.0 (= max, 3.0), screen of 0.5 over 3.0 (= 2.0) and exclusion of 2.0 over 3.0 (= -7.0)
@@ -91,14 +91,14 @@ fn overflow_error() -> GpuError {
 #[test]
 fn gpu_overflow_is_the_cpu_refusal_and_nuke_modes_match_pigment() {
     let cancel = CancellationToken::default();
-    let blurred = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_filters(vec![LayerFilter::GaussianBlur { radius_px: 1.0 }])])
+    let blurred = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_filters(vec![LayerFilter::HighPass { radius_px: 1.0 }])])
         .with_output(OutputStage::new(SampleRange::Extended, None));
     let simple = plan(vec![solid([2.0, 1.0, 1.0, 1.0]), solid([0.5, 0.5, 0.5, 1.0]), group(vec![layer(0, StudioBlendMode::Normal, 1.0), layer(1, StudioBlendMode::Normal, 1.0)])]);
     let none = GpuBackend::new(DeviceOptions { backend: BackendChoice::None, ..DeviceOptions::default() });
     let mut grid = Grid::default();
     assert_eq!(
         none.execute_extended_detailed(&simple, &blurred, &request(), &NoSources, &cancel, &mut grid).unwrap_err(),
-        GpuError::Backend(BackendError::Unsupported { operator: "sample_range_extended_filter_gaussian_blur", exactness: Exactness::Unsupported })
+        GpuError::Backend(BackendError::Unsupported { operator: "sample_range_extended_filter_high_pass", exactness: Exactness::Unsupported })
     );
     assert!(grid.px.is_empty());
 
