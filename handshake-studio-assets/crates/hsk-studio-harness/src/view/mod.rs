@@ -24,6 +24,8 @@ pub mod edit;
 pub mod export;
 pub mod brush_mix;
 pub mod layers;
+/// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
+pub mod monitor;
 pub mod selection_store;
 pub mod text;
 pub mod render;
@@ -153,6 +155,18 @@ pub struct Viewer {
     fit: bool,
     drawn: Vec<String>,
     cancel: &'static CancellationToken,
+    /// Program monitor of a document sequence (module [`monitor`]), its decoded-frame port and
+    /// wall clock (no audio device in the viewer).
+    monitor: Option<MonitorState>,
+}
+
+struct MonitorState {
+    monitor: monitor::ProgramMonitor,
+    sources: Option<Box<dyn monitor::FrameSource>>,
+    extents: Box<dyn hsk_studio_pulse::SourceExtents>,
+    clock: monitor::WallClock,
+    texture: Option<egui::TextureHandle>,
+    shown: Option<u64>,
 }
 
 const MAX_STATUS: usize = 200;
@@ -198,6 +212,78 @@ impl Viewer {
             fit: true,
             drawn: Vec::new(),
             cancel,
+            monitor: None,
+        }
+    }
+
+    /// Opens the program monitor on sequence `sequence_id` of the open document at
+    /// `width` x `height` (lane SMB-PULSE-PLAYBACK). Frames need a decoder: see
+    /// [`Viewer::set_monitor_sources`].
+    pub fn open_monitor(&mut self, sequence_id: &str, width: u32, height: u32) -> Result<(), monitor::MonitorFail> {
+        let sequence = self
+            .run
+            .snapshot()
+            .and_then(|s| s.document().sequences.iter().find(|q| q.sequence_id == sequence_id))
+            .cloned()
+            .ok_or(monitor::MonitorFail { code: "unknown_sequence", detail: sequence_id.to_owned() })?;
+        let program = monitor::ProgramMonitor::new(sequence, width, height, monitor::DropPolicy::DropLate)?;
+        self.monitor = Some(MonitorState {
+            monitor: program,
+            sources: None,
+            extents: Box::new(hsk_studio_pulse::UnknownExtents),
+            clock: monitor::WallClock::new(48_000),
+            texture: None,
+            shown: None,
+        });
+        Ok(())
+    }
+
+    /// Decoded-frame port and source lengths of the open monitor.
+    pub fn set_monitor_sources(&mut self, sources: Box<dyn monitor::FrameSource>, extents: Box<dyn hsk_studio_pulse::SourceExtents>) {
+        if let Some(m) = &mut self.monitor {
+            m.sources = Some(sources);
+            m.extents = extents;
+        }
+    }
+
+    /// The open program monitor.
+    pub fn monitor(&self) -> Option<&monitor::ProgramMonitor> {
+        self.monitor.as_ref().map(|m| &m.monitor)
+    }
+
+    fn monitor_ui(&mut self, ctx: &egui::Context) {
+        let Some(m) = &mut self.monitor else { return };
+        if let Some(sources) = &m.sources {
+            let _ = m.monitor.refresh(&m.clock, sources.as_ref(), m.extents.as_ref(), self.cancel);
+        }
+        let frame = m.monitor.shown().map(|f| f.frame);
+        if frame != m.shown {
+            m.shown = frame;
+            m.texture = m.monitor.shown().map(|f| {
+                let (w, h) = (f.image.width, f.image.height);
+                let mut rgba = Vec::with_capacity((w as usize).saturating_mul(h as usize).saturating_mul(4));
+                for y in 0..h {
+                    for x in 0..w {
+                        let p = f.image.pixel(x, y).unwrap_or([0.0; 4]);
+                        rgba.extend(p.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+                    }
+                }
+                let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                ctx.load_texture("hsk-studio-monitor", image, egui::TextureOptions::NEAREST)
+            });
+        }
+        let drawn = egui::TopBottomPanel::bottom(widget::id(monitor::widget::PANEL))
+            .show(ctx, |ui| {
+                if let Some(t) = &m.texture {
+                    ui.image((t.id(), t.size_vec2()));
+                }
+                m.monitor.ui(ui, &m.clock)
+            })
+            .inner;
+        self.drawn.push(monitor::widget::PANEL.into());
+        self.drawn.extend(drawn.into_iter().map(String::from));
+        if m.monitor.scheduler().transport() == monitor::Transport::Playing {
+            ctx.request_repaint();
         }
     }
 
@@ -688,6 +774,7 @@ impl Viewer {
         ctx.request_repaint_after(std::time::Duration::from_millis(if self.edit.selection.is_some() { 120 } else { 1000 }));
         self.render_if_dirty();
 
+        self.monitor_ui(ctx);
         egui::CentralPanel::default().show(ctx, |ui| self.canvas_ui(ui));
     }
 

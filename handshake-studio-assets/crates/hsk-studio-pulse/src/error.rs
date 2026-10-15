@@ -43,6 +43,8 @@ pub enum PulseError {
     InsufficientHandle,
     UnknownMarker,
     UnknownTransition,
+    AudioUnsupported,
+    AudioRejected,
 }
 
 impl PulseError {
@@ -87,6 +89,8 @@ impl PulseError {
             Self::InsufficientHandle => "insufficient_handle",
             Self::UnknownMarker => "unknown_marker",
             Self::UnknownTransition => "unknown_transition",
+            Self::AudioUnsupported => "audio_unsupported",
+            Self::AudioRejected => "audio_rejected",
         }
     }
 
@@ -101,6 +105,7 @@ impl PulseError {
             | Self::DropFrameUnsupported
             | Self::SourceExtentUnknown
             | Self::LinkedEditUnsupported
+            | Self::AudioUnsupported
             | Self::Inexact => Some(FailureCode::Unsupported),
             _ => Some(FailureCode::Validation),
         }
