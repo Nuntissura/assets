@@ -40,6 +40,9 @@ use hsk_studio_nib::anchor_path::{
 };
 use hsk_studio_nib::boolean::BooleanOptions;
 use hsk_studio_nib::freeform::{self, CornerTreatment};
+use hsk_studio_nib::network::{NetworkRegion, NetworkSegment, NetworkVertex, VectorNetwork};
+use hsk_studio_nib::width::{WidthCap, WidthPoint, WidthProfile, outline_variable};
+use hsk_studio_nib::OwnedPath;
 use hsk_studio_nib::pathfinder::{PathfinderOp, pathfinder};
 use hsk_studio_nib::shape::{self, CornerKind, EllipseSpec, RectSpec};
 use hsk_studio_nib::stroke::{LineJoin, StrokeOptions, StrokeStyle, outline_stroke};
@@ -83,6 +86,9 @@ pub mod widget {
     pub const POLAR_RADIAL: &str = "vector.polar.radial";
     pub const SPIRAL_DECAY: &str = "vector.spiral.decay";
     pub const SPIRAL_TURNS: &str = "vector.spiral.turns";
+    /// Lane SMB-ILLUSTRATOR-PEN-3.
+    pub const RESHAPE_RADIUS: &str = "vector.reshape.radius";
+    pub const BLOB_DIAMETER: &str = "vector.blob.diameter";
 }
 
 /// Paint of one path: 8-bit sRGB fill and stroke (absent = none) and the stroke width.
@@ -99,6 +105,213 @@ pub struct PathRecord {
     pub path_id: String,
     pub path: AnchorPath,
     pub style: VectorStyle,
+    /// The Folio `StudioVectorNetwork` record when the path is a network (lane SMB-ILLUSTRATOR-PEN-3;
+    /// `path` is then its stroke geometry, for consumers that ignore networks).
+    pub network: Option<folio::StudioVectorNetwork>,
+    /// Width profile `[t, width]` of a variable-width stroke (lane SMB-ILLUSTRATOR-PEN-3).
+    pub width: Option<Vec<[f64; 2]>>,
+}
+
+impl PathRecord {
+    /// A record without network and width profile.
+    pub fn plain(path_id: String, path: AnchorPath, style: VectorStyle) -> Self {
+        Self { path_id, path, style, network: None, width: None }
+    }
+}
+
+/// Network edits of the model surface ([`Viewer::edit_network`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NetworkEdit {
+    MoveVertex { vertex: usize, dx: f64, dy: f64 },
+    AddVertex { x: f64, y: f64 },
+    Connect { a: usize, b: usize },
+    DeleteSegment(usize),
+    Tangents { segment: usize, start: Option<[f64; 2]>, end: Option<[f64; 2]> },
+}
+
+/// Planarize tolerance of the paint bucket (document px).
+pub const PLANAR_TOLERANCE: f64 = 1.0e-6;
+
+/// Nib network of a Folio network record.
+pub fn network_of(n: &folio::StudioVectorNetwork) -> Result<VectorNetwork, String> {
+    use hsk_studio_nib::stroke::{LineCap, LineJoin};
+    let idx = |v: u32| usize::try_from(v).map_err(|_| "network: index".to_string());
+    let net = VectorNetwork {
+        vertices: n
+            .vertices
+            .iter()
+            .map(|v| NetworkVertex {
+                x: v.x,
+                y: v.y,
+                stroke_cap: v.stroke_cap.map(|c| match c {
+                    folio::StudioStrokeCap::Butt => LineCap::Butt,
+                    folio::StudioStrokeCap::Round => LineCap::Round,
+                    folio::StudioStrokeCap::Projecting => LineCap::Square,
+                }),
+                stroke_join: v.stroke_join.map(|j| match j {
+                    folio::StudioStrokeJoin::Miter => LineJoin::Miter,
+                    folio::StudioStrokeJoin::Round => LineJoin::Round,
+                    folio::StudioStrokeJoin::Bevel => LineJoin::Bevel,
+                }),
+                corner_radius: v.corner_radius,
+                handle_mirroring: v.handle_mirroring.map(|m| match m {
+                    folio::StudioHandleMirroring::None => Mirroring::None,
+                    folio::StudioHandleMirroring::Angle => Mirroring::Angle,
+                    folio::StudioHandleMirroring::AngleAndLength => Mirroring::AngleAndLength,
+                }),
+            })
+            .collect(),
+        segments: n
+            .segments
+            .iter()
+            .map(|s| Ok(NetworkSegment { start: idx(s.start)?, end: idx(s.end)?, tangent_start: s.tangent_start.map(|t| PathPoint::new(t[0], t[1])), tangent_end: s.tangent_end.map(|t| PathPoint::new(t[0], t[1])) }))
+            .collect::<Result<_, String>>()?,
+        regions: n
+            .regions
+            .iter()
+            .map(|r| {
+                Ok(NetworkRegion {
+                    winding_rule: match r.winding_rule {
+                        folio::StudioRegionWinding::NonZero => FillRule::NonZero,
+                        folio::StudioRegionWinding::EvenOdd => FillRule::EvenOdd,
+                    },
+                    loops: r.loops.iter().map(|l| l.iter().map(|k| idx(*k)).collect::<Result<Vec<_>, String>>()).collect::<Result<_, String>>()?,
+                    fills: r.fills,
+                    fill_style_id: r.fill_style_id.clone(),
+                })
+            })
+            .collect::<Result<_, String>>()?,
+    };
+    net.validate().map_err(|e| format!("network: {}", e.code()))?;
+    Ok(net)
+}
+
+/// Folio network record of a nib network (indices saturate at `u32::MAX`, refused by validation).
+pub fn folio_of(n: &VectorNetwork, path_id: &str) -> folio::StudioVectorNetwork {
+    use hsk_studio_nib::stroke::{LineCap, LineJoin};
+    let idx = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+    folio::StudioVectorNetwork {
+        schema_id: folio::VectorNetworkSchema::V1,
+        path_id: path_id.to_string(),
+        vertices: n
+            .vertices
+            .iter()
+            .map(|v| folio::StudioNetworkVertex {
+                x: v.x,
+                y: v.y,
+                stroke_cap: v.stroke_cap.map(|c| match c {
+                    LineCap::Butt => folio::StudioStrokeCap::Butt,
+                    LineCap::Round => folio::StudioStrokeCap::Round,
+                    LineCap::Square => folio::StudioStrokeCap::Projecting,
+                }),
+                stroke_join: v.stroke_join.map(|j| match j {
+                    LineJoin::Miter => folio::StudioStrokeJoin::Miter,
+                    LineJoin::Round => folio::StudioStrokeJoin::Round,
+                    LineJoin::Bevel => folio::StudioStrokeJoin::Bevel,
+                }),
+                corner_radius: v.corner_radius,
+                handle_mirroring: v.handle_mirroring.map(|m| match m {
+                    Mirroring::None => folio::StudioHandleMirroring::None,
+                    Mirroring::Angle => folio::StudioHandleMirroring::Angle,
+                    Mirroring::AngleAndLength => folio::StudioHandleMirroring::AngleAndLength,
+                }),
+            })
+            .collect(),
+        segments: n
+            .segments
+            .iter()
+            .map(|s| folio::StudioNetworkSegment { start: idx(s.start), end: idx(s.end), tangent_start: s.tangent_start.map(|t| [t.x, t.y]), tangent_end: s.tangent_end.map(|t| [t.x, t.y]) })
+            .collect(),
+        regions: n
+            .regions
+            .iter()
+            .map(|r| folio::StudioNetworkRegion {
+                winding_rule: if r.winding_rule == FillRule::EvenOdd { folio::StudioRegionWinding::EvenOdd } else { folio::StudioRegionWinding::NonZero },
+                loops: r.loops.iter().map(|l| l.iter().map(|k| idx(*k)).collect()).collect(),
+                fills: r.fills,
+                fill_style_id: r.fill_style_id.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn width_profile(w: &[[f64; 2]]) -> Result<WidthProfile, String> {
+    let p = WidthProfile { points: w.iter().map(|p| WidthPoint { t: p[0], width: p[1] }).collect() };
+    p.validate().map_err(|e| format!("width_profile: {e:?}"))?;
+    Ok(p)
+}
+
+/// Point-in-region test on the flattened outline of an anchor path (non-zero / even-odd per path).
+fn region_contains(path: &AnchorPath, q: PathPoint) -> bool {
+    let Ok(owned) = path.to_owned_path() else { return false };
+    let Ok(lines) = hsk_studio_nib::flatten::flatten(&owned, &hsk_studio_nib::flatten::FlattenOptions::default()) else { return false };
+    let mut polygon = OwnedPath::new(owned.fill_rule);
+    for l in lines {
+        let mut it = l.points.iter();
+        let Some(first) = it.next() else { continue };
+        polygon.elements.push(hsk_studio_nib::PathElement::MoveTo(*first));
+        polygon.elements.extend(it.map(|p| hsk_studio_nib::PathElement::LineTo(*p)));
+        polygon.elements.push(hsk_studio_nib::PathElement::Close);
+    }
+    freeform::polygon_contains(&polygon, q)
+}
+
+/// A point inside a closed anchor path: the area centroid of its flattened outline when inside,
+/// else the midpoint of the first inside span of the horizontal line through the centroid.
+fn interior_point(path: &AnchorPath) -> Option<PathPoint> {
+    let owned = path.to_owned_path().ok()?;
+    let lines = hsk_studio_nib::flatten::flatten(&owned, &hsk_studio_nib::flatten::FlattenOptions::default()).ok()?;
+    let pts: Vec<PathPoint> = lines.iter().flat_map(|l| l.points.iter().copied()).collect();
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for l in &lines {
+        let n = l.points.len();
+        for i in 0..n {
+            let (p, q) = (l.points[i], l.points[i.saturating_add(1).checked_rem(n)?]);
+            let cross = p.x * q.y - q.x * p.y;
+            a += cross;
+            cx += (p.x + q.x) * cross;
+            cy += (p.y + q.y) * cross;
+        }
+    }
+    if a == 0.0 || pts.is_empty() {
+        return None;
+    }
+    let c = PathPoint::new(cx / (3.0 * a), cy / (3.0 * a));
+    if region_contains(path, c) {
+        return Some(c);
+    }
+    let mut xs: Vec<f64> = Vec::new();
+    for l in &lines {
+        let n = l.points.len();
+        for i in 0..n {
+            let (p, q) = (l.points[i], l.points[i.saturating_add(1).checked_rem(n)?]);
+            if (p.y <= c.y) != (q.y <= c.y) {
+                xs.push(p.x + (c.y - p.y) / (q.y - p.y) * (q.x - p.x));
+            }
+        }
+    }
+    xs.sort_by(f64::total_cmp);
+    xs.windows(2).map(|w| PathPoint::new((w[0] + w[1]) / 2.0, c.y)).find(|m| region_contains(path, *m))
+}
+
+/// Arc-length fraction (0..=1) of the point at `(segment, t)` of contour `contour` (16 samples per segment).
+fn arc_fraction(path: &AnchorPath, contour: usize, segment: usize, t: f64) -> Result<f64, String> {
+    let c = path.contour(contour).map_err(|e| e.code().to_string())?;
+    let (mut total, mut upto) = (0.0, 0.0);
+    for si in 0..c.segment_count() {
+        let mut prev = ap::point_at(path, contour, si, 0.0).map_err(|e| e.code().to_string())?;
+        for k in 1..=16_u32 {
+            let tk = f64::from(k) / 16.0;
+            let q = ap::point_at(path, contour, si, tk).map_err(|e| e.code().to_string())?;
+            let step = ((q.x - prev.x).powi(2) + (q.y - prev.y).powi(2)).sqrt();
+            total += step;
+            if si < segment || (si == segment && tk <= t) {
+                upto += step;
+            }
+            prev = q;
+        }
+    }
+    Ok(if total > 0.0 { (upto / total).clamp(0.0, 1.0) } else { 0.0 })
 }
 
 /// The `vector` document entry.
@@ -182,6 +395,9 @@ pub struct VectorTool {
     pub corner: CornerTreatment,
     /// Kerf of the knife (document px).
     pub knife_kerf: f64,
+    /// Reshape falloff radius and blob brush diameter (document px).
+    pub reshape_radius: f64,
+    pub blob_diameter: f64,
     /// The freehand samples of the gesture in progress (pencil, knife, shape builder).
     pub samples: Vec<[f64; 2]>,
     /// The layer the pen extends (`None` = the next click starts a new path).
@@ -216,6 +432,8 @@ impl Default for VectorTool {
             pencil_close_within: 4.0,
             corner: CornerTreatment::Round,
             knife_kerf: 0.01,
+            reshape_radius: 40.0,
+            blob_diameter: 10.0,
             samples: Vec::new(),
             pen_layer: None,
             press: None,
@@ -328,13 +546,42 @@ impl VectorEntry {
         let mut records = Vec::with_capacity(paths.len());
         for p in paths {
             let o = p.as_object().ok_or("vector_entry_path")?;
-            if o.keys().any(|k| !["path_id", "fill", "stroke", "stroke_width", "path"].contains(&k.as_str())) {
+            if o.keys().any(|k| !["path_id", "fill", "stroke", "stroke_width", "path", "network", "width"].contains(&k.as_str())) {
                 return Err("vector_entry_unknown_field".into());
             }
+            let path_id = p["path_id"].as_str().ok_or("vector_entry_path_id")?.to_string();
+            let network = match o.get("network") {
+                None => None,
+                Some(n) => {
+                    let n: folio::StudioVectorNetwork = serde_json::from_value(n.clone()).map_err(|e| format!("vector_entry_network: {e}"))?;
+                    folio::validate_vector_network(&n).map_err(|d| format!("vector_entry_network: {:?} {}", d.code, d.target))?;
+                    if n.path_id != path_id {
+                        return Err(format!("vector_entry_network: path id {}", n.path_id));
+                    }
+                    Some(n)
+                }
+            };
+            let width = match o.get("width") {
+                None => None,
+                Some(w) => {
+                    let arr = w.as_array().filter(|a| a.len() <= hsk_studio_nib::width::MAX_WIDTH_POINTS).ok_or("vector_entry_width")?;
+                    let pts = arr
+                        .iter()
+                        .map(|q| {
+                            let q = q.as_array().filter(|q| q.len() == 2).ok_or("vector_entry_width")?;
+                            Ok([q[0].as_f64().ok_or("vector_entry_width")?, q[1].as_f64().ok_or("vector_entry_width")?])
+                        })
+                        .collect::<Result<Vec<[f64; 2]>, String>>()?;
+                    width_profile(&pts)?;
+                    Some(pts)
+                }
+            };
             records.push(PathRecord {
-                path_id: p["path_id"].as_str().ok_or("vector_entry_path_id")?.to_string(),
+                path_id,
                 style: VectorStyle { fill: rgb_of(&p["fill"], "fill")?, stroke: rgb_of(&p["stroke"], "stroke")?, stroke_width: p["stroke_width"].as_f64().ok_or("vector_entry_style: stroke_width")? },
                 path: path_of(&p["path"], &mut budget)?,
+                network,
+                width,
             });
         }
         let live: StudioLiveShapes = serde_json::from_value(v["live_shapes"].clone()).map_err(|e| format!("vector_entry_live_shapes: {e}"))?;
@@ -384,7 +631,16 @@ impl VectorEntry {
         let paths: Vec<Value> = self
             .paths
             .iter()
-            .map(|p| json!({"path_id": p.path_id, "fill": rgb_json(p.style.fill), "stroke": rgb_json(p.style.stroke), "stroke_width": p.style.stroke_width, "path": path_json(&p.path)}))
+            .map(|p| {
+                let mut v = json!({"path_id": p.path_id, "fill": rgb_json(p.style.fill), "stroke": rgb_json(p.style.stroke), "stroke_width": p.style.stroke_width, "path": path_json(&p.path)});
+                if let Some(n) = &p.network {
+                    v["network"] = serde_json::to_value(n).unwrap_or(Value::Null);
+                }
+                if let Some(w) = &p.width {
+                    v["width"] = json!(w);
+                }
+                v
+            })
             .collect();
         let mut live = StudioLiveShapes::new(document_id);
         live.shapes.clone_from(&self.live);
@@ -426,6 +682,13 @@ pub fn specs(doc: &StudioDocument, entry: &VectorEntry) -> Result<Vec<VectorLaye
             style.get_or_insert(record.style);
         }
         let style = style.unwrap_or(VectorStyle { fill: None, stroke: None, stroke_width: 0.0 });
+        // Networks and variable-width strokes draw through explicit fill and stroke-outline geometry.
+        if let Some(record) = path_ids.first().and_then(|id| entry.path(id))
+            && (record.network.is_some() || record.width.is_some())
+        {
+            out.push(outline_spec(&layer.layer_id, record)?);
+            continue;
+        }
         let mut fills = Vec::new();
         if let Some(c) = style.fill {
             fills.push(FillSpec { paint: solid(c), mode: StudioBlendMode::Normal, opacity: 1.0 });
@@ -438,6 +701,116 @@ pub fn specs(doc: &StudioDocument, entry: &VectorEntry) -> Result<Vec<VectorLaye
         out.push(VectorLayerSpec { layer_id: layer.layer_id.clone(), geometry: VectorGeometry::Paths(paths), fills });
     }
     Ok(out)
+}
+
+/// Largest pattern tile (pixels) a fill-and-stroke outline layer paints with.
+pub const MAX_OUTLINE_TILE_PIXELS: u64 = 16 << 20;
+
+/// The spec of a network or variable-width layer (lane SMB-ILLUSTRATOR-PEN-3): fill geometry (a
+/// network's filled regions, else the path) and the stroke's filled outline (a network's stroke
+/// geometry, else the path; outlined by the width profile or the uniform width) united as the layer
+/// geometry. With both a fill and a stroke the colour comes from a pattern tile over their bounds:
+/// `stroke * s + fill * f (1 - s)` over `s + f (1 - s)` from Nib's exact coverage of each (the
+/// stroke paints above the fill), so composite draws one coverage plane.
+fn outline_spec(layer_id: &str, record: &PathRecord) -> Result<VectorLayerSpec, String> {
+    let style = record.style;
+    let err = |e: hsk_studio_nib::Error| format!("vector_outline: {e:?}");
+    let network = record.network.as_ref().map(network_of).transpose()?;
+    let fill_paths: Vec<OwnedPath> = match (&network, style.fill) {
+        (_, None) => Vec::new(),
+        (Some(n), Some(_)) => n.fill_geometry().map_err(|e| e.code().to_string())?.iter().map(|g| g.to_owned_path().map_err(|e| e.code().to_string())).collect::<Result<_, _>>()?,
+        (None, Some(_)) => vec![record.path.to_owned_path().map_err(|e| e.code().to_string())?],
+    };
+    let outline = match style.stroke {
+        Some(_) if style.stroke_width > 0.0 || record.width.is_some() => {
+            let base = match &network {
+                Some(n) => n.stroke_geometry().map_err(|e| e.code().to_string())?,
+                None => record.path.clone(),
+            };
+            let owned = base.to_owned_path().map_err(|e| e.code().to_string())?;
+            if owned.elements.is_empty() {
+                None
+            } else {
+                let r = match &record.width {
+                    Some(w) => outline_variable(&owned, &width_profile(w)?, WidthCap::Butt, &BooleanOptions::default()),
+                    None => outline_stroke(&owned, &StrokeStyle::new(style.stroke_width), &StrokeOptions::default()),
+                };
+                match r {
+                    Ok(g) => Some(g.path),
+                    Err(hsk_studio_nib::Error::EmptyPathfinderResult) => None,
+                    Err(e) => return Err(err(e)),
+                }
+            }
+        }
+        _ => None,
+    };
+    let mut geometry = fill_paths.clone();
+    geometry.extend(outline.iter().cloned());
+    let fills = match (style.fill, style.stroke, &outline, fill_paths.is_empty()) {
+        (Some(f), Some(s), Some(o), false) => {
+            let tile = blend_tile(&fill_paths, o, f, s)?;
+            vec![FillSpec { paint: FillPaint::Pattern(tile), mode: StudioBlendMode::Normal, opacity: 1.0 }]
+        }
+        (Some(f), _, None, false) => vec![FillSpec { paint: solid(f), mode: StudioBlendMode::Normal, opacity: 1.0 }],
+        (_, Some(s), Some(_), true) | (None, Some(s), Some(_), _) => vec![FillSpec { paint: solid(s), mode: StudioBlendMode::Normal, opacity: 1.0 }],
+        _ => Vec::new(),
+    };
+    Ok(VectorLayerSpec { layer_id: layer_id.to_string(), geometry: VectorGeometry::Paths(geometry), fills })
+}
+
+/// The colour tile of a fill-and-stroke outline layer (module docs of [`outline_spec`]).
+fn blend_tile(fills: &[OwnedPath], outline: &OwnedPath, fill: [u8; 3], stroke: [u8; 3]) -> Result<hsk_studio_nib::raster::PatternTile, String> {
+    use hsk_studio_nib::raster::{PatternTile, PixelFrame, RasterOptions, rasterize};
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for path in fills.iter().chain(std::iter::once(outline)) {
+        for e in &path.elements {
+            let pts: &[PathPoint] = match e {
+                hsk_studio_nib::PathElement::MoveTo(p) | hsk_studio_nib::PathElement::LineTo(p) => std::slice::from_ref(p),
+                hsk_studio_nib::PathElement::QuadTo(a, p) => &[*a, *p][..],
+                hsk_studio_nib::PathElement::CubicTo(a, c, p) => &[*a, *c, *p][..],
+                hsk_studio_nib::PathElement::Close => &[],
+            };
+            for p in pts {
+                b = [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)];
+            }
+        }
+    }
+    if !b.iter().all(|v| v.is_finite()) {
+        return Err("vector_outline: empty".into());
+    }
+    let (x0, y0) = (b[0].floor(), b[1].floor());
+    let (w, h) = ((b[2].ceil() - x0).max(1.0), (b[3].ceil() - y0).max(1.0));
+    if w * h > MAX_OUTLINE_TILE_PIXELS as f64 || x0.abs() > 1.0e8 || y0.abs() > 1.0e8 {
+        return Err("vector_outline: tile_too_large".into());
+    }
+    // In range after the checks above.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let frame = PixelFrame { x: x0 as i32, y: y0 as i32, width: w as u32, height: h as u32 };
+    let opts = RasterOptions::default();
+    let cover = |p: &OwnedPath| rasterize(p, frame, &opts).map(|(c, _)| c.data).map_err(|e| format!("vector_outline: {e:?}"));
+    let s_cov = cover(outline)?;
+    let mut f_cov = vec![0.0_f32; s_cov.len()];
+    for p in fills {
+        for (acc, c) in f_cov.iter_mut().zip(cover(p)?) {
+            let a = f32::from(c) / 255.0;
+            *acc = 1.0 - (1.0 - *acc) * (1.0 - a);
+        }
+    }
+    let (fl, sl) = (fill.map(linear), stroke.map(linear));
+    let pixels = s_cov
+        .iter()
+        .zip(&f_cov)
+        .map(|(sc, f)| {
+            let s = f32::from(*sc) / 255.0;
+            let a = s + f * (1.0 - s);
+            if a <= 0.0 {
+                return [fl[0], fl[1], fl[2], 1.0];
+            }
+            let mix = |k: usize| (sl[k] * s + fl[k] * f * (1.0 - s)) / a;
+            [mix(0), mix(1), mix(2), 1.0]
+        })
+        .collect();
+    Ok(PatternTile { width: frame.width, height: frame.height, pixels, transform: [1.0, 0.0, 0.0, 1.0, f64::from(frame.x), f64::from(frame.y)] })
 }
 
 /// A fresh `SVPT` id (the document id's time fields, never one the entry holds).
@@ -605,6 +978,10 @@ pub fn tool_hover(tool: Tool) -> &'static str {
         Tool::RectangularGrid => "Drag a rectangular grid (rows and columns below)",
         Tool::PolarGrid => "Drag a polar grid (concentric and radial dividers below)",
         Tool::Spiral => "Drag from the centre: spiral (decay and turns below)",
+        Tool::Width => "Drag from a stroke outward to set its width there (variable-width stroke)",
+        Tool::Reshape => "Drag a point of a path; nearby anchors follow smoothly",
+        Tool::BlobBrush => "Paint a filled shape that merges with overlapping shapes of the same fill",
+        Tool::PaintBucket => "Click an enclosed region of the selected vector layer to fill it (Alt: clear it); the path becomes a vector network",
         _ => "",
     }
 }
@@ -628,7 +1005,10 @@ impl Tool {
     }
     /// Pen, direct selection or a shape tool.
     pub fn is_vector(self) -> bool {
-        matches!(self, Tool::Pen | Tool::DirectSelect | Tool::Curvature | Tool::Pencil | Tool::Knife | Tool::ShapeBuilder) || self.shape().is_some()
+        matches!(
+            self,
+            Tool::Pen | Tool::DirectSelect | Tool::Curvature | Tool::Pencil | Tool::Knife | Tool::ShapeBuilder | Tool::Width | Tool::Reshape | Tool::BlobBrush | Tool::PaintBucket
+        ) || self.shape().is_some()
     }
 }
 
@@ -732,7 +1112,7 @@ impl Viewer {
         if entry.paths.len() >= MAX_PATHS {
             return Err(format!("{op}: vector_entry_over_budget"));
         }
-        entry.paths.push(PathRecord { path_id: path_id.clone(), path, style });
+        entry.paths.push(PathRecord::plain(path_id.clone(), path, style));
         if let Some(shape) = live {
             entry.live.push(StudioLiveShape { layer_id: id.clone(), path_id: path_id.clone(), shape });
         }
@@ -756,7 +1136,7 @@ impl Viewer {
             return Err(format!("{op}: vector_entry_over_budget"));
         }
         let path_id = mint_path_id(self.vdoc()?, &entry);
-        entry.paths.push(PathRecord { path_id: path_id.clone(), path, style: style.unwrap_or(record.style) });
+        entry.paths.push(PathRecord { width: record.width.clone(), ..PathRecord::plain(path_id.clone(), path, style.unwrap_or(record.style)) });
         if let Some(shape) = live {
             entry.live.push(StudioLiveShape { layer_id: layer.to_string(), path_id: path_id.clone(), shape });
         }
@@ -917,7 +1297,15 @@ impl Viewer {
         let mut cuts: Vec<(String, PathRecord, Vec<AnchorPath>)> = Vec::new();
         for id in self.stack_vector_layers() {
             let record = self.vector_path(&id)?;
+            if record.network.is_some() {
+                continue;
+            }
             if record.style.fill.is_none() {
+                // Strokes only: open pieces (STU-VEC-048), lane SMB-ILLUSTRATOR-PEN-3.
+                let pieces = freeform::knife_strokes(&record.path, &points).map_err(|e| format!("knife: {}", e.code()))?;
+                if pieces.len() > record.path.contours.len() {
+                    cuts.push((id, record, pieces));
+                }
                 continue;
             }
             let owned = record.path.to_owned_path().map_err(|e| format!("knife: {}", e.code()))?;
@@ -993,7 +1381,7 @@ impl Viewer {
             }
             salt = salt.wrapping_add(1);
             let path_id = mint_path_id(doc, &entry);
-            entry.paths.push(PathRecord { path_id: path_id.clone(), path, style });
+            entry.paths.push(PathRecord::plain(path_id.clone(), path, style));
             let layer = super::layers::new_layer(&id, &base.name, &base.parent, "vector", json!({"payload_kind": "vector", "path_ids": [path_id]}))?;
             writes.push(PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(anchor.clone())), create: Some((layer, super::layers::operation_for(&id, false)?)) });
             ids.push(id);
@@ -1003,6 +1391,245 @@ impl Viewer {
         self.structure(op, writes, format!("{op} -> {} layer(s)", ids.len()))?;
         self.selected = ids.first().cloned();
         Ok(ids)
+    }
+
+    // ----- lane SMB-ILLUSTRATOR-PEN-3: networks, width, reshape, blob brush ------------------------
+
+    /// Stores `record` (a fresh path id is minted) and commits it with ONE `vector_paths` write; the
+    /// layer keeps its id.
+    fn replace_record(&mut self, op: &str, layer: &str, mut record: PathRecord) -> Result<String, String> {
+        record.path.validate().map_err(|e| format!("{op}: {}", e.code()))?;
+        let mut entry = self.vector_entry()?;
+        if entry.paths.len() >= MAX_PATHS {
+            return Err(format!("{op}: vector_entry_over_budget"));
+        }
+        let path_id = mint_path_id(self.vdoc()?, &entry);
+        record.path_id.clone_from(&path_id);
+        if let Some(n) = &mut record.network {
+            n.path_id.clone_from(&path_id);
+            folio::validate_vector_network(n).map_err(|d| format!("{op}: network {:?} {}", d.code, d.target))?;
+        }
+        entry.paths.push(record);
+        self.store_entry(&entry)?;
+        let ok = self.run.set_vector_paths(op, layer, vec![path_id]);
+        self.after_edit(ok, format!("{op} {layer}"))?;
+        self.selected = Some(layer.to_string());
+        Ok(layer.to_string())
+    }
+
+    /// The network of a vector layer: its stored network, else its path promoted losslessly
+    /// (STU-VEC-001; nothing is committed).
+    pub fn vector_network(&self, layer_id: &str) -> Result<VectorNetwork, String> {
+        let record = self.vector_path(layer_id)?;
+        match &record.network {
+            Some(n) => network_of(n),
+            None => VectorNetwork::from_path(&record.path).map_err(|e| format!("network: {}", e.code())),
+        }
+    }
+
+    /// Replaces the layer's geometry by `network` (STU-VEC-108 atomic set-network): validated whole,
+    /// stored as the Folio `StudioVectorNetwork` record of a new path (whose own geometry is the
+    /// network's stroke geometry, for consumers that ignore networks); ONE transaction, same layer.
+    pub fn set_network(&mut self, layer_id: &str, network: &VectorNetwork) -> Result<String, String> {
+        let r = self.set_network_inner("set_network", layer_id, network);
+        self.report(r)
+    }
+
+    fn set_network_inner(&mut self, op: &str, layer_id: &str, network: &VectorNetwork) -> Result<String, String> {
+        let style = self.vector_path(layer_id)?.style;
+        self.set_network_styled(op, layer_id, network, style)
+    }
+
+    fn set_network_styled(&mut self, op: &str, layer_id: &str, network: &VectorNetwork, style: VectorStyle) -> Result<String, String> {
+        network.validate().map_err(|e| format!("{op}: {}", e.code()))?;
+        let record = self.vector_path(layer_id)?;
+        let path = network.stroke_geometry().map_err(|e| format!("{op}: {}", e.code()))?;
+        let folio_network = folio_of(network, &record.path_id);
+        let next = PathRecord { path_id: record.path_id.clone(), path, style, network: Some(folio_network), width: record.width.clone() };
+        self.replace_record(op, layer_id, next)
+    }
+
+    /// Promotes a vector layer's path to a network (STU-VEC-001, lossless): one transaction.
+    pub fn promote_network(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = (|| {
+            let net = VectorNetwork::from_path(&self.vector_path(layer_id)?.path).map_err(|e| format!("promote: {}", e.code()))?;
+            self.set_network_inner("promote_network", layer_id, &net)
+        })();
+        self.report(r)
+    }
+
+    /// Network edit of the model surface (one transaction each): move a vertex, add a vertex,
+    /// connect two vertices, delete a segment (regions using it are dropped), set tangents.
+    pub fn edit_network(&mut self, layer_id: &str, edit: NetworkEdit) -> Result<String, String> {
+        let r = (|| {
+            let mut net = self.vector_network(layer_id)?;
+            match edit {
+                NetworkEdit::MoveVertex { vertex, dx, dy } => {
+                    if !(dx.is_finite() && dy.is_finite()) {
+                        return Err("network: non_finite".into());
+                    }
+                    let v = net.vertices.get_mut(vertex).ok_or("network: index_out_of_bounds")?;
+                    v.x += dx;
+                    v.y += dy;
+                }
+                NetworkEdit::AddVertex { x, y } => net.vertices.push(NetworkVertex::at(x, y)),
+                NetworkEdit::Connect { a, b } => net.segments.push(NetworkSegment::line(a, b)),
+                NetworkEdit::DeleteSegment(s) => {
+                    if s >= net.segments.len() {
+                        return Err("network: index_out_of_bounds".into());
+                    }
+                    net.segments.remove(s);
+                    net.regions.retain(|r| r.loops.iter().all(|l| !l.contains(&s)));
+                    for r in &mut net.regions {
+                        for l in &mut r.loops {
+                            for k in l.iter_mut() {
+                                if *k > s {
+                                    *k = k.saturating_sub(1);
+                                }
+                            }
+                        }
+                    }
+                }
+                NetworkEdit::Tangents { segment, start, end } => {
+                    let seg = net.segments.get_mut(segment).ok_or("network: index_out_of_bounds")?;
+                    seg.tangent_start = start.map(|t| PathPoint::new(t[0], t[1]));
+                    seg.tangent_end = end.map(|t| PathPoint::new(t[0], t[1]));
+                }
+            }
+            self.set_network_inner("edit_network", layer_id, &net)
+        })();
+        self.report(r)
+    }
+
+    /// Paint bucket (STU-VEC-004, Live-Paint reading): fills (`fill`) or clears the enclosed face of
+    /// the layer's network under document point `p`. The network is planarized (crossings and
+    /// T-junctions split); its regions become the faces of the planar embedding, each filled when an
+    /// interior point of it was inside the previously filled geometry; the face under the point takes
+    /// `fill`. A fill on a layer without fill colour takes the tool's fill colour. ONE transaction;
+    /// typed `paint_bucket: no enclosed region` when the point is in no face. Studio reading,
+    /// Illustrator Live Paint parity UNVERIFIED (D5).
+    pub fn network_paint_bucket(&mut self, layer_id: &str, p: [f64; 2], fill: bool) -> Result<String, String> {
+        let r = (|| {
+            if !p.iter().all(|v| v.is_finite()) {
+                return Err("paint_bucket: non_finite".into());
+            }
+            let code = |e: hsk_studio_nib::network::NetworkError| format!("paint_bucket: {}", e.code());
+            let planar = self.vector_network(layer_id)?.planarize(PLANAR_TOLERANCE).map_err(code)?;
+            // Fill state only shows where the layer has a fill colour: without one nothing was filled.
+            let painted = self.vector_path(layer_id)?.style.fill.is_some();
+            let old_fill = if painted { planar.fill_geometry().map_err(code)? } else { Vec::new() };
+            let q = PathPoint::new(p[0], p[1]);
+            let mut faces = planar.detect_regions(false).map_err(code)?;
+            let mut found = false;
+            for face in &mut faces {
+                let probe = VectorNetwork { regions: vec![NetworkRegion { fills: true, ..face.clone() }], ..planar.clone() };
+                let geometry = probe.fill_geometry().map_err(code)?;
+                let Some(shape) = geometry.first() else { continue };
+                if let Some(inner) = interior_point(shape) {
+                    face.fills = old_fill.iter().any(|g| region_contains(g, inner));
+                }
+                if !found && region_contains(shape, q) {
+                    face.fills = fill;
+                    found = true;
+                }
+            }
+            if !found {
+                return Err("paint_bucket: no enclosed region at the point".into());
+            }
+            let next = VectorNetwork { regions: faces, ..planar };
+            let record = self.vector_path(layer_id)?;
+            let mut style = record.style;
+            if fill && style.fill.is_none() {
+                style.fill = Some(self.edit.vector.fill);
+            }
+            self.set_network_styled("paint_bucket", layer_id, &next, style)
+        })();
+        self.report(r)
+    }
+
+    /// Width tool (STU-VEC-007, STU-VEC-122): sets the stroke width at arc-length fraction `t`
+    /// (0..=1 of each contour) of the layer's stroke (adding or replacing a width point; the first
+    /// point starts from the uniform stroke width). ONE transaction.
+    pub fn set_width_point(&mut self, layer_id: &str, t: f64, width: f64) -> Result<String, String> {
+        let r = (|| {
+            let record = self.vector_path(layer_id)?;
+            let base = record.width.as_ref().map(|w| width_profile(w)).transpose()?.unwrap_or_else(|| WidthProfile::uniform(record.style.stroke_width));
+            let profile = base.with_point(t, width).map_err(|e| format!("width: {e:?}"))?;
+            let next = PathRecord { width: Some(profile.points.iter().map(|p| [p.t, p.width]).collect()), ..record };
+            self.replace_record("width", layer_id, next)
+        })();
+        self.report(r)
+    }
+
+    /// Removes the layer's width profile (back to the uniform stroke). ONE transaction.
+    pub fn clear_width(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = (|| {
+            let record = self.vector_path(layer_id)?;
+            let next = PathRecord { width: None, ..record };
+            self.replace_record("clear_width", layer_id, next)
+        })();
+        self.report(r)
+    }
+
+    /// Width tool gesture: the stroke point nearest `from` gets the width `2 * |to - point|`.
+    pub fn width_drag(&mut self, from: [f64; 2], to: [f64; 2], radius: f64) -> Result<String, String> {
+        let (layer, target) = self.direct_hit(from, radius).ok_or("width: nothing under the pointer")?;
+        let record = self.vector_path(&layer)?;
+        let (contour, segment, t) = match target {
+            DirectTarget::Segment { contour, segment, t } => (contour, segment, t),
+            DirectTarget::Anchor(at) | DirectTarget::Handle(at, _) => (at.contour, at.anchor.min(record.path.contour(at.contour).map_err(|e| e.code().to_string())?.segment_count().saturating_sub(1)), 0.0),
+        };
+        let on = ap::point_at(&record.path, contour, segment, t).map_err(|e| e.code().to_string())?;
+        let width = 2.0 * ((to[0] - on.x).powi(2) + (to[1] - on.y).powi(2)).sqrt();
+        let fraction = arc_fraction(&record.path, contour, segment, t)?;
+        self.set_width_point(&layer, fraction, width)
+    }
+
+    /// Reshape (STU-VEC-007): drags the path point under `from` to `to`; anchors within
+    /// `reshape_radius` along the path follow with a falloff, continuity kept. ONE transaction.
+    pub fn reshape_drag(&mut self, from: [f64; 2], to: [f64; 2], radius: f64) -> Result<String, String> {
+        let r = (|| {
+            let (layer, target) = self.direct_hit(from, radius).ok_or("reshape: nothing under the pointer")?;
+            let DirectTarget::Segment { contour, segment, t } = target else {
+                return self.direct_drag_inner(from, to, Constraint::Free, false, radius);
+            };
+            let record = self.vector_path(&layer)?;
+            let path = freeform::reshape(&record.path, contour, segment, t, to[0] - from[0], to[1] - from[1], self.edit.vector.reshape_radius).map_err(|e| format!("reshape: {}", e.code()))?;
+            self.replace_vector_layer("reshape", &layer, path, None, None)
+        })();
+        self.report(r)
+    }
+
+    /// Blob brush (STU-VEC-007): the brush outline of the samples (`blob_diameter`, round), united
+    /// with every vector layer of the current stack that has the same paint (fill colour, no stroke,
+    /// no network) and overlaps it: ONE transaction creating the united layer and deleting the merged
+    /// ones.
+    pub fn blob_brush_stroke(&mut self, samples: &[[f64; 2]]) -> Result<String, String> {
+        let r = (|| {
+            let t = &self.edit.vector;
+            let style = VectorStyle { fill: Some(t.fill), stroke: None, stroke_width: 0.0 };
+            let diameter = t.blob_diameter;
+            let mut candidates = Vec::new();
+            for id in self.stack_vector_layers() {
+                let record = self.vector_path(&id)?;
+                if record.style == style && record.network.is_none() {
+                    candidates.push((id, record.path.to_owned_path().map_err(|e| format!("blob: {}", e.code()))?));
+                }
+            }
+            let points: Vec<PathPoint> = samples.iter().map(|s| PathPoint::new(s[0], s[1])).collect();
+            let others: Vec<OwnedPath> = candidates.iter().map(|(_, p)| p.clone()).collect();
+            let (united, merged) = freeform::blob_brush(&points, diameter, &others, &BooleanOptions::default()).map_err(|e| format!("blob: {e:?}"))?;
+            let path = AnchorPath::from_owned_path(&united).map_err(|e| format!("blob: {}", e.code()))?;
+            let merged_ids: Vec<String> = merged.iter().filter_map(|i| candidates.get(*i).map(|(id, _)| id.clone())).collect();
+            match merged_ids.last() {
+                None => self.create_vector_layer("blob_brush", "Blob", path, style, None),
+                Some(top) => {
+                    let ids = self.replace_with_pieces_deleting("blob_brush", vec![(top.clone(), path, style)], &merged_ids)?;
+                    ids.into_iter().next().ok_or_else(|| "blob: no layer".to_string())
+                }
+            }
+        })();
+        self.report(r)
     }
 
     /// Ends the pen path (the next pen click starts a new one). No transaction.
@@ -1048,6 +1675,16 @@ impl Viewer {
     fn direct_drag_inner(&mut self, from: [f64; 2], to: [f64; 2], constraint: Constraint, break_mirroring: bool, radius: f64) -> Result<String, String> {
         if !from.iter().chain(&to).all(|v| v.is_finite()) || !radius.is_finite() {
             return Err("direct_select: non_finite".into());
+        }
+        // Network layers: drag the nearest vertex (lane SMB-ILLUSTRATOR-PEN-3).
+        if let Some(layer) = self.selected.clone()
+            && self.vector_path(&layer).is_ok_and(|r| r.network.is_some())
+        {
+            let net = self.vector_network(&layer)?;
+            let near = net.vertices.iter().enumerate().map(|(i, v)| (i, ((v.x - from[0]).powi(2) + (v.y - from[1]).powi(2)).sqrt())).filter(|(_, d)| *d <= radius).min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((vertex, _)) = near {
+                return self.edit_network(&layer, NetworkEdit::MoveVertex { vertex, dx: to[0] - from[0], dy: to[1] - from[1] });
+            }
         }
         let (layer, target) = self.direct_hit(from, radius).ok_or("direct_select: nothing under the pointer")?;
         let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
@@ -1179,7 +1816,7 @@ impl Viewer {
             }
             salt = salt.wrapping_add(1);
             let path_id = mint_path_id(doc, &entry);
-            entry.paths.push(PathRecord { path_id: path_id.clone(), path, style });
+            entry.paths.push(PathRecord::plain(path_id.clone(), path, style));
             let layer = super::layers::new_layer(&id, op.member(), &parent, "vector", json!({"payload_kind": "vector", "path_ids": [path_id]}))?;
             writes.push(PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(top.clone())), create: Some((layer, super::layers::operation_for(&id, false)?)) });
             ids.push(id);
@@ -1258,6 +1895,9 @@ impl Viewer {
                 Tool::DirectSelect => self.direct_drag(a, b, constraint, alt, radius),
                 Tool::Pencil => self.pencil_stroke(&samples),
                 Tool::Knife => self.knife_cut(&samples).map(|ids| ids.join(",")),
+                Tool::Width => self.width_drag(a, b, radius),
+                Tool::Reshape => self.reshape_drag(a, b, radius),
+                Tool::BlobBrush => self.blob_brush_stroke(&samples),
                 Tool::ShapeBuilder => {
                     let operands = self.stack_vector_layers();
                     self.shape_builder_layers(&operands, &samples, alt).map(|ids| ids.join(","))
@@ -1284,6 +1924,16 @@ impl Viewer {
                     let _ = self.shape_builder_layers(&operands, &[d], alt);
                 }
                 Tool::DirectSelect => self.selected = self.direct_hit(d, radius).map(|(id, _)| id).or(self.selected.take()),
+                Tool::PaintBucket => {
+                    if let Some(layer) = self.selected.clone() {
+                        let _ = self.network_paint_bucket(&layer, d, !alt);
+                    } else {
+                        self.say("paint bucket: select a vector layer first".into());
+                    }
+                }
+                Tool::BlobBrush => {
+                    let _ = self.blob_brush_stroke(&[d]);
+                }
                 _ => {}
             }
         }
@@ -1377,6 +2027,14 @@ impl Viewer {
             Tool::Pencil => {
                 ui.push_id(super::widget::id(widget::PENCIL_FIDELITY), |ui| ui.add(egui::Slider::new(&mut t.pencil_fidelity, 0..=4).text("fidelity")));
                 drawn.push(widget::PENCIL_FIDELITY.into());
+            }
+            Tool::Reshape => {
+                ui.push_id(super::widget::id(widget::RESHAPE_RADIUS), |ui| ui.add(egui::Slider::new(&mut t.reshape_radius, 1.0..=500.0).text("falloff")));
+                drawn.push(widget::RESHAPE_RADIUS.into());
+            }
+            Tool::BlobBrush => {
+                ui.push_id(super::widget::id(widget::BLOB_DIAMETER), |ui| ui.add(egui::Slider::new(&mut t.blob_diameter, 1.0..=200.0).text("size")));
+                drawn.push(widget::BLOB_DIAMETER.into());
             }
             Tool::ArcSegment => {
                 ui.push_id(super::widget::id(widget::ARC_SLOPE), |ui| ui.add(egui::Slider::new(&mut t.arc_slope, -100.0..=100.0).text("slope")));

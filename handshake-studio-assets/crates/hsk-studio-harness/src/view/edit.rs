@@ -60,10 +60,15 @@ pub enum Tool {
     RectangularGrid,
     PolarGrid,
     Spiral,
+    /// Lane SMB-ILLUSTRATOR-PEN-3.
+    Width,
+    Reshape,
+    BlobBrush,
+    PaintBucket,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 22] = [
+    pub const ALL: [Tool; 26] = [
         Tool::View,
         Tool::RectSelect,
         Tool::EllipseSelect,
@@ -86,6 +91,10 @@ impl Tool {
         Tool::RectangularGrid,
         Tool::PolarGrid,
         Tool::Spiral,
+        Tool::Width,
+        Tool::Reshape,
+        Tool::BlobBrush,
+        Tool::PaintBucket,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -111,6 +120,10 @@ impl Tool {
             Tool::RectangularGrid => "rectangular_grid",
             Tool::PolarGrid => "polar_grid",
             Tool::Spiral => "spiral",
+            Tool::Width => "width",
+            Tool::Reshape => "reshape",
+            Tool::BlobBrush => "blob_brush",
+            Tool::PaintBucket => "paint_bucket",
         }
     }
     pub fn label(self) -> &'static str {
@@ -137,6 +150,10 @@ impl Tool {
             Tool::RectangularGrid => "Grid",
             Tool::PolarGrid => "Polar grid",
             Tool::Spiral => "Spiral",
+            Tool::Width => "Width",
+            Tool::Reshape => "Reshape",
+            Tool::BlobBrush => "Blob brush",
+            Tool::PaintBucket => "Paint bucket",
         }
     }
 }

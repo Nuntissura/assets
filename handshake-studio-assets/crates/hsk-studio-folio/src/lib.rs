@@ -63,6 +63,8 @@ mod vector;
 pub use vector::*;
 mod live_shape;
 pub use live_shape::*;
+mod vector_network;
+pub use vector_network::*;
 mod typestyle;
 pub use typestyle::*;
 mod composition;

@@ -131,6 +131,39 @@ pub fn outline_variable(path: &OwnedPath, profile: &WidthProfile, cap: WidthCap,
         if total <= 0.0 {
             continue;
         }
+        // Every interior width point becomes a polyline vertex (the width is linear between width
+        // points, so the outline is exact between vertices of straight runs).
+        let (pts, acc) = {
+            let mut out_p = Vec::with_capacity(n.saturating_add(profile.points.len()));
+            let mut out_a = Vec::with_capacity(n.saturating_add(profile.points.len()));
+            let mut marks = profile.points.iter().map(|w| w.t * total).filter(|m| *m > 0.0 && *m < total).peekable();
+            let segments = if line.closed { n } else { n.saturating_sub(1) };
+            for i in 0..segments {
+                let (a, b) = (pts[i], pts[i.saturating_add(1).checked_rem(n).unwrap_or(0)]);
+                let (la, lb) = (acc[i], if i.saturating_add(1) < n { acc[i.saturating_add(1)] } else { total });
+                out_p.push(a);
+                out_a.push(la);
+                while let Some(m) = marks.peek().copied() {
+                    if m <= la {
+                        marks.next();
+                        continue;
+                    }
+                    if m >= lb {
+                        break;
+                    }
+                    let f = (m - la) / (lb - la);
+                    out_p.push(PathPoint::new(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f));
+                    out_a.push(m);
+                    marks.next();
+                }
+            }
+            if !line.closed {
+                out_p.push(pts[n.saturating_sub(1)]);
+                out_a.push(acc[n.saturating_sub(1)]);
+            }
+            (out_p, out_a)
+        };
+        let n = pts.len();
         let mut left = Vec::with_capacity(n);
         let mut right = Vec::with_capacity(n);
         for i in 0..n {
