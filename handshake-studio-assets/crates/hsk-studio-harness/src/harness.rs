@@ -103,8 +103,11 @@ impl Resolver for TrustAll {
     fn format_supported(&self, _: &str) -> bool {
         true
     }
-    fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
-        false
+    /// Binds the adjustment primitive (an adjustment layer hosting `hsk.studio.adjustment@1`), so
+    /// documents with adjustment layers open and render their adjustment records (lane
+    /// SMB-HARNESS-RENDER-RECORDS); every other primitive layer stays unbound.
+    fn primitive_layer_binding(&self, kind: &str, schema_id: &str) -> bool {
+        kind == "adjustment" && schema_id == hsk_studio_folio::ADJUSTMENT_SCHEMA
     }
 }
 

@@ -9,9 +9,16 @@
 //! viewer therefore renders a view copy of the snapshot that wraps the root outputs in one
 //! isolated, normal, 100 % group ([`VIEW_ROOT_LAYER`]) and binds `blending_space` to the
 //! document's RGB working profile when it is unassigned. Both facts are listed in
-//! [`Frame::notes`]. Not applied in this slice (listed as notes when present): raster records
-//! (effects, adjustments: the plain, not the extended, lowering is used) and layer masks
-//! (masked layers fail as composite `Unavailable`).
+//! [`Frame::notes`].
+//!
+//! Raster records (lane SMB-HARNESS-RENDER-RECORDS): the document's Folio `StudioRasterRecords`
+//! (the package's records import entry: adjustments, mask parameters, advanced blending, effect
+//! stacks, smart filters) go through composite's adapter (`evaluate_with_inputs` +
+//! `lower_with_inputs` with `RenderInputs.records`), and the envelope composite builds is the one
+//! the backend executes; a frame with an envelope uses its default output stage (unit range),
+//! noted `records_envelope`. Layer masks and smart-filter masks are served as stitched coverage
+//! planes (the mask tiles over the union of their placements, hashed as composite expects).
+//! Without records the frame is exactly the records-free path of before.
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
@@ -108,6 +115,85 @@ pub(crate) fn preview_extensions() -> PlanExtensions {
 /// Tile bytes by lowercase SHA-256 hex (the package's asset map).
 pub type Assets = BTreeMap<String, Vec<u8>>;
 
+/// 8-bit sRGB straight RGBA of linear straight pixels, exactly as the viewer encodes a frame (for
+/// callers that render the same plan themselves and compare).
+pub fn encode_rgba8(pixels: &[[f32; 4]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pixels.len().saturating_mul(4));
+    for [r, g, b, a] in pixels {
+        out.extend([encode(*r), encode(*g), encode(*b), unit8(*a)]);
+    }
+    out
+}
+
+/// A mask's coverage tiles stitched into one plane over the union of their placements (the plane
+/// composite hashes through `TileInfoSource::mask_sha256` and the backend reads).
+struct StitchedMask {
+    bounds: Rect,
+    format: &'static str,
+    stride: u64,
+    bytes: Vec<u8>,
+    sha256: [u8; 32],
+}
+
+fn stitch_mask(assets: &Assets, tiles: &[TileRef]) -> Option<StitchedMask> {
+    let first = tiles.first()?;
+    let (format, bpp): (&'static str, usize) = match first.format.as_str() {
+        "coverage_u8" => ("coverage_u8", 1),
+        "coverage_u16le" => ("coverage_u16le", 2),
+        _ => return None,
+    };
+    if tiles.iter().any(|t| t.format != format) {
+        return None;
+    }
+    let side = |l: &folio::Length| (l.value.is_finite() && l.value >= 1.0 && l.value <= 65_536.0 && l.value.fract() == 0.0).then_some(l.value as u32);
+    let (mut gw, mut gh) = (0u32, 0u32);
+    for t in tiles {
+        gw = gw.max(side(&t.width)?);
+        gh = gh.max(side(&t.height)?);
+    }
+    let rect_of = |t: &TileRef| -> Option<Rect> {
+        Some(Rect { x: t.column.checked_mul(i64::from(gw))?, y: t.row.checked_mul(i64::from(gh))?, width: side(&t.width)?, height: side(&t.height)? })
+    };
+    let mut bounds: Option<Rect> = None;
+    for t in tiles {
+        let r = rect_of(t)?;
+        bounds = Some(match bounds {
+            None => r,
+            Some(b) => {
+                let x0 = b.x.min(r.x);
+                let y0 = b.y.min(r.y);
+                let x1 = b.x.checked_add(i64::from(b.width))?.max(r.x.checked_add(i64::from(r.width))?);
+                let y1 = b.y.checked_add(i64::from(b.height))?.max(r.y.checked_add(i64::from(r.height))?);
+                Rect { x: x0, y: y0, width: u32::try_from(x1.checked_sub(x0)?).ok()?, height: u32::try_from(y1.checked_sub(y0)?).ok()? }
+            }
+        });
+    }
+    let bounds = bounds?;
+    if bounds.area() > MAX_VIEW_PIXELS {
+        return None;
+    }
+    let bw = usize::try_from(bounds.width).ok()?;
+    let stride = bw.checked_mul(bpp)?;
+    let mut bytes = vec![0u8; stride.checked_mul(usize::try_from(bounds.height).ok()?)?];
+    for t in tiles {
+        let r = rect_of(t)?;
+        let body = assets.get(&t.content_digest.digest)?;
+        let row = usize::try_from(r.width).ok()?.checked_mul(bpp)?;
+        if body.len() != row.checked_mul(usize::try_from(r.height).ok()?)? {
+            return None;
+        }
+        let dx = usize::try_from(r.x.checked_sub(bounds.x)?).ok()?.checked_mul(bpp)?;
+        for y in 0..usize::try_from(r.height).ok()? {
+            let dy = usize::try_from(r.y.checked_sub(bounds.y)?).ok()?.checked_add(y)?;
+            let at = dy.checked_mul(stride)?.checked_add(dx)?;
+            let src = y.checked_mul(row)?;
+            bytes.get_mut(at..at.checked_add(row)?)?.copy_from_slice(body.get(src..src.checked_add(row)?)?);
+        }
+    }
+    let sha256 = hsk_studio_prism::profile_hash(&bytes);
+    Some(StitchedMask { bounds, format, stride: u64::try_from(stride).ok()?, bytes, sha256 })
+}
+
 /// Renders the document `snap` with the tile bytes in `assets` (read-back path).
 pub fn render(snap: &Snapshot, assets: &Assets, prefer: Prefer, gpu: Option<&hsk_studio_render_gpu::GpuBackend>, cancel: &CancellationToken) -> Result<Frame, RenderFail> {
     render_to(snap, assets, prefer, gpu, None, cancel)
@@ -159,6 +245,23 @@ pub fn render_full(
     display: Option<&mut dyn GpuDisplay>,
     cancel: &CancellationToken,
 ) -> Result<Frame, RenderFail> {
+    render_full_with_records(snap, assets, text, vectors, None, prefer, gpu, display, cancel)
+}
+
+/// [`render_full`] with the document's raster records (lane SMB-HARNESS-RENDER-RECORDS; module
+/// docs): `None` or an empty set renders exactly as [`render_full`].
+#[allow(clippy::too_many_arguments)]
+pub fn render_full_with_records(
+    snap: &Snapshot,
+    assets: &Assets,
+    text: Option<&PreparedText>,
+    vectors: Option<&PreparedVectors>,
+    records: Option<&folio::StudioRasterRecords>,
+    prefer: Prefer,
+    gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
+    display: Option<&mut dyn GpuDisplay>,
+    cancel: &CancellationToken,
+) -> Result<Frame, RenderFail> {
     let mut notes = Vec::new();
     let view = view_snapshot(snap, cancel, &mut notes)?;
     let doc = view.document();
@@ -175,8 +278,15 @@ pub fn render_full(
     let has_text = doc.layers.iter().any(|l| matches!(l.payload, folio::Payload::Text { .. }));
     let has_vector = doc.layers.iter().any(|l| matches!(l.payload, folio::Payload::Vector { .. }));
     let mut inputs_lowering: Option<composite::InputsLowering> = None;
-    let (lowering, text_masks) = if let (true, Some(prepared_vectors)) = (has_vector, vectors) {
-        let inputs = composite::RenderInputs { records: None, text: if has_text { Some(text.unwrap_or(&empty)) } else { None }, vectors: Some(prepared_vectors) };
+    // Raster records of the document, bound to the view copy's document id.
+    let records = records.filter(|r| !r.layers.is_empty() || r.global_light.is_some()).map(|r| {
+        let mut r = r.clone();
+        r.document_id = doc.document_id.clone();
+        r
+    });
+    let vectors = vectors.filter(|_| has_vector);
+    let (lowering, text_masks) = if vectors.is_some() || records.is_some() {
+        let inputs = composite::RenderInputs { records: records.as_ref(), text: if has_text { Some(text.unwrap_or(&empty)) } else { None }, vectors };
         let report = composite::evaluate_with_inputs(&plan, &view, &inputs, cancel).map_err(composite_fail)?;
         let lowered = composite::lower_with_inputs(&plan, &report, &view, &inputs, &root, target, &tiles).map_err(composite_fail)?;
         let lowering = composite::RenderLowering { plan: lowered.plan.clone(), sources: lowered.sources.clone(), mask_sources: lowered.mask_sources.clone(), exactness: lowered.exactness.clone() };
@@ -193,9 +303,20 @@ pub fn render_full(
         (composite::lower_to_render_plan(&plan, &report, &view, &root, target, &tiles).map_err(composite_fail)?, None)
     };
     let vector = inputs_lowering.as_ref().zip(vectors);
-    let sources = Sources { tiles: &tiles, table: &lowering.sources, space, text: text_masks.as_ref().map(|(m, p)| (m, *p)), vector };
+    // The envelope composite built from the records; without one the viewer's preview stage.
+    let envelope = inputs_lowering.as_ref().filter(|_| records.is_some()).map(|l| l.extensions.clone()).filter(|e| !e.is_empty());
+    let extensions = match &envelope {
+        Some(e) => {
+            notes.push("records_envelope: the raster records' envelope with the default output stage (unit range)".into());
+            e.clone()
+        }
+        None => preview_extensions(),
+    };
+    let masks: Vec<(SourceKey, StitchedMask)> = lowering.mask_sources.iter().filter_map(|(k, t)| Some((*k, stitch_mask(assets, t)?))).collect();
+    let sources = Sources { tiles: &tiles, table: &lowering.sources, space, text: text_masks.as_ref().map(|(m, p)| (m, *p)), vector, masks: &masks };
     let request = ExecuteRequest { expected_revision: lowering.plan.revision, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: MAX_WORKING_BYTES };
     if prefer == Prefer::Gpu
+        && envelope.is_none()
         && let Some(display) = display
     {
         match display.present(&lowering.plan, &request, &sources, cancel) {
@@ -212,7 +333,7 @@ pub fn render_full(
     if prefer == Prefer::Gpu {
         match gpu {
             None => notes.push("gpu_not_created: render-cpu used".into()),
-            Some(gpu) => match gpu.execute_extended_detailed(&lowering.plan, &preview_extensions(), &request, &sources, cancel, &mut sink) {
+            Some(gpu) => match gpu.execute_extended_detailed(&lowering.plan, &extensions, &request, &sources, cancel, &mut sink) {
                 Ok((receipt, _)) => {
                     if receipt.exactness.operators.iter().any(|o| o.key == hsk_studio_render_gpu::DISPLAY_CLIP_OPERATOR) {
                         notes.push(format!("{}: samples outside [0, 1] clipped for display (render-gpu DisplayTransform::Clip, Approximate)", hsk_studio_render_gpu::DISPLAY_CLIP_OPERATOR));
@@ -234,7 +355,7 @@ pub fn render_full(
         let cpu = hsk_studio_render_cpu::Renderer::new(hsk_studio_render_cpu::DEFAULT_CHUNK_SIDE)
             .map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
         let receipt = cpu
-            .execute_extended_detailed(&lowering.plan, &preview_extensions(), &request, &sources, cancel, &mut sink)
+            .execute_extended_detailed(&lowering.plan, &extensions, &request, &sources, cancel, &mut sink)
             .map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
         if receipt.exactness.operators.iter().any(|o| o.key == hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR) {
             notes.push(format!("{}: samples outside [0, 1] clipped for display (render-cpu DisplayTransform::Clip, Approximate)", hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR));
@@ -354,6 +475,7 @@ const ALPHA_CELL: usize = CELL * CELL * 4;
 
 struct TileTable<'a> {
     planes: BTreeMap<&'a str, TilePlaneBytes<'a>>,
+    assets: &'a Assets,
 }
 
 impl<'a> TileTable<'a> {
@@ -372,7 +494,7 @@ impl<'a> TileTable<'a> {
                 (digest.as_str(), entry)
             })
             .collect();
-        Self { planes }
+        Self { planes, assets }
     }
 }
 
@@ -384,6 +506,9 @@ impl composite::TileInfoSource for TileTable<'_> {
         let p = self.planes.get(tile.content_digest.digest.as_str())?;
         Some(TileInfo { format: SampleFormat::RgbF32Le, alpha: AlphaConvention::Straight, colour_sha256: p.colour_sha256, alpha_sha256: p.alpha_sha256 })
     }
+    fn mask_sha256(&self, tiles: &[TileRef]) -> Option<[u8; 32]> {
+        stitch_mask(self.assets, tiles).map(|m| m.sha256)
+    }
 }
 
 struct Sources<'a> {
@@ -394,6 +519,8 @@ struct Sources<'a> {
     text: Option<(&'a composite::TextMaskTable, &'a PreparedText)>,
     /// The inputs lowering and the prepared vector planes (vector coverage, stroke masks, painted rows).
     vector: Option<(&'a composite::InputsLowering, &'a PreparedVectors)>,
+    /// Stitched coverage planes of the lowering's mask sources (layer and smart-filter masks).
+    masks: &'a [(SourceKey, StitchedMask)],
 }
 
 impl PlanSources for Sources<'_> {
@@ -425,6 +552,9 @@ impl PlanSources for Sources<'_> {
             && let Some((_, layer)) = masks.iter().find(|(k, _)| *k == key)
         {
             return prepared.plane(layer)?.mask();
+        }
+        if let Some((_, m)) = self.masks.iter().find(|(k, _)| *k == key) {
+            return Some(Mask { bounds: m.bounds, sample_format: m.format, bytes: &m.bytes, stride_bytes: m.stride, sha256: m.sha256 });
         }
         let (lowering, vectors) = self.vector?;
         lowering.vector_mask(key, vectors)

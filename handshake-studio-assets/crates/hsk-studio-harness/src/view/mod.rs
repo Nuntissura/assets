@@ -183,6 +183,9 @@ pub struct Viewer {
     prototype: Option<(prototype::PrototypePlay, std::time::Instant)>,
     /// Selections before each wand / quick-select step (module [`select_liquify`]).
     selection_history: Vec<Option<hsk_studio_pigment::selection::CoveragePlane>>,
+    /// The document's raster records (package records entry), rendered through composite's
+    /// adapter (lane SMB-HARNESS-RENDER-RECORDS).
+    records: Option<hsk_studio_folio::StudioRasterRecords>,
 }
 
 struct MonitorState {
@@ -240,6 +243,7 @@ impl Viewer {
             monitor: None,
             prototype: None,
             selection_history: Vec::new(),
+            records: None,
         }
     }
 
@@ -394,6 +398,17 @@ impl Viewer {
         let just_imported = receipt.is_some();
         let receipt = receipt.or_else(|| opened.import_bytes(ImportRole::Receipt).and_then(|b| serde_json::from_slice(b).ok()));
         let original = opened.import_bytes(ImportRole::Original).map(<[u8]>::to_vec);
+        // Raster records (lane SMB-HARNESS-RENDER-RECORDS): rendered through composite's adapter.
+        self.records = None;
+        if let (Some(bytes), Some(snap)) = (opened.import_bytes(ImportRole::Records), opened.snapshot()) {
+            match serde_json::from_slice::<hsk_studio_folio::StudioRasterRecords>(bytes) {
+                Ok(r) => match hsk_studio_folio::validate_raster_records(&r, snap.document(), hsk_studio_folio::Budget::default(), self.cancel, &crate::harness::TrustAll) {
+                    Ok(_) => self.records = Some(r),
+                    Err(e) => self.say(format!("raster records not applied: {:?} at {}", e.code, e.target)),
+                },
+                Err(e) => self.say(format!("raster records not applied: {e}")),
+            }
+        }
         // Tile bodies come from the session (render-ready view of the opened revision).
         self.assets = self.run.render_assets().map_err(|e| format!("tiles {}: {e}", path.display()))?;
         self.edit = EditState { tool: self.edit.tool, combine: self.edit.combine, brush: self.edit.brush, ..EditState::default() };
@@ -520,7 +535,7 @@ impl Viewer {
             let snap = self.run.snapshot().ok_or_else(|| format!("export {}: nothing open", path.display()))?;
             let text = self.prepared_text().map_err(|e| format!("export {}: {e}", path.display()))?;
             let vectors = self.prepared_vectors().map_err(|e| format!("export {}: {e}", path.display()))?;
-            read_back = render::render_full(snap, &self.assets, Some(&text), vectors.as_ref(), Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
+            read_back = render::render_full_with_records(snap, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
             &read_back
         } else {
             shown
@@ -594,7 +609,7 @@ impl Viewer {
                 let Some(snap) = self.run.snapshot() else {
                     return;
                 };
-                render::render_full(snap, &self.assets, Some(&text), vectors.as_ref(), self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel)
+                render::render_full_with_records(snap, &self.assets, Some(&text), vectors.as_ref(), self.records.as_ref(), self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel)
             }
             (Err(e), _) => Err(RenderFail { code: "text", detail: e }),
             (_, Err(e)) => Err(RenderFail { code: "vector", detail: e }),
