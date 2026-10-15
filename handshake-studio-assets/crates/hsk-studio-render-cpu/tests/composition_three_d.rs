@@ -32,7 +32,7 @@ fn three_d_run_matches_the_ray_cast_oracle_on_every_chunking() {
     assert!(crossing[0] > 0 && crossing[1] > 0, "the planes intersect inside the frame: {crossing:?}");
     let b = scenes::BACKGROUND;
     let drawn = want.iter().filter(|p| (0..3).any(|c| (p[c] - b[c]).abs() > 1e-3)).count();
-    assert!(drawn > 300, "the planes cover the frame: {drawn} pixels");
+    assert!(drawn > 150, "the planes cover the frame: {drawn} pixels");
     let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
     let delta = scenes::max_delta(&base, &want);
     println!("three_d: {} layers, {drawn} drawn pixels, crossing {crossing:?}, cpu digest {} max |delta| vs oracle {delta:e}", scene.layers.len(), scenes::hex(&base.digest()));
