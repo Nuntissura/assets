@@ -172,11 +172,11 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
         let want = fixture::document_frame(&pixels);
         let mut failures = Vec::new();
         // (1) Document graph == scene path under the reference executor (`fixture::path_agreement`:
-        // bit-identical except colour inside the clip run, at most 1 ULP).
+        // alpha bit-identical; colour bit-identical except under a surfaced layer, at most 1 ULP).
         let doc_px = fixture::render_frame(&fixture::Ref, &got, &pixels).unwrap();
         let scene_px = fixture::render_scene_px(&fixture::Ref, &scene, &pixels);
         match fixture::path_agreement(&doc_px, &scene_px) {
-            Ok(ulp) => println!("document graph vs scene path: {} of {} pixels identical, {ulp} within 1 ULP of colour in the clip run",
+            Ok(ulp) => println!("document graph vs scene path: {} of {} pixels identical, {ulp} within 1 ULP of colour under a surfaced layer",
                 doc_px.len() - ulp, doc_px.len()),
             Err(e) => failures.extend(e),
         }

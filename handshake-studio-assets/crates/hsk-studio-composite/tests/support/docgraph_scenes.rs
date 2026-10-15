@@ -421,13 +421,14 @@ pub fn max_delta(got: &[[f32; 4]], want: &[[f32; 4]]) -> f32 {
     }
     worst
 }
-/// The document-graph frame against the scene-path frame: every alpha and every colour
-/// bit-identical, except colour inside the clip run (layer 12 over the masked base 10) by at most
-/// 1 ULP, because the scene path draws the masked base into an intermediate straight-alpha surface
-/// first (`SceneContent::Static`) and recovers its colour by a division, while the document graph
-/// clips to the base tile directly. Returns the number of 1-ULP pixels, or every other difference.
+/// The document-graph frame against the scene-path frame: every alpha bit-identical, every colour
+/// bit-identical except under a layer the scene path draws through an intermediate straight-alpha
+/// surface (a cut layer's static subtree, `SceneContent::Static`, and the layer clipped to such a
+/// base), by at most 1 ULP: the surface's colour is recovered by a division, while the document
+/// graph composites the tile directly. Returns the number of 1-ULP pixels, or every other
+/// difference.
 pub fn path_agreement(doc: &[[f32; 4]], scene: &[[f32; 4]]) -> Result<usize, Vec<String>> {
-    let run = moved_rect(spec(12));
+    let surfaced: Vec<Rect> = LAYERS.iter().filter(|l| l.cut.is_some() || l.clipped).map(moved_rect).collect();
     let mut ulp_pixels = 0;
     let mut other = Vec::new();
     for (i, (a, s)) in doc.iter().zip(scene).enumerate() {
@@ -435,9 +436,9 @@ pub fn path_agreement(doc: &[[f32; 4]], scene: &[[f32; 4]]) -> Result<usize, Vec
             continue;
         }
         let (x, y) = ((i % scenes::W as usize) as i64, (i / scenes::W as usize) as i64);
-        let in_run = x >= run.x && y >= run.y && x < run.x + i64::from(run.width) && y < run.y + i64::from(run.height);
+        let under = surfaced.iter().any(|r| x >= r.x && y >= r.y && x < r.x + i64::from(r.width) && y < r.y + i64::from(r.height));
         let ulp = a[3] == s[3] && (0..3).all(|c| a[c].to_bits().abs_diff(s[c].to_bits()) <= 1);
-        if in_run && ulp {
+        if under && ulp {
             ulp_pixels += 1;
         } else {
             other.push(format!("document graph != scene path at ({x}, {y}): {a:?} vs {s:?}"));
