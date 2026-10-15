@@ -235,8 +235,11 @@ fn check_all(test: &str, files: &[Expect]) {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
-/// D70s: raw SubIFD 3040 x 2014 12-bit Compression 34713, maker note 0x0096 version 0x44 0x10
-/// (lossy type 1); Z6: 6064 x 4040 12-bit 34713. Facts from byte inspection 2026-10-15.
+/// D70s (lossy type 1): raw SubIFD 3040 x 2014, 12 bit, Compression 34713, BGGR, curve maximum
+/// 4095. Z6 (12-bit compressed): 4548 x 3030, 12 bit, RGGB, as in the raw.pixls.us Exif dump
+/// (https://raw.pixls.us/getfile.php/3587/exif/: SubImage2 4548 x 3030, "Nikon NEF Compressed").
+/// Preview r measured at 1dcc906: D70s 0.938 (3008 x 2000 preview), Z6 0.885 (3024 x 2016); floors
+/// 0.90 / 0.85. Digests pinned from the same run.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
@@ -246,21 +249,21 @@ fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
             file: "nikon-d70s-12bit-lossy-type1.nef",
             sha256: "6c46f9854033e7623ebbb5de8c951df6762ca44f05d45035ccc5cb7e9f4e5692",
             dims: (3040, 2014, 12),
-            white: 0,
+            white: 4095,
             cfa: CfaPattern::Bayer(Bayer::Bggr),
             model: "NIKON D70s",
-            digest: "",
-            r_floor: 0.0,
+            digest: "291da6d41094b5da303e2cb7d704e464daa0edf03245fb14a9d8e592c92b4e11",
+            r_floor: 0.90,
         },
         Expect {
             file: "nikon-z6-12bit-compressed.nef",
             sha256: "f0ab08da469ee205f2bc08efd9005778c64cdcb064893cee03768e32e5da1a36",
-            dims: (6064, 4040, 12),
-            white: 0,
+            dims: (4548, 3030, 12),
+            white: 4095,
             cfa: CfaPattern::Bayer(Bayer::Rggb),
             model: "NIKON Z 6",
-            digest: "",
-            r_floor: 0.0,
+            digest: "af18a3a222d77b3e2f19ff416cba8d5c62488a2d1d6bf149db1f84b5c93ebe22",
+            r_floor: 0.85,
         },
     ]);
 }
