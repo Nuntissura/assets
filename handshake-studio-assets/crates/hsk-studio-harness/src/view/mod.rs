@@ -36,6 +36,10 @@ pub mod audio_out;
 /// SMB-AUDIO-IMPORT-WIRING, feature `media`).
 #[cfg(feature = "media")]
 pub mod audio_import;
+/// Batch processing of audio files: import, score effect chain, export, with progress, cancel and
+/// receipts (lane SMB-AUDIO-IMPORT-2, feature `audio-batch`).
+#[cfg(feature = "audio-batch")]
+pub mod audio_batch;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
@@ -186,6 +190,9 @@ pub struct Viewer {
     /// The document's raster records (package records entry), rendered through composite's
     /// adapter (lane SMB-HARNESS-RENDER-RECORDS).
     records: Option<hsk_studio_folio::StudioRasterRecords>,
+    /// The open audio file (module [`audio_import`]).
+    #[cfg(feature = "media")]
+    audio: Option<audio_import::ViewerAudio>,
 }
 
 struct MonitorState {
@@ -244,6 +251,8 @@ impl Viewer {
             prototype: None,
             selection_history: Vec::new(),
             records: None,
+            #[cfg(feature = "media")]
+            audio: None,
         }
     }
 
@@ -376,6 +385,14 @@ impl Viewer {
             return Err(format!("open {}: {len} bytes exceeds {}", path.display(), crate::import::MAX_SOURCE_BYTES));
         }
         let bytes = std::fs::read(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        // Audio files (WAV, MP3, FLAC, Ogg, AAC, AIFF) land in a score mixdown (module audio_import).
+        #[cfg(feature = "media")]
+        {
+            if crate::import::sniff(&bytes).is_none() && audio_import::sniff(&bytes) {
+                return self.open_audio_bytes(path, bytes);
+            }
+            self.audio = None;
+        }
         let (package, receipt) = if crate::import::sniff(&bytes).is_some() {
             match self.run.open_import_detailed(&bytes) {
                 Some((package, receipt)) => (package, Some(receipt)),
@@ -663,7 +680,8 @@ impl Viewer {
             .iter()
             .map(|r| json!({"id": r.layer_id, "name": r.name, "kind": r.kind, "depth": r.depth, "visible": r.visible, "opacity": r.opacity}))
             .collect();
-        json!({
+        #[allow(unused_mut)]
+        let mut state = json!({
             "source": self.source.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "revision": self.run.snapshot().map(|s| s.document().revision),
             "layers": rows,
@@ -675,7 +693,12 @@ impl Viewer {
             "develop": self.develop_json(),
             "ops": self.run.ops(),
             "status": self.status,
-        })
+        });
+        #[cfg(feature = "media")]
+        {
+            state["audio"] = self.audio_json();
+        }
+        state
     }
 
     // ----- egui ---------------------------------------------------------------------------
@@ -837,6 +860,8 @@ impl Viewer {
         self.render_if_dirty();
 
         self.monitor_ui(ctx);
+        #[cfg(feature = "media")]
+        self.audio_ui(ctx);
         if let Some((play, last)) = &mut self.prototype {
             let now = std::time::Instant::now();
             let ms = u64::try_from(now.duration_since(*last).as_millis()).unwrap_or(u64::MAX);

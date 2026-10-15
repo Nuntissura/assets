@@ -22,6 +22,8 @@ media = ["viewer", "dep:hsk-studio-reel", "hsk-studio-reel/prores"]
 media-native = ["media", "dep:hsk-studio-reel-native", "hsk-studio-reel-native/mf", "hsk-studio-reel-native/av1"]
 # Program monitor audio out through score-device (software device in tests; desktop adds the cpal backend).
 audio-device = ["viewer", "dep:hsk-studio-score-device"]
+# Audition batch processing (lane SMB-AUDIO-IMPORT-2): import, score effect chain, export.
+audio-batch = ["media", "dep:hsk-studio-score"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
@@ -53,6 +55,8 @@ hsk-studio-interop-fig = { path = "../hsk-studio-interop-fig", version = "=0.1.0
 hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-score-device = { path = "../hsk-studio-score-device", version = "=0.1.0", default-features = false, optional = true }
+# Batch effect chain (lane SMB-AUDIO-IMPORT-2; NEW EDGE harness -> score, lead brief 2026-10-15, steward to add).
+hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }
