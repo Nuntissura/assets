@@ -9,7 +9,7 @@ use hsk_studio_components::{
 use hsk_studio_folio::easing_preset;
 
 fn props(x: f64, y: f64) -> SmartProps {
-    SmartProps { x, y, width: 10.0, height: 10.0, rotation_deg: 0.0, opacity: 1.0, fill: None, corner_radius: 0.0 }
+    SmartProps { x, y, width: 10.0, height: 10.0, rotation_deg: 0.0, opacity: 1.0, fill: None, corner_radius: 0.0, gradient: None }
 }
 
 fn layer(id: &str, name: &str, parent: Option<&str>, p: SmartProps) -> SmartLayer {
@@ -19,6 +19,7 @@ fn layer(id: &str, name: &str, parent: Option<&str>, p: SmartProps) -> SmartLaye
         parent: parent.map(Into::into),
         implicit_text_style: None,
         content: None,
+        is_text: false,
         props: p,
     }
 }
@@ -27,6 +28,7 @@ fn text(id: &str, parent: Option<&str>, style: &str, content: &str, p: SmartProp
     SmartLayer {
         implicit_text_style: Some(style.into()),
         content: Some(content.into()),
+        is_text: true,
         ..layer(id, content, parent, p)
     }
 }
@@ -86,6 +88,7 @@ fn interpolated_properties_equal_hand_computed_values_at_progress_points() {
         opacity: 0.2,
         fill: Some([0.2, 0.4, 0.6, 1.0]),
         corner_radius: 4.0,
+        gradient: None,
     };
     let b = SmartProps {
         x: 200.0,
@@ -96,6 +99,7 @@ fn interpolated_properties_equal_hand_computed_values_at_progress_points() {
         opacity: 1.0,
         fill: Some([1.0, 0.0, 0.0, 0.5]),
         corner_radius: 20.0,
+        gradient: None,
     };
     // e = 0.25: x 24 + 176/4, y 100 + 50/4, size 70 + 40/4, rotation 350 + 20/4 (shortest arc through
     // 360, not 350 - 340/4), opacity 0.2 + 0.8/4, fill channel-wise, radius 4 + 16/4.

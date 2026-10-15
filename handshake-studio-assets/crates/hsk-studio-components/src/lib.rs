@@ -21,6 +21,7 @@ mod instance_resolution;
 mod player;
 mod prototype;
 mod smart_animate;
+mod transition;
 
 pub use auto_layout::{AutoLayoutResult, LayoutLimits, PlacedBox, solve_auto_layout};
 pub use constraints::{PlacedNode, RectPt, SizePt, apply_constraints, resize_component};
@@ -32,13 +33,19 @@ pub use instance_resolution::{
     rematch_overrides, resolve_instance, resolve_variable, swap_component, switch_variant,
 };
 pub use smart_animate::{
-    MAX_SMART_DEPTH, MAX_SMART_LAYERS, SmartDrawLayer, SmartFrame, SmartLayer, SmartMatch, SmartProps,
-    SmartSide, interpolate, match_layers, smart_animate_frame,
+    MAX_GRADIENT_STOPS, MAX_SMART_DEPTH, MAX_SMART_LAYERS, MAX_TEXT_COMPARE, MAX_TEXT_PAIR_EVALUATIONS,
+    SmartDrawLayer, SmartFrame, SmartGradient, SmartLayer, SmartMatch, SmartMatchOptions, SmartProps,
+    SmartSide, gradients_tween, interpolate, match_layers, match_layers_with, smart_animate_frame,
+    text_similarity,
 };
 pub use prototype::{FlowLimits, FlowReport, FlowWarning, PrototypeFlow, validate_flow};
 pub use player::{
     ActiveTransition, MAX_ACTIONS_PER_DISPATCH, MAX_STACK, PlayerEvent, PlayerInput, PlayerSession,
-    PlayerState, cubic_bezier_ease, overlay_placement,
+    PlayerState, cubic_bezier_ease, overlay_placement, transition_progress,
+};
+pub use transition::{
+    DirectionalFrame, MAX_SPRING_SETTLE_MS, SLIDE_PARALLAX, directional_frame, spring_displacement,
+    spring_progress, spring_settle_ms,
 };
 
 use hsk_studio_accord::CancellationToken;

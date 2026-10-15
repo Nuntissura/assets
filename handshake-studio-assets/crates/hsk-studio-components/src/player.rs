@@ -32,7 +32,7 @@
 use hsk_studio_folio::{
     CubicBezier, Navigation, NodeKind, OverlayPosition, Parent, StudioAction, StudioDesignRecords,
     StudioDocument, StudioFrameOverlay, StudioOverlayBackgroundInteraction, StudioOverlayPositionType,
-    StudioReaction, StudioTrigger, StudioValue, TransitionType,
+    SpringEasing, StudioReaction, StudioTrigger, StudioValue, TransitionDirection, TransitionType,
 };
 use std::collections::BTreeMap;
 
@@ -65,6 +65,23 @@ pub struct ActiveTransition {
     /// Layers are paired and tweened (`SMART_ANIMATE`, or a directional transition with
     /// `match_layers`, STU-PRO-117/118); the host draws it through [`crate::smart_animate_frame`].
     pub match_layers: bool,
+    /// The stored transition type and, for the five directional types, its direction (the host
+    /// places the screens through [`crate::directional_frame`]; lane SMB-FIG-SMART-ANIMATE-2).
+    pub transition_type: TransitionType,
+    pub direction: Option<TransitionDirection>,
+    /// A spring easing: the eased progress is [`crate::spring_progress`] at the elapsed seconds
+    /// (the cubic `easing` is then linear and unused).
+    pub spring: Option<SpringEasing>,
+}
+
+/// Eased progress of a transition at raw progress `raw` (elapsed / duration) and `elapsed_ms`:
+/// the spring solution when it has one (1 once the stored duration has passed), else the cubic.
+pub fn transition_progress(t: &ActiveTransition, raw: f64, elapsed_ms: f64) -> f64 {
+    match &t.spring {
+        Some(s) if raw < 1.0 => crate::spring_progress(s, elapsed_ms / 1000.0).unwrap_or(raw),
+        Some(_) => 1.0,
+        None => cubic_bezier_ease(&t.easing, raw),
+    }
 }
 
 /// What the running prototype shows.
@@ -221,7 +238,7 @@ impl PlayerSession {
             transition: self.transition.as_ref().map(|t| {
                 let elapsed = self.clock_ms.saturating_sub(t.start_ms) as f64;
                 let raw = if t.duration_ms == 0 { 1.0 } else { (elapsed / f64::from(t.duration_ms)).clamp(0.0, 1.0) };
-                (t.clone(), raw, cubic_bezier_ease(&t.easing, raw))
+                (t.clone(), raw, transition_progress(t, raw, elapsed))
             }),
             clock_ms: self.clock_ms,
         }
@@ -373,9 +390,6 @@ impl PlayerSession {
                                         .easing_function_cubic_bezier
                                         .clone()
                                         .unwrap_or(CubicBezier { x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0 });
-                                    if t.easing.easing_function_spring.is_some() {
-                                        events.push(PlayerEvent::Diagnostic("spring_easing_played_linear"));
-                                    }
                                     self.transition = Some(ActiveTransition {
                                         from,
                                         to: dest.clone(),
@@ -385,6 +399,9 @@ impl PlayerSession {
                                         easing,
                                         match_layers: t.transition_type == TransitionType::SmartAnimate
                                             || t.match_layers == Some(true),
+                                        transition_type: t.transition_type,
+                                        direction: t.direction,
+                                        spring: t.easing.easing_function_spring.clone(),
                                     });
                                     events.push(PlayerEvent::TransitionStarted { to: dest, duration_ms: t.duration });
                                 }
