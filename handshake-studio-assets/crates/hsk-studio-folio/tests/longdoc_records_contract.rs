@@ -133,3 +133,52 @@ fn longdoc_tables_round_trip_and_refusals() {
     unknown["cells"][0]["surprise"] = json!(1);
     assert!(serde_json::from_value::<StudioLongDocRecords>(records(vec![unknown])).is_err());
 }
+
+fn graphic(layer: u32) -> Value {
+    json!({"layer_id": identity("SLYR", layer), "page_id": "p2",
+        "bounds": {"x": pt(10.0), "y": pt(20.0), "width": pt(80.0), "height": pt(40.0)},
+        "content_width": pt(200.0), "content_height": pt(100.0)})
+}
+fn graphics(list: Vec<Value>) -> Value {
+    json!({"schema_id": "hsk.studio.longdoc_records@1", "document_id": identity("SDOC", 1), "graphic_frames": list})
+}
+
+/// Slice 2 (placed graphics): a graphic frame with every member round-trips byte-identically, a
+/// minimal one encodes only its required members (centre anchor, rectangle and no crop are not
+/// written), and the frame refusals.
+#[test]
+fn longdoc_graphic_frames_round_trip_and_refusals() {
+    let mut full = graphic(1);
+    full["shape"] = json!({"shape_kind": "path", "path_id": identity("SVPT", 1)});
+    full["fit"] = json!("fill_proportionally");
+    full["frame_fitting"] = json!("proportionally");
+    full["anchor"] = json!("bottom_right");
+    full["crop"] = json!({"top": pt(1.0), "right": pt(-2.0), "bottom": pt(3.0), "left": pt(4.0)});
+    let v = graphics(vec![full, graphic(2)]);
+    let r: StudioLongDocRecords = serde_json::from_value(v.clone()).unwrap();
+    let back = wire_identical(&r);
+    assert_eq!(serde_json::to_value(&back).unwrap()["graphic_frames"][1], graphic(2));
+    assert_eq!(back.graphic_frames[0].anchor, StudioFitAnchor::BottomRight);
+    assert_eq!(back.graphic_frame(&identity("SLYR", 2)).unwrap().shape, StudioFrameShape::Rectangle);
+    assert!(validate(&v).unwrap().is_empty());
+
+    let mut missing = graphic(9);
+    missing["page_id"] = json!("p1");
+    assert_eq!(code_of(&graphics(vec![missing])).0, Code::DanglingReference);
+    let mut page = graphic(1);
+    page["page_id"] = json!("p9");
+    assert_eq!(code_of(&graphics(vec![page])).0, Code::DanglingReference);
+    let mut empty = graphic(1);
+    empty["content_width"] = pt(0.0);
+    assert_eq!(code_of(&graphics(vec![empty])).0, Code::InvalidField);
+    let mut eaten = graphic(1);
+    eaten["crop"] = json!({"top": pt(0.0), "right": pt(100.0), "bottom": pt(0.0), "left": pt(100.0)});
+    assert_eq!(code_of(&graphics(vec![eaten])).0, Code::InvalidField);
+    let mut merge_only = graphic(1);
+    merge_only["fit"] = json!("honour_existing_style");
+    assert_eq!(code_of(&graphics(vec![merge_only])).0, Code::InvalidField);
+    let mut bad_path = graphic(1);
+    bad_path["shape"] = json!({"shape_kind": "path", "path_id": identity("SLYR", 1)});
+    assert_eq!(code_of(&graphics(vec![bad_path])).0, Code::InvalidId);
+    assert_eq!(code_of(&graphics(vec![graphic(1), graphic(1)])).0, Code::DuplicateIdentity);
+}

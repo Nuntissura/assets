@@ -17,6 +17,13 @@
 //! Declared gaps, not invented here: graphic cells, nested tables, diagonal lines, gradient fills,
 //! alternating patterns, table and cell styles, rotation and the second inset group (STU-LAY-141).
 //!
+//! Graphic frames (STU-LAY-028/029, STU-LAY-131): per raster layer the frame (page, pt bounds,
+//! rectangle / inscribed ellipse / `SVPT` path shape), the content size at 100 %, the applied fit
+//! (one union enumeration `StudioFit`; absent = cleared fitting), the stored `frame_fitting` rule,
+//! the nine-point anchor and the crop amounts. Declared gaps: format-aware place options (layer
+//! comps, PDF crop boxes, page selection), the linked-resource record (STU-LAY-030/132) and
+//! non-raster content.
+//!
 //! Hostile wire JSON: integer arithmetic is denied (workflow V4-01); grids are checked by
 //! `checked_mul` against `MAX_TABLE_CELLS` before any occupancy grid is allocated, and spans by
 //! `checked_add` against the grid edge (span overflow is refused, never clamped).
@@ -35,6 +42,8 @@ schema_token!(LongDocRecordsSchema, "hsk.studio.longdoc_records@1");
 
 /// Tables per record set.
 pub const MAX_TABLES: usize = 4096;
+/// Graphic frames per record set.
+pub const MAX_GRAPHIC_FRAMES: usize = 65_536;
 /// Rows of one table.
 pub const MAX_TABLE_ROWS: usize = 10_000;
 /// Columns of one table.
@@ -238,6 +247,106 @@ pub struct StudioTable {
     pub stroke_order: TableStrokeOrder,
 }
 
+/// STU-LAY-131 fitting: ONE union of the frame fitting enumeration (seven members) and the
+/// data-merge fitting enumeration (`preserve_sizes`, `honour_existing_style`; the other data-merge
+/// members are the same operations under other names). `honour_existing_style` is legal only for
+/// data merge and is refused on a graphic frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioFit {
+    ContentToFrame,
+    CenterContent,
+    Proportionally,
+    ContentAware,
+    FrameToContent,
+    FillProportionally,
+    ApplyFrameFittingOptions,
+    PreserveSizes,
+    HonourExistingStyle,
+}
+
+/// STU-LAY-029 anchor point (reference point) of placed content: nine positions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioFitAnchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    CenterLeft,
+    #[default]
+    Center,
+    CenterRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+impl StudioFitAnchor {
+    fn is_center(&self) -> bool {
+        *self == Self::Center
+    }
+    /// Horizontal and vertical fraction (0 = left/top, 0.5 = centre, 1 = right/bottom).
+    pub fn fractions(self) -> (f64, f64) {
+        match self {
+            Self::TopLeft => (0.0, 0.0),
+            Self::TopCenter => (0.5, 0.0),
+            Self::TopRight => (1.0, 0.0),
+            Self::CenterLeft => (0.0, 0.5),
+            Self::Center => (0.5, 0.5),
+            Self::CenterRight => (1.0, 0.5),
+            Self::BottomLeft => (0.0, 1.0),
+            Self::BottomCenter => (0.5, 1.0),
+            Self::BottomRight => (1.0, 1.0),
+        }
+    }
+}
+
+/// Picture-frame shape (STU-LAY-028: rectangle, ellipse or any vector path).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "shape_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioFrameShape {
+    #[default]
+    Rectangle,
+    /// The ellipse inscribed in the frame bounds.
+    Ellipse,
+    /// An `SVPT` path (spread coordinates, resolved by the caller) clips the content.
+    Path { path_id: String },
+}
+impl StudioFrameShape {
+    fn is_rectangle(&self) -> bool {
+        *self == Self::Rectangle
+    }
+}
+
+/// A graphic frame (STU-LAY-028/029): the frame geometry of a placed-asset layer, the placed
+/// content's size at 100 % and how it is fitted. The content itself is the layer's payload (raster
+/// tiles); nothing is duplicated here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioGraphicFrame {
+    /// `SLYR` id of a document layer with a raster payload.
+    pub layer_id: String,
+    /// Page key the frame sits on; page coordinates for `bounds`.
+    pub page_id: String,
+    /// `pt`, page coordinates, width and height greater than zero.
+    pub bounds: super::Bounds,
+    #[serde(default, skip_serializing_if = "StudioFrameShape::is_rectangle")]
+    pub shape: StudioFrameShape,
+    /// Placed content size at 100 %, `pt`, greater than zero.
+    pub content_width: Length,
+    pub content_height: Length,
+    /// The applied fitting; absent = cleared fitting (content at 100 % at the frame's top-left).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<StudioFit>,
+    /// The frame's stored content-fit rule (STU-LAY-029), re-applied by `apply_frame_fitting_options`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_fitting: Option<StudioFit>,
+    #[serde(default, skip_serializing_if = "StudioFitAnchor::is_center")]
+    pub anchor: StudioFitAnchor,
+    /// Crop amounts of the fitting options, `pt` (positive trims the content, negative adds space).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<LayoutEdges>,
+}
+
 /// The long-document records of one document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +357,8 @@ pub struct StudioLongDocRecords {
     pub document_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<StudioTable>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graphic_frames: Vec<StudioGraphicFrame>,
 }
 impl StudioLongDocRecords {
     /// An empty set for `document_id`.
@@ -256,7 +367,12 @@ impl StudioLongDocRecords {
             schema_id: LongDocRecordsSchema::V1,
             document_id: document_id.into(),
             tables: Vec::new(),
+            graphic_frames: Vec::new(),
         }
+    }
+    /// The graphic frame of this layer.
+    pub fn graphic_frame(&self, layer_id: &str) -> Option<&StudioGraphicFrame> {
+        self.graphic_frames.iter().find(|g| g.layer_id == layer_id)
     }
     /// The table with this key.
     pub fn table(&self, table_id: &str) -> Option<&StudioTable> {
@@ -414,6 +530,53 @@ fn validate_table(t: &StudioTable, c: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Graphic-frame checks: the layer exists and carries raster content, the page exists, positive
+/// pt bounds and content size, finite crop leaving a positive content box, a legal fit member.
+fn validate_graphic_frame(g: &StudioGraphicFrame, d: &StudioDocument, c: &mut Ctx) -> Result<()> {
+    c.tick()?;
+    let lid = g.layer_id.as_str();
+    id(lid, "SLYR", "graphic_frames/layer_id")?;
+    let layer = d
+        .layers
+        .iter()
+        .find(|l| l.layer_id == lid)
+        .ok_or_else(|| err(Code::DanglingReference, lid))?;
+    if !matches!(layer.payload, super::Payload::Raster { .. }) {
+        return Err(err(Code::PayloadMismatch, lid));
+    }
+    if d.locate_page(&g.page_id).is_none() {
+        return Err(err(Code::DanglingReference, format!("{lid}/page_id")));
+    }
+    let b = &g.bounds;
+    let target = format!("{lid}/bounds");
+    finite_length(&b.x, GeometryUnit::Pt, false, &target)?;
+    finite_length(&b.y, GeometryUnit::Pt, false, &target)?;
+    let (w, h) = (pt(&b.width, &target)?, pt(&b.height, &target)?);
+    let target = format!("{lid}/content");
+    let (cw, ch) = (pt(&g.content_width, &target)?, pt(&g.content_height, &target)?);
+    if w <= 0.0 || h <= 0.0 || cw <= 0.0 || ch <= 0.0 {
+        return Err(err(Code::InvalidField, target));
+    }
+    if let Some(e) = &g.crop {
+        let target = format!("{lid}/crop");
+        for l in [&e.top, &e.right, &e.bottom, &e.left] {
+            finite_length(l, GeometryUnit::Pt, false, &target)?;
+        }
+        if cw - e.left.value - e.right.value <= 0.0 || ch - e.top.value - e.bottom.value <= 0.0 {
+            return Err(err(Code::InvalidField, target));
+        }
+    }
+    if [g.fit, g.frame_fitting].contains(&Some(StudioFit::HonourExistingStyle))
+        || g.frame_fitting == Some(StudioFit::ApplyFrameFittingOptions)
+    {
+        return Err(err(Code::InvalidField, format!("{lid}/fit")));
+    }
+    if let StudioFrameShape::Path { path_id } = &g.shape {
+        id(path_id, "SVPT", &format!("{lid}/shape"))?;
+    }
+    Ok(())
+}
+
 /// The single validator: document binding, unique keys, `STXT` story references and every
 /// member's bounds (see the member docs). Records count against `Budget::nodes`.
 pub fn validate_longdoc_records(
@@ -439,6 +602,17 @@ pub fn validate_longdoc_records(
             return Err(err(Code::DuplicateIdentity, &t.table_id));
         }
         validate_table(t, &mut cx)?;
+    }
+    if r.graphic_frames.len() > MAX_GRAPHIC_FRAMES {
+        return Err(err(Code::BudgetExceeded, "graphic_frames"));
+    }
+    cx.nodes(r.graphic_frames.len(), "graphic_frames")?;
+    let mut layers = BTreeSet::new();
+    for g in &r.graphic_frames {
+        if !layers.insert(g.layer_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, &g.layer_id));
+        }
+        validate_graphic_frame(g, d, &mut cx)?;
     }
     canceled(token)?;
     Ok(cx.issues)

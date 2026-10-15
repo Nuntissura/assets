@@ -285,3 +285,124 @@ fn table_exports_fills_strokes_and_repeated_header_text() {
     let err = export_pdf_with(&input(&snapshot, &[], &fonts, &NoAssets), &PdfLongDoc { tables: &bad, ..PdfLongDoc::default() }, &cancel).unwrap_err();
     assert_eq!(err.code(), "stale_revision");
 }
+
+fn raster_layer(n: u32) -> StudioLayer {
+    StudioLayer {
+        schema_id: LayerSchema::V1,
+        layer_id: id("SLYR", n),
+        name: format!("picture {n}"),
+        parent: on_spread(),
+        kind: "raster".into(),
+        payload: Payload::Raster { tiles: vec![] },
+        visible: true,
+        appearance: None,
+        text_frame: None,
+    }
+}
+/// A 4 x 2 linear-light tile: columns 0-1 red, columns 2-3 blue, opaque.
+struct Picture {
+    tile: TileRef,
+    profile_id: hsk_studio_accord::DomainId,
+    colour: Vec<u8>,
+    alpha: Vec<u8>,
+}
+impl Picture {
+    fn new() -> Self {
+        let px = |x: usize| if x < 2 { [1.0f32, 0.0, 0.0] } else { [0.0, 0.0, 1.0] };
+        let colour = (0..2).flat_map(|_| (0..4).flat_map(move |x| px(x).into_iter().flat_map(f32::to_le_bytes))).collect();
+        let alpha = (0..8).flat_map(|_| 1.0f32.to_le_bytes()).collect();
+        let tile = TileRef {
+            object_key: "t0".into(),
+            layer_id: id("SLYR", 3),
+            column: 0,
+            row: 0,
+            width: Length { value: 4.0, unit: GeometryUnit::Px },
+            height: Length { value: 2.0, unit: GeometryUnit::Px },
+            format: "rgb_f32le".into(),
+            colour_profile_id: id("SCPF", 1),
+            schema_id: TileSchema::V1,
+            content_digest: ContentDigest { algorithm: "sha256".into(), digest: "00".into() },
+            artifact_manifest_id: "manifest-1".into(),
+        };
+        Self { tile, profile_id: hsk_studio_accord::DomainId::parse(&id("SCPF", 1)).unwrap(), colour, alpha }
+    }
+}
+impl PdfAssets for Picture {
+    fn path(&self, _: &str) -> Option<OwnedPath> {
+        None
+    }
+    /// The same picture for layers 3 and 4; the origin is ignored for graphic frames.
+    fn raster(&self, layer_id: &str) -> Option<PlacedRaster<'_>> {
+        use hsk_studio_prism::{ProfileInput, WORKING_PROFILE_LINEAR_SRGB, profile_hash};
+        (layer_id == id("SLYR", 3) || layer_id == id("SLYR", 4)).then(|| PlacedRaster {
+            grid: hsk_studio_pigment::Grid { origin_x: 0, origin_y: 0, tile_width: 4, tile_height: 2 },
+            tiles: vec![hsk_studio_pigment::ResolvedTile {
+                tile_ref: &self.tile,
+                bounds: hsk_studio_pigment::Rect { x: 0, y: 0, width: 4, height: 2 },
+                sample_format: "rgb_f32le",
+                colour_bytes: &self.colour,
+                colour_stride_bytes: 48,
+                colour_sha256: profile_hash(&self.colour),
+                alpha_bytes: &self.alpha,
+                alpha_stride_bytes: 16,
+                alpha_sha256: profile_hash(&self.alpha),
+                transfer: "linear_light",
+                alpha_association: "straight",
+                profile: ProfileInput { profile_id: &self.profile_id, bytes: WORKING_PROFILE_LINEAR_SRGB, expected_sha256: profile_hash(WORKING_PROFILE_LINEAR_SRGB) },
+            }],
+            origin_pt: [0.0, 0.0],
+            pt_per_px: 1.0,
+        })
+    }
+    fn profile(&self, _: &str) -> Option<&[u8]> {
+        None
+    }
+}
+
+/// Slice 2: the 4 x 2 picture as 200 x 100 pt content in two 100 x 100 frames on page 1.
+/// Frame A (20, 120), rectangle, proportionally: s = 0.5, box 100 x 50 centred at y 145..195 ->
+/// (40, 170) red, (100, 170) blue, (70, 130) white letterbox. Frame B (150, 120), inscribed ellipse,
+/// fill_proportionally: s = 1, box 200 x 100 at x 100..300, so the frame shows content x 50..150:
+/// (170, 170) red, (230, 170) blue; (125, 170) is content but outside the frame (white) and the
+/// frame corner (153, 123) is outside the ellipse (white). Layer 3 without a graphic frame record
+/// would draw at its PlacedRaster origin; the records replace that placement.
+#[test]
+fn placed_graphics_fit_and_clip_to_frame_shapes() {
+    let cancel = CancellationToken::default();
+    let doc = document(vec![raster_layer(3), raster_layer(4)]);
+    let snapshot = validate_document(doc, Budget::default(), &cancel, &Everything).unwrap();
+    let frame = |layer: u32, x: f64, shape: StudioFrameShape, fit: StudioFit| StudioGraphicFrame {
+        layer_id: id("SLYR", layer),
+        page_id: "page-1".into(),
+        bounds: Bounds { x: len(x), y: len(120.0), width: len(100.0), height: len(100.0) },
+        shape,
+        content_width: len(200.0),
+        content_height: len(100.0),
+        fit: Some(fit),
+        frame_fitting: None,
+        anchor: StudioFitAnchor::Center,
+        crop: None,
+    };
+    let mut records = StudioLongDocRecords::new(id("SDOC", 1));
+    records.graphic_frames.push(frame(3, 20.0, StudioFrameShape::Rectangle, StudioFit::Proportionally));
+    records.graphic_frames.push(frame(4, 150.0, StudioFrameShape::Ellipse, StudioFit::FillProportionally));
+    assert!(validate_longdoc_records(&records, snapshot.document(), Budget::default(), &cancel, &Everything).unwrap().is_empty());
+    let placed: Vec<_> = records.graphic_frames.iter().map(|g| hsk_studio_interop_layout::layout::place_graphic(snapshot.document(), g).unwrap()).collect();
+    let picture = Picture::new();
+    let out = export_pdf_with(&input(&snapshot, &[], &[], &picture), &PdfLongDoc { graphics: &placed, ..PdfLongDoc::default() }, &cancel).unwrap();
+    assert_eq!(out.tiles_drawn, 2);
+    let page = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();
+    let px = |x, y| page.pixel(x, y).unwrap();
+    let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 6);
+    assert!(close(px(40, 170), [255, 0, 0]), "A red {:?}", px(40, 170));
+    assert!(close(px(100, 170), [0, 0, 255]), "A blue {:?}", px(100, 170));
+    assert!(close(px(70, 130), [255, 255, 255]), "A letterbox {:?}", px(70, 130));
+    assert!(close(px(170, 170), [255, 0, 0]), "B red {:?}", px(170, 170));
+    assert!(close(px(230, 170), [0, 0, 255]), "B blue {:?}", px(230, 170));
+    assert!(close(px(125, 170), [255, 255, 255]), "B clipped to the frame {:?}", px(125, 170));
+    assert!(close(px(153, 123), [255, 255, 255]), "B clipped to the ellipse {:?}", px(153, 123));
+    let mut bad = placed.clone();
+    bad[0].transform[0] = f64::NAN;
+    let err = export_pdf_with(&input(&snapshot, &[], &[], &picture), &PdfLongDoc { graphics: &bad, ..PdfLongDoc::default() }, &cancel).unwrap_err();
+    assert_eq!(err.to_string(), "invalid_input: graphic_placement");
+}

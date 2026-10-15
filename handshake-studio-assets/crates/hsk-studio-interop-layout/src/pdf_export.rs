@@ -674,7 +674,10 @@ impl Cx<'_> {
         match &layer.payload {
             Payload::Text { story_id } => self.text_layer(layer, story_id)?,
             Payload::Vector { path_ids } => self.vector_layer(layer, spread, path_ids)?,
-            Payload::Raster { .. } => self.raster_layer(layer, spread)?,
+            Payload::Raster { .. } => match self.longdoc.graphic(&layer.layer_id) {
+                Some(g) => self.graphic_layer(layer, g)?,
+                None => self.raster_layer(layer, spread)?,
+            },
             _ => self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_kind_not_exported"),
         }
         self.close_group(plan.as_ref())
