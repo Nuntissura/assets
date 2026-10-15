@@ -201,8 +201,12 @@ fn masked_vector_and_adjustment_layers_lower_through_the_static_path() {
             space: scenes::space(),
             limits: SceneLimits::default(),
         };
-        let e = lower_scene(&moved, &ctx, &cancel).unwrap_err();
-        assert!(matches!(e, TemporalError::Unsupported { feature: "composition_adjustment_transform", .. }), "{e:?}");
+        // A transformed adjustment layer acts inside its moved bounds: a nib coverage mask of the
+        // composition rect through its matrix (translated 1 px right: column 0 uncovered).
+        let low = lower_scene(&moved, &ctx, &cancel).unwrap();
+        let (_, plane) = low.sources.mattes.iter().next().expect("bounds plane");
+        let at = |x: usize, y: usize| u16::from_le_bytes([plane.bytes[(y * 32 + x) * 2], plane.bytes[(y * 32 + x) * 2 + 1]]);
+        assert_eq!((at(0, 5), at(1, 5), at(31, 23)), (0, 65535, 65535));
         // An untransformed adjustment lowers to a transparent placeholder with the envelope op.
         moved.layers[0].matrix = Affine2::IDENTITY;
         let low = lower_scene(&moved, &ctx, &cancel).unwrap();

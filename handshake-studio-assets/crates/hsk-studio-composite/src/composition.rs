@@ -685,12 +685,6 @@ fn lower_inner(
             continue;
         }
         if let SceneContent::Adjustment(op) = &layer.content {
-            if !layer.matrix.is_identity() {
-                return Err(TemporalError::Unsupported {
-                    layer_id: id.to_owned(),
-                    feature: ADJUSTMENT_TRANSFORM,
-                });
-            }
             if layer.matte.is_some() {
                 return Err(TemporalError::Unsupported {
                     layer_id: id.to_owned(),
@@ -701,6 +695,25 @@ fn lower_inner(
                 rect: scene.rect(),
                 rgba: [0.0; 4],
             })?;
+            // A transformed adjustment layer acts inside its own bounds only: the composition rect
+            // (its layer space) through its matrix, rasterised by nib as the placeholder's
+            // coverage over the composition rect (After Effects reading, UNVERIFIED).
+            let mask = if layer.matrix.is_identity() {
+                None
+            } else {
+                let plane = adjustment_bounds_plane(scene, id, &layer.matrix, ctx, charges)?;
+                let key = out.key()?;
+                let input = MaskInput {
+                    key,
+                    placement: scene.rect(),
+                    format: MaskFormat::CoverageU16Le,
+                    sha256: plane.sha256,
+                    inverted: false,
+                    density: 1.0,
+                };
+                out.sources.mattes.insert(key, plane);
+                Some(input)
+            };
             adjustments.push((root_layers.len(), op.clone()));
             base = Some(Base::Adjustment);
             #[allow(clippy::cast_possible_truncation)]
@@ -709,7 +722,7 @@ fn lower_inner(
                 mode: layer.mode,
                 opacity: layer.opacity as f32,
                 fill_opacity: layer.fill_opacity as f32,
-                mask: None,
+                mask,
             });
             rendered.push(id.to_owned());
             continue;
@@ -902,6 +915,54 @@ fn lower_inner(
         rendered,
         skipped,
         surfaces_rendered: charges.surfaces.saturating_sub(surfaces_before),
+    })
+}
+
+/// Coverage (`coverage_u16le` over the composition rect) of a transformed adjustment layer's
+/// bounds: the composition rect through `matrix`, nib exact area coverage (8-bit, widened exactly).
+fn adjustment_bounds_plane(
+    scene: &SceneComposition,
+    layer_id: &str,
+    matrix: &Affine2,
+    ctx: &SceneContext<'_>,
+    charges: &mut Charges,
+) -> Result<MattePlane, TemporalError> {
+    use hsk_studio_nib::{FillRule, OwnedPath, PathElement, PathPoint};
+    let (w, h) = (f64::from(scene.width), f64::from(scene.height));
+    let corner = |x: f64, y: f64| {
+        let (a, b) = matrix.apply(x, y);
+        PathPoint::new(a, b)
+    };
+    let quad = OwnedPath {
+        elements: vec![
+            PathElement::MoveTo(corner(0.0, 0.0)),
+            PathElement::LineTo(corner(w, 0.0)),
+            PathElement::LineTo(corner(w, h)),
+            PathElement::LineTo(corner(0.0, h)),
+            PathElement::Close,
+        ],
+        fill_rule: FillRule::NonZero,
+    };
+    let px = u64::from(scene.width)
+        .checked_mul(u64::from(scene.height))
+        .ok_or(CompositeError::Overflow)?;
+    charges.charge(ctx, px.checked_mul(MATTE_BYTES_PER_PIXEL).ok_or(CompositeError::Overflow)?)?;
+    let coverage = crate::vector_nib::coverage(Some(&quad), scene.rect(), px).map_err(|code| {
+        TemporalError::Unsupported {
+            layer_id: layer_id.to_owned(),
+            feature: code,
+        }
+    })?;
+    let mut bytes = Vec::with_capacity(coverage.len().saturating_mul(2));
+    for c in coverage {
+        // 255 -> 65535 exactly (x * 257).
+        bytes.extend_from_slice(&u16::from(c).saturating_mul(257).to_le_bytes());
+    }
+    Ok(MattePlane {
+        width: scene.width,
+        height: scene.height,
+        sha256: hsk_studio_prism::profile_hash(&bytes),
+        bytes,
     })
 }
 

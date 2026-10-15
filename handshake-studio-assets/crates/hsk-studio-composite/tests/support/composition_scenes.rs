@@ -389,6 +389,10 @@ pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     out.extend(FRAMES6.iter().map(|f| (format!("comp6/frame{f}"), expected_scene6(*f, pixels))));
     out.extend([6u64, 12].iter().map(|f| (format!("comp3c/frame{f}"), expected_scene3_collapsed(*f, pixels))));
     out.extend([0u64, 4].iter().map(|f| (format!("comp7/frame{f}"), expected_scene7(*f, pixels))));
+    // Composition 6 at frame 7 with the adjustment layer moved by (5, 3): it acts in its bounds.
+    let mut moved = expected_scene6(7, pixels);
+    moved.layers[2].matrix = Affine2::translate(5.0, 3.0);
+    out.push(("comp6t/frame7".to_owned(), moved));
     out
 }
 
@@ -690,7 +694,13 @@ pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
                 let (l, texels, p, coverage) = match &prepared[i] {
                     Step::Draw(l, texels, p, coverage) => (l, texels, p, coverage),
                     Step::Adjust(l, prep) => {
-                        let k = (l.opacity * l.fill_opacity) as f32;
+                        // A moved adjustment acts inside the composition rect through its matrix
+                        // (fixture: integer translations, so coverage is 0 or 1 per pixel).
+                        let [a, b, tx, d, e, ty] = l.matrix.m;
+                        assert!(a == 1.0 && b == 0.0 && d == 0.0 && e == 1.0 && tx.fract() == 0.0 && ty.fract() == 0.0);
+                        let (ux, uy) = (x - tx as i64, y - ty as i64);
+                        let inside = ux >= 0 && uy >= 0 && ux < i64::from(scene.width) && uy < i64::from(scene.height);
+                        let k = (l.opacity * l.fill_opacity) as f32 * if inside { 1.0 } else { 0.0 };
                         acc = composite_adjustment(l.mode, acc, prep, k).unwrap();
                         i += 1;
                         continue;
