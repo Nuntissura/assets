@@ -301,12 +301,12 @@ fn container_magic_routing_names_the_family() {
         assert_eq!(error.code(), "decoder_unavailable");
         assert_eq!(error.to_string(), format!("decoder_unavailable:{family}"));
     };
-    unavailable(b"IIRO\x08\0\0\0", "orf");
-    unavailable(b"IIRS\x08\0\0\0", "orf");
-    unavailable(b"MMOR\0\0\0\x08", "orf");
-    unavailable(b"IIU\0\x08\0\0\0", "rw2");
-    unavailable(b"FUJIFILMCCD-RAW 0201FF383501", "raf");
-    unavailable(b"\0\0\0\x18ftypcrx \0\0\0\x01", "cr3");
+    // ORF, RW2, RAF and CR3 magics now route to their decoders (SMB-DEVELOP-RAW-COMPRESSED): a file
+    // that is only a magic prefix is a typed container refusal, never a decode.
+    for magic in [&b"IIRO\x08\0\0\0"[..], b"IIRS\x08\0\0\0", b"MMOR\0\0\0\x08", b"IIU\0\x08\0\0\0", b"FUJIFILMCCD-RAW 0201FF383501"] {
+        assert_eq!(decode_container(magic).err(), Some(DevelopError::InvalidContainer), "{magic:?}");
+    }
+    assert_eq!(decode_container(b"\0\0\0\x18ftypcrx \0\0\0\x01").err(), Some(DevelopError::UnsupportedContainer));
     unavailable(b"RIFF....WEBP", "unknown");
     unavailable(b"", "unknown");
     // TIFF without DNGVersion and without the CR marker (NEF/ARW today) stays unsupported.

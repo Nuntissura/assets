@@ -377,11 +377,12 @@ fn unsupported_process_version_and_cancel_stale() {
         assert_eq!(result, Err(DevelopError::SinkRejected));
 
         assert_eq!(plane.bytes(), &original[..], "plane unchanged after every failure");
-        // missing container decoder is explicit (CR3 = ISO BMFF 'ftyp crx'); a truncated TIFF header
-        // is a container error, not a silent success.
+        // a CR3 (ISO BMFF 'ftyp crx') without a raw track is an explicit container refusal (the CR3
+        // decoder exists since SMB-DEVELOP-RAW-COMPRESSED); a truncated TIFF header is a container
+        // error, not a silent success.
         assert_eq!(
             decode_container(b"\0\0\0\x18ftypcrx \0\0\0\0").err(),
-            Some(DevelopError::DecoderUnavailable("cr3"))
+            Some(DevelopError::UnsupportedContainer)
         );
         assert_eq!(decode_container(b"II*\0").err(), Some(DevelopError::InvalidContainer));
         assert_eq!(DevelopError::UnsupportedProcessVersion.code(), "unsupported_process_version");

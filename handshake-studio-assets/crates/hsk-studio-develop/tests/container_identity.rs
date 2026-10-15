@@ -8,7 +8,9 @@ use hsk_studio_develop::*;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// (corpus subdirectory, file name, expected IDENT value from the pre-switch HEAD).
+/// (corpus subdirectory, file name, expected IDENT value from the pre-switch HEAD; the CR3, RAF X-S10,
+/// compressed NEF, ORF and RW2 rows re-pinned by SMB-DEVELOP-RAW-COMPRESSED when those files started
+/// to decode, values equal to tests/real_raw_compressed.rs digests).
 const PINNED: &[(&str, &str, &str)] = &[
     ("dng", "adobe-dng-converter-canon-eos-5d3-16bit-uncompressed.dng", "5920x3950|16|cfa=d4f894f5e3414125ffa2b8a94637ab44034f9de931a6ca3ef6025c97cbd28a8d|dev=5760x3840:(5133, 2322):7332f8cafcebb9b56f707f8f01e6deca8e9ea8e2bc2d8ddc9709a4b64e981185"),
     ("dng", "canon-eos-5d3-mlv-14bit-lossless.dng", "1920x818|14|cfa=786415ab4fd024a1a066f13b7b900e99b0f2fcb4cfefd462511d2ea98934aa4e|dev=1920x818:(176919, 0):df7fe25d0ac83a989502df40ec85251242fa9af2983070842f46b031d9cabf3b"),
@@ -17,14 +19,14 @@ const PINNED: &[(&str, &str, &str)] = &[
     ("dng", "samsung-sm-g950u-16bit-uncompressed.dng", "4032x2268|16|cfa=ae7f8e1f45b0458f7f8d493efc88719f3b56b699843af7e4d917ef073e370454|dev=4032x2268:(0, 0):892662340a7743c4ccc880dc907d69484980087905b2f51344f3e8160c0a4987"),
     ("dng", "samsung-sm-g973u-16bit-uncompressed.dng.jfif-preview", "decode_err=DecoderUnavailable(\"jpeg\")"),
     ("raw-vendor", "canon-eos-350d-raw.cr2", "3516x2328|12|cfa=29f020448207b8283fab983dc6e200d7acf569883940524003973edfc1015756|dev=recipe_err=MissingColourData"),
-    ("raw-vendor", "canon-eos-r6.cr3", "decode_err=DecoderUnavailable(\"cr3\")"),
+    ("raw-vendor", "canon-eos-r6.cr3", "3584x2386|14|cfa=73d26ba5f75c2361d8eb197336335f95e1e41f8fffb2714fe3f7bb2b3e4b0c27|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "fujifilm-finepix-s5000.raf", "decode_err=DecoderUnavailable(\"raf\")"),
-    ("raw-vendor", "fujifilm-x-s10-14bit-compressed-xtrans.raf", "decode_err=DecoderUnavailable(\"raf\")"),
+    ("raw-vendor", "fujifilm-x-s10-14bit-compressed-xtrans.raf", "6384x4182|14|cfa=a7ccc3650bdead2da2dba81c3b56c98061d259d83444f1a8f872e9abe193fbf1|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "nikon-d1h-12bit-uncompressed.nef", "2012x1324|12|cfa=25c44149c9b10f0b11ec8e99d4ee6f1bdfe2b1095cc7bbeebb5809901fbbdbba|dev=recipe_err=MissingColourData"),
-    ("raw-vendor", "nikon-d70s-12bit-lossy-type1.nef", "decode_err=DecoderUnavailable(\"nef_compressed\")"),
-    ("raw-vendor", "nikon-z6-12bit-compressed.nef", "decode_err=DecoderUnavailable(\"nef_compressed\")"),
-    ("raw-vendor", "olympus-c5060wz-12bit.orf", "decode_err=DecoderUnavailable(\"orf\")"),
-    ("raw-vendor", "panasonic-dmc-lx7.rw2", "decode_err=DecoderUnavailable(\"rw2\")"),
+    ("raw-vendor", "nikon-d70s-12bit-lossy-type1.nef", "3040x2014|12|cfa=291da6d41094b5da303e2cb7d704e464daa0edf03245fb14a9d8e592c92b4e11|dev=recipe_err=MissingColourData"),
+    ("raw-vendor", "nikon-z6-12bit-compressed.nef", "4548x3030|12|cfa=af18a3a222d77b3e2f19ff416cba8d5c62488a2d1d6bf149db1f84b5c93ebe22|dev=recipe_err=MissingColourData"),
+    ("raw-vendor", "olympus-c5060wz-12bit.orf", "2608x1949|12|cfa=1e6a220bfa5fbdced0bc9acf6c62cecc3cf287ad3df527e3fe980f154534ab37|dev=recipe_err=MissingColourData"),
+    ("raw-vendor", "panasonic-dmc-lx7.rw2", "1904x1276|12|cfa=148fcc6e0589faf945c490b6abb210e8c8d9688035bdd8e69b1a732999b4f3f4|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "sony-ilce-7s-14bit-compressed.arw", "2816x1872|14|cfa=3fd53781275f0e7c114ed54873071d49cc6f7677090445dc0e92fbd9feebe8a2|dev=recipe_err=MissingColourData"),
 ];
 
