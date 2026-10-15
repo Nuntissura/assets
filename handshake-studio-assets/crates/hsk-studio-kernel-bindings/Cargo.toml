@@ -8,6 +8,8 @@ rust-version = { workspace = true }
 default = []
 # V4-04: fault-injection hooks (Fault, TransientHost::plan_fault); not part of a default build.
 test-faults = []
+# SMB-CKC-PORTS: in-memory CKC port double for tests of import mappings; never in a default build.
+ckc-test-double = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
