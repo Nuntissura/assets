@@ -1,13 +1,15 @@
-//! Declared display transform on the GPU backend (lane SMB-RENDER-SCENE-DISPLAY): the same scene
-//! as render-cpu `tests/cpu_scene_display.rs` (a 7x5 tile with colour from -0.5 to 4.0 under an
-//! in-range Multiply tile at opacity 0.8, alpha 0.5) against pigment's `composite_over` of the
-//! clipped sources. The refusal half runs on the `none` backend (no hardware: source preparation
+//! Deprecated GPU alias `with_display_transform` (lane SMB-RENDER-SCENE-DISPLAY, moved onto the
+//! plan output stage by SMB-PIGMENT-EXTENDED-RANGE): the same scene as render-cpu
+//! `tests/cpu_scene_display.rs` (a 7x5 tile with colour from -0.5 to 4.0 under an in-range Multiply
+//! tile at opacity 0.8, alpha 0.5) against pigment's `composite_over_extended` then the clamp. The refusal half runs on the `none` backend (no hardware: source preparation
 //! precedes the device check); the execution half follows `tests/gpu-proof.toml` (V4-03): without
 //! an adapter it FAILS with `NOT_PROVEN: no adapter` while `require_gpu = true`.
+#![allow(deprecated)]
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over_extended};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, BackendError, BlendSpace, ColourTag, Exactness, ExecuteRequest, Group, Layer,
+    AlphaConvention, BackendError, BlendSpace, ColourTag, EXTENDED_RANGE_OPERATOR, Exactness,
+    ExecuteRequest, Group, Layer,
     NoVector, OutputTarget, PlanNode, PlanNodeId, PlanSources, RenderPlan, SAMPLE_RANGE_OPERATOR,
     SampleFormat, SinkError, SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink,
 };
@@ -147,13 +149,14 @@ fn plan(base: &Tile, top: &Tile) -> RenderPlan<NoVector> {
 fn oracle(x: i64, y: i64) -> [f32; 4] {
     let site = PixelSite { x, y, seed: 0 };
     let p = scene_pixel(x as u32, y as u32);
-    let base = Rgba { rgb: [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0), p[2].clamp(0.0, 1.0)], a: p[3] };
-    let mut out = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, base, 1.0, site).unwrap();
+    let base = Rgba { rgb: [p[0], p[1], p[2]], a: p[3] };
+    let mut out = composite_over_extended(StudioBlendMode::Normal, Rgba::TRANSPARENT, base, 1.0, site).unwrap();
     if (2..6).contains(&x) && (1..4).contains(&y) {
         let top = Rgba { rgb: [TOP[0], TOP[1], TOP[2]], a: TOP[3] };
-        out = composite_over(StudioBlendMode::Multiply, out, top, 0.8, site).unwrap();
+        out = composite_over_extended(StudioBlendMode::Multiply, out, top, 0.8, site).unwrap();
     }
-    [out.rgb[0], out.rgb[1], out.rgb[2], out.a]
+    let c = |v: f32| v.clamp(0.0, 1.0);
+    [c(out.rgb[0]), c(out.rgb[1]), c(out.rgb[2]), out.a]
 }
 fn request(min: Exactness) -> ExecuteRequest {
     ExecuteRequest { expected_revision: 7, min_exactness: min, deadline: None, max_working_bytes: 1 << 30 }
@@ -163,12 +166,12 @@ fn strict() -> bool {
         || std::env::var("HSK_STUDIO_TEST_REQUIRE_GPU").as_deref() == Ok("1")
 }
 
-/// Undeclared: `sample_range_outside_unit` before any device work on every backend; declared Clip:
-/// source preparation passes and the none backend reaches its device check (`no_adapter`), a NaN
-/// sample stays a source mismatch and a floor above Approximate is refused with the clip key. On a
-/// live adapter, Clip renders the scene within TOLERANCE of pigment's composite of the clipped
-/// sources (chunk sides 2 and 64), records `display_clip_sources` Approximate, and undeclared
-/// stays refused with no sink call.
+/// Undeclared: `sample_range_outside_unit` before any device work on every backend; under the
+/// alias source preparation passes and the none backend reaches its device check (`no_adapter`), a
+/// NaN sample stays a source mismatch and a floor above Approximate is refused with
+/// `sample_range_extended`. On a live adapter the alias renders the scene within TOLERANCE of
+/// pigment's extended composite then the clamp (chunk sides 2 and 64), records `display_clip`, and
+/// undeclared stays refused with no sink call.
 #[test]
 fn gpu_clip_matches_the_clipped_oracle_and_undeclared_stays_refused() {
     let (base, top) = (Tile::new(W, H, scene_pixel), Tile::new(4, 3, |_, _| TOP));
@@ -193,7 +196,7 @@ fn gpu_clip_matches_the_clipped_oracle_and_undeclared_stays_refused() {
     assert_eq!(
         clip.execute_detailed(&p, &request(Exactness::Fitted), &src, &cancel, &mut grid).unwrap_err(),
         GpuError::Backend(BackendError::Unsupported {
-            operator: DISPLAY_CLIP_OPERATOR,
+            operator: EXTENDED_RANGE_OPERATOR,
             exactness: Exactness::Approximate,
         })
     );
@@ -238,7 +241,7 @@ fn gpu_clip_matches_the_clipped_oracle_and_undeclared_stays_refused() {
                 .exactness
                 .operators
                 .iter()
-                .any(|o| o.key == DISPLAY_CLIP_OPERATOR && o.exactness == Exactness::Approximate),
+                .any(|o| o.key == DISPLAY_CLIP_OPERATOR && o.exactness == Exactness::Fitted),
             "{:?}",
             receipt.exactness
         );
@@ -251,7 +254,7 @@ fn gpu_clip_matches_the_clipped_oracle_and_undeclared_stays_refused() {
                 }
             }
         }
-        println!("chunk {chunk_side}: max |delta| vs clipped oracle = {max:e} (tolerance {TOLERANCE:e})");
+        println!("chunk {chunk_side}: max |delta| vs extended-then-clip oracle = {max:e} (tolerance {TOLERANCE:e})");
         assert!(max <= TOLERANCE, "chunk {chunk_side}: deviation {max:e}");
         live += 1;
     }

@@ -276,10 +276,13 @@ impl SharedDevice {
         })
     }
 
-    /// Declares the display transform of the backend over the shared device (see
-    /// [`GpuBackend::with_display_transform`]).
+    /// Deprecated alias of the backend over the shared device (see
+    /// [`GpuBackend::with_display_transform`]); declare the output stage in the plan instead.
+    #[deprecated(note = "declare the output stage in the plan: PlanExtensions::with_output")]
     pub fn with_display_transform(mut self, transform: super::DisplayTransform) -> Self {
-        self.backend = self.backend.with_display_transform(transform);
+        #[allow(deprecated)]
+        let backend = self.backend.with_display_transform(transform);
+        self.backend = backend;
         self
     }
 

@@ -109,7 +109,7 @@ fn admission_and_prepare(plan: &RenderPlan<NoVector>) -> (BackendError, GpuError
     });
     let admitted = admit(plan, &backend, &request(), &CancellationToken::default())
         .expect_err("shared admission refuses this plan");
-    let prepared = prepare(plan, &NoSources, None, 1 << 20, None)
+    let prepared = prepare(plan, &NoSources, None, 1 << 20)
         .err()
         .expect("prepare refuses this plan on its own");
     (admitted, prepared)
@@ -278,7 +278,7 @@ fn defence_in_depth_refusal_keys_are_pigments() {
             refusal(feature.key()),
             "pigment admission, {feature:?}"
         );
-        let prepared = prepare(&glow_plan, &NoSources, Some(&envelope), 1 << 20, None)
+        let prepared = prepare(&glow_plan, &NoSources, Some(&envelope), 1 << 20)
             .err()
             .expect("effect compilation refuses the feature on its own");
         assert_eq!(
@@ -396,7 +396,7 @@ fn effects_with_blend_if_refusal_is_pigments_in_admission_and_prepare() {
     )
     .expect_err("shared admission refuses the combination");
     assert_eq!(admitted, refusal(ExtOperator::EffectsWithBlendIf.key()));
-    let prepared = prepare(&plan, &NoSources, Some(&both), 1 << 20, None)
+    let prepared = prepare(&plan, &NoSources, Some(&both), 1 << 20)
         .err()
         .expect("prepare refuses the combination on its own");
     assert_eq!(prepared, GpuError::Backend(admitted));

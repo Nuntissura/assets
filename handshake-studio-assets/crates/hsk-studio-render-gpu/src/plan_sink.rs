@@ -50,7 +50,7 @@ use hsk_studio_pigment::transform_math::{
     EdgeMode, PreparedTransform, ResampleFilter, SampleSite, TransformError,
 };
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, BackendError, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
+    AlphaConvention, BackendError, OutputStage, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MASK_DENSITY_OPERATOR,
     MaskFormat, NoVector, Operator, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR,
     PlanError, PlanExtensions, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
@@ -343,6 +343,8 @@ struct Prepared<'a> {
     has_blur: bool,
     /// Most taps of any blur (a blur pass costs taps x frame pixels).
     blur_taps: u64,
+    /// The plan's output stage (sample range, stage-6a display transform).
+    output: OutputStage,
 }
 
 impl<'a> Prepared<'a> {
@@ -477,14 +479,14 @@ fn plane_ok(bytes: &[u8], stride: u64, width: u32, height: u32, bpp: u64) -> boo
 }
 
 /// Shape, plane hashes and values of a resolved tile against the plan's declaration. A colour
-/// sample outside `[0, 1]` is refused unless `display_declared` (a declared display transform,
-/// `display.rs`); the result says whether the tile holds such a sample.
+/// sample outside `[0, 1]` is refused unless the plan's output stage is `extended` (any finite
+/// colour, `display.rs`).
 fn verify_tile(
     input: &TileInput,
     planes: &TilePlanes<'_>,
     plan_space: ColourTag,
-    display_declared: bool,
-) -> Result<bool, GpuError> {
+    extended: bool,
+) -> Result<(), GpuError> {
     let key = input.key;
     // Defence in depth: shared admission refuses a premultiplied convention first, because this
     // backend declares `ExtOperator::AlphaPremultiplied` Unsupported (key is pigment's).
@@ -521,13 +523,13 @@ fn verify_tile(
             if ![r, g, b, a].iter().all(|v| v.is_finite()) || !(0.0..=1.0).contains(&a) {
                 return Err(mismatch(key));
             }
-            out_of_unit |= ![r, g, b].iter().all(|v| (0.0..=1.0).contains(v));
+            out_of_unit |= ![r, g, b].iter().all(|v| sample_ok(extended, *v));
         }
     }
-    if out_of_unit && !display_declared {
+    if out_of_unit {
         return Err(unsupported(SAMPLE_RANGE_OPERATOR));
     }
-    Ok(out_of_unit)
+    Ok(())
 }
 
 /// Map a feather failure to the typed refusal (before any device work).
@@ -552,8 +554,9 @@ fn prepare<'a>(
     sources: &'a dyn PlanSources,
     extensions: Option<&PlanExtensions>,
     scratch_limit: u64,
-    clip: Option<&'a display::ClipStore>,
 ) -> Result<Prepared<'a>, GpuError> {
+    let output = extensions.map(|e| e.output).unwrap_or_default();
+    let extended = output.is_extended();
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
         return Err(unsupported(ExtOperator::AlphaPremultiplied.key()));
@@ -604,11 +607,7 @@ fn prepare<'a>(
                 let planes = sources
                     .tile(t.key)
                     .ok_or(GpuError::Backend(BackendError::UnresolvedSource(t.key)))?;
-                let out_of_unit = verify_tile(t, &planes, target.space, clip.is_some())?;
-                let planes = match clip {
-                    Some(store) if out_of_unit => store.substitute(t.key, planes)?,
-                    _ => planes,
-                };
+                verify_tile(t, &planes, target.space, extended)?;
                 end(t.placement)?;
                 has_tiles = true;
                 (
@@ -622,9 +621,9 @@ fn prepare<'a>(
                 )
             }
             PlanNode::Solid { rect, rgba } => {
-                if !rgba
-                    .iter()
-                    .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+                if !(rgba[..3].iter().all(|c| sample_ok(extended, *c))
+                    && rgba[3].is_finite()
+                    && (0.0..=1.0).contains(&rgba[3]))
                 {
                     return Err(unsupported(SAMPLE_RANGE_OPERATOR));
                 }
@@ -1034,6 +1033,7 @@ fn prepare<'a>(
         frame_margin: margins[root],
         has_blur,
         blur_taps,
+        output,
     })
 }
 
@@ -1069,7 +1069,7 @@ pub struct GpuBackend {
     options: DeviceOptions,
     /// WGSL override for fault injection (`None` = the generated shader).
     shader: Option<String>,
-    /// Declared display transform for tile samples outside `[0, 1]` (`None` = typed refusal).
+    /// Deprecated alias (`with_display_transform`): the output stage a plan without one runs with.
     display: Option<DisplayTransform>,
     inner: Mutex<Inner>,
 }
@@ -1169,16 +1169,16 @@ impl GpuBackend {
     pub fn options(&self) -> DeviceOptions {
         self.options
     }
-    /// Declares the display transform for tile colour samples outside `[0, 1]` (lane
-    /// SMB-RENDER-SCENE-DISPLAY, `plan_sink/display.rs`): `Clip` clips them on the host before
-    /// upload, exactly as render-cpu does, and records `display_clip_sources` (Approximate) in the
-    /// receipt ledger when anything was clipped. Without a declaration the typed refusal
-    /// `sample_range_outside_unit` is unchanged (test `tests/gpu_scene_display.rs`).
+    /// Deprecated alias (lane SMB-RENDER-SCENE-DISPLAY; the output stage now lives in the plan,
+    /// pigment `PlanExtensions::with_output`): a plan whose envelope has the default output stage
+    /// runs as if it declared `OutputStage { Extended, Some(transform) }`; a plan that declares its
+    /// own stage is unchanged (test `tests/gpu_scene_display.rs`).
+    #[deprecated(note = "declare the output stage in the plan: PlanExtensions::with_output")]
     pub fn with_display_transform(mut self, transform: DisplayTransform) -> Self {
         self.display = Some(transform);
         self
     }
-    /// The declared display transform (`None` = samples outside `[0, 1]` are refused).
+    /// The deprecated alias's display transform (`None` = plans run with their own stage).
     pub fn display_transform(&self) -> Option<DisplayTransform> {
         self.display
     }
@@ -1371,32 +1371,14 @@ impl GpuBackend {
         sink: &mut dyn TileSink,
         texture: Option<&TextureOut<'_>>,
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
+        let alias = display::aliased(extensions, self.display);
+        let extensions = alias.as_ref().or(extensions);
         let mut ledger = match extensions {
             None => admit::<NoVector>(plan, self, request, cancel)?,
             Some(e) => admit_extended(plan, e, self, request, cancel)?,
         };
         leaf_root_class(plan, self, &mut ledger);
-        // Declared display transform: clipped host copies of the out-of-range tiles (checked
-        // against `max_working_bytes` before allocation), read by `prepare` instead of the sources.
-        let clip_store = match self.display {
-            Some(DisplayTransform::Clip) => Some(display::ClipStore::build(
-                plan,
-                sources,
-                plan.target.space,
-                request.min_exactness,
-                &mut ledger,
-                request.max_working_bytes,
-            )?),
-            None => None,
-        };
-        let clip_bytes = clip_store.as_ref().map_or(0, display::ClipStore::bytes);
-        let prepared = prepare(
-            plan,
-            sources,
-            extensions,
-            request.max_working_bytes.saturating_sub(clip_bytes),
-            clip_store.as_ref(),
-        )?;
+        let prepared = prepare(plan, sources, extensions, request.max_working_bytes)?;
         let digest = match extensions {
             None => plan.digest(),
             Some(e) => e.digest_with(plan),
@@ -1577,6 +1559,9 @@ impl RenderBackend<NoVector> for GpuBackend {
     /// admission refuses it whatever is declared here.
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         let supported = match operator {
+            // Output stage (lane SMB-PIGMENT-EXTENDED-RANGE): `EXTENDED_FLAG` dispatches and the
+            // host-side clip (tests/gpu_extended_range.rs).
+            ExtOperator::ExtendedRange | ExtOperator::DisplayClip => true,
             ExtOperator::AdjustmentLayer
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
@@ -1733,6 +1718,8 @@ struct Exec<'e> {
     upload: Vec<u8>,
     mask_upload: Vec<u8>,
     stats: &'e mut GpuStats,
+    /// Extended-range output stage: every composite dispatch carries `EXTENDED_FLAG`.
+    extended: bool,
 }
 
 /// `a - b` as the unsigned offset of a region inside its chunk; a negative or oversized offset is
@@ -1852,6 +1839,7 @@ impl Exec<'_> {
             replace: pass == Pass::Replace,
             clip: pass == Pass::Clip,
             density: mask.map_or(1.0, |m| m.density),
+            extended: self.extended,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2088,6 +2076,8 @@ impl Exec<'_> {
             replace: false,
             clip: false,
             density: 1.0,
+            // Effects are refused in an extended-range plan (sample_range_extended_combination).
+            extended: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2144,6 +2134,8 @@ impl Exec<'_> {
             replace: false,
             clip: false,
             density: mask.map_or(1.0, |m| m.density),
+            // Adjustment layers are refused in an extended-range plan.
+            extended: false,
         };
         let Some(env) = self.ext.as_ref() else {
             return Err(unsupported("plan_shape"));
@@ -3230,6 +3222,7 @@ fn run(
             )
         })?;
 
+    let clip = prepared.output.display == Some(DisplayTransform::Clip);
     let mut ex = Exec {
         ctx,
         cancel,
@@ -3249,6 +3242,7 @@ fn run(
         upload: Vec::new(),
         mask_upload: Vec::new(),
         stats,
+        extended: prepared.output.is_extended(),
     };
     // A leaf root is one Normal, opacity-1 layer over transparent black.
     let root_layer = PLayer {
@@ -3387,6 +3381,12 @@ fn run(
                     for (value, word) in values.iter_mut().zip(texel.chunks_exact(4)) {
                         *value = f32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
                     }
+                    if clip {
+                        // Stage 6a (output stage `display: Some(Clip)`), on the host.
+                        for value in &mut values[..3] {
+                            *value = value.clamp(0.0, 1.0);
+                        }
+                    }
                     for value in &values[..3] {
                         colour.extend_from_slice(&value.to_le_bytes());
                     }
@@ -3439,6 +3439,8 @@ fn submit_fault(
 
 mod display;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
+pub(crate) use display::EXTENDED_FLAG;
+use display::sample_ok;
 #[cfg(test)]
 mod refusal_keys;
 

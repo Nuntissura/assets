@@ -72,7 +72,12 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         let cs_prime = (1.0 - a_b) * s.rgb + a_b * blended;
         let co = a_s * cs_prime + (1.0 - a_s) * a_b * b.rgb;
-        rgb = clamp(co / a_o, vec3<f32>(0.0), vec3<f32>(1.0));
+        if ((p.flags & 4u) != 0u) {
+            // Extended-range output stage: no unit clamp (pigment composite_over_extended).
+            rgb = co / a_o;
+        } else {
+            rgb = clamp(co / a_o, vec3<f32>(0.0), vec3<f32>(1.0));
+        }
     }
     var out_a = min(a_o, 1.0);
     if (clip) {

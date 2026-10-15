@@ -258,6 +258,10 @@ pub(crate) fn shader_source() -> String {
         .replace("//@PIXEL_ENTRIES@", &entries)
         .replace("//@BLEND_FUNCTIONS@", &functions)
         .replace("//@BLEND_CASES@", &cases)
+        .replace(
+            "@ADD_MODE@",
+            &StudioBlendMode::LinearDodgeAdd.discriminant().to_string(),
+        )
         .replace("//@ADJUST_FUNCTIONS@", &adjust_functions)
         .replace("//@ADJUST_CASES@", &adjust_cases)
 }
@@ -289,6 +293,8 @@ pub(crate) struct LayerParams {
     pub clip: bool,
     /// Mask density (`1.0` = plain mask: the shader leaves the coverage bit-for-bit).
     pub density: f32,
+    /// Extended-range output stage: `flags` bit 2, no unit clamp in the kernel.
+    pub extended: bool,
 }
 impl LayerParams {
     pub(crate) fn to_bytes(self) -> [u8; PARAMS_BYTES as usize] {
@@ -297,7 +303,13 @@ impl LayerParams {
             SourceKind::Region => (1, [0.0; 4]),
             SourceKind::Chunk => (2, [0.0; 4]),
         };
-        let flags = u32::from(self.replace) | if self.clip { 2 } else { 0 };
+        let flags = u32::from(self.replace)
+            | if self.clip { 2 } else { 0 }
+            | if self.extended {
+                crate::plan_sink::EXTENDED_FLAG
+            } else {
+                0
+            };
         // The 16 words of `Params` in declaration order (the solid colour starts at byte 48).
         let words: [[u8; 4]; 16] = [
             self.chunk_w.to_ne_bytes(),

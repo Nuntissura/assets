@@ -107,13 +107,23 @@ fn hsk_set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
 
 //@BLEND_FUNCTIONS@
 
+// `Params.flags` bit 2 (extended-range output stage, pigment `composite_over_extended`): linear
+// dodge is the unclamped `cb + cs` and the result is not clamped to [0, 1]. Pigment admits only the
+// modes `blend_math::extended_defined` in such a plan, so no other formula reaches this path.
 fn blend(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let extended = (p.flags & 4u) != 0u;
+    if (extended && mode == @ADD_MODE@u) {
+        return cb + cs;
+    }
     var raw: vec3<f32> = cs;
     switch (mode) {
 //@BLEND_CASES@
         default: {
             raw = cs;
         }
+    }
+    if (extended) {
+        return raw;
     }
     return clamp(raw, vec3<f32>(0.0), vec3<f32>(1.0));
 }
