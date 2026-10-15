@@ -690,6 +690,7 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
                 seq,
                 rev as u64,
                 &AnnotationEdit::AddMarker(m),
+                &Extent,
                 &cancel,
             )
             .unwrap();
@@ -716,7 +717,7 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
         );
         let p = assemble(&snap, &insert).unwrap();
         assert_eq!(p.splits(), &[(cid(1), cid(30))]);
-        let f = follow_timeline_edit(&ann, &p, 3, &cancel).unwrap();
+        let f = follow_timeline_edit(&ann, &p, 3, &Extent, &cancel).unwrap();
         let moved = f.annotations();
         assert_eq!(
             moved.marker("mk-a").unwrap().scope,
@@ -746,7 +747,7 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
             &TimelineEdit::ExtractClip { clip_id: cid(30) },
         )
         .unwrap();
-        let g = follow_timeline_edit(moved, &ext, 4, &cancel).unwrap();
+        let g = follow_timeline_edit(moved, &ext, 4, &Extent, &cancel).unwrap();
         assert_eq!(g.dropped_markers(), &["mk-a".to_owned()]);
         assert!(g.annotations().marker("mk-a").is_none());
         let s2 = seq_of(&ext);
@@ -763,8 +764,15 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
         // Replace moves the chapter; remove; typed refusals.
         let mut later = chapter.clone();
         later.start = at(20);
-        let r = plan_annotation_edit(&ann, seq, 3, &AnnotationEdit::ReplaceMarker(later), &cancel)
-            .unwrap();
+        let r = plan_annotation_edit(
+            &ann,
+            seq,
+            3,
+            &AnnotationEdit::ReplaceMarker(later),
+            &Extent,
+            &cancel,
+        )
+        .unwrap();
         assert_eq!(
             marker_span(seq, r.annotations().marker("mk-seq").unwrap())
                 .unwrap()
@@ -772,7 +780,7 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
             Some(at(20))
         );
         let code = |e: AnnotationEdit| {
-            plan_annotation_edit(&ann, seq, 3, &e, &cancel)
+            plan_annotation_edit(&ann, seq, 3, &e, &Extent, &cancel)
                 .unwrap_err()
                 .code()
         };
@@ -822,6 +830,7 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
                 &AnnotationEdit::RemoveMarker {
                     marker_id: "mk-seq".into()
                 },
+                &Extent,
                 &cancel
             )
             .unwrap_err(),
@@ -830,13 +839,353 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
         // A stored set over the bound is refused on its length before any marker is checked.
         let many = vec![marker("same", MarkerScope::Sequence, 0, 0); MAX_MARKERS + 1];
         assert_eq!(
-            TimelineAnnotations::from_parts(seq, 0, many, &cancel).unwrap_err(),
+            TimelineAnnotations::from_parts(seq, 0, many, vec![], &Extent, &cancel).unwrap_err(),
             PulseError::LimitExceeded
         );
         let dup = vec![marker("same", MarkerScope::Sequence, 0, 0); 2];
         assert_eq!(
-            TimelineAnnotations::from_parts(seq, 0, dup, &cancel).unwrap_err(),
+            TimelineAnnotations::from_parts(seq, 0, dup, vec![], &Extent, &cancel).unwrap_err(),
             PulseError::DuplicateId
         );
+    });
+}
+
+mod render {
+    //! Composite's composition-scene path on the CPU backend (test-only edge, see the lane file).
+    use hsk_studio_accord::CancellationToken;
+    use hsk_studio_composite::{
+        SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits, ScenePixels,
+        SceneTile, render_scene,
+    };
+    use hsk_studio_pigment::Rect;
+    use hsk_studio_pigment::blend_math::{BlendSpace, StudioBlendMode};
+    use hsk_studio_pigment::render_plan::{
+        AlphaConvention, ColourTag, Exactness, ExecuteRequest, SampleFormat, TilePlanes,
+    };
+    use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
+    use hsk_studio_render_cpu::Renderer;
+
+    pub const SIDE: u32 = 4;
+
+    fn space() -> ColourTag {
+        ColourTag {
+            profile_sha256: [7; 32],
+            blend_space: BlendSpace::Encoded,
+        }
+    }
+
+    /// One solid opaque `SIDE` x `SIDE` frame per clip (`rgb_f32le`, straight alpha).
+    pub struct Frame {
+        id: String,
+        colour: Vec<u8>,
+        alpha: Vec<u8>,
+        colour_sha256: [u8; 32],
+        alpha_sha256: [u8; 32],
+    }
+    impl Frame {
+        pub fn solid(id: &str, rgb: [f32; 3]) -> Self {
+            let (mut colour, mut alpha) = (Vec::new(), Vec::new());
+            for _ in 0..SIDE * SIDE {
+                for c in rgb {
+                    colour.extend_from_slice(&c.to_le_bytes());
+                }
+                alpha.extend_from_slice(&1.0f32.to_le_bytes());
+            }
+            let colour_sha256 = hsk_studio_prism::profile_hash(&colour);
+            let alpha_sha256 = hsk_studio_prism::profile_hash(&alpha);
+            Self {
+                id: id.into(),
+                colour,
+                alpha,
+                colour_sha256,
+                alpha_sha256,
+            }
+        }
+        fn layer(&self, n: u8, opacity: f64) -> SceneLayer {
+            SceneLayer {
+                layer_id: format!("SLYR-019abcde-0000-7000-8000-{n:012x}"),
+                content: SceneContent::Tiles(vec![SceneTile {
+                    tile_id: self.id.clone(),
+                    placement: Rect {
+                        x: 0,
+                        y: 0,
+                        width: SIDE,
+                        height: SIDE,
+                    },
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: self.colour_sha256,
+                    alpha_sha256: self.alpha_sha256,
+                }]),
+                mode: StudioBlendMode::Normal,
+                opacity,
+                fill_opacity: 1.0,
+                matrix: Affine2::IDENTITY,
+                matte: None,
+                clipped: false,
+            }
+        }
+    }
+
+    struct Pixels<'a>(&'a [&'a Frame]);
+    impl ScenePixels for Pixels<'_> {
+        fn tile(&self, tile_id: &str) -> Option<TilePlanes<'_>> {
+            let f = self.0.iter().find(|f| f.id == tile_id)?;
+            Some(TilePlanes {
+                width: SIDE,
+                height: SIDE,
+                colour: &f.colour,
+                colour_stride_bytes: u64::from(SIDE) * 12,
+                alpha: &f.alpha,
+                alpha_stride_bytes: u64::from(SIDE) * 4,
+                colour_sha256: f.colour_sha256,
+                alpha_sha256: f.alpha_sha256,
+                format: SampleFormat::RgbF32Le,
+                alpha_convention: AlphaConvention::Straight,
+                space: space(),
+            })
+        }
+    }
+
+    /// The cross dissolve frame: the incoming clip's frame at opacity `incoming_weight`
+    /// composited normally over the outgoing clip's frame; returns pixel (1, 2).
+    pub fn dissolve(outgoing: &Frame, incoming: &Frame, incoming_weight: f64) -> [f32; 4] {
+        let scene = SceneComposition {
+            composition_id: "SCOM-019abcde-0000-7000-8000-000000000001".into(),
+            width: SIDE,
+            height: SIDE,
+            background: None,
+            filter: ResampleFilter::Bilinear,
+            layers: vec![outgoing.layer(1, 1.0), incoming.layer(2, incoming_weight)],
+        };
+        let renderer = Renderer::new(64).unwrap();
+        let frames = [outgoing, incoming];
+        let pixels = Pixels(&frames);
+        let ctx = SceneContext {
+            backend: &renderer,
+            pixels: &pixels,
+            request: ExecuteRequest {
+                expected_revision: 7,
+                min_exactness: Exactness::Approximate,
+                deadline: None,
+                max_working_bytes: 1 << 24,
+            },
+            space: space(),
+            limits: SceneLimits::default(),
+        };
+        let rendered =
+            render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
+        rendered.pixel(1, 2).expect("pixel in frame")
+    }
+}
+
+fn dissolve(id: &str, out: u32, inc: u32, frames: u64) -> Transition {
+    Transition {
+        transition_id: id.into(),
+        kind: TransitionKind::CrossDissolve,
+        outgoing_clip_id: cid(out),
+        incoming_clip_id: cid(inc),
+        duration: Ticks::new(frames * F),
+        alignment: TransitionAlignment::CenteredOnCut,
+        center_offset: 0,
+        repeat_end_frame: false,
+    }
+}
+
+#[test]
+fn cross_dissolve_frame_matches_hand_computed_blend() {
+    bounded_case("cross_dissolve", || {
+        let cancel = CancellationToken::default();
+        // V1: A src 0..20 @0, B src b_in..b_in+20 @20 (cut at frame 20);
+        // A1: C src 0..10 @0, G src 50..60 @10.
+        let cut_seq = |b_in: u64| {
+            sequence(vec![
+                track(
+                    1,
+                    TrackKind::Video,
+                    0,
+                    true,
+                    vec![clip(1, 0, 20, 0), clip(2, b_in, b_in + 20, 20)],
+                ),
+                track(
+                    2,
+                    TrackKind::Audio,
+                    0,
+                    true,
+                    vec![clip(3, 0, 10, 0), clip(6, 50, 60, 10)],
+                ),
+            ])
+        };
+        let snap = snapshot_of(cut_seq(100), 3);
+        let seq = &snap.document().sequences[0];
+        let ann = TimelineAnnotations::new("seq-main");
+        let add = |a: &TimelineAnnotations, s: &StudioSequence, t: Transition| {
+            plan_annotation_edit(
+                a,
+                s,
+                a.revision(),
+                &AnnotationEdit::AddTransition(t),
+                &Extent,
+                &cancel,
+            )
+        };
+
+        // A 10-frame cross dissolve centred on the cut covers frames 15..25.
+        let t1 = dissolve("t1", 1, 2, 10);
+        let placed = transition_placement(seq, &t1).unwrap();
+        assert_eq!(
+            (placed.span.start().value(), placed.span.end().value()),
+            (15 * F, 25 * F)
+        );
+        let handles = transition_handles(seq, &t1, &Extent).unwrap();
+        assert_eq!(handles.outgoing_required.value(), 5 * F);
+        assert_eq!(handles.incoming_available, Some(Ticks::new(100 * F)));
+        let p = add(&ann, seq, t1.clone()).unwrap();
+        let with_t1 = p.annotations().clone();
+
+        // Frame 18: progress 3/10, A plays source frame 18, B plays its handle at source frame 98.
+        let at = |s: &StudioSequence, a: &TimelineAnnotations, frame: u64| {
+            transition_frame(
+                s,
+                a.transitions(),
+                &tid(1),
+                Ticks::new(frame * F),
+                &Extent,
+                &cancel,
+            )
+            .unwrap()
+        };
+        let f18 = at(seq, &with_t1, 18).expect("inside the dissolve");
+        assert_eq!(
+            (f18.progress_numerator, f18.progress_denominator),
+            (3 * F, 10 * F)
+        );
+        assert_eq!(
+            (f18.outgoing_source.value(), f18.incoming_source.value()),
+            (18 * F, 98 * F)
+        );
+        assert!(!f18.outgoing_held && !f18.incoming_held);
+        assert_eq!(at(seq, &with_t1, 14), None);
+        assert_eq!(at(seq, &with_t1, 25), None);
+
+        // Rendered through composite's scene path on the CPU backend vs the hand blend
+        // (1 - p) * out + p * in.
+        let out = render::Frame::solid("out", [0.8, 0.2, 0.1]);
+        let inc = render::Frame::solid("in", [0.1, 0.4, 0.9]);
+        let close = |got: [f32; 4], want: [f32; 4]| {
+            assert!(
+                got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 2e-6),
+                "{got:?} vs {want:?}"
+            );
+        };
+        close(
+            render::dissolve(&out, &inc, f18.incoming_weight()),
+            [0.59, 0.26, 0.34, 1.0],
+        );
+        let f15 = at(seq, &with_t1, 15).unwrap();
+        close(
+            render::dissolve(&out, &inc, f15.incoming_weight()),
+            [0.8, 0.2, 0.1, 1.0],
+        );
+        let f24 = at(seq, &with_t1, 24).unwrap();
+        close(
+            render::dissolve(&out, &inc, f24.incoming_weight()),
+            [0.17, 0.38, 0.82, 1.0],
+        );
+
+        // Audio crossfade on the audio cut; kind/track and adjacency are enforced.
+        let mut fade = dissolve("t2", 3, 6, 4);
+        fade.kind = TransitionKind::AudioCrossfade;
+        let with_both = add(&with_t1, seq, fade).unwrap().annotations().clone();
+        assert_eq!(with_both.transitions().len(), 2);
+        let code = |t: Transition| add(&with_t1, seq, t).unwrap_err().code();
+        assert_eq!(code(dissolve("x", 3, 6, 4)), "invalid_input");
+        assert_eq!(code(dissolve("x", 2, 1, 4)), "not_adjacent");
+        assert_eq!(code(dissolve("x", 1, 2, 4)), "overlap");
+        assert_eq!(code(dissolve("t1", 3, 6, 4)), "duplicate_id");
+        let odd = Transition {
+            duration: Ticks::new(10 * F + 1),
+            ..dissolve("x", 1, 2, 0)
+        };
+        assert_eq!(code(odd), "not_frame_aligned");
+        let long = Transition {
+            alignment: TransitionAlignment::EndAtCut,
+            ..dissolve("x", 1, 2, 30)
+        };
+        assert_eq!(code(long), "outside_range");
+        // Hostile ticks: a whole-frame duration near u64::MAX and an i64::MIN centre offset are
+        // typed refusals.
+        let huge = Transition {
+            duration: Ticks::new(u64::MAX / F * F),
+            ..dissolve("x", 1, 2, 0)
+        };
+        assert_eq!(code(huge), "outside_range");
+        let wild = Transition {
+            alignment: TransitionAlignment::Custom,
+            center_offset: i64::MIN,
+            ..dissolve("x", 1, 2, 10)
+        };
+        assert_eq!(code(wild), "outside_range");
+        let stray = Transition {
+            center_offset: 1,
+            ..dissolve("x", 1, 2, 10)
+        };
+        assert_eq!(code(stray), "invalid_input");
+        let many = vec![t1.clone(); MAX_TRANSITIONS + 1];
+        assert_eq!(
+            TimelineAnnotations::from_parts(seq, 0, vec![], many, &Extent, &cancel).unwrap_err(),
+            PulseError::LimitExceeded
+        );
+
+        // Short handle: B starts at source frame 2 but the dissolve needs 5 frames before it.
+        let short_snap = snapshot_of(cut_seq(2), 3);
+        let short = &short_snap.document().sequences[0];
+        assert_eq!(
+            add(&ann, short, t1.clone()).unwrap_err(),
+            PulseError::InsufficientHandle
+        );
+        assert_eq!(
+            transition_handles(short, &t1, &Extent).unwrap().shortfall(),
+            (Some(Ticks::new(0)), Some(Ticks::new(3 * F)))
+        );
+        let held = add(
+            &ann,
+            short,
+            Transition {
+                repeat_end_frame: true,
+                ..t1.clone()
+            },
+        )
+        .unwrap();
+        let f15 = at(short, held.annotations(), 15).unwrap();
+        assert_eq!((f15.incoming_source.value(), f15.incoming_held), (0, true));
+
+        // Edits: a ripple trim moves the cut and the dissolve with it; ripple delete drops it.
+        let trim_a = TimelineEdit::TrimOut {
+            clip_id: cid(1),
+            new_duration: Ticks::new(15 * F),
+            ripple: true,
+        };
+        let trim = edit(&snap, &trim_a).unwrap();
+        let kept = follow_timeline_edit(&with_t1, &trim, 1, &Extent, &cancel).unwrap();
+        assert!(kept.dropped_transitions().is_empty());
+        let f13 = at(seq_of(&trim), kept.annotations(), 13).unwrap();
+        assert_eq!(
+            (
+                f13.progress_numerator,
+                f13.outgoing_source.value(),
+                f13.incoming_source.value()
+            ),
+            (3 * F, 13 * F, 98 * F)
+        );
+        let gone = edit(&snap, &TimelineEdit::ExtractClip { clip_id: cid(2) }).unwrap();
+        let dropped = follow_timeline_edit(&with_t1, &gone, 1, &Extent, &cancel).unwrap();
+        assert_eq!(dropped.dropped_transitions(), &["t1".to_owned()]);
+        // Undo of the add removes the record; redo restores it.
+        let undo = plan_annotation_revert(&with_t1, seq, 1, p.inverse(), &cancel).unwrap();
+        assert!(undo.annotations().transitions().is_empty());
+        let redo =
+            plan_annotation_revert(undo.annotations(), seq, 2, undo.inverse(), &cancel).unwrap();
+        assert_eq!(redo.annotations().transitions(), with_t1.transitions());
     });
 }

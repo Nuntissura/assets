@@ -1,5 +1,6 @@
-//! Timeline annotations beside one Folio sequence: markers (STU-VID-034) as typed records with
-//! their own revision and one-step inverse. Folio stores no markers yet (folio `timeline.rs`
+//! Timeline annotations beside one Folio sequence: markers (STU-VID-034) and transitions
+//! (STU-VID-032, `crate::transition`) as typed records with their own revision and one-step
+//! inverse. Folio stores no markers yet (folio `timeline.rs`
 //! module docs), so pulse owns the record shape and its validation and the host persists the set;
 //! clip markers follow clip edits through [`follow_timeline_edit`].
 //!
@@ -12,7 +13,8 @@
 
 use crate::error::{PulseError, Result};
 use crate::range::{Grid, TickDelta, TickRange};
-use crate::timeline_edit::{EditProposal, rate_of};
+use crate::timeline_edit::{EditProposal, SourceExtents, rate_of};
+use crate::transition::{MAX_TRANSITIONS, Transition, TransitionPlacement, check_transition};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{StudioClip, StudioSequence};
 use std::collections::{BTreeMap, BTreeSet};
@@ -81,6 +83,7 @@ pub struct TimelineAnnotations {
     sequence_id: String,
     revision: u64,
     markers: Vec<Marker>,
+    transitions: Vec<Transition>,
 }
 
 impl TimelineAnnotations {
@@ -90,6 +93,7 @@ impl TimelineAnnotations {
             sequence_id: sequence_id.to_owned(),
             revision: 0,
             markers: Vec::new(),
+            transitions: Vec::new(),
         }
     }
     /// A stored set, validated against `sequence` (the host's persisted form).
@@ -97,16 +101,20 @@ impl TimelineAnnotations {
         sequence: &StudioSequence,
         revision: u64,
         markers: Vec<Marker>,
+        transitions: Vec<Transition>,
+        extents: &dyn SourceExtents,
         cancel: &CancellationToken,
     ) -> Result<Self> {
-        if markers.len() > MAX_MARKERS {
+        if markers.len() > MAX_MARKERS || transitions.len() > MAX_TRANSITIONS {
             return Err(PulseError::LimitExceeded);
         }
         let set = Self {
             sequence_id: sequence.sequence_id.clone(),
             revision,
             markers,
+            transitions,
         };
+        check_transitions(sequence, &set.transitions, extents, cancel)?;
         let mut ids = BTreeSet::new();
         for (i, marker) in set.markers.iter().enumerate() {
             if i.is_multiple_of(CANCEL_STRIDE) {
@@ -131,6 +139,45 @@ impl TimelineAnnotations {
     pub fn marker(&self, marker_id: &str) -> Option<&Marker> {
         self.markers.iter().find(|m| m.marker_id == marker_id)
     }
+    pub fn transitions(&self) -> &[Transition] {
+        &self.transitions
+    }
+    pub fn transition(&self, transition_id: &str) -> Option<&Transition> {
+        self.transitions
+            .iter()
+            .find(|t| t.transition_id == transition_id)
+    }
+}
+
+/// Every transition plays (placement and handles) and no two overlap on one track.
+fn check_transitions(
+    sequence: &StudioSequence,
+    transitions: &[Transition],
+    extents: &dyn SourceExtents,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    let mut placed: Vec<TransitionPlacement> = Vec::with_capacity(transitions.len());
+    for (i, transition) in transitions.iter().enumerate() {
+        if i.is_multiple_of(CANCEL_STRIDE) {
+            cancel.check()?;
+        }
+        if transition.transition_id.is_empty() || !text_ok(&transition.transition_id, MAX_ID_BYTES)
+        {
+            return Err(PulseError::InvalidInput);
+        }
+        if !ids.insert(transition.transition_id.as_str()) {
+            return Err(PulseError::DuplicateId);
+        }
+        placed.push(check_transition(sequence, transition, extents)?);
+    }
+    placed.sort_by(|a, b| (&a.track_id, a.span.start()).cmp(&(&b.track_id, b.span.start())));
+    for pair in placed.windows(2) {
+        if pair[0].track_id == pair[1].track_id && pair[0].span.end() > pair[1].span.start() {
+            return Err(PulseError::Overlap);
+        }
+    }
+    Ok(())
 }
 
 /// Typed annotation commands.
@@ -141,6 +188,11 @@ pub enum AnnotationEdit {
     ReplaceMarker(Marker),
     RemoveMarker {
         marker_id: String,
+    },
+    /// Places a transition at an edit point (STU-VID-032a apply transition).
+    AddTransition(Transition),
+    RemoveTransition {
+        transition_id: String,
     },
 }
 
@@ -157,6 +209,7 @@ pub struct AnnotationProposal {
     annotations: TimelineAnnotations,
     inverse: AnnotationInverse,
     dropped_markers: Vec<String>,
+    dropped_transitions: Vec<String>,
 }
 
 impl AnnotationProposal {
@@ -169,6 +222,11 @@ impl AnnotationProposal {
     /// Clip markers whose clip the followed edit removed (reported, never silently lost).
     pub fn dropped_markers(&self) -> &[String] {
         &self.dropped_markers
+    }
+    /// Transitions the followed edit made unplayable (clips no longer abutting, removed, short
+    /// handle); reported, never silently lost.
+    pub fn dropped_transitions(&self) -> &[String] {
+        &self.dropped_transitions
     }
 }
 
@@ -231,7 +289,7 @@ fn step(
     before: &TimelineAnnotations,
     mut after: TimelineAnnotations,
     target: u64,
-    dropped: Vec<String>,
+    dropped: (Vec<String>, Vec<String>),
 ) -> AnnotationProposal {
     after.revision = target;
     AnnotationProposal {
@@ -240,7 +298,8 @@ fn step(
             restore: before.clone(),
         },
         annotations: after,
-        dropped_markers: dropped,
+        dropped_markers: dropped.0,
+        dropped_transitions: dropped.1,
     }
 }
 
@@ -250,6 +309,7 @@ pub fn plan_annotation_edit(
     sequence: &StudioSequence,
     expected_revision: u64,
     edit: &AnnotationEdit,
+    extents: &dyn SourceExtents,
     cancel: &CancellationToken,
 ) -> Result<AnnotationProposal> {
     cancel.check()?;
@@ -286,8 +346,23 @@ pub fn plan_annotation_edit(
                 .ok_or(PulseError::UnknownMarker)?;
             after.markers.remove(index);
         }
+        AnnotationEdit::AddTransition(transition) => {
+            if annotations.transitions.len() >= MAX_TRANSITIONS {
+                return Err(PulseError::LimitExceeded);
+            }
+            after.transitions.push(transition.clone());
+            check_transitions(sequence, &after.transitions, extents, cancel)?;
+        }
+        AnnotationEdit::RemoveTransition { transition_id } => {
+            let index = after
+                .transitions
+                .iter()
+                .position(|t| &t.transition_id == transition_id)
+                .ok_or(PulseError::UnknownTransition)?;
+            after.transitions.remove(index);
+        }
     }
-    Ok(step(annotations, after, target, Vec::new()))
+    Ok(step(annotations, after, target, Default::default()))
 }
 
 /// Undo or redo of one annotation step: restores `inverse.restore` only while the set equals
@@ -310,17 +385,20 @@ pub fn plan_annotation_revert(
         annotations,
         inverse.restore.clone(),
         target,
-        Vec::new(),
+        Default::default(),
     ))
 }
 
 /// Carries the annotations over one applied timeline edit (the host records both steps as one
 /// history entry): clip markers of a split clip move to the piece whose source window holds their
 /// start; clip markers of a removed clip are dropped and listed. Sequence markers never move.
+/// A transition that no longer plays (clips gone or no longer abutting, handle now short) is
+/// dropped and listed; the others keep their records and move with their cut.
 pub fn follow_timeline_edit(
     annotations: &TimelineAnnotations,
     proposal: &EditProposal,
     expected_revision: u64,
+    extents: &dyn SourceExtents,
     cancel: &CancellationToken,
 ) -> Result<AnnotationProposal> {
     cancel.check()?;
@@ -366,7 +444,29 @@ pub fn follow_timeline_edit(
         kept.push(marker);
     }
     after.markers = kept;
-    Ok(step(annotations, after, target, dropped))
+    let mut dropped_transitions = Vec::new();
+    let mut playable = Vec::with_capacity(after.transitions.len());
+    for (i, transition) in std::mem::take(&mut after.transitions)
+        .into_iter()
+        .enumerate()
+    {
+        if i.is_multiple_of(CANCEL_STRIDE) {
+            cancel.check()?;
+        }
+        match check_transition(sequence, &transition, extents) {
+            Ok(_) => playable.push(transition),
+            Err(PulseError::Canceled) => return Err(PulseError::Canceled),
+            Err(_) => dropped_transitions.push(transition.transition_id),
+        }
+    }
+    after.transitions = playable;
+    check_transitions(sequence, &after.transitions, extents, cancel)?;
+    Ok(step(
+        annotations,
+        after,
+        target,
+        (dropped, dropped_transitions),
+    ))
 }
 
 /// Timeline position of `[a, b)` source ticks of `clip` (clipped to its playing window); `None`

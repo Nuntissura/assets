@@ -12,6 +12,12 @@ hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 
+[dev-dependencies]
+hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", default-features = false }
+hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+
 [lib]
 path = "src/lib.rs"
 
