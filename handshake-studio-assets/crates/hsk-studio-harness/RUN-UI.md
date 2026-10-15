@@ -3,7 +3,7 @@
 The window is never opened by tests or agents (CX-SAFE-002). Tests drive the same state
 headlessly: `tests/viewer_headless.rs`, `tests/viewer_edit.rs`, `tests/viewer_shared_display.rs`,
 `tests/viewer_layers.rs`, `tests/viewer_brush_parity.rs`, `tests/viewer_selection.rs`, `tests/viewer_text.rs`,
-`tests/viewer_develop.rs`, `tests/viewer_develop_2.rs`.
+`tests/viewer_develop.rs`, `tests/viewer_develop_2.rs`, `tests/viewer_develop_3.rs`.
 
 ## Build and launch
 
@@ -54,6 +54,10 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
   corrections ("Add luminance mask" / "Add colour mask": a correction masked by a luminance or
   colour range; amount, the local stack and the mask values; Remove). Saving the document stores
   the develop edit (session entry `develop`); reopening the package restores it.
+  Lane SMB-HARNESS-DEVELOP-3: HSL mixer (eight bands), Parametric curve, Grayscale mix (button
+  Grayscale / Colour plus band weights), "Add linear gradient", "Add radial gradient", "Add brush"
+  corrections with their geometry sliders, per mask Invert and Remove. Every add or remove is its
+  own Undo step even before a value moves.
 - Right: properties of the selected layer, built from hsk-studio-controls descriptors. Name,
   Visible, Opacity and Blend mode commit (undoable); Fill opacity, Clipped and Isolation are
   read-only (no chronicle property). Below: the import receipt (source format, loss entries,
@@ -79,11 +83,12 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
 
 ## Known limits
 
-- Develop: HSL mixer, parametric curve, grayscale mix and gradient / brush masks are not in the
-  panel; a saved develop entry that does not decode or that develop refuses is ignored (the status
-  line and `develop_json().entry` say why); developed values above 1 (strong white-balance gains or
-  exposure on highlights) make the composite render fail `sample_range_outside_unit` in render-cpu
-  while the develop export clamps and counts them (`clip` in the export report).
+- Develop: brush dabs are added through `develop_op(AddBrushDabs)`, not painted on the canvas; a
+  saved develop entry that does not decode or that develop refuses is ignored (the status line and
+  `develop_json().entry` say why); developed values above 1 (strong white-balance gains or
+  exposure on highlights) are clipped for the preview by the renderers' declared display transform
+  Clip (the status line says so; no tone-map mode yet); the develop export clamps and counts them
+  (`clip` in the export report).
 
 - Layer masks: masked layers make the render fail with a typed composite `Unavailable` message.
 - Effects and adjustment layers (raster records) are not applied by the viewer.
