@@ -19,8 +19,8 @@ use hsk_studio_composite::{self as composite, BlendSpace, CompositeError, Exactn
 use hsk_studio_folio::{self as folio, Inspection, ProfileBinding, Snapshot, TileRef};
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, ColourTag, ExecuteRequest, NoVector, OutputTarget, PlanSources, RenderPlan, SampleFormat, SinkError,
-    SourceKey, TilePlanes, TileSink,
+    AlphaConvention, ColourTag, DisplayTransform, ExecuteRequest, NoVector, OutputStage, OutputTarget, PlanExtensions, PlanSources,
+    RenderPlan, SampleFormat, SampleRange, SinkError, SourceKey, TilePlanes, TileSink,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -94,6 +94,15 @@ impl std::fmt::Display for RenderFail {
 
 fn composite_fail(e: CompositeError) -> RenderFail {
     RenderFail::new("composite", format!("{e:?}"))
+}
+
+/// The viewer's plan envelope: extended sample range with the display transform Clip as the
+/// output stage (lane SMB-RENDER-SCENE-DISPLAY; F-R31-3). Scene-referred values outside [0, 1] (a
+/// developed camera raw with strong gains) are clipped for display only; the document keeps the
+/// unclipped values and exports keep their own clamping. The backends' deprecated
+/// `with_display_transform(Clip)` aliases executed a default-stage plan as exactly this envelope.
+pub(crate) fn preview_extensions() -> PlanExtensions {
+    PlanExtensions::default().with_output(OutputStage::new(SampleRange::Extended, Some(DisplayTransform::Clip)))
 }
 
 /// Tile bytes by lowercase SHA-256 hex (the package's asset map).
@@ -203,7 +212,7 @@ pub fn render_full(
     if prefer == Prefer::Gpu {
         match gpu {
             None => notes.push("gpu_not_created: render-cpu used".into()),
-            Some(gpu) => match gpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink) {
+            Some(gpu) => match gpu.execute_extended_detailed(&lowering.plan, &preview_extensions(), &request, &sources, cancel, &mut sink) {
                 Ok((receipt, _)) => {
                     if receipt.exactness.operators.iter().any(|o| o.key == hsk_studio_render_gpu::DISPLAY_CLIP_OPERATOR) {
                         notes.push(format!("{}: samples outside [0, 1] clipped for display (render-gpu DisplayTransform::Clip, Approximate)", hsk_studio_render_gpu::DISPLAY_CLIP_OPERATOR));
@@ -220,12 +229,13 @@ pub fn render_full(
     }
     if !done {
         // Scene-referred values outside [0, 1] (a developed camera raw with strong gains) are shown
-        // through render-cpu's declared display transform Clip (lane SMB-RENDER-SCENE-DISPLAY;
-        // Approximate, recorded in the receipt ledger); the document keeps the unclipped values.
+        // through the plan's output stage, display transform Clip ([`preview_extensions`]; lane
+        // SMB-RENDER-SCENE-DISPLAY, recorded in the receipt ledger); the document keeps the unclipped values.
         let cpu = hsk_studio_render_cpu::Renderer::new(hsk_studio_render_cpu::DEFAULT_CHUNK_SIDE)
-            .map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?
-            .with_display_transform(hsk_studio_render_cpu::DisplayTransform::Clip);
-        let receipt = cpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
+            .map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
+        let receipt = cpu
+            .execute_extended_detailed(&lowering.plan, &preview_extensions(), &request, &sources, cancel, &mut sink)
+            .map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
         if receipt.exactness.operators.iter().any(|o| o.key == hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR) {
             notes.push(format!("{}: samples outside [0, 1] clipped for display (render-cpu DisplayTransform::Clip, Approximate)", hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR));
         }

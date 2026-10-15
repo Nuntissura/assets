@@ -548,9 +548,9 @@ impl Viewer {
             return;
         }
         if self.prefer == Prefer::Gpu && self.gpu.is_none() && self.display.is_none() {
-            // Preview only: scene-referred values outside [0, 1] are clipped for display (render-gpu
-            // DisplayTransform::Clip, lane SMB-RENDER-SCENE-DISPLAY); exports keep their own clamping.
-            self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options).with_display_transform(hsk_studio_render_gpu::DisplayTransform::Clip));
+            // Preview only: render::render_full declares the display clip in the plan's output stage
+            // (render::preview_extensions, lane SMB-RENDER-SCENE-DISPLAY); exports keep their own clamping.
+            self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options));
         }
         let result = match (self.prepared_text(), self.prepared_vectors()) {
             (Ok(text), Ok(vectors)) => {

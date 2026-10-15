@@ -28,9 +28,7 @@ impl WgpuDisplay {
     /// typed error text; the viewer then keeps the read-back path.
     pub fn new(state: &egui_wgpu::RenderState) -> Result<Self, String> {
         let shared = SharedDevice::new(&state.device, &state.queue, state.adapter.get_info(), DeviceOptions::default())
-            .map_err(|e| format!("render-gpu shared device: {e}"))?
-            // Preview: values outside [0, 1] clipped for display (lane SMB-RENDER-SCENE-DISPLAY).
-            .with_display_transform(hsk_studio_render_gpu::DisplayTransform::Clip);
+            .map_err(|e| format!("render-gpu shared device: {e}"))?;
         Ok(Self { state: state.clone(), shared, target: None })
     }
 
@@ -72,7 +70,10 @@ impl GpuDisplay for WgpuDisplay {
             self.target = Some(Target { texture, id });
         }
         let target = self.target.as_ref().ok_or("no display texture")?;
-        self.shared.render_to_texture(plan, None, request, sources, cancel, &target.texture).map_err(|e| format!("{e} ({e:?})"))?;
+        // Preview: values outside [0, 1] clipped for display by the plan's output stage
+        // (super::render::preview_extensions, lane SMB-RENDER-SCENE-DISPLAY).
+        let extensions = super::render::preview_extensions();
+        self.shared.render_to_texture(plan, Some(&extensions), request, sources, cancel, &target.texture).map_err(|e| format!("{e} ({e:?})"))?;
         Ok(target.id)
     }
 }
