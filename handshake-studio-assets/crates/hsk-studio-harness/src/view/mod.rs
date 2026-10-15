@@ -36,6 +36,8 @@ pub mod audio_out;
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
 pub mod prototype;
+/// Magic wand, quick selection and liquify brush (lane SMB-PS-SELECT-LIQUIFY).
+pub mod select_liquify;
 pub mod selection_store;
 pub mod text;
 pub mod render;
@@ -172,6 +174,8 @@ pub struct Viewer {
     monitor: Option<MonitorState>,
     /// Prototype play mode (module [`prototype`]) and the clock of its last frame.
     prototype: Option<(prototype::PrototypePlay, std::time::Instant)>,
+    /// Selections before each wand / quick-select step (module [`select_liquify`]).
+    selection_history: Vec<Option<hsk_studio_pigment::selection::CoveragePlane>>,
 }
 
 struct MonitorState {
@@ -228,6 +232,7 @@ impl Viewer {
             cancel,
             monitor: None,
             prototype: None,
+            selection_history: Vec::new(),
         }
     }
 
