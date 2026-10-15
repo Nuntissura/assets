@@ -172,7 +172,7 @@ pub fn three_d_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
                 let c = inv(sub(CAMERA_POSITION, s.position));
                 let k = inv(dir);
                 let t = (-s.anchor[2] - c[2]) / k[2];
-                if !(t > 1e-3) {
+                if t.is_nan() || t <= 1e-3 {
                     continue;
                 }
                 let u = add(c, scale(k, t));
