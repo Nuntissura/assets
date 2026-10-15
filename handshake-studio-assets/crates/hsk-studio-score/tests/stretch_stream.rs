@@ -98,7 +98,12 @@ fn phase_reset_at_onsets_bounds_the_smear_of_a_click_train() {
 fn stationary_material_sees_no_onsets_and_hostile_streams_are_refused() {
     bounded_case("stretch_stream_hostile", || {
         let token = CancellationToken::default();
-        let x = sine(440.0, 0.5, 0.0, RATE, RATE as usize);
+        // A steady tone with a 0.25 s raised-cosine fade-out (an abrupt stop is itself a broadband
+        // transient: measured as an onset at frame 116, centre 47_514, when the tone was cut).
+        let mut x = sine(440.0, 0.5, 0.0, RATE, RATE as usize);
+        for (i, v) in x.iter_mut().rev().take(12_000).enumerate() {
+            *v *= (0.5 - 0.5 * (std::f64::consts::PI * i as f64 / 12_000.0).cos()) as f32;
+        }
         let mut on = StreamingStretch::new(RATE, 1.25, params(), true).unwrap();
         let mut off = StreamingStretch::new(RATE, 1.25, params(), false).unwrap();
         let (a, b) = (stream(&mut on, &x, 1000, 1000), stream(&mut off, &x, 1000, 1000));
