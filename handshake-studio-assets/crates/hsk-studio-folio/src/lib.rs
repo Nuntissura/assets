@@ -73,6 +73,8 @@ mod typestyle;
 pub use typestyle::*;
 mod composition;
 pub use composition::*;
+mod motion_records;
+pub use motion_records::*;
 mod parentpages;
 pub use parentpages::*;
 mod longdoc;

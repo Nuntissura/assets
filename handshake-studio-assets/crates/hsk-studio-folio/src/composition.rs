@@ -846,7 +846,7 @@ fn validate_3d(d: &StudioLayer3d, layer: &str, cx: &mut Ctx) -> Result<()> {
     validate_named(&d.material.values, MATERIAL_NAMES, &format!("{t}/material"), cx)
 }
 
-fn validate_keyed(
+pub(crate) fn validate_keyed(
     t: &str,
     dim: usize,
     value_ok: &dyn Fn(&[f64]) -> bool,
