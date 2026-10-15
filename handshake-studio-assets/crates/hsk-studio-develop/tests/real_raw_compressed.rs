@@ -333,3 +333,23 @@ fn cr3_crx_r6_decodes_and_matches_the_embedded_preview() {
         r_floor: 0.96,
     }]);
 }
+
+/// X-S10 (raw.pixls.us id 4190): header mode 3 (lossy compressed), raw IFD 6384 x 4182, 14 bit,
+/// `IS` stream flag 0, sensor type 16 (X-Trans), 9 stripes, 697 six-row groups, X-Trans layout
+/// record equal to develop's X-Trans grid (byte inspection 2026-10-15). The S5000 (SuperCCD, no
+/// TIFF raw block) stays decoder_unavailable:raf (tests/real_raw.rs routing test).
+#[test]
+#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+fn raf_xtrans_lossy_x_s10_decodes_and_matches_the_embedded_preview() {
+    const TEST: &str = "raf_xtrans_lossy_x_s10_decodes_and_matches_the_embedded_preview";
+    check_all(TEST, &[Expect {
+        file: "fujifilm-x-s10-14bit-compressed-xtrans.raf",
+        sha256: "9419d1408ebf850395e5dd563beb96309466546252caf541466034c9cb7e9724",
+        dims: (6384, 4182, 14),
+        white: 16383,
+        cfa: CfaPattern::XTrans,
+        model: "X-S10",
+        digest: "",
+        r_floor: 0.0,
+    }]);
+}

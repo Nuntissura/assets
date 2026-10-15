@@ -32,6 +32,8 @@ pub mod ljpeg;
 mod nef;
 mod nefc;
 mod par;
+mod raf;
+mod rafc;
 mod tiffep;
 
 use hsk_studio_accord::CancellationToken;
@@ -241,6 +243,9 @@ impl From<hsk_studio_accord::ValidationError> for DevelopError {
 pub fn decode_container(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     if cr3::is_cr3(bytes) {
         return cr3::decode(bytes);
+    }
+    if raf::is_raf(bytes) {
+        return raf::decode(bytes);
     }
     // TIFF family (classic + BigTIFF magic); BigTIFF is then refused by the reader, not mislabeled.
     if [&b"II*\0"[..], b"MM\0*", b"II+\0", b"MM\0+"]
