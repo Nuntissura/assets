@@ -44,6 +44,22 @@ const TEXT: &str = "Hi PDF world";
 const BLEED_IN: f64 = 3.0;
 const BLEED_OUT: f64 = 9.0;
 
+/// Lane SMB-LAYOUT-PDFX-VERAPDF: PDF/X-4 and PDF/A-2b identification over the sRGB output intent
+/// (Folio colour is RGB).
+fn archival() -> ExportOptions<'static> {
+    use hsk_studio_interop_layout::press::{OutputIntent, OutputIntentSubtype, PdfX4};
+    let intent = OutputIntent { icc: SRGB, components: 3, output_condition_identifier: "sRGB IEC61966-2.1", output_condition: None, registry: Some("http://www.color.org"), subtype: OutputIntentSubtype::GtsPdfx };
+    let x4 = PdfX4 { created: "D:20261015000000Z", modified: "D:20261015000000Z", trapped: false };
+    ExportOptions { version: "1.6", output_intent: Some(intent), info_title: Some("Studio layout corpus"), pdfx4: Some(x4), pdfa2b: true, ..ExportOptions::default() }
+}
+
+/// Writes `bytes` as `name` into `HSK_STUDIO_PDF_CORPUS_DIR` when it is set (external veraPDF run).
+fn dump(name: &str, bytes: &[u8]) {
+    if let Some(dir) = std::env::var_os("HSK_STUDIO_PDF_CORPUS_DIR") {
+        std::fs::write(std::path::Path::new(&dir).join(name), bytes).unwrap();
+    }
+}
+
 fn id(prefix: &str, n: u32) -> String {
     format!("{prefix}-019abcde-0000-7000-8000-{n:012x}")
 }
@@ -477,6 +493,11 @@ fn snapshot_lowers_to_pdf() {
     assert!(near(px(118, 324), [255, 255, 255]), "linear white {:?}", px(118, 324));
     let grey = px(118, 314);
     assert!(grey[0].abs_diff(grey[1]) <= 3 && (150..=245).contains(&grey[0]), "half-alpha linear grey {grey:?}");
+    // The same document with the archival identification, for the veraPDF corpus.
+    let input = PdfExportInput { snapshot: &b.snapshot, design: Some(&design), type_styles: None, stories: &stories, fonts: &fonts, assets: &assets, options: archival(), limits: Limits::default() };
+    let x = export_pdf(&input, &cancel).unwrap();
+    assert_eq!(x.loss.len(), out.loss.len());
+    dump("layout-snapshot.pdf", &x.bytes);
 }
 
 #[test]
@@ -809,7 +830,7 @@ fn folio_appearance_becomes_transparency_groups() {
                 stories: &[],
                 fonts: &[],
                 assets: &assets,
-                options: ExportOptions::default(),
+                options: archival(),
                 limits: Limits::default(),
             },
             &cancel,
@@ -817,6 +838,7 @@ fn folio_appearance_becomes_transparency_groups() {
         .unwrap()
     };
     let masked = run(true);
+    dump("layout-appearance-mask.pdf", &masked.bytes);
     let codes: Vec<&str> = masked.loss.iter().map(|l| l.code).collect();
     assert!(codes.contains(&"blend_mode_not_in_pdf"), "{codes:?}");
     assert!(!codes.contains(&"layer_mask_unresolved"), "{codes:?}");
@@ -907,7 +929,7 @@ fn folio_clipping_gradient_and_pdfx4() {
             stories: &[],
             fonts: &[],
             assets: &Assets,
-            options: ExportOptions { output_intent: Some(intent), info_title: Some("folio x4"), pdfx4: Some(x4), ..ExportOptions::default() },
+            options: ExportOptions { output_intent: Some(intent), info_title: Some("folio x4"), pdfx4: Some(x4), pdfa2b: true, ..ExportOptions::default() },
             limits: Limits::default(),
         },
         &cancel,
@@ -915,6 +937,15 @@ fn folio_clipping_gradient_and_pdfx4() {
     .unwrap();
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
     assert!(!codes.iter().any(|c| c.starts_with("clip_") || c.starts_with("gradient_") || *c == "paint_gradient"), "{codes:?}");
+    dump("layout-clip-gradient.pdf", &out.bytes);
+    // veraPDF 1.30.3 PDF/A-2b passed these exact bytes (artifact report, byte-identical fixture);
+    // only that report moves the receipt off not_proven.
+    assert_eq!(out.receipt.sha256_hex, "3405693a3cf44a39e97bbcaae250a3ab0ccbbce8466f82f3e84e88e8524934f0", "export changed: re-run veraPDF, refresh the fixture");
+    assert_eq!(out.receipt.conformance, "not_proven");
+    let report = include_bytes!("fixtures/verapdf/layout-clip-gradient.pdfa-2b.xml");
+    let proven = out.receipt.clone().with_verapdf_report(&out.bytes, report).unwrap();
+    assert_eq!(proven.conformance, hsk_studio_interop_layout::press::CONFORMANCE_PDFA2B_VERAPDF);
+    assert_eq!(proven.conformance_report_sha256.as_deref(), Some("fa7edad7534370e5f5b918927c1511e76d118457d6ef94374cf3b9d65ee04654"));
     let report = hsk_studio_interop_layout::press::check_pdfx4(&out.bytes, &Limits::default(), &cancel).unwrap();
     assert!(report.all_passed(), "{:?}", report.failed());
     assert_eq!(out.receipt.effective_pdfx_profile.as_deref(), Some("PDF/X-4"));
@@ -992,12 +1023,13 @@ fn folio_clip_to_text_and_raster_bases() {
             stories: &stories,
             fonts: &fonts,
             assets: &assets,
-            options: ExportOptions::default(),
+            options: archival(),
             limits: Limits::default(),
         },
         &cancel,
     )
     .unwrap();
+    dump("layout-clip-text-raster.pdf", &out.bytes);
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
     assert!(!codes.iter().any(|c| c.starts_with("clip_")), "{codes:?}");
     let p1 = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();

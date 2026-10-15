@@ -33,8 +33,10 @@ mod cff;
 mod pdfx;
 mod render;
 mod sfnt;
-pub use pdfx::{PDFX4_VERSION, PdfXReport, PdfXRule, check_pdfx4};
+pub use pdfx::{PDFA2B_CONFORMANCE, PDFA2B_PART, PDFX4_VERSION, PdfXReport, PdfXRule, check_pdfx4};
 mod subset;
+mod verdict;
+pub use verdict::{CONFORMANCE_PDFA2B_VERAPDF, MAX_REPORT_BYTES, VERAPDF_PDFA2B_PROFILE};
 pub use render::{RenderedPage, render_page};
 #[cfg(test)]
 mod tests;
@@ -134,6 +136,10 @@ pub enum ExportError {
     InvalidGradient,
     /// A PDF/X-4 requirement the request cannot meet (`what` names it).
     PdfXRequirement(&'static str),
+    /// A PDF/A-2b requirement the request cannot meet (`what` names it).
+    PdfARequirement(&'static str),
+    /// [`ExportReceipt::with_verapdf_report`] refused the report (`why` names the reason).
+    ReportRefused(&'static str),
     /// `end_group` without an open group, `finish` with one open, or groups deeper than 32.
     UnbalancedGroup,
     /// A soft mask image that is not `DeviceGray` without alpha.
@@ -183,6 +189,8 @@ impl ExportError {
             Self::AlphaOutOfRange => "alpha_out_of_range",
             Self::InvalidGradient => "invalid_gradient",
             Self::PdfXRequirement(_) => "pdfx_requirement",
+            Self::PdfARequirement(_) => "pdfa_requirement",
+            Self::ReportRefused(_) => "report_refused",
             Self::UnbalancedGroup => "unbalanced_group",
             Self::InvalidMask => "invalid_mask",
             Self::RenderOverBudget => "render_over_budget",
@@ -247,6 +255,11 @@ pub struct ExportOptions<'a> {
     /// `not_proven`). Requires a `GtsPdfx` output intent, version 1.6 or later and a TrimBox on
     /// every page.
     pub pdfx4: Option<PdfX4<'a>>,
+    /// Write the PDF/A-2b identification (XMP `pdfaid` part 2 conformance B, the XMP extension
+    /// schemas for the non-predefined properties, a `GTS_PDFA1` output intent sharing the
+    /// destination profile). Requires an output intent and a 1.x header. Conformance stays
+    /// `not_proven` until a passing veraPDF report is attached ([`ExportReceipt::with_verapdf_report`]).
+    pub pdfa2b: bool,
 }
 
 /// PDF/X-4 identification values (no clock is read: dates come from the caller).
@@ -260,7 +273,7 @@ pub struct PdfX4<'a> {
 }
 impl Default for ExportOptions<'_> {
     fn default() -> Self {
-        Self { version: "1.7", output_intent: None, info_title: None, subset_fonts: true, pdfx4: None }
+        Self { version: "1.7", output_intent: None, info_title: None, subset_fonts: true, pdfx4: None, pdfa2b: false }
     }
 }
 
@@ -364,8 +377,14 @@ pub struct ExportReceipt {
     /// `None` in this slice: no PDF/X profile is claimed or proven (STU-PDF-002; test
     /// `two_page_export_reads_back`).
     pub effective_pdfx_profile: Option<String>,
-    /// [`EXPORT_CONFORMANCE`] (`not_proven`; test `two_page_export_reads_back`).
+    /// [`EXPORT_CONFORMANCE`] (`not_proven`; test `two_page_export_reads_back`), or
+    /// [`CONFORMANCE_PDFA2B_VERAPDF`] once a passing veraPDF report is attached
+    /// ([`ExportReceipt::with_verapdf_report`]).
     pub conformance: &'static str,
+    /// sha256 of the validator report behind `conformance` (`None` while `not_proven`).
+    pub conformance_report_sha256: Option<String>,
+    /// Validator and profile of that report (`veraPDF 1.30.3: PDF/A-2b validation profile`).
+    pub conformance_validator: Option<String>,
 }
 
 /// PDF blend modes (ISO 32000-2 11.3.5, Tables 134 and 135).
@@ -591,6 +610,9 @@ pub struct PdfExport {
     font_files: BTreeMap<[u8; 32], u32>,
     subset: bool,
     pdfx4: Option<(String, String, bool, String)>,
+    /// PDF/A-2b identification requested; the title for the XMP `dc:title`.
+    pdfa2b: bool,
+    title: Option<String>,
     shadings: usize,
     subset_files: Vec<SubsetFile>,
     subset_by_hash: BTreeMap<[u8; 32], usize>,
@@ -704,6 +726,8 @@ impl PdfExport {
             font_files: BTreeMap::new(),
             subset: options.subset_fonts,
             pdfx4: None,
+            pdfa2b: options.pdfa2b,
+            title: options.info_title.map(str::to_owned),
             shadings: 0,
             subset_files: Vec::new(),
             subset_by_hash: BTreeMap::new(),
@@ -730,7 +754,15 @@ impl PdfExport {
                 return Err(ExportError::PdfXRequirement("pdf_dates"));
             }
         }
-        if options.info_title.is_some() || options.pdfx4.is_some() {
+        if options.pdfa2b {
+            if options.output_intent.is_none() {
+                return Err(ExportError::PdfARequirement("output_intent"));
+            }
+            if !options.version.starts_with("1.") {
+                return Err(ExportError::PdfARequirement("version_1_x"));
+            }
+        }
+        if options.info_title.is_some() || options.pdfx4.is_some() || options.pdfa2b {
             let mut info = Dict::default();
             if let Some(title) = options.info_title {
                 info.set("Title", text_bytes(title)?);
@@ -1961,17 +1993,18 @@ impl PdfExport {
         cat.set("Type", name("Catalog"));
         cat.set("Pages", rf(self.pages_root));
         if let Some(oi) = self.output_intent.take() {
-            cat.set("OutputIntents", Object::Array(vec![Object::Dict(oi)]));
+            let mut intents = vec![Object::Dict(oi.clone())];
+            // PDF/A-2 6.2.3: a GTS_PDFA1 intent beside GTS_PDFX, same DestOutputProfile reference.
+            if self.pdfa2b && oi.get("S") == Some(&name("GTS_PDFX")) {
+                let mut a = oi;
+                a.set("S", name("GTS_PDFA1"));
+                intents.push(Object::Dict(a));
+            }
+            cat.set("OutputIntents", Object::Array(intents));
         }
-        if let Some((created, modified, trapped, title)) = self.pdfx4.clone() {
-            let xmp = format!(
-                "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\">\n<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>\n<xmp:CreateDate>{}</xmp:CreateDate>\n<xmp:ModifyDate>{}</xmp:ModifyDate>\n<pdf:Producer>hsk-studio-press</pdf:Producer>\n<pdf:Trapped>{}</pdf:Trapped>\n<pdfxid:GTS_PDFXVersion>{}</pdfxid:GTS_PDFXVersion>\n</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>",
-                pdfx::xml(&title),
-                pdfx::xmp_date(&created),
-                pdfx::xmp_date(&modified),
-                if trapped { "True" } else { "False" },
-                pdfx::PDFX4_VERSION
-            );
+        if self.pdfx4.is_some() || self.pdfa2b {
+            let x4 = self.pdfx4.as_ref().map(|(c, m, t, _)| (c.as_str(), m.as_str(), *t));
+            let xmp = pdfx::xmp_packet(self.title.as_deref(), x4, self.pdfa2b);
             self.reserve(1)?;
             self.charge(xmp.len(), xmp.len())?;
             let mut md = Dict::default();
@@ -2091,6 +2124,8 @@ impl PdfExport {
                     _ => None,
                 }),
             conformance: EXPORT_CONFORMANCE,
+            conformance_report_sha256: None,
+            conformance_validator: None,
         })
     }
 }

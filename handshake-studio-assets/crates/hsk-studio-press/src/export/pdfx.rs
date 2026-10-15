@@ -65,13 +65,68 @@ pub(super) fn valid_date(s: &str) -> bool {
     tail.is_empty() || tail == "Z" || (tail.len() == 7 && (tail.starts_with('+') || tail.starts_with('-')))
 }
 
-/// The ISO 8601 form of a PDF date for XMP (`2026-10-15T00:00:00Z`).
+/// The ISO 8601 form of a PDF date for XMP (`2026-10-15T00:00:00Z`; an offset `+01'00'` becomes
+/// `+01:00`, so the XMP date names the same instant as the Info date, PDF/A-2 6.6.3).
 pub(super) fn xmp_date(s: &str) -> String {
-    let d: Vec<char> = s.trim_start_matches("D:").chars().take(14).collect();
+    let rest = s.trim_start_matches("D:");
+    let n = rest.chars().take_while(char::is_ascii_digit).count().min(14);
+    let d: Vec<char> = rest.chars().take(n).collect();
     let part = |a: usize, b: usize, def: &str| -> String {
         if d.len() >= b { d[a..b].iter().collect() } else { def.to_owned() }
     };
-    format!("{}-{}-{}T{}:{}:{}Z", part(0, 4, "0000"), part(4, 6, "01"), part(6, 8, "01"), part(8, 10, "00"), part(10, 12, "00"), part(12, 14, "00"))
+    let tail = rest.get(n..).unwrap_or("");
+    let zone = match (tail.get(..1), tail.get(1..3), tail.get(4..6)) {
+        (Some(sign @ ("+" | "-")), Some(h), Some(m)) => format!("{sign}{h}:{m}"),
+        _ => "Z".to_owned(),
+    };
+    format!("{}-{}-{}T{}:{}:{}{zone}", part(0, 4, "0000"), part(4, 6, "01"), part(6, 8, "01"), part(8, 10, "00"), part(10, 12, "00"), part(12, 14, "00"))
+}
+
+/// What the writer puts into the XMP `pdfaid:part` / `pdfaid:conformance` for PDF/A-2b.
+pub const PDFA2B_PART: &str = "2";
+pub const PDFA2B_CONFORMANCE: &str = "B";
+
+/// One XMP extension schema entry (PDF/A-2 6.6.2.3.2) declaring a single Text property.
+fn extension_schema(schema: &str, uri: &str, prefix: &str, property: &str, description: &str) -> String {
+    format!(
+        "<rdf:li rdf:parseType=\"Resource\">\n<pdfaSchema:schema>{schema}</pdfaSchema:schema>\n<pdfaSchema:namespaceURI>{uri}</pdfaSchema:namespaceURI>\n<pdfaSchema:prefix>{prefix}</pdfaSchema:prefix>\n<pdfaSchema:property><rdf:Seq><rdf:li rdf:parseType=\"Resource\">\n<pdfaProperty:name>{property}</pdfaProperty:name>\n<pdfaProperty:valueType>Text</pdfaProperty:valueType>\n<pdfaProperty:category>internal</pdfaProperty:category>\n<pdfaProperty:description>{description}</pdfaProperty:description>\n</rdf:li></rdf:Seq></pdfaSchema:property>\n</rdf:li>\n"
+    )
+}
+
+/// The document XMP packet: `dc:title` (when titled), `pdf:Producer`, the PDF/X-4 properties
+/// (dates, `pdf:Trapped`, `pdfxid:GTS_PDFXVersion`) when `x4` is set, and the PDF/A-2b
+/// identification with extension schemas for the properties XMP 2005 does not predefine
+/// (`pdf:Trapped`, `pdfxid:GTS_PDFXVersion`; veraPDF 6.6.2.3.1) when `pdfa2b`.
+pub(super) fn xmp_packet(title: Option<&str>, x4: Option<(&str, &str, bool)>, pdfa2b: bool) -> String {
+    let mut ns = String::from(" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"");
+    let mut body = String::new();
+    if let Some(t) = title {
+        body.push_str(&format!("<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>\n", xml(t)));
+    }
+    body.push_str("<pdf:Producer>hsk-studio-press</pdf:Producer>\n");
+    if let Some((created, modified, trapped)) = x4 {
+        ns.push_str(" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\"");
+        body.push_str(&format!(
+            "<xmp:CreateDate>{}</xmp:CreateDate>\n<xmp:ModifyDate>{}</xmp:ModifyDate>\n<pdf:Trapped>{}</pdf:Trapped>\n<pdfxid:GTS_PDFXVersion>{PDFX4_VERSION}</pdfxid:GTS_PDFXVersion>\n",
+            xmp_date(created),
+            xmp_date(modified),
+            if trapped { "True" } else { "False" },
+        ));
+    }
+    if pdfa2b {
+        ns.push_str(" xmlns:pdfaid=\"http://www.aiim.org/pdfa/ns/id/\"");
+        body.push_str(&format!("<pdfaid:part>{PDFA2B_PART}</pdfaid:part>\n<pdfaid:conformance>{PDFA2B_CONFORMANCE}</pdfaid:conformance>\n"));
+        if x4.is_some() {
+            ns.push_str(" xmlns:pdfaExtension=\"http://www.aiim.org/pdfa/ns/extension/\" xmlns:pdfaSchema=\"http://www.aiim.org/pdfa/ns/schema#\" xmlns:pdfaProperty=\"http://www.aiim.org/pdfa/ns/property#\"");
+            body.push_str("<pdfaExtension:schemas><rdf:Bag>\n");
+            body.push_str(&extension_schema("Adobe PDF Schema", "http://ns.adobe.com/pdf/1.3/", "pdf", "Trapped", "Whether the document has been trapped"));
+            body.push_str(&extension_schema("PDF/X ID Schema", "http://www.npes.org/pdfx/ns/id/", "pdfxid", "GTS_PDFXVersion", "ID of PDF/X standard"));
+            body.push_str("</rdf:Bag></pdfaExtension:schemas>\n");
+        }
+    }
+    format!(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n<rdf:Description rdf:about=\"\"{ns}>\n{body}</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>"
+    )
 }
 
 /// Self-check of the PDF/X-4 rules this crate implements, on the written bytes.
