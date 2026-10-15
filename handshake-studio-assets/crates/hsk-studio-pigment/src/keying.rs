@@ -252,20 +252,52 @@ pub enum KeyStage {
     EdgeSmooth { radius_px: u32, colour_sigma: f32 },
     Despill(Despill),
 }
+/// The kind of a stage: the unit of capability (render-plan `ExtOperator::Key`).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum KeyKind {
+    Chroma,
+    Luma,
+    Difference,
+    ColourRange,
+    Levels,
+    ChokeSpread,
+    Feather,
+    EdgeSmooth,
+    Despill,
+}
+impl KeyKind {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Chroma => "key_chroma",
+            Self::Luma => "key_luma",
+            Self::Difference => "key_difference",
+            Self::ColourRange => "key_colour_range",
+            Self::Levels => "matte_levels",
+            Self::ChokeSpread => "matte_choke_spread",
+            Self::Feather => "matte_feather",
+            Self::EdgeSmooth => "matte_edge_smooth",
+            Self::Despill => "key_despill",
+        }
+    }
+}
 impl KeyStage {
+    pub const fn kind(&self) -> KeyKind {
+        match self {
+            Self::Chroma(..) => KeyKind::Chroma,
+            Self::Luma(..) => KeyKind::Luma,
+            Self::Difference(..) => KeyKind::Difference,
+            Self::ColourRange(..) => KeyKind::ColourRange,
+            Self::Levels { .. } => KeyKind::Levels,
+            Self::ChokeSpread { .. } => KeyKind::ChokeSpread,
+            Self::Feather { .. } => KeyKind::Feather,
+            Self::EdgeSmooth { .. } => KeyKind::EdgeSmooth,
+            Self::Despill(_) => KeyKind::Despill,
+        }
+    }
     /// Operator key of the stage (the unit of capability).
     pub const fn key(&self) -> &'static str {
-        match self {
-            Self::Chroma(..) => "key_chroma",
-            Self::Luma(..) => "key_luma",
-            Self::Difference(..) => "key_difference",
-            Self::ColourRange(..) => "key_colour_range",
-            Self::Levels { .. } => "matte_levels",
-            Self::ChokeSpread { .. } => "matte_choke_spread",
-            Self::Feather { .. } => "matte_feather",
-            Self::EdgeSmooth { .. } => "matte_edge_smooth",
-            Self::Despill(_) => "key_despill",
-        }
+        self.kind().key()
     }
     /// Range checks of the stage's parameters.
     pub fn validate(&self) -> Result<(), KeyError> {

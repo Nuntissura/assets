@@ -437,6 +437,14 @@ pub enum PlanError {
     /// A content-aware fill combined with an adjustment layer, effects, a transform, a blur or
     /// filters on the same layer, a pass-through layer, a clipped layer or a clip base.
     ContentAwareCombination { node: u32 },
+    /// A key pipeline ([`LayerExtension::keys`]) with a stage parameter out of range, more than
+    /// `keying::MAX_KEY_STAGES` stages, or a stage that needs an input the envelope cannot carry
+    /// (a difference matte's clean plate).
+    KeyParameter { node: u32 },
+    /// A key pipeline combined with an adjustment layer, effects, a transform, a blur, filters or a
+    /// content-aware fill on the same layer, a pass-through layer, a clipped layer or a clip base,
+    /// or in an extended-range plan (keying is defined on unit-range samples).
+    KeyCombination { node: u32 },
     /// A [`PlanLimits`] field is above its hard maximum ([`PlanLimits::MAXIMUM`]): limits can only
     /// tighten. Not a defect of the plan: the caller's limits are refused before the plan is read.
     LimitAboveMaximum {
@@ -488,6 +496,8 @@ impl PlanError {
             Self::FilterCombination { .. } => "plan_filter_combination",
             Self::ContentAwareParameter { .. } => "plan_content_aware_parameter",
             Self::ContentAwareCombination { .. } => "plan_content_aware_combination",
+            Self::KeyParameter { .. } => "plan_key_parameter",
+            Self::KeyCombination { .. } => "plan_key_combination",
         }
     }
 }

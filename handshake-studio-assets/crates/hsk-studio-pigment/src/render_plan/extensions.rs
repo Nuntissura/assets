@@ -25,6 +25,7 @@ use crate::coverage_math::{
 use crate::Rect;
 use crate::content_aware::{CONTENT_AWARE_EXACTNESS, ContentAwareOptions};
 use crate::filter_math::{FILTER_EXACTNESS, FilterKind, LayerFilter, MAX_FILTERS_PER_LAYER};
+use crate::keying::{KEY_EXACTNESS, KeyKind, KeyStage, MAX_KEY_STAGES};
 use crate::effect_math::{
     EFFECT_EXACTNESS, EffectError, EffectKind, EffectOp, MAX_EFFECTS_PER_LAYER,
     MAX_EFFECTS_PER_PLAN,
@@ -118,6 +119,18 @@ impl Knockout {
 ///   admission refuses it under the key `content_aware_fill` before any sink call. `None` = no
 ///   fill (and absent from the digest).
 ///
+/// - `keys`: a key pipeline ([`crate::keying`], lane SMB-AE-KEY-TRACK-2, STU-CMP-032/033): the
+///   stages run in list order over the layer's content (WITHOUT the layer mask, over the content
+///   bounds inside the plan extent) as one [`crate::keying::run_key_pipeline`] call, and the
+///   result (colour despilled, alpha multiplied by the matte) is what the layer composites, so
+///   the layer mask, Blend-If, mode and opacity apply after the key. A stage out of range, more
+///   than [`MAX_KEY_STAGES`] stages or a difference matte (its clean plate is not an envelope
+///   input) is [`PlanError::KeyParameter`]; keys together with an adjustment layer, effects, a
+///   transform, a blur, filters or a content-aware fill on the same layer, a pass-through layer,
+///   a clipped layer, a clip base or an extended-range output stage are
+///   [`PlanError::KeyCombination`]. Reported per stage as [`ExtOperator::Key`] (Approximate).
+///   Empty = no key (and absent from the digest).
+///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
 #[non_exhaustive]
@@ -139,6 +152,8 @@ pub struct LayerExtension {
     pub filters: Vec<LayerFilter>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_aware_fill: Option<ContentAwareFillOp>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<KeyStage>,
 }
 
 /// A content-aware fill on a layer's content ([`LayerExtension::content_aware_fill`]): the pixels
@@ -181,7 +196,12 @@ impl LayerExtension {
             blur: None,
             filters: Vec::new(),
             content_aware_fill: None,
+            keys: Vec::new(),
         }
+    }
+    pub fn with_keys(mut self, keys: Vec<KeyStage>) -> Self {
+        self.keys = keys;
+        self
     }
     pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
         self.adjustment = Some(op);
@@ -323,6 +343,9 @@ pub enum ExtOperator {
     ExtendedEnvelope(ExtendedOp),
     /// The stage-6a clip ([`DisplayTransform::Clip`]); class Exact. Key `display_clip`.
     DisplayClip,
+    /// One key-pipeline stage kind ([`LayerExtension::keys`], [`crate::keying`]); class
+    /// [`KEY_EXACTNESS`] (Approximate). Keys [`KeyKind::key`] (`key_*`, `matte_*`).
+    Key(KeyKind),
     /// A stage-6a view transform ([`DisplayTransform::View`] or [`DisplayTransform::ViewFrom`],
     /// Prism's ACES 1.x RRT + ODT / RRTODT from the
     /// published CTL, evaluated per pixel by `hsk_studio_prism::ViewTransformId::apply`); class
@@ -357,6 +380,7 @@ impl ExtOperator {
             Self::ExtendedRangeCombination => EXTENDED_RANGE_COMBINATION_OPERATOR,
             Self::ExtendedEnvelope(op) => op.key(),
             Self::DisplayClip => DISPLAY_CLIP_OPERATOR,
+            Self::Key(kind) => kind.key(),
             Self::DisplayView => super::output::DISPLAY_VIEW_OPERATOR,
         }
     }
@@ -387,6 +411,7 @@ impl ExtOperator {
                 }
             }
             Self::DisplayClip | Self::DisplayView => Exactness::Exact,
+            Self::Key(_) => KEY_EXACTNESS,
         }
     }
 }
@@ -665,6 +690,29 @@ impl PlanExtensions {
                     return Err(PlanError::ContentAwareCombination { node });
                 }
                 add(ExtOperator::ContentAwareFill);
+            }
+            if !e.keys.is_empty() {
+                if e.keys.len() > MAX_KEY_STAGES
+                    || e.keys.iter().any(|k| k.validate().is_err() || k.kind() == KeyKind::Difference)
+                {
+                    return Err(PlanError::KeyParameter { node });
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || e.content_aware_fill.is_some()
+                    || self.output.is_extended()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::KeyCombination { node });
+                }
+                for k in &e.keys {
+                    add(ExtOperator::Key(k.kind()));
+                }
             }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {

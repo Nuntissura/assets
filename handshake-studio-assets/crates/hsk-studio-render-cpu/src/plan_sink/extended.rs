@@ -37,6 +37,7 @@ use hsk_studio_pigment::render_plan::OutputStage;
 use hsk_studio_pigment::render_plan::{
     BackendError, ContentAwareFillOp, ExtOperator, PlanError, PlanExtensions, SAMPLE_RANGE_OPERATOR,
 };
+use hsk_studio_pigment::keying::{KeyStage, MAX_KEY_STAGES};
 use hsk_studio_pigment::transform_math::LayerTransform;
 use std::collections::BTreeMap;
 
@@ -53,6 +54,8 @@ const EFFECT_OP_BYTES: u64 = 64;
 const FILTER_OP_BYTES: u64 = 64;
 /// Resident bytes charged per content-aware fill (the `ContentAwareFillOp` record).
 const CONTENT_AWARE_OP_BYTES: u64 = 256;
+/// Resident bytes charged per key stage (the `KeyStage` record; colour-range samples counted apart).
+const KEY_STAGE_BYTES: u64 = 64;
 /// Resident bytes charged per layer transform (the record plus its prepared inverse and bounds).
 const TRANSFORM_STATE_BYTES: u64 = 256;
 /// Bytes the window arrays of one effect call hold next to pigment's own peak: the backdrop plane
@@ -83,6 +86,8 @@ pub(super) struct LayerFx {
     /// Content-aware fill (pigment `content_aware::fill`, lane SMB-RENDER-CONTENT-AWARE): index
     /// into [`ExtPrep::content_aware`].
     pub(super) content_aware: Option<usize>,
+    /// Key pipeline (pigment `keying`, lane SMB-AE-KEY-TRACK-2): index into [`ExtPrep::keys`].
+    pub(super) key: Option<usize>,
 }
 
 /// The filters of one layer (list order), the growth of the layer's pixels each stage causes
@@ -177,6 +182,7 @@ pub(super) struct ExtPrep {
     blurs: Vec<BlurLayer>,
     filters: Vec<FilterLayer>,
     content_aware: Vec<ContentAwareFillOp>,
+    keys: Vec<Vec<KeyStage>>,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -396,6 +402,29 @@ impl ExtPrep {
                 fx.content_aware = Some(prep.content_aware.len());
                 prep.content_aware.push(*op);
             }
+            if !e.keys.is_empty() {
+                // Defence in depth for pigment's `KeyParameter` (validated at admission).
+                if e.keys.len() > MAX_KEY_STAGES || e.keys.iter().any(|k| k.validate().is_err()) {
+                    return Err(RenderError::Backend(BackendError::InvalidPlan(
+                        PlanError::KeyParameter { node: e.group.0 },
+                    )));
+                }
+                let samples = e.keys.iter().try_fold(0_u64, |acc, k| {
+                    let n = match k {
+                        KeyStage::ColourRange(r, _) => r.add.len().saturating_add(r.subtract.len()),
+                        _ => 0,
+                    };
+                    u64::try_from(n).ok().and_then(|n| n.checked_mul(12)).and_then(|b| acc.checked_add(b))
+                });
+                let bytes = u64::try_from(e.keys.len())
+                    .ok()
+                    .and_then(|n| n.checked_mul(KEY_STAGE_BYTES))
+                    .and_then(|b| b.checked_add(samples?))
+                    .ok_or_else(overflow)?;
+                prep.charge(bytes, limit)?;
+                fx.key = Some(prep.keys.len());
+                prep.keys.push(e.keys.clone());
+            }
             if let Some(t) = &e.transform {
                 prep.charge(TRANSFORM_STATE_BYTES, limit)?;
                 fx.transform = Some(prep.transforms.len());
@@ -457,6 +486,11 @@ impl ExtPrep {
         if let Some(layer) = self.filters.get_mut(index) {
             layer.bounds = bounds;
         }
+    }
+
+    /// Key pipeline `index` (see [`LayerFx::key`]).
+    pub(super) fn key(&self, index: usize) -> Option<&[KeyStage]> {
+        self.keys.get(index).map(Vec::as_slice)
     }
 
     /// Content-aware fill `index` (see [`LayerFx::content_aware`]).

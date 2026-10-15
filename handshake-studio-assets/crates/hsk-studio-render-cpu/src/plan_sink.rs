@@ -29,6 +29,7 @@ mod display;
 mod effects;
 mod extended;
 mod filter;
+mod key;
 #[cfg(test)]
 mod refusal_keys;
 
@@ -396,6 +397,8 @@ struct Prepared<'a> {
     ext: ExtPrep,
     /// Content-aware fills to run before the first chunk (lane SMB-RENDER-CONTENT-AWARE).
     fills: Vec<content_aware::FillJob<'a>>,
+    /// Key pipelines to run before the first chunk, after the fills (lane SMB-AE-KEY-TRACK-2).
+    keys: Vec<key::KeyJob>,
 }
 
 impl<'a> Prepared<'a> {
@@ -579,6 +582,7 @@ fn prepare<'a, V: VectorSource>(
     // Does the node's subtree hold a content-aware fill? (A filled layer's content may not.)
     let mut has_fill: Vec<bool> = Vec::with_capacity(n);
     let mut fills: Vec<content_aware::FillJob<'a>> = Vec::new();
+    let mut key_jobs: Vec<key::KeyJob> = Vec::new();
     for (i, node) in plan.nodes.iter().enumerate() {
         let mut group_has_effects = false;
         let mut group_has_fill = false;
@@ -858,6 +862,49 @@ fn prepare<'a, V: VectorSource>(
                             at
                         }
                     };
+                    // Key pipeline (pigment `keying::run_key_pipeline`): the layer reads a keyed
+                    // node of `extra`, written before the first chunk (see `key`). Pigment
+                    // validated the combinations (`KeyCombination`); kept as defence in depth.
+                    let source_index = match layer_fx.key {
+                        None => source_index,
+                        Some(index) => {
+                            if layer_fx.effect.is_some()
+                                || layer_fx.blur.is_some()
+                                || layer_fx.filter.is_some()
+                                || layer_fx.transform.is_some()
+                                || layer_fx.adjustment.is_some()
+                                || layer_fx.content_aware.is_some()
+                                || pass_through
+                                || clipped
+                                || starts_run
+                            {
+                                return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                    PlanError::KeyCombination { node: node_id },
+                                )));
+                            }
+                            if has_effects[input] || has_fill[input] {
+                                return Err(unsupported(key::KEY_NESTED));
+                            }
+                            let stages = ext.key(index).ok_or_else(|| unsupported("plan_shape"))?.to_vec();
+                            let plane = content_bounds
+                                .map(|b| intersect(b, target.extent))
+                                .transpose()?
+                                .flatten();
+                            let slot = extra.len();
+                            let at = add_u(n, slot)?;
+                            extra.push(PNode::Filled {
+                                rect: plane.unwrap_or(target.extent),
+                                data: Vec::new(),
+                            });
+                            extra_bounds.push(plane);
+                            if let Some(bounds) = plane {
+                                key_jobs.push(key::KeyJob { extra: slot, input, bounds, stages, node: node_id });
+                            }
+                            layer_bounds = plane;
+                            group_has_fill = true;
+                            at
+                        }
+                    };
                     group_has_fill |= has_fill[input];
                     group_effects |= layer_fx.effect.is_some()
                         || layer_fx.blur.is_some()
@@ -993,6 +1040,7 @@ fn prepare<'a, V: VectorSource>(
         seed: plan.revision,
         ext,
         fills,
+        keys: key_jobs,
     })
 }
 
@@ -1892,6 +1940,17 @@ impl Renderer {
             content_aware::run_fills(&mut prepared, remaining.saturating_sub(fill_bytes), cancel)?;
         }
         let scratch_bytes = scratch_bytes.checked_add(fill_bytes).ok_or(BackendError::Overflow)?;
+        // Key pipelines (lane SMB-AE-KEY-TRACK-2): their planes and pigment's predicted pipeline
+        // bytes are charged next to the scratch and fills, all before the first sink call.
+        let key_bytes = key::key_bytes(&prepared)?;
+        let key_pigment = key::pigment_bytes(&prepared)?;
+        let remaining = request.max_working_bytes.saturating_sub(scratch_bytes);
+        let key_total = key_bytes.checked_add(key_pigment).ok_or(BackendError::Overflow)?;
+        let _key_lease = self.reserve(key_total, remaining)?;
+        if !prepared.keys.is_empty() {
+            key::run_keys(&mut prepared, key_pigment, cancel)?;
+        }
+        let scratch_bytes = scratch_bytes.checked_add(key_total).ok_or(BackendError::Overflow)?;
         let eval = Eval {
             prepared: &prepared,
         };
@@ -2173,6 +2232,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // synthesizes the whole layer content once, so the bytes are pigment's
             // (tests/cpu_content_aware.rs).
             ExtOperator::ContentAwareFill => operator.intrinsic(),
+            // Key pipelines (lane SMB-AE-KEY-TRACK-2): pigment's `keying::run_key_pipeline` keys
+            // the whole layer content once, so the bytes are pigment's (tests/cpu_keying.rs).
+            ExtOperator::Key(_) => operator.intrinsic(),
             // Output stage (lane SMB-PIGMENT-EXTENDED-RANGE): extended range composites through
             // pigment's `composite_over_extended`, the clip is `f32::clamp` on the delivered chunk
             // (tests/cpu_extended_range.rs).
