@@ -32,3 +32,4 @@ hsk-studio-composite = { path = "../hsk-studio-composite", version = "=0.1.0", d
 hsk-studio-render-cpu = { path = "../hsk-studio-render-cpu", version = "=0.1.0", default-features = false }
 hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
 hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false }

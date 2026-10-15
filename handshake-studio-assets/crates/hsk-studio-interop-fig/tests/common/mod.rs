@@ -438,15 +438,87 @@ pub fn prepare_outputs(p: &NativeProposal, outputs: &[FigTextOutput<'_>], files:
     })
 }
 
+// ---------- images ----------
+
+/// One decoded image paint source: straight RGB f32 LE + alpha f32 LE planes (8-bit samples / 255,
+/// no colour management, like the encoded blend space of the plan).
+pub struct DecodedImage {
+    pub width: u32,
+    pub height: u32,
+    pub colour: Vec<u8>,
+    pub alpha: Vec<u8>,
+    pub colour_sha256: [u8; 32],
+    pub alpha_sha256: [u8; 32],
+}
+
+/// Image paint sources of a proposal, by composite's source id (`<algorithm>:<digest>`), decoded
+/// from the `images/<hash>` parts of the original `.fig` with hsk-studio-interop-raster (dev edge
+/// approved 2026-10-15).
+#[derive(Default)]
+pub struct Images(pub BTreeMap<String, DecodedImage>);
+
+impl Images {
+    pub fn from_fig(fig: &[u8], p: &NativeProposal) -> Self {
+        let cancel = CancellationToken::default();
+        let container = hsk_studio_interop_fig::open_fig(fig, &hsk_studio_interop_fig::Limits::default(), &cancel).unwrap();
+        let mut out = BTreeMap::new();
+        for paint in &p.vector_records.image_paints {
+            let StudioImageSource::ImportOriginal { part, .. } = &paint.image else { continue };
+            let id = hsk_studio_composite::image_source_id(&paint.image);
+            if out.contains_key(&id) {
+                continue;
+            }
+            let bytes = &container.part(part).expect("image part").bytes;
+            let img = hsk_studio_interop_raster::decode(bytes, &hsk_studio_interop_raster::Limits::default(), &cancel)
+                .expect("image part decodes");
+            let hsk_studio_interop_raster::Samples::U8(samples) = &img.samples else { panic!("8-bit image") };
+            let ch = img.colour.channels();
+            let (mut colour, mut alpha) = (Vec::new(), Vec::new());
+            for px in samples.chunks(ch) {
+                let rgb = match img.colour {
+                    hsk_studio_interop_raster::Colour::Gray | hsk_studio_interop_raster::Colour::GrayA => [px[0]; 3],
+                    hsk_studio_interop_raster::Colour::Rgb | hsk_studio_interop_raster::Colour::Rgba => [px[0], px[1], px[2]],
+                    hsk_studio_interop_raster::Colour::Cmyk => panic!("CMYK image paint"),
+                };
+                for c in rgb {
+                    colour.extend_from_slice(&(f32::from(c) / 255.0).to_le_bytes());
+                }
+                let a = if img.colour.has_alpha() { f32::from(px[ch - 1]) / 255.0 } else { 1.0 };
+                alpha.extend_from_slice(&a.to_le_bytes());
+            }
+            out.insert(
+                id,
+                DecodedImage {
+                    width: img.width,
+                    height: img.height,
+                    colour_sha256: hsk_studio_prism::profile_hash(&colour),
+                    alpha_sha256: hsk_studio_prism::profile_hash(&alpha),
+                    colour,
+                    alpha,
+                },
+            );
+        }
+        Self(out)
+    }
+}
+
 // ---------- rendering ----------
 
-struct Assets<'a>(&'a NativeProposal);
+struct Assets<'a>(&'a NativeProposal, Option<&'a Images>);
 impl VectorAssets for Assets<'_> {
     fn path(&self, path_id: &str) -> Option<OwnedPath> {
         self.0.paths.iter().find(|p| p.path_id == path_id).map(|p| p.geometry.clone())
     }
-    fn image(&self, _: &StudioImageSource) -> Option<ImageInfo> {
-        None
+    fn image(&self, source: &StudioImageSource) -> Option<ImageInfo> {
+        let img = self.1?.0.get(&hsk_studio_composite::image_source_id(source))?;
+        Some(ImageInfo {
+            width: img.width,
+            height: img.height,
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            colour_sha256: img.colour_sha256,
+            alpha_sha256: img.alpha_sha256,
+        })
     }
 }
 
@@ -472,11 +544,28 @@ struct Sources<'a>(
     &'a hsk_studio_composite::PreparedVectors,
     Option<&'a PreparedText>,
     ColourTag,
+    Option<&'a Images>,
 );
 impl PlanSources for Sources<'_> {
-    /// Painted (gradient) row tiles of the vector layers.
+    /// Painted (gradient) row tiles of the vector layers, then decoded image paint sources.
     fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
-        self.0.vector_paint(key, self.1, self.3)
+        if let Some(t) = self.0.vector_paint(key, self.1, self.3) {
+            return Some(t);
+        }
+        let img = self.4?.0.get(self.0.image_source(key)?)?;
+        Some(TilePlanes {
+            width: img.width,
+            height: img.height,
+            colour: &img.colour,
+            colour_stride_bytes: u64::from(img.width) * 12,
+            alpha: &img.alpha,
+            alpha_stride_bytes: u64::from(img.width) * 4,
+            colour_sha256: img.colour_sha256,
+            alpha_sha256: img.alpha_sha256,
+            format: SampleFormat::RgbF32Le,
+            alpha_convention: AlphaConvention::Straight,
+            space: self.3,
+        })
     }
     fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
         if let Some(m) = self.0.vector_mask(key, self.1) {
@@ -524,6 +613,11 @@ pub const H: usize = 900;
 /// colon-separated part); `hidden` lists them. Groups composite as groups, so a refused leaf would
 /// otherwise block its whole page.
 pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
+    render_with(p, text, None)
+}
+
+/// [`render`] with decoded image paint sources.
+pub fn render_with(p: &NativeProposal, text: Option<&PreparedText>, images: Option<&Images>) -> Render {
     let cancel = CancellationToken::default();
     let mut hidden: Vec<String> = Vec::new();
     let mut refused: BTreeMap<String, u32> = BTreeMap::new();
@@ -533,7 +627,7 @@ pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
             &snap,
             &p.design,
             &p.vector_records,
-            &Assets(p),
+            &Assets(p, images),
             BlendSpace::Encoded,
             // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
             &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
@@ -586,7 +680,7 @@ pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
         };
         Renderer::with_threads(256, 4)
             .unwrap()
-            .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, text, space), &cancel, &mut grid)
+            .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, text, space, images), &cancel, &mut grid)
             .unwrap();
         return Render { w: W, px: grid.px, refused, outputs, rendered: outputs, ids, hidden };
     }
