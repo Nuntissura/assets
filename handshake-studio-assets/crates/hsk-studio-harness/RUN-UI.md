@@ -47,7 +47,12 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
   click the first point to close), Pencil (freehand drag fitted and smoothed; fidelity 0-4; ends
   within 4 px close), Knife (drag across filled vector layers: each is cut into separate closed
   regions), Shape builder (drag across overlapping regions of the stack's vector layers to merge
-  them, Alt to delete them), Arc, Grid, Polar grid, Spiral (drag; parameters in the row). Every
+  them, Alt to delete them), Arc, Grid, Polar grid, Spiral (drag; parameters in the row). Lane
+  SMB-ILLUSTRATOR-PEN-3: Width (drag outward from a stroke: variable-width profile), Reshape (drag a
+  path point; nearby anchors follow), Blob brush (filled strokes that merge with overlapping shapes
+  of the same fill), Paint bucket (click a face of the selected layer's vector network to fill it,
+  Alt to clear; crossings and T-junctions are split first); Direct drags network vertices; the
+  knife also cuts stroke-only paths into open pieces. Every
   vector edit is one Undo step and a path edit keeps the layer (chronicle `vector_paths`). The
   selected vector layer shows its path, anchors and handles.
 - Left: layer tree in stack order. Buttons New (empty raster layer above the selection), Dup,
@@ -95,7 +100,10 @@ constraint, break_mirroring, radius)`, `edit_path(layer, PathEdit)` (insert / de
 move anchor / move handle / bend / scissors / join / reverse), `draw_shape(ShapeKind, a, b, shift)`,
 `live_shape`, `set_live_shape`, `expand_shape`, `pathfinder_layers(PathfinderOp, layers)`,
 `curvature_point(x, y, corner, close_radius)`, `pencil_stroke(samples)`, `knife_cut(points)`,
-`shape_builder_layers(layers, gesture, delete)`, `stack_vector_layers`, `edit_path(layer,
+`shape_builder_layers(layers, gesture, delete)`, `stack_vector_layers`, `vector_network`,
+`promote_network`, `set_network`, `edit_network(layer, NetworkEdit)`, `network_paint_bucket(layer,
+point, fill)`, `set_width_point`, `clear_width`, `width_drag`, `reshape_drag`, `blob_brush_stroke`,
+`edit_path(layer,
 PathEdit::Corner { at, kind: Round | InvertedRound | Chamfer, radius })`,
 `offset_path_layer`, `outline_stroke_layer`, `vector_path`, `vector_entry`, `set_vector_tool` (CLI: `studio-harness develop
 SOURCE OUT --png|--jpeg [--adjust CONTROL VALUE]...`). `Viewer::state_json()` projects
@@ -128,5 +136,6 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
 - Vector layers: path records live in the session entry `vector` (saved with the package); a
   path edit is one chronicle `vector_paths` write (the layer keeps its id). Knife, shape builder
   and pathfinder results are polygons (curves flattened); the knife leaves a 0.01 px kerf.
-  Vector networks (STU-VEC-001/008), the width, reshape and blob-brush tools and the `fancy`
-  corner are not built; Illustrator parity of every tool is UNVERIFIED.
+  Networks are Folio `StudioVectorNetwork` records in the `vector` entry; network and
+  variable-width layers draw their fill and stroke outline through one colour tile (bilinear,
+  Approximate). The `fancy` corner is not built; Illustrator parity of every tool is UNVERIFIED.
