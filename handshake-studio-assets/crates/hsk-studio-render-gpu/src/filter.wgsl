@@ -42,6 +42,9 @@ const MED_MAX_N: u32 = 160u;
 fn usm_ch(o: f32, b: f32) -> f32 {
     let d = o - b;
     if (abs(d) * 255.0 >= p.threshold) {
+        if ((p.op & 0x100u) != 0u) {
+            return o + p.amount * d; // extended range: unclamped (filter_window_in)
+        }
         return clamp(o + p.amount * d, 0.0, 1.0);
     }
     return o;
@@ -60,7 +63,33 @@ fn unpremul(c: vec4<f32>) -> vec4<f32> {
     if (!(a > 0.0)) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
+    if ((p.op & 0x100u) != 0u) {
+        // Extended range (blur_math::unpremultiply_in): colour P / A unclamped.
+        return vec4<f32>(c.x / a, c.y / a, c.z / a, min(a, 1.0));
+    }
     return vec4<f32>(clamp(c.x / a, 0.0, 1.0), clamp(c.y / a, 0.0, 1.0), clamp(c.z / a, 0.0, 1.0), min(a, 1.0));
+}
+
+// Extended-range overflow marker shared by the extended passes (lane SMB-RENDER-GPU-EXTENDED-
+// ENVELOPE): alpha 2 (no admitted alpha exceeds 1; 1.5 leaves room for rounding). The finiteness
+// tests read the exponent bits, independent of the compiler's float NaN / inf assumptions.
+fn hsk_finite1(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+fn hsk_finite4(v: vec4<f32>) -> bool {
+    let e = bitcast<vec4<u32>>(v) & vec4<u32>(0x7f800000u);
+    return all(e != vec4<u32>(0x7f800000u));
+}
+fn hsk_marked(v: vec4<f32>) -> bool {
+    return v.w > 1.5 || !hsk_finite4(v);
+}
+const HSK_OVERFLOW: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 2.0);
+// The output of an extended pass: the marker when an input was marked or the result is not finite.
+fn hsk_out(v: vec4<f32>, marked: bool) -> vec4<f32> {
+    if (marked || !hsk_finite4(v)) {
+        return HSK_OVERFLOW;
+    }
+    return v;
 }
 
 // ---- 64-bit words as vec2<u32> (x = low, y = high) ----
@@ -177,6 +206,19 @@ fn median_channel(x: i32, y: i32, c: u32) -> f32 {
 
 fn median_at(x: i32, y: i32) -> vec4<f32> {
     let m = vec4<f32>(median_channel(x, y, 0u), median_channel(x, y, 1u), median_channel(x, y, 2u), median_channel(x, y, 3u));
+    if ((p.op & 0x100u) != 0u) {
+        // Extended range: any marked sample of the disc marks the output.
+        let r = i32(p.radius);
+        var marked = false;
+        for (var iy: i32 = -r; iy <= r; iy = iy + 1) {
+            for (var ix: i32 = -r; ix <= r; ix = ix + 1) {
+                if (ix * ix + iy * iy <= r * r) {
+                    marked = marked || hsk_marked(sample_at(x + ix, y + iy));
+                }
+            }
+        }
+        return hsk_out(unpremul(m), marked);
+    }
     return unpremul(m);
 }
 
@@ -188,12 +230,17 @@ fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(gid.x);
     let y = i32(gid.y);
     let i = gid.y * p.fw + gid.x;
-    switch (p.op) {
+    let extended = (p.op & 0x100u) != 0u;
+    switch (p.op & 0xffu) {
         case 0u: {
             let o = src[i];
             let b = aux[i];
-            if (o.w == 0.0) {
+            if (extended && (hsk_marked(o) || hsk_marked(b))) {
+                dst[i] = HSK_OVERFLOW;
+            } else if (o.w == 0.0) {
                 dst[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            } else if (extended) {
+                dst[i] = hsk_out(vec4<f32>(usm_ch(o.x, b.x), usm_ch(o.y, b.y), usm_ch(o.z, b.z), o.w), false);
             } else {
                 dst[i] = vec4<f32>(usm_ch(o.x, b.x), usm_ch(o.y, b.y), usm_ch(o.z, b.z), o.w);
             }

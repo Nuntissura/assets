@@ -50,7 +50,7 @@ use hsk_studio_pigment::transform_math::{
     EdgeMode, PreparedTransform, ResampleFilter, SampleSite, TransformError,
 };
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, BackendError, OutputStage, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
+    AlphaConvention, BackendError, ExtendedOp, OutputStage, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MASK_DENSITY_OPERATOR,
     MaskFormat, NoVector, Operator, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR,
     PlanError, PlanExtensions, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
@@ -1574,6 +1574,10 @@ impl RenderBackend<NoVector> for GpuBackend {
             // the host to the read-back (tests/gpu_view_transform.rs); the shared-texture output
             // refuses it (execute_inner).
             ExtOperator::DisplayView => true,
+            // Envelope operations in the extended range (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE):
+            // every one pigment defines except content-aware fill, which this backend does not run
+            // at all (tests/gpu_extended_envelope.rs).
+            ExtOperator::ExtendedEnvelope(op) => op.defined() && op != ExtendedOp::ContentAwareFill,
             ExtOperator::AdjustmentLayer
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
@@ -1989,7 +1993,7 @@ impl Exec<'_> {
             planes.height.to_ne_bytes(),
             filter.to_ne_bytes(),
             u32::from(clamp_edge).to_ne_bytes(),
-            0u32.to_ne_bytes(),
+            u32::from(self.extended).to_ne_bytes(),
             0u32.to_ne_bytes(),
         ] {
             params.extend_from_slice(&w);
@@ -2088,8 +2092,8 @@ impl Exec<'_> {
             replace: false,
             clip: false,
             density: 1.0,
-            // Effects are refused in an extended-range plan (sample_range_extended_combination).
-            extended: false,
+            // Effect colour over the running frame (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE).
+            extended: self.extended,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2146,8 +2150,8 @@ impl Exec<'_> {
             replace: false,
             clip: false,
             density: mask.map_or(1.0, |m| m.density),
-            // Adjustment layers are refused in an extended-range plan.
-            extended: false,
+            // Adjustment layer (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE: linear exposure only).
+            extended: self.extended,
         };
         let Some(env) = self.ext.as_ref() else {
             return Err(unsupported("plan_shape"));
@@ -2811,7 +2815,7 @@ impl Exec<'_> {
             FilterBuf::B => Ok(&bb.b),
         };
         let (src, dst, aux) = (pick(src)?, pick(dst)?, pick(aux)?);
-        let bytes = filter_params_bytes(op, chunk.width, chunk.height);
+        let bytes = filter_params_bytes(op, chunk.width, chunk.height, self.extended);
         ctx.queue.write_buffer(&bb.params, 0, &bytes);
         let bind = ctx.kernel.bind_blur(&ctx.device, &bb.params, src, dst, aux);
         let mut encoder = ctx
@@ -2846,7 +2850,7 @@ impl Exec<'_> {
             BlurIo::AToB => (&bb.a, &bb.b, level(0)?),
             BlurIo::MixInto { level: l, shape } => (&bb.b, level(l)?, level(shape)?),
         };
-        let bytes = blur_params_bytes(op, chunk.width, chunk.height, &blur.taps, opacity)
+        let bytes = blur_params_bytes(op, chunk.width, chunk.height, &blur.taps, opacity, self.extended)
             .ok_or_else(|| unsupported("blur_parameter"))?;
         ctx.queue.write_buffer(&bb.params, 0, &bytes);
         let bind = ctx.kernel.bind_blur(&ctx.device, &bb.params, src, dst, aux);
@@ -3323,7 +3327,7 @@ fn run(
             let scopes = ErrorScopes::push(device);
             // Shared-device output: the chunk goes straight into the caller's texture, no read-back.
             if let Some(out) = texture {
-                out.write_chunk(&ex.levels[0], rect, frame.width, margin)?;
+                out.write_chunk_in(&ex.levels[0], rect, frame.width, margin, extended)?;
                 if let Some(captured) = scopes.finish() {
                     return Err(submit_fault(ctx, "submit_fault", OUTPUT_LABEL, captured));
                 }
@@ -3399,7 +3403,7 @@ fn run(
                         *value = f32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
                     }
                     if extended
-                        && (!values.iter().all(|v| v.is_finite()) || values[3] > 1.0)
+                        && (!values.iter().all(|v| v.is_finite()) || values[3] > 1.5)
                     {
                         // The kernel's overflow marker (or a non-finite texel): the typed refusal
                         // render-cpu returns for a non-finite extended composite.
@@ -3440,6 +3444,12 @@ fn run(
             cx = cx.checked_add(side_w).ok_or_else(overflow)?;
         }
         cy = cy.checked_add(side_h).ok_or_else(overflow)?;
+    }
+    if let Some(out) = texture {
+        // Extended range on the shared texture: the pass flags overflowed texels instead of
+        // displaying them; the flag is read once here (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE).
+        let read = out.finish(extended)?;
+        ex.stats.bytes_read_back = ex.stats.bytes_read_back.saturating_add(read);
     }
     Ok(chunks)
 }
@@ -3487,7 +3497,10 @@ use shared::TextureOut;
 struct TextureOut<'a>(std::convert::Infallible, std::marker::PhantomData<&'a ()>);
 #[cfg(not(feature = "shared-device"))]
 impl TextureOut<'_> {
-    fn write_chunk(&self, _: &wgpu::Buffer, _: Rect, _: u32, _: u32) -> Result<(), GpuError> {
+    fn write_chunk_in(&self, _: &wgpu::Buffer, _: Rect, _: u32, _: u32, _: bool) -> Result<(), GpuError> {
+        match self.0 {}
+    }
+    fn finish(&self, _: bool) -> Result<u64, GpuError> {
         match self.0 {}
     }
 }

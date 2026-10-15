@@ -17,6 +17,14 @@
 //! CPU encoding is +-1 per channel (test tests/shared_device.rs
 //! shared_device_renders_into_the_callers_texture_without_readback).
 //!
+//! Extended-range plans (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE): the pass checks every texel for
+//! the kernel's overflow marker (alpha above 1.5) or a non-finite value; such a texel is NOT
+//! written and sets a 4-byte device flag, which the host reads once after the last chunk (the only
+//! read-back of this path, extended plans only) and turns into the typed refusal render-cpu
+//! returns, `Unsupported { sample_range_outside_unit }`. The texture then holds an unfinished
+//! frame the caller must not present (as with any `Err`). A unit-range plan never reads the flag
+//! and writes every texel exactly as before.
+//!
 //! Contract: the texture must be created on the same device, `Rgba8Unorm`, 2D, one sample,
 //! usage `STORAGE_BINDING`, and at least the plan extent in both dimensions; anything else is
 //! refused as `Backend(Sink(Rejected))` before any device work. The commands are submitted on the
@@ -24,7 +32,7 @@
 //! Device loss is the host's to detect: no device-lost or uncaptured-error callback is installed
 //! on a shared device (see `GpuContext::from_external`).
 #![deny(clippy::arithmetic_side_effects)]
-use super::{GpuBackend, GpuStats, State, overflow};
+use super::{GpuBackend, GpuStats, State, overflow, unsupported};
 use crate::device::{DeviceOptions, GpuContext};
 use crate::error::GpuError;
 use crate::pipeline::PipelineFault;
@@ -32,7 +40,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::{
     BackendError, ExecuteRequest, NoVector, PlanExtensions, PlanSources, RenderPlan,
-    RenderReceipt, SinkError, TileSink,
+    RenderReceipt, SAMPLE_RANGE_OPERATOR, SinkError, TileSink,
 };
 
 /// The only texture format the shared output writes (storage-writable in core WebGPU).
@@ -50,12 +58,13 @@ struct Params {
     size: vec2<u32>,
     frame_width: u32,
     margin: u32,
-    pad0: u32,
+    extended: u32,
     pad1: u32,
 };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> level: array<vec4<f32>>;
 @group(0) @binding(2) var target_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var<storage, read_write> overflow_flag: array<atomic<u32>, 1>;
 
 fn unit(v: f32) -> f32 {
     // NaN compares unequal to itself: map it to 0 like the CPU encoder.
@@ -78,6 +87,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let p = level[(id.y + params.margin) * params.frame_width + id.x + params.margin];
+    if params.extended != 0u {
+        // Overflow marker (alpha 2) or a non-finite texel: never displayed, flagged for the host.
+        let e = bitcast<vec4<u32>>(p) & vec4<u32>(0x7f800000u);
+        if p.a > 1.5 || any(e == vec4<u32>(0x7f800000u)) {
+            atomicStore(&overflow_flag[0], 1u);
+            return;
+        }
+    }
     let a8 = byte(p.a);
     let c8 = vec3<f32>(byte(encode(p.r)), byte(encode(p.g)), byte(encode(p.b)));
     let pre = floor(c8 * a8 / 255.0 + vec3<f32>(0.5));
@@ -90,6 +107,10 @@ struct OutputPipeline {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     params: wgpu::Buffer,
+    /// Set by the pass when an extended-range texel overflowed (lane
+    /// SMB-RENDER-GPU-EXTENDED-ENVELOPE); cleared before every execution.
+    flag: wgpu::Buffer,
+    flag_readback: wgpu::Buffer,
 }
 
 impl OutputPipeline {
@@ -136,6 +157,16 @@ impl OutputPipeline {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -157,14 +188,35 @@ impl OutputPipeline {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            let flag = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared overflow flag"),
+                size: FLAG_BYTES,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let flag_readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hsk-studio-render-gpu shared overflow flag readback"),
+                size: FLAG_BYTES,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
             Self {
                 pipeline,
                 layout,
                 params,
+                flag,
+                flag_readback,
             }
         })
     }
 }
+
+/// Bytes of the overflow flag (one `atomic<u32>`).
+const FLAG_BYTES: u64 = 4;
+/// Longest wait for the overflow-flag read-back.
+const FLAG_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// One execution's texture output (built by [`SharedDevice::render_to_texture`], used by `run`).
 pub(in crate::plan_sink) struct TextureOut<'a> {
@@ -179,19 +231,21 @@ pub(in crate::plan_sink) struct TextureOut<'a> {
 impl TextureOut<'_> {
     /// Encode the central `rect` of the finished frame in `level` (frame width `frame_width`,
     /// effect margin `margin`) into the target texture and submit on the caller's queue.
-    pub(in crate::plan_sink) fn write_chunk(
+    pub(in crate::plan_sink) fn write_chunk_in(
         &self,
         level: &wgpu::Buffer,
         rect: Rect,
         frame_width: u32,
         margin: u32,
+        extended: bool,
     ) -> Result<(), GpuError> {
         let dst_x = u32::try_from(rect.x.checked_sub(self.origin_x).ok_or_else(overflow)?)
             .map_err(|_| overflow())?;
         let dst_y = u32::try_from(rect.y.checked_sub(self.origin_y).ok_or_else(overflow)?)
             .map_err(|_| overflow())?;
         let mut params = Vec::with_capacity(32);
-        for word in [dst_x, dst_y, rect.width, rect.height, frame_width, margin, 0, 0] {
+        let ext = u32::from(extended);
+        for word in [dst_x, dst_y, rect.width, rect.height, frame_width, margin, ext, 0] {
             params.extend_from_slice(&word.to_le_bytes());
         }
         self.queue.write_buffer(&self.pipeline.params, 0, &params);
@@ -210,6 +264,10 @@ impl TextureOut<'_> {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&self.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.pipeline.flag.as_entire_binding(),
                 },
             ],
         });
@@ -233,6 +291,45 @@ impl TextureOut<'_> {
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(())
+    }
+
+    /// After the last chunk of an extended-range plan: read the overflow flag (4 bytes) and return
+    /// the typed refusal render-cpu returns when a texel overflowed. A unit-range plan reads
+    /// nothing. Returns the bytes read back.
+    pub(in crate::plan_sink) fn finish(&self, extended: bool) -> Result<u64, GpuError> {
+        if !extended {
+            return Ok(0);
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu shared overflow flag"),
+            });
+        encoder.copy_buffer_to_buffer(&self.pipeline.flag, 0, &self.pipeline.flag_readback, 0, FLAG_BYTES);
+        self.queue.submit(Some(encoder.finish()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pipeline
+            .flag_readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |outcome| {
+                let _ = tx.send(outcome);
+            });
+        let polled = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(FLAG_WAIT),
+        });
+        if polled.is_err() || !matches!(rx.try_recv(), Ok(Ok(()))) {
+            return Err(GpuError::Gpu("readback_map_failed"));
+        }
+        let flagged = {
+            let view = self.pipeline.flag_readback.slice(..).get_mapped_range();
+            view.iter().any(|b| *b != 0)
+        };
+        self.pipeline.flag_readback.unmap();
+        if flagged {
+            return Err(unsupported(SAMPLE_RANGE_OPERATOR));
+        }
+        Ok(FLAG_BYTES)
     }
 }
 
@@ -321,6 +418,8 @@ impl SharedDevice {
             origin_x: extent.x,
             origin_y: extent.y,
         };
+        // A fresh overflow flag for this execution (ordered before every pass on the queue).
+        self.queue.write_buffer(&self.output.flag, 0, &[0u8; FLAG_BYTES as usize]);
         self.backend.execute_inner(
             plan,
             extensions,

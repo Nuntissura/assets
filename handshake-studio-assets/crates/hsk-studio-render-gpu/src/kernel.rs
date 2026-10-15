@@ -376,7 +376,10 @@ pub(crate) enum FilterOp {
 }
 
 /// The `FilterP` block of `op` over a `frame_w x frame_h` frame.
-pub(crate) fn filter_params_bytes(op: FilterOp, frame_w: u32, frame_h: u32) -> Vec<u8> {
+/// `filter.wgsl` op flag of an extended-range pass (bit 8 of `FilterP.op`).
+pub(crate) const FILTER_EXTENDED_BIT: u32 = 0x100;
+
+pub(crate) fn filter_params_bytes(op: FilterOp, frame_w: u32, frame_h: u32, extended: bool) -> Vec<u8> {
     // fw, fh, op, radius, origin_x, origin_y, seed_lo, seed_hi, amount, threshold, dist, mono
     let (code, radius, origin, seed, amount, threshold, dist, mono) = match op {
         FilterOp::Unsharp { amount, threshold } => (0u32, 0u32, (0i32, 0i32), 0u64, amount, threshold, 0u32, 0u32),
@@ -387,6 +390,7 @@ pub(crate) fn filter_params_bytes(op: FilterOp, frame_w: u32, frame_h: u32) -> V
             (4, 0, origin, seed, amount, 0.0, u32::from(gaussian), u32::from(mono))
         }
     };
+    let code = if extended { code | FILTER_EXTENDED_BIT } else { code };
     let words = [
         frame_w,
         frame_h,
@@ -428,6 +432,7 @@ pub(crate) fn blur_params_bytes(
     frame_h: u32,
     taps: &[f32],
     opacity: f32,
+    extended: bool,
 ) -> Option<Vec<u8>> {
     if taps.len() > BLUR_MAX_TAPS || taps.is_empty() {
         return None;
@@ -440,7 +445,7 @@ pub(crate) fn blur_params_bytes(
         BlurOp::Mix => 2,
     };
     let mut out = Vec::with_capacity(BLURP_BYTES as usize);
-    for w in [frame_w, frame_h, half, n, op, 0, opacity.to_bits(), 0] {
+    for w in [frame_w, frame_h, half, n, op, u32::from(extended), opacity.to_bits(), 0] {
         out.extend_from_slice(&w.to_ne_bytes());
     }
     for t in taps {

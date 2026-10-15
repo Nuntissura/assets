@@ -119,6 +119,21 @@ fn hsk_finite3(v: vec3<f32>) -> bool {
     return all(e != vec3<u32>(0x7f800000u));
 }
 
+// Extended-range overflow marker shared by the extended passes (lane SMB-RENDER-GPU-EXTENDED-
+// ENVELOPE): alpha 2 (no admitted alpha exceeds 1; 1.5 leaves room for rounding). The finiteness
+// tests read the exponent bits, independent of the compiler's float NaN / inf assumptions.
+fn hsk_finite1(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+fn hsk_finite4(v: vec4<f32>) -> bool {
+    let e = bitcast<vec4<u32>>(v) & vec4<u32>(0x7f800000u);
+    return all(e != vec4<u32>(0x7f800000u));
+}
+fn hsk_marked(v: vec4<f32>) -> bool {
+    return v.w > 1.5 || !hsk_finite4(v);
+}
+
+
 // `Params.flags` bit 2 (extended-range output stage, pigment `composite_over_extended`): linear
 // dodge is the unclamped `cb + cs`, screen is Foundry Nuke's float screen (`cb + cs - cb cs` where
 // either value is at most 1, else `max`), and the result is not clamped to [0, 1]. Pigment admits
@@ -265,12 +280,21 @@ fn exposure_ch(x: f32) -> f32 {
     if (g != 1.0) {
         lin = select(pow(x, g), 0.0, x <= 0.0);
     }
-    var v = clamp(lin * gain + offset, 0.0, 1.0);
+    // Extended range (`Params.flags` bit 2; pigment `PreparedAdjustment::apply_in`): no unit
+    // clamps; pigment admits only linear-light exposure there (g == 1).
+    let extended = (p.flags & 4u) != 0u;
+    var v = lin * gain + offset;
+    if (!extended) {
+        v = clamp(v, 0.0, 1.0);
+    }
     if (gamma != 1.0 && v > 0.0) {
         v = pow(v, 1.0 / gamma);
     }
     if (g != 1.0 && v > 0.0) {
         v = pow(v, 1.0 / g);
+    }
+    if (extended) {
+        return v;
     }
     return clamp(v, 0.0, 1.0);
 }
@@ -402,6 +426,9 @@ fn adjust_apply(rgb: vec3<f32>) -> vec3<f32> {
             out = rgb;
         }
     }
+    if ((p.flags & 4u) != 0u) {
+        return out;
+    }
     return clamp(out, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
@@ -416,6 +443,10 @@ fn adjust(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let di = (p.ry + gid.y) * p.chunk_w + (p.rx + gid.x);
     let b = dst[di];
+    let extended = (p.flags & 4u) != 0u;
+    if (extended && b.a > 1.5) {
+        return; // an overflow marker stays
+    }
     if (b.a <= 0.0) {
         dst[di] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         return;
@@ -430,6 +461,16 @@ fn adjust(@builtin(global_invocation_id) gid: vec3<u32>) {
     let adjusted = adjust_apply(b.rgb);
     let k = p.opacity * m * blend_if_weight(adjusted, b.rgb);
     let blended = blend(p.mode, b.rgb, adjusted);
+    if (extended) {
+        // pigment composite_adjustment_in: the lerp unclamped; a non-finite result is the marker.
+        let lerp = b.rgb + (blended - b.rgb) * k;
+        if (!hsk_finite3(lerp)) {
+            dst[di] = HSK_OVERFLOW;
+            return;
+        }
+        dst[di] = vec4<f32>(lerp, b.a);
+        return;
+    }
     let rgb = clamp(b.rgb + (blended - b.rgb) * k, vec3<f32>(0.0), vec3<f32>(1.0));
     dst[di] = vec4<f32>(rgb, b.a);
 }

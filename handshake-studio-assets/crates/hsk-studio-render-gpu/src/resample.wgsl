@@ -21,7 +21,8 @@ struct ResampleParams {
     filter_kind: u32,
     // 0 = transparent, 1 = clamp
     edge: u32,
-    pad0: u32,
+    // 1 = extended range (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE): P / A unclamped
+    ext: u32,
     pad1: u32,
 };
 
@@ -108,6 +109,17 @@ fn resample(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if (a <= 0.0) {
         dst_out[idx] = vec4<f32>(0.0);
+        return;
+    }
+    if (rp.ext != 0u) {
+        // transform_math::sample_rgba_in(Extended); a non-finite result is the overflow marker.
+        let c = p / a;
+        let e = bitcast<vec3<u32>>(c) & vec3<u32>(0x7f800000u);
+        if (any(e == vec3<u32>(0x7f800000u))) {
+            dst_out[idx] = vec4<f32>(0.0, 0.0, 0.0, 2.0);
+        } else {
+            dst_out[idx] = vec4<f32>(c, min(a, 1.0));
+        }
         return;
     }
     dst_out[idx] = vec4<f32>(clamp(p / a, vec3<f32>(0.0), vec3<f32>(1.0)), min(a, 1.0));

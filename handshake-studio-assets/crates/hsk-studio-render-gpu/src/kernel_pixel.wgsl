@@ -16,7 +16,7 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let di = (p.ry + gid.y) * p.chunk_w + (p.rx + gid.x);
     let extended = (p.flags & 4u) != 0u;
-    if (extended && dst[di].a > 1.0) {
+    if (extended && dst[di].a > 1.5) {
         return; // an overflow marker stays
     }
     var s: vec4<f32>;
@@ -27,8 +27,9 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         s = src[di];
     }
-    if (extended && s.a > 1.0) {
-        dst[di] = HSK_OVERFLOW; // a group result that overflowed
+    if (extended && hsk_marked(s)) {
+        // A group result, frame or envelope pass output that overflowed (marker or non-finite).
+        dst[di] = HSK_OVERFLOW;
         return;
     }
     var m: f32 = 1.0;
