@@ -14,6 +14,7 @@ pub mod filter_math;
 pub mod masked_patch;
 pub mod render_plan;
 pub mod retouch;
+pub mod select_tools;
 pub mod selection;
 pub mod tile;
 pub mod transform_math;
