@@ -19,6 +19,10 @@ mod wide_job;
 pub use wide_job::*;
 mod wide_plan;
 pub use wide::*;
+mod view_transform;
+pub use view_transform::{
+    DisplayEncoding, VIEW_TRANSFORM_DESCRIPTOR, ViewTransformId, aces1_sdr_video_from_aces2065,
+};
 mod working;
 pub use working::{
     WORKING_PROFILE_LINEAR_SRGB, WORKING_PROFILE_LINEAR_SRGB_ADMITTED, WORKING_PROFILE_LINEAR_SRGB_ADMITTED_SHA256_HEX,

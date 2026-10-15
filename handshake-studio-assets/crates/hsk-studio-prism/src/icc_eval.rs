@@ -85,7 +85,7 @@ const EXP_TAB: [f64; TAB] = {
 
 /// Natural logarithm of a finite x > 0 (absolute error about 2e-16 plus |ln x| * 1e-16).
 #[inline]
-fn ln(x: f64) -> f64 {
+pub(crate) fn ln(x: f64) -> f64 {
     let mut bits = x.to_bits();
     let mut e = ((bits >> 52) & 0x7ff) as i32;
     if e == 0 {
@@ -123,7 +123,7 @@ fn scale2(v: f64, n: i32) -> f64 {
 }
 
 #[inline]
-fn exp(z: f64) -> f64 {
+pub(crate) fn exp(z: f64) -> f64 {
     if z.is_nan() {
         return z;
     }
