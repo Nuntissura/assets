@@ -71,7 +71,11 @@ pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel};
 pub mod arrange;
 pub mod brushes;
 pub mod envelope;
-/// Lane SMB-ILLUSTRATOR-INTEROP.
+/// Lane SMB-ILLUSTRATOR-INTEROP. Feature `vector-interop` (harness -> interop-vector edge, requested
+/// 2026-10-15 in builders/dep-requests.jsonl): inert until the steward adds the edge to the manifest.
+#[allow(unexpected_cfgs)]
+#[cfg(feature = "vector-interop")]
+pub mod interop;
 pub mod pdf_export;
 pub mod swatch;
 pub use arrange::{AlignTarget, TransformOp};
