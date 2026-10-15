@@ -7,9 +7,11 @@
 //! Pure compute: no ports, no leases, no Folio writes. Every formula is a documented Studio
 //! reading, class Approximate; Photoshop parity is UNVERIFIED (oracle list D5).
 #![deny(clippy::arithmetic_side_effects)]
+pub mod magnetic;
 pub mod maxflow;
 pub mod quick;
 pub mod refine;
+pub mod refine_brush;
 pub mod wand;
 
 use crate::brush::BrushError;
@@ -97,6 +99,19 @@ pub(crate) fn admit_plane(bounds: Rect, limits: &SelectionLimits) -> Result<usiz
         return Err(Error::BudgetExceeded);
     }
     usize::try_from(bounds.area()).map_err(|_| Error::Overflow)
+}
+
+/// Smallest rectangle holding both (checked).
+pub(crate) fn union_rect(a: Rect, b: Rect) -> Result<Rect, Error> {
+    let (ae, af) = a.end()?;
+    let (be, bf) = b.end()?;
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    Ok(Rect {
+        x,
+        y,
+        width: u32::try_from(ae.max(be).checked_sub(x).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?,
+        height: u32::try_from(af.max(bf).checked_sub(y).ok_or(Error::Overflow)?).map_err(|_| Error::Overflow)?,
+    })
 }
 
 /// Row-major index of `(x, y)` inside `bounds`, `None` outside.

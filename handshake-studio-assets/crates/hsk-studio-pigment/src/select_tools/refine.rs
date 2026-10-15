@@ -482,13 +482,45 @@ pub fn refine_edge(
     ctx: &SelectionContext,
     limits: &ToolLimits,
 ) -> Result<RefineOutput, ToolError> {
+    refine_with_marks(layers, active, selection, &TrimapMarks::default(), opts, ctx, limits)
+}
+
+/// Painted trimap marks of the refinement brushes (STU-RAS-122): pixels with coverage >= 0.5 in
+/// `unknown` join the matte band; `foreground` / `background` pin pixels to 1 / 0 (known, outside
+/// the band). Later marks win in the order unknown, foreground, background.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TrimapMarks<'a> {
+    pub unknown: Option<&'a CoveragePlane>,
+    pub foreground: Option<&'a CoveragePlane>,
+    pub background: Option<&'a CoveragePlane>,
+}
+
+fn marked(plane: Option<&CoveragePlane>, x: i64, y: i64) -> bool {
+    plane.is_some_and(|p| p.at(x, y) >= 32768)
+}
+
+/// [`refine_edge`] with painted trimap marks.
+pub fn refine_with_marks(
+    layers: &[ColourView<'_>],
+    active: usize,
+    selection: &CoveragePlane,
+    marks: &TrimapMarks<'_>,
+    opts: &RefineOptions,
+    ctx: &SelectionContext,
+    limits: &ToolLimits,
+) -> Result<RefineOutput, ToolError> {
     check(opts)?;
     let reach_f = opts.radius.ceil() + opts.smooth.ceil() + f64::from(opts.window_radius) + 2.0;
     if reach_f > 1.0e9 {
         return Err(Error::Overflow.into());
     }
     let reach = reach_f as i64;
-    let sel = selection.bounds;
+    let mut sel = selection.bounds;
+    for m in [marks.unknown, marks.foreground].into_iter().flatten() {
+        if m.bounds.area() > 0 {
+            sel = if sel.area() == 0 { m.bounds } else { super::union_rect(sel, m.bounds)? };
+        }
+    }
     let (sx, sy) = sel.end()?;
     let (cx, cy) = ctx.canvas.end()?;
     let x0 = sel.x.saturating_sub(reach).max(ctx.canvas.x);
@@ -595,13 +627,28 @@ pub fn refine_edge(
     } else {
         vec![opts.radius; n]
     };
-    let unknown: Vec<bool> = (0..n)
+    let mut unknown: Vec<bool> = (0..n)
         .map(|i| {
             let d2 = if hard.get(i) == Some(&true) { to_bg.get(i) } else { to_fg.get(i) };
             let dist = d2.copied().unwrap_or(f64::INFINITY).sqrt() - 0.5;
             dist < band_radius.get(i).copied().unwrap_or(0.0)
         })
         .collect();
+    // Painted marks: unknown joins the band, foreground / background pin known values.
+    for (i, (u, h)) in unknown.iter_mut().zip(hard.iter_mut()).enumerate() {
+        let (x, y) = coords_of(region, i);
+        if marked(marks.unknown, x, y) {
+            *u = true;
+        }
+        if marked(marks.foreground, x, y) {
+            *u = false;
+            *h = true;
+        }
+        if marked(marks.background, x, y) {
+            *u = false;
+            *h = false;
+        }
+    }
     let band_pixels = unknown.iter().filter(|u| **u).count() as u64;
     let target: Vec<f64> = hard.iter().map(|h| if *h { 1.0 } else { 0.0 }).collect();
     let r = opts.window_radius as usize;

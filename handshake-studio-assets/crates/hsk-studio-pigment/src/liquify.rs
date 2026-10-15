@@ -92,8 +92,9 @@ impl Default for LiquifyLimits {
     }
 }
 
-/// The liquify tools of STU-FX-024 (turbulence and mesh clone are not implemented).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The liquify tools of STU-FX-024 and STU-RAS-140 (turbulence and mesh clone: lane
+/// SMB-PS-SELECT-LIQUIFY-2).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LiquifyTool {
     ForwardWarp,
     PushLeft,
@@ -102,6 +103,43 @@ pub enum LiquifyTool {
     Bloat,
     Reconstruct,
     Smooth,
+    /// Adds a smooth seeded value-noise displacement: per dab
+    /// `D += 0.05 size rate pressure w n(v)`, `n` bilinear between lattice values in `[-1, 1]`
+    /// (SplitMix64 of `(seed, cell, axis)`) on cells of `size / 2` pixels.
+    Turbulence { seed: u64 },
+    /// Copies the distortion found at `v + (dx, dy)`: `D' = D + k w (D(v + offset) - D)`,
+    /// `k = min(1, rate pressure)`.
+    MeshClone { dx: f64, dy: f64 },
+}
+
+fn splitmix(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Lattice value in `[-1, 1]` of cell `(i, j)` and `axis`.
+fn lattice(seed: u64, i: i64, j: i64, axis: u64) -> f64 {
+    let h = splitmix(seed ^ splitmix((i as u64).wrapping_mul(0x632B_E59B_D9B4_E019) ^ splitmix((j as u64) ^ axis.wrapping_mul(0x8CB9_2BA7_2F3D_8DD7))));
+    (h >> 11) as f64 / 9_007_199_254_740_992.0 * 2.0 - 1.0
+}
+
+/// Smooth value noise (bilinear lattice, smoothstep weights) at `(x, y)` with cell `cell`.
+fn value_noise(seed: u64, x: f64, y: f64, cell: f64, axis: u64) -> f64 {
+    let (u, v) = (x / cell, y / cell);
+    let (i, j) = (u.floor(), v.floor());
+    let (tx, ty) = (u - i, v - j);
+    let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+    let (i, j) = (i as i64, j as i64);
+    let (i1, j1) = (i.saturating_add(1), j.saturating_add(1));
+    let a = lattice(seed, i, j, axis);
+    let b = lattice(seed, i1, j, axis);
+    let c = lattice(seed, i, j1, axis);
+    let d = lattice(seed, i1, j1, axis);
+    let top = a + (b - a) * sx;
+    let bottom = c + (d - c) * sx;
+    top + (bottom - top) * sy
 }
 
 /// STU-RAS-142 liquify brush. No bound is declared: only out-of-domain values refuse (size must
@@ -259,6 +297,10 @@ impl LiquifyMesh {
         for v in [brush.size, brush.density, brush.pressure, brush.rate] {
             finite(v)?;
         }
+        if let LiquifyTool::MeshClone { dx, dy } = tool {
+            finite(dx)?;
+            finite(dy)?;
+        }
         if brush.size <= 0.0 || brush.density < 0.0 || brush.pressure < 0.0 || brush.rate < 0.0 {
             return Err(LiquifyError::OutOfRange);
         }
@@ -342,6 +384,16 @@ impl LiquifyMesh {
                         LiquifyTool::Reconstruct => {
                             let k = rate * strength * w;
                             if k >= 1.0 { [0.0, 0.0] } else { [d[0] * (1.0 - k), d[1] * (1.0 - k)] }
+                        }
+                        LiquifyTool::Turbulence { seed } => {
+                            let amp = 0.05 * brush.size * rate * strength * w;
+                            let cell = (brush.size / 2.0).max(1.0);
+                            [d[0] + amp * value_noise(seed, vx, vy, cell, 0), d[1] + amp * value_noise(seed, vx, vy, cell, 1)]
+                        }
+                        LiquifyTool::MeshClone { dx, dy } => {
+                            let k = (rate * strength).min(1.0) * w;
+                            let src = self.displacement_at(vx + dx, vy + dy);
+                            [d[0] + k * (src[0] - d[0]), d[1] + k * (src[1] - d[1])]
                         }
                         LiquifyTool::Smooth => {
                             let k = (rate * strength * w).min(1.0);
@@ -491,4 +543,4 @@ fn vertex_pixel(bounds: Rect, spacing: u32, cols: u32, k: usize) -> (i64, i64) {
 }
 
 /// Liquify surface description (Studio readings; Photoshop NOT_PROVEN, UNVERIFIED, D5).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"liquify","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-140 Liquify","STU-RAS-142 Liquify brush size/density/pressure/rate, freeze/thaw masks are StudioMask values","STU-FX-024"],"mesh":"LiquifyMesh{bounds, spacing, cols, rows, disp backward displacement per vertex, freeze}; serde (re-editable); bilinear between vertices","tools":["forward_warp","push_left","twirl cw|ccw","pucker","bloat","reconstruct","smooth"],"compose":"D'(p) = q + D(q) - p","render":"per pixel translation through transform_math::PreparedTransform (nearest|bilinear|bicubic, rule 1 exact centre): identity / reconstruct_all = byte copy","freeze":"set_freeze(CoveragePlane) per-vertex; thaw_all","limits":{"max_vertices":4194304,"max_dabs":100000,"max_work":4294967296},"not_implemented":["turbulence","mesh_clone","face-aware sliders","GPU path"],"parity":"NOT_PROVEN"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"liquify","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-140 Liquify","STU-RAS-142 Liquify brush size/density/pressure/rate, freeze/thaw masks are StudioMask values","STU-FX-024"],"mesh":"LiquifyMesh{bounds, spacing, cols, rows, disp backward displacement per vertex, freeze}; serde (re-editable); bilinear between vertices","tools":["forward_warp","push_left","twirl cw|ccw","pucker","bloat","reconstruct","smooth","turbulence(seed): smooth seeded value noise, 0.05 size rate pressure w per dab, cells size/2","mesh_clone(dx,dy): D += min(1, rate pressure) w (D(v+offset) - D)"],"compose":"D'(p) = q + D(q) - p","render":"per pixel translation through transform_math::PreparedTransform (nearest|bilinear|bicubic, rule 1 exact centre): identity / reconstruct_all = byte copy","freeze":"set_freeze(CoveragePlane) per-vertex; thaw_all","limits":{"max_vertices":4194304,"max_dabs":100000,"max_work":4294967296},"not_implemented":["face-aware sliders","GPU path"],"parity":"NOT_PROVEN"}"#;
