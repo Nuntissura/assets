@@ -24,7 +24,7 @@
 //! [`MAX_ACTIONS_PER_DISPATCH`] actions; the clock saturates.
 use hsk_studio_folio::{
     CubicBezier, Navigation, NodeKind, Parent, StudioAction, StudioDesignRecords, StudioDocument,
-    StudioReaction, StudioTrigger, StudioValue,
+    StudioReaction, StudioTrigger, StudioValue, TransitionType,
 };
 use std::collections::BTreeMap;
 
@@ -54,6 +54,9 @@ pub struct ActiveTransition {
     pub start_ms: u64,
     pub duration_ms: u32,
     pub easing: CubicBezier,
+    /// Layers are paired and tweened (`SMART_ANIMATE`, or a directional transition with
+    /// `match_layers`, STU-PRO-117/118); the host draws it through [`crate::smart_animate_frame`].
+    pub match_layers: bool,
 }
 
 /// What the running prototype shows.
@@ -359,6 +362,8 @@ impl PlayerSession {
                                         start_ms: self.clock_ms,
                                         duration_ms: t.duration,
                                         easing,
+                                        match_layers: t.transition_type == TransitionType::SmartAnimate
+                                            || t.match_layers == Some(true),
                                     });
                                     events.push(PlayerEvent::TransitionStarted { to: dest, duration_ms: t.duration });
                                 }

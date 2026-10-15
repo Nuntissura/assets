@@ -20,6 +20,7 @@ mod folio_bridge;
 mod instance_resolution;
 mod player;
 mod prototype;
+mod smart_animate;
 
 pub use auto_layout::{AutoLayoutResult, LayoutLimits, PlacedBox, solve_auto_layout};
 pub use constraints::{PlacedNode, RectPt, SizePt, apply_constraints, resize_component};
@@ -29,6 +30,10 @@ pub use instance_resolution::{
     DroppedOverride, Limits, OverrideEdit, OverrideProposal, Resolution, ResolvedField,
     ResolvedVariable, Source, VariableTable, check_footprint, is_overridable, propose_overrides,
     rematch_overrides, resolve_instance, resolve_variable, swap_component, switch_variant,
+};
+pub use smart_animate::{
+    MAX_SMART_DEPTH, MAX_SMART_LAYERS, SmartDrawLayer, SmartFrame, SmartLayer, SmartMatch, SmartProps,
+    SmartSide, interpolate, match_layers, smart_animate_frame,
 };
 pub use prototype::{FlowLimits, FlowReport, FlowWarning, PrototypeFlow, validate_flow};
 pub use player::{
