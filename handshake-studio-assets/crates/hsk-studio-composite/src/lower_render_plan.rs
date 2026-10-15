@@ -1531,6 +1531,17 @@ impl InputsLowering {
             return Some(plane.mask());
         }
         let (_, layer, row) = self.vector_rows.iter().find(|(k, _, _)| *k == key)?;
+        // A painted stroke row has two keys for one (layer, row): its tile and its stroke mask. The
+        // tile key is not a mask (callers that try the mask first then serve the tile, e.g. the
+        // composition static path, found by lane SMB-COMPOSITE-VECTOR-MASK).
+        if self
+            .plan
+            .nodes
+            .iter()
+            .any(|n| matches!(n, PlanNode::Tile(t) if t.key == key))
+        {
+            return None;
+        }
         vectors.plane(layer)?.stroke_mask(*row)
     }
     /// The painted (gradient or pattern) row tile behind `key`, in the plan's colour tag `space`.
