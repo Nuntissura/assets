@@ -6,7 +6,7 @@
 #![cfg(feature = "motion")]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
-    COMPOSITION_LAYER_CLIPPED, COMPOSITION_LAYER_CONTENT, COMPOSITION_PRECOMP_COLLAPSE,
+    COMPOSITION_LAYER_CLIPPED, COMPOSITION_PRECOMP_COLLAPSE,
     COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, COMPOSITION_PRECOMP_PAYLOAD,
     COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH, CompositionInput, CompositionTemporalSource,
 };
@@ -193,6 +193,8 @@ fn source_of(doc: &Value, rec: &Value, pixels: &Pixels, id: &str) -> Result<Comp
         resolver: &Available,
         blend_space: BlendSpace::Encoded,
         info: &Info(pixels),
+        space: scenes::space(),
+        inputs: hsk_studio_composite::RenderInputs::default(),
     };
     CompositionTemporalSource::new(&input, &CancellationToken::default())
 }
@@ -329,9 +331,10 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_COLLAPSE);
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":false})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
-        // Content other than raster tiles or a null layer.
+        // A vector layer goes through the static path (lane SMB-COMPOSITE-COMPOSITION-2), which
+        // lowers the layer's own graph operation; this fixture's vector layer has none.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 5))).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_LAYER_CONTENT);
+        assert_eq!(unsupported(e), hsk_studio_composite::temporal::composition::COMPOSITION_LAYER_NOT_IN_GRAPH);
         // A clipped layer.
         let mut doc = document();
         doc["layers"][2]["appearance"] = json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":2,"clipped":true,"isolation":"isolated"});

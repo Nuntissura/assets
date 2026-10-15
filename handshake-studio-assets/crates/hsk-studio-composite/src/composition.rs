@@ -51,6 +51,7 @@ use hsk_studio_pigment::render_plan::{
     MaskInput, OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
     RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
+use hsk_studio_pigment::adjust_math::AdjustmentOp;
 use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter};
 use hsk_studio_pigment::{Mask, Rect};
 use std::collections::BTreeMap;
@@ -67,6 +68,9 @@ pub const DEFAULT_MAX_SURFACES: usize = 256;
 pub const SURFACE_BYTES_PER_PIXEL: u64 = 16;
 /// Bytes per pixel of a track-matte coverage plane (`coverage_u16le`).
 pub const MATTE_BYTES_PER_PIXEL: u64 = 2;
+/// Refusal keys of composition layers composite cannot lower.
+pub const ADJUSTMENT_TRANSFORM: &str = "composition_adjustment_transform";
+pub const ADJUSTMENT_MATTE: &str = "composition_adjustment_matte";
 /// Exactness-ledger key of a track matte: the matte coverage is quantised to 16 bits and the
 /// luma weights are a Studio reading, so the class is `Approximate`.
 pub const TRACK_MATTE_KEY: &str = "track_matte";
@@ -97,6 +101,79 @@ pub enum SceneContent {
     /// A nested composition evaluated at the layer's source tick; its content rect is
     /// `(0, 0, width, height)` of the nested composition.
     Precomp(Box<SceneComposition>),
+    /// A static layer subtree (masks, effects, blur, vector and text planes; the document's static
+    /// lowering with the layer's opacity and blend left to the composition), rendered into a
+    /// surface over `StaticContent::rect` and transformed like a raster layer.
+    Static(Box<StaticContent>),
+    /// An adjustment layer (STU-MOT-005 `adjustment`): pigment's adjustment over everything below
+    /// it in the composition, on a transparent placeholder over the composition rect.
+    Adjustment(AdjustmentOp),
+}
+
+/// A caller-independent coverage plane a static subtree reads (text, vector and stroke coverage).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnedMask {
+    pub bounds: Rect,
+    pub sample_format: String,
+    pub bytes: Vec<u8>,
+    pub stride_bytes: u64,
+    pub sha256: [u8; 32],
+}
+
+/// A static layer subtree lowered by composite's static path (see [`SceneContent::Static`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StaticContent {
+    pub plan: RenderPlan,
+    pub extensions: PlanExtensions,
+    /// The surface the plan renders: the layer's content extent grown by its effect and blur
+    /// support (the plan's target extent).
+    pub rect: Rect,
+    /// Plan keys -> caller tile ids ([`ScenePixels::tile`]: raster tiles, image paints).
+    pub tiles: BTreeMap<SourceKey, String>,
+    /// Plan keys -> caller mask ids ([`ScenePixels::mask`]: Folio mask tiles).
+    pub masks: BTreeMap<SourceKey, String>,
+    /// Plan keys -> owned coverage planes (text, vector fill and stroke coverage).
+    pub owned_masks: BTreeMap<SourceKey, OwnedMask>,
+    /// Plan keys -> owned tiles (vector gradient and pattern rows).
+    pub owned_tiles: BTreeMap<SourceKey, Surface>,
+}
+
+struct StaticSources<'a> {
+    content: &'a StaticContent,
+    pixels: &'a dyn ScenePixels,
+}
+
+impl PlanSources for StaticSources<'_> {
+    fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        if let Some(s) = self.content.owned_tiles.get(&key) {
+            return Some(TilePlanes {
+                width: s.width,
+                height: s.height,
+                colour: &s.colour,
+                colour_stride_bytes: u64::from(s.width).checked_mul(12)?,
+                alpha: &s.alpha,
+                alpha_stride_bytes: u64::from(s.width).checked_mul(4)?,
+                colour_sha256: s.colour_sha256,
+                alpha_sha256: s.alpha_sha256,
+                format: SampleFormat::RgbF32Le,
+                alpha_convention: AlphaConvention::Straight,
+                space: self.content.plan.target.space,
+            });
+        }
+        self.pixels.tile(self.content.tiles.get(&key)?)
+    }
+    fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
+        if let Some(m) = self.content.owned_masks.get(&key) {
+            return Some(Mask {
+                bounds: m.bounds,
+                sample_format: &m.sample_format,
+                bytes: &m.bytes,
+                stride_bytes: m.stride_bytes,
+                sha256: m.sha256,
+            });
+        }
+        self.pixels.mask(self.content.masks.get(&key)?)
+    }
 }
 
 /// Which channel of the rendered matte layer becomes the coverage (STU-CMP-030 `channel`).
@@ -164,6 +241,11 @@ impl SceneComposition {
 /// Caller resolution of [`SceneTile::tile_id`] to immutable planes (already in the plan's tag).
 pub trait ScenePixels: Sync {
     fn tile(&self, tile_id: &str) -> Option<TilePlanes<'_>>;
+    /// A caller coverage plane of a static subtree ([`StaticContent::masks`]). Default: none.
+    fn mask(&self, mask_id: &str) -> Option<Mask<'_>> {
+        let _ = mask_id;
+        None
+    }
 }
 
 /// Bounds of one scene lowering / render (hostile-input bounds, V4-02).
@@ -508,6 +590,8 @@ fn lower_inner(
     let mut root_layers: Vec<Layer> = Vec::new();
     // (root layer index, transform) per resampled layer.
     let mut transforms: Vec<(usize, LayerTransform)> = Vec::new();
+    // (root layer index, adjustment) per adjustment layer.
+    let mut adjustments: Vec<(usize, AdjustmentOp)> = Vec::new();
     let mut rendered = Vec::new();
     let mut skipped = Vec::new();
     let surfaces_before = charges.surfaces;
@@ -538,7 +622,7 @@ fn lower_inner(
         let placement = classify(id, &layer.matrix)?;
         let has_content = match &layer.content {
             SceneContent::Tiles(t) => !t.is_empty(),
-            SceneContent::Precomp(_) => true,
+            SceneContent::Precomp(_) | SceneContent::Static(_) | SceneContent::Adjustment(_) => true,
             SceneContent::None => false,
         };
         let matte_empty = layer
@@ -551,6 +635,35 @@ fn lower_inner(
             || matches!(placement, Placement::Collapsed)
         {
             skipped.push(id.to_owned());
+            continue;
+        }
+        if let SceneContent::Adjustment(op) = &layer.content {
+            if !layer.matrix.is_identity() {
+                return Err(TemporalError::Unsupported {
+                    layer_id: id.to_owned(),
+                    feature: ADJUSTMENT_TRANSFORM,
+                });
+            }
+            if layer.matte.is_some() {
+                return Err(TemporalError::Unsupported {
+                    layer_id: id.to_owned(),
+                    feature: ADJUSTMENT_MATTE,
+                });
+            }
+            let input = out.push(PlanNode::Solid {
+                rect: scene.rect(),
+                rgba: [0.0; 4],
+            })?;
+            adjustments.push((root_layers.len(), op.clone()));
+            #[allow(clippy::cast_possible_truncation)]
+            root_layers.push(Layer {
+                input,
+                mode: layer.mode,
+                opacity: layer.opacity as f32,
+                fill_opacity: layer.fill_opacity as f32,
+                mask: None,
+            });
+            rendered.push(id.to_owned());
             continue;
         }
         // (plan source key, tile input without key) of the layer's content.
@@ -585,7 +698,21 @@ fn lower_inner(
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, nested.rect(), tile));
             }
-            SceneContent::None => {}
+            SceneContent::Static(content) => {
+                let surface = render_static(id, content, ctx, cancel, charges, &mut exactness)?;
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/static"),
+                    placement: content.rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, content.rect, tile));
+            }
+            SceneContent::None | SceneContent::Adjustment(_) => {}
         }
         let shift = match placement {
             Placement::Integer(dx, dy) => (dx, dy),
@@ -698,11 +825,16 @@ fn lower_inner(
     for op in operators {
         exactness.record(op.key(), op.intrinsic());
     }
-    let mut entries = Vec::with_capacity(transforms.len());
+    let mut entries = Vec::with_capacity(transforms.len().saturating_add(adjustments.len()));
     for (index, transform) in transforms {
         let li = u32::try_from(index).map_err(|_| CompositeError::Overflow)?;
         entries.push(LayerExtension::new(root, li).with_transform(transform));
     }
+    for (index, op) in adjustments {
+        let li = u32::try_from(index).map_err(|_| CompositeError::Overflow)?;
+        entries.push(LayerExtension::new(root, li).with_adjustment(op));
+    }
+    entries.sort_by_key(|e| e.layer);
     let extensions = PlanExtensions::from_layers(entries);
     if !extensions.is_empty() {
         let ops = extensions.validate(&plan).map_err(CompositeError::Plan)?;
@@ -802,6 +934,70 @@ fn matte_plane(
         bytes,
         sha256,
     })
+}
+
+/// Renders a static subtree into an owned surface over its rect (charged before allocation).
+fn render_static(
+    layer_id: &str,
+    content: &StaticContent,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    if content.plan.target.space != ctx.space || content.plan.target.extent != content.rect {
+        return Err(CompositeError::ColourMismatch.into());
+    }
+    charges.surface(ctx, content.rect.width, content.rect.height)?;
+    let mut plan = content.plan.clone();
+    plan.revision = ctx.request.expected_revision;
+    let (x0, y0) = (content.rect.x, content.rect.y);
+    let mut sink = OffsetSink {
+        x0,
+        y0,
+        frame: FrameSink::new(content.rect.width, content.rect.height)?,
+    };
+    let sources = StaticSources {
+        content,
+        pixels: ctx.pixels,
+    };
+    let receipt = ctx
+        .backend
+        .execute_extended(&plan, &content.extensions, &ctx.request, &sources, cancel, &mut sink)
+        .map_err(|e| TemporalError::Render {
+            composition_id: format!("{layer_id}/static"),
+            code: e.code(),
+        })?;
+    for op in &receipt.exactness.operators {
+        exactness.record(op.key, op.exactness);
+    }
+    let f = sink.frame;
+    Ok(Surface {
+        colour_sha256: hsk_studio_prism::profile_hash(&f.colour),
+        alpha_sha256: hsk_studio_prism::profile_hash(&f.alpha),
+        width: f.width,
+        height: f.height,
+        colour: f.colour,
+        alpha: f.alpha,
+    })
+}
+
+/// A [`FrameSink`] whose frame starts at `(x0, y0)` of plan space.
+struct OffsetSink {
+    x0: i64,
+    y0: i64,
+    frame: FrameSink,
+}
+
+impl TileSink for OffsetSink {
+    fn accept(&mut self, rect: Rect, colour: &[u8], alpha: &[u8]) -> Result<(), SinkError> {
+        let local = Rect {
+            x: rect.x.checked_sub(self.x0).ok_or(SinkError::Rejected)?,
+            y: rect.y.checked_sub(self.y0).ok_or(SinkError::Rejected)?,
+            ..rect
+        };
+        self.frame.accept(local, colour, alpha)
+    }
 }
 
 /// Full-frame sink: chunks are copied into the composition-sized planes.

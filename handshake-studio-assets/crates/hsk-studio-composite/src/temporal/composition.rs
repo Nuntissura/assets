@@ -55,13 +55,22 @@
 use super::motion::sample;
 use super::{LayerFrameState, LayerTiming, TemporalError, TemporalSource};
 use crate::composition::{
-    SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode, SceneTile,
+    OwnedMask, SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode, SceneTile,
+    StaticContent, Surface,
 };
+use crate::lower_extensions::{REFUSE_ADJUSTMENT_RECORD, adjustment_for, is_adjustment_layer};
+use crate::{
+    Limits, NodeAddr, RenderInputs, StepStatus, evaluate_with_inputs, lower, lower_with_inputs,
+};
+use hsk_studio_pigment::Mask;
+use hsk_studio_pigment::adjust_math::AdjustmentOp;
+use hsk_studio_pigment::effect_math::window::stack_support_px;
+use hsk_studio_pigment::render_plan::{AlphaConvention, ColourTag, OutputTarget, PlanLimits, SampleFormat};
 use crate::evaluate_static::tile_rects;
 use crate::{CompositeError, TileInfoSource};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{
-    Budget, Payload, ProfileBinding, Resolver, Snapshot, StudioComposition,
+    Budget, Payload, ProfileBinding, validate_document, Resolver, Snapshot, StudioComposition,
     StudioCompositionRecords, StudioInterpolation, StudioLayerProperty, StudioLayerTiming,
     StudioMatteMode, StudioPropertyStream, StudioRgba, StudioTrackMatte, TileRef,
     validate_composition_records,
@@ -87,6 +96,8 @@ pub const COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH: &str = "composition_precomp_on_
 /// the record set holds at most 64 compositions).
 pub const MAX_PRECOMP_DEPTH: usize = 16;
 pub const COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH: &str = "composition_track_matte_on_document_graph";
+pub const COMPOSITION_LAYER_NOT_IN_GRAPH: &str = "composition_layer_not_in_graph";
+pub const COMPOSITION_SPACE: &str = "composition_space";
 pub const COMPOSITION_BACKGROUND_PROFILE: &str = "composition_background_profile";
 pub const COMPOSITION_BACKGROUND_LINEAR_LIGHT: &str = "composition_background_linear_light";
 
@@ -103,6 +114,12 @@ pub struct CompositionInput<'a> {
     pub blend_space: BlendSpace,
     /// Plane hashes and sample format of each raster tile (as `lower_frame`).
     pub info: &'a dyn TileInfoSource,
+    /// Colour tag of the composition's plans (`blend_space` must equal `space.blend_space`);
+    /// static subtrees are lowered for it.
+    pub space: ColourTag,
+    /// Raster records, prepared text and vectors for layers drawn through the static path
+    /// (masks, effects, blur, adjustments, vector and text layers).
+    pub inputs: RenderInputs<'a>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +135,10 @@ struct Streams {
 enum Content {
     None,
     Tiles { tiles: Vec<SceneTile>, bounds: Rect },
+    /// A static subtree; `bounds` = the content extent (layer space), `content.rect` adds support.
+    Static { content: Box<StaticContent>, bounds: Rect },
+    /// An adjustment layer.
+    Adjustment(AdjustmentOp),
     /// A nested composition; `bounds` = `(0, 0, width, height)` of it.
     Precomp { composition_id: String, bounds: Rect },
 }
@@ -125,8 +146,10 @@ enum Content {
 impl Content {
     fn bounds(&self) -> Option<Rect> {
         match self {
-            Self::None => None,
-            Self::Tiles { bounds, .. } | Self::Precomp { bounds, .. } => Some(*bounds),
+            Self::None | Self::Adjustment(_) => None,
+            Self::Tiles { bounds, .. } | Self::Precomp { bounds, .. } | Self::Static { bounds, .. } => {
+                Some(*bounds)
+            }
         }
     }
     fn origin(&self) -> [f64; 2] {
@@ -176,6 +199,169 @@ pub struct CompositionTemporalSource {
     comps: BTreeMap<String, Comp>,
     filter: ResampleFilter,
     tiles: BTreeMap<String, TileRef>,
+}
+
+/// A layer that needs the static path: a vector, text or live boolean group layer, an enabled mask,
+/// or a raster-records entry (effects, blur, mask parameters, Blend-If, knockout).
+fn needs_static(input: &CompositionInput<'_>, dl: &hsk_studio_folio::StudioLayer) -> bool {
+    match &dl.payload {
+        Payload::Vector { .. } | Payload::Text { .. } => true,
+        Payload::Group => input.inputs.vectors.is_some_and(|v| v.knows(&dl.layer_id)),
+        _ => {
+            dl.appearance
+                .as_ref()
+                .and_then(|a| a.mask.as_ref())
+                .is_some_and(|m| m.enabled)
+                || input.inputs.records.is_some_and(|r| r.layer(&dl.layer_id).is_some())
+        }
+    }
+}
+
+/// The static subtree of one document layer for a composition (`SceneContent::Static`): the
+/// document's own lowering (`lower_with_inputs`, raster records, prepared text and vectors) rooted at
+/// the layer's graph operation, with the layer's opacity at 100 % and its blend mode normal (both
+/// are applied by the composition after the transform, STU-CMP-010 steps 6 and 8), its fill
+/// opacity, masks, effects and blur kept (steps 2-4). The surface is the layer's content extent
+/// grown by the effect and blur support of its envelope. `None` = the layer draws nothing.
+fn static_content(
+    input: &CompositionInput<'_>,
+    layer_id: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<(StaticContent, Rect)>, TemporalError> {
+    let doc = input.snapshot.document();
+    let op = doc
+        .graph
+        .operations
+        .iter()
+        .find(|o| o.layer_id == layer_id)
+        .ok_or_else(|| unsupported(layer_id, COMPOSITION_LAYER_NOT_IN_GRAPH))?;
+    let port = op
+        .outputs
+        .first()
+        .ok_or_else(|| unsupported(layer_id, COMPOSITION_LAYER_NOT_IN_GRAPH))?;
+    let root = NodeAddr {
+        layer_id: layer_id.to_owned(),
+        operation_key: op.operation_key.clone(),
+        port_key: port.port_key.clone(),
+    };
+    let mut frame = doc.clone();
+    let layer = frame
+        .layers
+        .iter_mut()
+        .find(|l| l.layer_id == layer_id)
+        .ok_or_else(|| CompositeError::DanglingInput(layer_id.to_owned()))?;
+    layer.visible = true;
+    if let Some(a) = layer.appearance.as_mut() {
+        a.opacity = 100.0;
+        a.blend_mode = hsk_studio_folio::BLEND_NORMAL;
+    }
+    let snap = validate_document(frame, input.budget, cancel, input.resolver)
+        .map_err(|e| TemporalError::Document(format!("{:?}:{}", e.code, e.target)))?;
+    let plan = lower(&snap, doc.revision, input.space.blend_space, &Limits::default(), cancel)?;
+    let report = evaluate_with_inputs(&plan, &snap, &input.inputs, cancel)?;
+    let step = report
+        .step(&root)
+        .ok_or_else(|| CompositeError::DanglingInput(layer_id.to_owned()))?;
+    if let StepStatus::Unavailable(code) = &step.status {
+        return Err(CompositeError::Unavailable(format!("{layer_id}:{code}")).into());
+    }
+    let Some(bounds) = step.extent else {
+        return Ok(None);
+    };
+    let target = OutputTarget {
+        extent: bounds,
+        format: SampleFormat::RgbF32Le,
+        alpha: AlphaConvention::Straight,
+        space: input.space,
+    };
+    let low = lower_with_inputs(&plan, &report, &snap, &input.inputs, &root, target, input.info)?;
+    // Effect and blur support around the content (the static extent is the content's own).
+    let mut margin = 0u32;
+    for e in &low.extensions.layers {
+        let fx = if e.effects.is_empty() {
+            0
+        } else {
+            stack_support_px(&e.effects).map_err(|_| CompositeError::Overflow)?
+        };
+        let blur = match &e.blur {
+            Some(b) => b.support_px().map_err(|_| CompositeError::Overflow)?,
+            None => 0,
+        };
+        margin = margin
+            .checked_add(fx)
+            .and_then(|m| m.checked_add(blur))
+            .ok_or(CompositeError::Overflow)?;
+    }
+    let grow = |v: u32| v.checked_add(margin.checked_mul(2)?);
+    let rect = Rect {
+        x: bounds.x.checked_sub(i64::from(margin)).ok_or(CompositeError::Overflow)?,
+        y: bounds.y.checked_sub(i64::from(margin)).ok_or(CompositeError::Overflow)?,
+        width: grow(bounds.width).ok_or(CompositeError::Overflow)?,
+        height: grow(bounds.height).ok_or(CompositeError::Overflow)?,
+    };
+    let mut plan = low.plan.clone();
+    plan.target.extent = rect;
+    plan.validate(&PlanLimits::default()).map_err(CompositeError::Plan)?;
+    let mut content = StaticContent {
+        plan,
+        extensions: low.extensions.clone(),
+        rect,
+        tiles: BTreeMap::new(),
+        masks: BTreeMap::new(),
+        owned_masks: BTreeMap::new(),
+        owned_tiles: BTreeMap::new(),
+    };
+    for (key, t) in &low.sources {
+        content.tiles.insert(*key, format!("{}/{}", t.layer_id, t.object_key));
+    }
+    for (key, tiles) in &low.mask_sources {
+        let id: Vec<String> = tiles.iter().map(|t| format!("{}/{}", t.layer_id, t.object_key)).collect();
+        content.masks.insert(*key, id.join("|"));
+    }
+    for (key, source) in &low.image_sources {
+        content.tiles.insert(*key, source.clone());
+    }
+    let own = |m: Mask<'_>| OwnedMask {
+        bounds: m.bounds,
+        sample_format: m.sample_format.to_owned(),
+        bytes: m.bytes.to_vec(),
+        stride_bytes: m.stride_bytes,
+        sha256: m.sha256,
+    };
+    for (key, layer) in &low.text_masks {
+        let m = input
+            .inputs
+            .text
+            .and_then(|t| t.plane(layer))
+            .and_then(|p| p.mask())
+            .ok_or_else(|| CompositeError::Unavailable(format!("{layer}:text_layer_not_prepared")))?;
+        content.owned_masks.insert(*key, own(m));
+    }
+    if let Some(vectors) = input.inputs.vectors {
+        let keys = low
+            .vector_masks
+            .iter()
+            .map(|(k, _)| *k)
+            .chain(low.vector_rows.iter().map(|(k, _, _)| *k));
+        for key in keys {
+            if let Some(m) = low.vector_mask(key, vectors) {
+                content.owned_masks.insert(key, own(m));
+            } else if let Some(t) = low.vector_paint(key, vectors, input.space) {
+                content.owned_tiles.insert(
+                    key,
+                    Surface {
+                        width: t.width,
+                        height: t.height,
+                        colour: t.colour.to_vec(),
+                        alpha: t.alpha.to_vec(),
+                        colour_sha256: t.colour_sha256,
+                        alpha_sha256: t.alpha_sha256,
+                    },
+                );
+            }
+        }
+    }
+    Ok(Some((content, bounds)))
 }
 
 fn unsupported(layer_id: &str, feature: &'static str) -> TemporalError {
@@ -297,6 +483,9 @@ impl CompositionTemporalSource {
             }
             .into());
         }
+        if input.space.blend_space != input.blend_space {
+            return Err(unsupported(input.composition_id, COMPOSITION_SPACE));
+        }
         validate_composition_records(input.records, doc, input.budget, cancel, input.resolver)
             .map_err(|e| TemporalError::Document(format!("{:?}:{}", e.code, e.target)))?;
         let mut tiles = BTreeMap::new();
@@ -371,6 +560,28 @@ impl CompositionTemporalSource {
                     }
                 }
                 (Some(_), _) => return Err(unsupported(id, COMPOSITION_PRECOMP_PAYLOAD)),
+                // Masks, raster records (effects, blur, mask parameters, Blend-If), vector and text
+                // layers and live boolean groups: the static subtree.
+                (None, Payload::Raster { .. } | Payload::Vector { .. } | Payload::Text { .. } | Payload::Group)
+                    if needs_static(input, dl) =>
+                {
+                    match static_content(input, id, cancel)? {
+                        Some((content, bounds)) => Content::Static {
+                            content: Box::new(content),
+                            bounds,
+                        },
+                        None => Content::None,
+                    }
+                }
+                (None, Payload::PrimitiveReference { .. }) if is_adjustment_layer(dl) => {
+                    let records = input
+                        .inputs
+                        .records
+                        .ok_or_else(|| unsupported(id, REFUSE_ADJUSTMENT_RECORD))?;
+                    let converted = adjustment_for(records, id, input.blend_space)
+                        .map_err(|code| unsupported(id, code))?;
+                    Content::Adjustment(converted.op)
+                }
                 (None, Payload::Group) => Content::None,
                 (None, Payload::Raster { tiles }) if tiles.is_empty() => Content::None,
                 (None, Payload::Raster { tiles }) => {
@@ -402,9 +613,6 @@ impl CompositionTemporalSource {
             let a = dl.effective_appearance();
             if a.clipped {
                 return Err(unsupported(id, COMPOSITION_LAYER_CLIPPED));
-            }
-            if a.mask.as_ref().is_some_and(|m| m.enabled) {
-                return Err(unsupported(id, COMPOSITION_LAYER_MASK));
             }
             // A precomposition layer is a Folio `group`, whose identity appearance is pass-through;
             // its rendered surface composites like any layer, so an UNAUTHORED appearance means
@@ -696,6 +904,8 @@ impl CompositionTemporalSource {
         let content = match &l.content {
             Content::None => SceneContent::None,
             Content::Tiles { tiles, .. } => SceneContent::Tiles(tiles.clone()),
+            Content::Static { content, .. } => SceneContent::Static(content.clone()),
+            Content::Adjustment(op) => SceneContent::Adjustment(op.clone()),
             Content::Precomp { composition_id, .. } => {
                 let nested = self
                     .comps
