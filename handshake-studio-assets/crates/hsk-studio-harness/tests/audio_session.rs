@@ -31,7 +31,7 @@ fn id(n: u32) -> String {
     format!("STRK-019abcde-0000-7000-8000-{n:012x}")
 }
 fn source(name: &str) -> ClipSource {
-    ClipSource::Media { artifact_manifest_id: name.into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() } }
+    ClipSource::Media { artifact_manifest_id: name.into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() }, asset_id: None }
 }
 fn clip(n: u32, src: &str, frames: u64) -> StudioClip {
     StudioClip {

@@ -313,6 +313,7 @@ pub fn import_audio_external(
                 algorithm: "sha256".into(),
                 digest: hex,
             },
+            asset_id: None,
         },
         sample_rate: decoded.sample_rate,
         frames,

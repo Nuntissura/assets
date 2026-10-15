@@ -119,6 +119,7 @@ pub fn source_key(source: &ClipSource) -> Option<String> {
         ClipSource::Media {
             artifact_manifest_id,
             content_digest,
+            ..
         } => format!(
             "media\u{1f}{artifact_manifest_id}\u{1f}{}\u{1f}{}",
             content_digest.algorithm, content_digest.digest

@@ -189,6 +189,7 @@ fn edl_fixture_ticks_losses_and_folio_sequence() {
                     algorithm: "sha256".into(),
                     digest: "ax".into(),
                 },
+                asset_id: None,
             },
         )]);
         let options = SequenceOptions {

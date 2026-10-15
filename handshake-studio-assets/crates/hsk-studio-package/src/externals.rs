@@ -21,11 +21,13 @@
 //! | `import_original_part` | `StudioImageSource::ImportOriginal` | entry hash + part + part hash | the `import/original.<entry hash>` entry |
 //! | `primitive` | any `schema_id` + `object_id` (`Payload::PrimitiveReference`, `ClipSource::Primitive`, `StudioEffectFill`) | schema id + object id | `Resolver::primitive` |
 //! | `colour_profile` | `colour_profile_id`, `profile_ref`, working / blending spaces | `SCPF` id | `Resolver::profile` |
-//! | `colour_lookup` | `StudioAdjustment::ColourLookup` (`lut`, `lut_kind`) | `lut` reference | `table` carried by value = embedded, else unresolved |
-//! | `font` | type style `font_family` / `font_style` | family + style | unresolved (no font resolver port in Folio) |
-//! | `composition_audio` | motion `StudioAudioLayer.audio_id` | artifact id | unresolved (caller-resolved, no hash) |
+//! | `colour_lookup` | `StudioAdjustment::ColourLookup` (`lut`, `lut_kind`) | `lut` reference | `table` carried by value = embedded, else `Resolver::lut` |
+//! | `colour_lookup` | clip-finishing `StudioLutRef` (exactly `artifact_manifest_id` + `content_digest`) | manifest id + content hash | embedded asset, else `Resolver::lut` |
+//! | `font` | type style `font_family` / `font_style`, template control `font_family` / `locked_font`, motion template `required_fonts` | family + style | `Resolver::font` |
+//! | `composition_audio` | motion `StudioAudioLayer.audio_id` | artifact id | `Resolver::audio` |
 //! | `placed_source` | raster `StudioPlacedSource.location` (`mode: embedded`) | source document id + content hash | embedded asset, else missing |
-//! | `placed_source` | raster `StudioPlacedSource.location` (`mode: linked`) | relative uri + content hash | the recorded health (`missing`, `modified`; `up_to_date` is unresolved: the package reads no files, STU-ASSET-010) |
+//! | `placed_source` | raster `StudioPlacedSource.location` (`mode: linked`) | relative uri + content hash | `Resolver::placed_link` (exists, hash matches; [`crate::LinkedFileResolver`] checks the file next to the opened document) |
+//! | `book_chapter` | book `StudioBookChapter` (chapter `SDOC` id, optional `file_path`) | file path, else document id | `Resolver::primitive("hsk.studio.document@1", id)` |
 //! | `icc_profile` | vector `StudioIccProfile` (bytes "travel with the document") | `SCPF` id + content hash | embedded asset, else `Resolver::profile` |
 //!
 //! Embedded by the record's own intent (an `embedded` placed source, an ICC profile): a writer
@@ -62,6 +64,7 @@ pub enum ExternalKind {
     CompositionAudio,
     PlacedSource,
     IccProfile,
+    BookChapter,
 }
 
 impl ExternalKind {
@@ -77,6 +80,7 @@ impl ExternalKind {
             Self::CompositionAudio => "composition_audio",
             Self::PlacedSource => "placed_source",
             Self::IccProfile => "icc_profile",
+            Self::BookChapter => "book_chapter",
         }
     }
 }
@@ -145,6 +149,9 @@ pub struct ExternalRef {
     pub target: String,
     /// How many places reference it.
     pub occurrences: u32,
+    /// CKC catalog record (`PRIM-Asset` handle) the reference names, for relink by catalog id
+    /// (media clips and placed sources; lane SMB-PACKAGE-COMPLETENESS-2).
+    pub asset_id: Option<String>,
 }
 
 impl ExternalRef {
@@ -168,7 +175,7 @@ pub fn embeddable_digests(
     let mut out: BTreeMap<String, bool> = BTreeMap::new();
     for_each_reference(doc, held, &mut |found| {
         let intent = match found.kind {
-            ExternalKind::TimelineMedia | ExternalKind::StoredStory => false,
+            ExternalKind::TimelineMedia | ExternalKind::StoredStory | ExternalKind::ColourLookup => false,
             ExternalKind::IccProfile => true,
             ExternalKind::PlacedSource if found.embedded_mode => true,
             _ => return,
@@ -206,10 +213,13 @@ struct Found {
     carried: bool,
     /// A placed source in `embedded` mode (kind `PlacedSource`).
     embedded_mode: bool,
-    /// The recorded link health of a linked placed source.
-    health: Option<String>,
+    /// `asset_id` member of the reference object.
+    asset_id: Option<String>,
     target: String,
 }
+
+/// Schema id a book chapter document is resolved under (`Resolver::primitive`).
+const BOOK_CHAPTER_SCHEMA: &str = "hsk.studio.document@1";
 
 const PROFILE_KEYS: [&str; 7] = [
     "colour_profile_id",
@@ -255,7 +265,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: str_of(map, "asset_id").map(str::to_owned),
                         target: target.clone(),
                     });
                 }
@@ -268,7 +278,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -281,7 +291,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: digest_of(map.get("entry_digest")).map(|d| d.digest),
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -297,7 +307,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -310,7 +320,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: map.get("table").is_some_and(|t| !t.is_null()),
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -324,7 +334,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -337,14 +347,16 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
-                // `StudioPlacedMode` (tag `mode`): a placed source's location.
-                if let (Some(mode @ ("embedded" | "linked")), Some(label)) = (tag("mode"), str_of(map, "content_digest")) {
+                // `StudioPlacedSource`: its `location` (`StudioPlacedMode`, tag `mode`) and catalog id.
+                let location = map.get("location").and_then(Value::as_object);
+                let loc = |k: &str| location.and_then(|l| l.get(k)).and_then(Value::as_str);
+                if let (Some(mode @ ("embedded" | "linked")), Some(label)) = (loc("mode"), loc("content_digest")) {
                     let embedded_mode = mode == "embedded";
-                    let handle = if embedded_mode { str_of(map, "document_id") } else { str_of(map, "uri") };
+                    let handle = if embedded_mode { loc("document_id") } else { loc("uri") };
                     found(Found {
                         kind: ExternalKind::PlacedSource,
                         handle: handle.unwrap_or_default().to_owned(),
@@ -353,7 +365,65 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode,
-                        health: str_of(map, "health").map(str::to_owned),
+                        asset_id: str_of(map, "asset_id").map(str::to_owned),
+                        target: format!("{target}/location"),
+                    });
+                }
+                // Clip-finishing `StudioLutRef` (STU-COL-158): exactly a manifest handle plus a digest.
+                if map.len() == 2
+                    && let (Some(handle), Some(digest)) =
+                        (str_of(map, "artifact_manifest_id"), digest_of(map.get("content_digest")))
+                {
+                    found(Found {
+                        kind: ExternalKind::ColourLookup,
+                        handle: handle.to_owned(),
+                        schema_object: None,
+                        digest: Some(digest),
+                        entry_digest: None,
+                        carried: false,
+                        embedded_mode: false,
+                        asset_id: None,
+                        target: target.clone(),
+                    });
+                }
+                // Template fonts: `locked_font` (exposed source-text control) and every name of a
+                // motion template's `required_fonts`.
+                let mut font = |family: &str, at: String| {
+                    found(Found {
+                        kind: ExternalKind::Font,
+                        handle: format!("{family}/"),
+                        schema_object: None,
+                        digest: None,
+                        entry_digest: None,
+                        carried: false,
+                        embedded_mode: false,
+                        asset_id: None,
+                        target: at,
+                    });
+                };
+                if let Some(family) = str_of(map, "locked_font") {
+                    font(family, format!("{target}/locked_font"));
+                }
+                if let Some(Value::Array(names)) = map.get("required_fonts") {
+                    for (i, name) in names.iter().enumerate() {
+                        if let Some(family) = name.as_str() {
+                            font(family, format!("{target}/required_fonts/{i}"));
+                        }
+                    }
+                }
+                // `StudioBookChapter`: a chapter is another Studio document, at `file_path` when
+                // the book records one.
+                if let (Some(document), Some(_)) = (str_of(map, "document_id"), map.get("document_page_range").or(map.get("status"))) {
+                    let file = str_of(map, "file_path");
+                    found(Found {
+                        kind: ExternalKind::BookChapter,
+                        handle: file.unwrap_or(document).to_owned(),
+                        schema_object: Some((BOOK_CHAPTER_SCHEMA.to_owned(), document.to_owned())),
+                        digest: None,
+                        entry_digest: None,
+                        carried: false,
+                        embedded_mode: false,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -369,7 +439,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                         entry_digest: None,
                         carried: false,
                         embedded_mode: false,
-                        health: None,
+                        asset_id: None,
                         target: target.clone(),
                     });
                 }
@@ -383,7 +453,7 @@ fn walk(root: &Value, origin: &str, found: &mut dyn FnMut(Found)) {
                             entry_digest: None,
                             carried: false,
                             embedded_mode: false,
-                            health: None,
+                        asset_id: None,
                             target: format!("{target}/{key}"),
                         });
                     }
@@ -457,17 +527,27 @@ pub fn external_references(
             }
             ExternalKind::ColourProfile => LinkState::of(resolver.profile(&f.handle)),
             ExternalKind::ColourLookup if f.carried => LinkState::Embedded,
-            ExternalKind::ColourLookup | ExternalKind::Font | ExternalKind::CompositionAudio => LinkState::Unresolved,
+            ExternalKind::ColourLookup if sha.is_some_and(embedded) => LinkState::Embedded,
+            ExternalKind::ColourLookup => LinkState::of(resolver.lut(&f.handle, f.digest.as_ref())),
+            ExternalKind::Font => {
+                let (family, style) = f.handle.split_once('/').unwrap_or((f.handle.as_str(), ""));
+                LinkState::of(resolver.font(family, style))
+            }
+            ExternalKind::CompositionAudio => LinkState::of(resolver.audio(&f.handle)),
+            ExternalKind::BookChapter => {
+                let (schema, document) = f.schema_object.clone().unwrap_or_default();
+                LinkState::of(resolver.primitive(&schema, &document))
+            }
             ExternalKind::IccProfile if sha.is_some_and(embedded) => LinkState::Embedded,
             ExternalKind::IccProfile => LinkState::of(resolver.profile(&f.handle)),
             ExternalKind::PlacedSource if f.embedded_mode => {
                 if sha.is_some_and(embedded) { LinkState::Embedded } else { LinkState::Missing }
             }
-            ExternalKind::PlacedSource => match f.health.as_deref() {
-                Some("missing") => LinkState::Missing,
-                Some("modified") => LinkState::Modified,
-                _ => LinkState::Unresolved,
-            },
+            // The live check at open replaces the health recorded at the last save.
+            ExternalKind::PlacedSource => {
+                let label = f.digest.as_ref().map(|d| d.digest.as_str()).unwrap_or_default();
+                LinkState::of(resolver.placed_link(&f.handle, label))
+            }
         };
         out.insert(
             key,
@@ -484,6 +564,7 @@ pub fn external_references(
                 state,
                 target: f.target,
                 occurrences: 1,
+                asset_id: f.asset_id,
             },
         );
     })?;

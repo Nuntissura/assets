@@ -284,6 +284,11 @@ pub enum ClipSource {
     Media {
         artifact_manifest_id: String,
         content_digest: ContentDigest,
+        /// CKC catalog record (`PRIM-Asset` handle, canonical lowercase UUID,
+        /// [`crate::is_catalog_asset_id`]) the media came from (STU-ASSET-005/006); absent is not
+        /// encoded, so earlier documents stay byte-identical.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        asset_id: Option<String>,
     },
     /// Nested sequence in the same document; nesting must be acyclic.
     Sequence { sequence_id: String },
@@ -671,10 +676,12 @@ pub(crate) fn validate_sequences(
                     ClipSource::Media {
                         artifact_manifest_id,
                         content_digest,
+                        asset_id,
                     } => {
                         if !handle(artifact_manifest_id)
                             || !control_free(&content_digest.algorithm)
                             || !control_free(&content_digest.digest)
+                            || asset_id.as_deref().is_some_and(|a| !crate::is_catalog_asset_id(a))
                         {
                             return Err(err(Code::InvalidField, format!("{cid}/source")));
                         }

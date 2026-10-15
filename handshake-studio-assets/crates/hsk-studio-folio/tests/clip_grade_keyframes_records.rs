@@ -39,7 +39,7 @@ fn document() -> StudioDocument {
             clips: vec![StudioClip {
                 schema_id: ClipSchema::V1,
                 clip_id: CLIP.into(),
-                source_ref: ClipSource::Media { artifact_manifest_id: "a".into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "00".into() } },
+                source_ref: ClipSource::Media { artifact_manifest_id: "a".into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "00".into() }, asset_id: None },
                 source_in: Ticks::new(0),
                 source_out: Ticks::new(4 * F),
                 timeline_start: Ticks::new(0),

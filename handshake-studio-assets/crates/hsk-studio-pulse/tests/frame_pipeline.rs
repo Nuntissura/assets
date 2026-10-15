@@ -15,6 +15,7 @@ fn media(id: &str) -> ClipSource {
             algorithm: "sha256".into(),
             digest: "00".into(),
         },
+        asset_id: None,
     }
 }
 

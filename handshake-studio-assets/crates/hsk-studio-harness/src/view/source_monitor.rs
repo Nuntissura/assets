@@ -744,6 +744,7 @@ impl super::Viewer {
         let source = ClipSource::Media {
             artifact_manifest_id: format!("sha256:{hex}"),
             content_digest: folio::ContentDigest { algorithm: "sha256".into(), digest: hex },
+            asset_id: None,
         };
         let mut decoder = ReelFrameDecoder::new();
         decoder

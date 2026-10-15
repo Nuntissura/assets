@@ -838,6 +838,8 @@ impl Builder<'_, '_, '_> {
                 width: p.width,
                 height: p.height,
                 uses: Vec::new(),
+                // A PSD carries no CKC catalog record id (lane SMB-PACKAGE-COMPLETENESS-2).
+                asset_id: None,
             });
         }
         self.notes(&path, placed.notes);

@@ -201,6 +201,18 @@ impl Resolver for TypeStyleResolver<'_> {
     fn story_content(&self, id: &str, digest: &super::ContentDigest) -> Resolution {
         self.inner.story_content(id, digest)
     }
+    fn font(&self, family: &str, style: &str) -> Resolution {
+        self.inner.font(family, style)
+    }
+    fn audio(&self, audio_id: &str) -> Resolution {
+        self.inner.audio(audio_id)
+    }
+    fn lut(&self, lut: &str, content_digest: Option<&super::ContentDigest>) -> Resolution {
+        self.inner.lut(lut, content_digest)
+    }
+    fn placed_link(&self, uri: &str, content_digest: &str) -> Resolution {
+        self.inner.placed_link(uri, content_digest)
+    }
 }
 
 fn check(ok: bool, target: &str, field: &str) -> Result<()> {

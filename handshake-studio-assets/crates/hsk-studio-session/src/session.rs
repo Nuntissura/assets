@@ -617,13 +617,24 @@ impl Session {
         let resource = DomainId::parse(&reader.manifest().document_id).ok();
         let inherited = inherited_codec(reader.manifest());
         let correlation = 1;
+        // Linked placed sources are health-checked next to the opened file (exists, hash
+        // matches; lane SMB-PACKAGE-COMPLETENESS-2); bytes opened without a path have no
+        // directory to check against and keep the caller's resolver answer.
+        let linked = origin
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(|dir| hsk_studio_package::LinkedFileResolver::new(&*ports.resolver, dir));
+        let resolver: &dyn Resolver = match &linked {
+            Some(l) => l,
+            None => &*ports.resolver,
+        };
         let result = load_parts(
             reader.manifest(),
             reader.entries(),
             &mut raw,
             &config.budgets.limits,
             config.budgets.folio(),
-            &*ports.resolver,
+            resolver,
             cancel,
         )
         .and_then(|parts| {
@@ -631,6 +642,7 @@ impl Session {
                 .map_err(|_| SessionError::ReadOnlyDocument)?;
             Ok((resource, parts))
         });
+        drop(linked);
         match result {
             Ok((resource, parts)) => {
                 let revision = parts.snapshot.document().revision;
@@ -2277,11 +2289,20 @@ impl Session {
                         && e.name.strip_prefix(hsk_studio_package::ASSET_PREFIX) == Some(d)
                 })
         };
+        let linked = self
+            .origin
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(|dir| hsk_studio_package::LinkedFileResolver::new(&*self.ports.resolver, dir));
+        let resolver: &dyn Resolver = match &linked {
+            Some(l) => l,
+            None => &*self.ports.resolver,
+        };
         hsk_studio_package::external_references(
             self.snapshot.document(),
             &self.quarantined,
             &present,
-            &*self.ports.resolver,
+            resolver,
         )
         .map_err(SessionError::from_package)
     }

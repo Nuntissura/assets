@@ -809,6 +809,11 @@ pub struct StudioPlacedSource {
     pub height: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
+    /// CKC catalog record of the source (`PRIM-Asset` handle, canonical lowercase UUID,
+    /// [`crate::is_catalog_asset_id`]; STU-ASSET-005/006: an embedded placement still carries it so
+    /// provenance survives). Absent is not encoded (lane SMB-PACKAGE-COMPLETENESS-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
 }
 
 /// A placed-asset instance (STU-RAS-014: non-destructive accumulated transform): its shared source
@@ -861,6 +866,7 @@ fn placed_sources(r: &StudioRasterRecords, cx: &mut Ctx) -> Result<BTreeSet<Stri
                 check(label(content_digest), t, "content_digest")?;
             }
         }
+        check(s.asset_id.as_deref().is_none_or(crate::is_catalog_asset_id), t, "asset_id")?;
         check(s.uses.len() <= MAX_PLACED_SOURCES, t, "uses")?;
         cx.nodes(s.uses.len(), t)?;
     }

@@ -43,7 +43,26 @@ impl folio::Resolver for Host {
     fn story_content(&self, _: &str, _: &ContentDigest) -> Resolution {
         Resolution::Unauthorized
     }
+    fn font(&self, family: &str, style: &str) -> Resolution {
+        if (family, style) == ("Inter", "Bold") { Resolution::Available } else { Resolution::Absent }
+    }
+    fn audio(&self, _: &str) -> Resolution {
+        Resolution::Unauthorized
+    }
+    fn lut(&self, lut: &str, digest: Option<&ContentDigest>) -> Resolution {
+        match (lut, digest) {
+            ("lut-artifact-film", None) => Resolution::HashMismatch,
+            ("grade-look", Some(_)) => Resolution::Available,
+            _ => Resolution::Absent,
+        }
+    }
+    fn placed_link(&self, uri: &str, _: &str) -> Resolution {
+        if uri == "links/logo.psd" { Resolution::Absent } else { Resolution::Available }
+    }
 }
+
+/// A canonical CKC catalog asset id (kernel-bindings `AssetId` grammar).
+const ASSET: &str = "0190f5c2-7a1b-7c3d-8e4f-000000000abc";
 
 fn token() -> CancellationToken {
     CancellationToken::default()
@@ -98,7 +117,11 @@ fn bytes() -> Bytes {
 /// A document with a timeline: media clips (one the package can embed, one resolved, one whose
 /// hash changed, one absent) and a primitive clip, plus a profile the host does not have.
 fn document(b: &Bytes) -> folio::Snapshot {
-    let media = |name: &str, digest: ContentDigest| ClipSource::Media { artifact_manifest_id: name.into(), content_digest: digest };
+    let media = |name: &str, digest: ContentDigest| ClipSource::Media {
+        artifact_manifest_id: name.into(),
+        asset_id: (name == "media-ok").then(|| ASSET.to_string()),
+        content_digest: digest,
+    };
     let seq = StudioSequence {
         schema_id: SequenceSchema::V1,
         sequence_id: "seq".into(),
@@ -169,9 +192,12 @@ fn records(b: &Bytes, original_sha: &str) -> ImportEntry {
         "type_style_records":{"styles":[{"font_family":"Inter","font_style":"Bold"},{"font_family":"Inter","font_style":"Bold"}]},
         "motion":{"audio":[{"layers":[audio]}]},
         "effects":[{"pattern":{"schema_id":"hsk.studio.pattern@1","object_id":"pattern-7"}}],
+        "book":{"chapters":[{"document_id":id("SDOC", 3),"status":"normal","file_path":"chapters/ch1.handshake"}]},
+        "template":{"required_fonts":["Inter"],"controls":[{"control":{"locked_font":"Inter"}}]},
+        "grade":{"look": serde_json::to_value(StudioLutRef { artifact_manifest_id: "grade-look".into(), content_digest: sha(b"look cube") }).unwrap()},
         "placed":{"placed_sources":[
-            serde_json::to_value(StudioPlacedSource { source_id: "src-embedded".into(), location: StudioPlacedMode::Embedded { document_id: id("SDOC", 2), content_digest: format!("sha256-{}", sha256_hex_of(&b.placed_source)) }, width: 2.0, height: 2.0, uses: Vec::new() }).unwrap(),
-            serde_json::to_value(StudioPlacedSource { source_id: "src-linked".into(), location: StudioPlacedMode::Linked { uri: "links/logo.psd".into(), content_digest: "sha256-0011".into(), health: StudioLinkHealth::Missing }, width: 2.0, height: 2.0, uses: Vec::new() }).unwrap()
+            serde_json::to_value(StudioPlacedSource { source_id: "src-embedded".into(), location: StudioPlacedMode::Embedded { document_id: id("SDOC", 2), content_digest: format!("sha256-{}", sha256_hex_of(&b.placed_source)) }, width: 2.0, height: 2.0, uses: Vec::new(), asset_id: Some(ASSET.into()) }).unwrap(),
+            serde_json::to_value(StudioPlacedSource { source_id: "src-linked".into(), location: StudioPlacedMode::Linked { uri: "links/logo.psd".into(), content_digest: "sha256-0011".into(), health: StudioLinkHealth::Missing }, width: 2.0, height: 2.0, uses: Vec::new(), asset_id: None }).unwrap()
         ]},
         "icc":{"icc_profiles":[
             serde_json::to_value(StudioIccProfile { profile_id: id("SCPF", 7), name: "press".into(), colour_space: StudioColorModel::Cmyk, content_digest: sha(&b.icc), working_space: true }).unwrap(),
@@ -257,15 +283,18 @@ fn every_external_is_kept_on_save_and_reported_with_its_link_state() {
         ("hsk.studio.pattern@1/pattern-7".to_string(), "primitive", "resolved", 1),
         (profile_dead.clone(), "colour_profile", "missing", 1),
         ("lut-artifact-carried".to_string(), "colour_lookup", "embedded", 1),
-        ("lut-artifact-film".to_string(), "colour_lookup", "unresolved", 1),
-        ("Inter/Bold".to_string(), "font", "unresolved", 2),
-        ("audio-artifact".to_string(), "composition_audio", "unresolved", 1),
+        ("grade-look".to_string(), "colour_lookup", "resolved", 1),
+        ("lut-artifact-film".to_string(), "colour_lookup", "modified", 1),
+        ("Inter/".to_string(), "font", "missing", 2),
+        ("Inter/Bold".to_string(), "font", "resolved", 2),
+        ("chapters/ch1.handshake".to_string(), "book_chapter", "resolved", 1),
+        ("audio-artifact".to_string(), "composition_audio", "unauthorized", 1),
         (id("SDOC", 2), "placed_source", "embedded", 1),
         ("links/logo.psd".to_string(), "placed_source", "missing", 1),
         (id("SCPF", 7), "icc_profile", "embedded", 1),
         (id("SCPF", 8), "icc_profile", "resolved", 1),
     ];
-    let kind_order = ["timeline_media", "stored_story", "import_original_part", "primitive", "colour_profile", "colour_lookup", "font", "composition_audio", "placed_source", "icc_profile"];
+    let kind_order = ["timeline_media", "stored_story", "import_original_part", "primitive", "colour_profile", "colour_lookup", "font", "composition_audio", "placed_source", "icc_profile", "book_chapter"];
     wanted.sort_by_key(|(h, k, _, _)| (kind_order.iter().position(|x| x == k), h.clone()));
     assert_eq!(states(&opened), wanted);
 
@@ -279,10 +308,18 @@ fn every_external_is_kept_on_save_and_reported_with_its_link_state() {
         "external/primitive/hsk.studio.composition@1/obj-unsupported".to_string(),
         format!("external/colour_profile/{profile_dead}"),
         "external/placed_source/links/logo.psd".to_string(),
+        "external/colour_lookup/lut-artifact-film".to_string(),
+        "external/composition_audio/audio-artifact".to_string(),
+        "external/font/Inter/".to_string(),
     ]
     .into_iter()
     .collect();
     assert_eq!(lost, expected);
+    // Catalog ids ride along for relink by catalog record.
+    let catalog = |h: &str| opened.externals.iter().find(|e| e.handle == h).unwrap().asset_id.clone();
+    assert_eq!(catalog("media-ok").as_deref(), Some(ASSET));
+    assert_eq!(catalog(&id("SDOC", 2)).as_deref(), Some(ASSET));
+    assert_eq!(catalog("media-gone"), None);
     let gone = opened.externals.iter().find(|e| e.handle == "media-gone").unwrap();
     assert_eq!(gone.content_digest.as_ref().unwrap().digest, sha256_hex_of(b"never granted"), "relink by content hash");
     assert_eq!(gone.target, "document#/sequences/0/tracks/0/clips/3/source_ref", "location of the reference");
@@ -365,6 +402,9 @@ fn every_folio_reference_property_is_classified() {
         ("text_story", serde_json::to_value(folio::text_story_schema()).unwrap()),
         ("type_style_records", serde_json::to_value(folio::type_style_records_schema()).unwrap()),
         ("vector_network", serde_json::to_value(folio::vector_network_schema()).unwrap()),
+        ("book", serde_json::to_value(folio::book_schema()).unwrap()),
+        ("clip_finishing", serde_json::to_value(folio::clip_finishing_schema()).unwrap()),
+        ("layout_grids", serde_json::to_value(folio::layout_grids_schema()).unwrap()),
     ];
     const VOCAB: [&str; 22] = [
         "digest", "artifact", "manifest", "asset", "media", "audio", "font", "lut", "profile", "path", "uri", "url", "file",
@@ -401,7 +441,7 @@ fn every_folio_reference_property_is_classified() {
     let kinds = [
         ExternalKind::TimelineMedia, ExternalKind::StoredStory, ExternalKind::ImportOriginalPart, ExternalKind::Primitive,
         ExternalKind::ColourProfile, ExternalKind::ColourLookup, ExternalKind::Font, ExternalKind::CompositionAudio,
-        ExternalKind::PlacedSource, ExternalKind::IccProfile,
+        ExternalKind::PlacedSource, ExternalKind::IccProfile, ExternalKind::BookChapter,
     ];
     for (prop, class) in CLASSIFIED {
         for part in class.split(' ') {
@@ -417,6 +457,7 @@ fn every_folio_reference_property_is_classified() {
 /// that names no input (a destination, a documentation URL, a flag).
 const CLASSIFIED: &[(&str, &str)] = &[
     ("ClipSource.artifact_manifest_id", "external:timeline_media"),
+    ("ClipSource.asset_id", "external:timeline_media (CKC catalog id)"),
     ("ClipSource.content_digest", "external:timeline_media"),
     ("ClipSource.object_id", "external:primitive"),
     ("ClipSource.source_kind", "discriminator: timeline_media or primitive"),
@@ -435,14 +476,24 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioAudioLayer.audio_id", "external:composition_audio"),
     ("StudioBlendRange.source_black", "internal: value"),
     ("StudioBlendRange.source_white", "internal: value"),
+    ("StudioBook.style_source_document", "internal: one of the book's chapter ids"),
+    ("StudioBookChapter.file_path", "external:book_chapter"),
+    ("StudioBookSync.sync_composite_fonts", "internal: flag"),
     ("StudioBooleanGroup.fill_geometry_path_ids", "internal: vector path records"),
     ("StudioBrushArt.path_id", "internal: vector path records"),
     ("StudioClip.link_group", "internal: clip link group"),
     ("StudioClip.source_in", "internal: value"),
     ("StudioClip.source_out", "internal: value"),
     ("StudioClip.source_ref", "container of ClipSource"),
+    ("StudioClipEffectParams.input_lut", "container of StudioLutRef"),
     ("StudioColor.colour_profile_id", "external:colour_profile"),
+    ("StudioColourTarget.path", "internal: shape item path"),
     ("StudioConditionalRange.story_id", "internal: text story records"),
+    ("StudioControlKind.font_family_editable", "internal: flag"),
+    ("StudioControlKind.font_size_editable", "internal: flag"),
+    ("StudioControlKind.locked_font", "external:font"),
+    ("StudioControlSetting.font_family", "external:font"),
+    ("StudioControlSetting.font_size", "internal: value"),
     ("StudioCrossReference.source_end", "internal: value"),
     ("StudioCrossReference.source_start", "internal: value"),
     ("StudioCrossReference.source_story_id", "internal: text story records"),
@@ -461,6 +512,8 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioFootnote.note_story_id", "internal: text story records"),
     ("StudioFootnote.story_id", "internal: text story records"),
     ("StudioFrameShape.path_id", "internal: vector path records"),
+    ("StudioGradientMesh.source_path_id", "internal: vector path records"),
+    ("StudioGridAlignment.story_id", "internal: text story records"),
     ("StudioIccProfile.content_digest", "external:icc_profile"),
     ("StudioIccProfile.profile_id", "external:icc_profile"),
     ("StudioIccProfile.working_space", "internal: flag"),
@@ -471,11 +524,14 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioIndexMark.story_id", "internal: text story records"),
     ("StudioLightOptions.colour_profile_id", "external:colour_profile"),
     ("StudioLiveShape.path_id", "internal: vector path records"),
+    ("StudioLutRef.artifact_manifest_id", "external:colour_lookup"),
+    ("StudioLutRef.content_digest", "external:colour_lookup"),
     ("StudioMarker.url", "not_a_dependency: web-link marker"),
     ("StudioMask.linked", "internal: flag"),
     ("StudioMatchStatistics.source_mean", "internal: value"),
     ("StudioMatchStatistics.source_std", "internal: value"),
     ("StudioMotionRecords.composition_audio", "container of StudioAudioLayer"),
+    ("StudioMotionTemplate.required_fonts", "external:font"),
     ("StudioObjectStyle.epub_aria_label_source_type", "internal: value"),
     ("StudioObjectStyleCategories.enable_story_options", "internal: flag"),
     ("StudioOutputModule.audio", "not_a_dependency: output audio settings"),
@@ -483,11 +539,17 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioOutputModule.include_source_metadata", "not_a_dependency: flag"),
     ("StudioOutputModule.output_path", "not_a_dependency: render destination"),
     ("StudioParagraphFlow.story_id", "internal: text story records"),
+    ("StudioPathText.path_effect", "internal: value"),
+    ("StudioPathText.path_id", "internal: vector path records"),
+    ("StudioPathText.path_layer_id", "internal: document layer"),
+    ("StudioPathText.path_type_alignment", "internal: value"),
+    ("StudioPathText.story_id", "internal: text story records"),
     ("StudioPattern.source", "internal: pattern source (layer or tile artwork)"),
     ("StudioPatternSource.source_layer_id", "internal: document layer"),
     ("StudioPlacedAsset.source_id", "internal: placed source id"),
     ("StudioPlacedMode.content_digest", "external:placed_source"),
     ("StudioPlacedMode.uri", "external:placed_source"),
+    ("StudioPlacedSource.asset_id", "external:placed_source (CKC catalog id)"),
     ("StudioPlacedSource.source_id", "internal: placed source id"),
     ("StudioPublishing.documentation_links", "not_a_dependency: documentation links"),
     ("StudioRasterLayerRecord.placed_asset", "container of StudioPlacedAsset"),
@@ -515,6 +577,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ("StudioVectorNetwork.path_id", "internal: vector path records"),
     ("StudioVectorRecords.icc_profiles", "container of StudioIccProfile"),
     ("StudioVectorRecords.image_paints", "container of StudioImagePaint"),
+    ("StudioVectorRecords.path_texts", "container of StudioPathText"),
     ("StudioVectorRecords.width_profiles", "internal: width profiles"),
     ("StudioWidthProfile.path_id", "internal: vector path records"),
     ("StudioXrefDestination.story_id", "internal: text story records"),

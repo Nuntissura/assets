@@ -345,6 +345,11 @@ fn every_folio_digest_position_is_classified() {
         ("text_story", serde_json::to_value(folio::text_story_schema()).unwrap()),
         ("type_style_records", serde_json::to_value(folio::type_style_records_schema()).unwrap()),
         ("vector_network", serde_json::to_value(folio::vector_network_schema()).unwrap()),
+        ("motion_records", serde_json::to_value(folio::motion_records_schema()).unwrap()),
+        ("layout_flow_records", serde_json::to_value(folio::layout_flow_records_schema()).unwrap()),
+        ("book", serde_json::to_value(folio::book_schema()).unwrap()),
+        ("clip_finishing", serde_json::to_value(folio::clip_finishing_schema()).unwrap()),
+        ("layout_grids", serde_json::to_value(folio::layout_grids_schema()).unwrap()),
     ];
     let mut found = std::collections::BTreeSet::new();
     for (schema_name, schema) in &schemas {
@@ -393,7 +398,7 @@ fn every_folio_digest_position_is_classified() {
             assert_eq!(token.to_string().matches(TILE_SCHEMA_ID).count(), 1, "{schema_name}: TileRef schema_id is the tile token: {token}");
         }
     }
-    let classified: [&str; 7] = [
+    let classified: [&str; 8] = [
         // Linked media (caller-owned manifest handle): kept as a link, embedded only under
         // EmbedExternal::Granted / All, reported with its link state (externals.rs).
         "ClipSource.content_digest[source_kind=media]",
@@ -408,6 +413,9 @@ fn every_folio_digest_position_is_classified() {
         "StudioImageSource.content_digest[source_kind=package_asset]",
         // The import-original entry's own digest (its name carries it): not an asset.
         "StudioImageSource.entry_digest[source_kind=import_original]",
+        // A clip-finishing LUT resource (manifest handle + hash): linked, embedded under
+        // Granted / All (externals.rs, kind colour_lookup).
+        "StudioLutRef.content_digest",
         // Every tile plane: collected by its `schema_id` token and written; required on read for a
         // raster payload, else a typed loss.
         "TileRef.content_digest",

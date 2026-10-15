@@ -79,6 +79,7 @@ fn sequence() -> StudioSequence {
                 source_ref: ClipSource::Media {
                     artifact_manifest_id: "grey".into(),
                     content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() },
+                    asset_id: None,
                 },
                 source_in: Ticks::new(0),
                 source_out: Ticks::new(20 * F),

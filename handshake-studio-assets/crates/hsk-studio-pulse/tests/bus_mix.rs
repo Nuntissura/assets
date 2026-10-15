@@ -13,7 +13,7 @@ const SPF: usize = 1920;
 const RATE: u32 = 48_000;
 
 fn source(name: &str) -> ClipSource {
-    ClipSource::Media { artifact_manifest_id: name.into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() } }
+    ClipSource::Media { artifact_manifest_id: name.into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() }, asset_id: None }
 }
 fn clip(n: u32, src: &str, frames: u64, start: u64) -> StudioClip {
     StudioClip {

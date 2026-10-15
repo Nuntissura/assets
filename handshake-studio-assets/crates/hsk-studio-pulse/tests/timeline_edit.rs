@@ -69,6 +69,7 @@ fn clip(n: u32, source_in: u64, source_out: u64, start: u64, duration: u64) -> S
                 algorithm: "sha256".into(),
                 digest: "abc123".into(),
             },
+            asset_id: None,
         },
         source_in: Ticks::new(source_in),
         source_out: Ticks::new(source_out),

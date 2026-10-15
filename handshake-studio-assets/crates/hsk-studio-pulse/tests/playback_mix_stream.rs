@@ -17,6 +17,7 @@ fn source(name: &str) -> ClipSource {
             algorithm: "sha256".into(),
             digest: "abc123".into(),
         },
+        asset_id: None,
     }
 }
 fn clip(n: u32, src: &str, si: u64, frames: u64, start: u64) -> StudioClip {

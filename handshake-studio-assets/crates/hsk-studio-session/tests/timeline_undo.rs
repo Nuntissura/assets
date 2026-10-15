@@ -93,6 +93,7 @@ fn clip(n: u32, si: u64, frames: u64, start: u64) -> StudioClip {
                 algorithm: "sha256".into(),
                 digest: "abc123".into(),
             },
+            asset_id: None,
         },
         source_in: Ticks::new(si * F),
         source_out: Ticks::new((si + frames) * F),

@@ -27,7 +27,7 @@ fn clip(n: u32, src: &str, frames: u64) -> StudioClip {
     StudioClip {
         schema_id: ClipSchema::V1,
         clip_id: format!("SCLP-019abcde-0000-7000-8000-{n:012x}"),
-        source_ref: ClipSource::Media { artifact_manifest_id: src.into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() } },
+        source_ref: ClipSource::Media { artifact_manifest_id: src.into(), content_digest: ContentDigest { algorithm: "sha256".into(), digest: "abc123".into() }, asset_id: None },
         source_in: Ticks::new(0),
         source_out: Ticks::new(frames * F),
         timeline_start: Ticks::new(0),

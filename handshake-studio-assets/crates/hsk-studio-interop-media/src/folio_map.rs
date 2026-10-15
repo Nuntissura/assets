@@ -146,6 +146,7 @@ pub fn build_sequence(
                                 algorithm: "reel-name".into(),
                                 digest: safe,
                             },
+                            asset_id: None,
                         }
                     }
                 };
