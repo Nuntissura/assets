@@ -73,6 +73,15 @@
       "source": "LICENSE.txt of the same Inter-4.1.zip, byte-identical to the zip member",
       "licence": "OFL-1.1 text",
       "added": "2026-10-15, lane SMB-INTEROP-FIG-PAINTS-2"
+    },
+    {
+      "name": "Inter-Regular-4.1.ttf",
+      "size": 411640,
+      "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+      "role": "test font, unmodified (static Inter Regular 4.1, family 'Inter', style 'Regular'); the type crate's Inter-Regular.ttf 3.019 fixture is kept",
+      "source": "member extras/ttf/Inter-Regular.ttf of rsms/inter release v4.1 Inter-4.1.zip (zip sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e, https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip), extracted byte-identical",
+      "licence": "OFL-1.1 (Inter-4.1-OFL.txt)",
+      "added": "2026-10-15, lane SMB-INTEROP-FIG-EXPORT (lead decision START_LOG 2026-10-15: new fixture file, 3.019 kept)"
     }
   ]
 }

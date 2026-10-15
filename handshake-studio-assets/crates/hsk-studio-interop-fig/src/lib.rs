@@ -15,6 +15,7 @@ mod container;
 mod descriptor;
 mod effects;
 mod error;
+mod export;
 mod geometry;
 mod graph;
 mod import;
@@ -32,6 +33,10 @@ pub use container::{
 };
 pub use descriptor::DESCRIPTOR;
 pub use error::{FigError, Result};
+pub use export::{
+    FigDecodedImage, FigExportFormat, FigExportPlan, FigImageSource, FigPdfExport, MAX_EXPORT_SCALE,
+    MAX_EXPORT_SIDE_PT, export_frame_pdf, plan_frame_exports, render_frame_export,
+};
 pub use import::{
     Census, DefinitionSummary, FieldSummary, FigImport, FigOutcome, FigReceipt, LossEntry,
     LossKind, PartName, SanitizePolicy, SchemaSummary, SourceId, import_fig, report,
@@ -39,7 +44,7 @@ pub use import::{
 };
 pub use kiwi_value::{KiwiField, KiwiValue, decode_kiwi, decode_message_tree};
 pub use native::{
-    ExpandedNode, FigTextLayout, FigTextLine, FigTextRunSpec, FigVectorPath, FrameBackground,
+    ExpandedNode, FigGlyphOutline, FigTextLayout, FigTextLine, FigTextRunSpec, FigVectorPath, FrameBackground,
     IdMapEntry, IdMint, InstanceExpansion, MAX_EXPANDED_NODES, MAX_INSTANCE_DEPTH,
     MAX_OVERRIDE_PATH, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal, NativeRecords,
     RecordMapEntry, SequentialIdMint, id_index, read_native_records, to_native,
@@ -50,7 +55,7 @@ pub use text_out::{
 };
 pub use nodes::{
     AutoLayout, COMMON_NODE_FIELDS, Color, ComponentPropDef, DerivedGlyph, DerivedSymbolNode,
-    DerivedText, Effect, FigDocument, FigNode,
+    DerivedText, Effect, ExportSetting, FigDocument, FigNode,
     FramePayload, Geometry, GradientStop, InstanceOverride, InstancePayload, Interaction,
     InteractionAction, Matrix, NetRegion, NetSegment, NetVertex, NodeLoss, NodePayload, Paint,
     PaintKind, PathCommand, TextLine, TextPayload, TextRun, VariableMode, VariablePayload, VariableValue,

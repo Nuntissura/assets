@@ -39,6 +39,8 @@ pub enum FigError {
     /// The native (Folio) mapping produced a document or records Folio refused, or an import entry
     /// could not be encoded/parsed (the Folio code names the check).
     NativeRejected(hsk_studio_folio::Code),
+    /// A frame export was refused before any output (the press / plan code names the check).
+    ExportRefused(&'static str),
 }
 
 impl FigError {
@@ -60,6 +62,7 @@ impl FigError {
             Self::DecoderUnavailable { .. } => "decoder_unavailable",
             Self::EditableDecoderBlocked { .. } => "editable_decoder_blocked",
             Self::NativeRejected(_) => "native_rejected",
+            Self::ExportRefused(_) => "export_refused",
         }
     }
 

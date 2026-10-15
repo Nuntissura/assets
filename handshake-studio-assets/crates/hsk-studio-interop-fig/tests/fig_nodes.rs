@@ -485,7 +485,8 @@ fn real_fields_decoded_or_listed_as_loss() {
     // derivedTextData is decoded for its baselines, glyph sizes and font keys (lane
     // SMB-INTEROP-FIG-INSTANCES-FRAMES); its other members stay field-level losses.
     assert!(shapes.loss_count("NodeChange.derivedTextData", "field_not_decoded") == 0);
-    assert!(shapes.loss_count("NodeChange.derivedTextData.glyphs.commandsBlob", "field_not_decoded") > 0);
+    // Glyph outlines (commandsBlob) are decoded since SMB-INTEROP-FIG-EXPORT (PDF text as outlines).
+    assert!(shapes.loss_count("NodeChange.derivedTextData.glyphs.commandsBlob", "field_not_decoded") == 0);
     assert!(shapes.loss_count("NodeChange.fillPaints.authoredColor", "field_not_decoded") > 0);
     assert!(
         shapes.loss_count(

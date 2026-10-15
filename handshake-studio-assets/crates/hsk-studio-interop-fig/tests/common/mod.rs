@@ -111,6 +111,13 @@ impl FontFile {
         let hash = hsk_studio_prism::profile_hash(&bytes);
         Self { identity: "Inter-Regular", bytes, hash }
     }
+    /// Inter Regular 4.1 (rsms/inter v4.1, OFL-1.1, unmodified; tests/fixtures/provenance.json).
+    pub fn inter_regular_41() -> Self {
+        let path = format!("{}/tests/fixtures/Inter-Regular-4.1.ttf", env!("CARGO_MANIFEST_DIR"));
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("fixture font {path}: {e}"));
+        let hash = hsk_studio_prism::profile_hash(&bytes);
+        Self { identity: "Inter-Regular-4.1", bytes, hash }
+    }
     /// Inter Bold (rsms/inter v4.1, OFL-1.1, unmodified; tests/fixtures/provenance.json).
     pub fn inter_bold() -> Self {
         let path = format!("{}/tests/fixtures/Inter-Bold.ttf", env!("CARGO_MANIFEST_DIR"));
@@ -452,6 +459,9 @@ pub fn prepare_outputs(p: &NativeProposal, outputs: &[FigTextOutput<'_>], files:
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
+    /// The same pixels as 8-bit RGB and alpha (PDF export input).
+    pub rgb8: Vec<u8>,
+    pub alpha8: Option<Vec<u8>>,
     pub colour: Vec<u8>,
     pub alpha: Vec<u8>,
     pub colour_sha256: [u8; 32],
@@ -481,6 +491,7 @@ impl Images {
             let hsk_studio_interop_raster::Samples::U8(samples) = &img.samples else { panic!("8-bit image") };
             let ch = img.colour.channels();
             let (mut colour, mut alpha) = (Vec::new(), Vec::new());
+            let (mut rgb8, mut alpha8) = (Vec::new(), Vec::new());
             for px in samples.chunks(ch) {
                 let rgb = match img.colour {
                     hsk_studio_interop_raster::Colour::Gray | hsk_studio_interop_raster::Colour::GrayA => [px[0]; 3],
@@ -489,7 +500,9 @@ impl Images {
                 };
                 for c in rgb {
                     colour.extend_from_slice(&(f32::from(c) / 255.0).to_le_bytes());
+                    rgb8.push(c);
                 }
+                alpha8.push(if img.colour.has_alpha() { px[ch - 1] } else { 255 });
                 let a = if img.colour.has_alpha() { f32::from(px[ch - 1]) / 255.0 } else { 1.0 };
                 alpha.extend_from_slice(&a.to_le_bytes());
             }
@@ -498,6 +511,8 @@ impl Images {
                 DecodedImage {
                     width: img.width,
                     height: img.height,
+                    rgb8,
+                    alpha8: img.colour.has_alpha().then_some(alpha8),
                     colour_sha256: hsk_studio_prism::profile_hash(&colour),
                     alpha_sha256: hsk_studio_prism::profile_hash(&alpha),
                     colour,
@@ -506,6 +521,18 @@ impl Images {
             );
         }
         Self(out)
+    }
+}
+
+impl hsk_studio_interop_fig::FigImageSource for Images {
+    fn decoded(&self, source: &StudioImageSource) -> Option<hsk_studio_interop_fig::FigDecodedImage> {
+        let img = self.0.get(&hsk_studio_composite::image_source_id(source))?;
+        Some(hsk_studio_interop_fig::FigDecodedImage {
+            width: img.width,
+            height: img.height,
+            rgb: img.rgb8.clone(),
+            alpha: img.alpha8.clone(),
+        })
     }
 }
 

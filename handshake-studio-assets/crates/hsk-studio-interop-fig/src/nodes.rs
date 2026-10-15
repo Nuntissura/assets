@@ -255,14 +255,17 @@ pub struct TextLine {
     pub line_ascent: Option<f32>,
 }
 
-/// One placed glyph of `derivedTextData.glyphs` (outline blob not read here): the character it
-/// starts at, its pen position in node space and the font size Figma laid it out with.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One placed glyph of `derivedTextData.glyphs`: the character it starts at, its pen position in
+/// node space, the font size Figma laid it out with, its advance and its outline (`commandsBlob`,
+/// decoded like fill geometry; `None` when absent or undecodable, a loss entry names why).
+#[derive(Clone, Debug, PartialEq)]
 pub struct DerivedGlyph {
     pub first: u32,
     pub x: f32,
     pub y: f32,
     pub font_size: f32,
+    pub advance: Option<f32>,
+    pub commands: Option<Vec<PathCommand>>,
 }
 
 /// `derivedTextData`: the layout Figma computed and stored (lines, glyph sizes, fonts used).
@@ -282,6 +285,23 @@ pub struct DerivedSymbolNode {
     pub size: Option<Vec2>,
     pub transform: Option<Matrix>,
     pub text: Option<DerivedText>,
+}
+
+/// One `exportSettings` entry of a node, under the stored names. Fields not decoded here are named
+/// in `unsupported` (and are decode losses), so an export can refuse the setting instead of
+/// ignoring them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportSetting {
+    pub suffix: Option<String>,
+    /// `imageType` (`PNG`, `JPEG`, `SVG`, `PDF`, ...).
+    pub image_type: Option<String>,
+    /// `constraint`: (`CONTENT_SCALE` | `CONTENT_WIDTH` | `CONTENT_HEIGHT`, value).
+    pub constraint: Option<(String, f32)>,
+    pub contents_only: Option<bool>,
+    pub use_absolute_bounds: Option<bool>,
+    pub color_profile: Option<String>,
+    pub quality: Option<f32>,
+    pub unsupported: Vec<String>,
 }
 
 /// One `symbolOverrides` entry: the node path it targets and the overridden values decoded here.
@@ -436,6 +456,8 @@ pub struct FigNode {
     pub effect_style: Option<SourceId>,
     pub fill_style: Option<SourceId>,
     pub stroke_style: Option<SourceId>,
+    /// `exportSettings` of the node (frame export).
+    pub export_settings: Vec<ExportSetting>,
     pub effects: Vec<Effect>,
     pub fill_geometry: Vec<Geometry>,
     pub stroke_geometry: Vec<Geometry>,
@@ -694,6 +716,33 @@ impl<'a> Obj<'a> {
             }
         }
     }
+}
+
+/// `exportSettings`: suffix, image type, constraint and the options an export honours or refuses;
+/// the rest are named per setting in `unsupported`.
+fn export_settings(o: &mut Obj, cx: &mut Cx) -> Vec<ExportSetting> {
+    let path = o.sub("exportSettings");
+    let mut out = Vec::new();
+    for v in o.array(cx, "exportSettings") {
+        let mut so = Obj::of(v, path.clone());
+        let mut s = ExportSetting {
+            suffix: so.string(cx, "suffix"),
+            image_type: so.enum_name(cx, "imageType"),
+            contents_only: so.bool(cx, "contentsOnly"),
+            use_absolute_bounds: so.bool(cx, "useAbsoluteBounds"),
+            color_profile: so.enum_name(cx, "colorProfile"),
+            quality: so.f32(cx, "quality"),
+            ..ExportSetting::default()
+        };
+        if let Some(mut c) = so.obj(cx, "constraint") {
+            s.constraint = c.enum_name(cx, "type").zip(c.f32(cx, "value"));
+            c.finish(cx);
+        }
+        s.unsupported = so.unused();
+        so.finish(cx);
+        out.push(s);
+    }
+    out
 }
 
 /// A `StyleId` field: the local style node's guid; a library `assetRef` has no node in the file.
@@ -1173,7 +1222,7 @@ fn number_with_units(o: &mut Obj, cx: &mut Cx, name: &str) -> Option<(f32, Strin
     v
 }
 
-fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> TextPayload {
+fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> Result<TextPayload> {
     let (font_family, font_style) = font_name(o, cx);
     let font_size = o.f32(cx, "fontSize");
     let mut t = TextPayload {
@@ -1185,11 +1234,11 @@ fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> TextPayload {
         align_horizontal: o.enum_name(cx, "textAlignHorizontal"),
         align_vertical: o.enum_name(cx, "textAlignVertical"),
         auto_resize: o.enum_name(cx, "textAutoResize"),
-        derived: derived_text(o, cx),
+        derived: derived_text(o, cx)?,
         ..TextPayload::default()
     };
     let Some(mut td) = o.obj(cx, "textData") else {
-        return t;
+        return Ok(t);
     };
     t.characters = td.string(cx, "characters").unwrap_or_default();
     let ids: Vec<u32> = td
@@ -1238,14 +1287,14 @@ fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> TextPayload {
         });
         start = end;
     }
-    t
+    Ok(t)
 }
 
-fn instance(o: &mut Obj, cx: &mut Cx) -> InstancePayload {
+fn instance(o: &mut Obj, cx: &mut Cx) -> Result<InstancePayload> {
     let mut p = InstancePayload::default();
     let Some(mut sd) = o.obj(cx, "symbolData") else {
-        p.derived = derived_symbol(o, cx);
-        return p;
+        p.derived = derived_symbol(o, cx)?;
+        return Ok(p);
     };
     p.symbol_id = sd.guid(cx, "symbolID");
     p.uniform_scale = sd.f32(cx, "uniformScaleFactor");
@@ -1284,12 +1333,12 @@ fn instance(o: &mut Obj, cx: &mut Cx) -> InstancePayload {
         p.overrides.push(item);
     }
     sd.finish(cx);
-    p.derived = derived_symbol(o, cx);
-    p
+    p.derived = derived_symbol(o, cx)?;
+    Ok(p)
 }
 
 /// `derivedSymbolData` of an INSTANCE: per sublayer path, the laid-out size, transform and text.
-fn derived_symbol(o: &mut Obj, cx: &mut Cx) -> Vec<DerivedSymbolNode> {
+fn derived_symbol(o: &mut Obj, cx: &mut Cx) -> Result<Vec<DerivedSymbolNode>> {
     let path = o.sub("derivedSymbolData");
     let mut out = Vec::new();
     for e in o.array(cx, "derivedSymbolData") {
@@ -1308,17 +1357,19 @@ fn derived_symbol(o: &mut Obj, cx: &mut Cx) -> Vec<DerivedSymbolNode> {
         }
         node.size = eo.vec2(cx, "size");
         node.transform = eo.matrix(cx, "transform");
-        node.text = derived_text(&mut eo, cx);
+        node.text = derived_text(&mut eo, cx)?;
         eo.finish(cx);
         out.push(node);
     }
-    out
+    Ok(out)
 }
 
 /// `derivedTextData`: baselines (lines), glyph positions and sizes, font keys; every other
 /// member stays a `field_not_decoded` loss.
-fn derived_text(o: &mut Obj, cx: &mut Cx) -> Option<DerivedText> {
-    let mut d = o.obj(cx, "derivedTextData")?;
+fn derived_text(o: &mut Obj, cx: &mut Cx) -> Result<Option<DerivedText>> {
+    let Some(mut d) = o.obj(cx, "derivedTextData") else {
+        return Ok(None);
+    };
     let mut out = DerivedText::default();
     let lines_path = d.sub("baselines");
     for b in d.array(cx, "baselines") {
@@ -1348,13 +1399,28 @@ fn derived_text(o: &mut Obj, cx: &mut Cx) -> Option<DerivedText> {
         let first = go.u32(cx, "firstCharacter");
         let pos = go.vec2(cx, "position");
         let size = go.f32(cx, "fontSize");
+        let advance = go.f32(cx, "advance");
+        let blob = go.u32(cx, "commandsBlob");
         go.finish(cx);
+        // The glyph outline Figma laid out (path commands; an empty blob = a space).
+        let mut commands = None;
+        if let Some(i) = blob {
+            let blob_path = format!("{glyphs_path}.commandsBlob");
+            if let Some(bytes) = cx.blob(i, &blob_path) {
+                match decode_path(bytes, cx)? {
+                    Ok(c) => commands = Some(c),
+                    Err(code) => cx.lose(blob_path, code),
+                }
+            }
+        }
         match (first, pos, size) {
             (Some(first), Some(p), Some(font_size)) => out.glyphs.push(DerivedGlyph {
                 first,
                 x: p.x,
                 y: p.y,
                 font_size,
+                advance,
+                commands,
             }),
             _ => cx.lose(glyphs_path.clone(), "derived_glyph_incomplete"),
         }
@@ -1376,7 +1442,7 @@ fn derived_text(o: &mut Obj, cx: &mut Cx) -> Option<DerivedText> {
         out.fonts.push((family, style));
     }
     d.finish(cx);
-    Some(out)
+    Ok(Some(out))
 }
 
 fn variable(o: &mut Obj, cx: &mut Cx) -> VariablePayload {
@@ -1486,6 +1552,7 @@ pub const COMMON_NODE_FIELDS: &[&str] = &[
     "styleIdForEffect",
     "styleIdForFill",
     "styleIdForStrokeFill",
+    "exportSettings",
     "effects",
     "fillGeometry",
     "strokeGeometry",
@@ -1547,6 +1614,7 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         effect_style: style_id(&mut o, cx, "styleIdForEffect"),
         fill_style: style_id(&mut o, cx, "styleIdForFill"),
         stroke_style: style_id(&mut o, cx, "styleIdForStrokeFill"),
+        export_settings: export_settings(&mut o, cx),
         effects: effects(&mut o, cx),
         fill_geometry: geometry(&mut o, cx, "fillGeometry")?,
         stroke_geometry: geometry(&mut o, cx, "strokeGeometry")?,
@@ -1623,7 +1691,7 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         },
         "TEXT" => {
             let base = n.fills.clone();
-            NodePayload::Text(text(&mut o, cx, &base))
+            NodePayload::Text(text(&mut o, cx, &base)?)
         }
         "SYMBOL" => {
             let frame = frame(&mut o, cx);
@@ -1649,7 +1717,7 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         }
         "INSTANCE" => NodePayload::Instance {
             frame: frame(&mut o, cx),
-            instance: instance(&mut o, cx),
+            instance: instance(&mut o, cx)?,
         },
         "VARIABLE" => NodePayload::Variable(variable(&mut o, cx)),
         "VARIABLE_SET" => {

@@ -297,7 +297,9 @@ fn text_output_resolves_granted_font_and_types_missing_family() {
 #[test]
 fn whole_fixture_render_matches_operator_png() {
     // Prototype pages, first page: section fill, three frame fills, the orbs and 6 Inter Regular
-    // labels, compared with the three screen PNGs over their whole area.
+    // labels (Inter Regular 3.019: closer to Figma's rendering than the 4.1 fixture, measured in
+    // fig_export::inter_regular_versions_measured_on_the_text_line), compared with the three screen
+    // PNGs over their whole area.
     let files = [FontFile::inter_regular()];
     let p = map(&document("fig-prototype-pages.fig"), Budget::default());
     let out = resolve_text_outputs(&p, &[grant_inter(&files[0], "Regular")]);
@@ -376,6 +378,7 @@ fn node(id: SourceId, parent: Option<SourceId>, ty: &str, payload: NodePayload) 
         effect_style: None,
         fill_style: None,
         stroke_style: None,
+        export_settings: Vec::new(),
         effects: Vec::new(),
         fill_geometry: Vec::new(),
         stroke_geometry: Vec::new(),

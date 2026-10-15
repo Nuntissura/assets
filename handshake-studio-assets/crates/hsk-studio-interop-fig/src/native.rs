@@ -319,6 +319,9 @@ const CONTAINER_KINDS: &[&str] = &["FRAME", "SECTION", "GROUP", "BOOLEAN_OPERATI
 /// Folio has no layer for these: they become design records (variables) in a later slice.
 const NON_LAYER_KINDS: &[&str] = &["VARIABLE", "VARIABLE_SET"];
 
+/// Figma glyph outline space: em units with y up from the baseline (document y is down).
+const GLYPH_Y: f64 = -1.0;
+
 /// Instance expansion bound: instances nested inside expanded instances (deeper = refused).
 pub const MAX_INSTANCE_DEPTH: usize = 16;
 /// Instance expansion bound: guid-path length of one override (longer = refused).
@@ -384,8 +387,17 @@ pub struct FigTextRunSpec {
     pub fill_rgba: Option<[f64; 4]>,
 }
 
+/// One glyph Figma laid out, as its outline in document px (`path` is `None` for an empty glyph,
+/// a space, or an outline that could not be placed). `start` = byte offset of its character.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigGlyphOutline {
+    pub start: u64,
+    pub path: Option<OwnedPath>,
+}
+
 /// What a text layer needs to be drawn: its lines and runs. Fonts are resolved later, against
-/// caller-granted fonts (`resolve_text_outputs`).
+/// caller-granted fonts (`resolve_text_outputs`). `glyphs` are Figma's own laid-out glyph outlines
+/// (from `derivedTextData`), used where a font-free exact drawing is wanted (PDF export).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FigTextLayout {
     pub layer_id: String,
@@ -393,6 +405,7 @@ pub struct FigTextLayout {
     pub source: SourceId,
     pub lines: Vec<FigTextLine>,
     pub runs: Vec<FigTextRunSpec>,
+    pub glyphs: Vec<FigGlyphOutline>,
 }
 
 /// The active instance expansion: overrides and derived values keyed by guid path relative to
@@ -2508,12 +2521,51 @@ impl Mapper<'_> {
                 fill_rgba: fill_of(fills),
             });
         }
+        // Glyph outlines: em-unit commands scaled by the glyph's font size at its pen position in
+        // node space (Figma's glyph space is y-up: GLYPH_Y), then the node transform. Only when the
+        // stored glyphs belong to these characters (same count as the stored lines cover).
+        let mut glyphs = Vec::new();
+        if let (Some(d), true) = (&t.derived, translation && !lines.is_empty()) {
+            let covered = d.lines.last().map_or(0, |l| l.end) as usize;
+            if covered == chars {
+                for g in &d.glyphs {
+                    let start = at(g.first);
+                    let path = g.commands.as_ref().filter(|c| !c.is_empty()).and_then(|raw| {
+                        // Figma glyph blobs open with a Close (no current point yet): a Close
+                        // outside a subpath carries no geometry and is dropped.
+                        let mut open = false;
+                        let cmds: Vec<crate::nodes::PathCommand> = raw
+                            .iter()
+                            .filter(|c| match c {
+                                crate::nodes::PathCommand::MoveTo { .. } => {
+                                    open = true;
+                                    true
+                                }
+                                crate::nodes::PathCommand::Close => std::mem::replace(&mut open, false),
+                                _ => open,
+                            })
+                            .copied()
+                            .collect();
+                        if cmds.is_empty() {
+                            return None;
+                        }
+                        let fs = wide(g.font_size);
+                        let m = [fs, 0.0, abs[2] + wide(g.x), 0.0, GLYPH_Y * fs, abs[5] + wide(g.y)];
+                        path_from_commands(&cmds, &m, hsk_studio_nib::FillRule::NonZero)
+                    });
+                    glyphs.push(FigGlyphOutline { start, path });
+                }
+            } else {
+                self.lose("native.text.glyphs", "glyph_outlines_not_for_these_characters");
+            }
+        }
         self.text_layouts.push(FigTextLayout {
             layer_id: layer_id.to_owned(),
             story_id: story_id.to_owned(),
             source: n.id,
             lines,
             runs,
+            glyphs,
         });
     }
 
