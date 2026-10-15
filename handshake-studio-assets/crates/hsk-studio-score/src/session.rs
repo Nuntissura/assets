@@ -228,6 +228,35 @@ impl TrackSpec {
         }
         Ok(Self::new(source.iter().map(|c| c[source_in..end].to_vec()).collect(), start_sample))
     }
+    /// A clip cut from `source` frames `source_in .. source_in + source_frames` and played at
+    /// `speed` (band-limited windowed-sinc, see [`render_at_speed`](crate::render_at_speed); source
+    /// samples outside the window serve as handles). The clip lasts
+    /// `speed.output_frames(source_frames)` frames on the timeline. Refusals as
+    /// [`TrackSpec::from_source`], plus `NotFinite` for a non-finite source sample and
+    /// `CapacityExceeded` for a result longer than [`MAX_CLIP_FRAMES`].
+    pub fn from_source_at_speed(
+        source: &[Vec<f32>],
+        source_in: usize,
+        source_frames: usize,
+        speed: crate::varispeed::ClipSpeed,
+        start_sample: u64,
+    ) -> Result<Self, ScoreError> {
+        Self::from_source(&source[..source.len().min(2)], source_in, source_frames, start_sample)?;
+        if source.len() > 2 {
+            return Err(ScoreError::InvalidLayout);
+        }
+        let frames = speed.output_frames(source_frames as u64);
+        if frames > MAX_CLIP_FRAMES as u64 {
+            return Err(ScoreError::CapacityExceeded);
+        }
+        let mut clip = Vec::with_capacity(source.len());
+        for channel in source {
+            let mut out = vec![0.0_f32; frames as usize];
+            crate::varispeed::render_at_speed(channel, source_in, source_frames, speed, &mut out)?;
+            clip.push(out);
+        }
+        Ok(Self::new(clip, start_sample))
+    }
 }
 
 /// Fade shape. With progress `p = k / frames` at the `k`-th frame of the fade: `Linear` gains
