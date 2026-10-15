@@ -268,11 +268,12 @@ fn columns_and_gutter_then_thread_to_next_page() {
     )
     .unwrap();
     assert_eq!(plain, p);
-    // One more word than fits: overset is exactly the tail.
-    let text = format!("{TEN_WORDS} kkkk llll");
+    // Seven lines for six slots (frame 2 holds two): overset is exactly the seventh line.
+    let text = format!("{TEN_WORDS} kkkk llll mmmm nnnn");
     let (st, paras) = story(&text, &[(0, text.len() as u64)]);
     let over = run(&doc, &st, &paras, &records(), &[]).unwrap();
-    assert_eq!(over.overset, Some(SourceSpan { start: 50, end: 59 }));
+    assert_eq!(over.overset, Some(SourceSpan { start: 60, end: 69 }));
+    assert_eq!(over.frames[1].lines.len(), 2);
 }
 
 #[test]
