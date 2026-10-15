@@ -3,7 +3,7 @@
 //! reader. At rest the session holds the document, preserved unknown entries and nothing else.
 use crate::error::SessionError;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{self as folio, ContentDigest, Payload, Resolver, Snapshot, StudioDocument};
+use hsk_studio_folio::{self as folio, ContentDigest, Resolver, Snapshot, StudioDocument};
 use hsk_studio_package::{
     ASSET_PREFIX, AssetError, AssetReader, AssetSource, AssetStream, Codec, EntryKind, EntryMeta,
     IMPORT_PREFIX, ImportRef, ImportRole, Limits, LossNote, LossReason, MANIFEST_NAME, Manifest,
@@ -276,7 +276,7 @@ pub(crate) fn load_parts(
     if doc.document_id != manifest.document_id || doc.revision != manifest.revision {
         return Err(wrap(PackageError::DocumentMismatch));
     }
-    require_tile_assets(doc, manifest).map_err(wrap)?;
+    loss.extend(require_tile_assets(doc, manifest, &quarantined).map_err(wrap)?);
     Ok(Parts {
         snapshot,
         quarantined,
@@ -285,31 +285,35 @@ pub(crate) fn load_parts(
     })
 }
 
-/// Every raster tile of `doc` names a sha256 asset that the package manifest lists; a document
-/// the source cannot write assets for is refused here instead of failing later at save.
+/// Every asset `doc` and its import records among `held` reference (the package's
+/// `referenced_assets`) is listed by the manifest. A missing raster payload tile is refused here
+/// (`missing_asset`) instead of failing later at save; any other missing plane (layer or
+/// smart-filter mask, records image: a package written before SMB-PACKAGE-MASK-TILES) is returned
+/// as a typed loss note (`LossReason::MissingAsset`, `assets/<sha256>`).
 pub(crate) fn require_tile_assets(
     doc: &StudioDocument,
     manifest: &Manifest,
-) -> Result<(), PackageError> {
-    for layer in &doc.layers {
-        if let Payload::Raster { tiles } = &layer.payload {
-            for tile in tiles {
-                let digest = &tile.content_digest;
-                if digest.algorithm != "sha256" {
-                    return Err(PackageError::InvalidDigest);
-                }
-                let name = format!("{ASSET_PREFIX}{}", digest.digest);
-                let present = manifest
-                    .entries
-                    .iter()
-                    .any(|e| e.kind == EntryKind::Asset && e.name == name);
-                if !present {
-                    return Err(PackageError::MissingAsset);
-                }
-            }
+    held: &[Quarantined],
+) -> Result<Vec<LossNote>, PackageError> {
+    let mut loss = Vec::new();
+    for (digest, referenced) in hsk_studio_package::referenced_assets(doc, held)? {
+        let name = format!("{ASSET_PREFIX}{digest}");
+        let present = manifest
+            .entries
+            .iter()
+            .any(|e| e.kind == EntryKind::Asset && e.name == name);
+        if present {
+            continue;
         }
+        if referenced.required() {
+            return Err(PackageError::MissingAsset);
+        }
+        loss.push(LossNote {
+            name,
+            reason: LossReason::MissingAsset,
+        });
     }
-    Ok(())
+    Ok(loss)
 }
 
 /// Asset bytes pulled from the source package on demand, one asset per call, bounded by the

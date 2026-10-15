@@ -8,12 +8,13 @@ use crate::{
         ASSET_PREFIX, CONTAINER_VERSION, Codec, DOCUMENT_NAME, EntryKind, MANIFEST_NAME, Manifest,
         ManifestEntry, PREVIEW_PREFIX, PreviewInfo,
     },
-    read::{Opened, PreviewImage, Quarantined, tile_digests},
+    read::{Opened, PreviewImage, Quarantined},
+    references::referenced_assets,
     shuffle::byte_shuffle,
     zip::{Zip64Policy, ZipWriter, validate_name, validate_name_set},
 };
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{ContentDigest, Payload, Snapshot, StudioDocument};
+use hsk_studio_folio::{ContentDigest, Snapshot};
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 use std::{
     borrow::Cow,
@@ -171,38 +172,6 @@ pub(crate) struct Encoded {
     pub(crate) stored: Vec<u8>,
 }
 
-/// Element size implied by a tile format name such as `rgb_f32le` / `coverage_u16le`.
-fn element_size_for_format(format: &str) -> Option<u8> {
-    match format.rsplit('_').next()? {
-        "f32le" | "u32le" | "i32le" => Some(4),
-        "f16le" | "u16le" | "i16le" => Some(2),
-        "f64le" | "u64le" | "i64le" => Some(8),
-        _ => None,
-    }
-}
-
-/// Element size per content digest; `None` when tiles sharing a digest disagree or the format
-/// has no known element size.
-pub(crate) fn tile_elem_sizes(doc: &StudioDocument) -> BTreeMap<String, Option<u8>> {
-    let mut sizes: BTreeMap<String, Option<u8>> = BTreeMap::new();
-    for layer in &doc.layers {
-        if let Payload::Raster { tiles } = &layer.payload {
-            for tile in tiles {
-                let size = element_size_for_format(&tile.format);
-                sizes
-                    .entry(tile.content_digest.digest.clone())
-                    .and_modify(|current| {
-                        if *current != size {
-                            *current = None;
-                        }
-                    })
-                    .or_insert(size);
-            }
-        }
-    }
-    sizes
-}
-
 /// Smallest of raw / zstd / shuffle+zstd for `bytes` (ties keep the simpler codec).
 pub(crate) fn encode_blob(
     requested: Codec,
@@ -289,8 +258,7 @@ pub fn write_package_with<W: Write>(
     let doc_bytes = doc.encoded_bytes();
 
     let mut parts: Vec<Part<'_>> = Vec::new();
-    let elem_sizes = tile_elem_sizes(document);
-    for digest in tile_digests(document)? {
+    for (digest, referenced) in referenced_assets(document, extras.quarantined)? {
         check(cancel)?;
         let reference = ContentDigest {
             algorithm: "sha256".to_owned(),
@@ -305,8 +273,7 @@ pub fn write_package_with<W: Write>(
         if sha256_hex(&bytes, cancel)? != digest {
             return Err(PackageError::HashMismatch);
         }
-        let elem = elem_sizes.get(&digest).copied().flatten();
-        let encoded = encode_blob(options.asset_codec, elem, bytes, cancel)?;
+        let encoded = encode_blob(options.asset_codec, referenced.elem_size, bytes, cancel)?;
         parts.push(Part {
             name: format!("{ASSET_PREFIX}{digest}"),
             kind: EntryKind::Asset,

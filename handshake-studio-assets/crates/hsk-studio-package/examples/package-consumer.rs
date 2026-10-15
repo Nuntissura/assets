@@ -183,6 +183,7 @@ fn run() -> Result<(), String> {
                 .map(|n| match n.reason {
                     LossReason::Unlisted => "unlisted",
                     LossReason::Opaque => "opaque",
+                    LossReason::MissingAsset => "missing_asset",
                 })
                 .collect();
             println!(

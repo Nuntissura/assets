@@ -465,18 +465,16 @@ pub struct Session {
 /// `total_too_large`).
 pub const MAX_STAGED_BYTES: u64 = 1 << 30;
 
-/// Every asset digest a document references: raster tiles and mask coverage tiles.
-fn referenced_digests(document: &StudioDocument) -> Vec<&folio::ContentDigest> {
-    let mut out = Vec::new();
-    for layer in &document.layers {
-        if let folio::Payload::Raster { tiles } = &layer.payload {
-            out.extend(tiles.iter().map(|t| &t.content_digest));
-        }
-        if let Some(mask) = layer.appearance.as_ref().and_then(|a| a.mask.as_ref()) {
-            out.extend(mask.tiles.iter().map(|t| &t.content_digest));
-        }
-    }
-    out
+/// Every asset digest a document and its typed import records reference: raster tiles, layer mask
+/// coverage, smart-filter entry and stack masks, records image assets (the package's
+/// [`hsk_studio_package::referenced_assets`], the same set its writers write).
+fn referenced_digests(
+    document: &StudioDocument,
+    held: &[Quarantined],
+) -> Result<Vec<String>, PackageError> {
+    Ok(hsk_studio_package::referenced_assets(document, held)?
+        .into_keys()
+        .collect())
 }
 
 const _: fn() = || {
@@ -1670,7 +1668,7 @@ impl Session {
             return Err(fault(AuthorityFault::WrongRevision));
         }
         let source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
-        require_tile_assets(document, source.manifest()).map_err(|error| match error {
+        require_tile_assets(document, source.manifest(), &self.quarantined).map_err(|error| match error {
             PackageError::InvalidDigest => fault(AuthorityFault::Invalid),
             _ => fault(AuthorityFault::MissingAsset),
         })?;
@@ -2026,14 +2024,16 @@ impl Session {
     fn assets_available(&self, document: &StudioDocument) -> bool {
         let reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
         let manifest = reader.manifest();
-        referenced_digests(document).into_iter().all(|digest| {
-            digest.algorithm == "sha256"
-                && (self.staged.contains_key(&digest.digest)
-                    || manifest.entries.iter().any(|e| {
-                        e.kind == hsk_studio_package::EntryKind::Asset
-                            && e.name.strip_prefix(hsk_studio_package::ASSET_PREFIX)
-                                == Some(digest.digest.as_str())
-                    }))
+        let Ok(digests) = referenced_digests(document, &self.quarantined) else {
+            return false;
+        };
+        digests.iter().all(|digest| {
+            self.staged.contains_key(digest)
+                || manifest.entries.iter().any(|e| {
+                    e.kind == hsk_studio_package::EntryKind::Asset
+                        && e.name.strip_prefix(hsk_studio_package::ASSET_PREFIX)
+                            == Some(digest.as_str())
+                })
         })
     }
 
@@ -2097,11 +2097,15 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<BTreeMap<String, Vec<u8>>, SessionError> {
         let mut out = BTreeMap::new();
-        for digest in referenced_digests(self.snapshot.document()) {
-            if !out.contains_key(&digest.digest) {
-                let bytes = self.tile_bytes(digest, cancel)?;
-                out.insert(digest.digest.clone(), bytes);
-            }
+        for digest in referenced_digests(self.snapshot.document(), &self.quarantined)
+            .map_err(SessionError::from_package)?
+        {
+            let reference = folio::ContentDigest {
+                algorithm: "sha256".into(),
+                digest,
+            };
+            let bytes = self.tile_bytes(&reference, cancel)?;
+            out.insert(reference.digest, bytes);
         }
         Ok(out)
     }
@@ -2112,10 +2116,10 @@ impl Session {
     /// Best effort: an asset that cannot be read or does not fit is left out, and an undo naming
     /// it is then refused `missing_asset` (never a broken save).
     fn retain_replaced_assets(&mut self, cancel: &CancellationToken) {
-        let referenced: BTreeSet<&str> = referenced_digests(self.snapshot.document())
-            .into_iter()
-            .map(|d| d.digest.as_str())
-            .collect();
+        let Ok(referenced) = referenced_digests(self.snapshot.document(), &self.quarantined) else {
+            return;
+        };
+        let referenced: BTreeSet<&str> = referenced.iter().map(String::as_str).collect();
         let mut reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
         let replaced: Vec<String> = reader
             .manifest()

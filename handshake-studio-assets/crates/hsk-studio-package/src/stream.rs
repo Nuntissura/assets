@@ -26,9 +26,9 @@ use crate::{
         ASSET_PREFIX, CONTAINER_VERSION, Codec, DOCUMENT_NAME, EntryKind, MANIFEST_NAME, Manifest,
         ManifestEntry, PREVIEW_PREFIX, PreviewInfo,
     },
-    read::tile_digests,
+    references::referenced_assets,
     write::{
-        AssetReader, AssetStream, Extras, WriteOptions, WriteReceipt, encode_blob, tile_elem_sizes,
+        AssetReader, AssetStream, Extras, WriteOptions, WriteReceipt, encode_blob,
     },
     zip::{ZipWriter, validate_name, validate_name_set},
 };
@@ -175,12 +175,11 @@ pub fn write_package_streaming<W: Write + Seek>(
 
     // ---- plan -----------------------------------------------------------------------------
     let mut parts: Vec<Planned<'_>> = Vec::new();
-    let elem_sizes = tile_elem_sizes(document);
-    for digest in tile_digests(document)? {
+    for (digest, referenced) in referenced_assets(document, extras.quarantined)? {
         check(cancel)?;
         let handle = open_asset(assets, &digest, limits)?;
         let name = format!("{ASSET_PREFIX}{digest}");
-        let elem = elem_sizes.get(&digest).copied().flatten();
+        let elem = referenced.elem_size;
         let raw_len = handle.len;
         if options.asset_codec == Codec::Raw {
             parts.push(Planned {

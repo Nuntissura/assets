@@ -2,7 +2,7 @@
 //! `Read + Seek` stream through the same strict implementation.
 use crate::{
     error::PackageError,
-    hashing::{check, hex, is_hex64, sha256_hex},
+    hashing::{check, hex, sha256_hex},
     limits::Limits,
     manifest::{
         ASSET_PREFIX, Codec, EntryKind, MANIFEST_NAME, Manifest, ManifestEntry, PreviewInfo,
@@ -11,6 +11,7 @@ use crate::{
     zip::{EntryMeta, SliceSource, Source, StreamSource, preflight_source, stream_range},
 };
 use crate::import::{ImportEntry, ImportRef, ImportRole, parse_import_name};
+use crate::references::referenced_assets;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use ruzstd::decoding::StreamingDecoder;
@@ -34,6 +35,10 @@ pub enum LossReason {
     Unlisted,
     /// Listed with kind `opaque`: preserved, not semantically imported.
     Opaque,
+    /// A plane the document or its import records reference (`name` = `assets/<sha256>`) is not
+    /// in the package: a layer mask, smart-filter mask or records image a writer from before
+    /// SMB-PACKAGE-MASK-TILES dropped. The document opens; that plane is unavailable.
+    MissingAsset,
 }
 
 /// Explicit loss receipt: preserved-opaque, not semantically imported (STU-IO-004/005).
@@ -499,7 +504,7 @@ impl<S: Source> Container<S> {
         }
         held.sort_by(|a, b| a.0.name.cmp(&b.0.name));
         let mut loss = Vec::new();
-        let quarantined = held
+        let quarantined: Vec<Quarantined> = held
             .into_iter()
             .map(|(q, reason)| {
                 if let Some(reason) = reason {
@@ -523,9 +528,18 @@ impl<S: Source> Container<S> {
             {
                 return Err(PackageError::DocumentMismatch);
             }
-            for digest in tile_digests(doc)? {
+            // A raster payload tile is the layer itself: without it the package does not open.
+            // Any other plane (mask coverage, smart-filter masks, records images) missing, as in a
+            // package written before SMB-PACKAGE-MASK-TILES, is a typed loss note.
+            for (digest, referenced) in referenced_assets(doc, &quarantined)? {
                 if !assets.contains_key(&digest) {
-                    return Err(PackageError::MissingAsset);
+                    if referenced.required() {
+                        return Err(PackageError::MissingAsset);
+                    }
+                    loss.push(LossNote {
+                        name: format!("{ASSET_PREFIX}{digest}"),
+                        reason: LossReason::MissingAsset,
+                    });
                 }
             }
         }
@@ -548,23 +562,6 @@ pub(crate) fn verify_container(
     cancel: &CancellationToken,
 ) -> Result<(), PackageError> {
     Container::open(SliceSource(bytes), limits, cancel)?.verify_all(cancel)
-}
-
-/// Every distinct SHA-256 asset digest a document's raster tiles reference.
-pub(crate) fn tile_digests(doc: &folio::StudioDocument) -> Result<BTreeSet<String>, PackageError> {
-    let mut digests = BTreeSet::new();
-    for layer in &doc.layers {
-        if let folio::Payload::Raster { tiles } = &layer.payload {
-            for tile in tiles {
-                let d = &tile.content_digest;
-                if d.algorithm != "sha256" || !is_hex64(&d.digest) {
-                    return Err(PackageError::InvalidDigest);
-                }
-                digests.insert(d.digest.clone());
-            }
-        }
-    }
-    Ok(digests)
 }
 
 /// Opens a package from bytes under hard limits.
