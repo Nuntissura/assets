@@ -59,9 +59,13 @@ use crate::composition::{
     StaticContent, Surface,
 };
 use crate::lower_extensions::{REFUSE_ADJUSTMENT_RECORD, adjustment_for, is_adjustment_layer};
+use super::{FrameLowering, FrameRequest, lower_frame};
+use crate::composition::{SceneContext, render_scene};
 use crate::{
     Limits, NodeAddr, RenderInputs, StepStatus, evaluate_with_inputs, lower, lower_with_inputs,
 };
+use hsk_studio_pigment::render_plan::{MaskFormat, MaskInput, PlanNode, PlanSources, SourceKey, TilePlanes};
+use std::collections::BTreeSet;
 use hsk_studio_pigment::Mask;
 use hsk_studio_pigment::adjust_math::AdjustmentOp;
 use hsk_studio_pigment::effect_math::window::stack_support_px;
@@ -1077,4 +1081,435 @@ impl TemporalSource for CompositionTemporalSource {
         let origin = l.content.origin();
         Ok(Some([origin[0] + anchor[0], origin[1] + anchor[1]]))
     }
+}
+
+// ---- Document-graph path with precompositions and mattes (SMB-COMPOSITE-COMPOSITION-2 slice 4) ----
+
+/// Object key of the synthetic tile that stands for a rendered precomposition in a frame document.
+pub const PRECOMP_TILE_KEY: &str = "composite-precomp";
+/// Sample-format token of that synthetic tile (resolved only by composite's own wrappers).
+pub const PRECOMP_TILE_FORMAT: &str = "composite-surface-rgb_f32le";
+pub const COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH: &str = "composition_collapse_on_document_graph";
+pub const COMPOSITION_MATTE_WITH_MASK: &str = "composition_matte_with_mask";
+pub const COMPOSITION_MATTE_TARGET: &str = "composition_matte_target_not_found";
+pub const COMPOSITION_PRECOMP_GRAPH: &str = "composition_precomp_graph_operation";
+
+/// A document-graph frame with the surfaces and matte planes composite rendered for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentFrame {
+    pub frame: FrameLowering,
+    /// Plan keys of the synthetic precomposition tiles -> the rendered nested compositions.
+    pub surfaces: BTreeMap<SourceKey, Surface>,
+    /// Plan keys of the track-matte masks -> their coverage planes.
+    pub mattes: BTreeMap<SourceKey, crate::composition::MattePlane>,
+}
+
+impl DocumentFrame {
+    /// `PlanSources` serving the owned surfaces and mattes first, then the caller's sources.
+    pub fn sources<'a>(&'a self, caller: &'a dyn PlanSources) -> DocumentSources<'a> {
+        DocumentSources { frame: self, caller }
+    }
+}
+
+/// See [`DocumentFrame::sources`].
+pub struct DocumentSources<'a> {
+    frame: &'a DocumentFrame,
+    caller: &'a dyn PlanSources,
+}
+
+impl PlanSources for DocumentSources<'_> {
+    fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        if let Some(s) = self.frame.surfaces.get(&key) {
+            return Some(TilePlanes {
+                width: s.width,
+                height: s.height,
+                colour: &s.colour,
+                colour_stride_bytes: u64::from(s.width).checked_mul(12)?,
+                alpha: &s.alpha,
+                alpha_stride_bytes: u64::from(s.width).checked_mul(4)?,
+                colour_sha256: s.colour_sha256,
+                alpha_sha256: s.alpha_sha256,
+                format: SampleFormat::RgbF32Le,
+                alpha_convention: AlphaConvention::Straight,
+                space: self.frame.frame.lowering.plan.target.space,
+            });
+        }
+        self.caller.tile(key)
+    }
+    fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
+        if let Some(m) = self.frame.mattes.get(&key) {
+            return Some(Mask {
+                bounds: Rect { x: 0, y: 0, width: m.width, height: m.height },
+                sample_format: "coverage_u16le",
+                bytes: &m.bytes,
+                stride_bytes: u64::from(m.width).checked_mul(2)?,
+                sha256: m.sha256,
+            });
+        }
+        self.caller.mask(key)
+    }
+}
+
+/// Resolver of a frame document: the synthetic precomposition tiles are available.
+struct FrameResolver<'a> {
+    inner: &'a dyn Resolver,
+}
+impl Resolver for FrameResolver<'_> {
+    fn primitive(&self, schema: &str, id: &str) -> hsk_studio_folio::Resolution {
+        self.inner.primitive(schema, id)
+    }
+    fn profile(&self, id: &str) -> hsk_studio_folio::Resolution {
+        self.inner.profile(id)
+    }
+    fn tile(&self, t: &TileRef) -> hsk_studio_folio::Resolution {
+        if t.object_key == PRECOMP_TILE_KEY && t.format == PRECOMP_TILE_FORMAT {
+            return hsk_studio_folio::Resolution::Available;
+        }
+        self.inner.tile(t)
+    }
+    fn format_supported(&self, format: &str) -> bool {
+        format == PRECOMP_TILE_FORMAT || self.inner.format_supported(format)
+    }
+    fn primitive_layer_binding(&self, kind: &str, schema: &str) -> bool {
+        self.inner.primitive_layer_binding(kind, schema)
+    }
+}
+
+/// Tile info of a frame document: the rendered surfaces for the synthetic tiles.
+struct FrameInfo<'a> {
+    inner: &'a dyn TileInfoSource,
+    surfaces: &'a BTreeMap<String, Surface>,
+}
+impl TileInfoSource for FrameInfo<'_> {
+    fn tile_info(&self, t: &TileRef) -> Option<crate::TileInfo> {
+        if t.object_key == PRECOMP_TILE_KEY && t.format == PRECOMP_TILE_FORMAT {
+            let s = self.surfaces.get(&t.layer_id)?;
+            return Some(crate::TileInfo {
+                format: SampleFormat::RgbF32Le,
+                alpha: AlphaConvention::Straight,
+                colour_sha256: s.colour_sha256,
+                alpha_sha256: s.alpha_sha256,
+            });
+        }
+        self.inner.tile_info(t)
+    }
+    fn mask_sha256(&self, tiles: &[TileRef]) -> Option<[u8; 32]> {
+        self.inner.mask_sha256(tiles)
+    }
+}
+
+/// The temporal source of the document-graph path with precompositions and mattes rendered by
+/// composite: precomposition and matted layers are allowed, matte sources never render.
+struct DocumentGraphSource<'a> {
+    inner: &'a CompositionTemporalSource,
+}
+impl TemporalSource for DocumentGraphSource<'_> {
+    fn layer_state(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<LayerFrameState>, TemporalError> {
+        let Some(l) = self.inner.find(layer_id) else {
+            return Ok(None);
+        };
+        let matte_source = self.inner.root()?.layers.iter().any(|o| {
+            o.matte
+                .as_ref()
+                .is_some_and(|m| m.source_layer_id == layer_id)
+        });
+        Ok(Some(LayerFrameState {
+            visible: !matte_source,
+            opacity_scale: CompositionTemporalSource::opacity_scale(l, tick, cancel)?,
+            ..LayerFrameState::IDENTITY
+        }))
+    }
+    fn resample_filter(&self, layer_id: &str) -> Option<ResampleFilter> {
+        self.inner.find(layer_id).map(|_| self.inner.filter)
+    }
+    fn layer_matrix(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Affine2>, TemporalError> {
+        let Some(l) = self.inner.find(layer_id) else {
+            return Ok(None);
+        };
+        CompositionTemporalSource::matrix(self.inner.root()?, l, tick, cancel).map(Some)
+    }
+}
+
+impl CompositionTemporalSource {
+    /// Frame `tick` over the DOCUMENT graph (`lower_frame`) with this composition's
+    /// precompositions and track mattes, which the graph alone cannot express:
+    ///
+    /// - A precomposition layer (a content-less Folio `group` layer whose graph operation is a
+    ///   composite with no inputs, or a source) is rendered by `ctx` from its nested composition at
+    ///   its source tick ([`CompositionTemporalSource::scene_at`]) into a surface; the frame document
+    ///   gives the layer one synthetic raster tile ([`PRECOMP_TILE_KEY`], format
+    ///   [`PRECOMP_TILE_FORMAT`], the nested size at `(0, 0)`) and a source operation with the same
+    ///   output port, so the static path places it with the layer's matrix, opacity and appearance.
+    ///   Collapsed precompositions are refused here
+    ///   ([`COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH`]; the scene path expands them).
+    /// - A track matte: the matte layer is rendered alone by `ctx` (as the scene path does) into a
+    ///   `coverage_u16le` plane over the composition rect, set as the mask of the plan layer that
+    ///   carries the matted layer's tiles (plan space; [`COMPOSITION_MATTE_WITH_MASK`] when that
+    ///   layer already has a mask, [`COMPOSITION_MATTE_TARGET`] when it lowers to no tile entry).
+    ///   Matte sources never render on their own.
+    ///
+    /// The plan is validated again by pigment; execute it with [`DocumentFrame::sources`] over the
+    /// caller's sources. `req.snapshot` must be the snapshot the source was read from.
+    pub fn lower_document_frame(
+        &self,
+        req: &FrameRequest<'_>,
+        tick: i64,
+        ctx: &SceneContext<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<DocumentFrame, TemporalError> {
+        let root = self.root()?;
+        let scene = self.scene_at(tick, cancel)?;
+        let doc = req.snapshot.document();
+        let mut frame_doc = doc.clone();
+        let mut surfaces: BTreeMap<String, Surface> = BTreeMap::new();
+        let mut changed = false;
+        for l in &root.layers {
+            let Content::Precomp { collapse, bounds, .. } = &l.content else {
+                continue;
+            };
+            if *collapse {
+                return Err(unsupported(&l.layer_id, COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH));
+            }
+            if let Some(SceneContent::Precomp(nested)) = scene
+                .layers
+                .iter()
+                .find(|s| s.layer_id == l.layer_id)
+                .map(|s| &s.content)
+            {
+                let r = render_scene(nested, ctx, cancel)?;
+                surfaces.insert(
+                    l.layer_id.clone(),
+                    Surface {
+                        colour_sha256: hsk_studio_prism::profile_hash(&r.colour),
+                        alpha_sha256: hsk_studio_prism::profile_hash(&r.alpha),
+                        width: r.width,
+                        height: r.height,
+                        colour: r.colour,
+                        alpha: r.alpha,
+                    },
+                );
+            }
+            let profile = match &doc.blending_space {
+                ProfileBinding::Assigned(p) => p.clone(),
+                ProfileBinding::Unassigned(()) => {
+                    return Err(unsupported(&l.layer_id, COMPOSITION_PRECOMP_GRAPH));
+                }
+            };
+            let layer = frame_doc
+                .layers
+                .iter_mut()
+                .find(|d| d.layer_id == l.layer_id)
+                .ok_or_else(|| CompositeError::DanglingInput(l.layer_id.clone()))?;
+            let digest = surfaces
+                .get(&l.layer_id)
+                .map_or_else(|| "0".repeat(64), |s| hsk_studio_prism::hash_hex(&s.colour_sha256));
+            layer.kind = "raster".to_owned();
+            layer.payload = Payload::Raster {
+                tiles: vec![TileRef {
+                    object_key: PRECOMP_TILE_KEY.to_owned(),
+                    layer_id: l.layer_id.clone(),
+                    column: 0,
+                    row: 0,
+                    width: hsk_studio_folio::Length {
+                        value: f64::from(bounds.width),
+                        unit: hsk_studio_folio::GeometryUnit::Px,
+                    },
+                    height: hsk_studio_folio::Length {
+                        value: f64::from(bounds.height),
+                        unit: hsk_studio_folio::GeometryUnit::Px,
+                    },
+                    format: PRECOMP_TILE_FORMAT.to_owned(),
+                    colour_profile_id: profile,
+                    schema_id: hsk_studio_folio::TileSchema::V1,
+                    content_digest: hsk_studio_folio::ContentDigest {
+                        algorithm: "sha256".to_owned(),
+                        digest,
+                    },
+                    artifact_manifest_id: "composite.precomp".to_owned(),
+                }],
+            };
+            let op = frame_doc
+                .graph
+                .operations
+                .iter_mut()
+                .find(|o| o.layer_id == l.layer_id)
+                .ok_or_else(|| unsupported(&l.layer_id, COMPOSITION_PRECOMP_GRAPH))?;
+            let has_inputs = frame_doc
+                .graph
+                .edges
+                .iter()
+                .any(|e| e.target.layer_id == l.layer_id);
+            if has_inputs || !matches!(op.outputs.as_slice(), [p] if p.port_key == "out") {
+                return Err(unsupported(&l.layer_id, COMPOSITION_PRECOMP_GRAPH));
+            }
+            // The one source port Folio admits for a raster layer (same `out` key, so the edges
+            // that read it stay valid).
+            op.operation_kind = hsk_studio_folio::OperationKind::Source;
+            op.inputs = Vec::new();
+            op.outputs = vec![hsk_studio_folio::Port {
+                port_key: "out".to_owned(),
+                value_type: hsk_studio_folio::ValueType::Image,
+                cardinality: hsk_studio_folio::Cardinality::One,
+                semantic: hsk_studio_folio::Semantic::Source,
+            }];
+            changed = true;
+        }
+        let resolver = FrameResolver {
+            inner: req.resolver,
+        };
+        let owned;
+        let snapshot = if changed {
+            owned = validate_document(frame_doc, req.budget, cancel, &resolver)
+                .map_err(|e| TemporalError::Document(format!("{:?}:{}", e.code, e.target)))?;
+            &owned
+        } else {
+            req.snapshot
+        };
+        let info = FrameInfo {
+            inner: req.info,
+            surfaces: &surfaces,
+        };
+        let frame_req = FrameRequest {
+            snapshot,
+            resolver: &resolver,
+            info: &info,
+            ..*req
+        };
+        let mut frame = lower_frame(&frame_req, &DocumentGraphSource { inner: self }, tick, cancel)?;
+        let mut out_surfaces = BTreeMap::new();
+        for (key, t) in &frame.lowering.sources {
+            if t.object_key == PRECOMP_TILE_KEY
+                && t.format == PRECOMP_TILE_FORMAT
+                && let Some(s) = surfaces.get(&t.layer_id)
+            {
+                out_surfaces.insert(*key, s.clone());
+            }
+        }
+        // Track mattes.
+        let mut mattes = BTreeMap::new();
+        let mut next_key = next_free_key(&frame.lowering.plan)?;
+        for s in &scene.layers {
+            let Some(matte) = &s.matte else { continue };
+            let plane = crate::composition::matte_coverage(&scene, &s.layer_id, matte, ctx, cancel)?;
+            let owner: BTreeSet<SourceKey> = frame
+                .lowering
+                .sources
+                .iter()
+                .filter(|(_, t)| t.layer_id == s.layer_id)
+                .map(|(k, _)| *k)
+                .collect();
+            let entry = matte_entry(&frame.lowering.plan, &owner)
+                .ok_or_else(|| unsupported(&s.layer_id, COMPOSITION_MATTE_TARGET))?;
+            let key = SourceKey(next_key);
+            next_key = next_key.checked_add(1).ok_or(CompositeError::Overflow)?;
+            let (g, li) = entry;
+            let Some(PlanNode::Group(group)) = frame.lowering.plan.nodes.get_mut(g) else {
+                return Err(CompositeError::Overflow.into());
+            };
+            let Some(layer) = group.layers.get_mut(li) else {
+                return Err(CompositeError::Overflow.into());
+            };
+            if layer.mask.is_some() {
+                return Err(unsupported(&s.layer_id, COMPOSITION_MATTE_WITH_MASK));
+            }
+            layer.mask = Some(MaskInput {
+                key,
+                placement: Rect { x: 0, y: 0, width: plane.width, height: plane.height },
+                format: MaskFormat::CoverageU16Le,
+                sha256: plane.sha256,
+                inverted: matte.inverted,
+                density: 1.0,
+            });
+            frame
+                .lowering
+                .exactness
+                .record(crate::composition::TRACK_MATTE_KEY, hsk_studio_pigment::blend_math::Exactness::Approximate);
+            mattes.insert(key, plane);
+        }
+        if !mattes.is_empty() {
+            let ops = frame
+                .lowering
+                .plan
+                .validate(&PlanLimits::default())
+                .map_err(CompositeError::Plan)?;
+            for op in ops {
+                frame.lowering.exactness.record(op.key(), op.intrinsic());
+            }
+            if !frame.extensions.is_empty() {
+                frame
+                    .extensions
+                    .validate(&frame.lowering.plan)
+                    .map_err(CompositeError::Plan)?;
+            }
+        }
+        Ok(DocumentFrame {
+            frame,
+            surfaces: out_surfaces,
+            mattes,
+        })
+    }
+}
+
+/// One past the largest source key the plan uses (tiles and masks).
+fn next_free_key(plan: &hsk_studio_pigment::render_plan::RenderPlan) -> Result<u32, TemporalError> {
+    let mut max: Option<u32> = None;
+    for n in &plan.nodes {
+        match n {
+            PlanNode::Tile(t) => max = max.max(Some(t.key.0)),
+            PlanNode::Group(g) => {
+                for l in &g.layers {
+                    if let Some(m) = l.mask {
+                        max = max.max(Some(m.key.0));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    match max {
+        None => Ok(0),
+        Some(m) => m.checked_add(1).ok_or_else(|| CompositeError::Overflow.into()),
+    }
+}
+
+/// The (group node, layer index) whose input is the matted layer's content: its single tile node,
+/// or an isolated group made only of its tiles.
+fn matte_entry(
+    plan: &hsk_studio_pigment::render_plan::RenderPlan,
+    owner: &BTreeSet<SourceKey>,
+) -> Option<(usize, usize)> {
+    let is_owned = |id: usize| -> bool {
+        match plan.nodes.get(id) {
+            Some(PlanNode::Tile(t)) => owner.contains(&t.key),
+            Some(PlanNode::Group(g)) => {
+                !g.layers.is_empty()
+                    && g.layers.iter().all(|l| {
+                        matches!(plan.nodes.get(l.input.0 as usize), Some(PlanNode::Tile(t)) if owner.contains(&t.key))
+                    })
+            }
+            _ => false,
+        }
+    };
+    if owner.is_empty() {
+        return None;
+    }
+    for (g, n) in plan.nodes.iter().enumerate() {
+        let PlanNode::Group(group) = n else { continue };
+        for (li, l) in group.layers.iter().enumerate() {
+            if is_owned(l.input.0 as usize) {
+                return Some((g, li));
+            }
+        }
+    }
+    None
 }

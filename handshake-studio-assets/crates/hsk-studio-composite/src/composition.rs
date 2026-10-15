@@ -853,6 +853,20 @@ fn lower_inner(
     })
 }
 
+/// The coverage plane of one track matte of `scene` with fresh charges (the document-graph path,
+/// `temporal::composition`).
+pub(crate) fn matte_coverage(
+    scene: &SceneComposition,
+    layer_id: &str,
+    matte: &SceneMatte,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+) -> Result<MattePlane, TemporalError> {
+    let mut charges = Charges::default();
+    let mut ledger = ExactnessLedger::default();
+    matte_plane(scene, layer_id, matte, ctx, cancel, 1, &mut charges, &mut ledger)
+}
+
 /// The coverage plane of one track matte (module docs): the matte layer rendered alone over the
 /// composition rect, converted to `coverage_u16le`. Absent matte layer = zero coverage (no
 /// render). The render and the plane are charged before allocation.
