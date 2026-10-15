@@ -48,9 +48,17 @@
 //!   kernel; `dC` the straight RGB difference to the centre pixel): flat-colour regions are
 //!   smoothed, edges where the colour changes stay sharp.
 //!
-//! GPU: no render backend executes keying stages yet. [`gpu_admission`] returns the typed refusal
-//! [`KeyError::GpuUnsupported`] (key [`KEY_GPU_REFUSAL`]) for every stage, so a GPU path refuses
-//! instead of approximating.
+//! The rest of the STU-CMP-032 table (lane SMB-AE-KEY-TRACK-2): colour key, colour-difference
+//! key, linear colour key, extract, inner/outer key, key cleaner, wire removal and unmult; each
+//! rule is stated on its parameter type ([`ColourKey`], [`ColourDifferenceKey`],
+//! [`LinearColourKey`], [`Extract`], [`InnerOuterKey`], [`KeyCleaner`], [`WireRemoval`],
+//! [`KeyStage::Unmult`]). Hue ([`LinearMatch::Hue`]) uses the piecewise HSV formula (IEEE
+//! arithmetic, no trigonometry).
+//!
+//! GPU: no GPU backend executes keying stages. [`gpu_admission`] returns the typed refusal
+//! [`KeyError::GpuUnsupported`] (key [`KEY_GPU_REFUSAL`]) for every stage, and render-gpu declares
+//! every `ExtOperator::Key` kind Unsupported, so a GPU path refuses instead of approximating;
+//! render-cpu executes the envelope's key stages through [`run_key_pipeline`].
 //!
 //! Hostile inputs (V4-01/02): parameters are range-checked (never clamped), planes are checked
 //! (length, finite, `[0, 1]`) and the byte and work cost of the whole pipeline is computed with
@@ -75,6 +83,8 @@ pub const MAX_KEY_MORPH_RADIUS_PX: u32 = 256;
 pub const MAX_KEY_FEATHER_PX: f32 = 250.0;
 /// Largest edge-aware smoothing radius.
 pub const MAX_KEY_SMOOTH_RADIUS_PX: u32 = 64;
+/// Vertices one inner/outer key path may carry.
+pub const MAX_KEY_PATH_VERTICES: usize = 1024;
 /// Largest difference-matte pre-blur radius.
 pub const MAX_KEY_BLUR_PX: f32 = 100.0;
 /// Samples one colour-range set may carry.
@@ -235,6 +245,120 @@ pub enum MatteCombine {
     Max,
 }
 
+/// Colour key (simple, STU-CMP-032 row "Colour key"): matte 0 where the straight RGB distance to
+/// `key` (divided by `sqrt 3`, so `0..=1`) is at most `tolerance`, else 1. Edge thinning and
+/// feathering are the [`KeyStage::ChokeSpread`] and [`KeyStage::Feather`] stages after it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ColourKey {
+    pub key: [f32; 3],
+    /// `0..=1`.
+    pub tolerance: f32,
+}
+
+/// Colour-difference key (row "Colour-difference key"): two partial mattes from the screen
+/// channel's excess, each with its own black / white point, combined into one. With `S` the
+/// screen channel and `o1`, `o2` the others: partial A = `1 - levels(S - max(o1, o2), a)`, partial
+/// B = `1 - levels(S - (o1 + o2) / 2, b)`, matte = `max(A, B)` (a pixel either partial calls
+/// foreground is kept); `levels(v, (black, white)) = clamp((v - black) / (white - black), 0, 1)`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ColourDifferenceKey {
+    pub screen: SpillScreen,
+    /// `0 <= black < white <= 1` each.
+    pub a_black: f32,
+    pub a_white: f32,
+    pub b_black: f32,
+    pub b_white: f32,
+}
+
+/// What a linear colour key compares (row "Linear colour key").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum LinearMatch {
+    /// Straight RGB distance divided by `sqrt 3`.
+    Rgb,
+    /// Circular HSV hue difference divided by 180 degrees (an achromatic pixel or key: 1 unless
+    /// both are achromatic, then 0).
+    Hue,
+    /// BT.709 Cb/Cr distance.
+    Chroma,
+}
+/// Linear colour key: matte from similarity to `key`; `keep` keeps the matched range instead of
+/// removing it. matched = `1 - ramp(d, tolerance, softness)`; matte = `1 - matched` (remove) or
+/// `matched` (keep).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct LinearColourKey {
+    pub key: [f32; 3],
+    pub matching: LinearMatch,
+    /// `0..=1`.
+    pub tolerance: f32,
+    /// `0..=1`.
+    pub softness: f32,
+    pub keep: bool,
+}
+
+/// The channel an extract reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum ExtractChannel {
+    Luminance,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+}
+/// Extract (row "Extract"): keep pixels whose channel value lies in `[black, white]`, with linear
+/// ramps of width `black_softness` below and `white_softness` above; `invert` swaps kept and
+/// removed.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Extract {
+    pub channel: ExtractChannel,
+    /// `0 <= black <= white <= 1`.
+    pub black: f32,
+    pub white: f32,
+    /// `0..=1` each.
+    pub black_softness: f32,
+    pub white_softness: f32,
+    pub invert: bool,
+}
+
+/// Inner/outer key (row "Inner/outer key"): two closed paths (plan coordinates, even-odd fill at
+/// pixel centres) bounding the edge of an object with no screen. Inside `inner`: 1; outside
+/// `outer`: 0; in the band between, the matte is the projection of the pixel colour `C` on the
+/// line from the background colour `B` (mean straight colour outside `outer`) to the foreground
+/// colour `F` (mean inside `inner`): `clamp((C - B) . (F - B) / |F - B|^2, 0, 1)` (0.5 when `F`
+/// and `B` coincide or a region is empty). Refine its edge with the thin / feather stages.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct InnerOuterKey {
+    /// `3..=MAX_KEY_PATH_VERTICES` finite vertices each.
+    pub inner: Vec<[f64; 2]>,
+    pub outer: Vec<[f64; 2]>,
+}
+
+/// Key cleaner (row "Key cleaner"): restores edge detail a compressed source smeared. In the band
+/// of pixels within `edge_radius_px` (square window) of a partial matte value (strictly between 0
+/// and 1), the matte is smoothed by the colour-guided [`KeyStage::EdgeSmooth`] rule (radius
+/// `edge_radius_px`, colour sigma 0.1) and then contrasted about 0.5:
+/// `clamp(0.5 + alpha_contrast * (m - 0.5), 0, 1)`. Outside the band the matte is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct KeyCleaner {
+    /// `1..=MAX_KEY_SMOOTH_RADIUS_PX`.
+    pub edge_radius_px: u32,
+    /// `0..=4`.
+    pub alpha_contrast: f32,
+}
+
+/// Wire removal (row "Wire removal"): pixels whose centre lies within `thickness_px / 2` of the
+/// segment `from`-`to` are replaced by the mean of the two pixels just outside the band along the
+/// segment's normal (nearest pixel, clamped to the plane). `slope` (`0..=1`) softens the band edge:
+/// the replacement weight is 1 for distances up to `(1 - slope) * half` and falls linearly to 0 at
+/// `half`. Colour and alpha are replaced alike.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct WireRemoval {
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+    /// `0.5..=64`.
+    pub thickness_px: f32,
+    pub slope: f32,
+}
+
 /// One stack entry of a key pipeline (STU-CMP-033).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum KeyStage {
@@ -251,6 +375,16 @@ pub enum KeyStage {
     /// Cross-bilateral smoothing radius and colour sigma (`0 < sigma <= 2`).
     EdgeSmooth { radius_px: u32, colour_sigma: f32 },
     Despill(Despill),
+    ColourKey(ColourKey, MatteCombine),
+    ColourDifference(ColourDifferenceKey, MatteCombine),
+    LinearColour(LinearColourKey, MatteCombine),
+    Extract(Extract, MatteCombine),
+    InnerOuter(InnerOuterKey, MatteCombine),
+    KeyCleaner(KeyCleaner),
+    WireRemoval(WireRemoval),
+    /// Unmult (row "Unmult"): alpha from luminance for elements shot on black: with `m = max(R, G,
+    /// B)`, colour becomes `C / m` (0 where `m` is 0) and the matte is multiplied by `m`.
+    Unmult,
 }
 /// The kind of a stage: the unit of capability (render-plan `ExtOperator::Key`).
 #[non_exhaustive]
@@ -265,6 +399,14 @@ pub enum KeyKind {
     Feather,
     EdgeSmooth,
     Despill,
+    ColourKey,
+    ColourDifference,
+    LinearColour,
+    Extract,
+    InnerOuter,
+    KeyCleaner,
+    WireRemoval,
+    Unmult,
 }
 impl KeyKind {
     pub const fn key(self) -> &'static str {
@@ -278,6 +420,14 @@ impl KeyKind {
             Self::Feather => "matte_feather",
             Self::EdgeSmooth => "matte_edge_smooth",
             Self::Despill => "key_despill",
+            Self::ColourKey => "key_colour",
+            Self::ColourDifference => "key_colour_difference",
+            Self::LinearColour => "key_linear_colour",
+            Self::Extract => "key_extract",
+            Self::InnerOuter => "key_inner_outer",
+            Self::KeyCleaner => "matte_key_cleaner",
+            Self::WireRemoval => "key_wire_removal",
+            Self::Unmult => "key_unmult",
         }
     }
 }
@@ -293,6 +443,14 @@ impl KeyStage {
             Self::Feather { .. } => KeyKind::Feather,
             Self::EdgeSmooth { .. } => KeyKind::EdgeSmooth,
             Self::Despill(_) => KeyKind::Despill,
+            Self::ColourKey(..) => KeyKind::ColourKey,
+            Self::ColourDifference(..) => KeyKind::ColourDifference,
+            Self::LinearColour(..) => KeyKind::LinearColour,
+            Self::Extract(..) => KeyKind::Extract,
+            Self::InnerOuter(..) => KeyKind::InnerOuter,
+            Self::KeyCleaner(_) => KeyKind::KeyCleaner,
+            Self::WireRemoval(_) => KeyKind::WireRemoval,
+            Self::Unmult => KeyKind::Unmult,
         }
     }
     /// Operator key of the stage (the unit of capability).
@@ -327,6 +485,34 @@ impl KeyStage {
                 *radius_px <= MAX_KEY_SMOOTH_RADIUS_PX && colour_sigma.is_finite() && *colour_sigma > 0.0 && *colour_sigma <= 2.0
             }
             Self::Despill(d) => unit(d.amount),
+            Self::ColourKey(k, _) => k.key.iter().all(|c| unit(*c)) && unit(k.tolerance),
+            Self::ColourDifference(k, _) => {
+                [k.a_black, k.a_white, k.b_black, k.b_white].iter().all(|v| unit(*v))
+                    && k.a_black < k.a_white
+                    && k.b_black < k.b_white
+            }
+            Self::LinearColour(k, _) => k.key.iter().all(|c| unit(*c)) && unit(k.tolerance) && unit(k.softness),
+            Self::Extract(k, _) => {
+                [k.black, k.white, k.black_softness, k.white_softness].iter().all(|v| unit(*v)) && k.black <= k.white
+            }
+            Self::InnerOuter(k, _) => {
+                let path = |p: &Vec<[f64; 2]>| {
+                    (3..=MAX_KEY_PATH_VERTICES).contains(&p.len()) && p.iter().flatten().all(|v| v.is_finite())
+                };
+                path(&k.inner) && path(&k.outer)
+            }
+            Self::KeyCleaner(k) => {
+                (1..=MAX_KEY_SMOOTH_RADIUS_PX).contains(&k.edge_radius_px)
+                    && k.alpha_contrast.is_finite()
+                    && (0.0..=4.0).contains(&k.alpha_contrast)
+            }
+            Self::WireRemoval(k) => {
+                k.from.iter().chain(k.to.iter()).all(|v| v.is_finite())
+                    && k.thickness_px.is_finite()
+                    && (0.5..=64.0).contains(&k.thickness_px)
+                    && unit(k.slope)
+            }
+            Self::Unmult => true,
         };
         if ok { Ok(()) } else { Err(KeyError::Parameter) }
     }
@@ -463,6 +649,15 @@ pub fn key_pipeline_cost(n: u64, stages: &[KeyStage]) -> Result<(u64, u64), KeyE
                 let samples = u64::try_from(k.add.len().saturating_add(k.subtract.len())).map_err(|_| KeyError::Overflow)?;
                 (0, n.checked_add(samples).ok_or(KeyError::Overflow)?)
             }
+            KeyStage::InnerOuter(k, _) => {
+                let v = u64::try_from(k.inner.len().saturating_add(k.outer.len())).map_err(|_| KeyError::Overflow)?;
+                (0, n.checked_mul(v.checked_add(1).ok_or(KeyError::Overflow)?).ok_or(KeyError::Overflow)?)
+            }
+            KeyStage::KeyCleaner(k) => {
+                let side = u64::from(k.edge_radius_px).checked_mul(2).and_then(|v| v.checked_add(1)).ok_or(KeyError::Overflow)?;
+                // Band dilation and the smoothing window; one band plane (1 B per pixel).
+                (n, n.checked_mul(side.checked_mul(side).and_then(|v| v.checked_mul(2)).ok_or(KeyError::Overflow)?).ok_or(KeyError::Overflow)?)
+            }
             _ => (0, n),
         };
         bytes = bytes.max(n.checked_mul(28).ok_or(KeyError::Overflow)?.checked_add(b).ok_or(KeyError::Overflow)?);
@@ -550,6 +745,41 @@ pub fn run_key_pipeline(
                 matte = edge_smooth(&matte, &colour, w, h, *radius_px, *colour_sigma);
             }
             KeyStage::Despill(d) => despill(&mut colour, d),
+            KeyStage::ColourKey(k, c) => {
+                let key = rgb3(k.key);
+                let t = f64::from(k.tolerance);
+                let e: Vec<f32> = colour.iter().map(|p| if rgb_distance(rgb(*p), key) <= t { 0.0 } else { 1.0 }).collect();
+                combine(&mut matte, &e, *c);
+            }
+            KeyStage::ColourDifference(k, c) => {
+                let e = colour_difference_values(&colour, k);
+                combine(&mut matte, &e, *c);
+            }
+            KeyStage::LinearColour(k, c) => {
+                let e = linear_values(&colour, k);
+                combine(&mut matte, &e, *c);
+            }
+            KeyStage::Extract(k, c) => {
+                let e = extract_values(&colour, k);
+                combine(&mut matte, &e, *c);
+            }
+            KeyStage::InnerOuter(k, c) => {
+                let e = inner_outer_values(&colour, src.bounds, w, k);
+                combine(&mut matte, &e, *c);
+            }
+            KeyStage::KeyCleaner(k) => {
+                matte = key_cleaner(&matte, &colour, w, h, k);
+            }
+            KeyStage::WireRemoval(k) => wire_removal(&mut colour, src.bounds, w, h, k),
+            KeyStage::Unmult => {
+                for (p, m) in colour.iter_mut().zip(matte.iter_mut()) {
+                    let mx = f64::from(p[0].max(p[1]).max(p[2]));
+                    for v in p.iter_mut().take(3) {
+                        *v = if mx > 0.0 { (f64::from(*v) / mx).min(1.0) as f32 } else { 0.0 };
+                    }
+                    *m = (f64::from(*m) * mx) as f32;
+                }
+            }
         }
     }
     for (p, m) in colour.iter_mut().zip(&matte) {
@@ -836,4 +1066,247 @@ fn edge_smooth(m: &[f32], colour: &[[f32; 4]], w: usize, h: usize, r: u32, sigma
         }
     }
     out
+}
+
+// ---- keyers of lane SMB-AE-KEY-TRACK-2 ----
+
+fn rgb_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (d0, d1, d2) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    (d0 * d0 + d1 * d1 + d2 * d2).sqrt() / 3f64.sqrt()
+}
+
+fn levels(v: f64, black: f32, white: f32) -> f64 {
+    let (b, w) = (f64::from(black), f64::from(white));
+    ((v - b) / (w - b)).clamp(0.0, 1.0)
+}
+
+fn colour_difference_values(colour: &[[f32; 4]], k: &ColourDifferenceKey) -> Vec<f32> {
+    let (s, o1, o2) = match k.screen {
+        SpillScreen::Green => (1usize, 0usize, 2usize),
+        SpillScreen::Blue => (2, 0, 1),
+    };
+    colour
+        .iter()
+        .map(|p| {
+            let (sv, a, b) = (f64::from(p[s]), f64::from(p[o1]), f64::from(p[o2]));
+            let pa = 1.0 - levels(sv - a.max(b), k.a_black, k.a_white);
+            let pb = 1.0 - levels(sv - (a + b) / 2.0, k.b_black, k.b_white);
+            pa.max(pb) as f32
+        })
+        .collect()
+}
+
+/// HSV hue in degrees `[0, 360)`, `None` for an achromatic colour.
+fn hue(c: [f64; 3]) -> Option<f64> {
+    let mx = c[0].max(c[1]).max(c[2]);
+    let mn = c[0].min(c[1]).min(c[2]);
+    let d = mx - mn;
+    if d <= 0.0 {
+        return None;
+    }
+    let h = if mx == c[0] {
+        ((c[1] - c[2]) / d).rem_euclid(6.0)
+    } else if mx == c[1] {
+        (c[2] - c[0]) / d + 2.0
+    } else {
+        (c[0] - c[1]) / d + 4.0
+    };
+    Some(h * 60.0)
+}
+
+fn linear_values(colour: &[[f32; 4]], k: &LinearColourKey) -> Vec<f32> {
+    let key = rgb3(k.key);
+    let (t, s) = (f64::from(k.tolerance), f64::from(k.softness));
+    let key_hue = hue(key);
+    let key_c = ycbcr(key);
+    colour
+        .iter()
+        .map(|p| {
+            let c = rgb(*p);
+            let d = match k.matching {
+                LinearMatch::Rgb => rgb_distance(c, key),
+                LinearMatch::Hue => match (hue(c), key_hue) {
+                    (Some(a), Some(b)) => {
+                        let x = (a - b).abs();
+                        x.min(360.0 - x) / 180.0
+                    }
+                    (None, None) => 0.0,
+                    _ => 1.0,
+                },
+                LinearMatch::Chroma => {
+                    let v = ycbcr(c);
+                    let (db, dr) = (v[1] - key_c[1], v[2] - key_c[2]);
+                    (db * db + dr * dr).sqrt()
+                }
+            };
+            let matched = 1.0 - ramp(d, t, s);
+            (if k.keep { matched } else { 1.0 - matched }) as f32
+        })
+        .collect()
+}
+
+fn extract_values(colour: &[[f32; 4]], k: &Extract) -> Vec<f32> {
+    let (b, w) = (f64::from(k.black), f64::from(k.white));
+    let (bs, ws) = (f64::from(k.black_softness), f64::from(k.white_softness));
+    colour
+        .iter()
+        .map(|p| {
+            let v = match k.channel {
+                ExtractChannel::Luminance => luma(rgb(*p)),
+                ExtractChannel::Red => f64::from(p[0]),
+                ExtractChannel::Green => f64::from(p[1]),
+                ExtractChannel::Blue => f64::from(p[2]),
+                ExtractChannel::Alpha => f64::from(p[3]),
+            };
+            let keep = if v < b {
+                if bs > 0.0 { (1.0 - (b - v) / bs).max(0.0) } else { 0.0 }
+            } else if v > w {
+                if ws > 0.0 { (1.0 - (v - w) / ws).max(0.0) } else { 0.0 }
+            } else {
+                1.0
+            };
+            (if k.invert { 1.0 - keep } else { keep }) as f32
+        })
+        .collect()
+}
+
+/// Even-odd point-in-polygon (crossing number) of `(x, y)`.
+fn inside_path(path: &[[f64; 2]], x: f64, y: f64) -> bool {
+    let mut inside = false;
+    let mut j = path.len().saturating_sub(1);
+    for (i, a) in path.iter().enumerate() {
+        let b = path[j];
+        if (a[1] > y) != (b[1] > y) {
+            let t = (y - a[1]) / (b[1] - a[1]);
+            if x < a[0] + t * (b[0] - a[0]) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+fn inner_outer_values(colour: &[[f32; 4]], bounds: Rect, w: usize, k: &InnerOuterKey) -> Vec<f32> {
+    let centre = |i: usize| -> (f64, f64) {
+        let (row, col) = (i.checked_div(w).unwrap_or(0), i.checked_rem(w).unwrap_or(0));
+        (bounds.x as f64 + col as f64 + 0.5, bounds.y as f64 + row as f64 + 0.5)
+    };
+    // 0: inside inner, 1: band, 2: outside outer.
+    let region: Vec<u8> = (0..colour.len())
+        .map(|i| {
+            let (x, y) = centre(i);
+            if inside_path(&k.inner, x, y) {
+                0
+            } else if inside_path(&k.outer, x, y) {
+                1
+            } else {
+                2
+            }
+        })
+        .collect();
+    let mean = |which: u8| -> Option<[f64; 3]> {
+        let (mut s, mut n) = ([0.0f64; 3], 0.0f64);
+        for (p, r) in colour.iter().zip(&region) {
+            if *r == which {
+                let c = rgb(*p);
+                for (a, b) in s.iter_mut().zip(c) {
+                    *a += b;
+                }
+                n += 1.0;
+            }
+        }
+        (n > 0.0).then(|| s.map(|v| v / n))
+    };
+    let (f, b) = (mean(0), mean(2));
+    colour
+        .iter()
+        .zip(&region)
+        .map(|(p, r)| match r {
+            0 => 1.0,
+            2 => 0.0,
+            _ => match (f, b) {
+                (Some(f), Some(b)) => {
+                    let fb = [f[0] - b[0], f[1] - b[1], f[2] - b[2]];
+                    let len2 = fb[0] * fb[0] + fb[1] * fb[1] + fb[2] * fb[2];
+                    if len2 < 1e-12 {
+                        0.5
+                    } else {
+                        let c = rgb(*p);
+                        let cb = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+                        ((cb[0] * fb[0] + cb[1] * fb[1] + cb[2] * fb[2]) / len2).clamp(0.0, 1.0) as f32
+                    }
+                }
+                _ => 0.5,
+            },
+        })
+        .collect()
+}
+
+fn key_cleaner(m: &[f32], colour: &[[f32; 4]], w: usize, h: usize, k: &KeyCleaner) -> Vec<f32> {
+    let r = usize::try_from(k.edge_radius_px).unwrap_or(0);
+    let partial: Vec<bool> = m.iter().map(|v| *v > 0.0 && *v < 1.0).collect();
+    let smooth = edge_smooth(m, colour, w, h, k.edge_radius_px, 0.1);
+    let contrast = f64::from(k.alpha_contrast);
+    let mut out = m.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let mut band = false;
+            'scan: for yy in y.saturating_sub(r)..=y.saturating_add(r).min(h.saturating_sub(1)) {
+                for xx in x.saturating_sub(r)..=x.saturating_add(r).min(w.saturating_sub(1)) {
+                    if partial[idx(xx, yy, w)] {
+                        band = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if band {
+                let i = idx(x, y, w);
+                out[i] = (0.5 + contrast * (f64::from(smooth[i]) - 0.5)).clamp(0.0, 1.0) as f32;
+            }
+        }
+    }
+    out
+}
+
+fn wire_removal(colour: &mut [[f32; 4]], bounds: Rect, w: usize, h: usize, k: &WireRemoval) {
+    let (ax, ay, bx, by) = (k.from[0], k.from[1], k.to[0], k.to[1]);
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let half = f64::from(k.thickness_px) / 2.0;
+    let slope = f64::from(k.slope);
+    let (nx, ny) = if len2 > 0.0 {
+        let l = len2.sqrt();
+        (-dy / l, dx / l)
+    } else {
+        (0.0, 1.0)
+    };
+    let src = colour.to_vec();
+    let pixel = |px: f64, py: f64| -> [f32; 4] {
+        let col = (px - bounds.x as f64).floor().clamp(0.0, w.saturating_sub(1) as f64) as usize;
+        let row = (py - bounds.y as f64).floor().clamp(0.0, h.saturating_sub(1) as f64) as usize;
+        src[idx(col, row, w)]
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let (px, py) = (bounds.x as f64 + x as f64 + 0.5, bounds.y as f64 + y as f64 + 0.5);
+            let t = if len2 > 0.0 { (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let (cx, cy) = (ax + t * dx, ay + t * dy);
+            let d = ((px - cx) * (px - cx) + (py - cy) * (py - cy)).sqrt();
+            if d > half {
+                continue;
+            }
+            let inner = (1.0 - slope) * half;
+            let f = if d <= inner || half <= inner { 1.0 } else { ((half - d) / (half - inner)).clamp(0.0, 1.0) };
+            // The two sides of the band through the closest point, one pixel beyond it.
+            let reach = half + 1.0;
+            let a = pixel(cx + nx * reach, cy + ny * reach);
+            let b = pixel(cx - nx * reach, cy - ny * reach);
+            let i = idx(x, y, w);
+            for c in 0..4 {
+                let repl = (f64::from(a[c]) + f64::from(b[c])) / 2.0;
+                colour[i][c] = (f64::from(src[i][c]) * (1.0 - f) + repl * f) as f32;
+            }
+        }
+    }
 }
