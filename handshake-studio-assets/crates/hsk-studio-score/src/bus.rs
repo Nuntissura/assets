@@ -1,8 +1,9 @@
 //! Session routing with sends, buses, aux returns and a master bus (lane SMB-AUDITION-SESSION;
 //! STU-FX-137 "Send: a named routing from a track to a submix with its own level").
 //!
-//! A [`MixGraph`] holds tracks ([`StripSpec`]: a [`TrackSpec`] with its clip, fades, effect stack,
-//! volume and pan lanes, plus an output and sends), buses ([`BusSpec`]: an effect chain, a volume
+//! A [`MixGraph`] holds tracks ([`StripSpec`]: a [`TrackSpec`] with its clip, fades and effect stack,
+//! or any [`StripSource`] such as a pulse timeline track, plus a volume and a pan lane, an output and
+//! sends), buses ([`BusSpec`]: an effect chain, a volume
 //! and a pan lane, an output and sends of their own) and the master ([`MasterSpec`]: an effect chain
 //! and a volume lane). An aux return is an ordinary bus whose input comes from sends and whose
 //! output returns to the master (or to another bus).
@@ -68,12 +69,96 @@ pub struct SendSpec {
     pub pan: f64,
 }
 
+/// The pre-fader signal of a strip from outside score (lane SMB-AUDITION-SESSION-2: pulse renders a
+/// timeline track's clips at unity). Mono sources write the left plane only.
+pub trait StripSource: Send {
+    /// 1 or 2.
+    fn channels(&self) -> usize;
+    /// Last clip end on the timeline.
+    fn length_samples(&self) -> u64;
+    /// Next timeline sample `render` continues from.
+    fn position(&self) -> u64;
+    /// Moves to timeline `sample` (state rebuilt as the source defines).
+    fn seek(&mut self, sample: u64, cancel: &CancellationToken) -> Result<(), ScoreError>;
+    /// Renders `left.len()` frames at [`StripSource::position`] and advances it.
+    fn render(&mut self, left: &mut [f32], right: &mut [f32], cancel: &CancellationToken) -> Result<(), ScoreError>;
+}
+
+/// A one-track [`Session`] as a strip source (seek = reset and render up to the sample).
+struct SessionStrip {
+    session: Session,
+    channels: usize,
+    block: usize,
+    scratch: [Vec<f32>; 2],
+}
+
+impl StripSource for SessionStrip {
+    fn channels(&self) -> usize {
+        self.channels
+    }
+    fn length_samples(&self) -> u64 {
+        self.session.length_samples()
+    }
+    fn position(&self) -> u64 {
+        self.session.position()
+    }
+    fn seek(&mut self, sample: u64, cancel: &CancellationToken) -> Result<(), ScoreError> {
+        if sample < self.session.position() {
+            self.session.reset();
+        }
+        while self.session.position() < sample {
+            let n = (sample - self.session.position()).min(self.block as u64) as usize;
+            let at = self.session.position();
+            let [l, r] = &mut self.scratch;
+            self.session.render(at, &mut l[..n], &mut r[..n], cancel)?;
+        }
+        Ok(())
+    }
+    fn render(&mut self, left: &mut [f32], right: &mut [f32], cancel: &CancellationToken) -> Result<(), ScoreError> {
+        let at = self.session.position();
+        self.session.render(at, left, right, cancel)
+    }
+}
+
+/// Where a strip's pre-fader signal comes from.
+pub enum StripInput {
+    /// A score track (clip, fades, effect stack); its own volume and pan lanes are not used (the
+    /// strip's are).
+    Track(TrackSpec),
+    /// An outside source (for example a pulse timeline track rendered at unity).
+    Source(Box<dyn StripSource>),
+}
+
 /// One track of the graph.
 pub struct StripSpec {
-    pub track: TrackSpec,
+    pub input: StripInput,
+    pub volume_db: AutomationLane,
+    pub pan: AutomationLane,
     pub output: Destination,
     pub sends: Vec<SendSpec>,
 }
+
+impl StripSpec {
+    /// A score track whose volume and pan lanes become the strip fader and pan.
+    pub fn track(mut track: TrackSpec, output: Destination, sends: Vec<SendSpec>) -> Self {
+        let volume_db = std::mem::replace(&mut track.volume_db, AutomationLane::constant(0.0));
+        let pan = std::mem::replace(&mut track.pan, AutomationLane::constant(0.0));
+        Self { input: StripInput::Track(track), volume_db, pan, output, sends }
+    }
+    /// An outside pre-fader source.
+    pub fn source(
+        source: Box<dyn StripSource>,
+        volume_db: AutomationLane,
+        pan: AutomationLane,
+        output: Destination,
+        sends: Vec<SendSpec>,
+    ) -> Self {
+        Self { input: StripInput::Source(source), volume_db, pan, output, sends }
+    }
+}
+
+/// Warm-up rendered before a seek target (bus effect state and delays), in seconds (authored).
+pub const GRAPH_SEEK_WARMUP_SECONDS: u64 = 1;
 
 /// One bus (submix or aux return).
 pub struct BusSpec {
@@ -175,7 +260,7 @@ struct Edge {
 }
 
 struct Strip {
-    session: Session,
+    source: Box<dyn StripSource>,
     mono: bool,
     volume_db: AutomationLane,
     pan: AutomationLane,
@@ -297,25 +382,41 @@ impl MixGraph {
         let mut edges = Vec::new();
         let mut built_strips = Vec::with_capacity(strips.len());
         let mut length = 0u64;
-        for (i, mut s) in strips.into_iter().enumerate() {
+        for (i, s) in strips.into_iter().enumerate() {
             if !dest_ok(s.output) {
                 return Err(ScoreError::OutOfRange);
             }
             check_sends(&s.sends)?;
-            lane_within(&s.track.volume_db, TRACK_VOLUME_DB)?;
-            lane_within(&s.track.pan, TRACK_PAN)?;
-            let mono = s.track.clip.len() == 1;
-            let volume_db = std::mem::replace(&mut s.track.volume_db, AutomationLane::constant(0.0));
-            let pan = std::mem::replace(&mut s.track.pan, AutomationLane::constant(if mono { -1.0 } else { 0.0 }));
-            let session = Session::new(sample_rate_hz, max_block_frames, vec![s.track])?;
-            length = length.max(session.length_samples());
+            lane_within(&s.volume_db, TRACK_VOLUME_DB)?;
+            lane_within(&s.pan, TRACK_PAN)?;
+            let source: Box<dyn StripSource> = match s.input {
+                StripInput::Track(mut track) => {
+                    let channels = track.clip.len();
+                    track.volume_db = AutomationLane::constant(0.0);
+                    track.pan = AutomationLane::constant(if channels == 1 { -1.0 } else { 0.0 });
+                    let session = Session::new(sample_rate_hz, max_block_frames, vec![track])?;
+                    Box::new(SessionStrip {
+                        session,
+                        channels,
+                        block: max_block_frames,
+                        scratch: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
+                    })
+                }
+                StripInput::Source(source) => source,
+            };
+            if !(1..=2).contains(&source.channels()) {
+                return Err(ScoreError::InvalidLayout);
+            }
+            let mono = source.channels() == 1;
+            let (volume_db, pan) = (s.volume_db, s.pan);
+            length = length.max(source.length_samples());
             edges.push((Source::Strip(i), Tap::Post, None, 0.0, s.output));
             for send in s.sends {
                 let tap = if send.tap == SendTap::PreFader { Tap::Pre } else { Tap::Post };
                 edges.push((Source::Strip(i), tap, Some(send.level_db), send.pan, Destination::Bus(send.bus)));
             }
             built_strips.push(Strip {
-                session,
+                source,
                 mono,
                 volume_db,
                 pan,
@@ -467,17 +568,26 @@ impl MixGraph {
     pub fn position(&self) -> u64 {
         self.position
     }
+    pub fn max_block_frames(&self) -> usize {
+        self.block
+    }
     pub fn latency(&self) -> &GraphLatency {
         &self.latency
     }
 
     /// Returns to sample 0 and resets every track, bus, effect and delay.
     pub fn reset(&mut self) {
+        let none = CancellationToken::default();
+        for s in &mut self.strips {
+            // Sources rebuild their state at 0; a failure there resurfaces on the next render.
+            let _ = s.source.seek(0, &none);
+        }
+        self.reset_buses();
+    }
+
+    fn reset_buses(&mut self) {
         self.internal = 0;
         self.position = 0;
-        for s in &mut self.strips {
-            s.session.reset();
-        }
         for b in &mut self.buses {
             if let Some(c) = &mut b.chain {
                 c.reset();
@@ -489,6 +599,37 @@ impl MixGraph {
         for e in &mut self.edges {
             e.delay.reset();
         }
+    }
+
+    /// Moves playback to timeline `sample`: bus and master chains and delays are reset, the strips
+    /// seek to `w = sample - P - W` (`W` = [`GRAPH_SEEK_WARMUP_SECONDS`] of samples, clamped at 0)
+    /// and the graph renders from `w` up to `sample`, discarding. A seek with `w = 0` is exactly the
+    /// continuous render; a later seek is exact when every bus and master effect forgets its input
+    /// within `W` samples (delay lines refill within the pre-roll `P`).
+    pub fn seek(&mut self, sample: u64, cancel: &CancellationToken) -> Result<(), ScoreError> {
+        let warm = u64::from(self.rate).saturating_mul(GRAPH_SEEK_WARMUP_SECONDS);
+        let from = sample.saturating_sub(self.latency.total.saturating_add(warm));
+        let result = (|| {
+            self.reset_buses();
+            for s in &mut self.strips {
+                s.source.seek(from, cancel)?;
+            }
+            self.internal = from;
+            let target = sample.checked_add(self.latency.total).ok_or(ScoreError::PositionOverflow)?;
+            while self.internal < target {
+                let n = (target - self.internal).min(self.block as u64) as usize;
+                let [mut l, mut r] = std::mem::take(&mut self.discard);
+                let out = self.step(n, &mut l[..n], &mut r[..n], cancel);
+                self.discard = [l, r];
+                out?;
+            }
+            self.position = sample;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.reset();
+        }
+        result
     }
 
     /// Renders `left.len()` frames at timeline `start_sample` (refusals as [`Session::render`]).
@@ -537,7 +678,10 @@ impl MixGraph {
         for s in &mut self.strips {
             cancel.check().map_err(|_| ScoreError::Canceled)?;
             let [pl, pr] = &mut s.pre;
-            s.session.render(q, &mut pl[..n], &mut pr[..n], cancel)?;
+            if s.source.position() != q {
+                s.source.seek(q, cancel)?;
+            }
+            s.source.render(&mut pl[..n], &mut pr[..n], cancel)?;
             for k in 0..n {
                 let t = q + k as u64;
                 let g = db_to_linear(s.volume_db.value_at(t));

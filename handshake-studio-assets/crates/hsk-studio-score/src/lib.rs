@@ -47,8 +47,8 @@ mod varispeed;
 pub use block::{InputBlock, OutputBlock};
 pub use bounce::{BounceChunk, BounceReceipt, BounceRequest};
 pub use bus::{
-    BusSpec, Destination, GraphLatency, MAX_BUSES, MAX_SENDS_PER_SOURCE, MasterSpec, MixGraph, SEND_LEVEL_DB, SendSpec,
-    SendTap, StripSpec,
+    BusSpec, Destination, GRAPH_SEEK_WARMUP_SECONDS, GraphLatency, MAX_BUSES, MAX_SENDS_PER_SOURCE, MasterSpec, MixGraph,
+    SEND_LEVEL_DB, SendSpec, SendTap, StripInput, StripSource, StripSpec,
 };
 pub use chain::{Chain, ChainStage, MAX_CHAIN_STAGES};
 pub use delay::{

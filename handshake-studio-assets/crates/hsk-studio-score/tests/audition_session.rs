@@ -159,21 +159,21 @@ fn sends_buses_and_master_are_latency_compensated_and_levelled() {
         assert!(lim_latency > 0);
         let strips = vec![
             // 0: direct to master at 0.25.
-            StripSpec { track: impulse_track(len, 1000, 0.25), output: Destination::Master, sends: vec![] },
+            StripSpec::track(impulse_track(len, 1000, 0.25), Destination::Master, vec![]),
             // 1: through bus 0 (latent), at 0.125.
-            StripSpec { track: impulse_track(len, 1000, 0.125), output: Destination::Bus(0), sends: vec![] },
+            StripSpec::track(impulse_track(len, 1000, 0.125), Destination::Bus(0), vec![]),
             // 2: through bus 1 -> bus 2 (both latent), at 0.0625.
-            StripSpec { track: impulse_track(len, 1000, 0.0625), output: Destination::Bus(1), sends: vec![] },
+            StripSpec::track(impulse_track(len, 1000, 0.0625), Destination::Bus(1), vec![]),
             // 3: fader at -96 dB to the master, pre-fader send at -6.0206 dB to aux bus 3 (no effects).
-            StripSpec {
-                track: {
+            StripSpec::track(
+                {
                     let mut t = impulse_track(len, 2000, 0.5);
                     t.volume_db = AutomationLane::constant(-96.0);
                     t
                 },
-                output: Destination::Master,
-                sends: vec![SendSpec { bus: 3, tap: SendTap::PreFader, level_db: AutomationLane::constant(-6.020_599_913_279_624), pan: 0.0 }],
-            },
+                Destination::Master,
+                vec![SendSpec { bus: 3, tap: SendTap::PreFader, level_db: AutomationLane::constant(-6.020_599_913_279_624), pan: 0.0 }],
+            ),
         ];
         let mut b0 = BusSpec::new("bus-a");
         b0.effects = vec![delay_effect(rate)];
@@ -202,7 +202,7 @@ fn sends_buses_and_master_are_latency_compensated_and_levelled() {
         let rebuild = || {
             let mut b = BusSpec::new("bus-a");
             b.effects = vec![delay_effect(rate)];
-            MixGraph::new(rate, 7, vec![StripSpec { track: impulse_track(len, 1000, 0.125), output: Destination::Bus(0), sends: vec![] }], vec![b], MasterSpec::default()).unwrap()
+            MixGraph::new(rate, 7, vec![StripSpec::track(impulse_track(len, 1000, 0.125), Destination::Bus(0), vec![])], vec![b], MasterSpec::default()).unwrap()
         };
         let [a, _] = render(&mut rebuild(), len, 7);
         let [b, _] = render(&mut rebuild(), len, 5);
@@ -231,7 +231,7 @@ fn post_fader_sends_master_volume_and_refusals() {
         for at in (0..3100).step_by(620) {
             session.render(at as u64, &mut sl[at..at + 620], &mut sr[at..at + 620], &token).unwrap();
         }
-        let mut graph = MixGraph::new(rate, 620, vec![StripSpec { track: mk(), output: Destination::Master, sends: vec![] }], vec![], MasterSpec::default()).unwrap();
+        let mut graph = MixGraph::new(rate, 620, vec![StripSpec::track(mk(), Destination::Master, vec![])], vec![], MasterSpec::default()).unwrap();
         let [gl, gr] = render(&mut graph, 3100, 620);
         assert_eq!(bits(&gl), bits(&sl));
         assert_eq!(bits(&gr), bits(&sr));
@@ -242,13 +242,13 @@ fn post_fader_sends_master_volume_and_refusals() {
         bus.pan = AutomationLane::constant(1.0);
         let master = MasterSpec { effects: vec![], volume_db: AutomationLane::constant(-6.020_599_913_279_624) };
         let send = SendSpec { bus: 0, tap: SendTap::PostFader, level_db: AutomationLane::constant(0.0), pan: 0.0 };
-        let mut graph = MixGraph::new(rate, 64, vec![StripSpec { track: t, output: Destination::Bus(0), sends: vec![send.clone()] }], vec![bus], MasterSpec { ..master }).unwrap();
+        let mut graph = MixGraph::new(rate, 64, vec![StripSpec::track(t, Destination::Bus(0), vec![send.clone()])], vec![bus], MasterSpec { ..master }).unwrap();
         let [l, r] = render(&mut graph, 100, 64);
         // Track post-fader 0.25 reaches the bus twice (output + send) = 0.5; hard right: L 0, R 0.5;
         // master halves it.
         assert!(l[10].abs() < 1e-7 && (r[10] - 0.25).abs() < 1e-6, "{} {}", l[10], r[10]);
         // Refusals.
-        let one = || vec![StripSpec { track: impulse_track(10, 0, 0.1), output: Destination::Bus(0), sends: vec![] }];
+        let one = || vec![StripSpec::track(impulse_track(10, 0, 0.1), Destination::Bus(0), vec![])];
         let cyc = |a: usize, b: usize| {
             let mut x = BusSpec::new("x");
             x.output = Destination::Bus(a);
@@ -265,7 +265,7 @@ fn post_fader_sends_master_volume_and_refusals() {
         let mut b = BusSpec::new("b");
         b.output = Destination::Master;
         assert_eq!(
-            MixGraph::new(rate, 64, vec![StripSpec { track: impulse_track(10, 0, 0.1), output: Destination::Master, sends: vec![loud] }], vec![b], MasterSpec::default()).err(),
+            MixGraph::new(rate, 64, vec![StripSpec::track(impulse_track(10, 0, 0.1), Destination::Master, vec![loud])], vec![b], MasterSpec::default()).err(),
             Some(ScoreError::OutOfRange),
             "send level out of range"
         );
@@ -273,5 +273,79 @@ fn post_fader_sends_master_volume_and_refusals() {
         let mut bad = BusSpec::new("mono-fx");
         bad.effects = vec![mono_fx];
         assert_eq!(MixGraph::new(rate, 64, one(), vec![bad], MasterSpec::default()).err(), Some(ScoreError::ChannelMismatch));
+    });
+}
+
+/// Lane SMB-AUDITION-SESSION-2: a seek lands on the same samples as the continuous render, near the
+/// start (warm-up reaches sample 0) and far into the timeline (bus effect memory shorter than the
+/// warm-up); an outside `StripSource` drives a strip like a score track.
+#[test]
+fn graph_seek_matches_the_continuous_render_and_sources_drive_strips() {
+    bounded_case("graph-seek", || {
+        let rate = 48_000;
+        let len = 3 * rate as usize;
+        let build = || {
+            let mut t = TrackSpec::new(vec![noise(11, len), noise(12, len)], 0);
+            t.volume_db = AutomationLane::new(&[(0, -6.0), (len as u64, 0.0)], Interpolation::Linear, TRACK_VOLUME_DB).unwrap();
+            let mut bus = BusSpec::new("delay-bus");
+            bus.effects = vec![delay_effect(rate)];
+            let send = SendSpec { bus: 0, tap: SendTap::PostFader, level_db: AutomationLane::constant(-3.0), pan: 0.2 };
+            MixGraph::new(rate, 1024, vec![StripSpec::track(t, Destination::Master, vec![send])], vec![bus], MasterSpec::default()).unwrap()
+        };
+        let [full_l, full_r] = render(&mut build(), len, 1024);
+        let token = CancellationToken::default();
+        for at in [100usize, 70_000, 120_001] {
+            let mut g = build();
+            // Render a little first, then jump (backwards for the last case is covered by the reset).
+            let mut l = vec![0.0; 1000];
+            let mut r = vec![0.0; 1000];
+            g.render(0, &mut l, &mut r, &token).unwrap();
+            g.seek(at as u64, &token).unwrap();
+            assert_eq!(g.position(), at as u64);
+            let n = 4000.min(len - at);
+            let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
+            for k in (0..n).step_by(1000) {
+                let m = 1000.min(n - k);
+                g.render((at + k) as u64, &mut l[k..k + m], &mut r[k..k + m], &token).unwrap();
+            }
+            assert_eq!(bits(&l), bits(&full_l[at..at + n]), "seek {at}");
+            assert_eq!(bits(&r), bits(&full_r[at..at + n]), "seek {at}");
+        }
+
+        /// A mono source: an impulse train, seekable.
+        struct Impulses {
+            pos: u64,
+            len: u64,
+        }
+        impl StripSource for Impulses {
+            fn channels(&self) -> usize {
+                1
+            }
+            fn length_samples(&self) -> u64 {
+                self.len
+            }
+            fn position(&self) -> u64 {
+                self.pos
+            }
+            fn seek(&mut self, sample: u64, _: &CancellationToken) -> Result<(), ScoreError> {
+                self.pos = sample;
+                Ok(())
+            }
+            fn render(&mut self, left: &mut [f32], _right: &mut [f32], _: &CancellationToken) -> Result<(), ScoreError> {
+                for (k, v) in left.iter_mut().enumerate() {
+                    *v = if (self.pos + k as u64) % 100 == 0 { 0.5 } else { 0.0 };
+                }
+                self.pos += left.len() as u64;
+                Ok(())
+            }
+        }
+        let strip = StripSpec::source(Box::new(Impulses { pos: 0, len: 1000 }), AutomationLane::constant(0.0), AutomationLane::constant(-1.0), Destination::Master, vec![]);
+        let mut g = MixGraph::new(rate, 256, vec![strip], vec![], MasterSpec::default()).unwrap();
+        assert_eq!(g.length_samples(), 1000);
+        let [l, r] = render(&mut g, 1000, 256);
+        for k in 0..1000 {
+            assert_eq!(l[k], if k % 100 == 0 { 0.5 } else { 0.0 }, "mono hard left {k}");
+            assert_eq!(r[k], 0.0);
+        }
     });
 }
