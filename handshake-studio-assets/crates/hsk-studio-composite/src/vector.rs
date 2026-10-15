@@ -30,8 +30,10 @@
 //! fill. A gradient or pattern row ([`FillPaint::Gradient`], [`FillPaint::Pattern`]) is evaluated by
 //! nib over the layer plane into a straight RGBA tile ([`PreparedPaint::Painted`]). With
 //! [`VectorCoverage::Exact`] the fill coverage is nib's exact area coverage of the layer outline
-//! (paths united, boolean groups combined by nib) instead of the supersampled rule; the default
-//! stays supersampled so existing planes are unchanged. The layer plane covers fills, strokes and
+//! (paths united, boolean groups combined by nib) instead of the supersampled rule; Exact is the
+//! default (lead decision after SMB-INTEROP-FIG-PAINTS b160fc3 moved its pins to Exact), and
+//! `Supersampled` stays selectable (it also keeps the Folio adapter's earlier stroke/gradient
+//! refusals). The layer plane covers fills, strokes and
 //! image copies; every plane of a layer shares its placement.
 //!
 //! Refusals are typed per layer and never dropped (`PreparedVectors::refusal`): unresolved paths or
@@ -170,10 +172,11 @@ pub struct VectorLayerSpec {
 /// How a layer's fill coverage is computed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VectorCoverage {
-    /// Studio supersampling (module docs; the original rule, unchanged).
-    #[default]
+    /// Studio supersampling (module docs; the original rule, kept selectable).
     Supersampled,
-    /// nib's exact signed-area coverage of the layer outline (`crate::vector_nib`).
+    /// nib's exact signed-area coverage of the layer outline (`crate::vector_nib`); the default
+    /// (lead decision, START_LOG: nib owns coverage, CX-CAP-001).
+    #[default]
     Exact,
 }
 
@@ -191,7 +194,7 @@ impl Default for VectorResolution {
     fn default() -> Self {
         Self {
             aa_samples: 4,
-            coverage: VectorCoverage::Supersampled,
+            coverage: VectorCoverage::Exact,
             max_layer_pixels: 64 << 20,
             path_limits: PathLimits::default(),
         }

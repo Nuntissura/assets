@@ -100,7 +100,9 @@ fn vector_records(image_paints: Vec<Value>, boolean_groups: Vec<Value>) -> Studi
 }
 fn prepared(v: &Value, d: &StudioDesignRecords, r: &StudioVectorRecords) -> (hsk_studio_folio::Snapshot, PreparedVectors) {
     let snap = open(v);
-    let p = prepare_vectors(&snap, d, r, &Assets, BlendSpace::Encoded, &VectorResolution::default(),
+    let p = prepare_vectors(&snap, d, r, &Assets, BlendSpace::Encoded,
+        // The supersampled rule and its Folio refusals (the default is nib Exact since SMB-COMPOSITE-CLIP-RECORDS).
+        &VectorResolution { coverage: VectorCoverage::Supersampled, ..VectorResolution::default() },
         &CancellationToken::default()).unwrap();
     (snap, p)
 }

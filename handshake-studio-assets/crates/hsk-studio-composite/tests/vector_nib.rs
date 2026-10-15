@@ -188,10 +188,11 @@ fn folio_nib_mode_maps_strokes_and_gradients_and_refuses_typed() {
         assert_eq!(report.step(&root).unwrap().status, StepStatus::Ready);
         lower_with_inputs(&plan, &report, &snap, &inputs, &root, target(), &no_tiles).unwrap();
 
-        // Default mode: the earlier refusals, unchanged.
+        // Supersampled mode: the earlier refusals, unchanged.
         let refusal = |unit: &str, rows: Vec<Value>, res: &VectorResolution| prepared(unit, rows, res).refusal(&id);
-        assert_eq!(refusal("px", rows(), &VectorResolution::default()), Some("paint_gradient"));
-        assert_eq!(refusal("px", vec![fill_row(solid(0.8)), stroke_row(solid(0.1), "px")], &VectorResolution::default()),
+        let supersampled = VectorResolution { coverage: VectorCoverage::Supersampled, ..VectorResolution::default() };
+        assert_eq!(refusal("px", rows(), &supersampled), Some("paint_gradient"));
+        assert_eq!(refusal("px", vec![fill_row(solid(0.8)), stroke_row(solid(0.1), "px")], &supersampled),
             Some("vector_stroke_not_rendered"));
         // nib mode refusals.
         assert_eq!(refusal("mm", rows(), &exact()), Some(REFUSE_GEOMETRY_UNIT_KEY));
