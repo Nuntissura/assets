@@ -125,7 +125,8 @@ fn library_fixture_end_to_end() {
         assert!(p.photos[2..].iter().all(|s| s.xmp.is_none()));
         let m = "Adobe_AdditionalMetadata";
         assert_eq!(loss(&p, m, "xmp_rating_differs_from_catalog"), (1, Disposition::Approximate));
-        assert_eq!(loss(&p, m, "xmp_compressed_not_inflated"), (1, Disposition::Opaque));
+        // A zlib-looking value is now inflated through the shared DEFLATE; this one is not a valid stream.
+        assert_eq!(loss(&p, m, "xmp_inflate_failed"), (1, Disposition::Unsupported));
         assert_eq!(loss(&p, m, "xmp_not_packet"), (1, Disposition::Unsupported));
         assert_eq!(loss(&p, m, "xmp_doctype_refused"), (1, Disposition::Unsupported));
         assert_eq!(loss(&p, m, "orphan_row"), (1, Disposition::Unsupported));

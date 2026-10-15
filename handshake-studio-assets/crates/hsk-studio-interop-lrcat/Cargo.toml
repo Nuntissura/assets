@@ -10,7 +10,13 @@ default = []
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-develop = { path = "../hsk-studio-develop", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false }
+hsk-studio-kernel-bindings = { path = "../hsk-studio-kernel-bindings", version = "=0.1.0", default-features = false }
 sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+
+[dev-dependencies]
+hsk-studio-kernel-bindings = { path = "../hsk-studio-kernel-bindings", version = "=0.1.0", default-features = false, features = ["ckc-test-double"] }
 
 [lib]
 path = "src/lib.rs"

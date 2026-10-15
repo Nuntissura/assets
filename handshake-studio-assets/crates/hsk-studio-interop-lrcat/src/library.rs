@@ -14,7 +14,8 @@ use crate::extract::{
     PhotoProposal, extract_with,
 };
 use crate::lua_rules::{RuleGroup, RuleLimits, SmartRules, parse_smart_rules};
-use crate::xmp::{PacketShape, XmpLibraryFields, XmpLimits, XmpRating, decode_xmp_packet, packet_shape};
+use crate::develop_map::{DevelopMapping, map_develop};
+use crate::xmp::{PacketShape, XmpLibraryFields, XmpLimits, XmpRating, decode_xmp_packet, inflate_packet, packet_shape};
 use crate::source::{Grant, Limits};
 use hsk_studio_accord::CancellationToken;
 use std::collections::{HashMap, HashSet};
@@ -239,6 +240,8 @@ pub struct LibraryProposal {
     pub photos: Vec<PhotoLibraryState>,
     pub collections: Vec<LibraryCollection>,
     pub keywords: Vec<LibraryKeyword>,
+    /// Develop settings mapped into develop's typed controls (one per catalog develop row).
+    pub develop: Vec<DevelopMapping>,
     pub losses: Vec<LossNote>,
     /// Row accounting of the tables only the library layer decodes
     /// (`AgLibraryCollectionContent`, `AgLibraryKeywordSynonym`).
@@ -352,16 +355,23 @@ fn read_library_tables(
             if seen_xmp.contains(&image) {
                 return Ok(Some(Dropped::new("image", Disposition::Unsupported, "xmp_duplicate")));
             }
-            let bytes = v[1].bytes().unwrap_or(&[]);
-            match packet_shape(bytes) {
-                PacketShape::CompressedLooking => {
-                    return Ok(Some(Dropped::new("xmp", Disposition::Opaque, "xmp_compressed_not_inflated")));
-                }
+            let stored = v[1].bytes().unwrap_or(&[]);
+            // A zlib value is inflated (transiently, capped at max_input_bytes before output is
+            // produced) through the shared DEFLATE, then decoded like a text packet.
+            let inflated;
+            let bytes: &[u8] = match packet_shape(stored) {
+                PacketShape::CompressedLooking => match inflate_packet(stored, lib.xmp.max_input_bytes as usize) {
+                    Ok(out) => {
+                        inflated = out;
+                        &inflated
+                    }
+                    Err(code) => return Ok(Some(Dropped::new("xmp", Disposition::Unsupported, code))),
+                },
                 PacketShape::Other => {
                     return Ok(Some(Dropped::new("xmp", Disposition::Unsupported, "xmp_not_packet")));
                 }
-                PacketShape::Text => {}
-            }
+                PacketShape::Text => stored,
+            };
             match decode_xmp_packet(bytes, &lib.xmp) {
                 Err(err) => Ok(Some(Dropped::new("xmp", Disposition::Unsupported, err.code()))),
                 Ok(fields) => {
@@ -607,6 +617,16 @@ pub fn extract_library(
         budget.charge(c.name.as_ref().map_or(0, |n| n.len() as u64))?;
     }
 
+    budget.charge(entry_bytes::<DevelopMapping>().saturating_mul(catalog.develop.len() as u64))?;
+    let mut develop = Vec::with_capacity(catalog.develop.len());
+    for d in &catalog.develop {
+        let (mapping, row_losses) = map_develop(d);
+        for (field, disposition, code) in row_losses {
+            losses.add("Adobe_imageDevelopSettings", field, disposition, code, Some(d.image_local_id));
+        }
+        develop.push(mapping);
+    }
+
     let mut losses = losses.0;
     losses.sort_by(|a, b| (&a.entity, &a.field, a.code).cmp(&(&b.entity, &b.field, b.code)));
     Ok(LibraryProposal {
@@ -614,6 +634,7 @@ pub fn extract_library(
         photos,
         collections,
         keywords,
+        develop,
         losses,
         counts: raw.counts,
         resolves,

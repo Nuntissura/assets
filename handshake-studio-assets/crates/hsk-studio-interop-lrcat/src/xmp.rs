@@ -572,3 +572,58 @@ pub(crate) fn packet_shape(bytes: &[u8]) -> PacketShape {
         PacketShape::Other
     }
 }
+
+/// Adler-32 (RFC 1950) of `data`.
+fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65_521;
+    let (mut a, mut b) = (1u32, 0u32);
+    for chunk in data.chunks(5552) {
+        for &x in chunk {
+            a = a.wrapping_add(u32::from(x));
+            b = b.wrapping_add(a);
+        }
+        a = a.checked_rem(MOD).unwrap_or(0);
+        b = b.checked_rem(MOD).unwrap_or(0);
+    }
+    b.checked_shl(16).unwrap_or(0) | a
+}
+
+/// Inflates a zlib stream (RFC 1950), optionally preceded by a 4-byte big-endian length, through
+/// the workspace's single shared DEFLATE (`hsk_studio_package::inflate_exact`, D16). The output
+/// is capped at `cap` before it is produced; the zlib header (CM 8, FCHECK, no preset
+/// dictionary), the Adler-32 trailer and a declared length are all checked. Stable codes only.
+pub(crate) fn inflate_packet(bytes: &[u8], cap: usize) -> Result<Vec<u8>, &'static str> {
+    let header_ok = |h: &[u8]| match h {
+        [a, b, ..] => a & 0x0f == 8 && u16::from_be_bytes([*a, *b]).checked_rem(31) == Some(0),
+        _ => false,
+    };
+    let (declared, stream) = if header_ok(bytes) {
+        (None, bytes)
+    } else {
+        let (len, rest) = bytes.split_at_checked(4).ok_or("xmp_zlib_truncated")?;
+        let len = u32::from_be_bytes([len[0], len[1], len[2], len[3]]);
+        (Some(usize::try_from(len).map_err(|_| "xmp_inflate_over_limit")?), rest)
+    };
+    if let Some(n) = declared
+        && n > cap
+    {
+        return Err("xmp_inflate_over_limit");
+    }
+    if stream.get(1).is_some_and(|f| f & 0x20 != 0) {
+        return Err("xmp_zlib_preset_dictionary");
+    }
+    let body_end = stream.len().checked_sub(4).filter(|e| *e >= 2).ok_or("xmp_zlib_truncated")?;
+    let body = &stream[2..body_end];
+    let trailer = &stream[body_end..];
+    let out = hsk_studio_package::inflate_exact(body, declared.unwrap_or(cap)).map_err(|f| match f {
+        hsk_studio_package::InflateFail::OutputLimit => "xmp_inflate_over_limit",
+        hsk_studio_package::InflateFail::Invalid | hsk_studio_package::InflateFail::Trailing => "xmp_inflate_failed",
+    })?;
+    if declared.is_some_and(|n| n != out.len()) {
+        return Err("xmp_inflate_length_mismatch");
+    }
+    if adler32(&out).to_be_bytes() != [trailer[0], trailer[1], trailer[2], trailer[3]] {
+        return Err("xmp_zlib_checksum");
+    }
+    Ok(out)
+}

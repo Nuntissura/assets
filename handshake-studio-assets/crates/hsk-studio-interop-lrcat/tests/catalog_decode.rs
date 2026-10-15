@@ -566,7 +566,7 @@ fn cancel_stale_no_source_write_no_sql_closure() {
             .filter(|n| !n.is_empty())
             .collect();
         for dep in &deps {
-            assert!(["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "sha2"].contains(dep), "unexpected dependency {dep}");
+            assert!(["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-develop", "hsk-studio-package", "hsk-studio-kernel-bindings", "sha2"].contains(dep), "unexpected dependency {dep}");
         }
         let sources = [
             include_str!("../src/lib.rs"),
@@ -578,6 +578,8 @@ fn cancel_stale_no_source_write_no_sql_closure() {
             include_str!("../src/library.rs"),
             include_str!("../src/lua_rules.rs"),
             include_str!("../src/xmp.rs"),
+            include_str!("../src/develop_map.rs"),
+            include_str!("../src/ckc_import.rs"),
             manifest,
         ];
         for needle in ["rusqlite", "libsqlite3", "sqlx", "turso", "limbo", "libsql", "sea-orm", "diesel", "surrealdb", "sqlite3_"] {

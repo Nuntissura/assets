@@ -1,0 +1,16 @@
+{
+  "files": {
+    "synthetic-library-2.lrcat": {
+      "bytes": 29696,
+      "sha256": "dc07e62736a109423e0ee98e09c778adb800f0659fea80885136dbdc206a12d3"
+    }
+  },
+  "generator": "generate_library_fixture_2.py",
+  "generator_location": "kept OUTSIDE the product repository (CX-503R): artifact root WP-KERNEL-STUDIO/interop-lrcat/fixtures-gen/generate_library_fixture_2.py",
+  "generator_notes": "offline, run once with python -I, stdlib sqlite3 and zlib; no test or build step runs it",
+  "generator_sha256": "fd9b49eac099cbe436e0ca48428c00d735fdb95dab493763e1d7181504d16158",
+  "lane": "SMB-CKC-PORTS",
+  "purpose": "synthetic develop-settings rows and zlib XMP values (prefixed, bare, bad Adler-32, wrong length, 8 MiB bomb); byte-decoding proof only; not Lightroom-written; no personal data",
+  "python": "3.14.0",
+  "sqlite_library_version": "3.50.4"
+}
