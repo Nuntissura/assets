@@ -20,7 +20,7 @@ mod scenes;
 const CPU_TOLERANCE: f32 = 1e-6;
 /// Frame digests (colour plane then alpha plane, SHA-256) of every `scenes::cases` entry,
 /// recorded when the case was added; any change to a frame's pixels shows here.
-const GOLDEN: [(&str, &str); 15] = [
+const GOLDEN: [(&str, &str); 17] = [
     ("comp1/frame0", "80952af10847e9206fc169b6d71ba416136135d5a6c92fd6df58ef22a695f1c3"),
     ("comp1/frame5", "17c0727e2320ba849bd7b70c829b62ce2cf7ffa080797d9d78ab32e1da2b41e6"),
     ("comp1/frame10", "b88a69fc89e656aa9c1b4f2732cf17ed35ff7d2586822cf08288e7c4f083d5c5"),
@@ -37,6 +37,8 @@ const GOLDEN: [(&str, &str); 15] = [
     ("comp5/frame0", "41a302d58cbaaca5ed5ef2ae38e0878ed001083ac748c3b9bc61bb9aa7f158c3"),
     ("comp5/frame5", "728b77afbe7d167a9ae8ba788e8f0775061e99f40c08e091cfec324687463ee9"),
     ("comp5/frame10", "0b6dffa54759a1c535cb80f8bda687416fe8a8dd60993c3ef6343a66574eeb63"),
+    ("comp6/frame0", "422cb1b81f3cc3e555e313c7c26d13c59bee6185f5c061b678e89d09067d5fc6"),
+    ("comp6/frame7", "ae86ccf7cf0edc238e66cfcf38c1a7e1597fcc7154bf4efb6b132ad4c0bdcc48"),
 ];
 
 fn render(renderer: &Renderer, scene: &SceneComposition, pixels: &scenes::Pixels) -> RenderedScene {

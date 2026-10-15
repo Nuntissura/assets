@@ -16,9 +16,15 @@
 //! pigment's single-pixel `composite_over`, bottom to top over the background.
 #![allow(dead_code)]
 use hsk_studio_composite::{
-    RenderedScene, SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode, ScenePixels,
-    SceneTile,
+    OwnedMask, RenderedScene, SceneComposition, SceneContent, SceneLayer, SceneMatte, SceneMatteMode,
+    ScenePixels, SceneTile, StaticContent,
 };
+use hsk_studio_pigment::adjust_math::{AdjustmentOp, composite_adjustment};
+use hsk_studio_pigment::render_plan::{
+    Group, Layer, MaskFormat, MaskInput, OutputTarget, PlanExtensions, PlanNode, PlanNodeId, RenderPlan,
+    SourceKey,
+};
+use std::collections::BTreeMap;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendSpace, PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::render_plan::{AlphaConvention, ColourTag, SampleFormat, TilePlanes};
@@ -310,6 +316,7 @@ pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     out.extend(FRAMES2.iter().map(|f| (format!("comp2/frame{f}"), expected_scene2(*f, pixels))));
     out.extend(FRAMES3.iter().map(|f| (format!("comp3/frame{f}"), expected_scene3(*f, pixels))));
     out.extend(FRAMES5.iter().map(|f| (format!("comp5/frame{f}"), expected_scene5(*f, pixels))));
+    out.extend(FRAMES6.iter().map(|f| (format!("comp6/frame{f}"), expected_scene6(*f, pixels))));
     out
 }
 
@@ -427,6 +434,117 @@ pub fn scene_resamples(scene: &SceneComposition) -> bool {
     scene.layers.iter().any(layer)
 }
 
+/// Frames of composition 6 (static subtree and adjustment layer, lane SMB-COMPOSITE-COMPOSITION-2).
+pub const FRAMES6: [u64; 2] = [0, 7];
+const STATIC_FILL: [f32; 4] = [0.3, 0.8, 0.6, 1.0];
+
+/// The static content of layer 13: a 10x8 solid cut by an owned `coverage_u8` ramp (what a vector
+/// or text layer lowers to), content rect (2, 3)-(12, 11).
+pub fn static13() -> StaticContent {
+    let rect = Rect { x: 2, y: 3, width: 10, height: 8 };
+    let mut bytes = Vec::new();
+    for y in 0..8u32 {
+        for x in 0..10u32 {
+            bytes.push(((x * 29 + y * 17) % 256) as u8);
+        }
+    }
+    let sha = hsk_studio_prism::profile_hash(&bytes);
+    let plan = RenderPlan {
+        revision: 7,
+        target: OutputTarget { extent: rect, format: SampleFormat::RgbF32Le, alpha: AlphaConvention::Straight, space: space() },
+        nodes: vec![
+            PlanNode::Solid { rect, rgba: STATIC_FILL },
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![Layer {
+                    input: PlanNodeId(0),
+                    mode: StudioBlendMode::Normal,
+                    opacity: 1.0,
+                    fill_opacity: 1.0,
+                    mask: Some(MaskInput { key: SourceKey(0), placement: rect, format: MaskFormat::CoverageU8, sha256: sha, inverted: false, density: 1.0 }),
+                }],
+            }),
+        ],
+        root: PlanNodeId(1),
+    };
+    let mut owned_masks = BTreeMap::new();
+    owned_masks.insert(SourceKey(0), OwnedMask { bounds: rect, sample_format: "coverage_u8".into(), bytes, stride_bytes: 10, sha256: sha });
+    StaticContent {
+        plan,
+        extensions: PlanExtensions::default(),
+        rect,
+        tiles: BTreeMap::new(),
+        masks: BTreeMap::new(),
+        owned_masks,
+        owned_tiles: BTreeMap::new(),
+    }
+}
+
+/// Composition 6, 32x24, background (0.15, 0.1, 0.05, 1): layer 2 tile `ta` moved (8, 6); layer
+/// 13 the static content rotating about its centre (frame 0: 0 deg, frame 7: 21 deg) at position
+/// (16, 12), 90 %; layer 14 an INVERT adjustment at 70 % over everything below.
+pub fn expected_scene6(frame: u64, pixels: &Pixels) -> SceneComposition {
+    let ta = pixels.get(&tile_id(2, "ta")).unwrap();
+    let rot = 3.0 * frame as f64;
+    SceneComposition {
+        composition_id: identity("SCOM", 6),
+        width: W,
+        height: H,
+        background: Some([0.15, 0.1, 0.05, 1.0]),
+        filter: ResampleFilter::Bilinear,
+        layers: vec![
+            SceneLayer {
+                layer_id: identity("SLYR", 2),
+                content: SceneContent::Tiles(vec![ta.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: Affine2::translate(8.0, 6.0),
+                matte: None,
+            },
+            SceneLayer {
+                layer_id: identity("SLYR", 13),
+                content: SceneContent::Static(Box::new(static13())),
+                mode: StudioBlendMode::Normal,
+                opacity: 0.9,
+                fill_opacity: 1.0,
+                // Content origin (2, 3), anchor = centre (5, 4) of the content.
+                matrix: Affine2::translate(-2.0, -3.0).then(Affine2::from_parts(5.0, 4.0, 1.0, 1.0, rot, 11.0, 8.0)),
+                matte: None,
+            },
+            SceneLayer {
+                layer_id: identity("SLYR", 14),
+                content: SceneContent::Adjustment(AdjustmentOp::Invert),
+                mode: StudioBlendMode::Normal,
+                opacity: 0.7,
+                fill_opacity: 1.0,
+                matrix: Affine2::IDENTITY,
+                matte: None,
+            },
+        ],
+    }
+}
+
+/// The surface pixels of a static content (oracle of [`static13`]: fill times coverage).
+fn static_frame(c: &StaticContent) -> Vec<[f32; 4]> {
+    let m = c.owned_masks.get(&SourceKey(0)).unwrap();
+    m.bytes
+        .iter()
+        .map(|b| {
+            let cov = (f64::from(*b) / 255.0) as f32;
+            let r = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT,
+                Rgba::new([STATIC_FILL[0], STATIC_FILL[1], STATIC_FILL[2]], STATIC_FILL[3]), cov, PixelSite::default()).unwrap();
+            [r.rgb[0], r.rgb[1], r.rgb[2], r.a]
+        })
+        .collect()
+}
+
+/// One oracle step, bottom first.
+enum Step<'a> {
+    Draw(&'a SceneLayer, Texels<'a>, PreparedTransform, Option<Vec<f32>>),
+    Adjust(&'a SceneLayer, Box<hsk_studio_pigment::adjust_math::PreparedAdjustment>),
+}
+
 /// Where an oracle layer reads its texels.
 enum Texels<'a> {
     Tile(&'a TilePix),
@@ -460,13 +578,20 @@ pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
             SceneContent::Precomp(nested) => {
                 sources.push((Texels::Frame(oracle(nested, pixels), nested.width), nested.rect()));
             }
+            SceneContent::Static(c) => {
+                sources.push((Texels::Frame(static_frame(c), c.rect.width), c.rect));
+            }
+            SceneContent::Adjustment(op) => {
+                prepared.push(Step::Adjust(l, Box::new(op.prepare().expect("adjustment"))));
+                continue;
+            }
             _ => {}
         }
         let coverage = l.matte.as_ref().map(|m| matte_coverage(scene, m, pixels));
         for (texels, rect) in sources {
             let p = PreparedTransform::new(&LayerTransform::new(l.matrix, scene.filter), rect)
                 .expect("invertible");
-            prepared.push((l, texels, p, coverage.clone()));
+            prepared.push(Step::Draw(l, texels, p, coverage.clone()));
         }
     }
     let mut out = Vec::with_capacity((scene.width * scene.height) as usize);
@@ -476,7 +601,15 @@ pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
             if let Some(b) = scene.background {
                 acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, PixelSite::default()).unwrap();
             }
-            for (l, texels, p, coverage) in &prepared {
+            for step in &prepared {
+                let (l, texels, p, coverage) = match step {
+                    Step::Draw(l, texels, p, coverage) => (l, texels, p, coverage),
+                    Step::Adjust(l, prep) => {
+                        let k = (l.opacity * l.fill_opacity) as f32;
+                        acc = composite_adjustment(l.mode, acc, prep, k).unwrap();
+                        continue;
+                    }
+                };
                 let s = p.sample_rgba(x, y, |i, j| Ok::<_, ()>(texels.at(i, j))).unwrap();
                 let src = Rgba::new([s[0], s[1], s[2]], s[3]);
                 let mask = coverage.as_ref().map_or(1.0, |c| c[(y * i64::from(scene.width) + x) as usize]);
