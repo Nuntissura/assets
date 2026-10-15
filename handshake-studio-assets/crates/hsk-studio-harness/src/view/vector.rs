@@ -39,6 +39,7 @@ use hsk_studio_nib::anchor_path::{
     self as ap, AnchorAddr, AnchorPath, AnchorSelection, Constraint, Contour, EditAnchor, EndAddr, HandleSide,
 };
 use hsk_studio_nib::boolean::BooleanOptions;
+use hsk_studio_nib::freeform::{self, CornerTreatment};
 use hsk_studio_nib::pathfinder::{PathfinderOp, pathfinder};
 use hsk_studio_nib::shape::{self, CornerKind, EllipseSpec, RectSpec};
 use hsk_studio_nib::stroke::{LineJoin, StrokeOptions, StrokeStyle, outline_stroke};
@@ -72,6 +73,16 @@ pub mod widget {
     pub const INNER: &str = "vector.shape.inner_radius";
     pub const PEN_END: &str = "vector.pen.end";
     pub const PATHFINDER: &str = "vector.pathfinder";
+    /// Lane SMB-ILLUSTRATOR-PEN-2.
+    pub const PENCIL_FIDELITY: &str = "vector.pencil.fidelity";
+    pub const ARC_SLOPE: &str = "vector.arc.slope";
+    pub const ARC_CLOSED: &str = "vector.arc.closed";
+    pub const GRID_ROWS: &str = "vector.grid.rows";
+    pub const GRID_COLUMNS: &str = "vector.grid.columns";
+    pub const POLAR_CONCENTRIC: &str = "vector.polar.concentric";
+    pub const POLAR_RADIAL: &str = "vector.polar.radial";
+    pub const SPIRAL_DECAY: &str = "vector.spiral.decay";
+    pub const SPIRAL_TURNS: &str = "vector.spiral.turns";
 }
 
 /// Paint of one path: 8-bit sRGB fill and stroke (absent = none) and the stroke width.
@@ -108,6 +119,11 @@ pub enum ShapeKind {
     Polygon,
     Star,
     Line,
+    /// Lane SMB-ILLUSTRATOR-PEN-2.
+    ArcSegment,
+    RectangularGrid,
+    PolarGrid,
+    Spiral,
 }
 
 /// A path edit of the model surface ([`Viewer::edit_path`]); each is one transaction.
@@ -123,6 +139,8 @@ pub enum PathEdit {
     SplitAtAnchor(AnchorAddr),
     Join(EndAddr, EndAddr),
     Reverse(Option<usize>),
+    /// Live corner on an anchor with two incident segments (round, inverted round, chamfer).
+    Corner { at: AnchorAddr, kind: CornerTreatment, radius: f64 },
 }
 
 /// What a direct-selection hit found.
@@ -145,6 +163,27 @@ pub struct VectorTool {
     pub polygon_sides: u32,
     pub star_points: u32,
     pub star_inner: f64,
+    /// Arc segment slope (percent), closed (pie) and base axis.
+    pub arc_slope: f64,
+    pub arc_closed: bool,
+    /// Grid dividers (rectangular: rows, columns; polar: concentric, radial).
+    pub grid_rows: u32,
+    pub grid_columns: u32,
+    pub polar_concentric: u32,
+    pub polar_radial: u32,
+    /// Spiral decay (percent per turn) and turns.
+    pub spiral_decay: f64,
+    pub spiral_turns: f64,
+    /// Pencil fidelity 0..=4 (STU-VEC-119 soft range): RDP tolerance 0.5 * 2^fidelity px; ends
+    /// closer than `pencil_close_within` px close the path (0 = never).
+    pub pencil_fidelity: u32,
+    pub pencil_close_within: f64,
+    /// Live corner treatment and radius of the corner command.
+    pub corner: CornerTreatment,
+    /// Kerf of the knife (document px).
+    pub knife_kerf: f64,
+    /// The freehand samples of the gesture in progress (pencil, knife, shape builder).
+    pub samples: Vec<[f64; 2]>,
     /// The layer the pen extends (`None` = the next click starts a new path).
     pub pen_layer: Option<String>,
     /// Press point and current point of the canvas gesture in progress (document pixels;
@@ -165,6 +204,19 @@ impl Default for VectorTool {
             polygon_sides: 6,
             star_points: 5,
             star_inner: 0.5,
+            arc_slope: 0.0,
+            arc_closed: false,
+            grid_rows: 5,
+            grid_columns: 5,
+            polar_concentric: 5,
+            polar_radial: 6,
+            spiral_decay: 80.0,
+            spiral_turns: 2.5,
+            pencil_fidelity: 2,
+            pencil_close_within: 4.0,
+            corner: CornerTreatment::Round,
+            knife_kerf: 0.01,
+            samples: Vec::new(),
             pen_layer: None,
             press: None,
             current: None,
@@ -453,6 +505,24 @@ fn shape_of(kind: ShapeKind, tool: &VectorTool, a: [f64; 2], b: [f64; 2], constr
             let path = shape::line(a[0], a[1], len, angle).map_err(refuse)?;
             Ok((path, StudioShapeParameters::Line { x: l(a[0]), y: l(a[1]), length: l(len), angle }))
         }
+        ShapeKind::ArcSegment => {
+            let path = shape::arc_segment(a[0], a[1], b[0], b[1], tool.arc_slope, tool.arc_closed, true).map_err(refuse)?;
+            Ok((path, StudioShapeParameters::ArcSegment { start_x: l(a[0]), start_y: l(a[1]), end_x: l(b[0]), end_y: l(b[1]), slope: tool.arc_slope, closed: tool.arc_closed, base_along_x: true, fill_arc: false }))
+        }
+        ShapeKind::RectangularGrid => {
+            let path = shape::rectangular_grid(x, y, w, h, tool.grid_rows, tool.grid_columns, 0.0, 0.0, true).map_err(refuse)?;
+            Ok((path, StudioShapeParameters::RectangularGrid { x: l(x), y: l(y), width: l(w), height: l(h), horizontal_dividers: tool.grid_rows, vertical_dividers: tool.grid_columns, skew_horizontal: 0.0, skew_vertical: 0.0, use_outside_rectangle_as_frame: true, fill_grid: true }))
+        }
+        ShapeKind::PolarGrid => {
+            let (rx, ry) = (w / 2.0, h / 2.0);
+            let path = shape::polar_grid(x + rx, y + ry, rx, ry, tool.polar_concentric, tool.polar_radial, 0.0, 0.0).map_err(refuse)?;
+            Ok((path, StudioShapeParameters::PolarGrid { center_x: l(x + rx), center_y: l(y + ry), radius_x: l(rx), radius_y: l(ry), concentric_dividers: tool.polar_concentric, radial_dividers: tool.polar_radial, skew_radial: 0.0, skew_angular: 0.0, create_compound_path_from_ellipses: false, fill_grid: true }))
+        }
+        ShapeKind::Spiral => {
+            let r = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+            let path = shape::spiral(a[0], a[1], r, tool.spiral_decay, tool.spiral_turns, true).map_err(refuse)?;
+            Ok((path, StudioShapeParameters::Spiral { center_x: l(a[0]), center_y: l(a[1]), radius: l(r), decay: tool.spiral_decay, turns: tool.spiral_turns, clockwise: true }))
+        }
     }
 }
 
@@ -485,6 +555,16 @@ fn shape_geometry(p: &StudioShapeParameters) -> Result<AnchorPath, String> {
         StudioShapeParameters::Polygon { center_x, center_y, radius, side_count, inset_percentage } => shape::polygon(center_x.value, center_y.value, radius.value, *side_count, *inset_percentage).map_err(refuse),
         StudioShapeParameters::Star { center_x, center_y, radius, point_count, inner_radius } => shape::star(center_x.value, center_y.value, radius.value, *point_count, *inner_radius).map_err(refuse),
         StudioShapeParameters::Line { x, y, length, angle } => shape::line(x.value, y.value, length.value, *angle).map_err(refuse),
+        StudioShapeParameters::ArcSegment { start_x, start_y, end_x, end_y, slope, closed, base_along_x, .. } => {
+            shape::arc_segment(start_x.value, start_y.value, end_x.value, end_y.value, *slope, *closed, *base_along_x).map_err(refuse)
+        }
+        StudioShapeParameters::RectangularGrid { x, y, width, height, horizontal_dividers, vertical_dividers, skew_horizontal, skew_vertical, use_outside_rectangle_as_frame, .. } => {
+            shape::rectangular_grid(x.value, y.value, width.value, height.value, *horizontal_dividers, *vertical_dividers, *skew_horizontal, *skew_vertical, *use_outside_rectangle_as_frame).map_err(refuse)
+        }
+        StudioShapeParameters::PolarGrid { center_x, center_y, radius_x, radius_y, concentric_dividers, radial_dividers, skew_radial, skew_angular, .. } => {
+            shape::polar_grid(center_x.value, center_y.value, radius_x.value, radius_y.value, *concentric_dividers, *radial_dividers, *skew_radial, *skew_angular).map_err(refuse)
+        }
+        StudioShapeParameters::Spiral { center_x, center_y, radius, decay, turns, clockwise } => shape::spiral(center_x.value, center_y.value, radius.value, *decay, *turns, *clockwise).map_err(refuse),
     }
 }
 
@@ -501,6 +581,7 @@ fn apply(path: &AnchorPath, edit: PathEdit) -> Result<AnchorPath, String> {
         PathEdit::SplitAtAnchor(at) => ap::split_at_anchor(path, at),
         PathEdit::Join(a, b) => ap::join(path, a, b, ap::DEFAULT_MERGE_DISTANCE),
         PathEdit::Reverse(c) => ap::reverse(path, c),
+        PathEdit::Corner { at, kind, radius } => freeform::apply_corner(path, at, kind, radius).map(|(p, _)| p),
     };
     r.map_err(|e| format!("path_edit: {}", e.code()))
 }
@@ -516,6 +597,14 @@ pub fn tool_hover(tool: Tool) -> &'static str {
         Tool::Polygon => "Drag from the centre: regular polygon (sides below)",
         Tool::Star => "Drag from the centre: star (points and inner radius below)",
         Tool::Line => "Drag a line segment (Shift: 45 degrees)",
+        Tool::Curvature => "Click to place points the curve passes through (Alt-click: corner point); click the first point to close",
+        Tool::Pencil => "Drag a freehand path, fitted and smoothed (fidelity below); ends close together close the path",
+        Tool::Knife => "Drag across filled vector layers to cut them into separate closed regions",
+        Tool::ShapeBuilder => "Drag across overlapping regions of vector layers to merge them (Alt: delete the regions)",
+        Tool::ArcSegment => "Drag an arc segment (slope below)",
+        Tool::RectangularGrid => "Drag a rectangular grid (rows and columns below)",
+        Tool::PolarGrid => "Drag a polar grid (concentric and radial dividers below)",
+        Tool::Spiral => "Drag from the centre: spiral (decay and turns below)",
         _ => "",
     }
 }
@@ -530,12 +619,16 @@ impl Tool {
             Tool::Polygon => Some(ShapeKind::Polygon),
             Tool::Star => Some(ShapeKind::Star),
             Tool::Line => Some(ShapeKind::Line),
+            Tool::ArcSegment => Some(ShapeKind::ArcSegment),
+            Tool::RectangularGrid => Some(ShapeKind::RectangularGrid),
+            Tool::PolarGrid => Some(ShapeKind::PolarGrid),
+            Tool::Spiral => Some(ShapeKind::Spiral),
             _ => None,
         }
     }
     /// Pen, direct selection or a shape tool.
     pub fn is_vector(self) -> bool {
-        matches!(self, Tool::Pen | Tool::DirectSelect) || self.shape().is_some()
+        matches!(self, Tool::Pen | Tool::DirectSelect | Tool::Curvature | Tool::Pencil | Tool::Knife | Tool::ShapeBuilder) || self.shape().is_some()
     }
 }
 
@@ -732,6 +825,186 @@ impl Viewer {
         }
     }
 
+    /// Curvature tool (STU-VEC-007): adds a point the curve passes through (`corner` = Alt: a
+    /// corner point) to the curvature path, or closes it when the point is within `close_radius` of
+    /// its first point; every smooth point's handles are recomputed ([`freeform::smooth_curvature`]).
+    /// One transaction per call (a new layer for the first point, a `vector_paths` write after).
+    pub fn curvature_point(&mut self, x: f64, y: f64, corner: bool, close_radius: f64) -> Result<String, String> {
+        let r = self.curvature_inner(x, y, corner, close_radius);
+        self.report(r)
+    }
+
+    fn curvature_inner(&mut self, x: f64, y: f64, corner: bool, close_radius: f64) -> Result<String, String> {
+        if !(x.is_finite() && y.is_finite() && close_radius.is_finite()) {
+            return Err("curvature: non_finite".into());
+        }
+        let anchor = EditAnchor { mirroring: if corner { Mirroring::None } else { Mirroring::AngleAndLength }, ..EditAnchor::corner(x, y) };
+        let current = self.edit.vector.pen_layer.clone().and_then(|id| self.vector_path(&id).ok().map(|r| (id, r)));
+        match current {
+            Some((id, record)) if record.path.contours.last().is_some_and(|c| !c.closed) => {
+                let last = record.path.contours.len().saturating_sub(1);
+                let contour = &record.path.contours[last];
+                let first = contour.anchors[0].position;
+                let near = ((first.x - x).powi(2) + (first.y - y).powi(2)).sqrt() <= close_radius;
+                let grown = if near && contour.anchors.len() >= 2 {
+                    ap::close_contour(&record.path, last, None)
+                } else {
+                    ap::append_anchor(&record.path, last, anchor)
+                }
+                .map_err(|e| format!("curvature: {}", e.code()))?;
+                let closed = grown.contours.last().is_some_and(|c| c.closed);
+                let path = freeform::smooth_curvature(&grown, last).map_err(|e| format!("curvature: {}", e.code()))?;
+                let id = self.replace_vector_layer("curvature", &id, path, None, None)?;
+                if closed {
+                    self.edit.vector.pen_layer = None;
+                }
+                Ok(id)
+            }
+            _ => {
+                let path = ap::start_contour(&AnchorPath::new(FillRule::NonZero), anchor).map_err(|e| format!("curvature: {}", e.code()))?;
+                let style = self.style_now(true);
+                let id = self.create_vector_layer("curvature", "Curve", path, style, None)?;
+                self.edit.vector.pen_layer = Some(id.clone());
+                Ok(id)
+            }
+        }
+    }
+
+    /// Pencil (STU-VEC-007 freehand, STU-VEC-119 fidelity): one new vector layer from the samples,
+    /// reduced at `0.5 * 2^fidelity` px and smoothed; closed when the ends are within
+    /// `pencil_close_within` px. One transaction.
+    pub fn pencil_stroke(&mut self, samples: &[[f64; 2]]) -> Result<String, String> {
+        let r = (|| {
+            let t = &self.edit.vector;
+            if t.pencil_fidelity > 4 {
+                return Err("pencil: fidelity 0..=4".to_string());
+            }
+            let tolerance = [0.5, 1.0, 2.0, 4.0, 8.0][usize::try_from(t.pencil_fidelity).unwrap_or(0)];
+            let close = (t.pencil_close_within > 0.0).then_some(t.pencil_close_within);
+            let points: Vec<PathPoint> = samples.iter().map(|s| PathPoint::new(s[0], s[1])).collect();
+            let path = freeform::fit_freehand(&points, tolerance, close).map_err(|e| format!("pencil: {}", e.code()))?;
+            let style = self.style_now(true);
+            self.create_vector_layer("pencil", "Pencil", path, style, None)
+        })();
+        self.report(r)
+    }
+
+    /// The vector layers of the selected layer's stack (the document root without a selection),
+    /// bottom first.
+    pub fn stack_vector_layers(&self) -> Vec<String> {
+        let Ok(doc) = self.vdoc() else { return Vec::new() };
+        let group = self.selected.as_deref().and_then(|s| self.run.placement(s)).and_then(|(p, _)| match p {
+            Parent::Root(()) => None,
+            Parent::Node(n) => Some(n.node_id),
+        });
+        super::layers::stack(doc, group.as_deref())
+            .into_iter()
+            .filter(|id| doc.layers.iter().any(|l| &l.layer_id == id && matches!(l.payload, Payload::Vector { .. })))
+            .collect()
+    }
+
+    /// Knife (STU-VEC-048): cuts every filled vector layer of the current stack that the polyline
+    /// separates into closed regions; each cut layer is replaced by its regions (same style and
+    /// name) in ONE transaction. Typed: `knife: nothing cut` when no layer separates.
+    pub fn knife_cut(&mut self, cut: &[[f64; 2]]) -> Result<Vec<String>, String> {
+        let r = self.knife_inner(cut);
+        self.report(r)
+    }
+
+    fn knife_inner(&mut self, cut: &[[f64; 2]]) -> Result<Vec<String>, String> {
+        let points: Vec<PathPoint> = cut.iter().map(|s| PathPoint::new(s[0], s[1])).collect();
+        let kerf = self.edit.vector.knife_kerf;
+        let mut cuts: Vec<(String, PathRecord, Vec<AnchorPath>)> = Vec::new();
+        for id in self.stack_vector_layers() {
+            let record = self.vector_path(&id)?;
+            if record.style.fill.is_none() {
+                continue;
+            }
+            let owned = record.path.to_owned_path().map_err(|e| format!("knife: {}", e.code()))?;
+            match freeform::knife(&owned, &points, kerf, &BooleanOptions::default()) {
+                Ok(pieces) if pieces.len() > 1 => {
+                    let pieces = pieces.iter().map(AnchorPath::from_owned_path).collect::<Result<Vec<_>, _>>().map_err(|e| format!("knife: {}", e.code()))?;
+                    cuts.push((id, record, pieces));
+                }
+                Ok(_) | Err(hsk_studio_nib::Error::EmptyPathfinderResult) => {}
+                Err(e) => return Err(format!("knife: {e:?}")),
+            }
+        }
+        if cuts.is_empty() {
+            return Err("knife: nothing cut".into());
+        }
+        let pieces: Vec<(String, AnchorPath, VectorStyle)> = cuts.into_iter().flat_map(|(id, rec, pieces)| pieces.into_iter().map(move |p| (id.clone(), p, rec.style))).collect();
+        self.replace_with_pieces("knife", pieces)
+    }
+
+    /// Shape builder (STU-VEC-007): the given vector layers (one stack) are divided into faces; the
+    /// faces the gesture touches are merged (`delete` = false) or removed; every remaining face is a
+    /// vector layer; the operands are deleted; ONE transaction.
+    pub fn shape_builder_layers(&mut self, layer_ids: &[String], gesture: &[[f64; 2]], delete: bool) -> Result<Vec<String>, String> {
+        let r = (|| {
+            let mut operands = Vec::new();
+            for id in layer_ids {
+                let (_, index) = self.run.placement(id).ok_or_else(|| format!("shape_builder: {id} is not in a layer stack"))?;
+                operands.push((index, id.clone(), self.vector_path(id)?));
+            }
+            operands.sort_by_key(|(i, _, _)| *i);
+            let paths = operands.iter().map(|(_, _, r)| r.path.to_owned_path().map_err(|e| format!("shape_builder: {}", e.code()))).collect::<Result<Vec<_>, _>>()?;
+            let points: Vec<PathPoint> = gesture.iter().map(|s| PathPoint::new(s[0], s[1])).collect();
+            let faces = freeform::shape_builder(&paths, &points, delete, &BooleanOptions::default()).map_err(|e| format!("shape_builder: {e:?}"))?;
+            let top = operands.last().map(|(_, id, _)| id.clone()).ok_or("shape_builder: no operands")?;
+            let mut pieces = Vec::new();
+            for f in faces {
+                let style = f.sources.iter().max().and_then(|i| operands.get(*i)).map(|(_, _, r)| r.style).ok_or("shape_builder: piece without source")?;
+                pieces.push((top.clone(), AnchorPath::from_owned_path(&f.path).map_err(|e| format!("shape_builder: {}", e.code()))?, style));
+            }
+            let doomed: Vec<String> = operands.iter().map(|(_, id, _)| id.clone()).collect();
+            self.replace_with_pieces_deleting("shape_builder", pieces, &doomed)
+        })();
+        self.report(r)
+    }
+
+    /// One transaction: every piece becomes a vector layer directly above its anchor layer (same
+    /// parent), then every anchor layer is deleted.
+    fn replace_with_pieces(&mut self, op: &str, pieces: Vec<(String, AnchorPath, VectorStyle)>) -> Result<Vec<String>, String> {
+        let mut doomed: Vec<String> = Vec::new();
+        for (id, _, _) in &pieces {
+            if !doomed.contains(id) {
+                doomed.push(id.clone());
+            }
+        }
+        self.replace_with_pieces_deleting(op, pieces, &doomed)
+    }
+
+    fn replace_with_pieces_deleting(&mut self, op: &str, pieces: Vec<(String, AnchorPath, VectorStyle)>, doomed: &[String]) -> Result<Vec<String>, String> {
+        let mut entry = self.vector_entry()?;
+        if entry.paths.len().saturating_add(pieces.len()) > MAX_PATHS {
+            return Err(format!("{op}: vector_entry_over_budget"));
+        }
+        let doc = self.vdoc()?;
+        let mut writes = Vec::new();
+        let mut ids: Vec<String> = Vec::new();
+        let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
+        for (anchor, path, style) in pieces {
+            let base = doc.layers.iter().find(|l| l.layer_id == anchor).ok_or_else(|| format!("{op}: no layer {anchor}"))?;
+            let mut id = super::layers::mint_layer_id(doc, salt);
+            while ids.contains(&id) {
+                salt = salt.wrapping_add(1);
+                id = super::layers::mint_layer_id(doc, salt);
+            }
+            salt = salt.wrapping_add(1);
+            let path_id = mint_path_id(doc, &entry);
+            entry.paths.push(PathRecord { path_id: path_id.clone(), path, style });
+            let layer = super::layers::new_layer(&id, &base.name, &base.parent, "vector", json!({"payload_kind": "vector", "path_ids": [path_id]}))?;
+            writes.push(PlacementWrite { layer_id: id.clone(), to: Some(Place::Before(anchor.clone())), create: Some((layer, super::layers::operation_for(&id, false)?)) });
+            ids.push(id);
+        }
+        writes.extend(doomed.iter().map(|id| PlacementWrite { layer_id: id.clone(), to: None, create: None }));
+        self.store_entry(&entry)?;
+        self.structure(op, writes, format!("{op} -> {} layer(s)", ids.len()))?;
+        self.selected = ids.first().cloned();
+        Ok(ids)
+    }
+
     /// Ends the pen path (the next pen click starts a new one). No transaction.
     pub fn pen_end(&mut self) {
         self.edit.vector.pen_layer = None;
@@ -819,7 +1092,8 @@ impl Viewer {
         }
         let unit = self.vdoc()?.geometry_unit;
         let (path, live) = shape_of(kind, &self.edit.vector, a, b, constrain, unit)?;
-        let style = if kind == ShapeKind::Line { VectorStyle { fill: None, ..self.style_now(true) } } else { self.style_now(false) };
+        let open = matches!(kind, ShapeKind::Line | ShapeKind::Spiral) || (kind == ShapeKind::ArcSegment && !self.edit.vector.arc_closed);
+        let style = if open || matches!(kind, ShapeKind::RectangularGrid | ShapeKind::PolarGrid) { VectorStyle { fill: None, ..self.style_now(true) } } else { self.style_now(false) };
         let name = match kind {
             ShapeKind::Rectangle => "Rectangle",
             ShapeKind::RoundedRectangle => "Rounded Rectangle",
@@ -827,6 +1101,10 @@ impl Viewer {
             ShapeKind::Polygon => "Polygon",
             ShapeKind::Star => "Star",
             ShapeKind::Line => "Line",
+            ShapeKind::ArcSegment => "Arc",
+            ShapeKind::RectangularGrid => "Rectangular Grid",
+            ShapeKind::PolarGrid => "Polar Grid",
+            ShapeKind::Spiral => "Spiral",
         };
         self.create_vector_layer("shape", name, path, style, Some(live))
     }
@@ -958,19 +1236,32 @@ impl Viewer {
             && let Some(p) = response.interact_pointer_pos()
         {
             self.edit.vector.press = Some(to_doc(p));
+            self.edit.vector.samples.clear();
         }
         if response.dragged()
             && let Some(p) = response.interact_pointer_pos()
         {
-            self.edit.vector.current = Some(to_doc(p));
+            let d = to_doc(p);
+            self.edit.vector.current = Some(d);
+            if self.edit.vector.samples.len() < freeform::MAX_SAMPLES {
+                self.edit.vector.samples.push(d);
+            }
         }
         let constraint = if shift { Constraint::Angle45 } else { Constraint::Free };
         if response.drag_stopped()
             && let (Some(a), Some(b)) = (self.edit.vector.press.take(), self.edit.vector.current)
         {
+            let mut samples = std::mem::take(&mut self.edit.vector.samples);
+            samples.insert(0, a);
             let _ = match tool {
                 Tool::Pen => self.pen_point(a[0], a[1], Some([b[0] - a[0], b[1] - a[1]]), radius),
                 Tool::DirectSelect => self.direct_drag(a, b, constraint, alt, radius),
+                Tool::Pencil => self.pencil_stroke(&samples),
+                Tool::Knife => self.knife_cut(&samples).map(|ids| ids.join(",")),
+                Tool::ShapeBuilder => {
+                    let operands = self.stack_vector_layers();
+                    self.shape_builder_layers(&operands, &samples, alt).map(|ids| ids.join(","))
+                }
                 t => match t.shape() {
                     Some(kind) => self.draw_shape(kind, a, b, shift),
                     None => Ok(String::new()),
@@ -984,6 +1275,13 @@ impl Viewer {
             match tool {
                 Tool::Pen => {
                     let _ = self.pen_point(d[0], d[1], None, radius);
+                }
+                Tool::Curvature => {
+                    let _ = self.curvature_point(d[0], d[1], alt, radius);
+                }
+                Tool::ShapeBuilder => {
+                    let operands = self.stack_vector_layers();
+                    let _ = self.shape_builder_layers(&operands, &[d], alt);
                 }
                 Tool::DirectSelect => self.selected = self.direct_hit(d, radius).map(|(id, _)| id).or(self.selected.take()),
                 _ => {}
@@ -1070,11 +1368,39 @@ impl Viewer {
                 ui.push_id(super::widget::id(widget::INNER), |ui| ui.add(egui::Slider::new(&mut t.star_inner, 0.05..=1.0).text("inner")));
                 drawn.push(widget::INNER.into());
             }
-            Tool::Pen => {
+            Tool::Pen | Tool::Curvature => {
                 if ui.push_id(super::widget::id(widget::PEN_END), |ui| ui.add_enabled(t.pen_layer.is_some(), egui::Button::new("End path"))).inner.on_hover_text("Enter / Escape").clicked() {
                     t.pen_layer = None;
                 }
                 drawn.push(widget::PEN_END.into());
+            }
+            Tool::Pencil => {
+                ui.push_id(super::widget::id(widget::PENCIL_FIDELITY), |ui| ui.add(egui::Slider::new(&mut t.pencil_fidelity, 0..=4).text("fidelity")));
+                drawn.push(widget::PENCIL_FIDELITY.into());
+            }
+            Tool::ArcSegment => {
+                ui.push_id(super::widget::id(widget::ARC_SLOPE), |ui| ui.add(egui::Slider::new(&mut t.arc_slope, -100.0..=100.0).text("slope")));
+                drawn.push(widget::ARC_SLOPE.into());
+                ui.push_id(super::widget::id(widget::ARC_CLOSED), |ui| ui.checkbox(&mut t.arc_closed, "closed"));
+                drawn.push(widget::ARC_CLOSED.into());
+            }
+            Tool::RectangularGrid => {
+                ui.push_id(super::widget::id(widget::GRID_ROWS), |ui| ui.add(egui::Slider::new(&mut t.grid_rows, 0..=50).text("rows")));
+                drawn.push(widget::GRID_ROWS.into());
+                ui.push_id(super::widget::id(widget::GRID_COLUMNS), |ui| ui.add(egui::Slider::new(&mut t.grid_columns, 0..=50).text("columns")));
+                drawn.push(widget::GRID_COLUMNS.into());
+            }
+            Tool::PolarGrid => {
+                ui.push_id(super::widget::id(widget::POLAR_CONCENTRIC), |ui| ui.add(egui::Slider::new(&mut t.polar_concentric, 0..=50).text("concentric")));
+                drawn.push(widget::POLAR_CONCENTRIC.into());
+                ui.push_id(super::widget::id(widget::POLAR_RADIAL), |ui| ui.add(egui::Slider::new(&mut t.polar_radial, 0..=50).text("radial")));
+                drawn.push(widget::POLAR_RADIAL.into());
+            }
+            Tool::Spiral => {
+                ui.push_id(super::widget::id(widget::SPIRAL_DECAY), |ui| ui.add(egui::Slider::new(&mut t.spiral_decay, 5.0..=99.0).text("decay %")));
+                drawn.push(widget::SPIRAL_DECAY.into());
+                ui.push_id(super::widget::id(widget::SPIRAL_TURNS), |ui| ui.add(egui::Slider::new(&mut t.spiral_turns, 0.25..=20.0).text("turns")));
+                drawn.push(widget::SPIRAL_TURNS.into());
             }
             _ => {}
         }
@@ -1093,6 +1419,7 @@ impl Viewer {
         }
         t.press = self.edit.vector.press;
         t.current = self.edit.vector.current;
+        t.samples = std::mem::take(&mut self.edit.vector.samples);
         self.edit.vector = t;
         if let Some(op) = run_op {
             // The selected vector layer and the vector layer directly below it in its stack.

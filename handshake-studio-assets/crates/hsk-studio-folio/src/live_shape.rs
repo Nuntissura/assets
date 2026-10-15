@@ -18,8 +18,9 @@
 //! - Bounds marked `unknown` (angles, inner ratio, star inner radius, line length and angle,
 //!   radii) are checked for finiteness and physical domain only: `inner_ratio` `0..1`, star
 //!   `inner_radius` positive, lengths non-negative.
-//! - Only the five shapes the Studio tools build are carried (rectangle, ellipse/arc, polygon,
-//!   star, line); arc segment, rectangular grid, polar grid and spiral are not stored yet.
+//! - Nine shapes are carried: rectangle, ellipse/arc, polygon, star, line, and (lane
+//!   SMB-ILLUSTRATOR-PEN-2) arc segment, rectangular grid, polar grid and spiral; divider counts
+//!   and spiral quarter turns are bounded by Studio budgets (the spec captures no bound).
 //! - `corner_kind` `fancy` is stored (it is a captured member) but Nib refuses to build it, and
 //!   `corner_smoothing` is stored as a percent `>= 0` (no captured maximum).
 //!
@@ -40,6 +41,10 @@ pub const LIVE_RECT_MAX_PT: f64 = 16348.0;
 pub const LIVE_POLYGON_SIDES: (u32, u32) = (3, 100);
 /// STU-VEC-127 star point count hard range.
 pub const LIVE_STAR_POINTS: (u32, u32) = (3, 50);
+/// Most dividers of one grid direction (a Studio budget: the spec captures no bound).
+pub const LIVE_MAX_DIVIDERS: u32 = 1000;
+/// Most quarter turns of a spiral (a Studio budget: the spec captures no bound).
+pub const LIVE_MAX_SPIRAL_QUARTERS: u32 = 4096;
 
 /// STU-VEC-112 corner kinds (serialised as the Studio member names; the captured values are
 /// [`StudioCornerKind::capture_value`]).
@@ -115,6 +120,57 @@ pub enum StudioShapeParameters {
         length: Length,
         angle: f64,
     },
+    /// Arc segment (lane SMB-ILLUSTRATOR-PEN-2): from start to end; `slope` percent (soft
+    /// -100..=100); `closed` and `base_along_x` are the Studio reading of the captured `type` and
+    /// `base_along` popups whose members are UNKNOWN; `fill_arc` (default false).
+    ArcSegment {
+        start_x: Length,
+        start_y: Length,
+        end_x: Length,
+        end_y: Length,
+        slope: f64,
+        closed: bool,
+        base_along_x: bool,
+        fill_arc: bool,
+    },
+    /// Rectangular grid: divider counts (at most [`LIVE_MAX_DIVIDERS`]), skews in percent (soft
+    /// -500..=500), `use_outside_rectangle_as_frame` (default true), `fill_grid` (default true).
+    RectangularGrid {
+        x: Length,
+        y: Length,
+        width: Length,
+        height: Length,
+        horizontal_dividers: u32,
+        vertical_dividers: u32,
+        skew_horizontal: f64,
+        skew_vertical: f64,
+        use_outside_rectangle_as_frame: bool,
+        fill_grid: bool,
+    },
+    /// Polar grid: concentric and radial divider counts, skews in percent,
+    /// `create_compound_path_from_ellipses` (default false), `fill_grid` (default true).
+    PolarGrid {
+        center_x: Length,
+        center_y: Length,
+        radius_x: Length,
+        radius_y: Length,
+        concentric_dividers: u32,
+        radial_dividers: u32,
+        skew_radial: f64,
+        skew_angular: f64,
+        create_compound_path_from_ellipses: bool,
+        fill_grid: bool,
+    },
+    /// Spiral: `decay` = the per-turn radius ratio in percent (positive), `turns` positive with at
+    /// most [`LIVE_MAX_SPIRAL_QUARTERS`] quarter turns, winding `clockwise` on a y-down canvas.
+    Spiral {
+        center_x: Length,
+        center_y: Length,
+        radius: Length,
+        decay: f64,
+        turns: f64,
+        clockwise: bool,
+    },
 }
 
 impl StudioShapeParameters {
@@ -126,6 +182,10 @@ impl StudioShapeParameters {
             Self::Polygon { .. } => "polygon",
             Self::Star { .. } => "star",
             Self::Line { .. } => "line",
+            Self::ArcSegment { .. } => "arc_segment",
+            Self::RectangularGrid { .. } => "rectangular_grid",
+            Self::PolarGrid { .. } => "polar_grid",
+            Self::Spiral { .. } => "spiral",
         }
     }
 }
@@ -221,6 +281,40 @@ fn validate_shape(s: &StudioShapeParameters, unit: GeometryUnit, t: &str) -> Res
             length(y, unit, false, t, "y")?;
             length(l, unit, true, t, "length")?;
             angle(*a, t, "angle")
+        }
+        StudioShapeParameters::ArcSegment { start_x, start_y, end_x, end_y, slope, .. } => {
+            for (l, name) in [(start_x, "start_x"), (start_y, "start_y"), (end_x, "end_x"), (end_y, "end_y")] {
+                length(l, unit, false, t, name)?;
+            }
+            // Only a soft range is captured: the value must be finite.
+            angle(*slope, t, "slope")
+        }
+        StudioShapeParameters::RectangularGrid { x, y, width, height, horizontal_dividers, vertical_dividers, skew_horizontal, skew_vertical, .. } => {
+            length(x, unit, false, t, "x")?;
+            length(y, unit, false, t, "y")?;
+            length(width, unit, true, t, "width")?;
+            length(height, unit, true, t, "height")?;
+            field(*horizontal_dividers <= LIVE_MAX_DIVIDERS, t, "horizontal_dividers")?;
+            field(*vertical_dividers <= LIVE_MAX_DIVIDERS, t, "vertical_dividers")?;
+            angle(*skew_horizontal, t, "skew_horizontal")?;
+            angle(*skew_vertical, t, "skew_vertical")
+        }
+        StudioShapeParameters::PolarGrid { center_x, center_y, radius_x, radius_y, concentric_dividers, radial_dividers, skew_radial, skew_angular, .. } => {
+            length(center_x, unit, false, t, "center_x")?;
+            length(center_y, unit, false, t, "center_y")?;
+            length(radius_x, unit, true, t, "radius_x")?;
+            length(radius_y, unit, true, t, "radius_y")?;
+            field(*concentric_dividers <= LIVE_MAX_DIVIDERS, t, "concentric_dividers")?;
+            field(*radial_dividers <= LIVE_MAX_DIVIDERS, t, "radial_dividers")?;
+            angle(*skew_radial, t, "skew_radial")?;
+            angle(*skew_angular, t, "skew_angular")
+        }
+        StudioShapeParameters::Spiral { center_x, center_y, radius, decay, turns, .. } => {
+            length(center_x, unit, false, t, "center_x")?;
+            length(center_y, unit, false, t, "center_y")?;
+            length(radius, unit, true, t, "radius")?;
+            field(decay.is_finite() && *decay > 0.0, t, "decay")?;
+            field(turns.is_finite() && *turns > 0.0 && *turns * 4.0 <= f64::from(LIVE_MAX_SPIRAL_QUARTERS), t, "turns")
         }
     }
 }

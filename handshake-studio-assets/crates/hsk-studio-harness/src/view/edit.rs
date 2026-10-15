@@ -51,10 +51,19 @@ pub enum Tool {
     Polygon,
     Star,
     Line,
+    /// Lane SMB-ILLUSTRATOR-PEN-2.
+    Curvature,
+    Pencil,
+    Knife,
+    ShapeBuilder,
+    ArcSegment,
+    RectangularGrid,
+    PolarGrid,
+    Spiral,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [
+    pub const ALL: [Tool; 22] = [
         Tool::View,
         Tool::RectSelect,
         Tool::EllipseSelect,
@@ -69,6 +78,14 @@ impl Tool {
         Tool::Polygon,
         Tool::Star,
         Tool::Line,
+        Tool::Curvature,
+        Tool::Pencil,
+        Tool::Knife,
+        Tool::ShapeBuilder,
+        Tool::ArcSegment,
+        Tool::RectangularGrid,
+        Tool::PolarGrid,
+        Tool::Spiral,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -86,6 +103,14 @@ impl Tool {
             Tool::Polygon => "polygon",
             Tool::Star => "star",
             Tool::Line => "line",
+            Tool::Curvature => "curvature",
+            Tool::Pencil => "pencil",
+            Tool::Knife => "knife",
+            Tool::ShapeBuilder => "shape_builder",
+            Tool::ArcSegment => "arc",
+            Tool::RectangularGrid => "rectangular_grid",
+            Tool::PolarGrid => "polar_grid",
+            Tool::Spiral => "spiral",
         }
     }
     pub fn label(self) -> &'static str {
@@ -104,6 +129,14 @@ impl Tool {
             Tool::Polygon => "Polygon",
             Tool::Star => "Star",
             Tool::Line => "Line",
+            Tool::Curvature => "Curvature",
+            Tool::Pencil => "Pencil",
+            Tool::Knife => "Knife",
+            Tool::ShapeBuilder => "Shape builder",
+            Tool::ArcSegment => "Arc",
+            Tool::RectangularGrid => "Grid",
+            Tool::PolarGrid => "Polar grid",
+            Tool::Spiral => "Spiral",
         }
     }
 }
@@ -294,7 +327,7 @@ impl Viewer {
         self.edit.tool = tool;
         self.edit.gesture.clear();
         self.edit.vector.press = None;
-        if tool != Tool::Pen {
+        if !matches!(tool, Tool::Pen | Tool::Curvature) {
             self.edit.vector.pen_layer = None;
         }
         if tool == Tool::Text {

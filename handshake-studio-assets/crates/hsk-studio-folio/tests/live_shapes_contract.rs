@@ -59,6 +59,15 @@ fn live_shapes_round_trip_and_refuse_typed() {
     assert_eq!(ok(json!({"shape_kind":"ellipse","center_x":pt(0.0),"center_y":pt(0.0),"radius_x":pt(9.0),"radius_y":pt(3.0),"start_angle":0.0,"end_angle":270.0,"inner_ratio":0.0})), Ok(()));
     assert_eq!(ok(json!({"shape_kind":"line","x":pt(0.0),"y":pt(0.0),"length":pt(9.0),"angle":45.0})), Ok(()));
     assert_eq!(ok(json!({"shape_kind":"polygon","center_x":pt(0.0),"center_y":pt(0.0),"radius":pt(1.0),"side_count":100,"inset_percentage":100.0})), Ok(()));
+    // Lane SMB-ILLUSTRATOR-PEN-2 kinds: arc segment, rectangular grid, polar grid, spiral.
+    assert_eq!(ok(json!({"shape_kind":"arc_segment","start_x":pt(0.0),"start_y":pt(0.0),"end_x":pt(9.0),"end_y":pt(3.0),"slope":50.0,"closed":false,"base_along_x":true,"fill_arc":false})), Ok(()));
+    assert_eq!(ok(json!({"shape_kind":"rectangular_grid","x":pt(0.0),"y":pt(0.0),"width":pt(9.0),"height":pt(3.0),"horizontal_dividers":5,"vertical_dividers":1000,"skew_horizontal":-500.0,"skew_vertical":0.0,"use_outside_rectangle_as_frame":true,"fill_grid":true})), Ok(()));
+    assert_eq!(ok(json!({"shape_kind":"polar_grid","center_x":pt(0.0),"center_y":pt(0.0),"radius_x":pt(9.0),"radius_y":pt(3.0),"concentric_dividers":5,"radial_dividers":6,"skew_radial":0.0,"skew_angular":0.0,"create_compound_path_from_ellipses":false,"fill_grid":true})), Ok(()));
+    assert_eq!(ok(json!({"shape_kind":"spiral","center_x":pt(0.0),"center_y":pt(0.0),"radius":pt(9.0),"decay":80.0,"turns":2.5,"clockwise":true})), Ok(()));
+    let target = |v: Value| ok(v).expect_err("refused").target;
+    assert!(target(json!({"shape_kind":"rectangular_grid","x":pt(0.0),"y":pt(0.0),"width":pt(9.0),"height":pt(3.0),"horizontal_dividers":1001,"vertical_dividers":0,"skew_horizontal":0.0,"skew_vertical":0.0,"use_outside_rectangle_as_frame":true,"fill_grid":true})).ends_with("horizontal_dividers"));
+    assert!(target(json!({"shape_kind":"spiral","center_x":pt(0.0),"center_y":pt(0.0),"radius":pt(9.0),"decay":0.0,"turns":2.5,"clockwise":true})).ends_with("decay"));
+    assert!(target(json!({"shape_kind":"spiral","center_x":pt(0.0),"center_y":pt(0.0),"radius":pt(9.0),"decay":80.0,"turns":1025.0,"clockwise":true})).ends_with("turns"));
     // Bounds (STU-VEC-127) and domains.
     let code = |shape: Value| ok(shape).expect_err("refused");
     assert_eq!(code(json!({"shape_kind":"polygon","center_x":pt(0.0),"center_y":pt(0.0),"radius":pt(1.0),"side_count":101,"inset_percentage":0.0})).target, format!("{}/side_count", id("SLYR", 5)));

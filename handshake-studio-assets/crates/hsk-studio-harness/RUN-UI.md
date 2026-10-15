@@ -42,8 +42,14 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
   the pathfinder box applies unite, minus front, intersect, exclude, divide, trim, merge or crop to
   the selected vector layer and the vector layer below it), Rectangle, Rounded, Ellipse shape,
   Polygon, Star, Line (drag; polygon and star from the centre; Shift = square / circle / 45
-  degrees; fill, stroke, width, corner radius, sides, points and inner radius in the row). Every
-  vector edit is one Undo step. The selected vector layer shows its path, anchors and handles.
+  degrees; fill, stroke, width, corner radius, sides, points and inner radius in the row). Lane
+  SMB-ILLUSTRATOR-PEN-2: Curvature (click points the curve passes through, Alt-click = corner,
+  click the first point to close), Pencil (freehand drag fitted and smoothed; fidelity 0-4; ends
+  within 4 px close), Knife (drag across filled vector layers: each is cut into separate closed
+  regions), Shape builder (drag across overlapping regions of the stack's vector layers to merge
+  them, Alt to delete them), Arc, Grid, Polar grid, Spiral (drag; parameters in the row). Every
+  vector edit is one Undo step and a path edit keeps the layer (chronicle `vector_paths`). The
+  selected vector layer shows its path, anchors and handles.
 - Left: layer tree in stack order. Buttons New (empty raster layer above the selection), Dup,
   Del (a group with its contents), Up, Down, Group, Ungroup: each is one undoable chronicle
   transaction (`placement` property). The checkbox shows/hides a layer through the session
@@ -88,6 +94,9 @@ vector tools `pen_point(x, y, drag, close_radius)`, `pen_end`, `direct_hit`, `di
 constraint, break_mirroring, radius)`, `edit_path(layer, PathEdit)` (insert / delete / convert /
 move anchor / move handle / bend / scissors / join / reverse), `draw_shape(ShapeKind, a, b, shift)`,
 `live_shape`, `set_live_shape`, `expand_shape`, `pathfinder_layers(PathfinderOp, layers)`,
+`curvature_point(x, y, corner, close_radius)`, `pencil_stroke(samples)`, `knife_cut(points)`,
+`shape_builder_layers(layers, gesture, delete)`, `stack_vector_layers`, `edit_path(layer,
+PathEdit::Corner { at, kind: Round | InvertedRound | Chamfer, radius })`,
 `offset_path_layer`, `outline_stroke_layer`, `vector_path`, `vector_entry`, `set_vector_tool` (CLI: `studio-harness develop
 SOURCE OUT --png|--jpeg [--adjust CONTROL VALUE]...`). `Viewer::state_json()` projects
 the document, frame, receipt, run operations and `edit` (tool, combine, brush, selection bounds,
@@ -116,10 +125,8 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
 - A duplicated raster layer carries its whole tile list in one chronicle value (64 KiB value
   budget, about 150-200 tiles; larger layers are refused `budget_exceeded`).
 - Large documents render synchronously (the window pauses while rendering).
-- Vector layers: chronicle has no property for a vector layer's paths, so every path edit replaces
-  the layer by a successor with a new id in one transaction (name, place and appearance kept). The
-  path records live in the `vector` entry, which the session cannot save yet (its document entry
-  tokens are `selection`, `text`, `develop`): until the session carries `vector`, saving a document
-  with vector layers is refused (`vector_entry_not_persistable`) instead of losing the geometry.
-  Vector networks, the curvature, pencil, width, knife and shape-builder tools, arc segment, grids
-  and spiral are not built; Illustrator parity of every tool is UNVERIFIED.
+- Vector layers: path records live in the session entry `vector` (saved with the package); a
+  path edit is one chronicle `vector_paths` write (the layer keeps its id). Knife, shape builder
+  and pathfinder results are polygons (curves flattened); the knife leaves a 0.01 px kerf.
+  Vector networks (STU-VEC-001/008), the width, reshape and blob-brush tools and the `fancy`
+  corner are not built; Illustrator parity of every tool is UNVERIFIED.

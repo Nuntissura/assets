@@ -165,7 +165,7 @@ fn shape_tools_draw_live_shapes_and_parameters_stay_editable() {
                     assert!((length.value - 200.0_f64.sqrt()).abs() < 1e-9 && (angle - 45.0).abs() < 1e-9);
                     "line"
                 }
-                StudioShapeParameters::Ellipse { .. } => "ellipse",
+                other => other.kind(),
             }
         })
         .collect();
