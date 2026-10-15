@@ -24,6 +24,7 @@ files:
 - product/kumihimo-render-bridge/Cargo.toml
 - product/third-party/eframe-0.33.3/
 - product/third-party/egui-wgpu-0.33.3/
+- product/kumihimo-egui/src/demo.rs
 dependencies:
 - Published standalone desktop source 1e37e0aa49ce960306be0ef0fe2e432b73e85589
 spec_refs:
@@ -160,3 +161,37 @@ source_dependency_contract:
     digest verification required before patch admission; resolver/build cache PENDING
   source_materialization: Exact source/archive acquisition is admitted source work, not Cargo fetch; no nested Git
     or unrelated dependency update
+bounded_original_wp012_remediation:
+  decision_id: WP012-KUMIHIMO-ORIGINAL-CHROME-DEMO-REPAIR-20261015
+  authority: MT-175.json#/kumihimo_standalone_source_admission_20261014/original_chrome_demo_repair_20261015
+  authority_sha256: 78ff9349d9485bc9bfee4afd9634e478d585baebae837a6e840ed3a4468d8053
+  status: SOURCE_ONLY_IMPLEMENTATION_RELEASED_HOST_ADOPTION_HELD
+  basis: Carry existing WP-KUM-012 compact reachability/readability and demo fixture remediation; original WP022
+    paint-only scope/history remains unchanged outside these exact admitted repairs
+  active_path_leases_override_previous_writer_groups_for_these_paths_only: true
+  writers:
+    native_source:
+      path: product/kumihimo-egui/src/chrome.rs
+      before_sha256: 6f8bd87471579d47a2599e4936e337278f476bf530fbcddde63a6c0b42131394
+      scope: Only existing globalPanes/frame/tool-header paint/hit allocation, placement and clipping for four observed
+        overlaps
+    sdk_frame:
+      path: product/kumihimo-egui/src/demo.rs
+      before_sha256: 759fe678f6d925a3c150d8412b78c4a731cfab2b48a799c8a01d99980fe1c8e1
+      scope: Only decorative tiny-clip marker bounding or omission; preserve valid18-DIP inset
+  checker: sdk_producer independent dependency/adversarial/pixel review; lead owns integration/dependency/callers/Git
+  preserve:
+  - canonical frame/provider/slot geometry
+  - entity IDs, commands and F6 reveal
+  - input/state/theme tokens
+  - strict RenderSlot::local_point
+  - Ready/provenance and native negative obligations
+  - all69 prior bindings, three locks and original proof/failure/closure history
+  read_only:
+  - capture.rs and capture_host
+  - cold-firstframe readiness mechanism
+  - tests, manifests, locks, native and SDK sources
+  execution: No Cargo/test/probe/rerender or phase07 retry/08 admitted; actual changed-input proof mapping and exact
+    Primary phase/slot required
+  expansion: If one admitted source file is insufficient, report exact evidenced additional path before writing
+    it

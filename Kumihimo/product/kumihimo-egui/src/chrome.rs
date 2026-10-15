@@ -761,6 +761,95 @@ fn frame_menu(
         }
     });
 }
+fn chrome_button_width(ctx: &egui::Context, label: &str) -> f32 {
+    let style = ctx.style();
+    ctx.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                label.into(),
+                egui::TextStyle::Button.resolve(&style),
+                style.visuals.text_color(),
+            )
+            .size()
+            .x
+    }) + 2.0 * style.spacing.button_padding.x
+}
+fn header_without_workspace_controls(rect: egui::Rect, controls: egui::Rect) -> egui::Rect {
+    if !rect.intersect(controls).is_positive() {
+        return rect;
+    }
+    let left = (controls.left() - rect.left()).max(0.0);
+    let right = (rect.right() - controls.right()).max(0.0);
+    if left >= right {
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + left, rect.bottom()))
+    } else {
+        egui::Rect::from_min_max(egui::pos2(rect.right() - right, rect.top()), rect.max)
+    }
+}
+fn frame_header_width(ctx: &egui::Context, frame: FrameId, compact: bool) -> f32 {
+    let style = ctx.style();
+    let drag = ctx.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(
+                format!("⠿ {}", frame.raw()),
+                egui::TextStyle::Body.resolve(&style),
+                style.visuals.text_color(),
+            )
+            .size()
+            .x
+    });
+    (drag
+        + chrome_button_width(ctx, if compact { "⋮" } else { "Frame" })
+        + chrome_button_width(ctx, if compact { "Tabs" } else { "Tabs / groups" })
+        + 2.0 * style.spacing.item_spacing.x)
+        .ceil()
+}
+fn frame_header_fits(
+    ctx: &egui::Context,
+    frame: &workspace::FrameProjection,
+    surface: SurfaceBinding,
+    controls: egui::Rect,
+    state: &ChromeState,
+) -> bool {
+    if frame.settings.profile == ChromeProfile::Hidden && frame.usable.y() == frame.content.y()
+        || frame.settings.profile == ChromeProfile::Contextual
+            && !state.revealed.contains(&frame.frame)
+            && !ctx.input(|i| {
+                i.pointer
+                    .hover_pos()
+                    .is_some_and(|p| to_egui(frame.bounds).contains(p))
+            })
+    {
+        return false;
+    }
+    let bounds = to_egui(frame.content);
+    let header = egui::Rect::from_min_size(
+        bounds.min,
+        egui::vec2(
+            bounds.width(),
+            frame.settings.header_height.min(bounds.height()),
+        ),
+    )
+    .intersect(to_egui(frame.clip))
+    .intersect(to_egui(surface.bounds));
+    let header = header_without_workspace_controls(header, controls);
+    header.width() >= frame_header_width(ctx, frame.frame, true)
+        && header.height() >= ctx.style().spacing.interact_size.y
+}
+fn record_header(
+    report: &mut FrameReport,
+    response: &egui::Response,
+    id: String,
+    label: String,
+    target: Option<ViewId>,
+) {
+    let rect = response.rect.intersect(response.interact_rect);
+    if rect.is_positive() {
+        let mut response = response.clone();
+        response.rect = rect;
+        record(report, &response, id, label, target);
+    }
+}
 pub fn draw(
     ctx: &egui::Context,
     controller: &mut Controller,
@@ -794,17 +883,67 @@ pub fn draw(
     if ctx.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused) {
         state.preview.take();
     }
+    let workspace_header = projection
+        .frames
+        .iter()
+        .filter(|frame| {
+            frame.settings.profile != ChromeProfile::Hidden
+                && (frame.settings.profile != ChromeProfile::Contextual
+                    || state.revealed.contains(&frame.frame)
+                    || ctx.input(|i| {
+                        i.pointer
+                            .hover_pos()
+                            .is_some_and(|p| to_egui(frame.bounds).contains(p))
+                    }))
+        })
+        .map(|frame| {
+            let bounds = to_egui(frame.content);
+            egui::Rect::from_min_size(
+                bounds.min,
+                egui::vec2(
+                    bounds.width(),
+                    frame.settings.header_height.min(bounds.height()),
+                ),
+            )
+            .intersect(to_egui(frame.clip))
+            .intersect(to_egui(surface.bounds))
+        })
+        .filter(|rect| rect.is_positive())
+        .max_by(|a, b| {
+            a.width()
+                .total_cmp(&b.width())
+                .then_with(|| b.top().total_cmp(&a.top()))
+        })
+        .unwrap_or_else(|| to_egui(surface.bounds));
+    let style = ctx.style();
+    let workspace_width =
+        chrome_button_width(ctx, "Panes / reveal (F6)").min(workspace_header.width());
+    let workspace_controls = egui::Rect::from_min_size(
+        egui::pos2(
+            workspace_header.right() - workspace_width,
+            workspace_header.top(),
+        ),
+        egui::vec2(workspace_width, style.spacing.interact_size.y),
+    );
     egui::Area::new(egui::Id::new((surface.viewport, "workspace-controls")))
         .order(egui::Order::Foreground)
+        .default_size(workspace_controls.size())
         .fixed_pos(egui::pos2(
-            (surface.bounds.right() as f32 - 170.0).max(surface.bounds.x() as f32),
-            surface.bounds.y() as f32,
+            workspace_controls.left(),
+            workspace_controls.top(),
         ))
         .constrain_to(to_egui(surface.bounds))
+        .constrain(false)
         .show(ctx, |ui| {
+            ui.set_width(workspace_controls.width());
             ui.set_clip_rect(ui.clip_rect().intersect(to_egui(surface.bounds)));
             let mut dismissed = false;
-            let panes_menu = ui.menu_button("Panes / reveal (F6)", |ui| {
+            let (panes_menu, _) = egui::containers::menu::MenuButton::from_button(
+                egui::Button::new("Panes / reveal (F6)")
+                    .min_size(workspace_controls.size())
+                    .truncate(),
+            )
+            .ui(ui, |ui| {
                 if button(
                     ui,
                     "workspace/panes-menu/dismiss",
@@ -838,7 +977,27 @@ pub fn draw(
                                     owner.map(|f| controller.snapshot().frames[&f].workspace);
                             }
                         }
-                        ui.menu_button("Tabs", |ui| {
+                        let fallback =
+                            projection
+                                .frames
+                                .iter()
+                                .find(|p| p.frame == frame)
+                                .filter(|p| {
+                                    !frame_header_fits(ctx, p, surface, workspace_controls, state)
+                                });
+                        if let Some(p) = fallback {
+                            let response = ui.menu_button("Frame", |ui| {
+                                frame_menu(ui, p, controller, surface, host, state, size, report);
+                            });
+                            record_header(
+                                report,
+                                &response.response,
+                                format!("frame/{}/menu", frame.raw()),
+                                "Frame menu".into(),
+                                None,
+                            );
+                        }
+                        let tabs = ui.menu_button("Tabs", |ui| {
                             let workspace = controller.snapshot().frames[&frame].workspace;
                             let colors = state
                                 .resolve(&policy, workspace, surface.viewport)
@@ -846,18 +1005,27 @@ pub fn draw(
                                 .unwrap_or(false);
                             tab_list(ui, frame, controller, host, state, size, colors, report);
                         });
+                        if fallback.is_some() {
+                            record_header(
+                                report,
+                                &tabs.response,
+                                format!("frame/{}/tabs-menu", frame.raw()),
+                                "Tabs and groups menu".into(),
+                                None,
+                            );
+                        }
                     });
                 }
             });
             record(
                 report,
-                &panes_menu.response,
+                &panes_menu,
                 "workspace/panes-menu".into(),
                 "Panes / reveal (F6)".into(),
                 None,
             );
             if dismissed {
-                panes_menu.response.request_focus();
+                panes_menu.request_focus();
                 state.latest_announcement = Some((
                     surface.viewport,
                     "Pane list dismissed; logical focus returned to Panes / reveal (F6)".into(),
@@ -871,7 +1039,6 @@ pub fn draw(
                             let frame = egui::Frame::popup(ui.style())
                                 .fill(ui.visuals().window_fill().to_opaque());
                             let width = (panes_menu
-                                .response
                                 .rect
                                 .width()
                                 .max(120.0)
@@ -1001,6 +1168,10 @@ pub fn draw(
                 egui::Rect::from_min_size(to_egui(frame.content).min, egui::vec2(26.0, 24.0))
                     .intersect(to_egui(frame.content))
                     .intersect(to_egui(frame.clip));
+            let rect = header_without_workspace_controls(rect, workspace_controls);
+            if !rect.is_positive() {
+                continue;
+            }
             let mut ui = egui::Ui::new(
                 ctx.clone(),
                 egui::Id::new((surface.viewport, frame.frame.raw(), "reveal")),
@@ -1019,7 +1190,7 @@ pub fn draw(
                     format!("Reveal frame {} controls", frame.frame.raw()),
                 )
             });
-            record(
+            record_header(
                 report,
                 &response,
                 format!("frame/{}/reveal", frame.frame.raw()),
@@ -1093,8 +1264,11 @@ pub fn draw(
         }
         let bounds = to_egui(frame.content);
         let height = settings.header_height.min(bounds.height());
-        let header = egui::Rect::from_min_size(bounds.min, egui::vec2(bounds.width(), height));
-        if header.intersect(to_egui(frame.clip)).is_negative() {
+        let header = egui::Rect::from_min_size(bounds.min, egui::vec2(bounds.width(), height))
+            .intersect(to_egui(frame.clip))
+            .intersect(to_egui(surface.bounds));
+        let header = header_without_workspace_controls(header, workspace_controls);
+        if !frame_header_fits(ctx, frame, surface, workspace_controls, state) {
             continue;
         }
         let mut ui = egui::Ui::new(
@@ -1124,37 +1298,30 @@ pub fn draw(
                     format!("Move frame {}", frame.frame.raw()),
                 )
             });
-            record(
+            record_header(
                 report,
                 &drag,
                 format!("frame/{}/drag", frame.frame.raw()),
                 format!("Move frame {}", frame.frame.raw()),
                 None,
             );
-            let frame_menu_response = ui.menu_button(
-                if settings.profile == ChromeProfile::Compact {
-                    "⋮"
-                } else {
-                    "Frame"
-                },
-                |ui| {
-                    frame_menu(ui, frame, controller, surface, host, state, size, report);
-                },
-            );
-            record(
+            let compact = settings.profile == ChromeProfile::Compact
+                || header.width() < frame_header_width(ctx, frame.frame, false);
+            let frame_menu_response = ui.menu_button(if compact { "⋮" } else { "Frame" }, |ui| {
+                frame_menu(ui, frame, controller, surface, host, state, size, report);
+            });
+            record_header(
                 report,
                 &frame_menu_response.response,
                 format!("frame/{}/menu", frame.frame.raw()),
                 "Frame menu".into(),
                 None,
             );
-            let (tabs_menu_response, _) = egui::containers::menu::MenuButton::new(
-                if settings.profile == ChromeProfile::Compact {
-                    "Tabs"
-                } else {
-                    "Tabs / groups"
-                },
-            )
+            let (tabs_menu_response, _) = egui::containers::menu::MenuButton::new(if compact {
+                "Tabs"
+            } else {
+                "Tabs / groups"
+            })
             .config(
                 egui::containers::menu::MenuConfig::new()
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
@@ -1171,7 +1338,7 @@ pub fn draw(
                     report,
                 );
             });
-            record(
+            record_header(
                 report,
                 &tabs_menu_response,
                 format!("frame/{}/tabs-menu", frame.frame.raw()),
@@ -1181,10 +1348,15 @@ pub fn draw(
             if recreate {
                 ui.label("Surface recreation required");
             }
-            if settings.profile == ChromeProfile::Full {
+            if settings.profile == ChromeProfile::Full
+                && ui.available_width() >= chrome_button_width(ctx, source)
+            {
                 ui.label(egui::RichText::new(source).small());
             }
-            let remaining = (ui.available_width() / 95.0).floor().max(1.0) as usize;
+            let remaining = (ui.available_width() / 95.0).floor().max(0.0) as usize;
+            if remaining == 0 {
+                return;
+            }
             let query = TabQuery {
                 frame: Some(frame.frame),
                 limit: remaining.min(size),
@@ -1215,12 +1387,21 @@ pub fn draw(
             ));
             continue;
         }
+        let bounds = header_without_workspace_controls(
+            to_egui(tool.clip)
+                .intersect(to_egui(tool.bounds))
+                .intersect(to_egui(surface.bounds)),
+            workspace_controls,
+        );
+        if !bounds.is_positive() {
+            continue;
+        }
         egui::Area::new(egui::Id::new((surface.viewport, "tool", tool.tool.raw())))
             .order(egui::Order::Foreground)
-            .fixed_pos(to_egui(tool.bounds).min)
+            .fixed_pos(bounds.min)
             .show(ctx, |ui| {
-                ui.set_clip_rect(to_egui(tool.clip));
-                ui.set_width(tool.bounds.width() as f32);
+                ui.set_clip_rect(bounds);
+                ui.set_width(bounds.width());
                 let layout = if record_tool.policy.orientation == kumihimo_core::Axis::Vertical {
                     egui::Layout::top_down(egui::Align::Min)
                 } else {
@@ -1235,7 +1416,7 @@ pub fn draw(
                             format!("Move tool {}", tool.tool.raw()),
                         )
                     });
-                    record(
+                    record_header(
                         report,
                         &drag,
                         format!("tool/{}/drag", tool.tool.raw()),
@@ -1247,18 +1428,33 @@ pub fn draw(
                         tool.tool.raw(),
                         record_tool.target.view.raw()
                     );
+                    let action_width =
+                        if record_tool.policy.orientation == kumihimo_core::Axis::Vertical {
+                            ui.available_width()
+                        } else {
+                            (ui.available_width()
+                                - chrome_button_width(ctx, "Dock tool")
+                                - ui.spacing().item_spacing.x)
+                                .max(0.0)
+                        };
                     let response = ui
-                        .add_enabled(
+                        .add_enabled_ui(
                             tool.presentation.applicable && tool.presentation.usable,
-                            egui::Button::new(&label),
+                            |ui| {
+                                ui.add_sized(
+                                    egui::vec2(action_width, ui.spacing().interact_size.y),
+                                    egui::Button::new(&label).truncate(),
+                                )
+                            },
                         )
+                        .inner
                         .on_hover_text(format!(
                             "Pinned target resource {}; origin {}; host owner {}",
                             record_tool.target.resource.raw(),
                             record_tool.origin.raw(),
                             record_tool.owner.raw()
                         ));
-                    record(
+                    record_header(
                         report,
                         &response,
                         format!("tool/{}/action", tool.tool.raw()),
@@ -1270,7 +1466,10 @@ pub fn draw(
                             report.reject(e);
                         }
                     }
-                    let dock = ui.menu_button("Dock tool", |ui| {
+                    let (dock, _) = egui::containers::menu::MenuButton::from_button(
+                        egui::Button::new("Dock tool").truncate(),
+                    )
+                    .ui(ui, |ui| {
                         let offset = page(
                             ui,
                             state,
@@ -1306,9 +1505,9 @@ pub fn draw(
                             }
                         }
                     });
-                    record(
+                    record_header(
                         report,
-                        &dock.response,
+                        &dock,
                         format!("tool/{}/dock-menu", tool.tool.raw()),
                         "Dock tool".into(),
                         Some(record_tool.target.view),

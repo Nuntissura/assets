@@ -266,10 +266,24 @@ impl DemoHost {
             .documents
             .get(&slot.resource)
             .ok_or(AdapterError::Stale("mark resource"))?;
-        let point = egui::pos2(
-            (slot.bounds.x() + slot.bounds.width() - 18.0) as f32,
-            (slot.bounds.y() + 18.0) as f32,
+        let clip = to_egui(slot.clip);
+        let mut point = egui::pos2(
+            ((slot.bounds.x() + slot.bounds.width() - 18.0) as f32)
+                .clamp(clip.left(), clip.right()),
+            ((slot.bounds.y() + 18.0) as f32).clamp(clip.top(), clip.bottom()),
         );
+        if (point.x as f64) < slot.clip.x() {
+            point.x = (slot.clip.x() as f32).next_up();
+        }
+        if (point.x as f64) > slot.clip.right() {
+            point.x = (slot.clip.right() as f32).next_down();
+        }
+        if (point.y as f64) < slot.clip.y() {
+            point.y = (slot.clip.y() as f32).next_up();
+        }
+        if (point.y as f64) > slot.clip.bottom() {
+            point.y = (slot.clip.bottom() as f32).next_down();
+        }
         slot.local_point(point)?;
         Ok((
             point,

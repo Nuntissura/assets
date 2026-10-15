@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-022-external-native-embedding-v1
-generation: 17
+generation: 19
 phase: active
 owner: 01a13bc6-31e0-7d41-8ea8-805ce8c65bcd
 changed_files:
@@ -24,6 +24,7 @@ changed_files:
 - product/kumihimo-render-bridge/Cargo.toml
 - product/third-party/eframe-0.33.3
 - product/third-party/egui-wgpu-0.33.3
+- product/kumihimo-egui/src/demo.rs
 proof:
 - kind: published_preparation
   revision: 4b528d20b7a1e11cc175a19bc24946d0ffd75d47
@@ -420,12 +421,50 @@ proof:
   physical_compiler_slot: PRIMARY_RELEASED_AFTER_ACTUAL_IDENTITY_CLOSURE
   retry: No07 rerun or phase08 until scoped classification and exact Primary admission
   native: NOT_RUN
+- kind: bounded_original_wp012_remediation_source_release
+  decision_id: WP012-KUMIHIMO-ORIGINAL-CHROME-DEMO-REPAIR-20261015
+  authority: MT-175.json#/kumihimo_standalone_source_admission_20261014/original_chrome_demo_repair_20261015
+  authority_sha256: 78ff9349d9485bc9bfee4afd9634e478d585baebae837a6e840ed3a4468d8053
+  status: SOURCE_IMPLEMENTED_INDEPENDENT_SOURCE_ACCEPTED_FRESH_RUNTIME_OPEN
+  original_writers_settled: All existing source helpers completed before exclusive chrome/demo leases resumed; no
+    active source writer or compiler
+  before_head: a870cb35bf77f66c676d7c01cab5722b01ccd529
+  before_paths:
+    native_source:
+      path: product/kumihimo-egui/src/chrome.rs
+      before_sha256: 6f8bd87471579d47a2599e4936e337278f476bf530fbcddde63a6c0b42131394
+      scope: Only existing globalPanes/frame/tool-header paint/hit allocation, placement and clipping for four observed
+        overlaps
+    sdk_frame:
+      path: product/kumihimo-egui/src/demo.rs
+      before_sha256: 759fe678f6d925a3c150d8412b78c4a731cfab2b48a799c8a01d99980fe1c8e1
+      scope: Only decorative tiny-clip marker bounding or omission; preserve valid18-DIP inset
+  runtime_acceptance: OPEN; source-only release does not authorize proof execution or host adoption
+  source_review:
+    checker: sdk_producer
+    chrome_sha256: f366f2c6d18e8ab1fcc62fb7dec05bdf152d167263449a62df043a151dd15851
+    demo_sha256: 6f5298564493ccb90faeb8954e079d86317699d406819f5c78df97fac37c6ce2
+    verdict: SOURCE_ACCEPTED; checker independently verified final whitespace-only rebind
+    scope: Only chrome.rs and demo.rs product changes; no untracked product files; all3 locks unchanged
+  resolved_source_findings:
+  - Canonical f64 clip rounding requires inward representable f32 marker adjustment
+  - Tool header anchor uses reduced bounds.min
+  - Area constrain_to precedes constrain(false) to avoid setter override
+  affected_proof:
+    phase03: Fresh default all-target compile required; both modules unconditional
+    phase04: Fresh all-feature all-target compile required
+    phase05: Prior SDK-only four-test proof retained where unchanged inputs disjoint
+    phase06: Fresh existing adapter/manual/native-app suites required for changed shared chrome/demo
+    phase07_08: Fresh existing dark/light full capture workflow; original80 images retained as prior-source evidence
+    phase09_10: Original native/UIA and eframe native proof remain separate and open
+    execution: Exact Primary phase/slot still required; no Cargo or rerender run
+  formatting: Pinned rustfmt chrome whole-file check0; demo changed marker matches formatter; unrelated immutable
+    demo baseline formatting retained
 blockers:
-- Primary finite original Assets scope/contract decision required for verified preexisting shared-chrome overlap;
-  Diagnostics shrink rejection and static-idle first-frame classification pending; phase08 not authorized; light/native
-  acceptance OPEN
-next_action: Publish actual07 accepted numeric/closure and inspected visual findings; await sole Diagnostics remaining
-  exact classification and Primary finite original-source admission; no geometry edits/rerender/phase08
+- Bounded chrome/demo source implemented and source-reviewed; fresh compile, interaction and pixels OPEN; exact
+  Primary phase/slot required; host adoption held
+next_action: Publish scoped source checkpoint and70-file candidate binding, hand exact affected proof map to Primary;
+  execute only separately granted phase
 source_freeze:
   native_worker: frozen_after_phase04_u8_phase_snapshot_remediation
   theme_worker: frozen
@@ -438,7 +477,7 @@ source_freeze:
     product/kumihimo-egui/src/lib.rs: 67bd502b173c30d06022e902fa484b976356c682d30398946937bb80ba6345b1
     product/kumihimo-egui/src/native.rs: 045da16ac587899de05427b6aa0eee44e71a895d1608c023f3689c38fcfd54c7
     product/kumihimo-egui/src/window_slots.rs: ca22bace1b37f5cf935020179143c626edac48716ec477182439ea06aa4a4384
-    product/kumihimo-egui/src/chrome.rs: 6f8bd87471579d47a2599e4936e337278f476bf530fbcddde63a6c0b42131394
+    product/kumihimo-egui/src/chrome.rs: f366f2c6d18e8ab1fcc62fb7dec05bdf152d167263449a62df043a151dd15851
     product/kumihimo-egui/src/input.rs: 46aad2f5866bb64aceaa5850845f7089d9da4bab4aa906d4fadb9c1e898bcb0a
     product/kumihimo-egui/src/navigation.rs: 54eaed5a5a96a282c8259dd6b6800f9bace6baf14870f9935e85a62eb3b73172
     product/kumihimo-egui/tests/adapter_contracts.rs: 9187c43ab25fbedda56ac1d9a52ddb185f418c8588ec86bf82977e0b664c2bda
@@ -446,14 +485,21 @@ source_freeze:
     product/README.md: 34461a7c621398ab8d664f58f878e64f65914451cc98b1b110fdf73681a23e66
     product/kumihimo-egui/tests/native_app_contracts.rs: c43f8ef1a5d35b08fffbc7f6b3debe32f1a9f139eb5164fb19f69aeb2d09d1b0
     product/kumihimo-egui/examples/native_probe.rs: 9497ec15f4b760339c158e1ad59599db44d0a44685a017859e835bee95468b0b
-  runtime: OFFSCREEN_DARK_CAPTURE_RUN_NATIVE_NOT_RUN
-  compiler: PHASE04_ALL_FEATURE_ALL_TARGET_CARGO0_OUTER0_INDEPENDENTLY_ACCEPTED
+    product/kumihimo-egui/src/demo.rs: 6f5298564493ccb90faeb8954e079d86317699d406819f5c78df97fac37c6ce2
+  runtime: NEW_CHROME_DEMO_CANDIDATE_NOT_RUN; historical dark capture retained
+  compiler: NEW_CHROME_DEMO_CANDIDATE_NOT_COMPILED; prior compiler proof retained for old inputs
   eframe_producer: SOURCE_IMPLEMENTED_NATIVE_PROOF_PENDING
   sdk_expansion: FROZEN_SOURCE_WITH_RESOLVED_PHASE01_LOCK_OUTPUT
   sdk_frame_worker: frozen
   sdk_producer_worker: frozen_after_byte_lease_and_cancelled_map_polling_repairs
   provenance: All 45 original SDK files reread; only six admitted sources changed; other 39 hashes retained
-  input_manifest: .local/wp022-phase07-reviewed-input.json
+  input_manifest: New70-file candidate pending source publication; historical69 .local/wp022-phase07-reviewed-input.json
+    retained
   sdk_owning_tests: PHASE05_FOUR_PASSED_CARGO0_HISTORICAL_WRAPPER_FAILED_INDEPENDENT_LATE_CLOSURE
-  adapter_contracts: PHASE06_32_ADAPTER_3_MANUAL_7_NATIVE_APP_PASSED_CARGO0_INDEPENDENT_LATE_CLOSURE
+  adapter_contracts: NEW_CHROME_DEMO_CANDIDATE_NOT_RUN; prior42 tests retained for old inputs
   dark_capture: 80_PNG_82_JSON_ACTUALLY_INSPECTED_VISUAL_ACCEPTANCE_OPEN
+  bounded_remediation:
+    chrome: SOURCE_ACCEPTED_FROZEN_AFTER_WHITESPACE_ONLY_FORMATTING
+    demo: SOURCE_ACCEPTED_FROZEN
+    checker: sdk_producer independent
+    all_other_sources: FROZEN_READ_ONLY
