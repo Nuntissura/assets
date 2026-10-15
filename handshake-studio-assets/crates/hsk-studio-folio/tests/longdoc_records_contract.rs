@@ -302,3 +302,64 @@ fn longdoc_footnotes_and_index_round_trip_and_refusals() {
     );
     assert_eq!(with(&|v| v["index_options"]["level_styles"] = json!([null, null, null, null, null])).1, "index_options/index_level_styles");
 }
+
+fn running_records() -> Value {
+    json!({"schema_id": "hsk.studio.longdoc_records@1", "document_id": identity("SDOC", 1),
+        "text_variables": [
+            {"variable_id": "h1", "kind": {"variable_kind": "match_paragraph_style", "style": identity("STYS", 1), "use_on_page": "last_on_page", "delete_end_punctuation": true, "change_case": "titlecase"}},
+            {"variable_id": "last", "kind": {"variable_kind": "last_page_number", "scope": "section", "style": "current"}},
+            {"variable_id": "file", "kind": {"variable_kind": "file_name", "include_extension": true}},
+            {"variable_id": "xref", "kind": {"variable_kind": "xref_page_number"}}
+        ],
+        "running_texts": [{"running_id": "hdr", "frame_ids": [identity("SLYR", 1)],
+            "parts": [{"part_kind": "section_marker"}, {"part_kind": "text", "text": " | "}, {"part_kind": "variable", "variable_id": "h1"}, {"part_kind": "page_number"}]}],
+        "endnotes": [{"note_id": "e1", "story_id": identity("STXT", 1), "anchor": 4, "note_story_id": identity("STXT", 2)}],
+        "endnote_options": {"title": "Notes", "numbering_style": "lower_roman", "start_at": 1, "restart": "story_restart", "scope": "story", "suffix": ".", "separator_text": " "},
+        "sidenotes": [{"note_id": "s1", "story_id": identity("STXT", 1), "anchor": 9, "note_story_id": identity("STXT", 3)}],
+        "sidenote_options": {"width": pt(72.0), "gap": pt(6.0), "space_between": pt(3.0), "side": "inside", "anchor": "frame_top", "numbering_style": "arabic", "start_at": 1, "restart": "page"}
+    })
+}
+/// A document whose layer 1 is a text frame (running texts must name text frames).
+fn frame_document() -> StudioDocument {
+    let mut v = serde_json::to_value(document()).unwrap();
+    let e = json!({"top": pt(0.0), "right": pt(0.0), "bottom": pt(0.0), "left": pt(0.0)});
+    v["layers"][0]["text_frame"] = json!({"page_id": "p1", "bounds": {"x": pt(0.0), "y": pt(0.0), "width": pt(100.0), "height": pt(20.0)},
+        "inset_spacing": e, "text_column_count": 1, "text_column_gutter": pt(0.0), "first_baseline_offset": "fixed",
+        "minimum_first_baseline_offset": pt(10.0), "vertical_justification": "top", "auto_sizing_type": "off",
+        "previous_text_frame": null, "next_text_frame": null});
+    v["layers"][0]["kind"] = json!("text");
+    v["layers"][0]["payload"] = json!({"payload_kind": "text", "story_id": identity("STXT", 9)});
+    serde_json::from_value(v).unwrap()
+}
+
+/// SMB-LAYOUT-LONGDOC-2: text variables, running texts, endnotes and provisional sidenotes round
+/// trip (defaults not encoded) and their refusals.
+#[test]
+fn longdoc_running_endnote_sidenote_records() {
+    let v = running_records();
+    let r: StudioLongDocRecords = serde_json::from_value(v.clone()).unwrap();
+    let back = wire_identical(&r);
+    let wire = serde_json::to_value(&back).unwrap();
+    assert!(wire["text_variables"][2]["kind"].get("include_path").is_none());
+    assert_eq!(wire["endnote_options"]["scope"], json!("story"));
+    assert_eq!(back.sidenote_options.as_ref().unwrap().side, SidenoteSide::Inside);
+    let check = |v: &Value| {
+        let r: StudioLongDocRecords = serde_json::from_value(v.clone()).expect("shape");
+        validate_longdoc_records(&r, &frame_document(), Budget::default(), &CancellationToken::default(), &Caller)
+    };
+    assert!(check(&v).unwrap().is_empty());
+    let code = |f: &dyn Fn(&mut Value)| {
+        let mut v = running_records();
+        f(&mut v);
+        let d = check(&v).expect_err("refused");
+        (d.code, d.target)
+    };
+    assert_eq!(code(&|v| v["running_texts"][0]["parts"][2]["variable_id"] = json!("nope")), (Code::DanglingReference, "running/running_variable_missing".into()));
+    assert_eq!(code(&|v| v["running_texts"][0]["frame_ids"] = json!([identity("SLYR", 2)])).0, Code::PayloadMismatch);
+    assert_eq!(code(&|v| v["text_variables"][1]["variable_id"] = json!("h1")).0, Code::DuplicateIdentity);
+    assert_eq!(code(&|v| v["text_variables"][0]["kind"]["style"] = json!(identity("SLYR", 1))).0, Code::InvalidId);
+    assert_eq!(code(&|v| v["endnotes"][0]["note_story_id"] = json!(identity("STXT", 1))).0, Code::RenderCycle);
+    assert_eq!(code(&|v| v["endnote_options"]["start_at"] = json!(0)).1, "endnotes/endnote_start_at_range");
+    assert_eq!(code(&|v| v["endnote_options"]["numbering_style"] = json!("triple_leading_zeros")).1, "endnotes/number_style_not_legal_for_endnotes");
+    assert_eq!(code(&|v| v["sidenote_options"]["width"] = pt(0.0)).1, "sidenote_options/sidenote_geometry");
+}

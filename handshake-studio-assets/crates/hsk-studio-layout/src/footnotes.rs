@@ -213,7 +213,7 @@ fn compose_note(
 }
 
 /// Where a reference is: thread index, line, reference x.
-fn locate(body: &LayoutProposal, anchor: u64, story_end: u64, paragraphs: &[ShapedParagraph]) -> Option<(usize, [f64; 2], f64)> {
+pub(crate) fn locate(body: &LayoutProposal, anchor: u64, story_end: u64, paragraphs: &[ShapedParagraph]) -> Option<(usize, [f64; 2], f64)> {
     let mut last: Option<(usize, &Line)> = None;
     for (fi, f) in body.frames.iter().enumerate() {
         for l in &f.lines {

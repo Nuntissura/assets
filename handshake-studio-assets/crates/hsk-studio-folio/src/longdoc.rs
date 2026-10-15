@@ -55,6 +55,18 @@
 //! the six independent separators. Declared gaps: page-range scopes other than the current page,
 //! capitalisation commands, book documents, hidden entries.
 //!
+//! Text variables and running text (STU-LAY-015, STU-LAY-016, STU-LAY-048; lane SMB-LAYOUT-LONGDOC-2):
+//! the twelve captured variable kinds are carried (`StudioVariableKind`); running texts name the
+//! text-frame layers that show them (one per page, e.g. resolved parent items) and a sequence of
+//! literal text, variables, page-number and section-marker parts. Dates are resolved by the caller
+//! (layout has no clock); cross-reference and live-caption variables are stored but not resolved.
+//!
+//! Endnotes (STU-LAY-150 endnote fields): references like footnotes, with title, prefix/suffix
+//! (0..=100 characters), numbering, restart (continuous or per story) and scope. Sidenotes: the
+//! spec names them and declares their option contract a SPEC GAP; the provisional Studio options
+//! here (width, gap, inside/outside the margin, anchor to the reference line or the frame top,
+//! restart) are labelled provisional and may be replaced by the spec's contract.
+//!
 //! Hostile wire JSON: integer arithmetic is denied (workflow V4-01); grids are checked by
 //! `checked_mul` against `MAX_TABLE_CELLS` before any occupancy grid is allocated, and spans by
 //! `checked_add` against the grid edge (span overflow is refused, never clamped).
@@ -902,6 +914,329 @@ pub fn check_index_options(o: &StudioIndexOptions) -> std::result::Result<(), &'
     Ok(())
 }
 
+/// STU-LAY-016 change-case enumeration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeCase {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Titlecase,
+    Sentencecase,
+}
+
+/// Which on-page occurrence a running header uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunningUse {
+    #[default]
+    FirstOnPage,
+    LastOnPage,
+}
+
+/// STU-LAY-015 `variable_scope`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VariableScope {
+    #[default]
+    Document,
+    Section,
+}
+
+/// The twelve captured text-variable kinds (STU-LAY-048).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "variable_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioVariableKind {
+    CustomText {
+        text: String,
+    },
+    FileName {
+        #[serde(default, skip_serializing_if = "is_false")]
+        include_path: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        include_extension: bool,
+    },
+    LastPageNumber {
+        #[serde(default)]
+        scope: VariableScope,
+        /// Any numbering member legal on a variable, including `current`.
+        style: StudioNumberStyle,
+    },
+    ChapterNumber {
+        number: u32,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        before: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        after: String,
+        style: StudioNumberStyle,
+    },
+    OutputDate {
+        format: String,
+    },
+    CreationDate {
+        format: String,
+    },
+    ModificationDate {
+        format: String,
+    },
+    MatchCharacterStyle {
+        /// `STYS` character style.
+        style: String,
+        #[serde(default)]
+        use_on_page: RunningUse,
+        #[serde(default, skip_serializing_if = "is_false")]
+        delete_end_punctuation: bool,
+        #[serde(default)]
+        change_case: ChangeCase,
+    },
+    MatchParagraphStyle {
+        /// `STYS` paragraph style.
+        style: String,
+        #[serde(default)]
+        use_on_page: RunningUse,
+        #[serde(default, skip_serializing_if = "is_false")]
+        delete_end_punctuation: bool,
+        #[serde(default)]
+        change_case: ChangeCase,
+    },
+    XrefPageNumber,
+    XrefChapterNumber,
+    LiveCaption,
+}
+
+/// One text variable definition (a single edit updates every instance).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioTextVariable {
+    /// Document-local key, unique in the set.
+    pub variable_id: String,
+    pub kind: StudioVariableKind,
+}
+
+/// One part of a running text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "part_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioRunningPart {
+    Text { text: String },
+    Variable { variable_id: String },
+    /// STU-LAY-015 automatic page number of the page showing the text.
+    PageNumber,
+    /// The section marker of the page's section.
+    SectionMarker,
+}
+
+/// A running header or footer shown in text frames (one per page).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioRunningText {
+    pub running_id: String,
+    /// `SLYR` text-frame layers that show the text (each on its own page).
+    pub frame_ids: Vec<String>,
+    pub parts: Vec<StudioRunningPart>,
+}
+
+/// STU-LAY-150 `restart_endnote_numbering`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EndnoteRestart {
+    #[default]
+    Continuous,
+    StoryRestart,
+}
+
+/// STU-LAY-150 `scope_value`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EndnoteScope {
+    #[default]
+    Document,
+    Story,
+}
+
+/// One endnote (same shape as a footnote).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioEndnote {
+    pub note_id: String,
+    pub story_id: String,
+    pub anchor: u64,
+    pub note_story_id: String,
+}
+
+/// STU-LAY-150 endnote options.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioEndnoteOptions {
+    /// 0..=100 characters.
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<String>,
+    pub numbering_style: StudioNumberStyle,
+    /// 1..=400 (the footnote bound; the endnote capture states no bound).
+    pub start_at: u32,
+    #[serde(default)]
+    pub restart: EndnoteRestart,
+    #[serde(default)]
+    pub scope: EndnoteScope,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub suffix: String,
+    /// Between the number and the note text, 0..=100 characters.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub separator_text: String,
+}
+
+/// Provisional sidenote placement (SPEC GAP, see module docs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SidenoteSide {
+    #[default]
+    Outside,
+    Inside,
+}
+/// Provisional sidenote anchor (SPEC GAP).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SidenoteAnchor {
+    #[default]
+    ReferenceLine,
+    FrameTop,
+}
+/// Provisional sidenote options (SPEC GAP).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioSidenoteOptions {
+    /// Column width, `pt`, greater than zero.
+    pub width: Length,
+    /// Distance from the frame edge, `pt`, non-negative.
+    pub gap: Length,
+    /// Vertical space between stacked sidenotes, `pt`, non-negative.
+    pub space_between: Length,
+    #[serde(default)]
+    pub side: SidenoteSide,
+    #[serde(default)]
+    pub anchor: SidenoteAnchor,
+    pub numbering_style: StudioNumberStyle,
+    pub start_at: u32,
+    #[serde(default)]
+    pub restart: FootnoteRestart,
+}
+
+/// Text variables per record set.
+pub const MAX_TEXT_VARIABLES: usize = 4096;
+/// Running texts per record set.
+pub const MAX_RUNNING_TEXTS: usize = 4096;
+
+/// Text-variable and running-text rules: unique keys, `STYS` styles on the matching kinds,
+/// legal numbering styles, bounded text, running parts naming defined variables and `SLYR`
+/// frames, no frame shown by two running texts.
+pub fn check_running(vars: &[StudioTextVariable], running: &[StudioRunningText]) -> std::result::Result<(), &'static str> {
+    if vars.len() > MAX_TEXT_VARIABLES || running.len() > MAX_RUNNING_TEXTS {
+        return Err("too_many_variables");
+    }
+    let short = |t: &str| t.chars().count() <= 1024 && !t.chars().any(|c| c.is_control() && c != '\t');
+    let mut keys = BTreeSet::new();
+    for v in vars {
+        if !label(&v.variable_id) {
+            return Err("variable_id");
+        }
+        if !keys.insert(v.variable_id.as_str()) {
+            return Err("variable_duplicate");
+        }
+        match &v.kind {
+            StudioVariableKind::CustomText { text } if !short(text) => return Err("variable_text"),
+            StudioVariableKind::OutputDate { format } | StudioVariableKind::CreationDate { format } | StudioVariableKind::ModificationDate { format }
+                if !short(format) => return Err("variable_text"),
+            StudioVariableKind::ChapterNumber { before, after, style, .. } => {
+                if !short(before) || !short(after) {
+                    return Err("variable_text");
+                }
+                if *style == StudioNumberStyle::Current {
+                    return Err("number_style_not_legal_here");
+                }
+            }
+            StudioVariableKind::MatchCharacterStyle { style, .. } | StudioVariableKind::MatchParagraphStyle { style, .. } if id(style, "STYS", "variable").is_err() => {
+                return Err("variable_style_ref");
+            }
+            _ => {}
+        }
+    }
+    let mut shown = BTreeSet::new();
+    let mut runs = BTreeSet::new();
+    for r in running {
+        if !label(&r.running_id) {
+            return Err("running_id");
+        }
+        if !runs.insert(r.running_id.as_str()) {
+            return Err("running_duplicate");
+        }
+        for f in &r.frame_ids {
+            if id(f, "SLYR", "running").is_err() {
+                return Err("running_frame_ref");
+            }
+            if !shown.insert(f.as_str()) {
+                return Err("running_frame_shared");
+            }
+        }
+        if r.parts.len() > 256 {
+            return Err("running_parts");
+        }
+        for part in &r.parts {
+            match part {
+                StudioRunningPart::Text { text } if !short(text) => return Err("variable_text"),
+                StudioRunningPart::Variable { variable_id } if !keys.contains(variable_id.as_str()) => return Err("running_variable_missing"),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Endnote rules: footnote-shaped references (no note in a note, no shared note story) and the
+/// option bounds.
+pub fn check_endnotes(notes: &[StudioEndnote], o: Option<&StudioEndnoteOptions>) -> std::result::Result<(), &'static str> {
+    let as_foot: Vec<StudioFootnote> = notes
+        .iter()
+        .map(|n| StudioFootnote { note_id: n.note_id.clone(), story_id: n.story_id.clone(), anchor: n.anchor, note_story_id: n.note_story_id.clone() })
+        .collect();
+    check_footnotes(&as_foot)?;
+    if let Some(o) = o {
+        if !o.numbering_style.legal_for_footnotes() {
+            return Err("number_style_not_legal_for_endnotes");
+        }
+        if !(1..=400).contains(&o.start_at) {
+            return Err("endnote_start_at_range");
+        }
+        if [&o.title, &o.prefix, &o.suffix, &o.separator_text].iter().any(|t| t.chars().count() > 100 || t.contains('\n')) {
+            return Err("endnote_text_length");
+        }
+        let style_ok = |s: &Option<String>| s.as_deref().is_none_or(|v| id(v, "STYS", "endnote").is_ok());
+        if !style_ok(&o.title_style) || !style_ok(&o.text_style) {
+            return Err("endnote_style_ref");
+        }
+    }
+    Ok(())
+}
+
+/// Provisional sidenote option bounds.
+pub fn check_sidenote_options(o: &StudioSidenoteOptions) -> std::result::Result<(), &'static str> {
+    let ok = |l: &Length, positive: bool| l.unit == GeometryUnit::Pt && l.value.is_finite() && if positive { l.value > 0.0 } else { l.value >= 0.0 };
+    if !ok(&o.width, true) || !ok(&o.gap, false) || !ok(&o.space_between, false) {
+        return Err("sidenote_geometry");
+    }
+    if !o.numbering_style.legal_for_footnotes() {
+        return Err("number_style_not_legal_for_sidenotes");
+    }
+    if !(1..=400).contains(&o.start_at) {
+        return Err("sidenote_start_at_range");
+    }
+    Ok(())
+}
+
 /// The long-document records of one document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -926,6 +1261,18 @@ pub struct StudioLongDocRecords {
     pub index_marks: Vec<StudioIndexMark>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_options: Option<StudioIndexOptions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_variables: Vec<StudioTextVariable>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running_texts: Vec<StudioRunningText>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endnotes: Vec<StudioEndnote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endnote_options: Option<StudioEndnoteOptions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sidenotes: Vec<StudioEndnote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidenote_options: Option<StudioSidenoteOptions>,
 }
 impl StudioLongDocRecords {
     /// An empty set for `document_id`.
@@ -941,6 +1288,12 @@ impl StudioLongDocRecords {
             footnote_options: None,
             index_marks: Vec::new(),
             index_options: None,
+            text_variables: Vec::new(),
+            running_texts: Vec::new(),
+            endnotes: Vec::new(),
+            endnote_options: None,
+            sidenotes: Vec::new(),
+            sidenote_options: None,
         }
     }
     /// The graphic frame of this layer.
@@ -1255,6 +1608,45 @@ pub fn validate_longdoc_records(
             let code = if why == "index_style_ref" { Code::InvalidId } else { Code::InvalidField };
             err(code, format!("index_options/{why}"))
         })?;
+    }
+    cx.nodes(r.text_variables.len(), "text_variables")?;
+    cx.nodes(r.running_texts.len(), "running_texts")?;
+    check_running(&r.text_variables, &r.running_texts).map_err(|why| {
+        let code = match why {
+            "variable_duplicate" | "running_duplicate" | "running_frame_shared" => Code::DuplicateIdentity,
+            "variable_style_ref" | "running_frame_ref" => Code::InvalidId,
+            "running_variable_missing" => Code::DanglingReference,
+            "too_many_variables" => Code::BudgetExceeded,
+            _ => Code::InvalidField,
+        };
+        err(code, format!("running/{why}"))
+    })?;
+    for r in &r.running_texts {
+        for f in &r.frame_ids {
+            let layer = d.layers.iter().find(|l| l.layer_id == *f).ok_or_else(|| err(Code::DanglingReference, format!("running/{f}")))?;
+            if layer.text_frame.is_none() {
+                return Err(err(Code::PayloadMismatch, format!("running/{f}")));
+            }
+        }
+    }
+    cx.nodes(r.endnotes.len(), "endnotes")?;
+    check_endnotes(&r.endnotes, r.endnote_options.as_ref()).map_err(|why| {
+        let code = match why {
+            "footnote_in_footnote" => Code::RenderCycle,
+            "note_duplicate" | "note_story_shared" => Code::DuplicateIdentity,
+            "note_story_ref" | "endnote_style_ref" => Code::InvalidId,
+            "too_many_footnotes" => Code::BudgetExceeded,
+            _ => Code::InvalidField,
+        };
+        err(code, format!("endnotes/{why}"))
+    })?;
+    cx.nodes(r.sidenotes.len(), "sidenotes")?;
+    check_endnotes(&r.sidenotes, None).map_err(|why| {
+        let code = if why == "footnote_in_footnote" { Code::RenderCycle } else { Code::InvalidField };
+        err(code, format!("sidenotes/{why}"))
+    })?;
+    if let Some(o) = &r.sidenote_options {
+        check_sidenote_options(o).map_err(|why| err(Code::InvalidField, format!("sidenote_options/{why}")))?;
     }
     canceled(token)?;
     Ok(cx.issues)

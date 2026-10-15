@@ -92,6 +92,8 @@ pub enum TableError {
     TooLarge,
     /// A cell's content range does not start and end on shaped paragraph boundaries.
     CellContent,
+    /// A table anchor is neither a host paragraph start nor the story end (`reflow_with_tables`).
+    Anchor,
 }
 impl TableError {
     pub const fn code(self) -> &'static str {
@@ -100,6 +102,7 @@ impl TableError {
             Self::Grid(w) => w,
             Self::TooLarge => "table_too_large",
             Self::CellContent => "cell_content_not_on_paragraphs",
+            Self::Anchor => "table_anchor_not_on_paragraph",
         }
     }
 }

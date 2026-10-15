@@ -26,6 +26,7 @@ pub struct FrameObstacles {
 }
 
 /// One frame of the thread, in points. `origin_*` is the frame top-left in spread coordinates.
+#[derive(Clone)]
 pub(crate) struct Frame<'a> {
     pub id: &'a str,
     /// Index of the frame's layer in `StudioDocument::layers`.
@@ -239,4 +240,61 @@ pub(crate) fn resolve<'a>(
         supported(story, f)?;
     }
     Ok(Input { text, frames })
+}
+
+/// One text-frame layer resolved on its own (no thread), for text that is placed into a frame it
+/// does not own (running text, generated notes). Same number checks as `resolve`; the frame's
+/// story, columns and auto-size settings are not consulted. Also returns the page side.
+pub(crate) fn single_frame<'a>(
+    document: &'a StudioDocument,
+    layer_id: &str,
+) -> Result<(Frame<'a>, hsk_studio_folio::PageSide), LayoutError> {
+    let (layer_index, layer) = document
+        .layers
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.layer_id == layer_id)
+        .ok_or(LayoutError::InvalidInput)?;
+    let f = layer.text_frame.as_ref().ok_or(LayoutError::InvalidInput)?;
+    let loc = document.locate_page(&f.page_id).ok_or(LayoutError::InvalidInput)?;
+    for p in &loc.spread.pages {
+        page_ok(p)?;
+    }
+    let page_x = loc.spread.pages[..loc.page_index]
+        .iter()
+        .map(|p| pt(&p.width))
+        .sum::<Result<f64, LayoutError>>()?;
+    let b = &f.bounds;
+    let (x, y, w, h) = (pt(&b.x)?, pt(&b.y)?, pt(&b.width)?, pt(&b.height)?);
+    let i = &f.inset_spacing;
+    let (top, right, bottom, left) = (pt(&i.top)?, pt(&i.right)?, pt(&i.bottom)?, pt(&i.left)?);
+    let baseline = pt(&f.minimum_first_baseline_offset)?;
+    if w <= 0.0
+        || h <= 0.0
+        || [top, right, bottom, left].iter().any(|v| *v < 0.0)
+        || left + right >= w
+        || top + bottom >= h
+        || baseline < top
+    {
+        return Err(LayoutError::InvalidGeometry);
+    }
+    Ok((
+        Frame {
+            id: layer.layer_id.as_str(),
+            layer_index,
+            spread: loc.spread_index,
+            page: loc.page_index,
+            origin_x_pt: page_x + x,
+            origin_y_pt: y,
+            width_pt: w,
+            height_pt: h,
+            inset_top_pt: top,
+            inset_left_pt: left,
+            inset_right_pt: right,
+            inset_bottom_pt: bottom,
+            first_baseline_pt: baseline,
+            obstacles: Vec::new(),
+        },
+        loc.page.side,
+    ))
 }
