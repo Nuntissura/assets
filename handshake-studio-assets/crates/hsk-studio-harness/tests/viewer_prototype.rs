@@ -386,7 +386,7 @@ fn directional_match_layers_gradient_tween_and_text_rule() {
         options: SmartMatchOptions::default(),
     };
     let mid = smart_document(&doc, detail, animated, 0.5, &mode).unwrap();
-    let node = |name: &str| mid.nodes.iter().filter(|n| n.name.as_deref() == Some(name)).last().unwrap();
+    let node = |name: &str| mid.nodes.iter().rev().find(|n| n.name.as_deref() == Some(name)).unwrap();
     // Unmatched destination title moves up from the bottom edge: y 24 + 520 (1 - 0.5) = 284, opaque.
     let title = node("Animated");
     assert_eq!((title.transform.unwrap().m12, title.opacity), (284.0, Some(1.0)));
@@ -411,7 +411,9 @@ fn directional_match_layers_gradient_tween_and_text_rule() {
     let shown = play.render().unwrap();
     let centre = px(&shown, 157, 170);
     eprintln!("gradient orb centre at 0.5: {centre:?}");
-    let _ = centre;
+    // The tweened stops are (0.5, 0.5, 0) -> (0.5, 0.5, 1); half way along the gradient axis the
+    // colour is 0.5 grey = 127.5/255 (measured 128, 128, 129).
+    assert!(centre.iter().all(|c| (f64::from(*c) - 127.5).abs() <= 2.0), "{centre:?}");
     // Studio text-by-content rule (opt-in): the fixture's explicitly named texts pair by content.
     let (fa, fb) = (smart_frame(&doc, detail).unwrap(), smart_frame(&doc, animated).unwrap());
     let name = |f: &hsk_studio_components::SmartFrame, id: &str| f.layers.iter().find(|l| l.id == id).unwrap().name.clone();
