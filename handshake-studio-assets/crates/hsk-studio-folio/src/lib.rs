@@ -53,6 +53,8 @@ mod components;
 pub use components::*;
 mod records;
 pub use records::*;
+mod prototype;
+pub use prototype::*;
 mod identity;
 pub use identity::{check_identity_uniqueness, check_variable_identity_uniqueness};
 mod raster;

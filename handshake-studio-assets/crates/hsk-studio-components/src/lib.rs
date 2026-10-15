@@ -18,6 +18,7 @@ mod constraints;
 mod design;
 mod folio_bridge;
 mod instance_resolution;
+mod player;
 mod prototype;
 
 pub use auto_layout::{AutoLayoutResult, LayoutLimits, PlacedBox, solve_auto_layout};
@@ -30,6 +31,10 @@ pub use instance_resolution::{
     rematch_overrides, resolve_instance, resolve_variable, swap_component, switch_variant,
 };
 pub use prototype::{FlowLimits, FlowReport, FlowWarning, PrototypeFlow, validate_flow};
+pub use player::{
+    ActiveTransition, MAX_ACTIONS_PER_DISPATCH, MAX_STACK, PlayerEvent, PlayerInput, PlayerSession,
+    PlayerState, cubic_bezier_ease,
+};
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};

@@ -34,8 +34,9 @@ pub use container::{
 pub use descriptor::DESCRIPTOR;
 pub use error::{FigError, Result};
 pub use export::{
-    FigDecodedImage, FigExportFormat, FigExportPlan, FigImageSource, FigPdfExport, MAX_EXPORT_SCALE,
-    MAX_EXPORT_SIDE_PT, export_frame_pdf, plan_frame_exports, render_frame_export,
+    DEFAULT_JPEG_QUALITY, FigDecodedImage, FigExportFormat, FigExportPlan, FigImageSource,
+    FigPdfExport, FigRasterExport, MAX_EXPORT_SCALE, MAX_EXPORT_SIDE_PT, export_frame_pdf,
+    export_frame_raster, plan_frame_exports, render_frame_export,
 };
 pub use import::{
     Census, DefinitionSummary, FieldSummary, FigImport, FigOutcome, FigReceipt, LossEntry,

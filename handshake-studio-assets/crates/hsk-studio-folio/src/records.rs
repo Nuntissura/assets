@@ -17,7 +17,8 @@
 //!
 //! Declared gaps, not invented here: the record set carries no revision (Folio revisions are
 //! caller-owned and a snapshot is only built for `StudioDocument`); pages carry no
-//! `explicit_variable_modes` or `flow_starting_points` (only nodes can be keyed); instance layers are
+//! `explicit_variable_modes` (only nodes can be keyed; flow starting points are keyed by the page
+//! node in `prototype_pages` since lane SMB-INTEROP-FIG-PROTOTYPE); instance layers are
 //! linked to `SCIN` records by the existing `PrimitiveReference` payload, which this validator does
 //! not duplicate; whether an override's `overridden_node_id` is a definition node id or an
 //! instance-scoped id is not stated by STU-DS-117, so only the `SLYR` grammar is checked; a member
@@ -40,6 +41,7 @@ use super::{
     err, id,
     identity::Namespaces,
     paint::{STYLE_REF_FIELDS, StudioPaintStyle, validate_style},
+    prototype::{StudioFrameOverflow, StudioPrototypePage, check_prototype},
     reactions::{StudioReaction, validate_reactions},
     values::{Ctx, VariableType, label},
 };
@@ -105,6 +107,12 @@ pub struct StudioDesignRecords {
     pub variables: Vec<StudioVariable>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paint_styles: Vec<StudioPaintStyle>,
+    /// STU-PRO-128/129 flow starting points and entry frame per page (`crate::prototype`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prototype_pages: Vec<StudioPrototypePage>,
+    /// STU-PRO-138 overflow (scroll) direction per frame (`crate::prototype`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_overflow: Vec<StudioFrameOverflow>,
 }
 impl StudioDesignRecords {
     /// An empty set for `document_id`.
@@ -119,6 +127,8 @@ impl StudioDesignRecords {
             variable_collections: Vec::new(),
             variables: Vec::new(),
             paint_styles: Vec::new(),
+            prototype_pages: Vec::new(),
+            frame_overflow: Vec::new(),
         }
     }
     /// The design entry of a node.
@@ -649,6 +659,8 @@ pub fn validate_design_records(
     check_components(r, &nodes, &mut c)?;
     check_instances(r, &nodes, &refs, &mut c)?;
     check_nodes(r, &nodes, &refs, &mut ids, &mut c)?;
+    let kinds: BTreeMap<&str, NodeKind> = nodes.iter().map(|(k, v)| (*k, v.kind.clone())).collect();
+    check_prototype(&r.prototype_pages, &r.frame_overflow, &kinds, &mut c)?;
     c.tick()?;
     Ok(c.issues)
 }

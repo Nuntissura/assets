@@ -384,6 +384,7 @@ fn node(id: SourceId, parent: Option<SourceId>, ty: &str, payload: NodePayload) 
         stroke_geometry: Vec::new(),
         interactions: Vec::new(),
         flow_start: None,
+        flow_position: None,
         payload,
     }
 }

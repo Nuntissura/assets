@@ -364,6 +364,8 @@ pub struct InteractionAction {
     pub transition: Option<String>,
     pub duration: Option<f32>,
     pub easing: Option<String>,
+    /// `easingFunction` (the four cubic-bezier numbers of a custom easing), as stored.
+    pub easing_function: Vec<f32>,
     pub connection: Option<String>,
     pub destination: Option<SourceId>,
 }
@@ -373,6 +375,8 @@ pub struct Interaction {
     pub id: Option<SourceId>,
     /// Stored trigger name (`ON_CLICK`, ...).
     pub trigger: Option<String>,
+    /// `event.transitionTimeout` (seconds) of an `AFTER_TIMEOUT` trigger.
+    pub timeout: Option<f32>,
     pub deleted: Option<bool>,
     pub actions: Vec<InteractionAction>,
 }
@@ -464,6 +468,8 @@ pub struct FigNode {
     pub interactions: Vec<Interaction>,
     /// `prototypeStartingPoint.name` (a flow starts at this node).
     pub flow_start: Option<String>,
+    /// `prototypeStartingPoint.position`: fractional index ordering the flows of a page.
+    pub flow_position: Option<String>,
     pub payload: NodePayload,
 }
 
@@ -1506,6 +1512,7 @@ fn interactions(o: &mut Obj, cx: &mut Cx) -> Vec<Interaction> {
             };
             if let Some(mut ev) = io.obj(cx, "event") {
                 it.trigger = ev.enum_name(cx, "interactionType");
+                it.timeout = ev.f32(cx, "transitionTimeout");
                 ev.finish(cx);
             }
             let actions_path = io.sub("actions");
@@ -1516,6 +1523,11 @@ fn interactions(o: &mut Obj, cx: &mut Cx) -> Vec<Interaction> {
                     transition: ao.enum_name(cx, "transitionType"),
                     duration: ao.f32(cx, "transitionDuration"),
                     easing: ao.enum_name(cx, "easingType"),
+                    easing_function: ao
+                        .array(cx, "easingFunction")
+                        .iter()
+                        .filter_map(KiwiValue::as_f32)
+                        .collect(),
                     connection: ao.enum_name(cx, "connectionType"),
                     destination: ao.guid(cx, "transitionNodeID"),
                 });
@@ -1620,12 +1632,14 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         stroke_geometry: geometry(&mut o, cx, "strokeGeometry")?,
         interactions: interactions(&mut o, cx),
         flow_start: None,
+        flow_position: None,
         payload: NodePayload::None,
         type_name,
         fills,
     };
     if let Some(mut sp) = o.obj(cx, "prototypeStartingPoint") {
         n.flow_start = sp.string(cx, "name");
+        n.flow_position = sp.string(cx, "position");
         sp.finish(cx);
     }
     n.payload = match n.type_name.as_str() {

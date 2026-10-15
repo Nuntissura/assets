@@ -70,6 +70,9 @@ use hsk_studio_folio::{
     check_story_style_scopes, validate_type_style_records,
 };
 use hsk_studio_folio::{
+    StudioFlowStart, StudioFrameOverflow, StudioOverflowDirection, StudioPrototypePage, easing_preset,
+};
+use hsk_studio_folio::{
     StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioTextStory,
     TextStorySchema, validate_text_story,
 };
@@ -437,6 +440,11 @@ struct Mapper<'a> {
     /// clip id, source layer, clipped layers.
     clips: Vec<(String, String, Vec<String>)>,
     text_layouts: Vec<FigTextLayout>,
+    /// The page (CANVAS root layer) being walked.
+    page: Option<NodeRef>,
+    /// Flow starting points: page, frame node id, name, stored position.
+    flow_starts: Vec<(NodeRef, String, String, Option<String>)>,
+    frame_overflow: Vec<StudioFrameOverflow>,
     layers: Vec<StudioLayer>,
     stories: Vec<StudioTextStory>,
     paths: Vec<FigVectorPath>,
@@ -1481,6 +1489,14 @@ impl Mapper<'_> {
                     Some("MOUSE_LEAVE") => StudioTrigger::MouseLeave {},
                     Some("MOUSE_DOWN") => StudioTrigger::MouseDown {},
                     Some("MOUSE_UP") => StudioTrigger::MouseUp {},
+                    Some("AFTER_TIMEOUT") => {
+                        let ms = it.timeout.map_or(0.0, |s| (wide(s) * 1000.0).round());
+                        if !(0.0..=f64::from(hsk_studio_folio::MAX_TIMEOUT_MS)).contains(&ms) {
+                            self.lose("native.interactions.timeout", "timeout_out_of_range");
+                            continue;
+                        }
+                        StudioTrigger::AfterTimeout { timeout: ms as u32 }
+                    }
                     other => {
                         self.lose(
                             format!("native.interactions.trigger={}", other.unwrap_or("?")),
@@ -1545,15 +1561,37 @@ impl Mapper<'_> {
                                         );
                                         continue;
                                     }
-                                    let bezier = match a.easing.as_deref() {
-                                        Some("LINEAR") => (0.0, 0.0, 1.0, 1.0),
-                                        other => {
+                                    // Figma easing names -> the Studio-declared preset tuples
+                                    // (STU-PRO-120, folio::EASING_PRESETS); a custom cubic keeps
+                                    // its stored numbers; springs have no published tuple.
+                                    let preset = match a.easing.as_deref() {
+                                        None | Some("LINEAR") => easing_preset("LINEAR"),
+                                        Some("IN_CUBIC") | Some("EASE_IN") => easing_preset("EASE_IN"),
+                                        Some("OUT_CUBIC") => easing_preset("EASE_OUT"),
+                                        Some("INOUT_CUBIC") => easing_preset("EASE_IN_AND_OUT"),
+                                        Some("IN_BACK_CUBIC") => easing_preset("EASE_IN_BACK"),
+                                        Some("OUT_BACK_CUBIC") => easing_preset("EASE_OUT_BACK"),
+                                        Some("INOUT_BACK_CUBIC") => easing_preset("EASE_IN_AND_OUT_BACK"),
+                                        Some("CUSTOM_CUBIC") => match a.easing_function.as_slice() {
+                                            [x1, y1, x2, y2] => Some(CubicBezier {
+                                                x1: wide(*x1),
+                                                y1: wide(*y1),
+                                                x2: wide(*x2),
+                                                y2: wide(*y2),
+                                            }),
+                                            _ => None,
+                                        },
+                                        _ => None,
+                                    };
+                                    let bezier = match preset {
+                                        Some(b) => (b.x1, b.y1, b.x2, b.y2),
+                                        None => {
                                             self.lose(
                                                 format!(
                                                     "native.interactions.easing={}",
-                                                    other.unwrap_or("?")
+                                                    a.easing.as_deref().unwrap_or("?")
                                                 ),
-                                                "easing_curve_unverified_linear_used",
+                                                "easing_without_studio_tuple_linear_used",
                                             );
                                             (0.0, 0.0, 1.0, 1.0)
                                         }
@@ -1890,9 +1928,6 @@ impl Mapper<'_> {
                 },
             );
         }
-        if n.flow_start.is_some() {
-            self.lose("native.flow_start", "flow_start_not_mapped");
-        }
         match &n.payload {
             NodePayload::Rectangle { .. } if !baked => {
                 self.lose("native.corner_radii", "shape_geometry_not_emitted")
@@ -1915,9 +1950,6 @@ impl Mapper<'_> {
                 // is mapped (or lost) by `frame_background`.
                 if !baked && (f.corner_radius.is_some() || f.corner_radii.is_some()) {
                     self.lose("native.corner_radii", "frame_corner_radii_no_folio_home");
-                }
-                if f.scroll_direction.is_some() {
-                    self.lose("native.scroll_direction", "scroll_not_mapped");
                 }
                 for d in &f.component_props {
                     if d.kind.as_deref() != Some("VARIANT") {
@@ -2832,6 +2864,34 @@ impl Mapper<'_> {
             };
         }
         self.record(n.id, &node_ref);
+        // STU-PRO-128 flow starting points (on the page) and STU-PRO-138 overflow (on the frame).
+        if let Some(name) = &n.flow_start {
+            match (&self.page, in_expansion) {
+                (Some(page), false) => {
+                    let page = page.clone();
+                    self.flow_starts.push((page, node_ref.node_id.clone(), name.clone(), n.flow_position.clone()));
+                }
+                _ => self.lose("native.flow_start", "flow_start_outside_page"),
+            }
+        }
+        if let NodePayload::Frame(f) | NodePayload::Symbol { frame: f, .. } | NodePayload::Instance { frame: f, .. } =
+            &n.payload
+            && let Some(dir) = f.scroll_direction.as_deref()
+        {
+            let overflow_direction = match dir {
+                "NONE" => Some(StudioOverflowDirection::None),
+                "HORIZONTAL" => Some(StudioOverflowDirection::Horizontal),
+                "VERTICAL" => Some(StudioOverflowDirection::Vertical),
+                "BOTH" => Some(StudioOverflowDirection::Both),
+                other => {
+                    self.lose(format!("native.scroll_direction={other}"), "scroll_direction_unknown");
+                    None
+                }
+            };
+            if let Some(overflow_direction) = overflow_direction {
+                self.frame_overflow.push(StudioFrameOverflow { node: node_ref.clone(), overflow_direction });
+            }
+        }
         let is_container = ty == "CANVAS" || is_artboard || CONTAINER_KINDS.contains(&ty);
         // Frame fill as a background layer and frame clip (artboards, frames, components).
         let mut background = None;
@@ -2876,6 +2936,7 @@ impl Mapper<'_> {
         }
         let group_layer = parent_layer_id(&Parent::Node(node_ref.clone()));
         let clip = background.and_then(|b| b.1);
+        let outer_page = if ty == "CANVAS" { self.page.replace(node_ref.clone()) } else { None };
         let operands = self.walk_children(
             &children,
             Parent::Node(node_ref.clone()),
@@ -2883,7 +2944,11 @@ impl Mapper<'_> {
             depth,
             &abs,
             clip,
-        )?;
+        );
+        if ty == "CANVAS" {
+            self.page = outer_page;
+        }
+        let operands = operands?;
         if let (Some(operation), Some(layer_id)) = (bool_op, group_layer) {
             self.current = Some(n.id);
             if operands.is_empty() {
@@ -2993,6 +3058,9 @@ pub fn to_native(
         backgrounds: Vec::new(),
         clips: Vec::new(),
         text_layouts: Vec::new(),
+        page: None,
+        flow_starts: Vec::new(),
+        frame_overflow: Vec::new(),
     };
     for &root in &doc.roots {
         let r = &doc.nodes[root];
@@ -3034,6 +3102,8 @@ pub fn to_native(
         backgrounds,
         clips,
         text_layouts,
+        flow_starts,
+        frame_overflow,
         ..
     } = m;
     let mut layers = layers;
@@ -3090,6 +3160,20 @@ pub fn to_native(
     design_records.component_instances = component_instances;
     design_records.variable_collections = collections;
     design_records.variables = variables;
+    // Flow starting points per page in their stored order (fractional index, byte order).
+    let mut flow_starts = flow_starts;
+    flow_starts.sort_by(|a, b| a.0.node_id.cmp(&b.0.node_id).then(a.3.cmp(&b.3)));
+    for (page, node_id, name, _) in flow_starts {
+        match design_records.prototype_pages.iter_mut().find(|p| p.page == page) {
+            Some(p) => p.flow_starting_points.push(StudioFlowStart { node_id, name }),
+            None => design_records.prototype_pages.push(StudioPrototypePage {
+                page,
+                flow_starting_points: vec![StudioFlowStart { node_id, name }],
+                prototype_start_node_id: None,
+            }),
+        }
+    }
+    design_records.frame_overflow = frame_overflow;
     // Type styles: one `StudioTypeStyle` per STYS id; stories resolve against the set.
     let mut type_styles = StudioTypeStyleRecords::new(snapshot.document().document_id.clone());
     let mut unit_lost = false;
@@ -3319,7 +3403,8 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",
     "text_direction (stories are written left-to-right; Figma stores AUTO directionality)",
     "auto_layout_fields (stackHorizontalPadding/stackVerticalPadding read as left/top; sizing, alignment, wrap and border inclusion are defaults)",
-    "transition_easing (only LINEAR has a verified curve; other easings are written linear with a loss entry)",
+    "transition_easing (Figma easing names are written as the Studio-declared STU-PRO-120 preset tuples of folio::EASING_PRESETS, CUSTOM_CUBIC keeps its stored numbers; whether Figma's presets use the same numbers is unverified; springs are written linear with a loss entry)",
+    "prototype_flow (flow starting points are ordered by the stored fractional position per page; overflow direction from scrollDirection; AFTER_TIMEOUT delay = transitionTimeout seconds x 1000)",
 ];
 
 impl NativeProposal {

@@ -749,3 +749,93 @@ pub fn export_frame_pdf(
 pub fn render_frame_export(pdf: &FigPdfExport, cancel: &CancellationToken) -> Result<RenderedPage> {
     hsk_studio_press::render_page(&pdf.bytes, 0, 1.0, &hsk_studio_press::Limits::default(), cancel).map_err(press_err)
 }
+
+/// A PNG or JPEG frame export: the file bytes (hsk-studio-interop-raster encoders) of the page
+/// rendered back by [`render_frame_export`], with the losses of the PDF lowering plus the raster
+/// step's own.
+#[derive(Clone, Debug)]
+pub struct FigRasterExport {
+    pub file_name: String,
+    pub format: FigExportFormat,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+    pub loss: Vec<NodeLoss>,
+}
+
+/// JPEG quality used when the setting stores none (interop-raster's 1..=100 scale; a typed note
+/// says so, Figma's own default is UNVERIFIED).
+pub const DEFAULT_JPEG_QUALITY: u8 = 80;
+
+/// Writes a PNG or JPEG plan: the frame lowered to a PDF page, rendered back by press at the plan
+/// scale, encoded by interop-raster (PNG: 8-bit RGB, balanced compression; JPEG: baseline 4:4:4 at
+/// the setting's quality, stored 0..=1 read as a fraction of 100). The raster is opaque: a frame
+/// without a painted background renders on white (typed note). A PDF plan is refused here.
+pub fn export_frame_raster(
+    p: &NativeProposal,
+    plan: &FigExportPlan,
+    quality: Option<f32>,
+    images: Option<&dyn FigImageSource>,
+    cancel: &CancellationToken,
+) -> Result<FigRasterExport> {
+    if plan.format == FigExportFormat::Pdf {
+        return Err(FigError::ExportRefused("export_plan_is_pdf"));
+    }
+    let pdf = export_frame_pdf(p, plan, images, cancel)?;
+    let page = render_frame_export(&pdf, cancel)?;
+    let mut loss: BTreeMap<(String, &'static str), (u32, Option<SourceId>)> = pdf
+        .loss
+        .iter()
+        .map(|l| ((l.path.clone(), l.code), (l.count, l.first)))
+        .collect();
+    let painted = p.frame_backgrounds.iter().any(|b| b.frame == plan.frame && b.painted);
+    if !painted {
+        lose(&mut loss, "export.background", "transparent_background_rendered_white", Some(plan.source));
+    }
+    let samples = hsk_studio_interop_raster::Samples::U8(page.rgb);
+    let bytes = match plan.format {
+        FigExportFormat::Png => hsk_studio_interop_raster::encode_png(&hsk_studio_interop_raster::PngEncodeRequest {
+            width: page.width,
+            height: page.height,
+            colour: hsk_studio_interop_raster::Colour::Rgb,
+            samples: &samples,
+            icc: None,
+            compression: hsk_studio_interop_raster::PngCompression::Balanced,
+        }),
+        _ => {
+            let q = match quality {
+                Some(v) if v.is_finite() && v > 0.0 && v <= 1.0 => {
+                    let scaled = (f64::from(v) * 100.0).round().clamp(1.0, 100.0);
+                    // In range 1..=100 by the clamp above.
+                    u8::try_from(scaled as i64).unwrap_or(DEFAULT_JPEG_QUALITY)
+                }
+                Some(_) => {
+                    lose(&mut loss, "export.quality", "jpeg_quality_out_of_range_default_used", Some(plan.source));
+                    DEFAULT_JPEG_QUALITY
+                }
+                None => {
+                    lose(&mut loss, "export.quality", "jpeg_quality_default_used", Some(plan.source));
+                    DEFAULT_JPEG_QUALITY
+                }
+            };
+            hsk_studio_interop_raster::encode_jpeg(&hsk_studio_interop_raster::JpegEncodeRequest {
+                width: page.width,
+                height: page.height,
+                colour: hsk_studio_interop_raster::Colour::Rgb,
+                samples: &samples,
+                quality: q,
+                subsampling: hsk_studio_interop_raster::JpegSubsampling::S444,
+                icc: None,
+            })
+        }
+    }
+    .map_err(|_| FigError::ExportRefused("raster_encode_refused"))?;
+    Ok(FigRasterExport {
+        file_name: plan.file_name.clone(),
+        format: plan.format,
+        width: page.width,
+        height: page.height,
+        bytes,
+        loss: aggregate(loss),
+    })
+}
