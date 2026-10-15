@@ -1,6 +1,7 @@
 //! Camera colour on the real raw-vendor corpus (lane SMB-DEVELOP-CAMERA-COLOUR). `#[ignore]`d (the
 //! raw.pixls.us CC0 corpus is never committed): run with
-//! `cargo nextest run -p hsk-studio-develop --test camera_colour --run-ignored ignored-only --no-capture`.
+//! `cargo nextest run -p hsk-studio-develop --test camera_colour --run-ignored ignored-only --no-capture`
+//! (one test per corpus file, F-R33-1).
 //!
 //! Oracle: the camera's own embedded JPEG preview (largest JPEG in the file, decoded by zune-jpeg),
 //! rendered by the camera with its as-shot white balance. The raw is reduced to block means of the
@@ -398,9 +399,45 @@ fn check(test: &str, e: &Expect) -> Vec<String> {
     bad
 }
 
-#[test]
-#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
-fn as_shot_white_balance_and_colour_routes_render_preview_neutrals_neutral() {
-    let bad: Vec<String> = FILES.iter().flat_map(|e| check("camera_colour", e)).collect();
+/// One `#[ignore]`d test per corpus file (F-R33-1, STUDIO-R33: the single test over every file hit
+/// the 120 s per-test cap in the debug round profile). Each test runs [`check`] on its own file with
+/// the assertions unchanged; the test name is the `NOT_PROVEN:` label. `every_corpus_file_has_its_own_test`
+/// keeps `FILES` and the tests one to one.
+fn run(test: &str, file: &str) {
+    let e = FILES.iter().find(|e| e.file == file).unwrap_or_else(|| panic!("{file} is not in FILES"));
+    let bad = check(test, e);
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+macro_rules! per_file {
+    ($($name:ident => $file:literal,)+) => {
+        /// Corpus files that have a test of their own below.
+        const TESTED: &[&str] = &[$($file),+];
+        $(
+            #[test]
+            #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+            fn $name() {
+                run(stringify!($name), $file);
+            }
+        )+
+    };
+}
+
+per_file! {
+    as_shot_white_balance_and_colour_routes_render_preview_neutrals_neutral_canon_eos_r6 => "canon-eos-r6.cr3",
+    as_shot_white_balance_and_colour_routes_render_preview_neutrals_neutral_olympus_c5060wz => "olympus-c5060wz-12bit.orf",
+    as_shot_white_balance_and_colour_routes_render_preview_neutrals_neutral_nikon_z6 => "nikon-z6-12bit-compressed.nef",
+    as_shot_white_balance_and_colour_routes_render_preview_neutrals_neutral_fujifilm_x_s10 => "fujifilm-x-s10-14bit-compressed-xtrans.raf",
+    as_shot_white_balance_and_colour_routes_render_preview_neutrals_neutral_panasonic_lx7 => "panasonic-dmc-lx7.rw2",
+}
+
+/// No corpus file loses its test: `FILES` and the per-file tests list the same files, once each.
+#[test]
+fn every_corpus_file_has_its_own_test() {
+    let files: Vec<&str> = FILES.iter().map(|e| e.file).collect();
+    assert_eq!(files, TESTED, "FILES and the per-file tests must list the same files in the same order");
+    let mut unique = files.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), files.len(), "a corpus file is listed twice");
 }
