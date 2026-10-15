@@ -466,3 +466,142 @@ pub fn tile_rect(x0: f64, y0: f64, x1: f64, y1: f64) -> OwnedPath {
 fn sq(v: f64) -> f64 {
     v * v
 }
+
+/// Vertices of the calligraphic nib polygon.
+pub const NIB_VERTICES: u32 = 32;
+
+/// Calligraphic brush (STU-VEC-152 nib): an elliptical nib `size` across (document units) with
+/// `roundness` percent (the minor axis over the major) turned `angle` degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalligraphicBrush {
+    pub angle: f64,
+    pub roundness: f64,
+    pub size: f64,
+}
+
+/// Convex hull (monotone chain), counter-clockwise in y-up terms.
+fn hull(mut pts: Vec<PathPoint>) -> Vec<PathPoint> {
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let cross = |o: PathPoint, a: PathPoint, b: PathPoint| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let mut lower: Vec<PathPoint> = Vec::new();
+    for p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len().saturating_sub(2)], lower[lower.len().saturating_sub(1)], *p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+    let mut upper: Vec<PathPoint> = Vec::new();
+    for p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len().saturating_sub(2)], upper[upper.len().saturating_sub(1)], *p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+fn polygon(points: &[PathPoint]) -> OwnedPath {
+    let mut o = OwnedPath::new(crate::FillRule::NonZero);
+    for (i, q) in points.iter().enumerate() {
+        o.elements.push(if i == 0 { PathElement::MoveTo(*q) } else { PathElement::LineTo(*q) });
+    }
+    o.elements.push(PathElement::Close);
+    o
+}
+
+fn union_all(parts: Vec<OwnedPath>) -> Result<OwnedPath, Error> {
+    match parts.len() {
+        0 => Ok(OwnedPath::new(crate::FillRule::NonZero)),
+        // nib's boolean takes two or more operands; one convex polygon is already its own union.
+        1 => Ok(parts.into_iter().next().unwrap_or_else(|| OwnedPath::new(crate::FillRule::NonZero))),
+        _ => match boolean(&parts, BooleanOp::Union, &BooleanOptions::default()) {
+            Ok(g) => Ok(g.path),
+            Err(Error::EmptyPathfinderResult) => Ok(OwnedPath::new(crate::FillRule::NonZero)),
+            Err(e) => Err(e),
+        },
+    }
+}
+
+/// The area the nib sweeps along every subpath of `spine` (lane SMB-ILLUSTRATOR-INTEROP): the
+/// union of the convex hulls of the nib polygon ([`NIB_VERTICES`] vertices) at the two ends of
+/// every spine chord (the exact sweep of a convex polygon along a straight chord). At most
+/// [`MAX_SCATTER_COPIES`] chords. Studio rule, Illustrator parity UNVERIFIED (D5).
+pub fn calligraphic_brush(spine: &OwnedPath, brush: &CalligraphicBrush) -> Result<OwnedPath, Error> {
+    let b = brush;
+    if !(b.angle.is_finite() && b.roundness.is_finite() && b.size.is_finite() && b.size > 0.0 && b.size <= 1.0e6 && (1.0..=100.0).contains(&b.roundness)) {
+        return Err(Error::InvalidRequest);
+    }
+    let (major, minor) = (b.size / 2.0, b.size / 2.0 * b.roundness / 100.0);
+    let (sa, ca) = sin_cos_deg(b.angle);
+    let nib: Vec<PathPoint> = (0..NIB_VERTICES)
+        .map(|k| {
+            let (s, c) = sin_cos_deg(360.0 * f64::from(k) / f64::from(NIB_VERTICES));
+            let (x, y) = (major * c, minor * s);
+            PathPoint::new(x * ca - y * sa, x * sa + y * ca)
+        })
+        .collect();
+    let mut parts = Vec::new();
+    for sp in spines(spine)? {
+        if sp.points.len() == 1 || sp.total() <= 0.0 {
+            continue;
+        }
+        for w in sp.points.windows(2) {
+            if parts.len() >= MAX_SCATTER_COPIES {
+                return Err(Error::BudgetExceeded);
+            }
+            let pts: Vec<PathPoint> = nib.iter().flat_map(|q| [PathPoint::new(w[0].x + q.x, w[0].y + q.y), PathPoint::new(w[1].x + q.x, w[1].y + q.y)]).collect();
+            parts.push(polygon(&hull(pts)));
+        }
+    }
+    union_all(parts)
+}
+
+/// Bristle brush (STU-VEC-152): `size` across (document units), `length` and `density` percent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BristleBrush {
+    pub size: f64,
+    pub length: f64,
+    pub density: f64,
+}
+
+/// Bristles along every subpath of `spine` (Studio rule, lane SMB-ILLUSTRATOR-INTEROP; Illustrator
+/// parity UNVERIFIED, D5): `n = 3 + round(29 density / 100)` bristles spread evenly across `size`,
+/// each a round-capped stroke of width `size / n * length / 100` along the spine offset to its
+/// place across it; the bristles are united.
+pub fn bristle_brush(spine: &OwnedPath, brush: &BristleBrush) -> Result<OwnedPath, Error> {
+    use crate::stroke::{LineCap, LineJoin, StrokeOptions, StrokeStyle, outline_stroke};
+    let b = brush;
+    if !(b.size.is_finite() && b.size > 0.0 && b.size <= 1.0e6 && b.length.is_finite() && (1.0..=1000.0).contains(&b.length) && b.density.is_finite() && (1.0..=100.0).contains(&b.density)) {
+        return Err(Error::InvalidRequest);
+    }
+    let n = (3.0 + (29.0 * b.density / 100.0).round()) as u32;
+    let width = b.size / f64::from(n) * b.length / 100.0;
+    let style = StrokeStyle { cap: LineCap::Round, join: LineJoin::Round, ..StrokeStyle::new(width) };
+    let mut parts = Vec::new();
+    for sp in spines(spine)? {
+        if sp.points.len() < 2 || sp.total() <= 0.0 {
+            continue;
+        }
+        for i in 0..n {
+            let d = (f64::from(i) / f64::from(n.saturating_sub(1).max(1)) - 0.5) * b.size;
+            let mut line = OwnedPath::new(crate::FillRule::NonZero);
+            for (k, s) in sp.lengths.iter().enumerate() {
+                let (p, t) = sp.at(*s);
+                let q = PathPoint::new(p.x - t.y * d, p.y + t.x * d);
+                line.elements.push(if k == 0 { PathElement::MoveTo(q) } else { PathElement::LineTo(q) });
+            }
+            if parts.len() >= MAX_SCATTER_COPIES {
+                return Err(Error::BudgetExceeded);
+            }
+            match outline_stroke(&line, &style, &StrokeOptions::default()) {
+                Ok(g) => parts.push(g.path),
+                Err(Error::EmptyPathfinderResult) => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    union_all(parts)
+}

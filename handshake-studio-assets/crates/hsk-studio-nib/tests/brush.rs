@@ -90,3 +90,27 @@ fn pattern_brush_lays_side_start_end_and_corner_tiles() {
     assert_eq!(pattern_brush(&straight, &[start], &stretch), Err(Error::InvalidRequest));
     assert_eq!(pattern_brush(&straight, &tiles, &PatternBrush { scale: f64::NAN, ..stretch }), Err(Error::InvalidRequest));
 }
+
+#[test]
+fn calligraphic_and_bristle_brushes_sweep_the_spine() {
+    let across = line(&[(0.0, 0.0), (100.0, 0.0)]);
+    let down = line(&[(0.0, 0.0), (0.0, 100.0)]);
+    // A round 10 px nib: the sweep is the 10 px band with round ends.
+    let round = CalligraphicBrush { angle: 0.0, roundness: 100.0, size: 10.0 };
+    near(path_bounds(&calligraphic_brush(&across, &round).unwrap()), [-5.0, -5.0, 105.0, 5.0]);
+    // A flat nib (10 % round) held at 0 degrees: thin along a horizontal stroke, wide down a vertical one.
+    let flat = CalligraphicBrush { angle: 0.0, roundness: 10.0, size: 10.0 };
+    near(path_bounds(&calligraphic_brush(&across, &flat).unwrap()), [-5.0, -0.5, 105.0, 0.5]);
+    near(path_bounds(&calligraphic_brush(&down, &flat).unwrap()), [-5.0, -0.5, 5.0, 100.5]);
+    // Turned 90 degrees the flat nib swaps.
+    near(path_bounds(&calligraphic_brush(&across, &CalligraphicBrush { angle: 90.0, ..flat }).unwrap()), [-0.5, -5.0, 100.5, 5.0]);
+    // Bristles: 32 bristles of 10 / 32 px across a 10 px brush, round caps.
+    let half = 10.0 / 32.0 / 2.0;
+    let bristles = bristle_brush(&across, &BristleBrush { size: 10.0, length: 100.0, density: 100.0 }).unwrap();
+    let b = path_bounds(&bristles).unwrap();
+    assert!((b.min[1] + 5.0 + half).abs() < 0.01 && (b.max[1] - 5.0 - half).abs() < 0.01 && (b.max[0] - 100.0 - half).abs() < 0.01, "{b:?}");
+    // Hostile: zero roundness, non-finite size, density out of range.
+    assert_eq!(calligraphic_brush(&across, &CalligraphicBrush { roundness: 0.0, ..round }), Err(Error::InvalidRequest));
+    assert_eq!(calligraphic_brush(&across, &CalligraphicBrush { size: f64::NAN, ..round }), Err(Error::InvalidRequest));
+    assert_eq!(bristle_brush(&across, &BristleBrush { size: 10.0, length: 100.0, density: 0.0 }), Err(Error::InvalidRequest));
+}
