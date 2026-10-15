@@ -1138,6 +1138,16 @@ const READERS: &[ReaderRow] = &[
         "has_mask_density",
         Reads::Reachable(&["reachable_nodes()"]),
     ),
+    // `RenderPlan::isolate_masked_pass_through`: a caller-chosen rewrite, not an admission
+    // predicate. It looks up one group layer by index and counts the layers of every group that
+    // reference its input, reachable or not, because the rewrite isolates that shared node for
+    // every reference; admission then decides capability on the rewritten plan through the
+    // reachable readers above (`has_pass_through_mask`, `validate`).
+    (
+        "render_plan.rs",
+        "isolate_masked_pass_through",
+        Reads::Every,
+    ),
     // `PlanExtensions::from_layers`: builds the envelope from its entries, reads none.
     ("render_plan/extensions.rs", "from_layers", Reads::Every),
     ("render_plan/extensions.rs", "is_empty", Reads::Every),
