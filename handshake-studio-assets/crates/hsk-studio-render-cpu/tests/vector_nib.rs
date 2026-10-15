@@ -76,7 +76,7 @@ fn nib_vector_layer_matches_the_oracle_on_every_chunking_and_thread_count() {
     assert_eq!(d, GOLDEN, "pinned frame digest");
 }
 
-const GOLDEN_CLIPPED: &str = "pending";
+const GOLDEN_CLIPPED: &str = "b7179c37c6560459a9e70b2524d02743da01034f147bb4da4c0d46a42e262b39";
 
 #[test]
 fn clipped_nib_vector_layer_matches_the_oracle() {
