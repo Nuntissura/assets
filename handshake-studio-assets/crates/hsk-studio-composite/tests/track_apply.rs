@@ -27,6 +27,7 @@ fn layer(streams: Vec<StudioPropertyStream>) -> StudioCompositionLayer {
         precomp: None,
         track_matte: None,
         streams,
+        corner_pin: None,
     }
 }
 

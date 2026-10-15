@@ -555,3 +555,62 @@ fn transform_admission_refusals_run_without_adapter() {
     assert_eq!(r, Err(BackendError::Unavailable("no_adapter")));
     assert_eq!(image.calls, 0);
 }
+
+/// Projective (corner pin) parity, lane SMB-AE-KEY-TRACK-2: the host takes every sample site from
+/// pigment's `PreparedTransform::sample_site` (binary64, the projective inverse included) and the
+/// resample pass interpolates in binary32, so a perspective quad must match the binary64 reference
+/// composited by pigment within the established tolerance, every filter and edge mode.
+#[test]
+fn gpu_projective_parity_vs_pigment_reference() {
+    if !gate("gpu_projective_parity_vs_pigment_reference") {
+        return;
+    }
+    let tile = Tile::new(9, 7);
+    let sources = Sources { tile: &tile, mask: None };
+    let src = rect(6, 5, 9, 7);
+    let from = [[6.0, 5.0], [15.0, 5.0], [15.0, 12.0], [6.0, 12.0]];
+    let to = [[4.5, 3.25], [33.0, 7.5], [29.75, 30.0], [2.0, 22.5]];
+    let p = hsk_studio_pigment::transform_math::Projective2::from_quads(from, to).unwrap();
+    let mut worst = (0.0f32, 0.0f32);
+    for filter in FILTERS {
+        for edge in [EdgeMode::Transparent, EdgeMode::Clamp] {
+            let t = LayerTransform::projective(p, filter).with_edge(edge);
+            let prep = PreparedTransform::new(&t, src).unwrap();
+            let (result, image) = execute(backend(), &plan(&tile, NORMAL, None), &envelope(Some(t)), &sources);
+            result.unwrap();
+            let want: Vec<[f32; 4]> = (0..EXTENT.height as i64)
+                .flat_map(|y| (0..EXTENT.width as i64).map(move |x| (x, y)))
+                .map(|(x, y)| reference(&prep, None, x, y))
+                .collect();
+            let (premult, straight) = deviation(&image.px, &want);
+            println!("projective parity {filter:?} {edge:?}: premultiplied/alpha {premult:e}, straight {straight:e}");
+            worst = (worst.0.max(premult), worst.1.max(straight));
+            assert!(premult <= TOLERANCE, "{filter:?} {edge:?}: {premult:e}");
+            assert!(straight <= 4.0 * TOLERANCE, "{filter:?} {edge:?}: {straight:e}");
+        }
+    }
+    println!("projective parity worst: {:e} premultiplied/alpha, {:e} straight", worst.0, worst.1);
+}
+
+/// Key pipelines (lane SMB-AE-KEY-TRACK-2) have no GPU pass: every stage kind is declared
+/// Unsupported, so shared admission refuses the plan under the stage's key before any device work
+/// or sink call, on any machine (no adapter needed).
+#[test]
+fn gpu_keying_is_refused_before_any_device_work() {
+    use hsk_studio_pigment::keying::{ChromaKey, ChromaSpace, KeyStage, MatteCombine};
+    use hsk_studio_pigment::render_plan::ExtOperator;
+    let tile = Tile::new(9, 7);
+    let sources = Sources { tile: &tile, mask: None };
+    for stage in [
+        KeyStage::Chroma(ChromaKey { key: [0.0, 1.0, 0.0], space: ChromaSpace::YCbCr, tolerance: 0.1, softness: 0.1, luma_weight: 0.0 }, MatteCombine::Replace),
+        KeyStage::ChokeSpread { radius_px: 1 },
+        KeyStage::Feather { radius_px: 1.0 },
+        KeyStage::Levels { black: 0.1, white: 0.9 },
+    ] {
+        assert_eq!(backend().extension_exactness(ExtOperator::Key(stage.kind())), Exactness::Unsupported);
+        let ext = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_keys(vec![stage.clone()])]);
+        let (result, image) = execute(backend(), &plan(&tile, NORMAL, None), &ext, &sources);
+        assert_eq!(result, Err(BackendError::Unsupported { operator: stage.key(), exactness: Exactness::Unsupported }), "{stage:?}");
+        assert_eq!(image.calls, 0);
+    }
+}

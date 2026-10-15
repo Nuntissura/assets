@@ -271,6 +271,36 @@ pub struct StudioCompositionLayer {
     /// At most one stream per property.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub streams: Vec<StudioPropertyStream>,
+    /// Corner pin (lane SMB-AE-KEY-TRACK-2; STU-CMP-065 four-point corner-pin solve, the After
+    /// Effects Corner Pin effect): the layer-space quad `from` is mapped onto the animated quad
+    /// `to` before the layer transform. Absent = none; a record without it serialises byte for
+    /// byte as before (serde default, skipped when `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_pin: Option<StudioCornerPin>,
+}
+
+/// A corner pin of a composition layer: `from` (four layer-space corners, upper left, upper
+/// right, lower right, lower left) is warped onto `to`, an 8-component keyframe stream of the same
+/// four corners (`x0, y0, x1, y1, x2, y2, x3, y3`, layer-space pixels). The map is the projective
+/// transform taking each `from` corner to its `to` corner; both quads must be convex.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCornerPin {
+    pub from: [[f64; 2]; 4],
+    pub static_value: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<StudioCompositionKeyframe>,
+}
+impl StudioCornerPin {
+    /// Components of the `to` stream.
+    pub const DIMENSION: usize = 8;
+}
+
+/// Whether four corners form a convex, non-degenerate quad (either winding).
+pub fn corner_quad_is_convex(q: &[[f64; 2]; 4]) -> bool {
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let c = [cross(q[0], q[1], q[2]), cross(q[1], q[2], q[3]), cross(q[2], q[3], q[0]), cross(q[3], q[0], q[1])];
+    q.iter().flatten().all(|v| v.is_finite()) && (c.iter().all(|v| *v > 1e-9) || c.iter().all(|v| *v < -1e-9))
 }
 impl StudioCompositionLayer {
     /// The stream animating `property`.
@@ -391,20 +421,49 @@ fn validate_stream(
             && (s.property != StudioLayerProperty::Opacity
                 || v.iter().all(|x| (0.0..=100.0).contains(x)))
     };
-    check(value_ok(&s.static_value), &t, "static_value")?;
-    if s.keyframes.len() > MAX_STREAM_KEYFRAMES {
+    validate_keyed(&t, dim, &value_ok, &s.static_value, &s.keyframes, cx)
+}
+
+/// A corner pin: convex `from`, an 8-component stream of convex `to` quads (keyframe rules of a
+/// transform stream).
+fn validate_corner_pin(p: &StudioCornerPin, layer: &str, cx: &mut Ctx) -> Result<()> {
+    cx.tick()?;
+    let t = format!("{layer}/corner_pin");
+    check(
+        corner_quad_is_convex(&p.from) && p.from.iter().flatten().all(|x| x.abs() <= MAX_STREAM_ABS_VALUE),
+        &t,
+        "from",
+    )?;
+    let value_ok = |v: &[f64]| {
+        v.len() == StudioCornerPin::DIMENSION
+            && v.iter().all(|x| x.is_finite() && x.abs() <= MAX_STREAM_ABS_VALUE)
+            && corner_quad_is_convex(&[[v[0], v[1]], [v[2], v[3]], [v[4], v[5]], [v[6], v[7]]])
+    };
+    validate_keyed(&t, StudioCornerPin::DIMENSION, &value_ok, &p.static_value, &p.keyframes, cx)
+}
+
+fn validate_keyed(
+    t: &str,
+    dim: usize,
+    value_ok: &dyn Fn(&[f64]) -> bool,
+    static_value: &[f64],
+    keyframes: &[StudioCompositionKeyframe],
+    cx: &mut Ctx,
+) -> Result<()> {
+    check(value_ok(static_value), t, "static_value")?;
+    if keyframes.len() > MAX_STREAM_KEYFRAMES {
         return Err(err(Code::BudgetExceeded, format!("{t}/keyframes")));
     }
-    cx.nodes(s.keyframes.len(), &t)?;
+    cx.nodes(keyframes.len(), t)?;
     let mut previous: Option<u64> = None;
-    for k in &s.keyframes {
+    for k in keyframes {
         cx.tick()?;
         if k.time > MAX_COMPOSITION_TICK {
-            return Err(overflow(&t, "keyframes/time"));
+            return Err(overflow(t, "keyframes/time"));
         }
-        check(previous.is_none_or(|p| p < k.time), &t, "keyframes/time")?;
+        check(previous.is_none_or(|p| p < k.time), t, "keyframes/time")?;
         previous = Some(k.time);
-        check(value_ok(&k.value), &t, "keyframes/value")?;
+        check(value_ok(&k.value), t, "keyframes/value")?;
         for (interp, tangents) in [(k.in_interp, &k.in_tangent), (k.out_interp, &k.out_tangent)] {
             let shape = tangents.is_empty() || tangents.len() == 1 || tangents.len() == dim;
             let each = tangents.iter().all(|g| {
@@ -413,8 +472,8 @@ fn validate_stream(
                     && g.influence.is_finite()
                     && (0.0..=1.0).contains(&g.influence)
             });
-            check(shape && each, &t, "keyframes/tangent")?;
-            check(!interp.is_bezier() || !tangents.is_empty(), &t, "keyframes/tangent")?;
+            check(shape && each, t, "keyframes/tangent")?;
+            check(!interp.is_bezier() || !tangents.is_empty(), t, "keyframes/tangent")?;
         }
     }
     Ok(())
@@ -459,6 +518,9 @@ fn validate_layer(
             return Err(err(Code::DuplicateIdentity, format!("{t}/streams/{}", s.property.wire())));
         }
         validate_stream(s, t, cx)?;
+    }
+    if let Some(p) = &l.corner_pin {
+        validate_corner_pin(p, t, cx)?;
     }
     Ok(())
 }

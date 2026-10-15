@@ -331,6 +331,10 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":false})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
+        // A corner pin (lane SMB-AE-KEY-TRACK-2) is projective: refused typed, never dropped.
+        let pin = json!({"from":[[0.0,0.0],[4.0,0.0],[4.0,4.0],[0.0,4.0]],"static_value":[0.0,0.0,5.0,1.0,5.0,5.0,0.0,4.0]});
+        let e = edit(&|r| r.pointer_mut(layer0).unwrap()["corner_pin"] = pin.clone()).unwrap_err();
+        assert_eq!(unsupported(e), hsk_studio_composite::track_apply::COMPOSITION_CORNER_PIN);
         // A vector layer goes through the static path (lane SMB-COMPOSITE-COMPOSITION-2), which
         // lowers the layer's own graph operation; this fixture's vector layer has none.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 5))).unwrap_err();

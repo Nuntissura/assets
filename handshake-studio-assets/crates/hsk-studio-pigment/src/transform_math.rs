@@ -35,6 +35,19 @@
 //!    outside, and a destination centre whose `(u, v)` lies outside `[-0.5, w - 0.5) x
 //!    [-0.5, h - 0.5)` is transparent (hard edge).
 //!
+//! Projective transforms (lane SMB-AE-KEY-TRACK-2; corner pin and planar tracks, STU-CMP-065):
+//! [`LayerTransform::perspective`] `Some(p)` makes the map `p` applied after `affine` (a
+//! [`Projective2`], homogeneous row-major 3x3). Destination pixel centres map back through the
+//! inverse 3x3; a centre whose homogeneous weight is not positive lies beyond the plane's horizon
+//! and is transparent. Rules 1-5 apply unchanged to the resulting `(u, v)`, so the bytes stay the
+//! reference's and a backend that takes its sample sites from [`PreparedTransform::sample_site`]
+//! (render-cpu, render-gpu) runs perspective without its own geometry. Validation of a projective
+//! map: finite coefficients, a positive homogeneous weight above [`MIN_PERSPECTIVE_WEIGHT`] at the
+//! four corners of the source footprint (so on all of it: the weight is affine in the source),
+//! the local linear part (Jacobian) and its inverse at those corners and the centre bounded by
+//! [`MAX_TRANSFORM_LINEAR`], and mapped corners inside [`MAX_TRANSFORM_TRANSLATE`]; the bounds are
+//! the mapped footprint corners (a line maps to a line where the weight is positive).
+//!
 //! Hostile inputs (V4-01/02): every coefficient must be finite, the linear part and its inverse are
 //! bounded by [`MAX_TRANSFORM_LINEAR`] (so scale lies in `[1/1024, 1024]` per axis, no degenerate
 //! shear), the translation by [`MAX_TRANSFORM_TRANSLATE`]; a singular matrix is refused; the
@@ -60,6 +73,103 @@ pub const MAX_TRANSFORMS_PER_PLAN: usize = 4096;
 pub const MAX_TRANSFORM_AREA_PER_PLAN: u64 = 1 << 36;
 /// Output pixels [`resample_reference`] allocates at most.
 pub const MAX_REFERENCE_PIXELS: u64 = 1 << 26;
+/// Smallest homogeneous weight a projective map may give a source footprint corner, relative to
+/// the largest absolute coefficient of its last row.
+pub const MIN_PERSPECTIVE_WEIGHT: f64 = 1e-6;
+
+/// A projective map, homogeneous row-major 3x3: `x' = (m0 x + m1 y + m2) / w`,
+/// `y' = (m3 x + m4 y + m5) / w`, `w = m6 x + m7 y + m8`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Projective2 {
+    pub m: [f64; 9],
+}
+impl Projective2 {
+    pub const IDENTITY: Self = Self {
+        m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    };
+    pub fn from_affine(a: &Affine2) -> Self {
+        let [p, q, r, s, t, u] = a.m;
+        Self { m: [p, q, r, s, t, u, 0.0, 0.0, 1.0] }
+    }
+    /// `self` followed by `after`.
+    pub fn then(&self, after: &Self) -> Self {
+        let (a, b) = (&after.m, &self.m);
+        let at = |r: usize, c: usize| -> f64 {
+            let row = match r {
+                0 => [a[0], a[1], a[2]],
+                1 => [a[3], a[4], a[5]],
+                _ => [a[6], a[7], a[8]],
+            };
+            let col = match c {
+                0 => [b[0], b[3], b[6]],
+                1 => [b[1], b[4], b[7]],
+                _ => [b[2], b[5], b[8]],
+            };
+            row[0] * col[0] + row[1] * col[1] + row[2] * col[2]
+        };
+        Self { m: [at(0, 0), at(0, 1), at(0, 2), at(1, 0), at(1, 1), at(1, 2), at(2, 0), at(2, 1), at(2, 2)] }
+    }
+    /// The homogeneous image `(X, Y, W)` of `(x, y)`.
+    pub fn apply_h(&self, x: f64, y: f64) -> (f64, f64, f64) {
+        let m = &self.m;
+        (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5], m[6] * x + m[7] * y + m[8])
+    }
+    /// The image of `(x, y)`, `None` where the weight is not positive or a value is not finite.
+    pub fn apply(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (px, py, w) = self.apply_h(x, y);
+        let (ox, oy) = (px / w, py / w);
+        (w > 0.0 && ox.is_finite() && oy.is_finite()).then_some((ox, oy))
+    }
+    /// Inverse by the adjugate over the determinant (a source point of positive weight maps back
+    /// with positive weight).
+    pub fn inverse(&self) -> Result<Self, TransformError> {
+        let [a, b, c, d, e, f, g, h, i] = self.m;
+        if !self.m.iter().all(|v| v.is_finite()) {
+            return Err(TransformError::NonFinite);
+        }
+        let adj = [
+            e * i - f * h,
+            c * h - b * i,
+            b * f - c * e,
+            f * g - d * i,
+            a * i - c * g,
+            c * d - a * f,
+            d * h - e * g,
+            b * g - a * h,
+            a * e - b * d,
+        ];
+        let det = a * adj[0] + b * adj[3] + c * adj[6];
+        if !det.is_finite() || det == 0.0 {
+            return Err(TransformError::Singular);
+        }
+        // adj / det; the sign of det is kept so a positive weight stays positive.
+        let m = adj.map(|v| v / det);
+        if !m.iter().all(|v| v.is_finite()) {
+            return Err(TransformError::NonFinite);
+        }
+        Ok(Self { m })
+    }
+    /// The map sending the quad `src` to the quad `dst` (corner `k` to corner `k`): the exact
+    /// 4-point homography (normalised DLT, `track_math::Homography::fit`). `Singular` for
+    /// collinear or coincident corners.
+    pub fn from_quads(src: [[f64; 2]; 4], dst: [[f64; 2]; 4]) -> Result<Self, TransformError> {
+        let h = crate::track_math::Homography::fit(&src, &dst).map_err(|e| match e {
+            crate::track_math::TrackError::Parameter => TransformError::NonFinite,
+            _ => TransformError::Singular,
+        })?;
+        Ok(Self { m: h.m })
+    }
+    /// Local linear part (Jacobian) of the map at `(x, y)`, `None` off the positive half-plane.
+    fn jacobian(&self, x: f64, y: f64) -> Option<[f64; 4]> {
+        let (px, py, w) = self.apply_h(x, y);
+        if w <= 0.0 {
+            return None;
+        }
+        let (ox, oy) = (px / w, py / w);
+        let m = &self.m;
+        Some([(m[0] - ox * m[6]) / w, (m[1] - ox * m[7]) / w, (m[3] - oy * m[6]) / w, (m[4] - oy * m[7]) / w])
+    }
+}
 
 /// Resampling method (STU-RAS-141 members 2, 3, 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -223,6 +333,10 @@ pub struct LayerTransform {
     /// The layer's coverage mask is transformed with its content (a linked mask); otherwise it
     /// stays in plan space.
     pub transform_mask: bool,
+    /// A projective map applied after `affine` (corner pin, planar track); `None` = affine only
+    /// (and absent from the digest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perspective: Option<Projective2>,
 }
 impl LayerTransform {
     pub const fn new(affine: Affine2, filter: ResampleFilter) -> Self {
@@ -231,6 +345,29 @@ impl LayerTransform {
             filter,
             edge: EdgeMode::Transparent,
             transform_mask: false,
+            perspective: None,
+        }
+    }
+    /// A projective transform (`affine` identity).
+    pub const fn projective(p: Projective2, filter: ResampleFilter) -> Self {
+        Self {
+            affine: Affine2::IDENTITY,
+            filter,
+            edge: EdgeMode::Transparent,
+            transform_mask: false,
+            perspective: Some(p),
+        }
+    }
+    pub const fn with_perspective(mut self, p: Projective2) -> Self {
+        self.perspective = Some(p);
+        self
+    }
+    /// The whole source -> destination map as a projective matrix.
+    pub fn map(&self) -> Projective2 {
+        let a = Projective2::from_affine(&self.affine);
+        match &self.perspective {
+            None => a,
+            Some(p) => a.then(p),
         }
     }
     pub const fn with_edge(mut self, edge: EdgeMode) -> Self {
@@ -273,6 +410,8 @@ impl TransformError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedTransform {
     inverse: Affine2,
+    /// The inverse 3x3 of a projective transform (`None` for an affine one).
+    projective_inverse: Option<Projective2>,
     filter: ResampleFilter,
     edge: EdgeMode,
     src: Rect,
@@ -283,7 +422,6 @@ impl PreparedTransform {
         if src.width == 0 || src.height == 0 {
             return Err(TransformError::EmptySource);
         }
-        let inverse = transform.affine.inverse()?;
         let (x1, y1) = src.end().map_err(|_| TransformError::BoundsOutOfRange)?;
         let g = match transform.edge {
             EdgeMode::Transparent => transform.filter.footprint_growth(),
@@ -291,9 +429,45 @@ impl PreparedTransform {
         };
         let (fx0, fy0, fx1, fy1) = (src.x as f64 - g, src.y as f64 - g, x1 as f64 + g, y1 as f64 + g);
         let corners = [(fx0, fy0), (fx1, fy0), (fx0, fy1), (fx1, fy1)];
+        let (inverse, projective_inverse) = match transform.perspective {
+            None => (transform.affine.inverse()?, None),
+            Some(p) => {
+                if !p.m.iter().all(|v| v.is_finite()) {
+                    return Err(TransformError::NonFinite);
+                }
+                transform.affine.inverse()?;
+                let map = transform.map();
+                let scale = map.m[6].abs().max(map.m[7].abs()).max(map.m[8].abs());
+                let centre = ((fx0 + fx1) / 2.0, (fy0 + fy1) / 2.0);
+                for (x, y) in corners.iter().copied().chain([centre]) {
+                    let (_, _, w) = map.apply_h(x, y);
+                    if !(w.is_finite() && w > MIN_PERSPECTIVE_WEIGHT * scale) {
+                        return Err(TransformError::Singular);
+                    }
+                    let j = map.jacobian(x, y).ok_or(TransformError::Singular)?;
+                    let det = j[0] * j[3] - j[1] * j[2];
+                    if !det.is_finite() || det == 0.0 {
+                        return Err(TransformError::Singular);
+                    }
+                    let inv = [j[3] / det, -j[1] / det, -j[2] / det, j[0] / det];
+                    if !j.iter().chain(inv.iter()).all(|v| v.is_finite() && v.abs() <= MAX_TRANSFORM_LINEAR) {
+                        return Err(TransformError::ScaleOutOfRange);
+                    }
+                    let (dx, dy) = map.apply(x, y).ok_or(TransformError::Singular)?;
+                    if dx.abs() > MAX_TRANSFORM_TRANSLATE || dy.abs() > MAX_TRANSFORM_TRANSLATE {
+                        return Err(TransformError::TranslationOutOfRange);
+                    }
+                }
+                (Affine2::IDENTITY, Some(map.inverse()?))
+            }
+        };
+        let map = transform.map();
         let (mut lo_x, mut lo_y, mut hi_x, mut hi_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for (x, y) in corners {
-            let (dx, dy) = transform.affine.apply(x, y);
+            let (dx, dy) = match transform.perspective {
+                None => transform.affine.apply(x, y),
+                Some(_) => map.apply(x, y).ok_or(TransformError::Singular)?,
+            };
             lo_x = lo_x.min(dx);
             lo_y = lo_y.min(dy);
             hi_x = hi_x.max(dx);
@@ -328,6 +502,7 @@ impl PreparedTransform {
         bounds.end().map_err(|_| TransformError::BoundsOutOfRange)?;
         Ok(Self {
             inverse,
+            projective_inverse,
             filter: transform.filter,
             edge: transform.edge,
             src,
@@ -341,8 +516,14 @@ impl PreparedTransform {
     pub fn source(&self) -> Rect {
         self.src
     }
+    /// The affine inverse; the identity for a projective transform (see
+    /// [`PreparedTransform::projective_inverse`]).
     pub fn inverse(&self) -> Affine2 {
         self.inverse
+    }
+    /// The inverse 3x3 of a projective transform.
+    pub fn projective_inverse(&self) -> Option<Projective2> {
+        self.projective_inverse
     }
     pub fn filter(&self) -> ResampleFilter {
         self.filter
@@ -352,8 +533,13 @@ impl PreparedTransform {
     }
 
     /// Continuous texel-index coordinates `(u, v)` of destination pixel `(x, y)`'s centre.
+    /// For a projective transform a centre beyond the horizon (homogeneous weight not positive) is
+    /// `(NaN, NaN)`, which samples as transparent.
     pub fn sample_position(&self, x: i64, y: i64) -> (f64, f64) {
-        let (sx, sy) = self.inverse.apply(x as f64 + 0.5, y as f64 + 0.5);
+        let (sx, sy) = match &self.projective_inverse {
+            None => self.inverse.apply(x as f64 + 0.5, y as f64 + 0.5),
+            Some(p) => p.apply(x as f64 + 0.5, y as f64 + 0.5).unwrap_or((f64::NAN, f64::NAN)),
+        };
         (sx - self.src.x as f64 - 0.5, sy - self.src.y as f64 - 0.5)
     }
 

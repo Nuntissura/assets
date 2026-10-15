@@ -40,11 +40,16 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_folio::{
-    StudioCompositionKeyframe, StudioCompositionLayer, StudioInterpolation, StudioLayerProperty,
-    StudioPropertyStream,
+    StudioCompositionKeyframe, StudioCompositionLayer, StudioCornerPin, StudioInterpolation,
+    StudioLayerProperty, StudioPropertyStream, corner_quad_is_convex,
 };
-use hsk_studio_pigment::track_math::{SimilarityFrame, TrackSample};
+use hsk_studio_pigment::track_math::{PlanarFrame, PlanarStatus, SimilarityFrame, TrackSample};
+use hsk_studio_pigment::transform_math::{LayerTransform, Projective2, ResampleFilter, TransformError};
 use std::fmt;
+
+/// Refusal key of the composition adapter for a layer with a corner pin (its scene layers carry
+/// an affine matrix; [`corner_pin_transform`] lowers a pin to a pigment layer transform).
+pub const COMPOSITION_CORNER_PIN: &str = "composition_corner_pin";
 
 /// Most keys one stream may receive (motion's `MAX_KEYFRAMES`).
 pub const MAX_TRACK_KEYS: usize = 65_536;
@@ -307,4 +312,120 @@ pub fn stabilize(
         put(&mut out, StudioLayerProperty::Scale, scl);
     }
     Ok(out)
+}
+
+// ---- corner pin (lane SMB-AE-KEY-TRACK-2) ----------------------------------------------------
+
+/// A quad of four corners (upper left, upper right, lower right, lower left).
+pub type Quad = [[f64; 2]; 4];
+
+/// Corner-pin frames from four point tracks (corner order as [`Quad`]): the frames where all four
+/// points are tracked, with their positions.
+pub fn corner_frames_from_tracks(corners: [&[TrackSample]; 4]) -> Result<Vec<(usize, Quad)>, TrackApplyError> {
+    let n = corners[0].len();
+    if corners.iter().any(|c| c.len() != n) {
+        return Err(TrackApplyError::Parameter);
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = corners.map(|c| c[i]);
+        if s.iter().any(|x| x.frame != s[0].frame) {
+            return Err(TrackApplyError::Parameter);
+        }
+        if s.iter().all(|x| x.status.is_tracked()) {
+            out.push((s[0].frame, s.map(|x| x.position)));
+        }
+    }
+    Ok(out)
+}
+
+/// Corner-pin frames from a planar track: the mapped quad of every `Tracked` frame.
+pub fn corner_frames_from_planar(planar: &[PlanarFrame]) -> Vec<(usize, Quad)> {
+    planar
+        .iter()
+        .filter(|f| f.status == PlanarStatus::Tracked)
+        .map(|f| (f.frame, f.quad))
+        .collect()
+}
+
+/// Writes a corner pin onto `target` (a new record; the input is untouched): `from` (the target's
+/// layer-space quad, usually its content rectangle) is pinned to each frame's quad plus `offset`,
+/// one linear keyframe per frame at its tick. Every quad must be convex and finite, frames
+/// strictly increasing, at most [`MAX_TRACK_KEYS`].
+pub fn apply_corner_pin(
+    target: &StudioCompositionLayer,
+    from: Quad,
+    frames: &[(usize, Quad)],
+    timing: TrackTiming,
+    offset: [f64; 2],
+) -> Result<StudioCompositionLayer, TrackApplyError> {
+    finite(&offset)?;
+    if frames.is_empty() || !corner_quad_is_convex(&from) {
+        return Err(TrackApplyError::Parameter);
+    }
+    if frames.len() > MAX_TRACK_KEYS {
+        return Err(TrackApplyError::KeyLimit);
+    }
+    if frames.windows(2).any(|w| w[0].0 >= w[1].0) {
+        return Err(TrackApplyError::Parameter);
+    }
+    let mut keys = Vec::with_capacity(frames.len());
+    for (frame, quad) in frames {
+        let to = quad.map(|p| [p[0] + offset[0], p[1] + offset[1]]);
+        if !corner_quad_is_convex(&to) {
+            return Err(TrackApplyError::Parameter);
+        }
+        keys.push(key(timing.tick(*frame)?, to.iter().flatten().copied().collect()));
+    }
+    let static_value = keys.first().map(|k| k.value.clone()).unwrap_or_default();
+    let mut out = target.clone();
+    out.corner_pin = Some(StudioCornerPin { from, static_value, keyframes: keys });
+    Ok(out)
+}
+
+/// The pigment layer transform of a corner pin with the quad `to` (layer space = the plan
+/// coordinates of the layer's tile): the projective map taking `from` onto `to`
+/// (`Projective2::from_quads`), executed by render-cpu and render-gpu through pigment's resampler.
+pub fn corner_pin_transform(from: Quad, to: Quad, filter: ResampleFilter) -> Result<LayerTransform, TransformError> {
+    if !corner_quad_is_convex(&from) || !corner_quad_is_convex(&to) {
+        return Err(TransformError::Singular);
+    }
+    Ok(LayerTransform::projective(Projective2::from_quads(from, to)?, filter))
+}
+
+/// The pinned quad of `pin` at composition `tick`, sampled by motion (linear and Bezier keys, held
+/// ends; motion owns keyframe evaluation).
+#[cfg(feature = "motion")]
+pub fn corner_pin_quad_at(pin: &StudioCornerPin, tick: i64) -> Result<Quad, TrackApplyError> {
+    use hsk_studio_motion::{EvalTick, Interpolation, Keyframe, Property, TemporalTangent};
+    let interp = |i: StudioInterpolation| match i {
+        StudioInterpolation::Linear => Interpolation::Linear,
+        StudioInterpolation::Bezier => Interpolation::Bezier,
+        StudioInterpolation::ContinuousBezier => Interpolation::ContinuousBezier,
+        StudioInterpolation::AutoBezier => Interpolation::AutoBezier,
+        StudioInterpolation::Hold => Interpolation::Hold,
+    };
+    let tangents = |t: &[hsk_studio_folio::StudioTemporalTangent]| -> Vec<TemporalTangent> {
+        t.iter().map(|t| TemporalTangent { speed: t.speed, influence: t.influence }).collect()
+    };
+    let keys = pin
+        .keyframes
+        .iter()
+        .map(|k| Keyframe {
+            time: hsk_studio_accord::Ticks::new(k.time),
+            value: k.value.clone(),
+            in_interp: interp(k.in_interp),
+            out_interp: interp(k.out_interp),
+            in_tangent: tangents(&k.in_tangent),
+            out_tangent: tangents(&k.out_tangent),
+        })
+        .collect();
+    let p = Property::new("corner_pin", pin.static_value.clone(), keys).map_err(|_| TrackApplyError::Parameter)?;
+    if p.dimension() != StudioCornerPin::DIMENSION {
+        return Err(TrackApplyError::Parameter);
+    }
+    let v = p
+        .sample(EvalTick::new(tick), &hsk_studio_accord::CancellationToken::default())
+        .map_err(|_| TrackApplyError::Parameter)?;
+    Ok([[v[0], v[1]], [v[2], v[3]], [v[4], v[5]], [v[6], v[7]]])
 }

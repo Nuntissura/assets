@@ -601,6 +601,11 @@ impl CompositionTemporalSource {
         for l in &comp.layers {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
             let id = l.layer_id.as_str();
+            // A corner pin is projective and a scene layer carries an affine matrix: refused typed,
+            // never dropped (lane SMB-AE-KEY-TRACK-2; `track_apply::corner_pin_transform` lowers it).
+            if l.corner_pin.is_some() {
+                return Err(unsupported(id, crate::track_apply::COMPOSITION_CORNER_PIN));
+            }
             let dl = doc
                 .layers
                 .iter()
