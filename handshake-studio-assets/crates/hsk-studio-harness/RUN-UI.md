@@ -35,6 +35,15 @@ cargo run -p hsk-studio-harness --features desktop --bin studio-harness -- "<pat
   `text_size_pt`, colour = brush colour, font Ubuntu-Light bundled with egui). Undo / Redo
   buttons and Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y undo and redo every committed edit (visibility, name,
   opacity, blend mode, paint, layer structure, text layers).
+- Vector tools (lane SMB-ILLUSTRATOR-PEN): Pen (click = corner anchor, drag = smooth anchor with
+  mirrored handles, click the first anchor to close, Enter / Escape / "End path" ends the path;
+  new paths have no fill and a stroke in the stroke colour), Direct (drag an anchor, a handle end
+  or a segment of a vector layer; Shift snaps to 45 degrees, Alt on a handle breaks the mirroring;
+  the pathfinder box applies unite, minus front, intersect, exclude, divide, trim, merge or crop to
+  the selected vector layer and the vector layer below it), Rectangle, Rounded, Ellipse shape,
+  Polygon, Star, Line (drag; polygon and star from the centre; Shift = square / circle / 45
+  degrees; fill, stroke, width, corner radius, sides, points and inner radius in the row). Every
+  vector edit is one Undo step. The selected vector layer shows its path, anchors and handles.
 - Left: layer tree in stack order. Buttons New (empty raster layer above the selection), Dup,
   Del (a group with its contents), Up, Down, Group, Ungroup: each is one undoable chronicle
   transaction (`placement` property). The checkbox shows/hides a layer through the session
@@ -74,7 +83,12 @@ Every window action is a `hsk_studio_harness::view::Viewer` method: `open`, `set
 `save`, `export`, `new_raster_layer`, `duplicate_layer`, `delete_layer`, `move_layer`,
 `shift_layer`, `rename_layer`, `group_layers`, `ungroup`, `layer_action(widget name)`,
 `place_text` / `place_text_with_font`, `add_font`, `text_entry`, `set_develop` /
-`set_develop_many`, `develop_op`, `set_develop_threads`, `export_develop`, `develop_json`, `develop_edit` (CLI: `studio-harness develop
+`set_develop_many`, `develop_op`, `set_develop_threads`, `export_develop`, `develop_json`, `develop_edit`,
+vector tools `pen_point(x, y, drag, close_radius)`, `pen_end`, `direct_hit`, `direct_drag(from, to,
+constraint, break_mirroring, radius)`, `edit_path(layer, PathEdit)` (insert / delete / convert /
+move anchor / move handle / bend / scissors / join / reverse), `draw_shape(ShapeKind, a, b, shift)`,
+`live_shape`, `set_live_shape`, `expand_shape`, `pathfinder_layers(PathfinderOp, layers)`,
+`offset_path_layer`, `outline_stroke_layer`, `vector_path`, `vector_entry`, `set_vector_tool` (CLI: `studio-harness develop
 SOURCE OUT --png|--jpeg [--adjust CONTROL VALUE]...`). `Viewer::state_json()` projects
 the document, frame, receipt, run operations and `edit` (tool, combine, brush, selection bounds,
 undo/redo history, text tool fonts). Widget ids are stable (`view::widget`, tools `tool.<key>`,
@@ -102,3 +116,10 @@ layer buttons `layers.<action>`). The active selection is saved with the documen
 - A duplicated raster layer carries its whole tile list in one chronicle value (64 KiB value
   budget, about 150-200 tiles; larger layers are refused `budget_exceeded`).
 - Large documents render synchronously (the window pauses while rendering).
+- Vector layers: chronicle has no property for a vector layer's paths, so every path edit replaces
+  the layer by a successor with a new id in one transaction (name, place and appearance kept). The
+  path records live in the `vector` entry, which the session cannot save yet (its document entry
+  tokens are `selection`, `text`, `develop`): until the session carries `vector`, saving a document
+  with vector layers is refused (`vector_entry_not_persistable`) instead of losing the geometry.
+  Vector networks, the curvature, pencil, width, knife and shape-builder tools, arc segment, grids
+  and spiral are not built; Illustrator parity of every tool is UNVERIFIED.
