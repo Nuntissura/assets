@@ -457,8 +457,10 @@ impl folio::Resolver for ViewResolver {
     fn format_supported(&self, _: &str) -> bool {
         true
     }
-    fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
-        false
+    /// The adjustment primitive is bound (adjustment layers render their records; lane
+    /// SMB-HARNESS-RENDER-RECORDS); other primitive layers stay unbound.
+    fn primitive_layer_binding(&self, kind: &str, schema_id: &str) -> bool {
+        kind == "adjustment" && schema_id == folio::ADJUSTMENT_SCHEMA
     }
 }
 
