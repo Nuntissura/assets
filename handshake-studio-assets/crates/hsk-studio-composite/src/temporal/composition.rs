@@ -1475,6 +1475,11 @@ impl CompositionTemporalSource {
         let mut next_key = next_free_key(&frame.lowering.plan)?;
         for s in &scene.layers {
             let Some(matte) = &s.matte else { continue };
+            // A scene matte without a track-matte record is an unlinked vector mask, which this
+            // path lowered in place (plan space) with the inputs.
+            if root.layers.iter().any(|c| c.layer_id == s.layer_id && c.matte.is_none()) {
+                continue;
+            }
             let plane = crate::composition::matte_coverage(&scene, &s.layer_id, matte, ctx, cancel)?;
             let owner: BTreeSet<SourceKey> = frame
                 .lowering
