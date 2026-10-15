@@ -311,9 +311,9 @@ fn check_all(test: &str, files: &[Expect]) {
 /// D70s (lossy type 1): raw SubIFD 3040 x 2014, 12 bit, Compression 34713, BGGR, curve maximum
 /// 4095. Z6 (12-bit compressed): 4548 x 3030, 12 bit, RGGB, as in the raw.pixls.us Exif dump
 /// (https://raw.pixls.us/getfile.php/3587/exif/: SubImage2 4548 x 3030, "Nikon NEF Compressed").
-/// Preview r measured at ec53c53 (sliding window): D70s 0.994 (3008 x 2000 preview), Z6 0.938
-/// (3024 x 2016); floors 0.97 / 0.90. Negative control: the D70s CFA against the Z6 preview (another
-/// scene) must stay below 0.8. Digests pinned at 1dcc906.
+/// Preview r measured with the scale-searching oracle (slice 3 tree): D70s 0.997 (3008 x 2000
+/// preview), Z6 0.986 (3024 x 2016); floors 0.97 / 0.95. Negative control: the D70s CFA against the
+/// Z6 preview (another scene) measured 0.032, must stay below 0.5. Digests pinned at 1dcc906.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
@@ -337,7 +337,7 @@ fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
             cfa: CfaPattern::Bayer(Bayer::Rggb),
             model: "NIKON Z 6",
             digest: "af18a3a222d77b3e2f19ff416cba8d5c62488a2d1d6bf149db1f84b5c93ebe22",
-            r_floor: 0.90,
+            r_floor: 0.95,
         },
     ]);
     // Negative control: the oracle must not accept a frame of another scene.
@@ -347,14 +347,14 @@ fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
     ) {
         let (r, _, _) = preview_r(&decode_container(&d70s).unwrap(), &z6).unwrap();
         println!("control: d70s cfa vs z6 preview r={r}");
-        assert!(r < 0.8, "the preview oracle accepted another scene: r={r}");
+        assert!(r < 0.5, "the preview oracle accepted another scene: r={r}");
     }
 }
 
 /// EOS R6 (raw.pixls.us id 4659): main CRAW track CMP1 version 0x200, 3584 x 2386 stored sensor
 /// (displayed 3408 x 2272), 14 bit, 4 planes, CFA code 0 (RGGB), 3 wavelet levels, one tile,
-/// header 872 bytes (byte inspection 2026-10-15). Preview r measured at ec53c53: 0.986 (3408 x 2272
-/// preview); floor 0.96. Digest pinned from the same run.
+/// header 872 bytes (byte inspection 2026-10-15). Preview r measured: 0.987 (3408 x 2272 preview);
+/// floor 0.96. Digest pinned at ec53c53.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn cr3_crx_r6_decodes_and_matches_the_embedded_preview() {
@@ -374,7 +374,9 @@ fn cr3_crx_r6_decodes_and_matches_the_embedded_preview() {
 /// X-S10 (raw.pixls.us id 4190): header mode 3 (lossy compressed), raw IFD 6384 x 4182, 14 bit,
 /// `IS` stream flag 0, sensor type 16 (X-Trans), 9 stripes, 697 six-row groups, X-Trans layout
 /// record equal to develop's X-Trans grid (byte inspection 2026-10-15). The S5000 (SuperCCD, no
-/// TIFF raw block) stays decoder_unavailable:raf (tests/real_raw.rs routing test).
+/// TIFF raw block) stays decoder_unavailable:raf (tests/real_raw.rs routing test). Preview r
+/// measured on the slice 3 tree: 0.948 (4416 x 2944 reduced preview); floor 0.92; digest pinned
+/// from the same run. Debug decode ~25 s.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn raf_xtrans_lossy_x_s10_decodes_and_matches_the_embedded_preview() {
@@ -386,7 +388,7 @@ fn raf_xtrans_lossy_x_s10_decodes_and_matches_the_embedded_preview() {
         white: 16383,
         cfa: CfaPattern::XTrans,
         model: "X-S10",
-        digest: "",
-        r_floor: 0.0,
+        digest: "a7ccc3650bdead2da2dba81c3b56c98061d259d83444f1a8f872e9abe193fbf1",
+        r_floor: 0.92,
     }]);
 }
