@@ -11,6 +11,7 @@ pub mod content_aware;
 pub mod coverage_math;
 pub mod effect_math;
 pub mod filter_math;
+pub mod keying;
 pub mod masked_patch;
 pub mod render_plan;
 pub mod retouch;
