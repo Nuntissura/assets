@@ -10,12 +10,10 @@
 //! composite's Folio adapter (`prepare_vectors`), colours decoded from 8-bit sRGB (the harness
 //! working space) into the linear-light plan by [`plan_colour`].
 //!
-//! Swatches: a swatch is a published `PAINT` style with one fill row (`publish_key` `swatch-<n>`).
-//! Applying a swatch copies its paint into the layer's fill or stroke row and records a link
-//! (`swatch_links` in the entry); editing the swatch updates the swatch and every linked row in one
-//! step (edit-updates-all-uses); detaching drops the link and keeps the local copy (STU-VEC-051). A
-//! network region painted with a swatch names the swatch style itself (`fill_style_id`), which
-//! composite paints. Folio rows carry no swatch reference: the row link is viewer state (gap).
+//! Swatches (lane SMB-ILLUSTRATOR-TOOLS-2, [`super::swatch`]) are Folio `StudioSwatch` records
+//! bound to rows by `StudioSwatchPaint`; graphic styles (STU-VEC-024) are published PAINT styles
+//! (`publish_key` `graphic-style-<n>`) a layer node links to directly. Swatch and brush bindings
+//! follow their rows through every restyle by row kind and per-kind ordinal.
 //!
 //! Each edit is ONE undo step (an entry-only history step of the session document entry).
 //! Hostile input (non-finite numbers, oversize stop or dash lists, out-of-range values) is refused
@@ -34,10 +32,11 @@ pub const MAX_GRADIENT_STOPS: usize = 256;
 pub const MAX_DASH: usize = 64;
 /// Most paint styles (layer appearances and swatches) one entry holds.
 pub const MAX_STYLES: usize = 4096;
-/// Most swatch links one entry holds.
-pub const MAX_LINKS: usize = 4096;
-/// Publish key prefix of swatches.
+/// Publish key prefix of swatch companion styles (one fill row bound to the swatch; network
+/// regions name them).
 pub const SWATCH_KEY: &str = "swatch-";
+/// Publish key prefix of graphic styles.
+pub const GRAPHIC_STYLE_KEY: &str = "graphic-style-";
 
 /// One gradient stop: `position` and `opacity` in `0..=1`, the colour 8-bit sRGB.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,14 +96,6 @@ impl RowKind {
             _ => None,
         }
     }
-}
-
-/// A swatch link: the `kind` row of layer `layer_id` holds a copy of swatch `swatch_id`'s paint.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SwatchLink {
-    pub layer_id: String,
-    pub kind: RowKind,
-    pub swatch_id: String,
 }
 
 /// IEC 61966-2-1 decode into linear light; an exact 8-bit value decodes like the viewer's own
@@ -208,7 +199,7 @@ pub fn layer_style_id(layer_id: &str) -> Result<String, String> {
     Ok(format!("SSTY-{uuid}"))
 }
 
-fn paint_style(id: &str, name: &str, key: &str, rows: &[StudioAppearanceRow]) -> Result<StudioPaintStyle, String> {
+pub(super) fn paint_style(id: &str, name: &str, key: &str, rows: &[StudioAppearanceRow]) -> Result<StudioPaintStyle, String> {
     let style: StudioPaintStyle = serde_json::from_value(json!({
         "schema_id": "hsk.studio.style_registry@1", "style_id": id, "kind": "PAINT", "name": name,
         "publishing": {"description": "", "description_markdown": "", "documentation_links": [], "publish_key": key, "is_remote": false},
@@ -226,7 +217,7 @@ pub fn validate_style(style: &StudioPaintStyle) -> Result<(), String> {
         .map_err(|d| format!("style: {:?} {}", d.code, d.target))
 }
 
-fn node(layer_id: &str, style_id: &str) -> Result<folio::StudioNodeDesign, String> {
+pub(super) fn node(layer_id: &str, style_id: &str) -> Result<folio::StudioNodeDesign, String> {
     serde_json::from_value(json!({"node": {"node_kind": "layer", "node_id": layer_id}, "style_refs": {"fill_style_id": style_id}})).map_err(|e| format!("style: {e}"))
 }
 
@@ -247,7 +238,7 @@ fn legacy_rows(record: &PathRecord, unit: GeometryUnit) -> Result<Vec<StudioAppe
 }
 
 /// The paint style a layer's fill style reference names in `design`, if any.
-fn node_style<'a>(design: &'a StudioDesignRecords, layer_id: &str) -> Option<&'a StudioPaintStyle> {
+pub(super) fn node_style<'a>(design: &'a StudioDesignRecords, layer_id: &str) -> Option<&'a StudioPaintStyle> {
     let id = design.node_design(layer_id)?.style_refs.get("fill_style_id")?;
     design.paint_styles.iter().find(|s| &s.style_id == id)
 }
@@ -280,9 +271,9 @@ pub(super) fn has_fill(entry: &VectorEntry, layer_id: &str, record: &PathRecord)
     }
 }
 
-/// Checks of the entry's `design` and `swatch_links` members (decode): only layer nodes with a
-/// `fill_style_id` naming a style of the set, Folio-valid paint styles, links to swatches.
-pub(super) fn validate_entry_styles(design: Option<&StudioDesignRecords>, links: &[SwatchLink], document_id: &str) -> Result<(), String> {
+/// Checks of the entry's `design` member (decode): only layer nodes with a `fill_style_id` naming a
+/// style of the set, and Folio-valid paint styles.
+pub(super) fn validate_entry_styles(design: Option<&StudioDesignRecords>, document_id: &str) -> Result<(), String> {
     if let Some(d) = design {
         if d.document_id != document_id {
             return Err("vector_entry_design: document".into());
@@ -305,61 +296,96 @@ pub(super) fn validate_entry_styles(design: Option<&StudioDesignRecords>, links:
             }
         }
     }
-    if links.len() > MAX_LINKS {
-        return Err("vector_entry_swatch_links: count".into());
-    }
-    for l in links {
-        let swatch = design.and_then(|d| d.paint_styles.iter().find(|s| s.style_id == l.swatch_id));
-        if !swatch.is_some_and(is_swatch) {
-            return Err(format!("vector_entry_swatch_links: {}", l.swatch_id));
-        }
-    }
     Ok(())
 }
 
-/// True for a swatch style (published under a `swatch-` key, one fill row).
-pub fn is_swatch(s: &StudioPaintStyle) -> bool {
-    s.publishing.publish_key.starts_with(SWATCH_KEY) && matches!(s.rows.as_slice(), [StudioAppearanceRow::Fill { .. }])
+/// True for a graphic style (lane SMB-ILLUSTRATOR-TOOLS-2: a published PAINT style under a
+/// `graphic-style-` key).
+pub fn is_graphic_style(s: &StudioPaintStyle) -> bool {
+    s.publishing.publish_key.starts_with(GRAPHIC_STYLE_KEY)
 }
 
-fn swatch_paint(s: &StudioPaintStyle) -> Result<StudioPaint, String> {
-    match s.rows.as_slice() {
-        [StudioAppearanceRow::Fill { paint, .. }] if is_swatch(s) => Ok(paint.clone()),
-        _ => Err(format!("swatch: {} is not a swatch", s.style_id)),
+/// Kind and per-kind ordinal of every row.
+fn ordinals(rows: &[StudioAppearanceRow]) -> Vec<(RowKind, usize)> {
+    let (mut f, mut s) = (0_usize, 0_usize);
+    rows.iter()
+        .map(|r| match r {
+            StudioAppearanceRow::Fill { .. } => {
+                f = f.saturating_add(1);
+                (RowKind::Fill, f)
+            }
+            StudioAppearanceRow::Stroke { .. } => {
+                s = s.saturating_add(1);
+                (RowKind::Stroke, s)
+            }
+        })
+        .collect()
+}
+
+/// Moves (or, between two styles, copies) the swatch and brush bindings of `from`'s rows `before`
+/// onto `to`'s rows `after` by kind and per-kind ordinal; bindings of kind `broken` are dropped.
+/// `to`'s own earlier bindings are replaced.
+pub(super) fn rebind(records: &mut folio::StudioVectorRecords, from: &str, before: &[StudioAppearanceRow], to: &str, after: &[StudioAppearanceRow], broken: Option<RowKind>) {
+    let (old, new) = (ordinals(before), ordinals(after));
+    let map = |row: u32| -> Option<u32> {
+        let k = old.get(usize::try_from(row).ok()?)?;
+        if Some(k.0) == broken {
+            return None;
+        }
+        new.iter().position(|x| x == k).and_then(|i| u32::try_from(i).ok())
+    };
+    let swatches: Vec<folio::StudioSwatchPaint> = records.swatch_paints.iter().filter(|p| p.style_id == from).filter_map(|p| Some(folio::StudioSwatchPaint { style_id: to.to_string(), row: map(p.row)?, ..p.clone() })).collect();
+    let brushes: Vec<folio::StudioBrushStroke> = records.brush_strokes.iter().filter(|p| p.style_id == from).filter_map(|p| Some(folio::StudioBrushStroke { style_id: to.to_string(), row: map(p.row)?, ..p.clone() })).collect();
+    records.swatch_paints.retain(|p| p.style_id != to);
+    records.brush_strokes.retain(|p| p.style_id != to);
+    records.swatch_paints.extend(swatches);
+    records.brush_strokes.extend(brushes);
+}
+
+/// A binding made together with a restyle: the first row of its kind takes it.
+pub(super) enum Bind {
+    Swatch { kind: RowKind, swatch_id: String, tint: Option<f64> },
+    Brush { brush_id: String, scale_override: Option<f64> },
+}
+
+/// The current rows of a layer: its node's style, else the synthesised 8-bit rows; and the style id
+/// they come from (`None` for synthesised rows).
+pub(super) fn current_rows(entry: &VectorEntry, doc: &StudioDocument, layer_id: &str, record: &PathRecord) -> Result<(Vec<StudioAppearanceRow>, Option<String>), String> {
+    match entry.design.as_ref().and_then(|d| node_style(d, layer_id)) {
+        Some(style) => Ok((style.rows.clone(), Some(style.style_id.clone()))),
+        None => Ok((legacy_rows(record, doc.geometry_unit)?, None)),
     }
 }
 
-/// Replaces the paint of every `kind` row of `rows` (a stroke row keeps its geometry).
-fn repaint(rows: &mut [StudioAppearanceRow], kind: RowKind, with: &StudioPaint) {
-    for r in rows {
-        match (r, kind) {
-            (StudioAppearanceRow::Fill { paint, .. }, RowKind::Fill) | (StudioAppearanceRow::Stroke { paint, .. }, RowKind::Stroke) => paint.clone_from(with),
-            _ => {}
+/// Mints a fresh `SSTY` id with the variant `tag` (`b` swatch companions use the swatch uuid).
+pub(super) fn mint_style_id(doc: &StudioDocument, design: &StudioDesignRecords, tag: &str) -> Result<(String, u64), String> {
+    let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
+    let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
+    let mut n = 0_u64;
+    loop {
+        let id = format!("SSTY-{high}-{low}-7ede-{tag}000-{n:012x}");
+        if !design.paint_styles.iter().any(|s| s.style_id == id) {
+            return Ok((id, n));
         }
+        n = n.checked_add(1).ok_or("style: id space")?;
     }
 }
 
 impl Viewer {
-    /// The appearance style of vector layer `layer_id` as composite draws it (its own style, or
-    /// the one synthesised from its 8-bit style).
+    /// The appearance style of vector layer `layer_id` as composite draws it (its own style, a
+    /// linked graphic style, or the one synthesised from its 8-bit style).
     pub fn layer_paint_style(&self, layer_id: &str) -> Result<StudioPaintStyle, String> {
         let doc = self.vdoc()?;
         let design = effective_design(doc, &self.vector_entry()?)?;
         node_style(&design, layer_id).cloned().ok_or_else(|| format!("style: {layer_id} is not a vector layer"))
     }
 
-    /// Swatches of the document: `(style id, name)`, in creation order.
-    pub fn swatches(&self) -> Result<Vec<(String, String)>, String> {
-        let entry = self.vector_entry()?;
-        Ok(entry.design.iter().flat_map(|d| d.paint_styles.iter()).filter(|s| is_swatch(s)).map(|s| (s.style_id.clone(), s.name.clone())).collect())
-    }
-
     /// Sets the fill of vector layer `layer_id` (`None` removes it): ONE undo step. A swatch link
-    /// of the fill is dropped.
+    /// of the fill is dropped; a linked graphic style is broken into a local copy.
     pub fn set_fill(&mut self, layer_id: &str, paint: Option<&PaintSpec>) -> Result<String, String> {
         let r = (|| {
             let paint = paint.map(folio_paint).transpose()?;
-            self.restyle("set_fill", layer_id, |rows, _| {
+            self.restyle("set_fill", layer_id, None, |rows, _| {
                 rows.retain(|r| !matches!(r, StudioAppearanceRow::Fill { .. }));
                 if let Some(p) = paint {
                     rows.insert(0, fill_row(p));
@@ -371,12 +397,12 @@ impl Viewer {
     }
 
     /// Sets the stroke of vector layer `layer_id` from the stroke panel (`None` removes it): ONE
-    /// undo step. A swatch link of the stroke is dropped.
+    /// undo step. A swatch or brush binding of the stroke is dropped.
     pub fn set_stroke(&mut self, layer_id: &str, panel: Option<&StrokePanel>) -> Result<String, String> {
         let r = (|| {
             let unit = self.vdoc()?.geometry_unit;
             let row = panel.map(|p| stroke_row(p, unit)).transpose()?;
-            self.restyle("set_stroke", layer_id, |rows, _| {
+            self.restyle("set_stroke", layer_id, None, |rows, _| {
                 rows.retain(|r| !matches!(r, StudioAppearanceRow::Stroke { .. }));
                 rows.extend(row);
                 Ok(Some(RowKind::Stroke))
@@ -385,120 +411,135 @@ impl Viewer {
         self.report(r)
     }
 
-    /// Creates a swatch named `name` (a slash path) holding `paint`: ONE undo step. Returns its
-    /// style id.
-    pub fn add_swatch(&mut self, name: &str, paint: &PaintSpec) -> Result<String, String> {
+    // ----- graphic styles (STU-VEC-024) ------------------------------------------------------------
+
+    /// Graphic styles of the document: `(style id, name)`.
+    pub fn graphic_styles(&self) -> Result<Vec<(String, String)>, String> {
+        let entry = self.vector_entry()?;
+        Ok(entry.design.iter().flat_map(|d| d.paint_styles.iter()).filter(|s| is_graphic_style(s)).map(|s| (s.style_id.clone(), s.name.clone())).collect())
+    }
+
+    /// Creates a graphic style named `name` from `layer_id`'s appearance (its swatch and brush
+    /// bindings come along): ONE undo step. Returns the style id.
+    pub fn add_graphic_style(&mut self, name: &str, layer_id: &str) -> Result<String, String> {
         let r = (|| {
-            let paint = folio_paint(paint)?;
+            let record = self.vector_path(layer_id)?;
             let doc = self.vdoc()?;
             let mut entry = self.vector_entry()?;
+            let (rows, from) = current_rows(&entry, doc, layer_id, &record)?;
             let design = entry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
             if design.paint_styles.len() >= MAX_STYLES {
-                return Err("swatch: style budget".into());
+                return Err("graphic_style: style budget".into());
             }
-            let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
-            let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
-            let mut n = 0_u64;
-            let id = loop {
-                let id = format!("SSTY-{high}-{low}-7ede-b000-{n:012x}");
-                if !design.paint_styles.iter().any(|s| s.style_id == id) {
-                    break id;
-                }
-                n = n.checked_add(1).ok_or("swatch: id space")?;
-            };
-            let style = paint_style(&id, name, &format!("{SWATCH_KEY}{n}"), &[fill_row(paint)])?;
-            design.paint_styles.push(style);
-            self.commit_entry("add_swatch", &id, &entry)?;
+            let (id, n) = mint_style_id(doc, design, "b")?;
+            design.paint_styles.push(paint_style(&id, name, &format!("{GRAPHIC_STYLE_KEY}{n}"), &rows)?);
+            if let Some(from) = from {
+                rebind(&mut entry.records, &from, &rows, &id, &rows, None);
+            }
+            self.commit_entry("add_graphic_style", &id, &entry)?;
             Ok(id)
         })();
         self.report(r)
     }
 
-    /// Applies swatch `swatch_id` to the `kind` row of layer `layer_id` (a layer without a stroke
-    /// gets a stroke of its 8-bit width, else 1 px) and links them: ONE undo step.
-    pub fn apply_swatch(&mut self, layer_id: &str, swatch_id: &str, kind: RowKind) -> Result<String, String> {
+    /// Links `layer_id` to graphic style `style_id` (its node names the style; a later redefine
+    /// updates the layer): ONE undo step.
+    pub fn apply_graphic_style(&mut self, layer_id: &str, style_id: &str) -> Result<String, String> {
         let r = (|| {
-            let entry = self.vector_entry()?;
-            let swatch = entry.design.as_ref().and_then(|d| d.paint_styles.iter().find(|s| s.style_id == swatch_id)).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
-            let paint = swatch_paint(swatch)?;
-            let width = self.vector_path(layer_id)?.style.stroke_width;
-            let id = swatch_id.to_string();
-            self.restyle_inner("apply_swatch", layer_id, Some(SwatchLink { layer_id: layer_id.to_string(), kind, swatch_id: id }), |rows, unit| {
-                match kind {
-                    RowKind::Fill => {
-                        rows.retain(|r| !matches!(r, StudioAppearanceRow::Fill { .. }));
-                        rows.insert(0, fill_row(paint.clone()));
-                    }
-                    RowKind::Stroke => {
-                        if !rows.iter().any(|r| matches!(r, StudioAppearanceRow::Stroke { .. })) {
-                            let weight = if width > 0.0 { width } else { 1.0 };
-                            rows.push(stroke_row(&StrokePanel::solid([0, 0, 0], weight), unit)?);
-                        }
-                        repaint(rows, RowKind::Stroke, &paint);
-                    }
-                }
-                Ok(Some(kind))
-            })
-        })();
-        self.report(r)
-    }
-
-    /// Drops the swatch link of the `kind` row of `layer_id` (its paint stays as a local copy):
-    /// ONE undo step.
-    pub fn detach_swatch(&mut self, layer_id: &str, kind: RowKind) -> Result<String, String> {
-        let r = (|| {
+            self.vector_path(layer_id)?;
             let mut entry = self.vector_entry()?;
-            let before = entry.links.len();
-            entry.links.retain(|l| !(l.layer_id == layer_id && l.kind == kind));
-            if entry.links.len() == before {
-                return Err(format!("swatch: {layer_id} {} is not linked", kind.token()));
+            let design = entry.design.as_mut().ok_or_else(|| format!("graphic_style: unknown {style_id}"))?;
+            if !design.paint_styles.iter().any(|s| s.style_id == style_id && is_graphic_style(s)) {
+                return Err(format!("graphic_style: unknown {style_id}"));
             }
-            self.commit_entry("detach_swatch", layer_id, &entry)?;
+            design.nodes.retain(|n| n.node.node_id != layer_id);
+            design.nodes.push(node(layer_id, style_id)?);
+            self.commit_entry("apply_graphic_style", layer_id, &entry)?;
             Ok(layer_id.to_string())
         })();
         self.report(r)
     }
 
-    /// Edits swatch `swatch_id`: the swatch and every linked row take `paint` (network regions
-    /// that name the swatch follow by reference): ONE undo step.
-    pub fn edit_swatch(&mut self, swatch_id: &str, paint: &PaintSpec) -> Result<String, String> {
+    /// Adds graphic style `style_id`'s rows to `layer_id`'s own appearance (fills after its fills,
+    /// strokes after its strokes; additive merge): ONE undo step.
+    pub fn merge_graphic_style(&mut self, layer_id: &str, style_id: &str) -> Result<String, String> {
         let r = (|| {
-            let paint = folio_paint(paint)?;
-            let mut entry = self.vector_entry()?;
-            let links = entry.links.clone();
-            let design = entry.design.as_mut().ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
-            let swatch = design.paint_styles.iter_mut().find(|s| s.style_id == swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
-            swatch_paint(swatch)?;
-            swatch.rows = vec![fill_row(paint.clone())];
-            for l in links.iter().filter(|l| l.swatch_id == swatch_id) {
-                let Ok(id) = layer_style_id(&l.layer_id) else { continue };
-                if let Some(style) = design.paint_styles.iter_mut().find(|s| s.style_id == id) {
-                    repaint(&mut style.rows, l.kind, &paint);
-                    validate_style(style)?;
-                }
-            }
-            self.commit_entry("edit_swatch", swatch_id, &entry)?;
-            Ok(swatch_id.to_string())
+            let entry = self.vector_entry()?;
+            let style = entry.design.as_ref().and_then(|d| d.paint_styles.iter().find(|s| s.style_id == style_id && is_graphic_style(s))).cloned().ok_or_else(|| format!("graphic_style: unknown {style_id}"))?;
+            self.restyle("merge_graphic_style", layer_id, None, |rows, _| {
+                let fills = rows.iter().take_while(|r| matches!(r, StudioAppearanceRow::Fill { .. })).count();
+                let (f, s): (Vec<_>, Vec<_>) = style.rows.iter().cloned().partition(|r| matches!(r, StudioAppearanceRow::Fill { .. }));
+                let tail = rows.split_off(fills);
+                rows.extend(f);
+                rows.extend(tail);
+                rows.extend(s);
+                Ok(None)
+            })
         })();
         self.report(r)
     }
 
-    /// The layer's current rows, `edit` applied, stored as its own style; `edit` returns the row
-    /// kind whose swatch link it breaks.
-    fn restyle(&mut self, op: &str, layer_id: &str, edit: impl FnOnce(&mut Vec<StudioAppearanceRow>, GeometryUnit) -> Result<Option<RowKind>, String>) -> Result<String, String> {
-        self.restyle_inner(op, layer_id, None, edit)
+    /// Breaks `layer_id`'s link to its graphic style into a local copy: ONE undo step.
+    pub fn break_graphic_style(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = self.restyle("break_graphic_style", layer_id, None, |_, _| Ok(None));
+        self.report(r)
     }
 
-    /// [`Viewer::restyle`] that also records `link` (after breaking the old link of its kind).
-    fn restyle_inner(&mut self, op: &str, layer_id: &str, link: Option<SwatchLink>, edit: impl FnOnce(&mut Vec<StudioAppearanceRow>, GeometryUnit) -> Result<Option<RowKind>, String>) -> Result<String, String> {
+    /// Redefines graphic style `style_id` from `layer_id`'s appearance; every linked layer follows:
+    /// ONE undo step.
+    pub fn redefine_graphic_style(&mut self, style_id: &str, layer_id: &str) -> Result<String, String> {
+        let r = (|| {
+            let record = self.vector_path(layer_id)?;
+            let doc = self.vdoc()?;
+            let mut entry = self.vector_entry()?;
+            let (rows, from) = current_rows(&entry, doc, layer_id, &record)?;
+            let design = entry.design.as_mut().ok_or_else(|| format!("graphic_style: unknown {style_id}"))?;
+            let style = design.paint_styles.iter_mut().find(|s| s.style_id == style_id && is_graphic_style(s)).ok_or_else(|| format!("graphic_style: unknown {style_id}"))?;
+            style.rows.clone_from(&rows);
+            validate_style(style)?;
+            match from {
+                Some(from) if from != style_id => rebind(&mut entry.records, &from, &rows, style_id, &rows, None),
+                Some(_) => {}
+                None => rebind(&mut entry.records, style_id, &[], style_id, &rows, None),
+            }
+            self.commit_entry("redefine_graphic_style", style_id, &entry)?;
+            Ok(style_id.to_string())
+        })();
+        self.report(r)
+    }
+
+    /// Clears `layer_id`'s appearance (no fill, no stroke): ONE undo step.
+    pub fn clear_appearance(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = self.restyle("clear_appearance", layer_id, None, |rows, _| {
+            rows.clear();
+            Ok(None)
+        });
+        self.report(r)
+    }
+
+    /// Reduces `layer_id`'s appearance to basic: its first fill and first stroke row: ONE undo step.
+    pub fn reduce_to_basic_appearance(&mut self, layer_id: &str) -> Result<String, String> {
+        let r = self.restyle("reduce_to_basic_appearance", layer_id, None, |rows, _| {
+            let fill = rows.iter().find(|r| matches!(r, StudioAppearanceRow::Fill { .. })).cloned();
+            let stroke = rows.iter().find(|r| matches!(r, StudioAppearanceRow::Stroke { .. })).cloned();
+            rows.clear();
+            rows.extend(fill);
+            rows.extend(stroke);
+            Ok(None)
+        });
+        self.report(r)
+    }
+
+    /// The layer's current rows, `edit` applied, stored as its own style (a linked graphic style
+    /// is broken into the local copy); bindings follow their rows by kind and ordinal, the kind
+    /// `edit` returns loses its bindings, then `bind` binds the first row of its kind.
+    pub(super) fn restyle(&mut self, op: &str, layer_id: &str, bind: Option<Bind>, edit: impl FnOnce(&mut Vec<StudioAppearanceRow>, GeometryUnit) -> Result<Option<RowKind>, String>) -> Result<String, String> {
         let record = self.vector_path(layer_id)?;
         let doc = self.vdoc()?;
         let mut entry = self.vector_entry()?;
         let id = layer_style_id(layer_id)?;
-        let mut rows = match entry.design.as_ref().and_then(|d| node_style(d, layer_id)) {
-            Some(style) => style.rows.clone(),
-            None => legacy_rows(&record, doc.geometry_unit)?,
-        };
+        let (before, from) = current_rows(&entry, doc, layer_id, &record)?;
+        let mut rows = before.clone();
         let broken = edit(&mut rows, doc.geometry_unit)?;
         let style = paint_style(&id, "Layers/appearance", "appearance", &rows)?;
         let design = entry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
@@ -507,17 +548,25 @@ impl Viewer {
         }
         design.paint_styles.retain(|s| s.style_id != id);
         design.paint_styles.push(style);
-        if design.node_design(layer_id).is_none() {
-            design.nodes.push(node(layer_id, &id)?);
-        }
-        if let Some(kind) = broken {
-            entry.links.retain(|l| !(l.layer_id == layer_id && l.kind == kind));
-        }
-        if let Some(l) = link {
-            if entry.links.len() >= MAX_LINKS {
-                return Err(format!("{op}: link budget"));
+        design.nodes.retain(|n| n.node.node_id != layer_id);
+        design.nodes.push(node(layer_id, &id)?);
+        rebind(&mut entry.records, from.as_deref().unwrap_or(&id), if from.is_some() { &before } else { &[] }, &id, &rows, broken);
+        if let Some(b) = bind {
+            let kind = match &b {
+                Bind::Swatch { kind, .. } => *kind,
+                Bind::Brush { .. } => RowKind::Stroke,
+            };
+            let row = ordinals(&rows).iter().position(|o| *o == (kind, 1)).and_then(|i| u32::try_from(i).ok()).ok_or_else(|| format!("{op}: no {} row", kind.token()))?;
+            match b {
+                Bind::Swatch { swatch_id, tint, .. } => {
+                    entry.records.swatch_paints.retain(|p| !(p.style_id == id && p.row == row));
+                    entry.records.swatch_paints.push(folio::StudioSwatchPaint { style_id: id.clone(), row, swatch_id, tint });
+                }
+                Bind::Brush { brush_id, scale_override } => {
+                    entry.records.brush_strokes.retain(|p| !(p.style_id == id && p.row == row));
+                    entry.records.brush_strokes.push(folio::StudioBrushStroke { style_id: id.clone(), row, brush_id, scale_override });
+                }
             }
-            entry.links.push(l);
         }
         self.commit_entry(op, layer_id, &entry)?;
         Ok(layer_id.to_string())

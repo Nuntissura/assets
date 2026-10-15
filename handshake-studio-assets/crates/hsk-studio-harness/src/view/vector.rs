@@ -66,7 +66,15 @@ pub const MAX_STROKE_WIDTH: f64 = 1000.0;
 pub const HIT_RADIUS_SCREEN: f64 = 6.0;
 
 pub mod style;
-pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel, SwatchLink};
+pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel};
+/// Lane SMB-ILLUSTRATOR-TOOLS-2.
+pub mod arrange;
+pub mod brushes;
+pub mod envelope;
+pub mod swatch;
+pub use arrange::{AlignTarget, TransformOp};
+pub use envelope::EnvelopeSpec;
+pub use swatch::{SwatchColour, SwatchSpec};
 
 /// Stable widget ids of the vector tools.
 pub mod widget {
@@ -290,8 +298,10 @@ pub struct VectorEntry {
     /// Folio paint styles of styled layers and swatches (lane SMB-VECTOR-STYLES, [`style`]; entry
     /// member `design`, absent when `None`).
     pub design: Option<folio::StudioDesignRecords>,
-    /// Swatch links (entry member `swatch_links`, absent when empty).
-    pub links: Vec<SwatchLink>,
+    /// Folio vector records of the entry other than the width profiles (those live on the path
+    /// records): swatches and swatch bindings, brushes and brush strokes, envelopes (lane
+    /// SMB-ILLUSTRATOR-TOOLS-2; entry member `vector_records`, absent when empty).
+    pub records: folio::StudioVectorRecords,
 }
 
 /// Shape tools.
@@ -379,6 +389,9 @@ pub struct VectorTool {
     /// [`Viewer::set_vector_tool`] keeps the live values).
     pub press: Option<[f64; 2]>,
     pub current: Option<[f64; 2]>,
+    /// CMYK ICC profile CMYK swatches resolve through (lane SMB-ILLUSTRATOR-TOOLS-2; machine-local,
+    /// never saved with the document).
+    pub cmyk_profile: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 impl Default for VectorTool {
@@ -412,6 +425,7 @@ impl Default for VectorTool {
             pen_vertex: None,
             press: None,
             current: None,
+            cmyk_profile: None,
         }
     }
 }
@@ -494,7 +508,7 @@ fn path_of(v: &Value, budget: &mut usize) -> Result<AnchorPath, String> {
 
 impl VectorEntry {
     pub fn empty() -> Self {
-        Self { paths: Vec::new(), live: Vec::new(), design: None, links: Vec::new() }
+        Self { paths: Vec::new(), live: Vec::new(), design: None, records: folio::StudioVectorRecords::new(String::new()) }
     }
 
     pub fn path(&self, path_id: &str) -> Option<&PathRecord> {
@@ -506,7 +520,7 @@ impl VectorEntry {
     pub fn decode(bytes: &[u8], doc: &StudioDocument, cancel: &hsk_studio_accord::CancellationToken) -> Result<Self, String> {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("vector_entry_json: {e}"))?;
         let object = v.as_object().ok_or("vector_entry_json: not an object")?;
-        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "swatch_links", "vector_records"].contains(&k.as_str())) {
+        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "vector_records"].contains(&k.as_str())) {
             return Err("vector_entry_unknown_field".into());
         }
         if v["schema"] != ENTRY_SCHEMA {
@@ -571,30 +585,16 @@ impl VectorEntry {
                 Some(serde_json::from_value::<folio::StudioDesignRecords>(d.clone()).map_err(|e| format!("vector_entry_design: {e}"))?)
             }
         };
-        let links = match object.get("swatch_links") {
-            None => Vec::new(),
-            Some(l) => {
-                let arr = l.as_array().filter(|a| a.len() <= style::MAX_LINKS).ok_or("vector_entry_swatch_links")?;
-                arr.iter()
-                    .map(|x| {
-                        let o = x.as_object().filter(|o| o.len() == 3).ok_or("vector_entry_swatch_links")?;
-                        let text = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| "vector_entry_swatch_links".to_string());
-                        let kind = RowKind::from_token(&text("kind")?).ok_or("vector_entry_swatch_links")?;
-                        Ok(SwatchLink { layer_id: text("layer_id")?, kind, swatch_id: text("swatch_id")? })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?
-            }
-        };
-        style::validate_entry_styles(design.as_ref(), &links, &doc.document_id)?;
+        style::validate_entry_styles(design.as_ref(), &doc.document_id)?;
+        let mut extra = folio::StudioVectorRecords::new(doc.document_id.clone());
         if let Some(r) = object.get("vector_records") {
-            if r.get("width_profiles").and_then(Value::as_array).is_some_and(|a| a.len() > MAX_PATHS) {
+            let members = ["width_profiles", "swatches", "swatch_paints", "brushes", "brush_strokes", "envelopes", "patterns", "pattern_paints", "clips", "masks", "attachments", "image_paints", "boolean_groups", "mask_parameters"];
+            if members.iter().any(|m| r.get(m).and_then(Value::as_array).is_some_and(|a| a.len() > folio::TOOLS_MAX_ENTRIES.max(MAX_PATHS))) {
                 return Err("vector_entry_over_budget".into());
             }
             let r: folio::StudioVectorRecords = serde_json::from_value(r.clone()).map_err(|e| format!("vector_entry_vector_records: {e}"))?;
-            let mut rest = r.clone();
-            rest.width_profiles.clear();
-            if rest != folio::StudioVectorRecords::new(doc.document_id.clone()) {
-                return Err("vector_entry_vector_records: members".into());
+            if r.document_id != doc.document_id {
+                return Err("vector_entry_vector_records: document".into());
             }
             for w in &r.width_profiles {
                 folio::validate_width_profile(w).map_err(|d| format!("vector_entry_width: {:?} {}", d.code, d.target))?;
@@ -606,10 +606,30 @@ impl VectorEntry {
                 let record = records.iter_mut().find(|p| p.path_id == w.path_id).ok_or_else(|| format!("vector_entry_width: path {}", w.path_id))?;
                 record.width = Some(pts);
             }
+            extra = r;
+            extra.width_profiles.clear();
         }
-        let entry = Self { paths: records, live: live.shapes, design, links };
+        let entry = Self { paths: records, live: live.shapes, design, records: extra };
         entry.validate(doc, cancel)?;
+        entry.validate_records(doc, cancel)?;
         Ok(entry)
+    }
+
+    /// Folio `validate_vector_records` over the members that apply to `doc` (envelopes of vector
+    /// layers it holds, with an existing top object; the others belong to revisions the history can
+    /// return to), with the entry's design records.
+    pub fn validate_records(&self, doc: &StudioDocument, cancel: &hsk_studio_accord::CancellationToken) -> Result<(), String> {
+        let mut r = self.folio_records(&doc.document_id);
+        let vector = |id: &str| doc.layers.iter().any(|l| l.layer_id == id && matches!(l.payload, Payload::Vector { .. }));
+        r.envelopes.retain(|e| {
+            vector(&e.layer_id)
+                && match &e.envelope {
+                    folio::StudioEnvelopeShape::TopObject { source_layer_id } => vector(source_layer_id),
+                    _ => true,
+                }
+        });
+        let design = self.design.clone().unwrap_or_else(|| folio::StudioDesignRecords::new(doc.document_id.clone()));
+        folio::validate_vector_records(&r, doc, Some(&design), folio::Budget::default(), cancel).map_err(|d| format!("vector_entry_vector_records: {:?} {}", d.code, d.target))
     }
 
     /// Path ids are `SVPT` ids and unique; styles finite and bounded; the live records that apply
@@ -662,22 +682,20 @@ impl VectorEntry {
         live.shapes.clone_from(&self.live);
         let mut v = json!({"schema": ENTRY_SCHEMA, "paths": paths, "live_shapes": live});
         let records = self.folio_records(document_id);
-        if !records.width_profiles.is_empty() {
+        if records != folio::StudioVectorRecords::new(document_id.to_string()) {
             v["vector_records"] = serde_json::to_value(&records).map_err(|e| format!("vector_entry_json: {e}"))?;
         }
         if let Some(d) = &self.design {
             v["design"] = serde_json::to_value(d).map_err(|e| format!("vector_entry_json: {e}"))?;
         }
-        if !self.links.is_empty() {
-            v["swatch_links"] = Value::Array(self.links.iter().map(|l| json!({"layer_id": l.layer_id, "kind": l.kind.token(), "swatch_id": l.swatch_id})).collect());
-        }
         serde_json::to_vec(&v).map_err(|e| format!("vector_entry_json: {e}"))
     }
 
-    /// The Folio vector records of the entry: a `StudioWidthProfile` per path with a width profile
-    /// (lane SMB-VECTOR-STYLES; composite strokes them with nib's variable outline).
+    /// The Folio vector records of the entry: its records plus a `StudioWidthProfile` per path with
+    /// a width profile (lane SMB-VECTOR-STYLES; composite strokes them with nib's variable outline).
     pub fn folio_records(&self, document_id: &str) -> folio::StudioVectorRecords {
-        let mut r = folio::StudioVectorRecords::new(document_id.to_string());
+        let mut r = self.records.clone();
+        r.document_id = document_id.to_string();
         r.width_profiles = self
             .paths
             .iter()
@@ -1461,19 +1479,23 @@ impl Viewer {
         self.report(r)
     }
 
-    /// Paint bucket with a swatch (lane SMB-VECTOR-STYLES): the face at `p` is filled and names
-    /// swatch `swatch_id` as its region fill style (`None`: back to the layer's fill), so composite
+    /// Paint bucket with a swatch (lane SMB-VECTOR-STYLES; Folio swatches since
+    /// SMB-ILLUSTRATOR-TOOLS-2): the face at `p` is filled and names swatch `swatch_id`'s companion
+    /// style as its region fill style (`None`: back to the layer's fill), so composite
     /// paints it with the swatch and a swatch edit repaints it. ONE transaction.
     pub fn network_region_swatch(&mut self, layer_id: &str, p: [f64; 2], swatch_id: Option<&str>) -> Result<String, String> {
         let r = (|| {
-            if let Some(id) = swatch_id {
-                let entry = self.vector_entry()?;
-                let known = entry.design.as_ref().is_some_and(|d| d.paint_styles.iter().any(|s| s.style_id == id && style::is_swatch(s)));
-                if !known {
-                    return Err(format!("region_swatch: unknown swatch {id}"));
+            // The region names the swatch's companion PAINT style (one fill row bound to the swatch).
+            let style = match swatch_id {
+                Some(id) => {
+                    if self.vector_entry()?.records.swatch(id).is_none() {
+                        return Err(format!("region_swatch: unknown swatch {id}"));
+                    }
+                    Some(swatch::companion_id(id)?)
                 }
-            }
-            self.paint_bucket_inner("region_swatch", layer_id, p, true, Some(swatch_id.map(str::to_string)))
+                None => None,
+            };
+            self.paint_bucket_inner("region_swatch", layer_id, p, true, Some(style))
         })();
         self.report(r)
     }

@@ -700,6 +700,72 @@ impl Run<'_> {
         self.property_edit(op, layer_id, Prop::VectorPaths, PropValue::PathIds(path_ids), None)
     }
 
+    /// ONE undoable step (lane SMB-ILLUSTRATOR-TOOLS-2): the `vector_paths` of every layer in
+    /// `writes` through one chronicle patch, and the session document entry `token` set to `bytes`
+    /// (when given) inside the same history step, so undo/redo restore both together. Without
+    /// path writes the step is entry-only. One record `op`.
+    pub fn set_vector_paths_and_entry(&mut self, op: &str, writes: &[(String, Vec<String>)], entry: Option<(&str, Vec<u8>)>) -> bool {
+        let before = self.frames.count();
+        let Some(session) = self.session.as_ref() else {
+            return self.push(op, before, Err("not_open"), None, None);
+        };
+        let previous = entry.as_ref().map(|(token, _)| EntryRestore { token: (*token).to_string(), bytes: session.document_entry(token).map(<[u8]>::to_vec) });
+        let depth = self.undo_stack.len();
+        if !writes.is_empty() {
+            if !self.harness.provider_selected(CHRONICLE_PROVIDER_ID) {
+                return self.own_op(op, before, Err("provider_not_selected"));
+            }
+            let n = self.op_no();
+            let cancel = self.cancel;
+            let Some(session) = self.session.as_mut() else {
+                return self.push(op, before, Err("not_open"), None, None);
+            };
+            let params = match patch_json_vector_paths(session, &self.actor, writes, n) {
+                Ok(p) => p,
+                Err(code) => return self.own_op(op, before, Err(code)),
+            };
+            let revision = session.document_revision();
+            match session.submit(CHRONICLE_PROVIDER_ID, &params, revision, cancel) {
+                Ok(applied) => {
+                    if applied.changed
+                        && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
+                    {
+                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None });
+                        self.redo_stack.clear();
+                    }
+                }
+                Err(f) => {
+                    let revision = self.revision();
+                    return self.push(op, before, Err(f.code()), Some(f.report), revision);
+                }
+            }
+        }
+        if let (Some((token, bytes)), Some(restore)) = (entry, previous) {
+            let cancel = self.cancel;
+            let set = match self.session.as_mut() {
+                Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
+                None => Err("not_open"),
+            };
+            if let Err(code) = set {
+                // A committed path step without its entry would split the step: undo the paths.
+                if self.undo_stack.len() > depth {
+                    let _ = self.undo();
+                }
+                return self.own_op(op, before, Err(code));
+            }
+            if self.undo_stack.len() > depth {
+                if let Some(step) = self.undo_stack.last_mut() {
+                    step.entry = Some(restore);
+                }
+            } else {
+                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore) });
+                self.redo_stack.clear();
+            }
+        }
+        let layers: Vec<&str> = writes.iter().map(|(l, _)| l.as_str()).collect();
+        self.own_op(op, before, Ok(json!({"layers": layers})))
+    }
+
     /// Stack parent and index (0 = bottom-most) of a layer of the working revision (chronicle
     /// `placement` through the session); `None` when absent, unstacked or nothing is open.
     pub fn placement(&self, layer_id: &str) -> Option<(Parent, u64)> {
@@ -1168,6 +1234,39 @@ impl Run<'_> {
 /// Builds the chronicle `Patch` JSON for one property edit. The address and revision come from the
 /// session's own revision vector, so the patch quotes what the session holds (exercised by every
 /// edit in `open_edit_save_reopen_verify_end_to_end`).
+/// One chronicle patch of several `vector_paths` writes (lane SMB-ILLUSTRATOR-TOOLS-2).
+fn patch_json_vector_paths(session: &Session, actor: &ActorContext, writes: &[(String, Vec<String>)], n: u64) -> Result<Vec<u8>, &'static str> {
+    let doc = session.snapshot().document();
+    let mut reads = Vec::with_capacity(writes.len());
+    let mut wire = Vec::with_capacity(writes.len());
+    for (layer_id, path_ids) in writes {
+        let layer = doc.layers.iter().find(|l| &l.layer_id == layer_id).ok_or("unknown_layer")?;
+        let folio::Payload::Vector { path_ids: current } = &layer.payload else {
+            return Err("not_a_vector_layer");
+        };
+        let address = json!({"target":{"node_kind":"layer","node_id":layer_id},"property":Prop::VectorPaths.field()});
+        let revision = session
+            .revisions()
+            .iter()
+            .find(|e| serde_json::to_value(&e.address).ok().as_ref() == Some(&address))
+            .map(|e| e.revision)
+            .ok_or("no_editable_property")?;
+        reads.push(json!({"address": address, "expected_revision": revision, "expected_value": PropValue::PathIds(current.clone()).wire()}));
+        wire.push(json!({"address": address, "value": PropValue::PathIds(path_ids.clone()).wire()}));
+    }
+    let patch = json!({
+        "transport_version": 1,
+        "document_id": doc.document_id,
+        "base_revision": session.document_revision(),
+        "command_id": format!("harness-op-{n}"),
+        "correlation_id": n,
+        "actor": actor_json(actor),
+        "reads": reads,
+        "writes": wire,
+    });
+    serde_json::to_vec(&patch).map_err(|_| "patch_encoding")
+}
+
 fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Prop, new: &PropValue, n: u64) -> Result<Vec<u8>, &'static str> {
     let layer = session.snapshot().document().layers.iter().find(|l| l.layer_id == layer_id).ok_or("unknown_layer")?;
     let property = prop.field();
