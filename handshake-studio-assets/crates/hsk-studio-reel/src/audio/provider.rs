@@ -1,12 +1,16 @@
 //! Standalone compressed-audio file providers (one `MediaProvider` per container kind), on the shared
-//! delivery loop of `engine`.
+//! delivery loop of `engine`. `open_stream` is the one dispatch point from container kind to a decoding
+//! `FrameSource`; probe, segment delivery and whole-file decode all go through it.
 #![deny(clippy::arithmetic_side_effects)]
-use super::engine::{self, Ids, StreamShape};
+use super::engine::{self, FrameSource, Ids, StreamShape};
 use super::flac::{FlacEncoder, FlacLimits, StreamInfo};
+use super::mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION};
 use super::native_flac::{NativeFlac, read_header};
-use super::ogg_audio;
 use super::packet::Decode;
-use super::{DecodedAudio, FLAC_DECODER_ID, FLAC_DECODER_VERSION, flac_descriptor};
+use super::{
+    DecodedAudio, FLAC_DECODER_ID, FLAC_DECODER_VERSION, flac_descriptor, mp3_descriptor,
+    mp3_stream, ogg_audio,
+};
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use hsk_studio_accord::CancellationToken;
@@ -16,6 +20,8 @@ use std::io::{SeekFrom, Write};
 pub const FLAC_PROVIDER_ID: &str = "flac";
 /// Provider id of Ogg audio files (Vorbis, Opus, FLAC in Ogg).
 pub const OGG_PROVIDER_ID: &str = "ogg-audio";
+/// Provider id of MPEG audio elementary streams (.mp3, .mp2, .mpa).
+pub const MP3_PROVIDER_ID: &str = "mpeg-audio";
 
 /// Container kinds served by `AudioFileProvider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +30,34 @@ pub enum AudioFileKind {
     Flac,
     /// Ogg (`OggS`) carrying Vorbis, Opus or FLAC.
     Ogg,
+    /// MPEG-1/2/2.5 audio Layer I/II/III elementary stream, optionally after ID3v2 tags.
+    MpegAudio,
+}
+
+impl AudioFileKind {
+    const ALL: [Self; 3] = [Self::Flac, Self::Ogg, Self::MpegAudio];
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Flac => FLAC_PROVIDER_ID,
+            Self::Ogg => OGG_PROVIDER_ID,
+            Self::MpegAudio => MP3_PROVIDER_ID,
+        }
+    }
+
+    fn sniff(self, head: &[u8]) -> bool {
+        match self {
+            Self::Flac => head.starts_with(b"fLaC"),
+            Self::Ogg => head.starts_with(b"OggS"),
+            Self::MpegAudio => {
+                head.starts_with(b"ID3")
+                    || head
+                        .get(..4)
+                        .and_then(|h| <[u8; 4]>::try_from(h).ok())
+                        .is_some_and(|h| super::mp3::header_is_valid(&h))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,33 +72,35 @@ impl AudioFileProvider {
         }
     }
 
-    /// Every standalone audio file provider of this build, in a stable order.
-    pub fn all() -> Vec<Self> {
-        vec![Self::flac(), Self::ogg()]
-    }
-
     pub const fn ogg() -> Self {
         Self {
             kind: AudioFileKind::Ogg,
         }
     }
 
-    fn id(&self) -> &'static str {
-        match self.kind {
-            AudioFileKind::Flac => FLAC_PROVIDER_ID,
-            AudioFileKind::Ogg => OGG_PROVIDER_ID,
+    pub const fn mpeg_audio() -> Self {
+        Self {
+            kind: AudioFileKind::MpegAudio,
         }
+    }
+
+    /// Every standalone audio file provider of this build, in a stable order.
+    pub fn all() -> Vec<Self> {
+        AudioFileKind::ALL
+            .iter()
+            .map(|&kind| Self { kind })
+            .collect()
     }
 }
 
-fn flac_limits() -> FlacLimits {
+pub(crate) fn flac_limits() -> FlacLimits {
     FlacLimits {
         max_channels: super::MAX_AUDIO_CHANNELS as u8,
         ..FlacLimits::default()
     }
 }
 
-fn shape_of(info: &StreamInfo) -> StreamShape {
+pub(crate) fn flac_shape(info: &StreamInfo) -> StreamShape {
     StreamShape {
         rate: info.sample_rate,
         channels: u16::from(info.channels),
@@ -77,6 +113,86 @@ fn source_len(src: &mut dyn ReadSeek) -> Result<u64, ReelError> {
     let len = src.seek(SeekFrom::End(0))?;
     src.seek(SeekFrom::Start(0))?;
     Ok(len)
+}
+
+/// An opened stream: its shape, its decoder ids and the decoding frame source (positioned at the first
+/// audio unit). Only headers have been read.
+pub(crate) struct Opened<'a> {
+    pub(crate) shape: StreamShape,
+    pub(crate) decoder_id: &'static str,
+    pub(crate) decoder_version: &'static str,
+    pub(crate) source: Box<dyn FrameSource + 'a>,
+    /// FLAC: the native reader, kept to verify the MD5 after a whole-stream decode.
+    flac: Option<NativeFlac<'a>>,
+}
+
+impl Opened<'_> {
+    fn frame_source(&mut self) -> &mut dyn FrameSource {
+        match self.flac.as_mut() {
+            Some(flac) => flac,
+            None => self.source.as_mut(),
+        }
+    }
+}
+
+struct NoFrames;
+impl FrameSource for NoFrames {
+    fn next_block(
+        &mut self,
+        _out: &mut Vec<f32>,
+        _cancel: &CancellationToken,
+    ) -> Result<Option<usize>, ReelError> {
+        Ok(None)
+    }
+    fn bytes_read(&self) -> u64 {
+        0
+    }
+}
+
+pub(crate) fn open_stream<'a>(
+    kind: AudioFileKind,
+    src: &'a mut dyn ReadSeek,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<Opened<'a>, ReelError> {
+    let len = source_len(src)?;
+    match kind {
+        AudioFileKind::Flac => {
+            let header = read_header(src, len, limits.max_probe_bytes, &flac_limits())?;
+            let shape = flac_shape(&header.info);
+            Ok(Opened {
+                shape,
+                decoder_id: FLAC_DECODER_ID,
+                decoder_version: FLAC_DECODER_VERSION,
+                source: Box::new(NoFrames),
+                flac: Some(NativeFlac::open(src, header, flac_limits())?),
+            })
+        }
+        AudioFileKind::Ogg => {
+            let ogg = ogg_audio::open(src, len, cancel)?;
+            let (decoder_id, decoder_version) = ogg.codec.ids();
+            Ok(Opened {
+                shape: ogg.shape,
+                decoder_id,
+                decoder_version,
+                source: Box::new(Decode {
+                    source: ogg.packets,
+                    decoder: ogg.decoder,
+                }),
+                flac: None,
+            })
+        }
+        AudioFileKind::MpegAudio => {
+            let info = mp3_stream::probe(src, len, limits, cancel)?;
+            Ok(Opened {
+                shape: info.shape,
+                decoder_id: MP3_DECODER_ID,
+                decoder_version: MP3_DECODER_VERSION,
+                source: Box::new(mp3_stream::Mp3Stream::open(src, info)?),
+                flac: None,
+            })
+        }
+    }
 }
 
 impl MediaProvider for AudioFileProvider {
@@ -102,14 +218,16 @@ impl MediaProvider for AudioFileProvider {
                 can_decode: true,
                 can_encode: false,
             },
+            AudioFileKind::MpegAudio => CodecDescriptor {
+                id: MP3_PROVIDER_ID,
+                container: "mpeg-audio",
+                ..mp3_descriptor()
+            },
         }
     }
 
     fn sniff(&self, head: &[u8]) -> bool {
-        match self.kind {
-            AudioFileKind::Flac => head.starts_with(b"fLaC"),
-            AudioFileKind::Ogg => head.starts_with(b"OggS"),
-        }
+        self.kind.sniff(head)
     }
 
     fn probe(
@@ -119,19 +237,13 @@ impl MediaProvider for AudioFileProvider {
         cancel: &CancellationToken,
     ) -> Result<StreamLayout, ReelError> {
         check_cancel(cancel)?;
-        let len = source_len(src)?;
-        let shape = match self.kind {
-            AudioFileKind::Flac => {
-                shape_of(&read_header(src, len, limits.max_probe_bytes, &flac_limits())?.info)
-            }
-            AudioFileKind::Ogg => ogg_audio::open(src, len, cancel)?.shape,
-        };
+        let shape = open_stream(self.kind, src, limits, cancel)?.shape;
         let tps = crate::time::exact_ticks_per_unit(shape.rate).ok_or(ReelError::Unsupported {
             what: "sample-rate-not-tick-exact",
         })?;
         Ok(StreamLayout {
             kind: MediaKind::Audio,
-            codec: self.id().into(),
+            codec: self.kind.id().into(),
             width: 0,
             height: 0,
             ticks_per_unit: tps,
@@ -150,7 +262,7 @@ impl MediaProvider for AudioFileProvider {
         sink: &mut dyn ChunkSink,
     ) -> Result<SegmentReceipt, ReelError> {
         check_cancel(cancel)?;
-        if req.codec != self.id() {
+        if req.codec != self.kind.id() {
             return Err(ReelError::CodecUnavailable {
                 codec: req.codec.clone(),
             });
@@ -160,52 +272,25 @@ impl MediaProvider for AudioFileProvider {
                 what: "audio-file-packets-output",
             });
         }
-        let len = verify_grant(src, &req.grant, req.expected_revision)?;
-        match self.kind {
-            AudioFileKind::Flac => {
-                let header = read_header(src, len, limits.max_probe_bytes, &flac_limits())?;
-                let shape = shape_of(&header.info);
-                // Range and exactness are checked before the first frame is read.
-                engine::plan(&shape, req)?;
-                let mut source = NativeFlac::open(src, header, flac_limits())?;
-                engine::deliver(
-                    &mut source,
-                    &shape,
-                    Ids {
-                        codec: FLAC_PROVIDER_ID.into(),
-                        decoder_id: FLAC_DECODER_ID,
-                        decoder_version: FLAC_DECODER_VERSION,
-                    },
-                    req,
-                    limits,
-                    cancel,
-                    sink,
-                )
-            }
-            AudioFileKind::Ogg => {
-                let ogg = ogg_audio::open(src, len, cancel)?;
-                engine::plan(&ogg.shape, req)?;
-                let (decoder_id, decoder_version) = ogg.codec.ids();
-                let shape = ogg.shape;
-                let mut source = Decode {
-                    source: ogg.packets,
-                    decoder: ogg.decoder,
-                };
-                engine::deliver(
-                    &mut source,
-                    &shape,
-                    Ids {
-                        codec: OGG_PROVIDER_ID.into(),
-                        decoder_id,
-                        decoder_version,
-                    },
-                    req,
-                    limits,
-                    cancel,
-                    sink,
-                )
-            }
-        }
+        verify_grant(src, &req.grant, req.expected_revision)?;
+        let mut opened = open_stream(self.kind, src, limits, cancel)?;
+        // Range and exactness are checked before the first audio unit is read.
+        engine::plan(&opened.shape, req)?;
+        let shape = opened.shape;
+        let ids = Ids {
+            codec: self.kind.id().into(),
+            decoder_id: opened.decoder_id,
+            decoder_version: opened.decoder_version,
+        };
+        engine::deliver(
+            opened.frame_source(),
+            &shape,
+            ids,
+            req,
+            limits,
+            cancel,
+            sink,
+        )
     }
 
     /// FLAC encode. Source chunks carry interleaved PCM in WAV byte layout: 8-bit unsigned, 16/24-bit
@@ -315,55 +400,52 @@ impl MediaProvider for AudioFileProvider {
     }
 }
 
+/// The audio file kind of a source, from its first bytes.
+pub(crate) fn detect_kind(src: &mut dyn ReadSeek) -> Result<AudioFileKind, ReelError> {
+    let mut head = [0u8; 16];
+    src.seek(SeekFrom::Start(0))?;
+    let mut n = 0usize;
+    while n < head.len() {
+        let got = std::io::Read::read(src, head.get_mut(n..).unwrap_or(&mut []))?;
+        if got == 0 {
+            break;
+        }
+        n = n.saturating_add(got);
+    }
+    src.seek(SeekFrom::Start(0))?;
+    let head = head.get(..n).unwrap_or(&[]);
+    AudioFileKind::ALL
+        .into_iter()
+        .find(|k| k.sniff(head))
+        .ok_or_else(|| ReelError::ImportUnsupported {
+            detected: crate::registry::detect_type(head).to_owned(),
+        })
+}
+
 pub(crate) fn decode_file(
     src: &mut dyn ReadSeek,
     limits: &Limits,
     max_frames: u64,
     cancel: &CancellationToken,
 ) -> Result<DecodedAudio, ReelError> {
-    let len = source_len(src)?;
-    let mut head = [0u8; 4];
-    let n = std::io::Read::read(src, &mut head)?;
-    src.seek(SeekFrom::Start(0))?;
-    let head = head.get(..n).unwrap_or(&[]);
-    if head.starts_with(b"fLaC") {
-        let header = read_header(src, len, limits.max_probe_bytes, &flac_limits())?;
-        let shape = shape_of(&header.info);
-        let mut source = NativeFlac::open(src, header, flac_limits())?;
-        let interleaved = engine::decode_all(&mut source, &shape, max_frames, cancel)?;
-        let whole = shape.total.is_none_or(|t| {
-            interleaved.len() as u64 == t.saturating_mul(u64::from(shape.channels))
-        });
-        let checksum_verified = if whole { source.md5_matches() } else { None };
-        return Ok(DecodedAudio {
-            sample_rate: shape.rate,
-            channels: shape.channels,
-            interleaved,
-            decoder_id: FLAC_DECODER_ID,
-            decoder_version: FLAC_DECODER_VERSION,
-            checksum_verified,
-        });
-    }
-    if head.starts_with(b"OggS") {
-        let ogg = ogg_audio::open(src, len, cancel)?;
-        let (decoder_id, decoder_version) = ogg.codec.ids();
-        let shape = ogg.shape;
-        let mut source = Decode {
-            source: ogg.packets,
-            decoder: ogg.decoder,
-        };
-        let interleaved = engine::decode_all(&mut source, &shape, max_frames, cancel)?;
-        return Ok(DecodedAudio {
-            sample_rate: shape.rate,
-            channels: shape.channels,
-            interleaved,
-            decoder_id,
-            decoder_version,
-            checksum_verified: None,
-        });
-    }
-    Err(ReelError::ImportUnsupported {
-        detected: crate::registry::detect_type(head).to_owned(),
+    let kind = detect_kind(src)?;
+    let mut opened = open_stream(kind, src, limits, cancel)?;
+    let shape = opened.shape;
+    let interleaved = engine::decode_all(opened.frame_source(), &shape, max_frames, cancel)?;
+    let whole = shape
+        .total
+        .is_none_or(|t| interleaved.len() as u64 == t.saturating_mul(u64::from(shape.channels)));
+    let checksum_verified = match opened.flac.take() {
+        Some(flac) if whole => flac.md5_matches(),
+        _ => None,
+    };
+    Ok(DecodedAudio {
+        sample_rate: shape.rate,
+        channels: shape.channels,
+        interleaved,
+        decoder_id: opened.decoder_id,
+        decoder_version: opened.decoder_version,
+        checksum_verified,
     })
 }
 
@@ -375,7 +457,7 @@ pub(crate) fn decode_flac_integers(
 ) -> Result<(StreamInfo, Vec<i32>, Option<bool>), ReelError> {
     let len = source_len(src)?;
     let header = read_header(src, len, limits.max_probe_bytes, &flac_limits())?;
-    let shape = shape_of(&header.info);
+    let shape = flac_shape(&header.info);
     let mut source = NativeFlac::open(src, header, flac_limits())?;
     source.keep_integers();
     let decoded = engine::decode_all(&mut source, &shape, max_frames, cancel)?;

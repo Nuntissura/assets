@@ -62,6 +62,37 @@
           "ref_s16le_sha256": "6013dfb0e5acc4b69ca4af35feb2565c7fbead2c22a2dda2198a61f31b94c7f6"
         }
       }
+    },
+    "mpeg_audio": {
+      "generator_script": "generate-mp3.sh (run once offline under the artifact root on D:)",
+      "reference": "raw s16le of libavcodec mp3float / mp2float decode with libavformat gapless trimming from the LAME tag, zlib level 9 as FILE.ref-s16.zz",
+      "files": {
+        "mp3-44k1-2ch-cbr.mp3": {
+          "bytes": 5870,
+          "sha256": "f8d87a26ecfa0ff9ec2b56416b4f31162c2ef782f380804e4c48cc9a6de09f04",
+          "content": "MPEG-1 Layer III joint stereo 440/1250 Hz, 44100 Hz, 0.3 s, libmp3lame CBR 128 kb/s, Info + LAME tag",
+          "ref": "mp3-44k1-2ch-cbr.mp3.ref-s16.zz",
+          "ref_s16le_bytes": 52920,
+          "ref_s16le_sha256": "b9cd52800c384605c2aac44f4630bca41f10b478d28ebd059a0eafd92765764e"
+        },
+        "mp3-22k05-1ch-vbr.mp3": {
+          "bytes": 2992,
+          "sha256": "62ce6c1ce41b5cae5d9824651d97cc6b6412c2f5e033682b3b0668094935be38",
+          "content": "MPEG-2 LSF Layer III mono, 22050 Hz, 0.4 s, 700 Hz sine + click train (short blocks), libmp3lame VBR -q:a 4, Xing + LAME tag",
+          "ref": "mp3-22k05-1ch-vbr.mp3.ref-s16.zz",
+          "ref_s16le_bytes": 17640,
+          "ref_s16le_sha256": "d1eb76bcedbdd1051d763fee219032086caebdac05122e8ba71006d0f226c37d"
+        },
+        "mp2-48k-2ch.mp2": {
+          "bytes": 6336,
+          "sha256": "cb7a1d0f0de21ffc9acce752cf4083c21c96b0d70cefd93e64462bb86d8826ac",
+          "content": "MPEG-1 Layer II stereo 330/880 Hz, 48000 Hz, 0.25 s, ffmpeg mp2 encoder 192 kb/s, no Xing frame",
+          "ref": "mp2-48k-2ch.mp2.ref-s16.zz",
+          "ref_s16le_bytes": 50688,
+          "ref_s16le_sha256": "07af9702c7dbaa7f5d6961add8983f640985177bf4f0d29f2b885450ea9dd4c3"
+        }
+      },
+      "tables": "src/audio/mp3_tables.rs is generated from minimp3.h (github.com/lieff/minimp3, CC0-1.0, sha256 57e437c5c1f0e8b243885d3929c8973b5e6c778451e0100ab4251d19915cb3ad) by gen_mp3_tables.py (this directory)"
     }
   }
 }

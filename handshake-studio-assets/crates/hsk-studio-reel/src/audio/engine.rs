@@ -24,7 +24,7 @@ pub(crate) trait FrameSource {
 }
 
 /// What the loop needs to know about the stream before it reads any payload.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamShape {
     pub(crate) rate: u32,
     pub(crate) channels: u16,

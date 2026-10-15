@@ -15,6 +15,9 @@ mod bits;
 pub(crate) mod engine;
 pub mod flac;
 mod md5;
+pub mod mp3;
+mod mp3_dsp;
+mod mp3_stream;
 mod native_flac;
 mod ogg;
 mod ogg_audio;
@@ -29,9 +32,12 @@ use crate::model::{
 };
 use hsk_studio_accord::CancellationToken;
 
+pub use mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION, OUTPUT_BOUND as MP3_OUTPUT_BOUND};
 pub use ogg_audio::OggCodec;
 pub use opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION};
-pub use provider::{AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID, OGG_PROVIDER_ID};
+pub use provider::{
+    AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID, MP3_PROVIDER_ID, OGG_PROVIDER_ID,
+};
 pub use vorbis::{VORBIS_DECODER_ID, VORBIS_DECODER_VERSION};
 
 /// Highest sample rate any audio header may declare (768 kHz, the highest rate of common DAW hardware);
@@ -102,9 +108,33 @@ pub fn opus_descriptor() -> CodecDescriptor {
     }
 }
 
+/// Descriptor of the MPEG audio adapter (Layers I, II and III; Studio-owned port of minimp3, CC0).
+pub fn mp3_descriptor() -> CodecDescriptor {
+    CodecDescriptor {
+        id: "mp3",
+        name: "MPEG-1/2/2.5 Audio Layers I-III (minimp3 port)",
+        kind: MediaKind::Audio,
+        container: "mpeg-audio|isobmff|matroska",
+        bit_depths: &[32],
+        chroma: None,
+        transfer: None,
+        decoder_id: MP3_DECODER_ID,
+        decoder_version: MP3_DECODER_VERSION,
+        licence: STUDIO_OWNED_LICENCE,
+        certification: Certification::NotCertified,
+        can_decode: true,
+        can_encode: false,
+    }
+}
+
 /// The audio codec adapters of this build, in a stable order (STU-VID-051 item 2).
 pub fn audio_codec_descriptors() -> Vec<CodecDescriptor> {
-    vec![flac_descriptor(), vorbis_descriptor(), opus_descriptor()]
+    vec![
+        flac_descriptor(),
+        vorbis_descriptor(),
+        opus_descriptor(),
+        mp3_descriptor(),
+    ]
 }
 
 /// A whole decoded audio stream (for import into Score, which works on planar f32 blocks).
