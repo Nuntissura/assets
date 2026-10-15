@@ -187,6 +187,29 @@ pub struct EditProposal {
     read_footprint: Vec<String>,
     write_footprint: Vec<String>,
     snapshot: Snapshot,
+    inverse: TimelineInverse,
+}
+
+/// The reversible half of one applied proposal: the sequence as the edit left it (`expect`, the
+/// precondition) and as it was before (`restore`). Pulse holds no history; the host keeps one of
+/// these per history step and plans undo/redo with [`plan_timeline_revert`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelineInverse {
+    sequence_id: String,
+    expect: StudioSequence,
+    restore: StudioSequence,
+}
+
+impl TimelineInverse {
+    pub fn sequence_id(&self) -> &str {
+        &self.sequence_id
+    }
+    pub fn expect(&self) -> &StudioSequence {
+        &self.expect
+    }
+    pub fn restore(&self) -> &StudioSequence {
+        &self.restore
+    }
 }
 
 impl EditProposal {
@@ -215,15 +238,19 @@ impl EditProposal {
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
+    /// Undo of this proposal for [`plan_timeline_revert`] (once it is applied).
+    pub fn inverse(&self) -> &TimelineInverse {
+        &self.inverse
+    }
 }
 
 #[derive(Default)]
-struct Footprint {
+pub(crate) struct Footprint {
     seen: BTreeSet<String>,
     ids: Vec<String>,
 }
 impl Footprint {
-    fn add(&mut self, id: &str) {
+    pub(crate) fn add(&mut self, id: &str) {
         if self.seen.insert(id.to_owned()) {
             self.ids.push(id.to_owned());
         }
@@ -231,18 +258,18 @@ impl Footprint {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Edge {
+pub(crate) enum Edge {
     Head,
     Tail,
 }
 
-fn rate_of(seq: &StudioSequence) -> Result<FrameRate> {
+pub(crate) fn rate_of(seq: &StudioSequence) -> Result<FrameRate> {
     seq.frame_rate
         .accord()
         .ok_or(PulseError::UnsupportedFrameRate)
 }
 
-fn grid_of(track: &StudioTrack, rate: FrameRate) -> Grid {
+pub(crate) fn grid_of(track: &StudioTrack, rate: FrameRate) -> Grid {
     if track.kind == TrackKind::Video {
         Grid::Frames(rate)
     } else {
@@ -250,7 +277,7 @@ fn grid_of(track: &StudioTrack, rate: FrameRate) -> Grid {
     }
 }
 
-fn lane_of(track: &StudioTrack) -> Result<Vec<TickRange>> {
+pub(crate) fn lane_of(track: &StudioTrack) -> Result<Vec<TickRange>> {
     track
         .clips
         .iter()
@@ -336,7 +363,7 @@ fn underflow_is_outside(error: PulseError) -> PulseError {
     }
 }
 
-fn check_extent(clip: &StudioClip, new_out: Ticks, ctx: &EditContext) -> Result<()> {
+pub(crate) fn check_extent(clip: &StudioClip, new_out: Ticks, ctx: &EditContext) -> Result<()> {
     match ctx.extents.extent(&clip.source_ref) {
         None => Err(PulseError::SourceExtentUnknown),
         Some(extent) if new_out > extent => Err(PulseError::PastSourceEnd),
@@ -400,7 +427,7 @@ fn write_lane(
 }
 
 /// Ripple on tracks that hold no selected clip: sync-locked tracks shift their later content.
-fn shift_other_tracks(
+pub(crate) fn shift_other_tracks(
     seq: &StudioSequence,
     out: &mut StudioSequence,
     members: &[(usize, usize)],
@@ -550,33 +577,45 @@ fn razor(
     for (&(t, c), fresh_id) in members.iter().zip(&ids) {
         let track = &seq.tracks[t];
         let clip = &track.clips[c];
-        let whole = TickRange::from_start_duration(clip.timeline_start, clip.duration)?;
-        let (left, right) = whole.split_at(at)?;
-        grid_of(track, rate).check_delta(TickDelta::between(whole.start(), at))?;
-        let span = clip.speed.span_for_duration(left.duration())?;
-        // Forward plays source_in -> source_out, reversed plays source_out -> source_in; the cut
-        // point is where the first half stops, and the second half continues from it.
-        let ((left_in, left_out), (right_in, right_out)) = if clip.speed.is_reversed() {
-            let cut = clip.source_out.checked_sub(span)?;
-            ((cut, clip.source_out), (clip.source_in, cut))
-        } else {
-            let cut = clip.source_in.checked_add(span)?;
-            ((clip.source_in, cut), (cut, clip.source_out))
-        };
-        let mut second = clip.clone();
-        second.clip_id = (*fresh_id).to_owned();
-        second.source_in = right_in;
-        second.source_out = right_out;
-        second.timeline_start = right.start();
-        second.duration = right.duration();
+        TickRange::from_start_duration(clip.timeline_start, clip.duration)?.split_at(at)?;
+        grid_of(track, rate).check_delta(TickDelta::between(clip.timeline_start, at))?;
+        let (first, mut second) = split_clip(clip, at, fresh_id)?;
         second.link_group = right_group.map(str::to_owned);
-        let first = &mut out.tracks[t].clips[c];
-        first.source_in = left_in;
-        first.source_out = left_out;
-        first.duration = left.duration();
+        out.tracks[t].clips[c] = first;
         out.tracks[t].clips.insert(c + 1, second);
     }
     Ok(out)
+}
+
+/// Splits `clip` at timeline tick `at` (strictly inside it) into two clips that render like the
+/// original (STU-VID-027): the right half takes `right_id` and continues the source where the left
+/// half stops. Forward plays source_in -> source_out, reversed plays source_out -> source_in.
+pub(crate) fn split_clip(
+    clip: &StudioClip,
+    at: Ticks,
+    right_id: &str,
+) -> Result<(StudioClip, StudioClip)> {
+    let whole = TickRange::from_start_duration(clip.timeline_start, clip.duration)?;
+    let (left, right) = whole.split_at(at)?;
+    let span = clip.speed.span_for_duration(left.duration())?;
+    let ((left_in, left_out), (right_in, right_out)) = if clip.speed.is_reversed() {
+        let cut = clip.source_out.checked_sub(span)?;
+        ((cut, clip.source_out), (clip.source_in, cut))
+    } else {
+        let cut = clip.source_in.checked_add(span)?;
+        ((clip.source_in, cut), (cut, clip.source_out))
+    };
+    let mut second = clip.clone();
+    second.clip_id = right_id.to_owned();
+    second.source_in = right_in;
+    second.source_out = right_out;
+    second.timeline_start = right.start();
+    second.duration = right.duration();
+    let mut first = clip.clone();
+    first.source_in = left_in;
+    first.source_out = left_out;
+    first.duration = left.duration();
+    Ok((first, second))
 }
 
 fn neighbour_edit(
@@ -619,7 +658,7 @@ fn neighbour_edit(
 }
 
 /// Rebuilds a track from lane pieces; the second piece of one origin clip takes a fresh id.
-fn write_pieces(
+pub(crate) fn write_pieces(
     track: &mut StudioTrack,
     pieces: &[LanePiece],
     fresh: &mut std::slice::Iter<'_, String>,
@@ -935,6 +974,55 @@ pub fn plan_timeline_edit(
     edit: &TimelineEdit,
     ctx: &EditContext,
 ) -> Result<EditProposal> {
+    propose(
+        snapshot,
+        sequence_id,
+        expected_revision,
+        ctx,
+        |old, reads| apply_edit(old, edit, ctx, reads),
+    )
+}
+
+/// Undo or redo of one applied proposal (STU-VID-040 / STU-HIS-002 snapshot revert): restores
+/// `inverse.restore()` only while the sequence still equals `inverse.expect()` (the content
+/// precondition; anything else is `revert_mismatch`). The result is an ordinary one-step proposal
+/// at `expected_revision + 1`, and its own [`EditProposal::inverse`] is the redo.
+pub fn plan_timeline_revert(
+    snapshot: &Snapshot,
+    sequence_id: &str,
+    expected_revision: u64,
+    inverse: &TimelineInverse,
+    ctx: &EditContext,
+) -> Result<EditProposal> {
+    if inverse.sequence_id != sequence_id {
+        return Err(PulseError::UnknownSequence);
+    }
+    propose(
+        snapshot,
+        sequence_id,
+        expected_revision,
+        ctx,
+        |old, reads| {
+            for track in &old.tracks {
+                reads.add(&track.track_id);
+            }
+            if *old != inverse.expect {
+                return Err(PulseError::RevertMismatch);
+            }
+            Ok(inverse.restore.clone())
+        },
+    )
+}
+
+/// Shared one-step transaction: stale-revision gate, edit, Folio validation at revision + 1,
+/// change list, footprints and the inverse.
+pub(crate) fn propose(
+    snapshot: &Snapshot,
+    sequence_id: &str,
+    expected_revision: u64,
+    ctx: &EditContext,
+    edit: impl FnOnce(&StudioSequence, &mut Footprint) -> Result<StudioSequence>,
+) -> Result<EditProposal> {
     ctx.cancel.check()?;
     let document = snapshot.document();
     if document.revision != expected_revision {
@@ -951,11 +1039,11 @@ pub fn plan_timeline_edit(
     let old = &document.sequences[index];
     let mut reads = Footprint::default();
     reads.add(sequence_id);
-    let mut edited = apply_edit(old, edit, ctx, &mut reads)?;
+    let mut edited = edit(old, &mut reads)?;
+    edited.duration = edited.content_end().ok_or(PulseError::Overflow)?;
     if edited == *old {
         return Err(PulseError::NoChange);
     }
-    edited.duration = edited.content_end().ok_or(PulseError::Overflow)?;
     let mut prospective = document.clone();
     prospective.sequences[index] = edited;
     prospective.revision = target_revision;
@@ -973,6 +1061,11 @@ pub fn plan_timeline_edit(
     if new.duration != old.duration {
         writes.add(sequence_id);
     }
+    let inverse = TimelineInverse {
+        sequence_id: sequence_id.to_owned(),
+        expect: new.clone(),
+        restore: old.clone(),
+    };
     Ok(EditProposal {
         sequence_id: sequence_id.to_owned(),
         base_revision: expected_revision,
@@ -981,5 +1074,6 @@ pub fn plan_timeline_edit(
         read_footprint: reads.ids,
         write_footprint: writes.ids,
         snapshot: validated,
+        inverse,
     })
 }

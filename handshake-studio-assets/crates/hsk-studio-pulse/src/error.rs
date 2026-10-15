@@ -38,6 +38,11 @@ pub enum PulseError {
     TimecodeUnsupported,
     DropFrameUnsupported,
     InvalidTimecode,
+    FitRequired,
+    RevertMismatch,
+    InsufficientHandle,
+    UnknownMarker,
+    UnknownTransition,
 }
 
 impl PulseError {
@@ -77,6 +82,11 @@ impl PulseError {
             Self::TimecodeUnsupported => "timecode_unsupported",
             Self::DropFrameUnsupported => "drop_frame_unsupported",
             Self::InvalidTimecode => "invalid_timecode",
+            Self::FitRequired => "fit_required",
+            Self::RevertMismatch => "revert_mismatch",
+            Self::InsufficientHandle => "insufficient_handle",
+            Self::UnknownMarker => "unknown_marker",
+            Self::UnknownTransition => "unknown_transition",
         }
     }
 
