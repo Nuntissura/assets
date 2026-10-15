@@ -8,18 +8,18 @@
   <jobs>
     <job>
       <item size="5053">
-        <name>D:\Projects\LLM projects\Handshake\Handshake Worktrees\Handshake_Artifacts\WP-KERNEL-STUDIO\studio-team-dev\layout-harden\verapdf\corpus\layout-clip-gradient.pdf</name>
+        <name>layout-clip-gradient.pdf</name>
       </item>
       <validationReport jobEndStatus="normal" profileName="PDF/A-2b validation profile" statement="PDF file is compliant with Validation Profile requirements." isCompliant="true">
         <details passedRules="144" failedRules="0" passedChecks="408" failedChecks="0"></details>
       </validationReport>
-      <duration start="1792033306624" finish="1792033306947">00:00:00.323</duration>
+      <duration start="1792041403096" finish="1792041403444">00:00:00.348</duration>
     </job>
   </jobs>
   <batchSummary totalJobs="1" failedToParse="0" encrypted="0" outOfMemory="0" veraExceptions="0">
     <validationReports compliant="1" nonCompliant="0" failedJobs="0">1</validationReports>
     <featureReports failedJobs="0">0</featureReports>
     <repairReports failedJobs="0">0</repairReports>
-    <duration start="1792033306575" finish="1792033306976">00:00:00.401</duration>
+    <duration start="1792041403045" finish="1792041403475">00:00:00.430</duration>
   </batchSummary>
 </report>

@@ -938,14 +938,15 @@ fn folio_clipping_gradient_and_pdfx4() {
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
     assert!(!codes.iter().any(|c| c.starts_with("clip_") || c.starts_with("gradient_") || *c == "paint_gradient"), "{codes:?}");
     dump("layout-clip-gradient.pdf", &out.bytes);
-    // veraPDF 1.30.3 PDF/A-2b passed these exact bytes (artifact report, byte-identical fixture);
-    // only that report moves the receipt off not_proven.
+    // veraPDF 1.30.3 PDF/A-2b passed these exact bytes (raw run studio-team-dev/r31-findings/verapdf,
+    // committed in its press::normalize_verapdf_report form: item name = file name, no machine
+    // path); only that report moves the receipt off not_proven.
     assert_eq!(out.receipt.sha256_hex, "3405693a3cf44a39e97bbcaae250a3ab0ccbbce8466f82f3e84e88e8524934f0", "export changed: re-run veraPDF, refresh the fixture");
     assert_eq!(out.receipt.conformance, "not_proven");
     let report = include_bytes!("fixtures/verapdf/layout-clip-gradient.pdfa-2b.xml");
     let proven = out.receipt.clone().with_verapdf_report(&out.bytes, report).unwrap();
     assert_eq!(proven.conformance, hsk_studio_interop_layout::press::CONFORMANCE_PDFA2B_VERAPDF);
-    assert_eq!(proven.conformance_report_sha256.as_deref(), Some("fa7edad7534370e5f5b918927c1511e76d118457d6ef94374cf3b9d65ee04654"));
+    assert_eq!(proven.conformance_report_sha256.as_deref(), Some("a1b6b1bc6310e608000aeec97225027e09384090295a48b32494f5fbb1a6a874"));
     let report = hsk_studio_interop_layout::press::check_pdfx4(&out.bytes, &Limits::default(), &cancel).unwrap();
     assert!(report.all_passed(), "{:?}", report.failed());
     assert_eq!(out.receipt.effective_pdfx_profile.as_deref(), Some("PDF/X-4"));

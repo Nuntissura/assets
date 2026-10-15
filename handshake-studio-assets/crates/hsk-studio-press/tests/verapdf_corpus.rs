@@ -140,12 +140,13 @@ fn verapdf_corpus_self_checks_and_is_written_on_request() {
     }
 }
 
-/// veraPDF 1.30.3 `-f 2b --format xml` on the corpus written by the test above (artifact
-/// `studio-team-dev/layout-harden/verapdf/reports/press-pdfx4-corpus.pdfa-2b.xml`, byte-identical).
+/// veraPDF 1.30.3 `-f 2b --format xml` on the corpus written by the test above (raw run
+/// `studio-team-dev/r31-findings/verapdf/press-pdfx4-corpus.pdfa-2b.xml`), committed in its
+/// `normalize_verapdf_report` form: the item name is the file name, never this machine's path.
 const REPORT: &[u8] = include_bytes!("fixtures/verapdf/press-pdfx4-corpus.pdfa-2b.xml");
 /// sha256 of the corpus bytes that report was produced for.
 const REPORTED_PDF_SHA256: &str = "e8605a4cbcd2d845cc4a33ee58e1106653f4246cddce7ee4aa7f17ff0bc10028";
-const REPORT_SHA256: &str = "626703968de9190cf3e9ec79c947343bd847a5f9052b0944faed9b91992f6d88";
+const REPORT_SHA256: &str = "3fce26d8941ddbd8de25be7975502c9f38b52187305aeaace1d68698175ef0ed";
 
 #[test]
 fn passing_verapdf_report_is_the_only_way_out_of_not_proven() {
@@ -158,6 +159,17 @@ fn passing_verapdf_report_is_the_only_way_out_of_not_proven() {
     assert_eq!(proven.conformance_validator.as_deref(), Some("veraPDF 1.30.3: PDF/A-2b validation profile"));
     assert_eq!(proven.effective_pdfx_profile.as_deref(), Some(PDFX4_VERSION), "PDF/X-4 itself stays self-checked only");
     let text = std::str::from_utf8(REPORT).unwrap();
+    // The raw veraPDF form (absolute input path in the item name, any folder) proves the same
+    // bytes and records the same normalised report sha256 (SMB-R31-FINDINGS).
+    assert!(text.contains("<name>press-pdfx4-corpus.pdf</name>"));
+    // The drive-letter directory is built at run time (no machine-path literal in the source, V4-03).
+    let drive = format!("{}:\\elsewhere\\corpus\\", 'X');
+    for dir in [drive.as_str(), "/srv/corpus/"] {
+        let raw = text.replacen("<name>", &format!("<name>{dir}"), 1);
+        let again = receipt.clone().with_verapdf_report(&bytes, raw.as_bytes()).unwrap();
+        assert_eq!(again.conformance_report_sha256.as_deref(), Some(REPORT_SHA256), "{dir}");
+        assert_eq!(normalize_verapdf_report(raw.as_bytes()).unwrap(), REPORT);
+    }
     let refused = |pdf: &[u8], report: &[u8]| receipt.clone().with_verapdf_report(pdf, report).err();
     let edited = |from: &str, to: &str| {
         assert!(text.contains(from), "{from}");

@@ -8,18 +8,18 @@
   <jobs>
     <job>
       <item size="713931">
-        <name>D:\Projects\LLM projects\Handshake\Handshake Worktrees\Handshake_Artifacts\WP-KERNEL-STUDIO\studio-team-dev\layout-harden\verapdf\corpus\press-pdfx4-corpus.pdf</name>
+        <name>press-pdfx4-corpus.pdf</name>
       </item>
       <validationReport jobEndStatus="normal" profileName="PDF/A-2b validation profile" statement="PDF file is compliant with Validation Profile requirements." isCompliant="true">
         <details passedRules="144" failedRules="0" passedChecks="2250" failedChecks="0"></details>
       </validationReport>
-      <duration start="1792033311834" finish="1792033312435">00:00:00.601</duration>
+      <duration start="1792041405185" finish="1792041405777">00:00:00.592</duration>
     </job>
   </jobs>
   <batchSummary totalJobs="1" failedToParse="0" encrypted="0" outOfMemory="0" veraExceptions="0">
     <validationReports compliant="1" nonCompliant="0" failedJobs="0">1</validationReports>
     <featureReports failedJobs="0">0</featureReports>
     <repairReports failedJobs="0">0</repairReports>
-    <duration start="1792033311789" finish="1792033312472">00:00:00.683</duration>
+    <duration start="1792041405136" finish="1792041405823">00:00:00.687</duration>
   </batchSummary>
 </report>

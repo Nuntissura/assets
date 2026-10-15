@@ -36,7 +36,7 @@ mod sfnt;
 pub use pdfx::{PDFA2B_CONFORMANCE, PDFA2B_PART, PDFX4_VERSION, PdfXReport, PdfXRule, check_pdfx4};
 mod subset;
 mod verdict;
-pub use verdict::{CONFORMANCE_PDFA2B_VERAPDF, MAX_REPORT_BYTES, VERAPDF_PDFA2B_PROFILE};
+pub use verdict::{CONFORMANCE_PDFA2B_VERAPDF, MAX_REPORT_BYTES, VERAPDF_PDFA2B_PROFILE, normalize_verapdf_report};
 pub use render::{RenderedPage, render_page};
 #[cfg(test)]
 mod tests;

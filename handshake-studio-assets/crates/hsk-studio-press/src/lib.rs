@@ -40,7 +40,7 @@ pub use error::{Limits, PressError, RedactionClass, SinkError, TextCause};
 pub use export::{
     BlendMode, Colour, DrawState, Gradient, GradientGeometry, GradientSpread, GradientStop, GroupStyle, MaskImage, MAX_GRADIENT_CYCLES, TextClipRun, PDFX4_VERSION, PDFA2B_CONFORMANCE, PDFA2B_PART, CONFORMANCE_PDFA2B_VERAPDF, VERAPDF_PDFA2B_PROFILE, MAX_REPORT_BYTES, PdfX4, PdfXReport, PdfXRule, SoftMask, check_pdfx4, EXPORT_CONFORMANCE, ExportError, ExportOptions, ExportReceipt, FillRule, FontHandle, IccHandle, ImageColour, ImageSpec, LineCap,
     LineJoin, MAX_EXPORT_COORD, MAX_EXPORT_TEXT, OutputIntent, OutputIntentSubtype, PageHandle, PageSpec, PathCommand, PdfExport, RenderedPage, StrokeStyle,
-    render_page,
+    normalize_verapdf_report, render_page,
 };
 pub use flatten::{FLATTEN_FILL, FlattenCause, FlattenNote, FlattenedPage, RENDER_STACK_BYTES};
 pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
