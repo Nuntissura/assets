@@ -13,7 +13,7 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 # Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
-viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib"]
+viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
 desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
 
@@ -40,6 +40,9 @@ hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-fea
 hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false, optional = true }
 # Program monitor (lane SMB-PULSE-PLAYBACK; edge harness -> pulse lead-approved 2026-10-15).
 hsk-studio-pulse = { path = "../hsk-studio-pulse", version = "=0.1.0", default-features = false, optional = true }
+# Prototype play mode (lane SMB-HARNESS-PROTOTYPE-PLAY; edges harness -> components and harness -> interop-fig lead-approved 2026-10-15, optional under viewer).
+hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-fig = { path = "../hsk-studio-interop-fig", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }

@@ -26,6 +26,8 @@ pub mod brush_mix;
 pub mod layers;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
+/// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
+pub mod prototype;
 pub mod selection_store;
 pub mod text;
 pub mod render;
@@ -160,6 +162,8 @@ pub struct Viewer {
     /// Program monitor of a document sequence (module [`monitor`]), its decoded-frame port and
     /// wall clock (no audio device in the viewer).
     monitor: Option<MonitorState>,
+    /// Prototype play mode (module [`prototype`]) and the clock of its last frame.
+    prototype: Option<(prototype::PrototypePlay, std::time::Instant)>,
 }
 
 struct MonitorState {
@@ -215,7 +219,20 @@ impl Viewer {
             drawn: Vec::new(),
             cancel,
             monitor: None,
+            prototype: None,
         }
+    }
+
+    /// Opens the prototype play mode on a Figma `.fig` (its first flow starting point).
+    pub fn open_prototype(&mut self, fig: &[u8]) -> Result<(), prototype::PlayFail> {
+        let play = prototype::PrototypePlay::open(fig, None)?;
+        self.prototype = Some((play, std::time::Instant::now()));
+        Ok(())
+    }
+
+    /// The open prototype play mode.
+    pub fn prototype(&mut self) -> Option<&mut prototype::PrototypePlay> {
+        self.prototype.as_mut().map(|p| &mut p.0)
     }
 
     /// Opens the program monitor on sequence `sequence_id` of the open document at
@@ -785,6 +802,13 @@ impl Viewer {
         self.render_if_dirty();
 
         self.monitor_ui(ctx);
+        if let Some((play, last)) = &mut self.prototype {
+            let now = std::time::Instant::now();
+            let ms = u64::try_from(now.duration_since(*last).as_millis()).unwrap_or(u64::MAX);
+            *last = now;
+            let drawn = play.ui(ctx, ms);
+            self.drawn.extend(drawn.into_iter().map(String::from));
+        }
         egui::CentralPanel::default().show(ctx, |ui| self.canvas_ui(ui));
     }
 

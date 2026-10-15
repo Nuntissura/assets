@@ -95,11 +95,13 @@ struct Snapshot {
     variants: BTreeMap<String, String>,
 }
 
-/// One prototype session over a document and its design records (borrowed, never mutated).
-pub struct PlayerSession<'a> {
-    reactions: BTreeMap<&'a str, &'a [StudioReaction]>,
-    parents: BTreeMap<&'a str, &'a str>,
-    instances: BTreeMap<&'a str, ()>,
+/// One prototype session over a document and its design records (copied in at start: the
+/// session owns its reaction table and tree, so a host can keep it beside the document).
+#[derive(Clone, Debug)]
+pub struct PlayerSession {
+    reactions: BTreeMap<String, Vec<StudioReaction>>,
+    parents: BTreeMap<String, String>,
+    instances: BTreeMap<String, ()>,
     screen: String,
     history: Vec<String>,
     overlays: Vec<String>,
@@ -141,25 +143,25 @@ fn parent_of(p: &Parent) -> Option<&str> {
     }
 }
 
-impl<'a> PlayerSession<'a> {
+impl PlayerSession {
     /// A session showing `start` (a frame node of `doc`). `None` when `start` is not a node.
-    pub fn start(doc: &'a StudioDocument, design: &'a StudioDesignRecords, start: &str) -> Option<Self> {
+    pub fn start(doc: &StudioDocument, design: &StudioDesignRecords, start: &str) -> Option<Self> {
         let mut parents = BTreeMap::new();
         let mut instances = BTreeMap::new();
         let mut known = false;
         for l in &doc.layers {
             known |= l.layer_id == start;
             if let Some(p) = parent_of(&l.parent) {
-                parents.insert(l.layer_id.as_str(), p);
+                parents.insert(l.layer_id.clone(), p.to_owned());
             }
             if l.kind == "component_instance" || l.kind == "group" {
-                instances.insert(l.layer_id.as_str(), ());
+                instances.insert(l.layer_id.clone(), ());
             }
         }
         for a in &doc.artboards {
             known |= a.artboard_id == start;
             if let Some(p) = parent_of(&a.parent) {
-                parents.insert(a.artboard_id.as_str(), p);
+                parents.insert(a.artboard_id.clone(), p.to_owned());
             }
         }
         if !known {
@@ -169,7 +171,7 @@ impl<'a> PlayerSession<'a> {
             .nodes
             .iter()
             .filter(|n| !n.reactions.is_empty() && n.node.node_kind != NodeKind::PageSpread)
-            .map(|n| (n.node.node_id.as_str(), n.reactions.as_slice()))
+            .map(|n| (n.node.node_id.clone(), n.reactions.clone()))
             .collect();
         Some(Self {
             reactions,
@@ -266,8 +268,11 @@ impl<'a> PlayerSession<'a> {
             if depth > 256 {
                 break;
             }
-            if let Some(list) = self.reactions.get(id.as_str()).copied()
-                && let Some(r) = list.iter().find(|r| r.trigger.as_ref().is_some_and(|t| Self::matches(t, input)))
+            if let Some(r) = self
+                .reactions
+                .get(id.as_str())
+                .and_then(|list| list.iter().find(|r| r.trigger.as_ref().is_some_and(|t| Self::matches(t, input))))
+                .cloned()
             {
                 if let (Some(StudioTrigger::OnHover {}), PlayerInput::HoverEnter(n)) = (&r.trigger, input) {
                     let snap = self.snapshot();
@@ -277,19 +282,19 @@ impl<'a> PlayerSession<'a> {
                 self.run(&id, &actions, &mut events);
                 return events;
             }
-            cur = self.parents.get(id.as_str()).map(|p| (*p).to_owned());
+            cur = self.parents.get(id.as_str()).cloned();
         }
         events.push(PlayerEvent::Diagnostic("no_reaction_for_trigger"));
         events
     }
 
     fn container_instance(&self, node: &str) -> Option<String> {
-        let mut cur = self.parents.get(node).copied();
+        let mut cur = self.parents.get(node);
         while let Some(id) = cur {
             if self.instances.contains_key(id) {
-                return Some(id.to_owned());
+                return Some(id.clone());
             }
-            cur = self.parents.get(id).copied();
+            cur = self.parents.get(id);
         }
         None
     }
@@ -408,7 +413,7 @@ impl<'a> PlayerSession<'a> {
             return events;
         }
         let screen = self.screen.clone();
-        if let Some(list) = self.reactions.get(screen.as_str()).copied() {
+        if let Some(list) = self.reactions.get(screen.as_str()).cloned() {
             for (i, r) in list.iter().enumerate() {
                 if let Some(StudioTrigger::AfterTimeout { timeout }) = &r.trigger {
                     let due = self.shown_ms.saturating_add(u64::from(*timeout));
