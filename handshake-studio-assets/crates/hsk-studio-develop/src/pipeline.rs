@@ -606,6 +606,9 @@ pub struct DevelopReceipt {
     pub output: Rect,
     pub tiles: u32,
     pub pixels: u64,
+    /// Whole-frame geometry stage (lens corrections, perspective, crop angle/flips) when it ran
+    /// (`develop_to_image` only); `None` otherwise.
+    pub geometry: Option<crate::geometry::GeometryReport>,
 }
 
 pub struct DevelopRequest<'a> {
@@ -950,7 +953,16 @@ pub fn develop_with_threads(
     cancel: &CancellationToken,
     sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
 ) -> Result<DevelopReceipt, DevelopError> {
-    develop_core(request, converter, threads, cancel, sink, false)
+    develop_core(request, converter, threads, cancel, sink, CoreMode::Tiles)
+}
+
+/// What [`develop_core`] runs: the tile API (whole-frame stages refused), the crop for the
+/// whole-frame image API, or the uncropped linear frame (stage A only) the geometry stage resamples.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CoreMode {
+    Tiles,
+    WholeFrame,
+    LinearFull,
 }
 
 /// Shared body of the tile API and the whole-frame image API. Stages that need the whole frame
@@ -962,7 +974,7 @@ fn develop_core(
     threads: Threads,
     cancel: &CancellationToken,
     sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
-    whole_frame: bool,
+    mode: CoreMode,
 ) -> Result<DevelopReceipt, DevelopError> {
     cancel.check()?;
     let plane = request.plane;
@@ -970,7 +982,13 @@ fn develop_core(
         return Err(DevelopError::StaleSource);
     }
     let prepared = request.recipe.prepare()?;
-    if !whole_frame {
+    if mode == CoreMode::Tiles {
+        if prepared.adjust.optics.is_active() {
+            return Err(DevelopError::UnsupportedContribution("lens_corrections_whole_frame"));
+        }
+        if prepared.adjust.geometry.is_some() || request.recipe.crop.needs_geometry() {
+            return Err(DevelopError::UnsupportedContribution("transform_whole_frame"));
+        }
         if prepared.adjust.clarity != 0.0 {
             return Err(DevelopError::UnsupportedContribution("clarity_whole_frame"));
         }
@@ -1002,10 +1020,12 @@ fn develop_core(
         }
     };
     let limits = plane.limits;
-    let (x0, y0, x1, y1) = request
-        .recipe
-        .crop
-        .source_bounds(plane.width, plane.height)?;
+    let (x0, y0, x1, y1) = if mode == CoreMode::LinearFull {
+        request.recipe.crop.source_bounds(plane.width, plane.height)?;
+        (0, 0, plane.width, plane.height)
+    } else {
+        request.recipe.crop.source_bounds(plane.width, plane.height)?
+    };
     let (crop_w, crop_h) = (x1 - x0, y1 - y0);
     let (ox, oy) = request.output_origin;
     let output = Rect {
@@ -1045,9 +1065,10 @@ fn develop_core(
         demosaic: &demosaic,
         prepared: &prepared,
         stage_a_total: stage_a_is_total(&prepared),
-        identity_finish: prepared.exposure_gain == 1.0
-            && prepared.curves.iter().all(Option::is_none)
-            && !prepared.adjust.pixel_active(),
+        identity_finish: mode == CoreMode::LinearFull
+            || (prepared.exposure_gain == 1.0
+                && prepared.curves.iter().all(Option::is_none)
+                && !prepared.adjust.pixel_active()),
         grid,
         output,
         source_origin: (x0 as usize, y0 as usize),
@@ -1136,6 +1157,7 @@ fn develop_core(
         output,
         tiles: delivered,
         pixels: u64::from(crop_w) * u64::from(crop_h),
+        geometry: None,
     })
 }
 
@@ -1168,6 +1190,27 @@ pub fn develop_to_image_threads(
     threads: Threads,
     cancel: &CancellationToken,
 ) -> Result<(DevelopedImage, DevelopReceipt), DevelopError> {
+    let prepared = recipe.prepare()?;
+    let geometric = prepared.adjust.optics.is_active() || prepared.adjust.geometry.is_some() || recipe.crop.needs_geometry();
+    let mode = if geometric { CoreMode::LinearFull } else { CoreMode::WholeFrame };
+    let (rgb, mut receipt) = develop_frame(plane, recipe, recipe_revision, threads, cancel, mode)?;
+    let mut image = DevelopedImage { width: receipt.output.width, height: receipt.output.height, rgb };
+    if geometric {
+        image = geometry_stage(image, &mut receipt, recipe, &prepared, threads, cancel)?;
+    }
+    postprocess(&mut image, recipe, threads, cancel)?;
+    Ok((image, receipt))
+}
+
+/// Develop the whole crop (or, in `LinearFull`, the uncropped stage-A frame) into one RGB buffer.
+fn develop_frame(
+    plane: &CfaPlane,
+    recipe: &DevelopRecipe,
+    recipe_revision: u64,
+    threads: Threads,
+    cancel: &CancellationToken,
+    mode: CoreMode,
+) -> Result<(Vec<f32>, DevelopReceipt), DevelopError> {
     let edge = plane.limits.max_tile_edge;
     let mut tiles = Vec::new();
     let receipt = develop_core(
@@ -1192,7 +1235,7 @@ pub fn develop_to_image_threads(
             tiles.push(tile);
             Ok(())
         },
-        true,
+        mode,
     )?;
     let (width, height) = (receipt.output.width as usize, receipt.output.height as usize);
     let edge = edge as usize;
@@ -1221,13 +1264,52 @@ pub fn develop_to_image_threads(
         }
         Ok(())
     })?;
-    let mut image = DevelopedImage {
-        width: receipt.output.width,
-        height: receipt.output.height,
-        rgb,
-    };
-    postprocess(&mut image, recipe, threads, cancel)?;
-    Ok((image, receipt))
+    Ok((rgb, receipt))
+}
+
+/// Whole-frame geometry: resample the uncropped linear frame (lens map, perspective, crop angle and
+/// flips; `geometry::apply`), cut the crop, then run stage C (exposure, tone, curves, colour) per
+/// pixel exactly as the tiles would have. The receipt is rewritten to describe the crop.
+fn geometry_stage(
+    image: DevelopedImage,
+    receipt: &mut DevelopReceipt,
+    recipe: &DevelopRecipe,
+    prepared: &PreparedRecipe,
+    threads: Threads,
+    cancel: &CancellationToken,
+) -> Result<DevelopedImage, DevelopError> {
+    let (warped, report) = crate::geometry::apply(
+        &image.rgb,
+        image.width,
+        image.height,
+        &prepared.adjust.optics,
+        prepared.adjust.geometry.as_ref(),
+        &recipe.crop,
+        prepared.adjust.luma,
+        threads,
+        cancel,
+    )?;
+    let (x0, y0, x1, y1) = recipe.crop.source_bounds(image.width, image.height)?;
+    let (cw, ch) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let full_w = image.width as usize;
+    let mut rgb = vec![0.0f32; cw * ch * 3];
+    let identity = prepared.exposure_gain == 1.0 && prepared.curves.iter().all(Option::is_none) && !prepared.adjust.pixel_active();
+    let rows = band_rows(cw);
+    for_each_band(&mut rgb, rows * cw * 3, threads, cancel, |band_index, band| {
+        for (k, px) in band.chunks_exact_mut(3).enumerate() {
+            let (x, y) = (x0 as usize + k % cw, y0 as usize + band_index * rows + k / cw);
+            let at = (y * full_w + x) * 3;
+            let value = [warped[at], warped[at + 1], warped[at + 2]];
+            let out = if identity { finish_pixel_identity(value)? } else { finish_pixel(prepared, value)? };
+            px.copy_from_slice(&out);
+        }
+        Ok(())
+    })?;
+    receipt.source_bounds = (x0, y0, x1, y1);
+    receipt.output = Rect { x: 0, y: 0, width: x1 - x0, height: y1 - y0 };
+    receipt.pixels = u64::from(x1 - x0) * u64::from(y1 - y0);
+    receipt.geometry = Some(report);
+    Ok(DevelopedImage { width: x1 - x0, height: y1 - y0, rgb })
 }
 
 /// Whole-frame stages after the tiles: clarity (when `enable_detail` and the slider is nonzero),

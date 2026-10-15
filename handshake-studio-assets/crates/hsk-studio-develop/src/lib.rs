@@ -24,6 +24,10 @@ mod crx;
 mod crx_wavelet;
 pub mod curves;
 pub mod detail;
+pub mod geometry;
+pub mod lens_profile;
+pub mod optics;
+pub mod upright;
 pub mod local;
 mod levels;
 pub mod output;
@@ -59,6 +63,13 @@ pub use local::{
 };
 pub use colour::{ColourGrading, GrayscaleMix, MAX_POINT_COLOURS, PointColour, Wheel};
 pub use detail::{Detail, NoiseReduction, Sharpen};
+pub use geometry::{Geometry, GeometryReport, IDENTITY_3X3, MAX_GUIDES, UprightMode, apply_geometry};
+pub use lens_profile::{
+    ChannelModel, LensBinding, LensModel, LensProfile, LensProjection, LensSample, MAX_LENS_PROFILE_BYTES, MAX_LENS_SAMPLES,
+    PerspectiveModel,
+};
+pub use optics::{Defringe, Optics};
+pub use upright::{UprightAnalysis, analyse as analyse_upright};
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{recipe_for_white_point, ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
 pub use output::{
@@ -133,6 +144,17 @@ pub enum DevelopError {
     /// A recognised container family without a decoder in this crate; carries the family
     /// (`orf`, `rw2`, `raf`, `cr3`, `jpeg`, `nef_compressed`) or `unknown` for unrecognised bytes.
     DecoderUnavailable(&'static str),
+    /// A lens profile document or bound lens model that cannot be used (lane SMB-DEVELOP-LENS-PRESETS).
+    InvalidLensProfile,
+    /// A perspective / crop-angle transform that is singular, unbounded or folds the frame.
+    InvalidTransform,
+    /// A colour lookup table (`.cube`) that cannot be used.
+    InvalidLut,
+    /// A develop preset document or preset field that cannot be used.
+    InvalidPreset,
+    /// A model-assisted operation (subject / sky / people masks) with no model provider in this
+    /// build; carries the source kind. Nothing is downloaded (STU-RAW-014a: degrade to manual sources).
+    ModelUnavailable(&'static str),
 }
 
 impl DevelopError {
@@ -184,6 +206,11 @@ impl DevelopError {
             Self::Canceled => "canceled",
             Self::SinkRejected => "sink_rejected",
             Self::DecoderUnavailable(_) => "decoder_unavailable",
+            Self::InvalidLensProfile => "invalid_lens_profile",
+            Self::InvalidTransform => "invalid_transform",
+            Self::InvalidLut => "invalid_lut",
+            Self::InvalidPreset => "invalid_preset",
+            Self::ModelUnavailable(_) => "model_unavailable",
         }
     }
 
@@ -213,7 +240,7 @@ impl DevelopError {
             | Self::UnsupportedIlluminant
             | Self::ApproximateColourNotAllowed
             | Self::UnsupportedContribution(_) => Outcome::Failure(FailureCode::Unsupported),
-            Self::DecoderUnavailable(_) | Self::SinkRejected => {
+            Self::DecoderUnavailable(_) | Self::SinkRejected | Self::ModelUnavailable(_) => {
                 Outcome::Failure(FailureCode::Unavailable)
             }
             _ => Outcome::Failure(FailureCode::Validation),
@@ -227,6 +254,7 @@ impl std::fmt::Display for DevelopError {
             Self::UnsupportedContribution(name) => write!(f, "unsupported_contribution:{name}"),
             Self::Prism(code) => write!(f, "prism_refused:{code}"),
             Self::DecoderUnavailable(format) => write!(f, "decoder_unavailable:{format}"),
+            Self::ModelUnavailable(kind) => write!(f, "model_unavailable:{kind}"),
             other => f.write_str(other.code()),
         }
     }

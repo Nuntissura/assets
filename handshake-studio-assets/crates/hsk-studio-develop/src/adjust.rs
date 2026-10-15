@@ -25,8 +25,9 @@ use crate::DevelopError;
 use crate::color::{self, D50_XYZ, Mat3, SRGB_TO_XYZ_D50};
 
 /// Version of the adjustment maths. Bump when any mapping below changes.
-pub const ADJUST_VERSION: (u32, u32) = (1, 1);
-/// Oldest recipe version still read: 1.0 recipes lack the 1.1 families, which are identity.
+pub const ADJUST_VERSION: (u32, u32) = (1, 2);
+/// Oldest recipe version still read: 1.0 recipes lack the 1.1 families and 1.0/1.1 recipes the 1.2
+/// families (optics, geometry), which are identity.
 pub const ADJUST_MIN_VERSION: (u32, u32) = (1, 0);
 
 /// Soft range of every count-scale slider (STU-RAW-110/111/112/115).
@@ -132,6 +133,10 @@ pub struct Adjustments {
     pub grayscale: crate::colour::GrayscaleMix,
     pub grading: crate::colour::ColourGrading,
     pub detail: crate::detail::Detail,
+    /// STU-RAW-117 lens corrections (gated by `enable_lens_corrections`; whole frame).
+    pub optics: crate::optics::Optics,
+    /// STU-RAW-118 geometry (gated by `enable_transform`; whole frame).
+    pub geometry: crate::geometry::Geometry,
 }
 
 /// Raw-form white balance (STU-RAW-110): kelvin 2000..25000 (the Kim Planckian approximation ends at
@@ -179,10 +184,15 @@ pub(crate) struct Gates {
     pub detail: bool,
     pub mask: bool,
     pub grayscale: bool,
+    pub lens: bool,
+    pub transform: bool,
 }
 
 impl Gates {
-    pub(crate) const ALL_PIXEL: Self = Self { colour: true, curve: true, detail: true, mask: false, grayscale: true };
+    pub(crate) const NONE: Self =
+        Self { colour: false, curve: false, detail: false, mask: false, grayscale: false, lens: false, transform: false };
+    pub(crate) const ALL_PIXEL: Self =
+        Self { colour: true, curve: true, detail: true, mask: false, grayscale: true, lens: false, transform: false };
 
     pub(crate) fn from_enables(e: &crate::recipe::Enables) -> Self {
         Self {
@@ -191,6 +201,8 @@ impl Gates {
             detail: e.enable_detail,
             mask: e.enable_mask_group_based_corrections,
             grayscale: e.enable_grayscale_mix,
+            lens: e.enable_lens_corrections,
+            transform: e.enable_transform,
         }
     }
 }
@@ -212,6 +224,8 @@ impl Default for Adjustments {
             grayscale: crate::colour::GrayscaleMix::default(),
             grading: crate::colour::ColourGrading::default(),
             detail: crate::detail::Detail::default(),
+            optics: crate::optics::Optics::default(),
+            geometry: crate::geometry::Geometry::default(),
         }
     }
 }
@@ -599,6 +613,8 @@ pub(crate) struct PreparedAdjust {
     pub(crate) luma: [f64; 3],
     pub(crate) local: crate::local::PreparedLocal,
     pub(crate) detail: crate::detail::PreparedDetail,
+    pub(crate) optics: crate::optics::PreparedOptics,
+    pub(crate) geometry: Option<crate::geometry::PreparedGeometry>,
 }
 
 impl PreparedAdjust {
@@ -607,7 +623,7 @@ impl PreparedAdjust {
         adjust: &Adjustments,
         gates: Gates,
     ) -> Result<Self, DevelopError> {
-        let Gates { colour: colour_on, curve: curve_on, detail: detail_on, mask: mask_on, grayscale: gray_on } = gates;
+        let Gates { colour: colour_on, curve: curve_on, detail: detail_on, mask: mask_on, grayscale: gray_on, lens: lens_on, transform: transform_on } = gates;
         if adjust.version < ADJUST_MIN_VERSION || adjust.version > ADJUST_VERSION {
             return Err(DevelopError::InvalidAdjustment);
         }
@@ -649,6 +665,8 @@ impl PreparedAdjust {
             gray_on,
         )?;
         let detail = crate::detail::PreparedDetail::prepare(&adjust.detail, detail_on)?;
+        let optics = crate::optics::PreparedOptics::prepare(&adjust.optics, lens_on)?;
+        let geometry = crate::geometry::PreparedGeometry::prepare(&adjust.geometry, transform_on)?;
         let colour = (extras.is_active() || (colour_on && (vibrance != 0.0 || saturation != 0.0 || mixer_active))).then_some(ColourStage {
             vibrance: if colour_on { vibrance } else { 0.0 },
             saturation: if colour_on { saturation } else { 0.0 },
@@ -665,6 +683,8 @@ impl PreparedAdjust {
             luma,
             local,
             detail,
+            optics,
+            geometry,
         })
     }
 

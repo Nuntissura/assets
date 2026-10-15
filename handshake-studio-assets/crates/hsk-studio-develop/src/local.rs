@@ -337,7 +337,7 @@ impl PreparedLocal {
             };
             let prepared = PreparedAdjust::prepare(
                 &adjust,
-                crate::adjust::Gates { colour: true, curve: true, detail: false, mask: false, grayscale: false },
+                crate::adjust::Gates { colour: true, curve: true, ..crate::adjust::Gates::NONE },
             )?;
             let exposure_gain = (s.exposure * a * LOCAL_EXPOSURE_STOPS).exp2();
             if !exposure_gain.is_finite() || exposure_gain <= 0.0 {

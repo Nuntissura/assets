@@ -59,10 +59,8 @@ impl Enables {
         [
             (self.enable_calibration, "calibration"),
             (self.enable_effects, "effects"),
-            (self.enable_lens_corrections, "lens_corrections"),
             (self.enable_red_eye, "red_eye"),
             (self.enable_retouch, "retouch"),
-            (self.enable_transform, "transform"),
             (self.enable_distraction_removal, "distraction_removal"),
         ]
         .into_iter()
@@ -91,7 +89,10 @@ impl ResolvedCurves {
     }
 }
 
-/// Authored normalised crop edges (0..1) plus orientation state; only identity variants run.
+/// Authored normalised crop edges (0..1) plus orientation state. The straighten angle (-45..45
+/// degrees), the flips and `constrain_to_warp` run in the whole-frame geometry stage
+/// (`develop_to_image`; the tile API refuses them as `unsupported_contribution:transform_whole_frame`);
+/// an orientation other than 1 is still refused.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NormalizedCrop {
     pub left: f64,
@@ -128,13 +129,11 @@ impl NormalizedCrop {
         if edges.iter().any(|v| !v.is_finite()) {
             return Err(DevelopError::NonFinite);
         }
-        if self.angle != 0.0
-            || self.orientation != 1
-            || self.flip_horizontal
-            || self.flip_vertical
-            || self.constrain_to_warp
-        {
+        if self.orientation != 1 {
             return Err(DevelopError::UnsupportedCrop);
+        }
+        if !(-45.0..=45.0).contains(&self.angle) {
+            return Err(DevelopError::InvalidAdjustment);
         }
         let unit = 0.0..=1.0;
         if !unit.contains(&self.left)
@@ -151,6 +150,11 @@ impl NormalizedCrop {
 
     /// Derived source bounds `(x0, y0, x1, y1)`: floor/ceil of the authored edges in written
     /// binary64 arithmetic; the authored normalised edges stay the authority.
+    /// True when the crop needs the whole-frame geometry stage (angle, flips or constrain to warp).
+    pub fn needs_geometry(&self) -> bool {
+        self.angle != 0.0 || self.flip_horizontal || self.flip_vertical || self.constrain_to_warp
+    }
+
     pub fn source_bounds(&self, width: u32, height: u32) -> Result<(u32, u32, u32, u32), DevelopError> {
         self.validate()?;
         let (w, h) = (f64::from(width), f64::from(height));

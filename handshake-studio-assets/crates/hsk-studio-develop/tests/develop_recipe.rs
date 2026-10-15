@@ -467,7 +467,8 @@ fn limits_and_range() {
         refuse(&|r| r.exposure_stops = f64::INFINITY, 4, DevelopError::NonFinite);
         refuse(&|r| r.as_shot_neutral = [1.0, 0.0, 1.0], 4, DevelopError::NonFinite);
         refuse(&|r| r.white_balance_mode = WbMode::Auto, 4, DevelopError::UnsupportedWhiteBalance);
-        refuse(&|r| r.crop.angle = 1.0, 4, DevelopError::UnsupportedCrop);
+        refuse(&|r| r.crop.angle = 1.0, 4, DevelopError::UnsupportedContribution("transform_whole_frame"));
+        refuse(&|r| r.crop.orientation = 6, 4, DevelopError::UnsupportedCrop);
         refuse(&|r| r.crop.left = 1.0, 4, DevelopError::EmptyCrop);
         refuse(&|r| r.curve_refine_saturation = 50, 4, DevelopError::UnsupportedCurve);
         refuse(&|r| r.output_profile.sha256 = [9; 32], 4, DevelopError::UnsupportedProfileTransform);
