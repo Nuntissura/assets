@@ -290,7 +290,7 @@ fn whole_fixture_render_matches_operator_png() {
         let mean = d.iter().sum::<f64>() / n;
         let p99 = d[(n * 0.99) as usize];
         eprintln!(
-            "{frame}: pixels {} mean {mean:.3} p99 {p99:.1} max {:.1} <=2: {:.4} <=8: {:.4} <=32: {:.4}",
+            "{frame}: pixels {} mean {mean:.4} p99 {p99:.4} max {:.1} <=2: {:.4} <=8: {:.4} <=32: {:.4}",
             d.len(),
             d[d.len() - 1],
             within(2.0),
@@ -299,10 +299,10 @@ fn whole_fixture_render_matches_operator_png() {
         );
         // Tolerances from the measured run (lane notes): >= 99.2 % of pixels within 8/255 (measured
         // 0.9923 / 0.9931 / 0.9927), mean difference <= 0.72/255 (measured 0.712 / 0.676 /
-        // 0.678), p99 <= 0.5/255; the residue is glyph antialiasing (Inter 3.019 vs Figma's Inter).
+        // 0.678), p99 <= 0.51/255 (measured 0.5000 at 4 decimals, f32 residue above it); the residue is glyph antialiasing (Inter 3.019 vs Figma's Inter).
         assert!(within(8.0) >= 0.992, "{frame}: {:.4} of pixels within 8/255", within(8.0));
         assert!(mean <= 0.72, "{frame}: mean difference {mean:.3}");
-        assert!(p99 <= 0.5, "{frame}: p99 {p99:.1}");
+        assert!(p99 <= 0.51, "{frame}: p99 {p99:.4}");
     }
     // Basic shapes, whole artboard: strokes, a gradient, an image paint and the bold run are
     // composite refusals or missing fonts; reported, compared at its own measured level.
