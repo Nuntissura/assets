@@ -6,7 +6,7 @@
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
-use hsk_studio_harness::import::{ImportError, SourceFormat, convert_to_native, import, sniff};
+use hsk_studio_harness::import::{ImportError, ImportSettings, SourceFormat, convert_to_native, import, import_with, sniff};
 use hsk_studio_harness::{Harness, References, Selection, cli, default_actor};
 use hsk_studio_package::{ImportRole, Limits, read_package};
 use serde_json::Value;
@@ -581,6 +581,11 @@ fn cr3_imports_through_the_spectral_table_colour_route() {
     assert_eq!(develop["colour_route"], "spectral_table", "{develop}");
     assert_eq!(develop["colour_source"], "SpectralTable { make: \"Canon\", model: \"EOS R6\", alias: false }");
     assert!(develop["colour_assumption"].is_null());
+    // Two calibrations interpolated by the solved CCT (STU-COL-218); no approximation, no loss note.
+    let (cct, w) = (develop["colour_cct"].as_f64().unwrap(), develop["illuminant_weight"].as_f64().unwrap());
+    assert!(cct > 2856.0 && cct < 6504.0 && w > 0.0 && w < 1.0, "cct {cct} weight {w}");
+    assert_eq!(develop["approximate_colour"], false);
+    assert!(!doc.receipt["loss"].as_array().unwrap().iter().any(|e| e["code"] == "approximate_colour_single_illuminant"));
     let layers = &doc.snapshot.document().layers;
     assert_eq!(layers.len(), 1);
     assert!(matches!(layers[0].payload, folio::Payload::Raster { .. }), "{:?}", layers[0].payload);
@@ -588,4 +593,36 @@ fn cr3_imports_through_the_spectral_table_colour_route() {
     assert!(window[2].as_u64().unwrap() > 3000 && window[3].as_u64().unwrap() > 2000, "{window:?}");
     assert!(doc.receipt["tiles"].as_u64().unwrap_or(0) > 0, "{}", doc.receipt["tiles"]);
     println!("CR3 import window={} tiles={} colour={}", develop["window"], doc.receipt["tiles"], develop["colour_source"]);
+}
+
+#[cfg(feature = "import-raw")]
+#[test]
+#[ignore = "external CC0 camera raw sample (oracle corpus raw-vendor/); run with --run-ignored ignored-only"]
+fn single_illuminant_raw_colour_needs_the_approximate_colour_opt_in() {
+    // Lead decision 2026-10-15 (SMB-DEVELOP-CAMERA-COLOUR-2): the C5060WZ ORF's only colour is its
+    // maker-note matrix, one calibration below STU-COL-218's two. Default import refuses it typed;
+    // ImportSettings { approximate_colour: true } imports it, and the receipt records the opt-in and
+    // the loss note.
+    let Some(bytes) = pinned("approximate_colour", "raw-vendor/olympus-c5060wz-12bit.orf", "3fc12bc3f6320cfab456111d7805b446e329fdd1907680be55e2e163e5e084bd") else {
+        return;
+    };
+    let cancel = CancellationToken::default();
+    match import(&bytes, &TrustAllResolver, &cancel) {
+        Err(ImportError::Importer { format: SourceFormat::CameraRaw, code }) => assert_eq!(code, "approximate_colour_not_allowed"),
+        Err(other) => panic!("unexpected refusal {other}"),
+        Ok(_) => panic!("imported without the opt-in"),
+    }
+    let settings = ImportSettings { approximate_colour: true };
+    let doc = match import_with(&bytes, &TrustAllResolver, &cancel, &settings) {
+        Ok(doc) => doc,
+        Err(e) => panic!("opted-in import refused: {e}"),
+    };
+    let develop = &doc.receipt["develop"];
+    assert_eq!(develop["approximate_colour"], true);
+    assert_eq!(develop["colour_route"], "file_matrix");
+    assert_eq!(develop["colour_assumption"], "file_matrix_white_assumed_d65");
+    assert_eq!(develop["illuminant_weight"], 0.0);
+    let loss = doc.receipt["loss"].as_array().unwrap();
+    assert!(loss.iter().any(|e| e["code"] == "approximate_colour_single_illuminant" && e["path"] == "document/colour" && e["kind"] == "transformed"), "{loss:?}");
+    assert_eq!(doc.snapshot.document().layers.len(), 1);
 }

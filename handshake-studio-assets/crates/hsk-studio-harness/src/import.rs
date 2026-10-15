@@ -213,8 +213,24 @@ mod with_package {
         }
     }
 
-    /// Sniffs `bytes` and runs the selected importer.
+    /// Import choices a host makes explicitly (lane SMB-DEVELOP-CAMERA-COLOUR-2). Every field
+    /// defaults to the strict behaviour.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ImportSettings {
+        /// Develop a camera raw whose only colour is a single-illuminant approximation (a vendor
+        /// file matrix, below STU-COL-218's two calibrations). Default `false`: such a raw refuses
+        /// `approximate_colour_not_allowed`. When used, the receipt's `develop.approximate_colour`
+        /// is `true` and the loss list names `approximate_colour_single_illuminant`.
+        pub approximate_colour: bool,
+    }
+
+    /// Sniffs `bytes` and runs the selected importer with the default (strict) settings.
     pub fn import(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        import_with(bytes, resolver, cancel, &ImportSettings::default())
+    }
+
+    /// [`import`] with explicit [`ImportSettings`].
+    pub fn import_with(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken, settings: &ImportSettings) -> Result<ImportedDocument, ImportError> {
         cancel.check().map_err(|_| ImportError::Canceled)?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SOURCE_BYTES {
             return Err(ImportError::Package("entry_too_large"));
@@ -222,8 +238,8 @@ mod with_package {
         let format = sniff(bytes).ok_or(ImportError::FormatUnrecognised)?;
         let mut imported = match format {
             SourceFormat::Psd | SourceFormat::Psb => psd_route(bytes, format, resolver, cancel),
-            SourceFormat::Tiff => tiff_family(bytes, resolver, cancel),
-            SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel),
+            SourceFormat::Tiff => tiff_family(bytes, resolver, cancel, settings),
+            SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel, settings),
             SourceFormat::Pdf => pdf_route(bytes, resolver, cancel),
             SourceFormat::Png | SourceFormat::Jpeg | SourceFormat::Webp => raster_route(bytes, format, resolver, cancel),
         }?;
@@ -295,7 +311,7 @@ mod with_package {
     }
 
     #[cfg(not(feature = "import-raw"))]
-    fn raw_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+    fn raw_route(_: &[u8], format: SourceFormat, _: &dyn Resolver, _: &CancellationToken, _: &ImportSettings) -> Result<ImportedDocument, ImportError> {
         Err(ImportError::FormatUnavailable { format, feature: "import-raw", reason: "feature_not_enabled" })
     }
 
@@ -307,11 +323,11 @@ mod with_package {
     /// plain TIFF only when no marker is present (otherwise develop's refusal stands); without
     /// `import-raw` a marked file is `format_unavailable` (format `camera_raw`, feature `import-raw`).
     /// Tests: `tests/import_tiff.rs` `camera_raw_never_imports_as_plain_tiff_without_import_raw`.
-    fn tiff_family(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+    fn tiff_family(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken, settings: &ImportSettings) -> Result<ImportedDocument, ImportError> {
         #[cfg(feature = "import-raw")]
         {
             let not_raw = hsk_studio_develop::DevelopError::UnsupportedContainer.code();
-            match raw_route(bytes, SourceFormat::Tiff, resolver, cancel) {
+            match raw_route(bytes, SourceFormat::Tiff, resolver, cancel, settings) {
                 Err(ImportError::Importer { code, .. }) if code == not_raw && camera_raw_marker(bytes).is_none() => {
                     plain_tiff(bytes, resolver, cancel, "develop_unsupported_container")
                 }
@@ -320,6 +336,7 @@ mod with_package {
         }
         #[cfg(not(feature = "import-raw"))]
         {
+            let _ = settings; // only the camera-raw route reads it
             if camera_raw_marker(bytes).is_some() {
                 return Err(ImportError::FormatUnavailable {
                     format: SourceFormat::CameraRaw,
@@ -369,12 +386,17 @@ mod with_package {
         format: SourceFormat,
         resolver: &dyn Resolver,
         cancel: &CancellationToken,
+        settings: &ImportSettings,
     ) -> Result<ImportedDocument, ImportError> {
         use hsk_studio_develop as develop;
-        let prepared = raw_prepare(bytes, format, cancel)?;
+        let prepared = raw_prepare_with(bytes, format, settings, cancel)?;
         let (image, receipt) = develop::develop_to_image(&prepared.plane, &prepared.recipe, 1, cancel).map_err(|e| prepared.refusal(e))?;
         let (window, window_report, colour_route) = (prepared.window, prepared.window_report, prepared.colour_route);
-        let (proposal, frames) = raw_proposal(&prepared, image, resolver, cancel)?;
+        let (colour_loss, colour_cct, illuminant_weight) = (prepared.colour_loss, prepared.colour_cct, prepared.illuminant_weight);
+        let (mut proposal, frames) = raw_proposal(&prepared, image, resolver, cancel)?;
+        if let Some(code) = colour_loss {
+            proposal.loss.entries.push(hsk_studio_interop_psd::LossEntry { path: "document/colour".into(), kind: hsk_studio_interop_psd::LossKind::Transformed, code });
+        }
         drop(prepared);
         let colour = super::colour::summary(
             &proposal,
@@ -388,6 +410,7 @@ mod with_package {
                 "demosaic": receipt.demosaic_algorithm,
                 "window": [window.x, window.y, window.width, window.height],
                 "colour_route": colour_route.key(), "colour_source": format!("{colour_route:?}"), "colour_assumption": colour_route.assumption(),
+                "approximate_colour": colour_loss.is_some(), "colour_cct": colour_cct, "illuminant_weight": illuminant_weight,
                 "clamped_below": window_report.clamped_below, "clamped_above": window_report.clamped_above,
                 "black_rounded": window_report.black_rounded, "black_site_adjusted": window_report.black_site_adjusted,
                 "output": "linear light, sRGB primaries (xyz_d50_to_linear_srgb), as-shot white balance, baseline exposure not applied",
@@ -413,6 +436,12 @@ mod with_package {
         /// Where `colour` came from (DNG tags, a vendor matrix tag or the spectral table; lane
         /// SMB-DEVELOP-CAMERA-COLOUR).
         pub colour_route: hsk_studio_develop::ColourRoute,
+        /// `Some(approximate_colour_single_illuminant)` when an opted-in approximate route is used.
+        pub colour_loss: Option<&'static str>,
+        /// Solved scene CCT (kelvin) and the weight toward the higher-temperature calibration
+        /// (two-illuminant interpolation, STU-COL-218; 0 for a single calibration).
+        pub colour_cct: f64,
+        pub illuminant_weight: f64,
         /// XYZ D50 -> linear sRGB primaries, the profile matrix of `recipe`.
         pub to_profile: hsk_studio_develop::color::Mat3,
         source: hsk_studio_interop_psd::SourceIdentity,
@@ -432,16 +461,26 @@ mod with_package {
         }
     }
 
-    /// Decodes `bytes` with `hsk-studio-develop` and prepares the default window (see [`RawPrepared`]).
+    /// Decodes `bytes` with `hsk-studio-develop` and prepares the default window (see [`RawPrepared`]),
+    /// strict settings (an approximate colour route refuses).
     #[cfg(feature = "import-raw")]
     pub fn raw_prepare(bytes: &[u8], format: SourceFormat, cancel: &CancellationToken) -> Result<RawPrepared, ImportError> {
+        raw_prepare_with(bytes, format, &ImportSettings::default(), cancel)
+    }
+
+    /// [`raw_prepare`] with explicit [`ImportSettings`].
+    #[cfg(feature = "import-raw")]
+    pub fn raw_prepare_with(bytes: &[u8], format: SourceFormat, settings: &ImportSettings, cancel: &CancellationToken) -> Result<RawPrepared, ImportError> {
         use hsk_studio_develop as develop;
         use hsk_studio_interop_psd as psd;
         let refusal = |e: develop::DevelopError| match e {
             develop::DevelopError::Canceled => ImportError::Canceled,
             other => ImportError::Importer { format, code: other.code() },
         };
-        let raw = develop::decode_container(bytes).map_err(refusal)?;
+        let mut raw = develop::decode_container(bytes).map_err(refusal)?;
+        if settings.approximate_colour {
+            raw.allow_approximate_colour();
+        }
         cancel.check().map_err(|_| ImportError::Canceled)?;
         let window = raw.default_window();
         let (plane, window_report) =
@@ -454,8 +493,22 @@ mod with_package {
             sha256: [0; 32],
         };
         let to_srgb = develop::color::xyz_d50_to_linear_srgb().map_err(refusal)?;
-        let (recipe, _) = raw.recipe(&to_srgb, binding, develop::BaselineExposure::Ignore).map_err(refusal)?;
-        Ok(RawPrepared { format, window, window_report, plane, recipe, colour: raw.color, colour_route: raw.colour_route, to_profile: to_srgb, source, mint })
+        let (recipe, solution) = raw.recipe(&to_srgb, binding, develop::BaselineExposure::Ignore).map_err(refusal)?;
+        Ok(RawPrepared {
+            format,
+            window,
+            window_report,
+            plane,
+            recipe,
+            colour_loss: raw.colour_loss(),
+            colour_cct: solution.cct,
+            illuminant_weight: solution.weight,
+            colour: raw.color,
+            colour_route: raw.colour_route,
+            to_profile: to_srgb,
+            source,
+            mint,
+        })
     }
 
     /// One developed image as interop-psd's raster proposal (one 32-bit `Background` layer through
