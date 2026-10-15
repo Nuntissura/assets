@@ -10,7 +10,7 @@ use hsk_studio_folio::StudioMaskMode;
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::vector::{PaintSpec, ShapeKind, VectorTool};
-use hsk_studio_press::{VectorItem, VectorNote, read_vector_document, render_page};
+use hsk_studio_press::{VectorEl, VectorItem, VectorNote, read_vector_document, render_page};
 
 const W: usize = 96;
 const H: usize = 64;
@@ -54,8 +54,18 @@ fn clips_and_masks_draw_and_export_to_pdf_and_svg() {
     let (pdf, losses) = v.vector_pdf_bytes().unwrap();
     assert!(losses.iter().all(|l| l.contains("raster_layer_not_exported") || l.contains("rasterized_at_document_resolution")), "{losses:?}");
     let doc = read_vector_document(&pdf, 1 << 24, &CancellationToken::default()).unwrap();
-    let clips = doc.pages[0].items.iter().filter(|i| matches!(i, VectorItem::PushClip { .. })).count();
-    assert_eq!(clips, 2);
+    // The clip rectangle (20, 15) px is (15, 36.75) pt; the inverted vector mask is even-odd
+    // (transparency groups add their own bounding-box clips).
+    let clips: Vec<(Vec<[f64; 2]>, bool)> = doc.pages[0]
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            VectorItem::PushClip { path, even_odd } => Some((path.iter().filter_map(|e| if let VectorEl::MoveTo(q) | VectorEl::LineTo(q) = e { Some(*q) } else { None }).collect(), *even_odd)),
+            _ => None,
+        })
+        .collect();
+    assert!(clips.iter().any(|(p, eo)| !eo && p.iter().any(|q| (q[0] - 15.0).abs() < 1e-6 && (q[1] - 36.75).abs() < 1e-6)), "{clips:?}");
+    assert!(clips.iter().any(|(_, eo)| *eo), "{clips:?}");
     assert!(doc.pages[0].notes.contains(&VectorNote::SoftMaskNotRead), "the soft mask is written");
     let page = render_page(&pdf, 0, 4.0 / 3.0, &hsk_studio_press::Limits::default(), &CancellationToken::default()).unwrap();
     let rgb = |x: usize, y: usize| {
