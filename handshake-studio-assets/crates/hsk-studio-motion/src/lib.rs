@@ -15,6 +15,7 @@ mod path;
 mod property;
 mod receipt;
 mod store;
+mod text_animator;
 mod time;
 
 pub use date::{
@@ -46,4 +47,10 @@ pub use property::{
 };
 pub use receipt::{DESCRIPTOR, EvalReceipt, PROFILE_KEYFRAMES, report};
 pub use store::{PropertyStore, StoreContext, TickEvaluation};
+pub use text_animator::{
+    Animator, AnimatorParam, AnimatorProperties, AnimatorTrack, BasedOn, CharTransform,
+    MAX_ANIMATORS, MAX_SELECTORS, MAX_TEXT_UNITS, RangeSelector, RangeShape, RangeUnits, Selector,
+    TextChar, WigglySelector, evaluate_text_animators, range_value, selector_amounts, splitmix64,
+    units_of, value_noise,
+};
 pub use time::EvalTick;

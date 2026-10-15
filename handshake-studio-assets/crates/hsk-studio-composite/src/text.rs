@@ -19,6 +19,13 @@
 //! is `Unavailable("<layer>:<type code>")`; a fill outside `[0, 1]` is `<layer>:text_fill`; a layer
 //! plane above `max_layer_pixels` is `<layer>:raster_over_limit`, refused before allocation.
 //! Documents without text are lowered by the unchanged static path (byte-identical plans).
+
+/// Per-glyph animated text (text animators, lane SMB-AE-MOTION-TOOLS; feature `motion`).
+#[cfg(feature = "motion")]
+pub mod animate;
+/// Coverage planes painted as static content (animated text, shape layers).
+pub mod painted;
+
 use crate::evaluate_static::{EvalReport, evaluate_with};
 use crate::lower_plan::{LoweredPlan, NodeAddr};
 use crate::lower_render_plan::{RenderLowering, TileInfoSource, lower_inner, text_root_plan};
