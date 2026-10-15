@@ -413,3 +413,21 @@ fn orf_two_field_c5060wz_decodes_and_matches_the_embedded_preview() {
         r_floor: 0.95,
     }]);
 }
+
+/// DMC-LX7 (raw.pixls.us id 7010): `IIU` magic, sensor 1904 x 1276 (tags 0x0002/0x0003), 12 bit,
+/// compression 34316 (byte inspection 2026-10-15; the previous lanes' RW2 blocker).
+#[test]
+#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+fn rw2_lx7_decodes_and_matches_the_embedded_preview() {
+    const TEST: &str = "rw2_lx7_decodes_and_matches_the_embedded_preview";
+    check_all(TEST, &[Expect {
+        file: "panasonic-dmc-lx7.rw2",
+        sha256: "18dfc3877e944020299635a8c2fad61fca2485b1c9b67645a495ee870a86e599",
+        dims: (1904, 1276, 12),
+        white: 4095,
+        cfa: CfaPattern::Bayer(Bayer::Rggb),
+        model: "DMC-LX7",
+        digest: "",
+        r_floor: 0.0,
+    }]);
+}

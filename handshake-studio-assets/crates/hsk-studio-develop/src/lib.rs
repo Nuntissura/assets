@@ -35,6 +35,7 @@ mod orf;
 mod par;
 mod raf;
 mod rafc;
+mod rw2;
 mod tiffep;
 
 use hsk_studio_accord::CancellationToken;
@@ -252,6 +253,9 @@ pub fn decode_container(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     }
     if orf::is_orf(bytes) {
         return orf::decode(bytes);
+    }
+    if rw2::is_rw2(bytes) {
+        return rw2::decode(bytes);
     }
     // TIFF family (classic + BigTIFF magic); BigTIFF is then refused by the reader, not mislabeled.
     if [&b"II*\0"[..], b"MM\0*", b"II+\0", b"MM\0+"]
