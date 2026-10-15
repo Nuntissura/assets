@@ -351,12 +351,18 @@ pub fn reflow_flow(
         } else {
             (req.paragraphs, vec![None; req.paragraphs.len()])
         };
+    let (anchored, pre) = crate::anchors::flow_effects(flow, req.story, paragraphs)?;
+    if pre.iter().zip(&flows).any(|(p, f)| *p > 0.0 && *f != ParaFlow::Single) {
+        return Err(LayoutError::UnsupportedComposition);
+    }
+    let paragraphs: &[ShapedParagraph] = anchored.as_deref().unwrap_or(paragraphs);
     let composed = compose_flow(
         &thread,
         text,
         paragraphs,
         &stylings,
         &flows,
+        &pre,
         req.composer,
         req.space,
         opts,
@@ -465,7 +471,8 @@ pub(crate) fn compose(
     cancel: &CancellationToken,
 ) -> Result<Composition, LayoutError> {
     let flows = vec![ParaFlow::Single; paragraphs.len()];
-    compose_flow(thread, text, paragraphs, stylings, &flows, composer, req_space, opts, limits, cancel)
+    let pre = vec![0.0; paragraphs.len()];
+    compose_flow(thread, text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, cancel)
 }
 
 /// Moves the lines of one band (all single-column lines, no obstacles in the frame) so that the
@@ -512,6 +519,7 @@ fn compose_flow(
     paragraphs: &[ShapedParagraph],
     stylings: &[Option<ParagraphStyling>],
     flows: &[ParaFlow],
+    pre: &[f64],
     composer: Composer,
     req_space: SpaceParams,
     opts: &TypesetOptions<'_>,
@@ -522,6 +530,7 @@ fn compose_flow(
     if paragraphs.len() > limits.max_paragraphs
         || stylings.len() != paragraphs.len()
         || flows.len() != paragraphs.len()
+        || pre.len() != paragraphs.len()
         || paragraphs
             .iter()
             .try_fold(0usize, |n, p| n.checked_add(p.glyphs.len()))
@@ -574,6 +583,25 @@ fn compose_flow(
         let mut after_cursor = None;
         match flow {
             ParaFlow::Single => {
+                // Above-line anchored objects push the paragraph down (anchors module); a push that
+                // falls into the next column or frame is re-applied at that column's top.
+                if pre[pi] > 0.0 {
+                    let mut c = cursor;
+                    c.extra += pre[pi];
+                    if let Some(s) =
+                        next_slot(thread, c, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)?
+                        && (s.pos != cursor.pos || s.col != cursor.col)
+                    {
+                        c = Cursor {
+                            pos: s.pos,
+                            col: s.col,
+                            line: 0,
+                            band: if s.pos == cursor.pos { cursor.band } else { None },
+                            extra: pre[pi],
+                        };
+                    }
+                    cursor = c;
+                }
                 let mut at = cursor;
                 while slots.len() < slot_cap {
                     match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)? {

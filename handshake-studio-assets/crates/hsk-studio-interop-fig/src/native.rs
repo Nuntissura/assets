@@ -235,6 +235,7 @@ impl FigTextStyle {
                     _ => None,
                 })
                 .filter(|_| paragraph),
+            grep_styles: Vec::new(),
         };
         (style, unit_lost)
     }

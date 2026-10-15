@@ -662,6 +662,7 @@ fn type_style(n: u32, scope: TypeStyleScope, fill: StudioRgba) -> StudioTypeStyl
         line_height: None,
         letter_spacing: None,
         align: None,
+        grep_styles: Vec::new(),
     }
 }
 

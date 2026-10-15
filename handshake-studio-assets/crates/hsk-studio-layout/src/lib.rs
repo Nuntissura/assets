@@ -6,15 +6,18 @@
 //! never mis-laid.
 #![forbid(unsafe_code)]
 
+mod anchors;
 mod breaker;
 mod endnotes;
 mod fitting;
 mod folio_input;
 mod footnotes;
 mod geometry;
+mod grep;
 mod hyphenate;
 mod index;
 mod numbering;
+mod objstyle;
 mod paragraph;
 mod parent_adapter;
 mod parents;
@@ -24,13 +27,28 @@ mod styles;
 mod table;
 mod threaded_reflow;
 mod toc;
+mod textflow;
 mod typeset;
+mod xref;
 
+pub use anchors::{
+    AnchorError, AnchorProposal, PlacedAnchor, anchored_graphic, inline_adjusted_paragraphs, place_anchored_objects,
+};
 pub use breaker::{Composer, KnuthPlassParams};
+pub use textflow::{ConditionalView, MAX_STORY_BYTES, conditional_view, replace_story_text, shift_flow_records};
+pub use xref::{
+    MAX_XREF_TOKENS, XrefBlock, XrefContext, XrefError, XrefResolution, XrefRun, XrefStatus, XrefStory,
+    parse_xref_format, resolve_cross_references, write_cross_reference,
+};
 pub use endnotes::{EndnoteGroup, GeneratedEndnotes, NoteBody, NoteHost, NoteReference, PlacedSidenote, SidenoteProposal, generate_endnotes, place_sidenotes};
 pub use fitting::{Crop, FitError, Fitted, PlacedGraphic, fit_content, place_graphic};
 pub use folio_input::FrameObstacles;
 pub use geometry::Rect;
+pub use grep::{
+    GREP_DFA_LIMIT, GREP_NEST_LIMIT, GREP_SIZE_LIMIT, GrepError, GrepMatch, MAX_GREP_MATCHES, apply_grep_styles,
+    grep_matches,
+};
+pub use objstyle::{AppliedObjectStyle, apply_object_style, resolve_object_style};
 pub use hyphenate::{
     EN_US_LICENCE, HyphenationError, HyphenationParams, Hyphenator, MAX_WORD_BYTES, hyphenated,
 };

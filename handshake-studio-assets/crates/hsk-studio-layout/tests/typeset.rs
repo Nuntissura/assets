@@ -531,6 +531,7 @@ fn style(n: u32, scope: TypeStyleScope, based_on: Option<u32>) -> StudioTypeStyl
         line_height: None,
         letter_spacing: None,
         align: None,
+        grep_styles: Vec::new(),
     }
 }
 fn records(styles: Vec<StudioTypeStyle>) -> StudioTypeStyleRecords {

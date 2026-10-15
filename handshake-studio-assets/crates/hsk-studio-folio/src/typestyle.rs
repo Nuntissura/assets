@@ -18,8 +18,8 @@
 //! to a character style or a range to a paragraph style.
 //!
 //! Declared gaps, not invented here: the full character/paragraph attribute groups of 14.7 (OpenType
-//! features, decoration, baseline shift, indents, spacing, hyphenation, composer, nested and GREP
-//! styles), override reporting (STU-TYP-202) and variable-bound fields (STU-TYP-204) are not stored;
+//! features, decoration, baseline shift, indents, spacing, hyphenation, composer, nested styles;
+//! GREP styles are carried since SMB-LAYOUT-UI as `grep_styles`), override reporting (STU-TYP-202) and variable-bound fields (STU-TYP-204) are not stored;
 //! the `StudioStyleRegistry` storage and publishing fields (14.6/14.10) stay with the design records
 //! (`PAINT` entries only). Bounds the spec does not state are checked for finiteness and their
 //! physical domain only (size and line-height length positive, percent line height positive).
@@ -113,7 +113,28 @@ pub struct StudioTypeStyle {
     /// Paragraph scope only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub align: Option<StudioTextAlign>,
+    /// STU-LAY-038 pattern (GREP) styles, paragraph scope only, stored ON the style (lane
+    /// SMB-LAYOUT-UI): each rule applies a character style to every regular-expression match inside
+    /// paragraphs carrying this style. Inherited through `based_on` (parent rules first); the
+    /// pattern syntax is the linear-time engine's (hsk-studio-layout `grep`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grep_styles: Vec<StudioGrepStyle>,
 }
+
+/// One pattern style rule.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioGrepStyle {
+    /// Regular expression, 1..=`MAX_GREP_PATTERN_BYTES` bytes.
+    pub pattern: String,
+    /// `STYS` id of a character style of the same set.
+    pub character_style: String,
+}
+
+/// Pattern bytes of one GREP rule (a Folio hard ceiling).
+pub const MAX_GREP_PATTERN_BYTES: usize = 1024;
+/// GREP rules per paragraph style (a Folio hard ceiling).
+pub const MAX_GREP_STYLES: usize = 64;
 
 /// The type styles of one document. An empty set is not encoded beyond its header.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -233,6 +254,16 @@ fn validate_style(s: &StudioTypeStyle, cx: &mut Ctx) -> Result<()> {
     if s.scope == TypeStyleScope::Character {
         check(s.align.is_none(), t, "align")?;
         check(s.next_style.is_none(), t, "next_style")?;
+        check(s.grep_styles.is_empty(), t, "grep_styles")?;
+    }
+    check(s.grep_styles.len() <= MAX_GREP_STYLES, t, "grep_styles")?;
+    for g in &s.grep_styles {
+        check(
+            !g.pattern.is_empty() && g.pattern.len() <= MAX_GREP_PATTERN_BYTES,
+            t,
+            "grep_styles/pattern",
+        )?;
+        id(&g.character_style, "STYS", &format!("{t}/grep_styles/character_style"))?;
     }
     Ok(())
 }
@@ -269,6 +300,14 @@ pub fn validate_type_style_records(
     for s in &r.styles {
         cx.tick()?;
         let t = s.style_id.as_str();
+        for g in &s.grep_styles {
+            let target = format!("{t}/grep_styles/character_style");
+            match scopes.get(g.character_style.as_str()) {
+                None => return Err(err(Code::DanglingReference, target)),
+                Some(TypeStyleScope::Paragraph) => return Err(err(Code::PayloadMismatch, target)),
+                Some(_) => {}
+            }
+        }
         for (field, reference, scope) in [
             ("based_on", &s.based_on, s.scope),
             ("next_style", &s.next_style, TypeStyleScope::Paragraph),

@@ -251,11 +251,12 @@ fn reflow_overset_per_thread_and_typed_refusals() {
         }
         .bytes(),
     );
+    // Multi-column frames compose since SMB-LAYOUT-UI slice 1 (layout tests/layout_columns.rs).
     let t = flow(&multi, &TOY);
-    assert_eq!(t[0].refusal(), Some("unsupported_composition"));
-    assert!(t[0].overset().is_none());
+    assert!(t[0].outcome.is_ok());
     assert!(t[1].outcome.is_ok());
-    // Baselines layout cannot map (cap height) are refused by layout, not guessed.
+    // Baselines layout cannot map (cap height) are refused by layout, not guessed, and the refusal
+    // passes through per thread (both threads use the fixture baseline here).
     let cap = import(
         &Fixture {
             baseline: "CapHeight",
@@ -263,10 +264,11 @@ fn reflow_overset_per_thread_and_typed_refusals() {
         }
         .bytes(),
     );
-    assert_eq!(
-        flow(&cap, &TOY)[0].outcome,
-        Err(LayoutError::UnsupportedComposition)
-    );
+    let c = flow(&cap, &TOY);
+    assert_eq!(c[0].outcome, Err(LayoutError::UnsupportedComposition));
+    assert_eq!(c[0].refusal(), Some("unsupported_composition"));
+    assert!(c[0].overset().is_none());
+    assert_eq!(c[1].refusal(), Some("unsupported_composition"));
 
     // An RTL story is refused before any shaping; a missing font is a typed layout refusal.
     let rtl = import(
