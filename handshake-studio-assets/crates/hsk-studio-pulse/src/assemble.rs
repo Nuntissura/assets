@@ -290,7 +290,14 @@ fn assemble(
                     return Err(PulseError::LinkedEditUnsupported);
                 }
                 let pieces = lift_span(&lane_of(track)?, span, grid_of(track, rate), ctx.cancel)?;
-                write_pieces(&mut out.tracks[t], &pieces, &mut fresh, &mut taken, ctx)?;
+                write_pieces(
+                    &mut out.tracks[t],
+                    &pieces,
+                    &mut fresh,
+                    &mut taken,
+                    &mut reads.splits,
+                    ctx,
+                )?;
             }
         }
         AssemblyMode::Insert => {
@@ -319,6 +326,7 @@ fn assemble(
                     grid_of(track, rate),
                     &mut fresh,
                     &mut taken,
+                    &mut reads.splits,
                 )?;
             }
         }
@@ -340,6 +348,7 @@ fn insert_gap(
     grid: crate::range::Grid,
     fresh: &mut std::slice::Iter<'_, String>,
     taken: &mut BTreeSet<String>,
+    splits: &mut Vec<(String, String)>,
 ) -> Result<()> {
     let at = points.sequence_in;
     let straddler = clips
@@ -355,6 +364,7 @@ fn insert_gap(
             return Err(PulseError::DuplicateId);
         }
         let (left, right) = split_clip(&clips[s], at, id)?;
+        splits.push((left.clip_id.clone(), id.clone()));
         clips[s] = left;
         clips.insert(s.saturating_add(1), right);
     }

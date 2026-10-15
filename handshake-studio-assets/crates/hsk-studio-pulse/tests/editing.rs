@@ -644,3 +644,199 @@ fn hostile_assembly_input_is_refused_typed_before_work() {
         assert_eq!(stale.unwrap_err(), PulseError::StaleRevision);
     });
 }
+
+fn marker(id: &str, scope: MarkerScope, start: u64, frames: u64) -> Marker {
+    Marker {
+        marker_id: id.into(),
+        scope,
+        name: "note".into(),
+        comment: String::new(),
+        color: LabelColor::Rose,
+        start: Ticks::new(start * F),
+        duration: Ticks::new(frames * F),
+        role: None,
+    }
+}
+
+#[test]
+fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
+    bounded_case("markers", || {
+        let cancel = CancellationToken::default();
+        let mut reversed = base();
+        reversed.tracks[2].clips[0].speed = Speed {
+            numerator: -1,
+            denominator: 1,
+        };
+        let snap = snapshot_of(reversed, 3);
+        let seq = &snap.document().sequences[0];
+        let spans = |s: &StudioSequence, a: &TimelineAnnotations| -> Vec<(String, u64, u64)> {
+            marker_spans(s, a, &cancel)
+                .unwrap()
+                .into_iter()
+                .map(|(id, r)| (id, r.start().value() / F, r.end().value() / F))
+                .collect()
+        };
+
+        // A sequence chapter marker spanning frames 12..15, a clip marker on A at source 6..8 and
+        // a point marker on the reversed clip D (source 0..2 plays at 12..14 backwards).
+        let mut chapter = marker("mk-seq", MarkerScope::Sequence, 12, 3);
+        chapter.role = Some(MarkerRole::Chapter);
+        let on_a = marker("mk-a", MarkerScope::Clip { clip_id: cid(1) }, 6, 2);
+        let on_d = marker("mk-d", MarkerScope::Clip { clip_id: cid(4) }, 0, 1);
+        let mut ann = TimelineAnnotations::new("seq-main");
+        for (rev, m) in [chapter.clone(), on_a, on_d].into_iter().enumerate() {
+            let p = plan_annotation_edit(
+                &ann,
+                seq,
+                rev as u64,
+                &AnnotationEdit::AddMarker(m),
+                &cancel,
+            )
+            .unwrap();
+            ann = p.annotations().clone();
+        }
+        assert_eq!(ann.revision(), 3);
+        let want = |v: &[(&str, u64, u64)]| {
+            v.iter()
+                .map(|(i, a, b)| ((*i).to_owned(), *a, *b))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            spans(seq, &ann),
+            want(&[("mk-a", 6, 8), ("mk-seq", 12, 15), ("mk-d", 13, 14)])
+        );
+
+        // Insert 3 frames at 4: A splits (right half 30 = source 4..10 at 7), so the clip marker
+        // moves to the piece and lands at 9..11; the sequence marker does not move with clips.
+        let insert = assembly(
+            AssemblyMode::Insert,
+            pts(Some(50), Some(53), Some(4), None),
+            &[(1, 20)],
+            &[30],
+        );
+        let p = assemble(&snap, &insert).unwrap();
+        assert_eq!(p.splits(), &[(cid(1), cid(30))]);
+        let f = follow_timeline_edit(&ann, &p, 3, &cancel).unwrap();
+        let moved = f.annotations();
+        assert_eq!(
+            moved.marker("mk-a").unwrap().scope,
+            MarkerScope::Clip { clip_id: cid(30) }
+        );
+        assert!(f.dropped_markers().is_empty());
+        let s1 = seq_of(&p);
+        assert_eq!(
+            spans(s1, moved),
+            want(&[("mk-a", 9, 11), ("mk-seq", 12, 15), ("mk-d", 13, 14)])
+        );
+        let at = |f: u64| Ticks::new(f * F);
+        assert_eq!(next_marker(s1, moved, at(0), &cancel).unwrap(), Some(at(9)));
+        assert_eq!(
+            next_marker(s1, moved, at(9), &cancel).unwrap(),
+            Some(at(12))
+        );
+        assert_eq!(
+            prev_marker(s1, moved, at(12), &cancel).unwrap(),
+            Some(at(9))
+        );
+        assert_eq!(next_marker(s1, moved, at(13), &cancel).unwrap(), None);
+
+        // Ripple delete of the piece drops its marker and says so; undo brings it back exactly.
+        let ext = edit(
+            p.snapshot(),
+            &TimelineEdit::ExtractClip { clip_id: cid(30) },
+        )
+        .unwrap();
+        let g = follow_timeline_edit(moved, &ext, 4, &cancel).unwrap();
+        assert_eq!(g.dropped_markers(), &["mk-a".to_owned()]);
+        assert!(g.annotations().marker("mk-a").is_none());
+        let s2 = seq_of(&ext);
+        let undo = plan_annotation_revert(g.annotations(), s2, 5, g.inverse(), &cancel).unwrap();
+        assert_eq!(undo.annotations().markers(), moved.markers());
+        let redo =
+            plan_annotation_revert(undo.annotations(), s2, 6, undo.inverse(), &cancel).unwrap();
+        assert_eq!(redo.annotations().markers(), g.annotations().markers());
+        assert_eq!(
+            plan_annotation_revert(&ann, seq, 3, g.inverse(), &cancel).unwrap_err(),
+            PulseError::RevertMismatch
+        );
+
+        // Replace moves the chapter; remove; typed refusals.
+        let mut later = chapter.clone();
+        later.start = at(20);
+        let r = plan_annotation_edit(&ann, seq, 3, &AnnotationEdit::ReplaceMarker(later), &cancel)
+            .unwrap();
+        assert_eq!(
+            marker_span(seq, r.annotations().marker("mk-seq").unwrap())
+                .unwrap()
+                .map(|s| s.start()),
+            Some(at(20))
+        );
+        let code = |e: AnnotationEdit| {
+            plan_annotation_edit(&ann, seq, 3, &e, &cancel)
+                .unwrap_err()
+                .code()
+        };
+        assert_eq!(
+            code(AnnotationEdit::AddMarker(chapter.clone())),
+            "duplicate_id"
+        );
+        assert_eq!(
+            code(AnnotationEdit::RemoveMarker {
+                marker_id: "nope".into()
+            }),
+            "unknown_marker"
+        );
+        assert_eq!(
+            code(AnnotationEdit::ReplaceMarker(chapter.clone())),
+            "no_change"
+        );
+        assert_eq!(
+            code(AnnotationEdit::AddMarker(marker(
+                "x",
+                MarkerScope::Clip { clip_id: cid(99) },
+                0,
+                0
+            ))),
+            "unknown_clip"
+        );
+        let mut odd = marker("x", MarkerScope::Sequence, 1, 0);
+        odd.start = Ticks::new(F + 1);
+        assert_eq!(code(AnnotationEdit::AddMarker(odd)), "not_frame_aligned");
+        let mut far = marker("x", MarkerScope::Clip { clip_id: cid(1) }, 0, 0);
+        far.start = Ticks::new(u64::MAX);
+        far.duration = Ticks::new(1);
+        assert_eq!(code(AnnotationEdit::AddMarker(far)), "overflow");
+        let mut bad = marker("x\u{7}", MarkerScope::Sequence, 0, 0);
+        assert_eq!(
+            code(AnnotationEdit::AddMarker(bad.clone())),
+            "invalid_input"
+        );
+        bad.marker_id = "x".into();
+        bad.name = "n".repeat(MAX_ANNOTATION_TEXT_BYTES + 1);
+        assert_eq!(code(AnnotationEdit::AddMarker(bad)), "invalid_input");
+        assert_eq!(
+            plan_annotation_edit(
+                &ann,
+                seq,
+                2,
+                &AnnotationEdit::RemoveMarker {
+                    marker_id: "mk-seq".into()
+                },
+                &cancel
+            )
+            .unwrap_err(),
+            PulseError::StaleRevision
+        );
+        // A stored set over the bound is refused on its length before any marker is checked.
+        let many = vec![marker("same", MarkerScope::Sequence, 0, 0); MAX_MARKERS + 1];
+        assert_eq!(
+            TimelineAnnotations::from_parts(seq, 0, many, &cancel).unwrap_err(),
+            PulseError::LimitExceeded
+        );
+        let dup = vec![marker("same", MarkerScope::Sequence, 0, 0); 2];
+        assert_eq!(
+            TimelineAnnotations::from_parts(seq, 0, dup, &cancel).unwrap_err(),
+            PulseError::DuplicateId
+        );
+    });
+}

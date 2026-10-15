@@ -188,6 +188,7 @@ pub struct EditProposal {
     write_footprint: Vec<String>,
     snapshot: Snapshot,
     inverse: TimelineInverse,
+    splits: Vec<(String, String)>,
 }
 
 /// The reversible half of one applied proposal: the sequence as the edit left it (`expect`, the
@@ -238,6 +239,11 @@ impl EditProposal {
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
+    /// `(origin clip id, new clip id)` for every clip this edit cut in two (razor, range lift and
+    /// extract, insert and overwrite); annotation owners use it to carry clip markers.
+    pub fn splits(&self) -> &[(String, String)] {
+        &self.splits
+    }
     /// Undo of this proposal for [`plan_timeline_revert`] (once it is applied).
     pub fn inverse(&self) -> &TimelineInverse {
         &self.inverse
@@ -248,6 +254,8 @@ impl EditProposal {
 pub(crate) struct Footprint {
     seen: BTreeSet<String>,
     ids: Vec<String>,
+    /// `(origin clip id, new clip id)` for every clip the edit cut in two.
+    pub(crate) splits: Vec<(String, String)>,
 }
 impl Footprint {
     pub(crate) fn add(&mut self, id: &str) {
@@ -580,6 +588,9 @@ fn razor(
         TickRange::from_start_duration(clip.timeline_start, clip.duration)?.split_at(at)?;
         grid_of(track, rate).check_delta(TickDelta::between(clip.timeline_start, at))?;
         let (first, mut second) = split_clip(clip, at, fresh_id)?;
+        reads
+            .splits
+            .push((clip.clip_id.clone(), (*fresh_id).to_owned()));
         second.link_group = right_group.map(str::to_owned);
         out.tracks[t].clips[c] = first;
         out.tracks[t].clips.insert(c + 1, second);
@@ -663,6 +674,7 @@ pub(crate) fn write_pieces(
     pieces: &[LanePiece],
     fresh: &mut std::slice::Iter<'_, String>,
     taken: &mut BTreeSet<String>,
+    splits: &mut Vec<(String, String)>,
     ctx: &EditContext,
 ) -> Result<()> {
     let originals = std::mem::take(&mut track.clips);
@@ -678,6 +690,7 @@ pub(crate) fn write_pieces(
             if !taken.insert(id.clone()) {
                 return Err(PulseError::DuplicateId);
             }
+            splits.push((clip.clip_id.clone(), id.clone()));
             clip.clip_id = id.clone();
         }
         let duration = piece.range.duration();
@@ -703,6 +716,7 @@ fn cut_tracks(
     close: bool,
     fresh: &[String],
     ctx: &EditContext,
+    reads: &mut Footprint,
 ) -> Result<()> {
     let rate = rate_of(seq)?;
     let mut taken: BTreeSet<String> = seq
@@ -721,7 +735,14 @@ fn cut_tracks(
         } else {
             lift_span(&lane, span, grid, ctx.cancel)?
         };
-        write_pieces(&mut out.tracks[t], &pieces, &mut ids, &mut taken, ctx)?;
+        write_pieces(
+            &mut out.tracks[t],
+            &pieces,
+            &mut ids,
+            &mut taken,
+            &mut reads.splits,
+            ctx,
+        )?;
     }
     Ok(())
 }
@@ -745,7 +766,7 @@ fn remove_clips(
         ));
     }
     let mut out = seq.clone();
-    cut_tracks(seq, &mut out, &plan, close, &[], ctx)?;
+    cut_tracks(seq, &mut out, &plan, close, &[], ctx, reads)?;
     if close {
         let lead = plan[0].1;
         let shift = TickDelta::between(lead.end(), lead.start());
@@ -785,7 +806,7 @@ fn cut_range(
     }
     let plan: Vec<(usize, TickRange)> = targeted.iter().map(|t| (*t, span)).collect();
     let mut out = seq.clone();
-    cut_tracks(seq, &mut out, &plan, close, fresh, ctx)?;
+    cut_tracks(seq, &mut out, &plan, close, fresh, ctx, reads)?;
     if close {
         let edited: Vec<(usize, usize)> = targeted.iter().map(|t| (*t, 0)).collect();
         let shift = TickDelta::between(span.end(), span.start());
@@ -1071,6 +1092,7 @@ pub(crate) fn propose(
         base_revision: expected_revision,
         target_revision,
         changes,
+        splits: reads.splits,
         read_footprint: reads.ids,
         write_footprint: writes.ids,
         snapshot: validated,
