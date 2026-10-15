@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod anchors;
+mod book;
 mod breaker;
 mod endnotes;
 mod fitting;
@@ -33,6 +34,9 @@ mod xref;
 
 pub use anchors::{
     AnchorError, AnchorProposal, PlacedAnchor, anchored_graphic, inline_adjusted_paragraphs, place_anchored_objects,
+};
+pub use book::{
+    BookChapter, BookError, CombinedBook, MAX_BOOK_PAGES, book_export_subset, book_page_key, chapter_page_ranges, combine_book,
 };
 pub use breaker::{Composer, KnuthPlassParams};
 pub use textflow::{ConditionalView, MAX_STORY_BYTES, conditional_view, replace_story_text, shift_flow_records};

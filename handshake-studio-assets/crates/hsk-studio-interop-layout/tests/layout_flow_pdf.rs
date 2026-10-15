@@ -350,3 +350,86 @@ fn anchored_picture_cross_reference_and_hidden_condition_export() {
     assert!(close(blue, [0, 0, 255]), "right half blue {blue:?}");
     assert!(close(above, [255, 255, 255]), "nothing above the box {above:?}");
 }
+
+/// Chapter `n` for the book test: spread SPGS n of `pages` 300 x 400 pages p1.., one frame (layer
+/// 10n, story n) on p1 at (20, 20), 200 x 100.
+fn chapter_doc(n: u32, pages: usize) -> StudioDocument {
+    let mut d = document();
+    d.document_id = id("SDOC", n);
+    d.page_spreads[0].page_spread_id = id("SPGS", n);
+    d.page_spreads[0].pages = (1..=pages)
+        .map(|i| StudioPage { page_id: format!("p{i}"), ..d.page_spreads[0].pages[0].clone() })
+        .collect();
+    let mut frame = d.layers[0].clone();
+    frame.layer_id = id("SLYR", 10 * n);
+    frame.parent = Parent::Node(NodeRef { node_kind: NodeKind::PageSpread, node_id: id("SPGS", n) });
+    frame.payload = Payload::Text { story_id: id("STXT", n) };
+    frame.text_frame.as_mut().unwrap().page_id = "p1".into();
+    d.layers = vec![frame];
+    d
+}
+
+/// SMB-LAYOUT-UI slice 5: a two-chapter book (2 + 3 pages, chapter 2 starting on the next odd
+/// page: 3) combined into one document and exported as ONE PDF: five pages in book order, each
+/// chapter's "Hi" on the first page of its chapter at (20, 400 - 36), and /PageLabels written
+/// from the book numbering.
+#[test]
+fn book_exports_one_pdf_with_continuous_page_labels() {
+    use hsk_studio_interop_layout::layout::{BookChapter, combine_book};
+    let cancel = CancellationToken::default();
+    let (a, b) = (chapter_doc(1, 2), chapter_doc(2, 3));
+    let mut book = StudioBook::new("book", "Book");
+    book.add_chapter(&a.document_id).unwrap();
+    book.add_chapter(&b.document_id).unwrap();
+    book.repagination_option = StudioRepagination::ContinueOnNextOdd;
+    validate_book(&book, Some(&[&a, &b]), &cancel).unwrap();
+    let combined = combine_book(&book, &[BookChapter { document: &a, sections: &[] }, BookChapter { document: &b, sections: &[] }], &id("SDOC", 99)).unwrap();
+    assert_eq!(combined.pages.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["1", "2", "3", "4", "5"]);
+    let snapshot = validate_document(combined.document.clone(), Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let flow = StudioLayoutFlowRecords::new(id("SDOC", 99));
+    let mut composed = Vec::new();
+    for n in [1u32, 2] {
+        let mut st = story("Hi", &[(0, 2)]);
+        st.story_id = id("STXT", n);
+        let (paras, glyphs) = shaped("Hi", &[(0, 2)]);
+        let req = ReflowRequest {
+            document: doc,
+            story: &st,
+            resolved_text: None,
+            paragraphs: &paras,
+            obstacles: &[],
+            composer: Composer::FirstFit,
+            space: SpaceParams::default(),
+            expected_revision: doc.revision,
+            limits: hsk_studio_interop_layout::layout::Limits::default(),
+        };
+        let placement = reflow_flow(&req, &TypesetOptions::default(), &flow, &cancel).unwrap();
+        composed.push((st, paras, glyphs, placement));
+    }
+    let stories: Vec<PdfStory<'_>> = composed
+        .iter()
+        .map(|(st, paras, glyphs, placement)| PdfStory { story: st, text: "Hi", placement, paragraphs: paras, glyphs, default_fill: Colour::DeviceGray(0.0) })
+        .collect();
+    let labels = page_labels_from_sections(&combined.sections, &combined.pages);
+    let fonts = [PdfFont { bytes: INTER, face_index: 0, hyphen: None }];
+    let picture = Picture::new();
+    let input = PdfExportInput { snapshot: &snapshot, design: None, type_styles: None, stories: &stories, fonts: &fonts, assets: &picture, options: ExportOptions::default(), limits: Limits::default() };
+    let out = export_pdf_with(&input, &PdfLongDoc { page_labels: &labels, ..PdfLongDoc::default() }, &cancel).unwrap();
+    assert_eq!(out.pages, ["c0-p1", "c0-p2", "c1-p1", "c1-p2", "c1-p3"]);
+    assert_eq!(out.glyphs_drawn, 4);
+    assert!(find(&out.bytes, b"/PageLabels").is_some());
+    // Glyphs: per page content stream in page order; "Hi" on pages 1 and 3 only.
+    let widths = hsk_studio_interop_layout::press::font_advance_widths(INTER, 0).unwrap();
+    let per_page: Vec<Vec<(u16, f64, f64)>> = streams(&out.bytes).iter().map(|s| common::pdf_scan::shown_runs(std::slice::from_ref(s), &widths)).filter(|g| !g.is_empty()).collect();
+    assert_eq!(per_page.len(), 2);
+    for g in &per_page {
+        assert_eq!(g.iter().map(|x| x.0).collect::<Vec<_>>(), [161, 679]);
+        assert!((g[0].1 - 20.0).abs() < 0.01 && (g[0].2 - 364.0).abs() < 0.01);
+    }
+    // Each page renders back (five pages, chapter 2's text on page index 2).
+    let page2 = render_page(&out.bytes, 2, 1.0, &Limits::default(), &cancel).unwrap();
+    let dark = (20u32..40).flat_map(|x| (20u32..40).map(move |y| (x, y))).filter(|&(x, y)| page2.pixel(x, y).is_some_and(|p| p[0] < 128)).count();
+    assert!(dark > 0, "chapter 2 heading drawn on book page 3");
+    assert!(render_page(&out.bytes, 5, 1.0, &Limits::default(), &cancel).is_err());
+}
