@@ -59,6 +59,8 @@ mod identity;
 pub use identity::{check_identity_uniqueness, check_variable_identity_uniqueness};
 mod raster;
 pub use raster::*;
+mod smart_filter;
+pub use smart_filter::*;
 mod vector;
 pub use vector::*;
 mod live_shape;

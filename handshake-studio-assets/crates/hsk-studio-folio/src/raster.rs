@@ -547,6 +547,10 @@ pub struct StudioRasterLayerRecord {
     pub advanced_blending: Option<StudioAdvancedBlending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<StudioEffectStack>,
+    /// Smart (live) filter stack (lane SMB-PS-SELECT-LIQUIFY-2, module `smart_filter`); absent
+    /// is not encoded, so earlier record sets stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart_filters: Option<super::StudioSmartFilterStack>,
 }
 impl StudioRasterLayerRecord {
     /// An empty entry for `layer_id`.
@@ -557,6 +561,7 @@ impl StudioRasterLayerRecord {
             mask: None,
             advanced_blending: None,
             effects: None,
+            smart_filters: None,
         }
     }
 }
@@ -1093,6 +1098,9 @@ pub fn validate_raster_records(
         }
         if let Some(s) = &e.effects {
             validate_effects(s, t, &mut cx)?;
+        }
+        if let Some(s) = &e.smart_filters {
+            super::smart_filter::validate_smart_filters(s, layer, &mut cx)?;
         }
     }
     // Every adjustment layer must have its adjustment record.
