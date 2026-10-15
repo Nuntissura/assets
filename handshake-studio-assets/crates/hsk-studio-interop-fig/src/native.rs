@@ -866,6 +866,38 @@ impl Mapper<'_> {
                 _ => StrokeAlign::Center,
             };
             let weight = wide(n.stroke_weight.unwrap_or(1.0)).max(0.0);
+            // Figma caps: NONE = butt, ROUND, SQUARE = projecting; marker caps (arrows, ERD,
+            // washi tape) have no Folio stroke cap: butt with a typed loss.
+            let cap = match n.stroke_cap.as_deref() {
+                None | Some("NONE") => StrokeCap::Butt,
+                Some("ROUND") => StrokeCap::Round,
+                Some("SQUARE") => StrokeCap::Projecting,
+                Some(other) => {
+                    self.lose(
+                        format!("native.strokes.cap={other}"),
+                        "stroke_cap_marker_no_folio_home",
+                    );
+                    StrokeCap::Butt
+                }
+            };
+            // Miter limit: Figma's stored ratio (default 4), Folio bounds 1..=500.
+            let miter_limit = match n.miter_limit.map(wide) {
+                None => 4.0,
+                Some(m) if (1.0..=500.0).contains(&m) => m,
+                Some(_) => {
+                    self.lose("native.strokes.miter_limit", "miter_limit_out_of_range");
+                    4.0
+                }
+            };
+            // Dashes: Figma repeats an odd-length pattern; Folio needs an even count, so an
+            // odd pattern is written twice (the same repetition). Negative lengths are refused.
+            let mut dash: Vec<Length> = n.dash_pattern.iter().map(|d| px(wide(*d))).collect();
+            if dash.iter().any(|d| d.value < 0.0) || (!dash.is_empty() && dash.iter().all(|d| d.value == 0.0)) {
+                self.lose("native.strokes.dash", "dash_pattern_invalid_solid_used");
+                dash.clear();
+            } else if dash.len() % 2 == 1 {
+                dash.extend(dash.clone());
+            }
             for p in &n.strokes {
                 self.pending_image = None;
                 if let Some((paint, opacity)) = self.paint(p, n.size, "strokes") {
@@ -876,15 +908,13 @@ impl Mapper<'_> {
                     let blend_mode = self.paint_blend(p, "strokes");
                     rows.push(StudioAppearanceRow::Stroke {
                         paint,
-                        // Cap and miter limit: Figma defaults (no cap, limit 4) where the file has
-                        // none; the decoder reports any stored strokeCap/miterLimit as a loss.
                         stroke: StudioStrokeStyle {
                             weight: px(weight),
-                            cap: StrokeCap::Butt,
+                            cap,
                             join,
                             align,
-                            miter_limit: 4.0,
-                            dash: Vec::new(),
+                            miter_limit,
+                            dash: dash.clone(),
                             dash_offset: px(0.0),
                         },
                         opacity,
@@ -1728,8 +1758,30 @@ impl Mapper<'_> {
     /// Shadow effects of a layer node -> one `StudioEffectStack` in the raster records; every
     /// effect without a Folio kind (blurs) or on an artboard is a typed loss.
     fn effects(&mut self, n: &FigNode, node: &NodeRef) {
+        let doc = self.doc;
+        // An effect style (`styleIdForEffect`) is a local style node carrying the effects; it
+        // supplies the node's effects (Figma keeps the style's effects authoritative).
+        let effects: &[crate::nodes::Effect] = match n.effect_style {
+            None => &n.effects,
+            Some(style) => match doc.node(style) {
+                Some(st) if !st.effects.is_empty() => {
+                    if !n.effects.is_empty() && n.effects != st.effects {
+                        self.lose("native.effects.style", "effect_style_replaces_inline_effects");
+                    }
+                    &st.effects
+                }
+                _ => {
+                    self.lose("native.effects.style", "effect_style_not_in_file");
+                    &n.effects
+                }
+            },
+        };
+        if n.fill_style.is_some() || n.stroke_style.is_some() {
+            // The paints are the style's synced values; the style link itself has no Folio field.
+            self.lose("native.paint.style_ref", "paint_style_reference_not_mapped");
+        }
         let mut list = Vec::new();
-        for (i, e) in n.effects.iter().enumerate() {
+        for (i, e) in effects.iter().enumerate() {
             let path = format!("native.effects.{}", e.kind);
             if node.node_kind != NodeKind::Layer {
                 self.lose(path, "effect_on_artboard_no_folio_home");
@@ -1755,6 +1807,27 @@ impl Mapper<'_> {
             let mut rec = StudioRasterLayerRecord::new(node.node_id.clone());
             rec.effects = Some(stack);
             self.fx.push(rec);
+            // A group with effects composites as one isolated Normal unit (a pass-through group
+            // has no own result to shadow; composite refuses effects on pass-through).
+            if let Some(l) = self
+                .layers
+                .iter_mut()
+                .find(|l| l.layer_id == node.node_id && l.kind == "group")
+            {
+                let a = l.appearance.get_or_insert(LayerAppearance {
+                    opacity: 100.0,
+                    fill_opacity: 100.0,
+                    blend_mode: BLEND_PASS_THROUGH,
+                    clipped: false,
+                    isolation: Isolation::PassThrough,
+                    mask: None,
+                });
+                if a.blend_mode == BLEND_PASS_THROUGH {
+                    a.blend_mode = BLEND_NORMAL;
+                    a.isolation = Isolation::Isolated;
+                    self.lose_plain("native.effects.group", "group_with_effects_isolated");
+                }
+            }
         }
     }
 
@@ -2216,9 +2289,10 @@ impl Mapper<'_> {
     ) -> Result<()> {
         let background =
             self.frame_background(root, frame, abs, group, !symbol.children.is_empty())?;
-        if nested {
-            self.effects(root, group);
-        }
+        // The expansion group is what draws the instance: it carries the instance's effects
+        // (also kept on the binding layer's records for a document instance).
+        let _ = nested;
+        self.effects(root, group);
         let clip = background.and_then(|b| b.1);
         let children = symbol.children.clone();
         self.walk_children(
@@ -2991,11 +3065,42 @@ pub fn to_native(
     .map_err(folio_error)?;
     let doc_id = snapshot.document().document_id.clone();
     let mut vector_records = StudioVectorRecords::new(doc_id.clone());
+    // A clip or mask on a pass-through group applies to each of its children (the group has no
+    // own result; composite refuses a mask on a pass-through layer): the attachment is pushed down
+    // to the children, which composite onto the same backdrop, so the coverage is the same.
+    let doc_layers = &snapshot.document().layers;
+    let pass_through = |id: &str| {
+        doc_layers.iter().any(|l| {
+            l.layer_id == id
+                && l.kind == "group"
+                && l.appearance
+                    .as_ref()
+                    .is_none_or(|a| a.blend_mode == BLEND_PASS_THROUGH)
+        })
+    };
+    let push_down = |target: &str| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![(target.to_owned(), 0usize)];
+        while let Some((t, depth)) = stack.pop() {
+            if depth < 64 && pass_through(&t) {
+                let kids: Vec<(String, usize)> = doc_layers
+                    .iter()
+                    .filter(|l| matches!(&l.parent, Parent::Node(p) if p.node_id == t))
+                    .map(|l| (l.layer_id.clone(), depth.saturating_add(1)))
+                    .collect();
+                stack.extend(kids.into_iter().rev());
+            } else {
+                out.push(t);
+            }
+        }
+        out
+    };
     let mut attached: BTreeMap<String, ()> = BTreeMap::new();
     for (i, (source, targets)) in mask_plans.iter().enumerate() {
         if targets.is_empty() {
             continue;
         }
+        let targets: Vec<String> = targets.iter().flat_map(|t| push_down(t)).collect();
         let mask_id = format!("fig-mask-{i}");
         vector_records.masks.push(StudioVectorMask {
             mask_id: mask_id.clone(),
@@ -3024,7 +3129,9 @@ pub fn to_native(
     // Frame clips: the region is the frame's background (or hidden clip-source) geometry; every
     // child layer of the frame carries the clip (beside a mask it may already have).
     let mut backgrounds = backgrounds;
-    for (clip_id, source, targets) in &clips {
+    // Deepest frames first: a frame's clip is recorded before the walk reaches its children, so
+    // reverse order visits inner frames before outer ones.
+    for (clip_id, source, targets) in clips.iter().rev() {
         if targets.is_empty() {
             let slot = loss
                 .entry(("native.clips_content".to_owned(), "frame_clip_without_layers"))
@@ -3040,12 +3147,15 @@ pub fn to_native(
             source_layer_id: source.clone(),
             clip_rule: StudioClipRule::NonZero,
         });
-        for t in targets {
+        // Inner clips are attached first (deepest frames first), so a pushed-down outer clip that
+        // meets a layer already clipped keeps the inner one (typed loss, see below).
+        let targets: Vec<String> = targets.iter().flat_map(|t| push_down(t)).collect();
+        for t in &targets {
             match vector_records.attachments.iter_mut().find(|a| &a.layer_id == t) {
                 Some(a) if a.clip_id.is_none() => a.clip_id = Some(clip_id.clone()),
                 Some(_) => {
                     let slot = loss
-                        .entry(("native.clips_content".to_owned(), "second_clip_on_layer_dropped"))
+                        .entry(("native.clips_content".to_owned(), "outer_clip_dropped_inner_kept"))
                         .or_insert((0, None));
                     slot.0 = slot.0.saturating_add(1);
                 }
@@ -3130,7 +3240,9 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "figma_render_parity (prototype-pages page 1 renders within measured tolerances of the Operator PNGs with Inter Regular granted; basic-shapes and the components page are not at parity: strokes, gradients, image paints, effect styles and Inter Bold are not drawn)",
     "instance_expansion (instances draw through an expansion group of the definition's children with overrides mapped; sublayer sizes come from derivedSymbolData only, resized shapes keep the definition geometry; uniform scale other than 1 is not applied)",
     "frame_background (frame fills are a bottom-most vector layer of the frame geometry; frame strokes stay on the frame and are not drawn; Figma's order of frame strokes over children is unverified)",
-    "frame_clip (clip content = a NONZERO vector clip of the frame geometry on every child layer; no renderer applies vector clip records yet)",
+    "frame_clip (clip content = a NONZERO vector clip of the frame geometry on every child layer, pushed down through pass-through groups; a layer inside nested clipping frames keeps only the inner clip, typed loss)",
+    "strokes (caps NONE/ROUND/SQUARE = butt/round/projecting, marker caps lost; an odd dash pattern is written twice; miter limit as stored; only fixture strokes without caps or dashes are compared with Figma rendering)",
+    "effect_styles (styleIdForEffect resolves to a local style node whose effects replace the node's; a group with effects is made isolated Normal; library styles are losses)",
     "text_layout (lines and baselines come from Figma's stored derivedTextData; glyph sizes from its laid-out glyphs; fonts must be granted by the caller per family and style)",
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",

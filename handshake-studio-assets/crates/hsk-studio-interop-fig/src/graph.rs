@@ -1,8 +1,9 @@
 //! Folio layer graph of an imported Figma document (lane SMB-INTEROP-FIG-LAYER-GRAPH), so the
-//! document can be composited. Folio types a vector source `vector` while every group input is
-//! `image`, so a vector layer can never feed a group; the mapping is therefore:
+//! document can be composited. Since lane SMB-INTEROP-FIG-PAINTS a vector source declares an
+//! image-typed `out` port (Folio SMB-FOLIO-VECTOR-IMAGE-PORT; composite draws it through nib), so
+//! groups of vector content composite as groups; the mapping is:
 //!
-//! - a vector layer with paths is a `source` operation (`vector` out) listed as a graph output;
+//! - a vector layer with paths is a `source` operation (`image` out);
 //! - a boolean group (the group carries a boolean record) is a `mix` operation with no inputs:
 //!   composite draws it as one leaf, its operand layers get no operation;
 //! - a text layer is a `source` operation whose single `out` port is `image` (Folio G1:
@@ -158,8 +159,11 @@ impl Builder<'_> {
                     inner
                 }
             }
+            // Lane SMB-INTEROP-FIG-PAINTS: vector sources declare an image-typed `out` port (Folio
+            // SMB-FOLIO-VECTOR-IMAGE-PORT; composite draws them through nib inside groups), so
+            // groups composite as groups instead of being flattened.
             ("vector", Payload::Vector { path_ids }) if !path_ids.is_empty() => {
-                vec![self.source(id, ValueType::Vector)]
+                vec![self.source(id, ValueType::Image)]
             }
             ("vector", _) => {
                 self.lose("native.graph", "vector_without_paths_not_composited");

@@ -450,8 +450,13 @@ impl VectorAssets for Assets<'_> {
     }
 }
 
-fn reopened(p: &NativeProposal) -> Snapshot {
+fn reopened(p: &NativeProposal, hidden: &[String]) -> Snapshot {
     let mut v: serde_json::Value = serde_json::from_slice(p.snapshot.encoded_bytes()).unwrap();
+    for l in v["layers"].as_array_mut().unwrap() {
+        if hidden.iter().any(|h| l["layer_id"] == h.as_str()) {
+            l["visible"] = serde_json::json!(false);
+        }
+    }
     for slot in ["working_space_rgb", "working_space_cmyk", "working_space_gray", "working_space_spot", "blending_space"] {
         v[slot] = serde_json::json!("SCPF-019abcde-0000-7000-8000-000000000001");
     }
@@ -506,42 +511,57 @@ pub struct Render {
     pub refused: BTreeMap<String, u32>,
     pub outputs: usize,
     pub rendered: usize,
+    /// Output layer ids (document graph outputs).
+    pub ids: Vec<String>,
+    /// Layers hidden because composite refused them (counted in `refused`).
+    pub hidden: Vec<String>,
 }
 pub const W: usize = 1400;
 pub const H: usize = 900;
 
-/// Composites the ready graph outputs (with `text` planes when given) on render-cpu at 1 px per
-/// document px; refused outputs are counted by reason and left out.
+/// Composites the document on render-cpu. Layers composite refuses (text without prepared fonts,
+/// image paints without decoded images) are hidden for the proof and counted by reason (the last
+/// colon-separated part); `hidden` lists them. Groups composite as groups, so a refused leaf would
+/// otherwise block its whole page.
 pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
-    let snap = reopened(p);
     let cancel = CancellationToken::default();
-    let vectors = prepare_vectors(
-        &snap,
-        &p.design,
-        &p.vector_records,
-        &Assets(p),
-        BlendSpace::Encoded,
-        // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
-        &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
-        &cancel,
-    )
-    .unwrap();
-    let mut plan = lower(&snap, snap.document().revision, BlendSpace::Encoded, &CLimits::default(), &cancel).unwrap();
-    let outputs = plan.outputs.len();
+    let mut hidden: Vec<String> = Vec::new();
     let mut refused: BTreeMap<String, u32> = BTreeMap::new();
-    let inputs = RenderInputs { vectors: Some(&vectors), records: Some(&p.raster_records), text };
-    let probe: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
-    plan.outputs.retain(|o| match probe.step(o).map(|s| &s.status) {
-        Some(StepStatus::Unavailable(reason)) => {
-            let key = reason.rsplit(':').next().unwrap_or(reason).to_owned();
-            *refused.entry(key).or_insert(0) += 1;
-            false
+    for _ in 0..16 {
+        let snap = reopened(p, &hidden);
+        let vectors = prepare_vectors(
+            &snap,
+            &p.design,
+            &p.vector_records,
+            &Assets(p),
+            BlendSpace::Encoded,
+            // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
+            &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
+            &cancel,
+        )
+        .unwrap();
+        let plan = lower(&snap, snap.document().revision, BlendSpace::Encoded, &CLimits::default(), &cancel).unwrap();
+        let inputs = RenderInputs { vectors: Some(&vectors), records: Some(&p.raster_records), text };
+        let probe: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
+        let leaves: Vec<(String, String)> = probe
+            .steps
+            .iter()
+            .filter_map(|s| match &s.status {
+                StepStatus::Unavailable(r) if !r.starts_with("input_unavailable") && !hidden.contains(&s.addr.layer_id) => {
+                    Some((s.addr.layer_id.clone(), r.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if !leaves.is_empty() {
+            for (layer, reason) in leaves {
+                *refused.entry(reason.rsplit(':').next().unwrap_or(&reason).to_owned()).or_insert(0) += 1;
+                hidden.push(layer);
+            }
+            continue;
         }
-        _ => true,
-    });
-    let rendered = plan.outputs.len();
-    let mut px = vec![[0.0f32; 4]; W * H];
-    if rendered > 0 {
+        let outputs = plan.outputs.len();
+        let ids: Vec<String> = plan.outputs.iter().map(|o| o.layer_id.clone()).collect();
         let plan = plan.with_document_root().unwrap();
         let report: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
         let target = OutputTarget {
@@ -568,9 +588,9 @@ pub fn render(p: &NativeProposal, text: Option<&PreparedText>) -> Render {
             .unwrap()
             .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, text, space), &cancel, &mut grid)
             .unwrap();
-        px = grid.px;
+        return Render { w: W, px: grid.px, refused, outputs, rendered: outputs, ids, hidden };
     }
-    Render { w: W, px, refused, outputs, rendered }
+    panic!("refusals did not settle in 16 rounds")
 }
 
 /// Our pixel at canvas (x, y) over a background colour, 0..=255 per channel.

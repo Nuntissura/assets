@@ -426,6 +426,16 @@ pub struct FigNode {
     pub stroke_weight: Option<f32>,
     pub stroke_align: Option<String>,
     pub stroke_join: Option<String>,
+    /// `strokeCap` as stored (`NONE`, `ROUND`, `SQUARE`, arrow/marker kinds).
+    pub stroke_cap: Option<String>,
+    /// `dashPattern` (dash, gap, ... in px); empty = solid.
+    pub dash_pattern: Vec<f32>,
+    pub miter_limit: Option<f32>,
+    /// Local style nodes referenced by `styleIdForEffect` / `styleIdForFill` /
+    /// `styleIdForStrokeFill` (`StyleId.guid`; a library `assetRef` is a loss).
+    pub effect_style: Option<SourceId>,
+    pub fill_style: Option<SourceId>,
+    pub stroke_style: Option<SourceId>,
     pub effects: Vec<Effect>,
     pub fill_geometry: Vec<Geometry>,
     pub stroke_geometry: Vec<Geometry>,
@@ -684,6 +694,18 @@ impl<'a> Obj<'a> {
             }
         }
     }
+}
+
+/// A `StyleId` field: the local style node's guid; a library `assetRef` has no node in the file.
+fn style_id(o: &mut Obj, cx: &mut Cx, name: &str) -> Option<SourceId> {
+    let mut so = o.obj(cx, name)?;
+    let id = so.guid(cx, "guid");
+    if id.is_none() && so.fields.iter().any(|f| &*f.name == "assetRef") {
+        cx.lose(so.sub("assetRef"), "style_asset_ref_not_in_file");
+        let _ = so.take("assetRef");
+    }
+    so.finish(cx);
+    id
 }
 
 fn guid_of(o: &mut Obj, cx: &mut Cx) -> Option<SourceId> {
@@ -1458,6 +1480,12 @@ pub const COMMON_NODE_FIELDS: &[&str] = &[
     "strokeWeight",
     "strokeAlign",
     "strokeJoin",
+    "strokeCap",
+    "dashPattern",
+    "miterLimit",
+    "styleIdForEffect",
+    "styleIdForFill",
+    "styleIdForStrokeFill",
     "effects",
     "fillGeometry",
     "strokeGeometry",
@@ -1488,6 +1516,15 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         .enum_name(cx, "type")
         .unwrap_or_else(|| "(untyped)".to_owned());
     let fills = paints(&mut o, cx, "fillPaints");
+    let dash_values = o.array(cx, "dashPattern");
+    let dash_pattern: Vec<f32> = dash_values
+        .iter()
+        .filter_map(KiwiValue::as_f32)
+        .filter(|v| v.is_finite())
+        .collect();
+    if dash_pattern.len() != dash_values.len() {
+        cx.lose("NodeChange.dashPattern", "field_type_unexpected");
+    }
     let mut n = FigNode {
         id,
         parent,
@@ -1504,6 +1541,12 @@ fn node(v: &KiwiValue, cx: &mut Cx) -> Result<Option<FigNode>> {
         stroke_weight: o.f32(cx, "strokeWeight"),
         stroke_align: o.enum_name(cx, "strokeAlign"),
         stroke_join: o.enum_name(cx, "strokeJoin"),
+        stroke_cap: o.enum_name(cx, "strokeCap"),
+        dash_pattern,
+        miter_limit: o.f32(cx, "miterLimit"),
+        effect_style: style_id(&mut o, cx, "styleIdForEffect"),
+        fill_style: style_id(&mut o, cx, "styleIdForFill"),
+        stroke_style: style_id(&mut o, cx, "styleIdForStrokeFill"),
         effects: effects(&mut o, cx),
         fill_geometry: geometry(&mut o, cx, "fillGeometry")?,
         stroke_geometry: geometry(&mut o, cx, "strokeGeometry")?,

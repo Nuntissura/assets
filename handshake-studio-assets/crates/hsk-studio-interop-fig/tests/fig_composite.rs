@@ -117,8 +117,13 @@ impl VectorAssets for Assets<'_> {
 
 /// The proposal's document with its five profile slots assigned, reopened with everything
 /// resolvable (the importer leaves the profiles unassigned: Figma documents carry none).
-fn reopened(p: &NativeProposal) -> Snapshot {
+fn reopened(p: &NativeProposal, hidden: &[String]) -> Snapshot {
     let mut v: serde_json::Value = serde_json::from_slice(p.snapshot.encoded_bytes()).unwrap();
+    for l in v["layers"].as_array_mut().unwrap() {
+        if hidden.iter().any(|h| l["layer_id"] == h.as_str()) {
+            l["visible"] = serde_json::json!(false);
+        }
+    }
     for slot in [
         "working_space_rgb",
         "working_space_cmyk",
@@ -177,45 +182,56 @@ struct Render {
     outputs: usize,
     rendered: usize,
     ids: Vec<String>,
+    /// Layers hidden because composite refused them (counted in `refused`).
+    hidden: Vec<String>,
 }
 
 const W: usize = 1400;
 const H: usize = 900;
 
-/// Composites the listed outputs that are ready (vector/boolean outputs; text outputs need a font
-/// and stay out of this proof), then executes the plan on render-cpu.
+/// Composites the document on render-cpu. Layers composite refuses (text without prepared fonts,
+/// image paints without decoded images) are hidden for the proof and counted by reason (the last
+/// colon-separated part); `hidden` lists them. Groups composite as groups, so a refused leaf would
+/// otherwise block its whole page.
 fn render(m: &Mapped) -> Render {
-    let snap = reopened(&m.proposal);
     let cancel = CancellationToken::default();
-    let vectors = prepare_vectors(
-        &snap,
-        &m.proposal.design,
-        &m.proposal.vector_records,
-        &Assets(&m.proposal),
-        BlendSpace::Encoded,
-        // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
-        &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
-        &cancel,
-    )
-    .unwrap();
-    let mut plan = lower(&snap, snap.document().revision, BlendSpace::Encoded, &CLimits::default(), &cancel).unwrap();
-    let outputs = plan.outputs.len();
+    let mut hidden: Vec<String> = Vec::new();
     let mut refused: BTreeMap<String, u32> = BTreeMap::new();
-    let inputs = RenderInputs { vectors: Some(&vectors), records: Some(&m.proposal.raster_records), ..RenderInputs::default() };
-    // Outputs that cannot be drawn by this harness (text needs prepared fonts; strokes, gradients and
-    // image paints are composite refusals) stay out of the document root, counted by reason.
-    let probe: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
-    plan.outputs.retain(|o| match probe.step(o).map(|s| &s.status) {
-        Some(StepStatus::Unavailable(reason)) => {
-            *refused.entry(reason.clone()).or_insert(0) += 1;
-            false
+    for _ in 0..16 {
+        let snap = reopened(&m.proposal, &hidden);
+        let vectors = prepare_vectors(
+            &snap,
+            &m.proposal.design,
+            &m.proposal.vector_records,
+            &Assets(&m.proposal),
+            BlendSpace::Encoded,
+            // Exact nib coverage (composite VectorCoverage::Exact, 5898a82) on the interop-fig render path.
+            &VectorResolution { coverage: hsk_studio_composite::VectorCoverage::Exact, ..VectorResolution::default() },
+            &cancel,
+        )
+        .unwrap();
+        let plan = lower(&snap, snap.document().revision, BlendSpace::Encoded, &CLimits::default(), &cancel).unwrap();
+        let inputs = RenderInputs { vectors: Some(&vectors), records: Some(&m.proposal.raster_records), ..RenderInputs::default() };
+        let probe: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
+        let leaves: Vec<(String, String)> = probe
+            .steps
+            .iter()
+            .filter_map(|s| match &s.status {
+                StepStatus::Unavailable(r) if !r.starts_with("input_unavailable") && !hidden.contains(&s.addr.layer_id) => {
+                    Some((s.addr.layer_id.clone(), r.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if !leaves.is_empty() {
+            for (layer, reason) in leaves {
+                *refused.entry(reason.rsplit(':').next().unwrap_or(&reason).to_owned()).or_insert(0) += 1;
+                hidden.push(layer);
+            }
+            continue;
         }
-        _ => true,
-    });
-    let rendered = plan.outputs.len();
-    let ids: Vec<String> = plan.outputs.iter().map(|o| o.layer_id.clone()).collect();
-    let mut px = vec![[0.0f32; 4]; W * H];
-    if rendered > 0 {
+        let outputs = plan.outputs.len();
+        let ids: Vec<String> = plan.outputs.iter().map(|o| o.layer_id.clone()).collect();
         let plan = plan.with_document_root().unwrap();
         let report: EvalReport = evaluate_with_inputs(&plan, &snap, &inputs, &cancel).unwrap();
         let target = OutputTarget {
@@ -231,7 +247,7 @@ fn render(m: &Mapped) -> Render {
         let space = target.space;
         let low = lower_with_inputs(&plan, &report, &snap, &inputs, &plan.document_root(), target, &no_tiles)
             .unwrap_or_else(|e| panic!("lowering: {e}"));
-        let mut grid = Grid { w: W, px: vec![[f32::NAN; 4]; W * H] };
+        let mut grid = Grid { w: W, px: vec![[0.0; 4]; W * H] };
         let request = ExecuteRequest {
             expected_revision: snap.document().revision,
             min_exactness: Exactness::Approximate,
@@ -242,9 +258,9 @@ fn render(m: &Mapped) -> Render {
             .unwrap()
             .execute_extended(&low.plan, &low.extensions, &request, &Sources(&low, &vectors, space), &cancel, &mut grid)
             .unwrap();
-        px = grid.px;
+        return Render { w: W, px: grid.px, refused, outputs, rendered: outputs, ids, hidden };
     }
-    Render { w: W, px, refused, outputs, rendered, ids }
+    panic!("refusals did not settle in 16 rounds")
 }
 
 /// Layer bbox in canvas px (union of its paths and, for boolean groups, its operands).
@@ -378,15 +394,11 @@ fn real_layer_graph_shape_and_losses_are_pinned() {
     // vector source listed as an output, so vector content is never a group input.
     type Pin<'a> = (&'a str, (usize, usize, usize), &'a [(&'a str, u32)]);
     let pins: [Pin<'_>; 3] = [
-        // Since SMB-INTEROP-FIG-INSTANCES-FRAMES: frame fills are background vector layers (so
-        // frames holding them flatten) and instances draw through expansion groups.
-        ("fig-basic-shapes.fig", (15, 0, 15), &[("group_flattened_vector_not_group_input", 3)]),
-        ("fig-components-autolayout.fig", (16, 0, 13), &[("group_flattened_vector_not_group_input", 9)]),
-        (
-            "fig-prototype-pages.fig",
-            (31, 0, 13),
-            &[("group_flattened_vector_not_group_input", 14), ("page_outside_outputs", 1)],
-        ),
+        // Since SMB-INTEROP-FIG-PAINTS vector sources are image-typed, so every group composites as a
+        // group (mix with ordered edges) and each page is one output; nothing is flattened.
+        ("fig-basic-shapes.fig", (18, 17, 1), &[]),
+        ("fig-components-autolayout.fig", (25, 23, 1), &[]),
+        ("fig-prototype-pages.fig", (45, 43, 1), &[("page_outside_outputs", 1)]),
     ];
     for (name, shape, losses) in pins {
         let m = mapped(name);
@@ -447,27 +459,11 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     assert_eq!(r.refused, want);
     // Since SMB-INTEROP-FIG-INSTANCES-FRAMES the artboard fill is an output (bottom-most) and the two
     // clipping frames without fill add hidden clip-source outputs (group-multiply, mask-group).
-    assert_eq!((r.outputs, r.rendered), (15, 13));
-    let mut names = rendered_names(&m, &r);
-    names.sort();
-    assert_eq!(
-        names,
-        [
-            "basic-shapes-artboard",
-            "boolean-union",
-            "ellipse-gradient",
-            "group-background",
-            "group-multiply",
-            "layer-blur",
-            "line-outline",
-            "mask-ellipse",
-            "mask-group",
-            "multiply-overlay",
-            "pen-freeform-bezier",
-            "rounded-solid-shadow",
-            "star-half-opacity"
-        ]
-    );
+    // The page is the one output (groups composite as groups); the two refused layers are hidden
+    // for the proof.
+    assert_eq!((r.outputs, r.rendered), (1, 1));
+    assert_eq!(rendered_names(&m, &r), ["basic-shapes"]);
+    assert_eq!(r.hidden.len(), 2);
     // Named nodes at a probe inside their box: colours within 4/255 of the PNG (measured max 1/255).
     // The star is 50 % opacity over the frame background, the overlay multiplies group-background,
     // the union is a boolean leaf.
@@ -512,14 +508,21 @@ fn real_prototype_orbs_composite_at_png_positions() {
     let r = render(&m);
     // Text outputs (6) are the only refusals (no prepared text here); the section fill, the three
     // frame fills and the three orbs render.
-    let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 6)].into_iter().collect();
+    // Every text layer of both pages (14) is the only refusal here (no prepared text); the first
+    // page is the one output.
+    let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 14)].into_iter().collect();
     assert_eq!(r.refused, want);
-    assert_eq!((r.outputs, r.rendered), (13, 7));
-    assert_eq!(
-        rendered_names(&m, &r),
-        ["prototype-section", "start-screen", "animated-orb", "detail-screen", "animated-orb", "animated-screen", "animated-orb"]
-    );
-    let orbs: Vec<String> = r.ids.iter().filter(|id| name_of(&m, id) == "animated-orb").cloned().collect();
+    assert_eq!((r.outputs, r.rendered), (1, 1));
+    let orbs: Vec<String> = m
+        .proposal
+        .snapshot
+        .document()
+        .layers
+        .iter()
+        .filter(|l| l.name == "animated-orb")
+        .map(|l| l.layer_id.clone())
+        .collect();
+    assert_eq!(orbs.len(), 3);
     // The frames sit at (40,70), (440,70), (840,70) in a section at (100,100): origins below.
     for (i, (frame, origin)) in [("start", (140usize, 170usize)), ("detail", (540, 170)), ("animated", (940, 170))]
         .into_iter()
@@ -553,23 +556,12 @@ fn real_components_document_draws_instances_through_expansions() {
     let m = mapped("fig-components-autolayout.fig");
     let r = render(&m);
     // Since SMB-INTEROP-FIG-INSTANCES-FRAMES the frame fills and the three instance expansions
-    // draw; the five text labels (three expanded) need prepared text and are the only refusals
-    // here (fig_instances_frames renders them with a granted font).
-    let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 5)].into_iter().collect();
+    // draw (SMB-INTEROP-FIG-PAINTS: as groups, the page is the one output); the six text labels
+    // (three expanded, one on the internal page) need prepared text and are the only refusals here
+    // (fig_instances_frames renders them with a granted font).
+    let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 6)].into_iter().collect();
     assert_eq!(r.refused, want);
-    assert_eq!((r.outputs, r.rendered), (13, 8));
-    assert_eq!(
-        rendered_names(&m, &r),
-        [
-            "fixture-button",
-            "state=default",
-            "state=hover",
-            "component-instances-artboard",
-            "horizontal-stack",
-            "button-instance-1",
-            "button-instance-2",
-            "button-instance-3"
-        ]
-    );
+    assert_eq!((r.outputs, r.rendered), (1, 1));
+    assert_eq!(rendered_names(&m, &r), ["components-autolayout"]);
     assert!(r.px.iter().any(|p| p[3] > 0.99));
 }

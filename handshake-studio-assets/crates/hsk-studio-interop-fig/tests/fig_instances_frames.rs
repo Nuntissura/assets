@@ -200,10 +200,33 @@ fn frame_fill_and_clip() {
         .map(|l| l.layer_id.as_str())
         .collect();
     assert!(!children.is_empty());
+    // A child that is a pass-through group passes the clip down to its own children (a mask on a
+    // pass-through layer has no group result; the children composite onto the same backdrop); a
+    // child already clipped by its own frame keeps that inner clip (typed loss).
+    let pass_through = |id: &str| {
+        d.layers.iter().any(|l| {
+            l.layer_id == id && l.kind == "group" && l.appearance.as_ref().is_none_or(|a| a.blend_mode == hsk_studio_folio::BLEND_PASS_THROUGH)
+        })
+    };
     for c in &children {
-        let a = p.vector_records.attachments.iter().find(|a| a.layer_id == *c).expect("attachment");
-        assert_eq!(a.clip_id.as_deref(), Some(clip_id.as_str()));
+        let a = p.vector_records.attachments.iter().find(|a| a.layer_id == *c);
+        if pass_through(c) {
+            assert!(a.is_none_or(|a| a.clip_id.is_none()), "pass-through group carries no clip");
+            let kids: Vec<&str> = d
+                .layers
+                .iter()
+                .filter(|l| matches!(&l.parent, Parent::Node(n) if n.node_id == *c))
+                .map(|l| l.layer_id.as_str())
+                .collect();
+            for k in kids.iter().filter(|k| !pass_through(k)) {
+                let a = p.vector_records.attachments.iter().find(|a| a.layer_id == *k).expect("pushed-down clip");
+                assert!(a.clip_id.is_some());
+            }
+        } else {
+            assert_eq!(a.expect("attachment").clip_id.as_deref(), Some(clip_id.as_str()));
+        }
     }
+    assert_eq!(loss(&p, "native.clips_content", "outer_clip_dropped_inner_kept"), 4);
     // A clipping frame without fill (group-multiply) gets a hidden clip-source layer.
     let gm = p
         .frame_backgrounds
@@ -347,6 +370,12 @@ fn node(id: SourceId, parent: Option<SourceId>, ty: &str, payload: NodePayload) 
         stroke_weight: None,
         stroke_align: None,
         stroke_join: None,
+        stroke_cap: None,
+        dash_pattern: Vec::new(),
+        miter_limit: None,
+        effect_style: None,
+        fill_style: None,
+        stroke_style: None,
         effects: Vec::new(),
         fill_geometry: Vec::new(),
         stroke_geometry: Vec::new(),
