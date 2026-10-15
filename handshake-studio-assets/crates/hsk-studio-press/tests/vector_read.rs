@@ -75,13 +75,98 @@ fn pages_record_fills_strokes_shadings_clips_groups_and_glyphs() {
         _ => None,
     }).collect();
     assert!(groups.iter().any(|(o, b)| (*o - 0.5).abs() < 1e-6 && *b == 1) || page.items.iter().any(|i| matches!(i, VectorItem::Draw { blend: 1, .. })), "{groups:?}");
-    // Text arrives as glyph outlines, noted.
-    assert!(draws.iter().any(|i| matches!(i, VectorItem::Draw { glyph: true, .. })));
-    assert!(page.notes.contains(&VectorNote::TextAsOutlines));
+    // Text arrives as glyph outlines carrying the glyph (Type 3 glyphs alone are noted as outlines).
+    assert!(draws.iter().any(|i| matches!(i, VectorItem::Draw { glyph: Some(_), .. })));
+    assert!(!page.notes.contains(&VectorNote::TextAsOutlines));
     // Hostile: not a PDF, over the byte cap, canceled.
     assert!(read_vector_pages(b"not a pdf", 1 << 24, &CancellationToken::default()).is_err());
     assert_eq!(read_vector_pages(&fixture(), 16, &CancellationToken::default()), Err(PressError::InputLimit("vector_read")));
     let canceled = CancellationToken::default();
     canceled.cancel();
     assert_eq!(read_vector_pages(&fixture(), 1 << 24, &canceled), Err(PressError::Canceled));
+}
+
+const CMYK_ICC: &[u8] = include_bytes!("../../hsk-studio-prism/tests/oracle/profiles/hsk-synth-cmyk-v2.icc");
+
+/// A hand-assembled PDF (objects numbered from 1, exact xref offsets).
+fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend(body);
+        out.extend(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+    out
+}
+
+fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
+    let mut v = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
+    v.extend(data);
+    v.extend(b"\nendstream");
+    v
+}
+
+/// Two layers (the second hidden), CMYK, Lab, ICC-based CMYK, a spot ink and an RGB stroke, and
+/// the ICC profile as the output intent: what an Illustrator PDF-compatible stream carries.
+fn layered() -> Vec<u8> {
+    let content = b"/OC /L1 BDC\n0 1 1 0 k 10 10 40 30 re f\n/Lab0 cs 50 20 -30 sc 60 10 20 20 re f\n/Icc cs 0.1 0.2 0.3 0.4 sc 90 10 20 20 re f\nEMC\n/OC /L2 BDC\n/Spot cs 0.5 scn 120 10 30 30 re f\nEMC\n0 0 1 RG 2 w 10 90 m 190 90 l S\n";
+    assemble(&[
+        b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R] /D << /Order [5 0 R 6 0 R] /OFF [6 0 R] >> >> /OutputIntents [<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier (CMYK) /DestOutputProfile 7 0 R >>] >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Properties << /L1 5 0 R /L2 6 0 R >> /ColorSpace << /Spot [/Separation /PANTONE#20185#20C /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.91 0.76 0] /N 1 >>] /Lab0 [/Lab << /WhitePoint [0.9642 1 0.8249] /Range [-128 127 -128 127] >>] /Icc [/ICCBased 7 0 R] >> >> /Contents 4 0 R >>".to_vec(),
+        stream("", content),
+        b"<< /Type /OCG /Name (Artwork) >>".to_vec(),
+        b"<< /Type /OCG /Name (Hidden) >>".to_vec(),
+        stream("/N 4", CMYK_ICC),
+    ])
+}
+
+#[test]
+fn documents_keep_source_colours_layers_and_glyph_text() {
+    let cancel = CancellationToken::default();
+    let doc = read_vector_document(&layered(), 1 << 24, &cancel).unwrap();
+    assert_eq!(doc.layers, vec![VectorLayer { name: "Artwork".into(), visible: true }, VectorLayer { name: "Hidden".into(), visible: false }]);
+    assert_eq!(doc.profiles.len(), 1);
+    assert_eq!(doc.profiles[0].bytes, CMYK_ICC);
+    assert_eq!((doc.profiles[0].components, doc.output_intent), (4, Some(0)));
+    let page = &doc.pages[0];
+    assert!(!page.notes.contains(&VectorNote::SourceColourUnmatched) && !page.notes.contains(&VectorNote::LayersUnmatched), "{:?}", page.notes);
+    // Layer brackets in content order; the hidden layer's spot fill is read too.
+    let order: Vec<String> = page
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            VectorItem::BeginLayer { layer } => Some(format!("L{layer}")),
+            VectorItem::EndLayer => Some("/L".into()),
+            VectorItem::Draw { source: Some(VectorColour::Process { space, .. }), .. } => Some(format!("{space:?}")),
+            VectorItem::Draw { source: Some(VectorColour::Spot { name, .. }), .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    let lab = "Lab { white: [0.9642, 1.0, 0.8249] }".to_string();
+    assert_eq!(order, ["L0", "Cmyk", lab.as_str(), "Icc(0)", "/L", "L1", "PANTONE 185 C", "/L", "Rgb"]);
+    let sources: Vec<&VectorColour> = page.items.iter().filter_map(|i| if let VectorItem::Draw { source: Some(c), .. } = i { Some(c) } else { None }).collect();
+    assert_eq!(sources[0], &VectorColour::Process { space: VectorSpace::Cmyk, components: vec![0.0, 1.0, 1.0, 0.0] });
+    assert_eq!(sources[1], &VectorColour::Process { space: VectorSpace::Lab { white: [0.9642, 1.0, 0.8249] }, components: vec![50.0, 20.0, -30.0] });
+    assert_eq!(sources[2], &VectorColour::Process { space: VectorSpace::Icc(0), components: vec![0.1, 0.2, 0.3, 0.4] });
+    assert_eq!(sources[3], &VectorColour::Spot { name: "PANTONE 185 C".into(), tint: 0.5, alternate: Some((VectorSpace::Cmyk, vec![0.0, 0.91, 0.76, 0.0])) });
+    // Glyphs carry their font, id and text.
+    let text = read_vector_document(&fixture(), 1 << 24, &cancel).unwrap();
+    let glyph = text.pages[0].items.iter().find_map(|i| if let VectorItem::Draw { glyph: Some(g), .. } = i { Some(g.clone()) } else { None }).expect("glyph");
+    assert_eq!((glyph.glyph_id, glyph.unicode.as_deref()), (161, Some("H")));
+    assert!((glyph.matrix[3] * 1000.0 - 24.0).abs() < 1e-6 && (glyph.matrix[4] - 20.0).abs() < 1e-6, "{:?}", glyph.matrix);
+    assert!(text.fonts[glyph.font].bytes.as_ref().is_some_and(|b| b.len() > 1000));
+    // Hostile: over the byte cap before anything is read, canceled.
+    assert_eq!(read_vector_document(&layered(), 16, &cancel), Err(PressError::InputLimit("vector_read")));
+    let canceled = CancellationToken::default();
+    canceled.cancel();
+    assert_eq!(read_vector_document(&layered(), 1 << 24, &canceled), Err(PressError::Canceled));
 }

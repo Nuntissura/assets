@@ -8,7 +8,18 @@
 //!   colour spaces converted by hayro; the source space is not kept: [`VectorNote::ColourConverted`]
 //!   for non-RGB sources is NOT recorded because hayro does not expose it, declared gap), or an
 //!   axial / radial shading sampled at [`GRADIENT_SAMPLES`] stops with its pattern matrix. Text is
-//!   drawn as glyph outlines ([`VectorNote::TextAsOutlines`]); Type 3 glyphs are interpreted.
+//!   drawn as glyph outlines; each outline glyph also carries its font (PostScript name and
+//!   TrueType / OpenType bytes when embedded, [`VectorFont`]), glyph id, Unicode text (ToUnicode,
+//!   glyph names) and glyph matrix ([`VectorGlyph`]) so a caller can keep text as text. Type 3
+//!   glyphs are interpreted ([`VectorNote::TextAsOutlines`]).
+//! - [`read_vector_document`] adds what the interpreter does not expose, from Press's own walk of
+//!   the same content (`vector_source.rs`): the colour each solid path was written in
+//!   ([`VectorColour`]: gray, RGB, CMYK, Lab, ICC-based with the profile bytes, spot inks), the
+//!   optional-content groups ([`VectorLayer`], Illustrator layers) as [`VectorItem::BeginLayer`] /
+//!   [`VectorItem::EndLayer`] around the content of the outermost `/OC` marked content, hidden
+//!   layers read too (from a copy of the file with every group on), and the `/OutputIntents`
+//!   profile. Any disagreement between the walk and the interpreter drops that page's source
+//!   colours ([`VectorNote::SourceColourUnmatched`]) or layers ([`VectorNote::LayersUnmatched`]).
 //! - [`VectorItem::PushClip`] / [`VectorItem::PopClip`]: clip paths (they arrive in user space).
 //! - [`VectorItem::PushGroup`] / [`VectorItem::PopGroup`]: transparency groups (opacity, blend).
 //! - Everything else is a typed note and is not drawn: images, soft masks, shadings that are not
@@ -19,6 +30,8 @@
 //! recording with [`VectorNote::Budget`]; cancellation is polled every 64 items.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{PressError, Result};
+use crate::vector_source::{DocSource, PageSource, SrcPaint, read_sources};
+pub use crate::vector_source::{VectorColour, VectorIcc, VectorLayer, VectorSpace};
 use hayro_interpret::font::Glyph;
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::{
@@ -27,7 +40,8 @@ use hayro_interpret::{
 };
 use hsk_studio_accord::CancellationToken;
 use kurbo::{Affine, BezPath, PathEl};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Most recorded items over all pages.
 pub const MAX_VECTOR_ITEMS: usize = 200_000;
@@ -37,6 +51,8 @@ pub const MAX_VECTOR_ELEMENTS: usize = 4_000_000;
 pub const GRADIENT_SAMPLES: usize = 16;
 /// Most pages read.
 pub const MAX_VECTOR_PAGES: usize = 1000;
+/// Most embedded font bytes kept over a document.
+pub const MAX_VECTOR_FONT_BYTES: usize = 64 << 20;
 
 /// A path element in user space (points, y up).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,15 +94,42 @@ pub enum VectorPaint {
     Gradient { axial: bool, coords: [f64; 6], matrix: [f64; 6], stops: Vec<(f64, [f32; 4])>, extend: [bool; 2] },
 }
 
+/// A glyph a draw came from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorGlyph {
+    /// Index into [`VectorDocument::fonts`].
+    pub font: usize,
+    pub glyph_id: u32,
+    /// What the glyph stands for (ToUnicode, then glyph names), when known.
+    pub unicode: Option<String>,
+    /// Glyph space (1000 units per em) to user space.
+    pub matrix: [f64; 6],
+}
+
+/// A font glyphs were drawn with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorFont {
+    /// Without a subset tag.
+    pub postscript_name: Option<String>,
+    /// TrueType / OpenType / CFF bytes when the font program is readable (not Type 1), within
+    /// [`MAX_VECTOR_FONT_BYTES`].
+    pub bytes: Option<Arc<[u8]>>,
+}
+
 /// One recorded item, in paint order.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum VectorItem {
-    Draw { path: Vec<VectorEl>, mode: VectorMode, paint: VectorPaint, blend: u8, glyph: bool },
+    /// `source`: the colour a solid paint was written in ([`read_vector_document`] only).
+    Draw { path: Vec<VectorEl>, mode: VectorMode, paint: VectorPaint, blend: u8, glyph: Option<VectorGlyph>, source: Option<VectorColour> },
     PushClip { path: Vec<VectorEl>, even_odd: bool },
     PopClip,
     /// `blend` is the PDF blend mode index (0 = Normal, in ISO 32000-2 table 134 order).
     PushGroup { opacity: f32, blend: u8 },
     PopGroup,
+    /// The content of an optional-content group (index into [`VectorDocument::layers`]) starts.
+    BeginLayer { layer: usize },
+    EndLayer,
 }
 
 /// What reading left out (typed, never silent).
@@ -99,6 +142,12 @@ pub enum VectorNote {
     ShadingNotRead,
     Budget,
     ColourConverted,
+    SourceColourUnmatched,
+    LayersUnmatched,
+    HiddenLayersNotRead,
+    SpotAlternateNotRead,
+    StructureNotRead,
+    FontBytesBudget,
 }
 
 impl VectorNote {
@@ -111,6 +160,12 @@ impl VectorNote {
             Self::ShadingNotRead => "pdf_shading_not_read",
             Self::Budget => "pdf_vector_budget",
             Self::ColourConverted => "pdf_colour_converted",
+            Self::SourceColourUnmatched => "pdf_source_colour_unmatched",
+            Self::LayersUnmatched => "pdf_layers_unmatched",
+            Self::HiddenLayersNotRead => "pdf_hidden_layers_not_read",
+            Self::SpotAlternateNotRead => "pdf_spot_alternate_not_read",
+            Self::StructureNotRead => "pdf_structure_not_read",
+            Self::FontBytesBudget => "pdf_font_bytes_budget",
         }
     }
 }
@@ -122,6 +177,26 @@ pub struct VectorPage {
     pub crop_box: [f64; 4],
     pub items: Vec<VectorItem>,
     pub notes: Vec<VectorNote>,
+}
+
+/// A whole document ([`read_vector_document`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VectorDocument {
+    pub pages: Vec<VectorPage>,
+    pub fonts: Vec<VectorFont>,
+    pub layers: Vec<VectorLayer>,
+    pub profiles: Vec<VectorIcc>,
+    /// `/OutputIntents` destination profile (index into `profiles`).
+    pub output_intent: Option<usize>,
+}
+
+/// Fonts seen so far (by hayro's font cache key).
+#[derive(Default)]
+struct FontTable {
+    list: Vec<VectorFont>,
+    by_key: BTreeMap<u128, usize>,
+    bytes: usize,
+    over: bool,
 }
 
 fn blend_index(b: BlendMode) -> u8 {
@@ -153,6 +228,17 @@ struct Recorder<'c> {
     full: bool,
     canceled: bool,
     cancel: &'c CancellationToken,
+    fonts: &'c mut FontTable,
+    /// The walk of this page, when there is one.
+    src: Option<&'c PageSource>,
+    path_at: usize,
+    mark_at: usize,
+    src_ok: bool,
+    marks_ok: bool,
+    /// Open marked content: whether it opened a layer.
+    mark_stack: Vec<bool>,
+    /// Inside a Type 3 glyph procedure (its drawing consumes no walk events).
+    type3: u32,
 }
 
 impl Recorder<'_> {
@@ -268,7 +354,69 @@ impl Recorder<'_> {
         }
     }
 
-    fn draw(&mut self, path: &BezPath, t: Affine, paint: &Paint<'_>, mode: VectorModeIn<'_>, glyph: bool) {
+    /// The next walk event for a path the interpreter paints, checked against its paint.
+    fn next_source(&mut self, paint: &Paint<'_>) -> Option<VectorColour> {
+        let src = self.src?;
+        if !self.src_ok || self.type3 > 0 {
+            return None;
+        }
+        let event = src.paths.get(self.path_at);
+        self.path_at = self.path_at.saturating_add(1);
+        match (event, paint) {
+            (Some(SrcPaint::Pattern), Paint::Pattern(_)) => None,
+            (Some(SrcPaint::Colour(c)), Paint::Color(drawn)) => {
+                let rgba = drawn.to_rgba().components();
+                let close = |want: &[f64]| want.iter().zip(rgba).all(|(w, d)| (w - f64::from(d)).abs() <= 0.02);
+                let agrees = match c {
+                    Some(VectorColour::Process { space: VectorSpace::Gray, components }) => components.first().is_none_or(|g| close(&[*g, *g, *g])),
+                    Some(VectorColour::Process { space: VectorSpace::Rgb, components }) => components.len() != 3 || close(components),
+                    _ => true,
+                };
+                if !agrees {
+                    self.src_ok = false;
+                    return None;
+                }
+                c.clone()
+            }
+            _ => {
+                self.src_ok = false;
+                None
+            }
+        }
+    }
+
+    fn font_index(&mut self, g: &hayro_interpret::font::OutlineGlyph) -> usize {
+        let key = g.font_cache_key();
+        if let Some(i) = self.fonts.by_key.get(&key) {
+            return *i;
+        }
+        let data = g.font_data();
+        let postscript_name = data.as_ref().and_then(|d| d.postscript_name.clone()).map(|n| match n.split_once('+') {
+            Some((tag, rest)) if tag.len() == 6 => rest.to_owned(),
+            _ => n,
+        });
+        let bytes = data.and_then(|d| {
+            let b: &[u8] = (*d.data).as_ref();
+            match self.fonts.bytes.checked_add(b.len()) {
+                Some(total) if total <= MAX_VECTOR_FONT_BYTES => {
+                    self.fonts.bytes = total;
+                    Some(Arc::<[u8]>::from(b))
+                }
+                _ => {
+                    self.fonts.over = true;
+                    None
+                }
+            }
+        });
+        let i = self.fonts.list.len();
+        self.fonts.list.push(VectorFont { postscript_name, bytes });
+        self.fonts.by_key.insert(key, i);
+        i
+    }
+
+    fn draw(&mut self, path: &BezPath, t: Affine, paint: &Paint<'_>, mode: VectorModeIn<'_>, glyph: Option<VectorGlyph>) {
+        // A painted path consumes its walk event whether or not it is recorded.
+        let source = if glyph.is_none() { self.next_source(paint) } else { None };
         if !self.live() {
             return;
         }
@@ -279,7 +427,8 @@ impl Recorder<'_> {
         };
         let Some(path) = self.convert(path, t) else { return };
         let blend = self.blend;
-        self.items.push(VectorItem::Draw { path, mode, paint, blend, glyph });
+        let source = if matches!(paint, VectorPaint::Solid(_)) { source } else { None };
+        self.items.push(VectorItem::Draw { path, mode, paint, blend, glyph, source });
     }
 }
 
@@ -304,7 +453,7 @@ impl<'a> Device<'a> for Recorder<'_> {
             PathDrawMode::Fill(rule) => VectorModeIn::Fill(*rule),
             PathDrawMode::Stroke(props) => VectorModeIn::Stroke(props),
         };
-        self.draw(path, transform, paint, mode, false);
+        self.draw(path, transform, paint, mode, None);
     }
 
     fn push_clip_path(&mut self, clip_path: &ClipPath) {
@@ -328,19 +477,29 @@ impl<'a> Device<'a> for Recorder<'_> {
     fn draw_glyph(&mut self, glyph: &Glyph<'a>, transform: Affine, glyph_transform: Affine, paint: &Paint<'a>, draw_mode: &GlyphDrawMode) {
         match glyph {
             Glyph::Outline(g) => {
-                self.notes.insert(VectorNote::TextAsOutlines);
+                if matches!(draw_mode, GlyphDrawMode::Invisible) {
+                    return;
+                }
                 let outline = g.outline();
                 let t = std::ops::Mul::mul(transform, glyph_transform);
+                let font = self.font_index(g);
+                let unicode = g.as_unicode().map(|u| match u {
+                    hayro_interpret::hayro_cmap::BfString::Char(c) => c.to_string(),
+                    hayro_interpret::hayro_cmap::BfString::String(s) => s,
+                });
+                let info = VectorGlyph { font, glyph_id: g.glyph_id().to_u32(), unicode, matrix: t.as_coeffs() };
                 match draw_mode {
-                    GlyphDrawMode::Fill => self.draw(&outline, t, paint, VectorModeIn::Fill(FillRule::NonZero), true),
-                    GlyphDrawMode::Stroke(props) => self.draw(&outline, t, paint, VectorModeIn::Stroke(props), true),
+                    GlyphDrawMode::Fill => self.draw(&outline, t, paint, VectorModeIn::Fill(FillRule::NonZero), Some(info)),
+                    GlyphDrawMode::Stroke(props) => self.draw(&outline, t, paint, VectorModeIn::Stroke(props), Some(info)),
                     GlyphDrawMode::Invisible => {}
                 }
             }
             Glyph::Type3(t3) => {
                 if !matches!(draw_mode, GlyphDrawMode::Invisible) {
                     self.notes.insert(VectorNote::TextAsOutlines);
+                    self.type3 = self.type3.saturating_add(1);
                     t3.interpret(self, transform, glyph_transform, paint);
+                    self.type3 = self.type3.saturating_sub(1);
                 }
             }
         }
@@ -357,44 +516,162 @@ impl<'a> Device<'a> for Recorder<'_> {
     fn pop_transparency_group(&mut self) {
         self.items.push(VectorItem::PopGroup);
     }
+
+    fn begin_marked_content(&mut self, tag: &[u8], _mcid: Option<i32>) {
+        if self.type3 > 0 {
+            return;
+        }
+        let Some(src) = self.src else { return };
+        let mark = src.marks.get(self.mark_at);
+        self.mark_at = self.mark_at.saturating_add(1);
+        let opens = match mark {
+            Some(m) if self.marks_ok && m.tag == tag => match m.layer {
+                // Only the outermost layer is kept (Illustrator layers are page level).
+                Some(layer) if !self.mark_stack.contains(&true) => {
+                    self.items.push(VectorItem::BeginLayer { layer });
+                    true
+                }
+                _ => false,
+            },
+            _ => {
+                self.marks_ok = false;
+                false
+            }
+        };
+        self.mark_stack.push(opens);
+    }
+
+    fn end_marked_content(&mut self) {
+        if self.type3 > 0 || self.src.is_none() {
+            return;
+        }
+        if self.mark_stack.pop() == Some(true) {
+            self.items.push(VectorItem::EndLayer);
+        }
+    }
 }
 
 fn rect(r: hayro_interpret::hayro_syntax::object::Rect) -> [f64; 4] {
     [r.x0, r.y0, r.x1, r.y1]
 }
 
-/// Every page of `pdf` as recorded vector content (module docs).
+/// Every page of `pdf` as recorded vector content (module docs), without source colours or
+/// layers (see [`read_vector_document`]).
 pub fn read_vector_pages(pdf: &[u8], max_bytes: usize, cancel: &CancellationToken) -> Result<Vec<VectorPage>> {
+    read(pdf, max_bytes, None, cancel).map(|d| d.pages)
+}
+
+/// [`read_vector_pages`] plus fonts, source colours, layers and profiles (module docs).
+pub fn read_vector_document(pdf: &[u8], max_bytes: usize, cancel: &CancellationToken) -> Result<VectorDocument> {
     if pdf.len() > max_bytes {
         return Err(PressError::InputLimit("vector_read"));
     }
     cancel.check().map_err(|_| PressError::Canceled)?;
-    let bytes = pdf.to_vec();
+    let sources = read_sources(pdf, cancel);
+    cancel.check().map_err(|_| PressError::Canceled)?;
+    let mut doc = read(pdf, max_bytes, Some(sources.as_ref()), cancel)?;
+    if let Some(s) = sources {
+        doc.layers = s.layers;
+        doc.profiles = s.profiles;
+        doc.output_intent = s.output_intent;
+    }
+    Ok(doc)
+}
+
+/// Strips what a page's walk could not vouch for.
+fn settle(rec: &mut Recorder<'_>) {
+    let Some(src) = rec.src else { return };
+    if !rec.src_ok || rec.path_at != src.paths.len() {
+        for i in &mut rec.items {
+            if let VectorItem::Draw { source, .. } = i {
+                *source = None;
+            }
+        }
+        rec.notes.insert(VectorNote::SourceColourUnmatched);
+    } else {
+        if src.spot_without_alternate {
+            rec.notes.insert(VectorNote::SpotAlternateNotRead);
+        }
+        if src.converted {
+            rec.notes.insert(VectorNote::ColourConverted);
+        }
+    }
+    if !rec.marks_ok || rec.mark_at != src.marks.len() || !rec.mark_stack.is_empty() {
+        if src.marks.iter().any(|m| m.layer.is_some()) {
+            rec.notes.insert(VectorNote::LayersUnmatched);
+        }
+        rec.items.retain(|i| !matches!(i, VectorItem::BeginLayer { .. } | VectorItem::EndLayer));
+    }
+}
+
+/// `sources`: `None` reads without a walk ([`read_vector_pages`]); `Some(None)` is a walk that
+/// failed (every page noted [`VectorNote::StructureNotRead`]).
+fn read(pdf: &[u8], max_bytes: usize, sources: Option<Option<&DocSource>>, cancel: &CancellationToken) -> Result<VectorDocument> {
+    if pdf.len() > max_bytes {
+        return Err(PressError::InputLimit("vector_read"));
+    }
+    cancel.check().map_err(|_| PressError::Canceled)?;
+    let walk = sources.flatten();
+    // Hidden layers are read from the copy with every group on.
+    let bytes = walk.and_then(|s| s.all_visible.clone()).unwrap_or_else(|| pdf.to_vec());
+    let hidden_not_read = walk.is_some_and(|s| s.hidden_not_read);
+    let walked_any = sources.is_some();
     std::thread::scope(|scope| {
-        let spawned = std::thread::Builder::new().name("hsk-press-vector-read".into()).stack_size(crate::RENDER_STACK_BYTES).spawn_scoped(scope, move || -> Result<Vec<VectorPage>> {
+        let spawned = std::thread::Builder::new().name("hsk-press-vector-read".into()).stack_size(crate::RENDER_STACK_BYTES).spawn_scoped(scope, move || -> Result<VectorDocument> {
             let pdf = Pdf::new(bytes).map_err(|_| PressError::Malformed("pdf_unreadable"))?;
             let pages = pdf.pages();
             if pages.len() > MAX_VECTOR_PAGES {
                 return Err(PressError::InputLimit("vector_read"));
             }
+            // A page count the walk disagrees with: no page is matched.
+            let walked = walk.filter(|s| s.pages.len() == pages.len());
+            let mut fonts = FontTable::default();
             let mut out = Vec::with_capacity(pages.len());
             let mut used_items = 0_usize;
             let mut used_elements = 0_usize;
-            for page in pages.iter() {
+            for (n, page) in pages.iter().enumerate() {
                 let settings = InterpreterSettings { render_annotations: false, ..InterpreterSettings::default() };
                 let cache = InterpreterCache::new();
                 let media = page.media_box();
                 let mut ctx = Context::new(Affine::IDENTITY, kurbo::Rect::new(media.x0, media.y0, media.x1, media.y1), &cache, pdf.xref(), settings);
-                let mut rec = Recorder { items: Vec::new(), notes: BTreeSet::new(), elements: used_elements, blend: 0, full: used_items >= MAX_VECTOR_ITEMS, canceled: false, cancel };
+                let src = walked.and_then(|s| s.pages.get(n)).and_then(Option::as_ref);
+                let mut rec = Recorder {
+                    items: Vec::new(),
+                    notes: BTreeSet::new(),
+                    elements: used_elements,
+                    blend: 0,
+                    full: used_items >= MAX_VECTOR_ITEMS,
+                    canceled: false,
+                    cancel,
+                    fonts: &mut fonts,
+                    src,
+                    path_at: 0,
+                    mark_at: 0,
+                    src_ok: true,
+                    marks_ok: true,
+                    mark_stack: Vec::new(),
+                    type3: 0,
+                };
                 interpret_page(page, &mut ctx, &mut rec);
                 if rec.canceled {
                     return Err(PressError::Canceled);
                 }
+                settle(&mut rec);
+                if walked_any && src.is_none() {
+                    rec.notes.insert(VectorNote::StructureNotRead);
+                }
+                if hidden_not_read {
+                    rec.notes.insert(VectorNote::HiddenLayersNotRead);
+                }
                 used_items = used_items.saturating_add(rec.items.len());
                 used_elements = rec.elements;
-                out.push(VectorPage { media_box: rect(media), crop_box: rect(page.intersected_crop_box()), items: rec.items, notes: rec.notes.into_iter().collect() });
+                let (items, mut notes) = (rec.items, rec.notes);
+                if fonts.over {
+                    notes.insert(VectorNote::FontBytesBudget);
+                }
+                out.push(VectorPage { media_box: rect(media), crop_box: rect(page.intersected_crop_box()), items, notes: notes.into_iter().collect() });
             }
-            Ok(out)
+            Ok(VectorDocument { pages: out, fonts: fonts.list, layers: Vec::new(), profiles: Vec::new(), output_intent: None })
         });
         match spawned {
             Ok(handle) => handle.join().unwrap_or(Err(PressError::Malformed("vector_reader_panicked"))),
