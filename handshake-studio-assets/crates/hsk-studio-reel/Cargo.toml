@@ -8,6 +8,8 @@ rust-version = { workspace = true }
 default = []
 av1 = ["dep:rav1d", "dep:libc"]
 prores = []
+# AV1 encode through rav1e (lane SMB-REEL-ENCODE; lead-approved 2026-10-15, default off).
+av1-encode = ["dep:rav1e"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
@@ -18,6 +20,7 @@ lewton = { version = "=0.10.2", default-features = false, features = [] }
 opus-pure = { version = "=0.2.2", default-features = false, features = [] }
 rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"], optional = true }
 libc = { version = "=0.2.190", default-features = false, features = [], optional = true }
+rav1e = { version = "=0.8.1", default-features = false, features = [], optional = true }
 
 [lib]
 path = "src/lib.rs"
