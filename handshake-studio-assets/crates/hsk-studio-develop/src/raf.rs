@@ -23,7 +23,7 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
-use crate::dng::{DngRaw, VendorFrame};
+use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::pipeline::{Bayer, CfaPattern, XTRANS};
 use crate::rafc;
 use crate::tiffep::{self, Tiff};
@@ -101,7 +101,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     let raw_ifd = tiff.ifd(tiffep::first_u32(&tiff, root.find(0xf000).ok_or(DevelopError::DecoderUnavailable("raf"))?)?)?;
     let get = |tag: u16| -> Result<u32, DevelopError> { tiffep::first_u32(&tiff, raw_ifd.find(tag).ok_or(DevelopError::InvalidContainer)?) };
     let (width, height, bits) = (get(0xf001)?, get(0xf002)?, get(0xf003)?);
-    if width == 0 || height == 0 || width > 65_535 || height > 65_535 {
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width == 0 || height == 0 || width > 65_535 || height > 65_535 || pixels > MAX_DNG_PIXELS {
         return Err(DevelopError::InvalidDimensions);
     }
     let bits16 = u16::try_from(bits).ok().filter(|b| (8..=16).contains(b)).ok_or(DevelopError::UnsupportedContainer)?;

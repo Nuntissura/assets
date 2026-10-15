@@ -22,13 +22,13 @@ fn zero_stream(bits: u32, xtrans: bool, quantizers: Option<&[u8]>) -> Vec<u8> {
             main = [[seed; 2]; 3];
             previous = Some(q);
         }
-        for pair in 0..6 {
+        for (pair, masks) in MASKS.iter().enumerate() {
             let width = if xtrans { 512 } else { 384 };
             for even in (0usize..width + 8).step_by(2) {
                 for (parity, column) in [(0, Some(even)), (1, even.checked_sub(7))] {
                     let Some(column) = column.filter(|&x| x < width) else { continue };
-                    for colour in 0..2 {
-                        if xtrans && (MASKS[pair][colour] >> (column % 4)) & 1 == 0 {
+                    for mask in masks {
+                        if xtrans && (mask >> (column % 4)) & 1 == 0 {
                             continue;
                         }
                         let (sum, count) = &mut if q == 0 { &mut main } else { &mut fine }[pair % 3][parity];
