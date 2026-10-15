@@ -33,7 +33,9 @@
 //!   the speed).
 //! - [`DropPolicy::PresentEveryFrame`] (review/export pacing): never skips, at any speed; when the
 //!   presenter is slower than the position the video lags and the lag is reported in
-//!   [`PlaybackStats::max_lag_ticks`], unbounded by construction.
+//!   [`PlaybackStats::max_lag_ticks`], unbounded by construction (tests
+//!   `playback_stays_within_one_frame_of_the_audio_clock`, 1x forward, and
+//!   `reverse_and_slow_play_end_at_the_range_edges_within_bounds`, 2x reverse: 0 dropped, lag reported).
 //!
 //! Shuttle ladder (Studio values; Premiere's exact steps are UNVERIFIED, D5): `L` from stop or
 //! reverse plays 1x forward, each further `L` doubles up to [`MAX_SHUTTLE`]; `J` mirrors it in
