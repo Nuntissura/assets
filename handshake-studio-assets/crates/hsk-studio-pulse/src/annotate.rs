@@ -26,26 +26,9 @@ pub const MAX_ANNOTATION_TEXT_BYTES: usize = 4096;
 const MAX_ID_BYTES: usize = 128;
 const CANCEL_STRIDE: usize = 256;
 
-/// The 16 declared label colours (STU-VID-020 `label_color`), reused for markers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum LabelColor {
-    Violet,
-    Iris,
-    Caribbean,
-    Lavender,
-    Cerulean,
-    Forest,
-    Rose,
-    Mango,
-    Purple,
-    Blue,
-    Teal,
-    Magenta,
-    Tan,
-    Green,
-    Brown,
-    Yellow,
-}
+/// The 16 declared label colours and the typed marker roles are Folio's stored types (STU-VID-020,
+/// STU-VID-034).
+pub use hsk_studio_folio::{LabelColor, MarkerRole};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarkerScope {
@@ -53,15 +36,6 @@ pub enum MarkerScope {
     Sequence,
     /// The clip's SOURCE time; travels with the clip.
     Clip { clip_id: String },
-}
-
-/// The optional typed role of a marker (STU-VID-034).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MarkerRole {
-    Chapter,
-    WebLink { url: String },
-    CuePoint,
-    Caption { text: String },
 }
 
 /// A point (`duration == 0`) or span marker.

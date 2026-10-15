@@ -7,8 +7,25 @@
 //! `sequence_id` is a document-local key (`[A-Za-z0-9_-]{1,128}`); the spec lists both a `reversed`
 //! flag and "reverse is a negative speed", so reversal is carried by the speed sign only; the sequence
 //! `duration` is not defined by the spec and is stored redundantly as the end of the last clip, like
-//! clip `duration`. Settings record, markers, work area, effect stack, transitions, label colour and
-//! track height/routing are not stored yet.
+//! clip `duration`. Settings record, work area, effect stack, label colour and track height/routing
+//! are not stored yet.
+//!
+//! Markers and transitions (lane SMB-FOLIO-TIMELINE-RECORDS): a sequence owns "a marker list"
+//! (STU-VID-010) and a clip carries `markers` ("Clip-local marker list") and `transitions`
+//! ("Optional head and tail transition references", STU-VID-020). Each marker carries "a name, a
+//! comment, a colour, a duration (a marker may be a span, not only a point), and an optional typed
+//! payload for chapter, web-link, cue-point and caption roles" (STU-VID-034); a `StudioTransition`
+//! (`hsk.studio.transition@1`, Rust type `TimelineTransition`) carries `transition_kind`, `duration`, `alignment` and
+//! `center_offset` (STU-VID-032). Studio readings, not stated by the spec: sequence markers sit in
+//! sequence ticks and clip markers in the clip's SOURCE ticks (they travel with the clip); a
+//! transition at a cut is stored once, as the outgoing clip's `tail`, and the abutting incoming
+//! clip's `head` must then be empty; marker and transition ids are document-local keys (no prefix
+//! is declared); the transition parameter set of 14.9.1 is not stored yet. All four fields are
+//! omitted from the wire when empty, so documents without them encode byte-identically. Exact
+//! placement around the cut, handles and frame alignment are Pulse's; this module stores and
+//! validates only.
+#![deny(clippy::arithmetic_side_effects)]
+
 use super::{
     Budget, Code, ContentDigest, Diagnostic, Resolution, ResolutionIssue, Resolver, Result,
     StudioDocument, canceled, cycle_check, err, id, key, required,
@@ -21,6 +38,7 @@ use std::collections::BTreeSet;
 schema_token!(SequenceSchema, "hsk.studio.sequence@1");
 schema_token!(TrackSchema, "hsk.studio.track@1");
 schema_token!(ClipSchema, "hsk.studio.clip@1");
+schema_token!(TransitionSchema, "hsk.studio.transition@1");
 
 /// Hard ceilings independent of the caller `Budget` (which also counts every sequence, track and clip
 /// against `Budget::nodes`).
@@ -29,10 +47,17 @@ pub const MAX_TRACKS_PER_SEQUENCE: usize = 1024;
 pub const MAX_CLIPS_PER_SEQUENCE: usize = 262_144;
 /// Longest opaque handle (manifest id, digest part, object id).
 pub const MAX_HANDLE_BYTES: usize = 256;
+/// Most markers (sequence and clip markers together) in one sequence.
+pub const MAX_MARKERS_PER_SEQUENCE: usize = 65_536;
+/// Longest marker name, comment or role text in bytes.
+pub const MAX_MARKER_TEXT_BYTES: usize = 4096;
 
 mod ticks_wire {
     use super::{Deserialize, Deserializer, Serializer, Ticks};
-    pub(super) fn serialize<S: Serializer>(t: &Ticks, s: S) -> std::result::Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(
+        t: &Ticks,
+        s: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         s.serialize_u64(t.value())
     }
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
@@ -79,6 +104,108 @@ impl SequenceFrameRate {
     }
 }
 
+/// The 16 declared label colours (STU-VID-020 `label_color`), used by markers.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelColor {
+    Violet,
+    Iris,
+    Caribbean,
+    Lavender,
+    Cerulean,
+    Forest,
+    Rose,
+    Mango,
+    Purple,
+    Blue,
+    Teal,
+    Magenta,
+    Tan,
+    Green,
+    Brown,
+    Yellow,
+}
+
+/// STU-VID-034 typed marker payload roles.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MarkerRole {
+    Chapter,
+    WebLink { url: String },
+    CuePoint,
+    Caption { text: String },
+}
+
+/// A point (`duration == 0`) or span marker (STU-VID-034).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioMarker {
+    /// Document-local key, unique among the document's markers.
+    pub marker_id: String,
+    pub name: String,
+    pub comment: String,
+    pub color: LabelColor,
+    /// Sequence ticks for a sequence marker, SOURCE ticks for a clip marker.
+    #[serde(with = "ticks_wire")]
+    #[schemars(with = "u64")]
+    pub start: Ticks,
+    #[serde(with = "ticks_wire")]
+    #[schemars(with = "u64")]
+    pub duration: Ticks,
+    /// Explicit null when the marker has no typed role.
+    #[serde(deserialize_with = "required")]
+    #[schemars(required)]
+    pub role: Option<MarkerRole>,
+}
+
+/// STU-VID-032 `alignment` (`custom` places the centre at `cut + center_offset`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransitionAlignment {
+    CenteredOnCut,
+    StartAtCut,
+    EndAtCut,
+    Custom,
+}
+
+/// STU-VID-032 `StudioTransition` (`hsk.studio.transition@1`). The Rust name differs because
+/// folio's `StudioTransition` is the STU-PRO-116 prototype transition (reactions.rs); the wire
+/// schema id is the spec's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineTransition {
+    pub schema_id: TransitionSchema,
+    /// Document-local key, unique among the document's transitions.
+    pub transition_id: String,
+    /// A `filter_kind` of the `transition` category (STU-FX-126), stored as an opaque key.
+    pub transition_kind: String,
+    #[serde(with = "ticks_wire")]
+    #[schemars(with = "u64")]
+    pub duration: Ticks,
+    pub alignment: TransitionAlignment,
+    /// Signed ticks from the cut to the transition centre; non-zero only with `custom`.
+    pub center_offset: i64,
+}
+
+/// A clip's head and tail transitions (STU-VID-020 `transitions`; explicit nulls on the wire).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClipTransitions {
+    #[serde(deserialize_with = "required")]
+    #[schemars(required)]
+    pub head: Option<TimelineTransition>,
+    #[serde(deserialize_with = "required")]
+    #[schemars(required)]
+    pub tail: Option<TimelineTransition>,
+}
+impl ClipTransitions {
+    pub fn is_empty(&self) -> bool {
+        self.head.is_none() && self.tail.is_none()
+    }
+}
+
 /// STU-VID-031 rational speed multiplier; the sign is the direction (negative = reverse). Must be
 /// reduced and nonzero so one speed has one spelling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -114,7 +241,10 @@ pub enum ClipSource {
     /// Nested sequence in the same document; nesting must be acyclic.
     Sequence { sequence_id: String },
     /// Another typed primitive (for example a composition), resolved by its owner.
-    Primitive { schema_id: String, object_id: String },
+    Primitive {
+        schema_id: String,
+        object_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -145,6 +275,12 @@ pub struct StudioClip {
     #[serde(deserialize_with = "required")]
     #[schemars(required)]
     pub link_group: Option<String>,
+    /// Clip-local markers in SOURCE ticks (omitted from the wire when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<StudioMarker>,
+    /// Head and tail transitions (omitted from the wire when both are empty).
+    #[serde(default, skip_serializing_if = "ClipTransitions::is_empty")]
+    pub transitions: ClipTransitions,
 }
 impl StudioClip {
     /// Exclusive end tick on the timeline; `None` on tick overflow.
@@ -195,6 +331,9 @@ pub struct StudioSequence {
     pub duration: Ticks,
     /// Ordered stack; per-kind `index` values follow this order.
     pub tracks: Vec<StudioTrack>,
+    /// Sequence markers in sequence ticks; they do not move with clips (omitted when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<StudioMarker>,
 }
 impl StudioSequence {
     /// End of the last clip over all tracks; `None` on tick overflow.
@@ -209,7 +348,7 @@ impl StudioSequence {
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
-        (a, b) = (b, a % b);
+        (a, b) = (b, a.checked_rem(b).unwrap_or(0));
     }
     a
 }
@@ -219,10 +358,10 @@ fn derived_duration(span: u64, speed: &Speed) -> Option<u64> {
     }
     let scaled = u128::from(span).checked_mul(u128::from(speed.denominator))?;
     let magnitude = u128::from(speed.numerator.unsigned_abs());
-    if scaled % magnitude != 0 {
+    if scaled.checked_rem(magnitude)? != 0 {
         return None;
     }
-    u64::try_from(scaled / magnitude).ok()
+    u64::try_from(scaled.checked_div(magnitude)?).ok()
 }
 pub(crate) fn control_free(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_HANDLE_BYTES && !s.chars().any(char::is_control)
@@ -240,17 +379,102 @@ pub(crate) fn handle(s: &str) -> bool {
         && s != ".."
 }
 
-/// Count of sequences, tracks and clips, charged against `Budget::nodes`.
+/// Count of sequences, tracks, clips, markers and transitions, charged against `Budget::nodes`.
 pub(crate) fn node_count(d: &StudioDocument) -> usize {
     d.sequences.iter().fold(0usize, |n, s| {
-        let clips = s
-            .tracks
-            .iter()
-            .fold(0usize, |m, t| m.saturating_add(t.clips.len()));
+        let clips = s.tracks.iter().fold(0usize, |m, t| {
+            t.clips
+                .iter()
+                .fold(m.saturating_add(t.clips.len()), |k, c| {
+                    k.saturating_add(c.markers.len())
+                        .saturating_add(usize::from(c.transitions.head.is_some()))
+                        .saturating_add(usize::from(c.transitions.tail.is_some()))
+                })
+        });
         n.saturating_add(1)
             .saturating_add(s.tracks.len())
+            .saturating_add(s.markers.len())
             .saturating_add(clips)
     })
+}
+
+fn text_ok(s: &str, allow_empty: bool) -> bool {
+    (allow_empty || !s.is_empty())
+        && s.len() <= MAX_MARKER_TEXT_BYTES
+        && !s.chars().any(char::is_control)
+}
+
+/// One marker: key id unique in the document, bounded text, `start + duration` in range.
+fn validate_marker<'a>(
+    m: &'a StudioMarker,
+    ids: &mut BTreeSet<&'a str>,
+    payload_size: &mut usize,
+    b: Budget,
+) -> Result<()> {
+    let target = m.marker_id.as_str();
+    if !key(target) {
+        return Err(err(Code::InvalidId, "marker_id"));
+    }
+    if !ids.insert(target) {
+        return Err(err(Code::DuplicateIdentity, target));
+    }
+    let role_text = match &m.role {
+        Some(MarkerRole::WebLink { url }) => Some((url.as_str(), false)),
+        Some(MarkerRole::Caption { text }) => Some((text.as_str(), true)),
+        _ => None,
+    };
+    // A comment may hold line breaks; names and role text may not hold control characters.
+    let comment_ok = m.comment.len() <= MAX_MARKER_TEXT_BYTES;
+    if !text_ok(&m.name, true)
+        || !comment_ok
+        || role_text.is_some_and(|(s, empty)| !text_ok(s, empty))
+    {
+        return Err(err(Code::InvalidField, format!("{target}/text")));
+    }
+    let bytes = m
+        .name
+        .len()
+        .saturating_add(m.comment.len())
+        .saturating_add(role_text.map_or(0, |(s, _)| s.len()));
+    charge(payload_size, bytes, b.payload_bytes, target)?;
+    if m.start.checked_add(m.duration).is_err() {
+        return Err(err(Code::InvalidField, format!("{target}/span")));
+    }
+    Ok(())
+}
+
+/// One transition: key id unique in the document, opaque kind key, non-zero duration, a centre
+/// offset only with `custom` and never beyond the duration.
+fn validate_transition<'a>(
+    t: &'a TimelineTransition,
+    ids: &mut BTreeSet<&'a str>,
+    payload_size: &mut usize,
+    b: Budget,
+) -> Result<()> {
+    let target = t.transition_id.as_str();
+    if !key(target) {
+        return Err(err(Code::InvalidId, "transition_id"));
+    }
+    if !ids.insert(target) {
+        return Err(err(Code::DuplicateIdentity, target));
+    }
+    if !key(&t.transition_kind) {
+        return Err(err(Code::InvalidField, format!("{target}/transition_kind")));
+    }
+    charge(
+        payload_size,
+        t.transition_kind.len(),
+        b.payload_bytes,
+        target,
+    )?;
+    let offset_ok = match t.alignment {
+        TransitionAlignment::Custom => t.center_offset.unsigned_abs() <= t.duration.value(),
+        _ => t.center_offset == 0,
+    };
+    if t.duration.value() == 0 || !offset_ok {
+        return Err(err(Code::InvalidField, format!("{target}/timing")));
+    }
+    Ok(())
 }
 
 fn charge(total: &mut usize, bytes: usize, limit: usize, target: &str) -> Result<()> {
@@ -286,6 +510,7 @@ pub(crate) fn validate_sequences(
         }
     }
     let (mut track_ids, mut clip_ids) = (BTreeSet::new(), BTreeSet::new());
+    let (mut marker_ids, mut transition_ids) = (BTreeSet::new(), BTreeSet::new());
     let mut links = Vec::new();
     for s in &d.sequences {
         canceled(token)?;
@@ -296,6 +521,18 @@ pub(crate) fn validate_sequences(
         }
         if s.tracks.len() > MAX_TRACKS_PER_SEQUENCE {
             return Err(err(Code::BudgetExceeded, format!("{sid}/tracks")));
+        }
+        // Counted before any marker is examined (hostile list lengths, V4-02).
+        let markers_here = s
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .fold(s.markers.len(), |n, c| n.saturating_add(c.markers.len()));
+        if markers_here > MAX_MARKERS_PER_SEQUENCE {
+            return Err(err(Code::BudgetExceeded, format!("{sid}/markers")));
+        }
+        for m in &s.markers {
+            validate_marker(m, &mut marker_ids, &mut payload_size, b)?;
         }
         let (mut stack, mut clips_here, mut content_end) = ([0u32; 4], 0usize, 0u64);
         for t in &s.tracks {
@@ -308,12 +545,20 @@ pub(crate) fn validate_sequences(
             if t.index != *slot {
                 return Err(err(Code::InvalidField, format!("{}/index", t.track_id)));
             }
-            *slot += 1;
-            charge(&mut payload_size, t.name.len(), b.payload_bytes, &t.track_id)?;
+            *slot = slot
+                .checked_add(1)
+                .ok_or_else(|| err(Code::BudgetExceeded, format!("{sid}/tracks")))?;
+            charge(
+                &mut payload_size,
+                t.name.len(),
+                b.payload_bytes,
+                &t.track_id,
+            )?;
             let mut previous: Option<(u64, u64)> = None;
+            let mut previous_tail = false;
             for c in &t.clips {
                 canceled(token)?;
-                clips_here += 1;
+                clips_here = clips_here.saturating_add(1);
                 if clips_here > MAX_CLIPS_PER_SEQUENCE {
                     return Err(err(Code::BudgetExceeded, format!("{sid}/clips")));
                 }
@@ -339,9 +584,10 @@ pub(crate) fn validate_sequences(
                         {
                             return Err(err(Code::InvalidField, format!("{cid}/source")));
                         }
-                        let bytes = artifact_manifest_id.len()
-                            + content_digest.algorithm.len()
-                            + content_digest.digest.len();
+                        let bytes = artifact_manifest_id
+                            .len()
+                            .saturating_add(content_digest.algorithm.len())
+                            .saturating_add(content_digest.digest.len());
                         charge(&mut payload_size, bytes, b.payload_bytes, cid)?;
                         let disposition = r.media(artifact_manifest_id, content_digest);
                         if disposition != Resolution::Available {
@@ -371,7 +617,7 @@ pub(crate) fn validate_sequences(
                         }
                         charge(
                             &mut payload_size,
-                            schema_id.len() + object_id.len(),
+                            schema_id.len().saturating_add(object_id.len()),
                             b.payload_bytes,
                             cid,
                         )?;
@@ -406,6 +652,24 @@ pub(crate) fn validate_sequences(
                         return Err(err(Code::InvalidField, format!("{cid}/overlap")));
                     }
                 }
+                for m in &c.markers {
+                    validate_marker(m, &mut marker_ids, &mut payload_size, b)?;
+                }
+                for tr in [&c.transitions.head, &c.transitions.tail]
+                    .into_iter()
+                    .flatten()
+                {
+                    validate_transition(tr, &mut transition_ids, &mut payload_size, b)?;
+                }
+                // One transition per cut: the outgoing clip's tail holds it, so an abutting
+                // incoming clip's head stays empty.
+                if c.transitions.head.is_some()
+                    && previous_tail
+                    && previous.is_some_and(|(_, previous_end)| previous_end == start)
+                {
+                    return Err(err(Code::InvalidField, format!("{cid}/transitions")));
+                }
+                previous_tail = c.transitions.tail.is_some();
                 previous = Some((start, end));
                 content_end = content_end.max(end);
             }

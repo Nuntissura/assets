@@ -87,6 +87,8 @@ fn clip(n: u32, si: u64, so: u64, start: u64) -> StudioClip {
         speed: Speed::UNIT,
         enabled: true,
         link_group: None,
+        markers: Vec::new(),
+        transitions: hsk_studio_folio::ClipTransitions::default(),
     }
 }
 fn track(
@@ -119,6 +121,7 @@ fn sequence(tracks: Vec<StudioTrack>) -> StudioSequence {
         frame_rate: SequenceFrameRate { ticks_per_frame: F },
         duration: Ticks::new(0),
         tracks,
+        markers: Vec::new(),
     };
     seq.duration = seq.content_end().unwrap();
     seq

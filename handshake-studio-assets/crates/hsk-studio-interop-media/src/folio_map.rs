@@ -165,6 +165,8 @@ pub fn build_sequence(
                     speed: clip.speed,
                     enabled: true,
                     link_group: clip.link.map(|event| format!("edl-link-{event}")),
+                    markers: Vec::new(),
+                    transitions: hsk_studio_folio::ClipTransitions::default(),
                 });
             }
             tracks.push(StudioTrack {
@@ -197,6 +199,7 @@ pub fn build_sequence(
             },
             duration: Ticks::new(end),
             tracks,
+            markers: Vec::new(),
         },
         losses,
     })

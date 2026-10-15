@@ -27,14 +27,8 @@ pub enum TransitionKind {
     AudioCrossfade,
 }
 
-/// STU-VID-032 `alignment`; `Custom` places the centre at `cut + center_offset`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransitionAlignment {
-    CenteredOnCut,
-    StartAtCut,
-    EndAtCut,
-    Custom,
-}
+/// STU-VID-032 `alignment`, Folio's stored type (`Custom` centres at `cut + center_offset`).
+pub use hsk_studio_folio::TransitionAlignment;
 
 /// One transition at the cut between `outgoing_clip_id` and the clip abutting it,
 /// `incoming_clip_id`, on the same track.

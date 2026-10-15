@@ -77,6 +77,8 @@ fn clip(n: u32, source_in: u64, source_out: u64, start: u64, duration: u64) -> S
         speed: Speed::UNIT,
         enabled: true,
         link_group: None,
+        markers: Vec::new(),
+        transitions: hsk_studio_folio::ClipTransitions::default(),
     }
 }
 fn linked(mut c: StudioClip) -> StudioClip {
@@ -135,6 +137,7 @@ fn snapshot(tracks: Vec<StudioTrack>) -> Snapshot {
             frame_rate: SequenceFrameRate { ticks_per_frame: F },
             duration: Ticks::new(end),
             tracks,
+            markers: Vec::new(),
         }],
     };
     validate_document(

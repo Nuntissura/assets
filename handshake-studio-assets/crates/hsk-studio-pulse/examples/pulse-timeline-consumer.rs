@@ -88,6 +88,8 @@ fn clip(n: i64, start: u64, frames: u64) -> StudioClip {
         speed: Speed::UNIT,
         enabled: true,
         link_group: None,
+        markers: Vec::new(),
+        transitions: hsk_studio_folio::ClipTransitions::default(),
     }
 }
 
@@ -151,6 +153,7 @@ fn fixture(cancel: &CancellationToken) -> Result<hsk_studio_folio::Snapshot> {
                     vec![clip(4, 0, 2), clip(5, 8, 2)],
                 ),
             ],
+            markers: Vec::new(),
         }],
     };
     validate_document(document, Budget::default(), cancel, &Available)

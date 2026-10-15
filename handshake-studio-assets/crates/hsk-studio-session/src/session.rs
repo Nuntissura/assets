@@ -12,9 +12,10 @@ use crate::{
     },
     registry::{ProposalRequest, ProviderRegistry},
     source::{
-        DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS, Handle, LazyAssets, SourceBox, document_entry,
-        load_parts, require_tile_assets,
+        DOCUMENT_ENTRY_PREFIX, DOCUMENT_ENTRY_TOKENS, Handle, LazyAssets, SourceBox,
+        document_entry, load_parts, require_tile_assets,
     },
+    timeline::{self, TIMELINE_STEP_PROVIDER, TimelineStep},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
@@ -23,8 +24,8 @@ use hsk_studio_chronicle::{
 use hsk_studio_folio::{self as folio, Resolver, Snapshot, StudioDocument, Unresolved};
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
-    Codec, Extras, ImportRef, Limits, LossNote, Manifest, PackageError, PackageReader, PreviewImage,
-    PreviewRef, Quarantined, StreamSave, WriteOptions, WriteReceipt, read_package,
+    Codec, Extras, ImportRef, Limits, LossNote, Manifest, PackageError, PackageReader,
+    PreviewImage, PreviewRef, Quarantined, StreamSave, WriteOptions, WriteReceipt, read_package,
     save_atomic_streaming, sha256_hex_of, write_package_with,
 };
 use std::{
@@ -210,6 +211,10 @@ pub struct Applied {
     pub revision_updates: Vec<RevisionUpdate>,
     /// Transaction that restores the previous values; submit it like any other.
     pub inverse: Option<Inverse>,
+    /// For a [`Session::submit_timeline`] step: the step that restores the previous sequence
+    /// value (undo); the caller sets a fresh `command_id`/`correlation_id` and submits it with
+    /// [`Session::submit_timeline`]. `None` for provider submits and no-change steps.
+    pub timeline_inverse: Option<TimelineStep>,
     /// The authority's canonical receipt (`None` for no-change or a standalone session).
     pub commit: Option<CommitReceipt>,
     /// True when this is the stored receipt of an earlier identical request: nothing was
@@ -696,7 +701,7 @@ impl Session {
         expected_revision: u64,
         cancel: &CancellationToken,
     ) -> Result<Applied, Failed> {
-        let result = self.submit_inner(None, provider, params, expected_revision, cancel);
+        let result = self.submit_inner(None, provider, params, expected_revision, cancel, None);
         self.settle(result, |applied, report| applied.report = report)
     }
 
@@ -714,7 +719,55 @@ impl Session {
         expected_revision: u64,
         cancel: &CancellationToken,
     ) -> Result<Applied, Failed> {
-        let result = self.submit_inner(Some(key), provider, params, expected_revision, cancel);
+        let result =
+            self.submit_inner(Some(key), provider, params, expected_revision, cancel, None);
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// Submits one timeline step (module `timeline`): the sequence value `step.expect` becomes
+    /// `step.write` at `expected_revision + 1`, through the same grant, admission, commit and
+    /// publish path as [`Session::submit`]. The returned [`Applied::timeline_inverse`] is the undo
+    /// (and the undo's inverse the redo). Refusals change nothing: `value_conflict` (the sequence
+    /// is not `expect`), `invalid_target` (no such sequence), `invalid_input` (sequence ids
+    /// disagree), `invalid_command`, `folio_rejected` / `budget_exceeded` (the result is not a
+    /// valid document), `stale_revision`. Test `timeline_step_round_trips_and_undoes_as_one_step`.
+    pub fn submit_timeline(
+        &mut self,
+        step: &TimelineStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(
+                None,
+                TIMELINE_STEP_PROVIDER,
+                &params,
+                expected_revision,
+                cancel,
+                Some(step),
+            )
+        });
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    /// As [`Session::submit_timeline`], idempotent under `key` (see [`Session::submit_keyed`]).
+    pub fn submit_timeline_keyed(
+        &mut self,
+        key: &IdempotencyKey,
+        step: &TimelineStep,
+        expected_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Applied, Failed> {
+        let result = step.binding_bytes().and_then(|params| {
+            self.submit_inner(
+                Some(key),
+                TIMELINE_STEP_PROVIDER,
+                &params,
+                expected_revision,
+                cancel,
+                Some(step),
+            )
+        });
         self.settle(result, |applied, report| applied.report = report)
     }
 
@@ -775,6 +828,7 @@ impl Session {
         params: &[u8],
         expected: u64,
         cancel: &CancellationToken,
+        timeline: Option<&TimelineStep>,
     ) -> Result<Applied, SessionError> {
         cancel.check().map_err(|_| SessionError::Canceled)?;
         if self.closed {
@@ -838,7 +892,10 @@ impl Session {
             applied,
             successor,
             slots,
-        } = self.propose_checked(provider_id, params, current, cancel)?;
+        } = match timeline {
+            Some(step) => self.propose_timeline(step, current, cancel)?,
+            None => self.propose_checked(provider_id, params, current, cancel)?,
+        };
         let Some(successor) = successor else {
             // No-change: nothing to commit anywhere; the receipt is still stored under the key.
             let mut applied = applied;
@@ -983,6 +1040,59 @@ impl Session {
         evicted
     }
 
+    /// Checks a timeline step against the live snapshot without publishing anything.
+    fn propose_timeline(
+        &self,
+        step: &TimelineStep,
+        current: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Proposed, SessionError> {
+        let successor = timeline::successor(
+            &self.snapshot,
+            step,
+            self.config.budgets.folio(),
+            &*self.ports.resolver,
+            cancel,
+        )?;
+        // Last point at which a cancel still prevents publication.
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        if let Some(next) = &successor
+            && !self.assets_available(next.document())
+        {
+            return Err(SessionError::Package(PackageError::MissingAsset));
+        }
+        let changed = successor.is_some();
+        let revision = if changed {
+            current
+                .checked_add(1)
+                .ok_or(SessionError::ProposalInconsistent)?
+        } else {
+            current
+        };
+        Ok(Proposed {
+            applied: Applied {
+                provider: TIMELINE_STEP_PROVIDER.to_owned(),
+                command_id: step.command_id.clone(),
+                correlation_id: step.correlation_id,
+                actor: timeline::actor_of(&self.config.actor),
+                previous_revision: current,
+                revision,
+                changed,
+                revision_updates: Vec::new(),
+                inverse: None,
+                timeline_inverse: changed
+                    .then(|| step.inverse(step.command_id.clone(), step.correlation_id)),
+                commit: None,
+                replayed: false,
+                cancel_too_late: false,
+                receipts_evicted: 0,
+                report: ReportStatus::Unaddressed,
+            },
+            successor,
+            slots: Vec::new(),
+        })
+    }
+
     /// Runs the provider and checks everything about its proposal without publishing anything.
     fn propose_checked(
         &self,
@@ -1125,6 +1235,7 @@ impl Session {
                 changed,
                 revision_updates: prepared.revision_updates().to_vec(),
                 inverse: prepared.inverse().cloned(),
+                timeline_inverse: None,
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
@@ -1843,7 +1954,9 @@ impl Session {
             && reread.quarantined.len() == self.quarantined.len()
             && {
                 let digests = |q: &[Quarantined]| -> BTreeSet<(String, String)> {
-                    q.iter().map(|e| (e.name.clone(), e.sha256_hex.clone())).collect()
+                    q.iter()
+                        .map(|e| (e.name.clone(), e.sha256_hex.clone()))
+                        .collect()
                 };
                 digests(&reread.quarantined) == digests(&self.quarantined)
             }
