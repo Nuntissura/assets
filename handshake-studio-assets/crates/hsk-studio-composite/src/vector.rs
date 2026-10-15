@@ -1011,6 +1011,16 @@ pub const REFUSE_WIDTH_PROFILE: &str = "vector_width_profile";
 pub const REFUSE_WIDTH_ASYMMETRIC: &str = "vector_width_asymmetric";
 /// A width-profiled stroke row with a dash, a projecting cap or a non-centre alignment.
 pub const REFUSE_WIDTH_STYLE: &str = "vector_width_style";
+/// An envelope nib refuses (geometry, mesh, top object) or a non-px document.
+pub const REFUSE_ENVELOPE: &str = "vector_envelope";
+/// An envelope asking to distort gradient or pattern fills (composite does not distort paints).
+pub const REFUSE_ENVELOPE_PAINT: &str = "vector_envelope_paint";
+/// A brush binding naming no brush, or a brush nib refuses.
+pub const REFUSE_BRUSH: &str = "vector_brush";
+/// A calligraphic or bristle brush on a stroke row (not drawn here).
+pub const REFUSE_BRUSH_KIND: &str = "vector_brush_kind";
+/// Colorization tints and shades or hue shift, or tints over a non-solid stroke paint.
+pub const REFUSE_BRUSH_COLORIZATION: &str = "vector_brush_colorization";
 
 /// Caller-owned resolution of what Folio references by id: `SVPT` path geometry (in plan pixels:
 /// the caller applies the document unit and resolution) and decoded image paint bytes.
@@ -1136,6 +1146,9 @@ pub fn image_source_id(source: &hsk_studio_folio::StudioImageSource) -> String {
     };
     format!("{}:{}", d.algorithm, d.digest)
 }
+
+/// One brush laid along one stroke path: an outline per brush art path.
+type BrushDraw<'a> = Box<dyn Fn(&OwnedPath) -> Result<Vec<OwnedPath>, hsk_studio_nib::Error> + 'a>;
 
 struct FolioCx<'a> {
     layers: std::collections::BTreeMap<&'a str, &'a hsk_studio_folio::StudioLayer>,
@@ -1308,19 +1321,27 @@ impl FolioCx<'_> {
         })
     }
 
-    /// Own fill and stroke geometry of a vector layer (lanes SMB-COMPOSITE-NETWORK-ADAPTER and
-    /// SMB-VECTOR-STYLES; STU-VEC-108, STU-VEC-122). A network path ([`VectorAssets::network`])
-    /// fills its filled regions without a `fill_style_id` and strokes its derived
-    /// `stroke_geometry` (every segment once); a filled region with its own `fill_style_id` is
-    /// painted by that style's fill rows, each as a [`FillPaint::StrokeGeometry`] row over the
-    /// region outline, placed after the layer's fill rows and before its stroke rows (a region
-    /// style with a stroke row is refused). A path with a Folio width profile
-    /// (`StudioVectorRecords::width_profile`) strokes with nib's variable-width outline. Every
-    /// stroke row becomes a [`FillPaint::StrokeGeometry`] row over the union of the stroke outlines.
-    /// Plain paths fill and stroke themselves; a layer with neither networks nor width profiles is
-    /// returned unchanged.
+    /// Own fill and stroke geometry of a vector layer (lanes SMB-COMPOSITE-NETWORK-ADAPTER,
+    /// SMB-VECTOR-STYLES and SMB-ILLUSTRATOR-TOOLS-2; STU-VEC-108, STU-VEC-122, STU-VEC-026,
+    /// STU-VEC-055/168/169). A network path ([`VectorAssets::network`]) fills its filled regions
+    /// without a `fill_style_id` and strokes its derived `stroke_geometry` (every segment once); a
+    /// filled region with its own `fill_style_id` is painted by that style's fill rows, each as a
+    /// [`FillPaint::StrokeGeometry`] row over the region outline, placed after the layer's fill rows
+    /// and before its stroke rows (a region style with a stroke row is refused). A path with a Folio
+    /// width profile (`StudioVectorRecords::width_profile`) strokes with nib's variable-width
+    /// outline. A stroke row bound to a brush (`StudioBrushStroke`) becomes one
+    /// [`FillPaint::StrokeGeometry`] row per brush art path: nib's art, scatter or pattern brush
+    /// along the stroke paths, painted with the art colour (`colorize.none`) or its tint of a solid
+    /// stroke colour (`colorize.tints`: `c' = 1 - (1 - L) (1 - stroke)`, L the art colour's Rec. 709
+    /// luminance in plan units; Studio rule). Every other stroke row becomes a
+    /// [`FillPaint::StrokeGeometry`] row over the union of the stroke outlines. An envelope
+    /// (`StudioEnvelope`) wraps the path geometry before the appearance is drawn, or with
+    /// `distort_appearance` the drawn fill and stroke geometry, through nib's `envelope_paths`
+    /// (one frame: the union bounds of everything it wraps); paints are not distorted. Plain paths
+    /// fill and stroke themselves; a layer with none of these is returned unchanged.
     fn own_geometry(
         &self,
+        layer_id: &str,
         payload: &hsk_studio_folio::Payload,
         geometry: VectorGeometry,
         fills: Vec<FillSpec>,
@@ -1330,7 +1351,14 @@ impl FolioCx<'_> {
         };
         let networks: Vec<_> = path_ids.iter().map(|id| self.assets.network(id)).collect();
         let profiles: Vec<_> = path_ids.iter().map(|id| self.records.width_profile(id)).collect();
-        if networks.iter().all(Option::is_none) && profiles.iter().all(Option::is_none) {
+        let envelope = self.records.envelope(layer_id);
+        let style_id = self.design.node_design(layer_id).and_then(|n| n.style_refs.get("fill_style_id"));
+        let rows_of = style_id.map(|id| self.visible_rows(id)).unwrap_or_default();
+        let brushed = |k: usize| -> Option<&hsk_studio_folio::StudioBrushStroke> {
+            self.records.brush_stroke(style_id?, rows_of.get(k).copied()?)
+        };
+        let any_brush = (0..fills.len()).any(|k| brushed(k).is_some());
+        if networks.iter().all(Option::is_none) && profiles.iter().all(Option::is_none) && envelope.is_none() && !any_brush {
             return Ok((geometry, fills));
         }
         let VectorGeometry::Paths(paths) = geometry else {
@@ -1360,6 +1388,26 @@ impl FolioCx<'_> {
                 stroke.push((s, profile));
             }
         }
+        if let Some(e) = envelope {
+            self.envelope_paints(e, &fills)?;
+            if !e.distort_appearance {
+                // The path geometry is wrapped first; the appearance follows the wrapped paths.
+                let (n_fill, n_stroke) = (fill.len(), stroke.len());
+                let mut all: Vec<OwnedPath> = std::mem::take(&mut fill);
+                all.extend(stroke.iter().map(|(p, _)| p.clone()));
+                all.extend(regions.iter().map(|(p, _)| p.clone()));
+                let mut wrapped = self.wrap(e, &all)?.into_iter();
+                fill = wrapped.by_ref().take(n_fill).collect();
+                for (k, w) in wrapped.by_ref().take(n_stroke).enumerate() {
+                    if let Some(s) = stroke.get_mut(k) {
+                        s.0 = w;
+                    }
+                }
+                for (r, w) in regions.iter_mut().zip(wrapped) {
+                    r.0 = w;
+                }
+            }
+        }
         let mut region_rows = Vec::new();
         for (outline, style) in regions {
             for f in self.style_rows(&style)? {
@@ -1378,24 +1426,243 @@ impl FolioCx<'_> {
         }
         let mut rows = Vec::with_capacity(fills.len().saturating_add(region_rows.len()));
         let mut region_rows = Some(region_rows);
-        for f in fills {
+        for (k, f) in fills.into_iter().enumerate() {
             match f.paint {
                 FillPaint::Stroke { style, paint } => {
                     rows.extend(region_rows.take().into_iter().flatten());
-                    rows.push(FillSpec {
-                        paint: FillPaint::StrokeGeometry {
-                            outline: self.stroke_outlines(&stroke, &style)?,
-                            paint,
-                        },
-                        mode: f.mode,
-                        opacity: f.opacity,
-                    });
+                    match brushed(k) {
+                        Some(b) => rows.extend(self.brush_rows(b, &stroke, &paint, f.mode, f.opacity)?),
+                        None => rows.push(FillSpec {
+                            paint: FillPaint::StrokeGeometry {
+                                outline: self.stroke_outlines(&stroke, &style)?,
+                                paint,
+                            },
+                            mode: f.mode,
+                            opacity: f.opacity,
+                        }),
+                    }
                 }
                 paint => rows.push(FillSpec { paint, mode: f.mode, opacity: f.opacity }),
             }
         }
         rows.extend(region_rows.into_iter().flatten());
+        if let Some(e) = envelope.filter(|e| e.distort_appearance) {
+            // The drawn appearance is wrapped: fill geometry and every own-geometry outline.
+            let mut all: Vec<OwnedPath> = fill.clone();
+            let mut counts = Vec::with_capacity(rows.len());
+            for r in &rows {
+                let n = match &r.paint {
+                    FillPaint::StrokeGeometry { outline, .. } => {
+                        all.extend(outline.iter().cloned());
+                        outline.len()
+                    }
+                    _ => 0,
+                };
+                counts.push(n);
+            }
+            let mut wrapped = self.wrap(e, &all)?.into_iter();
+            fill = wrapped.by_ref().take(fill.len()).collect();
+            for (r, n) in rows.iter_mut().zip(counts) {
+                if let FillPaint::StrokeGeometry { outline, .. } = &mut r.paint {
+                    *outline = wrapped.by_ref().take(n).collect();
+                }
+            }
+        }
         Ok((VectorGeometry::Paths(fill), rows))
+    }
+
+    /// Row index of each spec `style_rows(style_id)` returns (one per visible row, in order).
+    fn visible_rows(&self, style_id: &str) -> Vec<u32> {
+        use hsk_studio_folio::StudioAppearanceRow as R;
+        let Some(style) = self.design.paint_styles.iter().find(|s| s.style_id == style_id) else {
+            return Vec::new();
+        };
+        style
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, R::Fill { visible: true, .. } | R::Stroke { visible: true, .. }))
+            .filter_map(|(i, _)| u32::try_from(i).ok())
+            .collect()
+    }
+
+    /// Envelope paint options composite cannot honour (it does not distort paints).
+    fn envelope_paints(&self, e: &hsk_studio_folio::StudioEnvelope, fills: &[FillSpec]) -> Result<(), &'static str> {
+        let has = |f: &dyn Fn(&FillPaint) -> bool| {
+            fills.iter().any(|r| match &r.paint {
+                FillPaint::Stroke { paint, .. } | FillPaint::StrokeGeometry { paint, .. } => f(paint),
+                p => f(p),
+            })
+        };
+        if (e.distort_linear_gradient_fills && has(&|p| matches!(p, FillPaint::Gradient(_))))
+            || (e.distort_pattern_fills && has(&|p| matches!(p, FillPaint::Pattern(_))))
+        {
+            return Err(REFUSE_ENVELOPE_PAINT);
+        }
+        Ok(())
+    }
+
+    /// `paths` wrapped in envelope `e` (one frame).
+    fn wrap(&self, e: &hsk_studio_folio::StudioEnvelope, paths: &[OwnedPath]) -> Result<Vec<OwnedPath>, &'static str> {
+        use hsk_studio_folio::{StudioEnvelopeShape as S, StudioWarpAxis as A, StudioWarpStyle as W};
+        use hsk_studio_nib::warp::{Envelope, Mesh, Warp, WarpAxis, WarpStyle, envelope_paths};
+        if !self.unit_px {
+            return Err(REFUSE_GEOMETRY_UNIT);
+        }
+        let envelope = match &e.envelope {
+            S::Warp { warp_style, warp_axis, warp_bend, warp_distortion_horizontal, warp_distortion_vertical } => Envelope::Warp(Warp {
+                style: match warp_style {
+                    W::Arc => WarpStyle::Arc,
+                    W::ArcLower => WarpStyle::ArcLower,
+                    W::ArcUpper => WarpStyle::ArcUpper,
+                    W::Arch => WarpStyle::Arch,
+                    W::Bulge => WarpStyle::Bulge,
+                    W::ShellLower => WarpStyle::ShellLower,
+                    W::ShellUpper => WarpStyle::ShellUpper,
+                    W::Flag => WarpStyle::Flag,
+                    W::Wave => WarpStyle::Wave,
+                    W::Fish => WarpStyle::Fish,
+                    W::Rise => WarpStyle::Rise,
+                    W::Fisheye => WarpStyle::Fisheye,
+                    W::Inflate => WarpStyle::Inflate,
+                    W::Squeeze => WarpStyle::Squeeze,
+                    W::Twist => WarpStyle::Twist,
+                },
+                axis: match warp_axis {
+                    A::Horizontal => WarpAxis::Horizontal,
+                    A::Vertical => WarpAxis::Vertical,
+                },
+                bend: *warp_bend,
+                distortion_horizontal: *warp_distortion_horizontal,
+                distortion_vertical: *warp_distortion_vertical,
+            }),
+            S::Mesh { rows, columns, points } => Envelope::Mesh(Mesh {
+                rows: usize::try_from(*rows).map_err(|_| REFUSE_ENVELOPE)?,
+                columns: usize::try_from(*columns).map_err(|_| REFUSE_ENVELOPE)?,
+                points: points.iter().map(|q| PathPoint::new(q[0], q[1])).collect(),
+            }),
+            S::TopObject { source_layer_id } => match self.geometry(source_layer_id, 0)? {
+                VectorGeometry::Paths(top) => Envelope::Shape(top.into_iter().next().ok_or(REFUSE_ENVELOPE)?),
+                VectorGeometry::Boolean { .. } => return Err(REFUSE_ENVELOPE),
+            },
+        };
+        envelope_paths(paths, &envelope, e.envelope_fidelity).map_err(|err| match err {
+            hsk_studio_nib::Error::BudgetExceeded => crate::vector_nib::REFUSE_NIB_BUDGET,
+            _ => REFUSE_ENVELOPE,
+        })
+    }
+
+    /// The rows of a brushed stroke row: one own-geometry row per brush art path.
+    fn brush_rows(
+        &self,
+        b: &hsk_studio_folio::StudioBrushStroke,
+        bases: &[(OwnedPath, Option<&hsk_studio_folio::StudioWidthProfile>)],
+        row_paint: &FillPaint,
+        mode: StudioBlendMode,
+        opacity: f32,
+    ) -> Result<Vec<FillSpec>, &'static str> {
+        use hsk_studio_folio::{StudioArtScale as AS, StudioBrushDynamics as D, StudioBrushKind as K, StudioPatternFit as PF, StudioRotationRelative as RR};
+        use hsk_studio_nib::brush::{ArtBrush, ArtScale, Dyn, PatternBrush, PatternFit, RotationRelative, ScatterBrush, TileArt, TileSlot, art_brush, pattern_brush, scatter_brush};
+        if !self.unit_px {
+            return Err(REFUSE_GEOMETRY_UNIT);
+        }
+        let brush = self.records.brush(&b.brush_id).ok_or(REFUSE_BRUSH)?;
+        let k = b.scale_override.unwrap_or(100.0) / 100.0;
+        let resolve = |art: &[hsk_studio_folio::StudioBrushArt]| -> Result<Vec<OwnedPath>, &'static str> {
+            art.iter().map(|a| self.assets.path(&a.path_id).ok_or(REFUSE_PATH_UNRESOLVED)).collect()
+        };
+        // Stylus dynamics have no input in a document: the parameter's own value is used.
+        let dynamic = |p: &hsk_studio_folio::StudioBrushParam, scale: f64| Dyn {
+            min: p.value * scale,
+            max: p.max.unwrap_or(p.value) * scale,
+            random: p.dynamics == D::Random,
+        };
+        let nib_err = |e: hsk_studio_nib::Error| match e {
+            hsk_studio_nib::Error::BudgetExceeded => crate::vector_nib::REFUSE_NIB_BUDGET,
+            _ => REFUSE_BRUSH,
+        };
+        let (art, draw): (Vec<&hsk_studio_folio::StudioBrushArt>, BrushDraw<'_>) = match &brush.kind {
+            K::Art { art_width, art_scale_mode, art_guide_start, art_guide_end, flip_along, flip_across, art } => {
+                let paths = resolve(art)?;
+                let nb = ArtBrush {
+                    width: art_width.value * k,
+                    scale: match art_scale_mode {
+                        AS::Proportional => ArtScale::Proportional,
+                        AS::StretchToStrokeLength => ArtScale::Stretch,
+                        AS::StretchBetweenGuides => ArtScale::StretchBetweenGuides { start: art_guide_start.ok_or(REFUSE_BRUSH)?, end: art_guide_end.ok_or(REFUSE_BRUSH)? },
+                    },
+                    flip_along: *flip_along,
+                    flip_across: *flip_across,
+                };
+                (art.iter().collect(), Box::new(move |spine: &OwnedPath| art_brush(spine, &paths, &nb)))
+            }
+            K::Scatter { scatter_size, scatter_spacing, scatter_offset, scatter_rotation, scatter_rotation_relative_to, seed, art } => {
+                let paths = resolve(art)?;
+                let nb = ScatterBrush {
+                    size: dynamic(scatter_size, k),
+                    spacing: dynamic(scatter_spacing, 1.0),
+                    offset: dynamic(scatter_offset, 1.0),
+                    rotation: dynamic(scatter_rotation, 1.0),
+                    relative: match scatter_rotation_relative_to {
+                        RR::Page => RotationRelative::Page,
+                        RR::Path => RotationRelative::Path,
+                    },
+                    seed: *seed,
+                };
+                (art.iter().collect(), Box::new(move |spine: &OwnedPath| scatter_brush(spine, &paths, &nb)))
+            }
+            K::Pattern { pattern_brush_scale, fit_mode, flip_along, flip_across, tiles, .. } => {
+                let mut list = Vec::new();
+                let mut art = Vec::new();
+                for (slot, pieces) in [(TileSlot::Side, &tiles.side), (TileSlot::OuterCorner, &tiles.outer_corner), (TileSlot::InnerCorner, &tiles.inner_corner), (TileSlot::Start, &tiles.start), (TileSlot::End, &tiles.end)] {
+                    for (a, path) in pieces.iter().zip(resolve(pieces)?) {
+                        list.push(TileArt { slot, path });
+                        art.push(a);
+                    }
+                }
+                let nb = PatternBrush {
+                    scale: pattern_brush_scale.value * k,
+                    fit: match fit_mode {
+                        PF::StretchToFit => PatternFit::StretchToFit,
+                        PF::AddSpaceToFit => PatternFit::AddSpaceToFit,
+                        PF::ApproximatePath => PatternFit::ApproximatePath,
+                    },
+                    flip_along: *flip_along,
+                    flip_across: *flip_across,
+                };
+                (art, Box::new(move |spine: &OwnedPath| pattern_brush(spine, &list, &nb)))
+            }
+            K::Calligraphic { .. } | K::Bristle { .. } => return Err(REFUSE_BRUSH_KIND),
+        };
+        let mut outlines: Vec<Vec<OwnedPath>> = vec![Vec::new(); art.len()];
+        for (spine, _) in bases {
+            if spine.elements.is_empty() {
+                continue;
+            }
+            for (acc, out) in outlines.iter_mut().zip(draw(spine).map_err(nib_err)?) {
+                if !out.elements.is_empty() {
+                    acc.push(out);
+                }
+            }
+        }
+        let mut rows = Vec::with_capacity(art.len());
+        for (a, outline) in art.iter().zip(outlines) {
+            let [r, g, bl, _] = self.colour(&a.colour)?;
+            let paint = match brush.colorization {
+                hsk_studio_folio::StudioBrushColorization::None => FillPaint::Solid([r, g, bl, 1.0]),
+                hsk_studio_folio::StudioBrushColorization::Tints => match row_paint {
+                    FillPaint::Solid(c) => {
+                        let l = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+                        let tint = |s: f32| 1.0 - (1.0 - l) * (1.0 - s);
+                        FillPaint::Solid([tint(c[0]), tint(c[1]), tint(c[2]), c[3]])
+                    }
+                    _ => return Err(REFUSE_BRUSH_COLORIZATION),
+                },
+                _ => return Err(REFUSE_BRUSH_COLORIZATION),
+            };
+            rows.push(FillSpec { paint: FillPaint::StrokeGeometry { outline, paint: Box::new(paint) }, mode, opacity });
+        }
+        Ok(rows)
     }
 
     /// The stroke outlines of `bases` under `style`: uniform paths united by nib's stroker, each
@@ -1600,10 +1867,19 @@ pub fn prepare_vectors(
         if !drawn {
             continue;
         }
+        // A layer an envelope uses as its top object is consumed by it (STU-VEC-168: "make with
+        // top object"): it draws nothing of its own.
+        let consumed = vectors.envelopes.iter().any(|e| {
+            matches!(&e.envelope, hsk_studio_folio::StudioEnvelopeShape::TopObject { source_layer_id } if source_layer_id == &l.layer_id)
+        });
+        if consumed {
+            specs.push(VectorLayerSpec { layer_id: l.layer_id.clone(), geometry: VectorGeometry::Paths(Vec::new()), fills: Vec::new() });
+            continue;
+        }
         let prepared = cx
             .geometry(&l.layer_id, 0)
             .and_then(|geometry| Ok((geometry, cx.fills(&l.layer_id)?)))
-            .and_then(|(geometry, fills)| cx.own_geometry(&l.payload, geometry, fills));
+            .and_then(|(geometry, fills)| cx.own_geometry(&l.layer_id, &l.payload, geometry, fills));
         match prepared {
             Ok((geometry, fills)) => specs.push(VectorLayerSpec {
                 layer_id: l.layer_id.clone(),
