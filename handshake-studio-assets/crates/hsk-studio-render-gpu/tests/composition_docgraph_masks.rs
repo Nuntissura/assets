@@ -54,3 +54,22 @@ fn gpu_document_graph_frame_with_vector_clips_and_masks_matches_the_oracle() {
     println!("gpu scene path vs document graph: max |delta| {between:e}");
     assert!(between <= GPU_TOLERANCE, "scene path vs document graph: {between}");
 }
+
+/// Lane SMB-COMPOSITE-DOCGRAPH-2 goal 2 on the GPU: the moved variant's document-graph frame
+/// (`fixture::moved_frame`: bilinear tile transforms, a vector clip and a linked LUMINANCE mask
+/// resampled with their content, an unlinked ALPHA mask in place, a Folio clipped layer rotated
+/// over its masked base) within the GPU tolerance of `fixture::moved_oracle`, which render-cpu
+/// matches bit for bit.
+#[test]
+fn gpu_moved_document_graph_frame_matches_the_oracle() {
+    if !gate("gpu_moved_document_graph_frame_matches_the_oracle") {
+        return;
+    }
+    let pixels = fixture::scenes::Pixels::fixture();
+    let frame = fixture::moved_frame(&pixels);
+    let oracle = fixture::moved_oracle(&pixels);
+    let got = fixture::render_frame(backend(), &frame, &pixels).expect("frame renders");
+    let delta = fixture::max_delta(&got, &oracle);
+    println!("gpu moved frame: max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "moved document graph vs oracle: {delta}");
+}

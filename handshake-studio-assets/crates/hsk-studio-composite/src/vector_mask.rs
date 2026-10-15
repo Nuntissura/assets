@@ -417,6 +417,57 @@ pub fn source_bounds(mask: &VectorMask) -> Result<Option<Rect>, &'static str> {
     }
 }
 
+/// Where an unlinked mask (lane SMB-COMPOSITE-DOCGRAPH-2) can differ from its value outside the
+/// plane: [`source_bounds`] united with the region's pixel rect, grown by pigment's
+/// `feather_support` of the mask feather on every side, so a plane over it holds the whole
+/// feathered mask (backends clamp the feather taps at the plane border; past this rect the stored
+/// value is the constant [`outside_value`], so the clamp reads the true value). `None` = empty.
+pub fn unlinked_rect(mask: &VectorMask) -> Result<Option<Rect>, &'static str> {
+    let mut rect = source_bounds(mask)?;
+    if let Some([x0, y0, x1, y1]) = mask.region {
+        let (fx, fy, gx, gy) = (x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
+        let ok = |v: f64| v.is_finite() && v.abs() < 9.0e15;
+        if !(ok(fx) && ok(fy) && ok(gx) && ok(gy)) || gx - fx > f64::from(u32::MAX) || gy - fy > f64::from(u32::MAX) {
+            return Err(REFUSE_MASK_REGION);
+        }
+        // Finite, integral and in range by the checks above.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let r = Rect { x: fx as i64, y: fy as i64, width: (gx - fx) as u32, height: (gy - fy) as u32 };
+        if r.width > 0 && r.height > 0 {
+            rect = union(rect, r)?;
+        }
+    }
+    let Some(r) = rect else {
+        return Ok(None);
+    };
+    if mask.feather_px <= 0.0 {
+        return Ok(Some(r));
+    }
+    let support = hsk_studio_pigment::coverage_math::feather_support(mask.feather_px)
+        .map_err(|_| REFUSE_MASK_BUDGET)?;
+    let twice = support.checked_mul(2).ok_or(REFUSE_MASK_BUDGET)?;
+    Ok(Some(Rect {
+        x: r.x.checked_sub(i64::from(support)).ok_or(REFUSE_MASK_BUDGET)?,
+        y: r.y.checked_sub(i64::from(support)).ok_or(REFUSE_MASK_BUDGET)?,
+        width: r.width.checked_add(twice).ok_or(REFUSE_MASK_BUDGET)?,
+        height: r.height.checked_add(twice).ok_or(REFUSE_MASK_BUDGET)?,
+    }))
+}
+
+/// The mask's value outside [`source_bounds`] and the region after invert and region (what a
+/// plane holds there before pigment's own invert flag): `0`, or `1` for an inverted outline or
+/// content without region and for a `reveal_outside` luminance mask without invert.
+pub fn outside_value(mask: &VectorMask) -> f64 {
+    let outside = match &mask.source {
+        VectorMaskSource::Content { outside, .. } => f64::from(*outside),
+        VectorMaskSource::Outline(_) => 0.0,
+    };
+    if mask.region.is_some() {
+        return 0.0;
+    }
+    if mask.invert { 1.0 - outside } else { outside }
+}
+
 /// The masked layer's plane over `rect` (module docs): `(bytes, inverted_by_pigment)`, format
 /// `coverage_u16le`. `clip`: the layer's vector clip outline (`Some(None)` = an empty clip).
 pub(crate) fn plane(

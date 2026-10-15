@@ -33,8 +33,13 @@
 //!    density, feather, reveal_outside) cut their layers on this path as on the static and scene
 //!    paths, and vector/text layers draw. A vector clip plane moves with its layer; a vector mask
 //!    plane moves with it unless the mask is unlinked (STU-RAS-016), in which case it stays in plan
-//!    space and is re-rasterised over the plane rect united with the target extent, so it covers
-//!    the moved content (backends refuse a mask that does not cover its layer). The envelope of
+//!    space and is re-rasterised over the plane rect united with the target extent and the mask's
+//!    source rect grown by its feather support, so it covers the moved content (backends refuse a
+//!    mask that does not cover its layer) and holds the whole feathered mask, on every frame
+//!    (lane SMB-COMPOSITE-DOCGRAPH-2). A clip together with an unlinked mask is split as the scene
+//!    path cuts it: the clip moves with the content inside an isolated wrapper group, the mask
+//!    stays on the layer with its feather (`cut_unlinked`). A plane resampled with its content is
+//!    refitted to the tile rect, the frame the backends sample it in. The envelope of
 //!    the inputs (mask feather, effects, blur) is carried in [`FrameLowering::extensions`] with
 //!    the transform entries merged into it; the key tables are [`FrameLowering::tables`].
 //!
@@ -44,8 +49,9 @@
 //! would seam at tile edges); a non-zero translation or a transform of a non-raster layer (a group)
 //! ([`TRANSLATE_NON_RASTER_LAYER`]: the tiles of its members are not addressed by its id); a matrix
 //! pigment refuses (`CompositeError::Plan(PlanError::TransformMatrix)`); a moved layer with a
-//! vector clip AND an unlinked vector mask ([`TRANSFORM_UNLINKED_MASK_WITH_CLIP`]: one plane slot
-//! cannot both move and stay). Frame documents and plans
+//! vector clip AND an unlinked vector mask whose envelope entry carries more than the mask feather
+//! ([`TRANSFORM_UNLINKED_MASK_WITH_CLIP`]: effects, blur, filters or an adjustment act on the
+//! masked content and cannot be split from it). Frame documents and plans
 //! are disposable and never stored. The motion adapter ([`motion::MotionTemporalSource`], feature `motion`) is the
 //! only motion-aware code in composite; the default build keeps the static closure.
 #![deny(clippy::arithmetic_side_effects)]
@@ -59,9 +65,10 @@ use hsk_studio_folio::{Budget, Payload, Resolver, Snapshot, validate_document};
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::BlendSpace;
+use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_pigment::render_plan::{
-    ExtOperator, LayerExtension, OutputTarget, PlanExtensions, PlanLimits, PlanNode, PlanNodeId,
-    SourceKey,
+    ExtOperator, Group, Layer, LayerExtension, MaskFormat, MaskInput, OutputTarget, PlanExtensions,
+    PlanLimits, PlanNode, PlanNodeId, SourceKey,
 };
 use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, ResampleFilter};
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,8 +85,9 @@ pub const TRANSFORM_REQUIRES_RESAMPLING: &str = "transform_requires_resampling";
 pub const TRANSLATE_NON_RASTER_LAYER: &str = "translate_non_raster_layer";
 /// Refusal key: a resampling transform of a raster layer lowered to more than one tile.
 pub const TRANSFORM_MULTI_TILE_LAYER: &str = "transform_multi_tile_layer";
-/// Refusal key: a moved layer with a vector clip (moves) and an unlinked vector mask (stays), which
-/// the lowering combines into one plane.
+/// Refusal key: a moved layer with a vector clip (moves) and an unlinked vector mask (stays) whose
+/// envelope entry carries more than the mask feather, so the two cannot be split into a wrapper
+/// (lane SMB-COMPOSITE-DOCGRAPH-2 splits every other such layer).
 pub const TRANSFORM_UNLINKED_MASK_WITH_CLIP: &str = "transform_unlinked_vector_mask_with_clip";
 
 /// One layer's state at one tick. [`LayerFrameState::IDENTITY`] changes nothing.
@@ -523,7 +531,8 @@ pub fn lower_frame(
 
 /// [`lower_frame`] with the document's optional inputs (module docs, item 6). With empty inputs it
 /// is [`lower_frame`] (the same lowering calls, byte-identical plans). Besides the refusals of
-/// [`lower_frame`]: [`TRANSFORM_UNLINKED_MASK_WITH_CLIP`], and every refusal of
+/// [`lower_frame`]: [`TRANSFORM_UNLINKED_MASK_WITH_CLIP`] (only with effects, blur, filters or an
+/// adjustment on the layer), and every refusal of
 /// `evaluate_with_inputs` / `lower_with_inputs` (vector clip and vector mask codes included).
 pub fn lower_frame_with_inputs(
     req: &FrameRequest<'_>,
@@ -568,8 +577,8 @@ pub fn lower_frame_with_inputs(
     let mut hidden = Vec::new();
     let mut moves: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut linked_masks: BTreeSet<String> = BTreeSet::new();
-    // Moved layers whose unlinked vector mask stays in plan space (re-rasterised below).
-    let mut unlinked_moved: BTreeSet<String> = BTreeSet::new();
+    // Shown layers that move this frame (an unlinked vector mask stays, `cut_unlinked`).
+    let mut moved: BTreeSet<String> = BTreeSet::new();
     let mut resampled: BTreeMap<String, Resampled> = BTreeMap::new();
     for (index, layer) in doc.layers.iter().enumerate() {
         cancel.check().map_err(|_| canceled())?;
@@ -603,18 +612,7 @@ pub fn lower_frame_with_inputs(
             let moves_layer = matches!(movement, Movement::Resample(_))
                 || matches!(movement, Movement::Integer(dx, dy) if (dx, dy) != (0, 0));
             if show && moves_layer {
-                match vlink {
-                    Some(VectorLink::Split) => {
-                        return Err(TemporalError::Unsupported {
-                            layer_id: id.to_owned(),
-                            feature: TRANSFORM_UNLINKED_MASK_WITH_CLIP,
-                        });
-                    }
-                    Some(VectorLink::Unlinked) => {
-                        unlinked_moved.insert(id.to_owned());
-                    }
-                    _ => {}
-                }
+                moved.insert(id.to_owned());
             }
             if show && let Movement::Resample(filter) = movement {
                 if !matches!(layer.payload, Payload::Raster { .. }) {
@@ -731,9 +729,18 @@ pub fn lower_frame_with_inputs(
             },
         )
     };
-    if !unlinked_moved.is_empty() {
-        cover_target(&mut lowering, &mut tables, inputs, &unlinked_moved)?;
-    }
+    let mut base_extensions = base_extensions;
+    // Plan keys of unlinked vector-mask planes: they stay in plan space while their layer moves.
+    let staying = match inputs.vectors {
+        Some(vectors) => cut_unlinked(
+            &mut lowering,
+            &mut base_extensions,
+            &mut tables,
+            vectors,
+            &moved,
+        )?,
+        None => BTreeSet::new(),
+    };
 
     if !moves.is_empty() {
         let tile_layer: BTreeMap<SourceKey, &str> = lowering
@@ -763,6 +770,7 @@ pub fn lower_frame_with_inputs(
                             continue;
                         };
                         if let Some(owner) = mask_layer.get(&mask.key)
+                            && !staying.contains(&mask.key)
                             && linked_masks.contains(*owner)
                             && let Some(m) = moves.get(*owner)
                         {
@@ -797,7 +805,7 @@ pub fn lower_frame_with_inputs(
     let extensions = if resampled.is_empty() {
         base_extensions
     } else {
-        transform_envelope(&mut lowering, &resampled, base_extensions)?
+        transform_envelope(&mut lowering, &mut tables, &resampled, base_extensions)?
     };
     Ok(FrameLowering {
         lowering,
@@ -809,57 +817,295 @@ pub fn lower_frame_with_inputs(
     })
 }
 
-/// Re-rasterises the unlinked vector-mask plane of every layer in `layers` over its rect united
-/// with the target extent (the mask stays in plan space while its layer moves, and backends
-/// refuse a mask that does not cover the layer's content inside the target). The plane value
-/// outside the mask's own rect is the mask's rule (zero, or the content mode's outside value), so
-/// the pixels inside the old rect are unchanged.
-fn cover_target(
+/// Unlinked vector masks on the document graph (STU-RAS-016; lanes SMB-COMPOSITE-DOCGRAPH-MASKS,
+/// SMB-COMPOSITE-DOCGRAPH-2), on every frame whether the layer moves or not, so a layer's mask
+/// does not change when it starts to move. Returns the plan keys of the planes that stay in plan
+/// space.
+///
+/// - Every unlinked mask's plane is re-rasterised without the clip over its static rect united
+///   with the target extent and [`crate::vector_mask::unlinked_rect`] (source bounds and region
+///   grown by the feather support): it covers the moved content (backends refuse a mask that does
+///   not cover its layer) and holds the whole feathered mask, as the scene path's matte does
+///   (`crate::composition::unlinked_mask_matte_in`).
+/// - A layer with a vector clip AND an unlinked mask (the static lowering combines them into one
+///   plane, feathered as a whole) is split as the scene path cuts it: the clip moves with the
+///   content inside an isolated wrapper group ([`insert_wrapper`], a `coverage_u8` plane over the
+///   static rect, unfeathered), the mask stays on the layer with its feather and density. A layer
+///   whose envelope entry carries anything besides the mask feather (effects, blur, filters, an
+///   adjustment act on the masked content) keeps the combined plane when it does not move and is
+///   refused [`TRANSFORM_UNLINKED_MASK_WITH_CLIP`] when it does.
+fn cut_unlinked(
     lowering: &mut RenderLowering,
+    extensions: &mut PlanExtensions,
     tables: &mut FrameTables,
-    inputs: &RenderInputs<'_>,
-    layers: &BTreeSet<String>,
-) -> Result<(), TemporalError> {
-    let Some(vectors) = inputs.vectors else {
-        return Ok(());
-    };
+    vectors: &crate::vector::PreparedVectors,
+    moved: &BTreeSet<String>,
+) -> Result<BTreeSet<SourceKey>, TemporalError> {
     let extent = lowering.plan.target.extent;
-    for (key, p) in &mut tables.clip_planes {
-        if !layers.contains(&p.layer_id) {
-            continue;
-        }
-        let Some(Ok(mask)) = vectors.mask(&p.layer_id) else {
+    let mut staying = BTreeSet::new();
+    let planes: Vec<(SourceKey, String, Rect)> = tables
+        .clip_planes
+        .iter()
+        .map(|(k, p)| (*k, p.layer_id.clone(), p.placement))
+        .collect();
+    for (key, layer_id, base) in planes {
+        let unavailable = |code: &str| {
+            TemporalError::from(CompositeError::Unavailable(format!("{layer_id}:{code}")))
+        };
+        let Some(Ok(mask)) = vectors.mask(&layer_id) else {
             continue;
         };
-        let rect = crate::evaluate_static::union(Some(p.placement), extent)?
-            .ok_or(CompositeError::Overflow)?;
-        if rect == p.placement {
+        if mask.linked {
             continue;
         }
-        let (coverage, _) = crate::vector_mask::plane(mask, None, rect)
-            .map_err(|code| CompositeError::Unavailable(format!("{}:{code}", p.layer_id)))?;
-        p.sha256 = hsk_studio_prism::profile_hash(&coverage);
+        if let Some(clip) = vectors.clip(&layer_id) {
+            let outline = clip.map_err(unavailable)?;
+            let Some((g, li)) = layer_of_mask(&lowering.plan, key) else {
+                continue;
+            };
+            let entry = extensions
+                .layers
+                .iter()
+                .find(|e| e.group.0 as usize == g && e.layer as usize == li);
+            let feather_only = entry.is_none_or(|e| {
+                *e == LayerExtension::new(e.group, e.layer).with_mask_feather(e.mask_feather_px)
+            });
+            if !feather_only {
+                if moved.contains(&layer_id) {
+                    return Err(TemporalError::Unsupported {
+                        layer_id,
+                        feature: TRANSFORM_UNLINKED_MASK_WITH_CLIP,
+                    });
+                }
+                continue;
+            }
+            let coverage =
+                crate::vector_nib::coverage(outline, base, crate::vector::MAX_CLIP_PIXELS)
+                    .map_err(unavailable)?;
+            let sha256 = hsk_studio_prism::profile_hash(&coverage);
+            let clip_key = next_key(&lowering.plan, tables)?;
+            let clip_mask = MaskInput {
+                key: clip_key,
+                placement: base,
+                format: MaskFormat::CoverageU8,
+                sha256,
+                inverted: false,
+                density: 1.0,
+            };
+            insert_wrapper(&mut lowering.plan, extensions, g, li, clip_mask)
+                .ok_or(CompositeError::Overflow)?;
+            tables.clip_planes.push((
+                clip_key,
+                crate::vector::ClipPlane {
+                    layer_id: layer_id.clone(),
+                    placement: base,
+                    coverage,
+                    sha256,
+                    wide: false,
+                },
+            ));
+        }
+        let mut rect = crate::evaluate_static::union(Some(base), extent)?
+            .ok_or(CompositeError::Overflow)?;
+        if let Some(r) = crate::vector_mask::unlinked_rect(mask).map_err(unavailable)? {
+            rect = crate::evaluate_static::union(Some(rect), r)?.ok_or(CompositeError::Overflow)?;
+        }
+        let (coverage, inverted) =
+            crate::vector_mask::plane(mask, None, rect).map_err(unavailable)?;
+        let sha256 = hsk_studio_prism::profile_hash(&coverage);
+        let Some((_, p)) = tables.clip_planes.iter_mut().find(|(k, _)| *k == key) else {
+            return Err(CompositeError::Overflow.into());
+        };
         p.coverage = coverage;
+        p.sha256 = sha256;
         p.placement = rect;
+        p.wide = true;
         for node in &mut lowering.plan.nodes {
             let PlanNode::Group(g) = node else { continue };
             for l in &mut g.layers {
-                if let Some(m) = l.mask.as_mut().filter(|m| m.key == *key) {
+                if let Some(m) = l.mask.as_mut().filter(|m| m.key == key) {
                     m.placement = rect;
-                    m.sha256 = p.sha256;
+                    m.sha256 = sha256;
+                    m.format = MaskFormat::CoverageU16Le;
+                    m.inverted = inverted;
                 }
             }
         }
+        staying.insert(key);
     }
+    if !staying.is_empty() {
+        lowering
+            .plan
+            .validate(&PlanLimits::default())
+            .map_err(CompositeError::Plan)?;
+    }
+    Ok(staying)
+}
+
+/// The (group node, layer index) whose coverage mask is plane `key`.
+fn layer_of_mask(
+    plan: &hsk_studio_pigment::render_plan::RenderPlan,
+    key: SourceKey,
+) -> Option<(usize, usize)> {
+    plan.nodes.iter().enumerate().find_map(|(g, n)| match n {
+        PlanNode::Group(group) => group
+            .layers
+            .iter()
+            .position(|l| l.mask.is_some_and(|m| !m.is_clip_to_base() && m.key == key))
+            .map(|li| (g, li)),
+        _ => None,
+    })
+}
+
+/// One past the largest source key the frame uses (plan tiles and masks, owned planes, vector
+/// rows and image sources).
+pub(crate) fn next_key(
+    plan: &hsk_studio_pigment::render_plan::RenderPlan,
+    tables: &FrameTables,
+) -> Result<SourceKey, TemporalError> {
+    let mut max: Option<u32> = None;
+    for n in &plan.nodes {
+        match n {
+            PlanNode::Tile(t) => max = max.max(Some(t.key.0)),
+            PlanNode::Group(g) => {
+                for l in &g.layers {
+                    if let Some(m) = l.mask.filter(|m| !m.is_clip_to_base()) {
+                        max = max.max(Some(m.key.0));
+                    }
+                }
+            }
+            PlanNode::Solid { .. } | PlanNode::Vector(_) => {}
+        }
+    }
+    let owned = tables
+        .clip_planes
+        .iter()
+        .map(|(k, _)| k.0)
+        .chain(tables.vector_masks.iter().map(|(k, _)| k.0))
+        .chain(tables.image_sources.iter().map(|(k, _)| k.0))
+        .chain(tables.vector_rows.iter().map(|(k, _, _)| k.0));
+    for k in owned {
+        max = max.max(Some(k));
+    }
+    match max {
+        None => Ok(SourceKey(0)),
+        Some(m) => Ok(SourceKey(m.checked_add(1).ok_or(CompositeError::Overflow)?)),
+    }
+}
+
+/// Inserts the isolated wrapper `Group[Layer{content, Normal, 1, 1, mask}]` before group `g`
+/// (the plan stays index-ordered: every node id at or after `g`, the root and the envelope's
+/// group ids shift by one) and points layer `li` of the group, now at `g + 1`, at it. `content` is
+/// that layer's input; the layer's own mask and envelope entry are left to the caller. Returns
+/// `g + 1`, or `None` when `g` is not a group with layer `li` or an id overflows (the plan is then
+/// unchanged).
+pub(crate) fn insert_wrapper(
+    plan: &mut hsk_studio_pigment::render_plan::RenderPlan,
+    extensions: &mut PlanExtensions,
+    g: usize,
+    li: usize,
+    mask: MaskInput,
+) -> Option<usize> {
+    let g32 = u32::try_from(g).ok()?;
+    let content = match plan.nodes.get(g) {
+        Some(PlanNode::Group(group)) => group.layers.get(li)?.input,
+        _ => return None,
+    };
+    // Checked before any change: the largest id shifted is the last node.
+    u32::try_from(plan.nodes.len()).ok()?.checked_add(1)?;
+    let shift = |id: &mut PlanNodeId| {
+        if id.0 >= g32 {
+            id.0 = id.0.saturating_add(1);
+        }
+    };
+    for node in &mut plan.nodes {
+        if let PlanNode::Group(group) = node {
+            for l in &mut group.layers {
+                shift(&mut l.input);
+            }
+        }
+    }
+    shift(&mut plan.root);
+    for e in &mut extensions.layers {
+        shift(&mut e.group);
+    }
+    plan.nodes.insert(
+        g,
+        PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![Layer {
+                input: content,
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: Some(mask),
+            }],
+        }),
+    );
+    let parent = g.checked_add(1)?;
+    if let Some(PlanNode::Group(group)) = plan.nodes.get_mut(parent)
+        && let Some(l) = group.layers.get_mut(li)
+    {
+        l.input = PlanNodeId(g32);
+    }
+    Some(parent)
+}
+
+/// Lane SMB-COMPOSITE-DOCGRAPH-2: a mask plane resampled with its content
+/// (`LayerTransform::transform_mask`) is read by the backends in the tile's source coordinates
+/// from the plane's own origin (pigment `PreparedTransform::sample_coverage`, taps bounded by the
+/// tile size), so an owned plane of a resampled layer is refitted to exactly the tile rect: the
+/// part outside the tile is never sampled (the content is transparent there), the part inside is
+/// unchanged, and a tile pixel the plane did not hold reads 0.
+fn refit_plane(plane: &mut crate::vector::ClipPlane, rect: Rect) -> Result<(), TemporalError> {
+    if plane.placement == rect {
+        return Ok(());
+    }
+    let overflow = || TemporalError::from(CompositeError::Overflow);
+    let size: usize = if plane.wide { 2 } else { 1 };
+    let old = plane.placement;
+    let to_usize = |v: u32| usize::try_from(v).map_err(|_| overflow());
+    let (width, height) = (to_usize(rect.width)?, to_usize(rect.height)?);
+    let (old_w, old_h) = (to_usize(old.width)?, to_usize(old.height)?);
+    let row_bytes = width.checked_mul(size).ok_or_else(overflow)?;
+    let old_row = old_w.checked_mul(size).ok_or_else(overflow)?;
+    let total = row_bytes.checked_mul(height).ok_or_else(overflow)?;
+    if u64::try_from(total).map_err(|_| overflow())? > crate::vector::MAX_CLIP_PIXELS.saturating_mul(2) {
+        return Err(CompositeError::BudgetExceeded.into());
+    }
+    let mut out = vec![0u8; total];
+    // Offset of `v` from `origin` inside `0..len`, or `None` outside.
+    let inside = |v: i64, origin: i64, len: usize| -> Option<usize> {
+        usize::try_from(v.checked_sub(origin)?).ok().filter(|o| *o < len)
+    };
+    for (j, row) in out.chunks_exact_mut(row_bytes).enumerate() {
+        let y = rect.y.checked_add(i64::try_from(j).map_err(|_| overflow())?).ok_or_else(overflow)?;
+        let Some(oy) = inside(y, old.y, old_h) else { continue };
+        for (i, cell) in row.chunks_exact_mut(size).enumerate() {
+            let x = rect.x.checked_add(i64::try_from(i).map_err(|_| overflow())?).ok_or_else(overflow)?;
+            let Some(ox) = inside(x, old.x, old_w) else { continue };
+            let from = oy
+                .checked_mul(old_row)
+                .and_then(|v| v.checked_add(ox.checked_mul(size)?))
+                .ok_or_else(overflow)?;
+            let end = from.checked_add(size).ok_or_else(overflow)?;
+            cell.copy_from_slice(plane.coverage.get(from..end).ok_or_else(overflow)?);
+        }
+    }
+    plane.coverage = out;
+    plane.placement = rect;
+    plane.sha256 = hsk_studio_prism::profile_hash(&plane.coverage);
     Ok(())
 }
 
 /// The envelope entries of the resampled layers: each layer's single tile node, every group layer
 /// that references it, one `LayerTransform` with the After Effects affine. Records the transform
 /// operator's class in the lowering ledger and validates the envelope with pigment. The transform
-/// joins an entry `base` already has for the same group layer (mask feather, effects, blur).
+/// joins an entry `base` already has for the same group layer (mask feather, effects, blur). An
+/// owned plane resampled with its content is refitted to the tile rect ([`refit_plane`]).
 fn transform_envelope(
     lowering: &mut RenderLowering,
+    tables: &mut FrameTables,
     resampled: &BTreeMap<String, Resampled>,
     base: PlanExtensions,
 ) -> Result<PlanExtensions, TemporalError> {
@@ -878,6 +1124,8 @@ fn transform_envelope(
         }
     }
     let mut extensions = base;
+    // (group node, layer, tile rect) of the masks resampled with their content.
+    let mut refits: Vec<(usize, usize, Rect)> = Vec::new();
     for (id, nodes) in &tiles {
         let (Some(r), [tile_node]) = (resampled.get(*id), nodes.as_slice()) else {
             return Err(TemporalError::Unsupported {
@@ -916,6 +1164,9 @@ fn transform_envelope(
                 let has_mask = l.mask.is_some_and(|m| !m.is_clip_to_base());
                 let transform = LayerTransform::new(affine, r.filter)
                     .with_mask(r.linked_mask && has_mask);
+                if transform.transform_mask {
+                    refits.push((g, li, p));
+                }
                 let (Ok(g32), Ok(li32)) = (u32::try_from(g), u32::try_from(li)) else {
                     return Err(CompositeError::Overflow.into());
                 };
@@ -933,6 +1184,19 @@ fn transform_envelope(
         }
         let op = ExtOperator::Transform(r.filter);
         lowering.exactness.record(op.key(), op.intrinsic());
+    }
+    for (g, li, rect) in refits {
+        let Some(PlanNode::Group(group)) = lowering.plan.nodes.get_mut(g) else {
+            continue;
+        };
+        let Some(mask) = group.layers.get_mut(li).and_then(|l| l.mask.as_mut()) else {
+            continue;
+        };
+        if let Some((_, plane)) = tables.clip_planes.iter_mut().find(|(k, _)| *k == mask.key) {
+            refit_plane(plane, rect)?;
+            mask.placement = plane.placement;
+            mask.sha256 = plane.sha256;
+        }
     }
     extensions
         .validate(&lowering.plan)

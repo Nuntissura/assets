@@ -579,36 +579,59 @@ impl Charges {
 /// plane is an absent matte (coverage 0, or full when inverted). Density below 1 is refused
 /// (`vector_mask_unlinked_density`: a matte has no density). `revision` = the plan revision the
 /// scene request expects.
+///
+/// Lane SMB-COMPOSITE-DOCGRAPH-2: the plane is [`crate::vector_mask::unlinked_rect`] (source
+/// bounds and region grown by the feather support), so the feather is not cut at the source rect
+/// and its taps never clamp onto mask content; [`unlinked_mask_matte_in`] also covers the
+/// composition when the mask is full outside its art without pigment's invert (a `reveal_outside`
+/// luminance mask), where this form, with no composition rect, cuts at the plane.
 pub fn unlinked_mask_matte(
     mask: &crate::vector_mask::VectorMask,
     layer_id: &str,
     space: ColourTag,
     revision: u64,
 ) -> Result<SceneMatte, CompositeError> {
-    use crate::vector_mask::{REFUSE_MASK_UNLINKED_DENSITY, plane, source_bounds};
+    unlinked_matte(mask, layer_id, space, revision, None)
+}
+
+/// [`unlinked_mask_matte`] in a composition of rect `composition` (`(0, 0, width, height)`): a
+/// mask whose value outside its art is 1 and not carried by pigment's invert flag
+/// ([`crate::vector_mask::outside_value`]) gets a plane over the composition too, so the matte is
+/// full wherever the mask is, as on the document-graph path.
+pub fn unlinked_mask_matte_in(
+    mask: &crate::vector_mask::VectorMask,
+    layer_id: &str,
+    space: ColourTag,
+    revision: u64,
+    composition: Rect,
+) -> Result<SceneMatte, CompositeError> {
+    unlinked_matte(mask, layer_id, space, revision, Some(composition))
+}
+
+fn unlinked_matte(
+    mask: &crate::vector_mask::VectorMask,
+    layer_id: &str,
+    space: ColourTag,
+    revision: u64,
+    composition: Option<Rect>,
+) -> Result<SceneMatte, CompositeError> {
+    use crate::vector_mask::{REFUSE_MASK_UNLINKED_DENSITY, outside_value, plane, unlinked_rect};
     let unavailable = |code: &str| CompositeError::Unavailable(format!("{layer_id}:{code}"));
     if mask.density < 1.0 {
         return Err(unavailable(REFUSE_MASK_UNLINKED_DENSITY));
     }
-    let mut rect = source_bounds(mask).map_err(unavailable)?;
-    if let Some([x0, y0, x1, y1]) = mask.region {
-        let (fx, fy, gx, gy) = (x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
-        let ok = |v: f64| v.is_finite() && v.abs() < 9.0e15;
-        if !(ok(fx) && ok(fy) && ok(gx) && ok(gy)) || gx - fx > f64::from(u32::MAX) || gy - fy > f64::from(u32::MAX) {
-            return Err(unavailable(crate::vector_mask::REFUSE_MASK_REGION));
-        }
-        // Finite, integral and in range by the checks above.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let r = Rect { x: fx as i64, y: fy as i64, width: (gx - fx) as u32, height: (gy - fy) as u32 };
-        if r.width > 0 && r.height > 0 {
-            rect = crate::evaluate_static::union(rect, r)?;
-        }
-    }
+    let mut rect = unlinked_rect(mask).map_err(unavailable)?;
     let content_outside = match &mask.source {
         crate::vector_mask::VectorMaskSource::Content { outside, .. } => *outside,
         crate::vector_mask::VectorMaskSource::Outline(_) => 0.0,
     };
     let pure_invert = mask.invert && mask.region.is_none() && content_outside == 0.0;
+    if !pure_invert
+        && outside_value(mask) != 0.0
+        && let Some(c) = composition
+    {
+        rect = crate::evaluate_static::union(rect, c)?;
+    }
     let Some(rect) = rect else {
         return Ok(SceneMatte { layer: None, mode: SceneMatteMode::Alpha, inverted: pure_invert });
     };

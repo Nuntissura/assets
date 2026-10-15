@@ -43,7 +43,7 @@ use hsk_studio_pigment::render_plan::{
     RenderBackend, RenderPlan, RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::Mask;
-use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
+use hsk_studio_pigment::transform_math::{Affine2, LayerTransform, PreparedTransform, ResampleFilter};
 use scenes::Pixels;
 use std::collections::BTreeMap;
 
@@ -502,11 +502,34 @@ pub fn effective(m: &OwnedMask, feather_px: f32, inverted: bool, density: f32, x
     } else {
         stored(m, x, y, false)
     };
-    // Density 1 is the v1 inversion (pigment's v1 mask rule; `mask_coverage` owns density < 1).
+    after_feather(raw, inverted, density)
+}
+/// Invert and density of a stored (or feathered, or resampled) coverage: the v1 inversion at
+/// density 1 (pigment's v1 mask rule), `mask_coverage` below.
+pub fn after_feather(raw: f32, inverted: bool, density: f32) -> f32 {
     if density == 1.0 {
         return if inverted { 1.0 - raw } else { raw };
     }
     mask_coverage(raw, inverted, density).unwrap()
+}
+/// Pigment's resampled content at plan pixel `(x, y)` of a tile placed at `src` (the reference
+/// sampler `PreparedTransform::sample_rgba`, which both backends execute).
+pub fn sampled(t: &LayerTransform, src: Rect, planes: &TilePlanes<'_>, x: i64, y: i64) -> Rgba {
+    let prep = PreparedTransform::new(t, src).unwrap();
+    let c = prep.sample_rgba(x, y, |i, j| -> Result<[f32; 4], ()> {
+        let p = texel(planes, i64::from(i), i64::from(j));
+        Ok([p.rgb[0], p.rgb[1], p.rgb[2], p.a])
+    }).unwrap();
+    Rgba::new([c[0], c[1], c[2]], c[3])
+}
+/// A mask resampled with its content (`transform_mask`): pigment's `sample_coverage` in the
+/// tile's source coordinates, read from the plane's own origin (the backends' reading; composite
+/// refits every such plane to the tile rect).
+pub fn sampled_coverage(t: &LayerTransform, src: Rect, m: &OwnedMask, x: i64, y: i64) -> f32 {
+    let prep = PreparedTransform::new(t, src).unwrap();
+    prep.sample_coverage(x, y, |i, j| -> Result<f32, ()> {
+        Ok(stored(m, m.bounds.x + i64::from(i), m.bounds.y + i64::from(j), false))
+    }).unwrap()
 }
 /// One layer of a group for the run rule: content, mode, opacity x fill x coverage, clipped.
 struct Entry {
@@ -545,8 +568,10 @@ fn composite_entries(entries: &[(Entry, f32)], site: PixelSite) -> Rgba {
     acc
 }
 
-/// Reference executor (plain plans plus envelope mask feather): per pixel, groups composite their
-/// layers bottom-up over transparent with [`composite_entries`]; a coverage mask is [`effective`].
+/// Reference executor (plain plans plus envelope mask feather and tile transforms): per pixel,
+/// groups composite their layers bottom-up over transparent with [`composite_entries`]; a coverage
+/// mask is [`effective`]; a transformed tile layer reads pigment's reference sampler ([`sampled`],
+/// and [`sampled_coverage`] for a mask transformed with it).
 pub struct Ref;
 fn texel(p: &TilePlanes<'_>, cx: i64, cy: i64) -> Rgba {
     let c = cy as usize * p.colour_stride_bytes as usize + cx as usize * 12;
@@ -569,7 +594,16 @@ fn eval(plan: &RenderPlan, ext: &PlanExtensions, id: usize, src: &dyn PlanSource
         PlanNode::Group(g) => {
             let mut entries = Vec::new();
             for (li, l) in g.layers.iter().enumerate() {
-                let s = eval(plan, ext, l.input.0 as usize, src, x, y);
+                let entry = ext.layers.iter().find(|e| e.group.0 as usize == id && e.layer as usize == li);
+                let transform = entry.and_then(|e| e.transform);
+                let s = match (&transform, &plan.nodes[l.input.0 as usize]) {
+                    (Some(t), PlanNode::Tile(tile)) => {
+                        let planes = src.tile(tile.key).expect("tile served");
+                        sampled(t, tile.placement, &planes, x, y)
+                    }
+                    (Some(_), _) => panic!("a transform on a non-tile layer"),
+                    (None, _) => eval(plan, ext, l.input.0 as usize, src, x, y),
+                };
                 let mut cov = 1.0;
                 let mut clipped = false;
                 if let Some(m) = l.mask {
@@ -580,8 +614,14 @@ fn eval(plan: &RenderPlan, ext: &PlanExtensions, id: usize, src: &dyn PlanSource
                         assert_eq!(served.bounds, m.placement, "plane served at its plan placement");
                         let owned = OwnedMask { bounds: served.bounds, sample_format: served.sample_format.into(), bytes: served.bytes.to_vec(),
                             stride_bytes: served.stride_bytes, sha256: served.sha256 };
-                        let feather = ext.layers.iter().find(|e| e.group.0 as usize == id && e.layer as usize == li).map_or(0.0, |e| e.mask_feather_px);
-                        cov = effective(&owned, feather, m.inverted, m.density, x, y);
+                        let feather = entry.map_or(0.0, |e| e.mask_feather_px);
+                        cov = match (&transform, &plan.nodes[l.input.0 as usize]) {
+                            (Some(t), PlanNode::Tile(tile)) if t.transform_mask => {
+                                assert_eq!(feather, 0.0, "pigment refuses a feathered transformed mask");
+                                after_feather(sampled_coverage(t, tile.placement, &owned, x, y), m.inverted, m.density)
+                            }
+                            _ => effective(&owned, feather, m.inverted, m.density, x, y),
+                        };
                     }
                 }
                 entries.push((Entry { src: s, mode: l.mode, k: l.opacity * l.fill_opacity, clipped }, cov));
@@ -604,8 +644,8 @@ impl RenderBackend for Ref {
     fn execute_extended(&self, plan: &RenderPlan<NoVector>, ext: &PlanExtensions, _: &ExecuteRequest, src: &dyn PlanSources,
         _: &CancellationToken, sink: &mut dyn TileSink) -> Result<RenderReceipt, BackendError> {
         for e in &ext.layers {
-            assert!(e.transform.is_none() && e.effects.is_empty() && e.blur.is_none() && e.adjustment.is_none(),
-                "the reference executor takes mask feather only");
+            assert!(e.effects.is_empty() && e.blur.is_none() && e.adjustment.is_none() && e.filters.is_empty(),
+                "the reference executor takes mask feather and tile transforms only");
         }
         let e = plan.target.extent;
         let (mut colour, mut alpha) = (Vec::new(), Vec::new());
@@ -655,6 +695,206 @@ pub fn oracle(pixels: &Pixels) -> Vec<[f32; 4]> {
                     Rgba::TRANSPARENT
                 };
                 let cov = p.as_ref().map_or(1.0, |c| effective(&c.plane, c.feather_px, c.input.inverted, c.input.density, x, y));
+                entries.push((Entry { src, mode: StudioBlendMode::Normal, k: 1.0, clipped: l.clipped }, cov));
+            }
+            let o = composite_entries(&entries, PixelSite { x, y, seed: 0 });
+            out.push([o.rgb[0], o.rgb[1], o.rgb[2], o.a]);
+        }
+    }
+    out
+}
+
+// ---- Lane SMB-COMPOSITE-DOCGRAPH-2: fractional and rotated moves ----
+
+/// One layer's composition transform in the moved variant: position (anchor (0, 0)), rotation in
+/// degrees, uniform scale in percent (Folio stream units).
+pub struct Move {
+    pub n: u8,
+    pub position: [f64; 2],
+    pub rotation: f64,
+    pub scale: f64,
+}
+/// The moved variant of [`LAYERS`]: every layer but 10 resamples (fractional position, rotation,
+/// scale); layer 10 keeps an integer move because pigment refuses a feathered mask transformed
+/// with its content (`PlanError::TransformCombination`). Covered: a plain layer (11), a Folio
+/// clipped layer rotated over a masked base (12), a vector clip (2), an unlinked ALPHA mask (3)
+/// and a linked LUMINANCE reveal_outside mask, rotated and scaled (7).
+pub const MOVES: [Move; 6] = [
+    Move { n: 11, position: [1.25, 2.5], rotation: 0.0, scale: 100.0 },
+    Move { n: 10, position: [12.0, 3.0], rotation: 0.0, scale: 100.0 },
+    Move { n: 12, position: [14.5, 5.25], rotation: 30.0, scale: 100.0 },
+    Move { n: 2, position: [3.5, 12.25], rotation: -20.0, scale: 100.0 },
+    Move { n: 3, position: [22.5, 14.75], rotation: 0.0, scale: 100.0 },
+    Move { n: 7, position: [24.0, 2.0], rotation: 15.0, scale: 150.0 },
+];
+pub fn move_of(n: u8) -> &'static Move {
+    MOVES.iter().find(|m| m.n == n).expect("fixture move")
+}
+/// Content -> composition pixels of a moved layer: the composition adapter's matrix (the content
+/// origin (0, 0) moved to the origin, then After Effects' `position + R S (x - anchor)` with
+/// anchor (0, 0)), written out here with the same pigment calls.
+pub fn affine(m: &Move) -> Affine2 {
+    let s = m.scale / 100.0;
+    Affine2::translate(-0.0, -0.0).then(Affine2::from_parts(0.0, 0.0, s, s, m.rotation, m.position[0], m.position[1]))
+}
+/// `None` for an integer translation (the exact tile move), else the layer's pigment transform
+/// (bilinear, the composition adapter's filter) with `transform_mask` for a linked cut.
+pub fn layer_transform(l: &LayerSpec) -> Option<LayerTransform> {
+    let a = affine(move_of(l.n));
+    let [m0, m1, m2, m3, m4, m5] = a.m;
+    if m0 == 1.0 && m1 == 0.0 && m3 == 0.0 && m4 == 1.0 && m2.fract() == 0.0 && m5.fract() == 0.0 {
+        return None;
+    }
+    let linked = matches!(l.cut, Some(Cut::Clip | Cut::Vector | Cut::LuminanceRevealed));
+    Some(LayerTransform::new(a, ResampleFilter::Bilinear).with_mask(linked))
+}
+/// `m` cut (or zero-extended) to `rect`.
+pub fn crop(m: &OwnedMask, rect: Rect) -> OwnedMask {
+    let size = if m.sample_format == "coverage_u8" { 1 } else { 2 };
+    let mut bytes = Vec::new();
+    for y in rect.y..rect.y + i64::from(rect.height) {
+        for x in rect.x..rect.x + i64::from(rect.width) {
+            let r = m.bounds;
+            if x >= r.x && y >= r.y && x < r.x + i64::from(r.width) && y < r.y + i64::from(r.height) {
+                let i = (y - r.y) as usize * m.stride_bytes as usize + (x - r.x) as usize * size;
+                bytes.extend_from_slice(&m.bytes[i..i + size]);
+            } else {
+                bytes.extend(std::iter::repeat_n(0u8, size));
+            }
+        }
+    }
+    OwnedMask {
+        bounds: rect,
+        sample_format: m.sample_format.clone(),
+        stride_bytes: u64::from(rect.width) * size as u64,
+        sha256: hsk_studio_prism::profile_hash(&bytes),
+        bytes,
+    }
+}
+/// The plane of layer `l` in the moved variant: a resampled linked cut over exactly the tile rect
+/// at the authored place (the frame the backends resample it in), the integer-moved layer's plane
+/// moved with it, the unlinked mask over the frame extent in place.
+pub fn moved_plane(l: &LayerSpec) -> Option<CutPlane> {
+    let cut = l.cut?;
+    if cut == Cut::AlphaUnlinked {
+        return Some(cut_plane(cut, extent()));
+    }
+    let tile = Rect { x: 0, y: 0, width: l.w, height: l.h };
+    let mut c = cut_plane(cut, tile);
+    match layer_transform(l) {
+        Some(_) => {
+            c.plane = crop(&c.plane, tile);
+            c.input.placement = tile;
+            c.input.sha256 = c.plane.sha256;
+        }
+        None => {
+            let a = affine(move_of(l.n)).m;
+            c.plane.bounds.x += a[2] as i64;
+            c.plane.bounds.y += a[5] as i64;
+            c.input.placement = c.plane.bounds;
+        }
+    }
+    Some(c)
+}
+/// The tile rect of layer `l` in the moved variant's plan (authored for a resampled layer).
+pub fn moved_tile_rect(l: &LayerSpec) -> Rect {
+    match layer_transform(l) {
+        Some(_) => Rect { x: 0, y: 0, width: l.w, height: l.h },
+        None => {
+            let a = affine(move_of(l.n)).m;
+            Rect { x: a[2] as i64, y: a[5] as i64, width: l.w, height: l.h }
+        }
+    }
+}
+/// The document-graph frame of the moved variant in the static lowering's layout (as
+/// [`document_frame`]); the envelope holds the feather entry of the lowering, then one transform
+/// entry per resampled layer in layer-id order.
+pub fn moved_frame(pixels: &Pixels) -> DocFrame {
+    let mut by_id: Vec<&LayerSpec> = LAYERS.iter().collect();
+    by_id.sort_by_key(|l| layer_id(l.n));
+    let mut nodes = Vec::new();
+    let mut tiles = BTreeMap::new();
+    for (i, l) in by_id.iter().enumerate() {
+        let t = tile_of(pixels, l);
+        let key = SourceKey(i as u32);
+        nodes.push(PlanNode::Tile(TileInput {
+            key,
+            placement: moved_tile_rect(l),
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            colour_sha256: t.colour_sha256,
+            alpha_sha256: t.alpha_sha256,
+        }));
+        tiles.insert(key, t.id.clone());
+    }
+    let root = PlanNodeId(nodes.len() as u32);
+    let mut next = nodes.len() as u32;
+    let mut layers = Vec::new();
+    let mut owned_masks = BTreeMap::new();
+    let mut entries = Vec::new();
+    for (li, l) in LAYERS.iter().enumerate() {
+        let node = by_id.iter().position(|o| o.n == l.n).unwrap() as u32;
+        let mask = if l.clipped {
+            Some(MaskInput::clip_to_base())
+        } else if let Some(c) = moved_plane(l) {
+            let key = SourceKey(next);
+            next += 1;
+            owned_masks.insert(key, c.plane);
+            if c.feather_px > 0.0 {
+                entries.push(LayerExtension::new(root, li as u32).with_mask_feather(c.feather_px));
+            }
+            Some(MaskInput { key, ..c.input })
+        } else {
+            None
+        };
+        layers.push(Layer { input: PlanNodeId(node), mode: StudioBlendMode::Normal, opacity: 1.0, fill_opacity: 1.0, mask });
+    }
+    for l in &by_id {
+        if let Some(t) = layer_transform(l) {
+            let li = LAYERS.iter().position(|o| o.n == l.n).unwrap() as u32;
+            entries.push(LayerExtension::new(root, li).with_transform(t));
+        }
+    }
+    nodes.push(PlanNode::Group(Group { isolated: true, layers }));
+    DocFrame {
+        plan: RenderPlan { revision: 7, target: target(), nodes, root },
+        extensions: PlanExtensions::from_layers(entries),
+        tiles,
+        owned_masks,
+    }
+}
+/// The oracle of the moved variant, independent of the plan: per pixel every layer of [`LAYERS`]
+/// bottom first, its content through pigment's reference sampler (or the moved texel), its cut
+/// resampled with it (linked), moved with it (layer 10, feathered) or in place (unlinked), the
+/// clip run rule for layer 12.
+pub fn moved_oracle(pixels: &Pixels) -> Vec<[f32; 4]> {
+    let planes: Vec<Option<CutPlane>> = LAYERS.iter().map(moved_plane).collect();
+    let mut out = Vec::new();
+    for y in 0..i64::from(scenes::H) {
+        for x in 0..i64::from(scenes::W) {
+            let mut entries = Vec::new();
+            for (l, p) in LAYERS.iter().zip(&planes) {
+                let tile = tile_of(pixels, l);
+                let rect = moved_tile_rect(l);
+                let src = match layer_transform(l) {
+                    Some(t) => sampled(&t, rect, &tile.planes(), x, y),
+                    None => {
+                        let (cx, cy) = (x - rect.x, y - rect.y);
+                        if cx >= 0 && cy >= 0 && cx < i64::from(l.w) && cy < i64::from(l.h) {
+                            let t = tile.at(cx as u32, cy as u32);
+                            Rgba::new([t[0], t[1], t[2]], t[3])
+                        } else {
+                            Rgba::TRANSPARENT
+                        }
+                    }
+                };
+                let cov = match (p, layer_transform(l)) {
+                    (None, _) => 1.0,
+                    (Some(c), Some(t)) if t.transform_mask => {
+                        after_feather(sampled_coverage(&t, rect, &c.plane, x, y), c.input.inverted, c.input.density)
+                    }
+                    (Some(c), _) => effective(&c.plane, c.feather_px, c.input.inverted, c.input.density, x, y),
+                };
                 entries.push((Entry { src, mode: StudioBlendMode::Normal, k: 1.0, clipped: l.clipped }, cov));
             }
             let o = composite_entries(&entries, PixelSite { x, y, seed: 0 });

@@ -65,7 +65,7 @@ use crate::{
     Limits, NodeAddr, RenderInputs, StepStatus, evaluate_with_inputs, lower, lower_with_inputs,
 };
 use hsk_studio_pigment::render_plan::{
-    Group, Layer, LayerExtension, MaskFormat, MaskInput, PlanNode, PlanNodeId, PlanSources, SourceKey, TilePlanes,
+    LayerExtension, MaskFormat, MaskInput, PlanNode, PlanNodeId, PlanSources, SourceKey, TilePlanes,
 };
 use std::collections::BTreeSet;
 use hsk_studio_pigment::Mask;
@@ -248,6 +248,7 @@ fn needs_static(input: &CompositionInput<'_>, dl: &hsk_studio_folio::StudioLayer
 fn static_content(
     input: &CompositionInput<'_>,
     layer_id: &str,
+    composition: Rect,
     cancel: &CancellationToken,
 ) -> Result<Option<(StaticContent, Rect, Option<SceneMatte>)>, TemporalError> {
     let doc = input.snapshot.document();
@@ -268,7 +269,7 @@ fn static_content(
     };
     let unlinked = match unlinked {
         Some(m) => Some(
-            crate::composition::unlinked_mask_matte(&m, layer_id, input.space, doc.revision)
+            crate::composition::unlinked_mask_matte_in(&m, layer_id, input.space, doc.revision, composition)
                 .map_err(TemporalError::from)?,
         ),
         None => None,
@@ -634,7 +635,8 @@ impl CompositionTemporalSource {
                 (None, Payload::Raster { .. } | Payload::Vector { .. } | Payload::Text { .. } | Payload::Group)
                     if needs_static(input, dl) =>
                 {
-                    match static_content(input, id, cancel)? {
+                    let composition = Rect { x: 0, y: 0, width: comp.width, height: comp.height };
+                    match static_content(input, id, composition, cancel)? {
                         Some((content, bounds, unlinked)) => Content::Static {
                             content: Box::new(content),
                             bounds,
@@ -1479,7 +1481,7 @@ impl CompositionTemporalSource {
         }
         // Track mattes.
         let mut mattes = BTreeMap::new();
-        let mut next_key = next_free_key(&frame.lowering.plan)?;
+        let mut next_key = super::next_key(&frame.lowering.plan, &frame.tables)?.0;
         for s in &scene.layers {
             let Some(matte) = &s.matte else { continue };
             // A scene matte without a track-matte record is an unlinked vector mask, which this
@@ -1640,46 +1642,10 @@ fn wrap_masked_entry(frame: &mut FrameLowering, g: usize, li: usize, mask: MaskI
             return None;
         }
     }
-    let shift = |id: &mut PlanNodeId| -> Option<()> {
-        if id.0 >= g32 {
-            id.0 = id.0.checked_add(1)?;
-        }
-        Some(())
-    };
-    let plan = &mut frame.lowering.plan;
-    let content = match plan.nodes.get(g) {
-        Some(PlanNode::Group(group)) => group.layers.get(li)?.input,
-        _ => return None,
-    };
-    for node in &mut plan.nodes {
-        if let PlanNode::Group(group) = node {
-            for l in &mut group.layers {
-                shift(&mut l.input)?;
-            }
-        }
-    }
-    shift(&mut plan.root)?;
-    for e in &mut frame.extensions.layers {
-        shift(&mut e.group)?;
-    }
-    plan.nodes.insert(
-        g,
-        PlanNode::Group(Group {
-            isolated: true,
-            layers: vec![Layer {
-                input: content,
-                mode: StudioBlendMode::Normal,
-                opacity: 1.0,
-                fill_opacity: 1.0,
-                mask: Some(mask),
-            }],
-        }),
-    );
-    let parent = g.checked_add(1)?;
-    if let Some(PlanNode::Group(group)) = plan.nodes.get_mut(parent)
+    let parent = super::insert_wrapper(&mut frame.lowering.plan, &mut frame.extensions, g, li, mask)?;
+    if let Some(PlanNode::Group(group)) = frame.lowering.plan.nodes.get_mut(parent)
         && let Some(l) = group.layers.get_mut(li)
     {
-        l.input = PlanNodeId(g32);
         l.mask = None;
     }
     if let Some(i) = entry
@@ -1689,28 +1655,6 @@ fn wrap_masked_entry(frame: &mut FrameLowering, g: usize, li: usize, mask: MaskI
         e.layer = 0;
     }
     Some(parent)
-}
-
-/// One past the largest source key the plan uses (tiles and masks).
-fn next_free_key(plan: &hsk_studio_pigment::render_plan::RenderPlan) -> Result<u32, TemporalError> {
-    let mut max: Option<u32> = None;
-    for n in &plan.nodes {
-        match n {
-            PlanNode::Tile(t) => max = max.max(Some(t.key.0)),
-            PlanNode::Group(g) => {
-                for l in &g.layers {
-                    if let Some(m) = l.mask {
-                        max = max.max(Some(m.key.0));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    match max {
-        None => Ok(0),
-        Some(m) => m.checked_add(1).ok_or_else(|| CompositeError::Overflow.into()),
-    }
 }
 
 /// The (group node, layer index) whose input is the matted layer's content: its single tile node,
