@@ -547,7 +547,9 @@ pub fn import_ai_with(bytes: &[u8], policy: &ImportPolicy, provider: &dyn PdfDra
     let known: BTreeSet<&str> = paths.iter().map(|p| p.path_id.as_str()).collect();
     let snapshot = validate_document(document, budget, cancel, &Paths { known: &known }).map_err(|d| VectorError::Folio(d.code))?;
     drop(known);
-    let design_budget = Budget { nodes: design.paint_styles.iter().map(|s| s.rows.len().saturating_add(2)).sum::<usize>().saturating_add(design.nodes.len()).saturating_add(8), edges: 0, ..budget };
+    // Folio meters design records per member (rows, stops, dash entries): the SVG importer's cap
+    // of 16 records per layer node.
+    let design_budget = Budget { nodes: nodes_cap.saturating_mul(16).saturating_add(8), edges: 0, ..budget };
     let issues = validate_design_records(&design, snapshot.document(), design_budget, cancel, &Unresolved).map_err(|d| VectorError::Folio(d.code))?;
     if !issues.is_empty() {
         return Err(VectorError::Folio(hsk_studio_folio::Code::DanglingReference));
@@ -556,7 +558,7 @@ pub fn import_ai_with(bytes: &[u8], policy: &ImportPolicy, provider: &dyn PdfDra
     vector_records.clips = clips;
     vector_records.attachments = attachments;
     if !vector_records.clips.is_empty() {
-        let record_budget = Budget { nodes: vector_records.clips.len().saturating_mul(2).saturating_add(8), edges: 0, ..budget };
+        let record_budget = Budget { nodes: vector_records.clips.len().saturating_add(vector_records.attachments.len()).saturating_add(nodes_cap).saturating_add(8), edges: 0, ..budget };
         validate_vector_records(&vector_records, snapshot.document(), Some(&design), record_budget, cancel).map_err(|d| VectorError::Folio(d.code))?;
     }
     Ok(VectorProposal {
