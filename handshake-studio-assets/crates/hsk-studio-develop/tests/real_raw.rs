@@ -107,7 +107,7 @@ fn cr2_350d_decodes_the_stored_frame_deterministically() {
     }
     assert!(hi > lo.saturating_add(256), "sample spread {lo}..{hi}");
     println!("cr2 350d: {}x{} bits 12 samples_sha256={first} range~{lo}..{hi} decode={elapsed:?}", raw.width, raw.height);
-    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
+    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=adobe_dng_converter_not_installed");
 }
 
 /// D1H facts: raw SubIFD read by byte inspection (2026-10-14): 2012 x 1324, BitsPerSample 12,
@@ -136,7 +136,7 @@ fn nef_d1h_uncompressed_decodes_deterministically() {
     let mean = total / u64::from(raw.width - 2);
     assert!(mean < 300, "row 500 same-colour mean step {mean}");
     println!("nef d1h: 2012x1324 bits 12 samples_sha256={digest} row500_step={mean}");
-    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
+    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=adobe_dng_converter_not_installed");
 }
 
 /// ILCE-7S facts: raw SubIFD read by byte inspection (2026-10-14): 2816 x 1872, BitsPerSample 14,
@@ -168,7 +168,7 @@ fn arw_7s_craw_decodes_deterministically() {
     }
     assert!(hstep < vstep.max(1) * 3 && vstep < hstep.max(1) * 3, "hstep {hstep} vstep {vstep}");
     println!("arw 7s: 2816x1872 bits 14 samples_sha256={digest} hstep={hstep} vstep={vstep}");
-    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=no_approved_converter_run");
+    println!("NOT_PROVEN: {TEST} cfa_samples_vs_independent_dng reason=adobe_dng_converter_not_installed");
 }
 
 fn samples_digest(raw: &DngRaw) -> String {

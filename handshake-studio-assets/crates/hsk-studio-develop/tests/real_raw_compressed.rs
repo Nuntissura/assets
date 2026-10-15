@@ -304,7 +304,7 @@ fn check(test: &str, e: &Expect) -> Vec<String> {
 fn check_all(test: &str, files: &[Expect]) {
     let bad: Vec<String> = files.iter().flat_map(|e| check(test, e)).collect();
     for e in files {
-        println!("NOT_PROVEN: {test} {} cfa_samples_vs_independent_dng reason=no_approved_converter_run", e.file);
+        println!("NOT_PROVEN: {test} {} cfa_samples_vs_independent_dng reason=adobe_dng_converter_not_installed", e.file);
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
