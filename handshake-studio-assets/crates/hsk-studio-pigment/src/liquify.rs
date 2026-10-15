@@ -36,6 +36,9 @@ pub enum LiquifyError {
     Transform(TransformError),
     /// A brush or mesh parameter outside its formula's domain (never clamped).
     OutOfRange,
+    /// Face-aware liquify needs an on-device face-landmark model (STU-FX-024 face-aware mode,
+    /// STU-RAS-019 on-device ML); none is installed and nothing is downloaded.
+    ModelUnavailable,
 }
 impl LiquifyError {
     pub const fn code(self) -> &'static str {
@@ -44,6 +47,7 @@ impl LiquifyError {
             Self::Brush(e) => e.code(),
             Self::Transform(e) => e.code(),
             Self::OutOfRange => "liquify_out_of_range",
+            Self::ModelUnavailable => "model_unavailable",
         }
     }
 }
@@ -110,6 +114,34 @@ pub enum LiquifyTool {
     /// Copies the distortion found at `v + (dx, dy)`: `D' = D + k w (D(v + offset) - D)`,
     /// `k = min(1, rate pressure)`.
     MeshClone { dx: f64, dy: f64 },
+}
+
+/// Face-aware liquify sliders (STU-FX-024: "A face-aware mode detects faces and exposes parametric
+/// eye/nose/mouth/face-shape sliders"); values are percent, signed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FaceAwareSliders {
+    pub eye_size: f64,
+    pub eye_distance: f64,
+    pub nose_height: f64,
+    pub nose_width: f64,
+    pub smile: f64,
+    pub mouth_width: f64,
+    pub face_width: f64,
+    pub jawline: f64,
+    pub chin_height: f64,
+}
+
+/// Face-aware liquify: needs face landmarks from an on-device model, which is not installed
+/// (nothing is downloaded). Always refuses [`LiquifyError::ModelUnavailable`]
+/// (`model_unavailable`) after checking the inputs are finite, so a caller can tell a bad request
+/// from the missing model.
+pub fn face_aware_liquify(mesh: &LiquifyMesh, sliders: &FaceAwareSliders) -> Result<LiquifyMesh, LiquifyError> {
+    let s = sliders;
+    for v in [s.eye_size, s.eye_distance, s.nose_height, s.nose_width, s.smile, s.mouth_width, s.face_width, s.jawline, s.chin_height] {
+        finite(v)?;
+    }
+    let _ = mesh;
+    Err(LiquifyError::ModelUnavailable)
 }
 
 fn splitmix(mut z: u64) -> u64 {
@@ -543,4 +575,4 @@ fn vertex_pixel(bounds: Rect, spacing: u32, cols: u32, k: usize) -> (i64, i64) {
 }
 
 /// Liquify surface description (Studio readings; Photoshop NOT_PROVEN, UNVERIFIED, D5).
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"liquify","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-140 Liquify","STU-RAS-142 Liquify brush size/density/pressure/rate, freeze/thaw masks are StudioMask values","STU-FX-024"],"mesh":"LiquifyMesh{bounds, spacing, cols, rows, disp backward displacement per vertex, freeze}; serde (re-editable); bilinear between vertices","tools":["forward_warp","push_left","twirl cw|ccw","pucker","bloat","reconstruct","smooth","turbulence(seed): smooth seeded value noise, 0.05 size rate pressure w per dab, cells size/2","mesh_clone(dx,dy): D += min(1, rate pressure) w (D(v+offset) - D)"],"compose":"D'(p) = q + D(q) - p","render":"per pixel translation through transform_math::PreparedTransform (nearest|bilinear|bicubic, rule 1 exact centre): identity / reconstruct_all = byte copy","freeze":"set_freeze(CoveragePlane) per-vertex; thaw_all","limits":{"max_vertices":4194304,"max_dabs":100000,"max_work":4294967296},"not_implemented":["face-aware sliders","GPU path"],"parity":"NOT_PROVEN"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"liquify","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-140 Liquify","STU-RAS-142 Liquify brush size/density/pressure/rate, freeze/thaw masks are StudioMask values","STU-FX-024"],"mesh":"LiquifyMesh{bounds, spacing, cols, rows, disp backward displacement per vertex, freeze}; serde (re-editable); bilinear between vertices","tools":["forward_warp","push_left","twirl cw|ccw","pucker","bloat","reconstruct","smooth","turbulence(seed): smooth seeded value noise, 0.05 size rate pressure w per dab, cells size/2","mesh_clone(dx,dy): D += min(1, rate pressure) w (D(v+offset) - D)"],"compose":"D'(p) = q + D(q) - p","render":"per pixel translation through transform_math::PreparedTransform (nearest|bilinear|bicubic, rule 1 exact centre): identity / reconstruct_all = byte copy","freeze":"set_freeze(CoveragePlane) per-vertex; thaw_all","limits":{"max_vertices":4194304,"max_dabs":100000,"max_work":4294967296},"face_aware":"face_aware_liquify refuses model_unavailable (no on-device landmark model; nothing downloaded)","not_implemented":["face-aware landmark model","GPU liquify path"],"parity":"NOT_PROVEN"}"#;

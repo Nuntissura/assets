@@ -65,6 +65,9 @@ use hsk_studio_pigment::render_plan::{
 use hsk_studio_pigment::Rect;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Smart-filter stacks (lane SMB-PS-SMART-FILTER-WIRING).
+mod smart_filter;
+
 /// What the caller knows about one resolved tile that Folio's authored `TileRef` cannot state:
 /// the plane hashes and the declared sample/alpha convention of the resolved bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -612,6 +615,8 @@ struct EntryParts {
     knockout: Knockout,
     effects: Vec<EffectOp>,
     blur: Option<hsk_studio_pigment::blur_math::LayerBlur>,
+    /// Smart-filter stack (lane SMB-PS-SMART-FILTER-WIRING).
+    smart: Option<hsk_studio_pigment::smart_filter::SmartFilterOp>,
 }
 
 impl EntryParts {
@@ -633,6 +638,7 @@ impl EntryParts {
             knockout: features.knockout,
             effects: features.effect_ops().to_vec(),
             blur: features.blur,
+            smart: None,
         })
     }
     fn is_empty(&self) -> bool {
@@ -642,6 +648,7 @@ impl EntryParts {
             && self.knockout == Knockout::None
             && self.effects.is_empty()
             && self.blur.is_none()
+            && self.smart.is_none()
     }
     fn into_extension(self, group: PlanNodeId) -> LayerExtension {
         let mut e = LayerExtension::new(group, self.layer);
@@ -662,6 +669,9 @@ impl EntryParts {
         }
         if let Some(b) = self.blur {
             e = e.with_blur(b);
+        }
+        if let Some(op) = self.smart {
+            e = e.with_smart_filters(op);
         }
         e
     }
@@ -1394,8 +1404,9 @@ pub(crate) fn lower_inner(
                     )?;
                     if let Some(f) = &features {
                         let coverage_mask = child_appearance.mask && !child_appearance.clipped;
-                        let p =
+                        let mut p =
                             EntryParts::new(group_layers.len(), f, coverage_mask, adjustment_op)?;
+                        p.smart = out.smart_filters(records, layer)?;
                         if !p.is_empty() {
                             parts.push(p);
                         }
@@ -1437,7 +1448,8 @@ pub(crate) fn lower_inner(
             layers: vec![layer],
         }))?;
         if let Some(f) = &root_features {
-            let p = EntryParts::new(0, f, root_appearance.mask, None)?;
+            let mut p = EntryParts::new(0, f, root_appearance.mask, None)?;
+            p.smart = out.smart_filters(records, root_layer)?;
             if !p.is_empty() {
                 entries.push(p.into_extension(root_node));
             }
