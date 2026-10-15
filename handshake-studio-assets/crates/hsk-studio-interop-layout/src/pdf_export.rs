@@ -54,7 +54,7 @@ use crate::idml_decode::LossBook;
 use crate::model::{LossEntry, LossKind};
 
 mod longdoc;
-pub use longdoc::{PdfLongDoc, PdfTable};
+pub use longdoc::{PdfLongDoc, PdfOutlineItem, PdfPageLabel, PdfTable, outline_from_toc, page_labels_from_sections};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     BLEND_PASS_THROUGH, GeometryUnit, Isolation, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
@@ -315,6 +315,7 @@ pub fn export_pdf_with(input: &PdfExportInput<'_>, longdoc: &PdfLongDoc<'_>, can
     let by_id: BTreeMap<&str, &StudioLayer> = doc.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
     let order = paint_order(input.snapshot, &mut cx.loss);
     cx.draw_nodes(&order, &by_id, cancel)?;
+    longdoc.write_navigation(&mut cx, &page_ids)?;
     let Cx { ex, loss, glyphs, paths, tiles, .. } = cx;
     let (bytes, receipt) = ex.finish(cancel)?;
     Ok(PdfExportOutput {
@@ -1123,7 +1124,7 @@ impl Cx<'_> {
         if alpha < 1.0 {
             self.ex.set_draw_state(page, DrawState { fill_alpha: alpha, ..DrawState::default() })?;
         }
-        self.ex.show_glyphs(page, handle, f64::from_bits(k.size), [0.0, 0.0], k.fill, run)?;
+        self.ex.show_glyph_run(page, handle, f64::from_bits(k.size), [0.0, 0.0], k.fill, run)?;
         if alpha < 1.0 {
             self.ex.set_draw_state(page, DrawState::default())?;
         }

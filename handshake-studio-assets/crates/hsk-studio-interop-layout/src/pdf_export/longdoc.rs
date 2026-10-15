@@ -18,12 +18,22 @@
 //!   k = 0.5522847498, or the `SVPT` path from `PdfAssets::path`; an unresolved path clips to the
 //!   rectangle and is reported `frame_shape_unresolved`).
 //!
+//! - Page labels ([`page_labels_from_sections`]): one `/PageLabels` range per Studio section start
+//!   (arabic -> `/D`, roman -> `/R` `/r`, letters -> `/A` `/a`, the section prefix as `/P` when it is
+//!   included in labels, the page number as `/St`); a section whose style PDF cannot express
+//!   (leading zeros, full-width, kanji, symbols, ...) gets one range per page whose `/P` is the whole
+//!   Studio label.
+//! - Outline ([`outline_from_toc`]): one bookmark per generated TOC entry with a page, nested by
+//!   level, its destination the page with the entry's source baseline at the top (`/XYZ`).
+//!
 //! Colours bound to a profile are written ICCBased as everywhere in this module; unassigned colours
 //! are DeviceRGB and reported (`paint_colour_untagged`).
 use super::{Cx, PdfExportError, PdfExportInput, PdfStory, Result, check_story_list};
 use crate::model::LossKind;
 use hsk_studio_folio::{StudioColor, StudioDocument, StudioFrameShape, StudioLayer};
-use hsk_studio_layout::{PlacedGraphic, RuleSegment, TableProposal, tint_rgb};
+use hsk_studio_folio::{StudioNumberStyle, StudioSection};
+use hsk_studio_layout::{GeneratedStory, PageNumber, PlacedGraphic, RuleSegment, TableProposal, tint_rgb};
+use hsk_studio_press::{OutlineEntry, PageLabelRange, PageLabelStyle};
 use hsk_studio_nib::PathLimits;
 use hsk_studio_press::{FillRule, ImageColour, ImageSpec, LineCap, LineJoin, PathCommand, StrokeStyle};
 
@@ -46,6 +56,67 @@ pub struct PdfLongDoc<'a> {
     pub graphics: &'a [PlacedGraphic],
     /// Footnote separator rules (layout `FootnoteProposal::rules`).
     pub rules: &'a [RuleSegment],
+    /// `/PageLabels` ranges ([`page_labels_from_sections`]); empty writes none.
+    pub page_labels: &'a [PdfPageLabel],
+    /// Bookmarks in document order ([`outline_from_toc`]); empty writes none.
+    pub outline: &'a [PdfOutlineItem<'a>],
+}
+
+/// One page-label range starting at a Folio page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PdfPageLabel {
+    pub page_id: String,
+    pub style: Option<PageLabelStyle>,
+    pub prefix: String,
+    pub start: u32,
+}
+
+/// One bookmark: title, level (1 = top), Folio page and the destination top in spread
+/// coordinates (`None` fits the page).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PdfOutlineItem<'a> {
+    pub title: &'a str,
+    pub level: u32,
+    pub page_id: &'a str,
+    pub top_y: Option<f64>,
+}
+
+/// Page-label ranges for the Studio page numbering (module docs); `pages` is `number_pages`'
+/// output for the same `sections`.
+pub fn page_labels_from_sections(sections: &[StudioSection], pages: &[PageNumber]) -> Vec<PdfPageLabel> {
+    let mut out: Vec<PdfPageLabel> = Vec::new();
+    let mut current: Option<Option<usize>> = None;
+    for p in pages {
+        let section = p.section.and_then(|k| sections.get(k));
+        let style = section.map_or(StudioNumberStyle::Arabic, |s| s.page_number_style);
+        let pdf = match style {
+            StudioNumberStyle::Arabic => Some(PageLabelStyle::Decimal),
+            StudioNumberStyle::UpperRoman => Some(PageLabelStyle::UpperRoman),
+            StudioNumberStyle::LowerRoman => Some(PageLabelStyle::LowerRoman),
+            StudioNumberStyle::UpperLetters => Some(PageLabelStyle::UpperLetters),
+            StudioNumberStyle::LowerLetters => Some(PageLabelStyle::LowerLetters),
+            _ => None,
+        };
+        let starts = current != Some(p.section) || sections.iter().any(|s| s.page_start == p.page_id);
+        current = Some(p.section);
+        match pdf {
+            Some(st) if starts => {
+                let prefix = section.filter(|s| s.include_section_prefix).and_then(|s| s.section_prefix.clone()).unwrap_or_default();
+                out.push(PdfPageLabel { page_id: p.page_id.clone(), style: Some(st), prefix, start: p.number.max(1) });
+            }
+            Some(_) => {}
+            None => out.push(PdfPageLabel { page_id: p.page_id.clone(), style: None, prefix: p.label.clone(), start: 1 }),
+        }
+    }
+    out
+}
+
+/// Bookmarks of the placed entries of a generated TOC (module docs).
+pub fn outline_from_toc(toc: &GeneratedStory) -> Vec<PdfOutlineItem<'_>> {
+    toc.entries
+        .iter()
+        .filter_map(|e| Some(PdfOutlineItem { title: e.text.as_str(), level: e.level, page_id: e.page_id.as_deref()?, top_y: e.baseline_y }))
+        .collect()
 }
 impl<'a> PdfLongDoc<'a> {
     /// Every story this content draws.
@@ -55,6 +126,32 @@ impl<'a> PdfLongDoc<'a> {
     pub(super) fn graphic(&self, layer_id: &str) -> Option<&'a PlacedGraphic> {
         self.graphics.iter().find(|g| g.layer_id == layer_id)
     }
+    /// Writes the page labels and the outline (after the pages exist).
+    pub(super) fn write_navigation(&self, cx: &mut Cx<'_>, page_ids: &[String]) -> Result<()> {
+        let index = |id: &str| page_ids.iter().position(|p| p == id).ok_or(PdfExportError::InvalidInput("navigation_page"));
+        if !self.page_labels.is_empty() {
+            let mut ranges = Vec::with_capacity(self.page_labels.len());
+            for l in self.page_labels {
+                ranges.push(PageLabelRange { first_page: index(&l.page_id)?, style: l.style, prefix: &l.prefix, start: l.start });
+            }
+            cx.ex.set_page_labels(&ranges)?;
+        }
+        if !self.outline.is_empty() {
+            let mut entries = Vec::with_capacity(self.outline.len());
+            // Outline levels must not skip: an entry is at most one level below its predecessor.
+            let mut previous = 0u32;
+            for o in self.outline {
+                let pi = index(o.page_id)?;
+                let page = cx.pages.get(pi).ok_or(PdfExportError::InvalidInput("navigation_page"))?;
+                let level = o.level.min(previous.saturating_add(1)).max(1);
+                previous = level;
+                entries.push(OutlineEntry { title: o.title, level, page: page.handle, top_pt: o.top_y.map(|y| page.map(0.0, y).1) });
+            }
+            cx.ex.set_outline(&entries)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn check(&self, input: &PdfExportInput<'_>, doc: &StudioDocument) -> Result<()> {
         for r in self.rules {
             let finite = r.from.iter().chain(&r.to).chain([r.origin_x_pt, r.origin_y_pt, r.weight_pt].iter()).all(|v| v.is_finite());

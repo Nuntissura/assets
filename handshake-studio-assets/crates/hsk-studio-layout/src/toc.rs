@@ -80,12 +80,14 @@ impl std::fmt::Display for TocError {
 impl std::error::Error for TocError {}
 
 /// One generated entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TocEntryOut {
     pub level: u32,
     pub text: String,
     pub page_label: Option<String>,
     pub page_id: Option<String>,
+    /// Spread y of the baseline of the line holding the paragraph start (outline destinations).
+    pub baseline_y: Option<f64>,
     pub story_id: String,
     pub source_start: u64,
 }
@@ -191,6 +193,16 @@ pub(crate) fn page_of<'p>(
     })
 }
 
+/// The spread y of the baseline of the line holding story byte `at`.
+pub(crate) fn baseline_of(placement: Option<&LayoutProposal>, at: u64) -> Option<f64> {
+    placement?.frames.iter().find_map(|f| {
+        f.lines
+            .iter()
+            .find(|l| l.source.start == at || (l.source.start <= at && at < l.source.end))
+            .map(|l| f.origin_y_pt + l.baseline_y_pt)
+    })
+}
+
 struct Node {
     entry: TocEntryOut,
     sort: bool,
@@ -283,6 +295,7 @@ pub fn generate_toc(
                     text: clean(raw),
                     page_label: page.map(|x| x.label.clone()),
                     page_id: page.map(|x| x.page_id.clone()),
+                    baseline_y: page.and_then(|_| baseline_of(s.placement, p.start)),
                     story_id: s.story.story_id.clone(),
                     source_start: p.start,
                 },

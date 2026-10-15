@@ -163,20 +163,9 @@ fn streams(pdf: &[u8]) -> Vec<Vec<u8>> {
 fn find(h: &[u8], n: &[u8]) -> Option<usize> {
     h.windows(n.len()).position(|w| w == n)
 }
-/// `(gid, x, y)` of every `1 0 0 1 x y Tm` + `<gggg> Tj` pair of the content streams.
+/// `(gid, x, y)` of every drawn glyph (tests/common/pdf_scan.rs; Inter's program advances).
 fn shown(pdf: &[u8]) -> Vec<(u16, f64, f64)> {
-    let mut out = Vec::new();
-    for s in streams(pdf) {
-        let text = String::from_utf8_lossy(&s).into_owned();
-        let lines: Vec<&str> = text.lines().collect();
-        for w in lines.windows(2) {
-            let t: Vec<&str> = w[0].split(' ').collect();
-            if t.len() == 7 && t[6] == "Tm" && w[1].ends_with(" Tj") && w[1].starts_with('<') {
-                out.push((u16::from_str_radix(&w[1][1..5], 16).unwrap(), t[4].parse().unwrap(), t[5].parse().unwrap()));
-            }
-        }
-    }
-    out
+    common::pdf_scan::shown_runs(&streams(pdf), &hsk_studio_interop_layout::press::font_advance_widths(INTER, 0).unwrap())
 }
 fn near(a: [u8; 3], b: [u8; 3]) -> bool {
     a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 3)
@@ -748,8 +737,11 @@ fn dump(name: &str, bytes: &[u8]) {
 /// two-row table continuing the body frame at y 30 (FlowPosition, header red, body row blue), the
 /// picture in an ellipse frame at (230, 20) 60 x 60 filled proportionally, and the index in frame
 /// 22. Press's PDF/X-4 self-check passes on the bytes; pixels prove each feature in the one file.
-/// PDF/A-2b is not claimed: veraPDF 1.30.3 fails ISO 19005-2 6.2.11.5 on these bytes because `/W`
-/// takes the Type-shaped (kerned) advance of a glyph's first use, not the font program's width.
+/// PDF/A-2b: veraPDF 1.30.3 (`-f 2b --format xml`, run on these exact bytes from the folder holding
+/// them) passes; its report, normalised by press (`<name>` cut to the file name, no machine path),
+/// is the fixture `fixtures/verapdf/layout-longdoc.pdfa-2b.xml`. It passes since lane
+/// SMB-LAYOUT-LONGDOC-2: `/W` is the font program's `hmtx` width and the kerned Type positions are
+/// `TJ` adjustments (before, rule 6.2.11.5 failed on the shaped advances in `/W`).
 #[test]
 fn long_document_archival_export() {
     let cancel = CancellationToken::default();
@@ -897,9 +889,13 @@ fn long_document_archival_export() {
     let overlays = [PdfStory { story: &note_story, text: "The footnote.", placement: &fp.note_text[0].1, paragraphs: &note_paras, glyphs: &note_glyphs, default_fill: Colour::DeviceGray(0.0) }];
     let tables = [PdfTable { proposal: &tp, cells: PdfStory { story: &cell_story, text: "Hi", placement: &tp.text, paragraphs: &cell_paras, glyphs: &cell_glyphs, default_fill: Colour::DeviceGray(0.0) } }];
     let picture = Picture::new();
-    let longdoc = PdfLongDoc { tables: &tables, overlays: &overlays, graphics: &placed, rules: &fp.rules };
+    let longdoc = PdfLongDoc { tables: &tables, overlays: &overlays, graphics: &placed, rules: &fp.rules, ..PdfLongDoc::default() };
     let out = export_pdf_with(&PdfExportInput { options: archival(), ..input(&snapshot, &stories, &fonts, &picture) }, &longdoc, &cancel).unwrap();
     dump("layout-longdoc.pdf", &out.bytes);
+    assert_eq!(out.receipt.sha256_hex, "f1340044b008a4689303f2d31f2bf33a4bef9de912ddbad4c46907e0f5386259", "export changed: re-run veraPDF, refresh the fixture");
+    let verdict = include_bytes!("fixtures/verapdf/layout-longdoc.pdfa-2b.xml");
+    let proven = out.receipt.clone().with_verapdf_report(&out.bytes, verdict).unwrap();
+    assert_eq!(proven.conformance, hsk_studio_interop_layout::press::CONFORMANCE_PDFA2B_VERAPDF);
     let report = hsk_studio_interop_layout::press::check_pdfx4(&out.bytes, &Limits::default(), &cancel).unwrap();
     assert!(report.all_passed(), "{:?}", report.failed());
     assert_eq!(out.receipt.effective_pdfx_profile.as_deref(), Some("PDF/X-4"));
@@ -920,4 +916,133 @@ fn long_document_archival_export() {
     let g = shown(&out.bytes);
     assert!(g.iter().any(|s| s.2 == 188.0), "note line");
     assert_eq!(g.iter().filter(|s| [154.0, 130.0, 106.0, 82.0].contains(&s.2)).count(), index_glyphs.iter().flatten().count());
+}
+
+/// SMB-LAYOUT-LONGDOC-2 item 2: the three-page book of slice 3 (sections b1 "i" lower roman, b2-b3
+/// "S5", "S6" arabic from 5 with prefix S) exported with `/PageLabels` from the sections and an
+/// outline from the generated TOC (Alpha > Beta, Gamma), archival identification. Structure: the
+/// catalog's number tree has two ranges (page 0 `/S /r`; page 1 `/S /D /P (S) /St 5`); the outline
+/// root counts three open entries, Alpha has Beta as its only child, every destination is
+/// `/XYZ` on the entry's page at its source baseline (spread y 26 -> PDF y 274). veraPDF 1.30.3
+/// PDF/A-2b passes these exact bytes (normalised report fixture).
+#[test]
+fn page_labels_and_outline_from_sections_and_toc() {
+    let cancel = CancellationToken::default();
+    let snapshot = validate_document(book(), Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Alpha\nBeta\nGamma";
+    let (body_story, body_paras, body_glyphs) = shaped_story(5, body, &[(0, 6, Some(stys(1))), (6, 11, Some(stys(2))), (11, 16, Some(stys(1)))], &files, &fonts);
+    let body_place = reflow_typeset(
+        &ReflowRequest {
+            document: doc,
+            story: &body_story,
+            resolved_text: None,
+            paragraphs: &body_paras,
+            obstacles: &[],
+            composer: Composer::FirstFit,
+            space: SpaceParams::default(),
+            expected_revision: doc.revision,
+            limits: hsk_studio_interop_layout::layout::Limits::default(),
+        },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    let section = |sid: &str, start: &str, cont: bool, n: Option<u32>, style, prefix: Option<&str>| StudioSection {
+        section_id: sid.into(),
+        name: sid.into(),
+        page_start: start.into(),
+        continue_numbering: cont,
+        page_number_start: n,
+        page_number_style: style,
+        include_section_prefix: prefix.is_some(),
+        section_prefix: prefix.map(str::to_owned),
+        marker: None,
+    };
+    let sections = [section("a", "b1", true, None, StudioNumberStyle::LowerRoman, None), section("b", "b2", false, Some(5), StudioNumberStyle::Arabic, Some("S"))];
+    let pages = number_pages(doc, &sections).unwrap();
+    let entry = |s: u32, level: u32| StudioTocEntry { paragraph_style: stys(s), format_style: None, level, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false };
+    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: "Contents".into(), title_style: None, include_overset: false, entries: vec![entry(1, 1), entry(2, 2)] };
+    let generated = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
+    assert_eq!(generated.entries.iter().map(|e| e.baseline_y).collect::<Vec<_>>(), [Some(26.0); 3]);
+    let labels = hsk_studio_interop_layout::page_labels_from_sections(&sections, &pages);
+    assert_eq!(labels.iter().map(|l| (l.page_id.as_str(), l.prefix.as_str(), l.start)).collect::<Vec<_>>(), [("b1", "", 1), ("b2", "S", 5)]);
+    let outline = hsk_studio_interop_layout::outline_from_toc(&generated);
+    let stories = [PdfStory { story: &body_story, text: body, placement: &body_place, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) }];
+    let longdoc = PdfLongDoc { page_labels: &labels, outline: &outline, ..PdfLongDoc::default() };
+    let out = export_pdf_with(&PdfExportInput { options: archival(), ..input(&snapshot, &stories, &fonts, &NoAssets) }, &longdoc, &cancel).unwrap();
+    dump("layout-labels-outline.pdf", &out.bytes);
+    let text = String::from_utf8_lossy(&out.bytes).into_owned();
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = squash(&text);
+    assert!(flat.contains("/PageLabels << /Nums [0 << /Type /PageLabel /S /r >> 1 << /Type /PageLabel /S /D /P (S) /St 5 >>] >>"), "page labels");
+    assert!(flat.contains("/Type /Outlines /First") && flat.contains("/Count 3"), "outline root");
+    for title in ["Alpha", "Beta", "Gamma"] {
+        assert_eq!(flat.matches(&format!("/Title ({title})")).count(), 1, "{title}");
+    }
+    assert_eq!(flat.matches("/XYZ null 274 null]").count(), 3, "destinations at the source baselines");
+    assert_eq!(flat.matches("/Count 1").count(), 1, "Alpha holds Beta");
+    assert_eq!(out.receipt.sha256_hex, "c96de9dfd70aabfd79b9e0834247a3c3570dbf3d755f323e65cae17c4c8fc090", "export changed: re-run veraPDF, refresh the fixture");
+    let verdict = include_bytes!("fixtures/verapdf/layout-labels-outline.pdfa-2b.xml");
+    let proven = out.receipt.clone().with_verapdf_report(&out.bytes, verdict).unwrap();
+    assert_eq!(proven.conformance, hsk_studio_interop_layout::press::CONFORMANCE_PDFA2B_VERAPDF);
+    // Refusals: a label or bookmark on a page the document does not have.
+    let stray = [hsk_studio_interop_layout::PdfPageLabel { page_id: "nowhere".into(), style: None, prefix: "x".into(), start: 1 }];
+    let err = export_pdf_with(&input(&snapshot, &stories, &fonts, &NoAssets), &PdfLongDoc { page_labels: &stray, ..PdfLongDoc::default() }, &cancel).unwrap_err();
+    assert_eq!(err.to_string(), "invalid_input: navigation_page");
+}
+
+/// SMB-LAYOUT-LONGDOC-2 item 1 at the press boundary: `/W` takes the font program's `hmtx` widths
+/// (Inter H 2084/2816 em -> 740, i 668/2816 -> 237) whatever the caller passes, and a run keeps
+/// the caller's (kerned) positions as `TJ` adjustments: H at 0 then i at 14.0 (size 20; H's
+/// program advance 14.8) -> adjustment (14.8 - 14.0) * 1000 / 20 = 40; a glyph on another baseline
+/// starts a new text matrix. Refusals of the new writers are typed.
+#[test]
+fn press_tj_runs_program_widths_and_navigation_refusals() {
+    use hsk_studio_interop_layout::press::{ExportError, OutlineEntry, PageLabelRange, PageLabelStyle, PageSpec, PdfExport, font_advance_widths};
+    let cancel = CancellationToken::default();
+    let adv = font_advance_widths(INTER, 0).unwrap();
+    assert_eq!((adv[161], adv[679]), (740, 237));
+    let mut ex = PdfExport::new(ExportOptions::default(), &Limits::default()).unwrap();
+    let p = ex.add_page(PageSpec { media_box_pt: [0.0, 0.0, 200.0, 200.0], trim_box_pt: None, bleed_box_pt: None }).unwrap();
+    let font = ex.embed_font(INTER, 0, &[(161, 999), (679, 1)], &[(161, "H"), (679, "i")]).unwrap();
+    ex.show_glyph_run(p, font, 20.0, [10.0, 100.0], Colour::DeviceGray(0.0), &[(161, 0.0, 0.0), (679, 14.0, 0.0), (161, 0.0, -30.0)]).unwrap();
+    assert_eq!(ex.show_glyph_run(p, font, 20.0, [0.0, 0.0], Colour::DeviceGray(0.0), &[(2548, 0.0, 0.0)]), Err(ExportError::FontGlyphOutOfRange));
+    assert_eq!(ex.show_glyph_run(p, font, 20.0, [0.0, 0.0], Colour::DeviceGray(0.0), &[(161, 0.0, 0.0), (679, f64::NAN, 0.0)]), Err(ExportError::NonFinite));
+    // Page labels and outline refusals (one page).
+    let range = |first_page, start| PageLabelRange { first_page, style: Some(PageLabelStyle::Decimal), prefix: "", start };
+    assert_eq!(ex.set_page_labels(&[]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_page_labels(&[range(1, 1)]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_page_labels(&[range(0, 0)]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_page_labels(&[range(0, 1), range(0, 2)]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_page_labels(&[range(0, 1), range(1, 2)]), Err(ExportError::NoSuchPage));
+    let entry = |level, top| OutlineEntry { title: "t", level, page: p, top_pt: top };
+    assert_eq!(ex.set_outline(&[entry(2, None)]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_outline(&[entry(1, None), entry(3, None)]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_outline(&[entry(0, None)]), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.set_outline(&[entry(1, Some(f64::INFINITY))]), Err(ExportError::NonFinite));
+    let many = vec![entry(1, None); hsk_studio_interop_layout::press::MAX_OUTLINE_ENTRIES + 1];
+    assert_eq!(ex.set_outline(&many), Err(ExportError::TooManyObjects));
+    ex.set_page_labels(&[range(0, 3)]).unwrap();
+    ex.set_outline(&[entry(1, Some(150.0)), entry(2, None)]).unwrap();
+    let (bytes, _) = ex.finish(&cancel).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    assert!(text.contains("/W [161 [740] 679 [237]]"), "program widths in /W");
+    assert!(!text.contains("[999]"), "caller width ignored");
+    let content: String = streams(&bytes).iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    let tj: Vec<&str> = content.lines().filter(|l| l.ends_with(" TJ")).collect();
+    assert_eq!(tj.len(), 2, "{content}");
+    let adjust: f64 = tj[0].trim_start_matches('[').split(' ').nth(1).unwrap().parse().unwrap();
+    assert!((adjust - 40.0).abs() < 1e-9, "{}", tj[0]);
+    let got = shown(&bytes);
+    let want = [(161u16, 10.0, 100.0), (679, 24.0, 100.0), (161, 10.0, 70.0)];
+    assert_eq!(got.len(), want.len(), "{got:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert!(g.0 == w.0 && (g.1 - w.1).abs() < 1e-9 && g.2 == w.2, "{g:?} vs {w:?}");
+    }
+    assert!(text.contains("/PageLabels << /Nums [0 << /Type /PageLabel /S /D /St 3 >>] >>"));
+    assert!(text.contains("/XYZ null 150 null]"), "outline destination");
+    assert!(text.contains("/Fit]"));
 }

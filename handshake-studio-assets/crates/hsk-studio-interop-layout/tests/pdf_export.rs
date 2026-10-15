@@ -381,21 +381,10 @@ fn streams(pdf: &[u8]) -> Vec<Vec<u8>> {
 fn find(h: &[u8], n: &[u8]) -> Option<usize> {
     h.windows(n.len()).position(|w| w == n)
 }
-/// `(gid, x, y)` of every `1 0 0 1 x y Tm` + `<gggg> Tj` pair of the content streams.
+/// `(gid, x, y)` of every drawn glyph of the content streams (text matrices, `Tj`, `TJ` runs with
+/// Inter's program advances; tests/common/pdf_scan.rs).
 fn shown(streams: &[Vec<u8>]) -> Vec<(u16, f64, f64)> {
-    let mut out = Vec::new();
-    for s in streams {
-        let text = String::from_utf8_lossy(s);
-        let lines: Vec<&str> = text.lines().collect();
-        for w in lines.windows(2) {
-            let t: Vec<&str> = w[0].split(' ').collect();
-            if t.len() == 7 && t[6] == "Tm" && w[1].ends_with(" Tj") && w[1].starts_with('<') {
-                let gid = u16::from_str_radix(&w[1][1..5], 16).unwrap();
-                out.push((gid, t[4].parse().unwrap(), t[5].parse().unwrap()));
-            }
-        }
-    }
-    out
+    common::pdf_scan::shown_runs(streams, &hsk_studio_interop_layout::press::font_advance_widths(INTER, 0).unwrap())
 }
 
 #[test]

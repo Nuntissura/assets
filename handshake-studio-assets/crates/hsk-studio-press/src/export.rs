@@ -38,6 +38,13 @@ mod subset;
 mod verdict;
 pub use verdict::{CONFORMANCE_PDFA2B_VERAPDF, MAX_REPORT_BYTES, VERAPDF_PDFA2B_PROFILE, normalize_verapdf_report};
 pub use render::{RenderedPage, render_page};
+
+/// The advance width of every glyph of a font in 1/1000 em, as the font program states it
+/// (`hhea` / `hmtx`): the widths press writes into `/W` and uses for `TJ` adjustments.
+pub fn font_advance_widths(bytes: &[u8], face_index: u32) -> Result<Vec<u16>> {
+    let facts = sfnt::read(bytes, face_index)?;
+    sfnt::advances(bytes, &facts)
+}
 #[cfg(test)]
 mod tests;
 
@@ -575,6 +582,8 @@ struct FontBuild {
     num_glyphs: u16,
     /// CID of each glyph id for a CID-keyed CFF font (codes are CIDs); `None`: codes are glyph ids.
     gid_to_cid: Option<std::rc::Rc<Vec<u16>>>,
+    /// Advance of every glyph id in 1/1000 em from the font program (`/W` and `TJ` adjustments).
+    advances: std::rc::Rc<Vec<u16>>,
     /// Index into `PdfExport::subset_files` when subsetting.
     file: Option<usize>,
 }
@@ -595,6 +604,56 @@ struct IccBuild {
     components: u8,
 }
 
+/// PDF page-label numbering styles (ISO 32000 12.4.2, `/S`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageLabelStyle {
+    /// `/D` decimal arabic numerals.
+    Decimal,
+    /// `/R` upper-case roman numerals.
+    UpperRoman,
+    /// `/r` lower-case roman numerals.
+    LowerRoman,
+    /// `/A` upper-case letters (A..Z, then AA..ZZ, ...).
+    UpperLetters,
+    /// `/a` lower-case letters.
+    LowerLetters,
+}
+
+/// One page-label range: from `first_page` (0-based position in the order pages were added) up to
+/// the next range. `style` `None` writes the prefix alone (a label no PDF style can express).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageLabelRange<'a> {
+    pub first_page: usize,
+    pub style: Option<PageLabelStyle>,
+    pub prefix: &'a str,
+    /// First number of the range, at least 1.
+    pub start: u32,
+}
+
+/// One outline (bookmark) entry in document order; `level` 1 is the top; an entry's children are
+/// the following deeper entries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutlineEntry<'a> {
+    pub title: &'a str,
+    pub level: u32,
+    pub page: PageHandle,
+    /// Destination top in PDF user space (`/XYZ`); `None` fits the page (`/Fit`).
+    pub top_pt: Option<f64>,
+}
+
+/// Outline entries per document.
+pub const MAX_OUTLINE_ENTRIES: usize = 65_536;
+/// Deepest outline level.
+pub const MAX_OUTLINE_DEPTH: u32 = 32;
+
+struct OutlineNode {
+    title: Object,
+    page: usize,
+    top: Option<f64>,
+    parent: Option<usize>,
+    children: Vec<usize>,
+}
+
 /// The builder. Every method either applies completely or refuses with nothing changed.
 pub struct PdfExport {
     version: String,
@@ -603,6 +662,10 @@ pub struct PdfExport {
     next: u32,
     catalog: u32,
     pages_root: u32,
+    /// `/PageLabels` number tree entries: first page, style, prefix (text string), start.
+    page_labels: Vec<(usize, Option<PageLabelStyle>, Object, u32)>,
+    /// Outline tree (document order; `parent` / `children` are positions in this list).
+    outline: Vec<OutlineNode>,
     info: Option<u32>,
     output_intent: Option<Dict>,
     pages: Vec<PageBuild>,
@@ -719,6 +782,8 @@ impl PdfExport {
             next: 1,
             catalog: 0,
             pages_root: 0,
+            page_labels: Vec::new(),
+            outline: Vec::new(),
             info: None,
             output_intent: None,
             pages: Vec::new(),
@@ -1699,8 +1764,11 @@ impl PdfExport {
 
     /// Embeds a TrueType-outline font as Type0 / CIDFontType2 (`/Identity-H`, `/CIDToGIDMap
     /// /Identity`, the whole font as `/FontFile2`; a second font with the same bytes shares the
-    /// font file). `widths` are `(glyph id, advance in 1/1000 em)` for `/W`; `to_unicode` maps glyph
-    /// ids to their text for `/ToUnicode` (a later entry for the same glyph wins).
+    /// font file). `widths` names the glyphs that get a `/W` entry; the width written is the font
+    /// program's own advance (`hmtx`, [`font_advance_widths`]), whatever value the caller passes,
+    /// so `/W` and the program agree (ISO 19005-2 6.2.11.5; lane SMB-LAYOUT-LONGDOC-2).
+    /// `to_unicode` maps glyph ids to their text for `/ToUnicode` (a later entry for the same glyph
+    /// wins).
     pub fn embed_truetype(&mut self, bytes: &[u8], face_index: u32, widths: &[(u16, u16)], to_unicode: &[(u16, &str)]) -> Result<FontHandle> {
         let facts = sfnt::read(bytes, face_index)?;
         if facts.cff.is_some() {
@@ -1710,6 +1778,9 @@ impl PdfExport {
         if widths.iter().any(|(g, _)| *g >= n) || to_unicode.iter().any(|(g, _)| *g >= n) {
             return Err(ExportError::FontGlyphOutOfRange);
         }
+        let advances = std::rc::Rc::new(sfnt::advances(bytes, &facts)?);
+        let program_widths: Vec<(u16, u16)> = widths.iter().map(|(g, _)| (*g, advances.get(usize::from(*g)).copied().unwrap_or(0))).collect();
+        let widths = program_widths.as_slice();
         if to_unicode.iter().any(|(_, t)| t.is_empty() || t.chars().count() > MAX_GLYPH_TEXT) {
             return Err(ExportError::ToUnicodeInvalid);
         }
@@ -1809,7 +1880,7 @@ impl PdfExport {
             f.used.extend(to_unicode.iter().map(|(g, _)| *g));
             f.members.push((fd_num, cid_num, type0, base.clone()));
         }
-        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: None, file: subset_index });
+        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: None, file: subset_index, advances });
         Ok(FontHandle(self.fonts.len().saturating_sub(1)))
     }
 
@@ -1820,7 +1891,8 @@ impl PdfExport {
     /// (`/FontFile3 /Subtype /OpenType`) with codes = glyph ids (ISO 32000-2 9.7.4.2 and 9.9; wording
     /// UNVERIFIED). CID-keyed CFF programs are subset at finish (`cff::subset_cid`, glyph ids kept)
     /// when `ExportOptions::subset_fonts` is on; name-keyed OpenType-CFF is embedded whole.
-    /// `widths` and `to_unicode` take glyph ids in both cases.
+    /// `widths` and `to_unicode` take glyph ids in both cases; as in [`Self::embed_truetype`] the
+    /// `/W` values are the font's own `hmtx` advances.
     pub fn embed_font(&mut self, bytes: &[u8], face_index: u32, widths: &[(u16, u16)], to_unicode: &[(u16, &str)]) -> Result<FontHandle> {
         let facts = sfnt::read(bytes, face_index)?;
         let Some((cs, ce)) = facts.cff else {
@@ -1835,6 +1907,9 @@ impl PdfExport {
         if to_unicode.iter().any(|(_, t)| t.is_empty() || t.chars().count() > MAX_GLYPH_TEXT) {
             return Err(ExportError::ToUnicodeInvalid);
         }
+        let advances = std::rc::Rc::new(sfnt::advances(bytes, &facts)?);
+        let program_widths: Vec<(u16, u16)> = widths.iter().map(|(g, _)| (*g, advances.get(usize::from(*g)).copied().unwrap_or(0))).collect();
+        let widths = program_widths.as_slice();
         let map = cf.cid_keyed.then(|| std::rc::Rc::new(cf.gid_to_cid.clone()));
         let code = |g: u16| map.as_ref().and_then(|m| m.get(usize::from(g)).copied()).unwrap_or(g);
         let cid_widths: Vec<(u16, u16)> = widths.iter().map(|(g, w)| (code(*g), *w)).collect();
@@ -1907,7 +1982,7 @@ impl PdfExport {
         self.insert(cid_num, Object::Dict(cid));
         self.insert(tu_num, tu_stream);
         self.insert(type0, Object::Dict(t0));
-        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: map, file });
+        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: map, file, advances });
         Ok(FontHandle(self.fonts.len().saturating_sub(1)))
     }
 
@@ -1944,6 +2019,225 @@ impl PdfExport {
         body.push(op("ET", vec![]));
         self.draw(page, body, icc)?;
         self.top_mut(page)?.fonts.insert(font.0);
+        Ok(())
+    }
+
+    /// Shows glyphs like [`Self::show_glyphs`] (same inputs, same refusals), written as text runs:
+    /// consecutive glyphs on one baseline share one text matrix and one `TJ` array, and the
+    /// difference between the font program's advance (`/W`) and the caller's next position is a
+    /// `TJ` adjustment in thousandths of the text size (positive moves left), so kerning and
+    /// justification stay in the content stream exactly while `/W` stays the program's width. A
+    /// glyph on another baseline starts a new text matrix (lane SMB-LAYOUT-LONGDOC-2).
+    pub fn show_glyph_run(&mut self, page: PageHandle, font: FontHandle, size_pt: f64, origin_pt: [f64; 2], fill: Colour, glyphs: &[(u16, f64, f64)]) -> Result<()> {
+        self.page(page)?;
+        let f = self.fonts.get(font.0).ok_or(ExportError::NoSuchFont)?;
+        finite(&[size_pt, origin_pt[0], origin_pt[1]])?;
+        if size_pt <= 0.0 {
+            return Err(ExportError::InvalidSize);
+        }
+        if glyphs.iter().any(|(g, ..)| *g >= f.num_glyphs) {
+            return Err(ExportError::FontGlyphOutOfRange);
+        }
+        let advances = f.advances.clone();
+        let map = f.gid_to_cid.clone();
+        if let Some(file) = f.file.and_then(|i| self.subset_files.get_mut(i)) {
+            file.used.extend(glyphs.iter().map(|(g, ..)| *g));
+        }
+        if glyphs.is_empty() {
+            return Ok(());
+        }
+        let (mut body, icc) = self.colour_ops(&fill, false)?;
+        body.push(op("BT", vec![]));
+        body.push(op("Tf", vec![Object::Name(format!("F{}", font.0).into_bytes()), real(size_pt)]));
+        let code = |g: u16| map.as_ref().and_then(|m| m.get(usize::from(g)).copied()).unwrap_or(g);
+        let mut i = 0usize;
+        while let Some(&(g0, x0, y0)) = glyphs.get(i) {
+            let (gx, gy) = (origin_pt[0] + x0, origin_pt[1] + y0);
+            finite(&[gx, gy])?;
+            body.push(op("Tm", vec![int(1), int(0), int(0), int(1), real(gx), real(gy)]));
+            let mut items = vec![Object::Str(code(g0).to_be_bytes().to_vec())];
+            let mut j = i;
+            while let (Some(&(g, x, _)), Some(&(gn, xn, yn))) = (glyphs.get(j), glyphs.get(j.saturating_add(1))) {
+                if yn.to_bits() != y0.to_bits() {
+                    break;
+                }
+                let w = f64::from(advances.get(usize::from(g)).copied().unwrap_or(0));
+                let adjust = (x + w * size_pt / 1000.0 - xn) * 1000.0 / size_pt;
+                finite(&[adjust, origin_pt[0] + xn])?;
+                if adjust.abs() > 1e-6 {
+                    items.push(real(adjust));
+                }
+                items.push(Object::Str(code(gn).to_be_bytes().to_vec()));
+                j = j.saturating_add(1);
+            }
+            body.push(op("TJ", vec![Object::Array(items)]));
+            i = j.saturating_add(1);
+        }
+        body.push(op("ET", vec![]));
+        self.draw(page, body, icc)?;
+        self.top_mut(page)?.fonts.insert(font.0);
+        Ok(())
+    }
+
+    /// Sets the document's page labels (ISO 32000 12.4.2 `/PageLabels`, lane SMB-LAYOUT-LONGDOC-2):
+    /// the first range starts at page 0, ranges ascend strictly and name pages already added,
+    /// starts are at least 1, prefixes are text strings. Refusals: `ValueOutOfRange` (order, start,
+    /// empty list), `NoSuchPage`, `TextTooLong`. Replaces earlier labels.
+    pub fn set_page_labels(&mut self, ranges: &[PageLabelRange<'_>]) -> Result<()> {
+        let mut out = Vec::with_capacity(ranges.len());
+        let mut previous: Option<usize> = None;
+        for r in ranges {
+            let first_ok = match previous {
+                None => r.first_page == 0,
+                Some(p) => r.first_page > p,
+            };
+            if !first_ok || r.start == 0 {
+                return Err(ExportError::ValueOutOfRange);
+            }
+            if r.first_page >= self.pages.len() {
+                return Err(ExportError::NoSuchPage);
+            }
+            out.push((r.first_page, r.style, text_bytes(r.prefix)?, r.start));
+            previous = Some(r.first_page);
+        }
+        if out.is_empty() {
+            return Err(ExportError::ValueOutOfRange);
+        }
+        self.page_labels = out;
+        Ok(())
+    }
+
+    /// Sets the document outline (bookmarks, ISO 32000 12.3.3, lane SMB-LAYOUT-LONGDOC-2) from
+    /// entries in document order: the first entry is level 1, a level is at most one deeper than the
+    /// previous entry's, at most `MAX_OUTLINE_DEPTH` levels and `MAX_OUTLINE_ENTRIES` entries;
+    /// every page exists and every top is finite. Every node is written open. Refusals:
+    /// `ValueOutOfRange`, `NoSuchPage`, `NonFinite`, `TextTooLong`, `TooManyObjects`. Replaces an
+    /// earlier outline.
+    pub fn set_outline(&mut self, entries: &[OutlineEntry<'_>]) -> Result<()> {
+        if entries.len() > MAX_OUTLINE_ENTRIES {
+            return Err(ExportError::TooManyObjects);
+        }
+        let mut nodes: Vec<OutlineNode> = Vec::with_capacity(entries.len());
+        // Open ancestors by level: stack[d] = node at level d + 1.
+        let mut stack: Vec<usize> = Vec::new();
+        for e in entries {
+            if e.level == 0 || e.level > MAX_OUTLINE_DEPTH {
+                return Err(ExportError::ValueOutOfRange);
+            }
+            let depth = usize::try_from(e.level).map_err(|_| ExportError::ValueOutOfRange)?.saturating_sub(1);
+            if depth > stack.len() {
+                return Err(ExportError::ValueOutOfRange);
+            }
+            if e.page.0 >= self.pages.len() {
+                return Err(ExportError::NoSuchPage);
+            }
+            if let Some(t) = e.top_pt {
+                finite(&[t])?;
+            }
+            stack.truncate(depth);
+            let me = nodes.len();
+            let parent = stack.last().copied();
+            if let Some(p) = parent.and_then(|p| nodes.get_mut(p)) {
+                p.children.push(me);
+            }
+            nodes.push(OutlineNode { title: text_bytes(e.title)?, page: e.page.0, top: e.top_pt, parent, children: Vec::new() });
+            stack.push(me);
+        }
+        self.outline = nodes;
+        Ok(())
+    }
+
+    /// The `/PageLabels` and `/Outlines` catalog entries (objects for the outline).
+    fn write_labels_and_outline(&mut self, cat: &mut Dict, page_objs: &[u32]) -> Result<()> {
+        if !self.page_labels.is_empty() {
+            let mut nums = Vec::with_capacity(self.page_labels.len().saturating_mul(2));
+            for (first, style, prefix, start) in &self.page_labels {
+                let mut d = Dict::default();
+                d.set("Type", name("PageLabel"));
+                if let Some(s) = style {
+                    d.set(
+                        "S",
+                        name(match s {
+                            PageLabelStyle::Decimal => "D",
+                            PageLabelStyle::UpperRoman => "R",
+                            PageLabelStyle::LowerRoman => "r",
+                            PageLabelStyle::UpperLetters => "A",
+                            PageLabelStyle::LowerLetters => "a",
+                        }),
+                    );
+                }
+                if !matches!(prefix, Object::Str(p) if p.is_empty()) {
+                    d.set("P", prefix.clone());
+                }
+                if *start != 1 {
+                    d.set("St", int(*start));
+                }
+                nums.push(int(i64::try_from(*first).map_err(|_| ExportError::TooManyPages)?));
+                nums.push(Object::Dict(d));
+            }
+            let mut tree = Dict::default();
+            tree.set("Nums", Object::Array(nums));
+            cat.set("PageLabels", Object::Dict(tree));
+        }
+        if self.outline.is_empty() {
+            return Ok(());
+        }
+        self.reserve(u32::try_from(self.outline.len().saturating_add(1)).map_err(|_| ExportError::TooManyObjects)?)?;
+        let root = self.alloc();
+        let nums: Vec<u32> = (0..self.outline.len()).map(|_| self.alloc()).collect();
+        // Descendant counts (all open), children before parents (children come later in order).
+        let mut counts = vec![0i64; self.outline.len()];
+        for i in (0..self.outline.len()).rev() {
+            let c: i64 = self.outline[i].children.iter().map(|&k| counts[k].saturating_add(1)).sum();
+            counts[i] = c;
+        }
+        let tops: Vec<usize> = (0..self.outline.len()).filter(|&i| self.outline[i].parent.is_none()).collect();
+        let siblings = |list: &[usize], at: usize| -> (Option<usize>, Option<usize>) {
+            let pos = list.iter().position(|&x| x == at);
+            (pos.and_then(|p| p.checked_sub(1)).and_then(|p| list.get(p).copied()), pos.and_then(|p| list.get(p.saturating_add(1)).copied()))
+        };
+        let mut objs = Vec::with_capacity(self.outline.len());
+        for (i, n) in self.outline.iter().enumerate() {
+            let mut d = Dict::default();
+            d.set("Title", n.title.clone());
+            d.set("Parent", rf(n.parent.map_or(root, |p| nums[p])));
+            let list: &[usize] = match n.parent {
+                Some(p) => &self.outline[p].children,
+                None => &tops,
+            };
+            let (prev, next) = siblings(list, i);
+            if let Some(p) = prev {
+                d.set("Prev", rf(nums[p]));
+            }
+            if let Some(x) = next {
+                d.set("Next", rf(nums[x]));
+            }
+            if let (Some(f), Some(l)) = (n.children.first(), n.children.last()) {
+                d.set("First", rf(nums[*f]));
+                d.set("Last", rf(nums[*l]));
+                d.set("Count", Object::Int(counts[i]));
+            }
+            let page = rf(page_objs.get(n.page).copied().ok_or(ExportError::NoSuchPage)?);
+            let dest = match n.top {
+                Some(t) => vec![page, name("XYZ"), Object::Null, real(t), Object::Null],
+                None => vec![page, name("Fit")],
+            };
+            d.set("Dest", Object::Array(dest));
+            objs.push((nums[i], Object::Dict(d)));
+        }
+        for (num, o) in objs {
+            self.insert(num, o);
+        }
+        let mut r = Dict::default();
+        r.set("Type", name("Outlines"));
+        if let (Some(f), Some(l)) = (tops.first(), tops.last()) {
+            r.set("First", rf(nums[*f]));
+            r.set("Last", rf(nums[*l]));
+        }
+        let total: i64 = tops.iter().map(|&t| counts[t].saturating_add(1)).sum();
+        r.set("Count", Object::Int(total));
+        self.insert(root, Object::Dict(r));
+        cat.set("Outlines", rf(root));
         Ok(())
     }
 
@@ -1992,6 +2286,8 @@ impl PdfExport {
         let mut cat = Dict::default();
         cat.set("Type", name("Catalog"));
         cat.set("Pages", rf(self.pages_root));
+        let page_objs: Vec<u32> = pages.iter().map(|p| p.page_obj).collect();
+        self.write_labels_and_outline(&mut cat, &page_objs)?;
         if let Some(oi) = self.output_intent.take() {
             let mut intents = vec![Object::Dict(oi.clone())];
             // PDF/A-2 6.2.3: a GTS_PDFA1 intent beside GTS_PDFX, same DestOutputProfile reference.

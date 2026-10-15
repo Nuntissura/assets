@@ -120,6 +120,28 @@ pub(super) fn read(font: &[u8], face_index: u32) -> Result<FontFacts, ExportErro
     Ok(FontFacts { num_glyphs, units_per_em, bbox, ascent, descent, cap_height, ps_name: ps_name(font), cff })
 }
 
+/// Advance width of every glyph in 1/1000 em (rounded), from `hhea.numberOfHMetrics` and `hmtx`
+/// (OpenType: glyphs past the last long metric repeat its advance). This is the width the font
+/// program states, so `/W` built from it agrees with the program (ISO 19005-2 6.2.11.5). The table
+/// is `num_glyphs` long (bounded by `maxp`, at most 65535 entries); a short `hmtx` is refused.
+pub(super) fn advances(font: &[u8], facts: &FontFacts) -> Result<Vec<u16>, ExportError> {
+    let hhea = table(font, b"hhea").ok_or(BAD)?;
+    let long = usize::from(be16(hhea, 34).ok_or(BAD)?);
+    let hmtx = table(font, b"hmtx").ok_or(BAD)?;
+    if long == 0 || long.checked_mul(4).is_none_or(|n| n > hmtx.len()) {
+        return Err(BAD);
+    }
+    let upem = f64::from(facts.units_per_em);
+    let mut out = Vec::with_capacity(usize::from(facts.num_glyphs));
+    for g in 0..usize::from(facts.num_glyphs) {
+        let i = g.min(long.saturating_sub(1));
+        let adv = be16(hmtx, i.checked_mul(4).ok_or(BAD)?).ok_or(BAD)?;
+        let w = (f64::from(adv) * 1000.0 / upem).round();
+        out.push(if (0.0..=65535.0).contains(&w) { w as u16 } else { u16::MAX });
+    }
+    Ok(out)
+}
+
 /// `name` id 6 (Windows Unicode UTF-16BE, else Macintosh Roman ASCII), kept only when every char
 /// is a PDF-name-safe ASCII letter, digit, `-` or `_`.
 fn ps_name(font: &[u8]) -> Option<String> {
