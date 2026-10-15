@@ -4,6 +4,7 @@
 //! refused, no external reference is ever followed, the node count is bounded. Everything outside
 //! the subset stays verbatim in the package (and in `Opaque` children of the model) and is listed in
 //! the typed loss report.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::container;
 use crate::ids::IdMint;
 use crate::model::*;
@@ -26,10 +27,8 @@ const DESIGNMAP: &str = "designmap.xml";
 pub(crate) struct LossBook(BTreeMap<(String, String, LossKind, &'static str), u32>);
 impl LossBook {
     pub(crate) fn note(&mut self, part: &str, element: &str, kind: LossKind, code: &'static str) {
-        *self
-            .0
-            .entry((part.to_owned(), element.to_owned(), kind, code))
-            .or_insert(0) += 1;
+        let count = self.0.entry((part.to_owned(), element.to_owned(), kind, code)).or_insert(0);
+        *count = count.saturating_add(1);
     }
     pub(crate) fn finish(self) -> Vec<LossEntry> {
         self.0
@@ -107,8 +106,8 @@ const RUN_OVERHEAD: u64 = 192;
 /// What canonical export writes for one use of a range's shared data: style name, attributes and
 /// verbatim `Properties` XML.
 fn range_weight(style: &str, attrs: &Attrs, props: Option<&Opaque>) -> u64 {
-    let attrs: usize = attrs.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
-    (style.len() + attrs + props.map_or(0, |p| p.xml.len())) as u64
+    let attrs = attrs.iter().fold(0u64, |sum, (k, v)| sum.saturating_add(k.len() as u64).saturating_add(v.len() as u64).saturating_add(4));
+    (style.len() as u64).saturating_add(attrs).saturating_add(props.map_or(0, |p| p.xml.len() as u64))
 }
 fn link(v: Option<&str>) -> Option<String> {
     v.filter(|s| !s.is_empty() && *s != "n").map(str::to_owned)
@@ -834,7 +833,7 @@ impl StoryBuilder<'_> {
                     )?;
                     if let Some(p) = self.paras.last_mut() {
                         p.runs.push(run);
-                        unterminated = Some(p.runs.len() - 1);
+                        unterminated = p.runs.len().checked_sub(1);
                     }
                 }
                 "Br" => {
@@ -1011,7 +1010,7 @@ pub(crate) fn thread_chains(
                     return Err(IdmlError::CyclicThread);
                 }
             }
-            visited += chain.len();
+            visited = visited.saturating_add(chain.len());
             chains.push(chain);
         }
     }

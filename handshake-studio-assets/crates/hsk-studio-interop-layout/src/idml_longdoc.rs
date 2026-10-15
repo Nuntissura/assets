@@ -48,6 +48,7 @@
 //! cells are losses, never recursion; every fragment is parsed with the package XML limits; the
 //! result is re-validated by Folio (`validate_document`, `validate_text_story`,
 //! `validate_longdoc_records`).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::folio_export::{ExportNames, FolioExport, FolioExportInput, StoryInput, finish, folio_model, opaque};
 use crate::idml_decode::{IDPKG_NS, LossBook, canceled, parse_xml, text_of};
 use crate::idml_encode::{esc, num};
@@ -383,7 +384,7 @@ impl Importer<'_> {
         }
         let n = paras.len();
         for (i, p) in paras.iter_mut().enumerate() {
-            if i + 1 < n {
+            if i.saturating_add(1) < n {
                 p.0.push('\n');
             }
         }
@@ -454,9 +455,9 @@ fn table_of(imp: &mut Importer<'_>, part: &str, xml: &str, host: &str, anchor: u
     let (mut nrows, mut ncols, mut ncells) = (0usize, 0usize, 0usize);
     for c in kids(t) {
         match tag(c) {
-            "Row" => nrows += 1,
-            "Column" => ncols += 1,
-            "Cell" => ncells += 1,
+            "Row" => nrows = nrows.saturating_add(1),
+            "Column" => ncols = ncols.saturating_add(1),
+            "Cell" => ncells = ncells.saturating_add(1),
             _ => {}
         }
     }
@@ -514,7 +515,7 @@ fn table_of(imp: &mut Importer<'_>, part: &str, xml: &str, host: &str, anchor: u
     // Anchor cells. A Cell element on a slot an earlier span took is the covered placeholder
     // (InDesign may or may not write it) and is skipped; a span past the grid edge or over another
     // anchor refuses the table at the first offending slot (at most nrows * ncols marks in total).
-    let mut taken = vec![false; nrows * ncols];
+    let mut taken = vec![false; nrows.saturating_mul(ncols)];
     let mut cells = Vec::new();
     let mut texts: Vec<Option<Vec<(String, String)>>> = Vec::new();
     for c in kids(t).filter(|c| tag(*c) == "Cell") {
@@ -523,7 +524,7 @@ fn table_of(imp: &mut Importer<'_>, part: &str, xml: &str, host: &str, anchor: u
             imp.loss.note(part, "Cell", LossKind::Unsupported, "cell_name_invalid");
             continue;
         };
-        if (row as usize) < nrows && (col as usize) < ncols && taken[row as usize * ncols + col as usize] {
+        if (row as usize) < nrows && (col as usize) < ncols && (row as usize).checked_mul(ncols).and_then(|i| i.checked_add(col as usize)).and_then(|i| taken.get(i)).copied().unwrap_or(false) {
             continue;
         }
         // A span that is present but not a positive u32 is refused, never read as 1.
@@ -535,7 +536,7 @@ fn table_of(imp: &mut Importer<'_>, part: &str, xml: &str, host: &str, anchor: u
         }
         for r in row as usize..r1 as usize {
             for k in col as usize..c1 as usize {
-                let slot = &mut taken[r * ncols + k];
+                let Some(slot) = r.checked_mul(ncols).and_then(|i| i.checked_add(k)).and_then(|i| taken.get_mut(i)) else { return refuse(imp, "span_overflow") };
                 if *slot {
                     return refuse(imp, "cells_overlap");
                 }
@@ -599,10 +600,10 @@ fn table_of(imp: &mut Importer<'_>, part: &str, xml: &str, host: &str, anchor: u
         let start = at;
         let n = paras.len();
         for (i, (mut text, style)) in paras.into_iter().enumerate() {
-            if i + 1 < n {
+            if i.saturating_add(1) < n {
                 text.push('\n');
             }
-            at += text.len();
+            at = at.saturating_add(text.len());
             pieces.push((text, style));
         }
         cell.content = Some(StudioByteRange { start: start as u64, end: at as u64 });
@@ -1000,7 +1001,7 @@ pub fn import_longdoc(import: &IdmlImport, limits: &Limits, mint: &mut dyn IdMin
                     (el, _) => imp.loss.note(&st.part, el, LossKind::Unsupported, "inline_object_out_of_place"),
                 }
             }
-            at += run.text.len() as u64 + u64::from(run.br);
+            at = at.saturating_add(run.text.len() as u64).saturating_add(u64::from(run.br));
         }
     }
     let mut endnote_keys = BTreeSet::new();
@@ -1138,7 +1139,7 @@ impl Writer<'_> {
         if let Some(s) = self.swatches.get(&value) {
             return s.clone();
         }
-        let n = self.swatches.len() + 1;
+        let n = self.swatches.len().saturating_add(1);
         let id = format!("Color/hsk{n}");
         let _ = writeln!(self.swatch_xml, "<Color Self=\"{id}\" Model=\"Process\" Space=\"RGB\" ColorValue=\"{value}\" Name=\"hsk{n}\"/>");
         self.swatches.insert(value, id.clone());
@@ -1161,9 +1162,9 @@ impl Writer<'_> {
                 esc(NO_CHARACTER_STYLE, true),
                 if i == 0 { first_prefix } else { "" },
                 esc(piece, false),
-                if i + 1 < n { "<Br/>" } else { "" }
+                if i.saturating_add(1) < n { "<Br/>" } else { "" }
             );
-            pos += piece.len() as u64 + 1;
+            pos = pos.saturating_add(piece.len() as u64).saturating_add(1);
         }
         out
     }
@@ -1303,7 +1304,7 @@ fn insert_inline(st: &mut StoryModel, mut items: Vec<(u64, Opaque)>, loss: &mut 
             let (len, br) = (run.text.len() as u64, run.br);
             let mut cut = 0usize;
             let mut split = false;
-            while items.peek().is_some_and(|(a, _)| *a <= off + len) {
+            while items.peek().is_some_and(|(a, _)| *a <= off.saturating_add(len)) {
                 let Some((a, obj)) = items.next() else { break };
                 let k = usize::try_from(a.saturating_sub(off)).map_err(|_| bad.clone())?;
                 if !run.text.is_char_boundary(k) {
@@ -1321,7 +1322,7 @@ fn insert_inline(st: &mut StoryModel, mut items: Vec<(u64, Opaque)>, loss: &mut 
             } else if cut < run.text.len() || br {
                 out.push(RunModel { text: run.text[cut..].to_owned(), span: None, inline: None, ..run });
             }
-            off += len + u64::from(br);
+            off = off.saturating_add(len).saturating_add(u64::from(br));
         }
         para.runs = out;
     }
@@ -1557,14 +1558,14 @@ pub fn export_folio_longdoc(input: &FolioExportInput, longdoc: &LongDocExportInp
         }
     }
     if !endnote_ranges.is_empty() {
-        let id = format!("ua{:x}", stories.len() + 1);
+        let id = format!("ua{:x}", stories.len().saturating_add(1));
         let n = endnote_ranges.len();
         let paragraphs = endnote_ranges
             .into_iter()
             .enumerate()
             .map(|(i, obj)| {
                 let mut runs = vec![object_run(obj)];
-                if i + 1 < n {
+                if i.saturating_add(1) < n {
                     runs.push(RunModel { br: true, inline: None, ..object_run(opaque("Br", String::new())) });
                 }
                 ParaModel { style: NO_PARAGRAPH_STYLE.into(), attrs: Arc::new(Attrs::new()), props: None, runs }
@@ -1591,7 +1592,7 @@ pub fn export_folio_longdoc(input: &FolioExportInput, longdoc: &LongDocExportInp
         let (_, si, at) = built.pages.get(&g.page_id).cloned().ok_or(IdmlError::Folio(Code::DanglingReference))?;
         let name = d.layers.iter().find(|l| l.layer_id == g.layer_id).map_or("Graphic frame", |l| l.name.as_str());
         let part = built.model.spreads[si].part.clone();
-        let item = graphic_xml(g, name, n + 1, at, &mut w, &part)?;
+        let item = graphic_xml(g, name, n.saturating_add(1), at, &mut w, &part)?;
         built.model.spreads[si].items.push(SpreadItem::Opaque(item));
     }
     // Designmap: sections, text variables, resource parts; preferences.
