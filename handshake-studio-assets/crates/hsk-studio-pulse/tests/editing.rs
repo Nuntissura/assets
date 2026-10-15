@@ -122,6 +122,7 @@ fn sequence(tracks: Vec<StudioTrack>) -> StudioSequence {
         duration: Ticks::new(0),
         tracks,
         markers: Vec::new(),
+        work_area: None,
     };
     seq.duration = seq.content_end().unwrap();
     seq
@@ -648,10 +649,9 @@ fn hostile_assembly_input_is_refused_typed_before_work() {
     });
 }
 
-fn marker(id: &str, scope: MarkerScope, start: u64, frames: u64) -> Marker {
-    Marker {
+fn marker(id: &str, start: u64, frames: u64) -> StudioMarker {
+    StudioMarker {
         marker_id: id.into(),
-        scope,
         name: "note".into(),
         comment: String::new(),
         color: LabelColor::Rose,
@@ -659,6 +659,12 @@ fn marker(id: &str, scope: MarkerScope, start: u64, frames: u64) -> Marker {
         duration: Ticks::new(frames * F),
         role: None,
     }
+}
+fn record(snap: &Snapshot, e: &RecordEdit) -> Result<EditProposal> {
+    ctx_run(|ctx| plan_record_edit(snap, "seq-main", snap.document().revision, e, ctx))
+}
+fn add(scope: MarkerScope, m: StudioMarker) -> RecordEdit {
+    RecordEdit::AddMarker { scope, marker: m }
 }
 
 #[test]
@@ -670,48 +676,43 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
             numerator: -1,
             denominator: 1,
         };
-        let snap = snapshot_of(reversed, 3);
-        let seq = &snap.document().sequences[0];
-        let spans = |s: &StudioSequence, a: &TimelineAnnotations| -> Vec<(String, u64, u64)> {
-            marker_spans(s, a, &cancel)
+        let spans = |s: &StudioSequence| -> Vec<(String, u64, u64)> {
+            marker_spans(s, &cancel)
                 .unwrap()
                 .into_iter()
                 .map(|(id, r)| (id, r.start().value() / F, r.end().value() / F))
                 .collect()
         };
-
-        // A sequence chapter marker spanning frames 12..15, a clip marker on A at source 6..8 and
-        // a point marker on the reversed clip D (source 0..2 plays at 12..14 backwards).
-        let mut chapter = marker("mk-seq", MarkerScope::Sequence, 12, 3);
-        chapter.role = Some(MarkerRole::Chapter);
-        let on_a = marker("mk-a", MarkerScope::Clip { clip_id: cid(1) }, 6, 2);
-        let on_d = marker("mk-d", MarkerScope::Clip { clip_id: cid(4) }, 0, 1);
-        let mut ann = TimelineAnnotations::new("seq-main");
-        for (rev, m) in [chapter.clone(), on_a, on_d].into_iter().enumerate() {
-            let p = plan_annotation_edit(
-                &ann,
-                seq,
-                rev as u64,
-                &AnnotationEdit::AddMarker(m),
-                &Extent,
-                &cancel,
-            )
-            .unwrap();
-            ann = p.annotations().clone();
-        }
-        assert_eq!(ann.revision(), 3);
         let want = |v: &[(&str, u64, u64)]| {
             v.iter()
                 .map(|(i, a, b)| ((*i).to_owned(), *a, *b))
                 .collect::<Vec<_>>()
         };
+
+        // Folio's records are the model: a chapter span on the sequence, a span marker on clip A
+        // (source 6..8) and a point marker on the reversed clip D (source 0..2 plays at 12..14
+        // backwards). Each add is one undoable proposal.
+        let mut chapter = marker("mk-seq", 12, 3);
+        chapter.role = Some(MarkerRole::Chapter);
+        let mut snap = snapshot_of(reversed, 3);
+        for e in [
+            add(MarkerScope::Sequence, chapter.clone()),
+            add(MarkerScope::Clip { clip_id: cid(1) }, marker("mk-a", 6, 2)),
+            add(MarkerScope::Clip { clip_id: cid(4) }, marker("mk-d", 0, 1)),
+        ] {
+            snap = record(&snap, &e).unwrap().snapshot().clone();
+        }
+        assert_eq!(snap.document().revision, 6);
+        let seq = snap.document().sequences[0].clone();
+        assert_eq!(seq.markers, vec![chapter.clone()]);
+        assert_eq!(seq.tracks[0].clips[0].markers[0].marker_id, "mk-a");
         assert_eq!(
-            spans(seq, &ann),
+            spans(&seq),
             want(&[("mk-a", 6, 8), ("mk-seq", 12, 15), ("mk-d", 13, 14)])
         );
 
-        // Insert 3 frames at 4: A splits (right half 30 = source 4..10 at 7), so the clip marker
-        // moves to the piece and lands at 9..11; the sequence marker does not move with clips.
+        // Insert 3 frames at 4: A splits (right half 30 = source 4..10 at 7) and the clip marker
+        // moves to the piece holding it (9..11); the sequence marker does not move with clips.
         let insert = assembly(
             AssemblyMode::Insert,
             pts(Some(50), Some(53), Some(4), None),
@@ -720,136 +721,111 @@ fn markers_keep_their_scope_through_edits_with_spans_and_undo() {
         );
         let p = assemble(&snap, &insert).unwrap();
         assert_eq!(p.splits(), &[(cid(1), cid(30))]);
-        let f = follow_timeline_edit(&ann, &p, 3, &Extent, &cancel).unwrap();
-        let moved = f.annotations();
-        assert_eq!(
-            moved.marker("mk-a").unwrap().scope,
-            MarkerScope::Clip { clip_id: cid(30) }
-        );
-        assert!(f.dropped_markers().is_empty());
         let s1 = seq_of(&p);
+        assert!(s1.tracks[0].clips[0].markers.is_empty());
+        assert_eq!(s1.tracks[0].clips[2].clip_id, cid(30));
+        assert_eq!(s1.tracks[0].clips[2].markers[0].marker_id, "mk-a");
         assert_eq!(
-            spans(s1, moved),
+            spans(s1),
             want(&[("mk-a", 9, 11), ("mk-seq", 12, 15), ("mk-d", 13, 14)])
         );
         let at = |f: u64| Ticks::new(f * F);
-        assert_eq!(next_marker(s1, moved, at(0), &cancel).unwrap(), Some(at(9)));
-        assert_eq!(
-            next_marker(s1, moved, at(9), &cancel).unwrap(),
-            Some(at(12))
-        );
-        assert_eq!(
-            prev_marker(s1, moved, at(12), &cancel).unwrap(),
-            Some(at(9))
-        );
-        assert_eq!(next_marker(s1, moved, at(13), &cancel).unwrap(), None);
+        assert_eq!(next_marker(s1, at(0), &cancel).unwrap(), Some(at(9)));
+        assert_eq!(next_marker(s1, at(9), &cancel).unwrap(), Some(at(12)));
+        assert_eq!(prev_marker(s1, at(12), &cancel).unwrap(), Some(at(9)));
+        assert_eq!(next_marker(s1, at(13), &cancel).unwrap(), None);
 
-        // Ripple delete of the piece drops its marker and says so; undo brings it back exactly.
+        // Ripple delete of the piece takes its marker and says so; undo brings it back exactly.
         let ext = edit(
             p.snapshot(),
             &TimelineEdit::ExtractClip { clip_id: cid(30) },
         )
         .unwrap();
-        let g = follow_timeline_edit(moved, &ext, 4, &Extent, &cancel).unwrap();
-        assert_eq!(g.dropped_markers(), &["mk-a".to_owned()]);
-        assert!(g.annotations().marker("mk-a").is_none());
-        let s2 = seq_of(&ext);
-        let undo = plan_annotation_revert(g.annotations(), s2, 5, g.inverse(), &cancel).unwrap();
-        assert_eq!(undo.annotations().markers(), moved.markers());
-        let redo =
-            plan_annotation_revert(undo.annotations(), s2, 6, undo.inverse(), &cancel).unwrap();
-        assert_eq!(redo.annotations().markers(), g.annotations().markers());
-        assert_eq!(
-            plan_annotation_revert(&ann, seq, 3, g.inverse(), &cancel).unwrap_err(),
-            PulseError::RevertMismatch
-        );
+        assert_eq!(ext.removed_markers(), &["mk-a".to_owned()]);
+        let undo = revert(ext.snapshot(), ext.inverse()).unwrap();
+        assert_eq!(seq_of(&undo), s1);
 
-        // Replace moves the chapter; remove; typed refusals.
+        // Replace moves the chapter, remove deletes it; the work area scopes playback.
         let mut later = chapter.clone();
         later.start = at(20);
-        let r = plan_annotation_edit(
-            &ann,
-            seq,
-            3,
-            &AnnotationEdit::ReplaceMarker(later),
-            &Extent,
-            &cancel,
+        let r = record(&snap, &RecordEdit::ReplaceMarker { marker: later }).unwrap();
+        assert_eq!(seq_of(&r).markers[0].start, at(20));
+        let gone = record(
+            &snap,
+            &RecordEdit::RemoveMarker {
+                marker_id: "mk-d".into(),
+            },
         )
         .unwrap();
-        assert_eq!(
-            marker_span(seq, r.annotations().marker("mk-seq").unwrap())
-                .unwrap()
-                .map(|s| s.start()),
-            Some(at(20))
-        );
-        let code = |e: AnnotationEdit| {
-            plan_annotation_edit(&ann, seq, 3, &e, &Extent, &cancel)
-                .unwrap_err()
-                .code()
+        assert_eq!(gone.removed_markers(), &["mk-d".to_owned()]);
+        let area = WorkArea {
+            start: at(2),
+            end: at(10),
         };
+        let wa = record(&snap, &RecordEdit::SetWorkArea(Some(area))).unwrap();
         assert_eq!(
-            code(AnnotationEdit::AddMarker(chapter.clone())),
+            play_range(seq_of(&wa)).unwrap(),
+            TickRange::new(at(2), at(10)).unwrap()
+        );
+
+        // Typed refusals; nothing is proposed.
+        let code = |e: RecordEdit| record(&snap, &e).unwrap_err().code();
+        assert_eq!(
+            code(add(MarkerScope::Sequence, chapter.clone())),
             "duplicate_id"
         );
         assert_eq!(
-            code(AnnotationEdit::RemoveMarker {
+            code(RecordEdit::RemoveMarker {
                 marker_id: "nope".into()
             }),
             "unknown_marker"
         );
         assert_eq!(
-            code(AnnotationEdit::ReplaceMarker(chapter.clone())),
+            code(RecordEdit::ReplaceMarker {
+                marker: chapter.clone()
+            }),
             "no_change"
         );
         assert_eq!(
-            code(AnnotationEdit::AddMarker(marker(
-                "x",
+            code(add(
                 MarkerScope::Clip { clip_id: cid(99) },
-                0,
-                0
-            ))),
+                marker("x", 0, 0)
+            )),
             "unknown_clip"
         );
-        let mut odd = marker("x", MarkerScope::Sequence, 1, 0);
+        let mut odd = marker("x", 1, 0);
         odd.start = Ticks::new(F + 1);
-        assert_eq!(code(AnnotationEdit::AddMarker(odd)), "not_frame_aligned");
-        let mut far = marker("x", MarkerScope::Clip { clip_id: cid(1) }, 0, 0);
+        assert_eq!(code(add(MarkerScope::Sequence, odd)), "not_frame_aligned");
+        let mut far = marker("x", 0, 0);
         far.start = Ticks::new(u64::MAX);
         far.duration = Ticks::new(1);
-        assert_eq!(code(AnnotationEdit::AddMarker(far)), "overflow");
-        let mut bad = marker("x\u{7}", MarkerScope::Sequence, 0, 0);
         assert_eq!(
-            code(AnnotationEdit::AddMarker(bad.clone())),
-            "invalid_input"
+            code(add(MarkerScope::Clip { clip_id: cid(1) }, far)),
+            "overflow"
         );
-        bad.marker_id = "x".into();
-        bad.name = "n".repeat(MAX_ANNOTATION_TEXT_BYTES + 1);
-        assert_eq!(code(AnnotationEdit::AddMarker(bad)), "invalid_input");
+        let mut bad = marker("x", 0, 0);
+        bad.name = "bell\u{7}".into();
+        assert_eq!(code(add(MarkerScope::Sequence, bad)), "folio_rejected");
+        let backwards = WorkArea {
+            start: at(10),
+            end: at(10),
+        };
         assert_eq!(
-            plan_annotation_edit(
-                &ann,
-                seq,
-                2,
-                &AnnotationEdit::RemoveMarker {
-                    marker_id: "mk-seq".into()
-                },
-                &Extent,
-                &cancel
-            )
-            .unwrap_err(),
-            PulseError::StaleRevision
+            code(RecordEdit::SetWorkArea(Some(backwards))),
+            "invalid_range"
         );
-        // A stored set over the bound is refused on its length before any marker is checked.
-        let many = vec![marker("same", MarkerScope::Sequence, 0, 0); MAX_MARKERS + 1];
+        let ragged = WorkArea {
+            start: at(1),
+            end: Ticks::new(10 * F + 3),
+        };
         assert_eq!(
-            TimelineAnnotations::from_parts(seq, 0, many, vec![], &Extent, &cancel).unwrap_err(),
-            PulseError::LimitExceeded
+            code(RecordEdit::SetWorkArea(Some(ragged))),
+            "not_frame_aligned"
         );
-        let dup = vec![marker("same", MarkerScope::Sequence, 0, 0); 2];
-        assert_eq!(
-            TimelineAnnotations::from_parts(seq, 0, dup, vec![], &Extent, &cancel).unwrap_err(),
-            PulseError::DuplicateId
-        );
+        let stale = ctx_run(|ctx| {
+            plan_record_edit(&snap, "seq-main", 2, &RecordEdit::SetWorkArea(None), ctx)
+        });
+        assert_eq!(stale.unwrap_err(), PulseError::StaleRevision);
     });
 }
 
@@ -982,16 +958,22 @@ mod render {
     }
 }
 
-fn dissolve(id: &str, out: u32, inc: u32, frames: u64) -> Transition {
-    Transition {
+fn dissolve(id: &str, frames: u64) -> TimelineTransition {
+    TimelineTransition {
+        schema_id: TransitionSchema::V1,
         transition_id: id.into(),
-        kind: TransitionKind::CrossDissolve,
-        outgoing_clip_id: cid(out),
-        incoming_clip_id: cid(inc),
+        transition_kind: CROSS_DISSOLVE.into(),
         duration: Ticks::new(frames * F),
         alignment: TransitionAlignment::CenteredOnCut,
         center_offset: 0,
+        parameters: Vec::new(),
         repeat_end_frame: false,
+    }
+}
+fn set(out: u32, t: Option<TimelineTransition>) -> RecordEdit {
+    RecordEdit::SetTransition {
+        outgoing_clip_id: cid(out),
+        transition: t.map(Box::new),
     }
 }
 
@@ -1020,45 +1002,33 @@ fn cross_dissolve_frame_matches_hand_computed_blend() {
             ])
         };
         let snap = snapshot_of(cut_seq(100), 3);
-        let seq = &snap.document().sequences[0];
-        let ann = TimelineAnnotations::new("seq-main");
-        let add = |a: &TimelineAnnotations, s: &StudioSequence, t: Transition| {
-            plan_annotation_edit(
-                a,
-                s,
-                a.revision(),
-                &AnnotationEdit::AddTransition(t),
-                &Extent,
-                &cancel,
-            )
-        };
 
-        // A 10-frame cross dissolve centred on the cut covers frames 15..25.
-        let t1 = dissolve("t1", 1, 2, 10);
-        let placed = transition_placement(seq, &t1).unwrap();
+        // A 10-frame cross dissolve centred on the cut, stored as A's tail: frames 15..25.
+        let p = record(&snap, &set(1, Some(dissolve("t1", 10)))).unwrap();
+        let seq = seq_of(&p);
+        assert_eq!(
+            seq.tracks[0].clips[0]
+                .transitions
+                .tail
+                .as_ref()
+                .unwrap()
+                .transition_id,
+            "t1"
+        );
+        let placed = transition_placement(seq, &cid(1)).unwrap();
         assert_eq!(
             (placed.span.start().value(), placed.span.end().value()),
             (15 * F, 25 * F)
         );
-        let handles = transition_handles(seq, &t1, &Extent).unwrap();
+        let handles = transition_handles(seq, &cid(1), &Extent).unwrap();
         assert_eq!(handles.outgoing_required.value(), 5 * F);
         assert_eq!(handles.incoming_available, Some(Ticks::new(100 * F)));
-        let p = add(&ann, seq, t1.clone()).unwrap();
-        let with_t1 = p.annotations().clone();
 
         // Frame 18: progress 3/10, A plays source frame 18, B plays its handle at source frame 98.
-        let at = |s: &StudioSequence, a: &TimelineAnnotations, frame: u64| {
-            transition_frame(
-                s,
-                a.transitions(),
-                &tid(1),
-                Ticks::new(frame * F),
-                &Extent,
-                &cancel,
-            )
-            .unwrap()
+        let at = |s: &StudioSequence, frame: u64| {
+            transition_frame(s, &tid(1), Ticks::new(frame * F), &Extent, &cancel).unwrap()
         };
-        let f18 = at(seq, &with_t1, 18).expect("inside the dissolve");
+        let f18 = at(seq, 18).expect("inside the dissolve");
         assert_eq!(
             (f18.progress_numerator, f18.progress_denominator),
             (3 * F, 10 * F)
@@ -1068,11 +1038,20 @@ fn cross_dissolve_frame_matches_hand_computed_blend() {
             (18 * F, 98 * F)
         );
         assert!(!f18.outgoing_held && !f18.incoming_held);
-        assert_eq!(at(seq, &with_t1, 14), None);
-        assert_eq!(at(seq, &with_t1, 25), None);
+        assert_eq!(at(seq, 14), None);
+        assert_eq!(at(seq, 25), None);
 
-        // Rendered through composite's scene path on the CPU backend vs the hand blend
-        // (1 - p) * out + p * in.
+        // The program frame at 18 (frame_layers: A then B at weight 3/10) rendered through
+        // composite's scene path on the CPU backend vs the hand blend (1 - p) * out + p * in.
+        let layers = frame_layers(seq, Ticks::new(18 * F), &Extent, &cancel).unwrap();
+        assert_eq!(
+            layers.iter().map(|l| l.clip_id.clone()).collect::<Vec<_>>(),
+            vec![cid(1), cid(2)]
+        );
+        assert_eq!(
+            (layers[0].weight, layers[1].source_tick.value()),
+            (1.0, 98 * F)
+        );
         let out = render::Frame::solid("out", [0.8, 0.2, 0.1]);
         let inc = render::Frame::solid("in", [0.1, 0.4, 0.9]);
         let close = |got: [f32; 4], want: [f32; 4]| {
@@ -1082,97 +1061,123 @@ fn cross_dissolve_frame_matches_hand_computed_blend() {
             );
         };
         close(
-            render::dissolve(&out, &inc, f18.incoming_weight()),
+            render::dissolve(&out, &inc, layers[1].weight),
             [0.59, 0.26, 0.34, 1.0],
         );
-        let f15 = at(seq, &with_t1, 15).unwrap();
+        let f15 = at(seq, 15).unwrap();
         close(
             render::dissolve(&out, &inc, f15.incoming_weight()),
             [0.8, 0.2, 0.1, 1.0],
         );
-        let f24 = at(seq, &with_t1, 24).unwrap();
+        let f24 = at(seq, 24).unwrap();
         close(
             render::dissolve(&out, &inc, f24.incoming_weight()),
             [0.17, 0.38, 0.82, 1.0],
         );
 
-        // Audio crossfade on the audio cut; kind/track and adjacency are enforced.
-        let mut fade = dissolve("t2", 3, 6, 4);
-        fade.kind = TransitionKind::AudioCrossfade;
-        let with_both = add(&with_t1, seq, fade).unwrap().annotations().clone();
-        assert_eq!(with_both.transitions().len(), 2);
-        let code = |t: Transition| add(&with_t1, seq, t).unwrap_err().code();
-        assert_eq!(code(dissolve("x", 3, 6, 4)), "invalid_input");
-        assert_eq!(code(dissolve("x", 2, 1, 4)), "not_adjacent");
-        assert_eq!(code(dissolve("x", 1, 2, 4)), "overlap");
-        assert_eq!(code(dissolve("t1", 3, 6, 4)), "duplicate_id");
-        let odd = Transition {
-            duration: Ticks::new(10 * F + 1),
-            ..dissolve("x", 1, 2, 0)
-        };
-        assert_eq!(code(odd), "not_frame_aligned");
-        let long = Transition {
-            alignment: TransitionAlignment::EndAtCut,
-            ..dissolve("x", 1, 2, 30)
-        };
-        assert_eq!(code(long), "outside_range");
-        // Hostile ticks: a whole-frame duration near u64::MAX and an i64::MIN centre offset are
-        // typed refusals.
-        let huge = Transition {
-            duration: Ticks::new(u64::MAX / F * F),
-            ..dissolve("x", 1, 2, 0)
-        };
-        assert_eq!(code(huge), "outside_range");
-        let wild = Transition {
+        // Audio crossfade on the audio cut; kind/track, adjacency, ids and timing are enforced.
+        let mut fade = dissolve("t2", 4);
+        fade.transition_kind = AUDIO_CROSSFADE.into();
+        let both = record(p.snapshot(), &set(3, Some(fade))).unwrap();
+        assert!(seq_of(&both).tracks[1].clips[0].transitions.tail.is_some());
+        let code = |t: RecordEdit| record(p.snapshot(), &t).unwrap_err().code();
+        assert_eq!(code(set(3, Some(dissolve("x", 4)))), "invalid_input");
+        assert_eq!(code(set(2, Some(dissolve("x", 4)))), "not_adjacent");
+        assert_eq!(
+            code(set(
+                3,
+                Some(TimelineTransition {
+                    transition_kind: AUDIO_CROSSFADE.into(),
+                    ..dissolve("t1", 4)
+                })
+            )),
+            "duplicate_id"
+        );
+        assert_eq!(
+            code(set(
+                1,
+                Some(TimelineTransition {
+                    duration: Ticks::new(10 * F + 1),
+                    ..dissolve("x", 0)
+                })
+            )),
+            "not_frame_aligned"
+        );
+        assert_eq!(
+            code(set(
+                1,
+                Some(TimelineTransition {
+                    alignment: TransitionAlignment::EndAtCut,
+                    ..dissolve("x", 30)
+                })
+            )),
+            "outside_range"
+        );
+        // Hostile ticks: a whole-frame duration near u64::MAX and an i64::MIN centre offset.
+        assert_eq!(
+            code(set(
+                1,
+                Some(TimelineTransition {
+                    duration: Ticks::new(u64::MAX / F * F),
+                    ..dissolve("x", 0)
+                })
+            )),
+            "outside_range"
+        );
+        let wild = TimelineTransition {
             alignment: TransitionAlignment::Custom,
             center_offset: i64::MIN,
-            ..dissolve("x", 1, 2, 10)
+            ..dissolve("x", 10)
         };
-        assert_eq!(code(wild), "outside_range");
-        let stray = Transition {
-            center_offset: 1,
-            ..dissolve("x", 1, 2, 10)
-        };
-        assert_eq!(code(stray), "invalid_input");
-        let many = vec![t1.clone(); MAX_TRANSITIONS + 1];
+        assert_eq!(code(set(1, Some(wild))), "outside_range");
         assert_eq!(
-            TimelineAnnotations::from_parts(seq, 0, vec![], many, &Extent, &cancel).unwrap_err(),
-            PulseError::LimitExceeded
+            code(set(
+                1,
+                Some(TimelineTransition {
+                    center_offset: 1,
+                    ..dissolve("x", 10)
+                })
+            )),
+            "invalid_input"
         );
 
-        // Short handle: B starts at source frame 2 but the dissolve needs 5 frames before it.
-        let short_snap = snapshot_of(cut_seq(2), 3);
-        let short = &short_snap.document().sequences[0];
+        // Short handle: B starts at source frame 2 but the dissolve needs 5 frames before it;
+        // the stored repeat_end_frame choice holds source 0 instead.
+        let short = snapshot_of(cut_seq(2), 3);
         assert_eq!(
-            add(&ann, short, t1.clone()).unwrap_err(),
+            record(&short, &set(1, Some(dissolve("t1", 10)))).unwrap_err(),
             PulseError::InsufficientHandle
         );
-        assert_eq!(
-            transition_handles(short, &t1, &Extent).unwrap().shortfall(),
-            (Some(Ticks::new(0)), Some(Ticks::new(3 * F)))
-        );
-        let held = add(
-            &ann,
-            short,
-            Transition {
-                repeat_end_frame: true,
-                ..t1.clone()
-            },
+        let held = record(
+            &short,
+            &set(
+                1,
+                Some(TimelineTransition {
+                    repeat_end_frame: true,
+                    ..dissolve("t1", 10)
+                }),
+            ),
         )
         .unwrap();
-        let f15 = at(short, held.annotations(), 15).unwrap();
+        assert_eq!(
+            transition_handles(seq_of(&held), &cid(1), &Extent)
+                .unwrap()
+                .shortfall(),
+            (Some(Ticks::new(0)), Some(Ticks::new(3 * F)))
+        );
+        let f15 = at(seq_of(&held), 15).unwrap();
         assert_eq!((f15.incoming_source.value(), f15.incoming_held), (0, true));
 
-        // Edits: a ripple trim moves the cut and the dissolve with it; ripple delete drops it.
+        // Edits carry the record: a ripple trim moves the cut and the dissolve with it; ripple
+        // delete drops it and lists it; undo restores it.
         let trim_a = TimelineEdit::TrimOut {
             clip_id: cid(1),
             new_duration: Ticks::new(15 * F),
             ripple: true,
         };
-        let trim = edit(&snap, &trim_a).unwrap();
-        let kept = follow_timeline_edit(&with_t1, &trim, 1, &Extent, &cancel).unwrap();
-        assert!(kept.dropped_transitions().is_empty());
-        let f13 = at(seq_of(&trim), kept.annotations(), 13).unwrap();
+        let trim = edit(p.snapshot(), &trim_a).unwrap();
+        assert!(trim.dropped_transitions().is_empty());
+        let f13 = at(seq_of(&trim), 13).unwrap();
         assert_eq!(
             (
                 f13.progress_numerator,
@@ -1181,14 +1186,13 @@ fn cross_dissolve_frame_matches_hand_computed_blend() {
             ),
             (3 * F, 13 * F, 98 * F)
         );
-        let gone = edit(&snap, &TimelineEdit::ExtractClip { clip_id: cid(2) }).unwrap();
-        let dropped = follow_timeline_edit(&with_t1, &gone, 1, &Extent, &cancel).unwrap();
-        assert_eq!(dropped.dropped_transitions(), &["t1".to_owned()]);
-        // Undo of the add removes the record; redo restores it.
-        let undo = plan_annotation_revert(&with_t1, seq, 1, p.inverse(), &cancel).unwrap();
-        assert!(undo.annotations().transitions().is_empty());
-        let redo =
-            plan_annotation_revert(undo.annotations(), seq, 2, undo.inverse(), &cancel).unwrap();
-        assert_eq!(redo.annotations().transitions(), with_t1.transitions());
+        let gone = edit(p.snapshot(), &TimelineEdit::ExtractClip { clip_id: cid(2) }).unwrap();
+        assert_eq!(gone.dropped_transitions(), &["t1".to_owned()]);
+        assert!(seq_of(&gone).tracks[0].clips[0].transitions.tail.is_none());
+        let undo = revert(gone.snapshot(), gone.inverse()).unwrap();
+        assert_eq!(seq_of(&undo), seq);
+        // Clearing the transition is one undoable step too.
+        let cleared = record(p.snapshot(), &set(1, None)).unwrap();
+        assert!(seq_of(&cleared).tracks[0].clips[0].transitions.is_empty());
     });
 }

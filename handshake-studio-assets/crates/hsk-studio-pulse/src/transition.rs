@@ -1,13 +1,17 @@
-//! Transitions as typed timeline records (STU-VID-032/032a): a timed blend AT the edit point
-//! between two abutting clips on one track. Pulse owns the record, its placement around the cut,
-//! the handle (source beyond the trimmed bounds) accounting and the per-tick evaluation
-//! ([`transition_frame`]: which source tick of each clip plays and the blend progress). Pixels are
-//! composite's: a cross dissolve at progress `p` is the incoming frame at opacity `p` composited
-//! normally over the opaque outgoing frame, which equals `(1 - p) * out + p * in` (test
-//! `cross_dissolve_frame_matches_hand_computed_blend`). For non-opaque outgoing frames that over
-//! composite is not a pure mix; a mix operator is a composite follow-up. Premiere Pro's frame
-//! sampling of a dissolve (which progress the first frame shows) is UNVERIFIED (D5): here frame
-//! `k` of an `n`-frame dissolve has progress `k / n`.
+//! Transitions over Folio's stored records (STU-VID-032/032a; lane SMB-PULSE-PLAYBACK moved the
+//! model into Folio: `StudioClip.transitions`, `TimelineTransition` = `hsk.studio.transition@1`).
+//! A transition at the cut between a clip and the clip abutting it on its track is the OUTGOING
+//! clip's `tail` (Folio's storage rule). Pulse owns its placement around the cut, the handle
+//! accounting (source beyond the trimmed bounds) and the per-tick evaluation
+//! ([`transition_frame`]: which source tick of each clip plays and the blend progress). A clip's
+//! `head` transition (single-sided, no abutting outgoing clip) is stored by Folio but not evaluated
+//! here yet.
+//!
+//! Pixels are composite's: a cross dissolve at progress `p` is the incoming frame at opacity `p`
+//! composited normally over the opaque outgoing frame, which equals `(1 - p) * out + p * in` (test
+//! `cross_dissolve_frame_matches_hand_computed_blend`); for a non-opaque outgoing frame that over
+//! composite is not a pure mix. Premiere Pro's dissolve frame sampling is UNVERIFIED (D5): frame `k`
+//! of an `n`-frame dissolve has progress `k / n`.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PulseError, Result};
@@ -16,41 +20,23 @@ use crate::rational::SpeedMath;
 use crate::timeline_edit::{SourceExtents, rate_of};
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use hsk_studio_folio::{StudioClip, StudioSequence, TrackKind};
+pub use hsk_studio_folio::{
+    TimelineTransition, TransitionAlignment, TransitionParameter, TransitionParameterValue,
+    TransitionSchema,
+};
 
-/// Most transitions one annotation set holds.
-pub const MAX_TRANSITIONS: usize = 65_536;
-
-/// The shipped defaults (STU-VID-032a): a cross dissolve for video, a crossfade for audio.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransitionKind {
-    CrossDissolve,
-    AudioCrossfade,
-}
-
-/// STU-VID-032 `alignment`, Folio's stored type (`Custom` centres at `cut + center_offset`).
-pub use hsk_studio_folio::TransitionAlignment;
-
-/// One transition at the cut between `outgoing_clip_id` and the clip abutting it,
-/// `incoming_clip_id`, on the same track.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Transition {
-    pub transition_id: String,
-    pub kind: TransitionKind,
-    pub outgoing_clip_id: String,
-    pub incoming_clip_id: String,
-    pub duration: Ticks,
-    pub alignment: TransitionAlignment,
-    /// Signed ticks from the cut to the transition centre; non-zero only with `Custom`.
-    pub center_offset: i64,
-    /// The declared shortfall choice "repeat the end frame": a clip without enough handle holds
-    /// its last available source tick instead of the transition being refused.
-    pub repeat_end_frame: bool,
-}
+/// `transition_kind` of the shipped video default (STU-VID-032a). Studio key; the canonical
+/// `filter_kind` spelling of STU-FX-126 is not verified (UNVERIFIED).
+pub const CROSS_DISSOLVE: &str = "cross_dissolve";
+/// `transition_kind` of the shipped audio default (STU-VID-032a); same caveat.
+pub const AUDIO_CROSSFADE: &str = "audio_crossfade";
 
 /// Where a transition sits: `span = [cut - before_cut, cut + after_cut)` on `track_id`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionPlacement {
     pub track_id: String,
+    pub outgoing_clip_id: String,
+    pub incoming_clip_id: String,
     pub cut: Ticks,
     pub span: TickRange,
     pub before_cut: Ticks,
@@ -89,7 +75,7 @@ impl HandleReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitionFrame {
     pub transition_id: String,
-    pub kind: TransitionKind,
+    pub transition_kind: String,
     pub outgoing_clip_id: String,
     pub incoming_clip_id: String,
     pub outgoing_source: Ticks,
@@ -109,16 +95,13 @@ impl TransitionFrame {
     }
 }
 
-pub(crate) fn locate<'a>(
-    sequence: &'a StudioSequence,
-    clip_id: &str,
-) -> Option<(usize, usize, &'a StudioClip)> {
+pub(crate) fn locate(sequence: &StudioSequence, clip_id: &str) -> Option<(usize, usize)> {
     sequence.tracks.iter().enumerate().find_map(|(t, track)| {
         track
             .clips
             .iter()
             .position(|c| c.clip_id == clip_id)
-            .map(|c| (t, c, &track.clips[c]))
+            .map(|c| (t, c))
     })
 }
 
@@ -126,28 +109,35 @@ fn whole_frames(ticks: Ticks, rate: FrameRate) -> Result<()> {
     Grid::Frames(rate).check_delta(TickDelta::between(Ticks::new(0), ticks))
 }
 
-/// Places `transition` in `sequence`: both clips on one track, abutting, kind matching the
-/// track kind, whole frames on video, inside both clips.
-pub fn transition_placement(
+/// Placement of the tail transition of clip `c` on track `t` (both clips abutting, kind matching
+/// the track kind for the two shipped kinds, whole frames on video, inside both clips).
+pub(crate) fn placement_at(
     sequence: &StudioSequence,
-    transition: &Transition,
+    t: usize,
+    c: usize,
 ) -> Result<TransitionPlacement> {
-    let (t_out, c_out, out) =
-        locate(sequence, &transition.outgoing_clip_id).ok_or(PulseError::UnknownClip)?;
-    let (t_in, c_in, inc) =
-        locate(sequence, &transition.incoming_clip_id).ok_or(PulseError::UnknownClip)?;
-    let track = &sequence.tracks[t_out];
-    let kind_ok = matches!(
-        (transition.kind, track.kind),
-        (TransitionKind::CrossDissolve, TrackKind::Video)
-            | (TransitionKind::AudioCrossfade, TrackKind::Audio)
-    );
-    if t_in != t_out || !kind_ok {
-        return Err(PulseError::InvalidInput);
-    }
+    let track = sequence.tracks.get(t).ok_or(PulseError::UnknownTrack)?;
+    let out = track.clips.get(c).ok_or(PulseError::UnknownClip)?;
+    let transition = out
+        .transitions
+        .tail
+        .as_ref()
+        .ok_or(PulseError::UnknownTransition)?;
+    let inc = c
+        .checked_add(1)
+        .and_then(|i| track.clips.get(i))
+        .ok_or(PulseError::NotAdjacent)?;
     let cut = out.timeline_end().ok_or(PulseError::Overflow)?;
-    if c_out.checked_add(1) != Some(c_in) || inc.timeline_start != cut {
+    if inc.timeline_start != cut {
         return Err(PulseError::NotAdjacent);
+    }
+    let kind_ok = match transition.transition_kind.as_str() {
+        CROSS_DISSOLVE => track.kind == TrackKind::Video,
+        AUDIO_CROSSFADE => track.kind == TrackKind::Audio,
+        _ => true,
+    };
+    if !kind_ok {
+        return Err(PulseError::InvalidInput);
     }
     let d = transition.duration;
     if d.value() == 0 {
@@ -163,6 +153,9 @@ pub fn transition_placement(
         d.value().checked_div(2)
     }
     .ok_or(PulseError::Overflow)?;
+    if transition.alignment != TransitionAlignment::Custom && transition.center_offset != 0 {
+        return Err(PulseError::InvalidInput);
+    }
     let before = match transition.alignment {
         TransitionAlignment::CenteredOnCut => i128::from(half),
         TransitionAlignment::StartAtCut => 0,
@@ -171,9 +164,6 @@ pub fn transition_placement(
             i128::from(half).saturating_sub(i128::from(transition.center_offset))
         }
     };
-    if transition.alignment != TransitionAlignment::Custom && transition.center_offset != 0 {
-        return Err(PulseError::InvalidInput);
-    }
     let before = u64::try_from(before)
         .ok()
         .filter(|b| *b <= d.value())
@@ -189,6 +179,8 @@ pub fn transition_placement(
     }
     Ok(TransitionPlacement {
         track_id: track.track_id.clone(),
+        outgoing_clip_id: out.clip_id.clone(),
+        incoming_clip_id: inc.clip_id.clone(),
         cut,
         span: TickRange::new(cut.checked_sub(before)?, cut.checked_add(after)?)?,
         before_cut: before,
@@ -196,11 +188,19 @@ pub fn transition_placement(
     })
 }
 
+/// Placement of the transition held as `outgoing_clip_id`'s tail.
+pub fn transition_placement(
+    sequence: &StudioSequence,
+    outgoing_clip_id: &str,
+) -> Result<TransitionPlacement> {
+    let (t, c) = locate(sequence, outgoing_clip_id).ok_or(PulseError::UnknownClip)?;
+    placement_at(sequence, t, c)
+}
+
 /// Source available beyond the clip's playing tail (`tail`) or before its head.
 fn available(clip: &StudioClip, tail: bool, extents: &dyn SourceExtents) -> Option<Ticks> {
     // Forward plays source_in -> source_out; reversed plays source_out -> source_in.
-    let beyond_out = tail != clip.speed.is_reversed();
-    if beyond_out {
+    if tail != clip.speed.is_reversed() {
         extents
             .extent(&clip.source_ref)
             .map(|e| Ticks::new(e.value().saturating_sub(clip.source_out.value())))
@@ -209,17 +209,18 @@ fn available(clip: &StudioClip, tail: bool, extents: &dyn SourceExtents) -> Opti
     }
 }
 
-/// Handle accounting for a placed transition (STU-VID-032).
-pub fn transition_handles(
+fn handles_at(
     sequence: &StudioSequence,
-    transition: &Transition,
+    t: usize,
+    c: usize,
+    placement: &TransitionPlacement,
     extents: &dyn SourceExtents,
 ) -> Result<HandleReport> {
-    let placement = transition_placement(sequence, transition)?;
-    let (_, _, out) =
-        locate(sequence, &transition.outgoing_clip_id).ok_or(PulseError::UnknownClip)?;
-    let (_, _, inc) =
-        locate(sequence, &transition.incoming_clip_id).ok_or(PulseError::UnknownClip)?;
+    let clips = &sequence.tracks[t].clips;
+    let out = &clips[c];
+    let inc = clips
+        .get(c.saturating_add(1))
+        .ok_or(PulseError::NotAdjacent)?;
     Ok(HandleReport {
         outgoing_required: out.speed.span_for_duration(placement.after_cut)?,
         outgoing_available: available(out, true, extents),
@@ -228,17 +229,34 @@ pub fn transition_handles(
     })
 }
 
-/// Refuses a transition the sequence cannot play: placement errors, and a handle shortfall
-/// (`insufficient_handle`, or `source_extent_unknown` when a length is unknown) unless the record
-/// declares `repeat_end_frame`.
-pub(crate) fn check_transition(
+/// Handle accounting for the transition held as `outgoing_clip_id`'s tail (STU-VID-032).
+pub fn transition_handles(
     sequence: &StudioSequence,
-    transition: &Transition,
+    outgoing_clip_id: &str,
+    extents: &dyn SourceExtents,
+) -> Result<HandleReport> {
+    let (t, c) = locate(sequence, outgoing_clip_id).ok_or(PulseError::UnknownClip)?;
+    let placement = placement_at(sequence, t, c)?;
+    handles_at(sequence, t, c, &placement, extents)
+}
+
+/// The tail transition of clip `c` on track `t` plays: placement errors, and a handle shortfall
+/// (`insufficient_handle`, or `source_extent_unknown` for an unknown length) unless the record
+/// declares `repeat_end_frame`.
+pub(crate) fn check_at(
+    sequence: &StudioSequence,
+    t: usize,
+    c: usize,
     extents: &dyn SourceExtents,
 ) -> Result<TransitionPlacement> {
-    let placement = transition_placement(sequence, transition)?;
-    let report = transition_handles(sequence, transition, extents)?;
-    if !transition.repeat_end_frame {
+    let placement = placement_at(sequence, t, c)?;
+    let repeat = sequence.tracks[t].clips[c]
+        .transitions
+        .tail
+        .as_ref()
+        .is_some_and(|tr| tr.repeat_end_frame);
+    let report = handles_at(sequence, t, c, &placement, extents)?;
+    if !repeat {
         match report.shortfall() {
             (None, _) | (_, None) => return Err(PulseError::SourceExtentUnknown),
             _ if !report.sufficient() => return Err(PulseError::InsufficientHandle),
@@ -249,8 +267,9 @@ pub(crate) fn check_transition(
 }
 
 /// Source tick `clip` plays at timeline `tick` (which may lie outside the clip: a handle), with
-/// the hold rule of `repeat_end_frame` at the available bounds `[0, extent]`.
-fn source_at(
+/// the hold rule of `repeat_end_frame` at the available bounds `[0, extent]`. Positions between
+/// ticks round toward the clip start.
+pub fn clip_source_at(
     clip: &StudioClip,
     tick: Ticks,
     extents: &dyn SourceExtents,
@@ -299,33 +318,44 @@ fn source_at(
     ))
 }
 
-/// Evaluates the transition covering `tick` on `track_id`, if any.
-pub fn transition_frame<'a>(
+/// Evaluates the transition covering `tick` on `track_id`, if any: only the clip under `tick`
+/// (as outgoing) and the clip before it (`tick` inside the incoming clip) can hold it, because a
+/// placement stays inside both clips.
+pub fn transition_frame(
     sequence: &StudioSequence,
-    transitions: impl IntoIterator<Item = &'a Transition>,
     track_id: &str,
     tick: Ticks,
     extents: &dyn SourceExtents,
     cancel: &CancellationToken,
 ) -> Result<Option<TransitionFrame>> {
-    for (i, transition) in transitions.into_iter().enumerate() {
-        if i.is_multiple_of(256) {
-            cancel.check()?;
-        }
-        let placement = transition_placement(sequence, transition)?;
-        if placement.track_id != track_id || !placement.span.contains(tick) {
+    cancel.check()?;
+    let t = sequence
+        .tracks
+        .iter()
+        .position(|tr| tr.track_id == track_id)
+        .ok_or(PulseError::UnknownTrack)?;
+    let clips = &sequence.tracks[t].clips;
+    let under = clips.partition_point(|c| c.timeline_start <= tick);
+    for c in [under.checked_sub(1), under.checked_sub(2)]
+        .into_iter()
+        .flatten()
+    {
+        let Some(transition) = clips[c].transitions.tail.as_ref() else {
+            continue;
+        };
+        let Ok(placement) = placement_at(sequence, t, c) else {
+            continue;
+        };
+        if !placement.span.contains(tick) {
             continue;
         }
-        let (_, _, out) =
-            locate(sequence, &transition.outgoing_clip_id).ok_or(PulseError::UnknownClip)?;
-        let (_, _, inc) =
-            locate(sequence, &transition.incoming_clip_id).ok_or(PulseError::UnknownClip)?;
+        let (out, inc) = (&clips[c], &clips[c.saturating_add(1)]);
         let hold = transition.repeat_end_frame;
-        let (outgoing_source, outgoing_held) = source_at(out, tick, extents, hold)?;
-        let (incoming_source, incoming_held) = source_at(inc, tick, extents, hold)?;
+        let (outgoing_source, outgoing_held) = clip_source_at(out, tick, extents, hold)?;
+        let (incoming_source, incoming_held) = clip_source_at(inc, tick, extents, hold)?;
         return Ok(Some(TransitionFrame {
             transition_id: transition.transition_id.clone(),
-            kind: transition.kind,
+            transition_kind: transition.transition_kind.clone(),
             outgoing_clip_id: out.clip_id.clone(),
             incoming_clip_id: inc.clip_id.clone(),
             outgoing_source,
@@ -337,4 +367,37 @@ pub fn transition_frame<'a>(
         }));
     }
     Ok(None)
+}
+
+/// Every tail transition that still plays after an edit stays; the others are removed from
+/// `sequence` and their ids returned (two overlapping on one track: the later is removed). Used
+/// by every edit proposal, so a transition never outlives its cut silently.
+pub(crate) fn prune_transitions(
+    sequence: &mut StudioSequence,
+    extents: &dyn SourceExtents,
+    cancel: &CancellationToken,
+) -> Result<Vec<String>> {
+    let mut dropped = Vec::new();
+    for t in 0..sequence.tracks.len() {
+        cancel.check()?;
+        let mut last_end: Option<Ticks> = None;
+        for c in 0..sequence.tracks[t].clips.len() {
+            if sequence.tracks[t].clips[c].transitions.tail.is_none() {
+                continue;
+            }
+            let keep = match check_at(sequence, t, c, extents) {
+                Ok(placement) if last_end.is_none_or(|end| placement.span.start() >= end) => {
+                    last_end = Some(placement.span.end());
+                    true
+                }
+                Ok(_) => false,
+                Err(PulseError::Canceled) => return Err(PulseError::Canceled),
+                Err(_) => false,
+            };
+            if !keep && let Some(tr) = sequence.tracks[t].clips[c].transitions.tail.take() {
+                dropped.push(tr.transition_id);
+            }
+        }
+    }
+    Ok(dropped)
 }

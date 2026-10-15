@@ -154,6 +154,7 @@ fn fixture(cancel: &CancellationToken) -> Result<hsk_studio_folio::Snapshot> {
                 ),
             ],
             markers: Vec::new(),
+            work_area: None,
         }],
     };
     validate_document(document, Budget::default(), cancel, &Available)

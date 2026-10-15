@@ -189,6 +189,8 @@ pub struct EditProposal {
     snapshot: Snapshot,
     inverse: TimelineInverse,
     splits: Vec<(String, String)>,
+    dropped_transitions: Vec<String>,
+    removed_markers: Vec<String>,
 }
 
 /// The reversible half of one applied proposal: the sequence as the edit left it (`expect`, the
@@ -243,6 +245,15 @@ impl EditProposal {
     /// extract, insert and overwrite); annotation owners use it to carry clip markers.
     pub fn splits(&self) -> &[(String, String)] {
         &self.splits
+    }
+    /// Transitions this edit made unplayable (clips gone or no longer abutting, handle now
+    /// short); removed from the sequence and listed, never silently lost (undo restores them).
+    pub fn dropped_transitions(&self) -> &[String] {
+        &self.dropped_transitions
+    }
+    /// Markers that left the sequence with this edit (a removed clip, or a removed marker).
+    pub fn removed_markers(&self) -> &[String] {
+        &self.removed_markers
     }
     /// Undo of this proposal for [`plan_timeline_revert`] (once it is applied).
     pub fn inverse(&self) -> &TimelineInverse {
@@ -626,6 +637,7 @@ pub(crate) fn split_clip(
     first.source_in = left_in;
     first.source_out = left_out;
     first.duration = left.duration();
+    crate::annotate::split_records(&mut first, &mut second);
     Ok((first, second))
 }
 
@@ -680,12 +692,14 @@ pub(crate) fn write_pieces(
     let originals = std::mem::take(&mut track.clips);
     let mut rebuilt: Vec<StudioClip> = Vec::with_capacity(pieces.len());
     let mut seen = BTreeSet::new();
+    let mut first_piece: BTreeMap<usize, usize> = BTreeMap::new();
     for piece in pieces {
         let mut clip = originals
             .get(piece.origin)
             .ok_or(PulseError::InvalidInput)?
             .clone();
-        if !seen.insert(piece.origin) {
+        let second_piece = !seen.insert(piece.origin);
+        if second_piece {
             let id = fresh.next().ok_or(PulseError::InsufficientIds)?;
             if !taken.insert(id.clone()) {
                 return Err(PulseError::DuplicateId);
@@ -702,6 +716,14 @@ pub(crate) fn write_pieces(
         }
         clip.timeline_start = piece.range.start();
         clip.duration = duration;
+        match first_piece.get(&piece.origin) {
+            Some(&left) if second_piece => {
+                crate::annotate::split_records(&mut rebuilt[left], &mut clip);
+            }
+            _ => {
+                first_piece.insert(piece.origin, rebuilt.len());
+            }
+        }
         rebuilt.push(clip);
     }
     track.clips = rebuilt;
@@ -1000,6 +1022,7 @@ pub fn plan_timeline_edit(
         sequence_id,
         expected_revision,
         ctx,
+        true,
         |old, reads| apply_edit(old, edit, ctx, reads),
     )
 }
@@ -1023,6 +1046,7 @@ pub fn plan_timeline_revert(
         sequence_id,
         expected_revision,
         ctx,
+        false,
         |old, reads| {
             for track in &old.tracks {
                 reads.add(&track.track_id);
@@ -1035,13 +1059,14 @@ pub fn plan_timeline_revert(
     )
 }
 
-/// Shared one-step transaction: stale-revision gate, edit, Folio validation at revision + 1,
-/// change list, footprints and the inverse.
+/// Shared one-step transaction: stale-revision gate, edit, (with `carry`) removal of transitions
+/// that no longer play, Folio validation at revision + 1, change list, footprints and the inverse.
 pub(crate) fn propose(
     snapshot: &Snapshot,
     sequence_id: &str,
     expected_revision: u64,
     ctx: &EditContext,
+    carry: bool,
     edit: impl FnOnce(&StudioSequence, &mut Footprint) -> Result<StudioSequence>,
 ) -> Result<EditProposal> {
     ctx.cancel.check()?;
@@ -1061,6 +1086,11 @@ pub(crate) fn propose(
     let mut reads = Footprint::default();
     reads.add(sequence_id);
     let mut edited = edit(old, &mut reads)?;
+    let dropped_transitions = if carry {
+        crate::transition::prune_transitions(&mut edited, ctx.extents, ctx.cancel)?
+    } else {
+        Vec::new()
+    };
     edited.duration = edited.content_end().ok_or(PulseError::Overflow)?;
     if edited == *old {
         return Err(PulseError::NoChange);
@@ -1082,6 +1112,11 @@ pub(crate) fn propose(
     if new.duration != old.duration {
         writes.add(sequence_id);
     }
+    let kept: BTreeSet<&str> = marker_ids(new).collect();
+    let removed_markers = marker_ids(old)
+        .filter(|id| !kept.contains(id))
+        .map(str::to_owned)
+        .collect();
     let inverse = TimelineInverse {
         sequence_id: sequence_id.to_owned(),
         expect: new.clone(),
@@ -1097,5 +1132,19 @@ pub(crate) fn propose(
         write_footprint: writes.ids,
         snapshot: validated,
         inverse,
+        dropped_transitions,
+        removed_markers,
     })
+}
+
+fn marker_ids(seq: &StudioSequence) -> impl Iterator<Item = &str> {
+    seq.markers
+        .iter()
+        .chain(
+            seq.tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .flat_map(|c| c.markers.iter()),
+        )
+        .map(|m| m.marker_id.as_str())
 }

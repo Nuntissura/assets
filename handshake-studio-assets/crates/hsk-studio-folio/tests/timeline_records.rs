@@ -169,6 +169,8 @@ fn markers_and_transitions_round_trip_and_old_wire_is_unchanged() {
                 duration: Ticks::new(24 * TPF),
                 alignment: TransitionAlignment::CenteredOnCut,
                 center_offset: 0,
+                parameters: Vec::new(),
+                repeat_end_frame: false,
             })
         );
         assert!(a.transitions.head.is_none() && seq.tracks[0].clips[1].transitions.is_empty());

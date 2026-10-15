@@ -20,8 +20,12 @@
 //! sequence ticks and clip markers in the clip's SOURCE ticks (they travel with the clip); a
 //! transition at a cut is stored once, as the outgoing clip's `tail`, and the abutting incoming
 //! clip's `head` must then be empty; marker and transition ids are document-local keys (no prefix
-//! is declared); the transition parameter set of 14.9.1 is not stored yet. All four fields are
-//! omitted from the wire when empty, so documents without them encode byte-identically. Exact
+//! is declared). Lane SMB-PULSE-PLAYBACK adds the sequence `work_area` (STU-VID-035 "a named
+//! in/out span used to scope rendering and export"), the transition parameter values (one per
+//! `param_key` of STU-FX-103; Studio reading: the stored instance holds values, the descriptor
+//! holds bounds) and the declared shortfall choice `repeat_end_frame` (STU-VID-032 "repeat the
+//! end frame"). Every record field is omitted from the wire when empty or false, so documents
+//! without them encode byte-identically. Exact
 //! placement around the cut, handles and frame alignment are Pulse's; this module stores and
 //! validates only.
 #![deny(clippy::arithmetic_side_effects)]
@@ -51,6 +55,8 @@ pub const MAX_HANDLE_BYTES: usize = 256;
 pub const MAX_MARKERS_PER_SEQUENCE: usize = 65_536;
 /// Longest marker name, comment or role text in bytes.
 pub const MAX_MARKER_TEXT_BYTES: usize = 4096;
+/// Most parameter values one transition carries.
+pub const MAX_TRANSITION_PARAMETERS: usize = 256;
 
 mod ticks_wire {
     use super::{Deserialize, Deserializer, Serializer, Ticks};
@@ -187,6 +193,52 @@ pub struct TimelineTransition {
     pub alignment: TransitionAlignment,
     /// Signed ticks from the cut to the transition centre; non-zero only with `custom`.
     pub center_offset: i64,
+    /// Parameter values by `param_key` (STU-FX-103), unique keys (omitted when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<TransitionParameter>,
+    /// The declared shortfall choice "repeat the end frame" (omitted when false).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub repeat_end_frame: bool,
+}
+
+/// One transition parameter value (STU-FX-103 `param_key` + value).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionParameter {
+    pub param_key: String,
+    pub value: TransitionParameterValue,
+}
+
+/// A parameter value; numbers are finite (validated), so equality is reflexive (`Eq`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "value_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TransitionParameterValue {
+    Number {
+        value: f64,
+    },
+    Boolean {
+        value: bool,
+    },
+    /// An enumeration option key.
+    Enumeration {
+        value: String,
+    },
+    Ticks {
+        value: u64,
+    },
+}
+impl Eq for TransitionParameterValue {}
+
+/// STU-VID-035 work area: `[start, end)` in sequence ticks, `start < end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkArea {
+    #[serde(with = "ticks_wire")]
+    #[schemars(with = "u64")]
+    pub start: Ticks,
+    #[serde(with = "ticks_wire")]
+    #[schemars(with = "u64")]
+    pub end: Ticks,
 }
 
 /// A clip's head and tail transitions (STU-VID-020 `transitions`; explicit nulls on the wire).
@@ -334,6 +386,9 @@ pub struct StudioSequence {
     /// Sequence markers in sequence ticks; they do not move with clips (omitted when empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<StudioMarker>,
+    /// The work area (omitted when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_area: Option<WorkArea>,
 }
 impl StudioSequence {
     /// End of the last clip over all tracks; `None` on tick overflow.
@@ -474,6 +529,21 @@ fn validate_transition<'a>(
     if t.duration.value() == 0 || !offset_ok {
         return Err(err(Code::InvalidField, format!("{target}/timing")));
     }
+    if t.parameters.len() > MAX_TRANSITION_PARAMETERS {
+        return Err(err(Code::BudgetExceeded, format!("{target}/parameters")));
+    }
+    let mut keys = BTreeSet::new();
+    for p in &t.parameters {
+        let value_ok = match &p.value {
+            TransitionParameterValue::Number { value } => value.is_finite(),
+            TransitionParameterValue::Enumeration { value } => key(value),
+            _ => true,
+        };
+        if !key(&p.param_key) || !keys.insert(p.param_key.as_str()) || !value_ok {
+            return Err(err(Code::InvalidField, format!("{target}/parameters")));
+        }
+        charge(payload_size, p.param_key.len(), b.payload_bytes, target)?;
+    }
     Ok(())
 }
 
@@ -521,6 +591,11 @@ pub(crate) fn validate_sequences(
         }
         if s.tracks.len() > MAX_TRACKS_PER_SEQUENCE {
             return Err(err(Code::BudgetExceeded, format!("{sid}/tracks")));
+        }
+        if let Some(area) = &s.work_area
+            && area.start >= area.end
+        {
+            return Err(err(Code::InvalidField, format!("{sid}/work_area")));
         }
         // Counted before any marker is examined (hostile list lengths, V4-02).
         let markers_here = s

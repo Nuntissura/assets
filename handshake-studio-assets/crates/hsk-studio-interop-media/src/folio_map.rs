@@ -200,6 +200,7 @@ pub fn build_sequence(
             duration: Ticks::new(end),
             tracks,
             markers: Vec::new(),
+            work_area: None,
         },
         losses,
     })

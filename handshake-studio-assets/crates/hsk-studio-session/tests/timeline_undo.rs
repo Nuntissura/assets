@@ -127,6 +127,7 @@ fn sequence(clips: Vec<StudioClip>, markers: Vec<StudioMarker>) -> StudioSequenc
             clips,
         }],
         markers,
+        work_area: None,
     };
     s.duration = s.content_end().unwrap();
     s
@@ -161,6 +162,8 @@ fn edited() -> StudioSequence {
         duration: Ticks::new(8 * F),
         alignment: TransitionAlignment::CenteredOnCut,
         center_offset: 0,
+        parameters: Vec::new(),
+        repeat_end_frame: false,
     });
     sequence(
         vec![clip(1, 0, 24, 0), incoming, right, clip(2, 100, 48, 60)],

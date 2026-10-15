@@ -197,6 +197,7 @@ pub fn plan_assembly_edit(
         sequence_id,
         expected_revision,
         ctx,
+        true,
         |old, reads| assemble(old, edit, points, ctx, reads),
     )
 }

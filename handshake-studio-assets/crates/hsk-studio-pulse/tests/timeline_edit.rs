@@ -138,6 +138,7 @@ fn snapshot(tracks: Vec<StudioTrack>) -> Snapshot {
             duration: Ticks::new(end),
             tracks,
             markers: Vec::new(),
+            work_area: None,
         }],
     };
     validate_document(
