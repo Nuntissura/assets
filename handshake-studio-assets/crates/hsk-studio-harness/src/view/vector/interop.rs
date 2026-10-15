@@ -6,7 +6,10 @@
 //! gradient transforms scaled; design records and vector clips kept) whose vector entry rides as
 //! the session document entry `vector`. SVG export writes composite's `expand_vectors` (swatches
 //! resolved, brushes, width profiles, networks and envelopes expanded) through interop-vector
-//! `export_svg_with_loss`: one path element per painted shape, in points.
+//! `export_proposal_with_loss` (lane SMB-ILLUSTRATOR-INTEROP-2): the layer tree with names,
+//! visibility and opacity, each vector layer a group of one path element per painted row, in
+//! points; Folio vector clips as `clipPath` (their source geometry), VECTOR masks as clips of
+//! their source, ALPHA / LUMINANCE masks as `mask`; text and raster layers are typed losses.
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::style::effective_design;
@@ -18,6 +21,8 @@ use hsk_studio_folio::{self as folio, GeometryUnit, Length, StudioAppearanceRow,
 use hsk_studio_interop_vector as iv;
 use hsk_studio_nib::anchor_path::{AnchorPath, Contour, EditAnchor};
 use hsk_studio_nib::{FillRule, Mirroring, OwnedPath, PathElement, PathPoint};
+use super::masking;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Document pixels per point.
@@ -418,46 +423,169 @@ impl Viewer {
         let records = entry.folio_records(&doc.document_id);
         let (layers, refused) = expand_vectors(snap, &design, &records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::Encoded, &VectorResolution::default(), self.cancel)
             .map_err(|e| format!("svg_export: {e:?}"))?;
+        let expanded: BTreeMap<&str, &hsk_studio_composite::vector::ExpandedLayer> = layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
         let mut losses: Vec<String> = refused.iter().map(|(l, c)| format!("{l}: refused:{c}")).collect();
+        // Clips and masks: a VECTOR mask is written as a clip of its source geometry; ALPHA and
+        // LUMINANCE masks stay masks. Layers under a clip source are written as geometry.
+        let mut out_records = folio::StudioVectorRecords::new(doc.document_id.clone());
+        let mut geometry: BTreeSet<String> = BTreeSet::new();
         for a in &records.attachments {
-            losses.push(format!("{}: vector_clip_or_mask_not_exported", a.layer_id));
+            let (clip, mask) = masking::attachment(&records, &a.layer_id);
+            let mut kept = folio::StudioMaskAttachment { layer_id: a.layer_id.clone(), clip_id: None, mask_id: None };
+            if let Some(c) = clip {
+                geometry.extend(masking::subtree(doc, &c.source_layer_id));
+                if !out_records.clips.iter().any(|x| x.clip_id == c.clip_id) {
+                    out_records.clips.push(c.clone());
+                }
+                kept.clip_id = Some(c.clip_id.clone());
+            }
+            match mask {
+                Some(m) if m.mode == folio::StudioMaskMode::Vector && kept.clip_id.is_none() && !m.invert_mask => {
+                    geometry.extend(masking::subtree(doc, &m.source_layer_id));
+                    let id = format!("vector-mask-{}", m.mask_id);
+                    if !out_records.clips.iter().any(|x| x.clip_id == id) {
+                        out_records.clips.push(folio::StudioVectorClip { clip_id: id.clone(), source_layer_id: m.source_layer_id.clone(), clip_rule: folio::StudioClipRule::NonZero });
+                    }
+                    kept.clip_id = Some(id);
+                }
+                Some(m) if m.mode == folio::StudioMaskMode::Vector => losses.push(format!("{}: vector_mask_not_exported", a.layer_id)),
+                Some(m) => {
+                    if !out_records.masks.iter().any(|x| x.mask_id == m.mask_id) {
+                        out_records.masks.push(m.clone());
+                        out_records.mask_parameters.extend(records.mask_parameters(&m.mask_id).cloned());
+                    }
+                    kept.mask_id = Some(m.mask_id.clone());
+                }
+                None => {}
+            }
+            if kept.clip_id.is_some() || kept.mask_id.is_some() {
+                out_records.attachments.push(kept);
+            }
         }
+        // The document tree, bottom-most first: groups stay groups; a vector layer becomes a group
+        // of one shape layer per expanded row (its own PAINT style); clip geometry keeps the anchor
+        // paths; text and raster layers are not written.
+        let mut out_layers: Vec<folio::StudioLayer> = Vec::new();
         let mut out_design = folio::StudioDesignRecords::new(doc.document_id.clone());
         let mut paths = Vec::new();
         let mut n = 0_u64;
-        for layer in &layers {
-            if !doc.layers.iter().any(|l| l.layer_id == layer.layer_id && l.visible) {
-                continue;
+        let mut stack: Vec<(Option<String>, usize)> = vec![(None, 0)];
+        let mut order: Vec<String> = Vec::new();
+        while let Some((parent, depth)) = stack.pop() {
+            if depth > 64 {
+                return Err("svg_export: layer nesting deeper than 64".into());
             }
-            for row in &layer.rows {
-                let Some((paint, opacity)) = folio_paint(&row.paint, row.opacity) else {
-                    losses.push(format!("{}: paint_not_exported", layer.layer_id));
-                    continue;
-                };
-                n = n.saturating_add(1);
-                let id = |p: &str| format!("{p}-019abcde-0000-7000-8000-{n:012x}");
-                let shape_layer = id("SLYR");
-                let style_id = id("SSTY");
-                let mut k = 0_u64;
-                let mut path_id = || {
-                    k = k.saturating_add(1);
-                    format!("SVPT-019abcde-{:04x}-7000-8000-{k:012x}", n & 0xffff)
-                };
-                for p in &row.paths {
-                    paths.extend(anchors_pt(p, &shape_layer, &mut path_id)?);
-                }
-                let fill = StudioAppearanceRow::Fill { paint, opacity: opacity.clamp(0.0, 100.0), blend_mode: row.mode as u16, visible: true };
-                out_design.paint_styles.push(serde_json::from_value(serde_json::json!({
-                    "schema_id": "hsk.studio.style_registry@1", "style_id": style_id, "kind": "PAINT", "name": format!("export/{n}"),
-                    "publishing": {"description": "", "description_markdown": "", "documentation_links": [], "publish_key": format!("export-{n}"), "is_remote": false},
-                    "rows": [fill],
-                })).map_err(|e| format!("svg_export: {e}"))?);
-                out_design.nodes.push(serde_json::from_value(serde_json::json!({"node": {"node_kind": "layer", "node_id": shape_layer}, "style_refs": {"fill_style_id": style_id}})).map_err(|e| format!("svg_export: {e}"))?);
+            // Depth-first in stack order: push children reversed so the bottom-most comes first.
+            let kids = masking::children(doc, parent.as_deref());
+            for k in kids.iter().rev() {
+                stack.push((Some(k.clone()), depth.saturating_add(1)));
+            }
+            if let Some(p) = parent {
+                order.push(p);
             }
         }
+        let mut dropped: BTreeSet<String> = BTreeSet::new();
+        for id in &order {
+            let Some(layer) = doc.layers.iter().find(|l| &l.layer_id == id) else { continue };
+            if let folio::Parent::Node(p) = &layer.parent
+                && dropped.contains(&p.node_id)
+            {
+                dropped.insert(id.clone());
+                continue;
+            }
+            match &layer.payload {
+                folio::Payload::Group => out_layers.push(layer.clone()),
+                folio::Payload::Vector { path_ids } if geometry.contains(id) => {
+                    let mut ids = Vec::new();
+                    for (k, pid) in path_ids.iter().enumerate() {
+                        let Some(rec) = entry.path(pid) else { continue };
+                        let owned = rec.path.to_owned_path().map_err(|e| format!("svg_export: {}", e.code()))?;
+                        n = n.saturating_add(1);
+                        let tag = n;
+                        let mut j = 0_u64;
+                        let mut next = || {
+                            j = j.saturating_add(1);
+                            format!("SVPT-019abcdf-{:04x}-7000-8000-{:012x}", k & 0xffff, tag.wrapping_shl(16) | j)
+                        };
+                        for vp in anchors_pt(&owned, id, &mut next)? {
+                            ids.push(vp.path_id.clone());
+                            paths.push(vp);
+                        }
+                    }
+                    out_layers.push(folio::StudioLayer { payload: folio::Payload::Vector { path_ids: ids }, ..layer.clone() });
+                }
+                folio::Payload::Vector { .. } => {
+                    out_layers.push(folio::StudioLayer { kind: "group".into(), payload: folio::Payload::Group, ..layer.clone() });
+                    let Some(rows) = expanded.get(id.as_str()) else { continue };
+                    for row in &rows.rows {
+                        let Some((paint, opacity)) = folio_paint(&row.paint, row.opacity) else {
+                            losses.push(format!("{id}: paint_not_exported"));
+                            continue;
+                        };
+                        n = n.saturating_add(1);
+                        let mint = |p: &str| format!("{p}-019abcde-0000-7000-8000-{n:012x}");
+                        let shape_layer = mint("SLYR");
+                        let style_id = mint("SSTY");
+                        let mut k = 0_u64;
+                        let mut path_id = || {
+                            k = k.saturating_add(1);
+                            format!("SVPT-019abcde-{:04x}-7000-8000-{k:012x}", n & 0xffff)
+                        };
+                        let mut ids = Vec::new();
+                        for p in &row.paths {
+                            for vp in anchors_pt(p, &shape_layer, &mut path_id)? {
+                                ids.push(vp.path_id.clone());
+                                paths.push(vp);
+                            }
+                        }
+                        let fill = StudioAppearanceRow::Fill { paint, opacity: opacity.clamp(0.0, 100.0), blend_mode: row.mode as u16, visible: true };
+                        out_design.paint_styles.push(serde_json::from_value(serde_json::json!({
+                            "schema_id": "hsk.studio.style_registry@1", "style_id": style_id, "kind": "PAINT", "name": format!("export/{n}"),
+                            "publishing": {"description": "", "description_markdown": "", "documentation_links": [], "publish_key": format!("export-{n}"), "is_remote": false},
+                            "rows": [fill],
+                        })).map_err(|e| format!("svg_export: {e}"))?);
+                        out_design.nodes.push(serde_json::from_value(serde_json::json!({"node": {"node_kind": "layer", "node_id": shape_layer}, "style_refs": {"fill_style_id": style_id}})).map_err(|e| format!("svg_export: {e}"))?);
+                        out_layers.push(folio::StudioLayer {
+                            schema_id: folio::LayerSchema::V1,
+                            layer_id: shape_layer,
+                            name: format!("{} {n}", layer.name),
+                            parent: folio::Parent::Node(folio::NodeRef { node_kind: folio::NodeKind::Layer, node_id: id.clone() }),
+                            kind: "vector".into(),
+                            payload: folio::Payload::Vector { path_ids: ids },
+                            visible: true,
+                            appearance: None,
+                            text_frame: None,
+                        });
+                    }
+                }
+                folio::Payload::Text { .. } => {
+                    losses.push(format!("{id}: text_layer_not_exported"));
+                    dropped.insert(id.clone());
+                }
+                _ => {
+                    losses.push(format!("{id}: raster_layer_not_exported"));
+                    dropped.insert(id.clone());
+                }
+            }
+        }
+        out_records.attachments.retain(|a| out_layers.iter().any(|l| l.layer_id == a.layer_id));
+        let mut out_doc = doc.clone();
+        out_doc.layers = out_layers;
+        out_doc.graph = folio::StudioLayerGraph { schema_id: folio::GraphSchema::V1, operations: Vec::new(), edges: Vec::new(), outputs: Vec::new() };
+        let budget = folio::Budget { nodes: out_doc.layers.len().saturating_add(paths.len()).saturating_mul(2).saturating_add(64).max(folio::Budget::default().nodes), ..folio::Budget::default() };
+        let snapshot = folio::validate_document(out_doc, budget, self.cancel, &crate::harness::TrustAll).map_err(|d| format!("svg_export: folio {:?} {}", d.code, d.target))?;
         let board = doc.artboards.first().ok_or("svg_export: the document has no artboard")?;
+        let proposal = iv::VectorProposal {
+            snapshot,
+            paths,
+            design: out_design,
+            vector_records: out_records,
+            gradient_provenance: Vec::new(),
+            loss: Vec::new(),
+            provenance: iv::Provenance { source_format: "studio", source_unit: "px", pixels_per_inch: 96.0, px_to_pt: 0.75, source_len: 0, decoded_len: 0, view_box: None, viewport_px: [board.bounds.width.value, board.bounds.height.value] },
+        };
         let opts = iv::ExportOptions { pixels_per_inch: 96.0, artboard_pt: Some([board.bounds.width.value * 0.75, board.bounds.height.value * 0.75]) };
-        let svg = iv::export_svg_with_loss(&paths, &out_design, &opts).map_err(|e| format!("svg_export: {e:?}"))?;
+        let svg = iv::export_proposal_with_loss(&proposal, &opts).map_err(|e| format!("svg_export: {e:?}"))?;
         losses.extend(svg.loss.iter().map(|l| format!("{}: {}", l.path, l.code)));
         Ok((svg.text, losses))
     }

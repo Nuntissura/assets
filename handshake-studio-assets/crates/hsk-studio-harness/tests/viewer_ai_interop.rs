@@ -77,11 +77,11 @@ fn ai_imports_as_editable_vectors_and_exports_as_svg() {
     assert_eq!(text.stories.iter().filter_map(|st| st.inline_text()).collect::<Vec<_>>(), ["H"]);
     assert!(v.layers().iter().any(|r| r.kind == "text"));
     assert!((14..22).any(|x| (24..38).any(|y| px(&f, x, y)[3] > 200)), "the H is drawn");
-    // The imported document exports as SVG (a red path, the clip reported as a loss).
+    // The imported document exports as SVG (a red path, the clip as a clipPath).
     let (svg, svg_losses) = v.vector_svg().unwrap();
     assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"));
     assert!(svg.contains("#ff0000") || svg.contains("#f00"), "{svg}");
-    assert!(svg_losses.iter().any(|l| l.contains("clip")), "{svg_losses:?}");
+    assert!(svg.contains("<clipPath") && !svg_losses.iter().any(|l| l.contains("clip")), "{svg_losses:?}");
     let out = scratch.0.join("export.svg");
     v.export_vector_svg(&out, false).unwrap();
     assert!(v.export_vector_svg(&out, false).is_err());

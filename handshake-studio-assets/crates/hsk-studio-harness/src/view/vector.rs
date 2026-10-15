@@ -70,11 +70,13 @@ pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel};
 /// Lane SMB-ILLUSTRATOR-TOOLS-2.
 pub mod arrange;
 pub mod brushes;
+pub mod clipping;
 pub mod envelope;
 /// Lane SMB-ILLUSTRATOR-INTEROP. Feature `vector-interop` (harness -> interop-vector edge, steward
 /// sync ea20bcb; enabled by `viewer`).
 #[cfg(feature = "vector-interop")]
 pub mod interop;
+pub mod masking;
 pub mod pdf_export;
 pub mod swatch;
 pub use arrange::{AlignTarget, TransformOp};
