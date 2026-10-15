@@ -314,9 +314,6 @@ struct Comp {
 /// A stored composition ready to be evaluated at any tick (module docs).
 #[derive(Clone, Debug)]
 pub struct CompositionTemporalSource {
-    /// Procedural layers from Folio motion records (lane SMB-AE-MOTION-RECORDS,
-    /// `super::motion_records`); `None` = none.
-    pub(super) motion: Option<Box<super::motion_records::MotionLayers>>,
     root: String,
     /// The root and every composition it reaches through precomposition layers.
     comps: BTreeMap<String, Comp>,
@@ -681,7 +678,6 @@ impl CompositionTemporalSource {
             comps.insert(id, read);
         }
         Ok(Self {
-            motion: None,
             root: input.composition_id.to_owned(),
             comps,
             filter: DEFAULT_COMPOSITION_FILTER,
@@ -1484,10 +1480,6 @@ impl CompositionTemporalSource {
                 scene.background = None;
                 SceneContent::Precomp(Box::new(scene))
             }
-        };
-        let content = match self.motion.as_deref() {
-            Some(m) => m.content(&l.layer_id, tick, cancel)?.unwrap_or(content),
-            None => content,
         };
         let unlinked = match &l.content {
             Content::Static { unlinked: Some(u), .. } => Some(u),
