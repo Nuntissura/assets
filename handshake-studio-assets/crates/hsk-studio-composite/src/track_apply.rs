@@ -47,9 +47,15 @@ use hsk_studio_pigment::track_math::{PlanarFrame, PlanarStatus, SimilarityFrame,
 use hsk_studio_pigment::transform_math::{LayerTransform, Projective2, ResampleFilter, TransformError};
 use std::fmt;
 
-/// Refusal key of the composition adapter for a layer with a corner pin (its scene layers carry
-/// an affine matrix; [`corner_pin_transform`] lowers a pin to a pigment layer transform).
+/// RETIRED by lane SMB-AE-KEY-TRACK-3 (the adapter renders corner pins through
+/// `SceneContent::Pinned`); no longer returned, kept so callers matching it still compile.
 pub const COMPOSITION_CORNER_PIN: &str = "composition_corner_pin";
+/// A corner pin on a layer whose content has no pixels of its own (null, adjustment) or on a
+/// collapsed precomposition: refused by the composition adapter and by the scene lowering.
+pub const COMPOSITION_CORNER_PIN_CONTENT: &str = "composition_corner_pin_content";
+/// A corner-pinned layer on the document-graph path (`lower_frame`), whose layer state is an affine
+/// matrix: refused typed; `scene_at` + `lower_scene` render it.
+pub const COMPOSITION_CORNER_PIN_ON_DOCUMENT_GRAPH: &str = "composition_corner_pin_on_document_graph";
 
 /// Most keys one stream may receive (motion's `MAX_KEYFRAMES`).
 pub const MAX_TRACK_KEYS: usize = 65_536;

@@ -61,7 +61,7 @@ pub use lower_render_plan::{
 };
 pub use composition::{
     MattePlane, RenderedScene, SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits,
-    OwnedMask, SceneMatte, SceneMatteMode, StaticContent, Surface,
+    OwnedMask, PinnedContent, SceneMatte, SceneMatteMode, StaticContent, Surface,
     SceneLowering, ScenePixels, SceneSources, SceneTile, lower_scene, render_scene, unlinked_mask_matte, unlinked_mask_matte_in,
 };
 pub use temporal::{

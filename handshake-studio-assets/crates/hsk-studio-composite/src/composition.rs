@@ -111,6 +111,20 @@ pub enum SceneContent {
     /// An adjustment layer (STU-MOT-005 `adjustment`): pigment's adjustment over everything below
     /// it in the composition, on a transparent placeholder over the composition rect.
     Adjustment(AdjustmentOp),
+    /// Content under a corner pin (lane SMB-AE-KEY-TRACK-3; STU-CMP-065 four-point corner pin):
+    /// [`PinnedContent::pin`] maps the inner content's plan coordinates projectively before the
+    /// layer matrix, so the layer always resamples through `pin` then `matrix` (pigment
+    /// `LayerTransform::projective`). The inner content is tiles, a static subtree or a
+    /// precomposition (else `composition_corner_pin_content`).
+    Pinned(Box<PinnedContent>),
+}
+
+/// The inner content and the pin of [`SceneContent::Pinned`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinnedContent {
+    pub content: SceneContent,
+    /// Content plan coordinates -> content plan coordinates (the pinned quad).
+    pub pin: hsk_studio_pigment::transform_math::Projective2,
 }
 
 /// A caller-independent coverage plane a static subtree reads (text, vector and stroke coverage).
@@ -783,6 +797,22 @@ fn lower_inner(
             }
         }
         let placement = classify(id, &layer.matrix)?;
+        // A corner pin (lane SMB-AE-KEY-TRACK-3): the inner content always resamples through the
+        // pin then the matrix; a singular matrix still renders nothing.
+        let (content, pin) = match &layer.content {
+            SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
+            other => (other, None),
+        };
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_)) {
+            return Err(TemporalError::Unsupported {
+                layer_id: id.to_owned(),
+                feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
+            });
+        }
+        let placement = match (pin, placement) {
+            (Some(_), Placement::Integer(..)) => Placement::Resample,
+            (_, p) => p,
+        };
         if layer.clipped {
             if layer.matte.is_some() {
                 return Err(TemporalError::Unsupported {
@@ -810,10 +840,10 @@ fn lower_inner(
                 Some(Base::Rendered) => {}
             }
         }
-        let has_content = match &layer.content {
+        let has_content = match content {
             SceneContent::Tiles(t) => !t.is_empty(),
             SceneContent::Precomp(_) | SceneContent::Static(_) | SceneContent::Adjustment(_) => true,
-            SceneContent::None => false,
+            SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
             .matte
@@ -875,7 +905,7 @@ fn lower_inner(
         }
         // (plan source key, tile input without key) of the layer's content.
         let mut inputs: Vec<(SourceKey, Rect, SceneTile)> = Vec::new();
-        match &layer.content {
+        match content {
             SceneContent::Tiles(tiles) => {
                 for t in tiles {
                     let key = out.key()?;
@@ -919,7 +949,7 @@ fn lower_inner(
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, content.rect, tile));
             }
-            SceneContent::None | SceneContent::Adjustment(_) => {}
+            SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
         }
         let shift = match placement {
             Placement::Integer(dx, dy) => (dx, dy),
@@ -962,10 +992,14 @@ fn lower_inner(
             }
         };
         if matches!(placement, Placement::Resample) {
-            transforms.push((
-                root_layers.len(),
-                LayerTransform::new(layer.matrix, scene.filter),
-            ));
+            let transform = match pin {
+                None => LayerTransform::new(layer.matrix, scene.filter),
+                Some(p) => LayerTransform::projective(
+                    p.then(&hsk_studio_pigment::transform_math::Projective2::from_affine(&layer.matrix)),
+                    scene.filter,
+                ),
+            };
+            transforms.push((root_layers.len(), transform));
         }
         let mask = match &layer.matte {
             None if layer.clipped => Some(MaskInput::clip_to_base()),

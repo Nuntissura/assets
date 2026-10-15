@@ -186,6 +186,24 @@ struct CompLayer {
     fill_opacity: f64,
     streams: Streams,
     content: Content,
+    /// Corner pin (lane SMB-AE-KEY-TRACK-3): the layer-space quad `from` and the `to` stream.
+    pin: Option<(Quad, Property)>,
+}
+
+type Quad = [[f64; 2]; 4];
+
+/// The motion `Property` of a Folio corner pin's `to` stream (8 components), through the same
+/// keyframe conversion as a transform stream.
+fn pin_property(layer_id: &str, pin: &hsk_studio_folio::StudioCornerPin) -> Result<Property, TemporalError> {
+    property(
+        layer_id,
+        &StudioPropertyStream {
+            // Only the keyframe conversion of `property` is used; the component count is the pin's.
+            property: StudioLayerProperty::Position,
+            static_value: pin.static_value.clone(),
+            keyframes: pin.keyframes.clone(),
+        },
+    )
 }
 
 /// One layer's sampled transform group.
@@ -602,11 +620,6 @@ impl CompositionTemporalSource {
         for l in &comp.layers {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
             let id = l.layer_id.as_str();
-            // A corner pin is projective and a scene layer carries an affine matrix: refused typed,
-            // never dropped (lane SMB-AE-KEY-TRACK-2; `track_apply::corner_pin_transform` lowers it).
-            if l.corner_pin.is_some() {
-                return Err(unsupported(id, crate::track_apply::COMPOSITION_CORNER_PIN));
-            }
             let dl = doc
                 .layers
                 .iter()
@@ -714,6 +727,17 @@ impl CompositionTemporalSource {
                     rotation: stream(StudioLayerProperty::Rotation)?,
                     opacity: stream(StudioLayerProperty::Opacity)?,
                 },
+                pin: match &l.corner_pin {
+                    None => None,
+                    Some(p) => {
+                        // A pin on content that has no pixels of its own, or on a collapsed
+                        // precomposition (whose layers join this composition), is refused typed.
+                        if !matches!(content, Content::Tiles { .. } | Content::Static { .. } | Content::Precomp { collapse: false, .. }) {
+                            return Err(unsupported(id, crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT));
+                        }
+                        Some((p.from, pin_property(id, p)?))
+                    }
+                },
                 content,
             });
         }
@@ -787,6 +811,9 @@ impl CompositionTemporalSource {
         match self.find(layer_id) {
             Some(l) if matches!(l.content, Content::Precomp { .. }) => {
                 Err(unsupported(layer_id, COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH))
+            }
+            Some(l) if l.pin.is_some() => {
+                Err(unsupported(layer_id, crate::track_apply::COMPOSITION_CORNER_PIN_ON_DOCUMENT_GRAPH))
             }
             Some(l)
                 if l.matte.is_some()
@@ -1055,6 +1082,25 @@ impl CompositionTemporalSource {
                 })
             }
         };
+        // Corner pin (lane SMB-AE-KEY-TRACK-3): the pinned quad at `tick` (motion samples the
+        // stream), as a projective map in content plan coordinates (layer space is the content
+        // plan shifted by the content origin).
+        let content = match &l.pin {
+            None => content,
+            Some((from, to)) => {
+                let v = sample(&l.layer_id, Some(to), 8, tick, cancel)?.unwrap_or_default();
+                let quad: Quad = [[v[0], v[1]], [v[2], v[3]], [v[4], v[5]], [v[6], v[7]]];
+                let invalid = || TemporalError::InvalidState { layer_id: l.layer_id.clone(), field: "corner_pin" };
+                let pin = hsk_studio_pigment::transform_math::Projective2::from_quads(*from, quad).map_err(|_| invalid())?;
+                let o = l.content.origin();
+                let to_layer = hsk_studio_pigment::transform_math::Projective2::from_affine(&Affine2::translate(-o[0], -o[1]));
+                let to_plan = hsk_studio_pigment::transform_math::Projective2::from_affine(&Affine2::translate(o[0], o[1]));
+                SceneContent::Pinned(Box::new(crate::composition::PinnedContent {
+                    content,
+                    pin: to_layer.then(&pin).then(&to_plan),
+                }))
+            }
+        };
         Ok(Some(SceneLayer {
             layer_id: l.layer_id.clone(),
             content,
@@ -1304,6 +1350,9 @@ impl TemporalSource for DocumentGraphSource<'_> {
         let Some(l) = self.inner.find(layer_id) else {
             return Ok(None);
         };
+        if l.pin.is_some() {
+            return Err(unsupported(layer_id, crate::track_apply::COMPOSITION_CORNER_PIN_ON_DOCUMENT_GRAPH));
+        }
         CompositionTemporalSource::matrix(self.inner.root()?, l, tick, cancel).map(Some)
     }
 }
