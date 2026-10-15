@@ -989,6 +989,9 @@ fn develop_core(
         if prepared.adjust.geometry.is_some() || request.recipe.crop.needs_geometry() {
             return Err(DevelopError::UnsupportedContribution("transform_whole_frame"));
         }
+        if prepared.adjust.effects.is_active() {
+            return Err(DevelopError::UnsupportedContribution("effects_whole_frame"));
+        }
         if prepared.adjust.clarity != 0.0 {
             return Err(DevelopError::UnsupportedContribution("clarity_whole_frame"));
         }
@@ -1342,5 +1345,9 @@ fn postprocess(
         threads,
         cancel,
     )?;
+    if prepared.adjust.effects.is_active() {
+        cancel.check()?;
+        prepared.adjust.effects.apply(&mut image.rgb, image.width, image.height, prepared.adjust.luma)?;
+    }
     Ok(())
 }

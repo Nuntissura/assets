@@ -363,6 +363,8 @@ fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
         // (lane SMB-DEVELOP-LENS-PRESETS harness slice); the panel cannot set them before that.
         optics: hsk_studio_develop::Optics::default(),
         geometry: hsk_studio_develop::Geometry::default(),
+        effects: hsk_studio_develop::Effects::default(),
+        calibration: hsk_studio_develop::Calibration::default(),
     };
     Ok(DevelopEdit { exposure_stops: num(o, "exposure_stops", "edit")?, adjust })
 }

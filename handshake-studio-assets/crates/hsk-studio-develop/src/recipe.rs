@@ -57,8 +57,6 @@ impl Enables {
     /// (vibrance, saturation, mixer), detail (clarity) and the tone curve run in `adjust.rs`.
     fn first_unsupported(&self) -> Option<&'static str> {
         [
-            (self.enable_calibration, "calibration"),
-            (self.enable_effects, "effects"),
             (self.enable_red_eye, "red_eye"),
             (self.enable_retouch, "retouch"),
             (self.enable_distraction_removal, "distraction_removal"),

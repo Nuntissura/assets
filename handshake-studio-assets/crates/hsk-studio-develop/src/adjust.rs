@@ -25,7 +25,7 @@ use crate::DevelopError;
 use crate::color::{self, D50_XYZ, Mat3, SRGB_TO_XYZ_D50};
 
 /// Version of the adjustment maths. Bump when any mapping below changes.
-pub const ADJUST_VERSION: (u32, u32) = (1, 2);
+pub const ADJUST_VERSION: (u32, u32) = (1, 3);
 /// Oldest recipe version still read: 1.0 recipes lack the 1.1 families and 1.0/1.1 recipes the 1.2
 /// families (optics, geometry), which are identity.
 pub const ADJUST_MIN_VERSION: (u32, u32) = (1, 0);
@@ -137,6 +137,10 @@ pub struct Adjustments {
     pub optics: crate::optics::Optics,
     /// STU-RAW-118 geometry (gated by `enable_transform`; whole frame).
     pub geometry: crate::geometry::Geometry,
+    /// STU-RAW-119 grain and post-crop vignette (gated by `enable_effects`; whole frame, last).
+    pub effects: crate::effects::Effects,
+    /// STU-RAW-120 calibration (gated by `enable_calibration`; per pixel, first in stage C).
+    pub calibration: crate::effects::Calibration,
 }
 
 /// Raw-form white balance (STU-RAW-110): kelvin 2000..25000 (the Kim Planckian approximation ends at
@@ -186,13 +190,15 @@ pub(crate) struct Gates {
     pub grayscale: bool,
     pub lens: bool,
     pub transform: bool,
+    pub effects: bool,
+    pub calibration: bool,
 }
 
 impl Gates {
     pub(crate) const NONE: Self =
-        Self { colour: false, curve: false, detail: false, mask: false, grayscale: false, lens: false, transform: false };
+        Self { colour: false, curve: false, detail: false, mask: false, grayscale: false, lens: false, transform: false, effects: false, calibration: false };
     pub(crate) const ALL_PIXEL: Self =
-        Self { colour: true, curve: true, detail: true, mask: false, grayscale: true, lens: false, transform: false };
+        Self { colour: true, curve: true, detail: true, mask: false, grayscale: true, lens: false, transform: false, effects: false, calibration: true };
 
     pub(crate) fn from_enables(e: &crate::recipe::Enables) -> Self {
         Self {
@@ -203,6 +209,8 @@ impl Gates {
             grayscale: e.enable_grayscale_mix,
             lens: e.enable_lens_corrections,
             transform: e.enable_transform,
+            effects: e.enable_effects,
+            calibration: e.enable_calibration,
         }
     }
 }
@@ -226,6 +234,8 @@ impl Default for Adjustments {
             detail: crate::detail::Detail::default(),
             optics: crate::optics::Optics::default(),
             geometry: crate::geometry::Geometry::default(),
+            effects: crate::effects::Effects::default(),
+            calibration: crate::effects::Calibration::default(),
         }
     }
 }
@@ -615,6 +625,8 @@ pub(crate) struct PreparedAdjust {
     pub(crate) detail: crate::detail::PreparedDetail,
     pub(crate) optics: crate::optics::PreparedOptics,
     pub(crate) geometry: Option<crate::geometry::PreparedGeometry>,
+    pub(crate) effects: crate::effects::PreparedEffects,
+    calibration: Option<crate::effects::PreparedCalibration>,
 }
 
 impl PreparedAdjust {
@@ -623,7 +635,7 @@ impl PreparedAdjust {
         adjust: &Adjustments,
         gates: Gates,
     ) -> Result<Self, DevelopError> {
-        let Gates { colour: colour_on, curve: curve_on, detail: detail_on, mask: mask_on, grayscale: gray_on, lens: lens_on, transform: transform_on } = gates;
+        let Gates { colour: colour_on, curve: curve_on, detail: detail_on, mask: mask_on, grayscale: gray_on, lens: lens_on, transform: transform_on, effects: effects_on, calibration: calibration_on } = gates;
         if adjust.version < ADJUST_MIN_VERSION || adjust.version > ADJUST_VERSION {
             return Err(DevelopError::InvalidAdjustment);
         }
@@ -667,6 +679,8 @@ impl PreparedAdjust {
         let detail = crate::detail::PreparedDetail::prepare(&adjust.detail, detail_on)?;
         let optics = crate::optics::PreparedOptics::prepare(&adjust.optics, lens_on)?;
         let geometry = crate::geometry::PreparedGeometry::prepare(&adjust.geometry, transform_on)?;
+        let effects = crate::effects::PreparedEffects::prepare(&adjust.effects, effects_on)?;
+        let calibration = crate::effects::PreparedCalibration::prepare(&adjust.calibration, &adjust.working_to_xyz_d50, luma, calibration_on)?;
         let colour = (extras.is_active() || (colour_on && (vibrance != 0.0 || saturation != 0.0 || mixer_active))).then_some(ColourStage {
             vibrance: if colour_on { vibrance } else { 0.0 },
             saturation: if colour_on { saturation } else { 0.0 },
@@ -685,17 +699,22 @@ impl PreparedAdjust {
             detail,
             optics,
             geometry,
+            effects,
+            calibration,
         })
     }
 
     /// True when the per-pixel stages (everything but clarity and local corrections) do anything.
     pub(crate) fn pixel_active(&self) -> bool {
-        self.wb.is_some() || self.tone.is_some() || self.regions.is_some() || self.colour.is_some()
+        self.wb.is_some() || self.tone.is_some() || self.regions.is_some() || self.colour.is_some() || self.calibration.is_some()
     }
 
     /// White balance shift, basic tone, parametric regions (before the point curves).
     pub(crate) fn pre(&self, v: [f64; 3]) -> Result<[f64; 3], DevelopError> {
-        let mut v = v;
+        let mut v = match &self.calibration {
+            Some(c) => c.apply(v),
+            None => v,
+        };
         if let Some(m) = &self.wb {
             v = color::mul_vec(m, &v);
         }

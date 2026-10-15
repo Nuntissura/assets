@@ -24,6 +24,7 @@ mod crx;
 mod crx_wavelet;
 pub mod curves;
 pub mod detail;
+pub mod effects;
 pub mod geometry;
 pub mod lens_profile;
 pub mod optics;
@@ -63,6 +64,7 @@ pub use local::{
 };
 pub use colour::{ColourGrading, GrayscaleMix, MAX_POINT_COLOURS, PointColour, Wheel};
 pub use detail::{Detail, NoiseReduction, Sharpen};
+pub use effects::{Calibration, Effects, Grain, PostCropVignette, VignetteStyle, grain_field};
 pub use geometry::{Geometry, GeometryReport, IDENTITY_3X3, MAX_GUIDES, UprightMode, apply_geometry};
 pub use lens_profile::{
     ChannelModel, LensBinding, LensModel, LensProfile, LensProjection, LensSample, MAX_LENS_PROFILE_BYTES, MAX_LENS_SAMPLES,
