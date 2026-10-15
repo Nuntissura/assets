@@ -350,12 +350,13 @@ fn assets() -> Assets {
 fn streams(pdf: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut at = 0;
-    while let Some(s) = find(&pdf[at..], b"stream\n").map(|i| at + i + 7) {
-        let e = s + find(&pdf[s..], b"\nendstream").unwrap();
+    // A stream body follows its dictionary's `>>` and ends at the `\nendstream` the writer appends.
+    while let Some(s) = find(&pdf[at..], b">>\nstream\n").map(|i| at + i + 10) {
+        let Some(e) = find(&pdf[s..], b"\nendstream").map(|i| s + i) else { break };
         if let Ok(d) = miniz_oxide::inflate::decompress_to_vec_zlib(&pdf[s..e]) {
             out.push(d);
         }
-        at = e;
+        at = e + 10;
     }
     out
 }
