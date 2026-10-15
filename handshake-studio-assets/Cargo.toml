@@ -126,8 +126,8 @@ allowed = ["hsk-studio-accord", "hsk-studio-pigment", "hsk-studio-prism", "hsk-s
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-layout", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-pulse]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
-dev-allowed = ["hsk-studio-composite", "hsk-studio-render-cpu", "hsk-studio-pigment", "hsk-studio-prism", "hsk-studio-score"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-score"]
+dev-allowed = ["hsk-studio-composite", "hsk-studio-render-cpu", "hsk-studio-pigment", "hsk-studio-prism"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-score]
 allowed = ["hsk-studio-accord", "hsk-studio-observe"]
@@ -159,8 +159,8 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-pigment", "hsk-s
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-fig]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-nib", "hsk-studio-press"]
-dev-allowed = ["hsk-studio-composite", "hsk-studio-render-cpu", "hsk-studio-pigment", "hsk-studio-prism", "hsk-studio-interop-raster"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-nib", "hsk-studio-press", "hsk-studio-interop-raster"]
+dev-allowed = ["hsk-studio-composite", "hsk-studio-render-cpu", "hsk-studio-pigment", "hsk-studio-prism"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-layout]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-layout", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-press", "hsk-studio-nib", "hsk-studio-pigment"]
@@ -175,7 +175,7 @@ allowed = ["hsk-studio-accord", "hsk-studio-observe"]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-chronicle", "hsk-studio-package", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-harness]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-psd", "hsk-studio-develop", "hsk-studio-interop-tiff", "hsk-studio-press", "hsk-studio-prism", "hsk-studio-interop-raster", "hsk-studio-composite", "hsk-studio-pigment", "hsk-studio-render-cpu", "hsk-studio-render-gpu", "hsk-studio-type"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-psd", "hsk-studio-develop", "hsk-studio-interop-tiff", "hsk-studio-press", "hsk-studio-prism", "hsk-studio-interop-raster", "hsk-studio-composite", "hsk-studio-pigment", "hsk-studio-render-cpu", "hsk-studio-render-gpu", "hsk-studio-type", "hsk-studio-pulse"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-kernel-bindings]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-observe"]

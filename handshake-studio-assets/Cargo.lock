@@ -1757,6 +1757,7 @@ dependencies = [
  "hsk-studio-observe",
  "hsk-studio-package",
  "hsk-studio-pigment",
+ "hsk-studio-press",
  "hsk-studio-prism",
  "hsk-studio-render-cpu",
  "hsk-studio-type",
