@@ -1000,7 +1000,7 @@ impl Viewer {
                 let samples = std::mem::take(&mut self.edit.gesture);
                 let corners = (points.first().copied(), points.last().copied());
                 let _ = match (tool, corners) {
-                    (Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify, _) => self.ps_gesture(tool, &samples),
+                    (Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify | Tool::RefineBrush, _) => self.ps_gesture(tool, &samples),
                     (Tool::RectSelect, (Some(a), Some(b))) => self.select_rect(a[0].min(b[0]), a[1].min(b[1]), (a[0] - b[0]).abs(), (a[1] - b[1]).abs()),
                     (Tool::EllipseSelect, (Some(a), Some(b))) => self.select_ellipse(a[0].min(b[0]), a[1].min(b[1]), (a[0] - b[0]).abs(), (a[1] - b[1]).abs()),
                     (Tool::Lasso, _) => self.select_lasso(&points),
@@ -1049,7 +1049,7 @@ impl Viewer {
                     .collect();
                 painter.add(egui::Shape::line(pts, line));
             }
-            (Tool::Lasso | Tool::Brush | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify, Some(_), Some(_)) => {
+            (Tool::Lasso | Tool::Brush | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify | Tool::RefineBrush, Some(_), Some(_)) => {
                 let stroke = if tool == Tool::Brush {
                     let [r, gg, bb] = self.edit.brush.rgb8;
                     egui::Stroke::new((self.edit.brush.diameter_px as f32 * zoom).max(1.0), egui::Color32::from_rgba_unmultiplied(r, gg, bb, 120))
@@ -1091,7 +1091,7 @@ impl Viewer {
                 Tool::Lasso => "Drag a freehand selection",
                 Tool::Brush => "Paint on the selected raster layer (clipped to the selection)",
                 Tool::Text => "Click the canvas to place a point-text layer (size and colour from the text size and brush colour)",
-                Tool::MagicWand | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify => select_liquify::tool_hover(tool),
+                Tool::MagicWand | Tool::QuickSelect | Tool::MagneticLasso | Tool::Liquify | Tool::RefineBrush => select_liquify::tool_hover(tool),
                 other => vector::tool_hover(other),
             };
             if ui.push_id(widget::id(&name), |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).inner.on_hover_text(hover).clicked() {

@@ -70,10 +70,12 @@ pub enum Tool {
     QuickSelect,
     MagneticLasso,
     Liquify,
+    /// Lane SMB-PS-SMART-FILTER-WIRING: the STU-RAS-122 refinement brush set.
+    RefineBrush,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 30] = [
+    pub const ALL: [Tool; 31] = [
         Tool::View,
         Tool::RectSelect,
         Tool::EllipseSelect,
@@ -104,6 +106,7 @@ impl Tool {
         Tool::QuickSelect,
         Tool::MagneticLasso,
         Tool::Liquify,
+        Tool::RefineBrush,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -137,6 +140,7 @@ impl Tool {
             Tool::QuickSelect => "quick_selection",
             Tool::MagneticLasso => "magnetic_lasso",
             Tool::Liquify => "liquify",
+            Tool::RefineBrush => "refine_edge_brush",
         }
     }
     pub fn label(self) -> &'static str {
@@ -171,6 +175,7 @@ impl Tool {
             Tool::QuickSelect => "Quick select",
             Tool::MagneticLasso => "Magnetic lasso",
             Tool::Liquify => "Liquify",
+            Tool::RefineBrush => "Refine edge brush",
         }
     }
 }
@@ -221,6 +226,8 @@ pub struct EditState {
     /// Magic wand, quick select, magnetic lasso and liquify settings (module
     /// [`super::select_liquify`]).
     pub ps: super::select_liquify::PsSettings,
+    /// The refinement surface state of the refine-edge brush (module [`super::select_liquify`]).
+    pub(super) refine: Option<super::select_liquify::RefineSession>,
 }
 
 impl Default for EditState {
@@ -236,6 +243,7 @@ impl Default for EditState {
             vector: super::vector::VectorTool::default(),
             vector_local: None,
             ps: super::select_liquify::PsSettings::default(),
+            refine: None,
         }
     }
 }

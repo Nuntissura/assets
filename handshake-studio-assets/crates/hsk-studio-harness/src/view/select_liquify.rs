@@ -27,6 +27,8 @@ use hsk_studio_pigment::brush::StrokeSample;
 use hsk_studio_pigment::liquify::{LiquifyBrush, LiquifyLimits, LiquifyMesh, LiquifyTool};
 use hsk_studio_pigment::select_tools::ToolLimits;
 use hsk_studio_pigment::select_tools::magnetic::{MagneticOptions, magnetic_lasso};
+use hsk_studio_pigment::select_tools::refine::{MatteMethod, RefineOptions};
+use hsk_studio_pigment::select_tools::refine_brush::{RefineBrush, RefineBrushMode, RefineState};
 use super::edit::Tool;
 use super::widget;
 use hsk_studio_pigment::select_tools::quick::{GraphCutOptions, QuickStroke, StrokeMode, quick_select};
@@ -51,6 +53,19 @@ pub struct PsSettings {
     pub magnetic: MagneticOptions,
     pub liquify_tool: LiquifyTool,
     pub liquify_brush: LiquifyBrush,
+    /// Refine-edge brush (STU-RAS-122): mode, diameter, the surface's edge radius, feather radius.
+    pub refine_mode: RefineBrushMode,
+    pub refine_size: f64,
+    pub refine_radius: f64,
+    pub refine_feather_px: f32,
+}
+
+/// The refinement surface of the refine-edge brush: the painted state and the selection it last
+/// produced (a selection changed by another tool restarts the surface from that selection).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefineSession {
+    pub state: RefineState,
+    pub produced: Option<CoveragePlane>,
 }
 impl Default for PsSettings {
     fn default() -> Self {
@@ -61,6 +76,10 @@ impl Default for PsSettings {
             magnetic: MagneticOptions::default(),
             liquify_tool: LiquifyTool::ForwardWarp,
             liquify_brush: LiquifyBrush::default(),
+            refine_mode: RefineBrushMode::RefineEdge,
+            refine_size: 16.0,
+            refine_radius: 0.0,
+            refine_feather_px: 2.0,
         }
     }
 }
@@ -74,6 +93,19 @@ pub const MAGNETIC_WIDTH: &str = "ps.magnetic_width";
 pub const LIQUIFY_TOOL: &str = "ps.liquify_tool";
 pub const LIQUIFY_SIZE: &str = "ps.liquify_size";
 pub const LIQUIFY_PRESSURE: &str = "ps.liquify_pressure";
+pub const REFINE_MODE: &str = "ps.refine_mode";
+pub const REFINE_SIZE: &str = "ps.refine_size";
+pub const REFINE_RADIUS: &str = "ps.refine_radius";
+
+const REFINE_MODES: [(&str, RefineBrushMode); 7] = [
+    ("refine edge", RefineBrushMode::RefineEdge),
+    ("add", RefineBrushMode::AddToSelection),
+    ("subtract", RefineBrushMode::SubtractFromSelection),
+    ("matte", RefineBrushMode::Matte),
+    ("foreground", RefineBrushMode::Foreground),
+    ("background", RefineBrushMode::Background),
+    ("feather", RefineBrushMode::Feather),
+];
 
 /// Hover text of the tools.
 pub fn tool_hover(tool: Tool) -> &'static str {
@@ -82,6 +114,7 @@ pub fn tool_hover(tool: Tool) -> &'static str {
         Tool::QuickSelect => "Paint to grow the selection to the region (combine 'diminish' subtracts)",
         Tool::MagneticLasso => "Trace along an edge; the boundary snaps to it (width below)",
         Tool::Liquify => "Drag on the selected raster layer to warp it (tool and brush below)",
+        Tool::RefineBrush => "Paint over the selection edge: refine edge, add, subtract, matte, foreground, background or feather (mode below)",
         _ => "",
     }
 }
@@ -367,6 +400,10 @@ impl Viewer {
                 let layer = self.ps_layer("liquify", false).inspect_err(|e| self.say(e.clone()))?;
                 self.liquify(&layer, s.liquify_tool, samples, &s.liquify_brush).map(|_| ())
             }
+            Tool::RefineBrush => {
+                let layer = self.ps_layer("refine_brush", s.sample_merged).inspect_err(|e| self.say(e.clone()))?;
+                self.refine_stroke(&layer, samples)
+            }
             _ => Ok(()),
         }
     }
@@ -398,12 +435,76 @@ impl Viewer {
         drawn.push(LIQUIFY_SIZE.into());
         ui.push_id(widget::id(LIQUIFY_PRESSURE), |ui| ui.add(egui::Slider::new(&mut s.liquify_brush.pressure, 0.0..=100.0).text("pressure")));
         drawn.push(LIQUIFY_PRESSURE.into());
+        let mode = REFINE_MODES.iter().find(|(_, m)| *m == s.refine_mode).map_or("refine edge", |(n, _)| *n);
+        ui.push_id(widget::id(REFINE_MODE), |ui| {
+            egui::ComboBox::from_label("refine").selected_text(mode).show_ui(ui, |ui| {
+                for (name, m) in REFINE_MODES {
+                    ui.selectable_value(&mut s.refine_mode, m, name);
+                }
+            });
+        });
+        drawn.push(REFINE_MODE.into());
+        ui.push_id(widget::id(REFINE_SIZE), |ui| ui.add(egui::Slider::new(&mut s.refine_size, 1.0..=500.0).logarithmic(true).text("refine size")));
+        drawn.push(REFINE_SIZE.into());
+        ui.push_id(widget::id(REFINE_RADIUS), |ui| ui.add(egui::Slider::new(&mut s.refine_radius, 0.0..=100.0).text("edge radius")));
+        drawn.push(REFINE_RADIUS.into());
         self.edit.ps = s;
+    }
+
+    /// One refine-edge brush stroke (STU-RAS-122) on the current selection: the stroke edits the
+    /// refinement surface (pigment `RefineState`: trimap marks or the selection), the surface is
+    /// re-rendered against `layer_id` (or the composite with sample merged) with the edge radius of
+    /// the settings and the guided-filter matte, and the result becomes the selection: one
+    /// selection-history step. The surface persists across strokes until the selection is changed
+    /// by another tool or undone.
+    pub fn refine_stroke(&mut self, layer_id: &str, samples: &[StrokeSample]) -> Result<(), String> {
+        let result = self.refine_inner(layer_id, samples);
+        match result {
+            Ok(plane) => {
+                self.install_selection("refine_brush", plane);
+                if let Some(r) = self.edit.refine.as_mut() {
+                    r.produced = self.edit.selection.clone();
+                }
+                Ok(())
+            }
+            Err(e) => {
+                self.say(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn refine_inner(&mut self, layer_id: &str, samples: &[StrokeSample]) -> Result<CoveragePlane, String> {
+        let s = self.edit.ps;
+        let selection = self.edit.selection.clone().ok_or("refine_brush: make a selection first")?;
+        let restart = self.edit.refine.as_ref().is_none_or(|r| r.produced.as_ref() != Some(&selection));
+        let mut session = if restart {
+            RefineSession { state: RefineState::new(selection), produced: None }
+        } else {
+            self.edit.refine.clone().ok_or("refine_brush: no surface")?
+        };
+        let canvas = self.tool_canvas()?;
+        let ctx = SelectionContext::new(canvas);
+        let brush = RefineBrush { samples, diameter_px: s.refine_size, hardness_pct: 100.0, mode: s.refine_mode, feather_px: s.refine_feather_px };
+        session.state.apply_brush(&brush, &ctx).map_err(|e| format!("refine_brush: {}", e.code()))?;
+        let (region, colour, alpha) = self.sampled("refine_brush", layer_id, s.sample_merged)?;
+        let views = [ColourView { bounds: region, colour: &colour, alpha: &alpha }];
+        let opts = RefineOptions { radius: s.refine_radius, method: MatteMethod::GuidedFilter, ..RefineOptions::default() };
+        let out = session.state.render(&views, 0, &opts, &ctx, &ToolLimits::default()).map_err(|e| format!("refine_brush: {}", e.code()))?;
+        self.edit.refine = Some(session);
+        Ok(out.coverage)
+    }
+
+    /// Ends the refinement surface (the selection stays).
+    pub fn refine_end(&mut self) {
+        self.edit.refine = None;
     }
 
     /// Restores the selection before the newest wand / quick-select step.
     pub fn undo_selection(&mut self) -> Result<(), String> {
         let previous = self.selection_history.pop().ok_or("undo_selection: no selection step to undo")?;
+        // The refinement surface restarts from the restored selection.
+        self.edit.refine = None;
         match previous {
             Some(plane) => self.restore_selection(plane),
             None => self.clear_selection(),
