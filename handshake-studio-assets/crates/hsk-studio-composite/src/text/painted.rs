@@ -11,7 +11,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::CompositeError;
 use crate::composition::{OwnedMask, StaticContent};
-use hsk_studio_nib::raster::CoveragePlane;
+use hsk_studio_nib::raster::{CoveragePlane, PixelFrame};
+use hsk_studio_nib::{OwnedPath, PathElement, PathPoint};
 use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, ColourTag, Group, Layer, MaskFormat, MaskInput, OutputTarget, PlanExtensions,
@@ -58,6 +59,45 @@ fn union(a: Rect, b: Rect) -> Result<Rect, CompositeError> {
         width: u32::try_from(w).map_err(|_| CompositeError::Overflow)?,
         height: u32::try_from(h).map_err(|_| CompositeError::Overflow)?,
     })
+}
+
+/// Integer pixel frame enclosing every point of `path` (control points included; at least 1 x 1),
+/// `None` for an empty path or a frame outside `i32` / `u32`.
+pub fn path_frame(path: &OwnedPath) -> Option<PixelFrame> {
+    let mut b: Option<(f64, f64, f64, f64)> = None;
+    let mut add = |p: PathPoint| {
+        b = Some(match b {
+            None => (p.x, p.y, p.x, p.y),
+            Some((x0, y0, x1, y1)) => (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)),
+        });
+    };
+    for e in &path.elements {
+        match *e {
+            PathElement::MoveTo(p) | PathElement::LineTo(p) => add(p),
+            PathElement::QuadTo(a, p) => {
+                add(a);
+                add(p);
+            }
+            PathElement::CubicTo(a, c, p) => {
+                add(a);
+                add(c);
+                add(p);
+            }
+            PathElement::Close => {}
+        }
+    }
+    let (x0, y0, x1, y1) = b?;
+    let (fx, fy) = (x0.floor(), y0.floor());
+    let (w, h) = ((x1.ceil() - fx).max(1.0), (y1.ceil() - fy).max(1.0));
+    if !(fx.is_finite() && fy.is_finite() && w.is_finite() && h.is_finite())
+        || fx.abs() > f64::from(i32::MAX)
+        || fy.abs() > f64::from(i32::MAX)
+        || w > f64::from(u32::MAX)
+        || h > f64::from(u32::MAX)
+    {
+        return None;
+    }
+    Some(PixelFrame { x: fx as i32, y: fy as i32, width: w as u32, height: h as u32 })
 }
 
 /// Lowers `planes` (bottom first) into static content over the union of their frames. Planes that

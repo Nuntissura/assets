@@ -14,6 +14,11 @@
 //! nib errors map to typed refusal codes; budgets (pixels, work, pieces) are nib's own, checked
 //! before allocation (V4-02).
 #![deny(clippy::arithmetic_side_effects)]
+
+/// After Effects-style shape layers (lane SMB-AE-MOTION-TOOLS): ordered generators, paints and
+/// nib path operators.
+pub mod shape_layer;
+
 use crate::vector::{BooleanOp, VectorGeometry};
 use hsk_studio_nib::boolean::{BooleanOp as NibOp, BooleanOptions, boolean};
 use hsk_studio_nib::raster::{CoveragePlane, Paint, PixelFrame, RasterOptions, paint_coverage, rasterize};

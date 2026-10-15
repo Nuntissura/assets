@@ -22,13 +22,13 @@
 //! finite, every glyph frame within nib's pixel budget and the summed planes within the painted
 //! byte budget, all checked before the plane is allocated.
 #![deny(clippy::arithmetic_side_effects)]
-use super::painted::{DEFAULT_MAX_PAINTED_BYTES, PaintedPlane, painted_content};
+use super::painted::{DEFAULT_MAX_PAINTED_BYTES, PaintedPlane, painted_content, path_frame};
 use super::{TextResolution, TextRun};
 use crate::CompositeError;
 use crate::composition::StaticContent;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_motion::{CharTransform, TextChar};
-use hsk_studio_nib::raster::{PixelFrame, RasterOptions, rasterize};
+use hsk_studio_nib::raster::{RasterOptions, rasterize};
 use hsk_studio_nib::shape::sin_cos_deg;
 use hsk_studio_nib::{FillRule, OwnedPath, PathElement, PathPoint};
 use hsk_studio_pigment::render_plan::ColourTag;
@@ -200,39 +200,6 @@ pub fn move_glyph(glyph: &AnimatedGlyph, t: &CharTransform, shift_px: f64) -> Re
     Ok(out)
 }
 
-/// Integer pixel frame enclosing every point of `path` (control points included).
-pub(crate) fn frame_of(path: &OwnedPath) -> Option<PixelFrame> {
-    let mut b: Option<(f64, f64, f64, f64)> = None;
-    let mut add = |p: PathPoint| {
-        b = Some(match b {
-            None => (p.x, p.y, p.x, p.y),
-            Some((x0, y0, x1, y1)) => (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)),
-        });
-    };
-    for e in &path.elements {
-        match *e {
-            PathElement::MoveTo(p) | PathElement::LineTo(p) => add(p),
-            PathElement::QuadTo(a, p) => {
-                add(a);
-                add(p);
-            }
-            PathElement::CubicTo(a, c, p) => {
-                add(a);
-                add(c);
-                add(p);
-            }
-            PathElement::Close => {}
-        }
-    }
-    let (x0, y0, x1, y1) = b?;
-    let (fx, fy) = (x0.floor(), y0.floor());
-    let (w, h) = ((x1.ceil() - fx).max(1.0), (y1.ceil() - fy).max(1.0));
-    if fx.abs() > f64::from(i32::MAX) || fy.abs() > f64::from(i32::MAX) || w > f64::from(u32::MAX) || h > f64::from(u32::MAX) {
-        return None;
-    }
-    Some(PixelFrame { x: fx as i32, y: fy as i32, width: w as u32, height: h as u32 })
-}
-
 #[allow(clippy::too_many_arguments)]
 /// Lowers animated glyphs to static content (module docs). `transforms[i]` belongs to
 /// `glyphs[i]` (from `hsk_studio_motion::evaluate_text_animators` over [`text_chars`]).
@@ -266,7 +233,7 @@ pub fn animated_text_content(
             continue;
         }
         let moved = move_glyph(g, t, this_shift)?;
-        let Some(frame) = frame_of(&moved) else {
+        let Some(frame) = path_frame(&moved) else {
             continue;
         };
         let px = u64::from(frame.width).checked_mul(u64::from(frame.height)).ok_or(CompositeError::Overflow)?;
