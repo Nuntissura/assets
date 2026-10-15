@@ -33,3 +33,8 @@ hsk-studio-interop-raster = [[]]
 # harness: psd-tools sweep (16 size-balanced shards, 0-15), DNG convert, vendor RAW refusals (tests/import_psd.rs needs import-psd;
 # the DNG/RAW tests need import-raw).
 hsk-studio-harness = [["import-psd", "import-raw"]]
+
+[prebuild]
+# F-R32-2 (R32): viewer_media.rs h264_frames_decode_through_the_media_foundation_worker spawns
+# <target>/debug/reel-native-mf-worker; build it from the candidate right before the unit.
+"hsk-studio-harness+media-native" = [["hsk-studio-reel-native", "reel-native-mf-worker", "mf-worker"]]

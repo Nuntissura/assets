@@ -19,6 +19,9 @@
 #   V4-05 frozen duplicates: .config/duplicate-fingerprints.toml patterns over crates/*/src; a match in a file
 #     outside that fingerprint's `allowed` sites (D16 ZIP/CRC-32, D18 worker supervision, timecode) exits 71.
 # Units (each its own result; all run; a unit's build failure skips only that unit's test run):
+#   prebuild   [prebuild] of .config/round-features.toml: `cargo build -p PKG --bin BIN [--features F]` into this run's
+#              target right before the named features unit, for worker binaries its tests spawn from <target>/debug
+#              (prebuild/UNIT+BIN.*; a failure is recorded as that unit's build failure; F-R32-2).
 #   default    union over the selection, default features: one build (nextest --no-run) + one run (--no-fail-fast);
 #              files at the results root (build.*, run.*, list.txt, canary-filter.txt, junit.xml) as before.
 #              Per-test timeouts: .config/nextest.toml slow-timeout (CX-EXEC-005); a junit <failure type="test
@@ -380,8 +383,30 @@ for crate in sorted(ignored):
         for s in ignored[crate]:
             missing = [f for f in s if f not in members[crate].get("features", {})]
             ignored_units.append(("ignored", crate, ",".join(s), "feature_absent:" + ",".join(missing) if missing else "run"))
-print(f"config\tdoctest-per-test-timeout-s\t{budget}\t-")
+# [prebuild]: "CRATE+F1+F2" (a declared features unit) = [[package, bin, feature...], ...]: worker binaries that
+# unit's tests spawn from <target>/debug (F-R32-2); built from the candidate into the run's own target right before
+# that unit (a prebuild row precedes it; a failed prebuild is that unit's build failure).
+prebuild = {}
+for unit, specs in doc.get("prebuild", {}).items():
+    ok = isinstance(specs, list) and specs and all(
+        isinstance(s, list) and len(s) >= 2 and all(isinstance(x, str) and x and "," not in x and "|" not in x for x in s)
+        for s in specs)
+    if not ok:
+        sys.exit(f"run-round: round-features.toml [prebuild] {unit}: expected a list of [package, bin, feature...] lists")
+    prebuild[unit] = specs
+declared = {"+".join([c] + f.split(",")) for k, c, f, st in feature_units}
+for unit in prebuild:
+    if unit not in declared:
+        sys.exit(f"run-round: round-features.toml [prebuild] {unit}: not a declared [crates] features unit")
+rows = []
 for kind, crate, feats, status in feature_units + ignored_units + doc_units:
+    unit = "+".join([crate] + feats.split(",")) if kind == "features" and feats else None
+    if unit in prebuild and status == "run":
+        for pkg, binary, *bfeats in prebuild[unit]:
+            rows.append(("prebuild", unit, f"{pkg}|{binary}|{','.join(bfeats) or '-'}", "run"))
+    rows.append((kind, crate, feats, status))
+print(f"config\tdoctest-per-test-timeout-s\t{budget}\t-")
+for kind, crate, feats, status in rows:
     print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
 PY
 
@@ -642,13 +667,31 @@ rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
 cat "$results/fixtures/units.tsv" >>"$units"
 default_filter=$U_FILTER
 mkdir -p "$results/features" "$results/ignored" "$results/doctest"
+declare -A prebuild_fail=()
 while IFS=$'\t' read -r kind crate feats status; do
   status=${status%$'\r'}
   [ "$kind" = config ] && continue
+  if [ "$kind" = prebuild ]; then
+    # [prebuild] (F-R32-2): a worker binary the next features unit ($crate = its unit name) spawns from
+    # <target>/debug, built from this candidate into this run's target; a failure fails that unit's build.
+    IFS='|' read -r pb_pkg pb_bin pb_feats <<<"$feats"
+    pfa=(); [ "$pb_feats" != - ] && pfa=(--features "$pb_feats")
+    mkdir -p "$results/prebuild"
+    lock_unit
+    cargo build ${locked[@]+"${locked[@]}"} -p "$pb_pkg" --bin "$pb_bin" ${pfa[@]+"${pfa[@]}"} \
+      >"$results/prebuild/$crate+$pb_bin.stdout.txt" 2>"$results/prebuild/$crate+$pb_bin.stderr.txt"
+    pb_rc=$?
+    unlock_unit
+    rec "prebuild:$crate:$pb_bin" build "$pb_pkg" "$pb_feats" run "$pb_rc" - "prebuild/$crate+$pb_bin"
+    [ $pb_rc -ne 0 ] && prebuild_fail[$crate]=$pb_rc
+    continue
+  fi
   name=$crate; [ "$feats" != - ] && name="$crate+${feats//,/+}"
   if [ "$status" != run ]; then
     k=doctest; [ "$kind" != doctest ] && k=nextest
     rec "$kind:$name" "$k" "$crate" "$feats" "$status" - - -
+  elif [ "$kind" = features ] && [ -n "${prebuild_fail[$name]:-}" ]; then
+    rec "features:$name" nextest "$crate" "$feats" run "${prebuild_fail[$name]}" - "features/$name"
   elif [ "$kind" = features ]; then
     lock_unit
     nextest_unit "$results/features/$name" "$feats" -p "$crate"
