@@ -40,9 +40,10 @@ fn fixture() -> Vec<u8> {
     ex.finish(&CancellationToken::default()).unwrap().0
 }
 
-fn px(f: &hsk_studio_harness::view::render::Frame, x: u32, y: u32) -> [u8; 3] {
+/// Straight RGBA of a frame pixel (the PDF has no background: unpainted pixels are transparent).
+fn px(f: &hsk_studio_harness::view::render::Frame, x: u32, y: u32) -> [u8; 4] {
     let i = ((y * f.width + x) * 4) as usize;
-    [f.rgba8[i], f.rgba8[i + 1], f.rgba8[i + 2]]
+    [f.rgba8[i], f.rgba8[i + 1], f.rgba8[i + 2], f.rgba8[i + 3]]
 }
 
 #[test]
@@ -58,16 +59,16 @@ fn ai_imports_as_editable_vectors_and_exports_as_svg() {
     }
     // Editable: the vector layers carry Folio styles; pixels where the PDF drew them (y flipped,
     // x 4/3): red at (24, 80) px, the clipped gradient blue only inside 80..120 px, the green group
-    // at 50 % multiply, white outside.
+    // at 50 % opacity, transparent where nothing is drawn (the PDF has no background).
     assert!(v.layers().iter().filter(|r| r.kind == "vector").count() >= 4);
     v.render_if_dirty();
     let f = v.frame().unwrap_or_else(|| panic!("no frame: {}", v.state_json())).clone();
     assert_eq!((f.width, f.height), (200, 100));
-    assert_eq!(px(&f, 24, 80), [255, 0, 0]);
-    assert_eq!(px(&f, 100, 80), [0, 0, 255], "inside the clip");
-    assert_eq!(px(&f, 72, 80), [255, 255, 255], "gradient outside the clip");
+    assert_eq!(px(&f, 24, 80), [255, 0, 0, 255]);
+    assert_eq!(px(&f, 100, 80), [0, 0, 255, 255], "inside the clip");
+    assert_eq!(px(&f, 72, 80)[3], 0, "gradient outside the clip");
     let green = px(&f, 160, 80);
-    assert!(green[1] == 255 && green[0] > 100 && green[0] < 160, "{green:?}");
+    assert!(green[1] == 255 && green[0] == 0 && (120..=135).contains(&green[3]), "{green:?}");
     // The imported document exports as SVG (a red path, the clip reported as a loss).
     let (svg, svg_losses) = v.vector_svg().unwrap();
     assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"));
