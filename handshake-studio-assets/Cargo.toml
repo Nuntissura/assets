@@ -162,7 +162,7 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hs
 dev-allowed = ["hsk-studio-composite", "hsk-studio-render-cpu", "hsk-studio-pigment", "hsk-studio-prism"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-layout]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-layout", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-press"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-layout", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-press", "hsk-studio-nib", "hsk-studio-pigment"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-media]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-pulse"]
