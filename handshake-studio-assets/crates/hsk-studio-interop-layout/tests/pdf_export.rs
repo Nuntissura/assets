@@ -730,9 +730,108 @@ fn type_shaped_story_takes_its_fill_from_folio_styles() {
     let shown_ids: Vec<u16> = shown(&decoded).iter().map(|g| g.0).collect();
     assert_eq!(shown_ids, glyphs[0].iter().map(|g| g.glyph_id).collect::<Vec<_>>(), "Type's ids, in order");
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
-    assert!(codes.contains(&"paint_colour_untagged") && codes.contains(&"text_fill_alpha_ignored"), "{codes:?}");
+    assert!(codes.contains(&"paint_colour_untagged") && !codes.contains(&"text_fill_alpha_ignored"), "{codes:?}");
+    // The half-alpha red run is drawn through an /ExtGState with /ca 0.5.
+    assert!(content.contains("q\n/GS0 gs\n1.0 0.0 0.0 rg\nBT\n"), "alpha run");
+    assert!(find(&out.bytes, b"/ca 0.5 /CA 1 /BM /Normal").is_some(), "ExtGState ca");
     // A run whose font is not supplied is refused by the adapter.
     let other = [PdfFont { bytes: INTER, face_index: 1, hyphen: None }];
     let refused = shape(&files, TEXT, &segs, false, SIZE, |prepared| pdf_glyphs_from_type(&prepared.paragraphs()[0], &other));
     assert_eq!(refused, Err(PdfExportError::InvalidInput("font_not_supplied")));
+}
+
+struct MaskAssets {
+    coverage: Vec<u8>,
+}
+impl PdfAssets for MaskAssets {
+    fn path(&self, path_id: &str) -> Option<OwnedPath> {
+        GraphAssets.path(path_id)
+    }
+    fn raster(&self, _: &str) -> Option<PlacedRaster<'_>> {
+        None
+    }
+    fn profile(&self, _: &str) -> Option<&[u8]> {
+        None
+    }
+    /// 2x1 coverage (255, 0) over spread (350, 50) at 25 pt per pixel.
+    fn mask(&self, layer_id: &str) -> Option<PlacedMask<'_>> {
+        (layer_id == id("SLYR", 10)).then(|| PlacedMask {
+            mask: hsk_studio_pigment::Mask { bounds: Rect { x: 0, y: 0, width: 2, height: 1 }, sample_format: "coverage_u8", bytes: &self.coverage, stride_bytes: 2, sha256: profile_hash(&self.coverage) },
+            origin_pt: [350.0, 50.0],
+            pt_per_px: 25.0,
+        })
+    }
+}
+
+/// Item 6 through Folio appearance: group 10 at 50 percent opacity with Multiply becomes a
+/// transparency group (form XObject + /ExtGState); vector 11's Vivid Light has no PDF mode (drawn
+/// Normal, reported) and its 50 percent fill row goes through /ca; an enabled mask becomes a
+/// luminosity soft mask. Render-back without the mask: blue (12 only) at 50 percent under
+/// Multiply over white, red (11 only) at 50 percent.
+#[test]
+fn folio_appearance_becomes_transparency_groups() {
+    let cancel = CancellationToken::default();
+    let appearance = |opacity: f64, blend: u16, mask: bool| LayerAppearance {
+        opacity,
+        fill_opacity: 100.0,
+        blend_mode: blend,
+        clipped: false,
+        isolation: Isolation::Isolated,
+        mask: mask.then(|| StudioMask { tiles: vec![], enabled: true, linked: true }),
+    };
+    let run = |mask: bool| {
+        let mut d = graph_document();
+        d.layers[0].appearance = Some(appearance(50.0, 5, mask));
+        d.layers[1].appearance = Some(appearance(100.0, 15, false));
+        let snapshot = validate_document(d, Budget::default(), &cancel, &Everything).unwrap();
+        let mut design = StudioDesignRecords::new(id("SDOC", 1));
+        let fill = |n: u32, rgb: [f64; 3], opacity: f64| {
+            paint_style(n, StudioAppearanceRow::Fill {
+                paint: StudioPaint::Solid { colour: StudioColor { r: rgb[0], g: rgb[1], b: rgb[2], colour_profile_id: ProfileBinding::Unassigned(()) } },
+                opacity,
+                blend_mode: 2,
+                visible: true,
+            })
+        };
+        design.paint_styles.push(fill(11, [1.0, 0.0, 0.0], 50.0));
+        design.paint_styles.push(fill(12, [0.0, 0.0, 1.0], 100.0));
+        for n in [11u32, 12] {
+            let mut node: StudioNodeDesign = serde_json::from_value(serde_json::json!({"node": {"node_kind": "layer", "node_id": id("SLYR", n)}})).unwrap();
+            node.style_refs.insert("fill_style_id".into(), id("SSTY", n));
+            design.nodes.push(node);
+        }
+        let assets = MaskAssets { coverage: vec![255, 0] };
+        export_pdf(
+            &PdfExportInput {
+                snapshot: &snapshot,
+                design: Some(&design),
+                type_styles: None,
+                stories: &[],
+                fonts: &[],
+                assets: &assets,
+                options: ExportOptions::default(),
+                limits: Limits::default(),
+            },
+            &cancel,
+        )
+        .unwrap()
+    };
+    let masked = run(true);
+    let codes: Vec<&str> = masked.loss.iter().map(|l| l.code).collect();
+    assert!(codes.contains(&"blend_mode_not_in_pdf"), "{codes:?}");
+    assert!(!codes.contains(&"layer_mask_unresolved"), "{codes:?}");
+    assert!(find(&masked.bytes, b"/ca 0.5 /CA 0.5 /BM /Multiply /SMask").is_some(), "group ExtGState");
+    assert!(find(&masked.bytes, b"/S /Luminosity").is_some(), "soft mask");
+    assert!(find(&masked.bytes, b"/S /Transparency /I true").is_some(), "transparency group");
+    assert!(streams(&masked.bytes).contains(&vec![255u8, 0]), "mask coverage samples");
+    let page2 = render_page(&masked.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();
+    assert!(page2.notes.contains(&"soft_mask"), "{:?}", page2.notes);
+    // Without the mask the render-back shows the group opacity, the Multiply and the row alpha.
+    let plain = run(false);
+    let r = render_page(&plain.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 4);
+    // Spread (405, 55) -> page 2 (108, 354) -> device (108, 64): vector 12 only.
+    assert!(near(r.pixel(108, 64).unwrap(), [128, 128, 255]), "{:?}", r.pixel(108, 64));
+    // Spread (355, 52) -> device (58, 61): vector 11 only, 50 percent row inside the 50 percent group.
+    assert!(near(r.pixel(58, 61).unwrap(), [255, 191, 191]), "{:?}", r.pixel(58, 61));
 }

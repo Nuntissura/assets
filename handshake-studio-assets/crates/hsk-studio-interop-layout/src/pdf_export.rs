@@ -29,8 +29,14 @@
 //!   linear-light `rgb_f32le` samples are quantised to 16 bits and written ICCBased with the tile's
 //!   own profile (no colour conversion: the profile states what the samples mean); the straight
 //!   alpha plane becomes the image's `/SMask`.
-//! - Everything not drawn is a typed loss entry (`LossEntry`), never a silent drop: appearance
-//!   (opacity, blend, masks), gradients, non-centre stroke alignment, dashes, unresolved paths,
+//! - Appearance: a layer or composite group whose authored appearance is not the identity is drawn
+//!   as a PDF transparency group (press `begin_group` / `end_group`) with opacity x fill opacity,
+//!   its blend mode (PDF-named modes; the others drawn Normal and reported), isolation, and an
+//!   enabled mask as a luminosity soft mask from [`PdfAssets::mask`]; pass-through groups at full
+//!   opacity draw their children directly. Paint rows set their opacity and blend through
+//!   `/ExtGState`; text fill alpha likewise. Clipping masks are reported, not applied.
+//! - Everything not drawn is a typed loss entry (`LossEntry`), never a silent drop: clipping,
+//!   blend modes PDF lacks, unresolved masks, gradients, non-centre stroke alignment, dashes, unresolved paths,
 //!   tiles or profiles, fonts press refuses, layers outside page spreads, unknown layer kinds.
 //!
 //! Hostile input (V4-01/02): index arithmetic is checked; tile sample bytes are computed with
@@ -41,16 +47,16 @@ use crate::idml_decode::LossBook;
 use crate::model::{LossEntry, LossKind};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    GeometryUnit, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
+    BLEND_PASS_THROUGH, GeometryUnit, Isolation, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
     StrokeAlign, StrokeCap, StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords,
     StudioDocument, StudioLayer, StudioPaint, StudioRgba, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
 };
 use hsk_studio_layout::{FramePlacement, LayoutProposal, ShapedParagraph, resolve_style};
 use hsk_studio_nib::{OwnedPath, PathElement, PathLimits};
-use hsk_studio_pigment::{Grid, ResolvedTile};
+use hsk_studio_pigment::{Grid, Mask, ResolvedTile};
 use hsk_studio_press::{
-    Colour, ExportError, ExportOptions, ExportReceipt, FillRule, FontHandle, IccHandle, ImageColour,
-    ImageSpec, Limits, LineCap, LineJoin, PageHandle, PageSpec, PathCommand, PdfExport, StrokeStyle,
+    BlendMode, Colour, DrawState, ExportError, ExportOptions, ExportReceipt, FillRule, FontHandle, GroupStyle, IccHandle,
+    ImageColour, ImageSpec, Limits, LineCap, LineJoin, PageHandle, PageSpec, PathCommand, PdfExport, SoftMask, StrokeStyle,
 };
 use std::collections::BTreeMap;
 
@@ -115,6 +121,21 @@ pub trait PdfAssets {
     fn raster(&self, layer_id: &str) -> Option<PlacedRaster<'_>>;
     /// ICC bytes of an `SCPF` profile id (colours bound to it are written ICCBased).
     fn profile(&self, profile_id: &str) -> Option<&[u8]>;
+    /// The resolved coverage of a layer's enabled mask (Folio `StudioMask` tiles). Default: none
+    /// (the layer is drawn unmasked and `layer_mask_unresolved` is reported).
+    fn mask(&self, _layer_id: &str) -> Option<PlacedMask<'_>> {
+        None
+    }
+}
+
+/// A layer mask's coverage plane (pigment `Mask`: `coverage_u8` or `coverage_u16le`, validated and
+/// hash-checked here) and where its pixel (0, 0) sits. Outside its bounds the mask is 0
+/// (UNVERIFIED against Photoshop/InDesign mask defaults, D5).
+pub struct PlacedMask<'a> {
+    pub mask: Mask<'a>,
+    /// Spread coordinates (points, y down) of mask pixel (0, 0).
+    pub origin_pt: [f64; 2],
+    pub pt_per_px: f64,
 }
 
 pub struct PdfExportInput<'a> {
@@ -394,10 +415,13 @@ impl Cx<'_> {
                     if !layer.visible {
                         continue;
                     }
-                    if layer.appearance.is_some() {
-                        self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_appearance_ignored");
-                    }
+                    let plan = match spread_of(doc, by_id, layer) {
+                        Some(spread) => self.group_plan(layer, spread, true)?.map(|g| (spread, g)),
+                        None => None,
+                    };
+                    self.open_group(plan.as_ref())?;
                     self.draw_nodes(children, by_id, cancel)?;
+                    self.close_group(plan.as_ref())?;
                 }
                 Node::Layer(i) => {
                     let Some(layer) = doc.layers.get(*i) else { continue };
@@ -416,19 +440,171 @@ impl Cx<'_> {
             self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_not_on_page_spread");
             return Ok(());
         };
-        if layer.appearance.is_some() {
-            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_appearance_ignored");
-        }
+        let plan = self.group_plan(layer, spread, false)?.map(|g| (spread, g));
+        self.open_group(plan.as_ref())?;
         match &layer.payload {
-            Payload::Text { story_id } => self.text_layer(layer, story_id),
-            Payload::Vector { path_ids } => self.vector_layer(layer, spread, path_ids),
-            Payload::Raster { .. } => self.raster_layer(layer, spread),
-            _ => {
-                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_kind_not_exported");
-                Ok(())
+            Payload::Text { story_id } => self.text_layer(layer, story_id)?,
+            Payload::Vector { path_ids } => self.vector_layer(layer, spread, path_ids)?,
+            Payload::Raster { .. } => self.raster_layer(layer, spread)?,
+            _ => self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_kind_not_exported"),
+        }
+        self.close_group(plan.as_ref())
+    }
+
+    /// How a layer's authored appearance is painted: `None` when it needs no group (identity
+    /// appearance, or a pass-through group at full opacity without a mask). Opacity and fill
+    /// opacity multiply into the group opacity (no effects are exported, so fill opacity has nothing
+    /// else to leave out); blend modes without a PDF equal are drawn Normal and reported; clipping is
+    /// reported, not applied; an enabled mask becomes a luminosity soft mask from [`PdfAssets::mask`].
+    fn group_plan(&mut self, layer: &StudioLayer, spread: usize, group_layer: bool) -> Result<Option<GroupPlan>> {
+        let Some(a) = &layer.appearance else { return Ok(None) };
+        if a.clipped {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_clipping_not_exported");
+        }
+        let opacity = (a.opacity / 100.0) * (a.fill_opacity / 100.0);
+        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+        let mask_on = a.mask.as_ref().is_some_and(|m| m.enabled);
+        let pass_through = a.blend_mode == BLEND_PASS_THROUGH;
+        if pass_through && opacity >= 1.0 && !mask_on {
+            return Ok(None);
+        }
+        if !pass_through && a.blend_mode == BLEND_NORMAL && opacity >= 1.0 && !mask_on && (group_layer || a.isolation != Isolation::PassThrough) {
+            return Ok(None);
+        }
+        let blend = if pass_through {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "pass_through_group_isolated");
+            BlendMode::Normal
+        } else {
+            match pdf_blend(a.blend_mode) {
+                Some(b) => b,
+                None => {
+                    self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "blend_mode_not_in_pdf");
+                    BlendMode::Normal
+                }
+            }
+        };
+        let mask = if mask_on { self.mask_image(layer)? } else { None };
+        let _ = spread;
+        Ok(Some(GroupPlan { opacity, blend, isolated: a.isolation == Isolation::Isolated || !group_layer, mask }))
+    }
+
+    /// The layer mask as a DeviceGray image and its spread rectangle; unresolved or invalid masks
+    /// are reported and the layer is drawn unmasked.
+    fn mask_image(&mut self, layer: &StudioLayer) -> Result<Option<MaskImage>> {
+        let assets = self.input.assets;
+        let Some(m) = assets.mask(&layer.layer_id) else {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_mask_unresolved");
+            return Ok(None);
+        };
+        if m.mask.validate(m.mask.bounds).is_err() || !(m.pt_per_px.is_finite() && m.pt_per_px > 0.0 && m.origin_pt.iter().all(|v| v.is_finite())) {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "layer_mask_invalid");
+            return Ok(None);
+        }
+        let b = m.mask.bounds;
+        let too_big = || PdfExportError::Press(ExportError::StreamOverBudget);
+        let (w, h) = (usize::try_from(b.width).map_err(|_| too_big())?, usize::try_from(b.height).map_err(|_| too_big())?);
+        let size: usize = if m.mask.sample_format == "coverage_u8" { 1 } else { 2 };
+        let len = w.checked_mul(h).and_then(|n| n.checked_mul(size)).ok_or_else(too_big)?;
+        if len > self.input.limits.max_decoded_bytes {
+            return Err(too_big());
+        }
+        let stride = usize::try_from(m.mask.stride_bytes).map_err(|_| too_big())?;
+        let row_len = w.checked_mul(size).ok_or_else(too_big)?;
+        let mut samples = Vec::with_capacity(len);
+        for row in 0..h {
+            let at = row.checked_mul(stride).ok_or_else(too_big)?;
+            let r = m.mask.bytes.get(at..at.checked_add(row_len).ok_or_else(too_big)?).ok_or(PdfExportError::InvalidInput("mask_plane"))?;
+            if size == 1 {
+                samples.extend_from_slice(r);
+            } else {
+                for c in r.chunks_exact(2) {
+                    samples.extend_from_slice(&[c[1], c[0]]);
+                }
             }
         }
+        let k = m.pt_per_px;
+        let x0 = m.origin_pt[0] + b.x as f64 * k;
+        let y0 = m.origin_pt[1] + b.y as f64 * k;
+        Ok(Some(MaskImage {
+            samples,
+            width: b.width,
+            height: b.height,
+            bits: if size == 1 { 8 } else { 16 },
+            rect: [x0, y0, x0 + f64::from(b.width) * k, y0 + f64::from(b.height) * k],
+        }))
     }
+
+    /// Opens the plan's group on every page of its spread.
+    fn open_group(&mut self, plan: Option<&(usize, GroupPlan)>) -> Result<()> {
+        let Some((spread, _)) = plan else { return Ok(()) };
+        for i in 0..self.pages.len() {
+            if let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) {
+                let h = page.handle;
+                self.ex.begin_group(h)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Closes the plan's group on every page of its spread with its opacity, blend and mask.
+    fn close_group(&mut self, plan: Option<&(usize, GroupPlan)>) -> Result<()> {
+        let Some((spread, g)) = plan else { return Ok(()) };
+        for i in 0..self.pages.len() {
+            let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) else { continue };
+            let h = page.handle;
+            let soft_mask = g.mask.as_ref().map(|m| {
+                let (px, py) = page.map(m.rect[0], m.rect[3]);
+                SoftMask {
+                    image: ImageSpec { width: m.width, height: m.height, bits: m.bits, colour: ImageColour::DeviceGray, samples: &m.samples, alpha: None },
+                    placement: [m.rect[2] - m.rect[0], 0.0, 0.0, m.rect[3] - m.rect[1], px, py],
+                }
+            });
+            self.ex.end_group(h, GroupStyle { opacity: g.opacity, blend: g.blend, isolated: g.isolated, knockout: false, soft_mask })?;
+        }
+        Ok(())
+    }
+}
+
+/// The authored appearance of one layer as a PDF transparency group.
+struct GroupPlan {
+    opacity: f64,
+    blend: BlendMode,
+    isolated: bool,
+    mask: Option<MaskImage>,
+}
+
+struct MaskImage {
+    samples: Vec<u8>,
+    width: u32,
+    height: u32,
+    bits: u8,
+    /// Spread rectangle `[x0, y0, x1, y1]` (y down).
+    rect: [f64; 4],
+}
+
+/// `StudioBlendMode` discriminant (pigment `blend_math`) to the PDF blend mode with the same name;
+/// `None` for modes PDF does not define (dissolve, linear burn/dodge, vivid/linear/pin light, ...).
+/// PDF's formulas follow ISO 32000-2 11.3.5; equality with Photoshop's is UNVERIFIED (D5).
+fn pdf_blend(mode: u16) -> Option<BlendMode> {
+    Some(match mode {
+        2 => BlendMode::Normal,
+        4 => BlendMode::Darken,
+        5 => BlendMode::Multiply,
+        6 => BlendMode::ColorBurn,
+        8 => BlendMode::Lighten,
+        9 => BlendMode::Screen,
+        10 => BlendMode::ColorDodge,
+        12 => BlendMode::Overlay,
+        13 => BlendMode::SoftLight,
+        14 => BlendMode::HardLight,
+        18 => BlendMode::Difference,
+        19 => BlendMode::Exclusion,
+        20 => BlendMode::Hue,
+        21 => BlendMode::Saturation,
+        22 => BlendMode::Color,
+        23 => BlendMode::Luminosity,
+        _ => return None,
+    })
 }
 
 /// Index of the page spread a layer belongs to (through group parents).
@@ -674,10 +850,14 @@ impl Cx<'_> {
             return Ok(());
         };
         let page = page.handle;
-        if f64::from_bits(k.alpha) < 1.0 {
-            self.loss.note("document", "text", LossKind::Approximated, "text_fill_alpha_ignored");
+        let alpha = f64::from_bits(k.alpha);
+        if alpha < 1.0 {
+            self.ex.set_draw_state(page, DrawState { fill_alpha: alpha, ..DrawState::default() })?;
         }
         self.ex.show_glyphs(page, handle, f64::from_bits(k.size), [0.0, 0.0], k.fill, run)?;
+        if alpha < 1.0 {
+            self.ex.set_draw_state(page, DrawState::default())?;
+        }
         self.glyphs = self.glyphs.saturating_add(u64::try_from(run.len()).unwrap_or(u64::MAX));
         run.clear();
         Ok(())
@@ -768,9 +948,15 @@ impl Cx<'_> {
             if !visible {
                 continue;
             }
-            if opacity != 100.0 || blend != BLEND_NORMAL {
-                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "paint_opacity_or_blend_ignored");
-            }
+            let row_blend = match pdf_blend(blend) {
+                Some(b) => b,
+                None => {
+                    self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "blend_mode_not_in_pdf");
+                    BlendMode::Normal
+                }
+            };
+            let row_alpha = if opacity.is_finite() { (opacity / 100.0).clamp(0.0, 1.0) } else { 1.0 };
+            let row_state = DrawState { fill_alpha: row_alpha, stroke_alpha: row_alpha, blend: row_blend };
             let StudioPaint::Solid { colour } = paint else {
                 self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "paint_gradient");
                 continue;
@@ -809,6 +995,7 @@ impl Cx<'_> {
                 let handle = page.handle;
                 let mapped: Vec<(Vec<PathCommand>, FillRule)> =
                     paths.iter().map(|p| (commands(p, page), fill_rule(p))).collect();
+                self.ex.set_draw_state(handle, row_state)?;
                 for (cmds, rule) in &mapped {
                     match style {
                         None => self.ex.fill_path(handle, cmds, *rule, colour)?,
@@ -816,6 +1003,7 @@ impl Cx<'_> {
                     }
                     self.paths = self.paths.saturating_add(1);
                 }
+                self.ex.set_draw_state(handle, DrawState::default())?;
             }
         }
         Ok(())
