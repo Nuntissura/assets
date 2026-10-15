@@ -132,8 +132,9 @@ fn move_anchor_handle_bend_and_constraints() {
     assert!(h.x == 0.0 && (h.y - 8.0).abs() < 1e-12, "{h:?}");
     // Off-centre t = 0.25 lands on target too.
     let bent = bend_segment(&line, 0, 0, 0.25, 0.0, 6.0).unwrap();
+    // The straight segment's point at t = 0.25 is x = 30 (3 u t^2 + t^3) = 4.6875 (retracted handles).
     let q = point_at(&bent, 0, 0, 0.25).unwrap();
-    assert!((q.x - 7.5).abs() < 1e-12 && (q.y - 6.0).abs() < 1e-12, "{q:?}");
+    assert!((q.x - 4.6875).abs() < 1e-12 && (q.y - 6.0).abs() < 1e-12, "{q:?}");
     // Hit tests: the handle end, the anchor, a segment point.
     let hit = hit_anchor(&path, p(14.2, 0.1), 0.5).unwrap();
     assert_eq!((hit.at, hit.part), (at(0, 1), AnchorSelection::OutHandle));
