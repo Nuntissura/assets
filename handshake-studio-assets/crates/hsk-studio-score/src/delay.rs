@@ -228,3 +228,25 @@ impl Processor for FeedbackDelay {
         self.lowpass = [0.0; MAX_CHANNELS];
     }
 }
+
+const DELAY_AUTOMATION: &[crate::session::AutomationParam] = &[
+    crate::session::AutomationParam { name: "feedback", min: DELAY_FEEDBACK.0, max: DELAY_FEEDBACK.1 },
+    crate::session::AutomationParam { name: "mix", min: DELAY_MIX.0, max: DELAY_MIX.1 },
+];
+
+/// Automatable: 0 = `feedback`, 1 = `mix` (take effect from the next processed sample; the
+/// delay time is fixed because the line is sized at construction). `identity` keeps the
+/// construction-time configuration.
+impl crate::session::Automatable for FeedbackDelay {
+    fn automation_parameters(&self) -> &'static [crate::session::AutomationParam] {
+        DELAY_AUTOMATION
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(DELAY_AUTOMATION, index, value)?;
+        match index {
+            0 => self.params.feedback = value,
+            _ => self.params.mix = value,
+        }
+        Ok(())
+    }
+}

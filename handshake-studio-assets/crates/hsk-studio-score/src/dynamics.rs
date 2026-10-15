@@ -365,6 +365,32 @@ impl Processor for Dynamics {
     }
 }
 
+const DYNAMICS_AUTOMATION: &[crate::session::AutomationParam] = &[
+    crate::session::AutomationParam { name: "threshold_db", min: DYNAMICS_THRESHOLD_DB.0, max: DYNAMICS_THRESHOLD_DB.1 },
+    crate::session::AutomationParam { name: "ratio", min: DYNAMICS_RATIO.0, max: DYNAMICS_RATIO.1 },
+    crate::session::AutomationParam { name: "makeup_db", min: DYNAMICS_MAKEUP_DB.0, max: DYNAMICS_MAKEUP_DB.1 },
+];
+
+/// Automatable: 0 = `threshold_db`, 1 = `ratio`, 2 = `makeup_db`; the detector and gain state
+/// are kept (no reset). `identity` keeps the construction-time configuration.
+impl crate::session::Automatable for Dynamics {
+    fn automation_parameters(&self) -> &'static [crate::session::AutomationParam] {
+        DYNAMICS_AUTOMATION
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(DYNAMICS_AUTOMATION, index, value)?;
+        match index {
+            0 => self.params.threshold_db = value,
+            1 => self.params.ratio = value,
+            _ => {
+                self.params.makeup_db = value;
+                self.makeup = db_to_linear(value);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LimiterParams {
     /// Output ceiling in dBFS (dBTP when `true_peak`).
