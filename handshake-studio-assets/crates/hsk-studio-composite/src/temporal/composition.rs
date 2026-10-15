@@ -90,6 +90,9 @@ pub const COMPOSITION_LAYER_CLIPPED: &str = "composition_layer_clipped";
 pub const COMPOSITION_LAYER_MASK: &str = "composition_layer_mask";
 pub const COMPOSITION_LAYER_PASS_THROUGH: &str = "composition_layer_pass_through";
 pub const COMPOSITION_PRECOMP_COLLAPSE: &str = "composition_precomp_collapse_transformations";
+/// A collapsed precomposition with a blend mode other than normal or with a track matte.
+pub const COMPOSITION_COLLAPSE_BLEND: &str = "composition_collapse_blend_mode";
+pub const COMPOSITION_COLLAPSE_MATTE: &str = "composition_collapse_matte";
 pub const COMPOSITION_PRECOMP_PAYLOAD: &str = "composition_precomp_payload";
 pub const COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH: &str = "composition_precomp_on_document_graph";
 /// Precomposition nesting bound of [`CompositionTemporalSource::scene_at`] (Folio refuses cycles;
@@ -140,7 +143,12 @@ enum Content {
     /// An adjustment layer.
     Adjustment(AdjustmentOp),
     /// A nested composition; `bounds` = `(0, 0, width, height)` of it.
-    Precomp { composition_id: String, bounds: Rect },
+    Precomp {
+        composition_id: String,
+        /// STU-MOT-006 collapse transformations: the nested layers join this composition.
+        collapse: bool,
+        bounds: Rect,
+    },
 }
 
 impl Content {
@@ -457,6 +465,23 @@ fn bounds_of(rects: &[Rect]) -> Result<Option<Rect>, TemporalError> {
     }
 }
 
+/// A nested layer of a collapsed precomposition re-expressed in the outer composition: its matrix
+/// (and its matte layer's) followed by `outer`, its opacity times `opacity`.
+fn collapse_into(mut l: SceneLayer, outer: &Affine2, opacity: f64) -> SceneLayer {
+    place_after(&mut l, outer);
+    l.opacity *= opacity;
+    l
+}
+
+/// `outer` after the matrix of `l` and of every matte layer in its chain (mattes keep their own
+/// opacity; only their placement follows the collapse).
+fn place_after(l: &mut SceneLayer, outer: &Affine2) {
+    l.matrix = l.matrix.then(*outer);
+    if let Some(src) = l.matte.as_mut().and_then(|m| m.layer.as_mut()) {
+        place_after(src, outer);
+    }
+}
+
 /// `floor((tick - start_time) * denominator / numerator)` in `i128` (see
 /// [`CompositionTemporalSource::source_tick`]); `None` for a zero stretch or a result outside `i64`.
 fn map_source(t: &StudioLayerTiming, tick: i64) -> Option<i64> {
@@ -541,9 +566,6 @@ impl CompositionTemporalSource {
                 .find(|d| d.layer_id == l.layer_id)
                 .ok_or_else(|| CompositeError::DanglingInput(l.layer_id.clone()))?;
             let content = match (&l.precomp, &dl.payload) {
-                (Some(p), _) if p.collapse_transformations => {
-                    return Err(unsupported(id, COMPOSITION_PRECOMP_COLLAPSE));
-                }
                 (Some(p), Payload::Group) => {
                     let nested = input
                         .records
@@ -551,6 +573,7 @@ impl CompositionTemporalSource {
                         .ok_or_else(|| CompositeError::DanglingInput(p.composition_id.clone()))?;
                     Content::Precomp {
                         composition_id: p.composition_id.clone(),
+                        collapse: p.collapse_transformations,
                         bounds: Rect {
                             x: 0,
                             y: 0,
@@ -871,8 +894,27 @@ impl CompositionTemporalSource {
             if !l.visible || matte_sources.contains(l.layer_id.as_str()) {
                 continue;
             }
-            if let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? {
-                layers.push(layer);
+            let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
+                continue;
+            };
+            let collapsed = matches!(l.content, Content::Precomp { collapse: true, .. });
+            match (collapsed, layer.content) {
+                (true, SceneContent::Precomp(nested)) => {
+                    // Collapse transformations: the nested layers render directly in this
+                    // composition, each with its own matrix followed by the precomposition
+                    // layer's, its opacity times the layer's; no nested surface, no clip to the
+                    // nested rect (After Effects behaviour as Studio reads it, UNVERIFIED).
+                    if layer.mode != StudioBlendMode::Normal {
+                        return Err(unsupported(&layer.layer_id, COMPOSITION_COLLAPSE_BLEND));
+                    }
+                    if layer.matte.is_some() {
+                        return Err(unsupported(&layer.layer_id, COMPOSITION_COLLAPSE_MATTE));
+                    }
+                    for nl in nested.layers {
+                        layers.push(collapse_into(nl, &layer.matrix, layer.opacity));
+                    }
+                }
+                (_, content) => layers.push(SceneLayer { content, ..layer }),
             }
         }
         Ok(SceneComposition {

@@ -309,6 +309,20 @@ pub fn expected_scene3(frame: u64, pixels: &Pixels) -> SceneComposition {
     }
 }
 
+/// Composition 3 with `collapse_transformations` on layer 8: the nested layers render directly in
+/// composition 3, each matrix followed by layer 8's, opacity times layer 8's (1), no nested clip.
+pub fn expected_scene3_collapsed(frame: u64, pixels: &Pixels) -> SceneComposition {
+    let mut scene = expected_scene3(frame, pixels);
+    let outer = scene.layers.remove(0);
+    let SceneContent::Precomp(nested) = outer.content else { unreachable!() };
+    for mut l in nested.layers {
+        l.matrix = l.matrix.then(outer.matrix);
+        l.opacity *= outer.opacity;
+        scene.layers.push(l);
+    }
+    scene
+}
+
 /// Every rendered case: `(label, scene)` for the renderer tests.
 pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     let mut out: Vec<(String, SceneComposition)> =
@@ -317,6 +331,7 @@ pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     out.extend(FRAMES3.iter().map(|f| (format!("comp3/frame{f}"), expected_scene3(*f, pixels))));
     out.extend(FRAMES5.iter().map(|f| (format!("comp5/frame{f}"), expected_scene5(*f, pixels))));
     out.extend(FRAMES6.iter().map(|f| (format!("comp6/frame{f}"), expected_scene6(*f, pixels))));
+    out.extend([6u64, 12].iter().map(|f| (format!("comp3c/frame{f}"), expected_scene3_collapsed(*f, pixels))));
     out
 }
 

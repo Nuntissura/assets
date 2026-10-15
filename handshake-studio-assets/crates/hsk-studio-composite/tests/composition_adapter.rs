@@ -6,7 +6,7 @@
 #![cfg(feature = "motion")]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
-    COMPOSITION_LAYER_CLIPPED, COMPOSITION_PRECOMP_COLLAPSE,
+    COMPOSITION_LAYER_CLIPPED, COMPOSITION_COLLAPSE_BLEND,
     COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, COMPOSITION_PRECOMP_PAYLOAD,
     COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH, CompositionInput, CompositionTemporalSource,
 };
@@ -326,9 +326,9 @@ fn refusals_are_typed_and_nothing_is_dropped() {
             source_from(&document(), &r, &pixels)
         };
         let layer0 = "/compositions/0/layers/0";
-        // Precompositions: collapse transformations, and a precomposition layer with own content.
+        // A precomposition layer with own content (collapsed or not).
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":true})).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_PRECOMP_COLLAPSE);
+        assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":false})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
         // A vector layer goes through the static path (lane SMB-COMPOSITE-COMPOSITION-2), which
@@ -560,6 +560,21 @@ fn precomposition_plays_the_nested_composition_at_its_source_time() {
         // The document-graph path cannot render a precomposition: refused, not drawn empty.
         let e = hsk_studio_composite::TemporalSource::layer_state(&src, &identity("SLYR", 8), 0, &cancel).unwrap_err();
         assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, .. }), "{e:?}");
+
+        // Collapse transformations (lane SMB-COMPOSITE-COMPOSITION-2): the nested layers join the
+        // outer composition with their matrix followed by the precomposition layer's.
+        let mut rec = records();
+        rec["compositions"][2]["layers"][0]["precomp"]["collapse_transformations"] = json!(true);
+        let collapsed = source_of(&document(), &rec, &pixels, &scenes::composition3_id()).unwrap();
+        for frame in scenes::FRAMES3 {
+            let got = collapsed.scene_at(f(frame) as i64, &cancel).unwrap();
+            same_scene(&got, &scenes::expected_scene3_collapsed(frame, &pixels), &format!("comp3c frame {frame}"));
+        }
+        // A collapsed layer with an authored blend mode other than normal is refused.
+        let mut doc = document();
+        doc["layers"][7]["appearance"] = json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":5,"clipped":false,"isolation":"isolated"});
+        let e = source_of(&doc, &rec, &pixels, &scenes::composition3_id()).unwrap().scene_at(f(6) as i64, &cancel).unwrap_err();
+        assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_COLLAPSE_BLEND, .. }), "{e:?}");
     });
 }
 
