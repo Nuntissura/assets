@@ -1887,6 +1887,7 @@ dependencies = [
  "hsk-studio-interop-psd",
  "hsk-studio-interop-raster",
  "hsk-studio-interop-tiff",
+ "hsk-studio-interop-vector",
  "hsk-studio-layout",
  "hsk-studio-nib",
  "hsk-studio-observe",
