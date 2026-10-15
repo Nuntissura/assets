@@ -6,7 +6,7 @@
 //! document-graph path. Every pixel is compared with the shared oracle; the frame digest is pinned
 //! and identical on every chunk size and thread count; the scene path of the same composition
 //! (`render_scene` of the fixture scene, which composite proves equals `scene_at`) renders the
-//! same pixels (`path_agreement`: alpha bit-identical, colour within 1 ULP under a surfaced layer).
+//! same pixels (`path_agreement`: alpha bit-identical, colour within 2^-22 under a surfaced layer).
 //! render-gpu `tests/composition_docgraph_masks.rs` runs the same frame on the GPU.
 use hsk_studio_render_cpu::Renderer;
 
@@ -37,7 +37,7 @@ fn document_graph_frame_with_vector_clips_and_masks_matches_the_oracle_and_the_s
     let scene = fixture::render_scene_px(&Renderer::new(64).unwrap(), &fixture::scene(&pixels), &pixels);
     println!("cpu scene path vs document graph: max |delta| {:e}", fixture::max_delta(&scene, &base));
     match fixture::path_agreement(&base, &scene) {
-        Ok(ulp) => println!("  {} of {} pixels bit-identical, {ulp} within 1 ULP of colour under a surfaced layer", base.len() - ulp, base.len()),
+        Ok(ulp) => println!("  {} of {} pixels bit-identical, {ulp} within the surface rounding under a surfaced layer", base.len() - ulp, base.len()),
         Err(e) => panic!("{}", e.join("\n")),
     }
     assert!(off.is_empty(), "bit for bit against the oracle");

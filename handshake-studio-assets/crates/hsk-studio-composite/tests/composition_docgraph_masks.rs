@@ -2,8 +2,10 @@
 //! DOCUMENT-graph frame path (`CompositionTemporalSource::lower_document_frame` with the render
 //! inputs), driven by Folio records (`StudioVectorRecords` clips, masks and mask parameters,
 //! `StudioCompositionRecords`). Proofs: the document-graph frame and the scene path of the same
-//! composition render pixel-identical under one reference executor (pigment's `composite_over`,
-//! `coverage_math` feather and `mask_coverage`, the clip-to-base run rule); the document-graph
+//! composition render the same pixels under one reference executor (pigment's `composite_over`,
+//! `coverage_math` feather and `mask_coverage`, the clip-to-base run rule; alpha bit-identical,
+//! colour bit-identical except the scene path's surface rounding, `fixture::path_agreement`); the
+//! document-graph
 //! frame equals the folio-free fixture `support/docgraph_scenes.rs` structurally (plan, envelope,
 //! owned planes), which render-cpu / render-gpu `tests/composition_docgraph_masks.rs` render
 //! against the shared oracle.
@@ -179,11 +181,11 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
         let want = fixture::document_frame(&pixels);
         let mut failures = Vec::new();
         // (1) Document graph == scene path under the reference executor (`fixture::path_agreement`:
-        // alpha bit-identical; colour bit-identical except under a surfaced layer, at most 1 ULP).
+        // alpha bit-identical; colour bit-identical except under a surfaced layer, within 2^-22).
         let doc_px = fixture::render_frame(&fixture::Ref, &got, &pixels).unwrap();
         let scene_px = fixture::render_scene_px(&fixture::Ref, &scene, &pixels);
         match fixture::path_agreement(&doc_px, &scene_px) {
-            Ok(ulp) => println!("document graph vs scene path: {} of {} pixels identical, {ulp} within 1 ULP of colour under a surfaced layer",
+            Ok(ulp) => println!("document graph vs scene path: {} of {} pixels identical, {ulp} within the surface rounding under a surfaced layer",
                 doc_px.len() - ulp, doc_px.len()),
             Err(e) => failures.extend(e),
         }
@@ -347,7 +349,7 @@ fn track_mattes_on_masked_layers_on_the_document_graph_equal_the_scene_path() {
         let doc_px = fixture::render_frame(&fixture::Ref, &plain(&doc), &pixels).unwrap();
         let scene_px = fixture::render_scene_px(&fixture::Ref, &src.scene_at(0, &cancel).unwrap(), &pixels);
         match fixture::path_agreement(&doc_px, &scene_px) {
-            Ok(ulp) => println!("matted masked layers: document graph vs scene path, {ulp} pixels within 1 ULP"),
+            Ok(ulp) => println!("matted masked layers: document graph vs scene path, {ulp} pixels within the surface rounding"),
             Err(e) => panic!("{}", e.join("\n")),
         }
         // The matte cuts something: the frame differs from the unmatted one.
