@@ -38,3 +38,39 @@ fn empty_members_keep_records_byte_identical() {
     assert_eq!((b.x1, b.y1, b.x2, b.y2), (0.42, 0.0, 0.58, 1.0));
     assert!(easing_preset("GENTLE").is_none());
 }
+
+#[test]
+fn overlay_records_round_trip_and_keep_empty_sets_identical() {
+    // Lane SMB-FIG-SMART-ANIMATE: STU-PRO-122..124 frame overlay fields.
+    let before = r#"{"schema_id":"hsk.studio.design_records@1","document_id":"SDOC-019abcde-0000-7000-8000-000000000001"}"#;
+    let mut r: StudioDesignRecords = serde_json::from_str(before).unwrap();
+    assert!(r.frame_overlay.is_empty());
+    assert_eq!(serde_json::to_string(&r).unwrap(), before);
+    let node = NodeRef { node_kind: NodeKind::Layer, node_id: "SLYR-019abcde-0000-7000-8000-000000000002".into() };
+    r.frame_overlay.push(StudioFrameOverlay {
+        node: node.clone(),
+        overlay_position_type: Some(StudioOverlayPositionType::BottomCenter),
+        overlay_background: StudioOverlayBackground::SolidColor {
+            color: StudioRgba { r: 0.0, g: 0.0, b: 0.0, a: 0.4, colour_profile_id: ProfileBinding::Unassigned(()) },
+        },
+        overlay_background_interaction: StudioOverlayBackgroundInteraction::CloseOnClickOutside,
+    });
+    r.frame_overlay.push(StudioFrameOverlay {
+        node: NodeRef { node_kind: NodeKind::Layer, node_id: "SLYR-019abcde-0000-7000-8000-000000000003".into() },
+        overlay_position_type: None,
+        overlay_background: StudioOverlayBackground::None {},
+        overlay_background_interaction: StudioOverlayBackgroundInteraction::None,
+    });
+    let text = serde_json::to_string(&r).unwrap();
+    assert!(text.contains(r#""overlay_position_type":"BOTTOM_CENTER""#), "{text}");
+    assert!(text.contains(r#""overlay_background":{"type":"SOLID_COLOR","color":{"r":0.0,"g":0.0,"b":0.0,"a":0.4"#), "{text}");
+    assert!(text.contains(r#""overlay_background_interaction":"CLOSE_ON_CLICK_OUTSIDE""#));
+    assert!(text.contains(r#""overlay_background":{"type":"NONE"}"#));
+    let back: StudioDesignRecords = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, r);
+    // Unset resolves to CENTER (STU-PRO-123); MANUAL is a member; unknown members are refused.
+    assert_eq!(r.frame_overlay[1].position_type(), StudioOverlayPositionType::Center);
+    assert!(serde_json::from_str::<StudioOverlayPositionType>(r#""MANUAL""#).is_ok());
+    assert!(serde_json::from_str::<StudioOverlayPositionType>(r#""LEFT""#).is_err());
+    assert!(serde_json::from_str::<StudioOverlayBackground>(r#"{"type":"GRADIENT"}"#).is_err());
+}

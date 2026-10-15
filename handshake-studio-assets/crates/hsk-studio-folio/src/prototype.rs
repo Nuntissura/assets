@@ -6,12 +6,18 @@
 //! skipped when empty, so a record set without them encodes byte-identically to before (test
 //! `prototype_records_contract::empty_members_keep_records_byte_identical`).
 //!
+//! STU-PRO-122..124 overlay fields (lane SMB-FIG-SMART-ANIMATE) live on the destination frame:
+//! [`StudioFrameOverlay`] in `frame_overlay`, keyed by node, serde-default and skipped when empty
+//! (test `prototype_records_contract::overlay_records_round_trip_and_keep_empty_sets_identical`).
+//! An `OVERLAY` action opening a frame whose position type is `MANUAL` must carry
+//! `overlay_relative_position` (STU-PRO-154, refused here as an invalid field).
+//!
 //! Declared gaps, not invented here: the prototype background paints of STU-PRO-129 and the
 //! fixed-children count of STU-PRO-138 are not stored yet; STU-PRO-128 names the page as the
 //! carrier but a Studio page is any node the caller treats as one (a root `group` layer for imported
 //! Figma pages, an artboard, or a page spread), so the record names a node.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{Code, NodeRef, Result, err, values::{Ctx, label}};
+use super::{Code, NodeRef, Result, err, values::{Ctx, StudioRgba, label}};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +59,107 @@ pub enum StudioOverflowDirection {
 pub struct StudioFrameOverflow {
     pub node: NodeRef,
     pub overflow_direction: StudioOverflowDirection,
+}
+
+/// STU-PRO-123 overlay position (eight values; absent is the implicit unset state = `CENTER`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StudioOverlayPositionType {
+    Center,
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+    Manual,
+}
+
+/// STU-PRO-124 overlay background: `{type: "NONE"}` or `{type: "SOLID_COLOR", color}` (alpha is the
+/// background opacity of STU-PRO-020b).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE", deny_unknown_fields)]
+pub enum StudioOverlayBackground {
+    None {},
+    SolidColor { color: StudioRgba },
+}
+
+/// STU-PRO-124 `overlay_background_interaction`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StudioOverlayBackgroundInteraction {
+    None,
+    CloseOnClickOutside,
+}
+
+/// STU-PRO-122 the overlay fields of one frame node (`overlay.configure`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioFrameOverlay {
+    pub node: NodeRef,
+    /// Absent is the unset state, which resolves to `CENTER` ([`StudioFrameOverlay::position_type`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_position_type: Option<StudioOverlayPositionType>,
+    pub overlay_background: StudioOverlayBackground,
+    pub overlay_background_interaction: StudioOverlayBackgroundInteraction,
+}
+impl StudioFrameOverlay {
+    /// The resolved position type (unset = `CENTER`, STU-PRO-123).
+    pub fn position_type(&self) -> StudioOverlayPositionType {
+        self.overlay_position_type.unwrap_or(StudioOverlayPositionType::Center)
+    }
+}
+
+/// Checks the overlay members: one entry per existing node of the stated kind, a valid background
+/// colour, and STU-PRO-154 (an `OVERLAY` action opening a `MANUAL` frame carries its position).
+pub(crate) fn check_overlays(
+    overlays: &[StudioFrameOverlay],
+    designs: &[crate::StudioNodeDesign],
+    nodes: &BTreeMap<&str, crate::NodeKind>,
+    c: &mut Ctx,
+) -> Result<()> {
+    let mut manual = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for o in overlays {
+        c.tick()?;
+        c.nodes(1, &o.node.node_id)?;
+        if nodes.get(o.node.node_id.as_str()) != Some(&o.node.node_kind) {
+            return Err(err(Code::DanglingReference, &o.node.node_id));
+        }
+        if !seen.insert(o.node.node_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, &o.node.node_id));
+        }
+        if let StudioOverlayBackground::SolidColor { color } = &o.overlay_background {
+            color.validate(&format!("{}/overlay_background", o.node.node_id), c)?;
+        }
+        if o.position_type() == StudioOverlayPositionType::Manual {
+            manual.insert(o.node.node_id.as_str());
+        }
+    }
+    if manual.is_empty() {
+        return Ok(());
+    }
+    for d in designs {
+        for (ri, r) in d.reactions.iter().enumerate() {
+            c.tick()?;
+            for (ai, a) in r.actions.iter().enumerate() {
+                if let crate::StudioAction::Node {
+                    destination_id: Some(dest),
+                    navigation: crate::Navigation::Overlay,
+                    overlay_relative_position: None,
+                    ..
+                } = a
+                    && manual.contains(dest.as_str())
+                {
+                    return Err(err(
+                        Code::InvalidField,
+                        format!("{}/reactions/{ri}/actions/{ai}/overlay_relative_position", d.node.node_id),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Checks the prototype members against the document node index (`node id -> kind`): every page,

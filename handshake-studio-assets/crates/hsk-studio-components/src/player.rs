@@ -20,10 +20,18 @@
 //! - `URL`, `SET_VARIABLE` (written to the session's runtime variables, STU-PRO-113) and
 //!   `SET_VARIABLE_MODE` never change the screen; unsupported triggers are inert and reported.
 //!
+//! Overlays (lane SMB-FIG-SMART-ANIMATE, STU-PRO-122..124): each open overlay keeps the
+//! `overlay_relative_position` of the action that opened it; the destination frame's
+//! `StudioFrameOverlay` record (position type, background, click-outside interaction) is read from
+//! the design records; [`overlay_placement`] resolves the top-left of an overlay over the screen and
+//! [`PlayerSession::click_outside_overlay`] closes the top overlay when its frame says
+//! `CLOSE_ON_CLICK_OUTSIDE`.
+//!
 //! Bounds: history and overlay stacks at most [`MAX_STACK`]; one dispatch runs at most
 //! [`MAX_ACTIONS_PER_DISPATCH`] actions; the clock saturates.
 use hsk_studio_folio::{
-    CubicBezier, Navigation, NodeKind, Parent, StudioAction, StudioDesignRecords, StudioDocument,
+    CubicBezier, Navigation, NodeKind, OverlayPosition, Parent, StudioAction, StudioDesignRecords,
+    StudioDocument, StudioFrameOverlay, StudioOverlayBackgroundInteraction, StudioOverlayPositionType,
     StudioReaction, StudioTrigger, StudioValue, TransitionType,
 };
 use std::collections::BTreeMap;
@@ -64,6 +72,8 @@ pub struct ActiveTransition {
 pub struct PlayerState {
     pub screen: String,
     pub overlays: Vec<String>,
+    /// The `overlay_relative_position` each open overlay was opened with (parallel to `overlays`).
+    pub overlay_positions: Vec<Option<OverlayPosition>>,
     pub history_depth: usize,
     pub scroll_target: Option<String>,
     /// Instance layer -> variant node it changed to (runtime state).
@@ -94,6 +104,7 @@ pub enum PlayerEvent {
 struct Snapshot {
     screen: String,
     overlays: Vec<String>,
+    overlay_pos: Vec<Option<OverlayPosition>>,
     history: Vec<String>,
     variants: BTreeMap<String, String>,
 }
@@ -103,11 +114,13 @@ struct Snapshot {
 #[derive(Clone, Debug)]
 pub struct PlayerSession {
     reactions: BTreeMap<String, Vec<StudioReaction>>,
+    overlay_cfg: BTreeMap<String, StudioFrameOverlay>,
     parents: BTreeMap<String, String>,
     instances: BTreeMap<String, ()>,
     screen: String,
     history: Vec<String>,
     overlays: Vec<String>,
+    overlay_pos: Vec<Option<OverlayPosition>>,
     scroll_target: Option<String>,
     variants: BTreeMap<String, String>,
     variables: BTreeMap<String, StudioValue>,
@@ -178,11 +191,13 @@ impl PlayerSession {
             .collect();
         Some(Self {
             reactions,
+            overlay_cfg: design.frame_overlay.iter().map(|o| (o.node.node_id.clone(), o.clone())).collect(),
             parents,
             instances,
             screen: start.to_owned(),
             history: Vec::new(),
             overlays: Vec::new(),
+            overlay_pos: Vec::new(),
             scroll_target: None,
             variants: BTreeMap::new(),
             variables: BTreeMap::new(),
@@ -198,6 +213,7 @@ impl PlayerSession {
         PlayerState {
             screen: self.screen.clone(),
             overlays: self.overlays.clone(),
+            overlay_positions: self.overlay_pos.clone(),
             history_depth: self.history.len(),
             scroll_target: self.scroll_target.clone(),
             variants: self.variants.clone(),
@@ -228,6 +244,7 @@ impl PlayerSession {
         Snapshot {
             screen: self.screen.clone(),
             overlays: self.overlays.clone(),
+            overlay_pos: self.overlay_pos.clone(),
             history: self.history.clone(),
             variants: self.variants.clone(),
         }
@@ -259,6 +276,7 @@ impl PlayerSession {
         {
             self.screen = s.screen;
             self.overlays = s.overlays;
+            self.overlay_pos = s.overlay_pos;
             self.history = s.history;
             self.variants = s.variants;
             events.push(PlayerEvent::Navigated { from: node.clone(), to: self.screen.clone() });
@@ -319,7 +337,10 @@ impl PlayerSession {
                 }
                 StudioAction::Close {} => {
                     match self.overlays.pop() {
-                        Some(o) => events.push(PlayerEvent::OverlayClosed(o)),
+                        Some(o) => {
+                            self.overlay_pos.pop();
+                            events.push(PlayerEvent::OverlayClosed(o));
+                        }
                         None => events.push(PlayerEvent::Diagnostic("close_without_overlay")),
                     }
                     return;
@@ -330,7 +351,7 @@ impl PlayerSession {
                     events.push(PlayerEvent::VariableSet(variable_id.clone()));
                 }
                 StudioAction::SetVariableMode { .. } => events.push(PlayerEvent::Diagnostic("variable_mode_not_modelled")),
-                StudioAction::Node { destination_id, navigation, transition, .. } => {
+                StudioAction::Node { destination_id, navigation, transition, overlay_relative_position, .. } => {
                     let Some(dest) = destination_id.clone() else {
                         events.push(PlayerEvent::Diagnostic("node_action_without_destination"));
                         return;
@@ -376,11 +397,15 @@ impl PlayerSession {
                                 return;
                             }
                             self.overlays.push(dest.clone());
+                            self.overlay_pos.push(overlay_relative_position.clone());
                             events.push(PlayerEvent::OverlayOpened(dest));
                         }
                         Navigation::Swap => match self.overlays.last_mut() {
                             Some(top) => {
                                 *top = dest.clone();
+                                if let Some(p) = self.overlay_pos.last_mut() {
+                                    *p = overlay_relative_position.clone();
+                                }
                                 events.push(PlayerEvent::OverlayOpened(dest));
                             }
                             None => {
@@ -402,6 +427,35 @@ impl PlayerSession {
                 }
             }
         }
+    }
+
+    /// The overlay record of a frame (STU-PRO-122), when the design records carry one.
+    pub fn overlay_config(&self, frame: &str) -> Option<&StudioFrameOverlay> {
+        self.overlay_cfg.get(frame)
+    }
+
+    /// A click outside the top overlay: closes it when its frame's interaction is
+    /// `CLOSE_ON_CLICK_OUTSIDE` (STU-PRO-124), else a diagnostic.
+    pub fn click_outside_overlay(&mut self) -> Vec<PlayerEvent> {
+        let mut events = Vec::new();
+        self.settle(&mut events);
+        let Some(top) = self.overlays.last() else {
+            events.push(PlayerEvent::Diagnostic("no_overlay_open"));
+            return events;
+        };
+        let closes = self
+            .overlay_cfg
+            .get(top)
+            .is_some_and(|o| o.overlay_background_interaction == StudioOverlayBackgroundInteraction::CloseOnClickOutside);
+        if closes {
+            if let Some(o) = self.overlays.pop() {
+                self.overlay_pos.pop();
+                events.push(PlayerEvent::OverlayClosed(o));
+            }
+        } else {
+            events.push(PlayerEvent::Diagnostic("overlay_not_closed_on_click_outside"));
+        }
+        events
     }
 
     /// Advances the clock by `ms`: finishes transitions and fires the `AFTER_TIMEOUT` reactions of
@@ -433,5 +487,30 @@ impl PlayerSession {
             }
         }
         events
+    }
+}
+
+/// Top-left of an overlay of size `overlay` (w, h) over a screen of size `screen` (w, h), in the
+/// screen's frame-local px (STU-PRO-123): the eight positions against the screen edges, unset =
+/// `CENTER`, `MANUAL` = the opening action's `overlay_relative_position` (relative to the origin
+/// frame, read here as the screen; a `MANUAL` overlay without a position, which Folio refuses,
+/// falls back to `CENTER`). Figma's exact placement rule is UNVERIFIED (oracle D5).
+pub fn overlay_placement(
+    screen: (f64, f64),
+    overlay: (f64, f64),
+    config: Option<&StudioFrameOverlay>,
+    relative: Option<&OverlayPosition>,
+) -> (f64, f64) {
+    let (dx, dy) = (screen.0 - overlay.0, screen.1 - overlay.1);
+    let kind = config.map_or(StudioOverlayPositionType::Center, StudioFrameOverlay::position_type);
+    match (kind, relative) {
+        (StudioOverlayPositionType::TopLeft, _) => (0.0, 0.0),
+        (StudioOverlayPositionType::TopCenter, _) => (dx / 2.0, 0.0),
+        (StudioOverlayPositionType::TopRight, _) => (dx, 0.0),
+        (StudioOverlayPositionType::BottomLeft, _) => (0.0, dy),
+        (StudioOverlayPositionType::BottomCenter, _) => (dx / 2.0, dy),
+        (StudioOverlayPositionType::BottomRight, _) => (dx, dy),
+        (StudioOverlayPositionType::Manual, Some(p)) => (p.x, p.y),
+        (StudioOverlayPositionType::Center | StudioOverlayPositionType::Manual, _) => (dx / 2.0, dy / 2.0),
     }
 }

@@ -73,6 +73,10 @@ use hsk_studio_folio::{
     StudioFlowStart, StudioFrameOverflow, StudioOverflowDirection, StudioPrototypePage, easing_preset,
 };
 use hsk_studio_folio::{
+    OverlayPosition, StudioFrameOverlay, StudioOverlayBackground, StudioOverlayBackgroundInteraction,
+    StudioOverlayPositionType,
+};
+use hsk_studio_folio::{
     StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioTextStory,
     TextStorySchema, validate_text_story,
 };
@@ -445,6 +449,8 @@ struct Mapper<'a> {
     /// Flow starting points: page, frame node id, name, stored position.
     flow_starts: Vec<(NodeRef, String, String, Option<String>)>,
     frame_overflow: Vec<StudioFrameOverflow>,
+    /// STU-PRO-122 overlay fields of frames (lane SMB-FIG-SMART-ANIMATE).
+    frame_overlay: Vec<StudioFrameOverlay>,
     layers: Vec<StudioLayer>,
     stories: Vec<StudioTextStory>,
     paths: Vec<FigVectorPath>,
@@ -1613,12 +1619,13 @@ impl Mapper<'_> {
                                     })
                                 }
                             };
+                            let overlay_relative_position = self.overlay_position(a, navigation);
                             actions.push(StudioAction::Node {
                                 destination_id,
                                 navigation,
                                 transition,
                                 preserve_scroll_position: false,
-                                overlay_relative_position: None,
+                                overlay_relative_position,
                                 reset_video_position: false,
                                 reset_scroll_position: false,
                                 reset_interactive_components: false,
@@ -1641,6 +1648,105 @@ impl Mapper<'_> {
                 self.design_for(&node_ref).reactions = reactions;
             }
         }
+    }
+
+    /// STU-PRO-122..124: a frame's `overlayPositionType`, `overlayBackgroundAppearance` and
+    /// `overlayBackgroundInteraction` -> one `StudioFrameOverlay` (only when the frame stores any of
+    /// them). Unknown tokens are typed losses and fall back to the spec's unset / `NONE` states.
+    fn frame_overlay(&mut self, f: &crate::nodes::FramePayload, node_ref: &NodeRef) {
+        if f.overlay_position_type.is_none() && f.overlay_background.is_none() && f.overlay_background_interaction.is_none() {
+            return;
+        }
+        let overlay_position_type = match f.overlay_position_type.as_deref() {
+            None => None,
+            Some("CENTER") => Some(StudioOverlayPositionType::Center),
+            Some("TOP_LEFT") => Some(StudioOverlayPositionType::TopLeft),
+            Some("TOP_CENTER") => Some(StudioOverlayPositionType::TopCenter),
+            Some("TOP_RIGHT") => Some(StudioOverlayPositionType::TopRight),
+            Some("BOTTOM_LEFT") => Some(StudioOverlayPositionType::BottomLeft),
+            Some("BOTTOM_CENTER") => Some(StudioOverlayPositionType::BottomCenter),
+            Some("BOTTOM_RIGHT") => Some(StudioOverlayPositionType::BottomRight),
+            Some("MANUAL") => Some(StudioOverlayPositionType::Manual),
+            Some(other) => {
+                self.lose(format!("native.overlay_position_type={other}"), "overlay_position_unknown_center_used");
+                None
+            }
+        };
+        let (bg_type, bg_colour) = match &f.overlay_background {
+            Some((t, c)) => (t.as_deref(), *c),
+            None => (None, None),
+        };
+        let overlay_background = match (bg_type, bg_colour) {
+            (Some("SOLID_COLOR"), Some(c)) => StudioOverlayBackground::SolidColor {
+                color: StudioRgba {
+                    r: wide(c.r).clamp(0.0, 1.0),
+                    g: wide(c.g).clamp(0.0, 1.0),
+                    b: wide(c.b).clamp(0.0, 1.0),
+                    a: wide(c.a).clamp(0.0, 1.0),
+                    colour_profile_id: ProfileBinding::Unassigned(()),
+                },
+            },
+            (Some("SOLID_COLOR"), None) => {
+                self.lose("native.overlay_background", "overlay_background_colour_missing_none_used");
+                StudioOverlayBackground::None {}
+            }
+            (None | Some("NONE"), _) => StudioOverlayBackground::None {},
+            (Some(other), _) => {
+                self.lose(format!("native.overlay_background={other}"), "overlay_background_unknown_none_used");
+                StudioOverlayBackground::None {}
+            }
+        };
+        let overlay_background_interaction = match f.overlay_background_interaction.as_deref() {
+            None | Some("NONE") => StudioOverlayBackgroundInteraction::None,
+            Some("CLOSE_ON_CLICK_OUTSIDE") => StudioOverlayBackgroundInteraction::CloseOnClickOutside,
+            Some(other) => {
+                self.lose(format!("native.overlay_background_interaction={other}"), "overlay_interaction_unknown_none_used");
+                StudioOverlayBackgroundInteraction::None
+            }
+        };
+        self.frame_overlay.push(StudioFrameOverlay {
+            node: node_ref.clone(),
+            overlay_position_type,
+            overlay_background,
+            overlay_background_interaction,
+        });
+    }
+
+    /// The `overlay_relative_position` of a mapped `NODE` action (STU-PRO-112/123, document px,
+    /// precision 2): the action's stored `overlayRelativePosition` on an `OVERLAY` navigation, else
+    /// the destination frame's node-level one when that frame is `MANUAL` (typed note), else the
+    /// origin `{0, 0}` when that frame is `MANUAL` (typed loss: Folio refuses a `MANUAL` overlay
+    /// without a position, STU-PRO-154). A position on any other navigation is dropped (STU-PRO-155,
+    /// typed loss).
+    fn overlay_position(&mut self, a: &crate::nodes::InteractionAction, navigation: Navigation) -> Option<OverlayPosition> {
+        let at = |v: crate::nodes::Vec2| {
+            let p = OverlayPosition { x: (wide(v.x) * 100.0).round() / 100.0, y: (wide(v.y) * 100.0).round() / 100.0 };
+            (p.x.is_finite() && p.y.is_finite()).then_some(p)
+        };
+        if navigation != Navigation::Overlay {
+            if a.overlay_relative_position.is_some() {
+                self.lose("native.interactions.overlay_relative_position", "overlay_position_on_non_overlay_navigation");
+            }
+            return None;
+        }
+        let doc = self.doc;
+        let dest = a.destination.and_then(|d| doc.node(d)).and_then(|n| match &n.payload {
+            NodePayload::Frame(f) | NodePayload::Symbol { frame: f, .. } | NodePayload::Instance { frame: f, .. } => Some(f),
+            _ => None,
+        });
+        let manual = dest.is_some_and(|f| f.overlay_position_type.as_deref() == Some("MANUAL"));
+        if let Some(p) = a.overlay_relative_position.and_then(at) {
+            return Some(p);
+        }
+        if !manual {
+            return None;
+        }
+        if let Some(p) = dest.and_then(|f| f.overlay_relative_position).and_then(at) {
+            self.lose("native.interactions.overlay_relative_position", "overlay_position_from_destination_node");
+            return Some(p);
+        }
+        self.lose("native.interactions.overlay_relative_position", "overlay_manual_position_missing_origin_used");
+        Some(OverlayPosition { x: 0.0, y: 0.0 })
     }
 
     /// VARIABLE_SET -> `StudioVariableCollection` (Figma mode ids kept as `session:local`, first mode
@@ -2892,6 +2998,11 @@ impl Mapper<'_> {
                 self.frame_overflow.push(StudioFrameOverflow { node: node_ref.clone(), overflow_direction });
             }
         }
+        if let NodePayload::Frame(f) | NodePayload::Symbol { frame: f, .. } | NodePayload::Instance { frame: f, .. } =
+            &n.payload
+        {
+            self.frame_overlay(f, &node_ref);
+        }
         let is_container = ty == "CANVAS" || is_artboard || CONTAINER_KINDS.contains(&ty);
         // Frame fill as a background layer and frame clip (artboards, frames, components).
         let mut background = None;
@@ -3061,6 +3172,7 @@ pub fn to_native(
         page: None,
         flow_starts: Vec::new(),
         frame_overflow: Vec::new(),
+        frame_overlay: Vec::new(),
     };
     for &root in &doc.roots {
         let r = &doc.nodes[root];
@@ -3104,6 +3216,7 @@ pub fn to_native(
         text_layouts,
         flow_starts,
         frame_overflow,
+        frame_overlay,
         ..
     } = m;
     let mut layers = layers;
@@ -3174,6 +3287,7 @@ pub fn to_native(
         }
     }
     design_records.frame_overflow = frame_overflow;
+    design_records.frame_overlay = frame_overlay;
     // Type styles: one `StudioTypeStyle` per STYS id; stories resolve against the set.
     let mut type_styles = StudioTypeStyleRecords::new(snapshot.document().document_id.clone());
     let mut unit_lost = false;

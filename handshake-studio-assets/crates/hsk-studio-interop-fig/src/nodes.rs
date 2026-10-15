@@ -209,6 +209,14 @@ pub struct FramePayload {
     pub scroll_direction: Option<String>,
     pub component_props: Vec<ComponentPropDef>,
     pub is_state_group: Option<bool>,
+    /// `overlayPositionType` as stored (`CENTER`, ..., `MANUAL`; lane SMB-FIG-SMART-ANIMATE).
+    pub overlay_position_type: Option<String>,
+    /// `overlayBackgroundInteraction` as stored (`NONE`, `CLOSE_ON_CLICK_OUTSIDE`).
+    pub overlay_background_interaction: Option<String>,
+    /// `overlayBackgroundAppearance`: (`backgroundType` as stored, `backgroundColor`).
+    pub overlay_background: Option<(Option<String>, Option<Color>)>,
+    /// Node-level `overlayRelativePosition` (the action-level one is on [`InteractionAction`]).
+    pub overlay_relative_position: Option<Vec2>,
 }
 
 /// One style run of a TEXT node, in Unicode scalar indices `[start, end)`; font and fills are the
@@ -237,6 +245,9 @@ pub struct TextPayload {
     pub align_vertical: Option<String>,
     pub auto_resize: Option<String>,
     pub runs: Vec<TextRun>,
+    /// `autoRename`: the layer name follows the text content (implicit name; smart animate then
+    /// matches the layer by text style).
+    pub auto_rename: Option<bool>,
     /// Figma's own laid-out text (`derivedTextData`), when the file carries it.
     pub derived: Option<DerivedText>,
 }
@@ -368,6 +379,8 @@ pub struct InteractionAction {
     pub easing_function: Vec<f32>,
     pub connection: Option<String>,
     pub destination: Option<SourceId>,
+    /// `overlayRelativePosition` of an `OVERLAY` action (document px).
+    pub overlay_relative_position: Option<Vec2>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1205,6 +1218,14 @@ fn frame(o: &mut Obj, cx: &mut Cx) -> FramePayload {
         scroll_direction: o.enum_name(cx, "scrollDirection"),
         component_props,
         is_state_group: o.bool(cx, "isStateGroup"),
+        overlay_position_type: o.enum_name(cx, "overlayPositionType"),
+        overlay_background_interaction: o.enum_name(cx, "overlayBackgroundInteraction"),
+        overlay_background: o.obj(cx, "overlayBackgroundAppearance").map(|mut bo| {
+            let v = (bo.enum_name(cx, "backgroundType"), bo.color(cx, "backgroundColor"));
+            bo.finish(cx);
+            v
+        }),
+        overlay_relative_position: o.vec2(cx, "overlayRelativePosition"),
     }
 }
 
@@ -1240,6 +1261,7 @@ fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> Result<TextPayload> {
         align_horizontal: o.enum_name(cx, "textAlignHorizontal"),
         align_vertical: o.enum_name(cx, "textAlignVertical"),
         auto_resize: o.enum_name(cx, "textAutoResize"),
+        auto_rename: o.bool(cx, "autoRename"),
         derived: derived_text(o, cx)?,
         ..TextPayload::default()
     };
@@ -1530,6 +1552,7 @@ fn interactions(o: &mut Obj, cx: &mut Cx) -> Vec<Interaction> {
                         .collect(),
                     connection: ao.enum_name(cx, "connectionType"),
                     destination: ao.guid(cx, "transitionNodeID"),
+                    overlay_relative_position: ao.vec2(cx, "overlayRelativePosition"),
                 });
                 ao.finish(cx);
             }

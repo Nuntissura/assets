@@ -38,7 +38,7 @@ pub use smart_animate::{
 pub use prototype::{FlowLimits, FlowReport, FlowWarning, PrototypeFlow, validate_flow};
 pub use player::{
     ActiveTransition, MAX_ACTIONS_PER_DISPATCH, MAX_STACK, PlayerEvent, PlayerInput, PlayerSession,
-    PlayerState, cubic_bezier_ease,
+    PlayerState, cubic_bezier_ease, overlay_placement,
 };
 
 use hsk_studio_accord::CancellationToken;

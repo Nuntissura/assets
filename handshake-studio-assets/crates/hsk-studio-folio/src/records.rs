@@ -41,7 +41,7 @@ use super::{
     err, id,
     identity::Namespaces,
     paint::{STYLE_REF_FIELDS, StudioPaintStyle, validate_style},
-    prototype::{StudioFrameOverflow, StudioPrototypePage, check_prototype},
+    prototype::{StudioFrameOverflow, StudioFrameOverlay, StudioPrototypePage, check_overlays, check_prototype},
     reactions::{StudioReaction, validate_reactions},
     values::{Ctx, VariableType, label},
 };
@@ -113,6 +113,9 @@ pub struct StudioDesignRecords {
     /// STU-PRO-138 overflow (scroll) direction per frame (`crate::prototype`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frame_overflow: Vec<StudioFrameOverflow>,
+    /// STU-PRO-122 overlay fields per frame (`crate::prototype`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_overlay: Vec<StudioFrameOverlay>,
 }
 impl StudioDesignRecords {
     /// An empty set for `document_id`.
@@ -129,6 +132,7 @@ impl StudioDesignRecords {
             paint_styles: Vec::new(),
             prototype_pages: Vec::new(),
             frame_overflow: Vec::new(),
+            frame_overlay: Vec::new(),
         }
     }
     /// The design entry of a node.
@@ -661,6 +665,7 @@ pub fn validate_design_records(
     check_nodes(r, &nodes, &refs, &mut ids, &mut c)?;
     let kinds: BTreeMap<&str, NodeKind> = nodes.iter().map(|(k, v)| (*k, v.kind.clone())).collect();
     check_prototype(&r.prototype_pages, &r.frame_overflow, &kinds, &mut c)?;
+    check_overlays(&r.frame_overlay, &r.nodes, &kinds, &mut c)?;
     c.tick()?;
     Ok(c.issues)
 }
