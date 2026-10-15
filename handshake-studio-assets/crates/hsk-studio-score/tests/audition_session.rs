@@ -143,8 +143,8 @@ fn impulse_track(len: usize, at: usize, value: f32) -> TrackSpec {
 }
 
 /// A limiter far above the signal is a pure delay of its reported latency (gain exactly 1).
-fn delay_effect(rate: u32) -> Box<dyn Processor + Send> {
-    Box::new(LookaheadLimiter::new(rate, 2, LimiterParams { ceiling_db: 0.0, lookahead_ms: 3.0, release_ms: 50.0, true_peak: false }).unwrap())
+fn delay_effect(rate: u32) -> EffectSlot {
+    EffectSlot::new(Box::new(LookaheadLimiter::new(rate, 2, LimiterParams { ceiling_db: 0.0, lookahead_ms: 3.0, release_ms: 50.0, true_peak: false }).unwrap()))
 }
 
 /// Routing and latency compensation: a direct track, a track through a latent bus, a track through
@@ -155,7 +155,7 @@ fn sends_buses_and_master_are_latency_compensated_and_levelled() {
     bounded_case("graph", || {
         let rate = 48_000;
         let len = 4000;
-        let lim_latency = u64::from(delay_effect(rate).latency_samples());
+        let lim_latency = u64::from(delay_effect(rate).processor.latency_samples());
         assert!(lim_latency > 0);
         let strips = vec![
             // 0: direct to master at 0.25.
@@ -269,7 +269,7 @@ fn post_fader_sends_master_volume_and_refusals() {
             Some(ScoreError::OutOfRange),
             "send level out of range"
         );
-        let mono_fx: Box<dyn Processor + Send> = Box::new(LookaheadLimiter::new(rate, 1, LimiterParams::default()).unwrap());
+        let mono_fx = EffectSlot::new(Box::new(LookaheadLimiter::new(rate, 1, LimiterParams::default()).unwrap()));
         let mut bad = BusSpec::new("mono-fx");
         bad.effects = vec![mono_fx];
         assert_eq!(MixGraph::new(rate, 64, one(), vec![bad], MasterSpec::default()).err(), Some(ScoreError::ChannelMismatch));
@@ -347,5 +347,78 @@ fn graph_seek_matches_the_continuous_render_and_sources_drive_strips() {
             assert_eq!(l[k], if k % 100 == 0 { 0.5 } else { 0.0 }, "mono hard left {k}");
             assert_eq!(r[k], 0.0);
         }
+    });
+}
+
+/// Lane SMB-AUDITION-UI: bus effect keyframes (a gain lane on a bus, linear in dB, at the timeline
+/// sample the stage reads) and exact seeks through long effect tails (a 4 s reverb on a bus: the
+/// default `SeekMode::Exact` lands bit for bit on the continuous render forward and backward; a
+/// 1 s `Preroll` provably does not, which is why it is opt-in). Meters: peaks and loudness.
+#[test]
+fn bus_keyframes_exact_seek_through_long_tails_and_meters() {
+    bounded_case("graph-ui", || {
+        let rate = 48_000;
+        let token = CancellationToken::default();
+        // Keyframed bus gain: 0 dB at 0 falling to -12 dB at 1 s, held after.
+        let dc = TrackSpec::new(vec![vec![0.25; 72_000], vec![0.25; 72_000]], 0);
+        let mut bus = BusSpec::new("ramp");
+        let lane = AutomationLane::new(&[(0, 0.0), (48_000, -12.0)], Interpolation::Linear, GAIN_AUTOMATION_DB).unwrap();
+        bus.effects = vec![EffectSlot::new(Box::new(Gain::from_db(0.0).unwrap())).with_lane(0, lane)];
+        let mut g = MixGraph::new(rate, 1000, vec![StripSpec::track(dc, Destination::Bus(0), vec![])], vec![bus], MasterSpec::default()).unwrap();
+        let [l, _] = render(&mut g, 72_000, 1000);
+        for k in [0usize, 1, 24_000, 47_999, 48_000, 71_999] {
+            let db = if k < 48_000 { -12.0 * k as f64 / 48_000.0 } else { -12.0 };
+            let want = 0.25 * 10f64.powf(db / 20.0);
+            assert!((f64::from(l[k]) - want).abs() < 1e-6, "{k}: {} vs {want}", l[k]);
+        }
+        let m = g.meters();
+        assert!((m.master[0] - 0.25).abs() < 1e-6 && (m.strips[0][0] - 0.25).abs() < 1e-6 && (m.buses[0][0] - 0.25).abs() < 1e-6, "{m:?}");
+        // Out-of-range lane values are refused before rendering.
+        let mut bad = BusSpec::new("bad");
+        let lane = AutomationLane::new(&[(0, 100.0)], Interpolation::Step, (-1000.0, 1000.0)).unwrap();
+        bad.effects = vec![EffectSlot::new(Box::new(Gain::from_db(0.0).unwrap())).with_lane(0, lane)];
+        let dc = TrackSpec::new(vec![vec![0.25; 10]], 0);
+        assert_eq!(MixGraph::new(rate, 64, vec![StripSpec::track(dc, Destination::Bus(0), vec![])], vec![bad], MasterSpec::default()).err(), Some(ScoreError::OutOfRange));
+
+        // A long reverb tail on a bus: noise for 1 s, then 4 s of tail.
+        let len = 5 * rate as usize;
+        let build = || {
+            let mut src = vec![noise(21, rate as usize), noise(22, rate as usize)];
+            src.iter_mut().for_each(|c| c.resize(len, 0.0));
+            let t = TrackSpec::new(src, 0);
+            let mut bus = BusSpec::new("verb");
+            let params = ReverbParams { rt60_s: 4.0, ..ReverbParams::default() };
+            bus.effects = vec![EffectSlot::new(Box::new(Reverb::new(rate, 2, params).unwrap()))];
+            MixGraph::new(rate, 1000, vec![StripSpec::track(t, Destination::Bus(0), vec![])], vec![bus], MasterSpec::default()).unwrap()
+        };
+        let [full, _] = render(&mut build(), len, 1000);
+        let at = 4 * rate as usize;
+        let tail = |g: &mut MixGraph| {
+            let (mut l, mut r) = (vec![0.0; 1000], vec![0.0; 1000]);
+            g.render(at as u64, &mut l, &mut r, &token).unwrap();
+            l
+        };
+        // Exact, forward from 0.
+        let mut g = build();
+        assert_eq!(g.seek_mode(), SeekMode::Exact);
+        g.seek(at as u64, &token).unwrap();
+        assert_eq!(bits(&tail(&mut g)), bits(&full[at..at + 1000]), "exact forward seek");
+        // Exact, backward after rendering past the target.
+        let mut g = build();
+        g.seek(at as u64 + 5000, &token).unwrap();
+        g.seek(at as u64, &token).unwrap();
+        assert_eq!(bits(&tail(&mut g)), bits(&full[at..at + 1000]), "exact backward seek");
+        // A 1 s pre-roll misses the earlier part of the tail.
+        let mut g = build();
+        g.set_seek_mode(SeekMode::Preroll { seconds: 1 });
+        g.seek(at as u64, &token).unwrap();
+        let approx = tail(&mut g);
+        let worst = approx.iter().zip(&full[at..at + 1000]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(worst > 1e-6, "the short pre-roll is not exact here ({worst}), so Exact is the default");
+        assert!(full[at..at + 1000].iter().any(|v| v.abs() > 1e-4), "the tail is audible at 4 s");
+        // Loudness of the master is measured on rendered output.
+        let mut g = build();
+        let [_, _] = render(&mut g, rate as usize, 1000);
+        assert!(g.meters().loudness.integrated_lufs.is_some_and(f64::is_finite), "{:?}", g.meters().loudness);
     });
 }

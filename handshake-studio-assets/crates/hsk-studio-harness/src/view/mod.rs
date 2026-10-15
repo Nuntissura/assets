@@ -44,6 +44,10 @@ pub mod audio_batch;
 /// SMB-AUDITION-SESSION-2, feature `audio-batch`).
 #[cfg(feature = "audio-batch")]
 pub mod audio_session;
+/// Mixer and routing editor over the sequence bus graph (lane SMB-AUDITION-UI, feature
+/// `audio-batch`).
+#[cfg(feature = "audio-batch")]
+pub mod mixer;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
@@ -197,6 +201,9 @@ pub struct Viewer {
     /// The open audio file (module [`audio_import`]).
     #[cfg(feature = "media")]
     audio: Option<audio_import::ViewerAudio>,
+    /// The mixer of a sequence (module [`mixer`]).
+    #[cfg(feature = "audio-batch")]
+    mixer: Option<mixer::MixerState>,
 }
 
 struct MonitorState {
@@ -257,6 +264,8 @@ impl Viewer {
             records: None,
             #[cfg(feature = "media")]
             audio: None,
+            #[cfg(feature = "audio-batch")]
+            mixer: None,
         }
     }
 
@@ -704,6 +713,10 @@ impl Viewer {
         {
             state["audio"] = self.audio_json();
         }
+        #[cfg(feature = "audio-batch")]
+        {
+            state["mixer"] = self.mixer_json();
+        }
         state
     }
 
@@ -868,6 +881,8 @@ impl Viewer {
         self.monitor_ui(ctx);
         #[cfg(feature = "media")]
         self.audio_ui(ctx);
+        #[cfg(feature = "audio-batch")]
+        self.mixer_ui(ctx);
         if let Some((play, last)) = &mut self.prototype {
             let now = std::time::Instant::now();
             let ms = u64::try_from(now.duration_since(*last).as_millis()).unwrap_or(u64::MAX);

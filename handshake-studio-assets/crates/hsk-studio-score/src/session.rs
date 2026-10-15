@@ -142,7 +142,7 @@ impl AutomationLane {
         }
     }
     /// First sample after `t` at which the value may differ from the value at `t`.
-    fn next_change(&self, t: u64) -> u64 {
+    pub(crate) fn next_change(&self, t: u64) -> u64 {
         match self.segment(t) {
             None => self.points[0].0,
             Some(i) if i + 1 == self.points.len() => u64::MAX,

@@ -5,7 +5,7 @@
 //! with the package) and read back on open; Folio validates it against the open document both
 //! ways. Playback and export build pulse's [`TimelineBusStream`] from the sequence and its routing,
 //! with bus and master effects built from their stored instances by the batch module's
-//! [`EffectSpec`] (bus effects are static: keyframes on a bus effect are `preset_effect`); play it
+//! [`EffectSpec`] (with their keyframes as automation lanes, lane SMB-AUDITION-UI); play it
 //! through `audio_out::AudioOut::with_buses`.
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -70,15 +70,35 @@ impl super::Viewer {
     }
 }
 
-/// Builds a bus or master effect from its stored instance (static parameters; keyframes refused).
-pub fn bus_effect(instance: &folio::StudioAudioEffectInstance, rate: u32) -> Result<Box<dyn score::Processor + Send>, PulseError> {
-    if !instance.keyframes.is_empty() {
-        return Err(PulseError::AudioUnsupported);
-    }
-    let spec = EffectSpec::from_preset_instance(instance)
+/// Builds a bus or master effect from its stored instance (lane SMB-AUDITION-UI: with keyframes).
+/// Keyframe offsets are ticks from the sequence start, converted to samples exactly
+/// (`not_frame_aligned` otherwise); keyed parameters must be automatable in score (see
+/// [`EffectSpec::automation_index`]); lanes are linear between keyframes and held outside them.
+pub fn bus_effect(instance: &folio::StudioAudioEffectInstance, rate: u32) -> Result<score::EffectSlot, PulseError> {
+    let mut stat = instance.clone();
+    stat.keyframes.clear();
+    let spec = EffectSpec::from_preset_instance(&stat)
         .map_err(|_| PulseError::InvalidInput)?
         .ok_or(PulseError::InvalidInput)?;
-    spec.build(rate, 2).map_err(|_| PulseError::InvalidInput)
+    let processor = spec.build_automatable(rate, 2).map_err(|_| PulseError::InvalidInput)?;
+    let params = processor.automation_parameters();
+    let mut slot = score::EffectSlot::new(processor);
+    let mut keys: Vec<&str> = instance.keyframes.iter().map(|k| k.key.as_str()).collect();
+    keys.dedup();
+    keys.sort_unstable();
+    keys.dedup();
+    for key in keys {
+        let index = spec.automation_index(key).ok_or(PulseError::AudioUnsupported)?;
+        let range = params.get(index).map(|p| (p.min, p.max)).ok_or(PulseError::InvalidInput)?;
+        let mut points = Vec::new();
+        for k in instance.keyframes.iter().filter(|k| k.key == key) {
+            let at = hsk_studio_pulse::samples_from_ticks_exact(hsk_studio_accord::Ticks::new(k.offset_ticks), rate)?;
+            points.push((at, k.value));
+        }
+        let lane = score::AutomationLane::new(&points, score::Interpolation::Linear, range).map_err(|_| PulseError::InvalidInput)?;
+        slot = slot.with_lane(index, lane);
+    }
+    Ok(slot)
 }
 
 /// [`TimelineBusStream::new`] with [`bus_effect`] as the effect factory.

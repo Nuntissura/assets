@@ -273,3 +273,49 @@ fn routing_is_saved_with_the_session_reopens_and_plays_through_the_buses() {
     }
     assert_eq!(AUDIO_ROUTING_ENTRY, "audio_routing");
 }
+
+/// Lane SMB-AUDITION-UI: keyframes of a stored bus effect instance become automation lanes of the
+/// bus stage (offsets in ticks from the sequence start; linear between keyframes): a gain keyed from
+/// 0 dB to -12 dB over 5 frames on the submix gives the hand-computed ramp; a keyed parameter score
+/// cannot automate is refused.
+#[test]
+fn bus_effect_keyframes_from_stored_instances_automate_the_bus() {
+    let mut set = routing();
+    let r = &mut set.routings[0];
+    r.clip_gains.clear();
+    r.routes[1].sends.clear();
+    r.bus_effects[0].effects = vec![StudioAudioEffectInstance {
+        instance_id: "fx-gain".into(),
+        filter_kind: "gain".into(),
+        enabled: true,
+        params: vec![StudioAudioPresetParam { key: "db".into(), value: 0.0 }],
+        keyframes: vec![
+            StudioAudioPresetKeyframe { key: "db".into(), offset_ticks: 0, value: 0.0 },
+            StudioAudioPresetKeyframe { key: "db".into(), offset_ticks: 5 * F, value: -12.0 },
+        ],
+    }];
+    let seq = sequence();
+    let token = CancellationToken::default();
+    let mut stream = build_bus_stream(&seq, &set.routings[0], RATE, 480, sources(), &Ext, &token).unwrap();
+    let [l, _] = render(&mut stream, 10 * SPF);
+    for k in [0usize, 4800, 9599, 9600, 15_000] {
+        let db = if k < 5 * SPF { -12.0 * k as f64 / (5 * SPF) as f64 } else { -12.0 };
+        let a = 0.25 * 0.5 * 10f64.powf(db / 20.0);
+        let b = if k == 1000 { 0.5 * std::f64::consts::FRAC_1_SQRT_2 } else { 0.0 };
+        assert!((f64::from(l[k]) - (a + b)).abs() < 2e-6, "{k}: {} vs {}", l[k], a + b);
+    }
+    let mut bad = set.routings[0].clone();
+    bad.bus_effects[0].effects = vec![StudioAudioEffectInstance {
+        instance_id: "fx-lim".into(),
+        filter_kind: "lookahead_limiter".into(),
+        enabled: true,
+        params: vec![
+            StudioAudioPresetParam { key: "ceiling_db".into(), value: -1.0 },
+            StudioAudioPresetParam { key: "lookahead_ms".into(), value: 3.0 },
+            StudioAudioPresetParam { key: "release_ms".into(), value: 50.0 },
+            StudioAudioPresetParam { key: "true_peak".into(), value: 0.0 },
+        ],
+        keyframes: vec![StudioAudioPresetKeyframe { key: "lookahead_ms".into(), offset_ticks: 0, value: 4.0 }],
+    }];
+    assert!(build_bus_stream(&seq, &bad, RATE, 480, sources(), &Ext, &token).is_err());
+}

@@ -60,7 +60,7 @@ impl EffectSpec {
     }
 
     /// The same processor as an automatable score stage (every kind here is `Automatable`).
-    fn build_automatable(&self, rate: u32, channels: usize) -> Result<Box<dyn score::Automatable + Send>, score::ScoreError> {
+    pub(crate) fn build_automatable(&self, rate: u32, channels: usize) -> Result<Box<dyn score::Automatable + Send>, score::ScoreError> {
         Ok(match self {
             Self::Gain { db } => Box::new(score::Gain::from_db(*db)?),
             Self::Equalizer {

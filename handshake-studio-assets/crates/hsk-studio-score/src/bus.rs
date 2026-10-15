@@ -30,12 +30,14 @@
 //!
 //! Blocks render contiguously from sample 0 like [`Session::render`]; an error resets the graph.
 use crate::block::{InputBlock, OutputBlock};
-use crate::chain::{Chain, ChainStage};
 use crate::dsp::db_to_linear;
+use crate::loudness::{LoudnessMeter, LoudnessSnapshot};
 use crate::engine::Processor;
 use crate::error::ScoreError;
 use crate::layout::{BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, ticks_per_sample};
-use crate::session::{AutomationLane, MAX_TRACK_LATENCY, MAX_TRACKS, Session, TRACK_PAN, TRACK_VOLUME_DB, TrackSpec, pan_gains};
+use crate::session::{
+    AutomationLane, EffectSlot, MAX_TRACK_LATENCY, MAX_TRACKS, Session, TRACK_PAN, TRACK_VOLUME_DB, TrackSpec, pan_gains,
+};
 use hsk_studio_accord::CancellationToken;
 
 /// Most buses in one graph (authored bound).
@@ -160,11 +162,36 @@ impl StripSpec {
 /// Warm-up rendered before a seek target (bus effect state and delays), in seconds (authored).
 pub const GRAPH_SEEK_WARMUP_SECONDS: u64 = 1;
 
+/// How [`MixGraph::seek`] rebuilds bus and master effect state (lane SMB-AUDITION-UI).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SeekMode {
+    /// The state the continuous render would have: a seek forward renders on from the current
+    /// position, a seek backward renders again from sample 0 (pre-roll = the whole history), so the
+    /// output after any seek is the continuous render bit for bit, whatever the effects' tails.
+    #[default]
+    Exact,
+    /// Fast: reset, then render a pre-roll of `P + seconds` before the target; exact only when every
+    /// bus and master effect forgets its input within `seconds`.
+    Preroll { seconds: u64 },
+}
+
+/// Meter readings of the graph since the last [`MixGraph::reset_meters`] (seek and reset clear
+/// them): per strip and bus the post-fader sample peak per channel, the master output sample peak,
+/// and the master output loudness (score's BS.1770 meter, stereo weights 1, 1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphMeters {
+    pub strips: Vec<[f32; 2]>,
+    pub buses: Vec<[f32; 2]>,
+    pub master: [f32; 2],
+    pub loudness: LoudnessSnapshot,
+}
+
 /// One bus (submix or aux return).
 pub struct BusSpec {
     pub name: String,
-    /// Stereo-to-stereo processors in order (empty: none).
-    pub effects: Vec<Box<dyn Processor + Send>>,
+    /// Stereo-to-stereo stages in order (empty: none), each with its automation lanes (lane
+    /// SMB-AUDITION-UI: bus effect keyframes), evaluated at the timeline sample the stage reads.
+    pub effects: Vec<EffectSlot>,
     pub volume_db: AutomationLane,
     pub pan: AutomationLane,
     pub output: Destination,
@@ -187,7 +214,7 @@ impl BusSpec {
 
 /// The master bus.
 pub struct MasterSpec {
-    pub effects: Vec<Box<dyn Processor + Send>>,
+    pub effects: Vec<EffectSlot>,
     pub volume_db: AutomationLane,
 }
 
@@ -269,8 +296,9 @@ struct Strip {
 }
 
 struct Bus {
-    chain: Option<Chain>,
-    out: OutputBlock,
+    stack: Stack,
+    /// Input alignment `A(b)`: the bus input at internal sample `q` is timeline `q - A(b)`.
+    align: u64,
     volume_db: AutomationLane,
     pan: AutomationLane,
     /// Output path latency `D(b)`.
@@ -287,8 +315,7 @@ pub struct MixGraph {
     buses: Vec<Bus>,
     order: Vec<usize>,
     edges: Vec<Edge>,
-    master_chain: Option<Chain>,
-    master_out: OutputBlock,
+    master_stack: Stack,
     master_volume: AutomationLane,
     master_planes: [Vec<f32>; 2],
     latency: GraphLatency,
@@ -299,6 +326,12 @@ pub struct MixGraph {
     sum: [Vec<f64>; 2],
     scratch: [Vec<f32>; 2],
     discard: [Vec<f32>; 2],
+    seek_mode: SeekMode,
+    metering: bool,
+    strip_peaks: Vec<[f32; 2]>,
+    bus_peaks: Vec<[f32; 2]>,
+    master_peak: [f32; 2],
+    meter: LoudnessMeter,
 }
 
 fn lane_within(lane: &AutomationLane, range: (f64, f64)) -> Result<(), ScoreError> {
@@ -311,20 +344,114 @@ fn lane_within(lane: &AutomationLane, range: (f64, f64)) -> Result<(), ScoreErro
     Ok(())
 }
 
-fn chain(effects: Vec<Box<dyn Processor + Send>>, rate: u32, block: usize) -> Result<Option<Chain>, ScoreError> {
-    if effects.is_empty() {
-        return Ok(None);
+struct StackStage {
+    slot: EffectSlot,
+    /// Latency of the stages before this one.
+    offset: u64,
+    spec: BlockSpec,
+    out: OutputBlock,
+    last: Vec<f64>,
+}
+
+/// An automatable stereo effect stack with stage latencies (the bus / master counterpart of a
+/// session track stack: lanes are set before each sample their value changes at, evaluated at the
+/// timeline sample the stage reads, the stages run on the sub-blocks between changes).
+struct Stack {
+    stages: Vec<StackStage>,
+    latency: u64,
+}
+
+impl Stack {
+    fn new(slots: Vec<EffectSlot>, rate: u32, block: usize) -> Result<Self, ScoreError> {
+        let layout = ChannelLayout::stereo();
+        let mut stages = Vec::with_capacity(slots.len());
+        let mut offset = 0u64;
+        for slot in slots {
+            let p = &slot.processor;
+            if p.required_sample_rate_hz().is_some_and(|r| r != rate) {
+                return Err(ScoreError::InvalidRate);
+            }
+            if !p.accepts(&layout, &layout) {
+                return Err(ScoreError::ChannelMismatch);
+            }
+            if p.max_frames().is_some_and(|m| m < block) {
+                return Err(ScoreError::OutOfRange);
+            }
+            let params = p.automation_parameters();
+            for (index, lane) in &slot.lanes {
+                let param = params.get(*index).ok_or(ScoreError::OutOfRange)?;
+                lane_within(lane, (param.min, param.max))?;
+            }
+            let latency = u64::from(p.latency_samples());
+            stages.push(StackStage {
+                last: vec![f64::NAN; slot.lanes.len()],
+                slot,
+                offset,
+                spec: BlockSpec { sample_rate_hz: rate, layout: layout.clone(), frames: 1, start_sample: 0 },
+                out: OutputBlock::with_capacity(layout.clone(), block)?,
+            });
+            offset = offset.checked_add(latency).ok_or(ScoreError::CapacityExceeded)?;
+        }
+        Ok(Self { stages, latency: offset })
     }
-    for p in &effects {
-        if p.required_sample_rate_hz().is_some_and(|r| r != rate) {
-            return Err(ScoreError::InvalidRate);
+
+    fn reset(&mut self) {
+        for s in &mut self.stages {
+            s.slot.processor.reset();
+            s.last.fill(f64::NAN);
         }
     }
-    let stages = effects
-        .into_iter()
-        .map(|processor| ChainStage { processor, output: ChannelLayout::stereo() })
-        .collect();
-    Chain::new(ChannelLayout::stereo(), block, stages).map(Some)
+
+    /// `out[..][..n]` = the stack over `input[..][..n]`, whose first frame is timeline `start`.
+    fn run(&mut self, start: u64, input: &[Vec<f32>; 2], n: usize, out: &mut [Vec<f32>; 2], cancel: &CancellationToken) -> Result<(), ScoreError> {
+        if self.stages.is_empty() {
+            out[0][..n].copy_from_slice(&input[0][..n]);
+            out[1][..n].copy_from_slice(&input[1][..n]);
+            return Ok(());
+        }
+        let end = start + n as u64;
+        let mut at = 0usize;
+        while at < n {
+            cancel.check().map_err(|_| ScoreError::Canceled)?;
+            let t = start + at as u64;
+            let mut stop = end;
+            for stage in &mut self.stages {
+                let u = t.saturating_sub(stage.offset);
+                for (k, (index, lane)) in stage.slot.lanes.iter().enumerate() {
+                    let v = lane.value_at(u);
+                    if v.to_bits() != stage.last[k].to_bits() {
+                        stage.slot.processor.set_automated(*index, v)?;
+                        stage.last[k] = v;
+                    }
+                    stop = stop.min(stage.offset.saturating_add(lane.next_change(u)));
+                }
+            }
+            let sub = (stop - t) as usize;
+            for k in 0..self.stages.len() {
+                let (before, rest) = self.stages.split_at_mut(k);
+                let stage = &mut rest[0];
+                stage.spec.frames = sub;
+                stage.spec.start_sample = t.saturating_sub(stage.offset);
+                let slices: [&[f32]; 2] = match before.last() {
+                    None => [&input[0][at..at + sub], &input[1][at..at + sub]],
+                    Some(prev) => {
+                        let cap = prev.out.capacity();
+                        let b = prev.out.backing();
+                        [&b[..sub], &b[cap..cap + sub]]
+                    }
+                };
+                let block = InputBlock::new(&stage.spec, &slices);
+                stage.slot.processor.process(&block, &mut stage.out, cancel)?;
+            }
+            if let Some(last) = self.stages.last() {
+                let cap = last.out.capacity();
+                out[0][at..at + sub].copy_from_slice(&last.out.backing()[..sub]);
+                out[1][at..at + sub].copy_from_slice(&last.out.backing()[cap..cap + sub]);
+            }
+            at += sub;
+        }
+        Ok(())
+    }
 }
 
 /// Balance-pans a stereo pair.
@@ -433,16 +560,16 @@ impl MixGraph {
             check_sends(&b.sends)?;
             lane_within(&b.volume_db, TRACK_VOLUME_DB)?;
             lane_within(&b.pan, TRACK_PAN)?;
-            let chain = chain(b.effects, sample_rate_hz, max_block_frames)?;
-            bus_latency.push(chain.as_ref().map_or(0, |c| u64::from(c.latency_samples())));
+            let stack = Stack::new(b.effects, sample_rate_hz, max_block_frames)?;
+            bus_latency.push(stack.latency);
             edges.push((Source::Bus(i), Tap::Post, None, 0.0, b.output));
             for send in b.sends {
                 let tap = if send.tap == SendTap::PreFader { Tap::Pre } else { Tap::Post };
                 edges.push((Source::Bus(i), tap, Some(send.level_db), send.pan, Destination::Bus(send.bus)));
             }
             built_buses.push(Bus {
-                chain,
-                out: OutputBlock::with_capacity(ChannelLayout::stereo(), max_block_frames)?,
+                stack,
+                align: 0,
                 volume_db: b.volume_db,
                 pan: b.pan,
                 path: 0,
@@ -451,7 +578,7 @@ impl MixGraph {
             });
         }
         lane_within(&master.volume_db, TRACK_VOLUME_DB)?;
-        let master_chain = chain(master.effects, sample_rate_hz, max_block_frames)?;
+        let master_stack = Stack::new(master.effects, sample_rate_hz, max_block_frames)?;
         // Topological order of the buses (Kahn): bus -> bus edges.
         let mut indegree = vec![0usize; nb];
         for (from, _, _, _, to) in &edges {
@@ -503,14 +630,16 @@ impl MixGraph {
             .map(|e| source_latency(e.0, &paths))
             .max()
             .unwrap_or(0);
-        let master_effects = master_chain.as_ref().map_or(0, |c| u64::from(c.latency_samples()));
+        let master_effects = master_stack.latency;
         let total = master_alignment + master_effects;
         if total > MAX_TRACK_LATENCY {
             return Err(ScoreError::CapacityExceeded);
         }
         for (b, bus) in built_buses.iter_mut().enumerate() {
             bus.path = paths[b];
+            bus.align = alignment[b];
         }
+        let strip_count = built_strips.len();
         let edges = edges
             .into_iter()
             .map(|(from, tap, level_db, pan, to)| {
@@ -538,8 +667,7 @@ impl MixGraph {
             buses: built_buses,
             order,
             edges,
-            master_chain,
-            master_out: OutputBlock::with_capacity(ChannelLayout::stereo(), max_block_frames)?,
+            master_stack,
             master_volume: master.volume_db,
             master_planes: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
             latency: GraphLatency {
@@ -554,7 +682,39 @@ impl MixGraph {
             sum: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
             scratch: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
             discard: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
+            seek_mode: SeekMode::Exact,
+            metering: false,
+            strip_peaks: vec![[0.0; 2]; strip_count],
+            bus_peaks: vec![[0.0; 2]; nb],
+            master_peak: [0.0; 2],
+            meter: LoudnessMeter::new(sample_rate_hz, &[1.0, 1.0])?,
         })
+    }
+
+    /// The seek behaviour ([`SeekMode::Exact`] by default).
+    pub fn set_seek_mode(&mut self, mode: SeekMode) {
+        self.seek_mode = mode;
+    }
+    pub fn seek_mode(&self) -> SeekMode {
+        self.seek_mode
+    }
+
+    /// Meter readings since the last reset (see [`GraphMeters`]).
+    pub fn meters(&self) -> GraphMeters {
+        GraphMeters {
+            strips: self.strip_peaks.clone(),
+            buses: self.bus_peaks.clone(),
+            master: self.master_peak,
+            loudness: self.meter.snapshot(),
+        }
+    }
+
+    /// Clears the peaks and the loudness measurement.
+    pub fn reset_meters(&mut self) {
+        self.strip_peaks.iter_mut().for_each(|p| *p = [0.0; 2]);
+        self.bus_peaks.iter_mut().for_each(|p| *p = [0.0; 2]);
+        self.master_peak = [0.0; 2];
+        self.meter.reset();
     }
 
     pub fn sample_rate_hz(&self) -> u32 {
@@ -589,25 +749,46 @@ impl MixGraph {
         self.internal = 0;
         self.position = 0;
         for b in &mut self.buses {
-            if let Some(c) = &mut b.chain {
-                c.reset();
-            }
+            b.stack.reset();
         }
-        if let Some(c) = &mut self.master_chain {
-            c.reset();
-        }
+        self.master_stack.reset();
         for e in &mut self.edges {
             e.delay.reset();
         }
+        self.reset_meters();
     }
 
-    /// Moves playback to timeline `sample`: bus and master chains and delays are reset, the strips
-    /// seek to `w = sample - P - W` (`W` = [`GRAPH_SEEK_WARMUP_SECONDS`] of samples, clamped at 0)
-    /// and the graph renders from `w` up to `sample`, discarding. A seek with `w = 0` is exactly the
-    /// continuous render; a later seek is exact when every bus and master effect forgets its input
-    /// within `W` samples (delay lines refill within the pre-roll `P`).
+    /// Moves playback to timeline `sample` per the [`SeekMode`]; meters restart there.
+    /// `Exact`: forward renders on (discarding) from the current position, backward resets and
+    /// renders from sample 0, so effect tails of any length are the continuous render's.
+    /// `Preroll { seconds }`: bus and master stacks and delays are reset, the strips seek to
+    /// `w = sample - P - W` (`W` = `seconds` of samples, clamped at 0) and the graph renders from
+    /// `w` up to `sample`, discarding; exact when `w = 0` or every effect forgets its input within
+    /// `W` samples (delay lines refill within the pre-roll `P`).
     pub fn seek(&mut self, sample: u64, cancel: &CancellationToken) -> Result<(), ScoreError> {
-        let warm = u64::from(self.rate).saturating_mul(GRAPH_SEEK_WARMUP_SECONDS);
+        let seconds = match self.seek_mode {
+            SeekMode::Preroll { seconds } => seconds,
+            SeekMode::Exact => {
+                let result = (|| {
+                    if sample < self.position {
+                        self.reset();
+                    }
+                    let (mut l, mut r) = (vec![0.0f32; self.block], vec![0.0f32; self.block]);
+                    while self.position < sample {
+                        let n = (sample - self.position).min(self.block as u64) as usize;
+                        let at = self.position;
+                        self.render(at, &mut l[..n], &mut r[..n], cancel)?;
+                    }
+                    Ok(())
+                })();
+                if result.is_err() {
+                    self.reset();
+                }
+                self.reset_meters();
+                return result;
+            }
+        };
+        let warm = u64::from(self.rate).saturating_mul(seconds);
         let from = sample.saturating_sub(self.latency.total.saturating_add(warm));
         let result = (|| {
             self.reset_buses();
@@ -629,6 +810,7 @@ impl MixGraph {
         if result.is_err() {
             self.reset();
         }
+        self.reset_meters();
         result
     }
 
@@ -657,7 +839,10 @@ impl MixGraph {
                 self.discard = [l, r];
                 out?;
             }
-            self.step(frames, left, right, cancel)
+            self.metering = true;
+            let out = self.step(frames, left, right, cancel);
+            self.metering = false;
+            out
         })();
         match result {
             Ok(()) => {
@@ -695,6 +880,13 @@ impl MixGraph {
                 };
                 s.post[0][k] = l as f32;
                 s.post[1][k] = r as f32;
+            }
+        }
+        if self.metering {
+            for (s, peak) in self.strips.iter().zip(&mut self.strip_peaks) {
+                for (p, post) in peak.iter_mut().zip(&s.post) {
+                    *p = post[..n].iter().fold(*p, |m, v| m.max(v.abs()));
+                }
             }
         }
         // Buses in topological order, then the master.
@@ -742,7 +934,7 @@ impl MixGraph {
             match target {
                 Some(b) => {
                     let bus = &mut self.buses[b];
-                    run_chain(bus.chain.as_mut(), &mut bus.out, self.rate, q, &self.scratch, n, &mut bus.pre, cancel)?;
+                    bus.stack.run(q.saturating_sub(bus.align), &self.scratch, n, &mut bus.pre, cancel)?;
                     for k in 0..n {
                         let t = (q + k as u64).saturating_sub(bus.path);
                         let g = db_to_linear(bus.volume_db.value_at(t));
@@ -750,9 +942,16 @@ impl MixGraph {
                         bus.post[0][k] = l as f32;
                         bus.post[1][k] = r as f32;
                     }
+                    if self.metering {
+                        let peak = &mut self.bus_peaks[b];
+                        for (p, post) in peak.iter_mut().zip(&bus.post) {
+                            *p = post[..n].iter().fold(*p, |m, v| m.max(v.abs()));
+                        }
+                    }
                 }
                 None => {
-                    run_chain(self.master_chain.as_mut(), &mut self.master_out, self.rate, q, &self.scratch, n, &mut self.master_planes, cancel)?;
+                    let start = q.saturating_sub(self.latency.master_alignment);
+                    self.master_stack.run(start, &self.scratch, n, &mut self.master_planes, cancel)?;
                     for k in 0..n {
                         let t = (q + k as u64).saturating_sub(self.latency.total);
                         let g = db_to_linear(self.master_volume.value_at(t));
@@ -765,36 +964,13 @@ impl MixGraph {
         if left.iter().chain(right.iter()).any(|v| !v.is_finite()) {
             return Err(ScoreError::NotFinite);
         }
+        if self.metering {
+            self.master_peak[0] = left.iter().fold(self.master_peak[0], |m, v| m.max(v.abs()));
+            self.master_peak[1] = right.iter().fold(self.master_peak[1], |m, v| m.max(v.abs()));
+            self.meter.feed(&[&*left, &*right])?;
+        }
         self.internal += n as u64;
         Ok(())
     }
 }
 
-/// `out_planes[..][..n]` = `chain(input[..][..n])`, or the input when there is no chain.
-#[allow(clippy::too_many_arguments)]
-fn run_chain(
-    chain: Option<&mut Chain>,
-    block: &mut OutputBlock,
-    rate: u32,
-    start: u64,
-    input: &[Vec<f32>; 2],
-    n: usize,
-    out_planes: &mut [Vec<f32>; 2],
-    cancel: &CancellationToken,
-) -> Result<(), ScoreError> {
-    match chain {
-        None => {
-            out_planes[0][..n].copy_from_slice(&input[0][..n]);
-            out_planes[1][..n].copy_from_slice(&input[1][..n]);
-        }
-        Some(c) => {
-            let spec = BlockSpec { sample_rate_hz: rate, layout: ChannelLayout::stereo(), frames: n, start_sample: start };
-            let slices = [&input[0][..n], &input[1][..n]];
-            c.process(&InputBlock::new(&spec, &slices), block, cancel)?;
-            let cap = block.capacity();
-            out_planes[0][..n].copy_from_slice(&block.backing()[..n]);
-            out_planes[1][..n].copy_from_slice(&block.backing()[cap..cap + n]);
-        }
-    }
-    Ok(())
-}

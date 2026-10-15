@@ -297,6 +297,9 @@ struct HistoryStep {
     label: String,
     inverse: Value,
     entry: Option<EntryRestore>,
+    /// A timeline step (lane SMB-AUDITION-UI: mixer faders, pan, mute, solo) that undoes / redoes
+    /// this step through `Session::submit_timeline`.
+    timeline: Option<hsk_studio_session::TimelineStep>,
 }
 
 /// A session document entry as it was before a step (`None` = absent).
@@ -641,7 +644,7 @@ impl Run<'_> {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None, timeline: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -730,7 +733,7 @@ impl Run<'_> {
                     if applied.changed
                         && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                     {
-                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None });
+                        self.undo_stack.push(HistoryStep { label: format!("{op} vector_paths"), inverse, entry: None, timeline: None });
                         self.redo_stack.clear();
                     }
                 }
@@ -758,7 +761,7 @@ impl Run<'_> {
                     step.entry = Some(restore);
                 }
             } else {
-                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore) });
+                self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None });
                 self.redo_stack.clear();
             }
         }
@@ -784,7 +787,7 @@ impl Run<'_> {
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
                     let first = writes.first().map_or("", |w| w.layer_id.as_str());
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None, timeline: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -913,9 +916,42 @@ impl Run<'_> {
             true
         } else {
             let before = self.frames.count();
-            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore) });
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore), timeline: None });
             self.redo_stack.clear();
             self.own_op(op, before, Ok(json!({"layer_id": layer_id, "entry": token, "tiles_changed": false})))
+        }
+    }
+
+    /// One undoable step replacing the sequence `write.sequence_id` with `write` through the
+    /// session's timeline step (lane SMB-AUDITION-UI: mixer faders, pan, mute and solo are track
+    /// fields); undo / redo submit the step's inverse. Folio validates the result (refusals change
+    /// nothing). One record `op`.
+    pub fn submit_sequence(&mut self, op: &str, write: folio::StudioSequence) -> bool {
+        let before = self.frames.count();
+        let n = self.op_no();
+        let cancel = self.cancel;
+        let Some(session) = self.session.as_mut() else {
+            return self.push(op, before, Err("not_open"), None, None);
+        };
+        let Some(expect) = session.snapshot().document().sequences.iter().find(|q| q.sequence_id == write.sequence_id).cloned() else {
+            return self.own_op(op, before, Err("unknown_sequence"));
+        };
+        let sequence_id = write.sequence_id.clone();
+        let step = hsk_studio_session::TimelineStep { command_id: format!("{op}-{n}"), correlation_id: n, sequence_id: sequence_id.clone(), expect, write };
+        let revision = session.document_revision();
+        match session.submit_timeline(&step, revision, cancel) {
+            Ok(applied) => {
+                if applied.timeline_inverse.is_some() {
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {sequence_id}"), inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone() });
+                    self.redo_stack.clear();
+                }
+                let detail = json!({"sequence_id": sequence_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
+                self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+            }
+            Err(f) => {
+                let revision = self.revision();
+                self.push(op, before, Err(f.code()), Some(f.report), revision)
+            }
         }
     }
 
@@ -965,13 +1001,51 @@ impl Run<'_> {
             let code = if undo { "nothing_to_undo" } else { "nothing_to_redo" };
             return if self.session.is_some() { self.own_op(op, before, Err(code)) } else { self.push(op, before, Err(code), None, None) };
         };
+        if let Some(timeline) = step.timeline.clone() {
+            // A timeline step: submit it under fresh identity; its inverse goes to the other stack.
+            let n = self.op_no();
+            let cancel = self.cancel;
+            let mut submit = timeline;
+            submit.command_id = format!("{op}-{n}");
+            submit.correlation_id = n;
+            let Some(session) = self.session.as_mut() else {
+                if undo {
+                    self.undo_stack.push(step);
+                } else {
+                    self.redo_stack.push(step);
+                }
+                return self.push(op, before, Err("not_open"), None, None);
+            };
+            let revision = session.document_revision();
+            return match session.submit_timeline(&submit, revision, cancel) {
+                Ok(applied) => {
+                    let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
+                    let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: applied.timeline_inverse.clone() };
+                    if undo {
+                        self.redo_stack.push(next);
+                    } else {
+                        self.undo_stack.push(next);
+                    }
+                    self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+                }
+                Err(f) => {
+                    if undo {
+                        self.undo_stack.push(step);
+                    } else {
+                        self.redo_stack.push(step);
+                    }
+                    let revision = self.revision();
+                    self.push(op, before, Err(f.code()), Some(f.report), revision)
+                }
+            };
+        }
         if step.inverse.is_null() {
             // An entry-only step: swap the session document entry, nothing to submit.
             let swapped = step.entry.as_ref().map(|e| self.swap_entry(e));
             return match swapped {
                 Some(Ok(previous)) => {
                     let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
-                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous };
+                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None };
                     if undo {
                         self.redo_stack.push(entry);
                     } else {
@@ -1018,7 +1092,7 @@ impl Run<'_> {
                     self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                let entry = HistoryStep { label: step.label, inverse: next, entry: previous };
+                let entry = HistoryStep { label: step.label, inverse: next, entry: previous, timeline: None };
                 if undo {
                     self.redo_stack.push(entry);
                 } else {

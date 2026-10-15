@@ -28,12 +28,14 @@ use crate::transition::AUDIO_CROSSFADE;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{StudioAudioEffectInstance, StudioAudioRouting, StudioSequence, TrackKind};
 use hsk_studio_score::{
-    AutomationLane, BusSpec, ChannelLayout, Destination, MasterSpec, MixGraph, Processor, ScoreError, SendSpec,
-    SendTap, StripSource, StripSpec, TRACK_VOLUME_DB,
+    AutomationLane, BusSpec, ChannelLayout, Destination, EffectSlot, GraphMeters, MasterSpec, MixGraph, ScoreError,
+    SeekMode, SendSpec, SendTap, StripSource, StripSpec, TRACK_VOLUME_DB,
 };
 
-/// Builds one bus or master effect from its stored instance at the mix rate (stereo in and out).
-pub type EffectFactory<'a> = dyn FnMut(&StudioAudioEffectInstance, u32) -> Result<Box<dyn Processor + Send>> + 'a;
+/// Builds one bus or master effect from its stored instance at the mix rate (stereo in and out),
+/// with its automation lanes from the instance keyframes (lane SMB-AUDITION-UI; the lanes are in
+/// timeline samples of the sequence).
+pub type EffectFactory<'a> = dyn FnMut(&StudioAudioEffectInstance, u32) -> Result<EffectSlot> + 'a;
 
 fn db(linear: f64) -> f64 {
     let lo = TRACK_VOLUME_DB.0;
@@ -111,6 +113,8 @@ impl StripSource for Silence {
 pub struct TimelineBusStream {
     graph: MixGraph,
     rate: u32,
+    strip_tracks: Vec<Option<String>>,
+    bus_tracks: Vec<String>,
 }
 
 impl TimelineBusStream {
@@ -163,6 +167,7 @@ impl TimelineBusStream {
         // Audible audio tracks over the whole sequence (solo is sequence-wide).
         let solo = sequence.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.soloed);
         let mut strips = Vec::new();
+        let mut strip_tracks = Vec::new();
         for track in &sequence.tracks {
             cancel.check()?;
             if track.kind != TrackKind::Audio || !track.enabled || track.muted || (solo && !track.soloed) || track.volume <= 0.0 {
@@ -202,6 +207,7 @@ impl TimelineBusStream {
                     &routing.clip_gains,
                     cancel,
                 )?;
+                strip_tracks.push(Some(track.track_id.clone()));
                 strips.push(StripSpec::source(
                     Box::new(TrackStrip { stream, channels: class }),
                     AutomationLane::constant(db(track.volume)),
@@ -212,6 +218,7 @@ impl TimelineBusStream {
             }
         }
         if strips.is_empty() {
+            strip_tracks.push(None);
             strips.push(StripSpec::source(
                 Box::new(Silence(0)),
                 AutomationLane::constant(0.0),
@@ -241,7 +248,8 @@ impl TimelineBusStream {
             master.effects.push(effects(e, sample_rate_hz)?);
         }
         let graph = MixGraph::new(sample_rate_hz, max_block_frames, strips, bus_specs, master).map_err(score_failure)?;
-        Ok(Self { graph, rate: sample_rate_hz })
+        let bus_tracks = buses.iter().map(|&t| sequence.tracks[t].track_id.clone()).collect();
+        Ok(Self { graph, rate: sample_rate_hz, strip_tracks, bus_tracks })
     }
 
     pub fn length_samples(&self) -> u64 {
@@ -261,6 +269,28 @@ impl TimelineBusStream {
     pub fn layout(&self) -> ChannelLayout {
         ChannelLayout::stereo()
     }
+    /// Seek behaviour (score [`SeekMode`]; `Exact` by default: effect tails of any length match the
+    /// continuous render, a backward seek re-renders from the start).
+    pub fn set_seek_mode(&mut self, mode: SeekMode) {
+        self.graph.set_seek_mode(mode);
+    }
+    /// Strip, bus and master meters since the last reset (score [`GraphMeters`]); strips are in
+    /// build order (audible audio tracks, mono strip before stereo strip), buses in submix order.
+    pub fn meters(&self) -> GraphMeters {
+        self.graph.meters()
+    }
+    /// Track id of each strip of [`TimelineBusStream::meters`] (`None`: the silent strip).
+    pub fn strip_tracks(&self) -> &[Option<String>] {
+        &self.strip_tracks
+    }
+    /// Submix track id of each bus of [`TimelineBusStream::meters`].
+    pub fn bus_tracks(&self) -> &[String] {
+        &self.bus_tracks
+    }
+    pub fn reset_meters(&mut self) {
+        self.graph.reset_meters();
+    }
+
     /// Moves to `sample` (score `MixGraph::seek`).
     pub fn seek(&mut self, sample: u64, cancel: &CancellationToken) -> Result<()> {
         self.graph.seek(sample, cancel).map_err(score_failure)

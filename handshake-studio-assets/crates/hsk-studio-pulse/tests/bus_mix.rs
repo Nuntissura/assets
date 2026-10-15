@@ -5,7 +5,7 @@
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::*;
 use hsk_studio_pulse::*;
-use hsk_studio_score::{LimiterParams, LookaheadLimiter, Processor};
+use hsk_studio_score::{EffectSlot, LimiterParams, LookaheadLimiter};
 
 /// 25 fps; 48 kHz = 1920 samples per frame.
 const F: u64 = 10_160_640_000;
@@ -95,10 +95,10 @@ fn sequence(tracks: Vec<StudioTrack>) -> StudioSequence {
 }
 
 /// The limiter far above the signal is a pure delay (gain exactly 1).
-fn factory() -> impl FnMut(&StudioAudioEffectInstance, u32) -> std::result::Result<Box<dyn Processor + Send>, PulseError> {
+fn factory() -> impl FnMut(&StudioAudioEffectInstance, u32) -> std::result::Result<EffectSlot, PulseError> {
     |e: &StudioAudioEffectInstance, rate: u32| {
         assert_eq!(e.filter_kind, "lookahead_limiter");
-        Ok(Box::new(LookaheadLimiter::new(rate, 2, LimiterParams { ceiling_db: 0.0, lookahead_ms: 3.0, release_ms: 50.0, true_peak: false }).unwrap()) as Box<dyn Processor + Send>)
+        Ok(EffectSlot::new(Box::new(LookaheadLimiter::new(rate, 2, LimiterParams { ceiling_db: 0.0, lookahead_ms: 3.0, release_ms: 50.0, true_peak: false }).unwrap())))
     }
 }
 
