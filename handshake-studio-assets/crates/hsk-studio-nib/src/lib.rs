@@ -15,6 +15,7 @@ pub mod boolean;
 pub mod edit;
 pub mod flatten;
 pub mod freeform;
+pub mod network;
 pub mod pathfinder;
 pub mod raster;
 pub mod shape;
