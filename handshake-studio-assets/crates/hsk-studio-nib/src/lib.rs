@@ -11,7 +11,9 @@ pub use proposal::*;
 
 mod descriptor;
 pub mod anchor_path;
+pub mod arrange;
 pub mod boolean;
+pub mod brush;
 pub mod edit;
 pub mod flatten;
 pub mod freeform;
@@ -22,5 +24,6 @@ pub mod raster;
 pub mod shape;
 pub mod shape_ops;
 pub mod stroke;
+pub mod warp;
 pub mod width;
 pub use descriptor::descriptor;
