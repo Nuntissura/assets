@@ -23,10 +23,10 @@
 //!   vector clip whose source is a hidden vector layer holding the clip path;
 //! - filled glyphs of one font, size, colour and baseline in drawing order form a run; the run is
 //!   text (a Folio `text` layer, `StudioTextStory` and paragraph / character `StudioTypeStyle`
-//!   records, the font in [`AiImport::fonts`]) when every glyph has Unicode, the run is upright and
-//!   unscaled, and the provider confirms it draws the text exactly as placed
-//!   ([`PdfDrawingProvider::text_as_text`]); otherwise the run is one vector layer of glyph
-//!   outlines (`ai_text_as_outlines`);
+//!   records) when every glyph has Unicode, the run is upright and unscaled, and the provider
+//!   names a font that lays the text out exactly as placed ([`PdfDrawingProvider::text_as_text`]:
+//!   the embedded program, kept in [`AiImport::fonts`], or a font the host has); otherwise the run
+//!   is one vector layer of glyph outlines (`ai_text_as_outlines`);
 //! - Illustrator private data and native editability are typed losses (`ai_private_data_not_imported`,
 //!   `ai_native_editability_not_imported`): a PDF reading is never native editability; every reader
 //!   note is a loss under its own code.
@@ -184,18 +184,27 @@ pub struct PdfTextRun<'a> {
     pub glyphs: &'a [(u32, f64)],
 }
 
+/// The font a run kept as text is laid out with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PdfTextFont {
+    /// The font program embedded in the PDF (kept in [`AiImport::fonts`]).
+    Embedded,
+    /// A font the host already has, by family (nothing is embedded in the import).
+    Installed(String),
+}
+
 /// The PDF reading a host supplies (Press `read_vector_document`, adapted).
 pub trait PdfDrawingProvider {
     fn drawing(&self, pdf: &[u8], cancel: &CancellationToken) -> Result<PdfDrawing>;
-    /// Whether the host lays `run` out exactly as the PDF placed it (the same glyph ids at the same
-    /// offsets) with `run.font`, so it can stay editable text. Default: no, outlines.
-    fn text_as_text(&self, _run: &PdfTextRun<'_>) -> bool {
-        false
+    /// The font with which the host lays `run` out exactly as the PDF placed it (the same glyphs at
+    /// the same pen offsets), so it can stay editable text. Default: none, outlines.
+    fn text_as_text(&self, _run: &PdfTextRun<'_>) -> Option<PdfTextFont> {
+        None
     }
 }
 
 /// A text layer the import created: where its first baseline starts (document points) and its
-/// records; `font` indexes [`AiImport::fonts`].
+/// records; `font` indexes [`AiImport::fonts`] (`None`: an installed font named by the style).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiTextLayer {
     pub layer_id: String,
@@ -203,7 +212,7 @@ pub struct AiTextLayer {
     pub origin_pt: [f64; 2],
     pub paragraph_style: String,
     pub character_style: String,
-    pub font: usize,
+    pub font: Option<usize>,
 }
 
 /// A font program text layers name by family.
@@ -701,27 +710,33 @@ impl Builder<'_> {
         let (size_pt, origin) = upright(&first.matrix).unwrap_or((0.0, [first.matrix[4], first.matrix[5]]));
         let placed: Vec<(u32, f64)> = glyphs.iter().map(|g| (g.0.glyph_id, g.0.matrix[4] - origin[0])).collect();
         let font = drawing.fonts.get(first.font);
-        let as_text = font.is_some_and(|f| f.bytes.is_some())
-            && text.len() <= MAX_TEXT_RUN_BYTES
+        let eligible = text.len() <= MAX_TEXT_RUN_BYTES
             && !text.contains(['\n', '\r'])
             && self.text_layers.len() < MAX_TEXT_LAYERS
             && source.is_none_or(|c| matches!(c, PdfColour::Process { space: PdfSpace::Rgb | PdfSpace::Gray, .. }))
-            && font.is_some_and(|f| provider.text_as_text(&PdfTextRun { font: f, text: &text, size_pt, glyphs: &placed }));
+            && matches!(paint, PdfPaint::Solid(_));
+        let decision = match font {
+            Some(f) if eligible => provider.text_as_text(&PdfTextRun { font: f, text: &text, size_pt, glyphs: &placed }),
+            _ => None,
+        };
         let name: String = text.chars().take(32).collect();
-        if as_text {
-            let (Some(font), PdfPaint::Solid(c)) = (font, paint) else { return Ok(()) };
-            let Some(bytes) = font.bytes.clone() else { return Ok(()) };
-            let face = match self.font_ids.get(&first.font) {
-                Some(f) => *f,
-                None => {
+        let chosen = match (decision, font) {
+            (Some(PdfTextFont::Installed(family)), _) if !family.is_empty() && family.len() <= 256 => Some((family, None)),
+            (Some(PdfTextFont::Embedded), Some(font)) => match (self.font_ids.get(&first.font).copied(), font.bytes.clone()) {
+                (Some(f), _) => self.fonts.get(f).map(|x| (x.family.clone(), Some(f))),
+                (None, Some(bytes)) => {
                     let n = self.fonts.len();
                     let stem: String = font.postscript_name.as_deref().unwrap_or("Font").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(48).collect();
-                    self.fonts.push(AiFontFace { family: format!("{stem}#ai{}", n.saturating_add(1)), bytes });
+                    let family = format!("{stem}#ai{}", n.saturating_add(1));
+                    self.fonts.push(AiFontFace { family: family.clone(), bytes });
                     self.font_ids.insert(first.font, n);
-                    n
+                    Some((family, Some(n)))
                 }
-            };
-            let family = self.fonts.get(face).map(|f| f.family.clone()).unwrap_or_default();
+                (None, None) => None,
+            },
+            _ => None,
+        };
+        if let (Some((family, face)), PdfPaint::Solid(c)) = (chosen, paint) {
             let story_id = self.id("STXT")?;
             let (paragraph_style, character_style) = (self.id("STYS")?, self.id("STYS")?);
             let layer_id = self.layer(name, parent, "text", Payload::Text { story_id: story_id.clone() }, true, None)?;

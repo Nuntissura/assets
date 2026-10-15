@@ -23,8 +23,11 @@ use std::path::Path;
 /// Document pixels per point.
 const PX: f64 = 96.0 / 72.0;
 
-/// Press's PDF reading as the interop-vector drawing port.
-pub struct PressDrawing;
+/// Press's PDF reading as the interop-vector drawing port; `fonts` are the viewer's (a run whose
+/// embedded font cannot lay it out may still match one of them by PostScript name).
+pub struct PressDrawing<'f> {
+    pub fonts: &'f [super::super::text::FontFile],
+}
 
 fn els(path: &[hsk_studio_press::VectorEl]) -> Vec<iv::PdfEl> {
     path.iter()
@@ -88,7 +91,7 @@ fn item(i: &hsk_studio_press::VectorItem) -> iv::PdfDrawItem {
     }
 }
 
-impl iv::PdfDrawingProvider for PressDrawing {
+impl iv::PdfDrawingProvider for PressDrawing<'_> {
     fn drawing(&self, pdf: &[u8], cancel: &CancellationToken) -> iv::Result<iv::PdfDrawing> {
         let doc = hsk_studio_press::read_vector_document(pdf, iv::Limits::default().max_bytes, cancel).map_err(|e| match e {
             hsk_studio_press::PressError::Canceled => iv::VectorError::Canceled,
@@ -106,6 +109,31 @@ impl iv::PdfDrawingProvider for PressDrawing {
             output_intent: doc.output_intent,
         })
     }
+
+    /// A run stays text when the viewer's own layout (Type shaping, as `text::prepare` draws it)
+    /// reproduces the PDF's pen offsets (within 2 % of the size, at least 0.05 pt): with the
+    /// embedded program (the same glyph ids too), else with a viewer font registered under the
+    /// font's PostScript name.
+    fn text_as_text(&self, run: &iv::PdfTextRun<'_>) -> Option<iv::PdfTextFont> {
+        let tolerance = (run.size_pt * 0.02).max(0.05);
+        let fits = |shaped: &[(u32, f64)], ids: bool| shaped.len() == run.glyphs.len() && shaped.iter().zip(run.glyphs).all(|(a, b)| (!ids || a.0 == b.0) && (a.1 - b.1).abs() <= tolerance);
+        let cancel = CancellationToken::default();
+        if let Some(bytes) = run.font.bytes.as_ref() {
+            let font = super::super::text::FontFile::new("ai-import-probe", bytes.to_vec());
+            if super::super::text::shaped_line(&font, run.text, run.size_pt, &cancel).is_ok_and(|s| fits(&s, true)) {
+                return Some(iv::PdfTextFont::Embedded);
+            }
+        }
+        let name = run.font.postscript_name.as_deref()?;
+        let installed = self.fonts.iter().find(|f| f.family == name)?;
+        let shaped = super::super::text::shaped_line(installed, run.text, run.size_pt, &cancel).ok()?;
+        fits(&shaped, false).then(|| iv::PdfTextFont::Installed(installed.family.clone()))
+    }
+}
+
+/// sRGB-encoded component to linear light (the text renderer's fill space).
+fn linear(c: f64) -> f64 {
+    if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
 /// Deterministic ids from the source digest (`uuid_v7`-shaped; the 4th group starts with 8).
@@ -164,10 +192,10 @@ fn record(p: &iv::VectorPath) -> Result<PathRecord, String> {
 }
 
 /// A native package of the `.ai` file and the import losses (module docs).
-pub fn ai_to_package(bytes: &[u8], cancel: &CancellationToken) -> Result<(Vec<u8>, Vec<String>), String> {
+pub fn ai_to_package(bytes: &[u8], fonts: &[super::super::text::FontFile], cancel: &CancellationToken) -> Result<(Vec<u8>, Vec<String>), String> {
     let digest = hsk_studio_package::sha256_hex_of(bytes);
     let mut mint = DigestMint { stem: digest.clone(), next: 1 };
-    let ai = iv::import_ai_document(bytes, &iv::ImportPolicy::default(), &PressDrawing, &mut mint, cancel).map_err(|e| format!("ai_import: {e:?}"))?;
+    let ai = iv::import_ai_document(bytes, &iv::ImportPolicy::default(), &PressDrawing { fonts }, &mut mint, cancel).map_err(|e| format!("ai_import: {e:?}"))?;
     let proposal = &ai.proposal;
     let losses: Vec<String> = proposal.loss.iter().map(|l| format!("{}: {}", l.path, l.code)).collect();
     let mut doc = proposal.snapshot.document().clone();
@@ -222,6 +250,35 @@ pub fn ai_to_package(bytes: &[u8], cancel: &CancellationToken) -> Result<(Vec<u8
     entry.records = proposal.vector_records.clone();
     // The ICC profiles the swatches and the CMYK working space name travel with the entry.
     entry.icc = ai.icc.iter().map(|p| (p.sha256.clone(), p.bytes.clone())).collect();
+    // Embedded fonts of text layers travel with the document too (registered on open).
+    entry.fonts = ai.fonts.iter().map(|f| (f.family.clone(), f.bytes.to_vec())).collect();
+    if entry.fonts.len() > super::MAX_ENTRY_FONTS || entry.fonts.values().any(|b| b.len() > super::MAX_ENTRY_FONT_BYTES) {
+        return Err("ai_import: embedded fonts over the entry budget".into());
+    }
+    // Text layers: the session document entry `text` (stories, type styles in document pixels with
+    // linear-light fills in the working space, pen origins).
+    let text_entry = if ai.text_layers.is_empty() {
+        None
+    } else {
+        let mut styles = ai.type_styles.clone();
+        for st in &mut styles.styles {
+            if let Some(size) = &mut st.font_size {
+                size.value *= PX;
+            }
+            if let Some(f) = &mut st.fill {
+                (f.r, f.g, f.b) = (linear(f.r), linear(f.g), linear(f.b));
+                f.colour_profile_id = snapshot.document().working_space_rgb.clone();
+            }
+        }
+        let layers = ai
+            .text_layers
+            .iter()
+            .map(|t| super::super::text::TextLayerRecord { layer_id: t.layer_id.clone(), story_id: t.story_id.clone(), origin_px: [t.origin_pt[0] * PX, t.origin_pt[1] * PX], paragraph_style: t.paragraph_style.clone(), character_style: t.character_style.clone() })
+            .collect();
+        let e = super::super::text::TextEntry { schema: super::super::text::ENTRY_SCHEMA.into(), layers, stories: ai.stories.clone(), styles };
+        e.validate(snapshot.document(), cancel)?;
+        Some(e.to_bytes()?)
+    };
     entry.validate(snapshot.document(), cancel)?;
     entry.validate_records(snapshot.document(), cancel)?;
     let entry_bytes = entry.to_bytes(&snapshot.document().document_id)?;
@@ -229,11 +286,15 @@ pub fn ai_to_package(bytes: &[u8], cancel: &CancellationToken) -> Result<(Vec<u8
     let original = hsk_studio_package::ImportEntry::new(hsk_studio_package::ImportRole::Original, bytes.to_vec());
     let receipt = serde_json::json!({"receipt": "import", "receipt_version": 1, "source_format": "ai", "importer": "hsk-studio-interop-vector import_ai_with over hsk-studio-press read_vector_pages", "source": {"sha256": digest, "byte_len": bytes.len(), "entry": original.name()}, "loss": losses});
     let receipt = hsk_studio_package::ImportEntry::new(hsk_studio_package::ImportRole::Receipt, serde_json::to_vec(&receipt).map_err(|e| format!("ai_import: {e}"))?);
-    let held = vec![
+    let mut held = vec![
         hsk_studio_package::Quarantined { name: format!("{}{ENTRY}.{entry_sha}", hsk_studio_session::DOCUMENT_ENTRY_PREFIX), bytes: entry_bytes, sha256_hex: entry_sha },
         receipt.to_opaque(),
         original.to_opaque(),
     ];
+    if let Some(bytes) = text_entry {
+        let sha = hsk_studio_package::sha256_hex_of(&bytes);
+        held.push(hsk_studio_package::Quarantined { name: format!("{}{}.{sha}", hsk_studio_session::DOCUMENT_ENTRY_PREFIX, super::super::text::ENTRY), bytes, sha256_hex: sha });
+    }
     let mut out = Vec::new();
     hsk_studio_package::write_package_with(
         &snapshot,
@@ -340,7 +401,7 @@ impl Viewer {
                 return Err(format!("ai_import: {} exists", dest.display()));
             }
             let bytes = std::fs::read(source).map_err(|e| format!("ai_import: {e}"))?;
-            let (package, losses) = ai_to_package(&bytes, self.cancel)?;
+            let (package, losses) = ai_to_package(&bytes, &self.fonts, self.cancel)?;
             super::super::export::write_atomic(dest, &package).map_err(|e| format!("ai_import: {e}"))?;
             self.open(dest)?;
             Ok(losses)

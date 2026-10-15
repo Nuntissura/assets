@@ -457,6 +457,8 @@ impl Viewer {
                 self.save_input = path.with_extension("saved.handshake").to_string_lossy().into_owned();
             }
         }
+        // Fonts kept with the document (lane SMB-ILLUSTRATOR-INTEROP-2) are drawable at once.
+        self.adopt_document_fonts();
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
         self.say(format!("opened {} (revision {revision}, {} tile assets)", path.display(), self.assets.len()));
         Ok(())

@@ -310,6 +310,22 @@ pub struct VectorEntry {
     /// ICC profile bytes by the sha256 of a `StudioIccProfile` record (lane
     /// SMB-ILLUSTRATOR-INTEROP; entry member `icc`, absent when empty).
     pub icc: std::collections::BTreeMap<String, Vec<u8>>,
+    /// Font programs text layers name by family, kept with the document (lane
+    /// SMB-ILLUSTRATOR-INTEROP-2: fonts embedded in an imported `.ai`; entry member `fonts`, absent
+    /// when empty; registered with the viewer when the document opens).
+    pub fonts: std::collections::BTreeMap<String, Vec<u8>>,
+}
+
+/// Most fonts the vector entry keeps.
+pub const MAX_ENTRY_FONTS: usize = 16;
+/// Largest font program the vector entry keeps (bytes).
+pub const MAX_ENTRY_FONT_BYTES: usize = 8 << 20;
+
+fn hex_bytes(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    hex.as_bytes().chunks(2).map(|pair| std::str::from_utf8(pair).ok().and_then(|t| u8::from_str_radix(t, 16).ok())).collect()
 }
 
 /// Shape tools.
@@ -512,7 +528,7 @@ fn path_of(v: &Value, budget: &mut usize) -> Result<AnchorPath, String> {
 
 impl VectorEntry {
     pub fn empty() -> Self {
-        Self { paths: Vec::new(), live: Vec::new(), design: None, records: folio::StudioVectorRecords::new(String::new()), icc: std::collections::BTreeMap::new() }
+        Self { paths: Vec::new(), live: Vec::new(), design: None, records: folio::StudioVectorRecords::new(String::new()), icc: std::collections::BTreeMap::new(), fonts: std::collections::BTreeMap::new() }
     }
 
     pub fn path(&self, path_id: &str) -> Option<&PathRecord> {
@@ -524,7 +540,7 @@ impl VectorEntry {
     pub fn decode(bytes: &[u8], doc: &StudioDocument, cancel: &hsk_studio_accord::CancellationToken) -> Result<Self, String> {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("vector_entry_json: {e}"))?;
         let object = v.as_object().ok_or("vector_entry_json: not an object")?;
-        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "vector_records", "icc"].contains(&k.as_str())) {
+        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "vector_records", "icc", "fonts"].contains(&k.as_str())) {
             return Err("vector_entry_unknown_field".into());
         }
         if v["schema"] != ENTRY_SCHEMA {
@@ -628,7 +644,18 @@ impl VectorEntry {
         if extra.icc_profiles.iter().any(|p| !icc.contains_key(&p.content_digest.digest)) {
             return Err("vector_entry_icc: a profile record without its bytes".into());
         }
-        let entry = Self { paths: records, live: live.shapes, design, records: extra, icc };
+        let mut fonts = std::collections::BTreeMap::new();
+        if let Some(m) = object.get("fonts") {
+            let m = m.as_object().filter(|m| m.len() <= MAX_ENTRY_FONTS).ok_or("vector_entry_fonts")?;
+            for (family, hex) in m {
+                let hex = hex.as_str().filter(|h| h.len() <= MAX_ENTRY_FONT_BYTES.saturating_mul(2)).ok_or("vector_entry_fonts")?;
+                if family.is_empty() || family.len() > 256 {
+                    return Err("vector_entry_fonts: family".into());
+                }
+                fonts.insert(family.clone(), hex_bytes(hex).ok_or("vector_entry_fonts")?);
+            }
+        }
+        let entry = Self { paths: records, live: live.shapes, design, records: extra, icc, fonts };
         entry.validate(doc, cancel)?;
         entry.validate_records(doc, cancel)?;
         Ok(entry)
@@ -709,6 +736,9 @@ impl VectorEntry {
         }
         if !self.icc.is_empty() {
             v["icc"] = Value::Object(self.icc.iter().map(|(k, b)| (k.clone(), Value::String(b.iter().map(|x| format!("{x:02x}")).collect()))).collect());
+        }
+        if !self.fonts.is_empty() {
+            v["fonts"] = Value::Object(self.fonts.iter().map(|(k, b)| (k.clone(), Value::String(b.iter().map(|x| format!("{x:02x}")).collect()))).collect());
         }
         serde_json::to_vec(&v).map_err(|e| format!("vector_entry_json: {e}"))
     }
@@ -986,6 +1016,17 @@ impl Viewer {
     }
 
     /// The vector records of the open document (empty when it has none).
+    /// Registers the font programs the vector entry keeps (lane SMB-ILLUSTRATOR-INTEROP-2) under
+    /// their families, unless the viewer already has that family.
+    pub(super) fn adopt_document_fonts(&mut self) {
+        let Ok(entry) = self.vector_entry() else { return };
+        for (family, bytes) in entry.fonts {
+            if !self.fonts.iter().any(|f| f.family == family) {
+                self.add_font(&family, bytes);
+            }
+        }
+    }
+
     pub fn vector_entry(&self) -> Result<VectorEntry, String> {
         let doc = self.vdoc()?;
         match self.entry_bytes() {

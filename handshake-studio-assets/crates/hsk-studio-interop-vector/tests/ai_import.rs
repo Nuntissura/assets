@@ -109,8 +109,8 @@ impl PdfDrawingProvider for Layered {
     fn drawing(&self, _: &[u8], _: &CancellationToken) -> Result<PdfDrawing> {
         Ok(self.0.clone())
     }
-    fn text_as_text(&self, run: &PdfTextRun<'_>) -> bool {
-        run.text == "Hi" && (run.size_pt - 24.0).abs() < 1e-9 && run.glyphs.len() == 2 && run.glyphs[0] == (43, 0.0) && run.glyphs[1].0 == 76 && (run.glyphs[1].1 - 17.0).abs() < 1e-9
+    fn text_as_text(&self, run: &PdfTextRun<'_>) -> Option<PdfTextFont> {
+        (run.text == "Hi" && (run.size_pt - 24.0).abs() < 1e-9 && run.glyphs.len() == 2 && run.glyphs[0] == (43, 0.0) && run.glyphs[1].0 == 76 && (run.glyphs[1].1 - 17.0).abs() < 1e-9).then_some(PdfTextFont::Embedded)
     }
 }
 
@@ -181,7 +181,7 @@ fn ai_layers_document_colours_and_text_runs_are_kept() {
     assert_eq!(t.origin_pt, [10.0, 40.0]);
     assert_eq!(ai.stories[0].inline_text(), Some("Hi"));
     let ch = ai.type_styles.styles.iter().find(|s| s.style_id == t.character_style).unwrap();
-    assert!(ch.font_size.as_ref().is_some_and(|l| (l.value - 24.0).abs() < 1e-9) && ch.font_family.as_deref() == Some(ai.fonts[t.font].family.as_str()));
+    assert!(ch.font_size.as_ref().is_some_and(|l| (l.value - 24.0).abs() < 1e-9) && ch.font_family.as_deref() == t.font.map(|f| ai.fonts[f].family.as_str()));
     assert!(doc.layers.iter().any(|l| l.layer_id == t.layer_id && l.kind == "text"));
     assert!(doc.layers.iter().any(|l| l.name == "text outline: No"));
     assert!(p.loss.iter().any(|l| l.code == "ai_text_as_outlines"));

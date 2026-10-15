@@ -595,3 +595,50 @@ impl super::Viewer {
         Ok(id)
     }
 }
+
+/// Glyph ids and pen x offsets (pt, from the origin) of `text` shaped in one line at `size_pt`
+/// with `font`, exactly as [`prepare`] lays a point-text layer out (lane SMB-ILLUSTRATOR-INTEROP-2:
+/// an imported PDF text run stays text only when this layout reproduces its glyphs).
+pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken) -> Result<Vec<(u32, f64)>, String> {
+    const DOC: &str = "SDOC-019a0000-0000-7000-8000-000000000001";
+    const LAYER: &str = "SLYR-019a0000-0000-7000-8000-000000000002";
+    const STORY: &str = "STXT-019a0000-0000-7000-8000-000000000003";
+    const PARA: &str = "STYS-019a0000-0000-7000-8000-000000000004";
+    const CHAR: &str = "STYS-019a0000-0000-7000-8000-000000000005";
+    let len = text.len();
+    let doc: StudioDocument = serde_json::from_value(json!({
+        "schema_id": "hsk.studio.document@1", "document_id": DOC, "revision": 1, "geometry_unit": "pt", "colour_mode": 3, "bits_per_channel": 8,
+        "working_space_rgb": null, "working_space_cmyk": null, "working_space_gray": null, "working_space_spot": null, "blending_space": null,
+        "artboards": [], "page_spreads": [],
+        "layers": [{"schema_id": "hsk.studio.layer@1", "layer_id": LAYER, "name": "probe", "parent": null, "kind": "text", "payload": {"payload_kind": "text", "story_id": STORY}, "visible": true}],
+        "graph": {"schema_id": "hsk.studio.layer_graph@1", "operations": [], "edges": [], "outputs": []},
+    }))
+    .map_err(|e| format!("text_probe_document: {e}"))?;
+    let story: StudioTextStory = serde_json::from_value(json!({
+        "schema_id": "hsk.studio.text_story@1", "story_id": STORY, "text_kind": "point", "story_direction": "left_to_right",
+        "content": {"content_kind": "inline", "text_utf8": text},
+        "paragraphs": [{"start": 0, "end": len, "style_ref": PARA, "paragraph_direction": null}],
+        "character_ranges": [{"start": 0, "end": len, "style_ref": CHAR, "applied_language": null}],
+    }))
+    .map_err(|e| format!("text_probe_story: {e}"))?;
+    let mut styles = StudioTypeStyleRecords::new(DOC);
+    styles.styles = serde_json::from_value(json!([
+        {"schema_id": "hsk.studio.type_style@1", "style_id": PARA, "scope": "paragraph", "name": "probe/Paragraph", "align": "left"},
+        {"schema_id": "hsk.studio.type_style@1", "style_id": CHAR, "scope": "character", "name": "probe/Character", "font_family": font.family, "font_size": {"value": size_pt, "unit": "pt"}},
+    ]))
+    .map_err(|e| format!("text_probe_styles: {e}"))?;
+    let entry = TextEntry { schema: ENTRY_SCHEMA.into(), layers: vec![TextLayerRecord { layer_id: LAYER.into(), story_id: STORY.into(), origin_px: [0.0, 0.0], paragraph_style: PARA.into(), character_style: CHAR.into() }], stories: vec![story], styles };
+    shape_layers(&doc, &entry, std::slice::from_ref(font), cancel, |inputs, resolution| {
+        let mut out = Vec::new();
+        for input in inputs {
+            for r in input.runs {
+                let mut x = r.origin_px[0] / resolution.px_per_pt;
+                for g in r.run.glyphs() {
+                    out.push((g.glyph_id, x + g.x_offset_pt));
+                    x += g.x_advance_pt;
+                }
+            }
+        }
+        Ok(out)
+    })
+}
