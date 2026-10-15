@@ -483,6 +483,9 @@ pub struct StudioVectorRecords {
     pub brush_strokes: Vec<StudioBrushStroke>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub envelopes: Vec<StudioEnvelope>,
+    /// ICC profiles swatches convert through (lane SMB-ILLUSTRATOR-INTEROP).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub icc_profiles: Vec<StudioIccProfile>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -504,6 +507,7 @@ impl StudioVectorRecords {
             brushes: Vec::new(),
             brush_strokes: Vec::new(),
             envelopes: Vec::new(),
+            icc_profiles: Vec::new(),
         }
     }
     /// The swatch `swatch_id`.
@@ -521,6 +525,14 @@ impl StudioVectorRecords {
     /// The brush binding of stroke row `row` of style `style_id`.
     pub fn brush_stroke(&self, style_id: &str, row: u32) -> Option<&StudioBrushStroke> {
         self.brush_strokes.iter().find(|b| b.style_id == style_id && b.row == row)
+    }
+    /// The ICC profile record `profile_id`.
+    pub fn icc_profile(&self, profile_id: &str) -> Option<&StudioIccProfile> {
+        self.icc_profiles.iter().find(|p| p.profile_id == profile_id)
+    }
+    /// The profile marked as the working space of `model`.
+    pub fn working_icc(&self, model: StudioColorModel) -> Option<&StudioIccProfile> {
+        self.icc_profiles.iter().find(|p| p.working_space && p.colour_space == model)
     }
     /// The envelope of layer `layer_id`.
     pub fn envelope(&self, layer_id: &str) -> Option<&StudioEnvelope> {

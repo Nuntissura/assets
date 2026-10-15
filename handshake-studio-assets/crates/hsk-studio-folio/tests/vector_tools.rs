@@ -124,3 +124,27 @@ fn tool_records_round_trip_byte_identically_and_refuse_hostile_input() {
     many["swatches"] = Value::Array(vec![json!({}); TOOLS_MAX_ENTRIES + 1]);
     assert!(check(&many).is_err(), "over the entry budget");
 }
+
+#[test]
+fn icc_profile_records_pin_the_swatch_profiles() {
+    // Lane SMB-ILLUSTRATOR-INTEROP: the CMYK profile swatch 1 converts through is a Folio record.
+    let digest = json!({"algorithm":"sha256","digest":"ab".repeat(32)});
+    let profile = |n: u32, space: &str, working: bool| json!({"profile_id":identity("SCPF",n),"name":format!("p{n}"),"colour_space":space,"content_digest":digest,"working_space":working});
+    let mut f = full();
+    f["icc_profiles"] = json!([profile(1, "CMYK", true), profile(2, "RGB", false)]);
+    assert_eq!(check(&f), Ok(()));
+    let r: StudioVectorRecords = serde_json::from_value(f.clone()).unwrap();
+    assert_eq!(r.working_icc(StudioColorModel::Cmyk).map(|p| p.profile_id.clone()), Some(identity("SCPF", 1)));
+    assert_eq!(serde_json::to_value(&r).unwrap(), f);
+    let with = |profiles: Value| {
+        let mut x = full();
+        x["icc_profiles"] = profiles;
+        check(&x)
+    };
+    assert_eq!(with(json!([profile(1, "LAB", false)])), Err(Code::InvalidField), "Lab is the PCS, not a device profile");
+    assert_eq!(with(json!([profile(1, "CMYK", true), profile(3, "CMYK", true)])), Err(Code::DuplicateIdentity), "one working space per model");
+    assert_eq!(with(json!([profile(1, "RGB", false)])), Err(Code::InvalidField), "swatch 1 is CMYK");
+    let mut bad = profile(1, "CMYK", false);
+    bad["content_digest"]["digest"] = json!("xyz");
+    assert_eq!(with(json!([bad])), Err(Code::InvalidField));
+}

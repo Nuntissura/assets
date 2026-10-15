@@ -126,6 +126,21 @@ pub struct StudioSwatch {
     pub group_ref: Option<String>,
 }
 
+/// An ICC profile the document's swatches convert through (lane SMB-ILLUSTRATOR-INTEROP): `SCPF`
+/// id, the colour space it converts from, and the sha256 of its bytes (the bytes travel with the
+/// document outside Folio). `working_space` marks the document working space of that model while
+/// the document's own `working_space_<model>` binding is unassigned (one per model).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioIccProfile {
+    pub profile_id: String,
+    pub name: String,
+    pub colour_space: StudioColorModel,
+    pub content_digest: crate::ContentDigest,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub working_space: bool,
+}
+
 /// A PAINT-style row bound to a swatch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -360,6 +375,10 @@ pub enum StudioEnvelopeRaster {
     Transparency,
 }
 
+/// Order key of a colour model (channel count, gray flag) for the one-working-space rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct StudioColorModelKey(usize, bool);
+
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -490,9 +509,25 @@ pub(super) fn validate_tools(
     design: Option<&StudioDesignRecords>,
     cx: &mut Ctx,
 ) -> Result<()> {
-    for (n, what) in [(r.swatches.len(), "swatches"), (r.swatch_paints.len(), "swatch_paints"), (r.brushes.len(), "brushes"), (r.brush_strokes.len(), "brush_strokes"), (r.envelopes.len(), "envelopes")] {
+    for (n, what) in [(r.icc_profiles.len(), "icc_profiles"), (r.swatches.len(), "swatches"), (r.swatch_paints.len(), "swatch_paints"), (r.brushes.len(), "brushes"), (r.brush_strokes.len(), "brush_strokes"), (r.envelopes.len(), "envelopes")] {
         check(n <= TOOLS_MAX_ENTRIES, Code::BudgetExceeded, what, "count")?;
         cx.nodes(n, what)?;
+    }
+    let mut profiles: BTreeMap<&str, &StudioIccProfile> = BTreeMap::new();
+    let mut working: BTreeSet<StudioColorModelKey> = BTreeSet::new();
+    for p in &r.icc_profiles {
+        cx.tick()?;
+        let t = p.profile_id.as_str();
+        id(t, "SCPF", "icc_profiles/profile_id")?;
+        check(text_ok(&p.name), Code::InvalidField, t, "name")?;
+        check(sha256(&p.content_digest), Code::InvalidField, t, "content_digest")?;
+        check(p.colour_space != StudioColorModel::Lab, Code::InvalidField, t, "colour_space")?;
+        if profiles.insert(t, p).is_some() {
+            return Err(err(Code::DuplicateIdentity, t));
+        }
+        if p.working_space {
+            check(working.insert(StudioColorModelKey(p.colour_space.channels(), p.colour_space == StudioColorModel::Gray)), Code::DuplicateIdentity, t, "working_space")?;
+        }
     }
     let mut swatches: BTreeMap<&str, &StudioSwatch> = BTreeMap::new();
     for s in &r.swatches {
@@ -503,6 +538,12 @@ pub(super) fn validate_tools(
             return Err(err(Code::DuplicateIdentity, t));
         }
         validate_swatch(s, t)?;
+        // A swatch's profile, when the record set lists it, converts from the swatch's model.
+        if let (Some(pr), Some(m)) = (&s.profile_ref, s.color_model)
+            && let Some(p) = profiles.get(pr.as_str())
+        {
+            check(p.colour_space == m, Code::InvalidField, t, "profile_ref")?;
+        }
     }
     for s in &r.swatches {
         if let Some(base) = &s.base_swatch_ref {
