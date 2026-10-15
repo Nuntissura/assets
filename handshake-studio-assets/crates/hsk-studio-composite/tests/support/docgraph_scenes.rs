@@ -30,8 +30,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::vector::{FillRule, OwnedPath, PathElement, PathPoint};
 use hsk_studio_composite::{
     FillPaint, FillSpec, MaskContentMode, MaskNode, OwnedMask, PreparedVectors, RenderedScene, SceneComposition,
-    SceneContext, SceneLimits, VectorCoverage, VectorGeometry, VectorLayerSpec, VectorMask, VectorMaskSource,
-    VectorResolution, mask_content, prepare_vector_layers, render_scene, vector_layer_render_plan,
+    SceneContent, SceneContext, SceneLayer, SceneLimits, StaticContent, VectorCoverage, VectorGeometry,
+    VectorLayerSpec, VectorMask, VectorMaskSource, VectorResolution, mask_content, prepare_vector_layers,
+    render_scene, unlinked_mask_matte, vector_layer_render_plan,
 };
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, StudioBlendMode, composite_over};
@@ -42,6 +43,7 @@ use hsk_studio_pigment::render_plan::{
     RenderBackend, RenderPlan, RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::Mask;
+use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
 use scenes::Pixels;
 use std::collections::BTreeMap;
 
@@ -284,6 +286,89 @@ pub fn document_frame(pixels: &Pixels) -> DocFrame {
         extensions: PlanExtensions::from_layers(entries),
         tiles,
         owned_masks,
+    }
+}
+/// The scene path of the same composition (what `CompositionTemporalSource::scene_at` returns
+/// for the Folio records): plain layers as tiles, cut layers as static subtrees (the tile and its
+/// unmoved plane, `SceneContent::Static`), the clipped layer on the clip-to-base route, the
+/// unlinked mask as a composition-space alpha matte (`unlinked_mask_matte`, identity matrix).
+pub fn scene(pixels: &Pixels) -> SceneComposition {
+    let mut layers = Vec::new();
+    for l in &LAYERS {
+        let t = tile_of(pixels, l);
+        let rect = Rect { x: 0, y: 0, width: l.w, height: l.h };
+        let mut matte = None;
+        let content = match l.cut {
+            None => SceneContent::Tiles(vec![t.scene_tile(0, 0)]),
+            Some(cut) => {
+                let tile = PlanNode::Tile(TileInput {
+                    key: SourceKey(0),
+                    placement: rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: t.colour_sha256,
+                    alpha_sha256: t.alpha_sha256,
+                });
+                let mut owned_masks = BTreeMap::new();
+                let mut entries = Vec::new();
+                let (nodes, root) = if cut == Cut::AlphaUnlinked {
+                    let mask = vector_mask(cut, &prepared(rect)).unwrap();
+                    matte = Some(unlinked_mask_matte(&mask, &layer_id(l.n), scenes::space(), 7).unwrap());
+                    (vec![tile], PlanNodeId(0))
+                } else {
+                    let c = cut_plane(cut, rect);
+                    owned_masks.insert(SourceKey(1), c.plane);
+                    if c.feather_px > 0.0 {
+                        entries.push(LayerExtension::new(PlanNodeId(1), 0).with_mask_feather(c.feather_px));
+                    }
+                    let wrap = PlanNode::Group(Group {
+                        isolated: true,
+                        layers: vec![Layer {
+                            input: PlanNodeId(0),
+                            mode: StudioBlendMode::Normal,
+                            opacity: 1.0,
+                            fill_opacity: 1.0,
+                            mask: Some(MaskInput { key: SourceKey(1), ..c.input }),
+                        }],
+                    });
+                    (vec![tile, wrap], PlanNodeId(1))
+                };
+                let mut tiles = BTreeMap::new();
+                tiles.insert(SourceKey(0), t.id.clone());
+                SceneContent::Static(Box::new(StaticContent {
+                    plan: RenderPlan {
+                        revision: 7,
+                        target: OutputTarget { extent: rect, ..target() },
+                        nodes,
+                        root,
+                    },
+                    extensions: PlanExtensions::from_layers(entries),
+                    rect,
+                    tiles,
+                    masks: BTreeMap::new(),
+                    owned_masks,
+                    owned_tiles: BTreeMap::new(),
+                }))
+            }
+        };
+        layers.push(SceneLayer {
+            layer_id: layer_id(l.n),
+            content,
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2 { m: [1.0, 0.0, l.translate[0] as f64, 0.0, 1.0, l.translate[1] as f64] },
+            matte,
+            clipped: l.clipped,
+        });
+    }
+    SceneComposition {
+        composition_id: scenes::identity("SCOM", 9),
+        width: scenes::W,
+        height: scenes::H,
+        background: None,
+        filter: ResampleFilter::Bilinear,
+        layers,
     }
 }
 pub fn target() -> OutputTarget {

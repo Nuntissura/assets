@@ -216,6 +216,9 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
                 failures.push(format!("fixture {what} differs"));
             }
         }
+        if scene != fixture::scene(&pixels) {
+            failures.push("fixture scene differs".into());
+        }
         // (3) The oracle (independent of the plan) agrees bit for bit.
         let oracle = fixture::oracle(&pixels);
         let off = doc_px.iter().zip(&oracle).filter(|(a, o)| a != o).count();
@@ -239,6 +242,14 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
                     other => format!("{other:?}"),
                 };
                 println!("scene {} m {:?} clipped {} matte {} {what}", s.layer_id, s.matrix.m, s.clipped, s.matte.is_some());
+            }
+            let fs = fixture::scene(&pixels);
+            for (a, f) in scene.layers.iter().zip(&fs.layers) {
+                if a != f {
+                    println!("scene layer {} differs:
+ got  {a:?}
+ want {f:?}", a.layer_id);
+                }
             }
             panic!("{}", failures.join("
 "));
