@@ -16,11 +16,22 @@
 //!   `equal_power`, default `equal_power`; Studio key, the shipped default's curve is
 //!   UNVERIFIED). A crossfade on a clip with a non-unit speed is `audio_unsupported`.
 //!
-//! Timeline positions must sit on the audio sample grid (`not_frame_aligned` otherwise). Score
-//! mixes at most `hsk_studio_score::MAX_TRACKS` clips per session; more is `limit_exceeded`,
-//! refused before any sample is copied. The session is the master [`AudioClock`] of playback:
-//! its `position()` is the next sample it renders; a timeline with nothing audible mixes one
-//! silent sample so the clock still runs.
+//! Timeline positions must sit on the audio sample grid (`not_frame_aligned` otherwise). One score
+//! session mixes at most `hsk_studio_score::MAX_TRACKS` clips; `build_timeline_mix` refuses more
+//! (`limit_exceeded`, before any sample is copied). The session is the master [`AudioClock`] of
+//! playback: its `position()` is the next sample it renders; a timeline with nothing audible mixes
+//! one silent sample so the clock still runs.
+//!
+//! [`TimelineMixStream`] lifts the cap (lane SMB-PULSE-PLAYBACK-2): the same planned clips, sorted
+//! by start, are packed into groups of at most `MAX_TRACKS` consecutive clips; a group's score
+//! session is built only when the play position reaches the group's span (clip samples are copied
+//! then, not before) and dropped when the position passes it; every block sums the groups active
+//! in it. Score sums tracks linearly in f64 and publishes f32, so the stream equals the
+//! single-session mix within f32 rounding of the partial sums (test
+//! `streamed_mix_of_more_than_64_clips_matches_the_hand_mix`). Resident clip samples are bounded
+//! by [`StreamLimits::max_resident_frames`] (`limit_exceeded` before copying). Seeking drops every
+//! session; a group rebuilt behind the position renders and discards its samples from its start
+//! up to the position (bounded by the group's span, counted in [`StreamStats::discarded_frames`]).
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{PulseError, Result};
@@ -76,21 +87,54 @@ struct Cut {
     fade_out: Option<Fade>,
 }
 
-/// Builds the score mixdown of `sequence` at `sample_rate_hz` (see the module docs).
-pub fn build_timeline_mix(
-    sequence: &StudioSequence,
-    sample_rate_hz: u32,
-    max_block_frames: usize,
-    sources: &dyn AudioSources,
-    extents: &dyn SourceExtents,
-    cancel: &CancellationToken,
-) -> Result<Session> {
-    cancel.check()?;
+/// One planned timeline clip, independent of the sequence (no samples copied yet).
+#[derive(Clone, Debug)]
+struct PlannedClip {
+    source: ClipSource,
+    /// `None` = unit speed.
+    speed: Option<ClipSpeed>,
+    source_in: usize,
+    /// Unit speed: frames cut; other speeds: source window frames.
+    frames: usize,
+    start: u64,
+    /// Frames the clip lasts on the timeline.
+    len: u64,
+    fade_in: Option<Fade>,
+    fade_out: Option<Fade>,
+    volume_db: f64,
+    pan: f64,
+}
+
+impl PlannedClip {
+    fn end(&self) -> Result<u64> {
+        self.start.checked_add(self.len).ok_or(PulseError::Overflow)
+    }
+    fn spec(&self, sources: &dyn AudioSources, origin: u64) -> Result<TrackSpec> {
+        let source = sources
+            .audio(&self.source)
+            .ok_or(PulseError::SourceExtentUnknown)?;
+        let start = self.start.checked_sub(origin).ok_or(PulseError::Underflow)?;
+        let mut spec = match self.speed {
+            None => TrackSpec::from_source(source, self.source_in, self.frames, start),
+            Some(speed) => {
+                TrackSpec::from_source_at_speed(source, self.source_in, self.frames, speed, start)
+            }
+        }
+        .map_err(score_error)?;
+        spec.volume_db = AutomationLane::constant(self.volume_db);
+        spec.pan = AutomationLane::constant(self.pan);
+        spec.fade_in = self.fade_in;
+        spec.fade_out = self.fade_out;
+        Ok(spec)
+    }
+}
+
+fn audible_tracks(sequence: &StudioSequence) -> Vec<usize> {
     let solo = sequence
         .tracks
         .iter()
         .any(|t| t.kind == TrackKind::Audio && t.soloed);
-    let audible: Vec<usize> = (0..sequence.tracks.len())
+    (0..sequence.tracks.len())
         .filter(|&t| {
             let tr = &sequence.tracks[t];
             tr.kind == TrackKind::Audio
@@ -99,8 +143,11 @@ pub fn build_timeline_mix(
                 && (!solo || tr.soloed)
                 && tr.volume > 0.0
         })
-        .collect();
-    let count = audible.iter().fold(0usize, |n, &t| {
+        .collect()
+}
+
+fn audible_clip_count(sequence: &StudioSequence, audible: &[usize]) -> usize {
+    audible.iter().fold(0usize, |n, &t| {
         n.saturating_add(
             sequence.tracks[t]
                 .clips
@@ -108,12 +155,21 @@ pub fn build_timeline_mix(
                 .filter(|c| c.enabled)
                 .count(),
         )
-    });
-    if count > MAX_TRACKS {
-        return Err(PulseError::LimitExceeded);
-    }
-    let mut cuts: Vec<Cut> = Vec::with_capacity(count);
-    for &t in &audible {
+    })
+}
+
+/// Plans every audible clip (fades, handles, speeds, track gain) without copying samples; each
+/// clip's source must be present in `sources`.
+fn plan_clips(
+    sequence: &StudioSequence,
+    sample_rate_hz: u32,
+    audible: &[usize],
+    sources: &dyn AudioSources,
+    extents: &dyn SourceExtents,
+    cancel: &CancellationToken,
+) -> Result<Vec<PlannedClip>> {
+    let mut cuts: Vec<Cut> = Vec::new();
+    for &t in audible {
         let clips = &sequence.tracks[t].clips;
         let first_of_track = cuts.len();
         for (c, clip) in clips.iter().enumerate() {
@@ -197,16 +253,17 @@ pub fn build_timeline_mix(
             cuts[j].fade_in = Some(fade);
         }
     }
-    let mut specs = Vec::with_capacity(cuts.len());
+    let mut planned = Vec::with_capacity(cuts.len());
     for cut in &cuts {
         cancel.check()?;
         let track = &sequence.tracks[cut.track];
         let clip = &track.clips[cut.clip];
-        let source = sources
+        sources
             .audio(&clip.source_ref)
             .ok_or(PulseError::SourceExtentUnknown)?;
-        let mut spec = if clip.speed.numerator == 1 && clip.speed.denominator == 1 {
-            TrackSpec::from_source(source, cut.source_in, cut.frames, cut.start)
+        let (speed, frames, len) = if clip.speed.numerator == 1 && clip.speed.denominator == 1 {
+            let len = u64::try_from(cut.frames).map_err(|_| PulseError::Overflow)?;
+            (None, cut.frames, len)
         } else {
             let source_frames =
                 samples(clip.source_out.checked_sub(clip.source_in)?, sample_rate_hz)?;
@@ -216,14 +273,45 @@ pub fn build_timeline_mix(
                 clip.speed.is_reversed(),
             )
             .map_err(score_error)?;
-            TrackSpec::from_source_at_speed(source, cut.source_in, source_frames, speed, cut.start)
-        }
-        .map_err(score_error)?;
-        spec.volume_db = AutomationLane::constant(20.0 * track.volume.log10());
-        spec.pan = AutomationLane::constant(track.pan);
-        spec.fade_in = cut.fade_in;
-        spec.fade_out = cut.fade_out;
-        specs.push(spec);
+            let len = speed
+                .output_frames(u64::try_from(source_frames).map_err(|_| PulseError::Overflow)?);
+            (Some(speed), source_frames, len)
+        };
+        planned.push(PlannedClip {
+            source: clip.source_ref.clone(),
+            speed,
+            source_in: cut.source_in,
+            frames,
+            start: cut.start,
+            len,
+            fade_in: cut.fade_in,
+            fade_out: cut.fade_out,
+            volume_db: 20.0 * track.volume.log10(),
+            pan: track.pan,
+        });
+    }
+    Ok(planned)
+}
+
+/// Builds the score mixdown of `sequence` at `sample_rate_hz` (see the module docs).
+pub fn build_timeline_mix(
+    sequence: &StudioSequence,
+    sample_rate_hz: u32,
+    max_block_frames: usize,
+    sources: &dyn AudioSources,
+    extents: &dyn SourceExtents,
+    cancel: &CancellationToken,
+) -> Result<Session> {
+    cancel.check()?;
+    let audible = audible_tracks(sequence);
+    if audible_clip_count(sequence, &audible) > MAX_TRACKS {
+        return Err(PulseError::LimitExceeded);
+    }
+    let planned = plan_clips(sequence, sample_rate_hz, &audible, sources, extents, cancel)?;
+    let mut specs = Vec::with_capacity(planned.len());
+    for p in &planned {
+        cancel.check()?;
+        specs.push(p.spec(sources, 0)?);
     }
     if specs.is_empty() {
         // Nothing audible: one silent sample keeps the session running as the playback clock.
@@ -233,4 +321,278 @@ pub fn build_timeline_mix(
         ScoreError::OutOfRange => PulseError::InvalidInput,
         other => score_error(other),
     })
+}
+
+/// Bounds of a [`TimelineMixStream`] (authored values).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamLimits {
+    /// Most audible clips in one timeline.
+    pub max_clips: usize,
+    /// Clips per score session (`1..=MAX_TRACKS`).
+    pub group_clips: usize,
+    /// Clip frames (summed timeline lengths) resident in the active sessions at once.
+    pub max_resident_frames: u64,
+}
+
+impl Default for StreamLimits {
+    fn default() -> Self {
+        Self {
+            max_clips: 65_536,
+            group_clips: MAX_TRACKS,
+            max_resident_frames: 1 << 28,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamStats {
+    pub groups: usize,
+    pub sessions_built: u64,
+    pub sessions_dropped: u64,
+    pub max_active_sessions: usize,
+    pub max_resident_frames: u64,
+    /// Frames rendered and thrown away to bring a rebuilt session to the position.
+    pub discarded_frames: u64,
+}
+
+struct Group {
+    first: usize,
+    count: usize,
+    start: u64,
+    end: u64,
+    frames: u64,
+    session: Option<Session>,
+}
+
+/// Streaming mix of any number of clips (see the module docs); also the playback [`AudioClock`].
+pub struct TimelineMixStream<S: AudioSources> {
+    sources: S,
+    rate: u32,
+    block: usize,
+    limits: StreamLimits,
+    clips: Vec<PlannedClip>,
+    groups: Vec<Group>,
+    position: u64,
+    length: u64,
+    resident: u64,
+    scratch: [Vec<f32>; 2],
+    stats: StreamStats,
+}
+
+impl<S: AudioSources> TimelineMixStream<S> {
+    /// Plans the mix; refusals as [`build_timeline_mix`] except the session cap, plus
+    /// `limit_exceeded` above `limits.max_clips` (before planning) or for one group above
+    /// `max_resident_frames`, and `invalid_input` for `group_clips` outside `1..=MAX_TRACKS` or
+    /// `max_block_frames` 0.
+    pub fn new(
+        sequence: &StudioSequence,
+        sample_rate_hz: u32,
+        max_block_frames: usize,
+        sources: S,
+        extents: &dyn SourceExtents,
+        limits: StreamLimits,
+        cancel: &CancellationToken,
+    ) -> Result<Self> {
+        cancel.check()?;
+        if !(1..=MAX_TRACKS).contains(&limits.group_clips) || max_block_frames == 0 {
+            return Err(PulseError::InvalidInput);
+        }
+        crate::time::ticks_from_samples(1, sample_rate_hz)?;
+        let audible = audible_tracks(sequence);
+        if audible_clip_count(sequence, &audible) > limits.max_clips {
+            return Err(PulseError::LimitExceeded);
+        }
+        let mut clips = plan_clips(sequence, sample_rate_hz, &audible, &sources, extents, cancel)?;
+        clips.sort_by_key(|c| c.start);
+        let mut groups = Vec::new();
+        let mut length = 0u64;
+        for (index, chunk) in clips.chunks(limits.group_clips).enumerate() {
+            let first = index
+                .checked_mul(limits.group_clips)
+                .ok_or(PulseError::Overflow)?;
+            let mut end = 0u64;
+            let mut frames = 0u64;
+            for c in chunk {
+                end = end.max(c.end()?);
+                frames = frames.checked_add(c.len).ok_or(PulseError::Overflow)?;
+            }
+            if frames > limits.max_resident_frames {
+                return Err(PulseError::LimitExceeded);
+            }
+            length = length.max(end);
+            groups.push(Group {
+                first,
+                count: chunk.len(),
+                start: chunk.first().map_or(0, |c| c.start),
+                end,
+                frames,
+                session: None,
+            });
+        }
+        let stats = StreamStats {
+            groups: groups.len(),
+            ..StreamStats::default()
+        };
+        Ok(Self {
+            sources,
+            rate: sample_rate_hz,
+            block: max_block_frames,
+            limits,
+            clips,
+            groups,
+            position: 0,
+            length,
+            resident: 0,
+            scratch: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
+            stats,
+        })
+    }
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+    /// Last clip end in samples.
+    pub fn length_samples(&self) -> u64 {
+        self.length
+    }
+    pub fn stats(&self) -> StreamStats {
+        self.stats
+    }
+    pub fn clip_count(&self) -> usize {
+        self.clips.len()
+    }
+    pub fn active_sessions(&self) -> usize {
+        self.groups.iter().filter(|g| g.session.is_some()).count()
+    }
+    pub fn sources(&self) -> &S {
+        &self.sources
+    }
+    pub fn max_block_frames(&self) -> usize {
+        self.block
+    }
+
+    /// Moves to `sample`; every session is dropped and rebuilt on demand.
+    pub fn seek(&mut self, sample: u64) {
+        for g in &mut self.groups {
+            if g.session.take().is_some() {
+                self.stats.sessions_dropped = self.stats.sessions_dropped.saturating_add(1);
+            }
+        }
+        self.resident = 0;
+        self.position = sample;
+    }
+
+    fn build(&mut self, g: usize, cancel: &CancellationToken) -> Result<()> {
+        let resident = self
+            .resident
+            .checked_add(self.groups[g].frames)
+            .ok_or(PulseError::Overflow)?;
+        if resident > self.limits.max_resident_frames {
+            return Err(PulseError::LimitExceeded);
+        }
+        let (first, count, origin) = (
+            self.groups[g].first,
+            self.groups[g].count,
+            self.groups[g].start,
+        );
+        let last = first.checked_add(count).ok_or(PulseError::Overflow)?;
+        let mut specs = Vec::with_capacity(count);
+        for c in &self.clips[first..last] {
+            cancel.check()?;
+            specs.push(c.spec(&self.sources, origin)?);
+        }
+        let mut session = Session::new(self.rate, self.block, specs).map_err(score_error)?;
+        // Behind the position (seek into the middle of the group): render and discard.
+        let mut local = 0u64;
+        let target = self.position.saturating_sub(origin);
+        let block = u64::try_from(self.block).map_err(|_| PulseError::Overflow)?;
+        while local < target {
+            let step = target.saturating_sub(local).min(block);
+            let n = usize::try_from(step).map_err(|_| PulseError::Overflow)?;
+            let [l, r] = &mut self.scratch;
+            session
+                .render(local, &mut l[..n], &mut r[..n], cancel)
+                .map_err(score_error)?;
+            local = local.saturating_add(step);
+            self.stats.discarded_frames = self.stats.discarded_frames.saturating_add(step);
+        }
+        self.groups[g].session = Some(session);
+        self.resident = resident;
+        self.stats.sessions_built = self.stats.sessions_built.saturating_add(1);
+        self.stats.max_resident_frames = self.stats.max_resident_frames.max(resident);
+        Ok(())
+    }
+
+    /// Renders the next `left.len()` frames (at most `max_block_frames`) at the position and
+    /// advances it. `invalid_input` for unequal or empty outputs or a block above the maximum.
+    pub fn render(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        cancel.check()?;
+        let n = left.len();
+        if n == 0 || n != right.len() || n > self.block {
+            return Err(PulseError::InvalidInput);
+        }
+        left.fill(0.0);
+        right.fill(0.0);
+        let from = self.position;
+        let to = from
+            .checked_add(u64::try_from(n).map_err(|_| PulseError::Overflow)?)
+            .ok_or(PulseError::Overflow)?;
+        for g in 0..self.groups.len() {
+            let (start, end) = (self.groups[g].start, self.groups[g].end);
+            if end <= from {
+                if self.groups[g].session.take().is_some() {
+                    self.resident = self.resident.saturating_sub(self.groups[g].frames);
+                    self.stats.sessions_dropped = self.stats.sessions_dropped.saturating_add(1);
+                }
+                continue;
+            }
+            if start >= to {
+                continue;
+            }
+            if self.groups[g].session.is_none() {
+                self.build(g, cancel)?;
+            }
+            // Part of the block this group covers.
+            let a = start.max(from);
+            let b = end.min(to);
+            let offset =
+                usize::try_from(a.saturating_sub(from)).map_err(|_| PulseError::Overflow)?;
+            let len = usize::try_from(b.saturating_sub(a)).map_err(|_| PulseError::Overflow)?;
+            let local = a.checked_sub(start).ok_or(PulseError::Underflow)?;
+            let [l, r] = &mut self.scratch;
+            let session = self.groups[g]
+                .session
+                .as_mut()
+                .ok_or(PulseError::InvalidInput)?;
+            session
+                .render(local, &mut l[..len], &mut r[..len], cancel)
+                .map_err(score_error)?;
+            let end_at = offset.checked_add(len).ok_or(PulseError::Overflow)?;
+            for (dst, src) in left[offset..end_at].iter_mut().zip(&l[..len]) {
+                *dst += *src;
+            }
+            for (dst, src) in right[offset..end_at].iter_mut().zip(&r[..len]) {
+                *dst += *src;
+            }
+        }
+        self.stats.max_active_sessions = self
+            .stats
+            .max_active_sessions
+            .max(self.active_sessions());
+        self.position = to;
+        Ok(())
+    }
+}
+
+impl<S: AudioSources> AudioClock for TimelineMixStream<S> {
+    fn sample_rate_hz(&self) -> u32 {
+        self.rate
+    }
+    fn sample_position(&self) -> u64 {
+        self.position
+    }
 }
