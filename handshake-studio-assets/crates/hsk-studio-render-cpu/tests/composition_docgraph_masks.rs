@@ -6,7 +6,8 @@
 //! document-graph path. Every pixel is compared with the shared oracle; the frame digest is pinned
 //! and identical on every chunk size and thread count; the scene path of the same composition
 //! (`render_scene` of the fixture scene, which composite proves equals `scene_at`) renders the
-//! same pixels. render-gpu `tests/composition_docgraph_masks.rs` runs the same frame on the GPU.
+//! same pixels (`path_agreement`: bit-identical except colour in the clip run, at most 1 ULP).
+//! render-gpu `tests/composition_docgraph_masks.rs` runs the same frame on the GPU.
 use hsk_studio_render_cpu::Renderer;
 
 #[path = "../../hsk-studio-composite/tests/support/docgraph_scenes.rs"]
@@ -14,7 +15,7 @@ mod fixture;
 
 /// Digest (colour plane then alpha plane, SHA-256) of the CPU frame, recorded when the case was
 /// added.
-const GOLDEN: &str = "pending";
+const GOLDEN: &str = "424d4e27d452383a1d5f02dbf985671c424ca44733cb833461392d6210c92b8d";
 
 #[test]
 fn document_graph_frame_with_vector_clips_and_masks_matches_the_oracle_and_the_scene_path() {
@@ -34,8 +35,11 @@ fn document_graph_frame_with_vector_clips_and_masks_matches_the_oracle_and_the_s
         assert_eq!(fixture::digest(&other), digest, "chunk {chunk} threads {threads}");
     }
     let scene = fixture::render_scene_px(&Renderer::new(64).unwrap(), &fixture::scene(&pixels), &pixels);
-    let scene_off = (0..base.len()).filter(|i| base[*i] != scene[*i]).count();
-    println!("cpu scene path vs document graph: max |delta| {:e}, {scene_off} pixels not bit-identical", fixture::max_delta(&scene, &base));
+    println!("cpu scene path vs document graph: max |delta| {:e}", fixture::max_delta(&scene, &base));
+    match fixture::path_agreement(&base, &scene) {
+        Ok(ulp) => println!("  {} of {} pixels bit-identical, {ulp} within 1 ULP of colour in the clip run", base.len() - ulp, base.len()),
+        Err(e) => panic!("{}", e.join("\n")),
+    }
     assert!(off.is_empty(), "bit for bit against the oracle");
     assert_eq!(digest, GOLDEN, "golden digest");
 }

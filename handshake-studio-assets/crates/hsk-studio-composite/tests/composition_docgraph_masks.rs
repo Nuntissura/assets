@@ -171,30 +171,15 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
         let got = plain(&doc);
         let want = fixture::document_frame(&pixels);
         let mut failures = Vec::new();
-        // (1) Document graph == scene path under the reference executor: every alpha and every
-        // colour bit-identical, except colour inside the clip run (layer 12 over the masked base
-        // 10) by at most 1 ULP: the scene path draws the masked base into an intermediate
-        // straight-alpha surface first (`SceneContent::Static`), whose colour is recovered by a
-        // division, while the document graph clips to the base tile directly.
+        // (1) Document graph == scene path under the reference executor (`fixture::path_agreement`:
+        // bit-identical except colour inside the clip run, at most 1 ULP).
         let doc_px = fixture::render_frame(&fixture::Ref, &got, &pixels).unwrap();
         let scene_px = fixture::render_scene_px(&fixture::Ref, &scene, &pixels);
-        let run = fixture::moved_rect(fixture::spec(12));
-        let mut ulp_pixels = 0;
-        for (i, (a, s)) in doc_px.iter().zip(&scene_px).enumerate() {
-            if a == s {
-                continue;
-            }
-            let (x, y) = ((i % scenes::W as usize) as i64, (i / scenes::W as usize) as i64);
-            let in_run = x >= run.x && y >= run.y && x < run.x + i64::from(run.width) && y < run.y + i64::from(run.height);
-            let ulp = a[3] == s[3] && (0..3).all(|c| a[c].to_bits().abs_diff(s[c].to_bits()) <= 1);
-            if in_run && ulp {
-                ulp_pixels += 1;
-            } else {
-                failures.push(format!("doc != scene at ({x}, {y}): {a:?} vs {s:?}"));
-            }
+        match fixture::path_agreement(&doc_px, &scene_px) {
+            Ok(ulp) => println!("document graph vs scene path: {} of {} pixels identical, {ulp} within 1 ULP of colour in the clip run",
+                doc_px.len() - ulp, doc_px.len()),
+            Err(e) => failures.extend(e),
         }
-        println!("document graph vs scene path: {} of {} pixels identical, {ulp_pixels} within 1 ULP of colour in the clip run",
-            doc_px.len() - ulp_pixels, doc_px.len());
         // Every cut is visible in the frame (no silent no-op): the cut layers differ from the same
         // frame without the vector records.
         let uncut = build(&serde_json::from_value(json!({"schema_id":"hsk.studio.vector_records@1",
@@ -246,13 +231,10 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
             let fs = fixture::scene(&pixels);
             for (a, f) in scene.layers.iter().zip(&fs.layers) {
                 if a != f {
-                    println!("scene layer {} differs:
- got  {a:?}
- want {f:?}", a.layer_id);
+                    println!("scene layer {} differs:\n got  {a:?}\n want {f:?}", a.layer_id);
                 }
             }
-            panic!("{}", failures.join("
-"));
+            panic!("{}", failures.join("\n"));
         }
     });
 }
