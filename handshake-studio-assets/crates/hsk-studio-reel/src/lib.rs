@@ -49,6 +49,7 @@ mod matroska;
 mod mkv_content;
 mod mkv_pcm;
 mod model;
+pub mod mux;
 mod mxf;
 #[cfg(feature = "prores")]
 mod prores;
@@ -102,6 +103,10 @@ pub use mxf::{
 #[cfg(feature = "prores")]
 pub use prores::{
     ProResFrameHeader, decode_prores_frame, parse_frame_header as parse_prores_frame_header,
+};
+pub use mux::{
+    Container, MUXER_ID, MUXER_VERSION, MuxLimits, MuxReceipt, MuxSpec, Muxer, NclxColor, PcmSpec,
+    VideoEntry, VideoTrackSpec, video_timescale,
 };
 pub use registry::{ProxySource, Registry, detect_type};
 pub use report::{outcome_for, report};
