@@ -258,8 +258,26 @@ impl Dynamics {
         self.gain_db.get(index).copied()
     }
 
+    /// Detector reading for detector channel `ch` and input sample `x` (updates the RMS state).
+    /// Shared with [`SidechainDynamics`](crate::SidechainDynamics); `process` inlines the same
+    /// arithmetic.
+    pub(crate) fn detect(&mut self, ch: usize, x: f64) -> f64 {
+        match self.params.detector {
+            Detector::Peak => x.abs(),
+            Detector::Rms => {
+                let ms = self.rms_coeff * self.mean_square[ch] + (1.0 - self.rms_coeff) * x * x;
+                self.mean_square[ch] = ms;
+                ms.sqrt()
+            }
+        }
+    }
+    /// Linear make-up gain.
+    pub(crate) fn makeup_linear(&self) -> f64 {
+        self.makeup
+    }
+
     /// One smoothing step for gain state `s` toward the static target for `level`.
-    fn step(&mut self, s: usize, level: f64) -> f64 {
+    pub(crate) fn step(&mut self, s: usize, level: f64) -> f64 {
         let target = self.params.static_reduction_db(level_db(level));
         let g = self.gain_db[s];
         let next = match self.params.mode {
