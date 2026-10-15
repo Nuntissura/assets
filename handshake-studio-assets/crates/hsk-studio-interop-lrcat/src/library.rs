@@ -14,9 +14,10 @@ use crate::extract::{
     PhotoProposal, extract_with,
 };
 use crate::lua_rules::{RuleGroup, RuleLimits, SmartRules, parse_smart_rules};
+use crate::xmp::{PacketShape, XmpLibraryFields, XmpLimits, XmpRating, decode_xmp_packet, packet_shape};
 use crate::source::{Grant, Limits};
 use hsk_studio_accord::CancellationToken;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const LIBRARY_DECODER_ID: &str = "hsk-studio-interop-lrcat/library-mapping@1";
 /// Hard ceiling for `LibraryLimits::max_hierarchy_depth`.
@@ -30,6 +31,7 @@ const KIND_SET: &str = "com.adobe.ag.library.group";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LibraryLimits {
     pub rules: RuleLimits,
+    pub xmp: XmpLimits,
     /// Deepest keyword or collection nesting mapped as a hierarchy; deeper nodes are typed losses.
     pub max_hierarchy_depth: u32,
 }
@@ -38,6 +40,7 @@ impl Default for LibraryLimits {
     fn default() -> Self {
         Self {
             rules: RuleLimits::default(),
+            xmp: XmpLimits::default(),
             max_hierarchy_depth: 256,
         }
     }
@@ -46,6 +49,9 @@ impl Default for LibraryLimits {
 impl LibraryLimits {
     pub fn validate(&self) -> Result<()> {
         self.rules
+            .validate()
+            .map_err(|_| LrcatError::Limit(LimitKind::Configuration))?;
+        self.xmp
             .validate()
             .map_err(|_| LrcatError::Limit(LimitKind::Configuration))?;
         if self.max_hierarchy_depth == 0 || self.max_hierarchy_depth > HARD_MAX_HIERARCHY_DEPTH {
@@ -81,6 +87,9 @@ pub struct PhotoLibraryState {
     pub rating: Option<u8>,
     pub flag: Flag,
     pub label: Option<ColorLabel>,
+    /// Library fields of the XMP packet the catalog keeps for this image, when it is a plain
+    /// text packet (compressed packets are `xmp_compressed_not_inflated` losses).
+    pub xmp: Option<XmpLibraryFields>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +263,7 @@ struct Raw {
     counts: Vec<EntityCount>,
     rules: Vec<(i64, SmartRules)>,
     synonyms: Vec<(i64, String)>,
+    xmp: Vec<(i64, XmpLibraryFields)>,
     retained: u64,
 }
 
@@ -263,10 +273,23 @@ fn read_library_tables(
     limits: &Limits,
     lib: &LibraryLimits,
     cancel: &CancellationToken,
+    catalog: &CatalogProposal,
 ) -> Result<Raw> {
     let x = Extractor::new(db, schema, limits, cancel);
+    // Id sets of the entities the library rows refer to (charged before they are built).
+    db.charge(
+        entry_bytes::<i64>().saturating_mul(
+            (catalog.collections.len() as u64)
+                .saturating_add(catalog.keywords.len() as u64)
+                .saturating_add(catalog.photos.len() as u64),
+        ),
+    )?;
+    let collection_ids: HashSet<i64> = catalog.collections.iter().map(|c| c.local_id).collect();
+    let keyword_ids: HashSet<i64> = catalog.keywords.iter().map(|k| k.local_id).collect();
+    let image_ids: HashSet<i64> = catalog.photos.iter().map(|p| p.local_id).collect();
+
     let mut rules: Vec<(i64, SmartRules)> = Vec::new();
-    let mut seen_rules: HashMap<i64, ()> = HashMap::new();
+    let mut seen_rules: HashSet<i64> = HashSet::new();
     if let Some(t) = x.optional("AgLibraryCollectionContent") {
         let e = "AgLibraryCollectionContent";
         let walked = x.rows(e, t, &["collection", "content", "owningModule"], |id, v| {
@@ -274,10 +297,10 @@ fn read_library_tables(
             if module.as_deref() != Some(SMART_MODULE) {
                 return Ok(Some(Dropped::new("owningModule", Disposition::Unsupported, "collection_content_module_unmapped")));
             }
-            let Some(collection) = v[0].as_i64() else {
+            let Some(collection) = v[0].as_i64().filter(|c| collection_ids.contains(c)) else {
                 return Ok(Some(Dropped::new("collection", Disposition::Unsupported, "orphan_row")));
             };
-            if seen_rules.contains_key(&collection) {
+            if seen_rules.contains(&collection) {
                 return Ok(Some(Dropped::new("collection", Disposition::Unsupported, "smart_rules_duplicate")));
             }
             let bytes = v[1].bytes().unwrap_or(&[]);
@@ -286,9 +309,12 @@ fn read_library_tables(
                 Ok(parsed) => {
                     // Aggregate check BEFORE the tree is retained (per-rule size is bounded by
                     // `RuleLimits`, the running total by `max_retained_text_bytes`).
-                    db.charge(entry_bytes::<(i64, SmartRules)>().saturating_add(parsed.retained_bytes))?;
-                    db.charge(entry_bytes::<(i64, ())>())?;
-                    seen_rules.insert(collection, ());
+                    db.charge(
+                        entry_bytes::<(i64, SmartRules)>()
+                            .saturating_add(entry_bytes::<i64>())
+                            .saturating_add(parsed.retained_bytes),
+                    )?;
+                    seen_rules.insert(collection);
                     for (code, n) in &parsed.notes {
                         x.loss(e, "content", Disposition::Approximate, code, u64::from(*n), Some(id));
                     }
@@ -299,11 +325,13 @@ fn read_library_tables(
         })?;
         x.count(e, walked, rules.len() as u64);
     }
+
     let mut synonyms: Vec<(i64, String)> = Vec::new();
     if let Some(t) = x.optional("AgLibraryKeywordSynonym") {
         let e = "AgLibraryKeywordSynonym";
         let walked = x.rows(e, t, &["keyword", "name"], |id, v| {
-            let (Some(keyword), Some(name)) = (x.int(e, "keyword", &v[0], id), x.text(e, "name", &v[1], id)?) else {
+            let keyword = x.int(e, "keyword", &v[0], id).filter(|k| keyword_ids.contains(k));
+            let (Some(keyword), Some(name)) = (keyword, x.text(e, "name", &v[1], id)?) else {
                 return Ok(Some(Dropped::new("keyword,name", Disposition::Unsupported, "orphan_row")));
             };
             db.charge(entry_bytes::<(i64, String)>())?;
@@ -312,12 +340,55 @@ fn read_library_tables(
         })?;
         x.count(e, walked, synonyms.len() as u64);
     }
+
+    let mut xmp: Vec<(i64, XmpLibraryFields)> = Vec::new();
+    let mut seen_xmp: HashSet<i64> = HashSet::new();
+    if let Some(t) = x.optional("Adobe_AdditionalMetadata") {
+        let e = "Adobe_AdditionalMetadata";
+        let walked = x.rows(e, t, &["image", "xmp"], |id, v| {
+            let Some(image) = v[0].as_i64().filter(|i| image_ids.contains(i)) else {
+                return Ok(Some(Dropped::new("image", Disposition::Unsupported, "orphan_row")));
+            };
+            if seen_xmp.contains(&image) {
+                return Ok(Some(Dropped::new("image", Disposition::Unsupported, "xmp_duplicate")));
+            }
+            let bytes = v[1].bytes().unwrap_or(&[]);
+            match packet_shape(bytes) {
+                PacketShape::CompressedLooking => {
+                    return Ok(Some(Dropped::new("xmp", Disposition::Opaque, "xmp_compressed_not_inflated")));
+                }
+                PacketShape::Other => {
+                    return Ok(Some(Dropped::new("xmp", Disposition::Unsupported, "xmp_not_packet")));
+                }
+                PacketShape::Text => {}
+            }
+            match decode_xmp_packet(bytes, &lib.xmp) {
+                Err(err) => Ok(Some(Dropped::new("xmp", Disposition::Unsupported, err.code()))),
+                Ok(fields) => {
+                    db.charge(
+                        entry_bytes::<(i64, XmpLibraryFields)>()
+                            .saturating_add(entry_bytes::<i64>())
+                            .saturating_add(fields.retained_bytes),
+                    )?;
+                    seen_xmp.insert(image);
+                    for (code, n) in &fields.notes {
+                        x.loss(e, "xmp", Disposition::Approximate, code, u64::from(*n), Some(id));
+                    }
+                    xmp.push((image, fields));
+                    Ok(None)
+                }
+            }
+        })?;
+        x.count(e, walked, xmp.len() as u64);
+    }
+
     let (losses, counts) = x.finish();
     Ok(Raw {
         losses,
         counts,
         rules,
         synonyms,
+        xmp,
         retained: db.retained(),
     })
 }
@@ -383,6 +454,7 @@ fn photo_state(p: &PhotoProposal, losses: &mut Losses) -> PhotoLibraryState {
         rating: p.rating.and_then(|r| u8::try_from(r).ok()),
         flag,
         label,
+        xmp: None,
     }
 }
 
@@ -419,8 +491,8 @@ pub fn extract_library(
     cancel: &CancellationToken,
 ) -> Result<LibraryProposal> {
     lib.validate()?;
-    let (catalog, raw) = extract_with(grant, limits, cancel, |db, schema, limits, cancel| {
-        read_library_tables(db, schema, limits, lib, cancel)
+    let (catalog, raw) = extract_with(grant, limits, cancel, |db, schema, limits, cancel, catalog| {
+        read_library_tables(db, schema, limits, lib, cancel, catalog)
     })?;
     let mut budget = Budget {
         left: limits.max_retained_text_bytes.saturating_sub(raw.retained),
@@ -429,7 +501,25 @@ pub fn extract_library(
     let mut resolves: Vec<&'static str> = Vec::new();
 
     budget.charge(entry_bytes::<PhotoLibraryState>().saturating_mul(catalog.photos.len() as u64))?;
-    let photos: Vec<PhotoLibraryState> = catalog.photos.iter().map(|p| photo_state(p, &mut losses)).collect();
+    let mut photos: Vec<PhotoLibraryState> = catalog.photos.iter().map(|p| photo_state(p, &mut losses)).collect();
+    let photo_at: HashMap<i64, usize> = photos.iter().enumerate().map(|(i, p)| (p.local_id, i)).collect();
+    let decoded_xmp = !raw.xmp.is_empty();
+    for (image, fields) in raw.xmp {
+        let Some(&i) = photo_at.get(&image) else { continue };
+        let state = &mut photos[i];
+        let differs = match fields.rating {
+            Some(XmpRating::Stars(n)) => state.rating != Some(n),
+            Some(XmpRating::Rejected) => state.flag != Flag::Reject,
+            None => false,
+        };
+        if differs {
+            losses.add("Adobe_AdditionalMetadata", "xmp:Rating", Disposition::Approximate, "xmp_rating_differs_from_catalog", Some(image));
+        }
+        state.xmp = Some(fields);
+    }
+    if decoded_xmp {
+        resolves.push("xmp_blob_not_inflated");
+    }
 
     // Collections: kind, validated parent forest, rule trees attached to smart collections.
     let pairs: Vec<(i64, Option<i64>)> = catalog.collections.iter().map(|c| (c.local_id, c.parent)).collect();
@@ -480,9 +570,7 @@ pub fn extract_library(
     if catalog.loss("AgLibraryCollectionContent", "collection_content_not_decoded").is_some() {
         resolves.push("collection_content_not_decoded");
     }
-    for (orphan, _) in rules {
-        losses.add("AgLibraryCollectionContent", "collection", Disposition::Unsupported, "rules_collection_unresolved", Some(orphan));
-    }
+    debug_assert!(rules.is_empty(), "rule rows for unknown collections are refused at walk time");
 
     // Keywords: validated tree plus synonyms.
     let pairs: Vec<(i64, Option<i64>)> = catalog.keywords.iter().map(|k| (k.local_id, k.parent)).collect();
@@ -502,9 +590,9 @@ pub fn extract_library(
         .collect();
     let at: HashMap<i64, usize> = keywords.iter().enumerate().map(|(i, k)| (k.local_id, i)).collect();
     for (keyword, name) in raw.synonyms {
-        match at.get(&keyword) {
-            Some(&i) => keywords[i].synonyms.push(name),
-            None => losses.add("AgLibraryKeywordSynonym", "keyword", Disposition::Unsupported, "synonym_keyword_unresolved", Some(keyword)),
+        // Synonym rows for unknown keywords are refused at walk time (orphan_row).
+        if let Some(&i) = at.get(&keyword) {
+            keywords[i].synonyms.push(name);
         }
     }
     if catalog.loss("unmapped_table", "unmapped_table").is_some()

@@ -968,7 +968,7 @@ pub fn extract_catalog(
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<CatalogProposal> {
-    extract_with(grant, limits, cancel, |_, _, _, _| Ok(())).map(|(p, ())| p)
+    extract_with(grant, limits, cancel, |_, _, _, _, _| Ok(())).map(|(p, ())| p)
 }
 
 /// The fixed extraction with an `extra` reader that runs over the same decoded database after
@@ -979,7 +979,7 @@ pub(crate) fn extract_with<T>(
     grant: &Grant,
     limits: &Limits,
     cancel: &CancellationToken,
-    extra: impl FnOnce(&Db<'_>, &Schema, &Limits, &CancellationToken) -> Result<T>,
+    extra: impl FnOnce(&Db<'_>, &Schema, &Limits, &CancellationToken, &CatalogProposal) -> Result<T>,
 ) -> Result<(CatalogProposal, T)> {
     limits.validate()?;
     check_cancel(cancel)?;
@@ -1072,12 +1072,7 @@ pub(crate) fn extract_with<T>(
         x.loss("wal", "", Disposition::Missing, "wal_invalid_tail_ignored", wal.invalid_tail_bytes, None);
     }
 
-    let extra = extra(&db, &schema, limits, cancel)?;
 
-    let after = digest(grant, cancel)?;
-    if before != after {
-        return Err(LrcatError::SourceChanged);
-    }
     let (losses, counts) = x.finish();
     let proposal = CatalogProposal {
         fingerprint: Fingerprint {
@@ -1100,5 +1095,11 @@ pub(crate) fn extract_with<T>(
         decoder: DECODER_ID,
         notice: CONVERSION_NOTICE,
     };
+    let extra = extra(&db, &schema, limits, cancel, &proposal)?;
+
+    let after = digest(grant, cancel)?;
+    if before != after {
+        return Err(LrcatError::SourceChanged);
+    }
     Ok((proposal, extra))
 }

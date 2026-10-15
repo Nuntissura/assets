@@ -1,0 +1,17 @@
+{
+  "files": {
+    "synthetic-library.lrcat": {
+      "bytes": 28672,
+      "sha256": "04567b86035ad94da2791fc8b6630a981bb989b3ef1ca525e718402ecf300c8b"
+    }
+  },
+  "generator": "generate_library_fixture.py",
+  "generator_location": "kept OUTSIDE the product repository (CX-503R): artifact root WP-KERNEL-STUDIO/interop-lrcat/fixtures-gen/generate_library_fixture.py",
+  "generator_notes": "offline, run once with python -I and the standard sqlite3 module; the committed fixture is the output; no test or build step runs it",
+  "generator_sha256": "12453c917290e1a3f4e6d2046d5b62b7d36fe9954066fc2aad0f1591d74aac8b",
+  "lane": "SMB-LIGHTROOM-CATALOG",
+  "page_size": 1024,
+  "purpose": "synthetic lrcat-shaped library fixture (collections, smart rules, keyword tree, synonyms, XMP packets); byte-decoding proof only; not Lightroom-written; no personal data",
+  "python": "3.14.0",
+  "sqlite_library_version": "3.50.4"
+}

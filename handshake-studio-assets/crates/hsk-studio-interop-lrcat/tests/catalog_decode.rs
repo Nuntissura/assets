@@ -577,6 +577,7 @@ fn cancel_stale_no_source_write_no_sql_closure() {
             include_str!("../src/error.rs"),
             include_str!("../src/library.rs"),
             include_str!("../src/lua_rules.rs"),
+            include_str!("../src/xmp.rs"),
             manifest,
         ];
         for needle in ["rusqlite", "libsqlite3", "sqlx", "turso", "limbo", "libsql", "sea-orm", "diesel", "surrealdb", "sqlite3_"] {
@@ -586,7 +587,14 @@ fn cancel_stale_no_source_write_no_sql_closure() {
         assert!(!lib.contains("pub mod"), "internal modules stay private");
         assert_eq!(
             PUBLIC_ENTRYPOINTS,
-            ["extract_catalog", "extract_library", "parse_smart_rules", "resolve_hierarchy", "report"]
+            [
+                "extract_catalog",
+                "extract_library",
+                "parse_smart_rules",
+                "resolve_hierarchy",
+                "decode_xmp_packet",
+                "report"
+            ]
         );
         for name in PUBLIC_ENTRYPOINTS {
             assert!(DESCRIPTOR.contains(name));
