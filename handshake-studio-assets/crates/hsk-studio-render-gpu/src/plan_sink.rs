@@ -26,7 +26,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::device::{DeviceInfo, DeviceOptions, GpuContext};
 use crate::error::{GpuError, Reason};
-use crate::pipeline::PipelineFault;
+use crate::pipeline::{ErrorScopes, PipelineFault};
 use crate::ext::{
     AdjustGpu, BlendIfGpu, EXT_BYTES, FeatherError, FeatherPlane, LUT_BYTES, MIN_LUT_BYTES,
     compile_adjustment, ext_bytes, feather_plane, opcode_of,
@@ -1051,6 +1051,9 @@ struct Inner {
     /// Detail of the most recent pipeline creation failure (acquire, reacquire or the test-faults
     /// probe); cleared by a successful (re)acquire.
     pipeline_fault: Option<PipelineFault>,
+    /// Detail of the most recent execution that ended in a typed submit/read-back fault or a
+    /// caught panic; cleared by the next execution (lane SMB-RENDER-GPU-SUBMIT-FAULT).
+    submit_fault: Option<PipelineFault>,
 }
 
 /// GPU backend over the pigment `RenderBackend` port. Device use is serialised by one mutex.
@@ -1096,7 +1099,7 @@ impl GpuBackend {
                 // A device existed but the backend cannot run (shader/pipeline creation): kept as
                 // its own typed failure, distinct from `Unavailable`, with its detail.
                 error => {
-                    fault = failure.fault;
+                    fault = failure.fault.map(|f| *f);
                     (State::Failed(error), 0)
                 }
             },
@@ -1129,6 +1132,7 @@ impl GpuBackend {
                 last_generation,
                 stats: None,
                 pipeline_fault: None,
+                submit_fault: None,
             }),
         }
     }
@@ -1215,6 +1219,29 @@ impl GpuBackend {
             error
         })
     }
+    /// Detail of the most recent execution's typed fault: an error captured while a chunk's
+    /// commands were encoded, submitted or read back (`submit_fault`, `readback_map_failed`,
+    /// `submit_scope_timeout`, carried by `GpuError::Gpu(code)`) or a caught panic
+    /// (`submit_panic`, the device is then latched lost), with the operation label, the label
+    /// wgpu reports for the failing object, the class and the redacted backend message (lane
+    /// SMB-RENDER-GPU-SUBMIT-FAULT, tests/gpu_submit_fault.rs). `None` after an execution without
+    /// such a fault.
+    pub fn submit_fault(&self) -> Option<PipelineFault> {
+        self.lock().submit_fault.clone()
+    }
+    /// Fault-injection hook (V4-04: compiled only with the `test-faults` feature): arm one real
+    /// execution fault on the live device for the next execution (`false` when there is no live
+    /// device).
+    #[cfg(feature = "test-faults")]
+    pub fn inject_submit_fault(&self, fault: crate::pipeline::InjectedFault) -> bool {
+        match &self.lock_refreshed().state {
+            State::Ready(ctx) => {
+                ctx.inject(fault);
+                true
+            }
+            _ => false,
+        }
+    }
     /// Generation of the most recent device; 0 before any device existed.
     pub fn generation(&self) -> u64 {
         self.lock().last_generation
@@ -1260,7 +1287,7 @@ impl GpuBackend {
             Ok(ctx) => ctx,
             Err(failure) => {
                 if failure.fault.is_some() {
-                    inner.pipeline_fault = failure.fault;
+                    inner.pipeline_fault = failure.fault.map(|f| *f);
                 }
                 return Err(failure.error);
             }
@@ -1350,18 +1377,49 @@ impl GpuBackend {
         residency.reset_peak();
         let evictions_before = residency.evictions();
         let mut stats = GpuStats::default();
-        let result = run(
-            ctx,
-            residency,
-            &self.options,
-            &prepared,
-            plan,
-            request,
-            cancel,
-            sink,
-            &mut stats,
-            texture,
-        );
+        ctx.clear_fault_detail();
+        // Panic guard: a panic inside the execution (wgpu's fatal paths such as
+        // `Buffer::get_mapped_range` or `Device::poll`, or a defect here) is the typed
+        // `submit_panic`; the chunk's error scopes are popped while unwinding. The device state
+        // after such a panic is unknown, so the backend latches it as lost (reacquire recovers).
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(
+                ctx,
+                residency,
+                &self.options,
+                &prepared,
+                plan,
+                request,
+                cancel,
+                sink,
+                &mut stats,
+                texture,
+            )
+        }));
+        let result = match result {
+            Ok(result) => {
+                // detail of a typed execution fault (None after a clean execution)
+                let detail = ctx.fault_detail();
+                (result, detail)
+            }
+            Err(payload) => {
+                let fault = PipelineFault::new(
+                    "submit_panic",
+                    EXECUTE_LABEL,
+                    "panic",
+                    &crate::pipeline::panic_text(payload.as_ref()),
+                );
+                let error = fault.error();
+                let generation = ctx.generation();
+                let adapter = ctx.info().text();
+                residency.release_since(mark);
+                inner.state = State::Lost { generation, adapter };
+                inner.submit_fault = Some(fault);
+                return Err(error);
+            }
+        };
+        let (result, detail) = result;
+        inner.submit_fault = detail;
         stats.peak_resident_bytes = residency.peak_used();
         stats.evictions = residency.evictions().saturating_sub(evictions_before);
         residency.release_since(mark);
@@ -3183,6 +3241,16 @@ fn run(
             let count = texel_bytes(rect.width, rect.height);
             // The frame: the chunk plus the effect margin (the chunk itself without effects).
             let frame = grow_rect(rect, margin)?;
+            // Every device call of this chunk (passes, submits, read-back) runs under the
+            // out-of-memory, internal and validation scopes: an error raised there is the typed
+            // `submit_fault` with its detail, not the uncaptured latch (`device_fault`). The scopes
+            // are popped below, or by `Drop` on an early return or an unwind (lane
+            // SMB-RENDER-GPU-SUBMIT-FAULT).
+            let scopes = ErrorScopes::push(device);
+            let injected = ctx.take_injected();
+            if injected.panic {
+                panic!("injected execution panic (test-faults)");
+            }
 
             // Transparent backdrop for this frame, then the root group (transparent backdrop, so
             // isolated and not are the same here) or the single leaf.
@@ -3192,9 +3260,18 @@ fn run(
             } else {
                 eval_layer(&mut ex, prepared, &root_layer, frame, 0)?;
             }
+            // The passes of this chunk are submitted: their errors are attributed to the chunk;
+            // the output step gets its own scopes and label.
+            if let Some(captured) = scopes.finish() {
+                return Err(submit_fault(ctx, "submit_fault", CHUNK_LABEL, captured));
+            }
+            let scopes = ErrorScopes::push(device);
             // Shared-device output: the chunk goes straight into the caller's texture, no read-back.
             if let Some(out) = texture {
                 out.write_chunk(&ex.levels[0], rect, frame.width, margin)?;
+                if let Some(captured) = scopes.finish() {
+                    return Err(submit_fault(ctx, "submit_fault", OUTPUT_LABEL, captured));
+                }
                 chunks = chunks.saturating_add(1);
                 cx = cx.checked_add(side_w).ok_or_else(overflow)?;
                 continue;
@@ -3219,7 +3296,14 @@ fn run(
                     encoder.copy_buffer_to_buffer(&ex.levels[0], first, &staging, to, row_bytes);
                 }
             }
+            if injected.copy_out_of_bounds {
+                let past_end = staging.size().saturating_add(16);
+                encoder.copy_buffer_to_buffer(&ex.levels[0], 0, &staging, 0, past_end);
+            }
             queue.submit(Some(encoder.finish()));
+            if injected.staging_destroyed {
+                staging.destroy();
+            }
             let (tx, rx) = std::sync::mpsc::channel();
             staging
                 .slice(0..count)
@@ -3243,7 +3327,12 @@ fn run(
                 });
             }
             if !matches!(rx.try_recv(), Ok(Ok(()))) {
-                return Err(GpuError::Gpu("readback_map_failed"));
+                // The scoped error (if any) is the cause of the failed mapping.
+                let captured = scopes.finish().unwrap_or((
+                    "map",
+                    String::from("the read-back buffer could not be mapped"),
+                ));
+                return Err(submit_fault(ctx, "readback_map_failed", READBACK_LABEL, captured));
             }
             colour.clear();
             alpha.clear();
@@ -3262,6 +3351,9 @@ fn run(
             }
             staging.unmap();
             ex.stats.bytes_read_back = ex.stats.bytes_read_back.saturating_add(count);
+            if let Some(captured) = scopes.finish() {
+                return Err(submit_fault(ctx, "submit_fault", READBACK_LABEL, captured));
+            }
             if ctx.take_fault() {
                 return Err(GpuError::Gpu("device_fault"));
             }
@@ -3273,6 +3365,32 @@ fn run(
         cy = cy.checked_add(side_h).ok_or_else(overflow)?;
     }
     Ok(chunks)
+}
+
+/// Operation labels of execution faults.
+const CHUNK_LABEL: &str = "hsk-studio-render-gpu chunk";
+const READBACK_LABEL: &str = "hsk-studio-render-gpu readback";
+const OUTPUT_LABEL: &str = "hsk-studio-render-gpu shared output";
+const EXECUTE_LABEL: &str = "hsk-studio-render-gpu execute";
+
+/// Record the detail of an execution fault on `ctx` and return its typed error. A scope timeout
+/// keeps its own code (`submit_scope_timeout`).
+fn submit_fault(
+    ctx: &GpuContext,
+    code: &'static str,
+    label: &'static str,
+    captured: crate::pipeline::Captured,
+) -> GpuError {
+    let (class, message) = captured;
+    let code = if class == "timeout" && code == "submit_fault" {
+        "submit_scope_timeout"
+    } else {
+        code
+    };
+    let fault = PipelineFault::new(code, label, class, &message);
+    let error = fault.error();
+    ctx.record_fault(fault);
+    error
 }
 
 #[cfg(test)]

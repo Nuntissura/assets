@@ -185,6 +185,11 @@ fn fxc_rejected_kernel_is_a_typed_refusal_before_any_dispatch() {
         .backend;
     check_fxc_fault(&fault, backend, "hsk-studio-render-gpu composite");
     assert!(fault.message.len() <= FAULT_MESSAGE_MAX_BYTES);
+    // machine paths are redacted (lane SMB-RENDER-GPU-SUBMIT-FAULT): FXC names the source by the
+    // working directory plus the label; only the file name stays
+    let cwd = std::env::current_dir().expect("cwd");
+    assert!(!fault.message.contains(&*cwd.to_string_lossy()), "path leaked: {fault}");
+    assert!(!fault.message.contains(":\\"), "drive path leaked: {fault}");
     let extent = rect(0, 0, 4, 4);
     let mut sink = Image::new(extent);
     let detailed = broken.execute_detailed(
@@ -285,12 +290,7 @@ fn probe_hook_is_gated_and_the_fault_is_plain_data() {
             assert!(!t.contains("wgpu"), "public item mentions wgpu: {t}");
         }
     }
-    let fault = PipelineFault {
-        code: "pipeline_create",
-        label: "l",
-        class: "internal",
-        message: String::from("m"),
-    };
+    let fault = PipelineFault::new("pipeline_create", "l", "internal", "m");
     assert_eq!(fault.error(), GpuError::Pipeline("pipeline_create"));
     assert_eq!(fault.to_string(), "pipeline_create(l, internal): m");
 }

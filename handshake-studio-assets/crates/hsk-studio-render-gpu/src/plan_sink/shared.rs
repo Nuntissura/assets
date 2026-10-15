@@ -27,6 +27,7 @@
 use super::{GpuBackend, GpuStats, State, overflow};
 use crate::device::{DeviceOptions, GpuContext};
 use crate::error::GpuError;
+use crate::pipeline::PipelineFault;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::{
@@ -95,7 +96,7 @@ impl OutputPipeline {
     /// Built under `pipeline::guarded` (out-of-memory, internal and validation scopes plus a panic
     /// guard): the host's device has no handler of ours, so an unscoped backend compiler error
     /// would reach wgpu's default handler, which panics (lane SMB-RENDER-GPU-PIPELINE-FAULT).
-    fn new(device: &wgpu::Device) -> Result<Self, GpuError> {
+    fn new(device: &wgpu::Device) -> Result<Self, PipelineFault> {
         const LABEL: &str = "hsk-studio-render-gpu shared output";
         crate::pipeline::guarded(device, LABEL, crate::pipeline::Stage::Pipeline, || {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -162,7 +163,6 @@ impl OutputPipeline {
                 params,
             }
         })
-        .map_err(|fault| fault.error())
     }
 }
 
@@ -254,14 +254,17 @@ pub struct SharedDevice {
 
 impl SharedDevice {
     /// Wrap the caller's device and queue (clones of wgpu's reference-counted handles). Builds the
-    /// render-gpu compute pipelines and the output pass on that device; a failure is the typed
-    /// `GpuError::Pipeline`.
+    /// render-gpu compute pipelines and the output pass on that device; a failure is the
+    /// [`PipelineFault`] detail (code as `GpuError::Pipeline`, failing object label, wgpu class,
+    /// redacted backend message; lane SMB-RENDER-GPU-SUBMIT-FAULT, test
+    /// shared_device_new_returns_the_fault_detail). Execution faults on the shared device are
+    /// read from [`GpuBackend::submit_fault`] of [`SharedDevice::backend`].
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         adapter: wgpu::AdapterInfo,
         options: DeviceOptions,
-    ) -> Result<Self, GpuError> {
+    ) -> Result<Self, PipelineFault> {
         let ctx = GpuContext::from_external(device.clone(), queue.clone(), adapter, &options)?;
         let generation = ctx.generation();
         let output = OutputPipeline::new(device)?;

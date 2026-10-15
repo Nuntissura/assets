@@ -8,7 +8,7 @@ use crate::pipeline::PipelineFault;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::render_plan::BackendError;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -149,12 +149,21 @@ fn buffer_cap(device: &wgpu::Device, options: &DeviceOptions) -> u64 {
         .min(u64::from(limits.max_storage_buffer_binding_size))
 }
 
+/// The armed execution fault of [`GpuContext::take_injected`] (all false in a default build: no
+/// injection exists there, V4-04).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Injected {
+    pub(crate) copy_out_of_bounds: bool,
+    pub(crate) staging_destroyed: bool,
+    pub(crate) panic: bool,
+}
+
 /// Failure of [`GpuContext::acquire_with`]: the typed error and, for a pipeline failure, its
 /// detail.
 #[derive(Debug)]
 pub(crate) struct AcquireFailure {
     pub(crate) error: GpuError,
-    pub(crate) fault: Option<PipelineFault>,
+    pub(crate) fault: Option<Box<PipelineFault>>,
 }
 impl From<GpuError> for AcquireFailure {
     fn from(error: GpuError) -> Self {
@@ -163,7 +172,7 @@ impl From<GpuError> for AcquireFailure {
 }
 impl From<PipelineFault> for AcquireFailure {
     fn from(fault: PipelineFault) -> Self {
-        Self { error: fault.error(), fault: Some(fault) }
+        Self { error: fault.error(), fault: Some(Box::new(fault)) }
     }
 }
 impl From<AcquireFailure> for GpuError {
@@ -177,6 +186,11 @@ impl From<AcquireFailure> for GpuError {
 struct Signals {
     lost: AtomicBool,
     fault: AtomicBool,
+    /// Detail of the most recent typed execution fault (lane SMB-RENDER-GPU-SUBMIT-FAULT).
+    detail: Mutex<Option<PipelineFault>>,
+    /// One-shot injected execution fault (feature `test-faults`, V4-04).
+    #[cfg(feature = "test-faults")]
+    injected: Mutex<Option<crate::pipeline::InjectedFault>>,
 }
 
 /// One device generation. All wgpu objects are private; a lost context is not reused: acquire a
@@ -293,12 +307,12 @@ impl GpuContext {
             return Err(GpuError::DeviceLost { generation }.into());
         }
         if signals.fault.swap(false, Ordering::AcqRel) {
-            return Err(AcquireFailure::from(PipelineFault {
-                code: "pipeline_create",
-                label: "hsk-studio-render-gpu",
-                class: "uncaptured",
-                message: String::from("an error reached the uncaptured-error handler while the pipelines were built"),
-            }));
+            return Err(AcquireFailure::from(PipelineFault::new(
+                "pipeline_create",
+                "hsk-studio-render-gpu",
+                "uncaptured",
+                "an error reached the uncaptured-error handler while the pipelines were built",
+            )));
         }
         let info = info_of(adapter.get_info(), generation);
         let max_buffer_bytes = buffer_cap(&device, options);
@@ -324,8 +338,8 @@ impl GpuContext {
         queue: wgpu::Queue,
         adapter: wgpu::AdapterInfo,
         options: &DeviceOptions,
-    ) -> Result<Self, GpuError> {
-        let kernel = Kernel::new(&device, None).map_err(|fault| fault.error())?;
+    ) -> Result<Self, PipelineFault> {
+        let kernel = Kernel::new(&device, None)?;
         let max_buffer_bytes = buffer_cap(&device, options);
         Ok(Self {
             device,
@@ -354,6 +368,40 @@ impl GpuContext {
             })
         } else {
             Ok(())
+        }
+    }
+    /// Record the detail of a typed execution fault (read by `GpuBackend::submit_fault`).
+    pub(crate) fn record_fault(&self, fault: PipelineFault) {
+        *self.signals.detail.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
+    }
+    /// Clear the execution-fault detail (start of an execution).
+    pub(crate) fn clear_fault_detail(&self) {
+        *self.signals.detail.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+    /// The detail of the most recent typed execution fault.
+    pub(crate) fn fault_detail(&self) -> Option<PipelineFault> {
+        self.signals.detail.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+    /// Arm a one-shot execution fault (feature `test-faults`).
+    #[cfg(feature = "test-faults")]
+    pub(crate) fn inject(&self, fault: crate::pipeline::InjectedFault) {
+        *self.signals.injected.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
+    }
+    /// Take the armed execution fault (all false without `test-faults`).
+    pub(crate) fn take_injected(&self) -> Injected {
+        #[cfg(feature = "test-faults")]
+        {
+            use crate::pipeline::InjectedFault;
+            let armed = self.signals.injected.lock().unwrap_or_else(PoisonError::into_inner).take();
+            Injected {
+                copy_out_of_bounds: armed == Some(InjectedFault::ReadbackCopyOutOfBounds),
+                staging_destroyed: armed == Some(InjectedFault::StagingDestroyed),
+                panic: armed == Some(InjectedFault::Panic),
+            }
+        }
+        #[cfg(not(feature = "test-faults"))]
+        {
+            Injected::default()
         }
     }
     /// Read and clear the uncaptured-error latch (an API failure that was not a loss).
