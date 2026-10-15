@@ -29,8 +29,11 @@
 //! was; `finish` returns bytes only on success (tests `hostile_sizes_are_typed_refusals`,
 //! `hostile_fonts_are_typed_refusals`).
 #![deny(clippy::arithmetic_side_effects)]
+mod cff;
+mod pdfx;
 mod render;
 mod sfnt;
+pub use pdfx::{PDFX4_VERSION, PdfXReport, PdfXRule, check_pdfx4};
 mod subset;
 pub use render::{RenderedPage, render_page};
 #[cfg(test)]
@@ -59,6 +62,8 @@ pub const MAX_EXPORT_TEXT: usize = 4096;
 const MAX_GLYPH_TEXT: usize = 16;
 /// `bfchar` entries per block (Adobe TN 5014: at most 100).
 const BFCHAR_BLOCK: usize = 100;
+/// Most stops of one gradient (Folio's ceiling).
+pub const MAX_GRADIENT_STOPS: usize = 1024;
 /// Deepest nesting of open transparency groups on one page.
 const MAX_GROUP_DEPTH: usize = 32;
 const VERSIONS: [&str; 5] = ["1.4", "1.5", "1.6", "1.7", "2.0"];
@@ -124,6 +129,11 @@ pub enum ExportError {
     TextTooLong,
     /// An alpha or opacity outside 0..=1.
     AlphaOutOfRange,
+    /// A gradient with no stops, more than [`MAX_GRADIENT_STOPS`], offsets outside 0..=1 or decreasing, a negative
+    /// radius or a singular matrix.
+    InvalidGradient,
+    /// A PDF/X-4 requirement the request cannot meet (`what` names it).
+    PdfXRequirement(&'static str),
     /// `end_group` without an open group, `finish` with one open, or groups deeper than 32.
     UnbalancedGroup,
     /// A soft mask image that is not `DeviceGray` without alpha.
@@ -171,6 +181,8 @@ impl ExportError {
             Self::IccComponentsMismatch => "icc_components_mismatch",
             Self::TextTooLong => "text_too_long",
             Self::AlphaOutOfRange => "alpha_out_of_range",
+            Self::InvalidGradient => "invalid_gradient",
+            Self::PdfXRequirement(_) => "pdfx_requirement",
             Self::UnbalancedGroup => "unbalanced_group",
             Self::InvalidMask => "invalid_mask",
             Self::RenderOverBudget => "render_over_budget",
@@ -231,10 +243,24 @@ pub struct ExportOptions<'a> {
     /// Embed only the glyphs used (glyph ids preserved, `subset.rs`; default true). `false` embeds
     /// the whole font program.
     pub subset_fonts: bool,
+    /// Write the PDF/X-4 identification this crate implements (`pdfx.rs`; conformance stays
+    /// `not_proven`). Requires a `GtsPdfx` output intent, version 1.6 or later and a TrimBox on
+    /// every page.
+    pub pdfx4: Option<PdfX4<'a>>,
+}
+
+/// PDF/X-4 identification values (no clock is read: dates come from the caller).
+#[derive(Clone, Copy, Debug)]
+pub struct PdfX4<'a> {
+    /// PDF date strings (`D:20261015000000Z`).
+    pub created: &'a str,
+    pub modified: &'a str,
+    /// `/Trapped`: whether the document has been trapped.
+    pub trapped: bool,
 }
 impl Default for ExportOptions<'_> {
     fn default() -> Self {
-        Self { version: "1.7", output_intent: None, info_title: None, subset_fonts: true }
+        Self { version: "1.7", output_intent: None, info_title: None, subset_fonts: true, pdfx4: None }
     }
 }
 
@@ -386,6 +412,31 @@ impl BlendMode {
     }
 }
 
+/// Axial or radial shading geometry in gradient space (mapped to user space by `Gradient::matrix`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradientGeometry {
+    Axial { from: [f64; 2], to: [f64; 2] },
+    Radial { from: [f64; 2], from_radius: f64, to: [f64; 2], to_radius: f64 },
+}
+
+/// One colour stop: offset 0..=1 along the gradient, colour components 0..=1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradientStop {
+    pub offset: f64,
+    pub colour: [f64; 3],
+}
+
+/// A gradient fill: geometry, stops (non-decreasing offsets), `/Extend`, the gradient-to-user
+/// matrix and the colour space (`None` = DeviceRGB, else a 3-component ICC profile).
+#[derive(Clone, Copy, Debug)]
+pub struct Gradient<'a> {
+    pub geometry: GradientGeometry,
+    pub stops: &'a [GradientStop],
+    pub extend: [bool; 2],
+    pub matrix: [f64; 6],
+    pub profile: Option<IccHandle>,
+}
+
 /// Constant alpha and blend mode of the drawings that follow on a page (an `/ExtGState` with
 /// `/ca`, `/CA`, `/BM` set after each drawing's `q`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -440,6 +491,9 @@ struct Level {
     /// (resource name, XObject number) of images and forms.
     xobjects: Vec<(String, u32)>,
     gstates: Vec<(String, u32)>,
+    shadings: Vec<(String, u32)>,
+    /// Open `push_clip` levels.
+    clips: usize,
     state: DrawState,
 }
 
@@ -454,6 +508,8 @@ struct PageBuild {
 struct FontBuild {
     type0: u32,
     num_glyphs: u16,
+    /// CID of each glyph id for a CID-keyed CFF font (codes are CIDs); `None`: codes are glyph ids.
+    gid_to_cid: Option<std::rc::Rc<Vec<u16>>>,
     /// Index into `PdfExport::subset_files` when subsetting.
     file: Option<usize>,
 }
@@ -486,6 +542,8 @@ pub struct PdfExport {
     fonts: Vec<FontBuild>,
     font_files: BTreeMap<[u8; 32], u32>,
     subset: bool,
+    pdfx4: Option<(String, String, bool, String)>,
+    shadings: usize,
     subset_files: Vec<SubsetFile>,
     subset_by_hash: BTreeMap<[u8; 32], usize>,
     profiles: Vec<IccBuild>,
@@ -597,6 +655,8 @@ impl PdfExport {
             fonts: Vec::new(),
             font_files: BTreeMap::new(),
             subset: options.subset_fonts,
+            pdfx4: None,
+            shadings: 0,
             subset_files: Vec::new(),
             subset_by_hash: BTreeMap::new(),
             profiles: Vec::new(),
@@ -610,10 +670,31 @@ impl PdfExport {
         ex.reserve(4)?;
         ex.catalog = ex.alloc();
         ex.pages_root = ex.alloc();
-        if let Some(title) = options.info_title {
+        if let Some(x) = &options.pdfx4 {
+            let ok_version = options.version.split_once('.').and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?))).is_some_and(|(a, b)| a > 1 || b >= 6);
+            if !ok_version {
+                return Err(ExportError::PdfXRequirement("version_1_6"));
+            }
+            if !options.output_intent.is_some_and(|o| o.subtype == OutputIntentSubtype::GtsPdfx) {
+                return Err(ExportError::PdfXRequirement("gts_pdfx_output_intent"));
+            }
+            if !(pdfx::valid_date(x.created) && pdfx::valid_date(x.modified)) {
+                return Err(ExportError::PdfXRequirement("pdf_dates"));
+            }
+        }
+        if options.info_title.is_some() || options.pdfx4.is_some() {
             let mut info = Dict::default();
-            info.set("Title", text_bytes(title)?);
+            if let Some(title) = options.info_title {
+                info.set("Title", text_bytes(title)?);
+            }
             info.set("Producer", Object::Str(b"hsk-studio-press".to_vec()));
+            if let Some(x) = &options.pdfx4 {
+                info.set("GTS_PDFXVersion", Object::Str(pdfx::PDFX4_VERSION.as_bytes().to_vec()));
+                info.set("CreationDate", Object::Str(x.created.as_bytes().to_vec()));
+                info.set("ModDate", Object::Str(x.modified.as_bytes().to_vec()));
+                info.set("Trapped", name(if x.trapped { "True" } else { "False" }));
+                ex.pdfx4 = Some((x.created.to_owned(), x.modified.to_owned(), x.trapped, options.info_title.unwrap_or("").to_owned()));
+            }
             let num = ex.alloc();
             ex.insert(num, Object::Dict(info));
             ex.info = Some(num);
@@ -784,6 +865,9 @@ impl PdfExport {
             }
         };
         let level = self.top(page)?;
+        if level.clips != 0 {
+            return Err(ExportError::UnbalancedGroup);
+        }
         if level.ops.is_empty() {
             if let Some(p) = self.pages.get_mut(page.0) {
                 p.levels.pop();
@@ -946,6 +1030,13 @@ impl PdfExport {
             }
             res.set("ColorSpace", Object::Dict(d));
         }
+        if !l.shadings.is_empty() {
+            let mut d = Dict::default();
+            for (n, num) in &l.shadings {
+                d.set_key(n.as_bytes(), rf(*num));
+            }
+            res.set("Shading", Object::Dict(d));
+        }
         if !l.gstates.is_empty() {
             let mut d = Dict::default();
             for (n, num) in &l.gstates {
@@ -959,6 +1050,14 @@ impl PdfExport {
     /// Adds a page; boxes must be finite with positive size, trim and bleed inside the media box.
     pub fn add_page(&mut self, spec: PageSpec) -> Result<PageHandle> {
         check_box(&spec.media_box_pt)?;
+        if self.pdfx4.is_some() && spec.trim_box_pt.is_none() {
+            return Err(ExportError::PdfXRequirement("page_trim_box"));
+        }
+        if let (Some(t), Some(b)) = (spec.trim_box_pt, spec.bleed_box_pt)
+            && !inside(&t, &b)
+        {
+            return Err(ExportError::BoxOutsideMedia);
+        }
         for b in [spec.trim_box_pt, spec.bleed_box_pt].into_iter().flatten() {
             check_box(&b)?;
             if !inside(&b, &spec.media_box_pt) {
@@ -1064,6 +1163,140 @@ impl PdfExport {
         {
             l.gstates.push(g);
         }
+        Ok(())
+    }
+
+    /// Clips the drawings that follow on `page` (innermost open group) to `path` until the matching
+    /// [`Self::pop_clip`] (`q path W n`; ISO 32000-1 8.5.4). Depth is capped at 32.
+    pub fn push_clip(&mut self, page: PageHandle, path: &[PathCommand], rule: FillRule) -> Result<()> {
+        let mut ops = vec![op("q", vec![])];
+        ops.extend(Self::path_ops(path)?);
+        ops.push(op(if rule == FillRule::EvenOdd { "W*" } else { "W" }, vec![]));
+        ops.push(op("n", vec![]));
+        if self.top(page)?.clips >= MAX_GROUP_DEPTH {
+            return Err(ExportError::UnbalancedGroup);
+        }
+        self.push_ops(page, ops)?;
+        let l = self.top_mut(page)?;
+        l.clips = l.clips.saturating_add(1);
+        Ok(())
+    }
+
+    /// Ends the innermost [`Self::push_clip`] of `page`.
+    pub fn pop_clip(&mut self, page: PageHandle) -> Result<()> {
+        if self.top(page)?.clips == 0 {
+            return Err(ExportError::UnbalancedGroup);
+        }
+        self.push_ops(page, vec![op("Q", vec![])])?;
+        let l = self.top_mut(page)?;
+        l.clips = l.clips.saturating_sub(1);
+        Ok(())
+    }
+
+    /// Fills `path` with an axial (type 2) or radial (type 3) shading (ISO 32000-1 8.7.4.5.3/4):
+    /// `q path W n cm /Sh sh Q`, the stops as a stitching function (type 3) of linear (type 2)
+    /// pieces, padded to offsets 0 and 1 with the end colours; `extend` is `/Extend`.
+    pub fn fill_path_gradient(&mut self, page: PageHandle, path: &[PathCommand], rule: FillRule, g: &Gradient<'_>) -> Result<()> {
+        self.page(page)?;
+        finite(&g.matrix)?;
+        let [a, b, c, d, _, _] = g.matrix;
+        if (a * d - b * c).abs() < 1e-12 {
+            return Err(ExportError::InvalidGradient);
+        }
+        if g.stops.is_empty() || g.stops.len() > MAX_GRADIENT_STOPS {
+            return Err(ExportError::InvalidGradient);
+        }
+        for s in g.stops {
+            finite(&[s.offset])?;
+            finite(&s.colour)?;
+            if !(0.0..=1.0).contains(&s.offset) || !s.colour.iter().all(|v| (0.0..=1.0).contains(v)) {
+                return Err(ExportError::InvalidGradient);
+            }
+        }
+        if g.stops.windows(2).any(|w| w[1].offset < w[0].offset) {
+            return Err(ExportError::InvalidGradient);
+        }
+        let (coords, kind) = match g.geometry {
+            GradientGeometry::Axial { from, to } => {
+                finite(&[from[0], from[1], to[0], to[1]])?;
+                (vec![from[0], from[1], to[0], to[1]], 2)
+            }
+            GradientGeometry::Radial { from, from_radius, to, to_radius } => {
+                finite(&[from[0], from[1], from_radius, to[0], to[1], to_radius])?;
+                if from_radius < 0.0 || to_radius < 0.0 {
+                    return Err(ExportError::InvalidGradient);
+                }
+                (vec![from[0], from[1], from_radius, to[0], to[1], to_radius], 3)
+            }
+        };
+        let space = match g.profile {
+            Some(h) => {
+                let p = self.profiles.get(h.0).ok_or(ExportError::NoSuchProfile)?;
+                if p.components != 3 {
+                    return Err(ExportError::IccComponentsMismatch);
+                }
+                rf(p.space)
+            }
+            None => name("DeviceRGB"),
+        };
+        let mut stops: Vec<GradientStop> = g.stops.to_vec();
+        if let Some(first) = stops.first().copied()
+            && first.offset > 0.0
+        {
+            stops.insert(0, GradientStop { offset: 0.0, ..first });
+        }
+        if let Some(last) = stops.last().copied()
+            && last.offset < 1.0
+        {
+            stops.push(GradientStop { offset: 1.0, ..last });
+        }
+        if stops.len() == 1 {
+            stops.push(stops[0]);
+        }
+        let piece = |c0: [f64; 3], c1: [f64; 3]| {
+            let mut f = Dict::default();
+            f.set("FunctionType", int(2));
+            f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
+            f.set("C0", Object::Array(c0.iter().map(|v| real(*v)).collect()));
+            f.set("C1", Object::Array(c1.iter().map(|v| real(*v)).collect()));
+            f.set("N", real(1.0));
+            Object::Dict(f)
+        };
+        let function = if stops.len() == 2 {
+            piece(stops[0].colour, stops[1].colour)
+        } else {
+            let mut f = Dict::default();
+            f.set("FunctionType", int(3));
+            f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
+            f.set("Functions", Object::Array(stops.windows(2).map(|w| piece(w[0].colour, w[1].colour)).collect()));
+            let inner = stops.get(1..stops.len().saturating_sub(1)).unwrap_or(&[]);
+            f.set("Bounds", Object::Array(inner.iter().map(|s| real(s.offset)).collect()));
+            f.set("Encode", Object::Array(stops.windows(2).flat_map(|_| [real(0.0), real(1.0)]).collect()));
+            Object::Dict(f)
+        };
+        let mut sd = Dict::default();
+        sd.set("ShadingType", int(kind));
+        sd.set("ColorSpace", space);
+        sd.set("Coords", Object::Array(coords.iter().map(|v| real(*v)).collect()));
+        sd.set("Extend", Object::Array(vec![Object::Bool(g.extend[0]), Object::Bool(g.extend[1])]));
+        sd.set("Function", function);
+        let sh_name = format!("Sh{}", self.shadings);
+        let mut body = Self::path_ops(path)?;
+        body.push(op(if rule == FillRule::EvenOdd { "W*" } else { "W" }, vec![]));
+        body.push(op("n", vec![]));
+        body.push(op("cm", g.matrix.iter().map(|v| real(*v)).collect()));
+        body.push(op("sh", vec![name_obj(&sh_name)]));
+        match self.top(page)?.ops.len().checked_add(body.len()).and_then(|n| n.checked_add(3)) {
+            Some(n) if n <= self.limits.max_content_ops => {}
+            _ => return Err(ExportError::TooManyOperations),
+        }
+        self.reserve(1)?;
+        let num = self.alloc();
+        self.insert(num, Object::Dict(sd));
+        self.shadings = self.shadings.saturating_add(1);
+        let icc = g.profile.map(|h| h.0);
+        self.draw(page, body, icc)?;
+        self.top_mut(page)?.shadings.push((sh_name, num));
         Ok(())
     }
 
@@ -1188,6 +1421,9 @@ impl PdfExport {
     /// ids to their text for `/ToUnicode` (a later entry for the same glyph wins).
     pub fn embed_truetype(&mut self, bytes: &[u8], face_index: u32, widths: &[(u16, u16)], to_unicode: &[(u16, &str)]) -> Result<FontHandle> {
         let facts = sfnt::read(bytes, face_index)?;
+        if facts.cff.is_some() {
+            return Err(ExportError::FontCffNotEmbedded);
+        }
         let n = facts.num_glyphs;
         if widths.iter().any(|(g, _)| *g >= n) || to_unicode.iter().any(|(g, _)| *g >= n) {
             return Err(ExportError::FontGlyphOutOfRange);
@@ -1291,7 +1527,84 @@ impl PdfExport {
             f.used.extend(to_unicode.iter().map(|(g, _)| *g));
             f.members.push((fd_num, cid_num, type0, base.clone()));
         }
-        self.fonts.push(FontBuild { type0, num_glyphs: n, file: subset_index });
+        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: None, file: subset_index });
+        Ok(FontHandle(self.fonts.len().saturating_sub(1)))
+    }
+
+    /// Embeds a TrueType-outline font (as [`Self::embed_truetype`]) or an OpenType-CFF font as Type0
+    /// / CIDFontType0 (`/Identity-H`): a CID-keyed CFF (Top DICT `ROS`) is embedded as the bare CFF
+    /// program (`/FontFile3 /Subtype /CIDFontType0C`), codes are CIDs from the CFF charset and
+    /// `/W` / `/ToUnicode` are keyed by CID; a name-keyed CFF is embedded as the whole OpenType font
+    /// (`/FontFile3 /Subtype /OpenType`) with codes = glyph ids (ISO 32000-2 9.7.4.2 and 9.9; wording
+    /// UNVERIFIED). CFF programs are not subset (`ExportOptions::subset_fonts` applies to TrueType).
+    /// `widths` and `to_unicode` take glyph ids in both cases.
+    pub fn embed_font(&mut self, bytes: &[u8], face_index: u32, widths: &[(u16, u16)], to_unicode: &[(u16, &str)]) -> Result<FontHandle> {
+        let facts = sfnt::read(bytes, face_index)?;
+        let Some((cs, ce)) = facts.cff else {
+            return self.embed_truetype(bytes, face_index, widths, to_unicode);
+        };
+        let program = bytes.get(cs..ce).ok_or(ExportError::FontUnreadable)?;
+        let cf = cff::read(program)?;
+        let n = facts.num_glyphs.min(cf.num_glyphs);
+        if widths.iter().any(|(g, _)| *g >= n) || to_unicode.iter().any(|(g, _)| *g >= n) {
+            return Err(ExportError::FontGlyphOutOfRange);
+        }
+        if to_unicode.iter().any(|(_, t)| t.is_empty() || t.chars().count() > MAX_GLYPH_TEXT) {
+            return Err(ExportError::ToUnicodeInvalid);
+        }
+        let map = cf.cid_keyed.then(|| std::rc::Rc::new(cf.gid_to_cid.clone()));
+        let code = |g: u16| map.as_ref().and_then(|m| m.get(usize::from(g)).copied()).unwrap_or(g);
+        let cid_widths: Vec<(u16, u16)> = widths.iter().map(|(g, w)| (code(*g), *w)).collect();
+        let cid_text: Vec<(u16, &str)> = to_unicode.iter().map(|(g, t)| (code(*g), *t)).collect();
+        let embedded: &[u8] = if cf.cid_keyed { program } else { bytes };
+        self.precheck_raw(embedded.len())?;
+        self.reserve(5)?;
+        let cmap = to_unicode_cmap(&cid_text);
+        let (tu_stream, tu_len) = flate_stream(Dict::default(), cmap.as_bytes());
+        let mut ffd = Dict::default();
+        ffd.set("Subtype", name(if cf.cid_keyed { "CIDFontType0C" } else { "OpenType" }));
+        let (ff_stream, ff_len) = flate_stream(ffd, embedded);
+        let raw = cmap.len().checked_add(embedded.len()).ok_or(ExportError::AggregateOverBudget)?;
+        let written = tu_len.checked_add(ff_len).ok_or(ExportError::AggregateOverBudget)?;
+        self.charge(raw, written)?;
+        let base = facts.ps_name.clone().unwrap_or_else(|| format!("HskFont-{}", &sha256_hex(bytes)[..12]));
+        let scale = |v: i16| f64::from(v) * 1000.0 / f64::from(facts.units_per_em);
+        let (ff_num, fd_num, cid_num, tu_num, type0) = (self.alloc(), self.alloc(), self.alloc(), self.alloc(), self.alloc());
+        let mut fd = Dict::default();
+        fd.set("Type", name("FontDescriptor"));
+        fd.set("FontName", name(&base));
+        fd.set("Flags", int(4));
+        fd.set("FontBBox", Object::Array(facts.bbox.iter().map(|v| real(scale(*v))).collect()));
+        fd.set("ItalicAngle", int(0));
+        fd.set("Ascent", real(scale(facts.ascent)));
+        fd.set("Descent", real(scale(facts.descent)));
+        fd.set("CapHeight", real(scale(facts.cap_height.unwrap_or(facts.ascent))));
+        fd.set("StemV", int(80));
+        fd.set("FontFile3", rf(ff_num));
+        let mut sys = Dict::default();
+        sys.set("Registry", Object::Str(cf.registry.clone().unwrap_or_else(|| "Adobe".into()).into_bytes()));
+        sys.set("Ordering", Object::Str(cf.ordering.clone().unwrap_or_else(|| "Identity".into()).into_bytes()));
+        sys.set("Supplement", int(cf.supplement));
+        let mut cid = Dict::default();
+        cid.set("Type", name("Font"));
+        cid.set("Subtype", name("CIDFontType0"));
+        cid.set("BaseFont", name(&base));
+        cid.set("CIDSystemInfo", Object::Dict(sys));
+        cid.set("FontDescriptor", rf(fd_num));
+        cid.set("W", w_array(&cid_widths));
+        let mut t0 = Dict::default();
+        t0.set("Type", name("Font"));
+        t0.set("Subtype", name("Type0"));
+        t0.set("BaseFont", name(&base));
+        t0.set("Encoding", name("Identity-H"));
+        t0.set("DescendantFonts", Object::Array(vec![rf(cid_num)]));
+        t0.set("ToUnicode", rf(tu_num));
+        self.insert(ff_num, ff_stream);
+        self.insert(fd_num, Object::Dict(fd));
+        self.insert(cid_num, Object::Dict(cid));
+        self.insert(tu_num, tu_stream);
+        self.insert(type0, Object::Dict(t0));
+        self.fonts.push(FontBuild { type0, num_glyphs: n, gid_to_cid: map, file: None });
         Ok(FontHandle(self.fonts.len().saturating_sub(1)))
     }
 
@@ -1314,6 +1627,7 @@ impl PdfExport {
         if glyphs.is_empty() {
             return Ok(());
         }
+        let map = self.fonts.get(font.0).and_then(|f| f.gid_to_cid.clone());
         let (mut body, icc) = self.colour_ops(&fill, false)?;
         body.push(op("BT", vec![]));
         body.push(op("Tf", vec![Object::Name(format!("F{}", font.0).into_bytes()), real(size_pt)]));
@@ -1321,7 +1635,8 @@ impl PdfExport {
             let (gx, gy) = (origin_pt[0] + x, origin_pt[1] + y);
             finite(&[gx, gy])?;
             body.push(op("Tm", vec![int(1), int(0), int(0), int(1), real(gx), real(gy)]));
-            body.push(op("Tj", vec![Object::Str(g.to_be_bytes().to_vec())]));
+            let code = map.as_ref().and_then(|m| m.get(usize::from(*g)).copied()).unwrap_or(*g);
+            body.push(op("Tj", vec![Object::Str(code.to_be_bytes().to_vec())]));
         }
         body.push(op("ET", vec![]));
         self.draw(page, body, icc)?;
@@ -1340,7 +1655,7 @@ impl PdfExport {
         let mut kids = Vec::with_capacity(pages.len());
         for p in &pages {
             check_cancel(cancel)?;
-            if p.levels.len() != 1 {
+            if p.levels.len() != 1 || p.levels.first().is_some_and(|l| l.clips != 0) {
                 return Err(ExportError::UnbalancedGroup);
             }
             let base = p.levels.first().ok_or(ExportError::UnbalancedGroup)?;
@@ -1376,6 +1691,24 @@ impl PdfExport {
         cat.set("Pages", rf(self.pages_root));
         if let Some(oi) = self.output_intent.take() {
             cat.set("OutputIntents", Object::Array(vec![Object::Dict(oi)]));
+        }
+        if let Some((created, modified, trapped, title)) = self.pdfx4.clone() {
+            let xmp = format!(
+                "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\" xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\">\n<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>\n<xmp:CreateDate>{}</xmp:CreateDate>\n<xmp:ModifyDate>{}</xmp:ModifyDate>\n<pdf:Producer>hsk-studio-press</pdf:Producer>\n<pdf:Trapped>{}</pdf:Trapped>\n<pdfxid:GTS_PDFXVersion>{}</pdfxid:GTS_PDFXVersion>\n</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>",
+                pdfx::xml(&title),
+                pdfx::xmp_date(&created),
+                pdfx::xmp_date(&modified),
+                if trapped { "True" } else { "False" },
+                pdfx::PDFX4_VERSION
+            );
+            self.reserve(1)?;
+            self.charge(xmp.len(), xmp.len())?;
+            let mut md = Dict::default();
+            md.set("Type", name("Metadata"));
+            md.set("Subtype", name("XML"));
+            let num = self.alloc();
+            self.insert(num, Object::Stream(Box::new(Stream { dict: md, data: xmp.into_bytes() })));
+            cat.set("Metadata", rf(num));
         }
         self.insert(self.catalog, Object::Dict(cat));
         // Deterministic file identifier: a hash of every object as written (ISO 32000 14.4).
@@ -1467,7 +1800,13 @@ impl PdfExport {
             effective_destination_profile_sha256: profile,
             effective_output_condition: text("OutputConditionIdentifier"),
             effective_oc_registry: text("RegistryName"),
-            effective_pdfx_profile: None,
+            effective_pdfx_profile: doc
+                .info_ref()
+                .and_then(|r| doc.dict_of(r.num))
+                .and_then(|i| match i.get("GTS_PDFXVersion").map(|o| doc.resolve(o)) {
+                    Some(Object::Str(s)) => Some(text_string(s)),
+                    _ => None,
+                }),
             conformance: EXPORT_CONFORMANCE,
         })
     }

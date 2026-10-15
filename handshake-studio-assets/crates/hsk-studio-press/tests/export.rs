@@ -441,3 +441,140 @@ fn paint_device_renders_groups_and_soft_masks() {
     assert_eq!(ex.end_group(p, bad(0.0, Some(0.0))), Err(ExportError::ValueOutOfRange));
     assert_eq!(ex.end_group(p, bad(0.0, Some(f64::NAN))), Err(ExportError::NonFinite));
 }
+
+/// Offset of table `tag` in an sfnt (test-side directory walk).
+fn table_offset(font: &[u8], tag: &[u8; 4]) -> usize {
+    let n = u16::from_be_bytes([font[4], font[5]]) as usize;
+    (0..n)
+        .map(|i| 12 + i * 16)
+        .find(|r| &font[*r..*r + 4] == tag)
+        .map(|r| u32::from_be_bytes([font[r + 8], font[r + 9], font[r + 10], font[r + 11]]) as usize)
+        .unwrap()
+}
+
+/// Lane SMB-LAYOUT-PDF-EXPORT-3: OpenType-CFF fonts, clipping, axial / radial shadings and the
+/// PDF/X-4 identification with its self-check (conformance stays not_proven).
+#[test]
+fn cff_fonts_clipping_gradients_and_pdfx4() {
+    let cancel = CancellationToken::default();
+    let lim = Limits::default();
+    let near = |a: [u8; 3], b: [u8; 3], t: u8| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= t);
+    // Noto Sans SC is CID-keyed CFF (ROS Adobe-Identity-0, fontTools 4.62.1): H = gid 41 = CID 41,
+    // U+4E2D = gid 8805 = CID 9544 (0x2548); advances 728 and 1000 per 1000 em.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 200.0, 100.0])).unwrap();
+    let f = ex.embed_font(NOTO_SC_CFF, 0, &[(41, 728), (8805, 1000)], &[(41, "H"), (8805, "\u{4e2d}")]).unwrap();
+    ex.show_glyphs(p, f, 40.0, [20.0, 40.0], Colour::DeviceGray(0.0), &[(41, 0.0, 0.0), (8805, 60.0, 0.0)]).unwrap();
+    let (bytes, _) = ex.finish(&cancel).unwrap();
+    let content: Vec<u8> = {
+        let mut out = Vec::new();
+        let mut at = 0;
+        let find = |h: &[u8], n: &[u8]| h.windows(n.len()).position(|w| w == n);
+        while let Some(i) = find(&bytes[at..], b">>\nstream\n") {
+            let s = at + i + 10;
+            let e = s + find(&bytes[s..], b"\nendstream").unwrap();
+            if let Ok(d) = miniz_oxide::inflate::decompress_to_vec_zlib(&bytes[s..e])
+                && d.len() < 100_000
+            {
+                out.extend(d);
+            }
+            at = e + 10;
+        }
+        out
+    };
+    let text = String::from_utf8_lossy(&content);
+    // Codes are CIDs: 0x0029 is not printable ASCII (hex string), 0x2548 is "%H" (canonical literal).
+    assert!(text.contains("<0029> Tj") && text.contains("(%H) Tj"), "codes are CIDs");
+    assert!(text.contains("<2548> <4E2D>"), "ToUnicode keyed by CID");
+    assert!(String::from_utf8_lossy(&bytes).contains("/Subtype /CIDFontType0C"));
+    let r = render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap();
+    assert_eq!(r.font_warnings, 0, "the embedded CFF is read");
+    let ink = |x0: u32, x1: u32| (30..62).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|(x, y)| r.pixel(*x, *y) != Some([255, 255, 255])).count();
+    assert!(ink(20, 50) > 100 && ink(80, 120) > 200, "H {} / zhong {}", ink(20, 50), ink(80, 120));
+    // The TrueType path still refuses CFF, a damaged CFF table is unreadable.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    assert_eq!(ex.embed_truetype(NOTO_SC_CFF, 0, &[], &[]), Err(ExportError::FontCffNotEmbedded));
+    let mut broken = NOTO_SC_CFF.to_vec();
+    let at = table_offset(&broken, b"CFF ");
+    broken[at..at + 64].fill(0);
+    assert_eq!(ex.embed_font(&broken, 0, &[], &[]), Err(ExportError::FontUnreadable));
+    assert_eq!(ex.embed_font(NOTO_SC_CFF, 0, &[(40000, 1)], &[]), Err(ExportError::FontGlyphOutOfRange));
+    // Clipping: the left half of the page.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+    assert_eq!(ex.pop_clip(p), Err(ExportError::UnbalancedGroup));
+    ex.push_clip(p, &rect_path(0.0, 0.0, 50.0, 100.0), FillRule::NonZero).unwrap();
+    ex.fill_path(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
+    ex.pop_clip(p).unwrap();
+    let r = render_page(&ex.finish(&cancel).unwrap().0, 0, 1.0, &lim, &cancel).unwrap();
+    assert_eq!((r.pixel(25, 50), r.pixel(75, 50)), (Some([0, 0, 0]), Some([255, 255, 255])));
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+    ex.push_clip(p, &rect_path(0.0, 0.0, 50.0, 100.0), FillRule::NonZero).unwrap();
+    assert_eq!(ex.finish(&cancel).err(), Some(ExportError::UnbalancedGroup), "open clip at finish");
+    // Gradients: axial black -> white across x 0..100; three stops red / green / blue; radial white
+    // at the centre to black at radius 50 (extend: black outside).
+    let id = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let gradient_page = |g: Gradient<'_>| {
+        let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+        let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+        ex.fill_path_gradient(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, &g).unwrap();
+        render_page(&ex.finish(&cancel).unwrap().0, 0, 1.0, &lim, &cancel).unwrap()
+    };
+    let bw = [GradientStop { offset: 0.0, colour: [0.0; 3] }, GradientStop { offset: 1.0, colour: [1.0; 3] }];
+    let r = gradient_page(Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [100.0, 0.0] }, stops: &bw, extend: [true, true], matrix: id, profile: None });
+    assert!(near(r.pixel(25, 50).unwrap(), [64; 3], 4) && near(r.pixel(75, 50).unwrap(), [191; 3], 4), "{:?} {:?}", r.pixel(25, 50), r.pixel(75, 50));
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let rgb = [
+        GradientStop { offset: 0.0, colour: [1.0, 0.0, 0.0] },
+        GradientStop { offset: 0.5, colour: [0.0, 1.0, 0.0] },
+        GradientStop { offset: 1.0, colour: [0.0, 0.0, 1.0] },
+    ];
+    let r = gradient_page(Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [100.0, 0.0] }, stops: &rgb, extend: [true, true], matrix: id, profile: None });
+    assert!(near(r.pixel(50, 50).unwrap(), [0, 255, 0], 6) && near(r.pixel(1, 50).unwrap(), [252, 3, 0], 8), "{:?} {:?}", r.pixel(50, 50), r.pixel(1, 50));
+    let wb = [GradientStop { offset: 0.0, colour: [1.0; 3] }, GradientStop { offset: 1.0, colour: [0.0; 3] }];
+    let r = gradient_page(Gradient { geometry: GradientGeometry::Radial { from: [50.0, 50.0], from_radius: 0.0, to: [50.0, 50.0], to_radius: 50.0 }, stops: &wb, extend: [true, true], matrix: id, profile: None });
+    assert!(near(r.pixel(50, 50).unwrap(), [255; 3], 6), "centre {:?}", r.pixel(50, 50));
+    assert!(near(r.pixel(75, 50).unwrap(), [128; 3], 6), "r 25 {:?}", r.pixel(75, 50));
+    assert!(near(r.pixel(2, 2).unwrap(), [0; 3], 3), "outside, extended {:?}", r.pixel(2, 2));
+    // Gradient refusals.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 10.0, 10.0])).unwrap();
+    let sq = rect_path(0.0, 0.0, 5.0, 5.0);
+    let axial = GradientGeometry::Axial { from: [0.0, 0.0], to: [1.0, 0.0] };
+    let g = |stops, geometry, matrix| Gradient { geometry, stops, extend: [false, false], matrix, profile: None };
+    let down = [GradientStop { offset: 0.8, colour: [0.0; 3] }, GradientStop { offset: 0.2, colour: [1.0; 3] }];
+    let negative = GradientGeometry::Radial { from: [0.0, 0.0], from_radius: -1.0, to: [1.0, 1.0], to_radius: 2.0 };
+    for bad in [g(&[], axial, id), g(&down, axial, id), g(&bw, negative, id), g(&bw, axial, [0.0; 6])] {
+        assert_eq!(ex.fill_path_gradient(p, &sq, FillRule::NonZero, &bad), Err(ExportError::InvalidGradient));
+    }
+    let nan = [GradientStop { offset: f64::NAN, colour: [0.0; 3] }];
+    assert_eq!(ex.fill_path_gradient(p, &sq, FillRule::NonZero, &g(&nan, axial, id)), Err(ExportError::NonFinite));
+    // PDF/X-4: identification written and self-checked; requirements refused when unmet.
+    let x4 = PdfX4 { created: "D:20261015000000Z", modified: "D:20261015010000Z", trapped: false };
+    let intent = OutputIntent { icc: SRGB, components: 3, output_condition_identifier: "sRGB", output_condition: None, registry: Some("http://www.color.org"), subtype: OutputIntentSubtype::GtsPdfx };
+    let opts = ExportOptions { output_intent: Some(intent), info_title: Some("Proof <&> X-4"), pdfx4: Some(x4), ..ExportOptions::default() };
+    let mut ex = PdfExport::new(opts, &lim).unwrap();
+    assert_eq!(ex.add_page(page(A4)), Err(ExportError::PdfXRequirement("page_trim_box")));
+    let p = ex.add_page(PageSpec { media_box_pt: [0.0, 0.0, 120.0, 120.0], trim_box_pt: Some([10.0, 10.0, 110.0, 110.0]), bleed_box_pt: Some([5.0, 5.0, 115.0, 115.0]) }).unwrap();
+    let font = ex.embed_font(INTER, 0, &[(161, 740)], &[(161, "H")]).unwrap();
+    ex.show_glyphs(p, font, 20.0, [20.0, 20.0], Colour::DeviceGray(0.0), &[(161, 0.0, 0.0)]).unwrap();
+    let (bytes, receipt) = ex.finish(&cancel).unwrap();
+    assert_eq!(receipt.effective_pdfx_profile.as_deref(), Some(PDFX4_VERSION));
+    assert_eq!(receipt.conformance, "not_proven");
+    let report = check_pdfx4(&bytes, &lim, &cancel).unwrap();
+    assert!(report.all_passed(), "{:?}", report.failed());
+    assert!(report.rules.len() >= 11 && report.conformance == "not_proven");
+    assert!(String::from_utf8_lossy(&bytes).contains("<rdf:li xml:lang=\"x-default\">Proof &lt;&amp;&gt; X-4</rdf:li>"), "XMP escaped title");
+    // A plain export fails the identification rules.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    ex.add_page(page(A4)).unwrap();
+    let plain = check_pdfx4(&ex.finish(&cancel).unwrap().0, &lim, &cancel).unwrap();
+    for id in ["pdfx4.one_gts_pdfx_output_intent", "pdfx4.info_gts_pdfxversion", "pdfx4.xmp_metadata_pdfxid", "pdfx4.page_trim_inside_bleed_inside_media", "pdfx4.info_trapped"] {
+        assert!(plain.failed().contains(&id), "{id} {:?}", plain.failed());
+    }
+    let refused = |o: ExportOptions<'_>| PdfExport::new(o, &lim).err();
+    assert_eq!(refused(ExportOptions { output_intent: None, ..opts }), Some(ExportError::PdfXRequirement("gts_pdfx_output_intent")));
+    assert_eq!(refused(ExportOptions { version: "1.4", ..opts }), Some(ExportError::PdfXRequirement("version_1_6")));
+    assert_eq!(refused(ExportOptions { pdfx4: Some(PdfX4 { created: "2026-10-15", ..x4 }), ..opts }), Some(ExportError::PdfXRequirement("pdf_dates")));
+}

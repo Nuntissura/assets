@@ -35,8 +35,15 @@
 //!   enabled mask as a luminosity soft mask from [`PdfAssets::mask`]; pass-through groups at full
 //!   opacity draw their children directly. Paint rows set their opacity and blend through
 //!   `/ExtGState`; text fill alpha likewise. Clipping masks are reported, not applied.
-//! - Everything not drawn is a typed loss entry (`LossEntry`), never a silent drop: clipping,
-//!   blend modes PDF lacks, unresolved masks, gradients, non-centre stroke alignment, dashes, unresolved paths,
+//! - Clipping masks (`appearance.clipped`): the layer is clipped to the paths of its base (the nearest
+//!   unclipped layer painted before it at the same level) when the base is a vector layer; other
+//!   bases are reported. Gradient fill rows become axial / radial shadings (press
+//!   `fill_path_gradient`; Folio linear -> type 2, radial focal circle -> start circle, outer circle
+//!   -> end circle; transform composed with the page mapping); spread other than pad, perceptual
+//!   interpolation, stop opacity and midpoints are reported. CFF / OpenType-CFF fonts are embedded
+//!   through press `embed_font`.
+//! - Everything not drawn is a typed loss entry (`LossEntry`), never a silent drop: clip bases that
+//!   are not vector layers, blend modes PDF lacks, unresolved masks, gradients, non-centre stroke alignment, dashes, unresolved paths,
 //!   tiles or profiles, fonts press refuses, layers outside page spreads, unknown layer kinds.
 //!
 //! Hostile input (V4-01/02): index arithmetic is checked; tile sample bytes are computed with
@@ -49,13 +56,13 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     BLEND_PASS_THROUGH, GeometryUnit, Isolation, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
     StrokeAlign, StrokeCap, StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords,
-    StudioDocument, StudioLayer, StudioPaint, StudioRgba, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
+    GradientInterpolation, GradientSpread, StudioDocument, StudioGradient, StudioGradientGeometry, StudioLayer, StudioPaint, StudioRgba, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
 };
 use hsk_studio_layout::{FramePlacement, LayoutProposal, ShapedParagraph, resolve_style};
 use hsk_studio_nib::{OwnedPath, PathElement, PathLimits};
 use hsk_studio_pigment::{Grid, Mask, ResolvedTile};
 use hsk_studio_press::{
-    BlendMode, Colour, DrawState, ExportError, ExportOptions, ExportReceipt, FillRule, FontHandle, GroupStyle, IccHandle,
+    BlendMode, Colour, DrawState, ExportError, Gradient, GradientGeometry, GradientStop, ExportOptions, ExportReceipt, FillRule, FontHandle, GroupStyle, IccHandle,
     ImageColour, ImageSpec, Limits, LineCap, LineJoin, PageHandle, PageSpec, PathCommand, PdfExport, SoftMask, StrokeStyle,
 };
 use std::collections::BTreeMap;
@@ -407,8 +414,18 @@ fn visit(snap: &Snapshot, index: &BTreeMap<&str, usize>, seen: &mut [bool], addr
 impl Cx<'_> {
     fn draw_nodes(&mut self, nodes: &[Node], by_id: &BTreeMap<&str, &StudioLayer>, cancel: &CancellationToken) -> Result<()> {
         let doc = self.doc;
+        // The clip base of a clipped layer: the nearest unclipped layer painted before it at this level.
+        let mut base: Option<&StudioLayer> = None;
         for node in nodes {
             canceled(cancel)?;
+            let (Node::Group(i, _) | Node::Layer(i)) = node;
+            let Some(this) = doc.layers.get(*i) else { continue };
+            let clipped = this.appearance.as_ref().is_some_and(|a| a.clipped);
+            let clip = if clipped { self.clip_to_base(this, base, by_id)? } else { None };
+            if !clipped {
+                base = Some(this);
+            }
+            self.open_clip(clip.as_ref())?;
             match node {
                 Node::Group(i, children) => {
                     let Some(layer) = doc.layers.get(*i) else { continue };
@@ -428,8 +445,99 @@ impl Cx<'_> {
                     self.draw_layer(layer, by_id)?;
                 }
             }
+            self.close_clip(clip.as_ref())?;
         }
         Ok(())
+    }
+
+    /// The clipping path of a clipped layer: the paths of its base (a vector layer: all its paths in
+    /// one clipping path under the first path's fill rule). A missing or non-vector base is reported
+    /// and the layer is drawn unclipped.
+    fn clip_to_base(&mut self, layer: &StudioLayer, base: Option<&StudioLayer>, by_id: &BTreeMap<&str, &StudioLayer>) -> Result<Option<(usize, Vec<OwnedPath>)>> {
+        let Some(base) = base else {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "clip_base_missing");
+            return Ok(None);
+        };
+        let Payload::Vector { path_ids } = &base.payload else {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "clip_base_not_vector");
+            return Ok(None);
+        };
+        let Some(spread) = spread_of(self.doc, by_id, base) else { return Ok(None) };
+        let assets = self.input.assets;
+        let paths: Option<Vec<OwnedPath>> = path_ids.iter().map(|id| assets.path(id).filter(|p| p.validate(&PathLimits::default()).is_ok())).collect();
+        match paths {
+            Some(p) if !p.is_empty() => Ok(Some((spread, p))),
+            _ => {
+                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "clip_base_unresolved");
+                Ok(None)
+            }
+        }
+    }
+
+    fn open_clip(&mut self, clip: Option<&(usize, Vec<OwnedPath>)>) -> Result<()> {
+        let Some((spread, paths)) = clip else { return Ok(()) };
+        for i in 0..self.pages.len() {
+            let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) else { continue };
+            let h = page.handle;
+            let cmds: Vec<PathCommand> = paths.iter().flat_map(|p| commands(p, page)).collect();
+            let rule = paths.first().map_or(FillRule::NonZero, fill_rule);
+            self.ex.push_clip(h, &cmds, rule)?;
+        }
+        Ok(())
+    }
+
+    fn close_clip(&mut self, clip: Option<&(usize, Vec<OwnedPath>)>) -> Result<()> {
+        let Some((spread, _)) = clip else { return Ok(()) };
+        for i in 0..self.pages.len() {
+            if let Some(page) = self.pages.get(i).filter(|p| p.spread == *spread) {
+                let h = page.handle;
+                self.ex.pop_clip(h)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A Folio gradient as a press gradient (module docs); unsupported parts are reported.
+    fn gradient(&mut self, layer: &StudioLayer, g: &StudioGradient) -> Result<Option<MappedGradient>> {
+        let note = |cx: &mut Self, code: &'static str| cx.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, code);
+        if g.spread != GradientSpread::Pad {
+            note(self, "gradient_spread_padded");
+        }
+        if g.interpolation != GradientInterpolation::Classic {
+            note(self, "gradient_interpolation_classic");
+        }
+        if g.stops.iter().any(|s| s.opacity < 100.0) {
+            note(self, "gradient_stop_opacity_ignored");
+        }
+        if g.stops.iter().any(|s| s.midpoint.is_some()) {
+            note(self, "gradient_midpoint_ignored");
+        }
+        let geometry = match g.geometry {
+            StudioGradientGeometry::Linear { x1, y1, x2, y2 } => GradientGeometry::Axial { from: [x1, y1], to: [x2, y2] },
+            StudioGradientGeometry::Radial { cx, cy, r, fx, fy, fr } => GradientGeometry::Radial { from: [fx, fy], from_radius: fr, to: [cx, cy], to_radius: r },
+        };
+        let binding = g.stops.first().map(|s| s.colour.colour_profile_id.clone());
+        let same = g.stops.iter().all(|s| Some(&s.colour.colour_profile_id) == binding.as_ref());
+        let profile = match (&binding, same) {
+            (Some(ProfileBinding::Assigned(id)), true) => {
+                let assets = self.input.assets;
+                match assets.profile(id) {
+                    Some(bytes) => self.profile(bytes)?,
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        if profile.is_none() {
+            note(self, "paint_colour_untagged");
+        }
+        let mut stops: Vec<GradientStop> = g.stops.iter().map(|s| GradientStop { offset: (s.position / 100.0).clamp(0.0, 1.0), colour: [s.colour.r, s.colour.g, s.colour.b] }).collect();
+        stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        if stops.is_empty() {
+            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "gradient_without_stops");
+            return Ok(None);
+        }
+        Ok(Some((geometry, stops, true, profile)))
     }
 
     fn draw_layer(&mut self, layer: &StudioLayer, by_id: &BTreeMap<&str, &StudioLayer>) -> Result<()> {
@@ -458,9 +566,6 @@ impl Cx<'_> {
     /// reported, not applied; an enabled mask becomes a luminosity soft mask from [`PdfAssets::mask`].
     fn group_plan(&mut self, layer: &StudioLayer, spread: usize, group_layer: bool) -> Result<Option<GroupPlan>> {
         let Some(a) = &layer.appearance else { return Ok(None) };
-        if a.clipped {
-            self.loss.note(&layer.layer_id, &layer.kind, LossKind::Approximated, "layer_clipping_not_exported");
-        }
         let opacity = (a.opacity / 100.0) * (a.fill_opacity / 100.0);
         let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
         let mask_on = a.mask.as_ref().is_some_and(|m| m.enabled);
@@ -564,6 +669,9 @@ impl Cx<'_> {
         Ok(())
     }
 }
+
+/// A Folio gradient mapped for press: geometry, stops, pad flag and ICC profile.
+type MappedGradient = (GradientGeometry, Vec<GradientStop>, bool, Option<IccHandle>);
 
 /// The authored appearance of one layer as a PDF transparency group.
 struct GroupPlan {
@@ -702,7 +810,7 @@ impl Cx<'_> {
                 w.push(h);
             }
             let u: Vec<(u16, &str)> = unicode.get(i).map(|m| m.iter().map(|(a, b)| (*a, b.as_str())).collect()).unwrap_or_default();
-            match self.ex.embed_truetype(f.bytes, f.face_index, &w, &u) {
+            match self.ex.embed_font(f.bytes, f.face_index, &w, &u) {
                 Ok(h) => self.fonts.push(Some(h)),
                 Err(
                     e @ (ExportError::FontUnreadable
@@ -957,9 +1065,35 @@ impl Cx<'_> {
             };
             let row_alpha = if opacity.is_finite() { (opacity / 100.0).clamp(0.0, 1.0) } else { 1.0 };
             let row_state = DrawState { fill_alpha: row_alpha, stroke_alpha: row_alpha, blend: row_blend };
-            let StudioPaint::Solid { colour } = paint else {
-                self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "paint_gradient");
-                continue;
+            let colour = match paint {
+                StudioPaint::Solid { colour } => colour,
+                StudioPaint::Gradient { gradient } => {
+                    if stroke.is_some() {
+                        self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "stroke_gradient_not_exported");
+                        continue;
+                    }
+                    let Some((geometry, stops, _, profile)) = self.gradient(layer, gradient)? else { continue };
+                    for pi in 0..self.pages.len() {
+                        let Some(page) = self.pages.get(pi).filter(|p| p.spread == spread && p.overlaps_x(x0, x1)) else { continue };
+                        let handle = page.handle;
+                        let [a, b, c, d, e, f] = gradient.transform;
+                        // Document (y down) gradient transform followed by the page mapping (y up).
+                        let (tx, ty) = page.map(0.0, 0.0);
+                        let matrix = [a, -b, c, -d, e + tx, ty - f];
+                        let mapped: Vec<(Vec<PathCommand>, FillRule)> = paths.iter().map(|p| (commands(p, page), fill_rule(p))).collect();
+                        self.ex.set_draw_state(handle, row_state)?;
+                        for (cmds, rule) in &mapped {
+                            let g = Gradient { geometry, stops: &stops, extend: [true, true], matrix, profile };
+                            match self.ex.fill_path_gradient(handle, cmds, *rule, &g) {
+                                Ok(()) => self.paths = self.paths.saturating_add(1),
+                                Err(ExportError::InvalidGradient) => self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "gradient_invalid"),
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
+                        self.ex.set_draw_state(handle, DrawState::default())?;
+                    }
+                    continue;
+                }
             };
             let Some(colour) = self.colour(layer, colour)? else { continue };
             let style = match stroke {

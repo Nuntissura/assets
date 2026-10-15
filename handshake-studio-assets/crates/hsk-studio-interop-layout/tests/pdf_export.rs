@@ -840,3 +840,92 @@ fn folio_appearance_becomes_transparency_groups() {
     // Spread (355, 52) -> device (58, 61): vector 11 only, 50 percent row inside the 50 percent group.
     assert!(near(r.pixel(58, 61).unwrap(), [255, 191, 191]), "{:?}", r.pixel(58, 61));
 }
+
+/// Lane SMB-LAYOUT-PDF-EXPORT-3 through Folio: vector 11 is clipped to its base (vector 12, ordinal
+/// 0) and filled with a black -> white linear gradient over spread x 350..400; the document is
+/// written with the PDF/X-4 identification and passes the crate's self-check (not_proven).
+#[test]
+fn folio_clipping_gradient_and_pdfx4() {
+    let cancel = CancellationToken::default();
+    let mut d = graph_document();
+    d.layers[1].appearance = Some(LayerAppearance { opacity: 100.0, fill_opacity: 100.0, blend_mode: 2, clipped: true, isolation: Isolation::Isolated, mask: None });
+    let snapshot = validate_document(d, Budget::default(), &cancel, &Everything).unwrap();
+    let mut design = StudioDesignRecords::new(id("SDOC", 1));
+    let stop = |position: f64, v: f64| StudioGradientStop { position, midpoint: None, opacity: 100.0, colour: StudioColor { r: v, g: v, b: v, colour_profile_id: ProfileBinding::Assigned(id("SCPF", 1)) } };
+    design.paint_styles.push(paint_style(11, StudioAppearanceRow::Fill {
+        paint: StudioPaint::Gradient {
+            gradient: StudioGradient {
+                geometry: StudioGradientGeometry::Linear { x1: 350.0, y1: 0.0, x2: 400.0, y2: 0.0 },
+                transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                spread: GradientSpread::Pad,
+                interpolation: GradientInterpolation::Classic,
+                dither: false,
+                stops: vec![stop(0.0, 0.0), stop(100.0, 1.0)],
+            },
+        },
+        opacity: 100.0,
+        blend_mode: 2,
+        visible: true,
+    }));
+    design.paint_styles.push(paint_style(12, StudioAppearanceRow::Fill {
+        paint: StudioPaint::Solid { colour: StudioColor { r: 0.0, g: 0.0, b: 1.0, colour_profile_id: ProfileBinding::Assigned(id("SCPF", 1)) } },
+        opacity: 100.0,
+        blend_mode: 2,
+        visible: true,
+    }));
+    for n in [11u32, 12] {
+        let mut node: StudioNodeDesign = serde_json::from_value(serde_json::json!({"node": {"node_kind": "layer", "node_id": id("SLYR", n)}})).unwrap();
+        node.style_refs.insert("fill_style_id".into(), id("SSTY", n));
+        design.nodes.push(node);
+    }
+    struct Assets;
+    impl PdfAssets for Assets {
+        fn path(&self, path_id: &str) -> Option<OwnedPath> {
+            GraphAssets.path(path_id)
+        }
+        fn raster(&self, _: &str) -> Option<PlacedRaster<'_>> {
+            None
+        }
+        fn profile(&self, profile_id: &str) -> Option<&[u8]> {
+            (profile_id == id("SCPF", 1)).then_some(SRGB)
+        }
+    }
+    let x4 = hsk_studio_interop_layout::press::PdfX4 { created: "D:20261015000000Z", modified: "D:20261015000000Z", trapped: false };
+    let intent = hsk_studio_interop_layout::press::OutputIntent {
+        icc: SRGB,
+        components: 3,
+        output_condition_identifier: "sRGB",
+        output_condition: None,
+        registry: Some("http://www.color.org"),
+        subtype: hsk_studio_interop_layout::press::OutputIntentSubtype::GtsPdfx,
+    };
+    let out = export_pdf(
+        &PdfExportInput {
+            snapshot: &snapshot,
+            design: Some(&design),
+            type_styles: None,
+            stories: &[],
+            fonts: &[],
+            assets: &Assets,
+            options: ExportOptions { output_intent: Some(intent), info_title: Some("folio x4"), pdfx4: Some(x4), ..ExportOptions::default() },
+            limits: Limits::default(),
+        },
+        &cancel,
+    )
+    .unwrap();
+    let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
+    assert!(!codes.iter().any(|c| c.starts_with("clip_") || c.starts_with("gradient_") || *c == "paint_gradient"), "{codes:?}");
+    let report = hsk_studio_interop_layout::press::check_pdfx4(&out.bytes, &Limits::default(), &cancel).unwrap();
+    assert!(report.all_passed(), "{:?}", report.failed());
+    assert_eq!(out.receipt.effective_pdfx_profile.as_deref(), Some("PDF/X-4"));
+    let r = render_page(&out.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 6);
+    // Spread (395, 55) -> device (98, 64): inside both triangles, gradient t = 0.9.
+    assert!(near(r.pixel(98, 64).unwrap(), [230; 3]), "{:?}", r.pixel(98, 64));
+    // Spread (365, 52) -> device (68, 61): inside both, t = 0.3.
+    assert!(near(r.pixel(68, 61).unwrap(), [77; 3]), "{:?}", r.pixel(68, 61));
+    // Spread (355, 52) -> device (58, 61): inside vector 11 only, clipped away (page white).
+    assert_eq!(r.pixel(58, 61), Some([255, 255, 255]));
+    // Spread (405, 55) -> device (108, 64): the base alone (blue).
+    assert!(near(r.pixel(108, 64).unwrap(), [0, 0, 255]), "{:?}", r.pixel(108, 64));
+}

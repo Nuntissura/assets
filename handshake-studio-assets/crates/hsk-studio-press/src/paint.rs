@@ -22,8 +22,13 @@
 //! bytes exceed the layer memory cap are refused BEFORE allocation (their content is not drawn,
 //! [`FlattenNote::WorkBudget`]); a soft mask that cannot be built leaves what it masks undrawn
 //! ([`FlattenNote::SoftMask`]). Tests: the unit tests below and `tests/export.rs`.
-//! What it does not draw (absent from the raster, recorded as a [`FlattenNote`]): pattern and shading
-//! paints, content past the clip nesting cap or a budget. Absent content is not drawn, and an absent occluder uncovers what it
+//! Axial and radial shadings (types 2 and 3, ISO 32000-1 8.7.4.5.3 / 8.7.4.5.4) used as a fill paint
+//! or through `sh` are evaluated per pixel: the pixel centre is mapped back into shading space, the
+//! parameter is the projection onto the axis (axial) or the largest s with the point on circle s
+//! (radial), `/Extend` decides outside [0, 1], and the colour comes from a 1024-entry table of the
+//! shading function over its domain (lane SMB-LAYOUT-PDF-EXPORT-3).
+//! What it does not draw (absent from the raster, recorded as a [`FlattenNote`]): tiling patterns and
+//! the other shading types, content past the clip nesting cap or a budget. Absent content is not drawn, and an absent occluder uncovers what it
 //! covered (R13-F3: such content shows in the raster where a viewer shows the occluder; it is the page's
 //! own content). Region pixels are painted after drawing, so this does not reach a region (test
 //! `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
@@ -72,6 +77,94 @@ const LAYER_PIXEL_BYTES: usize = 36;
 const MAX_LAYER_BYTES: usize = 1 << 29;
 /// Soft masks kept for reuse (by mask and bounds).
 const MAX_MASK_CACHE: usize = 16;
+/// Samples of a shading function table.
+const SHADE_LUT: usize = 1024;
+
+/// An axial or radial shading prepared for per-pixel evaluation.
+struct Shade {
+    /// Device space to shading space.
+    inv: Affine,
+    coords: [f64; 6],
+    axial: bool,
+    extend: [bool; 2],
+    lut: Vec<[f32; 4]>,
+}
+
+impl Shade {
+    fn new(sp: &hayro_interpret::pattern::ShadingPattern) -> Option<Self> {
+        let hayro_interpret::shading::ShadingType::RadialAxial { coords, domain, function, extend, axial } = &*sp.shading.shading_type else {
+            return None;
+        };
+        if !sp.matrix.is_finite() || sp.matrix.determinant().abs() < 1e-12 {
+            return None;
+        }
+        let mut lut = Vec::with_capacity(SHADE_LUT);
+        for k in 0..SHADE_LUT {
+            let s = k as f32 / (SHADE_LUT - 1) as f32;
+            let t = domain[0] + s * (domain[1] - domain[0]);
+            let mut input = hayro_interpret::color::ColorComponents::new();
+            input.push(t);
+            let comps = function.eval(&input)?;
+            lut.push(sp.shading.color_space.to_rgba(&comps, sp.opacity, false).components());
+        }
+        Some(Self { inv: sp.matrix.inverse(), coords: coords.map(f64::from), axial: *axial, extend: *extend, lut })
+    }
+
+    /// The colour at device pixel (x, y), `None` outside the shading.
+    fn at(&self, x: usize, y: usize) -> Option<[f32; 4]> {
+        let p = map(self.inv, x as f64 + 0.5, y as f64 + 0.5);
+        let c = self.coords;
+        let s = if self.axial {
+            let (dx, dy) = (c[2] - c[0], c[3] - c[1]);
+            let len2 = dx * dx + dy * dy;
+            if len2 <= 0.0 {
+                return None;
+            }
+            ((p.x - c[0]) * dx + (p.y - c[1]) * dy) / len2
+        } else {
+            // Circles c(s) = c0 + s (c1 - c0), r(s) = r0 + s (r1 - r0): solve |p - c(s)| = r(s) and
+            // keep the largest admissible s with r(s) >= 0.
+            let (cdx, cdy, dr) = (c[3] - c[0], c[4] - c[1], c[5] - c[2]);
+            let (pdx, pdy) = (p.x - c[0], p.y - c[1]);
+            let a = cdx * cdx + cdy * cdy - dr * dr;
+            let b = pdx * cdx + pdy * cdy + c[2] * dr;
+            let cc = pdx * pdx + pdy * pdy - c[2] * c[2];
+            let roots: [Option<f64>; 2] = if a.abs() < 1e-12 {
+                [(b.abs() > 1e-12).then(|| cc / (2.0 * b)), None]
+            } else {
+                let disc = b * b - a * cc;
+                if disc < 0.0 {
+                    return None;
+                }
+                let r = disc.sqrt();
+                let (s1, s2) = ((b + r) / a, (b - r) / a);
+                [Some(s1.max(s2)), Some(s1.min(s2))]
+            };
+            let ok = |s: f64| c[2] + s * dr >= 0.0 && (s >= 0.0 || self.extend[0]) && (s <= 1.0 || self.extend[1]);
+            roots.into_iter().flatten().find(|s| ok(*s))?
+        };
+        let s = if s < 0.0 {
+            if !self.extend[0] {
+                return None;
+            }
+            0.0
+        } else if s > 1.0 {
+            if !self.extend[1] {
+                return None;
+            }
+            1.0
+        } else {
+            s
+        };
+        self.lut.get((s * (SHADE_LUT - 1) as f64).round() as usize).copied()
+    }
+}
+
+/// A fill paint: one colour, or a shading evaluated per pixel.
+enum Src {
+    Solid([f32; 4]),
+    Shade(Rc<Shade>),
+}
 
 #[derive(Clone, Copy, Debug)]
 struct IRect {
@@ -663,18 +756,55 @@ impl<'c> Painter<'c> {
     }
 
     fn fill_device(&mut self, path: &BezPath, rule: FillRule, rgba: [f32; 4]) {
+        self.fill_src(path, rule, &Src::Solid(rgba));
+    }
+
+    fn fill_src(&mut self, path: &BezPath, rule: FillRule, src: &Src) {
         let Some((alpha, blend)) = self.state() else { return };
         let Some(segs) = self.segments(path) else { return };
         let bounds = self.clip().b;
-        let a = rgba[3] * alpha;
-        if a <= 0.0 {
-            return;
+        match src {
+            Src::Solid(rgba) => {
+                let a = rgba[3] * alpha;
+                if a <= 0.0 {
+                    return;
+                }
+                let color = [rgba[0], rgba[1], rgba[2]];
+                self.cover(&segs, rule, bounds, |p, x, y, c| {
+                    let m = p.clip().at(x, y);
+                    p.composite(x, y, color, c * m, a, blend);
+                });
+            }
+            Src::Shade(sh) => {
+                let sh = sh.clone();
+                self.cover(&segs, rule, bounds, |p, x, y, c| {
+                    if let Some(rgba) = sh.at(x, y) {
+                        let m = p.clip().at(x, y);
+                        p.composite(x, y, [rgba[0], rgba[1], rgba[2]], c * m, rgba[3] * alpha, blend);
+                    }
+                });
+            }
         }
-        let color = [rgba[0], rgba[1], rgba[2]];
-        self.cover(&segs, rule, bounds, |p, x, y, c| {
-            let m = p.clip().at(x, y);
-            p.composite(x, y, color, c * m, a, blend);
-        });
+    }
+
+    /// The paint as a [`Src`]: colours, and axial / radial shading patterns; other patterns are noted.
+    fn paint_src(&mut self, paint: &Paint<'_>) -> Option<Src> {
+        match paint {
+            Paint::Color(c) => Some(Src::Solid(c.to_rgba().components())),
+            Paint::Pattern(p) => match &**p {
+                hayro_interpret::pattern::Pattern::Shading(sp) if sp.transfer_function.is_none() => match Shade::new(sp) {
+                    Some(sh) => Some(Src::Shade(Rc::new(sh))),
+                    None => {
+                        self.notes.insert(FlattenNote::PatternPaint);
+                        None
+                    }
+                },
+                _ => {
+                    self.notes.insert(FlattenNote::PatternPaint);
+                    None
+                }
+            },
+        }
     }
 
     /// One element pixel with shape `shape` and opacity `opacity`, under the ExtGState soft mask in
@@ -719,6 +849,10 @@ impl<'c> Painter<'c> {
     }
 
     fn stroke_device(&mut self, path: &BezPath, transform: Affine, props: &StrokeProps, rgba: [f32; 4]) {
+        self.stroke_src(path, transform, props, &Src::Solid(rgba));
+    }
+
+    fn stroke_src(&mut self, path: &BezPath, transform: Affine, props: &StrokeProps, src: &Src) {
         let scale = transform.determinant().abs().sqrt();
         if !scale.is_finite() || scale <= 0.0 {
             return;
@@ -742,20 +876,20 @@ impl<'c> Painter<'c> {
         let tol = (TOLERANCE / scale).max(1e-6);
         let outline = kurbo::stroke(path.elements().iter().copied(), &stroke, &kurbo::StrokeOpts::default(), tol);
         let device = transformed(&outline, transform);
-        self.fill_device(&device, FillRule::NonZero, rgba);
+        self.fill_src(&device, FillRule::NonZero, src);
     }
 
     fn draw_path_impl(&mut self, path: &BezPath, transform: Affine, paint: &Paint<'_>, mode: &PathDrawMode) {
         if !self.live() || !transform.is_finite() {
             return;
         }
-        let Some(rgba) = self.paint_rgba(paint) else { return };
+        let Some(src) = self.paint_src(paint) else { return };
         match mode {
             PathDrawMode::Fill(rule) => {
                 let device = transformed(path, transform);
-                self.fill_device(&device, *rule, rgba);
+                self.fill_src(&device, *rule, &src);
             }
-            PathDrawMode::Stroke(props) => self.stroke_device(path, transform, props, rgba),
+            PathDrawMode::Stroke(props) => self.stroke_src(path, transform, props, &src),
         }
     }
 

@@ -22,6 +22,8 @@ pub(super) struct FontFacts {
     pub descent: i16,
     pub cap_height: Option<i16>,
     pub ps_name: Option<String>,
+    /// Byte range of the `CFF ` table of an OpenType-CFF font (`None` for TrueType outlines).
+    pub cff: Option<(usize, usize)>,
 }
 
 fn be16(b: &[u8], at: usize) -> Option<u16> {
@@ -34,6 +36,23 @@ fn bei16(b: &[u8], at: usize) -> Option<i16> {
 fn be32(b: &[u8], at: usize) -> Option<u32> {
     let s = b.get(at..at.checked_add(4)?)?;
     Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+/// The byte range of table `tag`, bounds-checked against the file.
+fn table_range(font: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
+    let n = usize::from(be16(font, 4)?);
+    if n > MAX_TABLES {
+        return None;
+    }
+    for i in 0..n {
+        let rec = i.checked_mul(16)?.checked_add(12)?;
+        if font.get(rec..rec.checked_add(4)?)? == tag {
+            let off = usize::try_from(be32(font, rec.checked_add(8)?)?).ok()?;
+            let end = off.checked_add(usize::try_from(be32(font, rec.checked_add(12)?)?).ok()?)?;
+            return (end <= font.len()).then_some((off, end));
+        }
+    }
+    None
 }
 
 /// The bytes of table `tag`, bounds-checked against the file.
@@ -53,29 +72,29 @@ fn table<'a>(font: &'a [u8], tag: &[u8; 4]) -> Option<&'a [u8]> {
     None
 }
 
-/// Reads the facts of a single TrueType-outline font (`glyf`). Refusals: a collection
-/// (`ttcf`) or `face_index != 0` -> `FontCollectionNotEmbedded`; CFF outlines (`OTTO` or a `CFF `
-/// / `CFF2` table without `glyf`) -> `FontCffNotEmbedded`; `fsType` Restricted License (bits 0-3 ==
+/// Reads the facts of a single TrueType-outline (`glyf`) or OpenType-CFF (`CFF `) font. Refusals:
+/// a collection (`ttcf`) or `face_index != 0` -> `FontCollectionNotEmbedded`; CFF2 (variable CFF)
+/// outlines without a `CFF ` table -> `FontCffNotEmbedded`; `fsType` Restricted License (bits 0-3 ==
 /// 2) or Bitmap embedding only (bit 9) -> `FontEmbeddingRestricted`; anything unreadable ->
 /// `FontUnreadable`.
 pub(super) fn read(font: &[u8], face_index: u32) -> Result<FontFacts, ExportError> {
     let version = be32(font, 0).ok_or(BAD)?;
     match &version.to_be_bytes() {
         b"ttcf" => return Err(ExportError::FontCollectionNotEmbedded),
-        b"OTTO" => return Err(ExportError::FontCffNotEmbedded),
-        b"true" | [0, 1, 0, 0] => {}
+        b"OTTO" | b"true" | [0, 1, 0, 0] => {}
         _ => return Err(BAD),
     }
     if face_index != 0 {
         return Err(ExportError::FontCollectionNotEmbedded);
     }
+    let mut cff = None;
     if table(font, b"glyf").is_none() {
-        if table(font, b"CFF ").is_some() || table(font, b"CFF2").is_some() {
-            return Err(ExportError::FontCffNotEmbedded);
+        match table_range(font, b"CFF ") {
+            Some(r) => cff = Some(r),
+            None if table(font, b"CFF2").is_some() => return Err(ExportError::FontCffNotEmbedded),
+            None => return Err(BAD),
         }
-        return Err(BAD);
-    }
-    if table(font, b"loca").is_none() {
+    } else if table(font, b"loca").is_none() {
         return Err(BAD);
     }
     let head = table(font, b"head").ok_or(BAD)?;
@@ -98,7 +117,7 @@ pub(super) fn read(font: &[u8], face_index: u32) -> Result<FontFacts, ExportErro
             cap_height = bei16(os2, 88);
         }
     }
-    Ok(FontFacts { num_glyphs, units_per_em, bbox, ascent, descent, cap_height, ps_name: ps_name(font) })
+    Ok(FontFacts { num_glyphs, units_per_em, bbox, ascent, descent, cap_height, ps_name: ps_name(font), cff })
 }
 
 /// `name` id 6 (Windows Unicode UTF-16BE, else Macintosh Roman ASCII), kept only when every char
