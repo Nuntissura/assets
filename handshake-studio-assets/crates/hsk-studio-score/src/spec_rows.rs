@@ -55,6 +55,22 @@ pub const SPEC_ROWS: &[(&str, &str, Result<&str, &str>)] = &[
     ("Dynamics", "use_splines", Err(NO_MEANING)),
     ("Dynamics", "use_noise_gate", Err(NO_MEANING)),
     ("Dynamics", "makeup_gain", Err(NO_UNIT)),
+    // Flanger (sheet FlangerUI).
+    ("Flanger", "initial", Ok("FlangerParams.initial_ms (ms authored)")),
+    ("Flanger", "final", Ok("FlangerParams.final_ms (ms authored)")),
+    ("Flanger", "phase", Ok("FlangerParams.stereo_phase_deg (degrees)")),
+    ("Flanger", "mix", Ok("FlangerParams.mix (spec percent / 100)")),
+    ("Flanger", "feedback", Ok("FlangerParams.feedback (spec percent / 100; 100 refused as unstable)")),
+    ("Flanger", "cycles", Err(NO_MEANING)),
+    ("Flanger", "beats", Err(NO_MEANING)),
+    // Chorus/Flanger (sheet ChorusFlanger): no ranges and no semantics.
+    ("Chorus/Flanger", "width", Err(NO_MEANING)),
+    ("Chorus/Flanger", "intensity", Err(NO_MEANING)),
+    ("Chorus/Flanger", "transience", Err(NO_MEANING)),
+    // Phaser (sheet PhaserUI).
+    ("Phaser", "mix", Ok("PhaserParams.mix (spec percent / 100)")),
+    ("Phaser", "intensity", Err(NO_MEANING)),
+    ("Phaser", "depth", Err(NO_MEANING)),
 ];
 
 /// Studio field for spec row `(effect, parameter)`, or the typed refusal.
