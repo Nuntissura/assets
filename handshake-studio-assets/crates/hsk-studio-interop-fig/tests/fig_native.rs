@@ -591,14 +591,9 @@ fn real_native_auto_layout_reactions_variables() {
         destination_id.as_deref(),
         Some(node_of("start-screen").as_str())
     );
+    // INOUT_CUBIC is the Studio EASE_IN_AND_OUT preset tuple since SMB-INTEROP-FIG-PROTOTYPE (no loss).
     let c = counts(&p.mapping_loss);
-    assert_eq!(
-        c[&(
-            "native.interactions.easing=INOUT_CUBIC".to_owned(),
-            "easing_curve_unverified_linear_used"
-        )],
-        1
-    );
+    assert!(!c.keys().any(|(path, _)| path.starts_with("native.interactions.easing")));
 }
 
 #[test]

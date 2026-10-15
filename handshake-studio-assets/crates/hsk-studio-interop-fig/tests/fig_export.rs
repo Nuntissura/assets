@@ -263,12 +263,10 @@ fn prototype_interactions_are_records_and_survive_a_package_round_trip() {
             (sid(2, 16), "Some(OnClick)".into(), "Navigate".into(), Some(sid(2, 3)), None),
         ]
     );
-    // What Folio cannot hold yet is typed: the easing curve (INOUT_CUBIC written linear), the flow
-    // starting point, the scroll overflow.
-    let c = |path: &str, code: &str| p.mapping_loss.iter().filter(|l| l.path == path && l.code == code).map(|l| l.count).sum::<u32>();
-    assert_eq!(c("native.interactions.easing=INOUT_CUBIC", "easing_curve_unverified_linear_used"), 1);
-    assert_eq!(c("native.flow_start", "flow_start_not_mapped"), 1);
-    assert_eq!(c("native.scroll_direction", "scroll_not_mapped"), 1);
+    // Easing curve, flow starting point and scroll overflow are records since
+    // SMB-INTEROP-FIG-PROTOTYPE (fig_prototype::flow_start_overflow_and_easing_are_records).
+    assert_eq!(p.design.prototype_pages.len(), 1);
+    assert_eq!(p.design.frame_overflow.len(), 1);
     // Native round trip: the records import entry carries the reactions unchanged and the id map
     // still names every source node (the package reopen of fig_native proves the entry survives).
     let entries = p.import_entries(&import, &bytes).unwrap();

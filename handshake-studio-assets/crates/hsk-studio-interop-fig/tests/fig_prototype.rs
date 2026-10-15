@@ -65,7 +65,8 @@ fn png_and_jpeg_frame_exports_through_interop_raster() {
     let hsk_studio_interop_raster::Samples::U8(rgb) = &decoded.samples else { panic!("8-bit") };
     let (mean, within8) = compare(rgb, 360, &png);
     eprintln!("jpeg file q90: mean {mean:.6} <=8 {within8:.6}");
-    assert!(mean <= 1000.0);
+    // Measured: mean 1.498803/255, 98.8381 % within 8/255 (quality 90 baseline 4:4:4).
+    assert!(mean <= 1.4989 && within8 >= 0.98838, "jpeg file {mean} {within8}");
     // A default-quality JPEG is a typed note; a PDF plan is refused here.
     let jpg = export_frame_raster(&jp, &jplans[0], None, None, &cancel).unwrap();
     assert!(jpg.loss.iter().any(|l| l.code == "jpeg_quality_default_used"));
