@@ -73,7 +73,7 @@ fn field_rows(strips: &[(usize, usize)], w: usize, h: usize, file_len: usize) ->
             _ => {}
         }
         end = Some(next_end);
-        for r in 0..len / rb {
+        for r in 0..len.checked_div(rb)? {
             rows.push(offset.checked_add(r.checked_mul(rb)?)?);
         }
     }
