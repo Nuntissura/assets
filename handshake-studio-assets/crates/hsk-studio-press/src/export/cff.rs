@@ -436,3 +436,17 @@ pub(super) fn subset_cid(cff: &[u8], keep: &std::collections::BTreeSet<u16>) -> 
     out.extend(tail);
     Ok(out)
 }
+
+/// The charstring bytes of glyph `gid` (test and diagnostic aid).
+#[cfg(test)]
+pub(super) fn charstring(cff: &[u8], gid: usize) -> Option<&[u8]> {
+    let hdr = usize::from(u8_at(cff, 2)?);
+    let (_, after_name) = index(cff, hdr)?;
+    let (top, _) = index(cff, after_name)?;
+    let &(ts, te) = top.first()?;
+    let entries = dict(cff.get(ts..te)?)?;
+    let at = entries.iter().find(|(o, _)| *o == 17).and_then(|(_, v)| v.first().copied()).and_then(as_offset)?;
+    let (glyphs, _) = index(cff, at)?;
+    let &(s, e) = glyphs.get(gid)?;
+    cff.get(s..e)
+}

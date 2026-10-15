@@ -276,3 +276,28 @@ fn soft_mask_structure_reads_back() {
     let fg = form.dict.get("Group").and_then(Object::as_dict).unwrap();
     assert!(fg.get("S").unwrap().is_name("Transparency") && fg.get("I") == Some(&Object::Bool(true)));
 }
+
+/// Noto Sans SC (CID-keyed CFF; fontTools 4.62.1: gid 41 = CID 41 'H', gid 8805 = CID 9544).
+const NOTO_SC: &[u8] = include_bytes!("../../../hsk-studio-type/tests/fixtures/fonts/NotoSansSC-Regular.otf");
+
+/// CFF subsetting keeps glyph ids: same glyph count and charset, the kept charstrings byte-equal,
+/// the others `endchar`, and the program far smaller; the subset still parses.
+#[test]
+fn cff_subset_keeps_glyph_ids() {
+    let facts = super::sfnt::read(NOTO_SC, 0).unwrap();
+    let (cs, ce) = facts.cff.unwrap();
+    let program = &NOTO_SC[cs..ce];
+    let keep: std::collections::BTreeSet<u16> = [41u16, 8805].into_iter().collect();
+    let sub = super::cff::subset_cid(program, &keep).unwrap();
+    let (a, b) = (super::cff::read(program).unwrap(), super::cff::read(&sub).unwrap());
+    assert_eq!((b.num_glyphs, b.cid_keyed), (a.num_glyphs, true));
+    assert_eq!(b.gid_to_cid, a.gid_to_cid, "charset unchanged");
+    assert_eq!(b.gid_to_cid[8805], 9544);
+    assert!(sub.len() < program.len() / 5, "{} of {}", sub.len(), program.len());
+    let glyph = |cff: &[u8], gid: usize| super::cff::charstring(cff, gid).unwrap().to_vec();
+    assert_eq!(glyph(&sub, 41), glyph(program, 41));
+    assert_eq!(glyph(&sub, 8805), glyph(program, 8805));
+    assert_eq!(glyph(&sub, 74), vec![14u8], "unused glyph is endchar");
+    assert!(glyph(program, 74).len() > 1);
+    assert!(super::cff::subset_cid(&program[..64], &keep).is_err());
+}

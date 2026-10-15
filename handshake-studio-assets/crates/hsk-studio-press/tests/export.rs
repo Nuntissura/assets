@@ -582,3 +582,73 @@ fn cff_fonts_clipping_gradients_and_pdfx4() {
     assert_eq!(refused(ExportOptions { version: "1.4", ..opts }), Some(ExportError::PdfXRequirement("version_1_6")));
     assert_eq!(refused(ExportOptions { pdfx4: Some(PdfX4 { created: "2026-10-15", ..x4 }), ..opts }), Some(ExportError::PdfXRequirement("pdf_dates")));
 }
+
+/// Lane SMB-LAYOUT-PDFX-VERAPDF item 3 (press): gradient repeat / reflect, midpoints, stop opacity
+/// and text clipping, read back by render_page; hand-computed oracles.
+#[test]
+fn gradient_spread_midpoints_opacity_and_text_clip() {
+    let cancel = CancellationToken::default();
+    let lim = Limits::default();
+    let near = |a: [u8; 3], b: [u8; 3], t: u8| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= t);
+    let id = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let render = |stops: &[GradientStop], spread: GradientSpread, to: f64| {
+        let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+        let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+        let g = Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [to, 0.0] }, stops, extend: [true, true], spread, matrix: id, profile: None };
+        ex.fill_path_gradient(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, &g).unwrap();
+        render_page(&ex.finish(&cancel).unwrap().0, 0, 1.0, &lim, &cancel).unwrap()
+    };
+    let bw = [GradientStop::new(0.0, [0.0; 3]), GradientStop::new(1.0, [1.0; 3])];
+    // Repeat over 25 pt cycles: x 30.5 is 0.22 into its cycle; reflect mirrors odd cycles (0.78).
+    let r = render(&bw, GradientSpread::Repeat, 25.0);
+    assert!(near(r.pixel(30, 50).unwrap(), [56; 3], 5), "repeat {:?}", r.pixel(30, 50));
+    assert!(near(r.pixel(55, 50).unwrap(), [56; 3], 5), "repeat cycle 3 {:?}", r.pixel(55, 50));
+    let r = render(&bw, GradientSpread::Reflect, 25.0);
+    assert!(near(r.pixel(30, 50).unwrap(), [199; 3], 5), "reflect {:?}", r.pixel(30, 50));
+    assert!(near(r.pixel(55, 50).unwrap(), [56; 3], 5), "reflect even cycle {:?}", r.pixel(55, 50));
+    // Pad stays the end colour past 25 pt.
+    let r = render(&bw, GradientSpread::Pad, 25.0);
+    assert!(near(r.pixel(55, 50).unwrap(), [255; 3], 3), "pad {:?}", r.pixel(55, 50));
+    // Midpoint 0.25: the even mix (128) sits a quarter of the way (x 25 of 100) instead of 64.
+    let mid = [GradientStop { midpoint: Some(0.25), ..GradientStop::new(0.0, [0.0; 3]) }, GradientStop::new(1.0, [1.0; 3])];
+    let r = render(&mid, GradientSpread::Pad, 100.0);
+    assert!(near(r.pixel(24, 50).unwrap(), [128; 3], 6), "midpoint {:?}", r.pixel(24, 50));
+    // Stop opacity 0 -> 1 on red over white: alpha 0.25 at x 25, 0.75 at x 75.
+    let fade = [GradientStop { opacity: 0.0, ..GradientStop::new(0.0, [1.0, 0.0, 0.0]) }, GradientStop::new(1.0, [1.0, 0.0, 0.0])];
+    let r = render(&fade, GradientSpread::Pad, 100.0);
+    assert!(near(r.pixel(25, 50).unwrap(), [255, 191, 191], 5), "opacity {:?}", r.pixel(25, 50));
+    assert!(near(r.pixel(75, 50).unwrap(), [255, 63, 63], 5), "opacity {:?}", r.pixel(75, 50));
+    // Refusals: midpoint outside (0, 1), opacity outside 0..=1, too many cycles.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+    let sq = rect_path(0.0, 0.0, 100.0, 100.0);
+    let geometry = GradientGeometry::Axial { from: [0.0, 0.0], to: [1.0, 0.0] };
+    let bad_mid = [GradientStop { midpoint: Some(1.0), ..GradientStop::new(0.0, [0.0; 3]) }];
+    let bad_op = [GradientStop { opacity: 1.5, ..GradientStop::new(0.0, [0.0; 3]) }];
+    for (stops, spread, to) in [(&bad_mid[..], GradientSpread::Pad, 1.0), (&bad_op[..], GradientSpread::Pad, 1.0), (&bw[..], GradientSpread::Repeat, 0.1)] {
+        let g = Gradient { geometry: GradientGeometry::Axial { from: [0.0, 0.0], to: [to, 0.0] }, stops, extend: [true, true], spread, matrix: id, profile: None };
+        assert_eq!(ex.fill_path_gradient(p, &sq, FillRule::NonZero, &g), Err(ExportError::InvalidGradient), "{spread:?} {to}");
+    }
+    let _ = geometry;
+    // Text clip: a black square through an 80 pt Inter 'H' (gid 161): the stems ink, the space
+    // between them and the rest of the page stay white.
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+    let f = ex.embed_font(INTER, 0, &[(161, 740)], &[(161, "H")]).unwrap();
+    ex.push_clip_text(p, &[(f, 80.0, &[(161, 10.0, 10.0)])]).unwrap();
+    ex.fill_path(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
+    ex.pop_clip(p).unwrap();
+    let r = render_page(&ex.finish(&cancel).unwrap().0, 0, 1.0, &lim, &cancel).unwrap();
+    let black = (0..100).flat_map(|y| (0..100).map(move |x| (x, y))).filter(|(x, y)| r.pixel(*x, *y) == Some([0, 0, 0])).count();
+    assert!(black > 300 && black < 3000, "ink {black}");
+    assert_eq!(r.pixel(95, 5), Some([255, 255, 255]), "outside the glyph");
+    assert_eq!(r.pixel(40, 44), Some([255, 255, 255]), "inside the H counter");
+    assert_eq!(ex_bad_clip(&lim), Err(ExportError::FontGlyphOutOfRange));
+}
+
+fn ex_bad_clip(lim: &Limits) -> Result<(), ExportError> {
+    let mut ex = PdfExport::new(ExportOptions::default(), lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 10.0, 10.0])).unwrap();
+    let f = ex.embed_font(INTER, 0, &[], &[]).unwrap();
+    ex.push_clip_text(p, &[(f, 10.0, &[(60000, 0.0, 0.0)])])
+}
