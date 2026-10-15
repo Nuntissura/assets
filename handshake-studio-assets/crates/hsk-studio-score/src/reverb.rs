@@ -292,3 +292,40 @@ impl Processor for Reverb {
         self.pre_pos = 0;
     }
 }
+
+const REVERB_AUTOMATION: &[crate::session::AutomationParam] = &[
+    crate::session::AutomationParam { name: "rt60_s", min: REVERB_RT60_S.0, max: REVERB_RT60_S.1 },
+    crate::session::AutomationParam { name: "damping", min: REVERB_DAMPING.0, max: REVERB_DAMPING.1 },
+    crate::session::AutomationParam { name: "width", min: REVERB_WIDTH.0, max: REVERB_WIDTH.1 },
+    crate::session::AutomationParam { name: "wet", min: REVERB_LEVEL.0, max: REVERB_LEVEL.1 },
+    crate::session::AutomationParam { name: "dry", min: REVERB_LEVEL.0, max: REVERB_LEVEL.1 },
+];
+
+/// Automatable: 0 = `rt60_s` (comb loop gains recomputed), 1 = `damping`, 2 = `width`, 3 = `wet`,
+/// 4 = `dry`; the pre-delay (line length) is fixed. Delay lines keep their content.
+impl crate::session::Automatable for Reverb {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        REVERB_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(REVERB_AUTOMATION, index, value)?;
+        match index {
+            0 => {
+                self.params.rt60_s = value;
+                let rate = f64::from(self.sample_rate_hz);
+                for bank in &mut self.banks {
+                    for comb in &mut bank.combs {
+                        comb.feedback = 10f64.powf(-3.0 * comb.buf.len() as f64 / (value * rate));
+                    }
+                }
+            }
+            1 => self.params.damping = value,
+            2 => self.params.width = value,
+            3 => self.params.wet = value,
+            _ => self.params.dry = value,
+        }
+        self.wet1 = self.params.wet * (1.0 + self.params.width) / 2.0;
+        self.wet2 = self.params.wet * (1.0 - self.params.width) / 2.0;
+        Ok(())
+    }
+}

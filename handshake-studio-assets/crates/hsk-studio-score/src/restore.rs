@@ -631,3 +631,44 @@ impl crate::session::Automatable for ClickRepair {
         Ok(())
     }
 }
+
+/// Automatable: 0 = `fundamental_hz`, 1 = `bandwidth_hz`; the notches are re-placed with the same
+/// rule as [`HumRemover::new`] (harmonics at or above 0.95 Nyquist dropped), filter state is kept.
+impl crate::session::Automatable for HumRemover {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        vec![
+            crate::session::AutomationParam { name: "fundamental_hz", min: HUM_FUNDAMENTAL_HZ.0, max: HUM_FUNDAMENTAL_HZ.1 },
+            crate::session::AutomationParam { name: "bandwidth_hz", min: HUM_BANDWIDTH_HZ.0, max: HUM_BANDWIDTH_HZ.1 },
+        ]
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        let range = match index {
+            0 => HUM_FUNDAMENTAL_HZ,
+            1 => HUM_BANDWIDTH_HZ,
+            _ => return Err(ScoreError::OutOfRange),
+        };
+        if !value.is_finite() {
+            return Err(ScoreError::NotFinite);
+        }
+        if !(range.0..=range.1).contains(&value) {
+            return Err(ScoreError::OutOfRange);
+        }
+        if index == 0 {
+            self.params.fundamental_hz = value;
+        } else {
+            self.params.bandwidth_hz = value;
+        }
+        let rate = f64::from(self.sample_rate_hz);
+        self.used = 0;
+        self.sections = [None; MAX_HUM_HARMONICS];
+        for k in 1..=self.params.harmonics {
+            let f = self.params.fundamental_hz * k as f64;
+            if f >= 0.95 * rate / 2.0 {
+                break;
+            }
+            self.sections[self.used] = Some(Sos::new(SosKind::Notch, f, f / self.params.bandwidth_hz, rate));
+            self.used += 1;
+        }
+        Ok(())
+    }
+}

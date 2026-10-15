@@ -143,6 +143,7 @@ pub struct Equalizer {
     sections: Vec<Coefficients>,
     state: Vec<[f64; 2]>,
     master: f64,
+    specs: Vec<BiquadSpec>,
     identity: String,
 }
 
@@ -195,6 +196,7 @@ impl Equalizer {
                 .collect(),
             state: vec![[0.0; 2]; sections.len() * channels],
             master: db_to_linear(master_gain_db),
+            specs: sections.to_vec(),
             identity,
         })
     }
@@ -248,5 +250,52 @@ impl Processor for Equalizer {
     }
     fn reset(&mut self) {
         self.state.fill([0.0; 2]);
+    }
+}
+
+/// Automatable: 0 = `master_gain_db`; then for section `s`: `1 + 3s` = `frequency_hz`
+/// (20..rate/2), `2 + 3s` = `gain_db` (ignored by low/high pass, still range-checked), `3 + 3s` =
+/// `q`. Coefficients are recomputed with the same cookbook formulas; filter state is kept.
+impl crate::session::Automatable for Equalizer {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        let nyquist = f64::from(self.sample_rate_hz) / 2.0;
+        let mut v = vec![crate::session::AutomationParam { name: "master_gain_db", min: EQ_MASTER_GAIN_DB.0, max: EQ_MASTER_GAIN_DB.1 }];
+        for _ in &self.specs {
+            v.push(crate::session::AutomationParam { name: "frequency_hz", min: EQ_FREQUENCY_MIN_HZ, max: nyquist });
+            v.push(crate::session::AutomationParam { name: "gain_db", min: EQ_AMP_DB.0, max: EQ_AMP_DB.1 });
+            v.push(crate::session::AutomationParam { name: "q", min: EQ_Q.0, max: EQ_Q.1 });
+        }
+        v
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        if index > 3 * self.specs.len() {
+            return Err(ScoreError::OutOfRange);
+        }
+        if !value.is_finite() {
+            return Err(ScoreError::NotFinite);
+        }
+        if index == 0 {
+            if !(EQ_MASTER_GAIN_DB.0..=EQ_MASTER_GAIN_DB.1).contains(&value) {
+                return Err(ScoreError::OutOfRange);
+            }
+            self.master = db_to_linear(value);
+            return Ok(());
+        }
+        let (s, field) = ((index - 1) / 3, (index - 1) % 3);
+        let mut spec = self.specs[s];
+        match field {
+            0 => spec.frequency_hz = value,
+            1 => {
+                if !(EQ_AMP_DB.0..=EQ_AMP_DB.1).contains(&value) {
+                    return Err(ScoreError::OutOfRange);
+                }
+                spec.gain_db = value;
+            }
+            _ => spec.q = value,
+        }
+        spec.validate(self.sample_rate_hz)?;
+        self.specs[s] = spec;
+        self.sections[s] = spec.coefficients(self.sample_rate_hz);
+        Ok(())
     }
 }

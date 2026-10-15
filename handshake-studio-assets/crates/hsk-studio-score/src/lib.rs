@@ -52,7 +52,7 @@ pub use denoise::{
 };
 pub use digest::{sha256, to_hex};
 pub use dsp::{
-    ChannelMix, Gain, HARD_LIMITER_INPUT_BOOST_DB, HARD_LIMITER_LOOKAHEAD_MS,
+    CHANNEL_MIX_AUTOMATION, ChannelMix, GAIN_AUTOMATION_DB, Gain, HARD_LIMITER_INPUT_BOOST_DB, HARD_LIMITER_LOOKAHEAD_MS,
     HARD_LIMITER_MAX_AMP_DB, HARD_LIMITER_RELEASE_MS, HardLimiter, HardLimiterParams, Pan, Unity,
     db_to_linear, linear_to_db, normalised_to_value, value_to_normalised,
 };
@@ -85,7 +85,7 @@ pub use modulation::{
 pub use multiband::{
     CROSSOVER_MIN_HZ, Crossover, MAX_BANDS, MULTIBAND_BANDS, MultibandCompressor, MultibandParams,
 };
-pub use ramp::RampedGain;
+pub use ramp::{RAMPED_GAIN_AUTOMATION, RampedGain};
 pub use report::{outcome_of, report};
 pub use resample::{ClipResampler, MIN_CHUNK_FRAMES, ResampleReceipt, SINC_LEN};
 pub use restore::{

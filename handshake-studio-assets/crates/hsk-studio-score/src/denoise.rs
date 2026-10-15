@@ -449,3 +449,40 @@ impl Processor for NoiseReducer {
         self.count = 0;
     }
 }
+
+const DENOISE_AUTOMATION: &[crate::session::AutomationParam] = &[
+    crate::session::AutomationParam { name: "reduction_db", min: DENOISE_REDUCTION_DB.0, max: DENOISE_REDUCTION_DB.1 },
+    crate::session::AutomationParam { name: "over_subtraction", min: DENOISE_OVER_SUBTRACTION.0, max: DENOISE_OVER_SUBTRACTION.1 },
+    crate::session::AutomationParam { name: "smoothing_up_ms", min: DENOISE_SMOOTHING_MS.0, max: DENOISE_SMOOTHING_MS.1 },
+    crate::session::AutomationParam { name: "smoothing_down_ms", min: DENOISE_SMOOTHING_MS.0, max: DENOISE_SMOOTHING_MS.1 },
+];
+
+/// Automatable: 0 = `reduction_db`, 1 = `over_subtraction`, 2 = `smoothing_up_ms`, 3 =
+/// `smoothing_down_ms` (taking effect from the next STFT frame); FFT size, profile and frequency
+/// smoothing are fixed.
+impl crate::session::Automatable for NoiseReducer {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        DENOISE_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(DENOISE_AUTOMATION, index, value)?;
+        let hop_s = (self.size / 4) as f64 / f64::from(self.sample_rate_hz);
+        let coefficient = |ms: f64| if ms <= 0.0 { 0.0 } else { (-hop_s / (ms * 1e-3)).exp() };
+        match index {
+            0 => {
+                self.params.reduction_db = value;
+                self.floor = 10f64.powf(-value / 20.0);
+            }
+            1 => self.params.over_subtraction = value,
+            2 => {
+                self.params.smoothing_up_ms = value;
+                self.up = coefficient(value);
+            }
+            _ => {
+                self.params.smoothing_down_ms = value;
+                self.down = coefficient(value);
+            }
+        }
+        Ok(())
+    }
+}

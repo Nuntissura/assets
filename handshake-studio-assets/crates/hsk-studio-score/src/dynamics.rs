@@ -635,3 +635,28 @@ impl Processor for LookaheadLimiter {
         self.clamp_events = 0;
     }
 }
+
+const LIMITER_AUTOMATION: &[crate::session::AutomationParam] = &[
+    crate::session::AutomationParam { name: "ceiling_db", min: LIMITER_CEILING_DB.0, max: LIMITER_CEILING_DB.1 },
+    crate::session::AutomationParam { name: "release_ms", min: LIMITER_RELEASE_MS.0, max: LIMITER_RELEASE_MS.1 },
+];
+
+/// Automatable: 0 = `ceiling_db`, 1 = `release_ms`; lookahead and true-peak mode (latency) are
+/// fixed at construction.
+impl crate::session::Automatable for LookaheadLimiter {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        LIMITER_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(LIMITER_AUTOMATION, index, value)?;
+        if index == 0 {
+            self.params.ceiling_db = value;
+            self.ceiling = db_to_linear(value);
+            self.ceiling_f32 = self.ceiling as f32;
+        } else {
+            self.params.release_ms = value;
+            self.release_coeff = coefficient(value, f64::from(self.sample_rate_hz));
+        }
+        Ok(())
+    }
+}

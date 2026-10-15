@@ -293,3 +293,18 @@ impl Processor for MultibandCompressor {
         }
     }
 }
+
+/// Automatable: band `b` (0 = lowest) owns indices `3b` = `threshold_db`, `3b + 1` = `ratio`,
+/// `3b + 2` = `makeup_db` (as [`Dynamics`]); crossovers and band count are fixed.
+impl crate::session::Automatable for MultibandCompressor {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        self.computers.iter().flat_map(|c| c.automation_parameters()).collect()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        let band = index / 3;
+        let computer = self.computers.get_mut(band).ok_or(ScoreError::OutOfRange)?;
+        computer.set_automated(index % 3, value)?;
+        self.params.band_params[band] = *computer.params();
+        Ok(())
+    }
+}

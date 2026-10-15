@@ -556,3 +556,98 @@ impl Processor for HardLimiter {
         self.overshoot_events = 0;
     }
 }
+
+/// Automatable: no parameters (bit-exact copy).
+impl crate::session::Automatable for Unity {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        Vec::new()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(&[], index, value)
+    }
+}
+
+/// Gain automation range in dB (authored).
+pub const GAIN_AUTOMATION_DB: (f64, f64) = (-120.0, 48.0);
+const GAIN_AUTOMATION: &[crate::session::AutomationParam] =
+    &[crate::session::AutomationParam { name: "gain_db", min: GAIN_AUTOMATION_DB.0, max: GAIN_AUTOMATION_DB.1 }];
+
+/// Automatable: 0 = `gain_db` (linear = `10^(dB/20)` rounded to f32, as [`Gain::from_db`]).
+impl crate::session::Automatable for Gain {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        GAIN_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(GAIN_AUTOMATION, index, value)?;
+        self.linear = db_to_linear(value) as f32;
+        Ok(())
+    }
+}
+
+const PAN_AUTOMATION: &[crate::session::AutomationParam] =
+    &[crate::session::AutomationParam { name: "pan", min: -1.0, max: 1.0 }];
+
+/// Automatable: 0 = `pan` (rounded to f32, gains as [`Pan::new`]).
+impl crate::session::Automatable for Pan {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        PAN_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(PAN_AUTOMATION, index, value)?;
+        *self = Pan::new(value as f32)?;
+        Ok(())
+    }
+}
+
+/// Channel-matrix coefficient automation range (authored).
+pub const CHANNEL_MIX_AUTOMATION: (f64, f64) = (-64.0, 64.0);
+const MIX_COEFFICIENT: crate::session::AutomationParam =
+    crate::session::AutomationParam { name: "coefficient", min: CHANNEL_MIX_AUTOMATION.0, max: CHANNEL_MIX_AUTOMATION.1 };
+
+/// Automatable: index `o * inputs + i` = coefficient from input `i` to output `o` (rounded to f32).
+impl crate::session::Automatable for ChannelMix {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        vec![MIX_COEFFICIENT; self.coefficients.len()]
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        if index >= self.coefficients.len() {
+            return Err(ScoreError::OutOfRange);
+        }
+        crate::session::check_automated(&[MIX_COEFFICIENT], 0, value)?;
+        self.coefficients[index] = value as f32;
+        Ok(())
+    }
+}
+
+const HARD_LIMITER_AUTOMATION: &[crate::session::AutomationParam] = &[
+    crate::session::AutomationParam { name: "max_amp_db", min: HARD_LIMITER_MAX_AMP_DB.0, max: HARD_LIMITER_MAX_AMP_DB.1 },
+    crate::session::AutomationParam { name: "input_boost_db", min: HARD_LIMITER_INPUT_BOOST_DB.0, max: HARD_LIMITER_INPUT_BOOST_DB.1 },
+    crate::session::AutomationParam { name: "release_ms", min: HARD_LIMITER_RELEASE_MS.0, max: HARD_LIMITER_RELEASE_MS.1 },
+];
+
+/// Automatable: 0 = `max_amp_db`, 1 = `input_boost_db`, 2 = `release_ms` (same derivations as
+/// [`HardLimiter::new`]); the lookahead (latency) is fixed at construction.
+impl crate::session::Automatable for HardLimiter {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        HARD_LIMITER_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(HARD_LIMITER_AUTOMATION, index, value)?;
+        match index {
+            0 => {
+                self.params.max_amp_db = value;
+                self.ceiling = db_to_linear(value) as f32;
+            }
+            1 => {
+                self.params.input_boost_db = value;
+                self.boost = db_to_linear(value) as f32;
+            }
+            _ => {
+                self.params.release_ms = value;
+                let release_samples = (value * f64::from(self.sample_rate_hz) / 1000.0).max(1.0);
+                self.release_coeff = (-1.0 / release_samples).exp() as f32;
+            }
+        }
+        Ok(())
+    }
+}

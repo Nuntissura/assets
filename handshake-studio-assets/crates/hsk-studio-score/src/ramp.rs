@@ -113,3 +113,20 @@ impl Processor for RampedGain {
         self.uncommitted = false;
     }
 }
+
+/// Target-gain automation range (linear, authored).
+pub const RAMPED_GAIN_AUTOMATION: (f64, f64) = (-16.0, 16.0);
+const RAMP_AUTOMATION: &[crate::session::AutomationParam] =
+    &[crate::session::AutomationParam { name: "target", min: RAMPED_GAIN_AUTOMATION.0, max: RAMPED_GAIN_AUTOMATION.1 }];
+
+/// Automatable: 0 = `target` (linear, rounded to f32; the gain ramps to it across the next block
+/// as documented on [`RampedGain`]).
+impl crate::session::Automatable for RampedGain {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        RAMP_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(RAMP_AUTOMATION, index, value)?;
+        self.set_target(value as f32)
+    }
+}

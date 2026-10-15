@@ -203,6 +203,7 @@ pub struct Flanger {
     lfo: Lfo,
     lines: FracLines,
     last_delay: [f64; MAX_CHANNELS],
+    max_ms: f64,
     identity: String,
 }
 
@@ -229,6 +230,7 @@ impl Flanger {
             lfo: Lfo::new(params.rate_hz, rate, params.stereo_phase_deg),
             lines: FracLines::new(channels, params.initial_ms.max(params.final_ms) * ms),
             last_delay: [0.0; MAX_CHANNELS],
+            max_ms: params.initial_ms.max(params.final_ms),
             identity,
         })
     }
@@ -326,6 +328,7 @@ pub struct Chorus {
     depth: f64,
     lfo: Lfo,
     lines: FracLines,
+    max_ms: f64,
     identity: String,
 }
 
@@ -351,6 +354,7 @@ impl Chorus {
             depth: params.depth_ms * ms,
             lfo: Lfo::new(params.rate_hz, rate, params.stereo_phase_deg),
             lines: FracLines::new(channels, (params.delay_ms + params.depth_ms) * ms),
+            max_ms: params.delay_ms + params.depth_ms,
             identity,
         })
     }
@@ -541,5 +545,117 @@ impl Processor for Phaser {
         self.y1 = [[0.0; PHASER_STAGES.1]; MAX_CHANNELS];
         self.last = [0.0; MAX_CHANNELS];
         self.last_break = [0.0; MAX_CHANNELS];
+    }
+}
+
+/// Automatable: 0 = `initial_ms`, 1 = `final_ms` (both up to the larger of the two at
+/// construction, which sized the delay line), 2 = `rate_hz`, 3 = `feedback`, 4 = `mix`. The stereo
+/// phase offset is fixed; the LFO keeps its phase when the rate changes.
+impl crate::session::Automatable for Flanger {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        vec![
+            crate::session::AutomationParam { name: "initial_ms", min: FLANGER_DELAY_MS.0, max: self.max_ms },
+            crate::session::AutomationParam { name: "final_ms", min: FLANGER_DELAY_MS.0, max: self.max_ms },
+            crate::session::AutomationParam { name: "rate_hz", min: LFO_RATE_HZ.0, max: LFO_RATE_HZ.1 },
+            crate::session::AutomationParam { name: "feedback", min: MODULATION_FEEDBACK.0, max: MODULATION_FEEDBACK.1 },
+            crate::session::AutomationParam { name: "mix", min: 0.0, max: 1.0 },
+        ]
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        let range = match index {
+            0 | 1 => (FLANGER_DELAY_MS.0, self.max_ms),
+            2 => LFO_RATE_HZ,
+            3 => MODULATION_FEEDBACK,
+            4 => (0.0, 1.0),
+            _ => return Err(ScoreError::OutOfRange),
+        };
+        check(&[(value, range)])?;
+        let ms = f64::from(self.sample_rate_hz) / 1000.0;
+        match index {
+            0 => self.params.initial_ms = value,
+            1 => self.params.final_ms = value,
+            2 => {
+                self.params.rate_hz = value;
+                self.lfo.increment = value / f64::from(self.sample_rate_hz);
+            }
+            3 => self.params.feedback = value,
+            _ => self.params.mix = value,
+        }
+        self.initial = self.params.initial_ms * ms;
+        self.span = (self.params.final_ms - self.params.initial_ms) * ms;
+        Ok(())
+    }
+}
+
+/// Automatable: 0 = `delay_ms`, 1 = `depth_ms` (with `depth <= delay`, `delay >= 1` and
+/// `delay + depth` at most its value at construction, which sized the line; a value breaking
+/// these is `OutOfRange`), 2 = `rate_hz`, 3 = `mix`. Voices and stereo phase are fixed.
+impl crate::session::Automatable for Chorus {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        vec![
+            crate::session::AutomationParam { name: "delay_ms", min: CHORUS_DELAY_MS.0, max: self.max_ms.min(CHORUS_DELAY_MS.1) },
+            crate::session::AutomationParam { name: "depth_ms", min: 0.0, max: self.max_ms / 2.0 },
+            crate::session::AutomationParam { name: "rate_hz", min: LFO_RATE_HZ.0, max: LFO_RATE_HZ.1 },
+            crate::session::AutomationParam { name: "mix", min: 0.0, max: 1.0 },
+        ]
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        let mut p = self.params;
+        match index {
+            0 => p.delay_ms = value,
+            1 => p.depth_ms = value,
+            2 => p.rate_hz = value,
+            3 => p.mix = value,
+            _ => return Err(ScoreError::OutOfRange),
+        }
+        p.validate()?;
+        if p.delay_ms + p.depth_ms > self.max_ms {
+            return Err(ScoreError::OutOfRange);
+        }
+        let ms = f64::from(self.sample_rate_hz) / 1000.0;
+        self.params = p;
+        self.centre = p.delay_ms * ms;
+        self.depth = p.depth_ms * ms;
+        self.lfo.increment = p.rate_hz / f64::from(self.sample_rate_hz);
+        Ok(())
+    }
+}
+
+/// Automatable: 0 = `min_hz`, 1 = `max_hz` (`20 <= min <= max < rate/2`; a value breaking the order
+/// is `OutOfRange`), 2 = `rate_hz`, 3 = `feedback`, 4 = `mix`. Stage count and stereo phase are fixed.
+impl crate::session::Automatable for Phaser {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        let top = self.rate * 0.4999;
+        vec![
+            crate::session::AutomationParam { name: "min_hz", min: PHASER_MIN_HZ, max: top },
+            crate::session::AutomationParam { name: "max_hz", min: PHASER_MIN_HZ, max: top },
+            crate::session::AutomationParam { name: "rate_hz", min: LFO_RATE_HZ.0, max: LFO_RATE_HZ.1 },
+            crate::session::AutomationParam { name: "feedback", min: MODULATION_FEEDBACK.0, max: MODULATION_FEEDBACK.1 },
+            crate::session::AutomationParam { name: "mix", min: 0.0, max: 1.0 },
+        ]
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        let mut p = self.params;
+        match index {
+            0 => p.min_hz = value,
+            1 => p.max_hz = value,
+            2 => p.rate_hz = value,
+            3 => p.feedback = value,
+            4 => p.mix = value,
+            _ => return Err(ScoreError::OutOfRange),
+        }
+        check(&[
+            (p.min_hz, (PHASER_MIN_HZ, f64::MAX)),
+            (p.max_hz, (PHASER_MIN_HZ, f64::MAX)),
+            (p.rate_hz, LFO_RATE_HZ),
+            (p.feedback, MODULATION_FEEDBACK),
+            (p.mix, (0.0, 1.0)),
+        ])?;
+        if p.max_hz < p.min_hz || p.max_hz >= self.rate / 2.0 {
+            return Err(ScoreError::OutOfRange);
+        }
+        self.params = p;
+        self.lfo.increment = p.rate_hz / self.rate;
+        Ok(())
     }
 }

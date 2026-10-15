@@ -211,3 +211,15 @@ impl Processor for Chain {
         }
     }
 }
+
+/// Automatable: no parameters of its own. Stages are type-erased [`Processor`]s, so they are not
+/// reachable for automation through a `Chain`; a session track automates its stages through its
+/// own effect stack ([`EffectSlot`](crate::EffectSlot) lanes) instead.
+impl crate::session::Automatable for Chain {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        Vec::new()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(&[], index, value)
+    }
+}

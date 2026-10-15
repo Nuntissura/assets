@@ -508,3 +508,13 @@ impl Processor for LoudnessMeter {
         self.publish();
     }
 }
+
+/// Automatable: no parameters (a meter; channel weights are fixed for the measurement).
+impl crate::session::Automatable for LoudnessMeter {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        Vec::new()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(&[], index, value)
+    }
+}
