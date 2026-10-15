@@ -20,7 +20,7 @@ mod scenes;
 const CPU_TOLERANCE: f32 = 1e-6;
 /// Frame digests (colour plane then alpha plane, SHA-256) of every `scenes::cases` entry,
 /// recorded when the case was added; any change to a frame's pixels shows here.
-const GOLDEN: [(&str, &str); 12] = [
+const GOLDEN: [(&str, &str); 15] = [
     ("comp1/frame0", "80952af10847e9206fc169b6d71ba416136135d5a6c92fd6df58ef22a695f1c3"),
     ("comp1/frame5", "17c0727e2320ba849bd7b70c829b62ce2cf7ffa080797d9d78ab32e1da2b41e6"),
     ("comp1/frame10", "b88a69fc89e656aa9c1b4f2732cf17ed35ff7d2586822cf08288e7c4f083d5c5"),
@@ -34,6 +34,9 @@ const GOLDEN: [(&str, &str); 12] = [
     ("comp3/frame22", "622146a4e65879880e89b68ce2eb73c16034d4b48ed6a4505684a64f0c492513"),
     // The nested composition is outside its duration: only the background (same as frame 0).
     ("comp3/frame30", "e7db49c40019dbf54679d502694c8d2cda0131906cab33c2945c348578304eab"),
+    ("comp5/frame0", "41a302d58cbaaca5ed5ef2ae38e0878ed001083ac748c3b9bc61bb9aa7f158c3"),
+    ("comp5/frame5", "728b77afbe7d167a9ae8ba788e8f0775061e99f40c08e091cfec324687463ee9"),
+    ("comp5/frame10", "0b6dffa54759a1c535cb80f8bda687416fe8a8dd60993c3ef6343a66574eeb63"),
 ];
 
 fn render(renderer: &Renderer, scene: &SceneComposition, pixels: &scenes::Pixels) -> RenderedScene {
