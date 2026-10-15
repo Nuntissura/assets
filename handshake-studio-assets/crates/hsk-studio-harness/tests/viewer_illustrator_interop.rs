@@ -72,7 +72,10 @@ fn the_cmyk_profile_comes_from_folio_and_nib_brushes_draw() {
     again.apply_brush(&line, &bristle, None).unwrap();
     let f = frame(&mut again);
     assert_eq!(px(&f, 70, 24), WHITE);
-    assert!((26..=34).any(|y| px(&f, 70, y) == BLUE));
+    // Its 18 bristles are 0.42 px wide: anti-aliased blue, never a full blue pixel; every row of
+    // the band is tinted and the line's own 2 px stroke is gone.
+    assert!((27..=33).all(|y| px(&f, 70, y) != WHITE && px(&f, 70, y)[2] == 255));
+    assert_ne!(px(&f, 70, 30), BLUE);
     // Hostile: an empty or non-ICC profile is refused.
     assert!(again.set_document_cmyk_profile("empty", &[]).is_err());
     assert!(again.set_document_cmyk_profile("not icc", b"garbage").is_err());
