@@ -41,6 +41,10 @@ struct Parsed {
     png: bool,
     jpeg: bool,
     quality: Option<u8>,
+    /// develop: `--adjust CONTROL VALUE` (value kept as text; parsed as a number by `develop`).
+    adjust: Vec<(String, String)>,
+    threads: Option<usize>,
+    depth: Option<u8>,
 }
 
 fn boolean(s: &str) -> Result<bool, String> {
@@ -89,6 +93,20 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                         .filter(|q| (1..=100).contains(q))
                         .ok_or_else(|| "quality must be an integer in 1..=100".to_string())?,
                 )
+            }
+            "--adjust" => {
+                let control = take(&mut i, "develop control id")?;
+                p.adjust.push((control, take(&mut i, "value")?));
+            }
+            "--threads" => {
+                p.threads = Some(take(&mut i, "thread count")?.parse::<usize>().map_err(|_| "threads must be an unsigned integer".to_string())?)
+            }
+            "--depth" => {
+                p.depth = Some(match take(&mut i, "depth")?.as_str() {
+                    "8" => 8,
+                    "16" => 16,
+                    other => return Err(format!("depth must be 8 or 16, got `{other}`")),
+                })
             }
             "--rename" => {
                 let layer = take(&mut i, "layer id")?;
@@ -198,8 +216,88 @@ pub fn run(args: &[String]) -> CliOutput {
             }
             execute_export(&source, &output, format, parsed.overwrite)
         }
+        "develop" => {
+            let [source, output] = parsed.positional.as_slice() else {
+                return usage("develop needs SOURCE and OUT paths");
+            };
+            let format = match (parsed.png, parsed.jpeg, parsed.quality, parsed.depth) {
+                (true, false, None, depth) => DevelopChoice::Png(depth.unwrap_or(16)),
+                (true, false, Some(_), _) => return usage("--quality applies to --jpeg only"),
+                (false, true, _, Some(_)) => return usage("--depth applies to --png only (JPEG is 8-bit)"),
+                (false, true, q, None) => DevelopChoice::Jpeg(q.unwrap_or(DEFAULT_JPEG_QUALITY)),
+                _ => return usage("develop needs exactly one of --png, --jpeg"),
+            };
+            let mut adjust = Vec::with_capacity(parsed.adjust.len());
+            for (control, text) in &parsed.adjust {
+                // A number that is out of range (or NaN/inf) is develop's typed refusal, not a usage error.
+                match text.parse::<f64>() {
+                    Ok(v) => adjust.push((control.clone(), v)),
+                    Err(_) => return usage(&format!("--adjust {control}: `{text}` is not a number")),
+                }
+            }
+            let (source, output) = (PathBuf::from(source), PathBuf::from(output));
+            if !parsed.overwrite && same_file(&output, &source) {
+                return usage("OUT names the SOURCE file; pass --overwrite to replace it, or develop to another path");
+            }
+            execute_develop(&source, &output, format, &adjust, parsed.threads, parsed.overwrite)
+        }
         other => usage(&format!("unknown command `{other}`")),
     }
+}
+
+#[cfg_attr(not(feature = "viewer"), allow(dead_code))]
+enum DevelopChoice {
+    Png(u8),
+    Jpeg(u8),
+}
+
+/// `develop SOURCE OUT (--png [--depth 8|16] | --jpeg [--quality N]) [--adjust CONTROL VALUE]... [--threads N]`
+/// (lane SMB-HARNESS-DEVELOP-EXPORT): open the camera raw / DNG like the viewer, apply every
+/// `--adjust` as ONE develop step through the viewer (chronicle `tiles` commit, undoable), then
+/// `develop_to_output` and encode with the sRGB-v4 profile embedded. Refusals carry their stable code.
+#[cfg(feature = "viewer")]
+fn execute_develop(source: &Path, output: &Path, format: DevelopChoice, adjust: &[(String, f64)], threads: Option<usize>, overwrite: bool) -> CliOutput {
+    use crate::view::{Viewer, develop::DevelopExport, render::Prefer};
+    use hsk_studio_develop::OutputDepth;
+    let fail = |error: &str, detail: Value| out(1, &json!({"schema":crate::SCHEMA,"command":"develop","ok":false,"verdict":"fail","error":error,"detail":detail}));
+    let mut viewer = Viewer::new(Prefer::Cpu);
+    if let Err(detail) = viewer.open(source) {
+        let code = viewer.run().ops().last().and_then(|op| op["error"].as_str().map(str::to_string)).unwrap_or_else(|| "open_failed".into());
+        return fail(&code, json!({"stage":"open","message":detail}));
+    }
+    if !viewer.develop_available() {
+        return fail("not_a_raw_document", json!({"stage":"open","source_format":viewer.receipt().map(|r| r["source_format"].clone())}));
+    }
+    if let Some(n) = threads
+        && let Err(r) = viewer.set_develop_threads(n)
+    {
+        return fail(r.code, json!({"stage":"threads","message":r.detail}));
+    }
+    let mut step = Value::Null;
+    if !adjust.is_empty() {
+        let changes: Vec<(&str, f64)> = adjust.iter().map(|(c, v)| (c.as_str(), *v)).collect();
+        match viewer.set_develop_many(&changes) {
+            Ok(revision) => step = json!({"revision": revision, "history": viewer.run().history()}),
+            Err(r) => return fail(r.code, json!({"stage":"adjust","message":r.detail})),
+        }
+    }
+    let format = match format {
+        DevelopChoice::Png(16) => DevelopExport::Png { depth: OutputDepth::Sixteen },
+        DevelopChoice::Png(_) => DevelopExport::Png { depth: OutputDepth::Eight },
+        DevelopChoice::Jpeg(quality) => DevelopExport::Jpeg { quality },
+    };
+    match viewer.export_develop(output, format, overwrite) {
+        Ok(report) => out(
+            0,
+            &json!({"schema":crate::SCHEMA,"command":"develop","ok":true,"verdict":"pass","source":source.to_string_lossy(),"step":step,"develop":viewer.develop_json(),"export":report}),
+        ),
+        Err(r) => fail(r.code, json!({"stage":"export","message":r.detail})),
+    }
+}
+
+#[cfg(not(feature = "viewer"))]
+fn execute_develop(_: &Path, _: &Path, _: DevelopChoice, _: &[(String, f64)], _: Option<usize>, _: bool) -> CliOutput {
+    out(1, &json!({"schema":crate::SCHEMA,"command":"develop","ok":false,"verdict":"fail","error":"feature_unavailable","detail":{"feature":"viewer"}}))
 }
 
 /// Reads a source file within [`crate::import::MAX_SOURCE_BYTES`] (checked before reading).

@@ -371,6 +371,63 @@ mod with_package {
         cancel: &CancellationToken,
     ) -> Result<ImportedDocument, ImportError> {
         use hsk_studio_develop as develop;
+        let prepared = raw_prepare(bytes, format, cancel)?;
+        let (image, receipt) = develop::develop_to_image(&prepared.plane, &prepared.recipe, 1, cancel).map_err(|e| prepared.refusal(e))?;
+        let (window, window_report) = (prepared.window, prepared.window_report);
+        let (proposal, frames) = raw_proposal(&prepared, image, resolver, cancel)?;
+        drop(prepared);
+        let colour = super::colour::summary(
+            &proposal,
+            frames,
+            "develop camera solution -> linear light with sRGB primaries (the working space; no ICC transform); DNG embedded profiles are not read",
+        );
+        let extra = json!({
+            "colour": colour,
+            "develop": {
+                "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
+                "demosaic": receipt.demosaic_algorithm,
+                "window": [window.x, window.y, window.width, window.height],
+                "clamped_below": window_report.clamped_below, "clamped_above": window_report.clamped_above,
+                "black_rounded": window_report.black_rounded, "black_site_adjusted": window_report.black_site_adjusted,
+                "output": "linear light, sRGB primaries (xyz_d50_to_linear_srgb), as-shot white balance, baseline exposure not applied",
+            },
+        });
+        package_proposal(format, "hsk-studio-develop + hsk-studio-interop-psd", bytes, proposal, extra)
+    }
+
+    /// A decoded camera raw ready to develop (feature `import-raw`): the default crop window as a CFA
+    /// plane and the file's own recipe (colour solution into linear light with sRGB primaries, as-shot
+    /// white balance, baseline exposure ignored, every adjustment identity). The import route and the
+    /// viewer's develop panel (`view::develop`, lane SMB-HARNESS-DEVELOP-EXPORT) both start here, so a
+    /// re-develop with the identity recipe reproduces the imported tiles exactly.
+    #[cfg(feature = "import-raw")]
+    pub struct RawPrepared {
+        pub format: SourceFormat,
+        pub window: hsk_studio_develop::PlaneWindow,
+        pub window_report: hsk_studio_develop::WindowReport,
+        pub plane: hsk_studio_develop::CfaPlane,
+        pub recipe: hsk_studio_develop::DevelopRecipe,
+        source: hsk_studio_interop_psd::SourceIdentity,
+        /// The id mint after the working-profile id: every developed raster is tiled from a clone
+        /// of it, so document, layer and tile ids are those of the import.
+        mint: SourceMint,
+    }
+
+    #[cfg(feature = "import-raw")]
+    impl RawPrepared {
+        /// Develop refusals as importer errors (`Canceled` stays canceled).
+        pub fn refusal(&self, e: hsk_studio_develop::DevelopError) -> ImportError {
+            match e {
+                hsk_studio_develop::DevelopError::Canceled => ImportError::Canceled,
+                other => ImportError::Importer { format: self.format, code: other.code() },
+            }
+        }
+    }
+
+    /// Decodes `bytes` with `hsk-studio-develop` and prepares the default window (see [`RawPrepared`]).
+    #[cfg(feature = "import-raw")]
+    pub fn raw_prepare(bytes: &[u8], format: SourceFormat, cancel: &CancellationToken) -> Result<RawPrepared, ImportError> {
+        use hsk_studio_develop as develop;
         use hsk_studio_interop_psd as psd;
         let refusal = |e: develop::DevelopError| match e {
             develop::DevelopError::Canceled => ImportError::Canceled,
@@ -383,8 +440,6 @@ mod with_package {
             raw.cfa_plane(window, develop::RangePolicy::ClampReported, 1, develop::Limits::LARGE).map_err(refusal)?;
         let source = psd::SourceIdentity::of(bytes);
         let mut mint = SourceMint::new(&source.sha256);
-        let mut frames = super::colour::FrameCount::default();
-        let mut converter = super::colour::converter(format, &mint, &mut frames)?;
         let profile_id = psd::IdMint::linear_working_profile_id(&mut mint);
         let binding = develop::ProfileBinding {
             profile_id: hsk_studio_accord::DomainId::parse(&profile_id).map_err(|_| ImportError::Package("profile_id"))?,
@@ -392,8 +447,23 @@ mod with_package {
         };
         let to_srgb = develop::color::xyz_d50_to_linear_srgb().map_err(refusal)?;
         let (recipe, _) = raw.recipe(&to_srgb, binding, develop::BaselineExposure::Ignore).map_err(refusal)?;
-        let (image, receipt) = develop::develop_to_image(&plane, &recipe, 1, cancel).map_err(refusal)?;
-        drop(plane);
+        Ok(RawPrepared { format, window, window_report, plane, recipe, source, mint })
+    }
+
+    /// One developed image as interop-psd's raster proposal (one 32-bit `Background` layer through
+    /// `raster_proposal` and the Prism converter, the import's tiling) and the Prism frame count.
+    #[cfg(feature = "import-raw")]
+    pub fn raw_proposal(
+        prepared: &RawPrepared,
+        image: hsk_studio_develop::DevelopedImage,
+        resolver: &dyn Resolver,
+        cancel: &CancellationToken,
+    ) -> Result<(hsk_studio_interop_psd::ImportProposal, u64), ImportError> {
+        use hsk_studio_interop_psd as psd;
+        let format = prepared.format;
+        let mut mint = prepared.mint.clone();
+        let mut frames = super::colour::FrameCount::default();
+        let mut converter = super::colour::converter(format, &mint, &mut frames)?;
         let pixels = (image.width as usize).checked_mul(image.height as usize).ok_or(ImportError::Package("dimensions"))?;
         if Some(image.rgb.len()) != pixels.checked_mul(3) {
             return Err(ImportError::Package("developed_image_size"));
@@ -423,25 +493,9 @@ mod with_package {
             if e == psd::PsdError::Canceled { ImportError::Canceled } else { ImportError::Importer { format, code: e.code() } }
         };
         let proposal =
-            psd::raster_proposal(raster, &source, &cfg, &mut mint, Some(&mut converter), cancel).map_err(psd_refusal)?;
+            psd::raster_proposal(raster, &prepared.source, &cfg, &mut mint, Some(&mut converter), cancel).map_err(psd_refusal)?;
         drop(converter);
-        let colour = super::colour::summary(
-            &proposal,
-            frames.0,
-            "develop camera solution -> linear light with sRGB primaries (the working space; no ICC transform); DNG embedded profiles are not read",
-        );
-        let extra = json!({
-            "colour": colour,
-            "develop": {
-                "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
-                "demosaic": receipt.demosaic_algorithm,
-                "window": [window.x, window.y, window.width, window.height],
-                "clamped_below": window_report.clamped_below, "clamped_above": window_report.clamped_above,
-                "black_rounded": window_report.black_rounded, "black_site_adjusted": window_report.black_site_adjusted,
-                "output": "linear light, sRGB primaries (xyz_d50_to_linear_srgb), as-shot white balance, baseline exposure not applied",
-            },
-        });
-        package_proposal(format, "hsk-studio-develop + hsk-studio-interop-psd", bytes, proposal, extra)
+        Ok((proposal, frames.0))
     }
 
     #[cfg(feature = "import-psd")]
@@ -546,6 +600,7 @@ mod with_package {
     /// first 48 bits are the source digest's and whose tail is a counter. The same source always
     /// converts to the same ids (byte-identical packages); it is a stand-in for a host `IdMint`.
     #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster", feature = "import-pdf"))]
+    #[derive(Clone)]
     pub struct SourceMint {
         seed: String,
         n: u64,

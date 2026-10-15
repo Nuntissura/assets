@@ -18,6 +18,7 @@
 
 #[cfg(feature = "desktop")]
 pub mod display;
+pub mod develop;
 pub mod edit;
 pub mod export;
 pub mod brush_mix;
@@ -75,6 +76,11 @@ pub mod widget {
     pub const LAYER_DOWN: &str = "layers.down";
     pub const LAYER_GROUP: &str = "layers.group";
     pub const LAYER_UNGROUP: &str = "layers.ungroup";
+    /// Develop panel (lane SMB-HARNESS-DEVELOP-EXPORT): the sliders use the control ids of
+    /// `develop::CONTROLS` (`develop.exposure`, ...); these export the developed raw.
+    pub const DEVELOP_PANEL: &str = "develop";
+    pub const DEVELOP_EXPORT_PNG: &str = "develop.export.png";
+    pub const DEVELOP_EXPORT_JPEG: &str = "develop.export.jpeg";
     pub fn tool(key: &str) -> String {
         format!("tool.{key}")
     }
@@ -125,6 +131,8 @@ pub struct Viewer {
     /// Size of new text layers in points (1 pt = 1 document pixel).
     pub text_size_pt: f64,
     selected: Option<String>,
+    /// Develop state of an opened camera raw / DNG (module `develop`).
+    develop: Option<develop::DevelopDoc>,
     status: Vec<String>,
     zoom: f32,
     pan: egui::Vec2,
@@ -169,6 +177,7 @@ impl Viewer {
             fonts: text::FontFile::bundled().into_iter().collect(),
             text_size_pt: 24.0,
             selected: None,
+            develop: None,
             status: Vec::new(),
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
@@ -243,7 +252,9 @@ impl Viewer {
             self.cancel,
         )
         .map_err(|e| format!("tiles {}: {}", path.display(), e.code()))?;
+        let just_imported = receipt.is_some();
         let receipt = receipt.or_else(|| opened.import_bytes(ImportRole::Receipt).and_then(|b| serde_json::from_slice(b).ok()));
+        let original = opened.import_bytes(ImportRole::Original).map(<[u8]>::to_vec);
         // Tile bodies come from the session (render-ready view of the opened revision).
         self.assets = self.run.render_assets().map_err(|e| format!("tiles {}: {e}", path.display()))?;
         self.edit = EditState { tool: self.edit.tool, combine: self.edit.combine, brush: self.edit.brush, ..EditState::default() };
@@ -256,6 +267,8 @@ impl Viewer {
             }
         }
         self.receipt = receipt;
+        self.attach_develop(original.as_deref(), just_imported);
+        drop(original);
         self.source = Some(path.to_path_buf());
         self.selected = None;
         self.frame = None;
@@ -489,6 +502,7 @@ impl Viewer {
             "render_error": self.render_error.as_ref().map(|e| json!({"code": e.code, "detail": e.detail})),
             "receipt": self.receipt.as_ref().map(|r| json!({"source_format": r["source_format"], "layers": r["layers"], "loss_entries": r["loss"].as_array().map_or(0, Vec::len), "blending_space": r["blending_space"]})),
             "edit": self.edit_json(),
+            "develop": self.develop_json(),
             "ops": self.run.ops(),
             "status": self.status,
         })
@@ -621,8 +635,15 @@ impl Viewer {
         }
 
         let mut commits = Vec::new();
+        let mut develop_changes = Vec::new();
         egui::SidePanel::right(widget::id(widget::PROPERTIES_PANEL)).resizable(true).default_width(300.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                if self.develop.is_some() {
+                    ui.heading("Develop");
+                    develop_changes = self.develop_ui(ui);
+                    self.drawn.push(widget::DEVELOP_PANEL.into());
+                    ui.separator();
+                }
                 ui.heading("Properties");
                 commits = self.properties_ui(ui);
                 ui.separator();
@@ -634,6 +655,9 @@ impl Viewer {
         self.drawn.push(widget::RECEIPT_PANEL.into());
         for (layer, control, text) in commits {
             let _ = self.commit(&layer, &control, &text);
+        }
+        if !develop_changes.is_empty() {
+            let _ = self.set_develop_many(&develop_changes);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(if self.edit.selection.is_some() { 120 } else { 1000 }));
         self.render_if_dirty();
