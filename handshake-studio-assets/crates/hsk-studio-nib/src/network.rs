@@ -474,19 +474,6 @@ fn polyline(net: &VectorNetwork, s: usize) -> Result<Vec<(PathPoint, f64)>, Netw
     }).collect())
 }
 
-/// Parameters `(u, v)` in `[0, 1]` where segments `a0-a1` and `b0-b1` meet, if they do (not parallel).
-fn hit(a0: PathPoint, a1: PathPoint, b0: PathPoint, b1: PathPoint) -> Option<(f64, f64)> {
-    let (r, s) = (PathPoint::new(a1.x - a0.x, a1.y - a0.y), PathPoint::new(b1.x - b0.x, b1.y - b0.y));
-    let den = r.x * s.y - r.y * s.x;
-    if den == 0.0 {
-        return None;
-    }
-    let q = PathPoint::new(b0.x - a0.x, b0.y - a0.y);
-    let u = (q.x * s.y - q.y * s.x) / den;
-    let v = (q.x * r.y - q.y * r.x) / den;
-    ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)).then_some((u, v))
-}
-
 /// Distance from `p` to segment `a-b` and the parameter of the nearest point.
 fn nearest(p: PathPoint, a: PathPoint, b: PathPoint) -> (f64, f64) {
     let d = PathPoint::new(b.x - a.x, b.y - a.y);
@@ -500,9 +487,10 @@ impl VectorNetwork {
     /// Planarize (lane SMB-ILLUSTRATOR-PEN-3): splits every segment where it crosses another
     /// segment (a new vertex shared by both) or where a vertex lies on its interior within
     /// `tolerance` (a T-junction: split at the existing vertex), so [`VectorNetwork::detect_regions`]
-    /// finds faces without segments having to meet at shared vertices. Curves are located on 64
-    /// samples (crossing parameters are approximate to the sampling; the split vertex is the found
-    /// point and the sub-curves are exact de Casteljau pieces moved to it). Region loops are remapped
+    /// finds faces without segments having to meet at shared vertices. Crossings are exact to an
+    /// interval bound of `tolerance / 4` (Bezier subdivision, `crate::intersect`; lane
+    /// SMB-COMPOSITE-STROKE-GEOMETRY); the split vertex is the found point and the sub-curves are
+    /// exact de Casteljau pieces moved to it. Near-miss T-junctions are located on 64 samples. Region loops are remapped
     /// onto the sub-segments in walk order, so fill state is kept. Split points closer than
     /// `tolerance` merge. Bounded by [`MAX_PLANARIZE_WORK`] comparisons before splitting.
     pub fn planarize(&self, tolerance: f64) -> Result<Self, NetworkError> {
@@ -546,27 +534,33 @@ impl VectorNetwork {
                 if a[2] + tolerance < b[0] || b[2] + tolerance < a[0] || a[3] + tolerance < b[1] || b[3] + tolerance < a[1] {
                     continue;
                 }
-                let (li, lj) = (&lines[i], &lines[j]);
-                work = work.saturating_add(u64::try_from(li.len().saturating_mul(lj.len())).unwrap_or(u64::MAX));
+                // Exact crossings: Bezier subdivision with an interval bound (crate::intersect);
+                // straight segments as uniform-parameter lines.
+                let cubic = |s: usize| -> Result<crate::intersect::Cubic, NetworkError> {
+                    let seg = self.segment(s)?;
+                    let c = self.controls(s, false)?;
+                    Ok(if zero(seg.tangent_start) && zero(seg.tangent_end) { crate::intersect::line_cubic(c[0], c[3]) } else { c })
+                };
+                let (ci, cj) = (cubic(i)?, cubic(j)?);
+                let found = crate::intersect::cubic_crossings(&ci, &cj, (tolerance / 4.0).max(1e-12)).map_err(|e| match e {
+                    crate::path_contract::Error::BudgetExceeded => NetworkError::BudgetExceeded,
+                    _ => NetworkError::Degenerate,
+                })?;
+                work = work.saturating_add(u64::try_from(found.len()).unwrap_or(u64::MAX)).saturating_add(1);
                 if work > MAX_PLANARIZE_WORK {
                     return Err(NetworkError::BudgetExceeded);
                 }
-                for wi in li.windows(2) {
-                    for wj in lj.windows(2) {
-                        let Some((u, v)) = hit(wi[0].0, wi[1].0, wj[0].0, wj[1].0) else { continue };
-                        let ti = wi[0].1 + (wi[1].1 - wi[0].1) * u;
-                        let tj = wj[0].1 + (wj[1].1 - wj[0].1) * v;
-                        if !interior(ti) && !interior(tj) {
-                            continue; // meeting at endpoints: already a shared or separate vertex
-                        }
-                        let p = lerp_pt(wi[0].0, wi[1].0, u);
-                        let vtx = vertex_at(p, &mut vertices)?;
-                        if interior(ti) {
-                            splits.push((i, ti, vtx));
-                        }
-                        if interior(tj) {
-                            splits.push((j, tj, vtx));
-                        }
+                for (ti, tj) in found {
+                    if !interior(ti) && !interior(tj) {
+                        continue; // meeting at endpoints: already a shared or separate vertex
+                    }
+                    let p = crate::intersect::bez(&ci, ti);
+                    let vtx = vertex_at(p, &mut vertices)?;
+                    if interior(ti) {
+                        splits.push((i, ti, vtx));
+                    }
+                    if interior(tj) {
+                        splits.push((j, tj, vtx));
                     }
                 }
             }
@@ -653,5 +647,156 @@ impl VectorNetwork {
         let out = Self { vertices, segments, regions };
         out.validate()?;
         Ok(out)
+    }
+}
+
+// ---- lane SMB-COMPOSITE-STROKE-GEOMETRY slice 3: pen on networks ------------------------------------
+
+/// A pen target on a network: an existing vertex, or a point on a segment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NetworkHit {
+    Vertex(usize),
+    Segment { segment: usize, t: f64 },
+}
+
+impl VectorNetwork {
+    /// The vertex within `radius` of `p` (nearest), else the segment point within `radius`
+    /// (64 samples refined by ternary search), else `None`.
+    pub fn hit(&self, p: PathPoint, radius: f64) -> Option<NetworkHit> {
+        let d = |q: PathPoint| ((q.x - p.x).powi(2) + (q.y - p.y).powi(2)).sqrt();
+        if let Some((i, _)) = self.vertices.iter().enumerate().map(|(i, v)| (i, d(v.point()))).filter(|(_, dist)| *dist <= radius).min_by(|a, b| a.1.total_cmp(&b.1)) {
+            return Some(NetworkHit::Vertex(i));
+        }
+        let mut best: Option<(f64, usize, f64)> = None;
+        for s in 0..self.segments.len() {
+            let Ok(c) = self.controls(s, false) else { continue };
+            let mut bt = 0.0;
+            let mut bd = f64::INFINITY;
+            for k in 0..=64_u32 {
+                let t = f64::from(k) / 64.0;
+                let dist = d(bez(&c, t));
+                if dist < bd {
+                    bd = dist;
+                    bt = t;
+                }
+            }
+            let (mut lo, mut hi) = ((bt - 1.0 / 64.0).max(0.0), (bt + 1.0 / 64.0).min(1.0));
+            for _ in 0..40 {
+                let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                if d(bez(&c, m1)) < d(bez(&c, m2)) { hi = m2 } else { lo = m1 }
+            }
+            let t = (lo + hi) / 2.0;
+            let dist = d(bez(&c, t));
+            if dist <= radius && t > 1e-9 && t < 1.0 - 1e-9 && best.is_none_or(|b| dist < b.0) {
+                best = Some((dist, s, t));
+            }
+        }
+        best.map(|(_, segment, t)| NetworkHit::Segment { segment, t })
+    }
+
+    /// Splits segment `segment` at `t` (exclusive 0..1) by de Casteljau: a new vertex, two segments
+    /// (the first keeps the index, the second is appended) and every region loop through it
+    /// lengthened in walk order. Returns the network and the new vertex.
+    pub fn split_segment(&self, segment: usize, t: f64) -> Result<(Self, usize), NetworkError> {
+        if !t.is_finite() {
+            return Err(NetworkError::NonFinite);
+        }
+        if t <= 0.0 || t >= 1.0 {
+            return Err(NetworkError::OutOfRange);
+        }
+        self.validate()?;
+        if self.vertices.len() >= MAX_NETWORK_ELEMENTS || self.segments.len() >= MAX_NETWORK_ELEMENTS {
+            return Err(NetworkError::BudgetExceeded);
+        }
+        let seg = *self.segment(segment)?;
+        let straight = zero(seg.tangent_start) && zero(seg.tangent_end);
+        let c = self.controls(segment, false)?;
+        let (l, r) = split_cubic(c, t);
+        let mut out = self.clone();
+        let v = out.vertices.len();
+        // The point at the segment's own parameter (a straight segment's retracted handles make it
+        // non-uniform, so the point is evaluated, not interpolated).
+        let m = if straight { bez(&c, t) } else { l[3] };
+        out.vertices.push(NetworkVertex::at(m.x, m.y));
+        let tan = |h: PathPoint, at: PathPoint| PathPoint::new(h.x - at.x, h.y - at.y);
+        let (first, second) = if straight {
+            (NetworkSegment::line(seg.start, v), NetworkSegment::line(v, seg.end))
+        } else {
+            (
+                NetworkSegment { start: seg.start, end: v, tangent_start: Some(tan(l[1], l[0])), tangent_end: Some(tan(l[2], l[3])) },
+                NetworkSegment { start: v, end: seg.end, tangent_start: Some(tan(r[1], r[0])), tangent_end: Some(tan(r[2], r[3])) },
+            )
+        };
+        let appended = out.segments.len();
+        if let Some(s) = out.segments.get_mut(segment) {
+            *s = first;
+        }
+        out.segments.push(second);
+        // Loops: the split segment becomes the two halves in walk order.
+        for (ri, r) in self.regions.iter().enumerate() {
+            for (li, l) in r.loops.iter().enumerate() {
+                let walk = self.loop_vertices(l)?;
+                let mut next = Vec::with_capacity(l.len().saturating_add(1));
+                for (s, (_, reversed)) in l.iter().zip(&walk) {
+                    if *s == segment {
+                        if *reversed {
+                            next.extend([appended, segment]);
+                        } else {
+                            next.extend([segment, appended]);
+                        }
+                    } else {
+                        next.push(*s);
+                    }
+                }
+                if let Some(slot) = out.regions.get_mut(ri).and_then(|r| r.loops.get_mut(li)) {
+                    *slot = next;
+                }
+            }
+        }
+        out.validate()?;
+        Ok((out, v))
+    }
+
+    /// Pen on a network (STU-VEC-007 "connect to any existing network anchor, not only
+    /// endpoints"): the click at `p` lands on an existing vertex within `radius`, else splits the
+    /// segment under it (a new vertex joining that edge), else adds a free vertex; when `from` is
+    /// given a segment `from -> target` is added (`drag` = the tangent at `from`, mirrored into the
+    /// target; `None` = straight). Returns the network and the target vertex.
+    pub fn pen(&self, from: Option<usize>, p: PathPoint, drag: Option<PathPoint>, radius: f64) -> Result<(Self, usize), NetworkError> {
+        if !(p.x.is_finite() && p.y.is_finite() && radius.is_finite()) || drag.is_some_and(|d| !(d.x.is_finite() && d.y.is_finite())) {
+            return Err(NetworkError::NonFinite);
+        }
+        self.validate()?;
+        if let Some(f) = from {
+            self.vertex(f)?;
+        }
+        let (mut net, target) = match self.hit(p, radius) {
+            Some(NetworkHit::Vertex(v)) => (self.clone(), v),
+            Some(NetworkHit::Segment { segment, t }) => self.split_segment(segment, t)?,
+            None => {
+                if self.vertices.len() >= MAX_NETWORK_ELEMENTS {
+                    return Err(NetworkError::BudgetExceeded);
+                }
+                let mut n = self.clone();
+                n.vertices.push(NetworkVertex::at(p.x, p.y));
+                let v = n.vertices.len().saturating_sub(1);
+                (n, v)
+            }
+        };
+        if let Some(f) = from {
+            if f == target {
+                return Ok((net, target));
+            }
+            if net.segments.len() >= MAX_NETWORK_ELEMENTS {
+                return Err(NetworkError::BudgetExceeded);
+            }
+            let seg = match drag {
+                Some(d) if d.x != 0.0 || d.y != 0.0 => NetworkSegment { start: f, end: target, tangent_start: Some(d), tangent_end: Some(PathPoint::new(-d.x, -d.y)) },
+                _ => NetworkSegment::line(f, target),
+            };
+            net.segments.push(seg);
+        }
+        net.validate()?;
+        Ok((net, target))
     }
 }

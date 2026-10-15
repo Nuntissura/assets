@@ -346,6 +346,7 @@ impl Viewer {
         self.edit.vector.press = None;
         if !matches!(tool, Tool::Pen | Tool::Curvature) {
             self.edit.vector.pen_layer = None;
+            self.edit.vector.pen_vertex = None;
         }
         if tool == Tool::Text {
             self.say("text tool: click the canvas to place a text layer".into());

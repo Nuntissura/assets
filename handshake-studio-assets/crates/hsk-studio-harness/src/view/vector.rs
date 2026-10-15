@@ -412,6 +412,8 @@ pub struct VectorTool {
     pub samples: Vec<[f64; 2]>,
     /// The layer the pen extends (`None` = the next click starts a new path).
     pub pen_layer: Option<String>,
+    /// The network vertex the pen continues from on a network layer.
+    pub pen_vertex: Option<usize>,
     /// Press point and current point of the canvas gesture in progress (document pixels;
     /// [`Viewer::set_vector_tool`] keeps the live values).
     pub press: Option<[f64; 2]>,
@@ -446,6 +448,7 @@ impl Default for VectorTool {
             blob_diameter: 10.0,
             samples: Vec::new(),
             pen_layer: None,
+            pen_vertex: None,
             press: None,
             current: None,
         }
@@ -973,8 +976,8 @@ impl Viewer {
 
     /// Replaces the vector tool settings (the gesture in progress and the pen layer are kept).
     pub fn set_vector_tool(&mut self, tool: VectorTool) {
-        let (press, current, pen) = (self.edit.vector.press, self.edit.vector.current, self.edit.vector.pen_layer.take());
-        self.edit.vector = VectorTool { press, current, pen_layer: pen, ..tool };
+        let (press, current, pen, vertex) = (self.edit.vector.press, self.edit.vector.current, self.edit.vector.pen_layer.take(), self.edit.vector.pen_vertex);
+        self.edit.vector = VectorTool { press, current, pen_layer: pen, pen_vertex: vertex, ..tool };
     }
 
     /// The entry bytes: the session document entry when the session carries the `vector` token,
@@ -1118,6 +1121,12 @@ impl Viewer {
     fn pen_point_inner(&mut self, x: f64, y: f64, drag: Option<[f64; 2]>, close_radius: f64) -> Result<String, String> {
         if !(x.is_finite() && y.is_finite() && drag.is_none_or(|d| d.iter().all(|v| v.is_finite())) && close_radius.is_finite()) {
             return Err("pen: non_finite".into());
+        }
+        // A network layer (the pen layer, else the selected layer) is extended as a network: the
+        // click joins an existing vertex or edge (lane SMB-COMPOSITE-STROKE-GEOMETRY slice 3).
+        let network_layer = self.edit.vector.pen_layer.clone().or_else(|| self.selected.clone()).filter(|id| self.vector_path(id).is_ok_and(|r| r.network.is_some()));
+        if let Some(layer) = network_layer {
+            return self.network_pen_inner(&layer, x, y, drag, close_radius);
         }
         let anchor = match drag {
             Some([dx, dy]) if dx != 0.0 || dy != 0.0 => EditAnchor::smooth(x, y, dx, dy),
@@ -1584,7 +1593,28 @@ impl Viewer {
     /// Ends the pen path (the next pen click starts a new one). No transaction.
     pub fn pen_end(&mut self) {
         self.edit.vector.pen_layer = None;
+        self.edit.vector.pen_vertex = None;
         self.edit.vector.press = None;
+    }
+
+    /// Pen on a vector network (STU-VEC-007 "connect to any existing network anchor, not only
+    /// endpoints"; STU-VEC-008 the pen contributes to the network instead of collapsing it): the
+    /// click lands on the vertex within `radius`, else splits the edge under it, else adds a vertex,
+    /// and is joined to the previous pen vertex (`drag` = its tangent). ONE transaction; returns the
+    /// layer id; the pen keeps the vertex for the next click until [`Viewer::pen_end`].
+    pub fn network_pen(&mut self, layer_id: &str, x: f64, y: f64, drag: Option<[f64; 2]>, radius: f64) -> Result<String, String> {
+        let r = self.network_pen_inner(layer_id, x, y, drag, radius);
+        self.report(r)
+    }
+
+    fn network_pen_inner(&mut self, layer_id: &str, x: f64, y: f64, drag: Option<[f64; 2]>, radius: f64) -> Result<String, String> {
+        let net = self.vector_network(layer_id)?;
+        let from = if self.edit.vector.pen_layer.as_deref() == Some(layer_id) { self.edit.vector.pen_vertex } else { None };
+        let (next, target) = net.pen(from, PathPoint::new(x, y), drag.map(|d| PathPoint::new(d[0], d[1])), radius).map_err(|e| format!("pen: {}", e.code()))?;
+        let id = self.set_network_inner("pen_network", layer_id, &next)?;
+        self.edit.vector.pen_layer = Some(layer_id.to_string());
+        self.edit.vector.pen_vertex = Some(target);
+        Ok(id)
     }
 
     // ----- direct selection -----------------------------------------------------------------------

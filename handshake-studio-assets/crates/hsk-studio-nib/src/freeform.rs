@@ -433,24 +433,11 @@ fn split(c: [PathPoint; 4], t: f64) -> ([PathPoint; 4], [PathPoint; 4]) {
     ([c[0], p01, p012, m], [m, p123, p23, c[3]])
 }
 
-/// Parameter on `a0-a1` where it crosses `b0-b1` (both inclusive), if it does.
-fn crossing(a0: PathPoint, a1: PathPoint, b0: PathPoint, b1: PathPoint) -> Option<f64> {
-    let (r, s) = (sub(a1, a0), sub(b1, b0));
-    let den = r.x * s.y - r.y * s.x;
-    if den == 0.0 {
-        return None;
-    }
-    let q = sub(b0, a0);
-    let u = (q.x * s.y - q.y * s.x) / den;
-    let v = (q.x * r.y - q.y * r.x) / den;
-    ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)).then_some(u)
-}
-
 /// Knife on strokes (STU-VEC-048 "open endpoints where it crosses strokes only"): every contour of
 /// `path` (open or closed) is cut where the polyline `cut` crosses it; each resulting piece is an
 /// open contour of its own path (same fill rule), its cut ends `NONE` anchors sharing the crossing
-/// point. A contour the cut misses is returned unchanged. Crossings on curves are located on 64
-/// samples per segment (the split itself is exact de Casteljau at the found parameter).
+/// point. A contour the cut misses is returned unchanged. Crossings are exact to an interval bound
+/// of 1e-9 (Bezier subdivision, `crate::intersect`); the split is exact de Casteljau.
 pub fn knife_strokes(path: &AnchorPath, cut: &[PathPoint]) -> Result<Vec<AnchorPath>, AnchorError> {
     if cut.len() < 2 {
         return Err(AnchorError::InvalidParameter);
@@ -468,24 +455,15 @@ pub fn knife_strokes(path: &AnchorPath, cut: &[PathPoint]) -> Result<Vec<AnchorP
         for si in 0..c.segment_count() {
             let ctl = path.segment(ci, si)?;
             let straight = ctl[1] == ctl[0] && ctl[2] == ctl[3];
-            let poly: Vec<(PathPoint, f64)> = if straight {
-                vec![(ctl[0], 0.0), (ctl[3], 1.0)]
-            } else {
-                (0..=KNIFE_CURVE_SAMPLES).map(|k| {
-                    let t = f64::from(k) / f64::from(KNIFE_CURVE_SAMPLES);
-                    (cubic_at(&ctl, t), t)
-                }).collect()
-            };
+            // Exact crossings (Bezier subdivision with an interval bound, crate::intersect).
+            let curve = if straight { crate::intersect::line_cubic(ctl[0], ctl[3]) } else { ctl };
             let mut ts: Vec<f64> = Vec::new();
-            for w in poly.windows(2) {
-                for k in cut.windows(2) {
-                    if let Some(u) = crossing(w[0].0, w[1].0, k[0], k[1]) {
-                        let t = w[0].1 + (w[1].1 - w[0].1) * u;
-                        if t > 1e-9 && t < 1.0 - 1e-9 {
-                            ts.push(t);
-                        }
-                    }
-                }
+            for k in cut.windows(2) {
+                let found = crate::intersect::cubic_crossings(&curve, &crate::intersect::line_cubic(k[0], k[1]), 1e-9).map_err(|e| match e {
+                    Error::BudgetExceeded => AnchorError::BudgetExceeded,
+                    _ => AnchorError::InvalidGeometry,
+                })?;
+                ts.extend(found.into_iter().map(|(t, _)| t).filter(|t| *t > 1e-9 && *t < 1.0 - 1e-9));
             }
             ts.sort_by(f64::total_cmp);
             ts.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
