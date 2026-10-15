@@ -185,6 +185,44 @@ struct PLayer<'a> {
     blur: Option<Box<BlurGpu>>,
     /// Layer filters of the envelope (pigment `filter_math`, lane SMB-RENDER-FILTERS).
     filter: Option<Box<FilterGpu>>,
+    /// Smart-filter stack of the envelope (lane SMB-PS-SMART-FILTER-WIRING).
+    smart: Option<Box<SmartGpu>>,
+}
+
+/// A smart-filter stack compiled for the filter passes: per enabled entry its filter chain and
+/// opacity, the summed frame reach, and the plane it renders (content bounds inside the extent).
+struct SmartGpu {
+    entries: Vec<(FilterGpu, f32)>,
+    reach: u32,
+    plane: Option<Rect>,
+}
+
+/// Compiles a smart-filter stack; liquify entries and masks have no GPU pass yet (typed refusals
+/// before any device work).
+fn compile_smart(
+    op: &hsk_studio_pigment::smart_filter::SmartFilterOp,
+    plane: Option<Rect>,
+    node: u32,
+) -> Result<(SmartGpu, u64), GpuError> {
+    use hsk_studio_pigment::smart_filter::StackFilter;
+    if !op.check() {
+        return Err(GpuError::Backend(BackendError::InvalidPlan(PlanError::SmartFilterParameter { node })));
+    }
+    if op.stack_mask.is_some() || op.entries.iter().any(|e| e.mask.is_some()) {
+        return Err(unsupported("smart_filter_mask"));
+    }
+    let (mut entries, mut reach, mut ops) = (Vec::new(), 0u32, 1u64);
+    for e in op.entries.iter().filter(|e| e.enabled && e.opacity > 0.0) {
+        let f = match &e.filter {
+            StackFilter::Filter(f) => f,
+            StackFilter::Liquify { .. } => return Err(unsupported("smart_filter_liquify")),
+        };
+        let (compiled, pass_ops) = compile_filters(std::slice::from_ref(f), node)?;
+        reach = reach.checked_add(compiled.reach).ok_or_else(overflow)?;
+        ops = ops.max(pass_ops);
+        entries.push((compiled, e.opacity));
+    }
+    Ok((SmartGpu { entries, reach, plane }, ops))
 }
 
 /// Largest median radius the shader sorts in registers (a disc of at most 149 samples per channel).
@@ -900,6 +938,31 @@ fn prepare<'a>(
                         }
                         _ => None,
                     };
+                    // Smart-filter stack (pigment `smart_filter`): filter-only stacks without masks
+                    // run as filter passes plus a mix pass per entry; pigment validated the
+                    // combinations (`SmartFilterCombination`), kept as defence in depth.
+                    let smart = match layer_ext.and_then(|x| x.smart_filters.as_ref()) {
+                        Some(op) => {
+                            if fx.is_some()
+                                || blur.is_some()
+                                || adjust.is_some()
+                                || filter.is_some()
+                                || layer_ext.is_some_and(|x| x.transform.is_some())
+                                || pass_through
+                                || clipped
+                            {
+                                return Err(GpuError::Backend(BackendError::InvalidPlan(
+                                    PlanError::SmartFilterCombination { node: node_id },
+                                )));
+                            }
+                            let plane = content_bounds.map(|b| intersect(b, target.extent)).transpose()?.flatten();
+                            let (compiled, pass_ops) = compile_smart(op, plane, node_id)?;
+                            has_blur = true;
+                            blur_taps = blur_taps.max(pass_ops);
+                            Some(Box::new(compiled))
+                        }
+                        None => None,
+                    };
                     // The layer's bounds grow by its effect margin (and a layer blur's support);
                     // the margin of the node is the largest chain sum of effect margins through
                     // nested groups. A backdrop blur reads the backdrop of the layers below up to
@@ -912,7 +975,8 @@ fn prepare<'a>(
                         .as_ref()
                         .map_or(0, |f| f.margin)
                         .max(layer_blur)
-                        .max(filter.as_ref().map_or(0, |f| f.reach));
+                        .max(filter.as_ref().map_or(0, |f| f.reach))
+                        .max(smart.as_ref().map_or(0, |s| s.reach));
                     let layer_bounds = match content_bounds {
                         Some(b) if layer_margin > 0 => Some(grow_rect(b, layer_margin)?),
                         b => b,
@@ -944,6 +1008,7 @@ fn prepare<'a>(
                         fx,
                         blur,
                         filter,
+                        smart,
                     });
                 }
                 // Destination levels below this group's own: a plain layer needs its isolated child's
@@ -960,7 +1025,10 @@ fn prepare<'a>(
                         Some(PlanNode::Group(_)) => need.get(input).copied().unwrap_or(0),
                         _ => 0,
                     };
-                    if layers[k].fx.is_some()
+                    if layers[k].smart.is_some() {
+                        // The running result and one filtered copy.
+                        below.saturating_add(2)
+                    } else if layers[k].fx.is_some()
                         || layers[k].blur.is_some()
                         || layers[k].filter.is_some()
                     {
@@ -1613,7 +1681,11 @@ impl RenderBackend<NoVector> for GpuBackend {
             | ExtOperator::EffectsNested
             | ExtOperator::Transform(_)
             | ExtOperator::Blur(_)
-            | ExtOperator::Filter(_) => true,
+            | ExtOperator::Filter(_)
+            // Smart-filter stacks (lane SMB-PS-SMART-FILTER-WIRING): filter-only stacks without
+            // masks run as filter + mix passes within the filter tolerance (tests/gpu_smart_filter.rs);
+            // liquify entries and masks are typed refusals at prepare.
+            | ExtOperator::SmartFilter => true,
             ExtOperator::AlphaPremultiplied => false,
             // Key pipelines (lane SMB-AE-KEY-TRACK-3): `key.wgsl` on keyed tile layers
             // (tests/gpu_keying.rs); inner/outer key, key cleaner and wire removal are not run.
@@ -2367,6 +2439,9 @@ fn eval_layer(
     if let Some(filter) = &layer.filter {
         return eval_filter_layer(ex, prep, layer, filter, chunk, level);
     }
+    if let Some(smart) = &layer.smart {
+        return eval_smart_layer(ex, prep, layer, smart, chunk, level);
+    }
     if layer.opacity <= 0.0 {
         return Ok(());
     }
@@ -2700,6 +2775,70 @@ fn eval_filter_layer(
     for stage in &filter.stages {
         ex.check()?;
         ex.filter_stage(stage, chunk, content)?;
+    }
+    ex.composite(
+        layer.mode,
+        layer.opacity,
+        layer.mask.as_ref(),
+        layer.blend_if.as_ref(),
+        Pass::Normal,
+        region,
+        chunk,
+        level,
+        Src::Chunk,
+    )
+}
+
+/// A layer with a smart-filter stack (lane SMB-PS-SMART-FILTER-WIRING): the content WITHOUT the
+/// layer mask over the stack plane (content bounds inside the extent; transparent beyond, as
+/// pigment's `SmartFilterStack::render` sees it) one level below, then per enabled entry: copy to
+/// two levels below, the entry's filter passes there, and the mix pass `lerp(running, filtered,
+/// opacity)` back into the running level; finally composited with the layer's mask, Blend-If,
+/// mode and opacity over the plane (the stack output is the plane, as on render-cpu).
+fn eval_smart_layer(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    smart: &SmartGpu,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    if layer.opacity <= 0.0 {
+        return Ok(());
+    }
+    let Some(plane) = smart.plane else {
+        return Ok(());
+    };
+    let Some(content_region) = intersect(plane, chunk)? else {
+        return Ok(());
+    };
+    let mut region = content_region;
+    if let Some(mask) = layer.mask.as_ref() {
+        region = match intersect(region, mask.bounds)? {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+    }
+    let running = level.saturating_add(1);
+    let copy = level.saturating_add(2);
+    render_content(ex, prep, layer, None, content_region, chunk, running)?;
+    let rel = |v: i64, o: i64| i32::try_from(v.checked_sub(o).ok_or_else(overflow)?).map_err(|_| unsupported("filter_coordinates"));
+    let (cx1, cy1) = end(content_region)?;
+    let rect = (
+        rel(content_region.x, chunk.x)?,
+        rel(content_region.y, chunk.y)?,
+        u32::try_from(rel(cx1, chunk.x)?).map_err(|_| overflow())?,
+        u32::try_from(rel(cy1, chunk.y)?).map_err(|_| overflow())?,
+    );
+    for (chain, opacity) in &smart.entries {
+        ex.check()?;
+        ex.filter_pass(FilterOp::Copy, chunk, FilterBuf::Level(running), FilterBuf::Level(copy), FilterBuf::A)?;
+        for stage in &chain.stages {
+            ex.filter_stage(stage, chunk, copy)?;
+        }
+        // The mix also keeps nothing beyond the plane (render-cpu stores the plane only).
+        ex.filter_pass(FilterOp::Mix { t: *opacity, rect }, chunk, FilterBuf::Level(running), FilterBuf::A, FilterBuf::Level(copy))?;
+        ex.filter_pass(FilterOp::Copy, chunk, FilterBuf::A, FilterBuf::Level(running), FilterBuf::B)?;
     }
     ex.composite(
         layer.mode,
@@ -3306,6 +3445,7 @@ fn run(
         fx: None,
         blur: None,
         filter: None,
+        smart: None,
     };
     let mut colour: Vec<u8> = Vec::new();
     let mut alpha: Vec<u8> = Vec::new();

@@ -373,6 +373,9 @@ pub(crate) enum FilterOp {
     Copy,
     Median { radius: u32 },
     Noise { amount: f32, gaussian: bool, mono: bool, seed: u64, origin: (i32, i32) },
+    /// Premultiplied lerp of `src` toward `aux` by `t` (smart-filter entry mix), transparent
+    /// outside the frame-relative rect `[x0, x1) x [y0, y1)`.
+    Mix { t: f32, rect: (i32, i32, u32, u32) },
 }
 
 /// The `FilterP` block of `op` over a `frame_w x frame_h` frame.
@@ -389,6 +392,7 @@ pub(crate) fn filter_params_bytes(op: FilterOp, frame_w: u32, frame_h: u32, exte
         FilterOp::Noise { amount, gaussian, mono, seed, origin } => {
             (4, 0, origin, seed, amount, 0.0, u32::from(gaussian), u32::from(mono))
         }
+        FilterOp::Mix { t, rect } => (5, 0, (rect.0, rect.1), u64::from(rect.2) | (u64::from(rect.3) << 32), t, 0.0, 0, 0),
     };
     let code = if extended { code | FILTER_EXTENDED_BIT } else { code };
     let words = [

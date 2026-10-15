@@ -8,6 +8,9 @@
 //   op 1 HP:    dst = high_pass(src = o, aux = b)
 //   op 2 COPY:  dst = src
 //   op 3 MED:   dst = median over the disc dx^2 + dy^2 <= r^2 of the premultiplied src, unpremultiplied
+//   op 5 MIX:   dst = premultiplied lerp(src, aux, amount); amount <= 0 copies src, >= 1 copies aux;
+//               transparent outside the frame rect [origin_x, seed_lo) x [origin_y, seed_hi)
+//               (pigment smart_filter mix over its plane, lane SMB-PS-SMART-FILTER-WIRING)
 //   op 4 NOISE: dst = add_noise(src); the SplitMix64 hash of (seed, x, y, channel, draw) is the
 //               reference's exactly (64-bit words as u32 pairs); the uniform value is the top 24
 //               bits of the hash (the reference uses 53 bits in binary64), so a noise value differs
@@ -278,6 +281,26 @@ fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
                     clamp(o.y + noise_value(gx, gy, ch1), 0.0, 1.0),
                     clamp(o.z + noise_value(gx, gy, ch2), 0.0, 1.0),
                     o.w);
+            }
+        }
+        case 5u: {
+            let a = src[i];
+            let b = aux[i];
+            let t = p.amount;
+            if (x < p.origin_x || y < p.origin_y || x >= i32(p.seed_lo) || y >= i32(p.seed_hi)) {
+                dst[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            } else if (t <= 0.0) {
+                dst[i] = a;
+            } else if (t >= 1.0) {
+                dst[i] = b;
+            } else {
+                let al = a.w + (b.w - a.w) * t;
+                if (!(al > 0.0)) {
+                    dst[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+                } else {
+                    let pc = a.xyz * a.w + (b.xyz * b.w - a.xyz * a.w) * t;
+                    dst[i] = vec4<f32>(clamp(pc / al, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(al, 0.0, 1.0));
+                }
             }
         }
         default: {
