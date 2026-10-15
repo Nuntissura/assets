@@ -165,7 +165,7 @@ fn view_selection_refuses_unbuilt_targets_and_hdr_views_are_bounded() {
     assert_eq!(ViewSelectError::NotBuilt.code(), "view_not_built");
 
     // HDR views on a working-space neutral ramp: luminance (Rec.2020 Y) non-decreasing, every channel
-    // in [0, peak]. Channels themselves are not monotonic near the peak: the CTL limits to Rec.2020
+    // in [0, 1.0001 * peak]. Channels themselves are not monotonic near the peak: the CTL limits to Rec.2020
     // in D60-adapted XYZ (limit_to_primaries before the D60 -> D65 CAT), so the red channel of a
     // D60 neutral clips first and the CAT then mixes it (observed: R 9.764766 -> 9.764666 at 295
     // for 1000 nits); for the same reason a saturated neutral lands at about 97.7 % of the peak.
@@ -179,11 +179,13 @@ fn view_selection_refuses_unbuilt_targets_and_hdr_views_are_bounded() {
             let out = view.apply([k; 3]).unwrap();
             let y: f64 = (0..3).map(|c| y2020[c] * f64::from(out[c])).sum();
             assert!(y + 1e-6 >= prev_y, "{} luminance at {k}: {prev_y} -> {y}", view.key());
-            assert!(out.iter().all(|v| (0.0..=peak).contains(v)), "{} at {k}: {out:?}", view.key());
+            // The CTL clamps the HDR output at 0 only; after the CAT a channel may pass the peak
+            // slightly (observed G 10.000127 for 1000 nits).
+            assert!(out.iter().all(|v| (0.0..=peak * 1.0001).contains(v)), "{} at {k}: {out:?}", view.key());
             prev_y = y;
         }
         let top = view.apply([f32::MAX; 3]).unwrap();
-        assert!(top.iter().all(|v| *v >= 0.95 * peak && *v <= peak), "{} f32::MAX {top:?}", view.key());
+        assert!(top.iter().all(|v| *v >= 0.95 * peak && *v <= peak * 1.0001), "{} f32::MAX {top:?}", view.key());
     }
     for view in V::ALL {
         for input in SceneInput::ALL {
@@ -193,7 +195,7 @@ fn view_selection_refuses_unbuilt_targets_and_hdr_views_are_bounded() {
             }
             for px in [[-1e30, 5.0, 0.3], [f32::MAX, -f32::MAX, 0.0], [1e-45, 0.0, -0.0]] {
                 let out = vt.apply(px).unwrap();
-                let top = view.peak_nits() as f32 / 100.0;
+                let top = view.peak_nits() as f32 / 100.0 * 1.0001;
                 assert!(out.iter().all(|v| (0.0..=top).contains(v)), "{} {} {px:?} -> {out:?}", view.key(), input.key());
             }
             let mut odd = [0.1f32; 5];
