@@ -1,37 +1,40 @@
 #![deny(clippy::arithmetic_side_effects)]
 //! Maps a [`LibraryProposal`] onto the CKC catalog port commands of hsk-studio-kernel-bindings
-//! (lane SMB-CKC-PORTS). Accepted lrcat data enters CKC only through those typed ports (module 14
-//! lrcat clause: "accepted data enters existing CKC and Studio schemas through ResourceBroker ...";
-//! STU-ASSET-004/010). The plan is pure data; [`apply_ckc_import`] sends it through an injected
-//! [`CkcCatalogPort`]. Request ids derive from the source fingerprint and local ids, so re-applying
-//! the same plan after a failure is replayed by the host, not applied twice. Anything the port
-//! vocabulary cannot carry (custom label text, untranslatable smart rules, unresolved assets,
-//! non-set parents) is a typed loss in the plan; a smart collection whose rule cannot be
-//! translated in full is NOT created (dropping a criterion would widen it silently).
+//! (lanes SMB-CKC-PORTS, SMB-CKC-PORTS-ALIGN). Accepted lrcat data enters CKC only through those
+//! typed ports (module 14 lrcat clause: "accepted data enters existing CKC and Studio schemas
+//! through ResourceBroker ..."; STU-ASSET-004/010). The plan is pure data; [`apply_ckc_import`]
+//! sends it through an injected [`CkcCatalogPort`]. Collection ids are deterministic UUIDs
+//! (`collections: UUID[]`, Spec 2.2.3.2) derived from the source fingerprint and local id, and
+//! idempotency keys likewise, so re-applying the same plan after a failure is replayed by the host
+//! (STU-SDB-004), not applied twice. Per-asset metadata goes through all-or-nothing batches with
+//! one receipt each (WP-KERNEL-005 MT-014/MT-018). Anything the port cannot carry (custom label
+//! text, untranslatable smart rules, unresolved assets, non-set parents) is a typed loss in the
+//! plan; a smart collection whose rule cannot be translated in full is NOT created (dropping a
+//! criterion would widen it silently).
 use crate::extract::{Disposition, LossNote};
 use crate::library::{ColorLabel as LrLabel, Flag as LrFlag, HierarchyStatus, LibraryCollectionKind, LibraryProposal};
 use crate::lua_rules::{Combine, KnownField, KnownOp, RuleGroup, RuleNode, RuleScalar};
 use hsk_studio_kernel_bindings::{
-    AssetId, CatalogField, CatalogOp, CatalogRule, CatalogValue, CkcActor, CkcCatalogPort, CkcError, CkcLimits,
-    CkcReceipt, CollectionCommand, CollectionId, CollectionKind, ColorLabel, Criterion, Flag, KeywordCommand,
-    KeywordPath, MetadataChange, MetadataMutation, Rating,
+    AssetId, BatchTarget, CatalogField, CatalogOp, CatalogRule, CatalogValue, CkcActor, CkcCatalogPort, CkcError,
+    CkcLimits, CkcReceipt, CollectionCommand, CollectionId, CollectionKind, ColorLabel, Criterion, Flag, KeywordCommand,
+    KeywordPath, MetadataBatch, MetadataChange, Rating,
 };
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
-/// Metadata changes for one asset; the expected revision is read from CKC at apply time.
+/// One all-or-nothing metadata batch; expected revisions are read from CKC at apply time.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlannedMetadata {
-    pub request_id: String,
-    pub asset: AssetId,
-    pub changes: Vec<MetadataChange>,
+pub struct PlannedBatch {
+    pub idempotency_key: String,
+    pub targets: Vec<(AssetId, Vec<MetadataChange>)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CkcImportPlan {
     pub keywords: Vec<KeywordCommand>,
     /// Parents before children.
     pub collections: Vec<CollectionCommand>,
-    pub metadata: Vec<PlannedMetadata>,
+    pub metadata: Vec<PlannedBatch>,
     pub losses: Vec<LossNote>,
 }
 
@@ -52,6 +55,21 @@ impl Losses {
     }
 }
 
+/// Name-based UUID (version 8, RFC 9562 custom layout) from SHA-256 of `parts`.
+pub fn derived_uuid_bytes(parts: &[&[u8]]) -> [u8; 16] {
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update((p.len() as u64).to_be_bytes());
+        h.update(p);
+    }
+    let d = h.finalize();
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&d[..16]);
+    b[6] = (b[6] & 0x0f) | 0x80;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    b
+}
+
 fn op(k: KnownOp) -> CatalogOp {
     match k {
         KnownOp::Eq => CatalogOp::Eq,
@@ -70,37 +88,29 @@ fn op(k: KnownOp) -> CatalogOp {
     }
 }
 
-fn label_named(s: &str) -> Option<ColorLabel> {
-    match s.to_ascii_lowercase().as_str() {
-        "red" => Some(ColorLabel::Red),
-        "yellow" => Some(ColorLabel::Yellow),
-        "green" => Some(ColorLabel::Green),
-        "blue" => Some(ColorLabel::Blue),
-        "purple" => Some(ColorLabel::Purple),
-        _ => None,
-    }
-}
-
+/// lrcat rule field and value -> port field (Spec 2.2.3.2 names) and value.
 fn value(field: KnownField, v: &RuleScalar) -> Option<(CatalogField, CatalogValue)> {
     use RuleScalar as S;
     Some(match (field, v) {
         (KnownField::Rating, S::Int(n)) => (CatalogField::Rating, CatalogValue::Int(*n)),
-        (KnownField::Pick, S::Int(1)) => (CatalogField::Flag, CatalogValue::Flag(Flag::Flagged)),
+        (KnownField::Pick, S::Int(1)) => (CatalogField::Flag, CatalogValue::Flag(Flag::Pick)),
         (KnownField::Pick, S::Int(0)) => (CatalogField::Flag, CatalogValue::Flag(Flag::Unflagged)),
-        (KnownField::Pick, S::Int(-1)) => (CatalogField::Flag, CatalogValue::Flag(Flag::Rejected)),
-        (KnownField::LabelColor, S::Str(s)) => (CatalogField::Label, CatalogValue::Label(label_named(s)?)),
+        (KnownField::Pick, S::Int(-1)) => (CatalogField::Flag, CatalogValue::Flag(Flag::Reject)),
+        (KnownField::LabelColor, S::Str(s)) => {
+            (CatalogField::ColorLabel, CatalogValue::ColorLabel(ColorLabel::from_wire(&s.to_ascii_lowercase())?))
+        }
         (KnownField::Iso, S::Int(n)) => (CatalogField::Iso, CatalogValue::Int(*n)),
         (KnownField::HasAdjustments, S::Bool(b)) => (CatalogField::HasAdjustments, CatalogValue::Bool(*b)),
         (f, S::Str(s)) => {
             let field = match f {
-                KnownField::Keywords => CatalogField::Keyword,
-                KnownField::Filename => CatalogField::FileName,
+                KnownField::Keywords => CatalogField::Keywords,
+                KnownField::Filename => CatalogField::OriginalFilename,
                 KnownField::FileFormat => CatalogField::FileFormat,
                 KnownField::CaptureTime => CatalogField::CaptureTime,
-                KnownField::Collection => CatalogField::Collection,
+                KnownField::Collection => CatalogField::Collections,
                 KnownField::Folder => CatalogField::Folder,
                 KnownField::CameraModel => CatalogField::CameraModel,
-                KnownField::Lens => CatalogField::Lens,
+                KnownField::Lens => CatalogField::LensModel,
                 KnownField::AnySearchableText => CatalogField::AnyText,
                 _ => return None,
             };
@@ -151,7 +161,8 @@ pub fn plan_ckc_import(
     resolve: &dyn Fn(i64) -> Option<AssetId>,
     limits: &CkcLimits,
 ) -> Result<CkcImportPlan, CkcError> {
-    let fp = hex8(&lib.catalog.fingerprint.sha256_main);
+    let fp_bytes = lib.catalog.fingerprint.sha256_main;
+    let fp = hex8(&fp_bytes);
     let mut losses = Losses::default();
 
     // Keyword paths (root first) from the validated forest; a broken chain is a loss.
@@ -178,7 +189,7 @@ pub fn plan_ckc_import(
             Ok(path) if names.len() == usize::try_from(k.hierarchy.depth).unwrap_or(usize::MAX).saturating_add(1) => {
                 if !k.synonyms.is_empty() {
                     keyword_cmds.push(KeywordCommand::DefineSynonyms {
-                        request_id: format!("lrcat-{fp}-ks{}", k.local_id),
+                        idempotency_key: format!("lrcat-{fp}-ks{}", k.local_id),
                         keyword: path.clone(),
                         synonyms: k.synonyms.clone(),
                     });
@@ -193,7 +204,10 @@ pub fn plan_ckc_import(
     let ids: HashMap<i64, CollectionId> = lib
         .collections
         .iter()
-        .filter_map(|c| CollectionId::new(&format!("lrcat-{fp}-c{}", c.local_id), limits).ok().map(|id| (c.local_id, id)))
+        .map(|c| {
+            let uuid = derived_uuid_bytes(&[b"lrcat-collection", &fp_bytes, &c.local_id.to_be_bytes()]);
+            (c.local_id, CollectionId::from_bytes(uuid))
+        })
         .collect();
     let kinds: HashMap<i64, &LibraryCollectionKind> = lib.collections.iter().map(|c| (c.local_id, &c.kind)).collect();
     let mut order: Vec<&crate::library::LibraryCollection> = lib.collections.iter().collect();
@@ -202,22 +216,28 @@ pub fn plan_ckc_import(
     let mut collection_cmds = Vec::new();
     for c in order {
         let e = "AgLibraryCollection";
-        let Some(id) = ids.get(&c.local_id).cloned() else { continue };
+        let Some(collection_id) = ids.get(&c.local_id).cloned() else { continue };
         let parent = match c.hierarchy.parent {
-            Some(p) if kinds.get(&p) == Some(&&LibraryCollectionKind::CollectionSet) && created.get(&p) == Some(&true) => ids.get(&p).cloned(),
+            Some(p) if kinds.get(&p) == Some(&&LibraryCollectionKind::CollectionSet) && created.get(&p) == Some(&true) => {
+                ids.get(&p).cloned()
+            }
             Some(_) => {
                 losses.add(e, "collection_parent_dropped", Disposition::Approximate, c.local_id);
                 None
             }
             None => None,
         };
-        let request_id = format!("lrcat-{fp}-cc{}", c.local_id);
+        let idempotency_key = format!("lrcat-{fp}-cc{}", c.local_id);
         let name = c.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Collection {}", c.local_id));
         let cmd = match &c.kind {
-            LibraryCollectionKind::CollectionSet => CollectionCommand::Create { request_id, id, name, parent, kind: CollectionKind::Set },
-            LibraryCollectionKind::Collection => CollectionCommand::Create { request_id, id, name, parent, kind: CollectionKind::Manual },
+            LibraryCollectionKind::CollectionSet => {
+                CollectionCommand::Create { idempotency_key, collection_id, name, parent, kind: CollectionKind::Set }
+            }
+            LibraryCollectionKind::Collection => {
+                CollectionCommand::Create { idempotency_key, collection_id, name, parent, kind: CollectionKind::Manual }
+            }
             LibraryCollectionKind::SmartCollection => match c.rules.as_ref().and_then(translate_rule) {
-                Some(rule) => CollectionCommand::CreateSmart { request_id, id, name, parent, rule },
+                Some(rule) => CollectionCommand::CreateSmart { idempotency_key, collection_id, name, parent, rule },
                 None => {
                     losses.add(e, "smart_rule_not_translatable", Disposition::Unsupported, c.local_id);
                     created.insert(c.local_id, false);
@@ -238,7 +258,7 @@ pub fn plan_ckc_import(
         created.insert(c.local_id, true);
         collection_cmds.push(cmd);
     }
-    // Manual membership, one command per collection in member order.
+    // Manual membership, chunked to the member bound.
     let mut members: BTreeMap<i64, Vec<AssetId>> = BTreeMap::new();
     for m in &lib.catalog.collection_members {
         let manual = kinds.get(&m.collection) == Some(&&LibraryCollectionKind::Collection) && created.get(&m.collection) == Some(&true);
@@ -252,15 +272,15 @@ pub fn plan_ckc_import(
         for (n, chunk) in assets.chunks(limits.max_members.max(1)).enumerate() {
             if let Some(id) = ids.get(&c) {
                 collection_cmds.push(CollectionCommand::AddMembers {
-                    request_id: format!("lrcat-{fp}-cm{c}-{n}"),
-                    collection: id.clone(),
-                    assets: chunk.to_vec(),
+                    idempotency_key: format!("lrcat-{fp}-cm{c}-{n}"),
+                    collection_id: id.clone(),
+                    asset_ids: chunk.to_vec(),
                 });
             }
         }
     }
 
-    // Per-asset metadata: rating, flag, label, assigned keywords.
+    // Per-asset library metadata (PhotoAsset rating, flag, color_label, keywords).
     let mut assigned: HashMap<i64, Vec<KeywordPath>> = HashMap::new();
     for a in &lib.catalog.keyword_assignments {
         match paths.get(&a.keyword) {
@@ -268,7 +288,8 @@ pub fn plan_ckc_import(
             None => losses.add("AgLibraryKeywordImage", "keyword_not_imported", Disposition::Unsupported, a.keyword),
         }
     }
-    let mut metadata = Vec::new();
+    // rounds[k] holds chunk k of every asset, so no batch repeats an asset.
+    let mut rounds: Vec<Vec<(AssetId, Vec<MetadataChange>)>> = Vec::new();
     for p in &lib.photos {
         let Some(asset) = resolve(p.local_id) else {
             losses.add("Adobe_images", "asset_unresolved", Disposition::Missing, p.local_id);
@@ -276,39 +297,53 @@ pub fn plan_ckc_import(
         };
         let mut changes = Vec::new();
         if let Some(r) = p.rating {
-            match Rating::from_stars(r) {
+            match Rating::new(r) {
                 Ok(r) => changes.push(MetadataChange::SetRating(r)),
                 Err(_) => losses.add("Adobe_images", "rating_not_imported", Disposition::Unsupported, p.local_id),
             }
         }
         changes.push(MetadataChange::SetFlag(match p.flag {
-            LrFlag::Pick => Flag::Flagged,
-            LrFlag::Reject => Flag::Rejected,
+            LrFlag::Pick => Flag::Pick,
+            LrFlag::Reject => Flag::Reject,
             LrFlag::Unflagged => Flag::Unflagged,
         }));
-        match &p.label {
-            None => {}
-            Some(LrLabel::Red) => changes.push(MetadataChange::SetLabel(Some(ColorLabel::Red))),
-            Some(LrLabel::Yellow) => changes.push(MetadataChange::SetLabel(Some(ColorLabel::Yellow))),
-            Some(LrLabel::Green) => changes.push(MetadataChange::SetLabel(Some(ColorLabel::Green))),
-            Some(LrLabel::Blue) => changes.push(MetadataChange::SetLabel(Some(ColorLabel::Blue))),
-            Some(LrLabel::Purple) => changes.push(MetadataChange::SetLabel(Some(ColorLabel::Purple))),
-            Some(LrLabel::Custom(_)) => losses.add("Adobe_images", "label_not_in_ckc_set", Disposition::Unsupported, p.local_id),
+        let label = match &p.label {
+            None => None,
+            Some(LrLabel::Red) => Some(ColorLabel::Red),
+            Some(LrLabel::Yellow) => Some(ColorLabel::Yellow),
+            Some(LrLabel::Green) => Some(ColorLabel::Green),
+            Some(LrLabel::Blue) => Some(ColorLabel::Blue),
+            Some(LrLabel::Purple) => Some(ColorLabel::Purple),
+            Some(LrLabel::Custom(_)) => {
+                losses.add("Adobe_images", "label_not_in_ckc_set", Disposition::Unsupported, p.local_id);
+                None
+            }
+        };
+        if label.is_some() {
+            changes.push(MetadataChange::SetColorLabel(label));
         }
         for k in assigned.remove(&p.local_id).unwrap_or_default() {
             changes.push(MetadataChange::AddKeyword(k));
         }
-        for chunk in changes.chunks(limits.max_changes.max(1)) {
-            let n = metadata.len();
-            metadata.push(PlannedMetadata { request_id: format!("lrcat-{fp}-m{}-{n}", p.local_id), asset: asset.clone(), changes: chunk.to_vec() });
+        for (k, chunk) in changes.chunks(limits.max_changes.max(1)).enumerate() {
+            if rounds.len() <= k {
+                rounds.push(Vec::new());
+            }
+            rounds[k].push((asset.clone(), chunk.to_vec()));
+        }
+    }
+    let mut metadata = Vec::new();
+    for (r, round) in rounds.into_iter().enumerate() {
+        for (n, chunk) in round.chunks(limits.max_batch.max(1)).enumerate() {
+            metadata.push(PlannedBatch { idempotency_key: format!("lrcat-{fp}-mb{r}-{n}"), targets: chunk.to_vec() });
         }
     }
     Ok(CkcImportPlan { keywords: keyword_cmds, collections: collection_cmds, metadata, losses: losses.0.into_values().collect() })
 }
 
 /// Sends a plan through an injected port: synonyms, collections (parents first), membership,
-/// then per-asset metadata with the expected revision read from CKC. Stops at the first refusal;
-/// re-applying the same plan replays the receipts already issued.
+/// then metadata batches with each target's expected revision read from CKC (`asset.get`). Stops
+/// at the first refusal; re-applying the same plan replays the receipts already issued.
 pub fn apply_ckc_import(port: &dyn CkcCatalogPort, actor: &CkcActor, plan: &CkcImportPlan) -> Result<Vec<CkcReceipt>, CkcError> {
     let mut receipts = Vec::new();
     for k in &plan.keywords {
@@ -317,10 +352,14 @@ pub fn apply_ckc_import(port: &dyn CkcCatalogPort, actor: &CkcActor, plan: &CkcI
     for c in &plan.collections {
         receipts.push(port.collection(actor, c)?);
     }
-    for m in &plan.metadata {
-        let current = port.get(actor, &m.asset)?.revision;
-        let mutation = MetadataMutation { request_id: m.request_id.clone(), asset: m.asset.clone(), expected_revision: current, changes: m.changes.clone() };
-        receipts.push(port.mutate_metadata(actor, &mutation)?);
+    for b in &plan.metadata {
+        let mut targets = Vec::with_capacity(b.targets.len());
+        for (asset_id, changes) in &b.targets {
+            let expected_revision = port.get(actor, asset_id)?.revision;
+            targets.push(BatchTarget { asset_id: asset_id.clone(), expected_revision, changes: changes.clone() });
+        }
+        let batch = MetadataBatch { idempotency_key: b.idempotency_key.clone(), targets };
+        receipts.push(port.update_library_metadata_batch(actor, &batch)?);
     }
     Ok(receipts)
 }

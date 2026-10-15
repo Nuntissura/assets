@@ -5,7 +5,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_interop_lrcat::{
     Disposition, Grant, LibraryLimits, LibraryProposal, Limits, SliceSource, WhiteBalanceSource, XmpRating,
-    apply_ckc_import, extract_library, plan_ckc_import,
+    apply_ckc_import, derived_uuid_bytes, extract_library, plan_ckc_import,
 };
 use hsk_studio_kernel_bindings::{
     ActorKind, AssetFacts, AssetId, CatalogField, CatalogOp, CatalogRule, CatalogValue, CkcActor, CkcCatalogPort,
@@ -88,6 +88,15 @@ fn develop_settings_and_zlib_xmp_map_typed() {
     });
 }
 
+/// Test resolver: lrcat image n is CKC asset 00000000-0000-0000-0000-{n:012x}.
+fn asset(n: i64) -> AssetId {
+    AssetId::new(&format!("00000000-0000-0000-0000-{n:012x}")).unwrap()
+}
+
+fn name(a: &str) -> i64 {
+    i64::from_str_radix(&a[24..], 16).unwrap()
+}
+
 fn op() -> CkcActor {
     CkcActor { kind: ActorKind::Operator, principal_id: "importer".into() }
 }
@@ -97,17 +106,17 @@ fn import(bytes: &[u8]) -> (LibraryProposal, CkcTestDouble, hsk_studio_interop_l
     let p = library(bytes);
     let double = CkcTestDouble::new(l);
     for photo in &p.catalog.photos {
-        let facts = AssetFacts { file_name: photo.file_name.clone().unwrap_or_default(), ..AssetFacts::default() };
-        double.seed_asset(AssetId::new(&format!("a{}", photo.local_id), &l).unwrap(), facts).unwrap();
+        let facts = AssetFacts { original_filename: photo.file_name.clone().unwrap_or_default(), ..AssetFacts::default() };
+        double.seed_asset(asset(photo.local_id), facts).unwrap();
     }
-    let resolve = |id: i64| AssetId::new(&format!("a{id}"), &CkcLimits::default()).ok();
+    let resolve = |id: i64| Some(asset(id));
     let plan = plan_ckc_import(&p, &resolve, &l).unwrap();
     (p, double, plan)
 }
 
-fn hits(d: &CkcTestDouble, rule: CatalogRule) -> Vec<String> {
+fn hits(d: &CkcTestDouble, rule: CatalogRule) -> Vec<i64> {
     let req = SearchRequest { rule: Some(rule), sort: vec![], offset: 0, limit: 1000 };
-    d.search(&op(), &req).unwrap().assets.iter().map(|a| a.asset.as_str().to_owned()).collect()
+    d.search(&op(), &req).unwrap().assets.iter().map(|a| name(a.asset_id.as_str())).collect()
 }
 
 fn m(field: CatalogField, op: CatalogOp, value: CatalogValue) -> CatalogRule {
@@ -121,13 +130,14 @@ fn library_proposal_imports_through_ckc_port_double() {
         // Library fixture: sets, smart rule translation, dropped parents, flags, labels, synonyms.
         let (p, d, plan) = import(LIBRARY);
         let receipts = apply_ckc_import(&d, &op(), &plan).unwrap();
-        let fp: String = p.catalog.fingerprint.sha256_main.iter().take(4).map(|b| format!("{b:02x}")).collect();
-        let cid = |n: i64| CollectionId::new(&format!("lrcat-{fp}-c{n}"), &l).unwrap();
+        let fp = p.catalog.fingerprint.sha256_main;
+        let cid = |n: i64| CollectionId::from_bytes(derived_uuid_bytes(&[b"lrcat-collection", &fp, &n.to_be_bytes()]));
+        assert_eq!(&cid(3).as_str()[14..15], "8", "name-based UUID version 8");
         let expected_rule = CatalogRule::All(vec![
             m(CatalogField::Rating, CatalogOp::Ge, CatalogValue::Int(4)),
             CatalogRule::Any(vec![
-                m(CatalogField::Keyword, CatalogOp::ContainsAny, CatalogValue::Text("rome italy".into())),
-                m(CatalogField::Label, CatalogOp::Eq, CatalogValue::Label(ColorLabel::Red)),
+                m(CatalogField::Keywords, CatalogOp::ContainsAny, CatalogValue::Text("rome italy".into())),
+                m(CatalogField::ColorLabel, CatalogOp::Eq, CatalogValue::ColorLabel(ColorLabel::Red)),
             ]),
         ]);
         assert!(matches!(d.collection_state(&cid(3)), Some(DoubleCollection::Smart { rule, parent: Some(par), .. }) if rule == expected_rule && par == cid(1)));
@@ -137,24 +147,28 @@ fn library_proposal_imports_through_ckc_port_double() {
         assert_eq!(lp("collection_parent_dropped"), Some(1));
         assert_eq!(lp("smart_rule_not_translatable"), Some(1));
         assert_eq!(lp("label_not_in_ckc_set"), Some(1));
-        assert_eq!(hits(&d, m(CatalogField::Rating, CatalogOp::Ge, CatalogValue::Int(4))), ["a4", "a7"]);
+        assert_eq!(hits(&d, m(CatalogField::Rating, CatalogOp::Ge, CatalogValue::Int(4))), [4, 7]);
         assert!(hits(&d, expected_rule).is_empty(), "no imported asset has rating >= 4 and a red label or rome/italy keyword");
         let italy = KeywordPath::new(&["Places", "Europe", "Italy"], &l).unwrap();
         assert_eq!(d.synonyms(&italy), ["Italia", "Italie"]);
-        let a3 = d.get(&op(), &AssetId::new("a3", &l).unwrap()).unwrap();
-        assert_eq!((a3.flag, a3.rating, a3.revision), (Flag::Rejected, Rating::Unrated, 2));
-        let a1 = d.get(&op(), &AssetId::new("a1", &l).unwrap()).unwrap();
-        assert_eq!((a1.rating, a1.label), (Rating::Stars(3), Some(ColorLabel::Red)));
+        let a3 = d.get(&op(), &asset(3)).unwrap();
+        assert_eq!((a3.flag, a3.rating, a3.revision), (Flag::Reject, Rating::UNRATED, 2));
+        let a1 = d.get(&op(), &asset(1)).unwrap();
+        assert_eq!((a1.rating, a1.color_label), (Rating::new(3).unwrap(), Some(ColorLabel::Red)));
+        assert_eq!(plan.metadata.len(), 1, "8 photos fit one all-or-nothing batch (one receipt)");
+        let events = d.events();
         // Re-applying the same plan replays every receipt; nothing is applied twice.
         assert_eq!(apply_ckc_import(&d, &op(), &plan).unwrap(), receipts);
-        assert_eq!(d.get(&op(), &AssetId::new("a1", &l).unwrap()).unwrap().revision, 2);
+        assert_eq!(d.get(&op(), &asset(1)).unwrap().revision, 2);
+        assert_eq!(d.events(), events, "replays record no second EventLedger event");
 
         // Main fixture: manual membership and hierarchical keyword assignments.
         let (_, d, plan) = import(MAIN);
         apply_ckc_import(&d, &op(), &plan).unwrap();
-        assert_eq!(hits(&d, m(CatalogField::Keyword, CatalogOp::ContainsAny, CatalogValue::Text("italy".into()))), ["a1", "a2"]);
-        assert_eq!(hits(&d, m(CatalogField::Collection, CatalogOp::Eq, CatalogValue::Text("Favorites".into()))), ["a1", "a2", "a3"]);
-        let a1 = d.get(&op(), &AssetId::new("a1", &l).unwrap()).unwrap();
+        assert_eq!(hits(&d, m(CatalogField::Keywords, CatalogOp::ContainsAny, CatalogValue::Text("italy".into()))), [1, 2]);
+        assert_eq!(hits(&d, m(CatalogField::Collections, CatalogOp::Eq, CatalogValue::Text("Favorites".into()))), [1, 2, 3]);
+        let a1 = d.get(&op(), &asset(1)).unwrap();
+        assert_eq!(a1.collections.len(), 1, "PhotoAsset.collections lists Favorites");
         let travel_italy = KeywordPath::new(&["Travel", "Italy"], &l).unwrap();
         assert!(a1.keywords.contains(&travel_italy), "keyword assigned as its root-first path");
         assert_eq!(plan.losses.iter().find(|x| x.code == "smart_rule_not_translatable").map(|x| x.count), Some(1));
