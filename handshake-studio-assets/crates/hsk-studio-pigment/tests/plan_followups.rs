@@ -1168,6 +1168,14 @@ const READERS: &[ReaderRow] = &[
         "validate",
         Reads::Reachable(&["reachable_nodes()", "if counts &&"]),
     ),
+    // Selection tools (lane SMB-PS-SELECT-LIQUIFY): no plan and no envelope. `Composite` holds the
+    // colour views a selection samples (`Self { layers }`, `self.layers`); the max-flow graph
+    // counts its own vertices (`self.nodes()`). The scan matches the field names only.
+    ("select_tools.rs", "new", Reads::Every),
+    ("select_tools.rs", "premul", Reads::Every),
+    ("select_tools/maxflow.rs", "add_edge", Reads::Every),
+    ("select_tools/maxflow.rs", "max_flow", Reads::Every),
+    ("select_tools/maxflow.rs", "source_side", Reads::Every),
 ];
 
 fn crate_sources() -> Vec<Source> {
