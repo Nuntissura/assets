@@ -445,6 +445,15 @@ pub enum PlanError {
     /// content-aware fill on the same layer, a pass-through layer, a clipped layer or a clip base,
     /// or in an extended-range plan (keying is defined on unit-range samples).
     KeyCombination { node: u32 },
+    /// A smart-filter stack ([`LayerExtension::smart_filters`], lane SMB-PS-SELECT-LIQUIFY-2) with
+    /// more than `filter_math::MAX_FILTERS_PER_LAYER` entries, a filter parameter out of range, an
+    /// opacity outside `[0, 1]`, an invalid liquify mesh, or a mask that is not a density-1
+    /// coverage plane.
+    SmartFilterParameter { node: u32 },
+    /// A smart-filter stack combined with an adjustment layer, effects, a transform, a blur,
+    /// filters, a content-aware fill or keys on the same layer, a pass-through layer, a clipped
+    /// layer or a clip base, or in an extended-range plan.
+    SmartFilterCombination { node: u32 },
     /// A [`PlanLimits`] field is above its hard maximum ([`PlanLimits::MAXIMUM`]): limits can only
     /// tighten. Not a defect of the plan: the caller's limits are refused before the plan is read.
     LimitAboveMaximum {
@@ -498,6 +507,8 @@ impl PlanError {
             Self::ContentAwareCombination { .. } => "plan_content_aware_combination",
             Self::KeyParameter { .. } => "plan_key_parameter",
             Self::KeyCombination { .. } => "plan_key_combination",
+            Self::SmartFilterParameter { .. } => "plan_smart_filter_parameter",
+            Self::SmartFilterCombination { .. } => "plan_smart_filter_combination",
         }
     }
 }

@@ -30,6 +30,7 @@ mod effects;
 mod extended;
 mod filter;
 mod key;
+mod smart_filter;
 #[cfg(test)]
 mod refusal_keys;
 
@@ -399,6 +400,9 @@ struct Prepared<'a> {
     fills: Vec<content_aware::FillJob<'a>>,
     /// Key pipelines to run before the first chunk, after the fills (lane SMB-AE-KEY-TRACK-2).
     keys: Vec<key::KeyJob>,
+    /// Smart-filter stacks to run before the first chunk, after the keys (lane
+    /// SMB-PS-SELECT-LIQUIFY-2).
+    smart: Vec<smart_filter::SmartJob<'a>>,
 }
 
 impl<'a> Prepared<'a> {
@@ -583,6 +587,7 @@ fn prepare<'a, V: VectorSource>(
     let mut has_fill: Vec<bool> = Vec::with_capacity(n);
     let mut fills: Vec<content_aware::FillJob<'a>> = Vec::new();
     let mut key_jobs: Vec<key::KeyJob> = Vec::new();
+    let mut smart_jobs: Vec<smart_filter::SmartJob<'a>> = Vec::new();
     for (i, node) in plan.nodes.iter().enumerate() {
         let mut group_has_effects = false;
         let mut group_has_fill = false;
@@ -905,6 +910,61 @@ fn prepare<'a, V: VectorSource>(
                             at
                         }
                     };
+                    // Smart-filter stack (pigment `smart_filter::SmartFilterStack::render`): the
+                    // layer reads a filtered node of `extra`, written before the first chunk (see
+                    // `smart_filter`). Pigment validated the combinations; kept as defence in depth.
+                    let source_index = match layer_fx.smart {
+                        None => source_index,
+                        Some(index) => {
+                            if layer_fx.effect.is_some()
+                                || layer_fx.blur.is_some()
+                                || layer_fx.filter.is_some()
+                                || layer_fx.transform.is_some()
+                                || layer_fx.adjustment.is_some()
+                                || layer_fx.content_aware.is_some()
+                                || layer_fx.key.is_some()
+                                || pass_through
+                                || clipped
+                                || starts_run
+                            {
+                                return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                    PlanError::SmartFilterCombination { node: node_id },
+                                )));
+                            }
+                            if has_effects[input] || has_fill[input] {
+                                return Err(unsupported(smart_filter::SMART_FILTER_NESTED));
+                            }
+                            let op = ext.smart(index).ok_or_else(|| unsupported("plan_shape"))?.clone();
+                            let mut masks = Vec::with_capacity(op.entries.len());
+                            for e in &op.entries {
+                                masks.push(match &e.mask {
+                                    None => None,
+                                    Some(m) => Some(smart_filter::mask_view(sources, m, node_id)?),
+                                });
+                            }
+                            let stack_mask = match &op.stack_mask {
+                                None => None,
+                                Some(m) => Some(smart_filter::mask_view(sources, m, node_id)?),
+                            };
+                            let plane = content_bounds
+                                .map(|b| intersect(b, target.extent))
+                                .transpose()?
+                                .flatten();
+                            let slot = extra.len();
+                            let at = add_u(n, slot)?;
+                            extra.push(PNode::Filled {
+                                rect: plane.unwrap_or(target.extent),
+                                data: Vec::new(),
+                            });
+                            extra_bounds.push(plane);
+                            if let Some(bounds) = plane {
+                                smart_jobs.push(smart_filter::SmartJob { extra: slot, input, bounds, op, masks, stack_mask, node: node_id });
+                            }
+                            layer_bounds = plane;
+                            group_has_fill = true;
+                            at
+                        }
+                    };
                     group_has_fill |= has_fill[input];
                     group_effects |= layer_fx.effect.is_some()
                         || layer_fx.blur.is_some()
@@ -1041,6 +1101,7 @@ fn prepare<'a, V: VectorSource>(
         ext,
         fills,
         keys: key_jobs,
+        smart: smart_jobs,
     })
 }
 
@@ -1951,6 +2012,15 @@ impl Renderer {
             key::run_keys(&mut prepared, key_pigment, cancel)?;
         }
         let scratch_bytes = scratch_bytes.checked_add(key_total).ok_or(BackendError::Overflow)?;
+        // Smart-filter stacks (lane SMB-PS-SELECT-LIQUIFY-2): their planes are charged next to the
+        // scratch, fills and keys before the first sink call; pigment gets what remains.
+        let smart_bytes = smart_filter::smart_bytes(&prepared)?;
+        let remaining = request.max_working_bytes.saturating_sub(scratch_bytes);
+        let _smart_lease = self.reserve(smart_bytes, remaining)?;
+        if !prepared.smart.is_empty() {
+            smart_filter::run_smart(&mut prepared, remaining.saturating_sub(smart_bytes), cancel)?;
+        }
+        let scratch_bytes = scratch_bytes.checked_add(smart_bytes).ok_or(BackendError::Overflow)?;
         let eval = Eval {
             prepared: &prepared,
         };
@@ -2235,6 +2305,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Key pipelines (lane SMB-AE-KEY-TRACK-2): pigment's `keying::run_key_pipeline` keys
             // the whole layer content once, so the bytes are pigment's (tests/cpu_keying.rs).
             ExtOperator::Key(_) => operator.intrinsic(),
+            // Smart-filter stacks (lane SMB-PS-SELECT-LIQUIFY-2): pigment's
+            // `SmartFilterStack::render` filters the whole layer content once, so the bytes are
+            // pigment's (tests/cpu_smart_filter.rs).
+            ExtOperator::SmartFilter => operator.intrinsic(),
             // Output stage (lane SMB-PIGMENT-EXTENDED-RANGE): extended range composites through
             // pigment's `composite_over_extended`, the clip is `f32::clamp` on the delivered chunk
             // (tests/cpu_extended_range.rs).

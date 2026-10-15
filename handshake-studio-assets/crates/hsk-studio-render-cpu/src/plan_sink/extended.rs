@@ -54,6 +54,8 @@ const EFFECT_OP_BYTES: u64 = 64;
 const FILTER_OP_BYTES: u64 = 64;
 /// Resident bytes charged per content-aware fill (the `ContentAwareFillOp` record).
 const CONTENT_AWARE_OP_BYTES: u64 = 256;
+/// Resident bytes charged per smart-filter entry (the op record; liquify meshes counted apart).
+const SMART_ENTRY_BYTES: u64 = 128;
 /// Resident bytes charged per key stage (the `KeyStage` record; colour-range samples counted apart).
 const KEY_STAGE_BYTES: u64 = 64;
 /// Resident bytes charged per layer transform (the record plus its prepared inverse and bounds).
@@ -88,6 +90,9 @@ pub(super) struct LayerFx {
     pub(super) content_aware: Option<usize>,
     /// Key pipeline (pigment `keying`, lane SMB-AE-KEY-TRACK-2): index into [`ExtPrep::keys`].
     pub(super) key: Option<usize>,
+    /// Smart-filter stack (pigment `smart_filter`, lane SMB-PS-SELECT-LIQUIFY-2): index into
+    /// [`ExtPrep::smart`].
+    pub(super) smart: Option<usize>,
 }
 
 /// The filters of one layer (list order), the growth of the layer's pixels each stage causes
@@ -183,6 +188,7 @@ pub(super) struct ExtPrep {
     filters: Vec<FilterLayer>,
     content_aware: Vec<ContentAwareFillOp>,
     keys: Vec<Vec<KeyStage>>,
+    smart: Vec<hsk_studio_pigment::smart_filter::SmartFilterOp>,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -425,6 +431,28 @@ impl ExtPrep {
                 fx.key = Some(prep.keys.len());
                 prep.keys.push(e.keys.clone());
             }
+            if let Some(sf) = &e.smart_filters {
+                // Defence in depth for pigment's `SmartFilterParameter` (validated at admission).
+                if !sf.check() {
+                    return Err(RenderError::Backend(BackendError::InvalidPlan(
+                        PlanError::SmartFilterParameter { node: e.group.0 },
+                    )));
+                }
+                // The op record per entry plus the stored liquify meshes (16 + 4 bytes a vertex).
+                let mut bytes = u64::try_from(sf.entries.len())
+                    .ok()
+                    .and_then(|n| n.checked_mul(SMART_ENTRY_BYTES))
+                    .ok_or_else(overflow)?;
+                for entry in &sf.entries {
+                    if let hsk_studio_pigment::smart_filter::StackFilter::Liquify { mesh, .. } = &entry.filter {
+                        let v = u64::try_from(mesh.disp.len()).ok().and_then(|n| n.checked_mul(20)).ok_or_else(overflow)?;
+                        bytes = bytes.checked_add(v).ok_or_else(overflow)?;
+                    }
+                }
+                prep.charge(bytes, limit)?;
+                fx.smart = Some(prep.smart.len());
+                prep.smart.push(sf.clone());
+            }
             if let Some(t) = &e.transform {
                 prep.charge(TRANSFORM_STATE_BYTES, limit)?;
                 fx.transform = Some(prep.transforms.len());
@@ -486,6 +514,11 @@ impl ExtPrep {
         if let Some(layer) = self.filters.get_mut(index) {
             layer.bounds = bounds;
         }
+    }
+
+    /// Smart-filter stack `index` (see [`LayerFx::smart`]).
+    pub(super) fn smart(&self, index: usize) -> Option<&hsk_studio_pigment::smart_filter::SmartFilterOp> {
+        self.smart.get(index)
     }
 
     /// Key pipeline `index` (see [`LayerFx::key`]).

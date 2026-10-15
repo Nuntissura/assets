@@ -12,17 +12,23 @@
 //! `out = mix(prev, filter(prev), opacity * entry_mask * stack_mask)`, mixed premultiplied;
 //! a mix weight of exactly 0 keeps `prev`'s bytes and exactly 1 takes the filter's bytes.
 //!
-//! Gaps (recorded, not faked): the Folio `live_filter` layer record (schema id
-//! `hsk.studio.live_filter@1` exists in accord; folio refuses the kind today) is a folio-owner
-//! task; the plan envelope does not lower a masked stack, so backends do not run this module yet.
-//! Blend modes per entry are not implemented (normal only). Photoshop parity UNVERIFIED (D5).
+//! Persistence and rendering (lane SMB-PS-SELECT-LIQUIFY-2): the Folio record is
+//! `StudioRasterLayerRecord::smart_filters` ([`hsk_studio_folio::StudioSmartFilterStack`]),
+//! converted by [`SmartFilterOp::from_record`]; the render-plan envelope entry is
+//! `LayerExtension::smart_filters` ([`SmartFilterOp`], masks as plan coverage sources), which
+//! render-cpu executes by resolving the masks and calling [`SmartFilterStack::render`] (so its
+//! bytes are this module's) and render-gpu refuses (Unsupported). Composite does not lower the
+//! record yet (composite owner). Blend modes per entry are not implemented (normal only).
+//! Photoshop parity UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::filter_math::{FilterError, FilterLimits, LayerFilter, MAX_FILTERS_PER_LAYER, filter_plane};
 use crate::liquify::{LiquifyError, LiquifyLimits, LiquifyMesh};
 use crate::retouch::RgbaPlane;
 use crate::selection::{ColourView, CoveragePlane};
 use crate::transform_math::ResampleFilter;
-use crate::{Error, MAX_BYTES};
+use crate::render_plan::{MaskFormat, MaskInput};
+use crate::{Error, MAX_BYTES, Rect};
+use serde::Serialize;
 use std::fmt;
 
 /// Typed failure of a stack evaluation.
@@ -90,7 +96,7 @@ impl Default for StackLimits {
 }
 
 /// What one stack entry does.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum StackFilter {
     /// A core pixel filter of [`crate::filter_math`].
     Filter(LayerFilter),
@@ -234,3 +240,123 @@ impl SmartFilterStack {
 
 /// Stack surface description (Studio readings; Photoshop parity NOT_PROVEN, D5).
 pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"smart_filter","version":1,"lane":"SMB-PS-SELECT-LIQUIFY","spec_basis":["STU-RAS-037","STU-FX-011a","STU-FX-024"],"stack":"entries bottom-to-top: filter_math LayerFilter or liquify mesh; enabled, opacity [0,1], per-entry coverage mask, stack mask; re-rendered from the untouched source","mix":"premultiplied lerp(prev, filtered, opacity * mask * stack_mask); weight 0 keeps prev bytes, 1 takes filtered bytes","limits":{"max_entries":16},"gaps":["Folio live_filter record (folio owner; accord schema hsk.studio.live_filter@1)","plan envelope lowering of masked stacks (render-cpu/gpu)","per-entry blend modes"],"parity":"NOT_PROVEN"}"#;
+
+/// Operator key of the envelope entry ([`crate::render_plan::ExtOperator::SmartFilter`]).
+pub const SMART_FILTER_OPERATOR: &str = "smart_filter_stack";
+
+/// One envelope entry of a smart-filter stack: the filter, enable, opacity and an optional plan
+/// coverage-mask source (resolved by the backend like a layer mask).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SmartFilterEntryOp {
+    pub filter: StackFilter,
+    pub enabled: bool,
+    pub opacity: f32,
+    pub mask: Option<MaskInput>,
+}
+
+/// The render-plan envelope form of a smart-filter stack (`LayerExtension::smart_filters`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SmartFilterOp {
+    pub entries: Vec<SmartFilterEntryOp>,
+    pub stack_mask: Option<MaskInput>,
+}
+
+fn coverage_source(m: &MaskInput) -> bool {
+    matches!(m.format, MaskFormat::CoverageU8 | MaskFormat::CoverageU16Le) && m.density == 1.0 && m.placement.end().is_ok()
+}
+
+impl SmartFilterOp {
+    /// Envelope parameter check (`PlanError::SmartFilterParameter` when false; never clamps).
+    pub fn check(&self) -> bool {
+        let lim = LiquifyLimits::default();
+        self.entries.len() <= MAX_FILTERS_PER_LAYER
+            && self.stack_mask.as_ref().is_none_or(coverage_source)
+            && self.entries.iter().all(|e| {
+                e.opacity.is_finite()
+                    && (0.0..=1.0).contains(&e.opacity)
+                    && e.mask.as_ref().is_none_or(coverage_source)
+                    && match &e.filter {
+                        StackFilter::Filter(f) => f.validate().is_ok(),
+                        StackFilter::Liquify { mesh, .. } => mesh.validate(&lim).is_ok(),
+                    }
+            })
+    }
+
+    /// The evaluable stack, each mask source resolved to a coverage plane by `resolve` (stored
+    /// coverage with invert applied).
+    pub fn to_stack<E>(&self, mut resolve: impl FnMut(&MaskInput) -> Result<CoveragePlane, E>) -> Result<SmartFilterStack, E> {
+        let mut entries = Vec::with_capacity(self.entries.len());
+        for e in &self.entries {
+            let mask = match &e.mask {
+                None => None,
+                Some(m) => Some(resolve(m)?),
+            };
+            entries.push(StackEntry { filter: e.filter.clone(), enabled: e.enabled, opacity: e.opacity, mask });
+        }
+        let stack_mask = match &self.stack_mask {
+            None => None,
+            Some(m) => Some(resolve(m)?),
+        };
+        Ok(SmartFilterStack { entries, stack_mask })
+    }
+
+    /// Converts the Folio record. `mask` maps a Folio mask (coverage tiles) to the plan source the
+    /// caller registered for it (`None` refuses `InvalidInput`); a disabled stack lowers to no
+    /// entries. Percent opacity becomes `[0, 1]`.
+    pub fn from_record(
+        rec: &hsk_studio_folio::StudioSmartFilterStack,
+        mut mask: impl FnMut(&hsk_studio_folio::StudioMask) -> Option<MaskInput>,
+    ) -> Result<Self, Error> {
+        use hsk_studio_folio::{SmartNoiseDistribution, SmartResample, StudioSmartFilterKind as K};
+        if !rec.enabled {
+            return Ok(Self { entries: Vec::new(), stack_mask: None });
+        }
+        let mut entries = Vec::with_capacity(rec.filters.len());
+        for f in &rec.filters {
+            let filter = match &f.params {
+                K::GaussianBlur { radius_px } => StackFilter::Filter(LayerFilter::GaussianBlur { radius_px: *radius_px }),
+                K::UnsharpMask { amount_pct, radius_px, threshold_levels } => StackFilter::Filter(LayerFilter::UnsharpMask {
+                    amount_pct: *amount_pct,
+                    radius_px: *radius_px,
+                    threshold_levels: *threshold_levels,
+                }),
+                K::HighPass { radius_px } => StackFilter::Filter(LayerFilter::HighPass { radius_px: *radius_px }),
+                K::Median { radius_px } => StackFilter::Filter(LayerFilter::Median { radius_px: *radius_px }),
+                K::AddNoise { amount_pct, distribution, monochromatic, seed } => StackFilter::Filter(LayerFilter::AddNoise {
+                    amount_pct: *amount_pct,
+                    distribution: match distribution {
+                        SmartNoiseDistribution::Uniform => crate::filter_math::NoiseDistribution::Uniform,
+                        SmartNoiseDistribution::Gaussian => crate::filter_math::NoiseDistribution::Gaussian,
+                    },
+                    monochromatic: *monochromatic,
+                    seed: *seed,
+                }),
+                K::Liquify { mesh, resample } => StackFilter::Liquify {
+                    mesh: LiquifyMesh {
+                        bounds: Rect { x: mesh.origin_x, y: mesh.origin_y, width: mesh.width, height: mesh.height },
+                        spacing: mesh.spacing,
+                        cols: mesh.cols,
+                        rows: mesh.rows,
+                        disp: mesh.displacement.clone(),
+                        freeze: mesh.freeze.clone(),
+                    },
+                    resample: match resample {
+                        SmartResample::NearestNeighbour => ResampleFilter::NearestNeighbour,
+                        SmartResample::Bilinear => ResampleFilter::Bilinear,
+                        SmartResample::Bicubic => ResampleFilter::Bicubic,
+                    },
+                },
+            };
+            let mask = match &f.mask {
+                None => None,
+                Some(m) => Some(mask(m).ok_or(Error::InvalidInput)?),
+            };
+            entries.push(SmartFilterEntryOp { filter, enabled: f.enabled, opacity: (f.opacity / 100.0) as f32, mask });
+        }
+        let stack_mask = match &rec.stack_mask {
+            None => None,
+            Some(m) => Some(mask(m).ok_or(Error::InvalidInput)?),
+        };
+        Ok(Self { entries, stack_mask })
+    }
+}

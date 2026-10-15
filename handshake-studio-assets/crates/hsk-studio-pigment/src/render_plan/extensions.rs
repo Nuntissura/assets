@@ -131,6 +131,15 @@ impl Knockout {
 ///   [`PlanError::KeyCombination`]. Reported per stage as [`ExtOperator::Key`] (Approximate).
 ///   Empty = no key (and absent from the digest).
 ///
+/// - `smart_filters`: a smart (live) filter stack ([`crate::smart_filter::SmartFilterOp`], lane
+///   SMB-PS-SELECT-LIQUIFY-2, STU-RAS-037 / STU-FX-011a / STU-FX-024): filter_math filters and
+///   liquify meshes with per-entry enable, opacity and coverage mask plus a stack mask, evaluated
+///   once over the layer content inside the plan extent by
+///   [`crate::smart_filter::SmartFilterStack::render`]; the layer mask, Blend-If, mode and opacity
+///   apply after it. Parameters are [`PlanError::SmartFilterParameter`], combinations
+///   [`PlanError::SmartFilterCombination`]. Reported as [`ExtOperator::SmartFilter`]
+///   (Approximate). `None` = no stack (and absent from the digest).
+///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
 #[non_exhaustive]
@@ -154,6 +163,8 @@ pub struct LayerExtension {
     pub content_aware_fill: Option<ContentAwareFillOp>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<KeyStage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smart_filters: Option<crate::smart_filter::SmartFilterOp>,
 }
 
 /// A content-aware fill on a layer's content ([`LayerExtension::content_aware_fill`]): the pixels
@@ -197,7 +208,12 @@ impl LayerExtension {
             filters: Vec::new(),
             content_aware_fill: None,
             keys: Vec::new(),
+            smart_filters: None,
         }
+    }
+    pub fn with_smart_filters(mut self, op: crate::smart_filter::SmartFilterOp) -> Self {
+        self.smart_filters = Some(op);
+        self
     }
     pub fn with_keys(mut self, keys: Vec<KeyStage>) -> Self {
         self.keys = keys;
@@ -346,6 +362,9 @@ pub enum ExtOperator {
     /// One key-pipeline stage kind ([`LayerExtension::keys`], [`crate::keying`]); class
     /// [`KEY_EXACTNESS`] (Approximate). Keys [`KeyKind::key`] (`key_*`, `matte_*`).
     Key(KeyKind),
+    /// A smart-filter stack ([`LayerExtension::smart_filters`]); class Approximate (the
+    /// filter_math and liquify classes). Key `smart_filter_stack`.
+    SmartFilter,
     /// A stage-6a view transform ([`DisplayTransform::View`] or [`DisplayTransform::ViewFrom`],
     /// Prism's ACES 1.x RRT + ODT / RRTODT from the
     /// published CTL, evaluated per pixel by `hsk_studio_prism::ViewTransformId::apply`); class
@@ -381,6 +400,7 @@ impl ExtOperator {
             Self::ExtendedEnvelope(op) => op.key(),
             Self::DisplayClip => DISPLAY_CLIP_OPERATOR,
             Self::Key(kind) => kind.key(),
+            Self::SmartFilter => crate::smart_filter::SMART_FILTER_OPERATOR,
             Self::DisplayView => super::output::DISPLAY_VIEW_OPERATOR,
         }
     }
@@ -412,6 +432,7 @@ impl ExtOperator {
             }
             Self::DisplayClip | Self::DisplayView => Exactness::Exact,
             Self::Key(_) => KEY_EXACTNESS,
+            Self::SmartFilter => FILTER_EXACTNESS,
         }
     }
 }
@@ -713,6 +734,26 @@ impl PlanExtensions {
                 for k in &e.keys {
                     add(ExtOperator::Key(k.kind()));
                 }
+            }
+            if let Some(sf) = &e.smart_filters {
+                if !sf.check() {
+                    return Err(PlanError::SmartFilterParameter { node });
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || e.content_aware_fill.is_some()
+                    || !e.keys.is_empty()
+                    || self.output.is_extended()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::SmartFilterCombination { node });
+                }
+                add(ExtOperator::SmartFilter);
             }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {
