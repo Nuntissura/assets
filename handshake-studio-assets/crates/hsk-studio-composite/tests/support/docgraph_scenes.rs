@@ -454,7 +454,8 @@ fn stored(m: &OwnedMask, x: i64, y: i64, clamp: bool) -> f32 {
     }
 }
 /// Pigment's mask rule at `(x, y)`: feathered first (`feather_kernel`, horizontal then vertical,
-/// taps clamped to the plane, binary64 sums, clamped into [0, 1]), then `mask_coverage`.
+/// taps clamped to the plane, binary64 sums, clamped into [0, 1]), then invert and density (the
+/// v1 inversion at density 1, `mask_coverage` below).
 pub fn effective(m: &OwnedMask, feather_px: f32, inverted: bool, density: f32, x: i64, y: i64) -> f32 {
     let raw = if feather_px > 0.0 {
         let taps = feather_kernel(feather_px).unwrap();
@@ -474,6 +475,10 @@ pub fn effective(m: &OwnedMask, feather_px: f32, inverted: bool, density: f32, x
     } else {
         stored(m, x, y, false)
     };
+    // Density 1 is the v1 inversion (pigment's v1 mask rule; `mask_coverage` owns density < 1).
+    if density == 1.0 {
+        return if inverted { 1.0 - raw } else { raw };
+    }
     mask_coverage(raw, inverted, density).unwrap()
 }
 /// One layer of a group for the run rule: content, mode, opacity x fill x coverage, clipped.
