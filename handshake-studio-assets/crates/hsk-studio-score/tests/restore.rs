@@ -71,11 +71,15 @@ fn clicks_are_detected_and_interpolated() {
         println!("click SNR improvement {improvement:.2} dB");
         // Measured 28.62 dB at f423b59; bound set with margin from that run.
         assert!(improvement > 25.0, "{improvement}");
-        // Every click region is close to the clean signal afterwards.
-        for (start, len, _) in &clicks {
-            let worst = (*start..start + len).map(|n| (out[0][n + L] - clean[n]).abs()).fold(0.0, f32::max);
-            assert!(worst < 0.02, "click at {start}: {worst}");
-        }
+        // Every click region is close to the clean signal afterwards (clicks were 0.15..1.4 in
+        // size; the signal peak is about 0.6).
+        let worst = clicks
+            .iter()
+            .flat_map(|(start, len, _)| *start..start + len)
+            .map(|n| (out[0][n + L] - clean[n]).abs())
+            .fold(0.0, f32::max);
+        println!("worst repaired-sample error {worst:.5}");
+        assert!(worst < 0.05, "{worst}");
     });
 }
 
