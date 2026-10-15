@@ -14,6 +14,7 @@ pub mod anchor_path;
 pub mod boolean;
 pub mod edit;
 pub mod flatten;
+pub mod freeform;
 pub mod pathfinder;
 pub mod raster;
 pub mod shape;

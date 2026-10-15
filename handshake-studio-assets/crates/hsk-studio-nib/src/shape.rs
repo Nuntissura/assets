@@ -370,3 +370,160 @@ pub fn line(x: f64, y: f64, length: f64, angle: f64) -> Result<AnchorPath, Shape
     };
     finish(path)
 }
+
+// ---- lane SMB-ILLUSTRATOR-PEN-2: arc segment, grids, spiral ----------------------------------------
+
+/// Most dividers of one grid direction.
+pub const MAX_DIVIDERS: u32 = 1000;
+/// Most spiral segments (quarter turns).
+pub const MAX_SPIRAL_SEGMENTS: u32 = 4096;
+
+/// Arc segment (STU-VEC-127 `slope` soft -100..=100, `type` open/closed, `base_along` X/Y): one
+/// cubic from `(x0, y0)` to `(x1, y1)` whose handles run along the base axis at the start and the
+/// other axis at the end, of length `kappa * (1 + slope / 100)` of the extent (slope -100 = a
+/// straight line, 0 = a quarter ellipse, 100 = twice the bulge); `closed` adds the corner on the base
+/// axis (a pie). The popup members of `type` and `base_along` are UNKNOWN in the capture; these
+/// two booleans are the Studio reading.
+pub fn arc_segment(x0: f64, y0: f64, x1: f64, y1: f64, slope: f64, closed: bool, base_along_x: bool) -> Result<AnchorPath, ShapeError> {
+    let (x0, y0, x1, y1) = (finite("x0", x0)?, finite("y0", y0)?, finite("x1", x1)?, finite("y1", y1)?);
+    let slope = within("slope", slope, -100.0, 100.0)?;
+    let k = kappa() * (1.0 + slope / 100.0);
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let mut a = EditAnchor::corner(x0, y0);
+    let mut b = EditAnchor::corner(x1, y1);
+    let corner = if base_along_x {
+        a.outgoing = PathPoint::new(dx * k, 0.0);
+        b.incoming = PathPoint::new(0.0, -dy * k);
+        EditAnchor::corner(x1, y0)
+    } else {
+        a.outgoing = PathPoint::new(0.0, dy * k);
+        b.incoming = PathPoint::new(-dx * k, 0.0);
+        EditAnchor::corner(x0, y1)
+    };
+    let anchors = if closed { vec![a, b, corner] } else { vec![a, b] };
+    finish(AnchorPath { contours: vec![Contour { anchors, closed }], fill_rule: FillRule::NonZero })
+}
+
+/// Divider position `t` in `0..1` skewed by `skew` percent (STU-VEC-127 soft -500..=500): the
+/// rational map `t / (t + (1 - t) r)` with `r = 1 + skew / 100` for `skew >= 0`, else
+/// `1 / (1 - skew / 100)` (dividers bunch towards one side; 0 = even). Studio choice, UNVERIFIED.
+pub fn skewed(t: f64, skew: f64) -> f64 {
+    let r = if skew >= 0.0 { 1.0 + skew / 100.0 } else { 1.0 / (1.0 - skew / 100.0) };
+    t / (t + (1.0 - t) * r)
+}
+
+fn dividers(parameter: &'static str, n: u32) -> Result<u32, ShapeError> {
+    if n > MAX_DIVIDERS {
+        return Err(refuse(parameter, AnchorError::InvalidParameter));
+    }
+    Ok(n)
+}
+
+/// Rectangular grid (STU-VEC-127): `horizontal` row dividers and `vertical` column dividers across
+/// the rectangle, skewed per axis (percent, finite), optionally framed by the outside rectangle
+/// (`use_outside_rectangle_as_frame`). Dividers are open contours; the frame is closed.
+#[allow(clippy::too_many_arguments)]
+pub fn rectangular_grid(x: f64, y: f64, width: f64, height: f64, horizontal: u32, vertical: u32, skew_horizontal: f64, skew_vertical: f64, frame: bool) -> Result<AnchorPath, ShapeError> {
+    let (x, y) = (finite("x", x)?, finite("y", y)?);
+    let w = within("width", width, 0.0, RECT_MAX)?;
+    let h = within("height", height, 0.0, RECT_MAX)?;
+    let (nh, nv) = (dividers("horizontal_dividers", horizontal)?, dividers("vertical_dividers", vertical)?);
+    let (sh, sv) = (finite("skew_horizontal", skew_horizontal)?, finite("skew_vertical", skew_vertical)?);
+    let mut path = AnchorPath::new(FillRule::NonZero);
+    if frame {
+        path.contours.extend(rectangle(&RectSpec::plain(x, y, w, h))?.0.contours);
+    }
+    for i in 1..=nh {
+        let t = skewed(f64::from(i) / (f64::from(nh) + 1.0), sh);
+        let yy = y + h * t;
+        path.contours.push(Contour { anchors: vec![EditAnchor::corner(x, yy), EditAnchor::corner(x + w, yy)], closed: false });
+    }
+    for j in 1..=nv {
+        let t = skewed(f64::from(j) / (f64::from(nv) + 1.0), sv);
+        let xx = x + w * t;
+        path.contours.push(Contour { anchors: vec![EditAnchor::corner(xx, y), EditAnchor::corner(xx, y + h)], closed: false });
+    }
+    if path.contours.is_empty() {
+        return Err(refuse("geometry", AnchorError::EmptyResult));
+    }
+    finish(path)
+}
+
+/// Polar grid (STU-VEC-127): the outer ellipse, `concentric` inner ellipses at skewed radii and
+/// `radial` dividers from the centre at skewed angles (the first along +x). Ellipses are closed
+/// contours (even-odd fill: rings), dividers open.
+#[allow(clippy::too_many_arguments)]
+pub fn polar_grid(cx: f64, cy: f64, rx: f64, ry: f64, concentric: u32, radial: u32, skew_radial: f64, skew_angular: f64) -> Result<AnchorPath, ShapeError> {
+    let (nc, nr) = (dividers("concentric_dividers", concentric)?, dividers("radial_dividers", radial)?);
+    let (sc, sa) = (finite("skew_radial", skew_radial)?, finite("skew_angular", skew_angular)?);
+    let outer = ellipse(&EllipseSpec::full(cx, cy, rx, ry))?;
+    let mut path = AnchorPath::new(FillRule::EvenOdd);
+    path.contours.extend(outer.contours);
+    for i in 1..=nc {
+        let t = skewed(f64::from(i) / (f64::from(nc) + 1.0), sc);
+        path.contours.extend(ellipse(&EllipseSpec::full(cx, cy, rx * t, ry * t))?.contours);
+    }
+    for j in 0..nr {
+        let t = skewed(f64::from(j) / f64::from(nr.max(1)), sa);
+        let (s, c) = sin_cos_deg(360.0 * t);
+        path.contours.push(Contour { anchors: vec![EditAnchor::corner(cx, cy), EditAnchor::corner(cx + rx * c, cy + ry * s)], closed: false });
+    }
+    finish(path)
+}
+
+/// Spiral (STU-VEC-127 `turns`, `decay` = the per-turn radius ratio in percent): `turns * 4`
+/// tangent-continuous quarter-circle arcs from `(cx + radius, cy)`, each quarter `radius` times the
+/// fourth root of `decay / 100` of the previous (sqrt only), the centre of each arc moved towards
+/// its end so the arcs meet tangentially; `clockwise` on a y-down canvas. `decay` in `(0, 100)`,
+/// `turns` rounded to quarter turns, 1..=4096 quarters.
+pub fn spiral(cx: f64, cy: f64, radius: f64, decay: f64, turns: f64, clockwise: bool) -> Result<AnchorPath, ShapeError> {
+    let (cx, cy) = (finite("cx", cx)?, finite("cy", cy)?);
+    let r0 = within("radius", radius, 0.0, COORDINATE_LIMIT)?;
+    let decay = finite("decay", decay)?;
+    if !(decay > 0.0 && decay < 100.0) {
+        return Err(refuse("decay", AnchorError::InvalidParameter));
+    }
+    let quarters = (finite("turns", turns)? * 4.0).round();
+    if !(1.0..=f64::from(MAX_SPIRAL_SEGMENTS)).contains(&quarters) {
+        return Err(refuse("turns", AnchorError::InvalidParameter));
+    }
+    // In 1..=MAX_SPIRAL_SEGMENTS after the check.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = quarters as u32;
+    let q = (decay / 100.0).sqrt().sqrt();
+    let k = kappa();
+    let sign = if clockwise { 1.0 } else { -1.0 };
+    let mut centre = PathPoint::new(cx, cy);
+    let mut r = r0;
+    // Unit direction from the centre to the current point; rotates by 90 degrees per quarter.
+    let mut dir = PathPoint::new(1.0, 0.0);
+    let mut anchors = Vec::with_capacity(usize::try_from(n).unwrap_or(0).saturating_add(1));
+    let mut prev_handle = 0.0;
+    for i in 0..=n {
+        let p = PathPoint::new(centre.x + dir.x * r, centre.y + dir.y * r);
+        let tangent = PathPoint::new(-dir.y * sign, dir.x * sign);
+        let mut a = EditAnchor::corner(p.x, p.y);
+        if i > 0 {
+            a.incoming = PathPoint::new(-tangent.x * prev_handle, -tangent.y * prev_handle);
+        }
+        if i < n {
+            a.outgoing = PathPoint::new(tangent.x * k * r, tangent.y * k * r);
+        }
+        if i > 0 && i < n {
+            a.mirroring = Mirroring::Angle;
+        }
+        anchors.push(a);
+        if i == n {
+            break;
+        }
+        // The end of this quarter, the next radius, and the centre moved towards the end.
+        let next_dir = tangent;
+        let end = PathPoint::new(centre.x + next_dir.x * r, centre.y + next_dir.y * r);
+        prev_handle = k * r;
+        let r_next = r * q;
+        centre = PathPoint::new(end.x - next_dir.x * r_next, end.y - next_dir.y * r_next);
+        dir = next_dir;
+        r = r_next;
+    }
+    finish(AnchorPath { contours: vec![Contour { anchors, closed: false }], fill_rule: FillRule::NonZero })
+}
