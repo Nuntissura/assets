@@ -40,6 +40,9 @@ pub mod prototype;
 pub mod select_liquify;
 pub mod selection_store;
 pub mod text;
+/// Render-queue export of a timeline range through reel (lane SMB-REEL-ENCODE, feature `media`).
+#[cfg(feature = "media")]
+pub mod timeline_export;
 pub mod render;
 /// Pen, direct selection, shape tools and pathfinder on vector layers (lane SMB-ILLUSTRATOR-PEN).
 pub mod vector;
