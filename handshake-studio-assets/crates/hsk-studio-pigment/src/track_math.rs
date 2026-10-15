@@ -46,6 +46,16 @@
 //! Hartley 1997, solved by Gaussian elimination with partial pivoting; a near-singular system is
 //! `Degenerate`).
 //!
+//! Planar tracking (slice 4, [`track_planar`]): Shi-Tomasi features (the per-sample minimum
+//! eigenvalue score, greedy non-maximum suppression) inside a convex quad of the start frame are
+//! tracked frame to frame by the tracker above; per frame, RANSAC (Fischler and Bolles 1981) over
+//! the surviving (start, current) matches draws exact 4-point homographies from a seeded
+//! SplitMix64 sampler, keeps the one with the most inliers (reprojection error below
+//! `inlier_px`) and refits it by least squares on its inliers (re-scored until the inlier set is
+//! stable), so features on occluders or off the plane are rejected and retired for the rest of
+//! the track; only confident (`Tracked`) matches vote; the mapped quad is the animated mask path. Fewer than 4 inliers: `Lost`
+//! with the last homography held.
+//!
 //! Determinism: binary64 IEEE `+ - * /` and `sqrt` in a fixed order; `atan2` (two-point rotation)
 //! is the platform libm's, so its last-ulp agreement across hosts is UNVERIFIED. No GPU path.
 //! After Effects' tracker internals are UNVERIFIED (D5); Studio's readings above are authored.
@@ -487,6 +497,12 @@ fn window(r: u32) -> std::ops::RangeInclusive<i64> {
 
 /// Per-sample minimum eigenvalue of the gradient matrix and window variance both above threshold.
 fn feature_quality(l: &Level, p: [f64; 2], r: u32, min_eigen: f64) -> bool {
+    feature_score(l, p, r).is_some_and(|v| v >= min_eigen)
+}
+
+/// Per-sample minimum eigenvalue of the gradient matrix (Shi-Tomasi score); `None` for a window
+/// without variance.
+fn feature_score(l: &Level, p: [f64; 2], r: u32) -> Option<f64> {
     let (mut a, mut b, mut c) = (0.0, 0.0, 0.0);
     let (mut s, mut s2, mut k) = (0.0, 0.0, 0.0);
     for dy in window(r) {
@@ -504,7 +520,7 @@ fn feature_quality(l: &Level, p: [f64; 2], r: u32, min_eigen: f64) -> bool {
     }
     let lmin = (a + c) / 2.0 - (((a - c) / 2.0) * ((a - c) / 2.0) + b * b).sqrt();
     let var = s2 / k - (s / k) * (s / k);
-    lmin / k >= min_eigen && var > 1e-12
+    if var > 1e-12 { Some(lmin / k) } else { None }
 }
 
 fn ncc(i: &Level, j: &Level, p: [f64; 2], q: [f64; 2], r: u32) -> f64 {
@@ -896,5 +912,330 @@ pub fn solve_corner_pin(corners: [&[TrackSample]; 4], reference: usize) -> Resul
         let dst = [corners[0][i].position, corners[1][i].position, corners[2][i].position, corners[3][i].position];
         out.push((corners[0][i].frame, Homography::fit(&src, &dst)?));
     }
+    Ok(out)
+}
+
+// ---- planar tracking (slice 4) ----
+
+/// Most features one planar track keeps.
+pub const MAX_PLANAR_FEATURES: usize = 512;
+/// Most RANSAC hypotheses per frame.
+pub const MAX_RANSAC_ITERATIONS: u32 = 10_000;
+
+/// A planar track request: the surface is the convex quad `quad` of the start frame.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct PlanarSpec {
+    /// Convex quad (either winding) in layer pixels.
+    pub quad: [[f64; 2]; 4],
+    /// Features kept, `4..=MAX_PLANAR_FEATURES`.
+    pub max_features: usize,
+    pub feature_radius: u32,
+    pub search_radius: u32,
+    /// Minimum distance between features (non-maximum suppression, per axis), `1..=256`.
+    pub min_spacing_px: u32,
+    /// RANSAC hypotheses per frame, `1..=MAX_RANSAC_ITERATIONS`.
+    pub ransac_iterations: u32,
+    /// Reprojection error below which a match is an inlier, `(0, 100]`.
+    pub inlier_px: f64,
+    /// Seed of the deterministic hypothesis sampler.
+    pub seed: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum PlanarStatus {
+    Tracked,
+    /// Fewer than 4 inliers: the last homography is held.
+    Lost,
+}
+
+/// One frame of a planar track.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct PlanarFrame {
+    pub frame: usize,
+    /// Start-frame layer pixels -> this frame's.
+    pub homography: Homography,
+    /// The start quad mapped by `homography` (a 4-vertex mask path; any mask vertex maps the same
+    /// way through [`Homography::apply`]).
+    pub quad: [[f64; 2]; 4],
+    pub features: usize,
+    pub inliers: usize,
+    pub status: PlanarStatus,
+}
+
+fn cross(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+}
+
+/// Sign of the four edge turns: one strict sign for a convex, non-degenerate quad.
+fn quad_sign(q: &[[f64; 2]; 4]) -> Option<f64> {
+    let c = [cross(q[0], q[1], q[2]), cross(q[1], q[2], q[3]), cross(q[2], q[3], q[0]), cross(q[3], q[0], q[1])];
+    if c.iter().all(|v| *v > 1e-9) {
+        Some(1.0)
+    } else if c.iter().all(|v| *v < -1e-9) {
+        Some(-1.0)
+    } else {
+        None
+    }
+}
+
+fn inside(q: &[[f64; 2]; 4], sign: f64, p: [f64; 2]) -> bool {
+    [(0, 1), (1, 2), (2, 3), (3, 0)].iter().all(|&(i, j)| sign * cross(q[i], q[j], p) > 0.0)
+}
+
+/// SplitMix64 (G. L. Steele, D. Lea, C. H. Flood, OOPSLA 2014), the RANSAC hypothesis sampler.
+fn splitmix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ z.wrapping_shr(30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ z.wrapping_shr(27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ z.wrapping_shr(31)
+}
+
+/// RANSAC over `(reference, current)` matches (M. A. Fischler and R. C. Bolles, CACM 1981):
+/// exact 4-point hypotheses from the seeded sampler, inliers by reprojection error, the
+/// hypothesis with the most inliers (the first on ties) refitted by least squares on its inliers.
+fn ransac(matches: &[([f64; 2], [f64; 2])], spec: &PlanarSpec, frame: usize) -> Option<(Homography, Vec<bool>)> {
+    let n = matches.len();
+    if n < 4 {
+        return None;
+    }
+    let n64 = u64::try_from(n).ok()?;
+    let mut state = spec.seed ^ u64::try_from(frame).ok()?.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    let mut best: Option<(usize, Vec<bool>)> = None;
+    for _ in 0..spec.ransac_iterations {
+        let mut pick: Vec<usize> = Vec::with_capacity(4);
+        let mut guard = 0u32;
+        while pick.len() < 4 && guard < 64 {
+            guard = guard.saturating_add(1);
+            let i = usize::try_from(splitmix(&mut state).checked_rem(n64)?).ok()?;
+            if !pick.contains(&i) {
+                pick.push(i);
+            }
+        }
+        if pick.len() < 4 {
+            continue;
+        }
+        let src: Vec<[f64; 2]> = pick.iter().map(|i| matches[*i].0).collect();
+        let dst: Vec<[f64; 2]> = pick.iter().map(|i| matches[*i].1).collect();
+        let Ok(h) = Homography::fit(&src, &dst) else {
+            continue;
+        };
+        let mask: Vec<bool> = matches
+            .iter()
+            .map(|(a, b)| {
+                let p = h.apply(*a);
+                let e = ((p[0] - b[0]) * (p[0] - b[0]) + (p[1] - b[1]) * (p[1] - b[1])).sqrt();
+                e.is_finite() && e < spec.inlier_px
+            })
+            .collect();
+        let count = mask.iter().filter(|m| **m).count();
+        if best.as_ref().is_none_or(|(c, _)| count > *c) {
+            best = Some((count, mask));
+        }
+    }
+    let (mut count, mut mask) = best?;
+    if count < 4 {
+        return None;
+    }
+    // Least-squares refit on the inliers, re-scored with the refit model, until the inlier set
+    // is stable (at most 4 rounds).
+    let mut h = Homography::IDENTITY;
+    for _ in 0..4 {
+        let (src, dst): (Vec<[f64; 2]>, Vec<[f64; 2]>) =
+            matches.iter().zip(&mask).filter(|(_, m)| **m).map(|(m, _)| (m.0, m.1)).unzip();
+        h = Homography::fit(&src, &dst).ok()?;
+        let next: Vec<bool> = matches.iter().map(|(a, b)| reprojection(&h, *a, *b) < spec.inlier_px).collect();
+        let stable = next == mask;
+        mask = next;
+        count = mask.iter().filter(|m| **m).count();
+        if stable || count < 4 {
+            break;
+        }
+    }
+    if count < 4 {
+        return None;
+    }
+    Some((h, mask))
+}
+
+fn reprojection(h: &Homography, a: [f64; 2], b: [f64; 2]) -> f64 {
+    let p = h.apply(a);
+    let e = ((p[0] - b[0]) * (p[0] - b[0]) + (p[1] - b[1]) * (p[1] - b[1])).sqrt();
+    if e.is_finite() { e } else { f64::INFINITY }
+}
+
+/// Shi-Tomasi features inside the quad, strongest first, at least `min_spacing_px` apart on some
+/// axis (greedy non-maximum suppression; ties ordered by row then column), candidates on a grid of
+/// half the spacing.
+fn detect(level: &Level, spec: &PlanarSpec, sign: f64, min_eigen: f64) -> Vec<[f64; 2]> {
+    let r = f64::from(spec.feature_radius);
+    let (w, h) = (level.w as f64, level.h as f64);
+    let step = f64::from(spec.min_spacing_px.div_ceil(2).max(1));
+    let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for p in &spec.quad {
+        x0 = x0.min(p[0]);
+        x1 = x1.max(p[0]);
+        y0 = y0.min(p[1]);
+        y1 = y1.max(p[1]);
+    }
+    let (x0, x1, y0, y1) = (x0.max(r), x1.min(w - r), y0.max(r), y1.min(h - r));
+    let mut cands: Vec<(f64, [f64; 2])> = Vec::new();
+    let mut y = y0.floor() + 0.5;
+    while y <= y1 {
+        let mut x = x0.floor() + 0.5;
+        while x <= x1 {
+            let p = [x, y];
+            if inside(&spec.quad, sign, p)
+                && let Some(score) = feature_score(level, p, spec.feature_radius)
+                && score >= min_eigen
+            {
+                cands.push((score, p));
+            }
+            x += step;
+        }
+        y += step;
+    }
+    cands.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1[1].total_cmp(&b.1[1])).then(a.1[0].total_cmp(&b.1[0])));
+    let sp = f64::from(spec.min_spacing_px);
+    let mut out: Vec<[f64; 2]> = Vec::new();
+    for (_, p) in cands {
+        if out.len() >= spec.max_features {
+            break;
+        }
+        if out.iter().all(|q| (q[0] - p[0]).abs() >= sp || (q[1] - p[1]).abs() >= sp) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Planar tracking (STU-CMP-065 planar / mask tracking): Shi-Tomasi features detected inside the
+/// quad of the start frame, each tracked frame to frame by the [`track_points`] tracker, and per
+/// frame the homography from the start frame estimated by RANSAC over the surviving matches, so
+/// features on occluders or off the plane are rejected. `Degenerate` when the quad holds fewer
+/// than 4 features. Deterministic for a given `seed`.
+#[allow(clippy::too_many_arguments)]
+pub fn track_planar(
+    frames: &[LumaFrame],
+    start: usize,
+    direction: TrackDirection,
+    spec: &PlanarSpec,
+    params: &TrackParams,
+    limits: &TrackLimits,
+    cancel: &CancellationToken,
+    progress: TrackProgress<'_>,
+) -> Result<Vec<PlanarFrame>, TrackError> {
+    params.validate()?;
+    let sign = quad_sign(&spec.quad).ok_or(TrackError::Parameter)?;
+    let spec_ok = spec.quad.iter().flatten().all(|v| v.is_finite())
+        && (4..=MAX_PLANAR_FEATURES).contains(&spec.max_features)
+        && spec.feature_radius >= 1
+        && spec.feature_radius <= limits.max_feature_radius
+        && spec.search_radius >= 1
+        && spec.search_radius <= limits.max_search_radius
+        && (1..=256).contains(&spec.min_spacing_px)
+        && (1..=MAX_RANSAC_ITERATIONS).contains(&spec.ransac_iterations)
+        && spec.inlier_px.is_finite()
+        && spec.inlier_px > 0.0
+        && spec.inlier_px <= 100.0;
+    if !spec_ok || frames.is_empty() || frames.len() > limits.max_frames || start >= frames.len() {
+        return Err(TrackError::Parameter);
+    }
+    let first = &frames[0];
+    for f in frames {
+        if f.width != first.width || f.height != first.height {
+            return Err(TrackError::Shape);
+        }
+    }
+    let n = u64::from(first.width).checked_mul(u64::from(first.height)).ok_or(TrackError::Overflow)?;
+    if n > limits.max_frame_pixels {
+        return Err(TrackError::OverBudget { needed: n, limit: limits.max_frame_pixels });
+    }
+    for f in frames {
+        f.validate()?;
+    }
+    let levels = pyramid_levels(spec.feature_radius, spec.search_radius, first.width, first.height);
+    let span = match direction {
+        TrackDirection::Forward => frames.len().saturating_sub(start),
+        TrackDirection::Backward => start.saturating_add(1),
+    };
+    let span_u = u64::try_from(span).map_err(|_| TrackError::Overflow)?;
+    let feature_spec = TrackPointSpec { position: [0.0, 0.0], feature_radius: spec.feature_radius, search_radius: spec.search_radius };
+    let points = vec![feature_spec; spec.max_features];
+    let ov = TrackError::Overflow;
+    let (bytes, work) = track_cost(n, span_u, &points, levels, params)?;
+    let side = u64::from(spec.feature_radius).checked_mul(2).and_then(|v| v.checked_add(1)).ok_or(ov)?;
+    let detect_work = n.checked_mul(side.checked_mul(side).ok_or(ov)?).and_then(|v| v.checked_mul(12)).ok_or(ov)?;
+    let feats = u64::try_from(spec.max_features).map_err(|_| ov)?;
+    let ransac_work = u64::from(spec.ransac_iterations)
+        .checked_mul(feats.checked_add(64).ok_or(ov)?)
+        .and_then(|v| v.checked_mul(span_u))
+        .ok_or(ov)?;
+    let work = work.checked_add(detect_work).and_then(|v| v.checked_add(ransac_work)).ok_or(ov)?;
+    if bytes > limits.max_bytes {
+        return Err(TrackError::OverBudget { needed: bytes, limit: limits.max_bytes });
+    }
+    if work > limits.max_work {
+        return Err(TrackError::OverBudget { needed: work, limit: limits.max_work });
+    }
+
+    let mut prev = pyramid(&frames[start], levels);
+    let reference = detect(&prev[0], spec, sign, params.min_eigen);
+    if reference.len() < 4 {
+        return Err(TrackError::Degenerate);
+    }
+    let mut current: Vec<Option<[f64; 2]>> = reference.iter().map(|p| Some(*p)).collect();
+    let mut out = vec![PlanarFrame {
+        frame: start,
+        homography: Homography::IDENTITY,
+        quad: spec.quad,
+        features: reference.len(),
+        inliers: reference.len(),
+        status: PlanarStatus::Tracked,
+    }];
+    progress(1, span_u);
+    let order: Vec<usize> = match direction {
+        TrackDirection::Forward => (start..frames.len()).collect(),
+        TrackDirection::Backward => (0..=start).rev().collect(),
+    };
+    let mut held = Homography::IDENTITY;
+    for (done, &fi) in order.iter().enumerate().skip(1) {
+        cancel.check().map_err(|_| TrackError::Canceled)?;
+        let next = pyramid(&frames[fi], levels);
+        let mut matches = Vec::new();
+        let mut owners = Vec::new();
+        for (idx, (r, c)) in reference.iter().zip(current.iter_mut()).enumerate() {
+            if let Some(p) = *c {
+                let s = track_one(&prev, &next, p, &TrackPointSpec { position: p, ..feature_spec }, params);
+                // Only confident matches vote; a low-confidence or lost feature is retired.
+                if s.status == TrackStatus::Tracked {
+                    *c = Some(s.position);
+                    matches.push((*r, s.position));
+                    owners.push(idx);
+                } else {
+                    *c = None;
+                }
+            }
+        }
+        let features = matches.len();
+        let (homography, inliers, status) = match ransac(&matches, spec, fi) {
+            Some((h, mask)) => {
+                held = h;
+                // Outliers (occluders, off-plane points) are retired for the rest of the track.
+                for (m, idx) in mask.iter().zip(&owners) {
+                    if !m && let Some(c) = current.get_mut(*idx) {
+                        *c = None;
+                    }
+                }
+                (h, mask.iter().filter(|m| **m).count(), PlanarStatus::Tracked)
+            }
+            None => (held, 0, PlanarStatus::Lost),
+        };
+        let quad = spec.quad.map(|p| homography.apply(p));
+        out.push(PlanarFrame { frame: fi, homography, quad, features, inliers, status });
+        prev = next;
+        progress(u64::try_from(done).map_err(|_| ov)?.saturating_add(1), span_u);
+    }
+    out.sort_by_key(|f| f.frame);
     Ok(out)
 }
