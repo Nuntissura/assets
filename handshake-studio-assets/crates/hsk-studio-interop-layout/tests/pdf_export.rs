@@ -13,7 +13,7 @@ use hsk_studio_interop_layout::layout::{
     Alignment, Composer, JustifyParams, LayoutGlyph, Limits as ReflowLimits, ReflowRequest, ShapedParagraph, SourceSpan,
     SpaceParams, Spacing, TypesetOptions, reflow_typeset,
 };
-use hsk_studio_interop_layout::press::{Colour, ExportOptions, Limits, PdfDoc};
+use hsk_studio_interop_layout::press::{Colour, ExportOptions, Limits, PdfDoc, render_page};
 use hsk_studio_interop_layout::*;
 use hsk_studio_nib::{FillRule as NibRule, OwnedPath, PathElement, PathPoint};
 use hsk_studio_pigment::{Grid, Rect, ResolvedTile};
@@ -459,6 +459,24 @@ fn snapshot_lowers_to_pdf() {
     let codes: Vec<&str> = out.loss.iter().map(|l| l.code).collect();
     // No graph outputs: document order, reported.
     assert_eq!(codes, ["paint_colour_untagged", "story_not_supplied", "composition_graph_absent"], "{:?}", out.loss);
+    // Render-back (press render_page: hayro-interpret into press's paint device) at 1 px per pt;
+    // device y = 418 - PDF y.
+    let page1 = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();
+    assert_eq!((page1.width, page1.height, page1.font_warnings), (312, 418, 0));
+    let ink = (43..60).flat_map(|y| (29..129).map(move |x| (x, y))).filter(|(x, y)| page1.pixel(*x, *y) != Some([255, 255, 255])).count();
+    assert!(ink > 50, "glyph ink {ink}");
+    assert_eq!(page1.pixel(200, 300), Some([255, 255, 255]));
+    let page2 = render_page(&out.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();
+    assert_eq!(page2.pixel(103, 109), Some([255, 0, 0]), "square fill");
+    let edge = page2.pixel(53, 109).unwrap();
+    assert!(edge[2] > 200 && edge[0] < 60, "ICC blue stroke {edge:?}");
+    let px = |x, y| page2.pixel(x, y).unwrap();
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 6);
+    assert!(near(px(108, 314), [255, 0, 0]), "linear red {:?}", px(108, 314));
+    assert_eq!(px(108, 324), [255, 255, 255], "alpha 0");
+    assert!(near(px(118, 324), [255, 255, 255]), "linear white {:?}", px(118, 324));
+    let grey = px(118, 314);
+    assert!(grey[0].abs_diff(grey[1]) <= 3 && (150..=245).contains(&grey[0]), "half-alpha linear grey {grey:?}");
 }
 
 #[test]
@@ -513,6 +531,9 @@ fn misaligned_stale_and_refused_inputs() {
     let tripped = CancellationToken::default();
     tripped.cancel();
     assert_eq!(run(&b.glyphs, &place, &tripped).unwrap_err(), PdfExportError::Canceled);
+    // The DESCRIPTOR names the entry point and stays valid JSON.
+    let d: serde_json::Value = serde_json::from_str(hsk_studio_interop_layout::DESCRIPTOR).unwrap();
+    assert!(d["pdf_export"]["entry"].as_str().unwrap().starts_with("export_pdf("));
 }
 
 fn vector_in_group(n: u32, path: u32) -> StudioLayer {

@@ -28,7 +28,9 @@
 //! was; `finish` returns bytes only on success (tests `hostile_sizes_are_typed_refusals`,
 //! `hostile_fonts_are_typed_refusals`).
 #![deny(clippy::arithmetic_side_effects)]
+mod render;
 mod sfnt;
+pub use render::{RenderedPage, render_page};
 #[cfg(test)]
 mod tests;
 
@@ -116,6 +118,10 @@ pub enum ExportError {
     IccComponentsMismatch,
     /// A text string longer than [`MAX_EXPORT_TEXT`] chars.
     TextTooLong,
+    /// `render_page`: the canvas at the requested scale is over `Limits::max_flatten_pixels`.
+    RenderOverBudget,
+    /// `render_page`: the interpreter could not open the file or stopped (panic).
+    RenderRefused,
     /// The crate's writer or reader refused (serialisation or the read-back check).
     Press(PressError),
 }
@@ -154,6 +160,8 @@ impl ExportError {
             Self::IccUnreadable => "icc_unreadable",
             Self::IccComponentsMismatch => "icc_components_mismatch",
             Self::TextTooLong => "text_too_long",
+            Self::RenderOverBudget => "render_over_budget",
+            Self::RenderRefused => "render_refused",
             Self::Press(_) => "press_refused",
         }
     }

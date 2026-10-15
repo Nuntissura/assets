@@ -235,3 +235,32 @@ fn hostile_fonts_and_profiles_are_typed_refusals() {
     assert_eq!(ex.embed_icc(SRGB, 4), Err(ExportError::IccComponentsMismatch));
     assert_eq!(ExportError::FontCffNotEmbedded.code(), "font_cff_not_embedded");
 }
+
+/// `render_page`: hayro-interpret reads the export back into pixels; hostile scales, pages and
+/// budgets are typed refusals.
+#[test]
+fn render_back_reads_the_export() {
+    let cancel = CancellationToken::default();
+    let lim = Limits::default();
+    let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+    let p = ex.add_page(page([0.0, 0.0, 300.0, 200.0])).unwrap();
+    ex.fill_path(p, &square(), FillRule::NonZero, Colour::DeviceRgb([1.0, 0.0, 0.0])).unwrap();
+    let (bytes, _) = ex.finish(&cancel).unwrap();
+    for k in [1.0, 2.0] {
+        let r = render_page(&bytes, 0, k, &lim, &cancel).unwrap();
+        assert_eq!((r.width, r.height), ((300.0 * k) as u32, (200.0 * k) as u32));
+        // Square 100..200 pt; device y = (200 - y) * k.
+        let at = |x: f64, y: f64| r.pixel((x * k) as u32, ((200.0 - y) * k) as u32).unwrap();
+        assert_eq!(at(150.0, 150.0), [255, 0, 0]);
+        assert_eq!(at(50.0, 50.0), [255, 255, 255]);
+        assert_eq!((r.font_warnings, r.image_warnings), (0, 0));
+    }
+    assert_eq!(render_page(&bytes, 0, f64::NAN, &lim, &cancel), Err(ExportError::NonFinite));
+    assert_eq!(render_page(&bytes, 0, 0.0, &lim, &cancel), Err(ExportError::ValueOutOfRange));
+    assert_eq!(render_page(&bytes, 1, 1.0, &lim, &cancel), Err(ExportError::NoSuchPage));
+    let small = Limits { max_flatten_pixels: 1000, ..lim };
+    assert_eq!(render_page(&bytes, 0, 1.0, &small, &cancel), Err(ExportError::RenderOverBudget));
+    assert!(matches!(render_page(b"%PDF-1.7 garbage", 0, 1.0, &lim, &cancel), Err(ExportError::Press(_))));
+    let r = render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap();
+    assert_eq!(r.pixel(300, 0), None);
+}
