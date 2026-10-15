@@ -9,6 +9,7 @@ pub mod lower_plan;
 pub mod lower_render_plan;
 pub mod temporal;
 pub mod text;
+pub mod track_apply;
 pub mod vector;
 pub mod vector_mask;
 pub mod vector_nib;
