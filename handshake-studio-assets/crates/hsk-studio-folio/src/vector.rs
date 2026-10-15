@@ -461,6 +461,11 @@ pub struct StudioVectorRecords {
     /// sets written before them are byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mask_parameters: Vec<StudioVectorMaskParameters>,
+    /// Variable-width stroke profiles by `SVPT` path (STU-VEC-122, `crate::width_profile`; absent
+    /// and empty are the same set; empty is not encoded, so record sets written before them are
+    /// byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub width_profiles: Vec<crate::StudioWidthProfile>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -476,7 +481,12 @@ impl StudioVectorRecords {
             image_paints: Vec::new(),
             boolean_groups: Vec::new(),
             mask_parameters: Vec::new(),
+            width_profiles: Vec::new(),
         }
+    }
+    /// The width profile of the stroke of path `path_id`.
+    pub fn width_profile(&self, path_id: &str) -> Option<&crate::StudioWidthProfile> {
+        self.width_profiles.iter().find(|p| p.path_id == path_id)
     }
     /// The parameters of mask `mask_id` (`None` = every default).
     pub fn mask_parameters(&self, mask_id: &str) -> Option<&StudioVectorMaskParameters> {
@@ -918,6 +928,14 @@ pub fn validate_vector_records(
             t,
             "mask_parameters/feather",
         )?;
+    }
+
+    cx.nodes(r.width_profiles.len(), "width_profiles")?;
+    let mut profiled = BTreeSet::new();
+    for p in &r.width_profiles {
+        cx.tick()?;
+        crate::validate_width_profile(p)?;
+        unique(&mut profiled, p.path_id.as_str(), "width_profiles/path_id")?;
     }
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;

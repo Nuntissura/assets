@@ -1003,8 +1003,14 @@ pub const REFUSE_GEOMETRY_UNIT: &str = "vector_geometry_unit";
 pub const REFUSE_PAINT_PATTERN: &str = "paint_pattern_not_resolved";
 /// A Folio vector network record nib refuses (indices, budgets, open loops, non-finite points).
 pub const REFUSE_NETWORK: &str = "vector_network";
-/// A network region with its own `fill_style_id`: composite paints a layer with one fill style.
+/// A network region style that holds a stroke row (a region style paints fills only).
 pub const REFUSE_NETWORK_REGION_STYLE: &str = "vector_network_region_style";
+/// A Folio width profile nib refuses (point count, order, range).
+pub const REFUSE_WIDTH_PROFILE: &str = "vector_width_profile";
+/// A width profile with independent outgoing widths (nib profiles are symmetric).
+pub const REFUSE_WIDTH_ASYMMETRIC: &str = "vector_width_asymmetric";
+/// A width-profiled stroke row with a dash, a projecting cap or a non-centre alignment.
+pub const REFUSE_WIDTH_STYLE: &str = "vector_width_style";
 
 /// Caller-owned resolution of what Folio references by id: `SVPT` path geometry (in plan pixels:
 /// the caller applies the document unit and resolution) and decoded image paint bytes.
@@ -1017,6 +1023,17 @@ pub trait VectorAssets {
     /// derived fill geometry and its stroke rows outline its derived stroke geometry (lane
     /// SMB-COMPOSITE-NETWORK-ADAPTER). Default: no networks.
     fn network(&self, _path_id: &str) -> Option<hsk_studio_folio::StudioVectorNetwork> {
+        None
+    }
+    /// Plan colour of a Folio colour whose encoding the caller resolves (it knows the document
+    /// working space; lane SMB-VECTOR-STYLES): `Some([r, g, b])` in plan units for `space`. Called
+    /// after the profile check (a colour bound to another profile is still refused). Default
+    /// `None`: composite's own rule (no conversion; a linear-light plan takes only 0 and 1).
+    fn plan_colour(
+        &self,
+        _colour: &hsk_studio_folio::StudioColor,
+        _space: hsk_studio_pigment::blend_math::BlendSpace,
+    ) -> Option<[f32; 3]> {
         None
     }
 }
@@ -1191,6 +1208,12 @@ impl FolioCx<'_> {
         {
             return Err(REFUSE_PAINT_PROFILE);
         }
+        if let Some(rgb) = self.assets.plan_colour(c, self.space) {
+            if rgb.iter().any(|v| !v.is_finite()) {
+                return Err(REFUSE_PAINT);
+            }
+            return Ok([rgb[0], rgb[1], rgb[2], 1.0]);
+        }
         let rgb = [c.r as f32, c.g as f32, c.b as f32];
         if self.space == hsk_studio_pigment::blend_math::BlendSpace::LinearLight
             && rgb.iter().any(|v| *v != 0.0 && *v != 1.0)
@@ -1285,13 +1308,18 @@ impl FolioCx<'_> {
         })
     }
 
-    /// Vector networks (lane SMB-COMPOSITE-NETWORK-ADAPTER, STU-VEC-108): when a path of a vector
-    /// layer is a network ([`VectorAssets::network`]), the layer fills the network's derived
-    /// `fill_geometry` (filled regions, each under its winding rule) and every stroke row becomes a
-    /// [`FillPaint::StrokeGeometry`] row over the nib stroke outline of its derived
-    /// `stroke_geometry` (every segment once), so fill and stroke geometry may differ. Plain paths of
-    /// the same layer fill and stroke themselves. A layer without networks is returned unchanged.
-    fn networks(
+    /// Own fill and stroke geometry of a vector layer (lanes SMB-COMPOSITE-NETWORK-ADAPTER and
+    /// SMB-VECTOR-STYLES; STU-VEC-108, STU-VEC-122). A network path ([`VectorAssets::network`])
+    /// fills its filled regions without a `fill_style_id` and strokes its derived
+    /// `stroke_geometry` (every segment once); a filled region with its own `fill_style_id` is
+    /// painted by that style's fill rows, each as a [`FillPaint::StrokeGeometry`] row over the
+    /// region outline, placed after the layer's fill rows and before its stroke rows (a region
+    /// style with a stroke row is refused). A path with a Folio width profile
+    /// (`StudioVectorRecords::width_profile`) strokes with nib's variable-width outline. Every
+    /// stroke row becomes a [`FillPaint::StrokeGeometry`] row over the union of the stroke outlines.
+    /// Plain paths fill and stroke themselves; a layer with neither networks nor width profiles is
+    /// returned unchanged.
+    fn own_geometry(
         &self,
         payload: &hsk_studio_folio::Payload,
         geometry: VectorGeometry,
@@ -1301,7 +1329,8 @@ impl FolioCx<'_> {
             return Ok((geometry, fills));
         };
         let networks: Vec<_> = path_ids.iter().map(|id| self.assets.network(id)).collect();
-        if networks.iter().all(Option::is_none) {
+        let profiles: Vec<_> = path_ids.iter().map(|id| self.records.width_profile(id)).collect();
+        if networks.iter().all(Option::is_none) && profiles.iter().all(Option::is_none) {
             return Ok((geometry, fills));
         }
         let VectorGeometry::Paths(paths) = geometry else {
@@ -1310,48 +1339,121 @@ impl FolioCx<'_> {
         let owned = |a: &hsk_studio_nib::anchor_path::AnchorPath| {
             a.to_owned_path().map_err(|_| REFUSE_NETWORK)
         };
-        let (mut fill, mut stroke) = (Vec::new(), Vec::new());
-        for (path, network) in paths.into_iter().zip(networks) {
+        let (mut fill, mut stroke, mut regions) = (Vec::new(), Vec::new(), Vec::new());
+        for ((path, network), profile) in paths.into_iter().zip(networks).zip(profiles) {
             let Some(record) = network else {
-                stroke.push(path.clone());
+                stroke.push((path.clone(), profile));
                 fill.push(path);
                 continue;
             };
-            if record.regions.iter().any(|r| r.fill_style_id.is_some()) {
-                return Err(REFUSE_NETWORK_REGION_STYLE);
-            }
             let net = nib_network(&record).map_err(|_| REFUSE_NETWORK)?;
-            for g in net.fill_geometry().map_err(|_| REFUSE_NETWORK)? {
-                fill.push(owned(&g)?);
+            let filled = net.regions.iter().filter(|r| r.fills);
+            for (region, g) in filled.zip(net.fill_geometry().map_err(|_| REFUSE_NETWORK)?) {
+                let outline = owned(&g)?;
+                match &region.fill_style_id {
+                    Some(style) => regions.push((outline, style.clone())),
+                    None => fill.push(outline),
+                }
             }
             let s = owned(&net.stroke_geometry().map_err(|_| REFUSE_NETWORK)?)?;
             if !s.elements.is_empty() {
-                stroke.push(s);
+                stroke.push((s, profile));
             }
         }
-        let stroke = VectorGeometry::Paths(stroke);
-        let fills = fills
-            .into_iter()
-            .map(|f| match f.paint {
-                FillPaint::Stroke { style, paint } => Ok(FillSpec {
+        let mut region_rows = Vec::new();
+        for (outline, style) in regions {
+            for f in self.style_rows(&style)? {
+                if matches!(f.paint, FillPaint::Stroke { .. }) {
+                    return Err(REFUSE_NETWORK_REGION_STYLE);
+                }
+                region_rows.push(FillSpec {
                     paint: FillPaint::StrokeGeometry {
-                        outline: crate::vector_nib::stroke_outline(&stroke, &style)?
-                            .into_iter()
-                            .collect(),
-                        paint,
+                        outline: vec![outline.clone()],
+                        paint: Box::new(f.paint),
                     },
                     mode: f.mode,
                     opacity: f.opacity,
-                }),
-                paint => Ok(FillSpec { paint, mode: f.mode, opacity: f.opacity }),
-            })
-            .collect::<Result<_, &'static str>>()?;
-        Ok((VectorGeometry::Paths(fill), fills))
+                });
+            }
+        }
+        let mut rows = Vec::with_capacity(fills.len().saturating_add(region_rows.len()));
+        let mut region_rows = Some(region_rows);
+        for f in fills {
+            match f.paint {
+                FillPaint::Stroke { style, paint } => {
+                    rows.extend(region_rows.take().into_iter().flatten());
+                    rows.push(FillSpec {
+                        paint: FillPaint::StrokeGeometry {
+                            outline: self.stroke_outlines(&stroke, &style)?,
+                            paint,
+                        },
+                        mode: f.mode,
+                        opacity: f.opacity,
+                    });
+                }
+                paint => rows.push(FillSpec { paint, mode: f.mode, opacity: f.opacity }),
+            }
+        }
+        rows.extend(region_rows.into_iter().flatten());
+        Ok((VectorGeometry::Paths(fill), rows))
+    }
+
+    /// The stroke outlines of `bases` under `style`: uniform paths united by nib's stroker, each
+    /// width-profiled path outlined by `nib::width::outline_variable` (the profile's widths replace
+    /// the row weight; cap butt or round).
+    fn stroke_outlines(
+        &self,
+        bases: &[(OwnedPath, Option<&hsk_studio_folio::StudioWidthProfile>)],
+        style: &StrokeStyle,
+    ) -> Result<Vec<OwnedPath>, &'static str> {
+        use hsk_studio_nib::width::{MAX_WIDTH_POINTS, WidthCap, WidthPoint, WidthProfile, outline_variable};
+        let uniform: Vec<OwnedPath> = bases
+            .iter()
+            .filter(|(_, w)| w.is_none())
+            .map(|(p, _)| p.clone())
+            .collect();
+        let mut out: Vec<OwnedPath> =
+            crate::vector_nib::stroke_outline(&VectorGeometry::Paths(uniform), style)?
+                .into_iter()
+                .collect();
+        for (path, profile) in bases {
+            let Some(w) = profile else { continue };
+            if !self.unit_px {
+                return Err(REFUSE_GEOMETRY_UNIT);
+            }
+            if w.points.len() > MAX_WIDTH_POINTS {
+                return Err(REFUSE_WIDTH_PROFILE);
+            }
+            if !w.is_symmetric() {
+                return Err(REFUSE_WIDTH_ASYMMETRIC);
+            }
+            let cap = match style.cap {
+                LineCap::Butt => WidthCap::Butt,
+                LineCap::Round => WidthCap::Round,
+                LineCap::Square => return Err(REFUSE_WIDTH_STYLE),
+            };
+            if style.dash.is_some() || style.align != StrokeAlign::Center {
+                return Err(REFUSE_WIDTH_STYLE);
+            }
+            let nib = WidthProfile {
+                points: w.points.iter().map(|q| WidthPoint { t: q.position, width: q.width }).collect(),
+            };
+            nib.validate().map_err(|_| REFUSE_WIDTH_PROFILE)?;
+            if path.elements.is_empty() {
+                continue;
+            }
+            match outline_variable(path, &nib, cap, &hsk_studio_nib::boolean::BooleanOptions::default()) {
+                Ok(g) => out.push(g.path),
+                Err(hsk_studio_nib::Error::EmptyPathfinderResult) => {}
+                Err(hsk_studio_nib::Error::BudgetExceeded) => return Err(REFUSE_NIB_BUDGET),
+                Err(_) => return Err(REFUSE_VECTOR_GEOMETRY),
+            }
+        }
+        Ok(out)
     }
 
     /// The fill rows of the layer's `fill_style_id` paint style (no style reference = no fills).
     fn fills(&self, layer_id: &str) -> Result<Vec<FillSpec>, &'static str> {
-        use hsk_studio_folio::StudioAppearanceRow;
         let Some(style_id) = self
             .design
             .node_design(layer_id)
@@ -1359,11 +1461,17 @@ impl FolioCx<'_> {
         else {
             return Ok(Vec::new());
         };
+        self.style_rows(style_id)
+    }
+
+    /// The visible rows of paint style `style_id`, bottom first (unresolved: `REFUSE_FILL_STYLE`).
+    fn style_rows(&self, style_id: &str) -> Result<Vec<FillSpec>, &'static str> {
+        use hsk_studio_folio::StudioAppearanceRow;
         let style = self
             .design
             .paint_styles
             .iter()
-            .find(|s| &s.style_id == style_id)
+            .find(|s| s.style_id == style_id)
             .ok_or(REFUSE_FILL_STYLE)?;
         let mut out = Vec::new();
         for (row, r) in style.rows.iter().enumerate() {
@@ -1495,7 +1603,7 @@ pub fn prepare_vectors(
         let prepared = cx
             .geometry(&l.layer_id, 0)
             .and_then(|geometry| Ok((geometry, cx.fills(&l.layer_id)?)))
-            .and_then(|(geometry, fills)| cx.networks(&l.payload, geometry, fills));
+            .and_then(|(geometry, fills)| cx.own_geometry(&l.payload, geometry, fills));
         match prepared {
             Ok((geometry, fills)) => specs.push(VectorLayerSpec {
                 layer_id: l.layer_id.clone(),

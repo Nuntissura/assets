@@ -2,7 +2,7 @@
 //! (`VectorAssets::network`) and refuses hostile or unsupported records typed, before conversion.
 //! The save/reopen/render proof is harness `tests/viewer_network_adapter.rs`.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_composite::vector::{FillRule, OwnedPath, PathElement, PathPoint, REFUSE_NETWORK, REFUSE_NETWORK_REGION_STYLE};
+use hsk_studio_composite::vector::{FillRule, OwnedPath, PathElement, PathPoint, REFUSE_NETWORK};
 use hsk_studio_composite::*;
 use hsk_studio_folio::{StudioDesignRecords, StudioImageSource, StudioVectorNetwork, StudioVectorRecords};
 use serde_json::{Value, json};
@@ -65,10 +65,11 @@ fn refusal(net: Value) -> Option<&'static str> {
 fn network_records_prepare_and_hostile_records_are_refused_typed() {
     // A valid network with fill and stroke rows prepares (its open-line path is not the geometry).
     assert_eq!(refusal(network(left_face())), None);
-    // A region with its own fill style: one fill style per layer.
+    // A region style the design records lack is unresolved (resolved region styles are painted,
+    // lane SMB-VECTOR-STYLES tests/vector_styles.rs).
     let mut styled = left_face();
     styled["fill_style_id"] = json!(identity("SSTY", 2));
-    assert_eq!(refusal(network(styled)), Some(REFUSE_NETWORK_REGION_STYLE));
+    assert_eq!(refusal(network(styled)), Some("vector_fill_style_unresolved"));
     // Out-of-bounds vertex index and a loop that does not close: nib validation, typed.
     let mut bad = network(left_face());
     bad["segments"][0]["end"] = json!(99);
