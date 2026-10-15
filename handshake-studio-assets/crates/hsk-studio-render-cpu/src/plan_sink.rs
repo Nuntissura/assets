@@ -25,6 +25,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 mod blur;
 mod content_aware;
+mod display;
 mod effects;
 mod extended;
 mod filter;
@@ -36,6 +37,7 @@ use crate::px::{
     add_u, area, end, grow_rect, index_in, intersect, mul_u, offset, overflow, to_i64, union,
 };
 use crate::vector::VectorSource;
+pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
 pub use extended::MAX_EFFECT_WINDOW_WORK;
 use extended::{ExtPrep, FrameShape, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
@@ -177,6 +179,8 @@ pub struct Renderer {
     /// Plan budgets handed to shared admission: the maxima unless the host tightened them with
     /// [`Renderer::with_plan_limits`].
     limits: PlanLimits,
+    /// Declared display transform for tile samples outside `[0, 1]` (`None` = typed refusal).
+    display: Option<DisplayTransform>,
     live: AtomicU64,
     peak: AtomicU64,
 }
@@ -464,12 +468,15 @@ fn tile_at(p: &TilePlanes<'_>, rect: Rect, x: i64, y: i64) -> Result<[f32; 4], R
     tile_pixel(p, offset(x, rect.x)?, offset(y, rect.y)?)
 }
 
-/// Shape, plane hashes and values of a resolved tile against the plan's declaration.
+/// Shape, plane hashes and values of a resolved tile against the plan's declaration. A colour
+/// sample outside `[0, 1]` is refused unless `display_declared` (a declared display transform,
+/// `display.rs`); the result says whether the tile holds such a sample.
 fn verify_tile(
     input: &TileInput,
     planes: &TilePlanes<'_>,
     plan_space: hsk_studio_pigment::render_plan::ColourTag,
-) -> Result<(), RenderError> {
+    display_declared: bool,
+) -> Result<bool, RenderError> {
     let key = input.key;
     // Defence in depth: this backend declares `ExtOperator::AlphaPremultiplied` Unsupported, so
     // shared admission refuses a premultiplied convention first (key is pigment's).
@@ -514,10 +521,10 @@ fn verify_tile(
             out_of_unit |= ![r, g, b].iter().all(|v| (0.0..=1.0).contains(v));
         }
     }
-    if out_of_unit {
+    if out_of_unit && !display_declared {
         return Err(unsupported(SAMPLE_RANGE_OPERATOR));
     }
-    Ok(())
+    Ok(out_of_unit)
 }
 
 /// `reach[i]`: node `i` is the root or the input of a layer of a reachable group. Both callers
@@ -547,6 +554,7 @@ fn prepare<'a, V: VectorSource>(
     plan: &RenderPlan<V>,
     sources: &'a dyn PlanSources,
     mut ext: ExtPrep,
+    clip: Option<&'a display::ClipStore>,
 ) -> Result<Prepared<'a>, RenderError> {
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
@@ -584,7 +592,11 @@ fn prepare<'a, V: VectorSource>(
                 let planes = sources
                     .tile(t.key)
                     .ok_or(BackendError::UnresolvedSource(t.key))?;
-                verify_tile(t, &planes, target.space)?;
+                let out_of_unit = verify_tile(t, &planes, target.space, clip.is_some())?;
+                let planes = match clip {
+                    Some(store) if out_of_unit => store.substitute(t.key, planes)?,
+                    _ => planes,
+                };
                 end(t.placement)?;
                 (
                     PNode::Tile {
@@ -1639,6 +1651,7 @@ impl Renderer {
             chunk,
             threads,
             limits: PlanLimits::default(),
+            display: None,
             live: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         })
@@ -1648,6 +1661,7 @@ impl Renderer {
             chunk,
             threads: 1,
             limits: PlanLimits::default(),
+            display: None,
             live: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
@@ -1667,6 +1681,19 @@ impl Renderer {
             .map_err(|_| RenderError::InvalidConfig("plan_limits"))?;
         self.limits = limits;
         Ok(self)
+    }
+    /// Declares the display transform for tile colour samples outside `[0, 1]` (lane
+    /// SMB-RENDER-SCENE-DISPLAY, `plan_sink/display.rs`): `Clip` clips them at the source boundary
+    /// and records `display_clip_sources` (Approximate) in the receipt ledger when anything was
+    /// clipped. A renderer without a declaration keeps the typed refusal
+    /// `sample_range_outside_unit` (tests `tests/cpu_scene_display.rs`).
+    pub fn with_display_transform(mut self, transform: DisplayTransform) -> Self {
+        self.display = Some(transform);
+        self
+    }
+    /// The declared display transform (`None` = samples outside `[0, 1]` are refused).
+    pub fn display_transform(&self) -> Option<DisplayTransform> {
+        self.display
     }
     /// The plan budgets this renderer hands to shared admission.
     pub fn plan_limits(&self) -> PlanLimits {
@@ -1800,14 +1827,31 @@ impl Renderer {
         &self,
         plan: &RenderPlan<V>,
         ext: ExtPrep,
-        ledger: ExactnessLedger,
+        mut ledger: ExactnessLedger,
         digest: &dyn Fn() -> Result<[u8; 32], hsk_studio_pigment::Error>,
         request: &ExecuteRequest,
         sources: &dyn PlanSources,
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
-        let mut prepared = prepare(plan, sources, ext)?;
+        // Declared display transform: clipped copies of the out-of-range tiles, charged first
+        // (before allocation) and held for the whole run; `prepare` reads them instead.
+        let (clip_store, _clip_lease) = match self.display {
+            Some(DisplayTransform::Clip) => {
+                let (store, lease) = display::ClipStore::build(
+                    plan,
+                    sources,
+                    plan.target.space,
+                    request.min_exactness,
+                    &mut ledger,
+                    |bytes| self.reserve(bytes, request.max_working_bytes),
+                )?;
+                (Some(store), Some(lease))
+            }
+            None => (None, None),
+        };
+        let clip_bytes = clip_store.as_ref().map_or(0, display::ClipStore::bytes);
+        let mut prepared = prepare(plan, sources, ext, clip_store.as_ref())?;
         let digest = digest().map_err(|_| BackendError::Unavailable("plan_digest"))?;
 
         let extent = plan.target.extent;
@@ -1838,7 +1882,11 @@ impl Renderer {
             .and_then(|fx| fx.checked_add(prepared.ext.resident_bytes))
             .and_then(|fx| fx.checked_add(base))
             .ok_or(BackendError::Overflow)?;
-        let _lease = self.reserve(scratch_bytes, request.max_working_bytes)?;
+        let _lease = self.reserve(
+            scratch_bytes,
+            request.max_working_bytes.saturating_sub(clip_bytes),
+        )?;
+        let scratch_bytes = scratch_bytes.checked_add(clip_bytes).ok_or(BackendError::Overflow)?;
         // Content-aware fills (lane SMB-RENDER-CONTENT-AWARE): their planes are charged next to the
         // chunk scratch, pigment gets what remains of the budget; all before the first sink call.
         let fill_bytes = content_aware::fill_bytes(&prepared)?;

@@ -13,7 +13,7 @@ pub mod report;
 pub mod vector;
 
 pub use plan_sink::{
-    DEFAULT_CHUNK_SIDE, MAX_CHUNK_SIDE, MAX_EFFECT_WINDOW_WORK, MAX_PATH_ELEMENTS, MAX_THREADS,
+    DEFAULT_CHUNK_SIDE, DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform, MAX_CHUNK_SIDE, MAX_EFFECT_WINDOW_WORK, MAX_PATH_ELEMENTS, MAX_THREADS,
     RENDERER_NAME, RENDERER_VERSION, RenderError, Renderer, SourceFault, blend_supported,
 };
 pub use report::{outcome_of, report};
