@@ -425,6 +425,11 @@ impl<'a> Db<'a> {
         Ok(())
     }
 
+    /// Accounted retained bytes charged so far (see `charge`).
+    pub fn retained(&self) -> u64 {
+        self.retained.get()
+    }
+
     fn add_cells(&self, n: u64) -> Result<()> {
         let total = self.cells.get().saturating_add(n);
         if total > self.limits.max_cells {

@@ -277,16 +277,26 @@ impl LossLog {
 
 /// Walker row count plus the number of rows that produced no entry (`Dropped`).
 #[derive(Clone, Copy)]
-struct Walked {
+pub(crate) struct Walked {
     seen: u64,
     lost: u64,
 }
 
 /// Why a visited row produced no entry; `rows` records it as a whole-row loss.
-struct Dropped {
+pub(crate) struct Dropped {
     field: &'static str,
     disposition: Disposition,
     code: &'static str,
+}
+
+impl Dropped {
+    pub(crate) const fn new(field: &'static str, disposition: Disposition, code: &'static str) -> Self {
+        Self {
+            field,
+            disposition,
+            code,
+        }
+    }
 }
 
 /// Root-folder path by id; folder (root id, path from root) by id; file (folder id, name) by id.
@@ -296,7 +306,7 @@ type PathTables = (
     HashMap<i64, (Option<i64>, Option<String>)>,
 );
 
-struct Extractor<'a> {
+pub(crate) struct Extractor<'a> {
     db: &'a Db<'a>,
     schema: &'a Schema,
     limits: &'a Limits,
@@ -311,14 +321,39 @@ fn sanitize(name: &str) -> String {
 }
 
 impl<'a> Extractor<'a> {
-    fn loss(&self, entity: &str, field: &str, d: Disposition, code: &'static str, n: u64, id: Option<i64>) {
+    pub(crate) fn new(
+        db: &'a Db<'a>,
+        schema: &'a Schema,
+        limits: &'a Limits,
+        cancel: &'a CancellationToken,
+    ) -> Self {
+        Self {
+            db,
+            schema,
+            limits,
+            cancel,
+            losses: RefCell::new(LossLog::default()),
+            counts: RefCell::new(Vec::new()),
+            retained: Cell::new(0),
+        }
+    }
+
+    /// The aggregated loss notes (key order) and the entity counts in walk order.
+    pub(crate) fn finish(self) -> (Vec<LossNote>, Vec<EntityCount>) {
+        (
+            self.losses.into_inner().map.into_values().collect(),
+            self.counts.into_inner(),
+        )
+    }
+
+    pub(crate) fn loss(&self, entity: &str, field: &str, d: Disposition, code: &'static str, n: u64, id: Option<i64>) {
         self.losses.borrow_mut().add(entity, field, d, code, n, id);
     }
 
     /// Records an entity's accounting from three separate sources: the walker's row count and
     /// whole-row loss events (`walked`) and the number of entries the caller really kept
     /// (`mapped`). `lost` is never derived by subtraction.
-    fn count(&self, entity: &str, walked: Walked, mapped: u64) {
+    pub(crate) fn count(&self, entity: &str, walked: Walked, mapped: u64) {
         self.counts.borrow_mut().push(EntityCount {
             entity: entity.to_owned(),
             rows_seen: walked.seen,
@@ -382,7 +417,7 @@ impl<'a> Extractor<'a> {
     }
 
     /// Optional table: absent or not walkable is a typed loss, never silence.
-    fn optional(&self, name: &'static str) -> Option<&'a TableDef> {
+    pub(crate) fn optional(&self, name: &'static str) -> Option<&'a TableDef> {
         let Some(t) = self.lookup(name) else {
             self.loss(name, "", Disposition::Missing, "table_absent", 1, None);
             return None;
@@ -398,7 +433,7 @@ impl<'a> Extractor<'a> {
 
     /// Walks one table. `visit` returns `None` when the row produced its entry and `Some(Dropped)`
     /// when it produced none; every dropped row becomes a whole-row `LossNote` and one `lost`.
-    fn rows(
+    pub(crate) fn rows(
         &self,
         entity: &str,
         t: &TableDef,
@@ -438,7 +473,7 @@ impl<'a> Extractor<'a> {
     }
 
     /// Strict text decode of a column value; kept text is charged against the retained budget.
-    fn text(&self, entity: &str, field: &str, v: &Value, id: i64) -> Result<Option<String>> {
+    pub(crate) fn text(&self, entity: &str, field: &str, v: &Value, id: i64) -> Result<Option<String>> {
         if v.is_null() {
             return Ok(None);
         }
@@ -450,7 +485,7 @@ impl<'a> Extractor<'a> {
         Ok(out)
     }
 
-    fn int(&self, entity: &str, field: &str, v: &Value, id: i64) -> Option<i64> {
+    pub(crate) fn int(&self, entity: &str, field: &str, v: &Value, id: i64) -> Option<i64> {
         if v.is_null() {
             return None;
         }
@@ -933,6 +968,19 @@ pub fn extract_catalog(
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<CatalogProposal> {
+    extract_with(grant, limits, cancel, |_, _, _, _| Ok(())).map(|(p, ())| p)
+}
+
+/// The fixed extraction with an `extra` reader that runs over the same decoded database after
+/// the fixed tables and BEFORE the closing fingerprint, so its reads are covered by the same
+/// before/after source check. The catalog proposal does not depend on `extra` (separate loss
+/// log and counts); `extra` only shares the page, cell and retained-memory budgets.
+pub(crate) fn extract_with<T>(
+    grant: &Grant,
+    limits: &Limits,
+    cancel: &CancellationToken,
+    extra: impl FnOnce(&Db<'_>, &Schema, &Limits, &CancellationToken) -> Result<T>,
+) -> Result<(CatalogProposal, T)> {
     limits.validate()?;
     check_cancel(cancel)?;
     if matches!(grant.wal, WalGrant::PresentButNotGranted) {
@@ -950,15 +998,7 @@ pub fn extract_catalog(
     };
     let db = Db::open(grant.main.as_ref(), wal_arg, limits, cancel)?;
     let schema = db.read_schema()?;
-    let x = Extractor {
-        db: &db,
-        schema: &schema,
-        limits,
-        cancel,
-        losses: RefCell::new(LossLog::default()),
-        counts: RefCell::new(Vec::new()),
-        retained: Cell::new(0),
-    };
+    let x = Extractor::new(&db, &schema, limits, cancel);
 
     let freelist = db.freelist_report()?;
     if let Some(code) = freelist.anomaly {
@@ -1032,13 +1072,14 @@ pub fn extract_catalog(
         x.loss("wal", "", Disposition::Missing, "wal_invalid_tail_ignored", wal.invalid_tail_bytes, None);
     }
 
+    let extra = extra(&db, &schema, limits, cancel)?;
+
     let after = digest(grant, cancel)?;
     if before != after {
         return Err(LrcatError::SourceChanged);
     }
-    let losses: Vec<LossNote> = x.losses.into_inner().map.into_values().collect();
-    let counts = x.counts.into_inner();
-    Ok(CatalogProposal {
+    let (losses, counts) = x.finish();
+    let proposal = CatalogProposal {
         fingerprint: Fingerprint {
             main_len: before.main_len,
             wal_len: before.wal_len,
@@ -1058,5 +1099,6 @@ pub fn extract_catalog(
         wal,
         decoder: DECODER_ID,
         notice: CONVERSION_NOTICE,
-    })
+    };
+    Ok((proposal, extra))
 }
