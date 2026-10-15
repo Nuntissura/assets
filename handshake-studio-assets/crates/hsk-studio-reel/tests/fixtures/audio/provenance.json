@@ -124,6 +124,58 @@
         }
       },
       "tables": "src/audio/aac_tables.rs is generated from soundkit-aac-lc 0.12.3 (MIT) by gen_aac_tables.py (this directory)"
+    },
+    "containers": {
+      "generator_script": "generate-containers.sh (remux with -c copy; no re-encode)",
+      "reference": "the standalone decode of the same coded bytes (elementary-stream fixtures of this directory, themselves compared with libavcodec)",
+      "files": {
+        "audio-tracks.mp4": {
+          "bytes": 25374,
+          "sha256": "47a1550acbea04c7ae98f39347b139d84816562058f83ad519f0d9ce37720084",
+          "content": "ISO BMFF: track 1 mp4a/esds 0x40 (aac-lc-44k1-2ch.aac), 2 fLaC/dfLa (flac-s16-44k1-2ch.flac), 3 Opus/dOps (opus-48k-2ch.opus; elst media_time 312), 4 mp4a/esds 0x6B (mp3-44k1-2ch-cbr.mp3; elst media_time 1105)"
+        },
+        "audio-tracks.mkv": {
+          "bytes": 30225,
+          "sha256": "92747ad747f69b4239d6ed23c1244b5ddf96bf33dc6292170dd438838f7cb628",
+          "content": "Matroska: tracks 1 A_AAC, 2 A_FLAC, 3 A_OPUS, 4 A_VORBIS, 5 A_MPEG/L3 (same sources)"
+        }
+      }
+    },
+    "aiff": {
+      "generator_script": "generate-aiff.sh",
+      "reference": "sha256 of libavcodec decode as raw f32le (exact: power-of-two scaling)",
+      "files": {
+        "aiff-s16-44k1-2ch.aiff": {
+          "bytes": 17694,
+          "sha256": "0d815483a8ee49397495b3af52afc8190a99555ba20d22cb77a8f7d19b0f6373",
+          "content": "AIFF 16-bit stereo 440/1250 Hz 44100 Hz 0.1 s",
+          "ref_f32le_sha256": "e683f2ba74351113188ab3aebb602e9989eac6bf6fb62e50b4094b496659cece"
+        },
+        "aiff-s24-48k-1ch.aiff": {
+          "bytes": 14454,
+          "sha256": "90d54fd6e752014537d5abf43616b4a0293652e9c297bb36d09319fb9aee343c",
+          "content": "AIFF 24-bit mono 1 kHz 48000 Hz 0.1 s",
+          "ref_f32le_sha256": "0b7792a2717e961aa3071fcb59055edcd658c1a85f0ed819b1e88d98f8b8b5ab"
+        },
+        "aifc-f32-48k-2ch.aifc": {
+          "bytes": 38472,
+          "sha256": "0355fd4a75f248ce9b4a4303cfafc5ecbf102bf0836361de33687366737eba74",
+          "content": "AIFF-C fl32 stereo 300/700 Hz 48000 Hz 0.1 s",
+          "ref_f32le_sha256": "f2cfab372a6ec1e1a899121412d63bcae5de740f7ae84576edfc3d80b3a141de"
+        },
+        "aifc-ulaw-8k-1ch.aifc": {
+          "bytes": 872,
+          "sha256": "f9720c6802886621c23ac71d578cf3d1721de0a6972778e9da00c51c0d6dcc59",
+          "content": "AIFF-C ulaw mono 500 Hz 8000 Hz 0.1 s",
+          "ref_f32le_sha256": "0df1218708e3e16a72c9332666d80b1bdf1ff611cb7f8b9926f8c6c5f00ebb4d"
+        },
+        "aifc-alaw-8k-1ch.aifc": {
+          "bytes": 872,
+          "sha256": "6c54ef3d1a70501d3ccf3c15e3fbc6ee2ca292ecd47e207372f07886ff7c3641",
+          "content": "AIFF-C alaw mono 500 Hz 8000 Hz 0.1 s",
+          "ref_f32le_sha256": "4860364f15bf5e78ebc0a78100976d8cafb9639ae2df47f3db4ef22ee2850364"
+        }
+      }
     }
   }
 }

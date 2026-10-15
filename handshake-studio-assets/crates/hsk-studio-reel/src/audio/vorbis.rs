@@ -285,7 +285,6 @@ impl PacketDecoder for VorbisDecoder {
 
 /// Split Xiph-laced CodecPrivate (Matroska A_VORBIS): count-1, then the lengths of all but the last
 /// packet in Xiph lacing.
-#[allow(dead_code)] // Matroska A_VORBIS CodecPrivate (container hook slice)
 pub(crate) fn split_xiph_lacing(private: &[u8]) -> Result<Vec<&[u8]>, ReelError> {
     let bad = ReelError::Corrupt {
         what: "xiph-lacing",

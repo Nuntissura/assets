@@ -829,7 +829,6 @@ pub(crate) fn parse_native_header(
 /// Configuration carried by a container for FLAC-in-ISOBMFF (`dfLa`, RFC 9639 Annex / "Encapsulation of
 /// FLAC in ISO-BMFF" v0: version/flags then metadata blocks) and FLAC-in-Matroska / Ogg (CodecPrivate
 /// = "fLaC" + metadata blocks). Returns STREAMINFO.
-#[allow(dead_code)] // container hooks (FLAC in MP4 / Matroska / Ogg) use it from the next slice
 pub(crate) fn streaminfo_from_config(
     config: &[u8],
     limits: &FlacLimits,

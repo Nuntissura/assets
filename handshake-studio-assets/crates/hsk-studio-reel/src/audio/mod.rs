@@ -14,7 +14,9 @@
 pub mod aac;
 mod aac_dsp;
 mod aac_lc;
+pub mod aiff;
 mod bits;
+pub(crate) mod container;
 pub(crate) mod engine;
 pub mod flac;
 mod md5;
@@ -40,8 +42,8 @@ pub use mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION, OUTPUT_BOUND as MP3_OUTPUT_BO
 pub use ogg_audio::OggCodec;
 pub use opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION};
 pub use provider::{
-    AAC_PROVIDER_ID, AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID, MP3_PROVIDER_ID,
-    OGG_PROVIDER_ID,
+    AAC_PROVIDER_ID, AIFF_PROVIDER_ID, AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID,
+    MP3_PROVIDER_ID, OGG_PROVIDER_ID,
 };
 pub use vorbis::{VORBIS_DECODER_ID, VORBIS_DECODER_VERSION};
 

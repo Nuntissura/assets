@@ -1569,7 +1569,22 @@ impl MatroskaProvider {
                     sink,
                 );
             }
-            // No other decoder is registered for any Matroska CodecID in this slice.
+            // Compressed audio with a Studio audio codec (FLAC, Vorbis, Opus, AAC, MPEG audio).
+            if track.info.track_type == 2
+                && let Some(result) = crate::audio::container::decode_matroska_track(
+                    src,
+                    track,
+                    &plan,
+                    MATROSKA_PROVIDER_ID,
+                    req,
+                    limits,
+                    cancel,
+                    sink,
+                )
+            {
+                return result;
+            }
+            // No other decoder is registered for any other Matroska CodecID.
             return Err(ReelError::CodecUnavailable {
                 codec: track.info.codec_id.clone(),
             });

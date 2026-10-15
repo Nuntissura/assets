@@ -338,7 +338,6 @@ impl FrameSource for AdtsStream<'_> {
 /// AudioSpecificConfig from an MP4 `esds` box payload (ISO/IEC 14496-1 ES_Descriptor ->
 /// DecoderConfigDescriptor (tag 4) -> DecoderSpecificInfo (tag 5)), with the descriptor's
 /// objectTypeIndication.
-#[allow(dead_code)] // ISO BMFF hook (next slice)
 pub(crate) fn asc_from_esds(esds: &[u8]) -> Result<(u8, Vec<u8>), ReelError> {
     let bad = || ReelError::Corrupt { what: "mp4-esds" };
     // FullBox version/flags.

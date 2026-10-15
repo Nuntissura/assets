@@ -3,6 +3,7 @@
 //! `FrameSource`; probe, segment delivery and whole-file decode all go through it.
 #![deny(clippy::arithmetic_side_effects)]
 use super::aac::{AAC_DECODER_ID, AAC_DECODER_VERSION, AdtsHeader, AdtsStream, probe_adts};
+use super::aiff;
 use super::engine::{self, FrameSource, Ids, StreamShape};
 use super::flac::{FlacEncoder, FlacLimits, StreamInfo};
 use super::mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION};
@@ -17,6 +18,9 @@ use crate::model::*;
 use hsk_studio_accord::CancellationToken;
 use std::io::{SeekFrom, Write};
 
+/// Decoder id of the AIFF reader.
+pub const AIFF_DECODER_ID: &str = "aiff-pcm";
+
 /// Provider id of native FLAC files.
 pub const FLAC_PROVIDER_ID: &str = "flac";
 /// Provider id of Ogg audio files (Vorbis, Opus, FLAC in Ogg).
@@ -25,6 +29,8 @@ pub const OGG_PROVIDER_ID: &str = "ogg-audio";
 pub const MP3_PROVIDER_ID: &str = "mpeg-audio";
 /// Provider id of ADTS AAC elementary streams (.aac).
 pub const AAC_PROVIDER_ID: &str = "aac-adts";
+/// Provider id of AIFF / AIFF-C files (decode and encode).
+pub const AIFF_PROVIDER_ID: &str = "aiff-pcm";
 
 /// Container kinds served by `AudioFileProvider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,10 +43,18 @@ pub enum AudioFileKind {
     MpegAudio,
     /// AAC-LC in ADTS framing.
     AacAdts,
+    /// AIFF / AIFF-C (`FORM` .. `AIFF` | `AIFC`).
+    AiffPcm,
 }
 
 impl AudioFileKind {
-    const ALL: [Self; 4] = [Self::Flac, Self::Ogg, Self::MpegAudio, Self::AacAdts];
+    const ALL: [Self; 5] = [
+        Self::Flac,
+        Self::Ogg,
+        Self::MpegAudio,
+        Self::AacAdts,
+        Self::AiffPcm,
+    ];
 
     fn id(self) -> &'static str {
         match self {
@@ -48,6 +62,7 @@ impl AudioFileKind {
             Self::Ogg => OGG_PROVIDER_ID,
             Self::MpegAudio => MP3_PROVIDER_ID,
             Self::AacAdts => AAC_PROVIDER_ID,
+            Self::AiffPcm => AIFF_PROVIDER_ID,
         }
     }
 
@@ -63,6 +78,10 @@ impl AudioFileKind {
                         .is_some_and(|h| super::mp3::header_is_valid(&h))
             }
             Self::AacAdts => AdtsHeader::parse(head).is_some(),
+            Self::AiffPcm => {
+                head.starts_with(b"FORM")
+                    && matches!(head.get(8..12), Some(b"AIFF") | Some(b"AIFC"))
+            }
         }
     }
 }
@@ -88,6 +107,12 @@ impl AudioFileProvider {
     pub const fn aac_adts() -> Self {
         Self {
             kind: AudioFileKind::AacAdts,
+        }
+    }
+
+    pub const fn aiff() -> Self {
+        Self {
+            kind: AudioFileKind::AiffPcm,
         }
     }
 
@@ -215,6 +240,16 @@ pub(crate) fn open_stream<'a>(
                 flac: None,
             })
         }
+        AudioFileKind::AiffPcm => {
+            let info = aiff::parse(src, len, limits)?;
+            Ok(Opened {
+                shape: aiff::shape(&info),
+                decoder_id: AIFF_DECODER_ID,
+                decoder_version: "1",
+                source: Box::new(aiff::AiffReader::open(src, info)?),
+                flac: None,
+            })
+        }
     }
 }
 
@@ -250,6 +285,21 @@ impl MediaProvider for AudioFileProvider {
                 id: AAC_PROVIDER_ID,
                 container: "adts",
                 ..aac_descriptor()
+            },
+            AudioFileKind::AiffPcm => CodecDescriptor {
+                id: AIFF_PROVIDER_ID,
+                name: "AIFF / AIFF-C PCM (read: integer, float, G.711; write: integer, float)",
+                kind: MediaKind::Audio,
+                container: "aiff",
+                bit_depths: &[8, 16, 24, 32, 64],
+                chroma: None,
+                transfer: None,
+                decoder_id: AIFF_DECODER_ID,
+                decoder_version: "1",
+                licence: STUDIO_OWNED_LICENCE,
+                certification: Certification::NotApplicable,
+                can_decode: true,
+                can_encode: true,
             },
         }
     }
@@ -334,6 +384,9 @@ impl MediaProvider for AudioFileProvider {
         limits: &Limits,
         cancel: &CancellationToken,
     ) -> Result<EncodeReceipt, ReelError> {
+        if self.kind == AudioFileKind::AiffPcm && spec.codec == AIFF_PROVIDER_ID {
+            return aiff::encode(spec, source, out, limits, cancel, AIFF_PROVIDER_ID);
+        }
         if self.kind != AudioFileKind::Flac || spec.codec != FLAC_PROVIDER_ID {
             return Err(ReelError::CodecUnavailable {
                 codec: spec.codec.clone(),

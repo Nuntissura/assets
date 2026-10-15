@@ -925,6 +925,9 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
                     what: "quicktime-sound-version",
                 });
             }
+            // Compressed-audio configuration boxes (esds / dfLa / dOps), for the audio codec hook.
+            let remaining = e.remaining();
+            codec_config = crate::audio::container::sound_entry_config(version, e.take(remaining)?);
         }
         TrackKind::Timecode => timecode = Some(timecode::parse_tmcd(&mut e)?),
         TrackKind::Other => {}
@@ -1921,6 +1924,18 @@ impl IsobmffProvider {
                     sink,
                     route,
                 );
+            }
+            // Compressed audio with a Studio audio codec (AAC, MPEG audio, FLAC, Opus).
+            if let Some(result) = crate::audio::container::decode_isobmff_track(
+                src,
+                track,
+                ISOBMFF_PROVIDER_ID,
+                req,
+                limits,
+                cancel,
+                sink,
+            ) {
+                return result;
             }
             // Only uncompressed PCM decodes here; other compressed sample entries have no registered
             // decoder.
