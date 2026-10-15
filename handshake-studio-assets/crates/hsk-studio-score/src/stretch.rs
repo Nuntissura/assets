@@ -94,13 +94,7 @@ pub fn time_stretch(
     }
     let out_len = out_len.max(1);
     let hs = n / 4;
-    let bins = n / 2 + 1;
-    let fft = Fft::new(n);
-    let window: Vec<f64> = (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos()).collect();
-    let (mut re, mut im) = (vec![0.0; n], vec![0.0; n]);
-    let (mut mag, mut phase) = (vec![0.0; bins], vec![0.0; bins]);
-    let (mut prev_phase, mut synth) = (vec![0.0; bins], vec![0.0; bins]);
-    let mut peaks: Vec<usize> = Vec::with_capacity(bins);
+    let mut engine = FrameEngine::new(n, params.phase_locking);
     let half = (n / 2) as i64;
     // Output buffer with N/2 of margin on each side.
     let mut ola = vec![0.0_f64; out_len + n];
@@ -111,86 +105,350 @@ pub fn time_stretch(
     for k in k_first..=k_last {
         cancel.check().map_err(|_| ScoreError::Canceled)?;
         let ca = centre(k);
-        for i in 0..n {
-            re[i] = sample(ca - half + i as i64) * window[i];
-            im[i] = 0.0;
-        }
-        fft.transform(&mut re, &mut im, false);
-        for b in 0..bins {
-            mag[b] = (re[b] * re[b] + im[b] * im[b]).sqrt();
-            phase[b] = im[b].atan2(re[b]);
-        }
-        if k == k_first {
-            synth.copy_from_slice(&phase);
-        } else {
-            let ha = (ca - centre(k - 1)) as f64;
-            let advance = |b: usize, phase: &[f64], prev: &[f64]| {
-                let w = 2.0 * PI * b as f64 / n as f64;
-                let inst = if ha > 0.0 { w + princarg(phase[b] - prev[b] - w * ha) / ha } else { w };
-                inst * hs as f64
-            };
-            if params.phase_locking {
-                peaks.clear();
-                for b in 0..bins {
-                    let lo = b.saturating_sub(2);
-                    let hi = (b + 2).min(bins - 1);
-                    if (lo..=hi).all(|j| j == b || mag[b] > mag[j]) {
-                        peaks.push(b);
-                    }
-                }
-                if peaks.is_empty() {
-                    for (b, value) in synth.iter_mut().enumerate() {
-                        *value = princarg(*value + advance(b, &phase, &prev_phase));
-                    }
-                } else {
-                    // New peak phases first (they need the previous synthesis phase of their bin);
-                    // `re` is free scratch until the synthesis spectrum is built.
-                    for &p in &peaks {
-                        re[p] = princarg(synth[p] + advance(p, &phase, &prev_phase));
-                    }
-                    // Regions: bins between two peaks split at the lowest magnitude between them.
-                    let mut start = 0;
-                    for (i, &p) in peaks.iter().enumerate() {
-                        let end = match peaks.get(i + 1) {
-                            Some(&q) => (p..=q).min_by(|a, b| mag[*a].total_cmp(&mag[*b])).unwrap_or(q),
-                            None => bins,
-                        };
-                        let psi_p = re[p];
-                        for b in start..end {
-                            synth[b] = psi_p + phase[b] - phase[p];
-                        }
-                        start = end;
-                    }
-                }
-            } else {
-                for (b, value) in synth.iter_mut().enumerate() {
-                    *value = princarg(*value + advance(b, &phase, &prev_phase));
-                }
-            }
-        }
-        prev_phase.copy_from_slice(&phase);
-        // Synthesis spectrum (Hermitian) and inverse transform.
-        for b in 0..bins {
-            let (s, c) = synth[b].sin_cos();
-            re[b] = mag[b] * c;
-            im[b] = mag[b] * s;
-        }
-        im[0] = 0.0;
-        im[n / 2] = 0.0;
-        for b in 1..n / 2 {
-            re[n - b] = re[b];
-            im[n - b] = -im[b];
-        }
-        fft.transform(&mut re, &mut im, true);
+        let ha = if k == k_first { None } else { Some((ca - centre(k - 1)) as f64) };
+        engine.frame(&sample, ca, ha);
         let cs = k * hs as i64; // output centre
         for i in 0..n {
             let at = cs - half + i as i64 + half; // shifted by the N/2 margin
             if at >= 0 && (at as usize) < ola.len() {
-                ola[at as usize] += re[i] * window[i];
+                ola[at as usize] += engine.out[i];
             }
         }
     }
     Ok(ola[n / 2..n / 2 + out_len].iter().map(|v| (v / 1.5) as f32).collect())
+}
+
+/// One phase-vocoder frame: analysis at a centre, phase propagation (or reset), synthesis into
+/// `out` (inverse FFT times the window, before the 1/1.5 overlap-add normalisation). Shared by
+/// [`time_stretch`] and [`StreamingStretch`], so both compute identical frames.
+struct FrameEngine {
+    n: usize,
+    phase_locking: bool,
+    fft: Fft,
+    window: Vec<f64>,
+    re: Vec<f64>,
+    im: Vec<f64>,
+    mag: Vec<f64>,
+    prev_mag: Vec<f64>,
+    phase: Vec<f64>,
+    prev_phase: Vec<f64>,
+    synth: Vec<f64>,
+    peaks: Vec<usize>,
+    out: Vec<f64>,
+}
+
+impl FrameEngine {
+    fn new(n: usize, phase_locking: bool) -> Self {
+        let bins = n / 2 + 1;
+        Self {
+            n,
+            phase_locking,
+            fft: Fft::new(n),
+            window: (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos()).collect(),
+            re: vec![0.0; n],
+            im: vec![0.0; n],
+            mag: vec![0.0; bins],
+            prev_mag: vec![0.0; bins],
+            phase: vec![0.0; bins],
+            prev_phase: vec![0.0; bins],
+            synth: vec![0.0; bins],
+            peaks: Vec::with_capacity(bins),
+            out: vec![0.0; n],
+        }
+    }
+
+    /// Analyses the frame centred on input sample `ca` and returns the positive spectral flux
+    /// `sum max(0, |X_k| - |X_{k-1}|) / sum |X_k|` against the previous frame (0 for silence).
+    fn analyse(&mut self, sample: &dyn Fn(i64) -> f64, ca: i64) -> f64 {
+        let (n, half) = (self.n, (self.n / 2) as i64);
+        for i in 0..n {
+            self.re[i] = sample(ca - half + i as i64) * self.window[i];
+            self.im[i] = 0.0;
+        }
+        self.fft.transform(&mut self.re, &mut self.im, false);
+        self.prev_mag.copy_from_slice(&self.mag);
+        let (mut rise, mut total) = (0.0, 0.0);
+        for b in 0..n / 2 + 1 {
+            let (r, i) = (self.re[b], self.im[b]);
+            self.mag[b] = (r * r + i * i).sqrt();
+            self.phase[b] = i.atan2(r);
+            rise += (self.mag[b] - self.prev_mag[b]).max(0.0);
+            total += self.mag[b];
+        }
+        if total > 0.0 { rise / total } else { 0.0 }
+    }
+
+    /// Propagates phases with analysis hop `ha` (`None` = phase reset: synthesis phase = analysis
+    /// phase) and synthesises into `out`.
+    fn synthesise(&mut self, ha: Option<f64>) {
+        let (n, bins, hs) = (self.n, self.n / 2 + 1, (self.n / 4) as f64);
+        match ha {
+            None => self.synth.copy_from_slice(&self.phase),
+            Some(ha) => {
+                let (phase, prev) = (&self.phase, &self.prev_phase);
+                let advance = |b: usize| {
+                    let w = 2.0 * PI * b as f64 / n as f64;
+                    let inst = if ha > 0.0 { w + princarg(phase[b] - prev[b] - w * ha) / ha } else { w };
+                    inst * hs
+                };
+                if self.phase_locking {
+                    self.peaks.clear();
+                    for b in 0..bins {
+                        let lo = b.saturating_sub(2);
+                        let hi = (b + 2).min(bins - 1);
+                        if (lo..=hi).all(|j| j == b || self.mag[b] > self.mag[j]) {
+                            self.peaks.push(b);
+                        }
+                    }
+                    if self.peaks.is_empty() {
+                        for (b, value) in self.synth.iter_mut().enumerate() {
+                            *value = princarg(*value + advance(b));
+                        }
+                    } else {
+                        // New peak phases first (they need the previous synthesis phase of their
+                        // bin); `re` is free scratch until the synthesis spectrum is built.
+                        for &p in &self.peaks {
+                            self.re[p] = princarg(self.synth[p] + advance(p));
+                        }
+                        // Regions: bins between two peaks split at the lowest magnitude between them.
+                        let mut start = 0;
+                        for (i, &p) in self.peaks.iter().enumerate() {
+                            let end = match self.peaks.get(i + 1) {
+                                Some(&q) => (p..=q).min_by(|a, b| self.mag[*a].total_cmp(&self.mag[*b])).unwrap_or(q),
+                                None => bins,
+                            };
+                            let psi_p = self.re[p];
+                            for b in start..end {
+                                self.synth[b] = psi_p + phase[b] - phase[p];
+                            }
+                            start = end;
+                        }
+                    }
+                } else {
+                    for (b, value) in self.synth.iter_mut().enumerate() {
+                        *value = princarg(*value + advance(b));
+                    }
+                }
+            }
+        }
+        self.prev_phase.copy_from_slice(&self.phase);
+        // Synthesis spectrum (Hermitian) and inverse transform.
+        for b in 0..bins {
+            let (s, c) = self.synth[b].sin_cos();
+            self.re[b] = self.mag[b] * c;
+            self.im[b] = self.mag[b] * s;
+        }
+        self.im[0] = 0.0;
+        self.im[n / 2] = 0.0;
+        for b in 1..n / 2 {
+            self.re[n - b] = self.re[b];
+            self.im[n - b] = -self.im[b];
+        }
+        self.fft.transform(&mut self.re, &mut self.im, true);
+        for i in 0..n {
+            self.out[i] = self.re[i] * self.window[i];
+        }
+    }
+
+    fn frame(&mut self, sample: &dyn Fn(i64) -> f64, ca: i64, ha: Option<f64>) -> f64 {
+        let flux = self.analyse(sample, ca);
+        self.synthesise(ha);
+        flux
+    }
+}
+
+/// Onset threshold on the positive spectral flux (authored).
+pub const TRANSIENT_FLUX_THRESHOLD: f64 = 0.3;
+
+/// Streaming (push/pull) time-stretch with transient preservation.
+///
+/// The same phase vocoder as [`time_stretch`] (frames centred on output `k H_s` and analysed at
+/// input `round(k H_s / factor)`), run incrementally: [`push`](Self::push) accepts input into a
+/// bounded ring, [`pull`](Self::pull) processes every frame whose input is available and returns
+/// finished output, [`finish`](Self::finish) declares the end of the input (zeros after it) and the
+/// output then ends at exactly `round(total_input * factor)` samples. All buffers are allocated in
+/// [`StreamingStretch::new`]; push and pull allocate nothing. With `transients` off the output is
+/// bit-identical to [`time_stretch`] for any push/pull partition (tested).
+///
+/// **Transient preservation** (phase reset at onsets: C. Duxbury, M. Davies, M. Sandler, "Improved
+/// time-scaling of musical audio using phase locking at transients", AES 112, 2002; A. Roebel, "A
+/// new approach to transient processing in the phase vocoder", DAFx 2003; re-derived). A frame
+/// whose positive spectral flux exceeds [`TRANSIENT_FLUX_THRESHOLD`] is an onset: its synthesis
+/// phases are reset to its analysis phases, and the next four frames (up to the first whose window
+/// starts past the onset) advance the input by exactly `H_s`, so the onset region is resynthesised
+/// one to one instead of being smeared over the window. Later frames then move the
+/// analysis position back toward its target `round(k H_s / factor)` by at most twice the nominal
+/// hop per frame (and never backwards), so the long-term ratio is kept.
+pub struct StreamingStretch {
+    factor: f64,
+    hs: usize,
+    n: usize,
+    transients: bool,
+    engine: FrameEngine,
+    input: Vec<f64>,
+    in_count: u64,
+    finished: bool,
+    output: Vec<f64>,
+    emitted: u64,
+    ready: u64,
+    next_k: i64,
+    prev_centre: i64,
+    transient_left: u32,
+    onsets: u64,
+}
+
+impl StreamingStretch {
+    /// Refusals as [`time_stretch`] (rate, factor, FFT size).
+    pub fn new(sample_rate_hz: u32, factor: f64, params: StretchParams, transients: bool) -> Result<Self, ScoreError> {
+        ticks_per_sample(sample_rate_hz)?;
+        if !factor.is_finite() {
+            return Err(ScoreError::NotFinite);
+        }
+        let n = params.fft_size;
+        if !(STRETCH_FACTOR.0..=STRETCH_FACTOR.1).contains(&factor) || !n.is_power_of_two() || !(STRETCH_FFT.0..=STRETCH_FFT.1).contains(&n) {
+            return Err(ScoreError::OutOfRange);
+        }
+        let hs = n / 4;
+        // Input ring: the N samples of a frame plus room for the largest catch-up hops.
+        let max_hop = 2 * ((hs as f64 / factor).ceil() as usize) + hs;
+        let in_cap = (2 * n + 4 * max_hop).next_power_of_two();
+        Ok(Self {
+            factor,
+            hs,
+            n,
+            transients,
+            engine: FrameEngine::new(n, params.phase_locking),
+            input: vec![0.0; in_cap],
+            in_count: 0,
+            finished: false,
+            output: vec![0.0; (2 * n).next_power_of_two()],
+            emitted: 0,
+            ready: 0,
+            next_k: -1,
+            prev_centre: 0,
+            transient_left: 0,
+            onsets: 0,
+        })
+    }
+    /// Onsets detected so far.
+    pub fn onsets(&self) -> u64 {
+        self.onsets
+    }
+    /// Output samples that exist in total once the input is finished.
+    fn total_output(&self) -> Option<u64> {
+        self.finished.then(|| ((self.in_count as f64 * self.factor).round() as u64).max(1))
+    }
+    fn target(&self, k: i64) -> i64 {
+        (k as f64 * self.hs as f64 / self.factor).round() as i64
+    }
+    /// Analysis centre of the next frame.
+    fn next_centre(&self) -> i64 {
+        let k = self.next_k;
+        if k == -1 {
+            return self.target(-1);
+        }
+        if self.transient_left > 0 {
+            return self.prev_centre + self.hs as i64;
+        }
+        let nominal = (self.hs as f64 / self.factor).ceil() as i64;
+        let step = (self.target(k) - self.prev_centre).clamp(0, 2 * nominal);
+        if self.transients { self.prev_centre + step } else { self.target(k) }
+    }
+    /// Oldest input sample still needed.
+    fn oldest_needed(&self) -> i64 {
+        self.next_centre() - (self.n / 2) as i64
+    }
+    /// Accepts input samples while the ring has room; returns how many were taken. Refuses
+    /// NaN/inf with `NotFinite` (nothing taken) and pushes after `finish` with `OutOfRange`.
+    pub fn push(&mut self, samples: &[f32]) -> Result<usize, ScoreError> {
+        if self.finished {
+            return Err(ScoreError::OutOfRange);
+        }
+        if samples.iter().any(|v| !v.is_finite()) {
+            return Err(ScoreError::NotFinite);
+        }
+        let cap = self.input.len() as i64;
+        let oldest = self.oldest_needed().max(0);
+        let room = (oldest + cap - self.in_count as i64).max(0) as usize;
+        let take = room.min(samples.len());
+        for v in &samples[..take] {
+            let slot = (self.in_count % cap as u64) as usize;
+            self.input[slot] = f64::from(*v);
+            self.in_count += 1;
+        }
+        Ok(take)
+    }
+    /// Declares the end of the input.
+    pub fn finish(&mut self) {
+        self.finished = true;
+    }
+    /// Processes every frame that can be processed and copies finished output into `out`;
+    /// returns the number of samples written (0 when more input is needed or the output ended).
+    pub fn pull(&mut self, out: &mut [f32], cancel: &CancellationToken) -> Result<usize, ScoreError> {
+        let (n, hs) = (self.n, self.hs as i64);
+        let half = (n / 2) as i64;
+        let out_cap = self.output.len() as i64;
+        loop {
+            let available = self.ready - self.emitted;
+            if available as usize >= out.len() {
+                break;
+            }
+            if self.total_output().is_some_and(|total| self.ready >= total) {
+                break;
+            }
+            let ca = self.next_centre();
+            let k = self.next_k;
+            if !self.finished && ca + half > self.in_count as i64 {
+                break; // needs more input
+            }
+            // The frame writes output samples k Hs - N/2 .. k Hs + N/2.
+            if k * hs + half - self.emitted as i64 > out_cap {
+                break;
+            }
+            cancel.check().map_err(|_| ScoreError::Canceled)?;
+            let (cap, count, finished, input) = (self.input.len() as i64, self.in_count as i64, self.finished, &self.input);
+            let sample = |i: i64| {
+                if i < 0 || i >= count {
+                    0.0
+                } else {
+                    debug_assert!(finished || i >= count - cap);
+                    input[(i % cap) as usize]
+                }
+            };
+            let flux = self.engine.analyse(&sample, ca);
+            let onset = self.transients && k > -1 && self.transient_left == 0 && flux > TRANSIENT_FLUX_THRESHOLD;
+            let ha = if k == -1 || onset { None } else { Some((ca - self.prev_centre) as f64) };
+            if onset {
+                self.onsets += 1;
+                // Frames k+1 ..= k+4 also advance by H_s: frame k+4 is the first whose window
+                // starts past the onset region of frame k (centre + 4 H_s - N/2 = centre + N/2).
+                self.transient_left = 5;
+            }
+            self.engine.synthesise(ha);
+            for i in 0..n as i64 {
+                let at = k * hs - half + i;
+                if at >= self.emitted as i64 {
+                    self.output[(at % out_cap) as usize] += self.engine.out[i as usize];
+                }
+            }
+            self.transient_left = self.transient_left.saturating_sub(1);
+            self.prev_centre = ca;
+            self.next_k += 1;
+            self.ready = ((k + 1) * hs - half).max(0) as u64;
+        }
+        let mut available = self.ready - self.emitted;
+        if let Some(total) = self.total_output() {
+            available = available.min(total.saturating_sub(self.emitted));
+        }
+        let count = (available as usize).min(out.len());
+        for o in out.iter_mut().take(count) {
+            let slot = (self.emitted % out_cap as u64) as usize;
+            *o = (self.output[slot] / 1.5) as f32;
+            self.output[slot] = 0.0;
+            self.emitted += 1;
+        }
+        Ok(count)
+    }
 }
 
 /// The rational pitch ratio used for `semitones` (one term 65536).
