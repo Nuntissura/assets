@@ -2,14 +2,15 @@
 //! delivery loop of `engine`. `open_stream` is the one dispatch point from container kind to a decoding
 //! `FrameSource`; probe, segment delivery and whole-file decode all go through it.
 #![deny(clippy::arithmetic_side_effects)]
+use super::aac::{AAC_DECODER_ID, AAC_DECODER_VERSION, AdtsHeader, AdtsStream, probe_adts};
 use super::engine::{self, FrameSource, Ids, StreamShape};
 use super::flac::{FlacEncoder, FlacLimits, StreamInfo};
 use super::mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION};
 use super::native_flac::{NativeFlac, read_header};
 use super::packet::Decode;
 use super::{
-    DecodedAudio, FLAC_DECODER_ID, FLAC_DECODER_VERSION, flac_descriptor, mp3_descriptor,
-    mp3_stream, ogg_audio,
+    DecodedAudio, FLAC_DECODER_ID, FLAC_DECODER_VERSION, aac_descriptor, flac_descriptor,
+    mp3_descriptor, mp3_stream, ogg_audio,
 };
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
@@ -22,6 +23,8 @@ pub const FLAC_PROVIDER_ID: &str = "flac";
 pub const OGG_PROVIDER_ID: &str = "ogg-audio";
 /// Provider id of MPEG audio elementary streams (.mp3, .mp2, .mpa).
 pub const MP3_PROVIDER_ID: &str = "mpeg-audio";
+/// Provider id of ADTS AAC elementary streams (.aac).
+pub const AAC_PROVIDER_ID: &str = "aac-adts";
 
 /// Container kinds served by `AudioFileProvider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,16 +35,19 @@ pub enum AudioFileKind {
     Ogg,
     /// MPEG-1/2/2.5 audio Layer I/II/III elementary stream, optionally after ID3v2 tags.
     MpegAudio,
+    /// AAC-LC in ADTS framing.
+    AacAdts,
 }
 
 impl AudioFileKind {
-    const ALL: [Self; 3] = [Self::Flac, Self::Ogg, Self::MpegAudio];
+    const ALL: [Self; 4] = [Self::Flac, Self::Ogg, Self::MpegAudio, Self::AacAdts];
 
     fn id(self) -> &'static str {
         match self {
             Self::Flac => FLAC_PROVIDER_ID,
             Self::Ogg => OGG_PROVIDER_ID,
             Self::MpegAudio => MP3_PROVIDER_ID,
+            Self::AacAdts => AAC_PROVIDER_ID,
         }
     }
 
@@ -56,6 +62,7 @@ impl AudioFileKind {
                         .and_then(|h| <[u8; 4]>::try_from(h).ok())
                         .is_some_and(|h| super::mp3::header_is_valid(&h))
             }
+            Self::AacAdts => AdtsHeader::parse(head).is_some(),
         }
     }
 }
@@ -75,6 +82,12 @@ impl AudioFileProvider {
     pub const fn ogg() -> Self {
         Self {
             kind: AudioFileKind::Ogg,
+        }
+    }
+
+    pub const fn aac_adts() -> Self {
+        Self {
+            kind: AudioFileKind::AacAdts,
         }
     }
 
@@ -192,6 +205,16 @@ pub(crate) fn open_stream<'a>(
                 flac: None,
             })
         }
+        AudioFileKind::AacAdts => {
+            let info = probe_adts(src, len, limits, cancel)?;
+            Ok(Opened {
+                shape: info.shape,
+                decoder_id: AAC_DECODER_ID,
+                decoder_version: AAC_DECODER_VERSION,
+                source: Box::new(AdtsStream::open(src, &info)?),
+                flac: None,
+            })
+        }
     }
 }
 
@@ -222,6 +245,11 @@ impl MediaProvider for AudioFileProvider {
                 id: MP3_PROVIDER_ID,
                 container: "mpeg-audio",
                 ..mp3_descriptor()
+            },
+            AudioFileKind::AacAdts => CodecDescriptor {
+                id: AAC_PROVIDER_ID,
+                container: "adts",
+                ..aac_descriptor()
             },
         }
     }

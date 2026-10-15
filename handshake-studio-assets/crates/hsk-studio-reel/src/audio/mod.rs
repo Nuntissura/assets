@@ -11,6 +11,9 @@
 //! size, packet size) is checked against the bounds below before anything is allocated (V4-01/V4-02).
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod aac;
+mod aac_dsp;
+mod aac_lc;
 mod bits;
 pub(crate) mod engine;
 pub mod flac;
@@ -32,11 +35,13 @@ use crate::model::{
 };
 use hsk_studio_accord::CancellationToken;
 
+pub use aac::{AAC_DECODER_ID, AAC_DECODER_VERSION};
 pub use mp3::{MP3_DECODER_ID, MP3_DECODER_VERSION, OUTPUT_BOUND as MP3_OUTPUT_BOUND};
 pub use ogg_audio::OggCodec;
 pub use opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION};
 pub use provider::{
-    AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID, MP3_PROVIDER_ID, OGG_PROVIDER_ID,
+    AAC_PROVIDER_ID, AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID, MP3_PROVIDER_ID,
+    OGG_PROVIDER_ID,
 };
 pub use vorbis::{VORBIS_DECODER_ID, VORBIS_DECODER_VERSION};
 
@@ -127,6 +132,25 @@ pub fn mp3_descriptor() -> CodecDescriptor {
     }
 }
 
+/// Descriptor of the AAC-LC adapter (Studio-owned decoder, channel configurations 1-7).
+pub fn aac_descriptor() -> CodecDescriptor {
+    CodecDescriptor {
+        id: "aac-lc",
+        name: "AAC-LC (ISO/IEC 14496-3 decoder, channel configurations 1-7)",
+        kind: MediaKind::Audio,
+        container: "adts|isobmff|matroska",
+        bit_depths: &[32],
+        chroma: None,
+        transfer: None,
+        decoder_id: AAC_DECODER_ID,
+        decoder_version: AAC_DECODER_VERSION,
+        licence: STUDIO_OWNED_LICENCE,
+        certification: Certification::NotCertified,
+        can_decode: true,
+        can_encode: false,
+    }
+}
+
 /// The audio codec adapters of this build, in a stable order (STU-VID-051 item 2).
 pub fn audio_codec_descriptors() -> Vec<CodecDescriptor> {
     vec![
@@ -134,6 +158,7 @@ pub fn audio_codec_descriptors() -> Vec<CodecDescriptor> {
         vorbis_descriptor(),
         opus_descriptor(),
         mp3_descriptor(),
+        aac_descriptor(),
     ]
 }
 

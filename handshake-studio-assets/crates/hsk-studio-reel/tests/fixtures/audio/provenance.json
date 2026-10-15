@@ -93,6 +93,37 @@
         }
       },
       "tables": "src/audio/mp3_tables.rs is generated from minimp3.h (github.com/lieff/minimp3, CC0-1.0, sha256 57e437c5c1f0e8b243885d3929c8973b5e6c778451e0100ab4251d19915cb3ad) by gen_mp3_tables.py (this directory)"
+    },
+    "aac": {
+      "generator_script": "generate-aac.sh (run once offline under the artifact root on D:)",
+      "reference": "raw s16le of libavcodec native AAC decode (cross-checked against libavcodec aac_fixed: within 1 LSB on every 1024-sample block of the stereo and mono files), zlib level 9 as FILE.ref-s16.zz; PNS disabled because noise substitution is random by definition",
+      "files": {
+        "aac-lc-44k1-2ch.aac": {
+          "bytes": 5047,
+          "sha256": "f91c42036d0f76d02a6e2dd1d354d36ac77407fd40cc062b470625acd729516e",
+          "content": "AAC-LC stereo 440/1250 Hz, 44100 Hz, 0.3 s, ffmpeg aac encoder 128 kb/s, -aac_pns 0 (M/S and intensity stereo on), ADTS",
+          "ref": "aac-lc-44k1-2ch.aac.ref-s16.zz",
+          "ref_s16le_bytes": 57344,
+          "ref_s16le_sha256": "b838da77cf14b9ed90d8eb11fdc9754dcf7804aa0c8301a09a3e3caeb0c8f792"
+        },
+        "aac-lc-48k-1ch.aac": {
+          "bytes": 2863,
+          "sha256": "9bdc62f4ab4c9b1e727d33d6fa2201380880643f3bd8c464b2c03740e7a1bc38",
+          "content": "AAC-LC mono 600 Hz + click train, 48000 Hz, 0.3 s, 64 kb/s, -aac_pns 0, ADTS",
+          "ref": "aac-lc-48k-1ch.aac.ref-s16.zz",
+          "ref_s16le_bytes": 32768,
+          "ref_s16le_sha256": "0329a7083525f9c3ddc19bfc8d6578c18a942d6268d7ffb0e3abf014b29be1ea"
+        },
+        "aac-lc-48k-6ch.aac": {
+          "bytes": 4066,
+          "sha256": "4abddb9c9dc938b11332822c7553ba02482c544987c5f9bd5cf722f893be01fd",
+          "content": "AAC-LC 5.1 (300/500/700/60/900/1100 Hz), 48000 Hz, 0.1 s, 256 kb/s, -aac_pns 0, ADTS channel configuration 6",
+          "ref": "aac-lc-48k-6ch.aac.ref-s16.zz",
+          "ref_s16le_bytes": 73728,
+          "ref_s16le_sha256": "5f6532c5deeef0d7833163ef6b8ebd99ba9055426b4a27f7edff4d72c368881e"
+        }
+      },
+      "tables": "src/audio/aac_tables.rs is generated from soundkit-aac-lc 0.12.3 (MIT) by gen_aac_tables.py (this directory)"
     }
   }
 }
