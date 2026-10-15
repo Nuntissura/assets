@@ -62,7 +62,8 @@ fn develop_edit_saves_and_reopens_through_the_develop_entry() {
     step!("kelvin", v.develop_op(DevelopOp::Kelvin { kelvin: 4300.0, tint: 12.0 }));
     step!("kelvin slider", v.set_develop("develop.wb_kelvin", 6100.0));
     step!("grading", v.set_develop_many(&[("develop.grading.shadows.hue", 220.0), ("develop.grading.shadows.saturation", 40.0), ("develop.grading.balance", -20.0)]));
-    step!("point colour", v.develop_op(DevelopOp::AddPointColour { source: [0.30, 0.25, 0.20] }));
+    // A new point colour / range-masked correction is identity until a value moves (develop's own result).
+    ok(v.develop_op(DevelopOp::AddPointColour { source: [0.30, 0.25, 0.20] }));
     step!("point shift", v.set_develop_many(&[("develop.point.0.hue_shift", 40.0), ("develop.point.0.saturation", 30.0)]));
     step!("detail", v.set_develop_many(&[("develop.sharpen_amount", 60.0), ("develop.sharpen_radius", 1.5), ("develop.texture", 25.0)]));
     ok(v.develop_op(DevelopOp::AddLuminanceRange { lo: 0.05, hi: 1.0, feather: 0.2 }));
