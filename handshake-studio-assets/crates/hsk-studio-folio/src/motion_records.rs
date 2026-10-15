@@ -617,6 +617,27 @@ pub struct StudioRenderQueueItem {
     pub output_modules: Vec<StudioOutputModule>,
 }
 
+/// Per-composition motion settings (lane SMB-AE-MOTION-RECORDS-2; STU-MOT-004 shutter rows,
+/// STU-MOT-005 per-layer `motion_blur` opt-in gated by the composition's master switch).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCompositionMotionSettings {
+    pub composition_id: String,
+    /// Master motion-blur switch of the composition.
+    pub motion_blur: bool,
+    /// Degrees `0..=720` (STU-MOT-004 default 180).
+    pub shutter_angle: f64,
+    /// Degrees `-360..=360` (default 0).
+    pub shutter_phase: f64,
+    /// `2..=64` (default 16).
+    pub samples_per_frame: u32,
+    /// `2..=256` (default 128); stored, adaptive sampling is not built.
+    pub adaptive_sample_limit: u32,
+    /// Layers whose `motion_blur` switch is on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub motion_blur_layers: Vec<String>,
+}
+
 /// The motion records of one document (module docs).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -631,6 +652,9 @@ pub struct StudioMotionRecords {
     pub composition_audio: Vec<StudioCompositionAudio>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub render_queue: Vec<StudioRenderQueueItem>,
+    /// Shutter and motion-blur switches per composition (absent = STU-MOT-004 defaults, blur off).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composition_settings: Vec<StudioCompositionMotionSettings>,
 }
 
 impl StudioMotionRecords {
@@ -643,7 +667,11 @@ impl StudioMotionRecords {
             text_animators: Vec::new(),
             composition_audio: Vec::new(),
             render_queue: Vec::new(),
+            composition_settings: Vec::new(),
         }
+    }
+    pub fn composition_settings(&self, composition_id: &str) -> Option<&StudioCompositionMotionSettings> {
+        self.composition_settings.iter().find(|s| s.composition_id == composition_id)
     }
     pub fn shape_layer(&self, layer_id: &str) -> Option<&StudioShapeLayer> {
         self.shape_layers.iter().find(|s| s.layer_id == layer_id)
@@ -932,6 +960,32 @@ pub fn validate_motion_records(
         for l in &a.layers {
             check(key(&l.audio_id), t, "layers/audio_id")?;
             check(l.start_tick <= i64::MAX as u64 && num(l.gain) && l.gain >= 0.0, t, "layers")?;
+        }
+    }
+    let mut settings_seen = BTreeSet::new();
+    cx.nodes(r.composition_settings.len(), "composition_settings")?;
+    for s in &r.composition_settings {
+        let t = s.composition_id.as_str();
+        let Some(comp) = compositions.composition(t) else {
+            return Err(err(Code::DanglingReference, t));
+        };
+        if !settings_seen.insert(t) {
+            return Err(err(Code::DuplicateIdentity, t));
+        }
+        check(
+            (0.0..=720.0).contains(&s.shutter_angle)
+                && (-360.0..=360.0).contains(&s.shutter_phase)
+                && (2..=64).contains(&s.samples_per_frame)
+                && (2..=256).contains(&s.adaptive_sample_limit),
+            t,
+            "shutter",
+        )?;
+        check(s.motion_blur_layers.len() <= MAX_SHAPE_ITEMS.saturating_mul(4), t, "motion_blur_layers")?;
+        cx.nodes(s.motion_blur_layers.len(), t)?;
+        for l in &s.motion_blur_layers {
+            if comp.layer(l).is_none() {
+                return Err(err(Code::DanglingReference, format!("{t}/motion_blur_layers")));
+            }
         }
     }
     if r.render_queue.len() > MAX_QUEUE_ITEMS {

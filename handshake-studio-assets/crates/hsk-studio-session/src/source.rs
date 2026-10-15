@@ -141,7 +141,9 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// harness develop panel (`develop`, lane SMB-HARNESS-DEVELOP-2; interim persistence approved by
 /// the lead 2026-10-15) and the vector path records of the harness vector tools (`vector`, lane
 /// SMB-ILLUSTRATOR-PEN-2, approved by the lead 2026-10-15). The bytes belong to their producer.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector"];
+/// `composition` and `motion` (lane SMB-AE-MOTION-RECORDS-2, lead-directed 2026-10-15) carry the
+/// Folio composition and motion records (`crate::motion`).
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

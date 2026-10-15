@@ -34,6 +34,10 @@ use hsk_studio_nib::{FillRule, OwnedPath, PathElement, PathPoint};
 use hsk_studio_pigment::render_plan::ColourTag;
 use hsk_studio_type::{GlyphOutline, OutlineCommand, glyph_outlines};
 
+/// Motion's text-animator model (animators, selectors, `evaluate_text_animators`) for callers that
+/// place glyphs without their own motion dependency.
+pub use hsk_studio_motion as motion;
+
 /// Most glyphs of one animated text layer.
 pub const MAX_ANIMATED_GLYPHS: usize = 1 << 16;
 /// Largest absolute pixel coordinate a moved glyph may reach.

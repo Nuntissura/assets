@@ -36,8 +36,8 @@ impl ScenePixels for NoPixels {
 /// The red square shape layer moves to x = 4 * frame, y = 8.
 struct Moving(NoPixels);
 impl CompositionScenes for Moving {
-    fn scene_at(&mut self, tick: u64, cancel: &CancellationToken) -> Result<SceneComposition, String> {
-        let frame = tick / F;
+    fn scene_at(&mut self, tick: i64, cancel: &CancellationToken) -> Result<SceneComposition, String> {
+        let frame = tick as u64 / F;
         let root = ShapeGroup {
             items: vec![
                 ShapeItem::Rect { position: [8.0, 8.0], size: [16.0, 16.0], roundness: 0.0, reversed: false },

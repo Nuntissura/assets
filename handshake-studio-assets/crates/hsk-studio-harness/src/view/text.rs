@@ -327,6 +327,42 @@ fn style_of<'a>(styles: &'a StudioTypeStyleRecords, id: &str) -> Result<&'a foli
 /// Shapes and rasterises every text layer of `doc` that the entry describes (layers without a
 /// record are left to composite, which refuses them `text_layer_not_prepared`).
 pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], cancel: &CancellationToken) -> Result<PreparedText, String> {
+    shape_layers(doc, entry, fonts, cancel, |inputs, resolution| {
+        prepare_text(inputs, resolution, cancel).map_err(|e| format!("text_prepare: {e:?}"))
+    })
+}
+
+/// Text-animator glyphs of every text layer the entry describes (lane SMB-AE-MOTION-RECORDS-2;
+/// STU-MOT-090/094): the SAME shaping as [`prepare`] (Type's `TextEngine`, the entry's styles and
+/// fonts, one run per paragraph at the record's origin), then composite's `glyphs_from_runs` places
+/// each shaped glyph's Type outline at its pen position; the layer fill comes from the character
+/// style. Keyed by layer id, ready for `CompositionTemporalSource::with_motion_records`.
+#[cfg(feature = "media")]
+#[allow(clippy::type_complexity)]
+pub fn animated_glyphs(
+    doc: &StudioDocument,
+    entry: &TextEntry,
+    fonts: &[FontFile],
+    cancel: &CancellationToken,
+) -> Result<std::collections::BTreeMap<String, (Vec<hsk_studio_composite::text::animate::AnimatedGlyph>, [f32; 4])>, String> {
+    shape_layers(doc, entry, fonts, cancel, |inputs, resolution| {
+        let mut out = std::collections::BTreeMap::new();
+        for input in inputs {
+            let glyphs = hsk_studio_composite::text::animate::glyphs_from_runs(input.runs, resolution, cancel)
+                .map_err(|e| format!("text_animator_glyphs {}: {e:?}", input.layer_id))?;
+            out.insert(input.layer_id.to_owned(), (glyphs, input.fill_rgba));
+        }
+        Ok(out)
+    })
+}
+
+fn shape_layers<R>(
+    doc: &StudioDocument,
+    entry: &TextEntry,
+    fonts: &[FontFile],
+    cancel: &CancellationToken,
+    finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>,
+) -> Result<R, String> {
     let mut draws = Vec::new();
     for layer in &doc.layers {
         let Payload::Text { story_id } = &layer.payload else { continue };
@@ -444,7 +480,7 @@ pub fn prepare(doc: &StudioDocument, entry: &TextEntry, fonts: &[FontFile], canc
         runs_per_layer.push(runs);
     }
     let inputs: Vec<TextLayerInput<'_>> = draws.iter().zip(&runs_per_layer).map(|(d, runs)| TextLayerInput { layer_id: d.layer_id, runs, fill_rgba: d.fill }).collect();
-    let prepared = prepare_text(&inputs, &resolution, cancel).map_err(|e| format!("text_prepare: {e:?}"))?;
+    let prepared = finish(&inputs, &resolution)?;
     drop(inputs);
     drop(runs_per_layer);
     drop(shaped);

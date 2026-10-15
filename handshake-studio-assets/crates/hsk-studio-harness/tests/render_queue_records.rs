@@ -246,8 +246,8 @@ fn unsupported_render_settings_are_refused_before_rendering() {
     assert_eq!(code(&|v| v["render_queue"][0]["settings"]["field_render"] = json!("upper_field_first")), Some("render_fields"));
     assert_eq!(code(&|v| v["render_queue"][0]["settings"]["time_span"] = json!("work_area_only")), Some("render_work_area_unavailable"));
     assert_eq!(code(&|v| v["render_queue"][0]["settings"]["frame_rate"] = json!({"numerator":30,"denominator":1})), Some("render_frame_rate_conversion"));
-    assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][0]["channels"] = json!("rgb_alpha")), Some("output_alpha"));
+    assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][0]["channels"] = json!("rgb_alpha")), Some("output_alpha_codec"));
     assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][1]["colour"]["output_color_space"] = json!("rec2020")), Some("output_color_space"));
-    assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][0]["resize"] = json!({"width":32,"height":16,"lock_aspect":true})), Some("output_resize"));
+    assert_eq!(code(&|v| v["render_queue"][0]["output_modules"][0]["crop"] = json!({"top":0,"left":40,"bottom":0,"right":24})), Some("output_crop"));
     assert_eq!(code(&|v| v["composition_audio"][0]["layers"][0]["audio_id"] = json!("missing")), Some("output_audio_unavailable"));
 }
