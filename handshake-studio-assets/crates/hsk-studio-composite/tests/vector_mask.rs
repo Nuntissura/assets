@@ -269,7 +269,9 @@ fn vector_alpha_and_luminance_masks_lower_to_the_expected_planes() {
         let un = |code: &str| StepStatus::Unavailable(code.into());
         for (pairs, layer_n, code) in [
             (attach(&[(2, "nope")]), 2, "vector_mask_unresolved"),
-            (attach(&[(2, "m-raster")]), 2, "vector_mask_source_kind"),
+            (attach(&[(3, "m-raster")]), 3, "vector_mask_source_kind"),
+            // A layer masked by its own content: the source carries a mask (itself).
+            (attach(&[(2, "m-raster")]), 2, "vector_mask_source_nested"),
             (attach(&[(2, "m-pt")]), 2, "vector_mask_region"),
             (attach(&[(3, "m-alpha"), (6, "m-vec")]), 3, "vector_mask_source_nested"),
         ] {
