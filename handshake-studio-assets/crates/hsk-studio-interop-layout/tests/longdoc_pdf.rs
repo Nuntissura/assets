@@ -3,8 +3,10 @@
 //! page) and by an independent scan of the decoded content streams (glyph ids and positions).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::*;
+mod common;
 use hsk_studio_interop_layout::layout::{
-    Composer, FlowPosition, LayoutGlyph, ShapedParagraph, SourceSpan, SpaceParams, TableLimits, TableRequest, TypesetOptions, layout_table,
+    Composer, FlowPosition, LayoutGlyph, ReflowRequest, ShapedParagraph, SourceSpan, SpaceParams, TableLimits, TableRequest, TocLimits, TocSource,
+    TypesetOptions, generate_toc, layout_table, number_pages, reflow_typeset,
 };
 use hsk_studio_interop_layout::press::{Colour, ExportOptions, Limits, render_page};
 use hsk_studio_interop_layout::*;
@@ -405,4 +407,157 @@ fn placed_graphics_fit_and_clip_to_frame_shapes() {
     bad[0].transform[0] = f64::NAN;
     let err = export_pdf_with(&input(&snapshot, &[], &[], &picture), &PdfLongDoc { graphics: &bad, ..PdfLongDoc::default() }, &cancel).unwrap_err();
     assert_eq!(err.to_string(), "invalid_input: graphic_placement");
+}
+
+/// Three single-page spreads b1..b3 (300 x 300). Text layers: 11..13 thread story 5 through one
+/// 200 x 30 frame per page (one 24 pt line each); 14 holds story 9 (the TOC) on b1 at y 100.
+fn book() -> StudioDocument {
+    let page_spread = |n: u32| StudioPageSpread {
+        schema_id: PageSpreadSchema::V1,
+        page_spread_id: id("SPGS", n),
+        name: format!("spread {n}"),
+        parent: Parent::Root(()),
+        bounds: Bounds { x: len(0.0), y: len(0.0), width: len(300.0), height: len(300.0) },
+        pages: vec![StudioPage { page_id: format!("b{n}"), width: len(300.0), height: len(300.0), side: PageSide::SingleSided, margins: edges(10.0), bleed: None }],
+    };
+    let text_layer = |n: u32, spread: u32, story: u32, y: f64, h: f64, prev: Option<u32>, next: Option<u32>| StudioLayer {
+        schema_id: LayerSchema::V1,
+        layer_id: id("SLYR", n),
+        name: format!("frame {n}"),
+        parent: Parent::Node(NodeRef { node_kind: NodeKind::PageSpread, node_id: id("SPGS", spread) }),
+        kind: "text".into(),
+        payload: Payload::Text { story_id: id("STXT", story) },
+        visible: true,
+        appearance: None,
+        text_frame: Some(StudioTextFrame {
+            page_id: format!("b{spread}"),
+            bounds: Bounds { x: len(20.0), y: len(y), width: len(200.0), height: len(h) },
+            inset_spacing: edges(0.0),
+            text_column_count: 1,
+            text_column_gutter: len(0.0),
+            first_baseline_offset: FirstBaseline::Fixed,
+            minimum_first_baseline_offset: len(16.0),
+            vertical_justification: VerticalJustification::Top,
+            auto_sizing_type: AutoSizing::Off,
+            previous_text_frame: prev.map(|p| id("SLYR", p)),
+            next_text_frame: next.map(|q| id("SLYR", q)),
+        }),
+    };
+    let mut doc = document(vec![]);
+    doc.page_spreads = vec![page_spread(1), page_spread(2), page_spread(3)];
+    doc.layers = vec![
+        text_layer(11, 1, 5, 10.0, 30.0, None, Some(12)),
+        text_layer(12, 2, 5, 10.0, 30.0, Some(11), Some(13)),
+        text_layer(13, 3, 5, 10.0, 30.0, Some(12), None),
+        text_layer(14, 1, 9, 100.0, 150.0, None, None),
+    ];
+    doc
+}
+fn stys(n: u32) -> String {
+    id("STYS", n)
+}
+/// Story `n` of `text` with paragraphs at `paras` (style refs) and its Type shaping (Inter 20 pt,
+/// line height 24, ascent 16): each paragraph's visible text is shaped on its own and its clusters
+/// moved to the paragraph start.
+fn shaped_story(n: u32, text: &str, paras: &[(u64, u64, Option<String>)], files: &[common::text_shaping::FontFile], fonts: &[PdfFont<'_>]) -> (StudioTextStory, Vec<ShapedParagraph>, Vec<Vec<PdfGlyph>>) {
+    let mut st = story(n, text);
+    st.paragraphs = paras.iter().map(|(start, end, s)| StoryParagraph { start: *start, end: *end, style_ref: s.clone(), paragraph_direction: None }).collect();
+    let mut shaped = Vec::new();
+    let mut glyphs = Vec::new();
+    for (start, end, _) in paras {
+        let visible = text[*start as usize..*end as usize].trim_end_matches('\n');
+        let segs = [common::text_shaping::Seg { start: 0, end: visible.len() as u64, font: 0, script: *b"Latn", language: "en", axes: vec![] }];
+        let (mut p, g) = common::text_shaping::shape(files, visible, &segs, false, SIZE, |prepared| {
+            let p = &prepared.paragraphs()[0];
+            (ShapedParagraph::from_type(p, 24.0, 16.0), pdf_glyphs_from_type(p, fonts).unwrap())
+        });
+        for lg in &mut p.glyphs {
+            lg.cluster = SourceSpan { start: lg.cluster.start + start, end: lg.cluster.end + start };
+        }
+        p.source = SourceSpan { start: *start, end: *end };
+        shaped.push(p);
+        glyphs.push(g);
+    }
+    (st, shaped, glyphs)
+}
+
+/// Slice 3: sections number b1 "i" (lower roman), b2 "S5" (arabic from 5, prefix S), b3 "S6"; the
+/// body story puts Alpha (H1) on b1, Beta (H2) on b2, Gamma (H1) on b3. The TOC generated from H1
+/// (level 1) and H2 (level 2) reads "Contents / Alpha i / Beta S5 / Gamma S6", is composed into
+/// frame 14 and exported: its four lines (PDF baselines 300 - 116, -140, -164, -188) draw exactly
+/// the Type glyph ids of those paragraphs, in order, and leave ink in the frame.
+#[test]
+fn sections_and_toc_export_page_labels() {
+    let cancel = CancellationToken::default();
+    let snapshot = validate_document(book(), Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Alpha\nBeta\nGamma";
+    let (body_story, body_paras, body_glyphs) = shaped_story(5, body, &[(0, 6, Some(stys(1))), (6, 11, Some(stys(2))), (11, 16, Some(stys(1)))], &files, &fonts);
+    let reflow = |story: &StudioTextStory, paragraphs: &[ShapedParagraph]| {
+        reflow_typeset(
+            &ReflowRequest {
+                document: doc,
+                story,
+                resolved_text: None,
+                paragraphs,
+                obstacles: &[],
+                composer: Composer::FirstFit,
+                space: SpaceParams::default(),
+                expected_revision: doc.revision,
+                limits: hsk_studio_interop_layout::layout::Limits::default(),
+            },
+            &TypesetOptions::default(),
+            &cancel,
+        )
+        .unwrap()
+    };
+    let body_place = reflow(&body_story, &body_paras);
+    assert_eq!(body_place.frames.iter().map(|f| f.lines.len()).collect::<Vec<_>>(), [1, 1, 1]);
+    let mut b = StudioSection {
+        section_id: "b".into(),
+        name: "Body".into(),
+        page_start: "b2".into(),
+        continue_numbering: false,
+        page_number_start: Some(5),
+        page_number_style: StudioNumberStyle::Arabic,
+        include_section_prefix: true,
+        section_prefix: Some("S".into()),
+        marker: None,
+    };
+    let a = StudioSection { section_id: "a".into(), name: "Front".into(), page_start: "b1".into(), continue_numbering: true, page_number_start: None, page_number_style: StudioNumberStyle::LowerRoman, include_section_prefix: false, section_prefix: None, marker: None };
+    let pages = number_pages(doc, &[a.clone(), b.clone()]).unwrap();
+    assert_eq!(pages.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["i", "S5", "S6"]);
+    let entry = |s: u32, level: u32| StudioTocEntry { paragraph_style: stys(s), format_style: None, level, page_number_position: TocPageNumberPosition::After, separator: " ".into(), sort_alphabet: false };
+    let toc = StudioTocStyle { toc_id: "toc".into(), name: "Contents".into(), title: "Contents".into(), title_style: None, include_overset: false, entries: vec![entry(1, 1), entry(2, 2)] };
+    let generated = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
+    assert_eq!(generated.text, "Contents\nAlpha i\nBeta S5\nGamma S6");
+    let ranges: Vec<(u64, u64, Option<String>)> = generated.paragraphs.iter().map(|p| (p.start, p.end, None)).collect();
+    let (toc_story, toc_paras, toc_glyphs) = shaped_story(9, &generated.text, &ranges, &files, &fonts);
+    let toc_place = reflow(&toc_story, &toc_paras);
+    assert_eq!(toc_place.frames[0].lines.len(), 4);
+    let stories = [
+        PdfStory { story: &body_story, text: body, placement: &body_place, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &toc_story, text: &generated.text, placement: &toc_place, paragraphs: &toc_paras, glyphs: &toc_glyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let out = export_pdf_with(&input(&snapshot, &stories, &fonts, &NoAssets), &PdfLongDoc::default(), &cancel).unwrap();
+    assert_eq!(out.pages, ["b1", "b2", "b3"]);
+    let toc_lines: Vec<(u16, f64)> = shown(&out.bytes).into_iter().filter(|g| g.2 <= 184.0 + 1e-9).map(|g| (g.0, g.2)).collect();
+    let expected: Vec<u16> = toc_glyphs.iter().flatten().map(|g| g.glyph_id).collect();
+    assert_eq!(toc_lines.iter().map(|g| g.0).collect::<Vec<_>>(), expected);
+    let mut ys: Vec<f64> = toc_lines.iter().map(|g| g.1).collect();
+    ys.dedup();
+    assert_eq!(ys, [184.0, 160.0, 136.0, 112.0]);
+    let page = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();
+    let ink = (100..250).flat_map(|y| (20..220).map(move |x| (x, y))).filter(|(x, y)| page.pixel(*x, *y) != Some([255, 255, 255])).count();
+    assert!(ink > 200, "TOC ink {ink}");
+    // The same TOC with a continuing second section: b2 ii, b3 iii.
+    b.continue_numbering = true;
+    b.page_number_start = None;
+    b.page_number_style = StudioNumberStyle::LowerRoman;
+    b.include_section_prefix = false;
+    let pages = number_pages(doc, &[a, b]).unwrap();
+    let again = generate_toc(doc, &toc, &[TocSource { story: &body_story, text: body, placement: Some(&body_place) }], &pages, &id("STXT", 9), TocLimits::default(), &cancel).unwrap();
+    assert_eq!(again.text, "Contents\nAlpha i\nBeta ii\nGamma iii");
 }

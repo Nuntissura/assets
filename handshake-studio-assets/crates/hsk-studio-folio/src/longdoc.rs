@@ -24,6 +24,21 @@
 //! comps, PDF crop boxes, page selection), the linked-resource record (STU-LAY-030/132) and
 //! non-raster content.
 //!
+//! Sections (STU-LAY-014, STU-LAY-108): a section starts on a page and numbers the pages up to the
+//! next section start (document page order). `continue_numbering` and `page_number_start` are
+//! order-dependent and mutually exclusive (the start is refused while numbering continues); the
+//! prefix is at most FIVE characters without `,` or `+`, unique across sections, and is included
+//! in page labels only when `include_section_prefix`. Two sections never start on the same page and
+//! the first document page always starts a section once any section exists (the default section
+//! cannot be deleted). `StudioNumberStyle` is ONE numbering enumeration (the union the spec
+//! requires) with per-consumer legality (`legal_for_pages`, `legal_for_footnotes`).
+//!
+//! Tables of contents (STU-LAY-044, STU-LAY-148): style-driven TOC styles with a title, a title
+//! style, the include-overset flag and ordered entries mapping a source paragraph style to a level,
+//! a format style, a page-number position and a separator; at least one entry, a paragraph style
+//! mapped at most once. Multiple TOC styles per document are carried. Declared gaps: run-in,
+//! bookmarks, anchors, book documents, hidden-layer text, numbered-paragraph modes.
+//!
 //! Hostile wire JSON: integer arithmetic is denied (workflow V4-01); grids are checked by
 //! `checked_mul` against `MAX_TABLE_CELLS` before any occupancy grid is allocated, and spans by
 //! `checked_add` against the grid edge (span overflow is refused, never clamped).
@@ -347,6 +362,244 @@ pub struct StudioGraphicFrame {
     pub crop: Option<LayoutEdges>,
 }
 
+/// ONE numbering-style enumeration, the union of the captured page-number (14 members), list,
+/// footnote and text-variable enumerations (STU-LAY-108, STU-LAY-150); legality is per consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioNumberStyle {
+    UpperRoman,
+    LowerRoman,
+    UpperLetters,
+    LowerLetters,
+    Arabic,
+    Kanji,
+    ArabicAlifBaTah,
+    ArabicAbjad,
+    HebrewBiblical,
+    HebrewNonStandard,
+    SingleLeadingZeros,
+    DoubleLeadingZeros,
+    TripleLeadingZeros,
+    FullWidthArabic,
+    KatakanaModern,
+    KatakanaTraditional,
+    FormatNone,
+    Symbols,
+    Asterisks,
+    Current,
+}
+impl StudioNumberStyle {
+    /// The fourteen page-number members (STU-LAY-108).
+    pub fn legal_for_pages(self) -> bool {
+        !matches!(
+            self,
+            Self::KatakanaModern
+                | Self::KatakanaTraditional
+                | Self::FormatNone
+                | Self::Symbols
+                | Self::Asterisks
+                | Self::Current
+        )
+    }
+    /// The fifteen footnote members (STU-LAY-150).
+    pub fn legal_for_footnotes(self) -> bool {
+        !matches!(
+            self,
+            Self::TripleLeadingZeros
+                | Self::KatakanaModern
+                | Self::KatakanaTraditional
+                | Self::FormatNone
+                | Self::Current
+        )
+    }
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn yes() -> bool {
+    true
+}
+
+/// One section (STU-LAY-108).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioSection {
+    /// Document-local key, unique in the set.
+    pub section_id: String,
+    /// Non-empty.
+    pub name: String,
+    /// Page key of the section's first page.
+    pub page_start: String,
+    /// Absent = true (numbering continues from the previous section).
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub continue_numbering: bool,
+    /// 1..=999999; only with `continue_numbering` false (absent there = 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_number_start: Option<u32>,
+    pub page_number_style: StudioNumberStyle,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_section_prefix: bool,
+    /// At most five characters, no `,` or `+`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_prefix: Option<String>,
+    /// Section marker text (resolved by a section-marker variable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+}
+
+/// STU-LAY-148 page-number position of a TOC entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TocPageNumberPosition {
+    #[default]
+    After,
+    Before,
+    None,
+}
+impl TocPageNumberPosition {
+    fn is_after(&self) -> bool {
+        *self == Self::After
+    }
+}
+
+/// One TOC entry (STU-LAY-148): the source paragraph style it maps and how the entry is written.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioTocEntry {
+    /// `STYS` source paragraph style.
+    pub paragraph_style: String,
+    /// `STYS` style of the generated entry paragraph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_style: Option<String>,
+    /// Indent level, 1..=MAX_TOC_LEVEL.
+    pub level: u32,
+    #[serde(default, skip_serializing_if = "TocPageNumberPosition::is_after")]
+    pub page_number_position: TocPageNumberPosition,
+    /// Between entry text and page number, at most 100 characters.
+    pub separator: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sort_alphabet: bool,
+}
+
+/// One TOC style (STU-LAY-148).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioTocStyle {
+    /// Document-local key, unique in the set.
+    pub toc_id: String,
+    pub name: String,
+    /// Generated heading text; empty = no title paragraph.
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_style: Option<String>,
+    /// STU-LAY-148 include-overset flag of the generate command.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_overset: bool,
+    pub entries: Vec<StudioTocEntry>,
+}
+
+/// Deepest TOC level.
+pub const MAX_TOC_LEVEL: u32 = 9;
+/// Entries of one TOC style.
+pub const MAX_TOC_ENTRIES: usize = 256;
+/// Sections per record set.
+pub const MAX_SECTIONS: usize = 9999;
+
+/// The section rules of STU-LAY-108 against `d` (module docs); the stable code of the first
+/// violation. Shared by the Folio validator and layout numbering.
+pub fn check_sections(sections: &[StudioSection], d: &StudioDocument) -> std::result::Result<(), &'static str> {
+    if sections.len() > MAX_SECTIONS {
+        return Err("too_many_sections");
+    }
+    let mut prefixes = BTreeSet::new();
+    let mut starts = BTreeSet::new();
+    let mut keys = BTreeSet::new();
+    for sec in sections {
+        if !label(&sec.section_id) {
+            return Err("section_id");
+        }
+        if !keys.insert(sec.section_id.as_str()) {
+            return Err("section_duplicate");
+        }
+        if sec.name.trim().is_empty() || !label(&sec.name) {
+            return Err("section_name_empty");
+        }
+        if d.locate_page(&sec.page_start).is_none() {
+            return Err("section_page_missing");
+        }
+        if !starts.insert(sec.page_start.as_str()) {
+            return Err("sections_share_start_page");
+        }
+        if !sec.page_number_style.legal_for_pages() {
+            return Err("number_style_not_legal_for_pages");
+        }
+        match (sec.continue_numbering, sec.page_number_start) {
+            (true, Some(_)) => return Err("page_number_start_while_continuing"),
+            (false, Some(n)) if !(1..=999_999).contains(&n) => return Err("page_number_start_range"),
+            _ => {}
+        }
+        if let Some(p) = &sec.section_prefix {
+            if p.chars().count() > 5 {
+                return Err("section_prefix_too_long");
+            }
+            if p.contains(',') || p.contains('+') || p.chars().any(char::is_control) {
+                return Err("section_prefix_character");
+            }
+            if !p.is_empty() && !prefixes.insert(p.as_str()) {
+                return Err("section_prefix_duplicate");
+            }
+        }
+        if sec.marker.as_deref().is_some_and(|m| m.len() > 1024 || m.chars().any(char::is_control)) {
+            return Err("section_marker");
+        }
+    }
+    if !sections.is_empty() {
+        let first = d.page_spreads.iter().flat_map(|s| s.pages.first()).next();
+        if first.is_some_and(|p| !starts.contains(p.page_id.as_str())) {
+            return Err("first_page_without_section");
+        }
+    }
+    Ok(())
+}
+
+/// The TOC-style rules of STU-LAY-148: at least one entry, a paragraph style mapped once, levels
+/// 1..=MAX_TOC_LEVEL, separators of at most 100 characters, `STYS` references.
+pub fn check_toc_style(t: &StudioTocStyle) -> std::result::Result<(), &'static str> {
+    if !label(&t.toc_id) {
+        return Err("toc_id");
+    }
+    if t.entries.is_empty() {
+        return Err("toc_no_entries");
+    }
+    if t.entries.len() > MAX_TOC_ENTRIES {
+        return Err("toc_too_many_entries");
+    }
+    if t.title.len() > 1024 || t.title.chars().any(char::is_control) {
+        return Err("toc_title");
+    }
+    let style = |s: &str| id(s, "STYS", "toc").is_ok();
+    if t.title_style.as_deref().is_some_and(|s| !style(s)) {
+        return Err("toc_style_ref");
+    }
+    let mut mapped = BTreeSet::new();
+    for e in &t.entries {
+        if !style(&e.paragraph_style) || e.format_style.as_deref().is_some_and(|s| !style(s)) {
+            return Err("toc_style_ref");
+        }
+        if !mapped.insert(e.paragraph_style.as_str()) {
+            return Err("toc_style_mapped_twice");
+        }
+        if !(1..=MAX_TOC_LEVEL).contains(&e.level) {
+            return Err("toc_level");
+        }
+        if e.separator.chars().count() > 100 || e.separator.contains('\n') {
+            return Err("toc_separator");
+        }
+    }
+    Ok(())
+}
+
 /// The long-document records of one document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -359,6 +612,10 @@ pub struct StudioLongDocRecords {
     pub tables: Vec<StudioTable>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graphic_frames: Vec<StudioGraphicFrame>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<StudioSection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toc_styles: Vec<StudioTocStyle>,
 }
 impl StudioLongDocRecords {
     /// An empty set for `document_id`.
@@ -368,6 +625,8 @@ impl StudioLongDocRecords {
             document_id: document_id.into(),
             tables: Vec::new(),
             graphic_frames: Vec::new(),
+            sections: Vec::new(),
+            toc_styles: Vec::new(),
         }
     }
     /// The graphic frame of this layer.
@@ -613,6 +872,37 @@ pub fn validate_longdoc_records(
             return Err(err(Code::DuplicateIdentity, &g.layer_id));
         }
         validate_graphic_frame(g, d, &mut cx)?;
+    }
+    cx.nodes(r.sections.len(), "sections")?;
+    for sec in &r.sections {
+        cx.text(&sec.name, "sections")?;
+    }
+    check_sections(&r.sections, d).map_err(|why| {
+        let code = match why {
+            "section_page_missing" => Code::DanglingReference,
+            "section_duplicate" | "sections_share_start_page" | "section_prefix_duplicate" => Code::DuplicateIdentity,
+            "too_many_sections" => Code::BudgetExceeded,
+            _ => Code::InvalidField,
+        };
+        err(code, format!("sections/{why}"))
+    })?;
+    cx.nodes(r.toc_styles.len(), "toc_styles")?;
+    let mut tocs = BTreeSet::new();
+    for t in &r.toc_styles {
+        cx.tick()?;
+        if !tocs.insert(t.toc_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, &t.toc_id));
+        }
+        cx.nodes(t.entries.len(), &t.toc_id)?;
+        check_toc_style(t).map_err(|why| {
+            let code = match why {
+                "toc_style_mapped_twice" => Code::DuplicateIdentity,
+                "toc_style_ref" => Code::InvalidId,
+                "toc_too_many_entries" => Code::BudgetExceeded,
+                _ => Code::InvalidField,
+            };
+            err(code, format!("{}/{why}", t.toc_id))
+        })?;
     }
     canceled(token)?;
     Ok(cx.issues)

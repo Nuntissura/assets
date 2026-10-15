@@ -182,3 +182,60 @@ fn longdoc_graphic_frames_round_trip_and_refusals() {
     assert_eq!(code_of(&graphics(vec![bad_path])).0, Code::InvalidId);
     assert_eq!(code_of(&graphics(vec![graphic(1), graphic(1)])).0, Code::DuplicateIdentity);
 }
+
+fn sec(id: &str, start: &str) -> Value {
+    json!({"section_id": id, "name": format!("Section {id}"), "page_start": start, "page_number_style": "arabic"})
+}
+fn toc_style() -> Value {
+    json!({"toc_id": "toc1", "name": "Contents", "title": "Contents", "title_style": identity("STYS", 9),
+        "entries": [
+            {"paragraph_style": identity("STYS", 1), "format_style": identity("STYS", 11), "level": 1, "separator": " "},
+            {"paragraph_style": identity("STYS", 2), "level": 2, "separator": "\t", "page_number_position": "before", "sort_alphabet": true}
+        ]})
+}
+fn numbering(sections: Vec<Value>, tocs: Vec<Value>) -> Value {
+    json!({"schema_id": "hsk.studio.longdoc_records@1", "document_id": identity("SDOC", 1), "sections": sections, "toc_styles": tocs})
+}
+
+/// Slice 3 (sections, numbering, TOC): round trip (continue_numbering true and the `after`
+/// position are defaults and not encoded) and the STU-LAY-108 / STU-LAY-148 refusals with codes.
+#[test]
+fn longdoc_sections_and_toc_styles_round_trip_and_refusals() {
+    let mut b = sec("b", "p2");
+    b["continue_numbering"] = json!(false);
+    b["page_number_start"] = json!(5);
+    b["page_number_style"] = json!("lower_roman");
+    b["include_section_prefix"] = json!(true);
+    b["section_prefix"] = json!("App-");
+    b["marker"] = json!("Appendix");
+    let v = numbering(vec![sec("a", "p1"), b], vec![toc_style()]);
+    let r: StudioLongDocRecords = serde_json::from_value(v.clone()).unwrap();
+    let back = wire_identical(&r);
+    let wire = serde_json::to_value(&back).unwrap();
+    assert_eq!(wire["sections"][0], sec("a", "p1"));
+    assert_eq!(wire["toc_styles"][0], toc_style());
+    assert!(back.sections[0].continue_numbering);
+    assert_eq!(back.toc_styles[0].entries[0].page_number_position, TocPageNumberPosition::After);
+    assert!(validate(&v).unwrap().is_empty());
+
+    let with = |f: &dyn Fn(&mut Value)| {
+        let mut v = numbering(vec![sec("a", "p1"), sec("b", "p2")], vec![toc_style()]);
+        f(&mut v);
+        code_of(&v)
+    };
+    assert_eq!(with(&|v| v["sections"][1]["section_prefix"] = json!("ABCDEF")), (Code::InvalidField, "sections/section_prefix_too_long".into()));
+    assert_eq!(
+        with(&|v| {
+            v["sections"][0]["section_prefix"] = json!("X");
+            v["sections"][1]["section_prefix"] = json!("X");
+        }),
+        (Code::DuplicateIdentity, "sections/section_prefix_duplicate".into())
+    );
+    assert_eq!(with(&|v| v["sections"][1]["page_start"] = json!("p9")), (Code::DanglingReference, "sections/section_page_missing".into()));
+    assert_eq!(with(&|v| v["sections"][1]["page_number_start"] = json!(3)), (Code::InvalidField, "sections/page_number_start_while_continuing".into()));
+    assert_eq!(with(&|v| v["sections"][0]["page_start"] = json!("p3")), (Code::InvalidField, "sections/first_page_without_section".into()));
+    assert_eq!(with(&|v| v["toc_styles"][0]["entries"][1]["paragraph_style"] = json!(identity("STYS", 1))), (Code::DuplicateIdentity, "toc1/toc_style_mapped_twice".into()));
+    assert_eq!(with(&|v| v["toc_styles"][0]["entries"] = json!([])), (Code::InvalidField, "toc1/toc_no_entries".into()));
+    assert_eq!(with(&|v| v["toc_styles"][0]["title_style"] = json!(identity("SLYR", 1))).0, Code::InvalidId);
+    assert_eq!(with(&|v| v["toc_styles"][0]["entries"][0]["level"] = json!(0)).0, Code::InvalidField);
+}
