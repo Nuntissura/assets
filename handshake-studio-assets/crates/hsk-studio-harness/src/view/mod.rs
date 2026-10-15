@@ -28,6 +28,10 @@ pub mod layers;
 /// SMB-PULSE-PLAYBACK-2, feature `media`).
 #[cfg(feature = "media")]
 pub mod media;
+/// Program monitor audio out through score-device (lane SMB-PULSE-PLAYBACK-2, feature
+/// `audio-device`).
+#[cfg(feature = "audio-device")]
+pub mod audio_out;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).

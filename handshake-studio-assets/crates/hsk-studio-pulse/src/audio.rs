@@ -42,7 +42,8 @@ use crate::transition::{AUDIO_CROSSFADE, check_at};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_folio::{ClipSource, StudioSequence, TrackKind, TransitionParameterValue};
 use hsk_studio_score::{
-    AutomationLane, ClipSpeed, Fade, FadeCurve, MAX_TRACKS, ScoreError, Session, TrackSpec,
+    AutomationLane, ChannelLayout, ClipSpeed, Fade, FadeCurve, MAX_TRACKS, ScoreError, Session,
+    TrackSpec,
 };
 
 /// Parameter key of the crossfade curve (`linear` | `equal_power`).
@@ -468,6 +469,10 @@ impl<S: AudioSources> TimelineMixStream<S> {
     }
     pub fn max_block_frames(&self) -> usize {
         self.block
+    }
+    /// Output layout of the mix (score's stereo bus), for the device stream configuration.
+    pub fn layout(&self) -> ChannelLayout {
+        ChannelLayout::stereo()
     }
 
     /// Moves to `sample`; every session is dropped and rebuilt on demand.
