@@ -26,13 +26,15 @@
 //!   pixels); reconstructed as format 4 with bias 512 / 128.
 //!
 //! Typed refusals: raw format 8 (prefix-coded strips, DC-GH6 and later) and unknown formats are
-//! `decoder_unavailable:rw2`; an unknown CFA code is `unsupported_pattern`. Not read or applied
-//! (named in `unapplied`): black levels (0x001C-0x001E, plus the +15 codec offset LightCraft measured
-//! for formats 4/6), white level, sensor borders and crop, mapped-out defect pixels (stored as 0).
+//! `decoder_unavailable:rw2`; an unknown CFA code is `unsupported_pattern`. Levels: black from
+//! 0x001C-0x001E plus the +15 codec offset LightCraft measured for formats 4/6, white measured
+//! within the sensor borders (see `levels`). Not read or applied (named in `unapplied`): sensor
+//! borders and crop as an active area, mapped-out defect pixels (stored as 0).
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
+use crate::levels;
 use crate::pipeline::{Bayer, CfaPattern};
 use crate::tiffep::{self, Ifd, Tiff};
 
@@ -261,6 +263,9 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     if src.len() < need {
         return Err(DevelopError::InvalidContainer);
     }
+    // Formats 4 and 6 store every sample 15 above the tagged black (LightCraft's measurement on ~100
+    // files: flat dark regions sit 13-20 above the tag; the other formats do not).
+    let codec_offset = if matches!(encoding, Encoding::Blocks { kind: Block::Format4 | Block::Format6 { .. }, .. }) { 15.0 } else { 0.0 };
     let mut samples = vec![0u16; n];
     match encoding {
         Encoding::Words => {
@@ -271,6 +276,27 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         }
         Encoding::Blocks { kind, rotated } => decode_blocks(src, kind, rotated, &mut samples)?,
     }
+    // Levels: black = IFD0 0x001C/0x001D/0x001E (R, G, B) plus the codec offset, per 2x2 site of
+    // the CFA; white = what the sensor area proves (saturation plateau, or >= 16 samples at full
+    // scale), else full scale with the white unread.
+    let full = VendorFrame::full_scale(bits16).ok_or(DevelopError::UnsupportedContainer)?;
+    let mut applied = Vec::new();
+    let rgb = [0x001c, 0x001d, 0x001e].map(|t| tag_u32(&tiff, &root, t).ok().flatten());
+    let (black_repeat, black_level) = match (rgb, cfa_pattern) {
+        ([Some(r), Some(g), Some(b)], CfaPattern::Bayer(bayer)) if r > 0 || g > 0 || b > 0 => {
+            applied.push("rw2_black_level_unread");
+            let level = [f64::from(r), f64::from(g), f64::from(b)];
+            let cell = bayer.cell();
+            let sites: Vec<f64> = cell.iter().flatten().map(|c| level.get(usize::from(*c)).copied().unwrap_or(0.0) + codec_offset).collect();
+            ((2, 2), sites)
+        }
+        _ => ((1, 1), vec![0.0]),
+    };
+    let region = sensor_area(&tiff, &root, width, height).unwrap_or(levels::Region::whole(width, height));
+    let white = levels::measured_white(&samples, width, height, region, full);
+    if white.is_some() {
+        applied.push("rw2_white_level_unread");
+    }
     DngRaw::from_vendor(
         VendorFrame {
             width,
@@ -278,12 +304,19 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             bits: bits16,
             cfa_pattern,
             unique_camera_model: tiffep::ascii(&tiff, &root, tiffep::MODEL)?.map(|m| m.trim().to_string()),
-            unapplied: UNAPPLIED.to_vec(),
+            unapplied: levels::remaining(&UNAPPLIED, &applied),
             samples,
-            white_level: VendorFrame::full_scale(bits16).ok_or(DevelopError::UnsupportedContainer)?,
-            black_repeat: (1, 1),
-            black_level: vec![0.0],
+            white_level: white.unwrap_or(full),
+            black_repeat,
+            black_level,
         },
         bytes,
     )
+}
+
+/// Sensor borders 0x0004 top, 0x0005 left, 0x0006 bottom, 0x0007 right as a frame region.
+pub(crate) fn sensor_area(tiff: &Tiff<'_>, root: &Ifd, width: u32, height: u32) -> Option<levels::Region> {
+    let get = |t: u16| tag_u32(tiff, root, t).ok().flatten();
+    let region = levels::Region { x0: get(0x0005)?, y0: get(0x0004)?, x1: get(0x0007)?, y1: get(0x0006)? };
+    (region.x0 < region.x1 && region.y0 < region.y1 && region.x1 <= width && region.y1 <= height).then_some(region)
 }

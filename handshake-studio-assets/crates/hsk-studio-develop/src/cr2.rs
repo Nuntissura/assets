@@ -213,22 +213,28 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // Model (IFD0) is informational; a malformed tag is a container error, never ignored.
     let root = tiff.ifd(first)?;
     // Levels: black = per-site mean of the optically masked columns left of the SensorInfo image
-    // area (columns 2..left-2 over the image rows; LightCraft's measurement rule), white = the
-    // saturation plateau of the image area, else full scale. Without SensorInfo both stay unread.
+    // area (columns 2..left-2 over the image rows; LightCraft's measurement rule); white = what the
+    // image area proves (saturation plateau, or >= 16 samples at full scale), else full scale with
+    // the white named unread. Without SensorInfo both stay unread.
     let full = VendorFrame::full_scale(u16::from(precision)).ok_or(DevelopError::InvalidContainer)?;
     let area = levels::canon_sensor_area(&tiff, &root, width, height);
     let masked = area
         .filter(|a| a.x0 >= 6)
         .and_then(|a| levels::site_means(&samples, width, height, levels::Region { x0: 2, y0: a.y0, x1: a.x0.saturating_sub(2), y1: a.y1 }, (2, 2)));
-    let (black_repeat, black_level, white_level, unapplied) = match (area, masked) {
-        (Some(a), Some(black)) => (
-            (2, 2),
-            black,
-            levels::white_or_full(&samples, width, height, a, full),
-            levels::remaining(&UNAPPLIED, &["cr2_black_level_unread", "cr2_white_level_unread"]),
-        ),
-        _ => ((1, 1), vec![0.0], full, UNAPPLIED.to_vec()),
+    let white = area.and_then(|a| levels::measured_white(&samples, width, height, a, full));
+    let mut applied = Vec::new();
+    let (black_repeat, black_level) = match masked {
+        Some(black) => {
+            applied.push("cr2_black_level_unread");
+            ((2, 2), black)
+        }
+        None => ((1, 1), vec![0.0]),
     };
+    if white.is_some() {
+        applied.push("cr2_white_level_unread");
+    }
+    let white_level = white.unwrap_or(full);
+    let unapplied = levels::remaining(&UNAPPLIED, &applied);
     let unique_camera_model = match root.find(TAG_MODEL) {
         Some(entry) => Some(tiff.ascii(entry)?),
         None => None,

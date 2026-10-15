@@ -18,12 +18,13 @@
 //! Typed refusals: Olympus compressed ORF (every interchangeable-lens body since ~2008; no
 //! permissively licensed description exists) and the other uncompressed ORF layouts not built in
 //! this lane are `decoder_unavailable:orf`; a missing or unknown CFAPattern is
-//! `unsupported_pattern`. Not read (named in `unapplied`): black level (nothing in these files
-//! states one), white level, active area.
+//! `unsupported_pattern`. Levels: black from maker note 0x1012 (ValidBits 0x102C units), white
+//! measured (see `levels`). Not read (named in `unapplied`): active area.
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
+use crate::levels;
 use crate::pipeline::{Bayer, CfaPattern};
 use crate::tiffep::{self, Ifd, Tiff};
 
@@ -145,6 +146,19 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             pair[1] = ((b1 & 15) << 8) | b2;
         }
     }
+    // Levels: black = old-style maker note 0x1012 BlackLevel (mean of its four values, in 0x102C
+    // ValidBits units scaled to 12 bit; ExifTool Olympus tag names, LightCraft's reading); white =
+    // what the frame proves (saturation plateau, or >= 16 samples at full scale), else unread.
+    let full = VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?;
+    let mut applied = Vec::new();
+    let black = olympus_black(&tiff, &root, bits);
+    if black.is_some() {
+        applied.push("orf_black_level_unread");
+    }
+    let white = levels::measured_white(&samples, width, height, levels::Region::whole(width, height), full);
+    if white.is_some() {
+        applied.push("orf_white_level_unread");
+    }
     DngRaw::from_vendor(
         VendorFrame {
             width,
@@ -152,12 +166,36 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             bits,
             cfa_pattern,
             unique_camera_model: tiffep::ascii(&tiff, &root, tiffep::MODEL)?.map(|m| m.trim().to_string()),
-            unapplied: UNAPPLIED.to_vec(),
+            unapplied: levels::remaining(&UNAPPLIED, &applied),
             samples,
-            white_level: VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?,
+            white_level: white.unwrap_or(full),
             black_repeat: (1, 1),
-            black_level: vec![0.0],
+            black_level: vec![black.unwrap_or(0.0)],
         },
         bytes,
     )
+}
+
+/// Old-style Olympus maker note (`OLYMP\0` + 2 version bytes, then an IFD whose offsets are file
+/// offsets): 0x1012 BlackLevel (four values; mean) in 0x102C ValidBits units, scaled to `bits`.
+fn olympus_black(tiff: &Tiff<'_>, root: &Ifd, bits: u16) -> Option<f64> {
+    let exif = tiff.ifd(tiffep::first_u32(tiff, root.find(EXIF_IFD)?).ok()?).ok()?;
+    let entry = exif.find(0x927c)?;
+    if !tiff.bytes(entry).ok()?.starts_with(b"OLYMP\0") {
+        return None;
+    }
+    let note = tiff.ifd(u32::try_from(entry.value_offset.checked_add(8)?).ok()?).ok()?;
+    let v = tiff.u32s(note.find(0x1012)?).ok()?;
+    if v.len() != 4 {
+        return None;
+    }
+    let valid = match note.find(0x102c) {
+        Some(e) => *tiff.u32s(e).ok()?.first()?,
+        None => u32::from(bits),
+    };
+    if !(8..=16).contains(&valid) {
+        return None;
+    }
+    let mean = v.iter().map(|b| f64::from(*b)).sum::<f64>() / 4.0;
+    Some(mean * f64::from(1u32 << bits.min(16)) / f64::from(1u32 << valid))
 }

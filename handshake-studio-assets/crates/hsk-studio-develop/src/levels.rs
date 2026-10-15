@@ -23,16 +23,6 @@ impl Region {
         Self { x0: 0, y0: 0, x1: width, y1: height }
     }
 
-    /// The region shrunk by `margin` on every side (empty regions stay invalid).
-    pub fn inset(self, margin: u32) -> Self {
-        Self {
-            x0: self.x0.saturating_add(margin),
-            y0: self.y0.saturating_add(margin),
-            x1: self.x1.saturating_sub(margin),
-            y1: self.y1.saturating_sub(margin),
-        }
-    }
-
     fn valid(&self, width: u32, height: u32) -> bool {
         self.x0 < self.x1 && self.y0 < self.y1 && self.x1 <= width && self.y1 <= height
     }
@@ -99,9 +89,25 @@ pub(crate) fn plateau_white(samples: &[u16], width: u32, height: u32, region: Re
     (mx > full / 2 && top >= min_plateau && top >= under.saturating_mul(4).saturating_add(4)).then_some(near)
 }
 
-/// `plateau_white`, else the nominal full scale `full`.
-pub(crate) fn white_or_full(samples: &[u16], width: u32, height: u32, region: Region, full: u32) -> u32 {
-    plateau_white(samples, width, height, region, full).unwrap_or(full)
+/// The white level the samples prove: the saturation plateau (`plateau_white`), else `ceiling`
+/// itself when at least 16 samples of `region` reach it (highlights clipped at the code ceiling,
+/// e.g. the full scale or a lossy curve's top). `None` when the sample holds no saturated region,
+/// so the level stays unread.
+pub(crate) fn measured_white(samples: &[u16], width: u32, height: u32, region: Region, ceiling: u32) -> Option<u32> {
+    if let Some(w) = plateau_white(samples, width, height, region, ceiling) {
+        return Some(w);
+    }
+    if !region.valid(width, height) {
+        return None;
+    }
+    let mut at = 0u64;
+    for y in region.y0..region.y1 {
+        let row = usize::try_from(y).ok()?.checked_mul(usize::try_from(width).ok()?)?;
+        let start = row.checked_add(usize::try_from(region.x0).ok()?)?;
+        let end = row.checked_add(usize::try_from(region.x1).ok()?)?;
+        at = at.saturating_add(samples.get(start..end)?.iter().filter(|v| u32::from(**v) >= ceiling).count() as u64);
+    }
+    (at >= 16).then_some(ceiling)
 }
 
 /// `unapplied` without the names in `applied`.

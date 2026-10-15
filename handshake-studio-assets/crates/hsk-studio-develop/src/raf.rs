@@ -15,16 +15,19 @@
 //! anchored at (0, 0); without it the CFA is RGGB (X-A series, LightCraft colour renders).
 //! Compressed X-Trans is decoded only for the fixed X-Trans arrangement the codec uses.
 //!
-//! Typed refusals: uncompressed RAF (`decoder_unavailable:raf_uncompressed`, not in this lane's
-//! compressed scope), older FinePix layouts without the raw IFD such as the SuperCCD S5000
+//! Uncompressed RAF (mode 0, LightCraft's measured packings): 16-bit little-endian words, 12-bit
+//! LSB-first stream, or 32-bit little-endian words read MSB-first (raw IFD 0xF006 set), row stride
+//! 0xF005 in 32-bit words. Levels: black 0xF00A per CFA site, white measured (see `levels`).
+//! Typed refusals: older FinePix layouts without the raw IFD such as the SuperCCD S5000
 //! (`decoder_unavailable:raf`), unknown compression modes (`unsupported_compression`), container
-//! and stream modes that disagree (`invalid_container`). Not read (named in `unapplied`): black
-//! levels (0xF00A), white level, the crop records 0x0110/0x0111.
+//! and stream modes that disagree (`invalid_container`). Not read (named in `unapplied`): the crop
+//! records 0x0110/0x0111 as an active area (they bound the white measurement only).
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::pipeline::{Bayer, CfaPattern, XTRANS};
+use crate::levels;
 use crate::rafc;
 use crate::tiffep::{self, Tiff};
 
@@ -109,7 +112,17 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     let src = tiff.region(u64::from(get(0xf007)?), u64::from(get(0xf008)?))?;
     let cfa_pattern = cfa(bytes)?;
     let samples = match be32(bytes, 108) {
-        Some(0) => return Err(DevelopError::DecoderUnavailable("raf_uncompressed")),
+        Some(0) => {
+            let words32 = match raw_ifd.find(0xf006) {
+                Some(e) => tiffep::first_u32(&tiff, e)? != 0,
+                None => false,
+            };
+            let stride_words = match raw_ifd.find(0xf005) {
+                Some(e) => tiffep::first_u32(&tiff, e)?,
+                None => 0,
+            };
+            uncompressed(src, width, height, bits, words32, stride_words)?
+        }
         Some(mode @ (2 | 3)) => {
             // The stream's own flag (byte 2: 1 lossless, 0 lossy) must agree with the container.
             if src.get(2).copied() != Some(u8::from(mode == 2)) {
@@ -119,6 +132,29 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         }
         _ => return Err(DevelopError::UnsupportedCompression),
     };
+    // Levels: black = raw IFD 0xF00A, one value per CFA site (36 for X-Trans, 4 for Bayer, anchored
+    // at the frame origin as the CFA is) or one value for all; white = what the crop area proves
+    // (saturation plateau, or >= 16 samples at full scale), else full scale with the white unread.
+    let full = VendorFrame::full_scale(bits16).ok_or(DevelopError::UnsupportedContainer)?;
+    let period: u32 = if cfa_pattern == CfaPattern::XTrans { 6 } else { 2 };
+    let mut applied = Vec::new();
+    let tagged = match raw_ifd.find(0xf00a) {
+        Some(e) => tiff.u32s(e)?,
+        None => Vec::new(),
+    };
+    let (black_repeat, black_level) = match tagged.len() {
+        n if n == period.saturating_mul(period) as usize => ((period, period), tagged.iter().map(|v| f64::from(*v)).collect()),
+        n if n >= 1 && tagged.iter().all(|v| Some(v) == tagged.first()) => ((1, 1), vec![f64::from(tagged[0])]),
+        _ => ((1, 1), vec![0.0]),
+    };
+    if !tagged.is_empty() && black_level.iter().any(|b| *b > 0.0) {
+        applied.push("raf_black_level_unread");
+    }
+    let region = crop(bytes, width, height).unwrap_or(levels::Region::whole(width, height));
+    let white = levels::measured_white(&samples, width, height, region, full);
+    if white.is_some() {
+        applied.push("raf_white_level_unread");
+    }
     DngRaw::from_vendor(
         VendorFrame {
             width,
@@ -126,12 +162,94 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             bits: bits16,
             cfa_pattern,
             unique_camera_model: camera_name(bytes),
-            unapplied: UNAPPLIED.to_vec(),
+            unapplied: levels::remaining(&UNAPPLIED, &applied),
             samples,
-            white_level: VendorFrame::full_scale(bits16).ok_or(DevelopError::UnsupportedContainer)?,
-            black_repeat: (1, 1),
-            black_level: vec![0.0],
+            white_level: white.unwrap_or(full),
+            black_repeat,
+            black_level,
         },
         bytes,
     )
+}
+
+/// Header records 0x0110 (crop top, left) and 0x0111 (cropped height, width) as a frame region.
+pub(crate) fn crop(bytes: &[u8], width: u32, height: u32) -> Option<levels::Region> {
+    let pair = |tag: u16| -> Option<(u32, u32)> {
+        let d = record(bytes, tag)?;
+        Some((u32::from(u16::from_be_bytes([*d.first()?, *d.get(1)?])), u32::from(u16::from_be_bytes([*d.get(2)?, *d.get(3)?]))))
+    };
+    let ((top, left), (h, w)) = (pair(0x0110)?, pair(0x0111)?);
+    let region = levels::Region { x0: left, y0: top, x1: left.checked_add(w)?, y1: top.checked_add(h)? };
+    (w > 0 && h > 0 && region.x1 <= width && region.y1 <= height).then_some(region)
+}
+
+/// Uncompressed RAF strip (LightCraft's measured packings): 16-bit little-endian words when the
+/// strip holds two bytes per sample; otherwise samples packed at `bits`: a 12-bit LSB-first stream
+/// unless raw IFD 0xF006 is set, else (and at other depths) little-endian 32-bit words read
+/// MSB-first. 0xF005, when non-zero, is the row stride in 32-bit words. Every row must lie inside
+/// the strip before the frame is allocated (V4-02).
+fn uncompressed(src: &[u8], width: u32, height: u32, bits: u32, words32: bool, stride_words: u32) -> Result<Vec<u16>, DevelopError> {
+    let (w, h) = (width as usize, height as usize);
+    let n = w.checked_mul(h).ok_or(DevelopError::Overflow)?;
+    let store = if src.len() >= n.checked_mul(2).ok_or(DevelopError::Overflow)? { 16 } else { bits };
+    let packed_row = w.checked_mul(store as usize).ok_or(DevelopError::Overflow)?.div_ceil(8);
+    let stride = match stride_words {
+        0 => packed_row,
+        words => (words as usize).checked_mul(4).ok_or(DevelopError::Overflow)?.max(packed_row),
+    };
+    let required = stride
+        .checked_mul(h.checked_sub(1).ok_or(DevelopError::InvalidDimensions)?)
+        .and_then(|v| v.checked_add(packed_row))
+        .ok_or(DevelopError::Overflow)?;
+    if src.len() < required {
+        return Err(DevelopError::InvalidContainer);
+    }
+    let mut out = vec![0u16; n];
+    for (y, row) in out.chunks_exact_mut(w).enumerate() {
+        let at = y.checked_mul(stride).ok_or(DevelopError::Overflow)?;
+        let s = src.get(at..at.checked_add(packed_row).ok_or(DevelopError::Overflow)?).ok_or(DevelopError::InvalidContainer)?;
+        match store {
+            16 => row.iter_mut().zip(s.chunks_exact(2)).for_each(|(o, c)| *o = u16::from_le_bytes([c[0], c[1]])),
+            12 if !words32 => unpack_lsb(s, 12, row),
+            _ => unpack_words32_msb(s, store, row),
+        }
+    }
+    Ok(out)
+}
+
+/// `out.len()` LSB-first packed samples of `bits` from `src` (missing bytes read as 0).
+fn unpack_lsb(src: &[u8], bits: u32, out: &mut [u16]) {
+    let (mut acc, mut n) = (0u64, 0u32);
+    let mut it = src.iter();
+    let mask = 1u64.checked_shl(bits).unwrap_or(0).wrapping_sub(1);
+    for o in out.iter_mut() {
+        while n < bits {
+            acc |= u64::from(*it.next().unwrap_or(&0)) << n;
+            n = n.saturating_add(8);
+        }
+        *o = u16::try_from(acc & mask).unwrap_or(0);
+        acc >>= bits;
+        n = n.saturating_sub(bits);
+    }
+}
+
+/// Samples of `bits` taken MSB-first from little-endian 32-bit words (a short last word is
+/// zero-padded).
+fn unpack_words32_msb(src: &[u8], bits: u32, out: &mut [u16]) {
+    let (mut acc, mut n) = (0u64, 0u32);
+    let mut words = src.chunks(4).map(|c| {
+        let mut w = [0u8; 4];
+        w.iter_mut().zip(c).for_each(|(d, s)| *d = *s);
+        u32::from_le_bytes(w)
+    });
+    let mask = 1u64.checked_shl(bits).unwrap_or(0).wrapping_sub(1);
+    for o in out.iter_mut() {
+        while n < bits {
+            acc = (acc << 32) | u64::from(words.next().unwrap_or(0));
+            n = n.saturating_add(32);
+        }
+        n = n.saturating_sub(bits);
+        *o = u16::try_from((acc >> n) & mask).unwrap_or(0);
+        acc &= 1u64.checked_shl(n).unwrap_or(0).wrapping_sub(1);
+    }
 }

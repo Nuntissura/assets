@@ -13,13 +13,15 @@
 //! one `trak` per stream; a raw track's `stsd` entry is `CRAW` (VisualSampleEntry + 4 bytes, then
 //! child boxes incl. `CMP1`); its first sample's location comes from `stsz` and `co64`/`stco`. The
 //! main raw track is the first largest `CRAW` entry with a `CMP1` (a later equal-size track can be
-//! a Dual Pixel delta). Not read (named in `unapplied`): black/white levels (maker note `CMT3` /
-//! timed metadata), the `IAD1` active area and crop.
+//! a Dual Pixel delta). Levels: Canon ColorData (maker note 0x4001 in the `CTMD` timed metadata,
+//! else `CMT3`) black and white by ColorData version. Not read (named in `unapplied`): the `IAD1`
+//! active area and crop.
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::crx::{self, Coding};
 use crate::dng::{DngRaw, VendorFrame};
+use crate::levels;
 use crate::pipeline::{Bayer, CfaPattern};
 use crate::tiffep::{self, Tiff};
 
@@ -113,7 +115,13 @@ fn craw_entry(bytes: &[u8], e: &BoxRef, budget: &mut usize) -> Option<CrawEntry>
 }
 
 /// Descend `trak` -> `mdia` -> `minf` -> `stbl`; read the sample entry and first sample location.
-fn trak(bytes: &[u8], t: &BoxRef, budget: &mut usize) -> Option<RawTrack> {
+/// A track this decoder reads: a raw `CRAW` track, or the `CTMD` timed-metadata track's first sample.
+enum Track {
+    Raw(RawTrack),
+    Ctmd(Option<(usize, usize)>),
+}
+
+fn trak(bytes: &[u8], t: &BoxRef, budget: &mut usize) -> Option<Track> {
     let mut stbl = None;
     let mut stack = vec![(t.body, t.end, 0usize)];
     while let Some((from, to, depth)) = stack.pop() {
@@ -129,13 +137,15 @@ fn trak(bytes: &[u8], t: &BoxRef, budget: &mut usize) -> Option<RawTrack> {
         }
     }
     let stbl = stbl?;
-    let (mut entry, mut size, mut offset) = (None, None, None);
+    let (mut entry, mut ctmd, mut size, mut offset) = (None, false, None, None);
     for b in boxes(bytes, stbl.body, stbl.end, budget) {
         let body = bytes.get(b.body..b.end)?;
         match &b.kind {
             // full box: version/flags, entry count, entries
             b"stsd" if be32(body, 4)? > 0 => {
-                entry = boxes(bytes, b.body.saturating_add(8), b.end, budget).first().and_then(|e| craw_entry(bytes, e, budget));
+                let first = boxes(bytes, b.body.saturating_add(8), b.end, budget);
+                ctmd = first.first().is_some_and(|e| &e.kind == b"CTMD");
+                entry = first.first().and_then(|e| craw_entry(bytes, e, budget));
             }
             // version/flags, sample_size (0 = per-sample table), count, sizes
             b"stsz" => {
@@ -151,18 +161,31 @@ fn trak(bytes: &[u8], t: &BoxRef, budget: &mut usize) -> Option<RawTrack> {
             _ => {}
         }
     }
-    let (width, height, cmp1) = entry?;
     let sample = match (offset, size) {
         (Some(o), Some(s)) if o.checked_add(s as usize).is_some_and(|e| e <= bytes.len()) => Some((o, s as usize)),
         _ => None,
     };
-    Some(RawTrack { area: u64::from(width).saturating_mul(u64::from(height)), cmp1: cmp1?, sample })
+    if ctmd {
+        return Some(Track::Ctmd(sample));
+    }
+    let (width, height, cmp1) = entry?;
+    Some(Track::Raw(RawTrack { area: u64::from(width).saturating_mul(u64::from(height)), cmp1: cmp1?, sample }))
 }
 
-/// The parts of the file this decoder reads: the raw tracks and the `CMT1` TIFF stream.
-fn parse(bytes: &[u8]) -> (Vec<RawTrack>, Option<&[u8]>) {
+/// The parts of the file this decoder reads.
+#[derive(Default)]
+struct Parts<'a> {
+    tracks: Vec<RawTrack>,
+    /// `CMT1` (TIFF stream: IFD0) and `CMT3` (TIFF stream: the Canon maker note).
+    cmt1: Option<&'a [u8]>,
+    cmt3: Option<&'a [u8]>,
+    /// First sample of the `CTMD` timed-metadata track.
+    ctmd: Option<&'a [u8]>,
+}
+
+fn parse(bytes: &[u8]) -> Parts<'_> {
     let mut budget = MAX_BOXES;
-    let (mut tracks, mut cmt1) = (Vec::new(), None);
+    let mut parts = Parts::default();
     for top in boxes(bytes, 0, bytes.len(), &mut budget) {
         if &top.kind != b"moov" {
             continue;
@@ -171,17 +194,96 @@ fn parse(bytes: &[u8]) -> (Vec<RawTrack>, Option<&[u8]>) {
             match &b.kind {
                 b"uuid" if b.uuid == Some(CANON_UUID) => {
                     for c in boxes(bytes, b.body, b.end, &mut budget) {
-                        if &c.kind == b"CMT1" {
-                            cmt1 = bytes.get(c.body..c.end);
+                        match &c.kind {
+                            b"CMT1" => parts.cmt1 = bytes.get(c.body..c.end),
+                            b"CMT3" => parts.cmt3 = bytes.get(c.body..c.end),
+                            _ => {}
                         }
                     }
                 }
-                b"trak" => tracks.extend(trak(bytes, &b, &mut budget)),
+                b"trak" => match trak(bytes, &b, &mut budget) {
+                    Some(Track::Raw(t)) => parts.tracks.push(t),
+                    Some(Track::Ctmd(Some((at, len)))) if parts.ctmd.is_none() => {
+                        parts.ctmd = at.checked_add(len).and_then(|end| bytes.get(at..end));
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
     }
-    (tracks, cmt1)
+    parts
+}
+
+fn le16(b: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(b.get(at..at.checked_add(2)?)?.try_into().ok()?))
+}
+
+fn le32(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
+}
+
+/// Canon maker-note TIFF blocks in the CTMD sample: records (le32 length >= 12, le16 type at 4,
+/// items from byte 12) of types 7..9 hold items (le32 length >= 8, le32 tag, data) whose tag 0x927C
+/// data is a maker-note TIFF with block-relative offsets (LightCraft `timed_exif`).
+fn timed_maker_notes(sample: &[u8]) -> Vec<&[u8]> {
+    let (mut out, mut budget, mut at) = (Vec::new(), MAX_BOXES, 0usize);
+    while budget > 0 {
+        budget = budget.saturating_sub(1);
+        let Some(len) = le32(sample, at).map(|v| v as usize) else { break };
+        let Some(end) = at.checked_add(len).filter(|&e| len >= 12 && e <= sample.len()) else { break };
+        let Some(record) = sample.get(at..end) else { break };
+        if matches!(le16(record, 4), Some(7..=9)) {
+            let mut item_at = 12usize;
+            while budget > 0 {
+                budget = budget.saturating_sub(1);
+                let Some(item_len) = le32(record, item_at).map(|v| v as usize) else { break };
+                let Some(item_end) = item_at.checked_add(item_len).filter(|&e| item_len >= 8 && e <= record.len()) else { break };
+                if le32(record, item_at.saturating_add(4)) == Some(0x927c)
+                    && let Some(data) = record.get(item_at.saturating_add(8)..item_end)
+                {
+                    out.push(data);
+                }
+                item_at = item_end;
+            }
+        }
+        at = end;
+    }
+    out
+}
+
+/// Canon ColorData (maker note 0x4001) black (R, G, G, B channel order) and white, by ColorData
+/// version (word index offsets per the ExifTool Canon ColorData tables, as LightCraft reads them:
+/// versions 16-19 black 329 white 797; 32/33 black 343 white 811; 34/48 black 363 white 641; 64/65
+/// black 383 white 661; 66 black 383, no white). Timed-metadata maker notes win over `CMT3`.
+fn color_data_levels(parts: &Parts<'_>, bits: u16) -> (Option<[f64; 4]>, Option<u32>) {
+    let mut notes: Vec<&[u8]> = parts.ctmd.map(timed_maker_notes).unwrap_or_default();
+    notes.extend(parts.cmt3);
+    for note in notes {
+        let Ok((tiff, first)) = Tiff::parse(note) else { continue };
+        let Ok(ifd) = tiff.ifd(first) else { continue };
+        let Some(values) = ifd.find(0x4001).and_then(|e| tiff.u32s(e).ok()) else { continue };
+        let (black_at, white_at) = match values.first() {
+            Some(16..=19) => (329usize, Some(797usize)),
+            Some(32 | 33) => (343, Some(811)),
+            Some(34 | 48) => (363, Some(641)),
+            Some(64 | 65) => (383, Some(661)),
+            Some(66) => (383, None),
+            _ => return (None, None),
+        };
+        let full = VendorFrame::full_scale(bits).unwrap_or(0);
+        let black = values
+            .get(black_at..black_at.saturating_add(4))
+            .and_then(|v| <[u32; 4]>::try_from(v).ok())
+            .filter(|v| v.iter().any(|b| *b > 0) && v.iter().all(|b| *b < full / 2))
+            .map(|v| v.map(f64::from));
+        let max_black = black.map_or(0.0, |b| b.iter().copied().fold(0.0, f64::max));
+        let white = white_at
+            .and_then(|at| values.get(at).copied())
+            .filter(|w| f64::from(*w) > max_black && *w >= full / 2 && *w <= full);
+        return (black, white);
+    }
+    (None, None)
 }
 
 fn cfa(code: u8) -> Option<CfaPattern> {
@@ -201,10 +303,10 @@ fn model(cmt1: Option<&[u8]>) -> Option<String> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
-    let (tracks, cmt1) = parse(bytes);
+    let parts = parse(bytes);
     // First largest raw track (a later equal-size track can be the Dual Pixel delta).
     let mut main: Option<&RawTrack> = None;
-    for t in &tracks {
+    for t in &parts.tracks {
         if main.is_none_or(|m| t.area > m.area) {
             main = Some(t);
         }
@@ -217,18 +319,43 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     let sample = bytes.get(offset..offset.checked_add(size).ok_or(DevelopError::Overflow)?).ok_or(DevelopError::InvalidContainer)?;
     let samples = crx::decode(sample, &coding)?;
     let bits = u16::from(coding.bit_depth);
+    let full = VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?;
+    // Levels from ColorData: black per channel mapped to the CMP1 CFA's 2x2 site order (sites are
+    // anchored at the stored frame origin, as the CMP1 CFA code is); white from ColorData, else
+    // what the frame proves (saturation plateau or >= 16 samples at full scale), else unread.
+    let (black, tagged_white) = color_data_levels(&parts, bits);
+    let mut applied = Vec::new();
+    let (black_repeat, black_level) = match black {
+        Some([r, g1, g2, b]) => {
+            applied.push("cr3_black_level_unread");
+            let sites = match coding.cfa_pattern {
+                1 => [g1, r, b, g2],
+                2 => [g1, b, r, g2],
+                3 => [b, g1, g2, r],
+                _ => [r, g1, g2, b],
+            };
+            ((2, 2), sites.to_vec())
+        }
+        None => ((1, 1), vec![0.0]),
+    };
+    let white = tagged_white.or_else(|| {
+        levels::measured_white(&samples, coding.width, coding.height, levels::Region::whole(coding.width, coding.height), full)
+    });
+    if white.is_some() {
+        applied.push("cr3_white_level_unread");
+    }
     DngRaw::from_vendor(
         VendorFrame {
             width: coding.width,
             height: coding.height,
             bits,
             cfa_pattern,
-            unique_camera_model: model(cmt1),
-            unapplied: UNAPPLIED.to_vec(),
+            unique_camera_model: model(parts.cmt1),
+            unapplied: levels::remaining(&UNAPPLIED, &applied),
             samples,
-            white_level: VendorFrame::full_scale(bits).ok_or(DevelopError::UnsupportedContainer)?,
-            black_repeat: (1, 1),
-            black_level: vec![0.0],
+            white_level: white.unwrap_or(full),
+            black_repeat,
+            black_level,
         },
         bytes,
     )
