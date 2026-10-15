@@ -21,6 +21,7 @@ pub(crate) enum SosKind {
     LowPass,
     HighPass,
     AllPass,
+    Notch,
 }
 
 impl Sos {
@@ -33,6 +34,7 @@ impl Sos {
             SosKind::LowPass => ((1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0),
             SosKind::HighPass => ((1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0),
             SosKind::AllPass => (1.0 - alpha, -2.0 * cos, 1.0 + alpha),
+            SosKind::Notch => (1.0, -2.0 * cos, 1.0),
         };
         let (a0, a1, a2) = (1.0 + alpha, -2.0 * cos, 1.0 - alpha);
         Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }

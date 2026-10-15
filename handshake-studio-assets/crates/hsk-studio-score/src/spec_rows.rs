@@ -71,6 +71,10 @@ pub const SPEC_ROWS: &[(&str, &str, Result<&str, &str>)] = &[
     ("Phaser", "mix", Ok("PhaserParams.mix (spec percent / 100)")),
     ("Phaser", "intensity", Err(NO_MEANING)),
     ("Phaser", "depth", Err(NO_MEANING)),
+    // AutoClickRemover (sheet AutoClickRemoverUI): 1..100 scalars without semantics; ClickRepair
+    // uses its own authored threshold (robust sigmas) and AR order instead.
+    ("AutoClickRemover", "inf_threshold", Err(NO_MEANING)),
+    ("AutoClickRemover", "inf_complexity", Err(NO_MEANING)),
 ];
 
 /// Studio field for spec row `(effect, parameter)`, or the typed refusal.
