@@ -72,9 +72,10 @@ fn folio_swatches_resolve_through_prism_and_their_links_persist() {
     // Lab L* 50 is sRGB 0.4663 grey (CIE L* -> Y 0.1842 -> sRGB encoding).
     let lab = v.add_folio_swatch("Lab grey", &SwatchSpec::Global(SwatchColour::Lab([50.0, 0.0, 0.0]))).unwrap();
     grey(v.swatch_colour(&lab).unwrap(), 0.4663);
-    // CMYK needs a CMYK profile; with Prism's synthetic profile it resolves into range.
+    // CMYK needs the document's CMYK profile (a Folio record since SMB-ILLUSTRATOR-INTEROP); with
+    // Prism's synthetic profile it resolves into range.
     assert!(v.add_folio_swatch("CMYK red", &SwatchSpec::Global(SwatchColour::Cmyk([0.0, 1.0, 1.0, 0.0]))).is_err());
-    v.set_vector_tool(VectorTool { cmyk_profile: Some(std::sync::Arc::new(CMYK_ICC.to_vec())), ..v.vector_tool().clone() });
+    v.set_document_cmyk_profile("Synthetic CMYK", CMYK_ICC).unwrap();
     let cmyk = v.add_folio_swatch("CMYK red", &SwatchSpec::Global(SwatchColour::Cmyk([0.0, 1.0, 1.0, 0.0]))).unwrap();
     let c = v.swatch_colour(&cmyk).unwrap();
     assert!(c.iter().all(|x| (0.0..=1.0).contains(x)), "{c:?}");

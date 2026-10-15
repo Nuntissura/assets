@@ -12,9 +12,11 @@
 //!
 //! Colour resolution (into the harness working space, encoded sRGB): RGB as is; GRAY `g` as
 //! `(g, g, g)` (Studio rule); LAB through Prism (`WideSource::Lab`, D50 PCS, relative
-//! colorimetric) and CMYK through Prism with the caller's CMYK ICC profile
-//! ([`super::VectorTool::cmyk_profile`], machine-local, never saved; a CMYK swatch without one is
-//! refused), both into the CC0 sRGB v4 profile and clipped to 0..1. A spot uses its measured Lab,
+//! colorimetric) and CMYK through Prism with the document's CMYK profile (lane
+//! SMB-ILLUSTRATOR-INTEROP: from Folio — the swatch's `profile_ref`, else the document's
+//! `working_space_cmyk`, else the `StudioIccProfile` marked as the CMYK working space; its bytes
+//! travel in the entry keyed by the record's sha256; a CMYK swatch without one is refused), both
+//! into the CC0 sRGB v4 profile and clipped to 0..1. A spot uses its measured Lab,
 //! else its alternate, else it is refused (no process approximation). Tints scale toward paper in
 //! the source model (Studio rule): RGB/GRAY `1 - t (1 - c)`, CMYK `t c`, LAB `L = 100 - t (100 - L)`,
 //! `a, b = t a, t b`; a per-use tint applies on top. Illustrator/InDesign parity UNVERIFIED (D5).
@@ -23,6 +25,9 @@ use super::super::Viewer;
 use super::style::{PaintSpec, RowKind, SWATCH_KEY, StrokePanel, fill_row, folio_paint, node_style, paint_style, stroke_row};
 use super::VectorEntry;
 use hsk_studio_folio::{self as folio, StudioAppearanceRow, StudioColorModel, StudioDesignRecords, StudioPaint, StudioSwatch, StudioSwatchKind};
+
+/// Largest ICC profile the entry carries.
+pub const MAX_ICC_BYTES: usize = 8 << 20;
 
 /// A swatch colour definition.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,57 +106,74 @@ fn tinted(model: StudioColorModel, c: &[f64], t: f64) -> Vec<f64> {
         .collect()
 }
 
-/// The source model and components of a colour swatch (tints resolved, `extra` tint on top).
-fn source(records: &folio::StudioVectorRecords, s: &StudioSwatch, extra: f64) -> Result<(StudioColorModel, Vec<f64>), String> {
-    let (model, comps, t) = match s.swatch_kind {
-        StudioSwatchKind::Process | StudioSwatchKind::Global => (s.color_model.ok_or("swatch: colour model")?, s.components.clone(), 1.0),
+/// The CMYK profile bytes for a swatch profile reference (module docs).
+pub(super) fn cmyk_bytes(entry: &VectorEntry, doc: &folio::StudioDocument, profile_ref: Option<&str>) -> Option<Vec<u8>> {
+    let id = profile_ref
+        .map(str::to_string)
+        .or_else(|| match &doc.working_space_cmyk {
+            folio::ProfileBinding::Assigned(id) => Some(id.clone()),
+            folio::ProfileBinding::Unassigned(()) => None,
+        })
+        .or_else(|| entry.records.working_icc(StudioColorModel::Cmyk).map(|p| p.profile_id.clone()))?;
+    let record = entry.records.icc_profile(&id).filter(|p| p.colour_space == StudioColorModel::Cmyk)?;
+    entry.icc.get(&record.content_digest.digest).cloned()
+}
+
+/// The source model and components of a colour swatch (tints resolved, `extra` tint on top) and
+/// the profile reference of the swatch whose components they are.
+fn source(records: &folio::StudioVectorRecords, s: &StudioSwatch, extra: f64) -> Result<(StudioColorModel, Vec<f64>, Option<String>), String> {
+    let (model, comps, t, profile) = match s.swatch_kind {
+        StudioSwatchKind::Process | StudioSwatchKind::Global => (s.color_model.ok_or("swatch: colour model")?, s.components.clone(), 1.0, s.profile_ref.clone()),
         StudioSwatchKind::Spot => {
             let ink = s.spot.as_ref().ok_or("swatch: spot ink")?;
             match (ink.measured_lab, ink.alternate_space) {
-                (Some(lab), _) => (StudioColorModel::Lab, lab.to_vec(), 1.0),
-                (None, Some(m)) => (m, ink.alternate_color_value.clone(), 1.0),
+                (Some(lab), _) => (StudioColorModel::Lab, lab.to_vec(), 1.0, None),
+                (None, Some(m)) => (m, ink.alternate_color_value.clone(), 1.0, s.profile_ref.clone()),
                 (None, None) => return Err(format!("swatch: spot {} has no process approximation", ink.ink_name)),
             }
         }
         StudioSwatchKind::Tint => {
             let base = records.swatch(s.base_swatch_ref.as_deref().unwrap_or("")).ok_or("swatch: tint base")?;
-            let (m, c) = source(records, base, 1.0)?;
-            (m, c, s.tint_value.unwrap_or(100.0) / 100.0)
+            let (m, c, profile) = source(records, base, 1.0)?;
+            (m, c, s.tint_value.unwrap_or(100.0) / 100.0, profile)
         }
         StudioSwatchKind::Gradient => return Err("swatch: a gradient swatch has no single colour".into()),
     };
-    Ok((model, tinted(model, &comps, t * extra)))
+    Ok((model, tinted(model, &comps, t * extra), profile))
 }
 
 /// The resolved encoded-sRGB colour of a colour swatch.
-fn resolve_rgb(records: &folio::StudioVectorRecords, s: &StudioSwatch, extra: f64, cmyk: Option<&[u8]>) -> Result<[f64; 3], String> {
-    let (model, c) = source(records, s, extra)?;
+fn resolve_rgb(entry: &VectorEntry, doc: &folio::StudioDocument, s: &StudioSwatch, extra: f64) -> Result<[f64; 3], String> {
+    let (model, c, profile) = source(&entry.records, s, extra)?;
     let f = |v: &[f64]| -> Vec<f32> { v.iter().map(|x| *x as f32).collect() };
     match model {
         StudioColorModel::Rgb => Ok([c[0], c[1], c[2]]),
         StudioColorModel::Gray => Ok([c[0], c[0], c[0]]),
         StudioColorModel::Lab => prism_rgb(None, &f(&c)),
-        StudioColorModel::Cmyk => prism_rgb(Some(cmyk.ok_or("swatch: a CMYK swatch needs a CMYK profile (VectorTool::cmyk_profile)")?), &f(&c)),
+        StudioColorModel::Cmyk => {
+            let icc = cmyk_bytes(entry, doc, profile.as_deref()).ok_or("swatch: the document has no CMYK profile (set_document_cmyk_profile)")?;
+            prism_rgb(Some(&icc), &f(&c))
+        }
     }
 }
 
 /// The stand-in paint of a swatch for one binding (`tint` percent per use).
-pub(super) fn stand_in(records: &folio::StudioVectorRecords, swatch_id: &str, tint: Option<f64>, cmyk: Option<&[u8]>) -> Result<StudioPaint, String> {
-    let s = records.swatch(swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
+pub(super) fn stand_in(entry: &VectorEntry, doc: &folio::StudioDocument, swatch_id: &str, tint: Option<f64>) -> Result<StudioPaint, String> {
+    let s = entry.records.swatch(swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
     if s.swatch_kind == StudioSwatchKind::Gradient {
         let g = s.gradient.clone().ok_or("swatch: gradient")?;
         return Ok(StudioPaint::Gradient { gradient: g });
     }
-    let [r, g, b] = resolve_rgb(records, s, tint.unwrap_or(100.0) / 100.0, cmyk)?;
+    let [r, g, b] = resolve_rgb(entry, doc, s, tint.unwrap_or(100.0) / 100.0)?;
     Ok(StudioPaint::Solid { colour: folio::StudioColor { r, g, b, colour_profile_id: folio::ProfileBinding::Unassigned(()) } })
 }
 
 /// Rewrites the stand-in paint of every row bound to `swatch_id` or to a tint of it.
-fn propagate(entry: &mut VectorEntry, swatch_id: &str, cmyk: Option<&[u8]>) -> Result<(), String> {
+fn propagate(entry: &mut VectorEntry, doc: &folio::StudioDocument, swatch_id: &str) -> Result<(), String> {
     let tints: Vec<String> = entry.records.swatches.iter().filter(|s| s.base_swatch_ref.as_deref() == Some(swatch_id)).map(|s| s.swatch_id.clone()).collect();
     let bound: Vec<folio::StudioSwatchPaint> = entry.records.swatch_paints.iter().filter(|p| p.swatch_id == swatch_id || tints.contains(&p.swatch_id)).cloned().collect();
     for p in bound {
-        let paint = stand_in(&entry.records, &p.swatch_id, p.tint, cmyk)?;
+        let paint = stand_in(entry, doc, &p.swatch_id, p.tint)?;
         let design = entry.design.as_mut().ok_or("swatch: design")?;
         let Some(style) = design.paint_styles.iter_mut().find(|s| s.style_id == p.style_id) else { continue };
         if let Some(row) = usize::try_from(p.row).ok().and_then(|i| style.rows.get_mut(i)) {
@@ -236,7 +258,7 @@ impl Viewer {
     pub fn swatch_colour(&self, swatch_id: &str) -> Result<[f64; 3], String> {
         let entry = self.vector_entry()?;
         let s = entry.records.swatch(swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
-        resolve_rgb(&entry.records, s, 1.0, self.edit.vector.cmyk_profile.as_deref().map(|v| v.as_slice()))
+        resolve_rgb(&entry, self.vdoc()?, s, 1.0)
     }
 
     /// Creates a global RGB swatch (solid paint) or a gradient swatch: ONE undo step. Returns its
@@ -262,8 +284,7 @@ impl Viewer {
             }
             let id = s.swatch_id.clone();
             entry.records.swatches.push(s);
-            let cmyk = self.edit.vector.cmyk_profile.clone();
-            let paint = stand_in(&entry.records, &id, None, cmyk.as_deref().map(|v| v.as_slice()))?;
+            let paint = stand_in(&entry, doc, &id, None)?;
             let companion = companion_id(&id)?;
             let design = entry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
             design.paint_styles.push(paint_style(&companion, name, &format!("{SWATCH_KEY}{n}"), &[fill_row(paint)])?);
@@ -290,8 +311,7 @@ impl Viewer {
             let i = entry.records.swatches.iter().position(|s| s.swatch_id == swatch_id).ok_or_else(|| format!("swatch: unknown {swatch_id}"))?;
             let name = entry.records.swatches[i].name.clone();
             entry.records.swatches[i] = record(&doc.document_id, 0, &name, spec, Some(swatch_id))?;
-            let cmyk = self.edit.vector.cmyk_profile.clone();
-            propagate(&mut entry, swatch_id, cmyk.as_deref().map(|v| v.as_slice()))?;
+            propagate(&mut entry, doc, swatch_id)?;
             self.validate_records(&entry)?;
             self.commit_entry("edit_swatch", swatch_id, &entry)?;
             Ok(swatch_id.to_string())
@@ -313,8 +333,7 @@ impl Viewer {
                 return Err("swatch: tint percent".into());
             }
             let entry = self.vector_entry()?;
-            let cmyk = self.edit.vector.cmyk_profile.clone();
-            let paint = stand_in(&entry.records, swatch_id, tint, cmyk.as_deref().map(|v| v.as_slice()))?;
+            let paint = stand_in(&entry, self.vdoc()?, swatch_id, tint)?;
             let width = self.vector_path(layer_id)?.style.stroke_width;
             let bind = super::style::Bind::Swatch { kind, swatch_id: swatch_id.to_string(), tint };
             self.restyle("apply_swatch", layer_id, Some(bind), |rows, unit| {
@@ -361,6 +380,46 @@ impl Viewer {
             }
             self.commit_entry("detach_swatch", layer_id, &entry)?;
             Ok(layer_id.to_string())
+        })();
+        self.report(r)
+    }
+
+    /// Makes `icc` (a CMYK ICC profile) the document's CMYK working profile for swatches: a Folio
+    /// `StudioIccProfile` record (new `SCPF` id, sha256 of the bytes, `working_space`) and the bytes in
+    /// the entry; every CMYK swatch without its own profile re-resolves (ONE undo step). Prism must
+    /// admit the profile. Returns the `SCPF` id.
+    pub fn set_document_cmyk_profile(&mut self, name: &str, icc: &[u8]) -> Result<String, String> {
+        let r = (|| {
+            if icc.is_empty() || icc.len() > MAX_ICC_BYTES {
+                return Err("cmyk_profile: size".into());
+            }
+            // Prism admits it (a CMYK device profile it can convert from).
+            prism_rgb(Some(icc), &[0.0, 0.0, 0.0, 0.0])?;
+            let doc = self.vdoc()?;
+            let mut entry = self.vector_entry()?;
+            let digest = hsk_studio_prism::hash_hex(&hsk_studio_prism::profile_hash(icc));
+            let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
+            let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
+            let mut n = 0_u64;
+            let id = loop {
+                let id = format!("SCPF-{high}-{low}-7ede-8000-{n:012x}");
+                if entry.records.icc_profile(&id).is_none() {
+                    break id;
+                }
+                n = n.checked_add(1).ok_or("cmyk_profile: id space")?;
+            };
+            for p in entry.records.icc_profiles.iter_mut().filter(|p| p.colour_space == StudioColorModel::Cmyk) {
+                p.working_space = false;
+            }
+            entry.records.icc_profiles.push(folio::StudioIccProfile { profile_id: id.clone(), name: name.to_string(), colour_space: StudioColorModel::Cmyk, content_digest: folio::ContentDigest { algorithm: "sha256".into(), digest: digest.clone() }, working_space: true });
+            entry.icc.insert(digest, icc.to_vec());
+            let cmyk: Vec<String> = entry.records.swatches.iter().filter(|s| s.color_model == Some(StudioColorModel::Cmyk) || s.spot.as_ref().is_some_and(|i| i.measured_lab.is_none() && i.alternate_space == Some(StudioColorModel::Cmyk))).map(|s| s.swatch_id.clone()).collect();
+            for sw in cmyk {
+                propagate(&mut entry, doc, &sw)?;
+            }
+            self.validate_records(&entry)?;
+            self.commit_entry("set_document_cmyk_profile", &id, &entry)?;
+            Ok(id)
         })();
         self.report(r)
     }

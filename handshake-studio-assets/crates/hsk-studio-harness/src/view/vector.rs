@@ -71,6 +71,8 @@ pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel};
 pub mod arrange;
 pub mod brushes;
 pub mod envelope;
+/// Lane SMB-ILLUSTRATOR-INTEROP.
+pub mod pdf_export;
 pub mod swatch;
 pub use arrange::{AlignTarget, TransformOp};
 pub use envelope::EnvelopeSpec;
@@ -302,6 +304,9 @@ pub struct VectorEntry {
     /// records): swatches and swatch bindings, brushes and brush strokes, envelopes (lane
     /// SMB-ILLUSTRATOR-TOOLS-2; entry member `vector_records`, absent when empty).
     pub records: folio::StudioVectorRecords,
+    /// ICC profile bytes by the sha256 of a `StudioIccProfile` record (lane
+    /// SMB-ILLUSTRATOR-INTEROP; entry member `icc`, absent when empty).
+    pub icc: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 /// Shape tools.
@@ -389,9 +394,6 @@ pub struct VectorTool {
     /// [`Viewer::set_vector_tool`] keeps the live values).
     pub press: Option<[f64; 2]>,
     pub current: Option<[f64; 2]>,
-    /// CMYK ICC profile CMYK swatches resolve through (lane SMB-ILLUSTRATOR-TOOLS-2; machine-local,
-    /// never saved with the document).
-    pub cmyk_profile: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 impl Default for VectorTool {
@@ -425,7 +427,6 @@ impl Default for VectorTool {
             pen_vertex: None,
             press: None,
             current: None,
-            cmyk_profile: None,
         }
     }
 }
@@ -508,7 +509,7 @@ fn path_of(v: &Value, budget: &mut usize) -> Result<AnchorPath, String> {
 
 impl VectorEntry {
     pub fn empty() -> Self {
-        Self { paths: Vec::new(), live: Vec::new(), design: None, records: folio::StudioVectorRecords::new(String::new()) }
+        Self { paths: Vec::new(), live: Vec::new(), design: None, records: folio::StudioVectorRecords::new(String::new()), icc: std::collections::BTreeMap::new() }
     }
 
     pub fn path(&self, path_id: &str) -> Option<&PathRecord> {
@@ -520,7 +521,7 @@ impl VectorEntry {
     pub fn decode(bytes: &[u8], doc: &StudioDocument, cancel: &hsk_studio_accord::CancellationToken) -> Result<Self, String> {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("vector_entry_json: {e}"))?;
         let object = v.as_object().ok_or("vector_entry_json: not an object")?;
-        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "vector_records"].contains(&k.as_str())) {
+        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "vector_records", "icc"].contains(&k.as_str())) {
             return Err("vector_entry_unknown_field".into());
         }
         if v["schema"] != ENTRY_SCHEMA {
@@ -609,7 +610,22 @@ impl VectorEntry {
             extra = r;
             extra.width_profiles.clear();
         }
-        let entry = Self { paths: records, live: live.shapes, design, records: extra };
+        let mut icc = std::collections::BTreeMap::new();
+        if let Some(m) = object.get("icc") {
+            let m = m.as_object().filter(|m| m.len() <= 16).ok_or("vector_entry_icc")?;
+            for (digest, hex) in m {
+                let hex = hex.as_str().filter(|h| h.len() <= swatch::MAX_ICC_BYTES.saturating_mul(2) && h.len().is_multiple_of(2)).ok_or("vector_entry_icc")?;
+                let bytes = hex.as_bytes().chunks(2).map(|pair| std::str::from_utf8(pair).ok().and_then(|t| u8::from_str_radix(t, 16).ok())).collect::<Option<Vec<u8>>>().ok_or("vector_entry_icc")?;
+                if &hsk_studio_prism::hash_hex(&hsk_studio_prism::profile_hash(&bytes)) != digest {
+                    return Err("vector_entry_icc: digest".into());
+                }
+                icc.insert(digest.clone(), bytes);
+            }
+        }
+        if extra.icc_profiles.iter().any(|p| !icc.contains_key(&p.content_digest.digest)) {
+            return Err("vector_entry_icc: a profile record without its bytes".into());
+        }
+        let entry = Self { paths: records, live: live.shapes, design, records: extra, icc };
         entry.validate(doc, cancel)?;
         entry.validate_records(doc, cancel)?;
         Ok(entry)
@@ -687,6 +703,9 @@ impl VectorEntry {
         }
         if let Some(d) = &self.design {
             v["design"] = serde_json::to_value(d).map_err(|e| format!("vector_entry_json: {e}"))?;
+        }
+        if !self.icc.is_empty() {
+            v["icc"] = Value::Object(self.icc.iter().map(|(k, b)| (k.clone(), Value::String(b.iter().map(|x| format!("{x:02x}")).collect()))).collect());
         }
         serde_json::to_vec(&v).map_err(|e| format!("vector_entry_json: {e}"))
     }
