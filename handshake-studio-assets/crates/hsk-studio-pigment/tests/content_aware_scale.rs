@@ -86,11 +86,11 @@ fn narrowing_and_widening_keep_objects_intact() {
 #[test]
 fn protection_plane_keeps_flat_content_that_seams_prefer() {
     let limits = RetouchLimits::default();
-    // Horizontal grey ramp (every pixel carries gradient energy) with a flat 12 x 24 block whose
-    // inner columns are the cheapest seams (8 ramp pixels vs 32 half-gradient pixels on the
-    // border column); narrowing by 16 cuts the block unless it is protected.
+    // Horizontal grey ramp (every pixel carries gradient energy) with a flat full-height 12 px band
+    // whose inner columns are zero-energy seams (a shorter block would put its top and bottom
+    // edges in every seam through it); narrowing by 16 cuts the band unless it is protected.
     let b = rect(0, 0, 64, 32);
-    let in_block = |x: i64, y: i64| (20..32).contains(&x) && (4..28).contains(&y);
+    let in_block = |x: i64, _y: i64| (20..32).contains(&x);
     let src = plane(b, |x, y| {
         if in_block(x, y) {
             [0.5, 0.25, 0.75, 1.0]
@@ -101,7 +101,7 @@ fn protection_plane_keeps_flat_content_that_seams_prefer() {
     });
     let block_width = |p: &RgbaPlane| (0..p.bounds.width as i64).filter(|x| p.at(*x, 15) == [0.5, 0.25, 0.75, 1.0]).count();
     let plain = content_aware_scale(&src, 48, 32, None, &limits).unwrap();
-    let protect: CoveragePlane = sel_rect(RectF { x: 20.0, y: 4.0, width: 12.0, height: 24.0 }, &SelectionContext::new(b)).unwrap();
+    let protect: CoveragePlane = sel_rect(RectF { x: 20.0, y: 0.0, width: 12.0, height: 32.0 }, &SelectionContext::new(b)).unwrap();
     let kept = content_aware_scale(&src, 48, 32, Some(&protect), &limits).unwrap();
     println!(
         "unprotected block width {} crossings {}; protected width {} crossings {}",
