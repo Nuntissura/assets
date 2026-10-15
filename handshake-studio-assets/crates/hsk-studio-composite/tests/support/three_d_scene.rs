@@ -16,7 +16,7 @@
 //! planes' nearest-texel alpha), then samples and composites as above.
 #![allow(dead_code)]
 use crate::scenes::{BACKGROUND, Pixels, space, tile_id};
-use hsk_studio_composite::three_d::{DepthOfField, Falloff, Light, LightKind, Material, Plane3d, Transform3d, camera, expand_run, expand_run_lit, layer_rotation};
+use hsk_studio_composite::three_d::{Affine3, DepthOfField, Falloff, Light, LightKind, Material, Plane3d, Transform3d, camera, expand_run, expand_run_lit, layer_rotation};
 use hsk_studio_composite::{SceneComposition, SceneContent};
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::transform_math::{LayerTransform, PreparedTransform, Projective2, ResampleFilter};
@@ -39,18 +39,41 @@ struct Spec {
     orientation: [f64; 3],
     rot: [f64; 3],
     opacity: f64,
+    /// Lane SMB-AE-3D-2: the parent (pivot = anchor = position, X/Y/Z rotation, X/Y scale).
+    parent: Option<ParentSpec>,
+}
+/// A parent layer: `pivot + R S (v - pivot)`, `R` the X, Y, Z turns, `S = diag(sx, sy, 1)`.
+#[derive(Clone, Copy)]
+struct ParentSpec {
+    pivot: [f64; 3],
+    rot: [f64; 3],
+    scale: [f64; 2],
 }
 fn specs() -> [Spec; 3] {
     [
-        Spec { tile: "tg", layer: 12, at: (0, 0), anchor: [4.0, 4.0, 0.0], position: [20.0, 10.0, 25.0], scale: [1.5, 1.25], orientation: [0.0, 0.0, 0.0], rot: [0.0, 0.0, 20.0], opacity: 1.0 },
-        Spec { tile: "tf", layer: 11, at: (3, 2), anchor: [10.0, 7.0, 0.0], position: [16.0, 12.0, 0.0], scale: [1.0, 1.0], orientation: [0.0, 0.0, 0.0], rot: [0.0, 35.0, 0.0], opacity: 0.9 },
-        Spec { tile: "te", layer: 10, at: (0, 0), anchor: [5.0, 4.0, 1.5], position: [15.0, 13.0, 1.0], scale: [1.4, 1.4], orientation: [0.0, 0.0, 10.0], rot: [-40.0, 0.0, 0.0], opacity: 1.0 },
+        Spec { tile: "tg", layer: 12, at: (0, 0), anchor: [4.0, 4.0, 0.0], position: [20.0, 10.0, 25.0], scale: [1.5, 1.25], orientation: [0.0, 0.0, 0.0], rot: [0.0, 0.0, 20.0], opacity: 1.0, parent: None },
+        Spec { tile: "tf", layer: 11, at: (3, 2), anchor: [10.0, 7.0, 0.0], position: [16.0, 12.0, 0.0], scale: [1.0, 1.0], orientation: [0.0, 0.0, 0.0], rot: [0.0, 35.0, 0.0], opacity: 0.9, parent: None },
+        Spec { tile: "te", layer: 10, at: (0, 0), anchor: [5.0, 4.0, 1.5], position: [15.0, 13.0, 1.0], scale: [1.4, 1.4], orientation: [0.0, 0.0, 10.0], rot: [-40.0, 0.0, 0.0], opacity: 1.0, parent: None },
+    ]
+}
+
+/// Lane SMB-AE-3D-2: "tf" under a 3D parent (turned about X, Y and Z, scaled non-uniformly, so the
+/// child plane is sheared) and "te" under a 2D parent (Z turn and scale at Z 0).
+fn parented_specs() -> [Spec; 3] {
+    let [tg, tf, te] = specs();
+    [
+        tg,
+        Spec { parent: Some(ParentSpec { pivot: [16.0, 12.0, 0.0], rot: [12.0, -15.0, 6.0], scale: [1.15, 0.9] }), ..tf },
+        Spec { parent: Some(ParentSpec { pivot: [15.0, 13.0, 0.0], rot: [0.0, 0.0, 10.0], scale: [0.95, 1.1] }), ..te },
     ]
 }
 
 /// The run's planes, bottom first.
 pub fn planes(pixels: &Pixels) -> Vec<Plane3d> {
-    specs()
+    planes_of(pixels, &specs())
+}
+fn planes_of(pixels: &Pixels, specs: &[Spec]) -> Vec<Plane3d> {
+    specs
         .iter()
         .map(|s| {
             let t = pixels.get(&tile_id(s.layer, s.tile)).expect("tile");
@@ -65,6 +88,7 @@ pub fn planes(pixels: &Pixels) -> Vec<Plane3d> {
                     position: s.position,
                     scale: s.scale,
                     rotation: layer_rotation(s.orientation, s.rot[0], s.rot[1], s.rot[2]),
+                    parent: s.parent.map_or(Affine3::IDENTITY, |p| Affine3::layer(p.pivot, p.pivot, p.scale, &layer_rotation([0.0; 3], p.rot[0], p.rot[1], p.rot[2]))),
                 },
                 mode: StudioBlendMode::Normal,
                 opacity: s.opacity,
@@ -125,9 +149,35 @@ fn rotate(s: &Spec, v: V) -> V {
     }
     v
 }
-/// World point of layer point (x, y).
+/// World point of layer point (x, y): the layer's own transform, then its parent's.
 fn world(s: &Spec, x: f64, y: f64) -> V {
-    add(s.position, rotate(s, [s.scale[0] * (x - s.anchor[0]), s.scale[1] * (y - s.anchor[1]), -s.anchor[2]]))
+    let own = add(s.position, rotate(s, [s.scale[0] * (x - s.anchor[0]), s.scale[1] * (y - s.anchor[1]), -s.anchor[2]]));
+    match s.parent {
+        None => own,
+        Some(p) => {
+            let mut v = sub(own, p.pivot);
+            v = [v[0] * p.scale[0], v[1] * p.scale[1], v[2]];
+            for (axis, deg) in [(0, p.rot[0]), (1, p.rot[1]), (2, p.rot[2])] {
+                v = turn(v, axis, deg);
+            }
+            add(p.pivot, v)
+        }
+    }
+}
+/// Ray `c + t u` against the plane of `s` (any affine parent): `(t, x, y)` with `(x, y)` the layer
+/// point, by Cramer's rule on `world(0,0) + x ex + y ey = c + t u`.
+fn hit_any(s: &Spec, c: V, u: V) -> Option<(f64, f64, f64)> {
+    let w0 = world(s, 0.0, 0.0);
+    let ex = sub(world(s, 1.0, 0.0), w0);
+    let ey = sub(world(s, 0.0, 1.0), w0);
+    let nu = scale(u, -1.0);
+    let rhs = sub(c, w0);
+    let det3 = |a: V, b: V, d: V| dot(a, cross(b, d));
+    let den = det3(ex, ey, nu);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    Some((det3(ex, ey, rhs) / den, det3(rhs, ey, nu) / den, det3(ex, rhs, nu) / den))
 }
 /// Camera basis: right, down, forward (world).
 fn basis() -> (V, V, V) {
@@ -147,6 +197,26 @@ fn project(p: V) -> [f64; 2] {
 /// the planes intersect inside the frame).
 pub fn three_d_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
     let (out, crossing, _) = oracle(pixels, false, false);
+    (out, crossing)
+}
+
+/// Lane SMB-AE-3D-2: [`three_d_scene`] with "tf" under a 3D parent and "te" under a 2D parent
+/// (`parented_specs`).
+pub fn parented_scene(pixels: &Pixels) -> SceneComposition {
+    let cam = camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera");
+    SceneComposition {
+        composition_id: "three-d-parented".to_owned(),
+        width: W,
+        height: H,
+        background: Some(BACKGROUND),
+        filter: ResampleFilter::Bilinear,
+        layers: expand_run(&planes_of(pixels, &parented_specs()), &cam, W, H, space(), 7).expect("run expands"),
+    }
+}
+/// The ray-cast oracle of [`parented_scene`] (the parent applied by the oracle's own turns, the
+/// ray solved against the sheared plane by Cramer's rule), plus the crossing counts.
+pub fn parented_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
+    let (out, crossing, _) = oracle_of(pixels, &parented_specs(), false, false);
     (out, crossing)
 }
 
@@ -427,9 +497,11 @@ fn shadowed_texels(pixels: &Pixels) -> usize {
 }
 
 fn oracle(pixels: &Pixels, lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], f64) {
+    oracle_of(pixels, &specs(), lit, dof)
+}
+fn oracle_of(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], f64) {
     let (r, d, f) = basis();
-    let specs = specs();
-    let mut shaded = texels(pixels, &specs, lit);
+    let mut shaded = texels(pixels, specs, lit);
     let mut max_radius = 0.0f64;
     if dof {
         for (i, s) in specs.iter().enumerate() {
@@ -444,7 +516,7 @@ fn oracle(pixels: &Pixels, lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], 
         }
     }
     let mut draws = Vec::new();
-    for s in &specs {
+    for s in specs {
         let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
         let p = t.scene_tile(s.at.0, s.at.1).placement;
         let (x0, y0) = (p.x as f64, p.y as f64);
@@ -470,15 +542,20 @@ fn oracle(pixels: &Pixels, lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], 
                     let ez = rotate(s, [0.0, 0.0, 1.0]);
                     [dot(v, ex), dot(v, ey), dot(v, ez)]
                 };
-                let c = inv(sub(CAMERA_POSITION, s.position));
-                let k = inv(dir);
-                let t = (-s.anchor[2] - c[2]) / k[2];
+                let (t, lx, ly) = if s.parent.is_some() {
+                    // Lane SMB-AE-3D-2: a parented (possibly sheared) plane.
+                    let Some((t, x, y)) = hit_any(s, CAMERA_POSITION, dir) else { continue };
+                    (t, x + s.at.0 as f64, y + s.at.1 as f64)
+                } else {
+                    let c = inv(sub(CAMERA_POSITION, s.position));
+                    let k = inv(dir);
+                    let t = (-s.anchor[2] - c[2]) / k[2];
+                    let u = add(c, scale(k, t));
+                    (t, u[0] / s.scale[0] + s.anchor[0] + s.at.0 as f64, u[1] / s.scale[1] + s.anchor[1] + s.at.1 as f64)
+                };
                 if t.is_nan() || t <= 1e-3 {
                     continue;
                 }
-                let u = add(c, scale(k, t));
-                let lx = u[0] / s.scale[0] + s.anchor[0] + s.at.0 as f64;
-                let ly = u[1] / s.scale[1] + s.anchor[1] + s.at.1 as f64;
                 let p = draws[i].2;
                 let inside = lx >= p.x as f64 - 1.0 && ly >= p.y as f64 - 1.0 && lx < p.x as f64 + f64::from(p.width) + 1.0 && ly < p.y as f64 + f64::from(p.height) + 1.0;
                 if inside {

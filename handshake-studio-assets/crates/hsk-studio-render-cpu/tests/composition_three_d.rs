@@ -78,3 +78,24 @@ fn depth_of_field_matches_the_defocus_oracle() {
     let other = render(&Renderer::with_threads(5, 3).unwrap(), &scene, &pixels);
     assert_eq!(other.digest(), base.digest());
 }
+
+#[test]
+fn parented_three_d_run_matches_the_ray_cast_oracle() {
+    // Lane SMB-AE-3D-2 (STU-MOT-008): "tf" under a 3D parent (sheared by a non-uniform parent
+    // scale) and "te" under a 2D parent; the oracle applies the parents with its own turns and
+    // solves every camera ray against the sheared planes by Cramer's rule.
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::parented_scene(&pixels);
+    let (want, crossing) = three_d::parented_oracle(&pixels);
+    let b = scenes::BACKGROUND;
+    let drawn = want.iter().filter(|p| (0..3).any(|c| (p[c] - b[c]).abs() > 1e-3)).count();
+    assert!(drawn > 150, "the planes cover the frame: {drawn} pixels");
+    let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
+    let delta = scenes::max_delta(&base, &want);
+    let unparented = render(&Renderer::new(64).unwrap(), &three_d::three_d_scene(&pixels), &pixels);
+    println!("three_d parented: {drawn} drawn pixels, crossing {crossing:?}, cpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&base.digest()));
+    assert!(delta <= 1e-6, "{delta}");
+    assert_ne!(unparented.digest(), base.digest(), "the parents move the planes");
+    let other = render(&Renderer::with_threads(7, 4).unwrap(), &scene, &pixels);
+    assert_eq!(other.digest(), base.digest());
+}

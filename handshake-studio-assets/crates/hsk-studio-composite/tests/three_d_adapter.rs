@@ -38,7 +38,7 @@ fn document() -> Value {
         "schema_id":"hsk.studio.document@1","document_id":identity("SDOC",1),"revision":7,"geometry_unit":"px",
         "colour_mode":3,"bits_per_channel":8,"working_space_rgb":null,"working_space_cmyk":null,
         "working_space_gray":null,"working_space_spot":null,"blending_space":null,"artboards":[],"page_spreads":[],
-        "layers":[group(6), group(8), raster(3, vec![tile(3,"tb",6,6)]), raster(10, vec![tile(10,"te",10,8)]),
+        "layers":[group(6), group(8), group(9), raster(3, vec![tile(3,"tb",6,6)]), raster(10, vec![tile(10,"te",10,8)]),
             raster(11, vec![tile(11,"tf",20,14)])],
         "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]}
     });
@@ -122,6 +122,7 @@ fn three_d_runs_camera_breaks_and_refusals() {
                 position,
                 scale: [scale, scale],
                 rotation: three_d::layer_rotation([0.0; 3], rx, ry, 0.0),
+                parent: three_d::Affine3::IDENTITY,
             },
             mode: StudioBlendMode::Normal,
             opacity: 1.0,
@@ -146,8 +147,9 @@ fn three_d_runs_camera_breaks_and_refusals() {
     let at_tick = |f: &dyn Fn(&mut Vec<Value>), feature: &str| {
         refused(source(&edit(f), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap_err(), feature)
     };
-    at_open(&|l| l[2]["parent"] = json!(identity("SLYR", 3)), three_d::COMPOSITION_3D_PARENT);
-    at_open(&|l| l[3]["parent"] = json!(identity("SLYR", 11)), three_d::COMPOSITION_3D_PARENT);
+    // Lane SMB-AE-3D-2: 2D and 3D layers parent each other; a camera or light parent is refused.
+    at_open(&|l| l[2]["parent"] = json!(identity("SLYR", 6)), three_d::COMPOSITION_3D_PARENT);
+    at_open(&|l| l[3]["parent"] = json!(identity("SLYR", 8)), three_d::COMPOSITION_3D_PARENT);
     at_open(&|l| l[2]["track_matte"] = json!({"source_layer_id":identity("SLYR",3),"mode":"alpha","inverted":false}), three_d::COMPOSITION_3D_LAYER_OPTION);
     at_tick(
         &|l| {
@@ -242,4 +244,101 @@ fn lights_materials_and_shadow_diagnostics_from_records() {
     // A light outside its window lights nothing: the planes stay unlit.
     let plain = source(&records(layers()), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap();
     assert!(plain.layers.iter().all(|x| !matches!(&x.content, SceneContent::Pinned(p) if matches!(p.content, SceneContent::Lit(_)))));
+}
+
+type V3 = [f64; 3];
+/// Independent rotations (f64 sin/cos; y down, z away): X, then Y, then Z.
+fn turn_xyz(v: V3, rx: f64, ry: f64, rz: f64) -> V3 {
+    let (s, c) = rx.to_radians().sin_cos();
+    let v = [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]];
+    let (s, c) = ry.to_radians().sin_cos();
+    let v = [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]];
+    let (s, c) = rz.to_radians().sin_cos();
+    [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]
+}
+fn add3(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn sub3(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot3(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn unit3(a: V3) -> V3 {
+    let l = dot3(a, a).sqrt();
+    [a[0] / l, a[1] / l, a[2] / l]
+}
+/// Pinhole projection of `p` by a two-node camera at `eye` looking at `poi` (zoom 50, 32 x 24).
+fn project(eye: V3, poi: V3, p: V3) -> [f64; 2] {
+    let f = unit3(sub3(poi, eye));
+    let d = unit3(sub3([0.0, 1.0, 0.0], [f[0] * f[1], f[1] * f[1], f[2] * f[1]]));
+    let r = [d[1] * f[2] - d[2] * f[1], d[2] * f[0] - d[0] * f[2], d[0] * f[1] - d[1] * f[0]];
+    let q = sub3(p, eye);
+    [16.0 + 50.0 * dot3(q, r) / dot3(q, f), 12.0 + 50.0 * dot3(q, d) / dot3(q, f)]
+}
+
+#[test]
+fn three_d_parent_chains_from_records() {
+    // Lane SMB-AE-3D-2 (STU-MOT-008): plane "tf" under a 3D null (turned about X, Y and Z, scaled
+    // 115 % x 90 %, so the child plane is sheared), the 2D layer "tb" under the same null (it takes
+    // the null's 2D part only), then the camera under the null as well. Every expectation is the
+    // test's own geometry (f64 sin/cos), not `three_d`'s.
+    let pixels = Pixels::fixture();
+    let null = |scale: [f64; 2]| {
+        json!({"layer_id":identity("SLYR",9),"timing":timing(),"streams":[
+                {"property":"position","static_value":[16.0,12.0]},{"property":"rotation","static_value":[6.0]},
+                {"property":"scale","static_value":[scale[0],scale[1]]}],
+            "three_d":{"position_z":s(4.0),"rotation_x":s(12.0),"rotation_y":s(-15.0)}})
+    };
+    let with = |camera_parented: bool, scale: [f64; 2]| {
+        let mut l = layers();
+        l[2]["parent"] = json!(identity("SLYR", 9));
+        l[3]["parent"] = json!(identity("SLYR", 9));
+        if camera_parented {
+            l[0]["parent"] = json!(identity("SLYR", 9));
+        }
+        l.push(null(scale));
+        records(l)
+    };
+    // The null maps its layer space (anchor 0: a content-less layer) to world.
+    let null_world = |p: V3| add3([16.0, 12.0, 4.0], turn_xyz([1.15 * p[0], 0.9 * p[1], p[2]], 12.0, -15.0, 6.0));
+    // tf's own transform (anchor = content centre (10, 7), position (16, 12, 0), Y turn 35).
+    let tf_world = |x: f64, y: f64| null_world(add3([16.0, 12.0, 0.0], turn_xyz([x - 10.0, y - 7.0, 0.0], 0.0, 35.0, 0.0)));
+    let corners = [[0.0, 0.0], [20.0, 0.0], [20.0, 14.0], [0.0, 14.0], [7.25, 3.5]];
+    let check_tf = |scene: &hsk_studio_composite::SceneComposition, eye: V3, poi: V3| {
+        let pieces: Vec<_> = scene.layers.iter().filter(|x| x.layer_id == identity("SLYR", 11)).collect();
+        assert!(!pieces.is_empty(), "tf is drawn");
+        for piece in pieces {
+            let SceneContent::Pinned(p) = &piece.content else { panic!("pinned: {:?}", piece.content) };
+            for c in corners {
+                let (x, y, w) = p.pin.apply_h(c[0], c[1]);
+                let want = project(eye, poi, tf_world(c[0], c[1]));
+                assert!((x / w - want[0]).abs() < 1e-9 && (y / w - want[1]).abs() < 1e-9, "{c:?}: {:?} vs {want:?}", (x / w, y / w));
+            }
+        }
+    };
+    let src = source(&with(false, [115.0, 90.0]), &pixels).expect("source");
+    let scene = src.scene_at(0, &CancellationToken::default()).expect("scene");
+    check_tf(&scene, [10.0, 4.0, -60.0], [16.0, 12.0, 0.0]);
+    // The 2D child takes the null's 2D part: position (16, 12), Z turn 6, scale 115 % x 90 %.
+    let tb = scene.layers.iter().find(|x| x.layer_id == identity("SLYR", 3)).expect("tb");
+    for c in [[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [1.5, 4.0]] {
+        let child = [16.0 + c[0] - 3.0, 12.0 + c[1] - 3.0, 0.0];
+        let want = add3([16.0, 12.0, 0.0], turn_xyz([1.15 * child[0], 0.9 * child[1], 0.0], 0.0, 0.0, 6.0));
+        let got = tb.matrix.apply(c[0], c[1]);
+        assert!((got.0 - want[0]).abs() < 1e-9 && (got.1 - want[1]).abs() < 1e-9, "{c:?}: {got:?} vs {want:?}");
+    }
+    // A two-node camera under the null: its position and point of interest move with the chain.
+    let moved = source(&with(true, [115.0, 90.0]), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap();
+    check_tf(&moved, null_world([10.0, 4.0, -60.0]), null_world([16.0, 12.0, 0.0]));
+    // Hostile: a zero parent scale is refused at the tick, before any plane is expanded.
+    refused(
+        source(&with(false, [0.0, 90.0]), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap_err(),
+        three_d::COMPOSITION_3D_PARENT_DEGENERATE,
+    );
+    // The chain's inverse is exact enough for the shading and shadow lookups.
+    let chain = three_d::Affine3::layer([1.0, 2.0, 3.0], [16.0, 12.0, 4.0], [1.15, 0.9], &three_d::layer_rotation([0.0; 3], 12.0, -15.0, 6.0));
+    let back = chain.inverse().unwrap().apply(chain.apply([3.0, -7.0, 11.0]));
+    assert!(back.iter().zip([3.0, -7.0, 11.0]).all(|(a, b)| (a - b).abs() < 1e-12), "{back:?}");
 }

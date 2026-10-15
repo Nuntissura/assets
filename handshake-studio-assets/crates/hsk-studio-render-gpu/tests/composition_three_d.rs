@@ -104,3 +104,25 @@ fn gpu_depth_of_field_matches_the_defocus_oracle() {
     println!("three_d dof: gpu max |delta| vs oracle {delta:e}");
     assert!(delta <= GPU_TOLERANCE, "{delta}");
 }
+
+#[test]
+fn gpu_parented_three_d_run_matches_the_ray_cast_oracle() {
+    // Lane SMB-AE-3D-2: the parented run of render-cpu's test against the same oracle.
+    if !gate("gpu_parented_three_d_run_matches_the_ray_cast_oracle") {
+        return;
+    }
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::parented_scene(&pixels);
+    let (want, _) = three_d::parented_oracle(&pixels);
+    let ctx = SceneContext {
+        backend: backend(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let got = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
+    let delta = scenes::max_delta(&got, &want);
+    println!("three_d parented: gpu max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "{delta}");
+}

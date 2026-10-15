@@ -194,6 +194,9 @@ struct CompLayer {
     three_d: Option<Box<Layer3d>>,
 }
 
+/// A layer's own 3D transform: anchor, position, X/Y scale, rotation (lane SMB-AE-3D-2).
+type Own3d = ([f64; 3], [f64; 3], [f64; 2], crate::three_d::Mat3);
+
 /// The 3D streams of a layer (STU-CMP-035, STU-MOT-013) and, for a camera layer, its zoom and
 /// point of interest (STU-CMP-040/040a). A light layer (STU-CMP-045) renders nothing itself.
 #[derive(Clone, Debug)]
@@ -846,9 +849,6 @@ impl CompositionTemporalSource {
                     None => None,
                     Some(d) => {
                         // Planar-renderer refusals (lane SMB-AE-3D slice 1; `crate::three_d`).
-                        if l.parent.is_some() {
-                            return Err(unsupported(id, crate::three_d::COMPOSITION_3D_PARENT));
-                        }
                         if l.track_matte.is_some() || !l.masks.is_empty() || l.corner_pin.is_some() || a.clipped {
                             return Err(unsupported(id, crate::three_d::COMPOSITION_3D_LAYER_OPTION));
                         }
@@ -893,9 +893,13 @@ impl CompositionTemporalSource {
                 content,
             });
         }
+        // Lane SMB-AE-3D-2: 2D and 3D layers parent each other (`crate::three_d` module docs); a
+        // camera or light as a parent is refused.
         for l in &layers {
-            let parent_3d = l.parent.as_deref().is_some_and(|p| layers.iter().any(|o| o.layer_id == p && o.three_d.is_some()));
-            if parent_3d {
+            let camera_or_light = l.parent.as_deref().is_some_and(|p| {
+                layers.iter().any(|o| o.layer_id == p && o.three_d.as_deref().is_some_and(|d| d.camera.is_some() || d.light.is_some()))
+            });
+            if camera_or_light {
                 return Err(unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_PARENT));
             }
         }
@@ -1140,7 +1144,7 @@ impl CompositionTemporalSource {
                 let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
                     continue;
                 };
-                run.push((Self::plane(l, d, layer, tick, cancel)?, Self::material_at(l, d, tick, cancel)?, d.space, d.revision));
+                run.push((Self::plane(comp, l, layer, tick, cancel)?,Self::material_at(l, d, tick, cancel)?, d.space, d.revision));
                 continue;
             }
             Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers)?;
@@ -1178,15 +1182,14 @@ impl CompositionTemporalSource {
         })
     }
 
-    /// A 3D layer's plane at `tick` (`crate::three_d` module docs).
-    fn plane(
-        l: &CompLayer,
-        d: &Layer3d,
-        layer: SceneLayer,
-        tick: i64,
-        cancel: &CancellationToken,
-    ) -> Result<crate::three_d::Plane3d, TemporalError> {
+    /// A layer's own 3D transform at `tick` (anchor, position, scale, rotation): a 3D layer with
+    /// its Z members, orientation and X/Y rotations; a 2D layer at Z 0 turned about Z only
+    /// (`crate::three_d` module docs).
+    fn own_3d(l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<Own3d, TemporalError> {
         let Parts { anchor, position, scale, rotation } = Self::transform_parts(l, tick, cancel)?;
+        let Some(d) = l.three_d.as_deref() else {
+            return Ok(([anchor[0], anchor[1], 0.0], [position[0], position[1], 0.0], scale, crate::three_d::rot_z(rotation)));
+        };
         let one = |p: &Option<Property>| -> Result<f64, TemporalError> {
             Ok(sample(&l.layer_id, p.as_ref(), 1, tick, cancel)?.and_then(|v| v.first().copied()).unwrap_or(0.0))
         };
@@ -1194,12 +1197,47 @@ impl CompositionTemporalSource {
             Some(v) => [v[0], v[1], v[2]],
             None => [0.0; 3],
         };
-        let transform = crate::three_d::Transform3d {
-            anchor: [anchor[0], anchor[1], one(&d.anchor_z)?],
-            position: [position[0], position[1], one(&d.position_z)?],
+        Ok((
+            [anchor[0], anchor[1], one(&d.anchor_z)?],
+            [position[0], position[1], one(&d.position_z)?],
             scale,
-            rotation: crate::three_d::layer_rotation(orientation, one(&d.rotation_x)?, one(&d.rotation_y)?, rotation),
-        };
+            crate::three_d::layer_rotation(orientation, one(&d.rotation_x)?, one(&d.rotation_y)?, rotation),
+        ))
+    }
+
+    /// The 3D parent chain of `l` at `tick` (STU-MOT-008; `crate::three_d::Affine3::layer` of every
+    /// ancestor, innermost first; identity without a parent). The walk is bounded by the layer
+    /// count (`Cycle`), like [`Self::matrix`].
+    fn parent_3d(comp: &Comp, l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<crate::three_d::Affine3, TemporalError> {
+        let mut chain = crate::three_d::Affine3::IDENTITY;
+        let mut next = l.parent.as_deref();
+        let mut steps = 0usize;
+        while let Some(pid) = next {
+            steps = steps.checked_add(1).ok_or(CompositeError::Overflow)?;
+            if steps > comp.layers.len() {
+                return Err(CompositeError::Cycle(l.layer_id.clone()).into());
+            }
+            let parent = comp.layers.iter().find(|p| p.layer_id == pid).ok_or_else(|| CompositeError::DanglingInput(pid.to_owned()))?;
+            let (anchor, position, scale, rotation) = Self::own_3d(parent, tick, cancel)?;
+            chain = chain.then(&crate::three_d::Affine3::layer(anchor, position, scale, &rotation));
+            next = parent.parent.as_deref();
+        }
+        if chain != crate::three_d::Affine3::IDENTITY && chain.inverse().is_none() {
+            return Err(unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_PARENT_DEGENERATE));
+        }
+        Ok(chain)
+    }
+
+    /// A 3D layer's plane at `tick` (`crate::three_d` module docs).
+    fn plane(
+        comp: &Comp,
+        l: &CompLayer,
+        layer: SceneLayer,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<crate::three_d::Plane3d, TemporalError> {
+        let (anchor, position, scale, rotation) = Self::own_3d(l, tick, cancel)?;
+        let transform = crate::three_d::Transform3d { anchor, position, scale, rotation, parent: Self::parent_3d(comp, l, tick, cancel)? };
         let bounds = l.content.bounds().ok_or_else(|| unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_CONTENT))?;
         Ok(crate::three_d::Plane3d {
             layer_id: layer.layer_id,
@@ -1243,7 +1281,8 @@ impl CompositionTemporalSource {
             let rx = one(d.rotation_x.as_ref())?.unwrap_or(0.0);
             let ry = one(d.rotation_y.as_ref())?.unwrap_or(0.0);
             let rz = one(l.streams.rotation.as_ref())?.unwrap_or(0.0);
-            let mut cam = crate::three_d::camera(position, orientation, rx, ry, rz, poi, zoom, comp.width, comp.height)
+            let parent = Self::parent_3d(comp, l, tick, cancel)?;
+            let mut cam = crate::three_d::camera_in(&parent, position, orientation, rx, ry, rz, poi, zoom, comp.width, comp.height)
                 .ok_or_else(|| unsupported(id, crate::three_d::COMPOSITION_3D_CAMERA_DEGENERATE))?;
             if d.camera_dof {
                 let named = |name: &str| -> Result<f64, TemporalError> {
@@ -1334,8 +1373,20 @@ impl CompositionTemporalSource {
                 one(d.rotation_y.as_ref())?.unwrap_or(0.0),
                 one(l.streams.rotation.as_ref())?.unwrap_or(0.0),
             );
+            // Lane SMB-AE-3D-2: a parented light moves with the chain and turns by its rotation
+            // part; its point of interest is mapped by the chain (Studio reading, UNVERIFIED).
+            let parent = Self::parent_3d(comp, l, tick, cancel)?;
+            let identity = parent == crate::three_d::Affine3::IDENTITY;
+            let own = if identity {
+                own
+            } else {
+                let turn = crate::three_d::rotation_part(&parent.m).ok_or_else(|| unsupported(id, crate::three_d::COMPOSITION_3D_PARENT_DEGENERATE))?;
+                crate::three_d::mat_mul(&turn, &own)
+            };
+            let position = if identity { position } else { parent.apply(position) };
             let forward = crate::three_d::mat_vec(&own, [0.0, 0.0, 1.0]);
-            let direction = match sample(id, ls.point_of_interest.as_ref(), 3, tick, cancel)? {
+            let poi = sample(id, ls.point_of_interest.as_ref(), 3, tick, cancel)?.map(|t| if identity { t } else { parent.apply([t[0], t[1], t[2]]).to_vec() });
+            let direction = match poi {
                 Some(t) => {
                     let v = [t[0] - position[0], t[1] - position[1], t[2] - position[2]];
                     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();

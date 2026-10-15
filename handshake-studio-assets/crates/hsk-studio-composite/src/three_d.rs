@@ -31,6 +31,18 @@
 //! its planes in its own depth order: intersecting planes cut each other along the intersection
 //! line (per pixel, without anti-aliasing of that line). A plane that crosses the camera plane is
 //! refused ([`COMPOSITION_3D_CROSSES_CAMERA`]); one wholly behind the camera renders nothing.
+//!
+//! Parenting (lane SMB-AE-3D-2; STU-MOT-008 "the child's transform is evaluated in the parent's
+//! transform space", STU-CMP-010 step 5 "the parent chain"): a 3D layer's world point is
+//! [`Transform3d::parent`] applied to its own transform, the parent chain being each ancestor's
+//! [`Affine3::layer`] map (any affine: a non-uniform parent scale shears the child plane, whose
+//! normal is then the cofactor image, [`Transform3d::normal`]). Mixing 2D and 3D (Studio reading;
+//! the spec names no rule, After Effects behaviour UNVERIFIED, D5): a 2D ancestor of a 3D layer
+//! acts as a 3D layer at Z 0 turned about Z only; a 2D layer under a 3D parent stays 2D and takes
+//! the parent's 2D part only (X/Y position, Z rotation, X/Y scale, X/Y anchor; Z position, anchor
+//! Z, X/Y rotation and orientation ignored). A camera or light under a parent ([`camera_in`]) moves
+//! with the chain and turns by its rotation part. A camera or light as a parent is refused
+//! ([`COMPOSITION_3D_PARENT`]); a singular chain is [`COMPOSITION_3D_PARENT_DEGENERATE`].
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::CompositeError;
@@ -51,8 +63,11 @@ pub const COMPOSITION_3D_CROSSES_CAMERA: &str = "composition_3d_plane_crosses_ca
 pub const COMPOSITION_3D_CAMERA_DEGENERATE: &str = "composition_3d_camera_degenerate";
 /// A 3D layer with content the planar model cannot place (none, adjustment, pinned).
 pub const COMPOSITION_3D_CONTENT: &str = "composition_3d_content";
-/// A parent on a 3D layer, or a 3D parent of a 2D layer (slice 1 of the planar renderer).
+/// A camera or light layer as the parent of another layer (lane SMB-AE-3D-2 parents every other
+/// layer kind, 2D or 3D, in 3D; a camera or light parent is not modelled).
 pub const COMPOSITION_3D_PARENT: &str = "composition_3d_parent";
+/// A parent chain whose linear part is singular (a zero scale) under a 3D layer, camera or light.
+pub const COMPOSITION_3D_PARENT_DEGENERATE: &str = "composition_3d_parent_degenerate";
 /// A track matte, mask path, corner pin or clipping on a 3D layer (slice 1 of the planar renderer).
 pub const COMPOSITION_3D_LAYER_OPTION: &str = "composition_3d_layer_option";
 /// More planes in one run than [`MAX_RUN_PLANES`].
@@ -172,6 +187,77 @@ pub fn layer_rotation(orientation: Vec3, rx: f64, ry: f64, rz: f64) -> Mat3 {
     mat_mul(&rot_z(rz), &mat_mul(&rot_y(ry), &mat_mul(&rot_x(rx), &o)))
 }
 
+/// An affine map of 3D space, `p -> m p + t` (lane SMB-AE-3D-2: the parent chain of a 3D layer).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine3 {
+    pub m: Mat3,
+    pub t: Vec3,
+}
+impl Affine3 {
+    pub const IDENTITY: Self = Self { m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3] };
+    pub fn apply(&self, p: Vec3) -> Vec3 {
+        let r = mat_vec(&self.m, p);
+        [r[0] + self.t[0], r[1] + self.t[1], r[2] + self.t[2]]
+    }
+    /// `outer` after `self`.
+    pub fn then(&self, outer: &Affine3) -> Affine3 {
+        Affine3 { m: mat_mul(&outer.m, &self.m), t: outer.apply(self.t) }
+    }
+    /// One layer's transform from its own layer space to its parent's: `position + R S (p -
+    /// anchor)` with `S = diag(sx, sy, 1)` (a layer has no Z scale; Studio reading, UNVERIFIED).
+    pub fn layer(anchor: Vec3, position: Vec3, scale: [f64; 2], rotation: &Mat3) -> Affine3 {
+        let mut m = *rotation;
+        for row in &mut m {
+            row[0] *= scale[0];
+            row[1] *= scale[1];
+        }
+        let a = mat_vec(&m, anchor);
+        Affine3 { m, t: [position[0] - a[0], position[1] - a[1], position[2] - a[2]] }
+    }
+    /// The cofactor matrix `det(m) m^-T` (maps plane normals; never divides).
+    pub fn cofactor(&self) -> Mat3 {
+        let m = &self.m;
+        let c = |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+        [
+            [c(1, 2, 1, 2), -c(1, 2, 0, 2), c(1, 2, 0, 1)],
+            [-c(0, 2, 1, 2), c(0, 2, 0, 2), -c(0, 2, 0, 1)],
+            [c(0, 1, 1, 2), -c(0, 1, 0, 2), c(0, 1, 0, 1)],
+        ]
+    }
+    pub fn det(&self) -> f64 {
+        let m = &self.m;
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    }
+    /// The inverse map, `None` when `m` is singular or not finite.
+    pub fn inverse(&self) -> Option<Affine3> {
+        let det = self.det();
+        if !(det.is_finite() && det.abs() > 1e-300) {
+            return None;
+        }
+        let cof = self.cofactor();
+        let mut inv = transpose(&cof);
+        for row in &mut inv {
+            for v in row.iter_mut() {
+                *v /= det;
+            }
+        }
+        let t = mat_vec(&inv, self.t);
+        Some(Affine3 { m: inv, t: [-t[0], -t[1], -t[2]] })
+    }
+}
+
+/// The rotation part of a linear map (Gram-Schmidt on its columns, right-handed): what a camera
+/// or light takes from a scaled or sheared parent chain (Studio reading, UNVERIFIED). `None` when
+/// the first two columns are degenerate.
+pub fn rotation_part(m: &Mat3) -> Option<Mat3> {
+    let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
+    let u0 = normalize(col(0))?;
+    let c1 = col(1);
+    let u1 = normalize(sub(c1, scale(u0, dot(c1, u0))))?;
+    let u2 = cross(u0, u1);
+    Some([[u0[0], u1[0], u2[0]], [u0[1], u1[1], u2[1]], [u0[2], u1[2], u2[2]]])
+}
+
 /// The 3D transform of one layer at a tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform3d {
@@ -180,13 +266,22 @@ pub struct Transform3d {
     /// X and Y scale factors (1 = unscaled); a plane has no Z extent.
     pub scale: [f64; 2],
     pub rotation: Mat3,
+    /// The parent chain (STU-MOT-008), the layer's parent space -> world; [`Affine3::IDENTITY`]
+    /// without a parent.
+    pub parent: Affine3,
 }
 impl Transform3d {
     /// World point of layer point `(x, y, 0)`.
     pub fn world(&self, x: f64, y: f64) -> Vec3 {
         let local = [self.scale[0] * (x - self.anchor[0]), self.scale[1] * (y - self.anchor[1]), -self.anchor[2]];
         let r = mat_vec(&self.rotation, local);
-        [self.position[0] + r[0], self.position[1] + r[1], self.position[2] + r[2]]
+        let own = [self.position[0] + r[0], self.position[1] + r[1], self.position[2] + r[2]];
+        if self.parent == Affine3::IDENTITY { own } else { self.parent.apply(own) }
+    }
+    /// A world normal of the plane (not necessarily unit; either side).
+    pub fn normal(&self) -> Vec3 {
+        let own = mat_vec(&self.rotation, [0.0, 0.0, 1.0]);
+        if self.parent == Affine3::IDENTITY { own } else { mat_vec(&self.parent.cofactor(), own) }
     }
 }
 
@@ -259,10 +354,33 @@ pub fn camera(
     width: u32,
     height: u32,
 ) -> Option<Camera> {
+    camera_in(&Affine3::IDENTITY, position, orientation, rx, ry, rz, poi, zoom, width, height)
+}
+
+/// [`camera`] under a parent chain (lane SMB-AE-3D-2; Studio reading, UNVERIFIED): the position
+/// and the point of interest are mapped by `parent`; a one-node camera turns by the rotation part
+/// of the chain ([`rotation_part`], scale and shear dropped), a two-node camera looks at its mapped
+/// point of interest. `None` when degenerate.
+#[allow(clippy::too_many_arguments)]
+pub fn camera_in(
+    parent: &Affine3,
+    position: Vec3,
+    orientation: Vec3,
+    rx: f64,
+    ry: f64,
+    rz: f64,
+    poi: Option<Vec3>,
+    zoom: f64,
+    width: u32,
+    height: u32,
+) -> Option<Camera> {
     let own = layer_rotation(orientation, rx, ry, rz);
+    let identity = *parent == Affine3::IDENTITY;
+    let position = if identity { position } else { parent.apply(position) };
     let rotation = match poi {
-        None => own,
-        Some(target) => mat_mul(&look_at(position, target)?, &own),
+        None if identity => own,
+        None => mat_mul(&rotation_part(&parent.m)?, &own),
+        Some(target) => mat_mul(&look_at(position, if identity { target } else { parent.apply(target) })?, &own),
     };
     (zoom.is_finite() && zoom > 0.0).then_some(Camera {
         position,
@@ -731,7 +849,7 @@ pub type CasterAlpha<'a> = &'a dyn Fn(usize, f64, f64) -> f32;
 /// clamped). Studio reading of the classic renderer, UNVERIFIED (D5).
 pub fn shade(lit: &LitContent, x: f64, y: f64, albedo: [f32; 3], caster_alpha: CasterAlpha<'_>) -> [f32; 3] {
     let p = lit.transform.world(x, y);
-    let mut n = normalize(mat_vec(&lit.transform.rotation, [0.0, 0.0, 1.0])).unwrap_or([0.0, 0.0, 1.0]);
+    let mut n = normalize(lit.transform.normal()).unwrap_or([0.0, 0.0, 1.0]);
     let to_eye = sub(lit.eye, p);
     if dot(n, to_eye) < 0.0 {
         n = scale(n, -1.0);
@@ -800,7 +918,7 @@ pub fn shade(lit: &LitContent, x: f64, y: f64, albedo: [f32; 3], caster_alpha: C
 /// Distance along the unit ray `p + t u` to the plane of `t3`, for `1e-9 < t < max` (a shadow
 /// segment towards the light).
 fn segment_hit(t3: &Transform3d, p: Vec3, u: Vec3, max: f64) -> Option<f64> {
-    let n = mat_vec(&t3.rotation, [0.0, 0.0, 1.0]);
+    let n = t3.normal();
     let o = t3.world(t3.anchor[0], t3.anchor[1]);
     let den = dot(n, u);
     if den.abs() < 1e-12 {
@@ -811,7 +929,8 @@ fn segment_hit(t3: &Transform3d, p: Vec3, u: Vec3, max: f64) -> Option<f64> {
 }
 
 /// Layer point of world point `w` on the plane of `t3` (inverse of [`Transform3d::world`]).
-fn layer_point(t3: &Transform3d, w: Vec3) -> Option<(f64, f64)> {
+pub fn layer_point(t3: &Transform3d, w: Vec3) -> Option<(f64, f64)> {
+    let w = if t3.parent == Affine3::IDENTITY { w } else { t3.parent.inverse()?.apply(w) };
     let u = mat_vec(&transpose(&t3.rotation), sub(w, t3.position));
     (t3.scale[0] != 0.0 && t3.scale[1] != 0.0).then(|| (u[0] / t3.scale[0] + t3.anchor[0], u[1] / t3.scale[1] + t3.anchor[1]))
 }
