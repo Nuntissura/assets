@@ -14,6 +14,8 @@ hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
 miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
+lewton = { version = "=0.10.2", default-features = false, features = [] }
+opus-pure = { version = "=0.2.2", default-features = false, features = [] }
 rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"], optional = true }
 libc = { version = "=0.2.190", default-features = false, features = [], optional = true }
 

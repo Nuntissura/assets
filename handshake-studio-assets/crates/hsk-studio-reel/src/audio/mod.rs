@@ -16,7 +16,12 @@ pub(crate) mod engine;
 pub mod flac;
 mod md5;
 mod native_flac;
+mod ogg;
+mod ogg_audio;
+pub mod opus;
+mod packet;
 mod provider;
+pub mod vorbis;
 
 use crate::error::ReelError;
 use crate::model::{
@@ -24,7 +29,10 @@ use crate::model::{
 };
 use hsk_studio_accord::CancellationToken;
 
-pub use provider::{AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID};
+pub use ogg_audio::OggCodec;
+pub use opus::{OPUS_DECODER_ID, OPUS_DECODER_VERSION};
+pub use provider::{AudioFileKind, AudioFileProvider, FLAC_PROVIDER_ID, OGG_PROVIDER_ID};
+pub use vorbis::{VORBIS_DECODER_ID, VORBIS_DECODER_VERSION};
 
 /// Highest sample rate any audio header may declare (768 kHz, the highest rate of common DAW hardware);
 /// above it a header is refused as `MEDIA_LIMIT_EXCEEDED` before allocation.
@@ -56,9 +64,47 @@ pub fn flac_descriptor() -> CodecDescriptor {
     }
 }
 
+/// Descriptor of the Vorbis adapter (decode through lewton 0.10.2).
+pub fn vorbis_descriptor() -> CodecDescriptor {
+    CodecDescriptor {
+        id: "vorbis",
+        name: "Vorbis I (lewton decoder)",
+        kind: MediaKind::Audio,
+        container: "ogg|matroska",
+        bit_depths: &[32],
+        chroma: None,
+        transfer: None,
+        decoder_id: VORBIS_DECODER_ID,
+        decoder_version: VORBIS_DECODER_VERSION,
+        licence: "MIT OR Apache-2.0",
+        certification: Certification::NotApplicable,
+        can_decode: true,
+        can_encode: false,
+    }
+}
+
+/// Descriptor of the Opus adapter (decode through opus-pure 0.2.2, 48 kHz output).
+pub fn opus_descriptor() -> CodecDescriptor {
+    CodecDescriptor {
+        id: "opus",
+        name: "Opus (opus-pure decoder, RFC 6716)",
+        kind: MediaKind::Audio,
+        container: "ogg|matroska|isobmff",
+        bit_depths: &[16],
+        chroma: None,
+        transfer: None,
+        decoder_id: OPUS_DECODER_ID,
+        decoder_version: OPUS_DECODER_VERSION,
+        licence: "BSD-3-Clause",
+        certification: Certification::NotApplicable,
+        can_decode: true,
+        can_encode: false,
+    }
+}
+
 /// The audio codec adapters of this build, in a stable order (STU-VID-051 item 2).
 pub fn audio_codec_descriptors() -> Vec<CodecDescriptor> {
-    vec![flac_descriptor()]
+    vec![flac_descriptor(), vorbis_descriptor(), opus_descriptor()]
 }
 
 /// A whole decoded audio stream (for import into Score, which works on planar f32 blocks).

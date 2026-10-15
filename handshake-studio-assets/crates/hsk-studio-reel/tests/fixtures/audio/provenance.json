@@ -24,6 +24,44 @@
           "ref_bytes": 28800
         }
       }
+    },
+    "ogg": {
+      "generator_script": "generate-ogg.sh (run once offline under the artifact root on D:)",
+      "reference": "raw s16le of libavcodec decode (Vorbis: libavcodec native decoder; Opus: -c:a libopus, i.e. libopus itself; FLAC: native), zlib level 9 (Python zlib) as FILE.ref-s16.zz; libavcodec reorders 5.1 to FL FR FC LFE BL BR",
+      "files": {
+        "vorbis-44k1-2ch.ogg": {
+          "bytes": 5724,
+          "sha256": "10bd57e34aba7a18041200019dee135724efd974f2686d9c58faa17a36df4bc4",
+          "content": "stereo 440/1250 Hz, 44100 Hz, 0.25 s, libvorbis -q:a 4",
+          "ref": "vorbis-44k1-2ch.ogg.ref-s16.zz",
+          "ref_s16le_bytes": 43588,
+          "ref_s16le_sha256": "e871152a35269fc43f9f4002b05037f3fa28adb29035f7a0753b39bb989c9568"
+        },
+        "opus-48k-2ch.opus": {
+          "bytes": 5731,
+          "sha256": "1469872454576793b521061d3709d8a0d76692d144ab4682db062733e28ed190",
+          "content": "stereo 440/1250 Hz, 48000 Hz, 0.25 s, libopus 96 kb/s (mapping family 0)",
+          "ref": "opus-48k-2ch.opus.ref-s16.zz",
+          "ref_s16le_bytes": 48000,
+          "ref_s16le_sha256": "1ce6451f79976e889c68a975b56bdf78c5c7870690ed07bf68b999a1bfe73a26"
+        },
+        "opus-48k-6ch.opus": {
+          "bytes": 8255,
+          "sha256": "79d621137f793317b3bc72398c7a9850ffe415ea3160690c2edee76164178ab6",
+          "content": "5.1 (300/500/700/60/900/1100 Hz), 48000 Hz, 0.2 s, libopus 192 kb/s, -mapping_family 1 (4 streams, 2 coupled)",
+          "ref": "opus-48k-6ch.opus.ref-s16.zz",
+          "ref_s16le_bytes": 115200,
+          "ref_s16le_sha256": "fcdff6edce40519f72a8e6b106cccd582dd68fb0ee009800b2ae716661ee7cc2"
+        },
+        "flac-in-ogg-32k-1ch.oga": {
+          "bytes": 2742,
+          "sha256": "5543db5282eace7c9ee88712bf832a9b8bfd4bcd974c1ad2992186fcb8cec0f5",
+          "content": "mono 880 Hz, 32000 Hz, 16-bit, 0.25 s, ffmpeg FLAC encoder in the Ogg FLAC mapping",
+          "ref": "flac-in-ogg-32k-1ch.oga.ref-s16.zz",
+          "ref_s16le_bytes": 16000,
+          "ref_s16le_sha256": "6013dfb0e5acc4b69ca4af35feb2565c7fbead2c22a2dda2198a61f31b94c7f6"
+        }
+      }
     }
   }
 }

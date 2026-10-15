@@ -4,6 +4,8 @@
 use super::engine::{self, Ids, StreamShape};
 use super::flac::{FlacEncoder, FlacLimits, StreamInfo};
 use super::native_flac::{NativeFlac, read_header};
+use super::ogg_audio;
+use super::packet::Decode;
 use super::{DecodedAudio, FLAC_DECODER_ID, FLAC_DECODER_VERSION, flac_descriptor};
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
@@ -12,12 +14,16 @@ use std::io::{SeekFrom, Write};
 
 /// Provider id of native FLAC files.
 pub const FLAC_PROVIDER_ID: &str = "flac";
+/// Provider id of Ogg audio files (Vorbis, Opus, FLAC in Ogg).
+pub const OGG_PROVIDER_ID: &str = "ogg-audio";
 
 /// Container kinds served by `AudioFileProvider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioFileKind {
     /// Native FLAC stream (`fLaC`).
     Flac,
+    /// Ogg (`OggS`) carrying Vorbis, Opus or FLAC.
+    Ogg,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -34,12 +40,19 @@ impl AudioFileProvider {
 
     /// Every standalone audio file provider of this build, in a stable order.
     pub fn all() -> Vec<Self> {
-        vec![Self::flac()]
+        vec![Self::flac(), Self::ogg()]
+    }
+
+    pub const fn ogg() -> Self {
+        Self {
+            kind: AudioFileKind::Ogg,
+        }
     }
 
     fn id(&self) -> &'static str {
         match self.kind {
             AudioFileKind::Flac => FLAC_PROVIDER_ID,
+            AudioFileKind::Ogg => OGG_PROVIDER_ID,
         }
     }
 }
@@ -74,12 +87,28 @@ impl MediaProvider for AudioFileProvider {
                 container: "flac",
                 ..flac_descriptor()
             },
+            AudioFileKind::Ogg => CodecDescriptor {
+                id: OGG_PROVIDER_ID,
+                name: "Ogg audio (Vorbis, Opus, FLAC)",
+                kind: MediaKind::Audio,
+                container: "ogg",
+                bit_depths: &[16, 24, 32],
+                chroma: None,
+                transfer: None,
+                decoder_id: "ogg-rfc3533",
+                decoder_version: "1",
+                licence: STUDIO_OWNED_LICENCE,
+                certification: Certification::NotApplicable,
+                can_decode: true,
+                can_encode: false,
+            },
         }
     }
 
     fn sniff(&self, head: &[u8]) -> bool {
         match self.kind {
             AudioFileKind::Flac => head.starts_with(b"fLaC"),
+            AudioFileKind::Ogg => head.starts_with(b"OggS"),
         }
     }
 
@@ -91,8 +120,12 @@ impl MediaProvider for AudioFileProvider {
     ) -> Result<StreamLayout, ReelError> {
         check_cancel(cancel)?;
         let len = source_len(src)?;
-        let header = read_header(src, len, limits.max_probe_bytes, &flac_limits())?;
-        let shape = shape_of(&header.info);
+        let shape = match self.kind {
+            AudioFileKind::Flac => {
+                shape_of(&read_header(src, len, limits.max_probe_bytes, &flac_limits())?.info)
+            }
+            AudioFileKind::Ogg => ogg_audio::open(src, len, cancel)?.shape,
+        };
         let tps = crate::time::exact_ticks_per_unit(shape.rate).ok_or(ReelError::Unsupported {
             what: "sample-rate-not-tick-exact",
         })?;
@@ -102,7 +135,7 @@ impl MediaProvider for AudioFileProvider {
             width: 0,
             height: 0,
             ticks_per_unit: tps,
-            units: header.info.total_samples,
+            units: shape.total.unwrap_or(0),
             channels: shape.channels,
             tracks: 1,
         })
@@ -142,6 +175,29 @@ impl MediaProvider for AudioFileProvider {
                         codec: FLAC_PROVIDER_ID.into(),
                         decoder_id: FLAC_DECODER_ID,
                         decoder_version: FLAC_DECODER_VERSION,
+                    },
+                    req,
+                    limits,
+                    cancel,
+                    sink,
+                )
+            }
+            AudioFileKind::Ogg => {
+                let ogg = ogg_audio::open(src, len, cancel)?;
+                engine::plan(&ogg.shape, req)?;
+                let (decoder_id, decoder_version) = ogg.codec.ids();
+                let shape = ogg.shape;
+                let mut source = Decode {
+                    source: ogg.packets,
+                    decoder: ogg.decoder,
+                };
+                engine::deliver(
+                    &mut source,
+                    &shape,
+                    Ids {
+                        codec: OGG_PROVIDER_ID.into(),
+                        decoder_id,
+                        decoder_version,
                     },
                     req,
                     limits,
@@ -286,6 +342,24 @@ pub(crate) fn decode_file(
             decoder_id: FLAC_DECODER_ID,
             decoder_version: FLAC_DECODER_VERSION,
             checksum_verified,
+        });
+    }
+    if head.starts_with(b"OggS") {
+        let ogg = ogg_audio::open(src, len, cancel)?;
+        let (decoder_id, decoder_version) = ogg.codec.ids();
+        let shape = ogg.shape;
+        let mut source = Decode {
+            source: ogg.packets,
+            decoder: ogg.decoder,
+        };
+        let interleaved = engine::decode_all(&mut source, &shape, max_frames, cancel)?;
+        return Ok(DecodedAudio {
+            sample_rate: shape.rate,
+            channels: shape.channels,
+            interleaved,
+            decoder_id,
+            decoder_version,
+            checksum_verified: None,
         });
     }
     Err(ReelError::ImportUnsupported {

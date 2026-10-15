@@ -4,6 +4,7 @@
 mod audio_support;
 use audio_support::*;
 use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_reel::audio::*;
 use hsk_studio_reel::*;
 use std::io::Cursor;
 
@@ -16,7 +17,7 @@ fn ints_le(ints: &[i32], bytes: usize) -> Vec<u8> {
         .collect()
 }
 
-fn integers(bytes: &[u8]) -> Result<(audio::flac::StreamInfo, Vec<i32>, Option<bool>), ReelError> {
+fn integers(bytes: &[u8]) -> Result<(flac::StreamInfo, Vec<i32>, Option<bool>), ReelError> {
     decode_flac_integers(
         &mut Cursor::new(bytes.to_vec()),
         &Limits::default(),
@@ -194,7 +195,7 @@ const TICKS_PER_SAMPLE_44K1: u64 = hsk_studio_accord::TICKS_PER_SECOND / 44_100;
 /// and truncated frames are typed errors, never a panic.
 #[test]
 fn flac_hostile_headers_are_refused_before_allocation() {
-    let set_streaminfo = |f: &dyn Fn(&mut audio::flac::StreamInfo)| {
+    let set_streaminfo = |f: &dyn Fn(&mut flac::StreamInfo)| {
         let (mut info, _, _) = integers(S16).unwrap();
         f(&mut info);
         let mut bytes = S16.to_vec();
