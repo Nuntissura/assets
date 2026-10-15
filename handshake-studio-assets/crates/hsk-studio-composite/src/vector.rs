@@ -24,6 +24,16 @@
 //! transform and rotation 0 (`image_paint_transform`; Figma's rotation of a filled image is not
 //! modelled). Figma's own placement maths is UNVERIFIED (D5): class Approximate.
 //!
+//! Strokes, gradients, patterns and exact coverage (lane SMB-COMPOSITE-VECTOR-IN-GROUP slice 2) come
+//! from nib (`crate::vector_nib`): a stroke row ([`FillPaint::Stroke`]) paints inside the nib stroke
+//! outline of the geometry (its own `coverage_u8` plane, [`StrokePlane`]); strokes paint above every
+//! fill. A gradient or pattern row ([`FillPaint::Gradient`], [`FillPaint::Pattern`]) is evaluated by
+//! nib over the layer plane into a straight RGBA tile ([`PreparedPaint::Painted`]). With
+//! [`VectorCoverage::Exact`] the fill coverage is nib's exact area coverage of the layer outline
+//! (paths united, boolean groups combined by nib) instead of the supersampled rule; the default
+//! stays supersampled so existing planes are unchanged. The layer plane covers fills, strokes and
+//! image copies; every plane of a layer shares its placement.
+//!
 //! Refusals are typed per layer and never dropped (`PreparedVectors::refusal`): unresolved paths or
 //! images, gradients, strokes, colour profiles composite would have to convert, budgets. Hostile sizes
 //! (V4-01/02): plane pixels and the sample work are checked before allocation.
@@ -57,6 +67,17 @@ pub const REFUSE_IMAGE_TRANSFORM: &str = "image_paint_transform";
 pub const REFUSE_IMAGE_TILE_COUNT: &str = "image_paint_tile_count";
 pub const REFUSE_IMAGE_BOUNDS: &str = "image_paint_bounds";
 pub const REFUSE_FILL: &str = "vector_fill";
+/// A stroke row whose paint is an image or another stroke.
+pub const REFUSE_STROKE_PAINT: &str = "vector_stroke_paint";
+/// A fill row above a stroke row (strokes paint above fills).
+pub const REFUSE_STROKE_ORDER: &str = "vector_stroke_order";
+pub use crate::vector_nib::{PaintedTile, REFUSE_NIB_BUDGET, REFUSE_PAINT, REFUSE_STROKE_STYLE};
+/// nib's paint and stroke models, re-exported for folio-free callers (renderer tests).
+pub use hsk_studio_nib::raster::{
+    Gradient, GradientGeometry, GradientStop, Interpolation as GradientInterpolation, PatternTile,
+    Spread,
+};
+pub use hsk_studio_nib::stroke::{DashPattern, LineCap, LineJoin, StrokeAlign, StrokeStyle};
 
 /// The four live boolean operators.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +139,16 @@ pub enum FillPaint {
     /// Straight RGBA in the plan's blend space.
     Solid([f32; 4]),
     Image(ImageFill),
+    /// A nib gradient in plan pixels (colours in plan units), evaluated over the layer plane.
+    Gradient(Gradient),
+    /// A nib raster pattern in plan pixels, evaluated over the layer plane.
+    Pattern(PatternTile),
+    /// A stroke row: `paint` (solid, gradient or pattern) inside the nib stroke outline of the
+    /// layer's geometry instead of its fill. Stroke rows follow every fill row.
+    Stroke {
+        style: StrokeStyle,
+        paint: Box<FillPaint>,
+    },
 }
 
 /// One fill row (bottom first): its paint, blend mode and opacity fraction.
@@ -136,10 +167,22 @@ pub struct VectorLayerSpec {
     pub fills: Vec<FillSpec>,
 }
 
+/// How a layer's fill coverage is computed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VectorCoverage {
+    /// Studio supersampling (module docs; the original rule, unchanged).
+    #[default]
+    Supersampled,
+    /// nib's exact signed-area coverage of the layer outline (`crate::vector_nib`).
+    Exact,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct VectorResolution {
-    /// Samples per axis, `1..=16`.
+    /// Samples per axis, `1..=16` (supersampled coverage).
     pub aa_samples: u8,
+    /// Fill coverage method; strokes always use nib's exact coverage.
+    pub coverage: VectorCoverage,
     /// Pixels of one layer plane, checked before it is allocated.
     pub max_layer_pixels: u64,
     pub path_limits: PathLimits,
@@ -148,6 +191,7 @@ impl Default for VectorResolution {
     fn default() -> Self {
         Self {
             aa_samples: 4,
+            coverage: VectorCoverage::Supersampled,
             max_layer_pixels: 64 << 20,
             path_limits: PathLimits::default(),
         }
@@ -164,6 +208,8 @@ pub enum PreparedPaint {
         info: ImageInfo,
         placements: Vec<Affine2>,
     },
+    /// A gradient or pattern evaluated by nib over the layer plane (straight RGBA tile).
+    Painted(PaintedTile),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedFill {
@@ -180,9 +226,38 @@ pub struct VectorPlane {
     pub placement: Option<Rect>,
     pub coverage: Vec<u8>,
     pub sha256: [u8; 32],
+    /// Every row, bottom first (fills, then strokes).
     pub fills: Vec<PreparedFill>,
+    /// The nib stroke coverage of every stroke row (same placement as the fill plane).
+    pub strokes: Vec<StrokePlane>,
 }
+
+/// One stroke row's coverage (`coverage_u8` over the layer plane).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrokePlane {
+    /// Index of the row in [`VectorPlane::fills`].
+    pub row: usize,
+    pub coverage: Vec<u8>,
+    pub sha256: [u8; 32],
+}
+
 impl VectorPlane {
+    /// The stroke plane of row `row` as pigment's mask.
+    pub fn stroke_mask(&self, row: usize) -> Option<Mask<'_>> {
+        let bounds = self.placement?;
+        let s = self.strokes.iter().find(|s| s.row == row)?;
+        Some(Mask {
+            bounds,
+            sample_format: "coverage_u8",
+            bytes: &s.coverage,
+            stride_bytes: u64::from(bounds.width),
+            sha256: s.sha256,
+        })
+    }
+    /// Is row `row` a stroke row?
+    pub fn is_stroke(&self, row: usize) -> bool {
+        self.strokes.iter().any(|s| s.row == row)
+    }
     /// The plane as pigment's mask.
     pub fn mask(&self) -> Option<Mask<'_>> {
         let bounds = self.placement?;
@@ -424,7 +499,8 @@ fn placements(fill: &ImageFill, bounds: kurbo::Rect) -> Result<Vec<Affine2>, &'s
     })
 }
 
-/// Draws one spec: the coverage plane and the prepared fill rows, or the refusal code.
+/// Draws one spec: the coverage plane, the stroke planes and the prepared rows, or the refusal
+/// code.
 fn prepare_one(
     spec: &VectorLayerSpec,
     res: &VectorResolution,
@@ -434,36 +510,64 @@ fn prepare_one(
         Ok(b) => b,
         Err(code) => return Ok(Err(code)),
     };
-    let mut fills = Vec::with_capacity(spec.fills.len());
+    // Rows: fills first, then strokes (strokes paint above fills, Figma order; a fill row above a
+    // stroke row is refused, never reordered silently).
+    let mut seen_stroke = false;
+    let mut rows: Vec<(&FillPaint, Option<&hsk_studio_nib::stroke::StrokeStyle>, &FillSpec)> =
+        Vec::with_capacity(spec.fills.len());
     for f in &spec.fills {
         if !(f.opacity.is_finite() && (0.0..=1.0).contains(&f.opacity)) {
             return Ok(Err(REFUSE_FILL));
         }
-        let paint = match &f.paint {
+        match &f.paint {
+            FillPaint::Stroke { style, paint } => {
+                if matches!(**paint, FillPaint::Stroke { .. } | FillPaint::Image(_)) {
+                    return Ok(Err(REFUSE_STROKE_PAINT));
+                }
+                seen_stroke = true;
+                rows.push((paint, Some(style), f));
+            }
+            other => {
+                if seen_stroke {
+                    return Ok(Err(REFUSE_STROKE_ORDER));
+                }
+                rows.push((other, None, f));
+            }
+        }
+    }
+    // Stroke outlines (nib) and their bounds join the plane rect.
+    let mut stroke_paths = Vec::new();
+    let mut bbox = built.bbox;
+    for (_, style, _) in &rows {
+        let Some(style) = style else { continue };
+        let path = match crate::vector_nib::stroke_outline(&spec.geometry, style) {
+            Ok(p) => p,
+            Err(code) => return Ok(Err(code)),
+        };
+        if let Some([x0, y0, x1, y1]) = path.as_ref().and_then(crate::vector_nib::path_bounds) {
+            bbox = union_box(bbox, Some(kurbo::Rect::new(x0, y0, x1, y1)));
+        }
+        stroke_paths.push(path);
+    }
+    let mut image_placements: Vec<Option<Vec<Affine2>>> = Vec::with_capacity(rows.len());
+    for (paint, _, _) in &rows {
+        image_placements.push(match paint {
+            FillPaint::Image(image) => {
+                let Some(fill_box) = built.bbox else {
+                    return Ok(Err(REFUSE_IMAGE_BOUNDS));
+                };
+                match placements(image, fill_box) {
+                    Ok(p) => Some(p),
+                    Err(code) => return Ok(Err(code)),
+                }
+            }
             FillPaint::Solid(rgba) => {
                 if !rgba.iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)) {
                     return Ok(Err(REFUSE_FILL));
                 }
-                PreparedPaint::Solid(*rgba)
+                None
             }
-            FillPaint::Image(image) => {
-                let Some(bbox) = built.bbox else {
-                    return Ok(Err(REFUSE_IMAGE_BOUNDS));
-                };
-                match placements(image, bbox) {
-                    Ok(placements) => PreparedPaint::Image {
-                        source_id: image.source_id.clone(),
-                        info: image.info,
-                        placements,
-                    },
-                    Err(code) => return Ok(Err(code)),
-                }
-            }
-        };
-        fills.push(PreparedFill {
-            paint,
-            mode: f.mode,
-            opacity: f.opacity,
+            _ => None,
         });
     }
     let empty = || VectorPlane {
@@ -472,8 +576,9 @@ fn prepare_one(
         coverage: Vec::new(),
         sha256: hsk_studio_prism::profile_hash(&[]),
         fills: Vec::new(),
+        strokes: Vec::new(),
     };
-    let Some(bbox) = built.bbox else {
+    let Some(bbox) = bbox else {
         return Ok(Ok(empty()));
     };
     let (x0, y0) = (bbox.x0.floor(), bbox.y0.floor());
@@ -485,6 +590,9 @@ fn prepare_one(
     let (Some(width), Some(height)) = (side(x0, x1), side(y0, y1)) else {
         return Ok(Err(REFUSE_VECTOR_OVER_LIMIT));
     };
+    if !(x0.abs() < 9.0e15 && y0.abs() < 9.0e15) {
+        return Ok(Err(REFUSE_VECTOR_OVER_LIMIT));
+    }
     if width == 0 || height == 0 {
         return Ok(Ok(empty()));
     }
@@ -496,41 +604,115 @@ fn prepare_one(
         width,
         height,
     };
-    for fill in &fills {
-        if let PreparedPaint::Image {
-            info, placements, ..
-        } = &fill.paint
-        {
-            for a in placements {
-                let t = LayerTransform::new(*a, IMAGE_FILTER).with_edge(EdgeMode::Clamp);
-                let source = Rect {
-                    x: 0,
-                    y: 0,
-                    width: info.width,
-                    height: info.height,
-                };
-                let Ok(prepared) = PreparedTransform::new(&t, source) else {
-                    return Ok(Err(REFUSE_IMAGE_TRANSFORM));
-                };
-                let Some(united) = union_rect(plane_rect, prepared.bounds()) else {
-                    return Ok(Err(REFUSE_VECTOR_OVER_LIMIT));
-                };
-                plane_rect = united;
-            }
+    for ((paint, _, _), placed) in rows.iter().zip(&image_placements) {
+        let (FillPaint::Image(image), Some(placed)) = (paint, placed) else {
+            continue;
+        };
+        for a in placed {
+            let t = LayerTransform::new(*a, IMAGE_FILTER).with_edge(EdgeMode::Clamp);
+            let source = Rect {
+                x: 0,
+                y: 0,
+                width: image.info.width,
+                height: image.info.height,
+            };
+            let Ok(prepared) = PreparedTransform::new(&t, source) else {
+                return Ok(Err(REFUSE_IMAGE_TRANSFORM));
+            };
+            let Some(united) = union_rect(plane_rect, prepared.bounds()) else {
+                return Ok(Err(REFUSE_VECTOR_OVER_LIMIT));
+            };
+            plane_rect = united;
         }
     }
-    let (x0, y0, width, height) = (
-        plane_rect.x as f64,
-        plane_rect.y as f64,
-        plane_rect.width,
-        plane_rect.height,
-    );
-    let Some(pixels) = u64::from(width)
-        .checked_mul(u64::from(height))
+    let Some(pixels) = u64::from(plane_rect.width)
+        .checked_mul(u64::from(plane_rect.height))
         .filter(|p| *p <= res.max_layer_pixels)
     else {
         return Ok(Err(REFUSE_VECTOR_OVER_LIMIT));
     };
+    let coverage = match res.coverage {
+        VectorCoverage::Supersampled => {
+            match supersampled(&built, plane_rect, pixels, res, cancel)? {
+                Ok(c) => c,
+                Err(code) => return Ok(Err(code)),
+            }
+        }
+        VectorCoverage::Exact => {
+            let path = match crate::vector_nib::outline(&spec.geometry, 0) {
+                Ok(p) => p,
+                Err(code) => return Ok(Err(code)),
+            };
+            match crate::vector_nib::coverage(path.as_ref(), plane_rect, res.max_layer_pixels) {
+                Ok(c) => c,
+                Err(code) => return Ok(Err(code)),
+            }
+        }
+    };
+    cancel.check().map_err(|_| CompositeError::Canceled)?;
+    let mut fills = Vec::with_capacity(rows.len());
+    let mut strokes = Vec::new();
+    let mut stroke_iter = stroke_paths.iter();
+    for (index, ((paint, style, f), placed)) in rows.iter().zip(image_placements).enumerate() {
+        let prepared = match (paint, placed) {
+            (FillPaint::Solid(rgba), _) => PreparedPaint::Solid(*rgba),
+            (FillPaint::Image(image), Some(placements)) => PreparedPaint::Image {
+                source_id: image.source_id.clone(),
+                info: image.info,
+                placements,
+            },
+            (FillPaint::Gradient(g), _) => {
+                let paint = hsk_studio_nib::raster::Paint::Gradient(g.clone());
+                match crate::vector_nib::painted(&paint, plane_rect, res.max_layer_pixels) {
+                    Ok(t) => PreparedPaint::Painted(t),
+                    Err(code) => return Ok(Err(code)),
+                }
+            }
+            (FillPaint::Pattern(t), _) => {
+                let paint = hsk_studio_nib::raster::Paint::Pattern(t.clone());
+                match crate::vector_nib::painted(&paint, plane_rect, res.max_layer_pixels) {
+                    Ok(t) => PreparedPaint::Painted(t),
+                    Err(code) => return Ok(Err(code)),
+                }
+            }
+            _ => return Ok(Err(REFUSE_FILL)),
+        };
+        if style.is_some() {
+            let path = stroke_iter.next().ok_or(CompositeError::Overflow)?;
+            let c = match crate::vector_nib::coverage(path.as_ref(), plane_rect, res.max_layer_pixels) {
+                Ok(c) => c,
+                Err(code) => return Ok(Err(code)),
+            };
+            strokes.push(StrokePlane {
+                row: index,
+                sha256: hsk_studio_prism::profile_hash(&c),
+                coverage: c,
+            });
+        }
+        fills.push(PreparedFill {
+            paint: prepared,
+            mode: f.mode,
+            opacity: f.opacity,
+        });
+    }
+    Ok(Ok(VectorPlane {
+        layer_id: spec.layer_id.clone(),
+        placement: Some(plane_rect),
+        sha256: hsk_studio_prism::profile_hash(&coverage),
+        coverage,
+        fills,
+        strokes,
+    }))
+}
+
+/// The Studio supersampled coverage of the module docs over `rect`.
+fn supersampled(
+    built: &Built,
+    rect: Rect,
+    pixels: u64,
+    res: &VectorResolution,
+    cancel: &CancellationToken,
+) -> Result<Result<Vec<u8>, &'static str>, CompositeError> {
     if !(1..=16).contains(&res.aa_samples) {
         return Err(CompositeError::UnsupportedDescriptor("vector_aa_samples".into()));
     }
@@ -547,11 +729,12 @@ fn prepare_one(
     if coverage.try_reserve_exact(count).is_err() {
         return Ok(Err(REFUSE_VECTOR_OVER_LIMIT));
     }
+    let (x0, y0) = (rect.x as f64, rect.y as f64);
     let step = 1.0 / f64::from(res.aa_samples);
     let half = samples.checked_div(2).ok_or(CompositeError::Overflow)?;
-    for py in 0..height {
+    for py in 0..rect.height {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
-        for px in 0..width {
+        for px in 0..rect.width {
             let mut hits = 0_u64;
             for j in 0..res.aa_samples {
                 for i in 0..res.aa_samples {
@@ -573,13 +756,7 @@ fn prepare_one(
             coverage.push(u8::try_from(v).map_err(|_| CompositeError::Overflow)?);
         }
     }
-    Ok(Ok(VectorPlane {
-        layer_id: spec.layer_id.clone(),
-        placement: Some(plane_rect),
-        sha256: hsk_studio_prism::profile_hash(&coverage),
-        coverage,
-        fills,
-    }))
+    Ok(Ok(coverage))
 }
 
 /// Draws every spec (folio-free; the Folio adapter is [`crate::prepare_vectors`]). A spec that
@@ -617,6 +794,11 @@ pub const REFUSE_PAINT_PROFILE: &str = "paint_colour_profile";
 pub const REFUSE_PAINT_LINEAR: &str = "paint_colour_linear_light";
 pub const REFUSE_PAINT_MODE: &str = "paint_blend_mode";
 pub const REFUSE_BOOLEAN_OPERAND: &str = "boolean_operand_kind";
+/// A stroke weight, dash or offset, or a gradient, in a document whose geometry unit is not px
+/// (composite has no document-unit -> plan-pixel scale; paths arrive in plan pixels from the caller).
+pub const REFUSE_GEOMETRY_UNIT: &str = "vector_geometry_unit";
+/// A row bound to a Folio pattern (STU-VEC-138): composite receives no pattern tile artwork.
+pub const REFUSE_PAINT_PATTERN: &str = "paint_pattern_not_resolved";
 
 /// Caller-owned resolution of what Folio references by id: `SVPT` path geometry (in plan pixels:
 /// the caller applies the document unit and resolution) and decoded image paint bytes.
@@ -643,6 +825,13 @@ struct FolioCx<'a> {
     assets: &'a dyn VectorAssets,
     blending: &'a hsk_studio_folio::ProfileBinding,
     space: hsk_studio_pigment::blend_math::BlendSpace,
+    /// The document's geometry unit is px (plan pixels; strokes and gradients need it).
+    unit_px: bool,
+    /// nib mode ([`VectorCoverage::Exact`]): strokes, gradients and pattern bindings are mapped
+    /// (strokes and gradients rendered, pattern bindings refused). The default supersampled mode
+    /// keeps the earlier Folio behaviour (`vector_stroke_not_rendered`, `paint_gradient`) so pinned
+    /// consumers of the default are unchanged.
+    nib: bool,
 }
 
 impl FolioCx<'_> {
@@ -707,9 +896,94 @@ impl FolioCx<'_> {
         Ok([rgb[0], rgb[1], rgb[2], 1.0])
     }
 
+    /// A Folio paint as a row paint (solid in plan units, or a nib gradient).
+    fn paint(&self, paint: &hsk_studio_folio::StudioPaint) -> Result<FillPaint, &'static str> {
+        use hsk_studio_folio::{GradientInterpolation as I, GradientSpread as Sp, StudioGradientGeometry as G, StudioPaint};
+        match paint {
+            StudioPaint::Solid { colour } => Ok(FillPaint::Solid(self.colour(colour)?)),
+            StudioPaint::Gradient { gradient } => {
+                if !self.nib {
+                    return Err(REFUSE_PAINT_GRADIENT);
+                }
+                if !self.unit_px {
+                    return Err(REFUSE_GEOMETRY_UNIT);
+                }
+                let mut stops = Vec::with_capacity(gradient.stops.len());
+                for st in &gradient.stops {
+                    let [r, g, b, _] = self.colour(&st.colour)?;
+                    stops.push(GradientStop {
+                        offset: st.position / 100.0,
+                        colour: [r, g, b, (st.opacity / 100.0) as f32],
+                        midpoint: st.midpoint.map(|m| m / 100.0),
+                    });
+                }
+                Ok(FillPaint::Gradient(Gradient {
+                    geometry: match gradient.geometry {
+                        G::Linear { x1, y1, x2, y2 } => GradientGeometry::Linear { x1, y1, x2, y2 },
+                        G::Radial { cx, cy, r, fx, fy, fr } => {
+                            GradientGeometry::Radial { cx, cy, r, fx, fy, fr }
+                        }
+                    },
+                    transform: gradient.transform,
+                    spread: match gradient.spread {
+                        Sp::Pad => Spread::Pad,
+                        Sp::Reflect => Spread::Reflect,
+                        Sp::Repeat => Spread::Repeat,
+                    },
+                    interpolation: match gradient.interpolation {
+                        I::Classic => GradientInterpolation::Classic,
+                        I::Perceptual => GradientInterpolation::Perceptual,
+                    },
+                    dither: gradient.dither,
+                    stops,
+                }))
+            }
+        }
+    }
+
+    /// A Folio stroke style as nib's (px document only).
+    fn stroke_style(&self, s: &hsk_studio_folio::StudioStrokeStyle) -> Result<StrokeStyle, &'static str> {
+        use hsk_studio_folio::{StrokeAlign as A, StrokeCap as C, StrokeJoin as J};
+        let px = |l: &hsk_studio_folio::Length| -> Result<f64, &'static str> {
+            if l.unit == hsk_studio_folio::GeometryUnit::Px && self.unit_px {
+                Ok(l.value)
+            } else {
+                Err(REFUSE_GEOMETRY_UNIT)
+            }
+        };
+        let dash = if s.dash.is_empty() {
+            None
+        } else {
+            Some(DashPattern {
+                lengths: s.dash.iter().map(px).collect::<Result<Vec<_>, _>>()?,
+                phase: px(&s.dash_offset)?,
+            })
+        };
+        Ok(StrokeStyle {
+            width: px(&s.weight)?,
+            cap: match s.cap {
+                C::Butt => LineCap::Butt,
+                C::Round => LineCap::Round,
+                C::Projecting => LineCap::Square,
+            },
+            join: match s.join {
+                J::Miter => LineJoin::Miter,
+                J::Round => LineJoin::Round,
+                J::Bevel => LineJoin::Bevel,
+            },
+            miter_limit: s.miter_limit,
+            dash,
+            align: match s.align {
+                A::Center => StrokeAlign::Center,
+                A::Inside => StrokeAlign::Inside,
+                A::Outside => StrokeAlign::Outside,
+            },
+        })
+    }
+
     /// The fill rows of the layer's `fill_style_id` paint style (no style reference = no fills).
     fn fills(&self, layer_id: &str) -> Result<Vec<FillSpec>, &'static str> {
-        use hsk_studio_folio::{StudioAppearanceRow, StudioPaint};
+        use hsk_studio_folio::StudioAppearanceRow;
         let Some(style_id) = self
             .design
             .node_design(layer_id)
@@ -727,10 +1001,35 @@ impl FolioCx<'_> {
         for (row, r) in style.rows.iter().enumerate() {
             let row = u32::try_from(row).map_err(|_| REFUSE_FILL_STYLE)?;
             match r {
-                StudioAppearanceRow::Stroke { visible, .. } => {
-                    if *visible {
+                StudioAppearanceRow::Stroke {
+                    paint,
+                    stroke,
+                    opacity,
+                    blend_mode,
+                    visible,
+                } => {
+                    if !*visible {
+                        continue;
+                    }
+                    if !self.nib {
                         return Err(REFUSE_STROKE);
                     }
+                    if self.records.image_paint(style_id, row).is_some() {
+                        return Err(REFUSE_STROKE_PAINT);
+                    }
+                    if self.records.pattern_paint(style_id, row).is_some() {
+                        return Err(REFUSE_PAINT_PATTERN);
+                    }
+                    let mode =
+                        StudioBlendMode::try_from(*blend_mode).map_err(|_| REFUSE_PAINT_MODE)?;
+                    out.push(FillSpec {
+                        paint: FillPaint::Stroke {
+                            style: self.stroke_style(stroke)?,
+                            paint: Box::new(self.paint(paint)?),
+                        },
+                        mode,
+                        opacity: (*opacity / 100.0) as f32,
+                    });
                 }
                 StudioAppearanceRow::Fill {
                     paint,
@@ -744,6 +1043,9 @@ impl FolioCx<'_> {
                     let mode =
                         StudioBlendMode::try_from(*blend_mode).map_err(|_| REFUSE_PAINT_MODE)?;
                     let mut opacity = (*opacity / 100.0) as f32;
+                    if self.nib && self.records.pattern_paint(style_id, row).is_some() {
+                        return Err(REFUSE_PAINT_PATTERN);
+                    }
                     let paint = if let Some(image) = self.records.image_paint(style_id, row) {
                         let info = self
                             .assets
@@ -765,10 +1067,7 @@ impl FolioCx<'_> {
                             rotation: image.rotation,
                         })
                     } else {
-                        match paint {
-                            StudioPaint::Solid { colour } => FillPaint::Solid(self.colour(colour)?),
-                            StudioPaint::Gradient { .. } => return Err(REFUSE_PAINT_GRADIENT),
-                        }
+                        self.paint(paint)?
                     };
                     out.push(FillSpec {
                         paint,
@@ -812,6 +1111,8 @@ pub fn prepare_vectors(
         assets,
         blending: &doc.blending_space,
         space,
+        unit_px: doc.geometry_unit == hsk_studio_folio::GeometryUnit::Px,
+        nib: res.coverage == VectorCoverage::Exact,
     };
     let mut specs = Vec::new();
     let mut refused: Vec<(String, &'static str)> = Vec::new();

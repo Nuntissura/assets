@@ -218,6 +218,7 @@ fn vector_status(
             ledger.record(mode.key, mode.exactness);
             match &f.paint {
                 crate::vector::PreparedPaint::Solid(_) => record_operator(ledger, Operator::Solid),
+                crate::vector::PreparedPaint::Painted(_) => record_operator(ledger, Operator::Tile),
                 crate::vector::PreparedPaint::Image { .. } => {
                     record_operator(ledger, Operator::Tile);
                     record_ext(

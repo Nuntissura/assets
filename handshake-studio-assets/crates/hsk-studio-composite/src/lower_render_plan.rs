@@ -134,6 +134,8 @@ struct Emitter<'a> {
     vector_masks: Vec<(SourceKey, String)>,
     /// `SourceKey` -> image paint source id (`VectorPlane` image rows) the caller serves as a tile.
     image_sources: Vec<(SourceKey, String)>,
+    /// `SourceKey` -> (vector layer, row): a stroke row's coverage mask or a painted row's tile.
+    vector_rows: Vec<(SourceKey, String, usize)>,
     next_key: u32,
     info: &'a dyn TileInfoSource,
 }
@@ -146,6 +148,7 @@ pub(crate) struct Lowered {
     pub text_masks: crate::text::TextMaskTable,
     pub vector_masks: Vec<(SourceKey, String)>,
     pub image_sources: Vec<(SourceKey, String)>,
+    pub vector_rows: Vec<(SourceKey, String, usize)>,
 }
 
 impl Emitter<'_> {
@@ -208,14 +211,37 @@ impl Emitter<'_> {
         let transform = |a| LayerTransform::new(a, IMAGE_FILTER).with_edge(EdgeMode::Clamp);
         let mut rows = Vec::with_capacity(plane.fills.len());
         let mut row_transforms: Vec<(u32, LayerTransform)> = Vec::new();
-        for fill in &plane.fills {
+        // Stroke rows: (paint node, row index), composited above the fills with their own mask.
+        let mut stroke_layers: Vec<(PlanNodeId, usize)> = Vec::new();
+        for (index, fill) in plane.fills.iter().enumerate() {
+            let stroke = plane.is_stroke(index);
             let input = match &fill.paint {
                 PreparedPaint::Solid(rgba) => self.push(PlanNode::Solid { rect, rgba: *rgba })?,
+                PreparedPaint::Painted(t) => {
+                    let key = self.key()?;
+                    self.vector_rows.push((key, plane.layer_id.clone(), index));
+                    self.push(PlanNode::Tile(TileInput {
+                        key,
+                        placement: t.placement,
+                        format: SampleFormat::RgbF32Le,
+                        alpha: AlphaConvention::Straight,
+                        colour_sha256: t.colour_sha256,
+                        alpha_sha256: t.alpha_sha256,
+                    }))?
+                }
                 PreparedPaint::Image {
                     source_id,
                     info,
                     placements,
                 } => {
+                    if stroke {
+                        // Refused at preparation; defence in depth.
+                        return Err(CompositeError::Unavailable(format!(
+                            "{}:{}",
+                            plane.layer_id,
+                            crate::vector::REFUSE_STROKE_PAINT
+                        )));
+                    }
                     let key = self.key()?;
                     self.image_sources.push((key, source_id.clone()));
                     let tile = self.push(PlanNode::Tile(TileInput {
@@ -263,6 +289,10 @@ impl Emitter<'_> {
                     }
                 }
             };
+            if stroke {
+                stroke_layers.push((input, index));
+                continue;
+            }
             rows.push(Layer {
                 input,
                 mode: fill.mode,
@@ -271,18 +301,18 @@ impl Emitter<'_> {
                 mask: None,
             });
         }
-        let rows_group = self.push(PlanNode::Group(Group {
-            isolated: true,
-            layers: rows,
-        }))?;
-        for (i, t) in row_transforms {
-            entries.push(LayerExtension::new(rows_group, i).with_transform(t));
-        }
-        let key = self.key()?;
-        self.vector_masks.push((key, plane.layer_id.clone()));
-        let content = self.push(PlanNode::Group(Group {
-            isolated: true,
-            layers: vec![Layer {
+        let mut content_layers = Vec::with_capacity(stroke_layers.len().saturating_add(1));
+        if !rows.is_empty() {
+            let rows_group = self.push(PlanNode::Group(Group {
+                isolated: true,
+                layers: rows,
+            }))?;
+            for (i, t) in row_transforms {
+                entries.push(LayerExtension::new(rows_group, i).with_transform(t));
+            }
+            let key = self.key()?;
+            self.vector_masks.push((key, plane.layer_id.clone()));
+            content_layers.push(Layer {
                 input: rows_group,
                 mode: StudioBlendMode::Normal,
                 opacity: 1.0,
@@ -295,7 +325,35 @@ impl Emitter<'_> {
                     inverted: false,
                     density: 1.0,
                 }),
-            }],
+            });
+        }
+        for (input, index) in stroke_layers {
+            let (Some(fill), Some(stroke)) = (
+                plane.fills.get(index),
+                plane.strokes.iter().find(|s| s.row == index),
+            ) else {
+                return Err(CompositeError::Overflow);
+            };
+            let key = self.key()?;
+            self.vector_rows.push((key, plane.layer_id.clone(), index));
+            content_layers.push(Layer {
+                input,
+                mode: fill.mode,
+                opacity: fill.opacity,
+                fill_opacity: 1.0,
+                mask: Some(MaskInput {
+                    key,
+                    placement: rect,
+                    format: MaskFormat::CoverageU8,
+                    sha256: stroke.sha256,
+                    inverted: false,
+                    density: 1.0,
+                }),
+            });
+        }
+        let content = self.push(PlanNode::Group(Group {
+            isolated: true,
+            layers: content_layers,
         }))?;
         Ok(Some(content))
     }
@@ -639,6 +697,7 @@ pub(crate) fn text_root_plan(
         text_masks: Vec::new(),
         vector_masks: Vec::new(),
         image_sources: Vec::new(),
+        vector_rows: Vec::new(),
         next_key: 0,
         info: &none,
     };
@@ -835,6 +894,7 @@ pub(crate) fn lower_inner(
         text_masks: Vec::new(),
         vector_masks: Vec::new(),
         image_sources: Vec::new(),
+        vector_rows: Vec::new(),
         next_key: 0,
         info,
     };
@@ -1237,6 +1297,7 @@ pub(crate) fn lower_inner(
         text_masks: out.text_masks,
         vector_masks: out.vector_masks,
         image_sources: out.image_sources,
+        vector_rows: out.vector_rows,
     })
 }
 
@@ -1261,6 +1322,8 @@ pub struct InputsLowering {
     pub text_masks: crate::text::TextMaskTable,
     pub vector_masks: Vec<(SourceKey, String)>,
     pub image_sources: Vec<(SourceKey, String)>,
+    /// `SourceKey` -> (vector layer, row): a stroke row's coverage mask or a painted row's tile.
+    pub vector_rows: Vec<(SourceKey, String, usize)>,
     pub exactness: ExactnessLedger,
     pub notes: Vec<LoweringNote>,
 }
@@ -1271,8 +1334,37 @@ impl InputsLowering {
         key: SourceKey,
         vectors: &'p crate::vector::PreparedVectors,
     ) -> Option<hsk_studio_pigment::Mask<'p>> {
-        let (_, layer) = self.vector_masks.iter().find(|(k, _)| *k == key)?;
-        vectors.plane(layer)?.mask()
+        if let Some((_, layer)) = self.vector_masks.iter().find(|(k, _)| *k == key) {
+            return vectors.plane(layer)?.mask();
+        }
+        let (_, layer, row) = self.vector_rows.iter().find(|(k, _, _)| *k == key)?;
+        vectors.plane(layer)?.stroke_mask(*row)
+    }
+    /// The painted (gradient or pattern) row tile behind `key`, in the plan's colour tag `space`.
+    pub fn vector_paint<'p>(
+        &self,
+        key: SourceKey,
+        vectors: &'p crate::vector::PreparedVectors,
+        space: hsk_studio_pigment::render_plan::ColourTag,
+    ) -> Option<hsk_studio_pigment::render_plan::TilePlanes<'p>> {
+        let (_, layer, row) = self.vector_rows.iter().find(|(k, _, _)| *k == key)?;
+        let plane = vectors.plane(layer)?;
+        let crate::vector::PreparedPaint::Painted(t) = &plane.fills.get(*row)?.paint else {
+            return None;
+        };
+        Some(hsk_studio_pigment::render_plan::TilePlanes {
+            width: t.placement.width,
+            height: t.placement.height,
+            colour: &t.colour,
+            colour_stride_bytes: u64::from(t.placement.width).checked_mul(12)?,
+            alpha: &t.alpha,
+            alpha_stride_bytes: u64::from(t.placement.width).checked_mul(4)?,
+            colour_sha256: t.colour_sha256,
+            alpha_sha256: t.alpha_sha256,
+            format: SampleFormat::RgbF32Le,
+            alpha_convention: AlphaConvention::Straight,
+            space,
+        })
     }
     /// The image paint source id behind `key`.
     pub fn image_source(&self, key: SourceKey) -> Option<&str> {
@@ -1290,6 +1382,7 @@ impl InputsLowering {
             text_masks: lowered.text_masks,
             vector_masks: lowered.vector_masks,
             image_sources: lowered.image_sources,
+            vector_rows: lowered.vector_rows,
             exactness: lowered.lowering.exactness,
             notes: lowered.notes,
         }
@@ -1376,6 +1469,7 @@ pub fn vector_layer_render_plan(
         text_masks: Vec::new(),
         vector_masks: Vec::new(),
         image_sources: Vec::new(),
+        vector_rows: Vec::new(),
         next_key: 0,
         info: &none,
     };
@@ -1408,6 +1502,7 @@ pub fn vector_layer_render_plan(
         text_masks: out.text_masks,
         vector_masks: out.vector_masks,
         image_sources: out.image_sources,
+        vector_rows: out.vector_rows,
         exactness,
         notes: Vec::new(),
     })
