@@ -100,7 +100,16 @@ fn planar_track_recovers_the_plane_through_an_occluder_deterministically() {
             worst = worst.max(((e[0] - q[0]).powi(2) + (e[1] - q[1]).powi(2)).sqrt());
         }
         rejected += pf.features - pf.inliers;
-        println!("frame {}: features {}, inliers {}, worst so far {worst:.5}", pf.frame, pf.features, pf.inliers);
+        let centre = hap(&truth, [64.0, 64.0]);
+        let got = pf.homography.apply([64.0, 64.0]);
+        let corner_errs: Vec<String> = SPEC.quad.iter().zip(pf.quad).map(|(c, q)| {
+            let e = hap(&truth, *c);
+            format!("{:.3}", ((e[0] - q[0]).powi(2) + (e[1] - q[1]).powi(2)).sqrt())
+        }).collect();
+        println!(
+            "frame {}: features {}, inliers {}, centre error {:.4}, corner errors {:?}",
+            pf.frame, pf.features, pf.inliers, ((centre[0] - got[0]).powi(2) + (centre[1] - got[1]).powi(2)).sqrt(), corner_errs
+        );
     }
     println!("planar: worst quad corner error {worst:.5} px, features {} at start, {rejected} matches rejected over the run", out[0].features);
     assert!(out[0].features >= 20, "features detected: {}", out[0].features);
