@@ -101,6 +101,13 @@ pub trait IdMint {
     fn effect_stack_id(&mut self, _layer_id: &str) -> Option<String> {
         None
     }
+    /// `SDOC-...` of the Studio document the host makes of the smart object embedded under PSD
+    /// unique id `unique_id` (lane SMB-PS-ADJUST-STYLES-2; called once per embedded source). `None`
+    /// (the default) means the host mints none: an embedded smart object then keeps its cached
+    /// pixels only and reports `placed_source_document_unminted`.
+    fn placed_document_id(&mut self, _unique_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Identity of the source bytes the document was parsed from.
@@ -499,6 +506,10 @@ struct Builder<'a, 'm, 'c> {
     effect_tally: effects::EffectTally,
     /// Hidden groups around the layer being mapped (a layer inside a hidden group is in no render plan).
     hidden_groups: usize,
+    /// The document's linked-file items (`lnk2` / `lnk3` / `lnkD` / `lnkE`) and the placed sources
+    /// recorded so far (lane SMB-PS-ADJUST-STYLES-2, `placed.rs`).
+    linked: Vec<crate::placed::Linked>,
+    placed_sources: Vec<hsk_studio_folio::StudioPlacedSource>,
 }
 
 /// Flags of the mask whose coverage is mapped: the real user mask's when one exists.
@@ -634,14 +645,90 @@ impl Builder<'_, '_, '_> {
                 None => {}
             }
         }
+        if allow_effects {
+            record.placed_asset = self.placed_asset(index, layer);
+        }
         if record.adjustment.is_some()
             || record.mask.is_some()
             || record.advanced_blending.is_some()
             || record.effects.is_some()
+            || record.placed_asset.is_some()
         {
             self.records.push(record);
         }
         Ok(())
+    }
+
+    /// The placed-asset instance of a smart-object layer (`placed.rs`), recording its shared source
+    /// once per PSD unique id; every refusal is a typed loss on the layer's block and the layer keeps
+    /// its cached pixels.
+    fn placed_asset(&mut self, index: usize, layer: &PsdLayer) -> Option<hsk_studio_folio::StudioPlacedAsset> {
+        use crate::placed::{LinkedData, link_uri, source_id};
+        use hsk_studio_folio::{StudioLinkHealth, StudioPlacedAsset, StudioPlacedMode, StudioPlacedSource};
+        let key = if layer.block(b"SoLd").is_some() {
+            "SoLd"
+        } else if layer.block(b"SoLE").is_some() {
+            "SoLE"
+        } else {
+            "PlLd"
+        };
+        let path = format!("layer[{index}]/tagged/{key}");
+        let placed = match crate::placed::placed(layer, self.cfg.limits)? {
+            Ok(m) => m,
+            Err(reason) => {
+                self.note(path, LossKind::Unsupported, reason);
+                return None;
+            }
+        };
+        let p = placed.value;
+        let id = source_id(&p.unique_id);
+        if let Some(existing) = self.placed_sources.iter().find(|s| s.source_id == id) {
+            if existing.width != p.width || existing.height != p.height {
+                self.note(path, LossKind::Unsupported, "placed_source_size_conflict");
+                return None;
+            }
+        } else {
+            let Some(linked) = self.linked.iter().find(|l| l.unique_id == p.unique_id).cloned() else {
+                self.note(path, LossKind::Unsupported, "placed_source_missing");
+                return None;
+            };
+            let location = match linked.data {
+                LinkedData::Embedded(sha) => {
+                    let Some(document_id) = self.mint.placed_document_id(&p.unique_id) else {
+                        self.note(path, LossKind::Unsupported, "placed_source_document_unminted");
+                        return None;
+                    };
+                    StudioPlacedMode::Embedded { document_id, content_digest: format!("sha256-{}", hash_hex(&sha)) }
+                }
+                LinkedData::External => {
+                    let Some(uri) = link_uri(&linked.file_name) else {
+                        self.note(path, LossKind::Unsupported, "placed_link_uri_unmapped");
+                        return None;
+                    };
+                    // The importer reads no file outside the PSD: the link health is unknown, so it is
+                    // recorded `missing` (the cached pixels stay the display truth).
+                    self.note(path.clone(), LossKind::Transformed, "placed_link_health_not_checked");
+                    StudioPlacedMode::Linked {
+                        uri,
+                        content_digest: format!("psd-unique-id:{}", p.unique_id.chars().take(100).collect::<String>()),
+                        health: StudioLinkHealth::Missing,
+                    }
+                }
+                LinkedData::Alias => {
+                    self.note(path, LossKind::Unsupported, "placed_link_alias_unmapped");
+                    return None;
+                }
+            };
+            self.placed_sources.push(StudioPlacedSource {
+                source_id: id.clone(),
+                location,
+                width: p.width,
+                height: p.height,
+                uses: Vec::new(),
+            });
+        }
+        self.notes(&path, placed.notes);
+        Some(StudioPlacedAsset { source_id: id, transform: p.transform })
     }
 
     /// Maps an adjustment layer whose block this crate parses to an `adjustment` layer with a
@@ -1866,7 +1953,16 @@ fn build(
         records: Vec::new(),
         effect_tally: effects::EffectTally::default(),
         hidden_groups: 0,
+        linked: Vec::new(),
+        placed_sources: Vec::new(),
     };
+    {
+        let (linked, refused) = crate::placed::linked_files(&doc.layer_section.blocks, cfg.limits);
+        b.linked = linked;
+        for reason in refused {
+            b.note("layer_section/linked_files".to_owned(), LossKind::Unsupported, reason);
+        }
+    }
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
     let mut entries = b.walk(&tree, &Value::Null)?;
@@ -2038,6 +2134,7 @@ fn build(
     };
     let mut raster_records = StudioRasterRecords::new(document_id);
     raster_records.layers = std::mem::take(&mut b.records);
+    raster_records.placed_sources = std::mem::take(&mut b.placed_sources);
     if !raster_records.layers.is_empty() {
         // Folio charges one node per record layer and one per effect instance (`validate_raster_records`).
         // Both counts are the importer's own and are bounded before this point: record layers by
@@ -2050,7 +2147,12 @@ fn build(
         // `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
         // `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded` and
         // `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects`).
-        let needed = raster_records.layers.len().checked_add(b.effect_tally.kept()).ok_or(PsdError::Overflow)?;
+        let needed = raster_records
+            .layers
+            .len()
+            .checked_add(b.effect_tally.kept())
+            .and_then(|n| n.checked_add(raster_records.placed_sources.len()))
+            .ok_or(PsdError::Overflow)?;
         let records_budget = Budget { nodes: cfg.budget.nodes.max(needed), ..cfg.budget };
         // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input
         // (tests/adjustment_records.rs `non_finite_descriptor_numbers_are_typed_losses_not_import_failures`).

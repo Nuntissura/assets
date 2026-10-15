@@ -21,6 +21,7 @@ mod layers;
 mod limits;
 mod loss;
 mod pixels;
+mod placed;
 mod proposal;
 mod reader;
 mod report;

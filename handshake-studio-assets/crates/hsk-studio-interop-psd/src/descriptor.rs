@@ -22,9 +22,9 @@ pub(crate) const MAX_TOTAL_ITEMS: usize = 8192;
 /// Bytes of a key or class id.
 pub(crate) const MAX_KEY_BYTES: usize = 128;
 
-/// One descriptor value. Length-delimited payloads this crate does not interpret (`tdta`, `alis`,
-/// class references) are skipped and reported as [`Value::Raw`]; the block bytes stay in the
-/// document.
+/// One descriptor value. Length-delimited payloads this crate does not interpret (`alis`, class
+/// references) are skipped and reported as [`Value::Raw`]; `tdta` bytes are kept as
+/// [`Value::Data`]; the block bytes stay in the document.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Value {
     Object(Object),
@@ -37,6 +37,9 @@ pub(crate) enum Value {
     Integer(i32),
     Large(i64),
     Bool(bool),
+    /// A `tdta` raw-data item's bytes (lane SMB-PS-ADJUST-STYLES-2: the colour-lookup table text);
+    /// bounded by the descriptor's own data (the length is checked against it first).
+    Data(Vec<u8>),
     Raw,
 }
 
@@ -228,14 +231,62 @@ impl Cursor<'_, '_> {
                 let _class = self.key()?;
                 Ok(Value::Raw)
             }
-            b"tdta" | b"alis" => {
+            b"tdta" => {
+                let len = usize::try_from(self.u32()?).map_err(|_| "descriptor_truncated")?;
+                let bytes = self.r.bytes(len, "descriptor").map_err(|_| "descriptor_truncated")?;
+                Ok(Value::Data(bytes.to_vec()))
+            }
+            b"alis" => {
                 let len = usize::try_from(self.u32()?).map_err(|_| "descriptor_truncated")?;
                 self.r.bytes(len, "descriptor").map_err(|_| "descriptor_truncated")?;
                 Ok(Value::Raw)
             }
+            // Object array (lane SMB-PS-ADJUST-STYLES-2; layout read from the psd-tools corpus file
+            // `placedLayer.psd`, a custom envelope warp's `meshPoints`): a u32 element count, then one
+            // object whose items are per-key `UnFl` columns. Kept as that object.
+            b"ObAr" => {
+                let count = usize::try_from(self.u32()?).map_err(|_| "descriptor_item_limit")?;
+                if count > MAX_ITEMS_PER_CONTAINER {
+                    return Err("descriptor_item_limit");
+                }
+                Ok(Value::Object(self.object(depth.saturating_add(1))?))
+            }
+            // Unit-float list: 4-byte unit, u32 count, `count` doubles; the count is bounded and checked
+            // against the remaining bytes before anything is allocated. Kept as a list of unit floats.
+            b"UnFl" => {
+                let unit = self.array4()?;
+                let count = usize::try_from(self.u32()?).map_err(|_| "descriptor_item_limit")?;
+                let bytes = count.checked_mul(8).ok_or("descriptor_item_limit")?;
+                if count > MAX_ITEMS_PER_CONTAINER || bytes > self.r.remaining() {
+                    return Err("descriptor_item_limit");
+                }
+                let mut list = Vec::with_capacity(count);
+                for _ in 0..count {
+                    self.charge()?;
+                    list.push(Value::Unit(unit, self.f64()?));
+                }
+                Ok(Value::List(list))
+            }
             _ => Err("descriptor_type_unsupported"),
         }
     }
+}
+
+/// [`parse_versioned`] that also returns the bytes after the descriptor (a linked-file item's
+/// payload follows its open descriptor; lane SMB-PS-ADJUST-STYLES-2).
+pub(crate) fn parse_versioned_rest<'a>(
+    data: &'a [u8],
+    versions: &[u32],
+    limits: &Limits,
+) -> Result<(Object, &'a [u8]), Reason> {
+    let mut cursor = Cursor { r: Reader::new(data), limits, items_left: MAX_TOTAL_ITEMS };
+    for expected in versions {
+        if cursor.u32()? != *expected {
+            return Err("descriptor_version_unsupported");
+        }
+    }
+    let object = cursor.object(0)?;
+    Ok((object, cursor.r.rest()))
 }
 
 /// Parses `data` as: `versions.len()` leading u32 version words (each must equal the matching

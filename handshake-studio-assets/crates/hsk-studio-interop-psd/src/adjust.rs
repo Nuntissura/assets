@@ -49,11 +49,11 @@ pub(crate) struct Mapped<T> {
 /// Adjustment keys this module maps. The second set (lane SMB-PS-ADJUST-STYLES): `blnc`, `selc`,
 /// `mixr`, `phfl` (binary records, layouts confirmed on the psd-tools corpus files
 /// `layers/color-balance.psd` 20 bytes, `selective-color.psd` 84, `channel-mixer.psd` 44,
-/// `photo-filter.psd` 20) and `vibA`, `blwh` (version 16 + descriptor). `grdm` (gradient map) and
-/// `clrL` (colour lookup) are not mapped yet: the layer stays a typed unsupported layer.
-pub(crate) const MAPPED_ADJUSTMENT_KEYS: [&[u8; 4]; 15] = [
+/// `photo-filter.psd` 20) and `vibA`, `blwh` (version 16 + descriptor); `grdm` (gradient map) and `clrL`
+/// (colour lookup) since lane SMB-PS-ADJUST-STYLES-2 (layouts at their mappers).
+pub(crate) const MAPPED_ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
     b"levl", b"curv", b"hue ", b"hue2", b"brit", b"expA", b"nvrt", b"thrs", b"post", b"blnc", b"selc", b"mixr",
-    b"phfl", b"vibA", b"blwh",
+    b"phfl", b"vibA", b"blwh", b"grdm", b"clrL",
 ];
 
 const CHANNELS: [StudioAdjustmentChannel; 4] = [
@@ -112,6 +112,8 @@ pub(crate) fn adjustment(
         b"phfl" => photo_filter(data),
         b"vibA" => vibrance(data, limits),
         b"blwh" => black_and_white(data, limits),
+        b"grdm" => gradient_map(data),
+        b"clrL" => colour_lookup(data, limits),
         _ => Ok(Mapped { value: StudioAdjustment::Invert, notes: Vec::new() }),
     })
 }
@@ -715,4 +717,278 @@ pub(crate) fn mask_parameters(
         return Ok(None);
     }
     Ok(Some(Mapped { value: StudioMaskParameters { density, feather, inverted }, notes }))
+}
+
+// ---- gradient map and colour lookup (lane SMB-PS-ADJUST-STYLES-2) ---------------------------------
+//
+// `grdm`: Adobe Photoshop File Formats Specification "Gradient settings" (version 1: reverse and
+// dither bytes, Unicode name, colour stops of location u32 (0..=4096), midpoint u32 percent, colour
+// space u16 + four u16 components + 2 pad bytes, transparency stops of location, midpoint, opacity
+// u16, then expansion 2, interpolation (smoothness x 4096), length, mode, seed, flags, roughness,
+// colour model, min / max colours). Version 3 inserts a 4-byte interpolation method key (`Gcls`
+// classic, `Lnr ` linear, `Perc` perceptual) after the two flag bytes. Both layouts confirmed on the
+// psd-tools corpus files `layers/gradient-map.psd` (v1, 164 bytes) and
+// `layers/gradient-map-v3-{classic,linear,perceptual}.psd` (v3, 168 bytes); psd-tools
+// `psd/adjustments.py` GradientMap is the behaviour reference (MIT, no code copied).
+//
+// `clrL`: a u16 version (1) then a version-16 descriptor (corpus `layers/color-lookup.psd`: an EMPTY
+// descriptor, no table selected). The keys of a selected table (`lookupType` enum `3DLUT`,
+// `LUTFormat` enum `LUTFormatCUBE`, `LUT3DFileData` raw data, `LUT3DFileName` text, `Dthr` bool)
+// are UNVERIFIED: no corpus file carries a selected table (D5 list).
+
+/// Bytes of one `grdm` colour stop and transparency stop.
+const GRADIENT_COLOUR_STOP_BYTES: usize = 20;
+const GRADIENT_ALPHA_STOP_BYTES: usize = 10;
+/// `grdm` locations run `0..=4096`.
+const GRADIENT_LOCATION_MAX: u32 = 4096;
+
+fn gradient_map(data: &[u8]) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    const R: Reason = "gradient_map_truncated";
+    let mut r = Reader::new(data);
+    let version = truncated(r.u16("grdm"), R)?;
+    if !matches!(version, 1 | 3) {
+        return Err("gradient_map_version_unsupported");
+    }
+    let reverse = truncated(r.u8("grdm"), R)? != 0;
+    let dither = truncated(r.u8("grdm"), R)? != 0;
+    let method: Option<[u8; 4]> = if version == 3 {
+        let m = truncated(r.bytes(4, "grdm"), R)?;
+        Some([m[0], m[1], m[2], m[3]])
+    } else {
+        None
+    };
+    // Unicode name: u32 code units, two bytes each (not kept: Folio's gradient map has no name).
+    let units = usize::try_from(truncated(r.u32("grdm"), R)?).map_err(|_| R)?;
+    truncated(r.bytes(units.checked_mul(2).ok_or(R)?, "grdm"), R)?;
+    let count = usize::from(truncated(r.u16("grdm"), R)?);
+    if !(2..=hsk_studio_folio::MAX_GRADIENT_MAP_STOPS).contains(&count) {
+        return Err("gradient_map_stop_count");
+    }
+    // The whole stop table must be present before any stop is read (hostile counts).
+    if count.checked_mul(GRADIENT_COLOUR_STOP_BYTES).ok_or(R)? > r.remaining() {
+        return Err(R);
+    }
+    let mut stops = Vec::with_capacity(count);
+    for _ in 0..count {
+        let location = truncated(r.u32("grdm"), R)?;
+        let midpoint = truncated(r.u32("grdm"), R)?;
+        let space = truncated(r.u16("grdm"), R)?;
+        let mut c = [0u16; 4];
+        for v in &mut c {
+            *v = truncated(r.u16("grdm"), R)?;
+        }
+        truncated(r.bytes(2, "grdm"), R)?;
+        if location > GRADIENT_LOCATION_MAX || midpoint > 100 {
+            return Err("gradient_map_range");
+        }
+        // Folio keeps midpoints in 13..=87 (the Photoshop dialog's range); outside it is refused.
+        if !(13..=87).contains(&midpoint) {
+            return Err("gradient_map_midpoint_range");
+        }
+        if space != 0 {
+            // Only the RGB colour space maps (as the photo filter and the effect colours do).
+            return Err("gradient_map_colour_space_unmapped");
+        }
+        let unit = |v: u16| f64::from(v) / 65535.0;
+        stops.push(hsk_studio_folio::StudioGradientStop {
+            position: f64::from(location) / f64::from(GRADIENT_LOCATION_MAX) * 100.0,
+            midpoint: Some(f64::from(midpoint)),
+            opacity: 100.0,
+            colour: hsk_studio_folio::StudioColor {
+                r: unit(c[0]),
+                g: unit(c[1]),
+                b: unit(c[2]),
+                colour_profile_id: hsk_studio_folio::ProfileBinding::Unassigned(()),
+            },
+        });
+    }
+    if !stops.windows(2).all(|w| match w {
+        [a, b] => a.position <= b.position,
+        _ => true,
+    }) {
+        return Err("gradient_map_order");
+    }
+    let mut notes = Vec::new();
+    let alpha = usize::from(truncated(r.u16("grdm"), R)?);
+    if alpha > hsk_studio_folio::MAX_GRADIENT_MAP_STOPS
+        || alpha.checked_mul(GRADIENT_ALPHA_STOP_BYTES).ok_or(R)? > r.remaining()
+    {
+        return Err("gradient_map_stop_count");
+    }
+    let mut translucent = false;
+    for _ in 0..alpha {
+        truncated(r.u32("grdm"), R)?;
+        truncated(r.u32("grdm"), R)?;
+        translucent |= truncated(r.u16("grdm"), R)? != 255;
+    }
+    if translucent {
+        // A gradient map reads the colour stops only (Studio reading, UNVERIFIED D5).
+        notes.push((LossKind::Transformed, "gradient_map_transparency_ignored"));
+    }
+    if truncated(r.u16("grdm"), R)? != 2 {
+        return Err("gradient_map_expansion_unsupported");
+    }
+    let smoothness = truncated(r.u16("grdm"), R)?;
+    truncated(r.u16("grdm"), R)?; // length
+    if truncated(r.u16("grdm"), R)? != 0 {
+        // Mode 1 = a noise gradient: no stop list to map.
+        return Err("gradient_map_noise_unmapped");
+    }
+    // Pigment interpolates linearly between stops: exact for the v3 linear method, a reading of the
+    // classic smoothness and of the perceptual method otherwise.
+    match method {
+        Some(m) if m == *b"Lnr " => {}
+        Some(m) if m == *b"Perc" => {
+            notes.push((LossKind::Transformed, "gradient_map_perceptual_as_linear"));
+        }
+        _ if smoothness > 0 => notes.push((LossKind::Transformed, "gradient_map_smoothness_as_linear")),
+        _ => {}
+    }
+    Ok(Mapped { value: StudioAdjustment::GradientMap { stops, reverse, dither }, notes })
+}
+
+/// Text bytes of a `.cube` file at most this large are read (a 65-side cube is about 7 MB of text).
+const MAX_CUBE_BYTES: usize = 16 << 20;
+
+fn colour_lookup(data: &[u8], limits: &Limits) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    let mut r = Reader::new(data);
+    if truncated(r.u16("clrL"), "colour_lookup_truncated")? != 1 {
+        return Err("colour_lookup_version_unsupported");
+    }
+    let o = descriptor::parse_versioned(data.get(2..).ok_or("colour_lookup_truncated")?, &[16], limits)
+        .map_err(|_| "colour_lookup_descriptor_unreadable")?;
+    let dither = o.get("Dthr").and_then(descriptor::Value::boolean).unwrap_or(false);
+    let name = o.get("LUT3DFileName").or_else(|| o.get("Nm  ")).and_then(|v| match v {
+        descriptor::Value::Text(t) => Some(t.clone()),
+        _ => None,
+    });
+    let lut = |n: Option<String>| -> String {
+        let n: String = n.unwrap_or_default().chars().filter(|c| !c.is_control()).take(100).collect();
+        if n.is_empty() { "psd-clrL".to_owned() } else { format!("psd-clrL:{n}") }
+    };
+    if o.items.is_empty() {
+        // Nothing selected: Photoshop leaves the colours unchanged; the identity cube of side 2 is
+        // exactly that under trilinear interpolation.
+        let mut values = Vec::with_capacity(8);
+        for b in 0..2u8 {
+            for g in 0..2u8 {
+                for red in 0..2u8 {
+                    values.push([f64::from(red), f64::from(g), f64::from(b)]);
+                }
+            }
+        }
+        return Ok(Mapped {
+            value: StudioAdjustment::ColourLookup {
+                lut: lut(None),
+                lut_kind: hsk_studio_folio::StudioLutKind::Lut3d,
+                dither,
+                table: Some(hsk_studio_folio::StudioLutTable { side: 2, values }),
+            },
+            notes: vec![(LossKind::Transformed, "colour_lookup_unset_as_identity")],
+        });
+    }
+    match o.get("lookupType").and_then(descriptor::Value::enum_value) {
+        Some("3DLUT") => {}
+        Some("abstractProfile" | "deviceLinkProfile") => return Err("colour_lookup_profile_unmapped"),
+        _ => return Err("colour_lookup_type_unmapped"),
+    }
+    if o.get("LUTFormat").and_then(descriptor::Value::enum_value) != Some("LUTFormatCUBE") {
+        return Err("colour_lookup_format_unmapped");
+    }
+    let Some(descriptor::Value::Data(bytes)) = o.get("LUT3DFileData") else {
+        return Err("colour_lookup_table_missing");
+    };
+    let table = parse_cube(bytes)?;
+    Ok(Mapped {
+        value: StudioAdjustment::ColourLookup {
+            lut: lut(name),
+            lut_kind: hsk_studio_folio::StudioLutKind::Lut3d,
+            dither,
+            table: Some(table),
+        },
+        notes: Vec::new(),
+    })
+}
+
+/// A `.cube` text (the Adobe / IRIDAS Cube LUT format): `#` comments, `TITLE "..."`,
+/// `LUT_3D_SIZE n` (2..=Folio's 65), `DOMAIN_MIN 0 0 0` / `DOMAIN_MAX 1 1 1` (any other domain is
+/// refused), then `n^3` data lines of three numbers, red fastest. Keywords are case-sensitive (as
+/// written by Photoshop and Resolve); a 1D table, an unknown keyword, a value outside `0..=1`, a
+/// short or long table, or extra tokens on a line are refused. Tokenised per line (the comment is
+/// stripped first, except on the title line whose quoted text may hold `#`); no substring matching
+/// (V4-08).
+pub(crate) fn parse_cube(bytes: &[u8]) -> std::result::Result<hsk_studio_folio::StudioLutTable, Reason> {
+    const BAD: Reason = "colour_lookup_cube_invalid";
+    if bytes.len() > MAX_CUBE_BYTES {
+        return Err("colour_lookup_cube_too_large");
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| BAD)?;
+    let mut side: Option<u16> = None;
+    let mut values: Vec<[f64; 3]> = Vec::new();
+    let mut expected = 0usize;
+    for raw in text.split(['\n', '\r']) {
+        let line = raw.trim_start_matches([' ', '\t']);
+        let title = line
+            .strip_prefix("TITLE")
+            .is_some_and(|rest| rest.starts_with([' ', '\t']));
+        if title {
+            // The quoted title may hold '#'; it carries nothing the table needs.
+            if values.is_empty() {
+                continue;
+            }
+            return Err(BAD);
+        }
+        let line = line.split('#').next().unwrap_or("");
+        let mut tokens = line.split([' ', '\t']).filter(|t| !t.is_empty());
+        let Some(first) = tokens.next() else {
+            continue;
+        };
+        let rest: Vec<&str> = tokens.collect();
+        match first {
+            "LUT_3D_SIZE" => {
+                let [n] = rest.as_slice() else { return Err(BAD) };
+                let n: u16 = n.parse().map_err(|_| BAD)?;
+                if side.is_some() || !values.is_empty() {
+                    return Err(BAD);
+                }
+                if !(2..=hsk_studio_folio::MAX_LUT_SIDE).contains(&n) {
+                    return Err("colour_lookup_cube_size");
+                }
+                let s = usize::from(n);
+                expected = s.checked_mul(s).and_then(|v| v.checked_mul(s)).ok_or(BAD)?;
+                values.try_reserve_exact(expected).map_err(|_| "colour_lookup_cube_too_large")?;
+                side = Some(n);
+            }
+            "LUT_1D_SIZE" => return Err("colour_lookup_cube_1d"),
+            "DOMAIN_MIN" | "DOMAIN_MAX" => {
+                let want = if first == "DOMAIN_MIN" { 0.0 } else { 1.0 };
+                let ok = rest.len() == 3 && rest.iter().all(|t| t.parse::<f64>().is_ok_and(|v| v == want));
+                if !ok {
+                    return Err("colour_lookup_cube_domain");
+                }
+            }
+            _ => {
+                if side.is_none() {
+                    return Err(BAD);
+                }
+                let [g, b] = rest.as_slice() else { return Err(BAD) };
+                let mut v = [0.0f64; 3];
+                for (slot, t) in v.iter_mut().zip([first, *g, *b]) {
+                    let x: f64 = t.parse().map_err(|_| BAD)?;
+                    if !(x.is_finite() && (0.0..=1.0).contains(&x)) {
+                        return Err("colour_lookup_cube_range");
+                    }
+                    *slot = x;
+                }
+                if values.len() >= expected {
+                    return Err(BAD);
+                }
+                values.push(v);
+            }
+        }
+    }
+    match side {
+        Some(side) if values.len() == expected => Ok(hsk_studio_folio::StudioLutTable { side, values }),
+        _ => Err(BAD),
+    }
 }
