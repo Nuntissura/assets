@@ -177,3 +177,69 @@ fn batch_refuses_before_reading_and_cancels_without_publishing() {
     assert!(!dir.join("long-out.flac").exists());
     assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
 }
+
+/// Lane SMB-AUDITION-SESSION: effect presets as stored records. A chain becomes a Folio preset,
+/// is saved and loaded as JSON, comes back as the same chain, and a batch job run from the loaded
+/// preset produces the same output bytes as the job run from the original chain. Unknown kinds,
+/// unknown parameters, bad enumerations and keyframes are typed refusals.
+#[test]
+fn effect_presets_are_stored_records_that_drive_the_batch_chain() {
+    use hsk_studio_folio as folio;
+    use hsk_studio_harness::view::audio_batch::{chain_from_preset, load_preset_set, preset_from_chain, save_preset_set};
+    let dir = support_audio::scratch("presets");
+    let chain = vec![
+        EffectSpec::Gain { db: -3.0 },
+        EffectSpec::Equalizer {
+            sections: vec![
+                score::BiquadSpec { kind: score::BiquadKind::HighPass, frequency_hz: 80.0, gain_db: 0.0, q: 0.707 },
+                score::BiquadSpec { kind: score::BiquadKind::Peaking, frequency_hz: 3000.0, gain_db: 2.5, q: 1.2 },
+            ],
+            master_gain_db: -1.0,
+        },
+        EffectSpec::Dynamics(score::DynamicsParams::compressor(-18.0, 3.0)),
+        EffectSpec::Limiter(score::LimiterParams::default()),
+    ];
+    let mut set = folio::StudioAudioEffectPresetSet::new();
+    set.presets.push(preset_from_chain("voice-master", "Voice master", &["Mastering", "Voice"], &chain));
+    let path = dir.join("presets.json");
+    let written = save_preset_set(&path, &set, false).unwrap();
+    assert_eq!(written, std::fs::metadata(&path).unwrap().len());
+    assert_eq!(save_preset_set(&path, &set, false).unwrap_err().code, "output_exists");
+    let loaded = load_preset_set(&path).unwrap();
+    assert_eq!(loaded, set);
+    assert_eq!(loaded.presets[0].category_path, ["Mastering", "Voice"]);
+    let back = chain_from_preset(&loaded.presets[0]).unwrap();
+    assert_eq!(back, chain);
+
+    // The same batch output from the stored preset as from the chain it was made of.
+    let input = dir.join("in.wav");
+    std::fs::write(&input, wav(2, 48_000, WavFormat::Int16, None, &signal(9000, 2))).unwrap();
+    let mut queue = AudioBatchQueue::new(actor());
+    queue.submit(job(&input, dir.join("from-chain.flac"), chain.clone(), MixFormat::Flac { bits: 24 }));
+    queue.submit(job(&input, dir.join("from-preset.flac"), back, MixFormat::Flac { bits: 24 }));
+    let r = queue.run();
+    assert!(r.iter().all(|r| r.outcome == BatchOutcome::Complete), "{}", r[0].to_json());
+    assert_eq!(r[0].chain_identity, r[1].chain_identity);
+    assert_eq!(std::fs::read(dir.join("from-chain.flac")).unwrap(), std::fs::read(dir.join("from-preset.flac")).unwrap());
+
+    // A disabled instance is skipped; refusals are typed.
+    let mut p = loaded.presets[0].clone();
+    p.effects[0].enabled = false;
+    assert_eq!(chain_from_preset(&p).unwrap().len(), 3);
+    let refuse = |f: &dyn Fn(&mut folio::StudioAudioEffectPreset)| {
+        let mut p = loaded.presets[0].clone();
+        f(&mut p);
+        chain_from_preset(&p).unwrap_err()
+    };
+    assert!(refuse(&|p| p.effects[0].filter_kind = "reverb".into()).detail.contains("unknown filter_kind"));
+    assert!(refuse(&|p| p.effects[0].params.push(folio::StudioAudioPresetParam { key: "wet".into(), value: 1.0 })).detail.contains("unknown parameter"));
+    assert!(refuse(&|p| p.effects[0].params.clear()).detail.contains("missing db"));
+    assert!(refuse(&|p| p.effects[1].params.iter_mut().find(|x| x.key == "section_0_kind").unwrap().value = 7.0).detail.contains("kind"));
+    assert!(refuse(&|p| p.effects[2].params.iter_mut().find(|x| x.key == "mode").unwrap().value = 0.5).detail.contains("mode"));
+    assert!(refuse(&|p| p.effects[0].keyframes.push(folio::StudioAudioPresetKeyframe { key: "db".into(), offset_ticks: 0, value: 0.0 })).detail.contains("keyframes"));
+    // A stored file Folio refuses (duplicate preset id) does not load.
+    let bad = std::fs::read_to_string(&path).unwrap().replacen("\"presets\": [", "\"presets\": [{\"preset_id\":\"voice-master\",\"name\":\"x\",\"category_path\":[],\"effects\":[{\"instance_id\":\"a\",\"filter_kind\":\"gain\",\"enabled\":true,\"params\":[]}]},", 1);
+    let bad_path = dir.join("bad.json");
+    std::fs::write(&bad_path, bad).unwrap();
+    assert_eq!(load_preset_set(&bad_path).unwrap_err().code, "preset_invalid");
+}

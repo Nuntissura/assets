@@ -20,6 +20,7 @@ use super::audio_import::{
 };
 use super::monitor::MonitorFail;
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_folio as folio;
 use hsk_studio_reel as reel;
 use hsk_studio_score as score;
 use serde_json::{Value, json};
@@ -452,4 +453,220 @@ fn run_item(
     receipt.output_sha256 = Some(export.1);
     receipt.verified = true;
     Ok(())
+}
+
+// ----- effect presets as stored records -------------------------------------------------------
+
+/// `filter_kind` keys of the presets this module applies: score's processor identity tags.
+pub const PRESET_GAIN: &str = "gain";
+pub const PRESET_EQUALIZER: &str = "equalizer";
+pub const PRESET_DYNAMICS: &str = "dynamics";
+pub const PRESET_LIMITER: &str = "lookahead_limiter";
+/// Most equalizer sections a stored preset may describe (score's `MAX_EQ_SECTIONS`).
+const PRESET_MAX_EQ_SECTIONS: usize = score::MAX_EQ_SECTIONS;
+
+const BIQUAD_KINDS: [score::BiquadKind; 5] = [
+    score::BiquadKind::Peaking,
+    score::BiquadKind::LowShelf,
+    score::BiquadKind::HighShelf,
+    score::BiquadKind::LowPass,
+    score::BiquadKind::HighPass,
+];
+const MODES: [score::DynamicsMode; 2] = [score::DynamicsMode::Compressor, score::DynamicsMode::Expander];
+const DETECTORS: [score::Detector; 2] = [score::Detector::Peak, score::Detector::Rms];
+
+fn index_of<T: PartialEq>(all: &[T], v: &T) -> f64 {
+    all.iter().position(|x| x == v).unwrap_or(0) as f64
+}
+
+fn param(key: impl Into<String>, value: f64) -> folio::StudioAudioPresetParam {
+    folio::StudioAudioPresetParam { key: key.into(), value }
+}
+
+/// Element `v` of `all` when `v` is a whole non-negative index.
+fn pick<T: Copy>(all: &[T], v: f64) -> Option<T> {
+    (v.fract() == 0.0 && v >= 0.0 && v < all.len() as f64).then(|| all.get(v as usize).copied()).flatten()
+}
+
+impl EffectSpec {
+    /// The stored-record form of this effect (parameters named after score's parameter fields;
+    /// enumerations as their declaration index: biquad kind Peaking 0 .. HighPass 4, dynamics mode
+    /// Compressor 0 / Expander 1, detector Peak 0 / Rms 1, booleans 0 / 1; the equalizer stores its
+    /// section count as `sections` and each section as `section_<i>_kind|frequency_hz|gain_db|q`).
+    pub fn to_preset_instance(&self, instance_id: impl Into<String>) -> folio::StudioAudioEffectInstance {
+        let (kind, params) = match self {
+            Self::Gain { db } => (PRESET_GAIN, vec![param("db", *db)]),
+            Self::Equalizer { sections, master_gain_db } => {
+                let mut p = vec![param("master_gain_db", *master_gain_db), param("sections", sections.len() as f64)];
+                for (i, s) in sections.iter().enumerate() {
+                    p.push(param(format!("section_{i}_kind"), index_of(&BIQUAD_KINDS, &s.kind)));
+                    p.push(param(format!("section_{i}_frequency_hz"), s.frequency_hz));
+                    p.push(param(format!("section_{i}_gain_db"), s.gain_db));
+                    p.push(param(format!("section_{i}_q"), s.q));
+                }
+                (PRESET_EQUALIZER, p)
+            }
+            Self::Dynamics(d) => (
+                PRESET_DYNAMICS,
+                vec![
+                    param("mode", index_of(&MODES, &d.mode)),
+                    param("threshold_db", d.threshold_db),
+                    param("ratio", d.ratio),
+                    param("knee_db", d.knee_db),
+                    param("attack_ms", d.attack_ms),
+                    param("release_ms", d.release_ms),
+                    param("hold_ms", d.hold_ms),
+                    param("range_db", d.range_db),
+                    param("makeup_db", d.makeup_db),
+                    param("detector", index_of(&DETECTORS, &d.detector)),
+                    param("rms_window_ms", d.rms_window_ms),
+                    param("link", f64::from(u8::from(d.link))),
+                ],
+            ),
+            Self::Limiter(l) => (
+                PRESET_LIMITER,
+                vec![
+                    param("ceiling_db", l.ceiling_db),
+                    param("lookahead_ms", l.lookahead_ms),
+                    param("release_ms", l.release_ms),
+                    param("true_peak", f64::from(u8::from(l.true_peak))),
+                ],
+            ),
+        };
+        folio::StudioAudioEffectInstance {
+            instance_id: instance_id.into(),
+            filter_kind: kind.into(),
+            enabled: true,
+            params,
+            keyframes: Vec::new(),
+        }
+    }
+
+    /// The effect a stored instance describes; `None` for a disabled instance. Refusals
+    /// (`preset_effect`): an unknown `filter_kind`, a missing or unknown parameter, an enumerated
+    /// parameter that is not one of its indices, or keyframes (a batch chain applies static values).
+    /// Parameter ranges are checked by score when the chain is built (`effect_chain`).
+    pub fn from_preset_instance(e: &folio::StudioAudioEffectInstance) -> Result<Option<Self>, MonitorFail> {
+        if !e.enabled {
+            return Ok(None);
+        }
+        let target = |what: &str| format!("{}/{}: {what}", e.instance_id, e.filter_kind);
+        if !e.keyframes.is_empty() {
+            return Err(fail("preset_effect", target("keyframes are not applied by the batch chain")));
+        }
+        let used = RefCell::new(std::collections::BTreeSet::new());
+        let get = |key: &str| -> Result<f64, MonitorFail> {
+            used.borrow_mut().insert(key.to_owned());
+            e.params
+                .iter()
+                .find(|p| p.key == key)
+                .map(|p| p.value)
+                .ok_or_else(|| fail("preset_effect", target(&format!("missing {key}"))))
+        };
+        let enumerated = |what: &str, v: Option<()>| v.ok_or_else(|| fail("preset_effect", target(what)));
+        let spec = match e.filter_kind.as_str() {
+            PRESET_GAIN => Self::Gain { db: get("db")? },
+            PRESET_EQUALIZER => {
+                let count: Vec<usize> = (0..=PRESET_MAX_EQ_SECTIONS).collect();
+                let n = pick(&count, get("sections")?).ok_or_else(|| fail("preset_effect", target("sections")))?;
+                let mut sections = Vec::with_capacity(n);
+                for i in 0..n {
+                    let kind = pick(&BIQUAD_KINDS, get(&format!("section_{i}_kind"))?);
+                    enumerated("section kind", kind.map(|_| ()))?;
+                    sections.push(score::BiquadSpec {
+                        kind: kind.unwrap_or(score::BiquadKind::Peaking),
+                        frequency_hz: get(&format!("section_{i}_frequency_hz"))?,
+                        gain_db: get(&format!("section_{i}_gain_db"))?,
+                        q: get(&format!("section_{i}_q"))?,
+                    });
+                }
+                Self::Equalizer { sections, master_gain_db: get("master_gain_db")? }
+            }
+            PRESET_DYNAMICS => {
+                let mode = pick(&MODES, get("mode")?);
+                let detector = pick(&DETECTORS, get("detector")?);
+                let link = pick(&[false, true], get("link")?);
+                enumerated("mode", mode.map(|_| ()))?;
+                enumerated("detector", detector.map(|_| ()))?;
+                enumerated("link", link.map(|_| ()))?;
+                Self::Dynamics(score::DynamicsParams {
+                    mode: mode.unwrap_or(score::DynamicsMode::Compressor),
+                    threshold_db: get("threshold_db")?,
+                    ratio: get("ratio")?,
+                    knee_db: get("knee_db")?,
+                    attack_ms: get("attack_ms")?,
+                    release_ms: get("release_ms")?,
+                    hold_ms: get("hold_ms")?,
+                    range_db: get("range_db")?,
+                    makeup_db: get("makeup_db")?,
+                    detector: detector.unwrap_or(score::Detector::Peak),
+                    rms_window_ms: get("rms_window_ms")?,
+                    link: link.unwrap_or(false),
+                })
+            }
+            PRESET_LIMITER => {
+                let true_peak = pick(&[false, true], get("true_peak")?);
+                enumerated("true_peak", true_peak.map(|_| ()))?;
+                Self::Limiter(score::LimiterParams {
+                    ceiling_db: get("ceiling_db")?,
+                    lookahead_ms: get("lookahead_ms")?,
+                    release_ms: get("release_ms")?,
+                    true_peak: true_peak.unwrap_or(true),
+                })
+            }
+            other => return Err(fail("preset_effect", target(&format!("unknown filter_kind {other}")))),
+        };
+        let used = used.into_inner();
+        if let Some(extra) = e.params.iter().find(|p| !used.contains(&p.key)) {
+            return Err(fail("preset_effect", target(&format!("unknown parameter {}", extra.key))));
+        }
+        Ok(Some(spec))
+    }
+}
+
+/// A stored preset of `chain`: instances `fx-0`, `fx-1`, ... in order.
+pub fn preset_from_chain(preset_id: &str, name: &str, category_path: &[&str], chain: &[EffectSpec]) -> folio::StudioAudioEffectPreset {
+    folio::StudioAudioEffectPreset {
+        preset_id: preset_id.into(),
+        name: name.into(),
+        category_path: category_path.iter().map(|s| (*s).to_owned()).collect(),
+        effects: chain.iter().enumerate().map(|(i, e)| e.to_preset_instance(format!("fx-{i}"))).collect(),
+    }
+}
+
+/// The batch chain of a stored preset (disabled instances skipped; see
+/// [`EffectSpec::from_preset_instance`]).
+pub fn chain_from_preset(preset: &folio::StudioAudioEffectPreset) -> Result<Vec<EffectSpec>, MonitorFail> {
+    let mut chain = Vec::with_capacity(preset.effects.len());
+    for e in &preset.effects {
+        if let Some(spec) = EffectSpec::from_preset_instance(e)? {
+            chain.push(spec);
+        }
+    }
+    Ok(chain)
+}
+
+/// Writes a validated preset set as JSON (sibling temp file renamed on success; `output_exists`
+/// without `overwrite`); `preset_invalid` carries Folio's diagnostic.
+pub fn save_preset_set(path: &std::path::Path, set: &folio::StudioAudioEffectPresetSet, overwrite: bool) -> Result<u64, MonitorFail> {
+    folio::validate_audio_effect_presets(set, folio::Budget::default(), &CancellationToken::default())
+        .map_err(|d| fail("preset_invalid", format!("{d:?}")))?;
+    let bytes = serde_json::to_vec_pretty(set).map_err(|e| fail("preset_invalid", e.to_string()))?;
+    write_atomically(path, overwrite, |w| {
+        std::io::Write::write_all(w, &bytes).map_err(|e| fail("export_write", e.to_string()))?;
+        Ok(bytes.len() as u64)
+    })
+}
+
+/// Reads and validates a stored preset set (`audio_read` for I/O; `preset_invalid` for Folio's
+/// refusal of the JSON, size checked from the metadata against `Budget::input_bytes` first).
+pub fn load_preset_set(path: &std::path::Path) -> Result<folio::StudioAudioEffectPresetSet, MonitorFail> {
+    let budget = folio::Budget::default();
+    let len = std::fs::metadata(path).map_err(|e| fail("audio_read", e.to_string()))?.len();
+    if len > budget.input_bytes as u64 {
+        return Err(fail("preset_invalid", format!("{len} bytes exceeds {}", budget.input_bytes)));
+    }
+    let bytes = std::fs::read(path).map_err(|e| fail("audio_read", e.to_string()))?;
+    folio::parse_audio_effect_presets(&bytes, budget, &CancellationToken::default())
+        .map_err(|d| fail("preset_invalid", format!("{d:?}")))
 }
