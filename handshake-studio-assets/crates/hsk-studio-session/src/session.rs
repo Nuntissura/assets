@@ -1749,6 +1749,9 @@ impl Session {
     fn write_options(&self) -> WriteOptions {
         WriteOptions {
             asset_codec: self.asset_codec,
+            // A reference embedded in the source package stays embedded (the lazy source grants
+            // exactly its own assets and staged bodies); every other one stays a link.
+            embed_external: hsk_studio_package::EmbedExternal::Granted,
             ..WriteOptions::default()
         }
     }
@@ -2119,7 +2122,15 @@ impl Session {
         let Ok(referenced) = referenced_digests(self.snapshot.document(), &self.quarantined) else {
             return;
         };
-        let referenced: BTreeSet<&str> = referenced.iter().map(String::as_str).collect();
+        let Ok(embedded) =
+            hsk_studio_package::embeddable_digests(self.snapshot.document(), &self.quarantined)
+        else {
+            return;
+        };
+        let embedded: Vec<String> = embedded.into_iter().map(|(digest, _)| digest).collect();
+        // Embedded external bodies (media, stored text) stay in the source; they are not replaced.
+        let referenced: BTreeSet<&str> =
+            referenced.iter().chain(&embedded).map(String::as_str).collect();
         let mut reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
         let replaced: Vec<String> = reader
             .manifest()
@@ -2249,6 +2260,30 @@ impl Session {
     /// Entries the package kept verbatim or could not import (opaque / unlisted).
     pub fn loss(&self) -> &[LossNote] {
         &self.loss
+    }
+
+    /// Every reference of the current revision to data outside the document JSON (timeline media,
+    /// stored story text, import-original parts, primitives, colour profiles, LUTs, fonts,
+    /// composition audio) with its link state against this session's resolver and source package
+    /// (embedded = the source carries or the session staged its bytes), and the relink data
+    /// (handle, content hash, location). Lane SMB-PACKAGE-COMPLETENESS.
+    pub fn externals(&self) -> Result<Vec<hsk_studio_package::ExternalRef>, SessionError> {
+        let reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+        let manifest = reader.manifest();
+        let present = |d: &str| {
+            self.staged.contains_key(d)
+                || manifest.entries.iter().any(|e| {
+                    e.kind == hsk_studio_package::EntryKind::Asset
+                        && e.name.strip_prefix(hsk_studio_package::ASSET_PREFIX) == Some(d)
+                })
+        };
+        hsk_studio_package::external_references(
+            self.snapshot.document(),
+            &self.quarantined,
+            &present,
+            &*self.ports.resolver,
+        )
+        .map_err(SessionError::from_package)
     }
 
     /// Operations performed, counting the open.

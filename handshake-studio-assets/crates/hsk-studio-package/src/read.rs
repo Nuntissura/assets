@@ -12,6 +12,7 @@ use crate::{
 };
 use crate::import::{ImportEntry, ImportRef, ImportRole, parse_import_name};
 use crate::references::referenced_assets;
+use crate::externals::{ExternalRef, external_references};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio as folio;
 use ruzstd::decoding::StreamingDecoder;
@@ -39,6 +40,12 @@ pub enum LossReason {
     /// in the package: a layer mask, smart-filter mask or records image a writer from before
     /// SMB-PACKAGE-MASK-TILES dropped. The document opens; that plane is unavailable.
     MissingAsset,
+    /// A reference to data outside the document JSON is unavailable to this reader (link state
+    /// missing, unauthorized, modified or unsupported). `name` is the reference's
+    /// `ExternalRef::relink_key` (`external/<kind>/<sha256 or handle>`); the entry of
+    /// `Opened::externals` with that key carries the handle, hash and location for a relink. The
+    /// link itself stays in the document and is re-saved unchanged.
+    UnavailableExternal,
 }
 
 /// Explicit loss receipt: preserved-opaque, not semantically imported (STU-IO-004/005).
@@ -76,6 +83,10 @@ pub struct Opened {
     /// stay in `quarantined` (so every existing re-save path re-emits them verbatim; no copy is held
     /// twice), but they add no loss note: they are understood, not unknown.
     pub imports: Vec<ImportRef>,
+    /// Every reference to data outside the document JSON (timeline media, stored story text,
+    /// import-original parts, primitives, colour profiles, LUTs, fonts, composition audio) with its
+    /// link state and relink data; empty for a read-only document.
+    pub externals: Vec<ExternalRef>,
 }
 
 impl Opened {
@@ -521,6 +532,7 @@ impl<S: Source> Container<S> {
         let document = document.ok_or(PackageError::MissingEntry)?;
         let inspection = folio::inspect_bytes(&document, folio_budget, cancel, resolver)
             .map_err(PackageError::Document)?;
+        let mut externals = Vec::new();
         if let folio::Inspection::Editable(snapshot) = &inspection {
             let doc = snapshot.document();
             if doc.document_id != self.manifest.document_id
@@ -542,6 +554,16 @@ impl<S: Source> Container<S> {
                     });
                 }
             }
+            // References outside the document JSON (media, stored text, profiles, LUTs, fonts, ...):
+            // each with its link state; an unavailable one is a typed loss whose relink data is the
+            // matching `Opened::externals` entry (lane SMB-PACKAGE-COMPLETENESS).
+            externals = external_references(doc, &quarantined, &|d| assets.contains_key(d), resolver)?;
+            for e in externals.iter().filter(|e| e.state.is_unavailable()) {
+                loss.push(LossNote {
+                    name: e.relink_key(),
+                    reason: LossReason::UnavailableExternal,
+                });
+            }
         }
         Ok(Opened {
             manifest: self.manifest,
@@ -551,6 +573,7 @@ impl<S: Source> Container<S> {
             loss,
             previews,
             imports,
+            externals,
         })
     }
 }

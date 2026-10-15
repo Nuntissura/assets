@@ -184,6 +184,7 @@ fn run() -> Result<(), String> {
                     LossReason::Unlisted => "unlisted",
                     LossReason::Opaque => "opaque",
                     LossReason::MissingAsset => "missing_asset",
+                    LossReason::UnavailableExternal => "unavailable_external",
                 })
                 .collect();
             println!(

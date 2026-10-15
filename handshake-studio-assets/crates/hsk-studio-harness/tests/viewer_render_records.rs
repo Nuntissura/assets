@@ -1,8 +1,7 @@
 //! Lane SMB-HARNESS-RENDER-RECORDS (feature `viewer`): the viewer frame renders the document's Folio
 //! raster records (an invert adjustment layer from the PSD, an effect stack, a smart-filter stack)
-//! through composite's adapter. Masks are not part of this proof: the package writes only raster
-//! tile assets (`hsk_studio_package` `tile_digests`), so a document with mask coverage tiles does
-//! not reopen (`missing_asset`); reported to the lead as a package-owner gap. A saved document with those
+//! through composite's adapter. Masks are proven in `viewer_mask_package.rs` (note: the package
+//! gap that kept them out of this proof was fixed by SMB-PACKAGE-MASK-TILES, 8749f0a). A saved document with those
 //! records looks byte-identical in the viewer and in a direct composite
 //! (`lower_to_render_plan_extended`) + render-cpu render of the reopened package, and differs from
 //! the records-free frame.

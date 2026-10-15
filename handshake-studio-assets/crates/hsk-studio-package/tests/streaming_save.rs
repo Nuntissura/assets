@@ -371,6 +371,7 @@ fn streaming_output_is_byte_identical_and_strictly_readable() {
                 let options = WriteOptions {
                     zip64,
                     asset_codec: codec,
+                    ..WriteOptions::default()
                 };
                 let mut buffered = Vec::new();
                 let a = write_package_with(

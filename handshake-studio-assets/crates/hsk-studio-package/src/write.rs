@@ -14,7 +14,7 @@ use crate::{
     zip::{Zip64Policy, ZipWriter, validate_name, validate_name_set},
 };
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{ContentDigest, Snapshot};
+use hsk_studio_folio::{ContentDigest, Snapshot, StudioDocument};
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 use std::{
     borrow::Cow,
@@ -126,6 +126,49 @@ pub struct WriteOptions {
     /// tile format names a 2/4/8-byte element such as `rgb_f32le` or `coverage_u16le`) shuffle+zstd
     /// is chosen per blob; previews use plain zstd when this is not `Raw`.
     pub asset_codec: Codec,
+    /// Embedding of content-addressed external references (timeline media, stored story text;
+    /// module `externals`, STU-ASSET-006). Default [`EmbedExternal::Link`].
+    pub embed_external: EmbedExternal,
+}
+
+/// Whether the package carries the bytes of content-addressed external references (STU-ASSET-006:
+/// a document holds a link by default; embedding copies the bytes into the document's own artifact
+/// stream). The link itself is always kept in the document or record JSON, so nothing is dropped:
+/// a reader reports every reference with its link state (`Opened::externals`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EmbedExternal {
+    /// Links only (bulk media stays in the artifact tier, STU-ASSET-008). Bytes a record says
+    /// travel with the document (an `embedded` placed source, an ICC profile) are still embedded
+    /// when granted (absent: kept as the reference, reported missing on read).
+    #[default]
+    Link,
+    /// Embed every one the asset source grants; one it reports `asset_absent` stays a link. A
+    /// session re-save uses this, so a reference embedded in its source package stays embedded.
+    Granted,
+    /// Self-contained package: every one must be granted, else the save fails typed with nothing
+    /// written (STU-ASSET-009 fail-closed).
+    All,
+}
+
+/// The assets a write plans, in name order: (sha256, shuffle element size, must be granted).
+pub(crate) fn asset_plan(
+    document: &StudioDocument,
+    held: &[Quarantined],
+    options: &WriteOptions,
+) -> Result<Vec<(String, Option<u8>, bool)>, PackageError> {
+    let mut plan: BTreeMap<String, (Option<u8>, bool)> = referenced_assets(document, held)?
+        .into_iter()
+        .map(|(digest, r)| (digest, (r.elem_size, true)))
+        .collect();
+    let must = options.embed_external == EmbedExternal::All;
+    for (digest, travels) in crate::externals::embeddable_digests(document, held)? {
+        // Bytes the record says travel with the document are embedded whenever granted; linked
+        // ones only when the policy asks.
+        if travels || options.embed_external != EmbedExternal::Link {
+            plan.entry(digest).or_insert((None, must));
+        }
+    }
+    Ok(plan.into_iter().map(|(d, (e, m))| (d, e, m)).collect())
 }
 
 /// Optional entries written next to the document and its assets.
@@ -258,22 +301,24 @@ pub fn write_package_with<W: Write>(
     let doc_bytes = doc.encoded_bytes();
 
     let mut parts: Vec<Part<'_>> = Vec::new();
-    for (digest, referenced) in referenced_assets(document, extras.quarantined)? {
+    for (digest, elem_size, must) in asset_plan(document, extras.quarantined, options)? {
         check(cancel)?;
         let reference = ContentDigest {
             algorithm: "sha256".to_owned(),
             digest: digest.clone(),
         };
-        let bytes = assets
-            .read(&reference, limits.max_entry_bytes)
-            .map_err(PackageError::Asset)?;
+        let bytes = match assets.read(&reference, limits.max_entry_bytes) {
+            Ok(bytes) => bytes,
+            Err(AssetError::Absent) if !must => continue,
+            Err(e) => return Err(PackageError::Asset(e)),
+        };
         if bytes.len() as u64 > limits.max_entry_bytes {
             return Err(PackageError::Asset(AssetError::TooLarge));
         }
         if sha256_hex(&bytes, cancel)? != digest {
             return Err(PackageError::HashMismatch);
         }
-        let encoded = encode_blob(options.asset_codec, referenced.elem_size, bytes, cancel)?;
+        let encoded = encode_blob(options.asset_codec, elem_size, bytes, cancel)?;
         parts.push(Part {
             name: format!("{ASSET_PREFIX}{digest}"),
             kind: EntryKind::Asset,

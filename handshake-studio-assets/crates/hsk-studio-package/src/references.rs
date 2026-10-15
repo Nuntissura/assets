@@ -10,7 +10,9 @@
 //! - every records image source naming a package asset: an object whose `source_kind` is
 //!   `package_asset` (Folio `StudioImageSource::PackageAsset`).
 //!
-//! Records entries that are not JSON are opaque to the package and contribute nothing; their
+//! Record entries are `import/records.<sha256>` and the session's typed document entries
+//! (`studio/<token>.<sha256>`, [`DOCUMENT_ENTRY_PREFIX`]); other opaque entries are never
+//! interpreted. Record entries that are not JSON are opaque to the package and contribute nothing; their
 //! schemas belong to their producer. A tile or image object that does not decode as its Folio type,
 //! or whose digest is not lowercase SHA-256 hex, is `invalid_digest`.
 #![deny(clippy::arithmetic_side_effects)]
@@ -24,6 +26,22 @@ use crate::{
 use hsk_studio_folio as folio;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// Name prefix of the session's typed document entries (`studio/<token>.<sha256>`; their tokens
+/// and producers belong to `hsk-studio-session`). The package reads JSON ones as Folio records.
+pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
+
+/// True for an entry whose body may hold Folio records: `import/records.*` or `studio/*`.
+pub(crate) fn is_record_entry(name: &str) -> bool {
+    matches!(parse_import_name(name), Ok(Some((ImportRole::Records, _)))) || name.starts_with(DOCUMENT_ENTRY_PREFIX)
+}
+
+/// The JSON bodies of the record entries among `held` (non-JSON bodies are skipped: opaque).
+pub(crate) fn record_bodies(held: &[Quarantined]) -> impl Iterator<Item = (&str, Value)> {
+    held.iter().filter(|e| is_record_entry(&e.name)).filter_map(|e| {
+        serde_json::from_slice::<Value>(&e.bytes).ok().map(|v| (e.name.as_str(), v))
+    })
+}
 
 /// `schema_id` token every Folio tile reference carries.
 pub const TILE_SCHEMA_ID: &str = "hsk.studio.raster_tile@1";
@@ -92,7 +110,7 @@ impl Acc {
     }
 }
 
-fn checked_digest(d: &folio::ContentDigest) -> Result<&str, PackageError> {
+pub(crate) fn checked_digest(d: &folio::ContentDigest) -> Result<&str, PackageError> {
     if d.algorithm != "sha256" || !is_hex64(&d.digest) {
         return Err(PackageError::InvalidDigest);
     }
@@ -172,13 +190,7 @@ pub fn referenced_assets(
         }
         Found::Image { digest } => out.entry(digest).or_default().add(AssetUse::RecordImage, None),
     })?;
-    for entry in held {
-        if !matches!(parse_import_name(&entry.name), Ok(Some((ImportRole::Records, _)))) {
-            continue;
-        }
-        let Ok(records) = serde_json::from_slice::<Value>(&entry.bytes) else {
-            continue;
-        };
+    for (_, records) in record_bodies(held) {
         walk(&records, &mut |found| match found {
             Found::Tile { digest, elem } => out.entry(digest).or_default().add(AssetUse::RecordPlane, elem),
             Found::Image { digest } => out.entry(digest).or_default().add(AssetUse::RecordImage, None),

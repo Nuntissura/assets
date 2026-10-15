@@ -281,6 +281,22 @@ pub(crate) fn load_parts(
         return Err(wrap(PackageError::DocumentMismatch));
     }
     loss.extend(require_tile_assets(doc, manifest, &quarantined).map_err(wrap)?);
+    // References outside the document JSON whose data this reader cannot reach: typed loss notes
+    // (relink data from `Session::externals`; lane SMB-PACKAGE-COMPLETENESS).
+    let present = |d: &str| {
+        let name = format!("{ASSET_PREFIX}{d}");
+        manifest.entries.iter().any(|e| e.kind == EntryKind::Asset && e.name == name)
+    };
+    for e in hsk_studio_package::external_references(doc, &quarantined, &present, resolver)
+        .map_err(wrap)?
+        .iter()
+        .filter(|e| e.state.is_unavailable())
+    {
+        loss.push(LossNote {
+            name: e.relink_key(),
+            reason: LossReason::UnavailableExternal,
+        });
+    }
     Ok(Parts {
         snapshot,
         quarantined,

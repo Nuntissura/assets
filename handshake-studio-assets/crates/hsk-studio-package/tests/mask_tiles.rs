@@ -393,12 +393,15 @@ fn every_folio_digest_position_is_classified() {
             assert_eq!(token.to_string().matches(TILE_SCHEMA_ID).count(), 1, "{schema_name}: TileRef schema_id is the tile token: {token}");
         }
     }
-    let classified: [&str; 6] = [
-        // Caller-owned media (Folio: "caller-owned manifest handle"; the harness registers its
-        // bytes at runtime): not a package asset, never written by the package.
+    let classified: [&str; 7] = [
+        // Linked media (caller-owned manifest handle): kept as a link, embedded only under
+        // EmbedExternal::Granted / All, reported with its link state (externals.rs).
         "ClipSource.content_digest[source_kind=media]",
-        // A stored text stream "resolved by its owner" (artifact handle): not a package asset.
+        // A stored text stream "resolved by its owner": linked, like media (externals.rs).
         "StoryContent.content_digest[content_kind=stored]",
+        // ICC profile bytes that travel with the document: embedded when granted, else a typed
+        // loss (externals.rs, kind icc_profile).
+        "StudioIccProfile.content_digest",
         // A part inside the `import/original.<sha256>` entry, carried verbatim with that entry.
         "StudioImageSource.content_digest[source_kind=import_original]",
         // Records image naming `assets/<sha256>`: collected (AssetUse::RecordImage) and written.
