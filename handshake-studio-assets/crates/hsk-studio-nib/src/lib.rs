@@ -20,6 +20,7 @@ pub mod network;
 pub mod pathfinder;
 pub mod raster;
 pub mod shape;
+pub mod shape_ops;
 pub mod stroke;
 pub mod width;
 pub use descriptor::descriptor;
