@@ -42,10 +42,34 @@ pub enum Tool {
     Lasso,
     Brush,
     Text,
+    /// Vector tools (lane SMB-ILLUSTRATOR-PEN, module [`super::vector`]).
+    Pen,
+    DirectSelect,
+    Rectangle,
+    RoundedRectangle,
+    EllipseShape,
+    Polygon,
+    Star,
+    Line,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 6] = [Tool::View, Tool::RectSelect, Tool::EllipseSelect, Tool::Lasso, Tool::Brush, Tool::Text];
+    pub const ALL: [Tool; 14] = [
+        Tool::View,
+        Tool::RectSelect,
+        Tool::EllipseSelect,
+        Tool::Lasso,
+        Tool::Brush,
+        Tool::Text,
+        Tool::Pen,
+        Tool::DirectSelect,
+        Tool::Rectangle,
+        Tool::RoundedRectangle,
+        Tool::EllipseShape,
+        Tool::Polygon,
+        Tool::Star,
+        Tool::Line,
+    ];
     pub fn key(self) -> &'static str {
         match self {
             Tool::View => "view",
@@ -54,6 +78,14 @@ impl Tool {
             Tool::Lasso => "lasso",
             Tool::Brush => "brush",
             Tool::Text => "text",
+            Tool::Pen => "pen",
+            Tool::DirectSelect => "direct_select",
+            Tool::Rectangle => "rectangle",
+            Tool::RoundedRectangle => "rounded_rectangle",
+            Tool::EllipseShape => "ellipse",
+            Tool::Polygon => "polygon",
+            Tool::Star => "star",
+            Tool::Line => "line",
         }
     }
     pub fn label(self) -> &'static str {
@@ -64,6 +96,14 @@ impl Tool {
             Tool::Lasso => "Lasso",
             Tool::Brush => "Brush",
             Tool::Text => "Text",
+            Tool::Pen => "Pen",
+            Tool::DirectSelect => "Direct",
+            Tool::Rectangle => "Rectangle",
+            Tool::RoundedRectangle => "Rounded",
+            Tool::EllipseShape => "Ellipse shape",
+            Tool::Polygon => "Polygon",
+            Tool::Star => "Star",
+            Tool::Line => "Line",
         }
     }
 }
@@ -107,6 +147,10 @@ pub struct EditState {
     pub(super) ants_truncated: bool,
     /// The gesture in progress, in document pixels (and pressure for the brush).
     pub(super) gesture: Vec<StrokeSample>,
+    /// Vector tool settings and pen state (module [`super::vector`]).
+    pub vector: super::vector::VectorTool,
+    /// The vector entry of the open document while the session has no `vector` token.
+    pub(super) vector_local: Option<Vec<u8>>,
 }
 
 impl Default for EditState {
@@ -119,6 +163,8 @@ impl Default for EditState {
             ants: Vec::new(),
             ants_truncated: false,
             gesture: Vec::new(),
+            vector: super::vector::VectorTool::default(),
+            vector_local: None,
         }
     }
 }
@@ -247,6 +293,10 @@ impl Viewer {
     pub fn set_tool(&mut self, tool: Tool) {
         self.edit.tool = tool;
         self.edit.gesture.clear();
+        self.edit.vector.press = None;
+        if tool != Tool::Pen {
+            self.edit.vector.pen_layer = None;
+        }
         if tool == Tool::Text {
             self.say("text tool: click the canvas to place a text layer".into());
         }
@@ -491,6 +541,7 @@ impl Viewer {
             "selection": e.selection.as_ref().map(|s| json!({"bounds": [s.bounds.x, s.bounds.y, s.bounds.width, s.bounds.height], "coverage_sum": s.area_sum(), "ant_segments": e.ants.len(), "ants_truncated": e.ants_truncated})),
             "history": self.run.history(),
             "text_tool": {"available": true, "size_pt": self.text_size_pt, "fonts": self.fonts.iter().map(|f| f.family.clone()).collect::<Vec<_>>()},
+            "vector": self.vector_json(),
         })
     }
 }

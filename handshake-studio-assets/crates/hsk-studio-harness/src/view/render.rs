@@ -15,7 +15,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_composite::{self as composite, BlendSpace, CompositeError, Exactness, NodeAddr, PreparedText, TileInfo};
+use hsk_studio_composite::{self as composite, BlendSpace, CompositeError, Exactness, NodeAddr, PreparedText, PreparedVectors, TileInfo};
 use hsk_studio_folio::{self as folio, Inspection, ProfileBinding, Snapshot, TileRef};
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_pigment::render_plan::{
@@ -133,6 +133,23 @@ pub fn render_inner(
     display: Option<&mut dyn GpuDisplay>,
     cancel: &CancellationToken,
 ) -> Result<Frame, RenderFail> {
+    render_full(snap, assets, text, None, prefer, gpu, display, cancel)
+}
+
+/// [`render_inner`] with optional prepared vector layers (lane SMB-ILLUSTRATOR-PEN: composite
+/// `evaluate_with_inputs` + `lower_with_inputs`, the vector coverage planes and painted rows served
+/// to the backend). Without vector layers in the document this is exactly [`render_inner`].
+#[allow(clippy::too_many_arguments)]
+pub fn render_full(
+    snap: &Snapshot,
+    assets: &Assets,
+    text: Option<&PreparedText>,
+    vectors: Option<&PreparedVectors>,
+    prefer: Prefer,
+    gpu: Option<&hsk_studio_render_gpu::GpuBackend>,
+    display: Option<&mut dyn GpuDisplay>,
+    cancel: &CancellationToken,
+) -> Result<Frame, RenderFail> {
     let mut notes = Vec::new();
     let view = view_snapshot(snap, cancel, &mut notes)?;
     let doc = view.document();
@@ -147,7 +164,17 @@ pub fn render_inner(
     let tiles = TileTable::new(assets);
     let empty = PreparedText::default();
     let has_text = doc.layers.iter().any(|l| matches!(l.payload, folio::Payload::Text { .. }));
-    let (lowering, text_masks) = if has_text {
+    let has_vector = doc.layers.iter().any(|l| matches!(l.payload, folio::Payload::Vector { .. }));
+    let mut inputs_lowering: Option<composite::InputsLowering> = None;
+    let (lowering, text_masks) = if let (true, Some(prepared_vectors)) = (has_vector, vectors) {
+        let inputs = composite::RenderInputs { records: None, text: if has_text { Some(text.unwrap_or(&empty)) } else { None }, vectors: Some(prepared_vectors) };
+        let report = composite::evaluate_with_inputs(&plan, &view, &inputs, cancel).map_err(composite_fail)?;
+        let lowered = composite::lower_with_inputs(&plan, &report, &view, &inputs, &root, target, &tiles).map_err(composite_fail)?;
+        let lowering = composite::RenderLowering { plan: lowered.plan.clone(), sources: lowered.sources.clone(), mask_sources: lowered.mask_sources.clone(), exactness: lowered.exactness.clone() };
+        let masks = has_text.then(|| (lowered.text_masks.clone(), text.unwrap_or(&empty)));
+        inputs_lowering = Some(lowered);
+        (lowering, masks)
+    } else if has_text {
         let prepared = text.unwrap_or(&empty);
         let report = composite::evaluate_with_text(&plan, &view, prepared, cancel).map_err(composite_fail)?;
         let lowered = composite::lower_to_render_plan_with_text(&plan, &report, &view, &root, target, &tiles, prepared).map_err(composite_fail)?;
@@ -156,7 +183,8 @@ pub fn render_inner(
         let report = composite::evaluate(&plan, &view, cancel).map_err(composite_fail)?;
         (composite::lower_to_render_plan(&plan, &report, &view, &root, target, &tiles).map_err(composite_fail)?, None)
     };
-    let sources = Sources { tiles: &tiles, table: &lowering.sources, space, text: text_masks.as_ref().map(|(m, p)| (m, *p)) };
+    let vector = inputs_lowering.as_ref().zip(vectors);
+    let sources = Sources { tiles: &tiles, table: &lowering.sources, space, text: text_masks.as_ref().map(|(m, p)| (m, *p)), vector };
     let request = ExecuteRequest { expected_revision: lowering.plan.revision, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: MAX_WORKING_BYTES };
     if prefer == Prefer::Gpu
         && let Some(display) = display
@@ -354,10 +382,17 @@ struct Sources<'a> {
     space: ColourTag,
     /// Text masks of the lowering and the prepared planes behind them.
     text: Option<(&'a composite::TextMaskTable, &'a PreparedText)>,
+    /// The inputs lowering and the prepared vector planes (vector coverage, stroke masks, painted rows).
+    vector: Option<(&'a composite::InputsLowering, &'a PreparedVectors)>,
 }
 
 impl PlanSources for Sources<'_> {
     fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
+        if let Some((lowering, vectors)) = self.vector
+            && let Some(painted) = lowering.vector_paint(key, vectors, self.space)
+        {
+            return Some(painted);
+        }
         let (_, tile) = self.table.iter().find(|(k, _)| *k == key)?;
         let p = self.tiles.planes.get(tile.content_digest.digest.as_str())?;
         let side = |l: &folio::Length| (l.value.is_finite() && l.value >= 0.0 && l.value <= CELL as f64).then_some(l.value as u32);
@@ -376,9 +411,13 @@ impl PlanSources for Sources<'_> {
         })
     }
     fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
-        let (masks, prepared) = self.text?;
-        let (_, layer) = masks.iter().find(|(k, _)| *k == key)?;
-        prepared.plane(layer)?.mask()
+        if let Some((masks, prepared)) = self.text
+            && let Some((_, layer)) = masks.iter().find(|(k, _)| *k == key)
+        {
+            return prepared.plane(layer)?.mask();
+        }
+        let (lowering, vectors) = self.vector?;
+        lowering.vector_mask(key, vectors)
     }
 }
 

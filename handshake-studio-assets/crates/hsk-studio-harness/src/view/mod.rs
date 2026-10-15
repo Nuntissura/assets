@@ -29,6 +29,8 @@ pub mod monitor;
 pub mod selection_store;
 pub mod text;
 pub mod render;
+/// Pen, direct selection, shape tools and pathfinder on vector layers (lane SMB-ILLUSTRATOR-PEN).
+pub mod vector;
 
 use crate::harness::{Harness, References, Run, Selection};
 use crate::panel::{self, PanelValues, Route};
@@ -480,7 +482,8 @@ impl Viewer {
         let frame = if shown.rgba8.is_empty() {
             let snap = self.run.snapshot().ok_or_else(|| format!("export {}: nothing open", path.display()))?;
             let text = self.prepared_text().map_err(|e| format!("export {}: {e}", path.display()))?;
-            read_back = render::render_inner(snap, &self.assets, Some(&text), Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
+            let vectors = self.prepared_vectors().map_err(|e| format!("export {}: {e}", path.display()))?;
+            read_back = render::render_full(snap, &self.assets, Some(&text), vectors.as_ref(), Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("export {}: {e}", path.display()))?;
             &read_back
         } else {
             shown
@@ -519,6 +522,12 @@ impl Viewer {
             self.say(e.clone());
             return Err(e);
         }
+        // Vector layers are saved only with their path records (lane SMB-ILLUSTRATOR-PEN).
+        if let Err(r) = self.vector_save_check() {
+            let e = format!("save {}: {r}", path.display());
+            self.say(e.clone());
+            return Err(e);
+        }
         if self.run.save_to(path) {
             self.say(format!("saved {}", path.display()));
             Ok(())
@@ -543,14 +552,15 @@ impl Viewer {
             // DisplayTransform::Clip, lane SMB-RENDER-SCENE-DISPLAY); exports keep their own clamping.
             self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options).with_display_transform(hsk_studio_render_gpu::DisplayTransform::Clip));
         }
-        let result = match self.prepared_text() {
-            Ok(text) => {
+        let result = match (self.prepared_text(), self.prepared_vectors()) {
+            (Ok(text), Ok(vectors)) => {
                 let Some(snap) = self.run.snapshot() else {
                     return;
                 };
-                render::render_inner(snap, &self.assets, Some(&text), self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel)
+                render::render_full(snap, &self.assets, Some(&text), vectors.as_ref(), self.prefer, self.gpu.as_ref(), self.display.as_mut().map(|d| &mut **d as &mut dyn GpuDisplay), self.cancel)
             }
-            Err(e) => Err(RenderFail { code: "text", detail: e }),
+            (Err(e), _) => Err(RenderFail { code: "text", detail: e }),
+            (_, Err(e)) => Err(RenderFail { code: "vector", detail: e }),
         };
         match result {
             Ok(frame) => {
@@ -919,7 +929,9 @@ impl Viewer {
         let to_screen = |d: [f32; 2]| egui::pos2(shown.min.x + (d[0] - fx) * zoom, shown.min.y + (d[1] - fy) * zoom);
 
         // Tool gestures (every action below is a headless Viewer method).
-        if tool != Tool::View {
+        if tool.is_vector() {
+            self.vector_gesture(ui, &response, &to_doc, zoom);
+        } else if tool != Tool::View {
             if response.drag_started() {
                 self.edit.gesture.clear();
             }
@@ -998,6 +1010,8 @@ impl Viewer {
             _ => {}
         }
 
+        self.vector_overlay(&painter, &to_screen);
+
         // Marching ants: the 50 % outline of the selection, black under white dashes that move.
         if !self.edit.ants.is_empty() {
             let phase = (ui.input(|i| i.time) * 12.0 % 8.0) as f32;
@@ -1026,12 +1040,16 @@ impl Viewer {
                 Tool::Lasso => "Drag a freehand selection",
                 Tool::Brush => "Paint on the selected raster layer (clipped to the selection)",
                 Tool::Text => "Click the canvas to place a point-text layer (size and colour from the text size and brush colour)",
+                other => vector::tool_hover(other),
             };
             if ui.push_id(widget::id(&name), |ui| ui.selectable_label(self.edit.tool == tool, tool.label())).inner.on_hover_text(hover).clicked() {
                 self.set_tool(tool);
             }
             self.drawn.push(name);
         }
+        let mut vector_drawn = Vec::new();
+        self.vector_options_ui(ui, &mut vector_drawn);
+        self.drawn.extend(vector_drawn);
         ui.separator();
         let mut combine = self.edit.combine;
         ui.push_id(widget::id(widget::COMBINE), |ui| {
