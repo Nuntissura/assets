@@ -18,7 +18,14 @@
 //! ellipse arcs, stars and polygons are already resolved there), else the vector network, else the
 //! LINE segment. They are persisted in the records entry as `vector_paths`.
 //!
-//! Not mapped (typed losses): geometry of containers and artboards (no path home on groups), the
+//! Frames (lane SMB-INTEROP-FIG-INSTANCES-FRAMES): a frame fill is a background `vector` layer, the
+//! frame's bottom-most child, and frame clipping a vector clip record on the frame's child layers;
+//! component instances draw through an expansion group of the definition's children with the
+//! overrides mapped onto them (bounded: [`MAX_INSTANCE_DEPTH`], [`MAX_OVERRIDE_PATH`],
+//! [`MAX_EXPANDED_NODES`]; test fig_instances_frames::hostile_instances_refused_before_allocation);
+//! text layers record their lines and runs from Figma's stored layout ([`FigTextLayout`]).
+//!
+//! Not mapped (typed losses): geometry of containers without fill or clip, the
 //! boolean result outline, stroke outlines (derived from the path plus the stroke row), transforms
 //! and sizes of nodes without emitted geometry, image paints, effects, masks, text fonts and run
 //! styles, paint-to-variable bindings, flow starts, scroll behaviour. Editable import stays
@@ -27,11 +34,14 @@
 use crate::container::hex;
 use crate::effects::effect;
 use crate::geometry::{
-    Affine, IDENTITY, compose, fill_rule, line_path, network_paths, path_from_commands,
+    Affine, IDENTITY, compose, fill_rule, line_path, network_paths, path_from_commands, rect_path,
 };
 use crate::import::{FigImport, SourceId};
 use crate::nodes::VariableValue;
-use crate::nodes::{FigDocument, FigNode, NodeLoss, NodePayload, Paint, PaintKind};
+use crate::nodes::{
+    DerivedSymbolNode, FigDocument, FigNode, FramePayload, InstanceOverride, NodeLoss,
+    NodePayload, Paint, PaintKind, TextPayload, TextRun,
+};
 use crate::semantic_decode::EditableStatus;
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
@@ -67,7 +77,8 @@ use hsk_studio_folio::{
     StudioComponent, StudioComponentInstance, StudioComponentSet, StudioOverrideRecord, StudioValue,
 };
 use hsk_studio_folio::{
-    StudioEffectStack, StudioMaskAttachment, StudioMaskMode, StudioRasterLayerRecord,
+    StudioClipRule, StudioEffectStack, StudioMaskAttachment, StudioMaskMode,
+    StudioRasterLayerRecord, StudioVectorClip,
     StudioRasterRecords, StudioVectorMask, StudioVectorRecords, validate_raster_records,
     validate_vector_records,
 };
@@ -258,6 +269,14 @@ pub struct NativeProposal {
     /// The decode losses of the source [`FigDocument`].
     pub decode_loss: Vec<NodeLoss>,
     pub editable: EditableStatus,
+    /// Frame fills drawn as background layers, with the frame clips.
+    pub frame_backgrounds: Vec<FrameBackground>,
+    /// Instances drawn through an expansion group.
+    pub expansions: Vec<InstanceExpansion>,
+    /// Nodes created by instance expansion, with their source guid paths.
+    pub expanded: Vec<ExpandedNode>,
+    /// Lines and runs of every text layer (font resolution: `resolve_text_outputs`).
+    pub text_layouts: Vec<FigTextLayout>,
 }
 
 /// Figma blend mode name -> Folio `StudioBlendMode` discriminant (`hsk-studio-pigment`
@@ -300,10 +319,111 @@ const CONTAINER_KINDS: &[&str] = &["FRAME", "SECTION", "GROUP", "BOOLEAN_OPERATI
 /// Folio has no layer for these: they become design records (variables) in a later slice.
 const NON_LAYER_KINDS: &[&str] = &["VARIABLE", "VARIABLE_SET"];
 
+/// Instance expansion bound: instances nested inside expanded instances (deeper = refused).
+pub const MAX_INSTANCE_DEPTH: usize = 16;
+/// Instance expansion bound: guid-path length of one override (longer = refused).
+pub const MAX_OVERRIDE_PATH: usize = 16;
+/// Instance expansion bound: nodes all expansions of one document may create; an instance whose
+/// expansion would pass it is refused before any of its layers is created.
+pub const MAX_EXPANDED_NODES: u64 = 20_000;
+
+/// One frame fill drawn as a background layer (bottom-most child of its frame), and the frame's
+/// clip when its content is clipped (`frameMaskDisabled = false`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameBackground {
+    /// The frame's Figma node (inside an instance expansion: the definition node).
+    pub source: SourceId,
+    /// The frame's Folio node (artboard, group layer or expansion group).
+    pub frame: NodeRef,
+    /// `vector` layer holding the frame geometry; `painted` = it carries the frame fills,
+    /// otherwise it is a hidden clip-source layer.
+    pub layer_id: String,
+    pub painted: bool,
+    /// Set-local clip id in the vector records when the frame clips its content.
+    pub clip_id: Option<String>,
+}
+
+/// One node created by instance expansion: `path` is the guid path from the outermost document
+/// INSTANCE (`instance`) through nested instances to the definition node (Figma's own
+/// `I<instance>;<node>` identity); the definition node keeps its own id-map entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpandedNode {
+    pub instance: SourceId,
+    pub path: Vec<SourceId>,
+    pub node: NodeRef,
+}
+
+/// One instance drawn through its expansion: the `component_instance` binding layer (absent for
+/// instances nested in an expansion) and the group layer holding the expanded content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstanceExpansion {
+    pub instance: SourceId,
+    pub path: Vec<SourceId>,
+    pub binding_layer_id: Option<String>,
+    pub group_layer_id: String,
+}
+
+/// One laid-out line of a text output: byte range of the story and the baseline origin (pen
+/// start) in document px, taken from Figma's stored layout (`derivedTextData.baselines`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigTextLine {
+    pub start: u64,
+    pub end: u64,
+    pub baseline_px: [f64; 2],
+}
+
+/// One style run of a text output: byte range, the requested font (Figma family and style),
+/// size in px (Figma's laid-out glyph size where stored) and solid fill (straight RGBA 0..=1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigTextRunSpec {
+    pub start: u64,
+    pub end: u64,
+    pub family: Option<String>,
+    pub style: Option<String>,
+    pub size_px: Option<f64>,
+    pub fill_rgba: Option<[f64; 4]>,
+}
+
+/// What a text layer needs to be drawn: its lines and runs. Fonts are resolved later, against
+/// caller-granted fonts (`resolve_text_outputs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FigTextLayout {
+    pub layer_id: String,
+    pub story_id: String,
+    pub source: SourceId,
+    pub lines: Vec<FigTextLine>,
+    pub runs: Vec<FigTextRunSpec>,
+}
+
+/// The active instance expansion: overrides and derived values keyed by guid path relative to
+/// the symbol being expanded (`bool` = matched).
+struct Expansion {
+    root: SourceId,
+    prefix: Vec<SourceId>,
+    symbol: SourceId,
+    chain: Vec<SourceId>,
+    overrides: Vec<(Vec<SourceId>, InstanceOverride, bool)>,
+    derived: Vec<(Vec<SourceId>, DerivedSymbolNode, bool)>,
+}
+
 struct Mapper<'a> {
     doc: &'a FigDocument,
     mint: &'a mut dyn IdMint,
     cancel: &'a CancellationToken,
+    /// Every emitted node in paint order (parents first, siblings bottom-most first).
+    order: Vec<NodeRef>,
+    symbol_index: HashMap<SourceId, usize>,
+    exp: Vec<Expansion>,
+    /// Nodes all expansions may create: [`MAX_EXPANDED_NODES`], capped by the caller's Folio
+    /// node budget left after the document's own nodes (two per node).
+    expansion_budget: u64,
+    expanded_total: u64,
+    expanded: Vec<ExpandedNode>,
+    expansions: Vec<InstanceExpansion>,
+    backgrounds: Vec<FrameBackground>,
+    /// clip id, source layer, clipped layers.
+    clips: Vec<(String, String, Vec<String>)>,
+    text_layouts: Vec<FigTextLayout>,
     layers: Vec<StudioLayer>,
     stories: Vec<StudioTextStory>,
     paths: Vec<FigVectorPath>,
@@ -315,8 +435,6 @@ struct Mapper<'a> {
     text_styles: Vec<FigTextStyle>,
     /// Canonical style JSON (without the id) -> minted `STYS` id.
     text_style_ids: HashMap<String, String>,
-    /// Node index -> mapped node, for sibling mask resolution.
-    node_refs: HashMap<usize, NodeRef>,
     /// Mask source layer id and the layer ids it masks (later siblings in the same parent).
     mask_plans: Vec<(String, Vec<String>)>,
     artboards: Vec<StudioArtboard>,
@@ -436,7 +554,20 @@ impl Mapper<'_> {
         ids
     }
 
+    /// A mapping loss. Inside an instance expansion the path is prefixed `expansion:`: the same
+    /// definition data is mapped (and its losses counted) once on the definition itself, so the
+    /// expansion copies stay distinguishable from it.
     fn lose(&mut self, path: impl Into<String>, code: &'static str) {
+        let path = if self.exp.is_empty() {
+            path.into()
+        } else {
+            format!("expansion:{}", path.into())
+        };
+        self.lose_plain(path, code);
+    }
+
+    /// A loss under its own path (expansion-specific losses).
+    fn lose_plain(&mut self, path: impl Into<String>, code: &'static str) {
         let first = self.current;
         let slot = self.loss.entry((path.into(), code)).or_insert((0, first));
         slot.0 = slot.0.saturating_add(1);
@@ -699,9 +830,15 @@ impl Mapper<'_> {
     /// One PAINT style holding the node's whole appearance stack (fills bottom to top, then
     /// strokes), bound through `fill_style_id`. `None` when the node has no mappable paint.
     fn style(&mut self, n: &FigNode, node: NodeRef) -> Result<()> {
+        self.style_rows(n, node, true, true)
+    }
+
+    /// [`Self::style`] restricted to the fill rows and/or the stroke rows of the node.
+    fn style_rows(&mut self, n: &FigNode, node: NodeRef, fills: bool, strokes: bool) -> Result<()> {
         let mut rows = Vec::new();
         let mut images: Vec<StudioImagePaint> = Vec::new();
-        for p in &n.fills {
+        let none: &[Paint] = &[];
+        for p in if fills { &n.fills[..] } else { none } {
             self.pending_image = None;
             if let Some((paint, opacity)) = self.paint(p, n.size, "fills") {
                 if let Some(mut img) = self.pending_image.take() {
@@ -717,7 +854,7 @@ impl Mapper<'_> {
                 });
             }
         }
-        if !n.strokes.is_empty() {
+        if strokes && !n.strokes.is_empty() {
             let join = match n.stroke_join.as_deref() {
                 Some("ROUND") => StrokeJoin::Round,
                 Some("BEVEL") => StrokeJoin::Bevel,
@@ -1669,11 +1806,10 @@ impl Mapper<'_> {
             NodePayload::Frame(f)
             | NodePayload::Symbol { frame: f, .. }
             | NodePayload::Instance { frame: f, .. } => {
-                if f.corner_radius.is_some() || f.corner_radii.is_some() {
+                // With a background layer the rounded frame outline is its geometry; the clip
+                // is mapped (or lost) by `frame_background`.
+                if !baked && (f.corner_radius.is_some() || f.corner_radii.is_some()) {
                     self.lose("native.corner_radii", "frame_corner_radii_no_folio_home");
-                }
-                if f.mask_disabled == Some(false) {
-                    self.lose("native.clips_content", "frame_clip_not_mapped");
                 }
                 if f.scroll_direction.is_some() {
                     self.lose("native.scroll_direction", "scroll_not_mapped");
@@ -1701,6 +1837,643 @@ impl Mapper<'_> {
         }
     }
 
+    /// Records an emitted node: paint order, plus the id map (document nodes) or the expansion
+    /// map (nodes created by instance expansion; their definition keeps its id-map entry).
+    fn record(&mut self, source: SourceId, node: &NodeRef) {
+        self.order.push(node.clone());
+        match self.exp.last() {
+            None => self.id_map.push(IdMapEntry {
+                source,
+                node: node.clone(),
+            }),
+            Some(e) => {
+                let mut path = e.prefix.clone();
+                path.push(source);
+                self.expanded.push(ExpandedNode {
+                    instance: e.root,
+                    path,
+                    node: node.clone(),
+                });
+            }
+        }
+    }
+
+    /// The node with the active expansion's overrides and derived values applied (`None`: the
+    /// node is used as decoded).
+    fn patched(&mut self, n: &FigNode) -> Option<FigNode> {
+        let e = self.exp.last_mut()?;
+        let key = [n.id];
+        let mut hits = Vec::new();
+        for (path, ov, matched) in &mut e.overrides {
+            if path.as_slice() == key {
+                *matched = true;
+                hits.push(ov.clone());
+            }
+        }
+        let mut derived = None;
+        for (path, d, matched) in &mut e.derived {
+            if path.as_slice() == key {
+                *matched = true;
+                derived = Some(d.clone());
+            }
+        }
+        if hits.is_empty() && derived.is_none() {
+            return None;
+        }
+        let mut out = n.clone();
+        for ov in &hits {
+            self.apply_override(&mut out, ov, false, derived.as_ref());
+        }
+        if let Some(d) = derived {
+            self.apply_derived(&mut out, &d);
+        }
+        Some(out)
+    }
+
+    /// One override onto an expanded node. `root`: the override addresses the instance itself
+    /// (its size is the instance node's own stored size, already in effect).
+    fn apply_override(
+        &mut self,
+        n: &mut FigNode,
+        ov: &InstanceOverride,
+        root: bool,
+        derived: Option<&DerivedSymbolNode>,
+    ) {
+        if let Some(name) = &ov.name {
+            n.name = Some(name.clone());
+        }
+        if let Some(v) = ov.visible {
+            n.visible = Some(v);
+        }
+        if let Some(o) = ov.opacity {
+            n.opacity = Some(o);
+        }
+        if let Some(f) = &ov.fills {
+            // Text runs without fills of their own carry the node fills (decoder copy): they
+            // follow the override; runs with their own fills keep them.
+            let old = std::mem::replace(&mut n.fills, f.clone());
+            if let NodePayload::Text(t) = &mut n.payload {
+                for r in t.runs.iter_mut().filter(|r| r.fills == old) {
+                    r.fills = f.clone();
+                }
+            }
+        }
+        if ov.size.is_some() && !root && derived.and_then(|d| d.size).is_none() {
+            // A resized sublayer needs Figma's laid-out geometry; without a derived entry for it
+            // the definition's geometry is kept.
+            self.lose_plain(
+                "native.instance.expansion.override.size",
+                "override_size_without_derived_layout",
+            );
+        }
+        if let Some(chars) = &ov.characters {
+            match &mut n.payload {
+                NodePayload::Text(t) => {
+                    let distinct = t
+                        .runs
+                        .iter()
+                        .map(|r| r.style_id)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    if distinct.len() > 1 {
+                        self.lose_plain(
+                            "native.instance.expansion.override.characters",
+                            "override_text_runs_reset_to_first_style",
+                        );
+                    }
+                    let first = t.runs.first().cloned();
+                    t.characters = chars.clone();
+                    let len = u32::try_from(chars.chars().count()).unwrap_or(u32::MAX);
+                    t.runs = match first {
+                        Some(r) if len > 0 => vec![TextRun {
+                            start: 0,
+                            end: len,
+                            ..r
+                        }],
+                        _ => Vec::new(),
+                    };
+                }
+                _ => self.lose_plain(
+                    "native.instance.expansion.override.characters",
+                    "override_characters_on_non_text",
+                ),
+            }
+        }
+        for field in &ov.unsupported {
+            self.lose_plain(
+                format!("native.instance.expansion.override.{field}"),
+                "override_field_unsupported",
+            );
+        }
+    }
+
+    /// Figma's laid-out values of an expanded sublayer (`derivedSymbolData`).
+    fn apply_derived(&mut self, n: &mut FigNode, d: &DerivedSymbolNode) {
+        if let Some(t) = d.transform {
+            n.transform = Some(t);
+        }
+        if let Some(s) = d.size {
+            let changed = n.size.is_none_or(|old| old != s);
+            if changed && !n.fill_geometry.is_empty() && n.type_name != "TEXT" {
+                self.lose_plain(
+                    "native.instance.expansion.derived.size",
+                    "derived_size_geometry_not_rederived",
+                );
+            }
+            n.size = Some(s);
+        }
+        if let (Some(text), NodePayload::Text(t)) = (&d.text, &mut n.payload) {
+            t.derived = Some(text.clone());
+        }
+    }
+
+    /// Nodes the expansion of symbol `sym_idx` creates (nested expansions included, two per node
+    /// as an upper bound for a background or clip layer), or the refusal code: a symbol already
+    /// being expanded (cycle), nesting past [`MAX_INSTANCE_DEPTH`], or more than `left` nodes.
+    /// Walks node indices only; nothing is allocated beyond the bounded symbol chain and stack.
+    fn expansion_cost(&self, sym_idx: usize, left: u64) -> std::result::Result<u64, &'static str> {
+        let mut chain: Vec<SourceId> = Vec::new();
+        let mut total = 0u64;
+        self.cost_of(sym_idx, &mut chain, &mut total, left)?;
+        Ok(total)
+    }
+
+    fn cost_of(
+        &self,
+        sym_idx: usize,
+        chain: &mut Vec<SourceId>,
+        total: &mut u64,
+        left: u64,
+    ) -> std::result::Result<(), &'static str> {
+        let doc = self.doc;
+        let sym = &doc.nodes[sym_idx];
+        if chain.contains(&sym.id) {
+            return Err("instance_cycle_refused");
+        }
+        if chain.len() >= MAX_INSTANCE_DEPTH {
+            return Err("instance_nesting_over_limit");
+        }
+        chain.push(sym.id);
+        let mut stack: Vec<usize> = vec![sym_idx];
+        while let Some(i) = stack.pop() {
+            self.cancel
+                .check()
+                .map_err(|_| "instance_expansion_canceled")?;
+            *total = total.saturating_add(2);
+            if *total > left {
+                return Err("instance_expansion_over_budget");
+            }
+            let c = &doc.nodes[i];
+            match &c.payload {
+                NodePayload::Instance { instance, .. } if i != sym_idx => {
+                    if let Some(&s) = instance
+                        .symbol_id
+                        .and_then(|s| self.symbol_index.get(&s))
+                    {
+                        self.cost_of(s, chain, total, left)?;
+                    }
+                }
+                _ => stack.extend(c.children.iter().copied()),
+            }
+        }
+        chain.pop();
+        Ok(())
+    }
+
+    /// Draws an INSTANCE through an expansion group (`group` layer): the instance's own fill as
+    /// background, its clip, then the definition's children with the overrides mapped onto them
+    /// (the instance's own, then those of enclosing instances, which win). `binding`: the
+    /// `component_instance` layer of a document instance (nested instances have none). Refusals
+    /// (typed losses, nothing created): symbol not in the file, cycle, nesting or node budget.
+    fn expand_instance(
+        &mut self,
+        n: &FigNode,
+        parent: Parent,
+        depth: usize,
+        abs: &Affine,
+        binding: Option<String>,
+    ) -> Result<Option<NodeRef>> {
+        let doc = self.doc;
+        self.current = Some(n.id);
+        let NodePayload::Instance { frame, instance } = &n.payload else {
+            return Ok(None);
+        };
+        let Some(sym_idx) = instance
+            .symbol_id
+            .and_then(|s| self.symbol_index.get(&s).copied())
+        else {
+            self.lose_plain("native.instance.expansion", "instance_symbol_not_in_file");
+            return Ok(None);
+        };
+        let symbol = &doc.nodes[sym_idx];
+        let mut chain = self.exp.last().map(|e| e.chain.clone()).unwrap_or_default();
+        if chain.contains(&symbol.id) {
+            self.lose_plain("native.instance.expansion", "instance_cycle_refused");
+            return Ok(None);
+        }
+        if chain.len() >= MAX_INSTANCE_DEPTH {
+            self.lose_plain("native.instance.expansion", "instance_nesting_over_limit");
+            return Ok(None);
+        }
+        if self.exp.is_empty() {
+            // The whole expansion, nested instances included, is costed before anything exists.
+            let left = self.expansion_budget.saturating_sub(self.expanded_total);
+            match self.expansion_cost(sym_idx, left) {
+                Ok(cost) => self.expanded_total = self.expanded_total.saturating_add(cost),
+                Err(code) => {
+                    self.lose_plain("native.instance.expansion", code);
+                    return Ok(None);
+                }
+            }
+        }
+        chain.push(symbol.id);
+        let mut overrides = Vec::new();
+        for ov in &instance.overrides {
+            match ov.guid_path.len() {
+                0 => self.lose_plain(
+                    "native.instance.expansion.override_path",
+                    "override_path_empty",
+                ),
+                k if k > MAX_OVERRIDE_PATH => self.lose_plain(
+                    "native.instance.expansion.override_path",
+                    "override_path_over_limit",
+                ),
+                _ => overrides.push((ov.guid_path.clone(), ov.clone(), false)),
+            }
+        }
+        let mut derived = Vec::new();
+        for d in &instance.derived {
+            if d.guid_path.is_empty() || d.guid_path.len() > MAX_OVERRIDE_PATH {
+                self.lose_plain(
+                    "native.instance.expansion.derived_path",
+                    "derived_path_out_of_bounds",
+                );
+            } else {
+                derived.push((d.guid_path.clone(), d.clone(), false));
+            }
+        }
+        if let Some(outer) = self.exp.last_mut() {
+            for (path, ov, matched) in &mut outer.overrides {
+                if path.len() > 1 && path[0] == n.id {
+                    *matched = true;
+                    overrides.push((path[1..].to_vec(), ov.clone(), false));
+                }
+            }
+            for (path, d, matched) in &mut outer.derived {
+                if path.len() > 1 && path[0] == n.id {
+                    *matched = true;
+                    derived.push((path[1..].to_vec(), d.clone(), false));
+                }
+            }
+        }
+        if instance
+            .uniform_scale
+            .is_some_and(|s| (wide(s) - 1.0).abs() > 1e-9)
+        {
+            self.lose_plain("native.instance.expansion.scale", "instance_scale_not_applied");
+        }
+        // Overrides of the instance itself (path = the definition root).
+        let mut root = n.clone();
+        let mut root_hits = Vec::new();
+        for (path, ov, matched) in &mut overrides {
+            if path.as_slice() == [symbol.id] {
+                *matched = true;
+                root_hits.push(ov.clone());
+            }
+        }
+        for ov in &root_hits {
+            self.apply_override(&mut root, ov, true, None);
+        }
+        let mut prefix = self.exp.last().map(|e| e.prefix.clone()).unwrap_or_default();
+        prefix.push(n.id);
+        let root_id = self.exp.last().map_or(n.id, |e| e.root);
+        let nested = binding.is_none();
+        let group_id = self.mint.mint("SLYR");
+        let appearance = self.appearance(&root, true);
+        self.layers.push(StudioLayer {
+            schema_id: LayerSchema::V1,
+            layer_id: group_id.clone(),
+            name: root.name.clone().unwrap_or_default(),
+            parent,
+            kind: "group".into(),
+            payload: Payload::Group,
+            visible: root.visible.unwrap_or(true),
+            appearance,
+            text_frame: None,
+        });
+        let group = NodeRef {
+            node_kind: NodeKind::Layer,
+            node_id: group_id.clone(),
+        };
+        self.order.push(group.clone());
+        if nested {
+            self.expanded.push(ExpandedNode {
+                instance: root_id,
+                path: prefix.clone(),
+                node: group.clone(),
+            });
+        }
+        self.expansions.push(InstanceExpansion {
+            instance: root_id,
+            path: prefix.clone(),
+            binding_layer_id: binding,
+            group_layer_id: group_id,
+        });
+        self.exp.push(Expansion {
+            root: root_id,
+            prefix,
+            symbol: symbol.id,
+            chain,
+            overrides,
+            derived,
+        });
+        let body = self.expansion_body(&root, frame, symbol, &group, depth, abs, nested);
+        let done = self.exp.pop();
+        self.current = Some(n.id);
+        if let Some(e) = done {
+            let unmatched = e.overrides.iter().filter(|o| !o.2).count();
+            for _ in 0..unmatched {
+                self.lose_plain(
+                    "native.instance.expansion.override_path",
+                    "override_target_not_in_expansion",
+                );
+            }
+            let _ = e.symbol;
+        }
+        body?;
+        Ok(Some(group))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expansion_body(
+        &mut self,
+        root: &FigNode,
+        frame: &FramePayload,
+        symbol: &FigNode,
+        group: &NodeRef,
+        depth: usize,
+        abs: &Affine,
+        nested: bool,
+    ) -> Result<()> {
+        let background =
+            self.frame_background(root, frame, abs, group, !symbol.children.is_empty())?;
+        if nested {
+            self.effects(root, group);
+        }
+        let clip = background.and_then(|b| b.1);
+        let children = symbol.children.clone();
+        self.walk_children(
+            &children,
+            Parent::Node(group.clone()),
+            false,
+            depth,
+            abs,
+            clip,
+        )?;
+        Ok(())
+    }
+
+    /// Frame fill as a background `vector` layer (first child of the frame: bottom-most) and, when
+    /// the frame clips its content, a clip whose region is that layer's geometry (a hidden
+    /// clip-source layer when the frame has no fill). Geometry: the frame's decoded fill geometry
+    /// (corner radii resolved), else its size rectangle. Returns the layer and the clip index.
+    fn frame_background(
+        &mut self,
+        n: &FigNode,
+        f: &FramePayload,
+        abs: &Affine,
+        frame: &NodeRef,
+        has_children: bool,
+    ) -> Result<Option<(String, Option<usize>)>> {
+        let painted = !n.fills.is_empty();
+        let clip = f.mask_disabled == Some(false) && has_children;
+        if !painted && !clip {
+            return Ok(None);
+        }
+        let layer_id = self.mint.mint("SLYR");
+        let mut path_ids = self.geometry(n, abs, &layer_id);
+        if path_ids.is_empty()
+            && let Some(p) = n.size.and_then(|s| rect_path(abs, wide(s.x), wide(s.y)))
+        {
+            let path_id = self.mint.mint("SVPT");
+            path_ids.push(path_id.clone());
+            self.paths.push(FigVectorPath {
+                path_id,
+                layer_id: layer_id.clone(),
+                geometry: p,
+            });
+        }
+        if path_ids.is_empty() {
+            self.lose("native.frame_background", "frame_geometry_missing");
+            if clip {
+                self.lose("native.clips_content", "frame_clip_geometry_missing");
+            }
+            return Ok(None);
+        }
+        self.layers.push(StudioLayer {
+            schema_id: LayerSchema::V1,
+            layer_id: layer_id.clone(),
+            name: n.name.clone().unwrap_or_default(),
+            parent: Parent::Node(frame.clone()),
+            kind: "vector".into(),
+            payload: Payload::Vector { path_ids },
+            visible: painted,
+            appearance: None,
+            text_frame: None,
+        });
+        let node = NodeRef {
+            node_kind: NodeKind::Layer,
+            node_id: layer_id.clone(),
+        };
+        self.order.push(node.clone());
+        if painted {
+            self.style_rows(n, node, true, false)?;
+        }
+        let clip_index = if clip {
+            let id = format!("fig-clip-{}", self.clips.len());
+            self.clips.push((id, layer_id.clone(), Vec::new()));
+            Some(self.clips.len().saturating_sub(1))
+        } else {
+            None
+        };
+        self.backgrounds.push(FrameBackground {
+            source: n.id,
+            frame: frame.clone(),
+            layer_id: layer_id.clone(),
+            painted,
+            clip_id: clip_index.and_then(|i| self.clips.get(i)).map(|c| c.0.clone()),
+        });
+        Ok(Some((layer_id, clip_index)))
+    }
+
+    /// Lines and runs of a text layer from Figma's stored layout (baselines in document px),
+    /// recorded for drawing. Text whose transform is not a pure translation, or without a stored
+    /// layout that matches its characters, gets no lines (typed loss).
+    fn text_layout(
+        &mut self,
+        n: &FigNode,
+        t: &TextPayload,
+        abs: &Affine,
+        layer_id: &str,
+        story_id: &str,
+    ) {
+        let text = &t.characters;
+        let len = text.len() as u64;
+        let offsets: Vec<u64> = text
+            .char_indices()
+            .map(|(i, _)| i as u64)
+            .chain(std::iter::once(len))
+            .collect();
+        let chars = offsets.len().saturating_sub(1);
+        let at = |k: u32| offsets.get(k as usize).copied().unwrap_or(len);
+        let translation =
+            abs[0] == 1.0 && abs[1] == 0.0 && abs[3] == 0.0 && abs[4] == 1.0;
+        let mut lines = Vec::new();
+        let place = |x: f32, y: f32| [tidy(abs[2] + wide(x)), tidy(abs[5] + wide(y))];
+        if !translation {
+            self.lose("native.text.layout", "text_transform_not_translation");
+        } else {
+            match &t.derived {
+                Some(d) if !d.lines.is_empty() => {
+                    let covered = d.lines.last().map_or(0, |l| l.end) as usize;
+                    let ordered = d.lines.windows(2).all(|w| w[0].end <= w[1].first);
+                    if covered == chars && ordered {
+                        for l in &d.lines {
+                            lines.push(FigTextLine {
+                                start: at(l.first),
+                                end: at(l.end),
+                                baseline_px: place(l.x, l.y),
+                            });
+                        }
+                    } else if d.lines.len() == 1
+                        && !text.contains('\n')
+                        && matches!(t.align_horizontal.as_deref(), None | Some("LEFT"))
+                    {
+                        // An overridden one-line, left-aligned text keeps its line origin.
+                        let l = d.lines[0];
+                        self.lose("native.text.layout", "text_layout_reused_for_new_characters");
+                        lines.push(FigTextLine {
+                            start: 0,
+                            end: len,
+                            baseline_px: place(l.x, l.y),
+                        });
+                    } else {
+                        self.lose("native.text.layout", "text_layout_mismatch");
+                    }
+                }
+                _ => self.lose("native.text.layout", "text_layout_not_derived"),
+            }
+        }
+        let glyph_size = |s: u32, e: u32| {
+            t.derived.as_ref().and_then(|d| {
+                d.glyphs
+                    .iter()
+                    .find(|g| g.first >= s && g.first < e)
+                    .map(|g| g.font_size)
+            })
+        };
+        let fill_of = |fills: &[Paint]| {
+            fills.iter().find_map(|p| match &p.kind {
+                PaintKind::Solid { color: Some(c) } if p.visible != Some(false) => Some([
+                    wide(c.r),
+                    wide(c.g),
+                    wide(c.b),
+                    tidy(wide(c.a) * wide(p.opacity.unwrap_or(1.0))),
+                ]),
+                _ => None,
+            })
+        };
+        let mut runs = Vec::new();
+        let base;
+        let spans: &[TextRun] = if t.runs.is_empty() && !text.is_empty() {
+            base = [TextRun {
+                start: 0,
+                end: u32::try_from(chars).unwrap_or(u32::MAX),
+                style_id: 0,
+                font_family: t.font_family.clone(),
+                font_style: t.font_style.clone(),
+                font_size: t.font_size,
+                fills: n.fills.clone(),
+            }];
+            &base
+        } else {
+            &t.runs
+        };
+        for r in spans {
+            let derived = glyph_size(r.start, r.end);
+            if let (Some(d), Some(s)) = (derived, r.font_size)
+                && (d - s).abs() > f32::EPSILON
+            {
+                self.lose("native.text.font_size", "text_size_from_derived_layout");
+            }
+            let fills = if r.fills.is_empty() { &n.fills } else { &r.fills };
+            runs.push(FigTextRunSpec {
+                start: at(r.start),
+                end: at(r.end),
+                family: r.font_family.clone(),
+                style: r.font_style.clone(),
+                size_px: derived.or(r.font_size).map(wide),
+                fill_rgba: fill_of(fills),
+            });
+        }
+        self.text_layouts.push(FigTextLayout {
+            layer_id: layer_id.to_owned(),
+            story_id: story_id.to_owned(),
+            source: n.id,
+            lines,
+            runs,
+        });
+    }
+
+    /// Walks children in order; masks, clips and boolean operands follow each child's
+    /// representative node. Returns the child layer ids (boolean operands).
+    fn walk_children(
+        &mut self,
+        children: &[usize],
+        parent: Parent,
+        canvas: bool,
+        depth: usize,
+        abs: &Affine,
+        clip: Option<usize>,
+    ) -> Result<Vec<String>> {
+        let doc = self.doc;
+        // A mask node masks every later sibling in the same parent (Figma stacking order:
+        // ascending position = bottom to top).
+        let mut open_mask: Option<usize> = None;
+        let mut operands: Vec<String> = Vec::new();
+        for &c in children {
+            let Some(r) = self.walk(c, parent.clone(), canvas, depth.saturating_add(1), abs)?
+            else {
+                continue;
+            };
+            self.current = Some(doc.nodes[c].id);
+            if r.node_kind == NodeKind::Layer {
+                operands.push(r.node_id.clone());
+                if let Some(entry) = clip.and_then(|k| self.clips.get_mut(k)) {
+                    entry.2.push(r.node_id.clone());
+                }
+            }
+            if doc.nodes[c].mask == Some(true) {
+                if r.node_kind == NodeKind::Layer {
+                    open_mask = Some(self.mask_plans.len());
+                    self.mask_plans.push((r.node_id, Vec::new()));
+                } else {
+                    self.lose("native.mask", "mask_on_artboard_no_folio_home");
+                }
+            } else if let Some(m) = open_mask {
+                if r.node_kind == NodeKind::Layer {
+                    if let Some(plan) = self.mask_plans.get_mut(m) {
+                        plan.1.push(r.node_id);
+                    }
+                } else {
+                    self.lose("native.mask", "masked_artboard_no_folio_home");
+                }
+            }
+        }
+        Ok(operands)
+    }
+
+    /// Maps one node and its subtree. Returns the node standing for it among its parent's
+    /// children (`None`: nothing emitted).
     fn walk(
         &mut self,
         idx: usize,
@@ -1708,14 +2481,18 @@ impl Mapper<'_> {
         parent_is_canvas: bool,
         depth: usize,
         parent_abs: &Affine,
-    ) -> Result<()> {
+    ) -> Result<Option<NodeRef>> {
         self.check()?;
         if depth > 64 {
             self.lose("native.depth", "nesting_too_deep");
-            return Ok(());
+            return Ok(None);
         }
         let doc = self.doc;
-        let n = &doc.nodes[idx];
+        let source = &doc.nodes[idx];
+        self.current = Some(source.id);
+        let patched = self.patched(source);
+        let n: &FigNode = patched.as_ref().unwrap_or(source);
+        let in_expansion = !self.exp.is_empty();
         let abs = compose(parent_abs, n.transform.as_ref());
         let mut baked = false;
         let mut bool_op: Option<StudioBooleanOperation> = None;
@@ -1725,12 +2502,17 @@ impl Mapper<'_> {
         let name = n.name.clone().unwrap_or_default();
         if NON_LAYER_KINDS.contains(&ty) {
             // Variable records, built after the walk (`variables`).
-            return Ok(());
+            return Ok(None);
+        }
+        if ty == "INSTANCE" && in_expansion {
+            // An instance inside an expansion is drawn by its own expansion group only.
+            return self.expand_instance(n, parent, depth, &abs, None);
         }
         let is_artboard = parent_is_canvas
             && matches!(ty, "FRAME" | "SECTION")
             && !matches!(&n.payload, NodePayload::Frame(f) if f.is_state_group == Some(true));
         let node_ref;
+        let mut binding: Option<String> = None;
         if ty == "CANVAS" {
             let layer_id = self.mint.mint("SLYR");
             let internal = matches!(
@@ -1791,7 +2573,7 @@ impl Mapper<'_> {
                 schema_id: ArtboardSchema::V1,
                 artboard_id: artboard_id.clone(),
                 name,
-                parent,
+                parent: parent.clone(),
                 bounds: Bounds {
                     x: px(x),
                     y: px(y),
@@ -1807,12 +2589,13 @@ impl Mapper<'_> {
             let layer_id = self.mint.mint("SLYR");
             if ty == "INSTANCE" {
                 let instance_id = self.mint.mint("SCIN");
-                let mut l = instance_layer(&layer_id, &name, parent, &instance_id)
+                let mut l = instance_layer(&layer_id, &name, parent.clone(), &instance_id)
                     .map_err(|_| FigError::NativeRejected(hsk_studio_folio::Code::InvalidId))?;
                 l.visible = n.visible.unwrap_or(true);
                 l.appearance = self.appearance(n, false);
                 self.layers.push(l);
                 self.instances.push((idx, instance_id));
+                binding = Some(layer_id.clone());
             } else {
                 let (kind, payload, group) = if CONTAINER_KINDS.contains(&ty) || ty == "DOCUMENT" {
                     if let NodePayload::Boolean { operation } = &n.payload {
@@ -1840,6 +2623,7 @@ impl Mapper<'_> {
                 } else if let NodePayload::Text(text) = &n.payload {
                     let story_id = self.mint.mint("STXT");
                     self.story(text, story_id.clone(), &n.fills);
+                    self.text_layout(n, text, &abs, &layer_id, &story_id);
                     ("text".to_owned(), Payload::Text { story_id }, false)
                 } else {
                     // Every kind without a Folio layer kind.
@@ -1881,17 +2665,19 @@ impl Mapper<'_> {
                     schema_id: LayerSchema::V1,
                     layer_id: layer_id.clone(),
                     name,
-                    parent,
+                    parent: parent.clone(),
                     kind,
                     payload,
                     visible: n.visible.unwrap_or(true),
                     appearance,
                     text_frame: None,
                 });
-                if ty == "SYMBOL" {
+                if ty == "SYMBOL" && !in_expansion {
                     self.symbols.push((idx, layer_id.clone()));
                 }
-                if matches!(&n.payload, NodePayload::Frame(f) if f.is_state_group == Some(true)) {
+                if !in_expansion
+                    && matches!(&n.payload, NodePayload::Frame(f) if f.is_state_group == Some(true))
+                {
                     self.sets.push((idx, layer_id.clone()));
                 }
             }
@@ -1900,15 +2686,25 @@ impl Mapper<'_> {
                 node_id: layer_id,
             };
         }
-        self.id_map.push(IdMapEntry {
-            source: n.id,
-            node: node_ref.clone(),
-        });
+        self.record(n.id, &node_ref);
+        let is_container = ty == "CANVAS" || is_artboard || CONTAINER_KINDS.contains(&ty);
+        // Frame fill as a background layer and frame clip (artboards, frames, components).
+        let mut background = None;
+        if is_container
+            && let NodePayload::Frame(f) | NodePayload::Symbol { frame: f, .. } = &n.payload
+        {
+            background = self.frame_background(n, f, &abs, &node_ref, !n.children.is_empty())?;
+            baked |= background.is_some();
+        }
         self.unmapped(n, is_artboard, baked);
-        self.node_refs.insert(idx, node_ref.clone());
         self.effects(n, &node_ref);
         if ty != "CANVAS" {
-            self.style(n, node_ref.clone())?;
+            if background.is_some() {
+                // The fill rows live on the background layer; strokes stay on the frame.
+                self.style_rows(n, node_ref.clone(), false, true)?;
+            } else {
+                self.style(n, node_ref.clone())?;
+            }
         }
         if let NodePayload::Frame(f)
         | NodePayload::Symbol { frame: f, .. }
@@ -1917,53 +2713,32 @@ impl Mapper<'_> {
             let container = is_artboard || CONTAINER_KINDS.contains(&ty);
             self.auto_layout(f, &node_ref, container);
         }
-        let is_container = ty == "CANVAS" || is_artboard || CONTAINER_KINDS.contains(&ty);
         let children = n.children.clone();
         if !is_container && !children.is_empty() {
             for &c in &children {
                 self.current = Some(doc.nodes[c].id);
                 self.lose("native.children_of_leaf", "child_of_non_container_dropped");
             }
-            return Ok(());
         }
-        let parent = Parent::Node(node_ref);
-        // A mask node masks every later sibling in the same parent (Figma stacking order:
-        // ascending position = bottom to top).
-        let mut open_mask: Option<usize> = None;
-        let group_layer = parent_layer_id(&parent);
-        let mut operands: Vec<String> = Vec::new();
-        for c in children {
-            self.walk(
-                c,
-                parent.clone(),
-                ty == "CANVAS",
-                depth.saturating_add(1),
-                &abs,
-            )?;
-            let Some(r) = self.node_refs.get(&c).cloned() else {
-                continue;
-            };
-            self.current = Some(doc.nodes[c].id);
-            if r.node_kind == NodeKind::Layer {
-                operands.push(r.node_id.clone());
-            }
-            if doc.nodes[c].mask == Some(true) {
-                if r.node_kind == NodeKind::Layer {
-                    open_mask = Some(self.mask_plans.len());
-                    self.mask_plans.push((r.node_id, Vec::new()));
-                } else {
-                    self.lose("native.mask", "mask_on_artboard_no_folio_home");
-                }
-            } else if let Some(m) = open_mask {
-                if r.node_kind == NodeKind::Layer {
-                    if let Some(plan) = self.mask_plans.get_mut(m) {
-                        plan.1.push(r.node_id);
-                    }
-                } else {
-                    self.lose("native.mask", "masked_artboard_no_folio_home");
-                }
-            }
+        if binding.is_some() {
+            // A document instance: the binding layer carries the component records; the
+            // expansion group (following sibling) draws it and stands for it among siblings.
+            let drawn = self.expand_instance(n, parent, depth, &abs, binding)?;
+            return Ok(Some(drawn.unwrap_or(node_ref)));
         }
+        if !is_container {
+            return Ok(Some(node_ref));
+        }
+        let group_layer = parent_layer_id(&Parent::Node(node_ref.clone()));
+        let clip = background.and_then(|b| b.1);
+        let operands = self.walk_children(
+            &children,
+            Parent::Node(node_ref.clone()),
+            ty == "CANVAS",
+            depth,
+            &abs,
+            clip,
+        )?;
         if let (Some(operation), Some(layer_id)) = (bool_op, group_layer) {
             self.current = Some(n.id);
             if operands.is_empty() {
@@ -1978,7 +2753,7 @@ impl Mapper<'_> {
                 });
             }
         }
-        Ok(())
+        Ok(Some(node_ref))
     }
 }
 
@@ -2037,7 +2812,6 @@ pub fn to_native(
         pending_image: None,
         text_styles: Vec::new(),
         text_style_ids: HashMap::new(),
-        node_refs: HashMap::new(),
         mask_plans: Vec::new(),
         artboards: Vec::new(),
         styles: Vec::new(),
@@ -2054,6 +2828,26 @@ pub fn to_native(
         collections: Vec::new(),
         variables: Vec::new(),
         record_map: Vec::new(),
+        order: Vec::new(),
+        symbol_index: doc
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.type_name == "SYMBOL")
+            .map(|(i, n)| (n.id, i))
+            .collect(),
+        exp: Vec::new(),
+        expansion_budget: MAX_EXPANDED_NODES.min(
+            u64::try_from(cfg.budget.nodes)
+                .unwrap_or(u64::MAX)
+                .saturating_sub(u64::try_from(doc.nodes.len()).unwrap_or(u64::MAX).saturating_mul(2)),
+        ),
+        expanded_total: 0,
+        expanded: Vec::new(),
+        expansions: Vec::new(),
+        backgrounds: Vec::new(),
+        clips: Vec::new(),
+        text_layouts: Vec::new(),
     };
     for &root in &doc.roots {
         let r = &doc.nodes[root];
@@ -2089,6 +2883,12 @@ pub fn to_native(
         designs,
         id_map,
         loss,
+        order,
+        expanded,
+        expansions,
+        backgrounds,
+        clips,
+        text_layouts,
         ..
     } = m;
     let mut layers = layers;
@@ -2107,8 +2907,12 @@ pub fn to_native(
     }
     let booleans: std::collections::HashSet<String> =
         boolean_groups.iter().map(|g| g.layer_id.clone()).collect();
-    let order: Vec<NodeRef> = id_map.iter().map(|e| e.node.clone()).collect();
-    let built = crate::graph::build(&layers, &artboards, &order, &booleans);
+    // A document instance is drawn by its expansion group; its binding layer has no graph form.
+    let drawn_by_expansion: std::collections::HashSet<String> = expansions
+        .iter()
+        .filter_map(|e| e.binding_layer_id.clone())
+        .collect();
+    let built = crate::graph::build(&layers, &artboards, &order, &booleans, &drawn_by_expansion);
     for ((path, code), count) in built.loss {
         let slot = loss.entry((path.to_owned(), code)).or_insert((0, None));
         slot.0 = slot.0.saturating_add(count);
@@ -2217,6 +3021,42 @@ pub fn to_native(
             });
         }
     }
+    // Frame clips: the region is the frame's background (or hidden clip-source) geometry; every
+    // child layer of the frame carries the clip (beside a mask it may already have).
+    let mut backgrounds = backgrounds;
+    for (clip_id, source, targets) in &clips {
+        if targets.is_empty() {
+            let slot = loss
+                .entry(("native.clips_content".to_owned(), "frame_clip_without_layers"))
+                .or_insert((0, None));
+            slot.0 = slot.0.saturating_add(1);
+            for b in backgrounds.iter_mut().filter(|b| b.clip_id.as_ref() == Some(clip_id)) {
+                b.clip_id = None;
+            }
+            continue;
+        }
+        vector_records.clips.push(StudioVectorClip {
+            clip_id: clip_id.clone(),
+            source_layer_id: source.clone(),
+            clip_rule: StudioClipRule::NonZero,
+        });
+        for t in targets {
+            match vector_records.attachments.iter_mut().find(|a| &a.layer_id == t) {
+                Some(a) if a.clip_id.is_none() => a.clip_id = Some(clip_id.clone()),
+                Some(_) => {
+                    let slot = loss
+                        .entry(("native.clips_content".to_owned(), "second_clip_on_layer_dropped"))
+                        .or_insert((0, None));
+                    slot.0 = slot.0.saturating_add(1);
+                }
+                None => vector_records.attachments.push(StudioMaskAttachment {
+                    layer_id: t.clone(),
+                    clip_id: Some(clip_id.clone()),
+                    mask_id: None,
+                }),
+            }
+        }
+    }
     vector_records.image_paints = image_paint_records;
     vector_records.boolean_groups = boolean_groups;
     validate_vector_records(
@@ -2251,6 +3091,10 @@ pub fn to_native(
         mapping_loss: aggregate(loss),
         decode_loss: doc.loss.clone(),
         editable: EditableStatus::NotProven,
+        frame_backgrounds: backgrounds,
+        expansions,
+        expanded,
+        text_layouts,
     })
 }
 
@@ -2283,7 +3127,11 @@ pub const NATIVE_NOT_PROVEN: &[&str] = &[
     "image_transform (Folio transform = inverse of the Figma image transform, identity when absent; scaling factor 1, rotation 0; scale modes FILL FIT CROP/STRETCH TILE; row stand-in is a grey solid; unverified against Figma rendering)",
     "boolean_groups (operands = all child layers bottom first; cached outline = the decoded result geometry, in canvas px)",
     "geometry_space (paths are baked into canvas px with every node transform composed; artboard-local coordinates are path minus artboard bounds)",
-    "figma_render_parity (no comparison against Figma's rendering)",
+    "figma_render_parity (prototype-pages page 1 renders within measured tolerances of the Operator PNGs with Inter Regular granted; basic-shapes and the components page are not at parity: strokes, gradients, image paints, effect styles and Inter Bold are not drawn)",
+    "instance_expansion (instances draw through an expansion group of the definition's children with overrides mapped; sublayer sizes come from derivedSymbolData only, resized shapes keep the definition geometry; uniform scale other than 1 is not applied)",
+    "frame_background (frame fills are a bottom-most vector layer of the frame geometry; frame strokes stay on the frame and are not drawn; Figma's order of frame strokes over children is unverified)",
+    "frame_clip (clip content = a NONZERO vector clip of the frame geometry on every child layer; no renderer applies vector clip records yet)",
+    "text_layout (lines and baselines come from Figma's stored derivedTextData; glyph sizes from its laid-out glyphs; fonts must be granted by the caller per family and style)",
     "gradient_transform (Figma paint transform inverted and scaled by the node size; checked only for the identity transform of the fixtures)",
     "stacking_order (children in ascending position = bottom to top, read from one fixture PNG)",
     "text_direction (stories are written left-to-right; Figma stores AUTO directionality)",

@@ -14,6 +14,7 @@ hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-f
 hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false }
 hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
 miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 ruzstd = { version = "=0.9.0", default-features = false, features = ["std"] }
 sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }

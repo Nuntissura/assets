@@ -60,6 +60,22 @@ pub(crate) fn line_path(abs: &Affine, width: f64) -> Option<OwnedPath> {
     Some(p)
 }
 
+/// The node-local rectangle (0,0)-(`w`,`h`) as a closed path (a frame without decoded fill
+/// geometry); `None` for an empty or non-finite size.
+pub(crate) fn rect_path(abs: &Affine, w: f64, h: f64) -> Option<OwnedPath> {
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let mut p = OwnedPath::new(FillRule::NonZero);
+    p.elements.push(PathElement::MoveTo(apply(abs, 0.0, 0.0)));
+    p.elements.push(PathElement::LineTo(apply(abs, w, 0.0)));
+    p.elements.push(PathElement::LineTo(apply(abs, w, h)));
+    p.elements.push(PathElement::LineTo(apply(abs, 0.0, h)));
+    p.elements.push(PathElement::Close);
+    p.validate(&PathLimits::default()).ok()?;
+    Some(p)
+}
+
 /// Decoded Figma path commands -> Nib path in document px; `None` when Nib refuses the result
 /// (non-finite or out-of-range coordinate, structure) or the path is empty.
 pub(crate) fn path_from_commands(cmds: &[C], abs: &Affine, rule: FillRule) -> Option<OwnedPath> {

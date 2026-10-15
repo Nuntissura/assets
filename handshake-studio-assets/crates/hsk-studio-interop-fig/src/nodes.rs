@@ -237,10 +237,56 @@ pub struct TextPayload {
     pub align_vertical: Option<String>,
     pub auto_resize: Option<String>,
     pub runs: Vec<TextRun>,
+    /// Figma's own laid-out text (`derivedTextData`), when the file carries it.
+    pub derived: Option<DerivedText>,
 }
 
-/// One `symbolOverrides` entry: the node path it targets and the overridden values decoded here
-/// (any other overridden field is a loss entry).
+/// One laid-out line of `derivedTextData.baselines`: characters `[first, end)` (Unicode scalar
+/// indices) on a baseline whose origin is (`x`, `y`) in the TEXT node's own space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextLine {
+    pub first: u32,
+    pub end: u32,
+    pub x: f32,
+    pub y: f32,
+    pub width: Option<f32>,
+    pub line_y: Option<f32>,
+    pub line_height: Option<f32>,
+    pub line_ascent: Option<f32>,
+}
+
+/// One placed glyph of `derivedTextData.glyphs` (outline blob not read here): the character it
+/// starts at, its pen position in node space and the font size Figma laid it out with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DerivedGlyph {
+    pub first: u32,
+    pub x: f32,
+    pub y: f32,
+    pub font_size: f32,
+}
+
+/// `derivedTextData`: the layout Figma computed and stored (lines, glyph sizes, fonts used).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DerivedText {
+    pub lines: Vec<TextLine>,
+    pub glyphs: Vec<DerivedGlyph>,
+    /// `fontMetaData[].key` (family, style) of the fonts the layout used.
+    pub fonts: Vec<(Option<String>, Option<String>)>,
+}
+
+/// One `derivedSymbolData` entry of an INSTANCE: Figma's laid-out values for the instance's
+/// sublayer at `guid_path` (after overrides and auto layout).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DerivedSymbolNode {
+    pub guid_path: Vec<SourceId>,
+    pub size: Option<Vec2>,
+    pub transform: Option<Matrix>,
+    pub text: Option<DerivedText>,
+}
+
+/// One `symbolOverrides` entry: the node path it targets and the overridden values decoded here.
+/// Every other field the entry carries is named in `unsupported` (and is a decode loss entry), so
+/// instance expansion can report it per override instead of dropping it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InstanceOverride {
     pub guid_path: Vec<SourceId>,
@@ -250,6 +296,8 @@ pub struct InstanceOverride {
     pub visible: Option<bool>,
     pub opacity: Option<f32>,
     pub fills: Option<Vec<Paint>>,
+    /// Overridden fields not decoded here (`textData.lines`, `strokePaints`, ...).
+    pub unsupported: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -257,6 +305,8 @@ pub struct InstancePayload {
     pub symbol_id: Option<SourceId>,
     pub overrides: Vec<InstanceOverride>,
     pub uniform_scale: Option<f32>,
+    /// `derivedSymbolData` of the INSTANCE node.
+    pub derived: Vec<DerivedSymbolNode>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -500,6 +550,15 @@ impl<'a> Obj<'a> {
     }
     fn sub(&self, name: &str) -> String {
         format!("{}.{}", self.path, name)
+    }
+    /// Names of the fields not read so far.
+    fn unused(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .zip(&self.used)
+            .filter(|(_, used)| !**used)
+            .map(|(f, _)| f.name.to_string())
+            .collect()
     }
     fn take(&mut self, name: &str) -> Option<&'a KiwiValue> {
         let i = self.fields.iter().position(|f| &*f.name == name)?;
@@ -1104,6 +1163,7 @@ fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> TextPayload {
         align_horizontal: o.enum_name(cx, "textAlignHorizontal"),
         align_vertical: o.enum_name(cx, "textAlignVertical"),
         auto_resize: o.enum_name(cx, "textAutoResize"),
+        derived: derived_text(o, cx),
         ..TextPayload::default()
     };
     let Some(mut td) = o.obj(cx, "textData") else {
@@ -1162,6 +1222,7 @@ fn text(o: &mut Obj, cx: &mut Cx, base_fills: &[Paint]) -> TextPayload {
 fn instance(o: &mut Obj, cx: &mut Cx) -> InstancePayload {
     let mut p = InstancePayload::default();
     let Some(mut sd) = o.obj(cx, "symbolData") else {
+        p.derived = derived_symbol(o, cx);
         return p;
     };
     p.symbol_id = sd.guid(cx, "symbolID");
@@ -1188,15 +1249,112 @@ fn instance(o: &mut Obj, cx: &mut Cx) -> InstancePayload {
         if oo.fields.iter().any(|f| &*f.name == "fillPaints") {
             item.fills = Some(paints(&mut oo, cx, "fillPaints"));
         }
+        let mut text_unused = Vec::new();
         if let Some(mut td) = oo.obj(cx, "textData") {
             item.characters = td.string(cx, "characters");
+            text_unused = td.unused();
             td.finish(cx);
         }
+        item.unsupported = oo.unused();
+        item.unsupported
+            .extend(text_unused.into_iter().map(|f| format!("textData.{f}")));
         oo.finish(cx);
         p.overrides.push(item);
     }
     sd.finish(cx);
+    p.derived = derived_symbol(o, cx);
     p
+}
+
+/// `derivedSymbolData` of an INSTANCE: per sublayer path, the laid-out size, transform and text.
+fn derived_symbol(o: &mut Obj, cx: &mut Cx) -> Vec<DerivedSymbolNode> {
+    let path = o.sub("derivedSymbolData");
+    let mut out = Vec::new();
+    for e in o.array(cx, "derivedSymbolData") {
+        let mut eo = Obj::of(e, path.clone());
+        let mut node = DerivedSymbolNode::default();
+        if let Some(mut gp) = eo.obj(cx, "guidPath") {
+            let guids_path = gp.sub("guids");
+            for g in gp.array(cx, "guids") {
+                let mut go = Obj::of(g, guids_path.clone());
+                if let Some(id) = guid_of(&mut go, cx) {
+                    node.guid_path.push(id);
+                }
+                go.finish(cx);
+            }
+            gp.finish(cx);
+        }
+        node.size = eo.vec2(cx, "size");
+        node.transform = eo.matrix(cx, "transform");
+        node.text = derived_text(&mut eo, cx);
+        eo.finish(cx);
+        out.push(node);
+    }
+    out
+}
+
+/// `derivedTextData`: baselines (lines), glyph positions and sizes, font keys; every other
+/// member stays a `field_not_decoded` loss.
+fn derived_text(o: &mut Obj, cx: &mut Cx) -> Option<DerivedText> {
+    let mut d = o.obj(cx, "derivedTextData")?;
+    let mut out = DerivedText::default();
+    let lines_path = d.sub("baselines");
+    for b in d.array(cx, "baselines") {
+        let mut bo = Obj::of(b, lines_path.clone());
+        let pos = bo.vec2(cx, "position");
+        let first = bo.u32(cx, "firstCharacter");
+        let end = bo.u32(cx, "endCharacter");
+        let line = TextLine {
+            first: first.unwrap_or(0),
+            end: end.unwrap_or(0),
+            x: pos.map_or(0.0, |p| p.x),
+            y: pos.map_or(0.0, |p| p.y),
+            width: bo.f32(cx, "width"),
+            line_y: bo.f32(cx, "lineY"),
+            line_height: bo.f32(cx, "lineHeight"),
+            line_ascent: bo.f32(cx, "lineAscent"),
+        };
+        bo.finish(cx);
+        match (pos, first, end) {
+            (Some(_), Some(f), Some(e)) if f <= e => out.lines.push(line),
+            _ => cx.lose(lines_path.clone(), "derived_baseline_incomplete"),
+        }
+    }
+    let glyphs_path = d.sub("glyphs");
+    for g in d.array(cx, "glyphs") {
+        let mut go = Obj::of(g, glyphs_path.clone());
+        let first = go.u32(cx, "firstCharacter");
+        let pos = go.vec2(cx, "position");
+        let size = go.f32(cx, "fontSize");
+        go.finish(cx);
+        match (first, pos, size) {
+            (Some(first), Some(p), Some(font_size)) => out.glyphs.push(DerivedGlyph {
+                first,
+                x: p.x,
+                y: p.y,
+                font_size,
+            }),
+            _ => cx.lose(glyphs_path.clone(), "derived_glyph_incomplete"),
+        }
+    }
+    let fonts_path = d.sub("fontMetaData");
+    for f in d.array(cx, "fontMetaData") {
+        let mut fo = Obj::of(f, fonts_path.clone());
+        let (family, style) = match fo.obj(cx, "key") {
+            Some(mut k) => {
+                let family = k.string(cx, "family");
+                let style = k.string(cx, "style");
+                let _ = k.string(cx, "postscript");
+                k.finish(cx);
+                (family, style)
+            }
+            None => (None, None),
+        };
+        fo.finish(cx);
+        out.fonts.push((family, style));
+    }
+    d.finish(cx);
+    Some(out)
 }
 
 fn variable(o: &mut Obj, cx: &mut Cx) -> VariablePayload {

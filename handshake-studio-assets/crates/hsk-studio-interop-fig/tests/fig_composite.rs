@@ -375,16 +375,14 @@ fn real_layer_graph_shape_and_losses_are_pinned() {
     // vector source listed as an output, so vector content is never a group input.
     type Pin<'a> = (&'a str, (usize, usize, usize), &'a [(&'a str, u32)]);
     let pins: [Pin<'_>; 3] = [
-        ("fig-basic-shapes.fig", (12, 0, 12), &[("group_flattened_vector_not_group_input", 3)]),
-        (
-            "fig-components-autolayout.fig",
-            (9, 5, 1),
-            &[("group_flattened_vector_not_group_input", 1), ("layer_kind_not_composited", 3)],
-        ),
+        // Since SMB-INTEROP-FIG-INSTANCES-FRAMES: frame fills are background vector layers (so
+        // frames holding them flatten) and instances draw through expansion groups.
+        ("fig-basic-shapes.fig", (15, 0, 15), &[("group_flattened_vector_not_group_input", 3)]),
+        ("fig-components-autolayout.fig", (16, 0, 13), &[("group_flattened_vector_not_group_input", 9)]),
         (
             "fig-prototype-pages.fig",
-            (27, 17, 9),
-            &[("group_flattened_vector_not_group_input", 4), ("page_outside_outputs", 1)],
+            (31, 0, 13),
+            &[("group_flattened_vector_not_group_input", 14), ("page_outside_outputs", 1)],
         ),
     ];
     for (name, shape, losses) in pins {
@@ -409,8 +407,13 @@ fn real_layer_graph_shape_and_losses_are_pinned() {
                 "{name}"
             );
         }
-        // Instances are counted as losses, never silently listed.
-        let instances = d.layers.iter().filter(|l| l.kind == "component_instance").count();
+        // Instances without an expansion are counted as losses, never silently listed.
+        let instances = d
+            .layers
+            .iter()
+            .filter(|l| l.kind == "component_instance")
+            .filter(|l| !m.proposal.expansions.iter().any(|e| e.binding_layer_id.as_ref() == Some(&l.layer_id)))
+            .count();
         assert_eq!(
             u32::try_from(instances).unwrap(),
             want.get("layer_kind_not_composited").copied().unwrap_or(0),
@@ -439,12 +442,24 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
     assert_eq!(r.refused, want);
-    assert_eq!((r.outputs, r.rendered), (12, 6));
+    // Since SMB-INTEROP-FIG-INSTANCES-FRAMES the artboard fill is an output (bottom-most) and the two
+    // clipping frames without fill add hidden clip-source outputs (group-multiply, mask-group).
+    assert_eq!((r.outputs, r.rendered), (15, 9));
     let mut names = rendered_names(&m, &r);
     names.sort();
     assert_eq!(
         names,
-        ["boolean-union", "group-background", "layer-blur", "mask-ellipse", "multiply-overlay", "star-half-opacity"]
+        [
+            "basic-shapes-artboard",
+            "boolean-union",
+            "group-background",
+            "group-multiply",
+            "layer-blur",
+            "mask-ellipse",
+            "mask-group",
+            "multiply-overlay",
+            "star-half-opacity"
+        ]
     );
     // Named nodes at a probe inside their box: colours within 4/255 of the PNG (measured max 1/255).
     // The star is 50 % opacity over the frame background, the overlay multiplies group-background,
@@ -467,56 +482,37 @@ fn real_basic_shapes_composite_through_render_cpu_at_png_positions() {
         assert!(r.px[centre.1 * r.w + centre.0][3] > 0.4, "{node}: painted at {centre:?}");
     }
     // The multiply overlap region of group-background (x 570..700) and multiply-overlay (610..720).
-    // Where multiply-overlay lies beyond group-background, Figma multiplies it with the frame fill
-    // (245,247,252): composite has no frame fill (Folio artboards carry none), so our pixel is the
-    // plain overlay colour and the PNG is that colour times the fill.
-    for p in [(710usize, 420usize), (650, 460)] {
-        let o = ((p.1 - origin.1) * png.0 + (p.0 - origin.0)) * 4;
-        let ours = over_bg(&r, p.0, p.1, [png.2[0], png.2[1], png.2[2]]);
-        for (c, v) in ours.iter().enumerate() {
-            let multiplied = v * f64::from(png.2[c]) / 255.0;
-            assert!((multiplied - f64::from(png.2[o + c])).abs() <= 2.0, "{p:?} channel {c}");
-        }
+    // Where multiply-overlay lies beyond group-background Figma multiplies it with the frame fill
+    // (245,247,252); the fill is drawn now, so our pixel matches the PNG directly there.
+    for p in [(710usize, 420usize), (650, 460), (650, 420)] {
+        let d = diff_at(&r, &png, p, origin);
+        assert!(d <= 4.0, "multiply at {p:?} differs by {d}");
     }
-    let d = diff_at(&r, &png, (650, 420), origin);
-    assert!(d <= 4.0, "overlap differs by {d}");
-    // Positions: just outside the union box and the star box nothing is composited; the hidden mask
-    // source is not drawn.
+    // Positions: just outside the union box and the star box, and at the hidden mask source, only
+    // the frame fill is drawn (opaque, the PNG's background colour).
+    let fill = [png.2[0], png.2[1], png.2[2]];
     for (x, y) in [(352usize, 402usize), (523, 402), (809, 178), (809, 301), (225, 590)] {
-        assert_eq!(r.px[y * r.w + x][3], 0.0, "empty at ({x},{y})");
+        assert!(r.px[y * r.w + x][3] >= 0.999, "fill at ({x},{y})");
+        let ours = over_bg(&r, x, y, [0, 0, 0]);
+        assert!((0..3).all(|c| (ours[c] - f64::from(fill[c])).abs() <= 1.0), "fill colour at ({x},{y})");
     }
-    // Pixel agreement over the artboard where the composite is opaque (outside the multiply group): at
-    // least 97 % of those pixels are within 8/255 of the PNG (antialiased edges and the blur halo).
-    let (mut opaque, mut close) = (0u32, 0u32);
-    let mut misses: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-    for y in origin.1..origin.1 + png.1 {
-        for x in origin.0..origin.0 + png.0 {
-            // The multiply group region is measured above (frame fill missing from the graph).
-            let in_multiply = (560..760).contains(&x) && (340..480).contains(&y);
-            if r.px[y * r.w + x][3] >= 0.99 && !in_multiply {
-                opaque += 1;
-                if diff_at(&r, &png, (x, y), origin) <= 8.0 {
-                    close += 1;
-                } else {
-                    let k = (x / 50 * 50, y / 50 * 50);
-                    *misses.entry(k).or_insert(0u32) += 1;
-                }
-            }
-        }
-    }
-    assert!(opaque > 15_000, "opaque pixels {opaque}");
-    assert!(f64::from(close) >= 0.97 * f64::from(opaque), "close {close} of {opaque} {misses:?}");
+    // Whole-artboard agreement is measured in fig_instances_frames::whole_fixture_render_matches_operator_png.
 }
 
 #[test]
 fn real_prototype_orbs_composite_at_png_positions() {
     let m = mapped("fig-prototype-pages.fig");
     let r = render(&m);
-    // Text outputs (6) are the only refusals; the three orbs render.
+    // Text outputs (6) are the only refusals (no prepared text here); the section fill, the three
+    // frame fills and the three orbs render.
     let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 6)].into_iter().collect();
     assert_eq!(r.refused, want);
-    assert_eq!((r.outputs, r.rendered), (9, 3));
-    assert_eq!(rendered_names(&m, &r), ["animated-orb", "animated-orb", "animated-orb"]);
+    assert_eq!((r.outputs, r.rendered), (13, 7));
+    assert_eq!(
+        rendered_names(&m, &r),
+        ["prototype-section", "start-screen", "animated-orb", "detail-screen", "animated-orb", "animated-screen", "animated-orb"]
+    );
+    let orbs: Vec<String> = r.ids.iter().filter(|id| name_of(&m, id) == "animated-orb").cloned().collect();
     // The frames sit at (40,70), (440,70), (840,70) in a section at (100,100): origins below.
     for (i, (frame, origin)) in [("start", (140usize, 170usize)), ("detail", (540, 170)), ("animated", (940, 170))]
         .into_iter()
@@ -524,16 +520,17 @@ fn real_prototype_orbs_composite_at_png_positions() {
     {
         let png = decode_png(&fixture(&format!("fig-prototype-pages-{frame}.png")));
         assert_eq!((png.0, png.1), (360, 520));
-        let b = bbox_of(&m, &r.ids[i]).unwrap();
+        let b = bbox_of(&m, &orbs[i]).unwrap();
         let (cx, cy) = (((b[0] + b[2]) / 2.0) as usize, ((b[1] + b[3]) / 2.0) as usize);
         let d = diff_at(&r, &png, (cx, cy), origin);
         assert!(d <= 4.0, "{frame}: orb centre differs by {d}/255");
-        // Orb edge along its centre row: empty just outside, painted just inside.
+        // Orb edge along its centre row: the frame fill just outside, the orb just inside (both
+        // within 4/255 of the PNG).
         let (left, right) = (b[0] as usize, b[2] as usize);
-        assert_eq!(r.px[cy * r.w + left - 3][3], 0.0, "{frame}");
-        assert!(r.px[cy * r.w + left + 3][3] >= 0.99, "{frame}");
-        assert_eq!(r.px[cy * r.w + right + 3][3], 0.0, "{frame}");
-        assert!(r.px[cy * r.w + right - 3][3] >= 0.99, "{frame}");
+        for x in [left - 3, left + 3, right - 3, right + 3] {
+            let d = diff_at(&r, &png, (x, cy), origin);
+            assert!(d <= 4.0, "{frame}: x {x} differs by {d}");
+        }
         // And the same edges in the PNG: the orb differs from the background there.
         let bgpx = [png.2[0], png.2[1], png.2[2]];
         let at = |x: usize| {
@@ -545,13 +542,27 @@ fn real_prototype_orbs_composite_at_png_positions() {
 }
 
 #[test]
-fn real_components_document_has_nothing_drawable_and_says_why() {
+fn real_components_document_draws_instances_through_expansions() {
     let m = mapped("fig-components-autolayout.fig");
     let r = render(&m);
-    // The visible page holds a text-only component set and three instances: instances are
-    // layer_kind_not_composited (pinned above), the one output group is blocked by its text.
-    assert_eq!((r.outputs, r.rendered), (1, 0));
-    assert_eq!(r.refused.len(), 1);
-    assert!(r.refused.keys().next().unwrap().starts_with("input_unavailable:"));
-    assert!(r.px.iter().all(|p| p[3] == 0.0));
+    // Since SMB-INTEROP-FIG-INSTANCES-FRAMES the frame fills and the three instance expansions
+    // draw; the five text labels (three expanded) need prepared text and are the only refusals
+    // here (fig_instances_frames renders them with a granted font).
+    let want: BTreeMap<String, u32> = [("text_to_image_conversion".to_owned(), 5)].into_iter().collect();
+    assert_eq!(r.refused, want);
+    assert_eq!((r.outputs, r.rendered), (13, 8));
+    assert_eq!(
+        rendered_names(&m, &r),
+        [
+            "fixture-button",
+            "state=default",
+            "state=hover",
+            "component-instances-artboard",
+            "horizontal-stack",
+            "button-instance-1",
+            "button-instance-2",
+            "button-instance-3"
+        ]
+    );
+    assert!(r.px.iter().any(|p| p[3] > 0.99));
 }

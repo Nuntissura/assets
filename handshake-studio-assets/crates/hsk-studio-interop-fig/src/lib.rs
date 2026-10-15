@@ -23,6 +23,7 @@ mod kiwi_value;
 mod native;
 mod nodes;
 mod semantic_decode;
+mod text_out;
 mod version_map;
 
 pub use container::{
@@ -38,14 +39,21 @@ pub use import::{
 };
 pub use kiwi_value::{KiwiField, KiwiValue, decode_kiwi, decode_message_tree};
 pub use native::{
-    FigVectorPath, IdMapEntry, IdMint, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal,
-    NativeRecords, RecordMapEntry, SequentialIdMint, id_index, read_native_records, to_native,
+    ExpandedNode, FigTextLayout, FigTextLine, FigTextRunSpec, FigVectorPath, FrameBackground,
+    IdMapEntry, IdMint, InstanceExpansion, MAX_EXPANDED_NODES, MAX_INSTANCE_DEPTH,
+    MAX_OVERRIDE_PATH, NATIVE_NOT_PROVEN, NativeConfig, NativeProposal, NativeRecords,
+    RecordMapEntry, SequentialIdMint, id_index, read_native_records, to_native,
+};
+pub use text_out::{
+    FigFontGrant, FigTextOutput, FigTextOutputRun, FigTextOutputs, MissingFont,
+    resolve_text_outputs,
 };
 pub use nodes::{
-    AutoLayout, COMMON_NODE_FIELDS, Color, ComponentPropDef, Effect, FigDocument, FigNode,
+    AutoLayout, COMMON_NODE_FIELDS, Color, ComponentPropDef, DerivedGlyph, DerivedSymbolNode,
+    DerivedText, Effect, FigDocument, FigNode,
     FramePayload, Geometry, GradientStop, InstanceOverride, InstancePayload, Interaction,
     InteractionAction, Matrix, NetRegion, NetSegment, NetVertex, NodeLoss, NodePayload, Paint,
-    PaintKind, PathCommand, TextPayload, TextRun, VariableMode, VariablePayload, VariableValue,
+    PaintKind, PathCommand, TextLine, TextPayload, TextRun, VariableMode, VariablePayload, VariableValue,
     VariantProp, Vec2, VectorNetwork, decode_document, decode_path_blob, document_from_tree,
 };
 pub use semantic_decode::{EditableStatus, decode_semantic};

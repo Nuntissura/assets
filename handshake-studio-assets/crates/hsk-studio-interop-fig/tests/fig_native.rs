@@ -81,13 +81,23 @@ fn mapped(name: &str) -> Mapped {
     }
 }
 
+/// The layer mapped from the Figma node named `name` (frame background layers and instance
+/// expansion layers, lane SMB-INTEROP-FIG-INSTANCES-FRAMES, carry the names of their frame or
+/// definition node and are not node mappings).
 fn layer<'a>(p: &'a NativeProposal, name: &str) -> &'a StudioLayer {
+    let derived: std::collections::HashSet<&str> = p
+        .frame_backgrounds
+        .iter()
+        .map(|b| b.layer_id.as_str())
+        .chain(p.expansions.iter().map(|e| e.group_layer_id.as_str()))
+        .chain(p.expanded.iter().map(|e| e.node.node_id.as_str()))
+        .collect();
     let found: Vec<_> = p
         .snapshot
         .document()
         .layers
         .iter()
-        .filter(|l| l.name == name)
+        .filter(|l| l.name == name && !derived.contains(l.layer_id.as_str()))
         .collect();
     assert_eq!(found.len(), 1, "layer {name}");
     found[0]
@@ -199,7 +209,9 @@ fn real_native_mapping_structure() {
         )
         .map(|l| l.name.as_str())
         .collect();
-    assert_eq!(kids, ["group-background", "multiply-overlay"]);
+    // The clipping frame's hidden clip-source layer (its geometry, SMB-INTEROP-FIG-INSTANCES-FRAMES)
+    // is its first child.
+    assert_eq!(kids, ["group-multiply", "group-background", "multiply-overlay"]);
     // Text: a text layer bound to an inline story, one character range per style run (bytes).
     let t = layer(&m.proposal, "mixed-style-text");
     let Payload::Text { story_id } = &t.payload else {
@@ -233,7 +245,8 @@ fn real_native_mapping_structure() {
     };
     assert!(close(colour.r, 0.1) && close(colour.g, 0.15) && close(colour.b, 0.25));
     let comps = mapped("fig-components-autolayout.fig");
-    assert_eq!(comps.proposal.stories.len(), 3, "three TEXT nodes");
+    // Three TEXT nodes, plus the three expanded labels of the instances (SMB-INTEROP-FIG-INSTANCES-FRAMES).
+    assert_eq!(comps.proposal.stories.len(), 6, "three TEXT nodes and three expanded labels");
     // Every mapped node keeps its Figma source id.
     let index = id_index(&m.proposal.id_map);
     let src = m.doc.named("rounded-solid-shadow").next().unwrap().id;
@@ -615,11 +628,22 @@ fn real_native_package_round_trip() {
         assert_eq!(records.vector_records, m.proposal.vector_records, "{name}");
         assert_eq!(records.type_styles, m.proposal.type_styles, "{name}");
         assert_eq!(records.record_map, m.proposal.record_map, "{name}");
+        // One story per TEXT node plus one per text layer of an instance expansion.
         let texts = m.doc.nodes.iter().filter(|n| n.type_name == "TEXT").count();
+        let expanded_texts = m
+            .proposal
+            .expanded
+            .iter()
+            .filter(|e| {
+                m.proposal.snapshot.document().layers.iter().any(|l| {
+                    l.layer_id == e.node.node_id && l.kind == "text"
+                })
+            })
+            .count();
         assert_eq!(
             records.stories.len(),
-            texts,
-            "{name}: one story per TEXT node"
+            texts + expanded_texts,
+            "{name}: one story per TEXT node and expanded text layer"
         );
         for e in &records.id_map {
             assert!(

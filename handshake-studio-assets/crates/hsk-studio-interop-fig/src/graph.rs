@@ -15,8 +15,10 @@
 //! - only the first visible page (CANVAS) is listed in `graph.outputs` (pages share one canvas
 //!   space and would overlay); the other pages keep their operations (`page_outside_outputs`).
 //!
-//! Layers without a graph form (component instances, unmapped kinds, vector layers without paths)
-//! are typed losses, never silently dropped.
+//! Layers without a graph form (component instances without an expansion, unmapped kinds, vector
+//! layers without paths) are typed losses, never silently dropped. A component instance whose
+//! expansion group (lane SMB-INTEROP-FIG-INSTANCES-FRAMES) is a sibling draws through that group:
+//! its binding layer contributes nothing and is no loss.
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_folio::{
     Cardinality, DependencyKind, Edge, GraphSchema, NodeKind, NodeRef, Operation, OperationKind,
@@ -36,6 +38,7 @@ struct Builder<'a> {
     layers: HashMap<&'a str, &'a StudioLayer>,
     children: HashMap<String, Vec<NodeRef>>,
     booleans: &'a HashSet<String>,
+    expanded: &'a HashSet<String>,
     ops: Vec<Operation>,
     edges: Vec<Edge>,
     loss: BTreeMap<(&'static str, &'static str), u32>,
@@ -163,6 +166,7 @@ impl Builder<'_> {
                 Vec::new()
             }
             ("text", Payload::Text { .. }) => vec![self.source(id, ValueType::Image)],
+            _ if self.expanded.contains(id) => Vec::new(),
             _ => {
                 self.lose("native.graph", "layer_kind_not_composited");
                 Vec::new()
@@ -178,12 +182,14 @@ pub(crate) struct GraphBuild {
 }
 
 /// Builds the graph from the mapped layers. `order` is the mapper's node order (parents before
-/// children, siblings bottom-most first); `booleans` are the layers carrying a boolean record.
+/// children, siblings bottom-most first); `booleans` are the layers carrying a boolean record;
+/// `expanded` the instance binding layers drawn by their expansion group.
 pub(crate) fn build(
     layers: &[StudioLayer],
     artboards: &[StudioArtboard],
     order: &[NodeRef],
     booleans: &HashSet<String>,
+    expanded: &HashSet<String>,
 ) -> GraphBuild {
     let parent_of: HashMap<&str, &Parent> = layers
         .iter()
@@ -206,6 +212,7 @@ pub(crate) fn build(
         layers: layers.iter().map(|l| (l.layer_id.as_str(), l)).collect(),
         children,
         booleans,
+        expanded,
         ops: Vec::new(),
         edges: Vec::new(),
         loss: BTreeMap::new(),

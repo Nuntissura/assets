@@ -482,7 +482,10 @@ fn real_fields_decoded_or_listed_as_loss() {
         assert!(d.loss_count("Message.originFileKey", "field_not_decoded") == 1);
     }
     let (_, shapes) = doc("fig-basic-shapes.fig");
-    assert!(shapes.loss_count("NodeChange.derivedTextData", "field_not_decoded") == 1);
+    // derivedTextData is decoded for its baselines, glyph sizes and font keys (lane
+    // SMB-INTEROP-FIG-INSTANCES-FRAMES); its other members stay field-level losses.
+    assert!(shapes.loss_count("NodeChange.derivedTextData", "field_not_decoded") == 0);
+    assert!(shapes.loss_count("NodeChange.derivedTextData.glyphs.commandsBlob", "field_not_decoded") > 0);
     assert!(shapes.loss_count("NodeChange.fillPaints.authoredColor", "field_not_decoded") > 0);
     assert!(
         shapes.loss_count(
@@ -491,9 +494,11 @@ fn real_fields_decoded_or_listed_as_loss() {
         ) == 1
     );
     let (_, comps) = doc("fig-components-autolayout.fig");
+    // derivedSymbolData is decoded (guid path, size, transform, derived text) since lane
+    // SMB-INTEROP-FIG-INSTANCES-FRAMES.
     assert_eq!(
         comps.loss_count("NodeChange.derivedSymbolData", "field_not_decoded"),
-        3
+        0
     );
 }
 

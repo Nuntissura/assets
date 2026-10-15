@@ -229,9 +229,11 @@ fn real_geometry_losses_shrink_and_are_pinned() {
     // with geometry (14 / 10 / 17) and every shape node added native.transform + native.size and
     // a corner_radii / arc / star / vector_network loss (basic-shapes: 12 shapes, 0 paths).
     let pins: [(&str, u32, u32, u32, u32, u32, usize); 3] = [
-        ("fig-basic-shapes.fig", 1, 3, 1, 2, 0, 13),
-        ("fig-components-autolayout.fig", 8, 0, 6, 7, 6, 2),
-        ("fig-prototype-pages.fig", 14, 1, 14, 12, 1, 3),
+        // Since SMB-INTEROP-FIG-INSTANCES-FRAMES frame fills are background layers (the frame
+        // geometry and size are baked into their paths) and instances draw through expansions.
+        ("fig-basic-shapes.fig", 0, 3, 1, 0, 0, 16),
+        ("fig-components-autolayout.fig", 3, 0, 6, 3, 3, 10),
+        ("fig-prototype-pages.fig", 0, 1, 14, 0, 0, 17),
     ];
     for (name, geometry, stroke, transform, size, radii, paths) in pins {
         let m = mapped(name);
@@ -459,10 +461,12 @@ fn real_effects_masks_image_paints_pinned() {
     assert_eq!(v.masks.len(), 1);
     assert_eq!(v.masks[0].source_layer_id, layer_id("mask-ellipse"));
     assert_eq!(v.masks[0].mode, StudioMaskMode::Alpha);
-    assert_eq!(v.attachments.len(), 1);
-    assert_eq!(v.attachments[0].layer_id, layer_id("masked-gradient"));
+    // Frame clips attach too (SMB-INTEROP-FIG-INSTANCES-FRAMES): one attachment carries the mask.
+    let masked: Vec<_> = v.attachments.iter().filter(|a| a.mask_id.is_some()).collect();
+    assert_eq!(masked.len(), 1);
+    assert_eq!(masked[0].layer_id, layer_id("masked-gradient"));
     assert_eq!(
-        v.attachments[0].mask_id.as_deref(),
+        masked[0].mask_id.as_deref(),
         Some(v.masks[0].mask_id.as_str())
     );
     let source = p
