@@ -15,14 +15,16 @@
 //!
 //! Verified variant only: the JPEG frame row (`samples per line * components`) must equal the slice
 //! sum (or there is no slice tag and the frame row is the raw width); anything else is a typed
-//! refusal naming no guess. Not read (named in `unapplied`): MakerNote black/white levels and sensor
-//! borders, the CFA pattern (RGGB at the stored origin is the Canon family default, UNVERIFIED per
+//! refusal naming no guess. Levels: black from the masked columns left of the maker-note SensorInfo
+//! image area, white from the image area's saturation plateau (else full scale), see `levels`.
+//! Not read (named in `unapplied`): the sensor borders as an active area / crop, the CFA pattern (RGGB at the stored origin is the Canon family default, UNVERIFIED per
 //! body until an independent oracle confirms it), camera colour (decision R2: caller-supplied, or
 //! `missing_colour_data`).
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
+use crate::levels;
 use crate::ljpeg;
 use crate::pipeline::{Bayer, CfaPattern};
 use crate::tiffep::Tiff;
@@ -210,6 +212,23 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
 
     // Model (IFD0) is informational; a malformed tag is a container error, never ignored.
     let root = tiff.ifd(first)?;
+    // Levels: black = per-site mean of the optically masked columns left of the SensorInfo image
+    // area (columns 2..left-2 over the image rows; LightCraft's measurement rule), white = the
+    // saturation plateau of the image area, else full scale. Without SensorInfo both stay unread.
+    let full = VendorFrame::full_scale(u16::from(precision)).ok_or(DevelopError::InvalidContainer)?;
+    let area = levels::canon_sensor_area(&tiff, &root, width, height);
+    let masked = area
+        .filter(|a| a.x0 >= 6)
+        .and_then(|a| levels::site_means(&samples, width, height, levels::Region { x0: 2, y0: a.y0, x1: a.x0.saturating_sub(2), y1: a.y1 }, (2, 2)));
+    let (black_repeat, black_level, white_level, unapplied) = match (area, masked) {
+        (Some(a), Some(black)) => (
+            (2, 2),
+            black,
+            levels::white_or_full(&samples, width, height, a, full),
+            levels::remaining(&UNAPPLIED, &["cr2_black_level_unread", "cr2_white_level_unread"]),
+        ),
+        _ => ((1, 1), vec![0.0], full, UNAPPLIED.to_vec()),
+    };
     let unique_camera_model = match root.find(TAG_MODEL) {
         Some(entry) => Some(tiff.ascii(entry)?),
         None => None,
@@ -221,9 +240,11 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             bits: u16::from(precision),
             cfa_pattern: CfaPattern::Bayer(Bayer::Rggb),
             unique_camera_model,
-            unapplied: UNAPPLIED.to_vec(),
+            unapplied,
             samples,
-            white_level: VendorFrame::full_scale(u16::from(precision)).ok_or(DevelopError::InvalidContainer)?,
+            white_level,
+            black_repeat,
+            black_level,
         },
         bytes,
     )

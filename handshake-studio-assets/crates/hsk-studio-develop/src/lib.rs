@@ -24,6 +24,7 @@ mod crx_wavelet;
 pub mod curves;
 pub mod detail;
 pub mod local;
+mod levels;
 pub mod output;
 pub mod dng;
 pub mod pipeline;

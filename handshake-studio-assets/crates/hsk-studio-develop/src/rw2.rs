@@ -281,6 +281,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             unapplied: UNAPPLIED.to_vec(),
             samples,
             white_level: VendorFrame::full_scale(bits16).ok_or(DevelopError::UnsupportedContainer)?,
+            black_repeat: (1, 1),
+            black_level: vec![0.0],
         },
         bytes,
     )

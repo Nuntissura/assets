@@ -83,6 +83,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             unapplied,
             samples,
             white_level,
+            black_repeat: (1, 1),
+            black_level: vec![0.0],
         },
         bytes,
     )

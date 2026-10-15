@@ -737,8 +737,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
 }
 
 /// A whole stored CFA frame produced by a proprietary container decoder (`cr2`, ...). The frame
-/// carries no colour, black 0 and a placeholder white (`white_level`, default
-/// [`VendorFrame::full_scale`]); every level, crop or pattern
+/// carries no colour; its black and white levels come from the vendor decoder (tag, masked area or
+/// measured saturation plateau, see `levels`); every level, crop or pattern
 /// fact the vendor decoder did not read from the file is named in `unapplied`, so
 /// [`DngRaw::require_complete`] refuses it and nothing reads as an authored value.
 pub(crate) struct VendorFrame {
@@ -749,8 +749,14 @@ pub(crate) struct VendorFrame {
     pub unique_camera_model: Option<String>,
     pub unapplied: Vec<&'static str>,
     pub samples: Vec<u16>,
-    /// Largest code value the frame may hold (every sample is checked against it).
+    /// White (saturation) level used by develop. Samples may exceed it (clipped highlights above a
+    /// measured or tagged saturation level, as in DNG); they may not exceed the larger of it and the
+    /// bit depth's full scale (decoder sanity check).
     pub white_level: u32,
+    /// Black level repeat (rows, cols), 1..=16 each, anchored at the frame origin.
+    pub black_repeat: (u32, u32),
+    /// Black level per repeat site (row-major); each finite, >= 0 and below `white_level`.
+    pub black_level: Vec<f64>,
 }
 
 impl VendorFrame {
@@ -780,8 +786,17 @@ impl DngRaw {
         if !(1..=u32::from(u16::MAX)).contains(&white_level) || !(1..=16).contains(&frame.bits) {
             return Err(DevelopError::UnsupportedContainer);
         }
-        if frame.samples.iter().any(|v| u32::from(*v) > white_level) {
+        let ceiling = white_level.max(VendorFrame::full_scale(frame.bits).unwrap_or(white_level));
+        if frame.samples.iter().any(|v| u32::from(*v) > ceiling) {
             return Err(DevelopError::InvalidContainer);
+        }
+        let (rr, rc) = frame.black_repeat;
+        if !(1..=16).contains(&rr)
+            || !(1..=16).contains(&rc)
+            || frame.black_level.len() != (rr as usize).saturating_mul(rc as usize)
+            || frame.black_level.iter().any(|b| !b.is_finite() || *b < 0.0 || *b >= f64::from(white_level))
+        {
+            return Err(DevelopError::InvalidLevels);
         }
         Ok(Self {
             width: frame.width,
@@ -795,8 +810,8 @@ impl DngRaw {
                 right: frame.width,
             },
             default_crop: None,
-            black_repeat: (1, 1),
-            black_level: vec![0.0],
+            black_repeat: frame.black_repeat,
+            black_level: frame.black_level,
             black_delta_h: Vec::new(),
             black_delta_v: Vec::new(),
             white_level,
