@@ -74,9 +74,11 @@ fn styles_lower_to_pigment_ops_with_typed_refusals() {
     let used = g.used_stops();
     assert_eq!((used.len(), used[1].position, used[1].opacity, used[1].colour), (2, 0.6, 0.4, [0.0, 0.0, 1.0]));
 
-    // Refusals: chisel (pigment's feature key), texture, unresolved and canvas-aligned gradients,
-    // pattern overlay (no pattern pixels in the plan). A disabled instance is not refused.
-    assert_eq!(ops(vec![effect("be", 100.0, false, bevel("chisel_hard", false))]), Err("bevel_chisel"));
+    // Chisel renders since lane SMB-PS-ADJUST-STYLES-2. Refusals: texture, unresolved and
+    // canvas-aligned gradients, pattern overlay (no pattern pixels in the plan). A disabled
+    // instance is not refused.
+    let chisel = ops(vec![effect("be", 100.0, false, bevel("chisel_hard", false))]).unwrap();
+    assert!(matches!(chisel[0], EffectOp::BevelEmboss(b) if b.shape.technique == hsk_studio_pigment::effect_math::BevelTechnique::ChiselHard));
     assert_eq!(ops(vec![effect("be", 100.0, false, bevel("smooth", true))]), Err(REFUSE_BEVEL_TEXTURE));
     assert_eq!(ops(vec![effect("go", 100.0, false, gradient(true, None))]), Err(REFUSE_EFFECT_GRADIENT_UNRESOLVED));
     let two = json!([{"position":0.0,"midpoint":null,"opacity":100.0,"colour":colour(0.0,0.0,0.0)},

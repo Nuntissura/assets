@@ -256,9 +256,11 @@ fn styles_refuse_typed_and_report_their_kind() {
         f(&mut s);
         EffectOp::BevelEmboss(BevelEmbossOp::new(BevelPart::Highlight, WHITE, NORMAL, 1.0, s)).validate()
     };
-    assert_eq!(shape(|s| s.technique = BevelTechnique::ChiselHard), Err(EffectError::Unsupported(EffectFeature::BevelChisel)));
-    assert_eq!(shape(|s| s.style = BevelStyle::StrokeEmboss), Err(EffectError::Unsupported(EffectFeature::BevelStrokeEmboss)));
-    assert_eq!(shape(|s| s.soften_px = 2.0), Err(EffectError::Unsupported(EffectFeature::BevelSoften)));
+    // chisel, stroke emboss and soften render since lane SMB-PS-ADJUST-STYLES-2 (tests/bevel_techniques.rs)
+    assert_eq!(shape(|s| s.technique = BevelTechnique::ChiselHard), Ok(()));
+    assert_eq!(shape(|s| s.style = BevelStyle::StrokeEmboss), Ok(()));
+    assert_eq!(shape(|s| s.soften_px = 2.0), Ok(()));
+    assert_eq!(shape(|s| s.soften_px = f32::INFINITY), Err(EffectError::OutOfDomain));
     assert_eq!(shape(|s| s.size_px = f32::NAN), Err(EffectError::OutOfDomain));
     assert_eq!(shape(|s| s.size_px = 5000.0), Err(EffectError::SizeOutOfRange));
     assert_eq!(shape(|s| s.altitude_deg = 91.0), Err(EffectError::OutOfDomain));

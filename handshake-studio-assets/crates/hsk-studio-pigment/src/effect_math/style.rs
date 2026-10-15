@@ -20,8 +20,21 @@
 //!   highlight `clamp((s - s0) / (1 - s0))`, shadow `clamp((s0 - s) / s0)`. Region: inner bevel x
 //!   alpha, outer bevel x (1 - alpha), emboss everywhere, pillow emboss inside with the height and
 //!   outside with the negated height. The highlight and the shadow are two ops ([`BevelPart`]) so
-//!   each keeps its own colour, mode and opacity. Chisel techniques, stroke emboss and soften are
-//!   refused ([`super::EffectFeature`]).
+//!   each keeps its own colour, mode and opacity.
+//! - Bevel chisel hard (lane SMB-PS-ADJUST-STYLES-2): the height field is the signed distance to
+//!   the shape edge instead of the blurred alpha: with the region `alpha >= 0.5` (beyond the plane:
+//!   outside), `s = min(d_in - 0.5, size)` inside and `s = -min(d_out - 0.5, size)` outside, `d` the
+//!   centre distance to the nearest pixel of the other side within `ceil(size + 0.5)` (none found:
+//!   the cap), field `s / size` (the slope is `depth / 100`, constant across the bevel: the faceted
+//!   chisel look; beyond the plane the field reads -1); size 0 is flat. Chisel soft: the chisel-hard
+//!   field blurred by a Gaussian of `size / 4`. Both use the smooth shading and region rules.
+//! - Soften: the part matte (after the region rule) blurred by a Gaussian of `soften_px` (Adobe:
+//!   soften blurs the results of shading; the Gaussian is Studio's reading).
+//! - Stroke emboss: the emboss of the layer's stroke ([`BevelStroke`], resolved by the builder from
+//!   the stroke effect on the same layer): the field is taken from the union `max(alpha, stroke)`
+//!   and the region is the stroke matte (pigment's stroke rule); without a stroke the matte is empty
+//!   (Adobe: stroke emboss shows nothing without a stroke). Chisel, soften and stroke-emboss
+//!   readings are Studio's, UNVERIFIED (D5).
 //! - Gradient overlay: colour and stop opacity of a gradient over the LAYER BOUNDS (the reference
 //!   plane, or [`super::window::WindowGeometry::layer`]); the matte is alpha x stop opacity. Styles
 //!   linear, radial, angle, reflected, diamond; the geometry readings (box-projection length for
@@ -84,7 +97,7 @@ pub enum BevelStyle {
     PillowEmboss,
     StrokeEmboss,
 }
-/// Bevel technique (STU-RAS-157 `technique`); only `Smooth` renders.
+/// Bevel technique (STU-RAS-157 `technique`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum BevelTechnique {
     Smooth,
@@ -96,6 +109,14 @@ pub enum BevelTechnique {
 pub enum BevelPart {
     Highlight,
     Shadow,
+}
+
+/// The stroke a stroke-emboss bevel embosses: size and position of the stroke effect on the same
+/// layer (the builder resolves it; pigment's stroke rule draws its matte).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct BevelStroke {
+    pub size_px: f32,
+    pub position: super::StrokePosition,
 }
 
 /// The shape of a bevel, shared by its highlight and shadow ops. `depth` is the STU-RAS-157 percent
@@ -111,6 +132,9 @@ pub struct BevelShape {
     pub soften_px: f32,
     pub angle_deg: f32,
     pub altitude_deg: f32,
+    /// The embossed stroke of [`BevelStyle::StrokeEmboss`] (`None`: no stroke, empty matte); not
+    /// read by the other styles.
+    pub stroke: Option<BevelStroke>,
 }
 impl BevelShape {
     /// Inner bevel, smooth, up, depth 100, size 5, no soften, light 120 deg at 30 deg (the
@@ -124,6 +148,7 @@ impl BevelShape {
         soften_px: 0.0,
         angle_deg: 120.0,
         altitude_deg: 30.0,
+        stroke: None,
     };
 }
 
@@ -236,6 +261,12 @@ impl GradientOverlayOp {
         self.offset = offset;
         self
     }
+    /// Colour and stop opacity of the gradient at the centre of pixel `(x, y)` for the layer bounds
+    /// `layer` (the one definition the matte and the colour use; public so a backend computes the
+    /// per-pixel colours from the owner, lane SMB-PS-ADJUST-STYLES-2).
+    pub fn sample_at(&self, x: i64, y: i64, layer: crate::Rect) -> ([f32; 3], f32) {
+        gradient_at(self, x, y, (layer.x, layer.y, layer.width, layer.height))
+    }
     /// The used stops.
     pub fn used_stops(&self) -> &[GradientStopOp] {
         self.stops
@@ -279,17 +310,9 @@ pub(super) fn validate_bevel(o: &BevelEmbossOp) -> Result<(), EffectError> {
     if !s.depth.is_finite() || !(1.0..=1000.0).contains(&s.depth) {
         return Err(EffectError::OutOfDomain);
     }
-    if !s.soften_px.is_finite() || s.soften_px < 0.0 {
-        return Err(EffectError::OutOfDomain);
-    }
-    if s.technique != BevelTechnique::Smooth {
-        return Err(EffectError::Unsupported(EffectFeature::BevelChisel));
-    }
-    if s.style == BevelStyle::StrokeEmboss {
-        return Err(EffectError::Unsupported(EffectFeature::BevelStrokeEmboss));
-    }
-    if s.soften_px > 0.0 {
-        return Err(EffectError::Unsupported(EffectFeature::BevelSoften));
+    size_ok(s.soften_px)?;
+    if let Some(stroke) = s.stroke {
+        size_ok(stroke.size_px)?;
     }
     Ok(())
 }
@@ -326,10 +349,77 @@ pub(super) fn satin_support(o: &SatinOp) -> Result<u32, EffectError> {
         .checked_add(blur)
         .ok_or(EffectError::Overflow)
 }
+/// Radius of the chisel distance search: `ceil(size + 0.5)` (a distance beyond it is capped).
+fn chisel_radius(size_px: f32) -> u32 {
+    (size_px + 0.5).ceil() as u32
+}
+
+/// Support of the stroke a stroke emboss reads (the stroke rule's distance window).
+fn stroke_support(s: &BevelShape) -> u32 {
+    match (s.style, s.stroke) {
+        (BevelStyle::StrokeEmboss, Some(st)) => match st.position {
+            super::StrokePosition::Centre => (st.size_px / 2.0).ceil() as u32,
+            _ => st.size_px.ceil() as u32,
+        },
+        _ => 0,
+    }
+}
+
+/// Support of the height field alone (before the central difference).
+fn field_support(s: &BevelShape) -> Result<u32, EffectError> {
+    let blur = |v: f32| feather_support(v).map_err(|_| EffectError::SizeOutOfRange);
+    match s.technique {
+        BevelTechnique::Smooth => blur(s.size_px),
+        BevelTechnique::ChiselHard => Ok(chisel_radius(s.size_px)),
+        BevelTechnique::ChiselSoft => chisel_radius(s.size_px)
+            .checked_add(blur(s.size_px / 4.0)?)
+            .ok_or(EffectError::Overflow),
+    }
+}
+
+/// Stroke window + field + 1 (central difference) + soften blur.
 pub(super) fn bevel_support(o: &BevelEmbossOp) -> Result<u32, EffectError> {
-    feather_support(o.shape.size_px)
-        .map_err(|_| EffectError::SizeOutOfRange)?
-        .checked_add(1)
+    let s = &o.shape;
+    let soften = feather_support(s.soften_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    stroke_support(s)
+        .checked_add(field_support(s)?)
+        .and_then(|v| v.checked_add(1))
+        .and_then(|v| v.checked_add(soften))
+        .ok_or(EffectError::Overflow)
+}
+
+/// Upper bound of the per-pixel neighbourhood visits of a bevel over its grown window (the
+/// windowed evaluator charges `area x this` before reading any alpha).
+pub(super) fn bevel_work_per_px(o: &BevelEmbossOp) -> Result<u64, EffectError> {
+    let s = &o.shape;
+    let taps = |v: f32| -> Result<u64, EffectError> {
+        u64::try_from(feather_kernel(v).map_err(|_| EffectError::SizeOutOfRange)?.len())
+            .map_err(|_| EffectError::Overflow)
+    };
+    let square = |k: u32| -> Result<u64, EffectError> {
+        let side = u64::from(k)
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(1))
+            .ok_or(EffectError::Overflow)?;
+        side.checked_mul(side).ok_or(EffectError::Overflow)
+    };
+    let twice = |v: u64| v.checked_mul(2).ok_or(EffectError::Overflow);
+    let field = match s.technique {
+        BevelTechnique::Smooth => twice(taps(s.size_px)?)?,
+        BevelTechnique::ChiselHard => square(chisel_radius(s.size_px))?,
+        BevelTechnique::ChiselSoft => square(chisel_radius(s.size_px))?
+            .checked_add(twice(taps(s.size_px / 4.0)?)?)
+            .ok_or(EffectError::Overflow)?,
+    };
+    // 4: the gradient, shading and copy visits (the smooth bevel's charge before this lane).
+    let stroke = match stroke_support(s) {
+        0 => 0,
+        k => twice(square(k)?)?.checked_add(1).ok_or(EffectError::Overflow)?,
+    };
+    let soften = if s.soften_px > 0.0 { twice(taps(s.soften_px)?)? } else { 0 };
+    [field, stroke, soften, 4]
+        .iter()
+        .try_fold(0u64, |acc, v| acc.checked_add(*v))
         .ok_or(EffectError::Overflow)
 }
 
@@ -357,11 +447,88 @@ pub(super) fn satin_matte(alpha: &[f32], g: Grid, o: &SatinOp) -> Result<Vec<f32
         .collect())
 }
 
+/// Chisel-hard field `s / size` of `shape` (beyond the plane: outside; see the module doc).
+fn chisel_field(shape: &[f32], g: Grid, size_px: f32) -> Result<Vec<f32>, EffectError> {
+    let mut out = vec![0.0f32; g.len()?];
+    if size_px <= 0.0 {
+        return Ok(out);
+    }
+    // The work (area x (2k + 1)^2) is charged by the caller: the reference budget in
+    // `reference_matte`, the windowed meter in `window::run_local` (`bevel_work_per_px`).
+    let k = i64::from(chisel_radius(size_px));
+    let lo = k.checked_neg().ok_or(EffectError::Overflow)?;
+    let size = f64::from(size_px);
+    let inside_at = |x: i64, y: i64| g.get(shape, x, y).unwrap_or(0.0) >= 0.5;
+    for y in 0..g.h {
+        for x in 0..g.w {
+            let inside = inside_at(x, y);
+            let mut best = f64::INFINITY;
+            for oy in lo..=k {
+                for ox in lo..=k {
+                    let sx = x.checked_add(ox).ok_or(EffectError::Overflow)?;
+                    let sy = y.checked_add(oy).ok_or(EffectError::Overflow)?;
+                    if inside_at(sx, sy) != inside {
+                        best = best.min((ox as f64).hypot(oy as f64));
+                    }
+                }
+            }
+            let d = (best - 0.5).min(size);
+            let signed = if inside { d } else { -d };
+            let v = signed / size;
+            if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
+                *slot = v as f32;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The stroke matte a stroke emboss embosses (pigment's stroke rule, `super::stroke_half`).
+fn stroke_matte(alpha: &[f32], g: Grid, stroke: &BevelStroke) -> Result<Vec<f32>, EffectError> {
+    let half_of = |w: f32, outside: bool| {
+        super::stroke_half_by(alpha, g, w, outside, super::dilate_unbudgeted)
+    };
+    Ok(match stroke.position {
+        super::StrokePosition::Outside => half_of(stroke.size_px, true)?,
+        super::StrokePosition::Inside => half_of(stroke.size_px, false)?,
+        super::StrokePosition::Centre => {
+            let w = stroke.size_px / 2.0;
+            let out = half_of(w, true)?;
+            let inn = half_of(w, false)?;
+            out.iter().zip(&inn).map(|(a, b)| (a + b).min(1.0)).collect()
+        }
+    })
+}
+
 /// Bevel matte (the op's part) over a plane `g`.
 pub(super) fn bevel_matte(alpha: &[f32], g: Grid, o: &BevelEmbossOp) -> Result<Vec<f32>, EffectError> {
     let s = &o.shape;
-    let kernel = feather_kernel(s.size_px).map_err(|_| EffectError::SizeOutOfRange)?;
-    let h = blur_ext(alpha, g, &kernel, 0.0)?;
+    // Stroke emboss: the field comes from the union of the shape and its stroke, the region is the
+    // stroke matte; without a stroke there is nothing to emboss.
+    let stroke = match (s.style, s.stroke) {
+        (BevelStyle::StrokeEmboss, Some(st)) => Some(stroke_matte(alpha, g, &st)?),
+        (BevelStyle::StrokeEmboss, None) => return Ok(vec![0.0; g.len()?]),
+        _ => None,
+    };
+    let union: Option<Vec<f32>> = stroke
+        .as_ref()
+        .map(|st| alpha.iter().zip(st).map(|(a, b)| a.max(*b)).collect());
+    let shape = union.as_deref().unwrap_or(alpha);
+    // The height field and its value beyond the plane (far outside the shape).
+    let (h, beyond) = match s.technique {
+        BevelTechnique::Smooth => {
+            let kernel = feather_kernel(s.size_px).map_err(|_| EffectError::SizeOutOfRange)?;
+            (blur_ext(shape, g, &kernel, 0.0)?, 0.0f64)
+        }
+        BevelTechnique::ChiselHard => (chisel_field(shape, g, s.size_px)?, -1.0),
+        BevelTechnique::ChiselSoft => {
+            let hard = chisel_field(shape, g, s.size_px)?;
+            let kernel = feather_kernel(s.size_px / 4.0).map_err(|_| EffectError::SizeOutOfRange)?;
+            (blur_ext(&hard, g, &kernel, -1.0)?, -1.0)
+        }
+    };
+    let beyond = if s.size_px <= 0.0 { 0.0 } else { beyond };
+    drop(union);
     let scale = s.depth / 100.0 * s.size_px * if s.up { 1.0 } else { -1.0 };
     let (sa, ca) = f64::from(s.angle_deg).to_radians().sin_cos();
     let (sl, cl) = f64::from(s.altitude_deg).to_radians().sin_cos();
@@ -391,7 +558,7 @@ pub(super) fn bevel_matte(alpha: &[f32], g: Grid, o: &BevelEmbossOp) -> Result<V
     let mut out = vec![0.0f32; g.len()?];
     for y in 0..g.h {
         for x in 0..g.w {
-            let at = |xx: i64, yy: i64| f64::from(g.get(&h, xx, yy).unwrap_or(0.0));
+            let at = |xx: i64, yy: i64| g.get(&h, xx, yy).map_or(beyond, f64::from);
             let xm = x.checked_sub(1).ok_or(EffectError::Overflow)?;
             let xp = x.checked_add(1).ok_or(EffectError::Overflow)?;
             let ym = y.checked_sub(1).ok_or(EffectError::Overflow)?;
@@ -405,12 +572,20 @@ pub(super) fn bevel_matte(alpha: &[f32], g: Grid, o: &BevelEmbossOp) -> Result<V
                 BevelStyle::OuterBevel => part(gx, gy, k) * (1.0 - a),
                 BevelStyle::Emboss => part(gx, gy, k),
                 BevelStyle::PillowEmboss => part(gx, gy, k) * a + part(gx, gy, -k) * (1.0 - a),
-                BevelStyle::StrokeEmboss => 0.0,
+                BevelStyle::StrokeEmboss => {
+                    let st = g.idx(x, y).and_then(|i| stroke.as_ref()?.get(i)).copied();
+                    part(gx, gy, k) * f64::from(st.unwrap_or(0.0))
+                }
             };
             if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
                 *slot = v.clamp(0.0, 1.0) as f32;
             }
         }
+    }
+    if s.soften_px > 0.0 {
+        let kernel = feather_kernel(s.soften_px).map_err(|_| EffectError::SizeOutOfRange)?;
+        let soft = blur_ext(&out, g, &kernel, 0.0)?;
+        return Ok(soft.iter().map(|v| v.clamp(0.0, 1.0)).collect());
     }
     Ok(out)
 }

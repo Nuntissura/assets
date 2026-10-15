@@ -457,11 +457,12 @@ enum Plan {
     Chain(ChainPlan),
     Stroke { halves: Vec<HalfPlan>, centre: bool },
     /// Satin and bevel (module `style`): the style function on the window grown by `support`,
-    /// clipped to the domain (see [`run_local`]). `klen` is the blur kernel length.
+    /// clipped to the domain (see [`run_local`]). `per_px` bounds the neighbourhood visits per
+    /// grown-window pixel (satin: two blur passes + 4; bevel: `style::bevel_work_per_px`).
     Local {
         op: EffectOp,
         support: u32,
-        klen: u64,
+        per_px: u64,
     },
     /// Gradient overlay: alpha x stop opacity, with a colour per pixel.
     Gradient(super::GradientOverlayOp),
@@ -491,7 +492,13 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
             Plan::Local {
                 op: *op,
                 support: effect_support_px(op)?,
-                klen: u64::try_from(kernel.len()).map_err(|_| WindowError::Overflow)?,
+                per_px: match op {
+                    EffectOp::BevelEmboss(o) => super::style::bevel_work_per_px(o)?,
+                    _ => addu(
+                        mulu(u64::try_from(kernel.len()).map_err(|_| WindowError::Overflow)?, 2)?,
+                        4,
+                    )?,
+                },
             }
         }
         EffectOp::DropShadow(o) => Plan::Chain(ChainPlan::new(
@@ -622,11 +629,11 @@ impl Plan {
             // Upper bound (equal when the grown window lies inside the domain): sub-plane alpha
             // (4) + internal buffers (LOCAL_INTERNAL_BYTES) per grown pixel, plus the window
             // result; work = read + two blur passes + four per-pixel stages + the crop.
-            Self::Local { support, klen, .. } => {
+            Self::Local { support, per_px, .. } => {
                 let ag = area(grow(window, *support)?)?;
                 Ok(Cost {
                     peak: addu(mulu(ag, addu(4, LOCAL_INTERNAL_BYTES)?)?, mulu(aw, 4)?)?,
-                    work: addu(mulu(ag, addu(mulu(*klen, 2)?, 5)?)?, aw)?,
+                    work: addu(mulu(ag, addu(*per_px, 1)?)?, aw)?,
                 })
             }
             // Matte (4) and the per-pixel colours (12); read, opacity and colour passes.
@@ -1078,7 +1085,7 @@ fn run_local<S: AlphaSource + ?Sized>(
     g: &WindowGeometry,
     op: &EffectOp,
     support: u32,
-    klen: u64,
+    per_px: u64,
     meter: &mut Meter,
 ) -> WResult<Vec<f32>> {
     let grown = grow(g.window, support)?;
@@ -1089,7 +1096,7 @@ fn run_local<S: AlphaSource + ?Sized>(
     read_alpha_into(src, g, sub, &mut alpha, |a| a)?;
     let internal = mulu(ag, LOCAL_INTERNAL_BYTES)?;
     meter.reserve(internal)?;
-    meter.charge_work(mulu(ag, addu(mulu(klen, 2)?, 4)?)?)?;
+    meter.charge_work(mulu(ag, per_px)?)?;
     let grid = super::Grid {
         w: i64::from(sub.width),
         h: i64::from(sub.height),
@@ -1124,7 +1131,11 @@ fn run_matte<S: AlphaSource + ?Sized>(
 ) -> WResult<Vec<f32>> {
     match plan {
         Plan::Overlay => alpha_window(src, g, meter),
-        Plan::Local { op, support, klen } => run_local(src, g, op, *support, *klen, meter),
+        Plan::Local {
+            op,
+            support,
+            per_px,
+        } => run_local(src, g, op, *support, *per_px, meter),
         Plan::Gradient(o) => {
             let mut m = alpha_window(src, g, meter)?;
             meter.charge_work(area(g.window)?)?;

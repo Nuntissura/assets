@@ -40,8 +40,8 @@ pub mod window;
 /// Satin, bevel & emboss and gradient overlay (lane SMB-PS-ADJUST-STYLES).
 pub mod style;
 pub use style::{
-    BevelEmbossOp, BevelPart, BevelShape, BevelStyle, BevelTechnique, GradientOverlayOp,
-    GradientStopOp, GradientStyle, MAX_GRADIENT_STOPS, SatinOp,
+    BevelEmbossOp, BevelPart, BevelShape, BevelStroke, BevelStyle, BevelTechnique,
+    GradientOverlayOp, GradientStopOp, GradientStyle, MAX_GRADIENT_STOPS, SatinOp,
 };
 
 /// Class of every effect operator in this module (see module doc).
@@ -77,11 +77,13 @@ pub enum EffectFeature {
     GlowJitter,
     /// The Precise glow technique (Photoshop uses a distance transform there; Softer only).
     GlowTechniquePrecise,
-    /// Chisel hard / chisel soft bevel techniques (smooth only).
+    /// Chisel hard / chisel soft bevel techniques (rendered since lane SMB-PS-ADJUST-STYLES-2; the
+    /// key is kept for stored receipts and is no longer produced by pigment).
     BevelChisel,
-    /// Stroke emboss (needs a stroke effect on the same layer).
+    /// Stroke emboss (rendered since lane SMB-PS-ADJUST-STYLES-2; key kept, no longer produced).
     BevelStrokeEmboss,
-    /// Bevel soften above 0.
+    /// Bevel soften above 0 (rendered since lane SMB-PS-ADJUST-STYLES-2; key kept, no longer
+    /// produced).
     BevelSoften,
     /// More gradient stops than [`MAX_GRADIENT_STOPS`].
     GradientStops,
@@ -228,7 +230,7 @@ impl EffectKind {
             ),
             Self::BevelEmboss => (
                 "bevel_emboss",
-                "smooth technique: height depth/100 * size * Gaussian(alpha, size), central-difference normal, Lambert shading against the flat sin(altitude), highlight (s - s0)/(1 - s0) and shadow (s0 - s)/s0 as two ops; inner/outer/emboss/pillow regions; chisel, stroke emboss and soften refused (effect_math::style); Photoshop maths UNVERIFIED (D5)",
+                "smooth technique: height depth/100 * size * Gaussian(alpha, size); chisel hard: signed edge distance capped at size (slope depth/100), chisel soft: that field blurred by size/4; central-difference normal, Lambert shading against the flat sin(altitude), highlight (s - s0)/(1 - s0) and shadow (s0 - s)/s0 as two ops; inner/outer/emboss/pillow regions, stroke emboss on the layer's stroke matte (field of shape union stroke); soften blurs the part matte (effect_math::style); Photoshop maths UNVERIFIED (D5)",
             ),
             Self::GradientOverlay => (
                 "gradient_overlay",
@@ -924,6 +926,12 @@ fn dilate(src: &[f32], g: Grid, r: f32, outside: f32) -> Result<Vec<f32>, Effect
     if work > REFERENCE_WORK_BUDGET {
         return Err(EffectError::OverBudget);
     }
+    dilate_unbudgeted(src, g, r, outside)
+}
+
+/// [`dilate`] without the reference work budget (a windowed caller charges its own meter first).
+fn dilate_unbudgeted(src: &[f32], g: Grid, r: f32, outside: f32) -> Result<Vec<f32>, EffectError> {
+    let k = i64::from(r.ceil() as u32);
     let lo = k.checked_neg().ok_or(EffectError::Overflow)?;
     let mut out = vec![0.0f32; g.len()?];
     for y in 0..g.h {
@@ -1034,6 +1042,21 @@ fn matte_chain(
 /// One half of a stroke: `outside` = region dilated by `w` minus the alpha, otherwise the alpha
 /// minus the region eroded by `w`. The region is `alpha >= 0.5`; beyond the plane is outside.
 fn stroke_half(alpha: &[f32], g: Grid, w: f32, outside: bool) -> Result<Vec<f32>, EffectError> {
+    stroke_half_by(alpha, g, w, outside, dilate)
+}
+
+/// The dilation primitive of a stroke half.
+type Dilate = fn(&[f32], Grid, f32, f32) -> Result<Vec<f32>, EffectError>;
+
+/// [`stroke_half`] with the dilation `grow` (the budgeted reference one or the unbudgeted one of a
+/// windowed caller).
+fn stroke_half_by(
+    alpha: &[f32],
+    g: Grid,
+    w: f32,
+    outside: bool,
+    grow: Dilate,
+) -> Result<Vec<f32>, EffectError> {
     if w <= 0.0 {
         return Ok(vec![0.0; g.len()?]);
     }
@@ -1042,7 +1065,7 @@ fn stroke_half(alpha: &[f32], g: Grid, w: f32, outside: bool) -> Result<Vec<f32>
         .map(|a| if *a >= 0.5 { 1.0 } else { 0.0 })
         .collect();
     if outside {
-        let grown = dilate(&region, g, w, 0.0)?;
+        let grown = grow(&region, g, w, 0.0)?;
         Ok(grown
             .iter()
             .zip(alpha)
@@ -1050,7 +1073,7 @@ fn stroke_half(alpha: &[f32], g: Grid, w: f32, outside: bool) -> Result<Vec<f32>
             .collect())
     } else {
         let complement: Vec<f32> = region.iter().map(|r| 1.0 - r).collect();
-        let grown = dilate(&complement, g, w, 1.0)?;
+        let grown = grow(&complement, g, w, 1.0)?;
         Ok(grown.iter().zip(alpha).map(|(d, a)| d * a).collect())
     }
 }
@@ -1075,7 +1098,18 @@ pub fn reference_matte(plane: &EffectPlane, op: &EffectOp) -> Result<Vec<f32>, E
     match op {
         EffectOp::ColourOverlay(_) => Ok(alpha.to_vec()),
         EffectOp::Satin(o) => style::satin_matte(alpha, g, o),
-        EffectOp::BevelEmboss(o) => style::bevel_matte(alpha, g, o),
+        EffectOp::BevelEmboss(o) => {
+            // the reference plane's neighbourhood work, before any pass (the windowed evaluator
+            // charges its own meter instead)
+            let work = u64::try_from(g.len()?)
+                .ok()
+                .and_then(|n| n.checked_mul(style::bevel_work_per_px(o).ok()?))
+                .ok_or(EffectError::Overflow)?;
+            if work > REFERENCE_WORK_BUDGET {
+                return Err(EffectError::OverBudget);
+            }
+            style::bevel_matte(alpha, g, o)
+        }
         EffectOp::GradientOverlay(o) => {
             let mut out = alpha.to_vec();
             let bounds = (0, 0, plane.width, plane.height);

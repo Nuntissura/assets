@@ -35,7 +35,7 @@ use hsk_studio_pigment::effect_math::{
     ColourOverlayOp, DropShadowOp, EffectError, EffectFeature, EffectOp, GlowSource,
     GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
-    BevelEmbossOp, BevelPart, BevelShape, BevelStyle, BevelTechnique, GradientOverlayOp,
+    BevelEmbossOp, BevelPart, BevelShape, BevelStroke, BevelStyle, BevelTechnique, GradientOverlayOp,
     GradientStopOp, GradientStyle, SatinOp,
 };
 use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout, PlanError};
@@ -954,7 +954,14 @@ fn profile_colour(c: &StudioColor, cx: &EffectContext<'_>) -> Result<[f32; 3], &
 /// Bevel & emboss as two pigment ops, shadow then highlight, each with its own colour, mode and
 /// opacity (STU-RAS-157 highlight/shadow blocks). The angle follows Global Light when subscribed,
 /// and so does the altitude (STU-RAS-158: Global Light is `{angle, altitude}`).
-fn convert_bevel(e: &StudioEffect, cx: &EffectContext<'_>) -> Result<[EffectOp; 2], &'static str> {
+///
+/// Stroke emboss (lane SMB-PS-ADJUST-STYLES-2) embosses `stroke`, the first live stroke effect of
+/// the same stack (its size and position; `None`: nothing to emboss, pigment draws an empty matte).
+fn convert_bevel(
+    e: &StudioEffect,
+    cx: &EffectContext<'_>,
+    stroke: Option<BevelStroke>,
+) -> Result<[EffectOp; 2], &'static str> {
     let StudioEffectKind::BevelEmboss {
         style,
         technique,
@@ -1014,6 +1021,7 @@ fn convert_bevel(e: &StudioEffect, cx: &EffectContext<'_>) -> Result<[EffectOp; 
         soften_px: *soften as f32,
         angle_deg: angle as f32,
         altitude_deg: altitude as f32,
+        stroke,
     };
     let part = |p: BevelPart, mode: u16, colour: &StudioColor, opacity: f64| -> Result<EffectOp, &'static str> {
         let mode = StudioBlendMode::try_from(mode).map_err(|_| REFUSE_EFFECT_BLEND_MODE)?;
@@ -1087,6 +1095,18 @@ pub(crate) fn convert_effects(
     if live.len() > MAX_EFFECTS_PER_LAYER {
         return Err(REFUSE_EFFECT_LIMIT);
     }
+    // The stroke a stroke emboss embosses: the first live stroke of the stack.
+    let stroke = live.iter().find_map(|e| match &e.params {
+        StudioEffectKind::Stroke { size, position, .. } => Some(BevelStroke {
+            size_px: *size as f32,
+            position: match position {
+                FolioStrokePosition::Inside => PigmentStrokePosition::Inside,
+                FolioStrokePosition::Outside => PigmentStrokePosition::Outside,
+                FolioStrokePosition::Centre => PigmentStrokePosition::Centre,
+            },
+        }),
+        _ => None,
+    });
     for e in live {
         if let StudioEffectKind::Blur {
             render_scope,
@@ -1098,7 +1118,7 @@ pub(crate) fn convert_effects(
             }
             out.blur = Some(convert_blur(e, *render_scope, *radius)?);
         } else if matches!(e.params, StudioEffectKind::BevelEmboss { .. }) {
-            out.ops.extend(convert_bevel(e, cx)?);
+            out.ops.extend(convert_bevel(e, cx, stroke)?);
         } else {
             out.ops.push(convert_effect(e, cx, &mut out.notes)?);
         }
