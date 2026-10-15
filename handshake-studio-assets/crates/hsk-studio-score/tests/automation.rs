@@ -194,7 +194,11 @@ fn setting_a_parameter_equals_constructing_with_it_for_every_processor() {
         let signal = [noise(5, 12_000).iter().map(|v| v * v * v).collect::<Vec<f32>>(), noise(6, 12_000)];
         let mut covered = 0;
         for kind in kinds() {
-            let input = &signal[..kind.inputs];
+            // The click detector needs sparse clicks: low uniform noise (never past 1.35 robust
+            // sigmas) plus 0.5 spikes (about 6.7 sigmas: repaired at threshold 3, kept at 8).
+            let clicks: Vec<f32> = noise(5, 12_000).iter().enumerate().map(|(n, v)| v * 0.1 + if n % 997 == 500 { 0.5 } else { 0.0 }).collect();
+            let click_input = [clicks];
+            let input: &[Vec<f32>] = if kind.name == "ClickRepair" { &click_input } else { &signal[..kind.inputs] };
             let names: Vec<&str> = (kind.make)(&kind.base).automation_parameters().iter().map(|p| p.name).collect();
             assert_eq!(names.len(), kind.base.len(), "{}: {names:?}", kind.name);
             for i in 0..kind.base.len() {
