@@ -415,7 +415,9 @@ fn orf_two_field_c5060wz_decodes_and_matches_the_embedded_preview() {
 }
 
 /// DMC-LX7 (raw.pixls.us id 7010): `IIU` magic, sensor 1904 x 1276 (tags 0x0002/0x0003), 12 bit,
-/// compression 34316 (byte inspection 2026-10-15; the previous lanes' RW2 blocker).
+/// compression 34316 (byte inspection 2026-10-15; the previous lanes' RW2 blocker); CFA code 2
+/// (GRBG). Preview r measured: 0.978 (1920 x 1280 preview), floor 0.95; digest pinned from the
+/// same run.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn rw2_lx7_decodes_and_matches_the_embedded_preview() {
@@ -425,9 +427,9 @@ fn rw2_lx7_decodes_and_matches_the_embedded_preview() {
         sha256: "18dfc3877e944020299635a8c2fad61fca2485b1c9b67645a495ee870a86e599",
         dims: (1904, 1276, 12),
         white: 4095,
-        cfa: CfaPattern::Bayer(Bayer::Rggb),
+        cfa: CfaPattern::Bayer(Bayer::Grbg),
         model: "DMC-LX7",
-        digest: "",
-        r_floor: 0.0,
+        digest: "148fcc6e0589faf945c490b6abb210e8c8d9688035bdd8e69b1a732999b4f3f4",
+        r_floor: 0.95,
     }]);
 }
