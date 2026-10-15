@@ -36,3 +36,9 @@ corpus_config = ".config/oracle-corpus.toml"
 "crates/hsk-studio-type/tests/fixtures/evidence/type-reference-corrected-with-dlig.json" = 73
 # Prism oracle fixture: default_locations = source dirs of populate_corpus.py (copy tool); tests read the corpus root
 "crates/hsk-studio-prism/tests/oracle/t1_lcms2.json" = 1
+# render-gpu path redaction (SMB-RENDER-GPU-SUBMIT-FAULT 2e52586): doc examples of the drive-letter/UNC shapes the
+# redactor strips (pipeline.rs:104, :135, :137); lead decision 2026-10-15 (C41), C16 precedent
+"crates/hsk-studio-render-gpu/src/pipeline.rs" = 3
+# redact_paths test inputs (gpu_submit_fault.rs:262, :267, :283): example machine paths the redactor must reduce to
+# file names; never opened as host paths; lead decision 2026-10-15 (C41), C16 precedent
+"crates/hsk-studio-render-gpu/tests/gpu_submit_fault.rs" = 3
