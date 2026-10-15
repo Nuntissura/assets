@@ -95,7 +95,7 @@ pub struct FolioExport {
     pub loss: Vec<LossEntry>,
 }
 
-fn opaque(element: &str, xml: String) -> Opaque {
+pub(crate) fn opaque(element: &str, xml: String) -> Opaque {
     Opaque {
         element: element.to_owned(),
         xml,
@@ -147,6 +147,7 @@ fn run_of(
         special: false,
         language: language.map(Into::into),
         span: None,
+        inline: None,
     }
 }
 
@@ -257,6 +258,7 @@ fn story_model(
                             special: false,
                             language: None,
                             span: None,
+                            inline: None,
                         },
                         |c| run_of(c, names, &part, loss, &mut composition),
                     );
@@ -329,7 +331,7 @@ fn frame_children(path: &[PathPoint], p: &FramePrefs) -> Vec<Opaque> {
     ]
 }
 
-fn preferences_xml(doc: &DocumentSettings) -> String {
+pub(crate) fn preferences_xml(doc: &DocumentSettings, extra: &str) -> String {
     let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
     s.push_str(&format!(
         "<idPkg:Preferences xmlns:idPkg=\"{}\" DOMVersion=\"{DOM_VERSION}\">\n<DocumentPreference",
@@ -359,11 +361,12 @@ fn preferences_xml(doc: &DocumentSettings) -> String {
         s.push_str(&margin_xml(m));
         s.push('\n');
     }
+    s.push_str(extra);
     s.push_str("</idPkg:Preferences>\n");
     s
 }
 
-fn margin_xml(m: [f64; 4]) -> String {
+pub(crate) fn margin_xml(m: [f64; 4]) -> String {
     format!(
         "<MarginPreference ColumnCount=\"1\" ColumnGutter=\"12\" Top=\"{}\" Bottom=\"{}\" Left=\"{}\" Right=\"{}\" ColumnDirection=\"Horizontal\"/>",
         num(m[0]),
@@ -373,12 +376,50 @@ fn margin_xml(m: [f64; 4]) -> String {
     )
 }
 
+/// The written model before serialisation, with the id maps the long-document export needs.
+pub(crate) struct Built {
+    pub model: IdmlModel,
+    pub loss: LossBook,
+    /// Folio story id -> IDML story `Self`.
+    pub story_ids: BTreeMap<String, String>,
+    /// Folio page key -> (IDML page `Self`, spread index, page top-left in IDML spread coordinates).
+    pub pages: BTreeMap<String, (String, usize, (f64, f64))>,
+}
+
 /// Exports a Folio layout document and its stories as a deterministic IDML package.
 pub fn export_folio(
     input: &FolioExportInput,
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<FolioExport> {
+    let built = folio_model(input, &BTreeSet::new(), limits, cancel)?;
+    finish(built, "", Vec::new(), cancel)
+}
+
+/// Serialises a built model: the fixed parts, `Resources/Preferences.xml` with `extra_prefs`
+/// appended inside it, and `extra_parts`.
+pub(crate) fn finish(built: Built, extra_prefs: &str, extra_parts: Vec<IdmlPart>, cancel: &CancellationToken) -> Result<FolioExport> {
+    let Built { model, loss, .. } = built;
+    let mut parts = vec![
+        IdmlPart::new("mimetype".into(), IDML_MIMETYPE.as_bytes().to_vec()),
+        IdmlPart::new("META-INF/container.xml".into(), CONTAINER.as_bytes().to_vec()),
+        IdmlPart::new("designmap.xml".into(), Vec::new()),
+        IdmlPart::new(PREFERENCES_PART.into(), preferences_xml(&model.document, extra_prefs).into_bytes()),
+    ];
+    parts.extend(extra_parts);
+    let package = IdmlPackage { parts };
+    let bytes = export_model(&model, &package, cancel)?;
+    Ok(FolioExport { bytes, model, loss: loss.finish() })
+}
+
+/// Builds the IDML model of a Folio document. Layers in `handled` are written by the caller (the
+/// long-document export) and are not reported as unexported.
+pub(crate) fn folio_model(
+    input: &FolioExportInput,
+    handled: &BTreeSet<&str>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<Built> {
     canceled(cancel)?;
     let d = input.document;
     let ids: BTreeSet<String> = input
@@ -406,6 +447,7 @@ pub fn export_folio(
         .flat_map(|s| &s.pages)
         .any(|p| p.side != PageSide::SingleSided);
     let mut page_at: BTreeMap<&str, (f64, f64)> = BTreeMap::new();
+    let mut page_map: BTreeMap<String, (String, usize, (f64, f64))> = BTreeMap::new();
     let mut spreads: Vec<SpreadModel> = Vec::with_capacity(d.page_spreads.len());
     let mut page_n = 0usize;
     let mut bleeds = Vec::new();
@@ -455,6 +497,7 @@ pub fn export_folio(
                 ]
             }));
             page_at.insert(p.page_id.as_str(), (x, -h / 2.0));
+            page_map.insert(p.page_id.clone(), (format!("up{page_n:x}"), si, (x, -h / 2.0)));
             m.items.push(SpreadItem::Page(m.pages.len()));
             m.pages.push(PageModel {
                 id: format!("up{page_n:x}"),
@@ -480,6 +523,9 @@ pub fn export_folio(
     for l in &d.layers {
         canceled(cancel)?;
         let (Some(f), Payload::Text { story_id }) = (&l.text_frame, &l.payload) else {
+            if handled.contains(l.layer_id.as_str()) {
+                continue;
+            }
             loss.note(
                 "document",
                 &l.kind,
@@ -599,24 +645,6 @@ pub fn export_folio(
         spreads,
         stories,
     };
-    let package = IdmlPackage {
-        parts: vec![
-            IdmlPart::new("mimetype".into(), IDML_MIMETYPE.as_bytes().to_vec()),
-            IdmlPart::new(
-                "META-INF/container.xml".into(),
-                CONTAINER.as_bytes().to_vec(),
-            ),
-            IdmlPart::new("designmap.xml".into(), Vec::new()),
-            IdmlPart::new(
-                PREFERENCES_PART.into(),
-                preferences_xml(&model.document).into_bytes(),
-            ),
-        ],
-    };
-    let bytes = export_model(&model, &package, cancel)?;
-    Ok(FolioExport {
-        bytes,
-        model,
-        loss: loss.finish(),
-    })
+    let story_ids = story_ids.into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+    Ok(Built { model, loss, story_ids, pages: page_map })
 }

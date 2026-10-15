@@ -275,6 +275,10 @@ pub struct RunModel {
     pub language: Option<Arc<str>>,
     /// Byte range of the `Content` element in the story part (`None` for a bare `Br`).
     pub span: Option<Range<usize>>,
+    /// An inline object of the character range (`Table`, `Footnote`, `Endnote`, `EndnoteRange`,
+    /// `TextVariableInstance`), kept verbatim in its position; the run has no text. Interpreted by
+    /// `import_longdoc` (lane SMB-INTEROP-IDML) and written back as is by both write paths.
+    pub inline: Option<Arc<Opaque>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

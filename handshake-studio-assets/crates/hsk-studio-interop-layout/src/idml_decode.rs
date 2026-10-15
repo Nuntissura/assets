@@ -802,6 +802,7 @@ impl StoryBuilder<'_> {
             special: false,
             language,
             span: None,
+            inline: None,
         };
         let weight = range_weight(&proto.char_style, &proto.attrs, proto.props.as_deref());
         let mut unterminated: Option<usize> = None;
@@ -857,6 +858,25 @@ impl StoryBuilder<'_> {
                     self.open = false;
                 }
                 "Properties" => {}
+                el @ ("Table" | "Footnote" | "Endnote" | "EndnoteRange" | "TextVariableInstance") => {
+                    // Kept in place (no text of its own); `import_longdoc` interprets it.
+                    let xml = opaque(c, self.text);
+                    self.ensure_paragraph(template, para_weight)?;
+                    self.charge(
+                        weight
+                            .saturating_add(RUN_OVERHEAD)
+                            .saturating_add(xml.xml.len() as u64),
+                    )?;
+                    self.loss.note(self.part, el, LossKind::PreservedOpaque, "inline_object_kept");
+                    if let Some(p) = self.paras.last_mut() {
+                        p.runs.push(RunModel {
+                            inline: Some(Arc::new(xml)),
+                            ..proto.clone()
+                        });
+                    }
+                    // A following Br ends the paragraph after the object, not after earlier text.
+                    unterminated = None;
+                }
                 other => self.loss.note(
                     self.part,
                     other,

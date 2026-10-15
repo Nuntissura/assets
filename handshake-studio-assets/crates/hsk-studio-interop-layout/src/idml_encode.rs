@@ -199,7 +199,9 @@ fn story_xml(m: &IdmlModel, st: &StoryModel) -> String {
             if let Some(p) = &run.props {
                 body.push_str(&p.xml);
             }
-            if !run.text.is_empty() || !run.br {
+            if let Some(obj) = &run.inline {
+                body.push_str(&obj.xml);
+            } else if !run.text.is_empty() || !run.br {
                 let _ = write!(body, "<Content>{}</Content>", esc(&run.text, false));
             }
             if run.br {
