@@ -1,4 +1,5 @@
-//! Fujifilm compressed RAF through `decode_container`: synthetic RAF files built here (header with
+//! Fujifilm RAF (compressed, and uncompressed since SMB-DEVELOP-RAW-COMPRESSED-2) through
+//! `decode_container`: synthetic RAF files built here (header with
 //! pointers and compression mode, record directory with the X-Trans layout, little-endian TIFF raw
 //! block whose 0xF000 raw IFD locates the strip) around procedural zero-residual streams (every
 //! coded value is the Rice code of 0 under the decoder's adaptive parameter, as in LightCraft's
@@ -179,7 +180,9 @@ fn raf_hostile_and_unsupported_inputs_are_typed_refusals() {
     // Container says lossless, stream says lossy; unknown modes; uncompressed (out of scope).
     assert_eq!(decode_container(&raf(780, 18, 14, &strip, Some(layout()), 2)).err(), Some(DevelopError::InvalidContainer));
     assert_eq!(decode_container(&raf(780, 18, 14, &strip, Some(layout()), 4)).err(), Some(DevelopError::UnsupportedCompression));
-    assert_eq!(decode_container(&raf(780, 18, 14, &strip, Some(layout()), 0)).err(), Some(DevelopError::DecoderUnavailable("raf_uncompressed")));
+    // Mode 0 (uncompressed, decoded since SMB-DEVELOP-RAW-COMPRESSED-2): a strip too short for the
+    // rows is a typed refusal before the frame is allocated.
+    assert_eq!(decode_container(&raf(780, 18, 14, &strip, Some(layout()), 0)).err(), Some(DevelopError::InvalidContainer));
     // A different X-Trans arrangement (red and blue swapped) is not the codec's fixed layout.
     let swapped = layout().map(|c| [2, 1, 0][c as usize]);
     assert_eq!(decode_container(&raf(780, 18, 14, &strip, Some(swapped), 3)).err(), Some(DevelopError::UnsupportedPattern));
@@ -188,4 +191,48 @@ fn raf_hostile_and_unsupported_inputs_are_typed_refusals() {
     let raw_at = u32::from_be_bytes(old[100..104].try_into().unwrap()) as usize;
     old[raw_at..raw_at + 4].copy_from_slice(b"\0 \0 ");
     assert_eq!(decode_container(&old).err(), Some(DevelopError::DecoderUnavailable("raf")));
+}
+
+/// Uncompressed RAF (mode 0) packings, written here from the documented layouts: 16-bit
+/// little-endian words; a 12-bit LSB-first stream; 14-bit samples MSB-first in little-endian 32-bit
+/// words. Without 0xF00A the black stays unread.
+#[test]
+fn raf_uncompressed_packings_decode() {
+    let (w, h) = (16usize, 6usize);
+    let value = |x: usize, y: usize, max: usize| ((x * 251 + y * 977 + x * y * 13) % max) as u16;
+    // 16-bit words
+    let words: Vec<u8> = (0..w * h).flat_map(|i| value(i % w, i / w, 16384).to_le_bytes()).collect();
+    // 12-bit LSB-first
+    let mut lsb = Vec::new();
+    let (mut acc, mut n) = (0u64, 0u32);
+    for i in 0..w * h {
+        acc |= u64::from(value(i % w, i / w, 4096)) << n;
+        n += 12;
+        while n >= 8 {
+            lsb.push(acc as u8);
+            acc >>= 8;
+            n -= 8;
+        }
+    }
+    // 14-bit MSB-first in little-endian 32-bit words (rows of 16 x 14 = 224 bits = 7 words)
+    let mut packed = Vec::new();
+    for y in 0..h {
+        let mut bits: Vec<bool> = Vec::new();
+        for x in 0..w {
+            let v = value(x, y, 16384);
+            bits.extend((0..14).rev().map(|k| (v >> k) & 1 == 1));
+        }
+        for chunk in bits.chunks(32) {
+            let word = chunk.iter().fold(0u32, |a, b| (a << 1) | u32::from(*b)) << (32 - chunk.len());
+            packed.extend(word.to_le_bytes());
+        }
+    }
+    for (bits, strip, max) in [(14u32, words, 16384usize), (12, lsb, 4096), (14, packed, 16384)] {
+        let raw = decode_container(&raf(w as u32, h as u32, bits, &strip, None, 0)).unwrap_or_else(|e| panic!("{bits} {}: {e}", strip.len()));
+        assert_eq!(raw.cfa_pattern, CfaPattern::Bayer(Bayer::Rggb));
+        assert!((0..h).all(|y| (0..w).all(|x| raw.sample(x as u32, y as u32) == value(x, y, max))), "{bits}-bit, {} bytes", strip.len());
+        assert!(raw.unapplied.contains(&"raf_black_level_unread"));
+        let short = &strip[..strip.len() - strip.len() / h]; // one row missing
+        assert_eq!(decode_container(&raf(w as u32, h as u32, bits, short, None, 0)).err(), Some(DevelopError::InvalidContainer));
+    }
 }

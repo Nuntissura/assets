@@ -153,14 +153,23 @@ impl Tiff {
 }
 
 /// Maker note bytes: `Nikon\0` + version + a big-endian TIFF with one IFD holding 0x0096.
-fn maker_note(table: &[u8]) -> Vec<u8> {
+/// With `black`, also 0x003D BlackLevel (4 SHORTs, 14-bit units).
+fn maker_note(table: &[u8], black: Option<[u16; 4]>) -> Vec<u8> {
     let mut note = b"Nikon\0\x02\x10\0\0".to_vec();
-    let t = Tiff { ifds: vec![vec![(0x0096, 7, table.len() as u32, table.to_vec())]] };
+    let mut entries = vec![(0x0096, 7, table.len() as u32, table.to_vec())];
+    if let Some(b) = black {
+        entries.push((0x003d, 3, 4, be16(&b)));
+    }
+    let t = Tiff { ifds: vec![entries] };
     note.extend(t.write(&[], None));
     note
 }
 
 fn nef(strip: Vec<u8>, w: u32, h: u32, bits: u16, table: Option<&[u8]>) -> Vec<u8> {
+    nef_with_black(strip, w, h, bits, table, None)
+}
+
+fn nef_with_black(strip: Vec<u8>, w: u32, h: u32, bits: u16, table: Option<&[u8]>, black: Option<[u16; 4]>) -> Vec<u8> {
     let mut ifd0 = vec![
         (271, 2, 18, b"NIKON CORPORATION\0".to_vec()),
         (272, 2, 11, b"NIKON TEST\0".to_vec()),
@@ -185,7 +194,7 @@ fn nef(strip: Vec<u8>, w: u32, h: u32, bits: u16, table: Option<&[u8]>) -> Vec<u
     if let Some(table) = table {
         ifd0.push((34665, 4, 1, be32(&[0])));
         ifds[0] = ifd0;
-        let note = maker_note(table);
+        let note = maker_note(table, black);
         ifds.push(vec![(37500, 7, note.len() as u32, note)]);
         links.push((0, 34665, 2));
     }
@@ -231,8 +240,17 @@ fn nef_huffman_lossless_and_lossy_decode_to_the_source_cfa() {
         assert_eq!(raw.cfa_pattern, CfaPattern::Bayer(Bayer::Rggb));
         let got: Vec<i32> = (0..h as u32).flat_map(|y| (0..w as u32).map(move |x| (x, y))).map(|(x, y)| i32::from(raw.sample(x, y))).collect();
         assert_eq!(got, img, "{bits}-bit lossless");
-        assert!(raw.unapplied.contains(&"nef_black_level_unread"));
+        // No 0x003D: black 0 is applied; only 2 samples reach full scale (< 16), so the white stays
+        // unread (SMB-DEVELOP-RAW-COMPRESSED-2).
+        assert_eq!(raw.black_level, vec![0.0]);
+        assert_eq!(raw.unapplied, ["nef_white_level_unread"]);
         assert_eq!(raw.solve_colour().err(), Some(DevelopError::MissingColourData));
+        // 0x003D BlackLevel in 14-bit units, per 2x2 site, scaled to the sample depth.
+        let strip = encode(&img, w, table, i32::from(seed));
+        let file = nef_with_black(strip, w as u32, h as u32, bits, Some(&lossless_table(seed)), Some([600, 604, 608, 612]));
+        let raw = decode_container(&file).unwrap();
+        let scale = if bits == 12 { 0.25 } else { 1.0 };
+        assert_eq!((raw.black_repeat, raw.black_level.clone()), ((2, 2), [600.0, 604.0, 608.0, 612.0].map(|b| b * scale).to_vec()));
     }
     // Lossy type 2 (12-bit): decoded values index the interpolated curve (point k at code 16k is 12k).
     let img = image(w, h, 1023, 9); // lossy codes stay within category 10

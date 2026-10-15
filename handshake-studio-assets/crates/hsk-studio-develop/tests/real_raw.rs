@@ -120,7 +120,8 @@ fn nef_d1h_uncompressed_decodes_deterministically() {
         return;
     };
     let raw = decode_container(&bytes).unwrap();
-    assert_eq!((raw.width, raw.height, raw.bits_per_sample, raw.white_level), (2012, 1324, 12, 4095));
+    // White: the saturation plateau measured by SMB-DEVELOP-RAW-COMPRESSED-2 (tests/real_raw_levels.rs).
+    assert_eq!((raw.width, raw.height, raw.bits_per_sample, raw.white_level), (2012, 1324, 12, 3953));
     assert_eq!(raw.cfa_pattern, CfaPattern::Bayer(Bayer::Bggr));
     assert_eq!(raw.unique_camera_model.as_deref(), Some("NIKON D1H"));
     assert_eq!(raw.solve_colour().err(), Some(DevelopError::MissingColourData));

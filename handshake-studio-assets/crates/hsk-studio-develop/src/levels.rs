@@ -86,7 +86,10 @@ pub(crate) fn plateau_white(samples: &[u16], width: u32, height: u32, region: Re
     };
     let top = count(near, full.saturating_add(1));
     let under = count(below, near);
-    (mx > full / 2 && top >= min_plateau && top >= under.saturating_mul(4).saturating_add(4)).then_some(near)
+    // A frame (almost) entirely at one level is not evidence of saturation: the spike must be a
+    // minority of the region (at most 90 %).
+    let minority = top.saturating_mul(10) <= total.saturating_mul(9);
+    (mx > full / 2 && top >= min_plateau && top >= under.saturating_mul(4).saturating_add(4) && minority).then_some(near)
 }
 
 /// The white level the samples prove: the saturation plateau (`plateau_white`), else `ceiling`

@@ -183,8 +183,11 @@ fn nef_uncompressed_packed_and_16bit_strips_decode() {
         }
         assert_eq!(raw.cfa_pattern, CfaPattern::Bayer(Bayer::Bggr));
         assert_eq!(raw.unique_camera_model.as_deref(), Some("D1H"));
-        assert_eq!(raw.unapplied, ["nef_black_level_unread", "nef_white_level_unread", "nef_makernote_curve_unread"]);
-        assert_eq!(raw.require_complete(), Err(DevelopError::UnsupportedContribution("nef_black_level_unread")));
+        // No maker note: black 0 is applied (SMB-DEVELOP-RAW-COMPRESSED-2); the synthetic frame never
+        // saturates, so the white stays unread.
+        assert_eq!((raw.black_repeat, raw.black_level.clone()), ((1, 1), vec![0.0]));
+        assert_eq!(raw.unapplied, ["nef_white_level_unread", "nef_makernote_curve_unread"]);
+        assert_eq!(raw.require_complete(), Err(DevelopError::UnsupportedContribution("nef_white_level_unread")));
         assert_eq!(raw.solve_colour().err(), Some(DevelopError::MissingColourData));
     }
     // Little-endian 8/16-bit is byte aligned and decodes.
