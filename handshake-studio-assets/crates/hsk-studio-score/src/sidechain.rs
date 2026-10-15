@@ -215,3 +215,16 @@ impl Processor for SidechainDynamics {
         self.delay_pos = 0;
     }
 }
+
+/// Automatable: the gain computer's `threshold_db`, `ratio` and `makeup_db` (indices 0..3, as
+/// [`Dynamics`]); key source and lookahead are fixed at construction.
+impl crate::session::Automatable for SidechainDynamics {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        self.computer.automation_parameters()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        self.computer.set_automated(index, value)?;
+        self.params.dynamics = *self.computer.params();
+        Ok(())
+    }
+}

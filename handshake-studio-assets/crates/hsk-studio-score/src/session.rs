@@ -2,27 +2,36 @@
 //! tracks and buses).
 //!
 //! A [`Session`] owns mono or stereo clips placed at sample positions on one timeline, each with an
-//! optional effect ([`Automatable`] processor), a volume lane (dB) and a pan lane, and renders a
-//! stereo mix block by block in timeline order.
+//! ordered effect stack ([`EffectSlot`]s of [`Automatable`] processors), a volume lane (dB) and a
+//! pan lane, and renders a stereo mix block by block in timeline order.
 //!
 //! **Automation lanes** ([`AutomationLane`]) hold strictly increasing breakpoints `(sample,
 //! value)`. Before the first breakpoint the value is the first value, after the last the last
 //! value. Between breakpoints `Step` holds the earlier value and `Linear` interpolates
 //! `v0 + (v1 - v0) (t - t0) / (t1 - t0)` in `f64` (exact at breakpoints). Every lane is evaluated
-//! at every sample: volume and pan per sample; effect parameters are set before each sample at
-//! which their value changes (inside a linear ramp every sample, otherwise only at breakpoints),
-//! and the effect runs on the sub-blocks between those changes, so automation is sample-accurate.
+//! at every sample: volume and pan per sample at the output timeline position; an effect
+//! parameter is set before each sample at which its value changes (inside a linear ramp every
+//! sample, otherwise only at breakpoints), evaluated at the timeline position of the audio that
+//! stage is reading, and the stage runs on the sub-blocks between those changes, so automation is
+//! sample-accurate.
+//!
+//! **Latency compensation.** A track's latency `L` is the sum of its stages' latencies. Clips are
+//! in memory, so the stack is fed `L` samples ahead: the first render primes it with timeline
+//! samples `0..L` (outputs discarded) and output frame `t` then carries the stack's result for
+//! timeline sample `t`, aligned sample-exact with every other track; the session itself reports
+//! no latency. Stage `k` reads the audio of timeline time `n - (latency of stages before k)` when
+//! the stack is fed timeline sample `n`; its lanes are evaluated there (clamped at 0 during the
+//! priming pre-roll).
 //!
 //! **Per track and sample `t`:** `x` = clip sample at `t - start` (0 outside the clip, so effect
-//! tails continue), `y` = effect(x), gain `g = 10^(volume_db(t)/20)`. Mono: equal-power pan
-//! `(L, R) = g y (cos a, sin a)`, `a = (pan + 1) pi/4` (the [`Pan`](crate::Pan) law). Stereo:
-//! linear balance `L = g y_L min(1, 1 - pan)`, `R = g y_R min(1, 1 + pan)` (centre = unity). The
-//! bus is the sum over tracks in track order, accumulated in `f64` and rounded once.
+//! tails continue), `y` = stack(x) aligned to `t`, gain `g = 10^(volume_db(t)/20)`. Mono:
+//! equal-power pan `(L, R) = g y (cos a, sin a)`, `a = (pan + 1) pi/4` (the [`Pan`](crate::Pan)
+//! law). Stereo: linear balance `L = g y_L min(1, 1 - pan)`, `R = g y_R min(1, 1 + pan)` (centre =
+//! unity). The bus is the sum over tracks in track order, accumulated in `f64` and rounded once.
 //!
-//! Effects must have latency 0 (no plugin-delay compensation yet; a latent effect is refused with
-//! `OutOfRange`). All buffers are allocated in [`Session::new`]; `render` allocates nothing.
-//! Blocks must be rendered contiguously from sample 0; a render canceled during its work or with a
-//! non-finite result resets the session to sample 0 (nothing partial is kept).
+//! All buffers are allocated in [`Session::new`]; `render` allocates nothing. Blocks must be
+//! rendered contiguously from sample 0; a render canceled during its work or with a non-finite
+//! result resets the session to sample 0 (nothing partial is kept).
 use crate::block::{InputBlock, OutputBlock};
 use crate::dsp::{db_to_linear, poll};
 use crate::engine::Processor;
@@ -41,6 +50,10 @@ pub const TRACK_VOLUME_DB: (f64, f64) = (-96.0, 12.0);
 pub const TRACK_PAN: (f64, f64) = (-1.0, 1.0);
 /// Longest clip in frames (authored bound: 2^31).
 pub const MAX_CLIP_FRAMES: usize = 1 << 31;
+/// Most effect stages per track (authored bound).
+pub const MAX_TRACK_EFFECTS: usize = 16;
+/// Largest compensated track latency in samples (authored bound: 2^24).
+pub const MAX_TRACK_LATENCY: u64 = 1 << 24;
 
 /// One automatable parameter of a processor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,7 +65,9 @@ pub struct AutomationParam {
 
 /// A processor whose parameters can change between samples without resetting its state.
 pub trait Automatable: Processor {
-    fn automation_parameters(&self) -> &'static [AutomationParam];
+    /// Parameters in index order (ranges may depend on the construction, e.g. the rate). Called
+    /// outside the audio path (it may allocate).
+    fn automation_parameters(&self) -> Vec<AutomationParam>;
     /// Sets parameter `index` (refuses NaN/inf with `NotFinite`, out of range or an unknown index
     /// with `OutOfRange`). Allocation-free.
     fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError>;
@@ -147,26 +162,142 @@ impl AutomationLane {
     }
 }
 
-/// One track as given to [`Session::new`].
+/// One effect stage of a track: a processor and its `(parameter index, lane)` automation.
+pub struct EffectSlot {
+    pub processor: Box<dyn Automatable + Send>,
+    pub lanes: Vec<(usize, AutomationLane)>,
+}
+
+impl EffectSlot {
+    pub fn new(processor: Box<dyn Automatable + Send>) -> Self {
+        Self { processor, lanes: Vec::new() }
+    }
+    /// Adds an automation lane for parameter `index`.
+    pub fn with_lane(mut self, index: usize, lane: AutomationLane) -> Self {
+        self.lanes.push((index, lane));
+        self
+    }
+}
+
+/// One track as given to [`Session::new`]. Build it with [`TrackSpec::new`] and set the public
+/// fields (the struct is non-exhaustive so later fields are not breaking).
+#[non_exhaustive]
 pub struct TrackSpec {
     /// Planar clip, 1 or 2 channels of equal length.
     pub clip: Vec<Vec<f32>>,
     pub start_sample: u64,
     pub volume_db: AutomationLane,
     pub pan: AutomationLane,
-    pub effect: Option<Box<dyn Automatable + Send>>,
-    /// `(parameter index, lane)` pairs for the effect.
-    pub effect_lanes: Vec<(usize, AutomationLane)>,
+    /// Ordered effect stack (stage 0 first).
+    pub effects: Vec<EffectSlot>,
+}
+
+impl TrackSpec {
+    /// Unity volume (0 dB), centre pan, no effects.
+    pub fn new(clip: Vec<Vec<f32>>, start_sample: u64) -> Self {
+        Self {
+            clip,
+            start_sample,
+            volume_db: AutomationLane::constant(0.0),
+            pan: AutomationLane::constant(0.0),
+            effects: Vec::new(),
+        }
+    }
+}
+
+struct Stage {
+    slot: EffectSlot,
+    /// Latency of the stages before this one.
+    offset: u64,
+    block: BlockSpec,
+    out: OutputBlock,
+    last: Vec<f64>,
 }
 
 struct Track {
-    spec: TrackSpec,
-    end_sample: u64,
-    block: BlockSpec,
+    clip: Vec<Vec<f32>>,
+    start: u64,
+    end: u64,
+    volume_db: AutomationLane,
+    pan: AutomationLane,
+    stages: Vec<Stage>,
+    latency: u64,
     input: Vec<Vec<f32>>,
     wet: Vec<Vec<f32>>,
-    out: OutputBlock,
-    last_param: Vec<f64>,
+    primed: bool,
+}
+
+impl Track {
+    /// Feeds timeline samples `[feed, feed + len)` (`len <= max_block_frames`) through the stack;
+    /// the last stage's output goes to `wet[..len]` when `keep`.
+    fn run_stack(&mut self, feed: u64, len: usize, keep: bool, cancel: &CancellationToken) -> Result<(), ScoreError> {
+        let channels = self.input.len();
+        let end = feed + len as u64;
+        let mut at = 0;
+        while at < len {
+            poll(cancel)?;
+            let n = feed + at as u64;
+            let mut stop = end;
+            for stage in &mut self.stages {
+                let u = n.saturating_sub(stage.offset);
+                for (slot, (index, lane)) in stage.slot.lanes.iter().enumerate() {
+                    let v = lane.value_at(u);
+                    if v.to_bits() != stage.last[slot].to_bits() {
+                        stage.slot.processor.set_automated(*index, v)?;
+                        stage.last[slot] = v;
+                    }
+                    stop = stop.min(stage.offset.saturating_add(lane.next_change(u)));
+                }
+            }
+            let sub = (stop - n) as usize;
+            for (c, buf) in self.input.iter_mut().enumerate() {
+                for (k, v) in buf[..sub].iter_mut().enumerate() {
+                    let t = n + k as u64;
+                    *v = if t >= self.start && t < self.end { self.clip[c][(t - self.start) as usize] } else { 0.0 };
+                }
+            }
+            for k in 0..self.stages.len() {
+                let (before, rest) = self.stages.split_at_mut(k);
+                let stage = &mut rest[0];
+                stage.block.frames = sub;
+                stage.block.start_sample = n.saturating_sub(stage.offset);
+                let slices: [&[f32]; 2] = match before.last() {
+                    None => [&self.input[0][..sub], &self.input[channels - 1][..sub]],
+                    Some(prev) => {
+                        let cap = prev.out.capacity();
+                        let b = prev.out.backing();
+                        [&b[..sub], &b[(channels - 1) * cap..(channels - 1) * cap + sub]]
+                    }
+                };
+                let input = InputBlock::new(&stage.block, &slices[..channels]);
+                stage.slot.processor.process(&input, &mut stage.out, cancel)?;
+            }
+            if keep {
+                match self.stages.last() {
+                    Some(last) => {
+                        let cap = last.out.capacity();
+                        for (c, w) in self.wet.iter_mut().enumerate() {
+                            w[at..at + sub].copy_from_slice(&last.out.backing()[c * cap..c * cap + sub]);
+                        }
+                    }
+                    None => {
+                        for (w, i) in self.wet.iter_mut().zip(&self.input) {
+                            w[at..at + sub].copy_from_slice(&i[..sub]);
+                        }
+                    }
+                }
+            }
+            at += sub;
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {
+        for stage in &mut self.stages {
+            stage.slot.processor.reset();
+            stage.last.fill(f64::NAN);
+        }
+        self.primed = self.latency == 0;
+    }
 }
 
 /// Multitrack renderer; see the module docs.
@@ -181,13 +312,14 @@ pub struct Session {
 
 impl Session {
     /// Refusals (all before any rendering): rate not admitted -> `InvalidRate`; no tracks,
-    /// `max_block_frames` 0, or more than [`MAX_TRACKS`] / `MAX_BLOCK_FRAMES` -> `OutOfRange` /
-    /// `CapacityExceeded`; a clip with 0 or more than 2 channels -> `InvalidLayout`; unequal
-    /// channel lengths -> `LengthMismatch`; empty or too long clip, end position overflow ->
-    /// `CapacityExceeded` / `PositionOverflow`; NaN/inf sample or lane value -> `NotFinite`; lane
-    /// value out of range, unknown effect parameter or an effect with latency -> `OutOfRange`;
-    /// effect bound to another rate -> `InvalidRate`; effect not accepting the clip layout ->
-    /// `ChannelMismatch`.
+    /// `max_block_frames` 0 -> `OutOfRange`; more than [`MAX_TRACKS`] tracks, more than
+    /// [`MAX_TRACK_EFFECTS`] stages, a stack latency above [`MAX_TRACK_LATENCY`] or a block above
+    /// `MAX_BLOCK_FRAMES` -> `CapacityExceeded`; a clip with 0 or more than 2 channels ->
+    /// `InvalidLayout`; unequal channel lengths -> `LengthMismatch`; empty or too long clip ->
+    /// `CapacityExceeded`; end position overflow -> `PositionOverflow`; NaN/inf sample or lane
+    /// value -> `NotFinite`; lane value outside its range, an unknown effect parameter or a stage
+    /// that cannot take `max_block_frames` -> `OutOfRange`; a stage bound to another rate ->
+    /// `InvalidRate`; a stage not mapping the clip layout to itself -> `ChannelMismatch`.
     pub fn new(sample_rate_hz: u32, max_block_frames: usize, tracks: Vec<TrackSpec>) -> Result<Self, ScoreError> {
         ticks_per_sample(sample_rate_hz)?;
         if tracks.is_empty() || max_block_frames == 0 {
@@ -198,7 +330,7 @@ impl Session {
         }
         let mut built = Vec::with_capacity(tracks.len());
         let mut length = 0u64;
-        for mut spec in tracks {
+        for spec in tracks {
             let channels = spec.clip.len();
             if !(1..=2).contains(&channels) {
                 return Err(ScoreError::InvalidLayout);
@@ -207,47 +339,59 @@ impl Session {
             if spec.clip.iter().any(|c| c.len() != frames) {
                 return Err(ScoreError::LengthMismatch);
             }
-            if frames == 0 || frames > MAX_CLIP_FRAMES {
+            if frames == 0 || frames > MAX_CLIP_FRAMES || spec.effects.len() > MAX_TRACK_EFFECTS {
                 return Err(ScoreError::CapacityExceeded);
             }
             if spec.clip.iter().any(|c| c.iter().any(|v| !v.is_finite())) {
                 return Err(ScoreError::NotFinite);
             }
-            let end_sample = spec.start_sample.checked_add(frames as u64).ok_or(ScoreError::PositionOverflow)?;
+            let end = spec.start_sample.checked_add(frames as u64).ok_or(ScoreError::PositionOverflow)?;
             spec.volume_db.within(TRACK_VOLUME_DB)?;
             spec.pan.within(TRACK_PAN)?;
             let layout = if channels == 1 { ChannelLayout::mono(1) } else { ChannelLayout::stereo() };
-            let mut last_param = Vec::new();
-            match spec.effect.as_mut() {
-                Some(effect) => {
-                    if effect.required_sample_rate_hz().is_some_and(|r| r != sample_rate_hz) {
-                        return Err(ScoreError::InvalidRate);
-                    }
-                    if !effect.accepts(&layout, &layout) {
-                        return Err(ScoreError::ChannelMismatch);
-                    }
-                    if effect.latency_samples() != 0 || effect.max_frames().is_some_and(|m| m < max_block_frames) {
-                        return Err(ScoreError::OutOfRange);
-                    }
-                    let params = effect.automation_parameters();
-                    for (index, lane) in &spec.effect_lanes {
-                        let p = params.get(*index).ok_or(ScoreError::OutOfRange)?;
-                        lane.within((p.min, p.max))?;
-                    }
-                    last_param = vec![f64::NAN; spec.effect_lanes.len()];
+            let mut stages = Vec::with_capacity(spec.effects.len());
+            let mut offset = 0u64;
+            for slot in spec.effects {
+                let p = &slot.processor;
+                if p.required_sample_rate_hz().is_some_and(|r| r != sample_rate_hz) {
+                    return Err(ScoreError::InvalidRate);
                 }
-                None if !spec.effect_lanes.is_empty() => return Err(ScoreError::OutOfRange),
-                None => {}
+                if !p.accepts(&layout, &layout) {
+                    return Err(ScoreError::ChannelMismatch);
+                }
+                if p.max_frames().is_some_and(|m| m < max_block_frames) {
+                    return Err(ScoreError::OutOfRange);
+                }
+                let params = p.automation_parameters();
+                for (index, lane) in &slot.lanes {
+                    let param = params.get(*index).ok_or(ScoreError::OutOfRange)?;
+                    lane.within((param.min, param.max))?;
+                }
+                let latency = u64::from(p.latency_samples());
+                stages.push(Stage {
+                    last: vec![f64::NAN; slot.lanes.len()],
+                    slot,
+                    offset,
+                    block: BlockSpec { sample_rate_hz, layout: layout.clone(), frames: 1, start_sample: 0 },
+                    out: OutputBlock::with_capacity(layout.clone(), max_block_frames)?,
+                });
+                offset += latency;
+                if offset > MAX_TRACK_LATENCY {
+                    return Err(ScoreError::CapacityExceeded);
+                }
             }
-            length = length.max(end_sample);
+            length = length.max(end);
             built.push(Track {
-                spec,
-                end_sample,
-                block: BlockSpec { sample_rate_hz, layout: layout.clone(), frames: 1, start_sample: 0 },
+                clip: spec.clip,
+                start: spec.start_sample,
+                end,
+                volume_db: spec.volume_db,
+                pan: spec.pan,
+                stages,
+                latency: offset,
                 input: vec![vec![0.0; max_block_frames]; channels],
                 wet: vec![vec![0.0; max_block_frames]; channels],
-                out: OutputBlock::with_capacity(layout, max_block_frames)?,
-                last_param,
+                primed: offset == 0,
             });
         }
         Ok(Self {
@@ -270,14 +414,15 @@ impl Session {
     pub fn position(&self) -> u64 {
         self.position
     }
+    /// Compensated latency of track `index` (sum of its stage latencies), if it exists.
+    pub fn track_latency(&self, index: usize) -> Option<u64> {
+        self.tracks.get(index).map(|t| t.latency)
+    }
     /// Returns to sample 0 and resets every effect.
     pub fn reset(&mut self) {
         self.position = 0;
         for t in &mut self.tracks {
-            if let Some(e) = t.spec.effect.as_mut() {
-                e.reset();
-            }
-            t.last_param.fill(f64::NAN);
+            t.reset();
         }
     }
 
@@ -301,7 +446,7 @@ impl Session {
         if frames > self.max_block_frames {
             return Err(ScoreError::CapacityExceeded);
         }
-        start_sample.checked_add(frames as u64).ok_or(ScoreError::PositionOverflow)?;
+        start_sample.checked_add(frames as u64 + MAX_TRACK_LATENCY).ok_or(ScoreError::PositionOverflow)?;
         let result = self.render_inner(start_sample, frames, left, right, cancel);
         match result {
             Ok(()) => {
@@ -318,61 +463,26 @@ impl Session {
     fn render_inner(&mut self, start: u64, frames: usize, left: &mut [f32], right: &mut [f32], cancel: &CancellationToken) -> Result<(), ScoreError> {
         self.bus[0][..frames].fill(0.0);
         self.bus[1][..frames].fill(0.0);
+        let max_block = self.max_block_frames;
         for track in &mut self.tracks {
             poll(cancel)?;
-            let channels = track.input.len();
-            // Clip samples on this block (zeros outside the clip).
-            for (c, buf) in track.input.iter_mut().enumerate() {
-                for (k, v) in buf[..frames].iter_mut().enumerate() {
-                    let t = start + k as u64;
-                    *v = if t >= track.spec.start_sample && t < track.end_sample {
-                        track.spec.clip[c][(t - track.spec.start_sample) as usize]
-                    } else {
-                        0.0
-                    };
+            if !track.primed {
+                // Pre-roll: feed timeline samples 0..L, discarding the outputs.
+                let mut fed = 0u64;
+                while fed < track.latency {
+                    let len = (track.latency - fed).min(max_block as u64) as usize;
+                    track.run_stack(fed, len, false, cancel)?;
+                    fed += len as u64;
                 }
+                track.primed = true;
             }
-            match track.spec.effect.as_mut() {
-                None => {
-                    for (w, i) in track.wet.iter_mut().zip(&track.input) {
-                        w[..frames].copy_from_slice(&i[..frames]);
-                    }
-                }
-                Some(effect) => {
-                    let mut at = 0;
-                    while at < frames {
-                        let t = start + at as u64;
-                        let mut end = start + frames as u64;
-                        for (slot, (index, lane)) in track.spec.effect_lanes.iter().enumerate() {
-                            let v = lane.value_at(t);
-                            if v.to_bits() != track.last_param[slot].to_bits() {
-                                effect.set_automated(*index, v)?;
-                                track.last_param[slot] = v;
-                            }
-                            end = end.min(lane.next_change(t));
-                        }
-                        let len = ((end - t) as usize).min(frames - at);
-                        track.block.frames = len;
-                        track.block.start_sample = t;
-                        let slices: [&[f32]; 2] = [
-                            &track.input[0][at..at + len],
-                            &track.input[channels - 1][at..at + len],
-                        ];
-                        let input = InputBlock::new(&track.block, &slices[..channels]);
-                        effect.process(&input, &mut track.out, cancel)?;
-                        for (c, w) in track.wet.iter_mut().enumerate() {
-                            let src = &track.out.backing()[c * track.out.capacity()..c * track.out.capacity() + len];
-                            w[at..at + len].copy_from_slice(src);
-                        }
-                        at += len;
-                    }
-                }
-            }
+            track.run_stack(start + track.latency, frames, true, cancel)?;
+            let channels = track.wet.len();
             // Fader and pan, per sample.
             for k in 0..frames {
                 let t = start + k as u64;
-                let g = db_to_linear(track.spec.volume_db.value_at(t));
-                let pan = track.spec.pan.value_at(t);
+                let g = db_to_linear(track.volume_db.value_at(t));
+                let pan = track.pan.value_at(t);
                 let (l, r) = if channels == 1 {
                     let y = f64::from(track.wet[0][k]) * g;
                     let (gl, gr) = pan_gains(pan);

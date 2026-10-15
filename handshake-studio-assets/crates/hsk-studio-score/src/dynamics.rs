@@ -374,8 +374,8 @@ const DYNAMICS_AUTOMATION: &[crate::session::AutomationParam] = &[
 /// Automatable: 0 = `threshold_db`, 1 = `ratio`, 2 = `makeup_db`; the detector and gain state
 /// are kept (no reset). `identity` keeps the construction-time configuration.
 impl crate::session::Automatable for Dynamics {
-    fn automation_parameters(&self) -> &'static [crate::session::AutomationParam] {
-        DYNAMICS_AUTOMATION
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        DYNAMICS_AUTOMATION.to_vec()
     }
     fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
         crate::session::check_automated(DYNAMICS_AUTOMATION, index, value)?;

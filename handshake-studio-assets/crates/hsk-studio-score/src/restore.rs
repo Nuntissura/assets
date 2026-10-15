@@ -615,3 +615,19 @@ impl Processor for HumRemover {
         self.state.fill([SosState::default(); MAX_HUM_HARMONICS]);
     }
 }
+
+/// Automatable: 0 = `threshold` (robust sigmas, takes effect from the next analysis window).
+/// AR order, window and maximum gap are fixed at construction.
+const CLICK_AUTOMATION: &[crate::session::AutomationParam] =
+    &[crate::session::AutomationParam { name: "threshold", min: CLICK_THRESHOLD.0, max: CLICK_THRESHOLD.1 }];
+
+impl crate::session::Automatable for ClickRepair {
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        CLICK_AUTOMATION.to_vec()
+    }
+    fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
+        crate::session::check_automated(CLICK_AUTOMATION, index, value)?;
+        self.params.threshold = value;
+        Ok(())
+    }
+}

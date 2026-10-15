@@ -26,14 +26,7 @@ fn pan(points: &[(u64, f64)], interpolation: Interpolation) -> AutomationLane {
     AutomationLane::new(points, interpolation, TRACK_PAN).unwrap()
 }
 fn track(clip: Vec<Vec<f32>>, start_sample: u64) -> TrackSpec {
-    TrackSpec {
-        clip,
-        start_sample,
-        volume_db: AutomationLane::constant(0.0),
-        pan: AutomationLane::constant(0.0),
-        effect: None,
-        effect_lanes: Vec::new(),
-    }
+    TrackSpec::new(clip, start_sample)
 }
 
 #[test]
@@ -115,8 +108,7 @@ fn effect_parameter_automation_is_sample_accurate() {
         let ramp = AutomationLane::new(&[(1500, 0.0), (2000, 0.0), (2100, 1.0)], Interpolation::Linear, (0.0, 1.0)).unwrap();
         for (lane, name) in [(mix, "step"), (ramp, "linear")] {
             let mut t = track(vec![x.clone(), x.clone()], 0);
-            t.effect = Some(Box::new(FeedbackDelay::new(RATE, 2, *delay.params()).unwrap()));
-            t.effect_lanes = vec![(1, lane.clone())];
+            t.effects = vec![EffectSlot::new(Box::new(FeedbackDelay::new(RATE, 2, *delay.params()).unwrap())).with_lane(1, lane.clone())];
             let mut session = Session::new(RATE, 512, vec![t]).unwrap();
             for blocks in [&[512usize][..], &[1, 13, 300]] {
                 session.reset();
@@ -136,8 +128,7 @@ fn effect_parameter_automation_is_sample_accurate() {
         let params = DynamicsParams::compressor(-10.0, 4.0);
         let lane = AutomationLane::new(&[(0, -10.0), (4321, -30.0)], Interpolation::Step, (-100.0, 0.0)).unwrap();
         let mut t = track(vec![x.clone(), x.clone()], 0);
-        t.effect = Some(Box::new(Dynamics::new(RATE, 2, params).unwrap()));
-        t.effect_lanes = vec![(0, lane)];
+        t.effects = vec![EffectSlot::new(Box::new(Dynamics::new(RATE, 2, params).unwrap())).with_lane(0, lane)];
         let mut session = Session::new(RATE, 1000, vec![t]).unwrap();
         let out = render_all(&mut session, frames, &[1000]);
         let mut by_hand = Dynamics::new(RATE, 2, params).unwrap();
@@ -158,7 +149,7 @@ fn effect_parameter_automation_is_sample_accurate() {
 fn contiguity_cancel_and_reset() {
     bounded_case("session_contiguity", || {
         let mut t = track(vec![noise(1, 3000)], 0);
-        t.effect = Some(Box::new(FeedbackDelay::new(RATE, 1, DelayParams { time_ms: 3.0, ..DelayParams::default() }).unwrap()));
+        t.effects = vec![EffectSlot::new(Box::new(FeedbackDelay::new(RATE, 1, DelayParams { time_ms: 3.0, ..DelayParams::default() }).unwrap()))];
         let mut session = Session::new(RATE, 1000, vec![t]).unwrap();
         let reference = render_all(&mut session, 5000, &[1000]);
         session.reset();
@@ -208,12 +199,13 @@ fn hostile_sessions_are_refused_before_rendering() {
         let mut nan_pan = ok();
         nan_pan.pan = AutomationLane::constant(f64::NAN);
         assert_eq!(err(vec![nan_pan], 64), ScoreError::NotFinite);
-        // Effects: other rate, other layout, latency, unknown parameter, lane outside the
-        // parameter range, lanes without an effect.
+        // Effects: other rate, other layout, unknown parameter, lane outside the parameter
+        // range, too many stages.
         let with = |effect: Box<dyn Automatable + Send>, lanes: Vec<(usize, AutomationLane)>| {
             let mut t = ok();
-            t.effect = Some(effect);
-            t.effect_lanes = lanes;
+            let mut slot = EffectSlot::new(effect);
+            slot.lanes = lanes;
+            t.effects = vec![slot];
             t
         };
         let delay = |rate, ch| Box::new(FeedbackDelay::new(rate, ch, DelayParams::default()).unwrap());
@@ -221,32 +213,9 @@ fn hostile_sessions_are_refused_before_rendering() {
         assert_eq!(err(vec![with(delay(RATE, 2), vec![])], 64), ScoreError::ChannelMismatch);
         assert_eq!(err(vec![with(delay(RATE, 1), vec![(2, AutomationLane::constant(0.0))])], 64), ScoreError::OutOfRange);
         assert_eq!(err(vec![with(delay(RATE, 1), vec![(0, AutomationLane::constant(1.0))])], 64), ScoreError::OutOfRange);
-        let mut bare = ok();
-        bare.effect_lanes = vec![(0, AutomationLane::constant(0.0))];
-        assert_eq!(err(vec![bare], 64), ScoreError::OutOfRange);
-        // A latent effect is refused (no delay compensation): wrap a 5 ms sidechain lookahead.
-        struct Latent(SidechainDynamics);
-        impl Processor for Latent {
-            fn latency_samples(&self) -> u32 {
-                self.0.latency_samples()
-            }
-            fn accepts(&self, i: &ChannelLayout, o: &ChannelLayout) -> bool {
-                self.0.accepts(i, o)
-            }
-            fn process(&mut self, i: &InputBlock<'_>, o: &mut OutputBlock, c: &CancellationToken) -> Result<(), ScoreError> {
-                self.0.process(i, o, c)
-            }
-        }
-        impl Automatable for Latent {
-            fn automation_parameters(&self) -> &'static [AutomationParam] {
-                &[]
-            }
-            fn set_automated(&mut self, _: usize, _: f64) -> Result<(), ScoreError> {
-                Err(ScoreError::OutOfRange)
-            }
-        }
-        let sc = SidechainDynamics::new(RATE, 1, SidechainParams { dynamics: DynamicsParams::compressor(-20.0, 2.0), key: KeySource::Internal, lookahead_ms: 5.0 }).unwrap();
-        assert_eq!(err(vec![with(Box::new(Latent(sc)), vec![])], 64), ScoreError::OutOfRange);
+        let mut deep = ok();
+        deep.effects = (0..=MAX_TRACK_EFFECTS).map(|_| EffectSlot::new(delay(RATE, 1))).collect();
+        assert_eq!(err(vec![deep], 64), ScoreError::CapacityExceeded);
         assert_eq!(Session::new(44_101, 64, vec![ok()]).err(), Some(ScoreError::InvalidRate));
     });
 }

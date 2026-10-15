@@ -238,8 +238,8 @@ const DELAY_AUTOMATION: &[crate::session::AutomationParam] = &[
 /// delay time is fixed because the line is sized at construction). `identity` keeps the
 /// construction-time configuration.
 impl crate::session::Automatable for FeedbackDelay {
-    fn automation_parameters(&self) -> &'static [crate::session::AutomationParam] {
-        DELAY_AUTOMATION
+    fn automation_parameters(&self) -> Vec<crate::session::AutomationParam> {
+        DELAY_AUTOMATION.to_vec()
     }
     fn set_automated(&mut self, index: usize, value: f64) -> Result<(), ScoreError> {
         crate::session::check_automated(DELAY_AUTOMATION, index, value)?;
