@@ -163,7 +163,7 @@ fn two_point_rotation_scale_and_four_point_corner_pin() {
 fn pyramid_reaches_large_motion_and_the_search_region_bounds_it() {
     // 10 px per frame exceeds half the shortest wavelength of `tex` (9.4 px), which no tracker can
     // disambiguate, so this sequence uses the same texture three times coarser (shortest 28 px).
-    let d = [10.0, 6.0];
+    let d = [10.3, 6.4];
     let coarse = |x: f64, y: f64| tex(x / 3.0, y / 3.0);
     let frames: Vec<LumaFrame> = (0..6)
         .map(|t| render(W, W, |x, y| (x - d[0] * f64::from(t), y - d[1] * f64::from(t)), coarse))

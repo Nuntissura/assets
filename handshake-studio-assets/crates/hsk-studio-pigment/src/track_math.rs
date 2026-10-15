@@ -33,8 +33,8 @@
 //! - Status (authored, STU-CMP-065b): `Degenerate` when the per-sample minimum eigenvalue of `G` at
 //!   level 0 is below `min_eigen` (flat or one-directional texture: the aperture problem) or the
 //!   feature window has no variance; `Lost` when the frame-to-frame motion leaves the search region
-//!   (`|dx| > s` or `|dy| > s`) or is non-finite; `OutOfFrame` when the new position leaves the
-//!   frame; otherwise `Tracked` or `LowConfidence` by the confidence below. A point that is not
+//!   (`|dx| > s` or `|dy| > s`) or is non-finite; `OutOfFrame` when the new feature region (the
+//!   position plus or minus `r`) leaves the frame; otherwise `Tracked` or `LowConfidence` by the confidence below. A point that is not
 //!   tracked keeps its last position with confidence 0 for the remaining frames.
 //! - Confidence: the zero-mean normalised cross-correlation of the level-0 feature window of `I`
 //!   at the old position and of `J` at the new one, floored at 0 (1 = identical texture).
@@ -581,12 +581,16 @@ fn track_one(prev: &[Level], next: &[Level], p: [f64; 2], spec: &TrackPointSpec,
     let s = f64::from(spec.search_radius);
     let q = [p[0] + g[0], p[1] + g[1]];
     let lost = |status| TrackSample { frame: 0, position: p, confidence: 0.0, status };
-    if !(g[0].is_finite() && g[1].is_finite()) || g[0].abs() > s || g[1].abs() > s {
+    if !(g[0].is_finite() && g[1].is_finite()) {
         return lost(TrackStatus::Lost);
     }
-    let (w, h) = (prev[0].w as f64, prev[0].h as f64);
-    if !((0.0..w).contains(&q[0]) && (0.0..h).contains(&q[1])) {
+    // The feature region must stay inside the frame (edge-clamped samples carry no information).
+    let (w, h, rf) = (prev[0].w as f64, prev[0].h as f64, f64::from(r));
+    if q[0] - rf < 0.0 || q[1] - rf < 0.0 || q[0] + rf > w || q[1] + rf > h {
         return lost(TrackStatus::OutOfFrame);
+    }
+    if g[0].abs() > s || g[1].abs() > s {
+        return lost(TrackStatus::Lost);
     }
     let confidence = ncc(&prev[0], &next[0], p, q, r);
     let status = if confidence >= params.min_confidence { TrackStatus::Tracked } else { TrackStatus::LowConfidence };
