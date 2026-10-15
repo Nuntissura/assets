@@ -238,21 +238,25 @@ pub struct VectorPlane {
 /// Largest clip plane in pixels (checked before nib allocates it).
 pub const MAX_CLIP_PIXELS: u64 = 64 << 20;
 
-/// A clipped layer's rasterised clip region (`coverage_u8`, row-major, stride = width).
+/// A clipped or vector-masked layer's rasterised plane, row-major: `coverage_u8` (a clip alone,
+/// stride = width) or `coverage_u16le` (`wide`: a vector mask, possibly combined with a clip,
+/// stride = 2 x width; `crate::vector_mask`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClipPlane {
     pub layer_id: String,
     pub placement: Rect,
     pub coverage: Vec<u8>,
     pub sha256: [u8; 32],
+    pub wide: bool,
 }
 impl ClipPlane {
     pub fn mask(&self) -> Mask<'_> {
+        let width = u64::from(self.placement.width);
         Mask {
             bounds: self.placement,
-            sample_format: "coverage_u8",
+            sample_format: if self.wide { "coverage_u16le" } else { "coverage_u8" },
             bytes: &self.coverage,
-            stride_bytes: u64::from(self.placement.width),
+            stride_bytes: if self.wide { width.saturating_mul(2) } else { width },
             sha256: self.sha256,
         }
     }
@@ -306,8 +310,24 @@ pub struct PreparedVectors {
     /// Clipped layer -> its clip outline (`None` = an empty clip region: nothing shows) or the
     /// refusal code of a clip that could not be resolved.
     clips: Vec<(String, Result<Option<OwnedPath>, &'static str>)>,
+    /// Masked layer -> its vector mask (`crate::vector_mask`, Folio `StudioMaskAttachment::mask_id`)
+    /// or the refusal code of a mask that could not be resolved.
+    masks: Vec<(String, Result<std::sync::Arc<crate::vector_mask::VectorMask>, &'static str>)>,
 }
 impl PreparedVectors {
+    /// The vector mask of `layer_id` (Folio `StudioMaskAttachment::mask_id`, or [`Self::with_mask`]).
+    pub fn mask(&self, layer_id: &str) -> Option<Result<&crate::vector_mask::VectorMask, &'static str>> {
+        self.masks
+            .iter()
+            .find(|(l, _)| l == layer_id)
+            .map(|(_, m)| m.as_ref().map(|m| &**m).map_err(|e| *e))
+    }
+    /// Mask `layer_id` with `mask` (folio-free). A second mask on one layer replaces the first.
+    pub fn with_mask(mut self, layer_id: &str, mask: crate::vector_mask::VectorMask) -> Self {
+        self.masks.retain(|(l, _)| l != layer_id);
+        self.masks.push((layer_id.to_owned(), Ok(std::sync::Arc::new(mask))));
+        self
+    }
     /// The clip of `layer_id` (Folio `StudioMaskAttachment::clip_id`, or [`Self::with_clip`]).
     pub fn clip(&self, layer_id: &str) -> Option<Result<Option<&OwnedPath>, &'static str>> {
         self.clips
@@ -867,6 +887,8 @@ pub fn image_source_id(source: &hsk_studio_folio::StudioImageSource) -> String {
 
 struct FolioCx<'a> {
     layers: std::collections::BTreeMap<&'a str, &'a hsk_studio_folio::StudioLayer>,
+    /// Folio layer order (bottom first within a parent).
+    order: Vec<&'a hsk_studio_folio::StudioLayer>,
     design: &'a hsk_studio_folio::StudioDesignRecords,
     records: &'a hsk_studio_folio::StudioVectorRecords,
     assets: &'a dyn VectorAssets,
@@ -1153,6 +1175,7 @@ pub fn prepare_vectors(
     }
     let cx = FolioCx {
         layers: doc.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect(),
+        order: doc.layers.iter().collect(),
         design,
         records: vectors,
         assets,
@@ -1212,5 +1235,209 @@ pub fn prepare_vectors(
         });
         out.clips.push((a.layer_id.clone(), clip));
     }
+    // Vector masks (StudioVectorMask, crate::vector_mask): one resolution per mask record, shared by
+    // every layer attached to it; content planes are charged against one aggregate budget.
+    let mut budget = crate::vector_mask::MAX_MASK_CONTENT_PIXELS;
+    let mut resolved: Vec<(&str, MaskResult)> = Vec::new();
+    let mut attached: Vec<(String, MaskResult)> = Vec::new();
+    for a in &vectors.attachments {
+        cancel.check().map_err(|_| CompositeError::Canceled)?;
+        let Some(mask_id) = &a.mask_id else { continue };
+        let mask = match resolved.iter().find(|(id, _)| *id == mask_id.as_str()) {
+            Some((_, m)) => m.clone(),
+            None => {
+                let m = cx.vector_mask(mask_id, &out, doc.geometry_unit, &mut budget);
+                resolved.push((mask_id.as_str(), m.clone()));
+                m
+            }
+        };
+        attached.push((a.layer_id.clone(), mask));
+    }
+    out.masks.extend(attached);
     Ok(out)
+}
+
+type MaskResult = Result<std::sync::Arc<crate::vector_mask::VectorMask>, &'static str>;
+
+impl FolioCx<'_> {
+    /// Is `layer` masked or clipped itself (a vector record attachment, an enabled raster mask or
+    /// the clip-to-base route)?
+    fn nested_mask(&self, layer: &hsk_studio_folio::StudioLayer) -> bool {
+        let a = layer.effective_appearance();
+        a.clipped
+            || a.mask.as_ref().is_some_and(|m| m.enabled)
+            || self.records.attachments.iter().any(|t| t.layer_id == layer.layer_id)
+    }
+    /// The visible children of group `layer_id`, Folio layer order (bottom first).
+    fn children(&self, layer_id: &str) -> Vec<&hsk_studio_folio::StudioLayer> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|l| l.visible)
+            .filter(|l| matches!(&l.parent, hsk_studio_folio::Parent::Node(p) if p.node_id == layer_id))
+            .collect()
+    }
+    /// The geometry of a `VECTOR` mask source: a vector layer or boolean group, or a plain group
+    /// (the union of its visible members' geometry).
+    fn mask_geometry(
+        &self,
+        layer_id: &str,
+        depth: usize,
+        members: &mut usize,
+    ) -> Result<VectorGeometry, &'static str> {
+        use crate::vector_mask::{MAX_MASK_MEMBERS, REFUSE_MASK_BUDGET, REFUSE_MASK_SOURCE_KIND};
+        *members = members
+            .checked_add(1)
+            .filter(|m| *m <= MAX_MASK_MEMBERS)
+            .ok_or(REFUSE_MASK_BUDGET)?;
+        if depth > MAX_BOOLEAN_DEPTH {
+            return Err(REFUSE_MASK_BUDGET);
+        }
+        let layer = self
+            .layers
+            .get(layer_id)
+            .ok_or(crate::vector_mask::REFUSE_MASK_UNRESOLVED)?;
+        let boolean = self.records.boolean_group(layer_id).is_some();
+        match &layer.payload {
+            hsk_studio_folio::Payload::Vector { .. } => self.geometry(layer_id, 0),
+            hsk_studio_folio::Payload::Group if boolean => self.geometry(layer_id, 0),
+            hsk_studio_folio::Payload::Group => {
+                let next = depth.checked_add(1).ok_or(REFUSE_MASK_BUDGET)?;
+                let operands = self
+                    .children(layer_id)
+                    .into_iter()
+                    .map(|c| self.mask_geometry(&c.layer_id, next, members))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(VectorGeometry::Boolean {
+                    op: BooleanOp::Union,
+                    operands,
+                })
+            }
+            _ => Err(REFUSE_MASK_SOURCE_KIND),
+        }
+    }
+    /// The content tree of an `ALPHA` / `LUMINANCE` mask source (`crate::vector_mask::MaskNode`).
+    fn mask_node(
+        &self,
+        layer_id: &str,
+        depth: usize,
+        members: &mut usize,
+    ) -> Result<crate::vector_mask::MaskNode, &'static str> {
+        use crate::vector_mask::{
+            MAX_MASK_MEMBERS, MaskNode, REFUSE_MASK_BUDGET, REFUSE_MASK_SOURCE_KIND,
+            REFUSE_MASK_SOURCE_NESTED,
+        };
+        *members = members
+            .checked_add(1)
+            .filter(|m| *m <= MAX_MASK_MEMBERS)
+            .ok_or(REFUSE_MASK_BUDGET)?;
+        if depth > MAX_BOOLEAN_DEPTH {
+            return Err(REFUSE_MASK_BUDGET);
+        }
+        let layer = self
+            .layers
+            .get(layer_id)
+            .ok_or(crate::vector_mask::REFUSE_MASK_UNRESOLVED)?;
+        if self.nested_mask(layer) {
+            return Err(REFUSE_MASK_SOURCE_NESTED);
+        }
+        let a = layer.effective_appearance();
+        let mode = match StudioBlendMode::try_from(a.blend_mode).map_err(|_| REFUSE_PAINT_MODE)? {
+            // A member group is evaluated isolated (its own result composited Normal).
+            StudioBlendMode::PassThrough => StudioBlendMode::Normal,
+            m => m,
+        };
+        let opacity = ((a.opacity / 100.0) * (a.fill_opacity / 100.0)) as f32;
+        if !(0.0..=1.0).contains(&opacity) {
+            return Err(REFUSE_PAINT_MODE);
+        }
+        let leaf = || MaskNode::Leaf {
+            layer_id: layer_id.to_owned(),
+            mode,
+            opacity,
+        };
+        let boolean = self.records.boolean_group(layer_id).is_some();
+        match &layer.payload {
+            hsk_studio_folio::Payload::Vector { .. } => Ok(leaf()),
+            hsk_studio_folio::Payload::Group if boolean => Ok(leaf()),
+            hsk_studio_folio::Payload::Group => {
+                let next = depth.checked_add(1).ok_or(REFUSE_MASK_BUDGET)?;
+                let children = self
+                    .children(layer_id)
+                    .into_iter()
+                    .map(|c| self.mask_node(&c.layer_id, next, members))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(MaskNode::Group {
+                    mode,
+                    opacity,
+                    children,
+                })
+            }
+            _ => Err(REFUSE_MASK_SOURCE_KIND),
+        }
+    }
+    /// Resolve mask record `mask_id` (crate::vector_mask module docs).
+    fn vector_mask(
+        &self,
+        mask_id: &str,
+        prepared: &PreparedVectors,
+        unit: hsk_studio_folio::GeometryUnit,
+        budget: &mut u64,
+    ) -> MaskResult {
+        use crate::vector_mask::{
+            MaskContentMode, REFUSE_MASK_REGION, REFUSE_MASK_UNRESOLVED, VectorMask,
+            VectorMaskSource,
+        };
+        use hsk_studio_folio::StudioMaskMode;
+        let rec = self
+            .records
+            .masks
+            .iter()
+            .find(|m| m.mask_id == mask_id)
+            .ok_or(REFUSE_MASK_UNRESOLVED)?;
+        if !self.layers.contains_key(rec.source_layer_id.as_str()) {
+            return Err(REFUSE_MASK_UNRESOLVED);
+        }
+        let region = match &rec.region {
+            None => None,
+            Some(b) => {
+                let v = |l: &hsk_studio_folio::Length| {
+                    if l.unit == unit && l.value.is_finite() {
+                        Ok(l.value)
+                    } else {
+                        Err(REFUSE_MASK_REGION)
+                    }
+                };
+                let (x, y, w, h) = (v(&b.x)?, v(&b.y)?, v(&b.width)?, v(&b.height)?);
+                if w < 0.0 || h < 0.0 || !(x + w).is_finite() || !(y + h).is_finite() {
+                    return Err(REFUSE_MASK_REGION);
+                }
+                Some([x, y, x + w, y + h])
+            }
+        };
+        let mut members = 0usize;
+        let source = match rec.mode {
+            StudioMaskMode::Vector => {
+                let g = self.mask_geometry(&rec.source_layer_id, 0, &mut members)?;
+                VectorMaskSource::Outline(crate::vector_nib::outline(&g, 0)?)
+            }
+            StudioMaskMode::Alpha | StudioMaskMode::Luminance => {
+                let node = self.mask_node(&rec.source_layer_id, 0, &mut members)?;
+                let mode = if rec.mode == StudioMaskMode::Alpha {
+                    MaskContentMode::Alpha
+                } else {
+                    MaskContentMode::Luminance
+                };
+                crate::vector_mask::mask_content(prepared, &node, mode, budget)?
+            }
+        };
+        let mask = VectorMask {
+            source,
+            invert: rec.invert_mask,
+            region,
+        };
+        // A non-finite or out-of-range source is refused here, so evaluation reports it.
+        crate::vector_mask::source_bounds(&mask)?;
+        Ok(std::sync::Arc::new(mask))
+    }
 }

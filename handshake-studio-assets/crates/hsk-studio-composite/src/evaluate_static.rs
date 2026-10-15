@@ -278,6 +278,24 @@ fn record_appearance(ledger: &mut ExactnessLedger, step: &Step, adjustment: bool
     }
 }
 
+/// Why a vector-masked step (lane SMB-COMPOSITE-VECTOR-MASK, `crate::vector_mask`) cannot be
+/// rendered: its mask's own refusal, a second mask in the one slot (raster mask or clip-to-base),
+/// or an adjustment layer (no extent of its own to carry the plane). Never ignored.
+fn vector_mask_block(
+    vectors: Option<&crate::vector::PreparedVectors>,
+    step: &Step,
+    adjustment: bool,
+) -> Option<&'static str> {
+    if let Err(code) = vectors?.mask(&step.addr().layer_id)? {
+        return Some(code);
+    }
+    let a = step.appearance();
+    if a.clipped || a.mask {
+        return Some(crate::vector_mask::REFUSE_MASK_WITH_MASK);
+    }
+    adjustment.then_some(crate::vector_mask::REFUSE_MASK_ADJUSTMENT)
+}
+
 /// Why the step cannot be rendered although its payload can. The render IR has one mask slot per
 /// layer, so a clipped layer cannot also carry its own mask; a clipped layer cannot reference a
 /// pass-through group; an enabled mask without coverage tiles has unspecified meaning. None of
@@ -759,7 +777,8 @@ pub(crate) fn evaluate_with(
             }
         };
         // Appearance the renderer cannot honour yet makes the step unavailable (never ignored).
-        let eval = match appearance_block(&layers, step).or(ext_block) {
+        let mask_block = vector_mask_block(vectors, step, converted.is_some());
+        let eval = match appearance_block(&layers, step).or(ext_block).or(mask_block) {
             Some(reason) => StepEval {
                 extent: None,
                 status: StepStatus::Unavailable(reason.into()),

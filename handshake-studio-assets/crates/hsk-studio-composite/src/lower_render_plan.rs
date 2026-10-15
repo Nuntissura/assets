@@ -140,6 +140,8 @@ struct Emitter<'a> {
     clips: Option<&'a crate::vector::PreparedVectors>,
     /// `SourceKey` -> rasterised clip plane (owned).
     clip_planes: Vec<(SourceKey, crate::vector::ClipPlane)>,
+    /// Layers whose vector mask is a content (alpha or luminance) plane: one Approximate note each.
+    content_masks: Vec<String>,
     next_key: u32,
     info: &'a dyn TileInfoSource,
 }
@@ -160,11 +162,70 @@ impl Emitter<'_> {
     /// The clip mask of `layer_id` (lane SMB-COMPOSITE-CLIP-RECORDS): its clip outline rasterised by
     /// nib over the layer's extent united with the clip bounds (a plane that covers everything the
     /// layer draws, so no backend reads outside it). `None` without a clip.
-    fn clip_mask(&mut self, layer_id: &str, extent: Option<Rect>) -> Result<Option<MaskInput>, CompositeError> {
-        let Some(clip) = self.clips.and_then(|v| v.clip(layer_id)) else {
+    ///
+    /// A vector mask (lane SMB-COMPOSITE-VECTOR-MASK, `crate::vector_mask`) takes the same slot: one
+    /// `coverage_u16le` plane over the extent united with the clip and mask-source bounds, the clip
+    /// (if any) multiplied in. The returned code is the refusal of a layer that also carries a raster
+    /// mask or a clip-to-base route.
+    fn clip_mask(
+        &mut self,
+        layer_id: &str,
+        extent: Option<Rect>,
+    ) -> Result<Option<(MaskInput, &'static str)>, CompositeError> {
+        let unavailable = |code: &str| CompositeError::Unavailable(format!("{layer_id}:{code}"));
+        let clip = self.clips.and_then(|v| v.clip(layer_id));
+        let mask = self.clips.and_then(|v| v.mask(layer_id));
+        let mask = match mask {
+            Some(m) => Some(m.map_err(unavailable)?),
+            None => None,
+        };
+        let outline = match clip {
+            Some(c) => Some(c.map_err(unavailable)?),
+            None => None,
+        };
+        if let Some(mask) = mask {
+            let mut rect = extent;
+            if let Some(b) = crate::vector_mask::source_bounds(mask).map_err(unavailable)? {
+                rect = crate::evaluate_static::union(rect, b)?;
+            }
+            if let Some(p) = outline.flatten()
+                && let Some(b) = self.bounds_of(p)?
+            {
+                rect = crate::evaluate_static::union(rect, b)?;
+            }
+            let Some(rect) = rect else {
+                return Ok(None);
+            };
+            let (coverage, inverted) =
+                crate::vector_mask::plane(mask, outline, rect).map_err(unavailable)?;
+            if matches!(mask.source, crate::vector_mask::VectorMaskSource::Content { .. }) {
+                self.content_masks.push(layer_id.to_owned());
+            }
+            let sha256 = hsk_studio_prism::profile_hash(&coverage);
+            let key = self.key()?;
+            self.clip_planes.push((
+                key,
+                crate::vector::ClipPlane {
+                    layer_id: layer_id.to_owned(),
+                    placement: rect,
+                    coverage,
+                    sha256,
+                    wide: true,
+                },
+            ));
+            let input = MaskInput {
+                key,
+                placement: rect,
+                format: MaskFormat::CoverageU16Le,
+                sha256,
+                inverted,
+                density: 1.0,
+            };
+            return Ok(Some((input, crate::vector_mask::REFUSE_MASK_WITH_MASK)));
+        }
+        let Some(outline) = outline else {
             return Ok(None);
         };
-        let outline = clip.map_err(|code| CompositeError::Unavailable(format!("{layer_id}:{code}")))?;
         let mut rect = extent;
         if let Some([x0, y0, x1, y1]) = outline.and_then(crate::vector_nib::path_bounds) {
             let (fx, fy, gx, gy) = (x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
@@ -192,16 +253,44 @@ impl Emitter<'_> {
         let key = self.key()?;
         self.clip_planes.push((
             key,
-            crate::vector::ClipPlane { layer_id: layer_id.to_owned(), placement: rect, coverage, sha256 },
+            crate::vector::ClipPlane {
+                layer_id: layer_id.to_owned(),
+                placement: rect,
+                coverage,
+                sha256,
+                wide: false,
+            },
         ));
-        Ok(Some(MaskInput {
-            key,
-            placement: rect,
-            format: MaskFormat::CoverageU8,
-            sha256,
-            inverted: false,
-            density: 1.0,
-        }))
+        Ok(Some((
+            MaskInput {
+                key,
+                placement: rect,
+                format: MaskFormat::CoverageU8,
+                sha256,
+                inverted: false,
+                density: 1.0,
+            },
+            crate::vector::REFUSE_CLIP_WITH_MASK,
+        )))
+    }
+    /// Pixel bounds of a clip outline (`None` = no points or an empty box).
+    fn bounds_of(&self, outline: &hsk_studio_nib::OwnedPath) -> Result<Option<Rect>, CompositeError> {
+        let Some([x0, y0, x1, y1]) = crate::vector_nib::path_bounds(outline) else {
+            return Ok(None);
+        };
+        let (fx, fy, gx, gy) = (x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
+        let ok = |v: f64| v.is_finite() && v.abs() < 9.0e15;
+        if !(ok(fx) && ok(fy) && ok(gx) && ok(gy)) {
+            return Err(CompositeError::Overflow);
+        }
+        let (w, h) = (gx - fx, gy - fy);
+        if w > f64::from(u32::MAX) || h > f64::from(u32::MAX) {
+            return Err(CompositeError::Overflow);
+        }
+        // Finite, integral and in range by the checks above.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let bounds = Rect { x: fx as i64, y: fy as i64, width: w as u32, height: h as u32 };
+        Ok(Some(bounds).filter(|b| b.width > 0 && b.height > 0))
     }
     fn push(&mut self, node: PlanNode) -> Result<PlanNodeId, CompositeError> {
         let id = u32::try_from(self.nodes.len()).map_err(|_| CompositeError::Overflow)?;
@@ -423,15 +512,27 @@ impl Emitter<'_> {
         appearance: &StepAppearance,
         layer: &StudioLayer,
         mask_params: Option<crate::lower_extensions::MaskParams>,
-        clip: Option<MaskInput>,
+        clip: Option<(MaskInput, &'static str)>,
     ) -> Result<Layer, CompositeError> {
-        if clip.is_some() && (appearance.clipped || appearance.mask) {
+        if let Some((_, code)) = clip
+            && (appearance.clipped || appearance.mask)
+        {
             return Err(CompositeError::Unavailable(format!(
-                "{}:{}",
-                layer.layer_id,
-                crate::vector::REFUSE_CLIP_WITH_MASK
+                "{}:{code}",
+                layer.layer_id
             )));
         }
+        // A vector-masked pass-through group is lowered isolated (its group node, see the caller),
+        // so it composites Normal: a masked element is an isolated group (CSS Compositing).
+        let vector_masked = clip
+            .as_ref()
+            .is_some_and(|(_, c)| *c == crate::vector_mask::REFUSE_MASK_WITH_MASK);
+        let clip = clip.map(|(m, _)| m);
+        let mode = if vector_masked && appearance.mode == StudioBlendMode::PassThrough {
+            StudioBlendMode::Normal
+        } else {
+            appearance.mode
+        };
         let mask = match (appearance.clipped, appearance.mask) {
             (false, false) if clip.is_some() => clip,
             (true, true) => {
@@ -446,7 +547,7 @@ impl Emitter<'_> {
         };
         Ok(Layer {
             input,
-            mode: appearance.mode,
+            mode,
             opacity: appearance.opacity,
             fill_opacity: appearance.fill_opacity,
             mask,
@@ -760,6 +861,7 @@ pub(crate) fn text_root_plan(
         vector_rows: Vec::new(),
         clips: None,
         clip_planes: Vec::new(),
+        content_masks: Vec::new(),
         next_key: 0,
         info: &none,
     };
@@ -959,6 +1061,7 @@ pub(crate) fn lower_inner(
         vector_rows: Vec::new(),
         clips: vectors,
         clip_planes: Vec::new(),
+        content_masks: Vec::new(),
         next_key: 0,
         info,
     };
@@ -987,7 +1090,7 @@ pub(crate) fn lower_inner(
         .is_neutral_over_transparent()
         && root_features.as_ref().is_none_or(LayerFeatures::is_neutral)
         // A clipped root (vector clip record) is cut by its clip: wrapped like a masked root.
-        && vectors.is_none_or(|v| v.clip(&root.layer_id).is_none());
+        && vectors.is_none_or(|v| v.clip(&root.layer_id).is_none() && v.mask(&root.layer_id).is_none());
     let mut entries: Vec<LayerExtension> = Vec::new();
     let mut notes: Vec<LoweringNote> = Vec::new();
     for (i, step) in plan.steps.iter().enumerate() {
@@ -1109,11 +1212,23 @@ pub(crate) fn lower_inner(
                     node_of.insert(i, id);
                 }
             }
-            Step::Composite { inputs, appearance, .. } => {
+            Step::Composite { addr, inputs, appearance, .. } => {
                 let is_root = i == root_index;
+                // A vector-masked group is an isolated group (CSS Compositing: a masked element
+                // is isolated); its referencing layer composites Normal (`Emitter::layer`).
+                let vector_masked = vectors.is_some_and(|v| v.mask(&addr.layer_id).is_some());
+                if vector_masked && appearance.mode == StudioBlendMode::PassThrough {
+                    notes.push(LoweringNote {
+                        layer_id: addr.layer_id.clone(),
+                        key: crate::vector_mask::NOTE_MASK_ISOLATES,
+                        exactness: hsk_studio_pigment::blend_math::Exactness::Approximate,
+                        detail: "pass-through group with a vector mask lowered isolated, Normal".into(),
+                    });
+                }
                 // A neutral root renders over a transparent backdrop, where isolated and
                 // pass-through are equivalent; every other group follows its mode.
                 let group_isolated = (is_root && root_neutral)
+                    || vector_masked
                     || appearance.mode != StudioBlendMode::PassThrough;
                 // Where an adjustment layer of this group acts: an isolated group starts from a
                 // transparent backdrop, so only where its own content is (`None`: nowhere); a
@@ -1335,6 +1450,7 @@ pub(crate) fn lower_inner(
             }
         }
     }
+    notes.extend(content_mask_notes(std::mem::take(&mut out.content_masks)));
     let render = RenderPlan {
         revision: plan.revision,
         target,
@@ -1351,9 +1467,10 @@ pub(crate) fn lower_inner(
     let extensions = PlanExtensions::from_layers(entries);
     if records.is_some() || !extensions.is_empty() {
         record_envelope(&render, &extensions, &mut exactness)?;
-        for n in &notes {
-            exactness.record(n.key, n.exactness);
-        }
+    }
+    // Notes exist only with raster records (features) or vector masks; each is a ledger entry.
+    for n in &notes {
+        exactness.record(n.key, n.exactness);
     }
     Ok(Lowered {
         lowering: RenderLowering {
@@ -1549,6 +1666,7 @@ pub fn vector_layer_render_plan(
         vector_rows: Vec::new(),
         clips: Some(vectors),
         clip_planes: Vec::new(),
+        content_masks: Vec::new(),
         next_key: 0,
         info: &none,
     };
@@ -1557,7 +1675,8 @@ pub fn vector_layer_render_plan(
         CompositeError::Unavailable(format!("{layer_id}:vector_layer_empty"))
     })?;
     // A clipped layer (PreparedVectors::clip): one isolated wrapper layer carries the clip mask.
-    if let Some(mask) = out.clip_mask(layer_id, plane.placement)? {
+    // A vector-masked layer (PreparedVectors::mask) is wrapped the same way.
+    if let Some((mask, _)) = out.clip_mask(layer_id, plane.placement)? {
         root = out.push(PlanNode::Group(Group {
             isolated: true,
             layers: vec![Layer {
@@ -1569,6 +1688,7 @@ pub fn vector_layer_render_plan(
             }],
         }))?;
     }
+    let notes = content_mask_notes(std::mem::take(&mut out.content_masks));
     let render = RenderPlan {
         revision,
         target,
@@ -1586,6 +1706,9 @@ pub fn vector_layer_render_plan(
     if !extensions.is_empty() {
         record_envelope(&render, &extensions, &mut exactness)?;
     }
+    for n in &notes {
+        exactness.record(n.key, n.exactness);
+    }
     Ok(InputsLowering {
         plan: render,
         extensions,
@@ -1597,6 +1720,20 @@ pub fn vector_layer_render_plan(
         vector_rows: out.vector_rows,
         clip_planes: out.clip_planes,
         exactness,
-        notes: Vec::new(),
+        notes,
     })
+}
+
+/// One Approximate lowering note per content (alpha or luminance) vector mask: the plane is
+/// quantised to 16 bits and the luma weights are a Studio reading (`crate::vector_mask`).
+fn content_mask_notes(layers: Vec<String>) -> Vec<LoweringNote> {
+    layers
+        .into_iter()
+        .map(|layer_id| LoweringNote {
+            layer_id,
+            key: crate::vector_mask::NOTE_MASK_CONTENT,
+            exactness: Exactness::Approximate,
+            detail: "vector mask content quantised to coverage_u16le".into(),
+        })
+        .collect()
 }

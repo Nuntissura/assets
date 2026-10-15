@@ -215,6 +215,7 @@ pub struct CompositionTemporalSource {
 }
 
 /// A layer that needs the static path: a vector, text or live boolean group layer, an enabled mask,
+/// a vector clip or vector mask record (lanes SMB-COMPOSITE-CLIP-RECORDS, -VECTOR-MASK),
 /// or a raster-records entry (effects, blur, mask parameters, Blend-If, knockout).
 fn needs_static(input: &CompositionInput<'_>, dl: &hsk_studio_folio::StudioLayer) -> bool {
     match &dl.payload {
@@ -226,6 +227,10 @@ fn needs_static(input: &CompositionInput<'_>, dl: &hsk_studio_folio::StudioLayer
                 .and_then(|a| a.mask.as_ref())
                 .is_some_and(|m| m.enabled)
                 || input.inputs.records.is_some_and(|r| r.layer(&dl.layer_id).is_some())
+                || input
+                    .inputs
+                    .vectors
+                    .is_some_and(|v| v.clip(&dl.layer_id).is_some() || v.mask(&dl.layer_id).is_some())
         }
     }
 }
@@ -357,7 +362,10 @@ fn static_content(
             .vector_masks
             .iter()
             .map(|(k, _)| *k)
-            .chain(low.vector_rows.iter().map(|(k, _, _)| *k));
+            .chain(low.vector_rows.iter().map(|(k, _, _)| *k))
+            // Vector clip and vector mask planes (lanes SMB-COMPOSITE-CLIP-RECORDS, -VECTOR-MASK):
+            // the static subtree carries them, so they move with the layer (linked).
+            .chain(low.clip_planes.iter().map(|(k, _)| *k));
         for key in keys {
             if let Some(m) = low.vector_mask(key, vectors) {
                 content.owned_masks.insert(key, own(m));
