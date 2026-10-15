@@ -1889,6 +1889,7 @@ dependencies = [
  "hsk-studio-reel-native",
  "hsk-studio-render-cpu",
  "hsk-studio-render-gpu",
+ "hsk-studio-score",
  "hsk-studio-score-device",
  "hsk-studio-session",
  "hsk-studio-type",
