@@ -112,6 +112,54 @@ pub struct ColourRange {
 /// Most colour samples one colour-range mask may carry.
 pub const MAX_COLOUR_SAMPLES: usize = 16;
 
+/// Model-assisted mask sources of the STU-RAW-123 closed set (lane SMB-DEVELOP-LENS-PRESETS slice 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelMaskKind {
+    Subject,
+    Sky,
+    Background,
+    LandscapeComponent,
+    Object,
+    Person,
+    PersonComponent,
+}
+
+impl ModelMaskKind {
+    pub const ALL: [Self; 7] =
+        [Self::Subject, Self::Sky, Self::Background, Self::LandscapeComponent, Self::Object, Self::Person, Self::PersonComponent];
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Subject => "subject",
+            Self::Sky => "sky",
+            Self::Background => "background",
+            Self::LandscapeComponent => "landscape_component",
+            Self::Object => "object",
+            Self::Person => "person",
+            Self::PersonComponent => "person_component",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.key() == key)
+    }
+}
+
+/// Longest `model_version` text a model mask may carry.
+pub const MAX_MODEL_VERSION: usize = 256;
+
+/// A model-assisted mask (subject, sky, people, ...). STU-RAW-014a makes the model an optional
+/// adapter that degrades to the manual sources; this build has NO model provider and downloads
+/// nothing, so the record is kept (authored, validated, round-tripped) but evaluating it is the typed
+/// refusal `model_unavailable:<kind>`. `subcategory` carries an imported vendor subcategory id
+/// opaquely (STU-RAW-123); `model_version` records the model that produced a mask (none here).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelMask {
+    pub kind: ModelMaskKind,
+    pub subcategory: Option<u32>,
+    pub model_version: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum MaskSource {
     LinearGradient(LinearGradient),
@@ -119,6 +167,8 @@ pub enum MaskSource {
     Brush(Brush),
     LuminanceRange(LuminanceRange),
     ColourRange(ColourRange),
+    /// Model-assisted source; evaluation is `model_unavailable` in this build (see [`ModelMask`]).
+    Model(ModelMask),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,6 +268,11 @@ impl Mask {
                     if sample.iter().any(|c| !(0.0..=1.0).contains(c)) {
                         return Err(DevelopError::InvalidMask);
                     }
+                }
+            }
+            MaskSource::Model(m) => {
+                if m.model_version.as_ref().is_some_and(|v| v.len() > MAX_MODEL_VERSION) {
+                    return Err(DevelopError::InvalidMask);
                 }
             }
             MaskSource::Brush(b) => {
@@ -354,6 +409,7 @@ impl PreparedLocal {
                     }
                     MaskSource::LuminanceRange(r) => Geometry::LuminanceRange(*r),
                     MaskSource::ColourRange(r) => Geometry::ColourRange(r.clone()),
+                    MaskSource::Model(m) => return Err(DevelopError::ModelUnavailable(m.kind.key())),
                 };
                 masks.push(PreparedMask { geometry, inverted: mask.inverted, value: mask.value, blend: mask.blend });
             }

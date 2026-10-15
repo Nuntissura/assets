@@ -174,6 +174,7 @@ pub fn controls(edit: &DevelopEdit) -> Vec<DevelopControl> {
                     ("feather", POSITIVE, 0),
                 ],
                 MaskSource::Brush(_) => &[("radius", (0.001, 1.0), 3), ("flow", (0.0, 1.0), 2), ("feather", (0.0, 1.0), 2)],
+                MaskSource::Model(_) => &[],
             };
             for (f, range, p) in fields {
                 out.push(c(format!("develop.local.{i}.mask.{j}.{f}"), format!("local {i} mask {j} {f}"), "local", *range, *p));
@@ -485,6 +486,7 @@ fn source_kind(s: &MaskSource) -> &'static str {
         MaskSource::Brush(_) => "brush",
         MaskSource::LuminanceRange(_) => "luminance_range",
         MaskSource::ColourRange(_) => "colour_range",
+        MaskSource::Model(m) => m.kind.key(),
     }
 }
 

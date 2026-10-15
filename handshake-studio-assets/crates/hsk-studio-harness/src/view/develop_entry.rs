@@ -54,6 +54,7 @@ fn mask(m: &Mask) -> Result<Value, Refusal> {
         MaskSource::RadialGradient(r) => json!({"kind": "radial_gradient", "left": r.left, "top": r.top, "right": r.right, "bottom": r.bottom,
             "angle": r.angle, "midpoint": r.midpoint, "roundness": r.roundness, "feather": r.feather, "flipped": r.flipped}),
         MaskSource::Brush(b) => json!({"kind": "brush", "dabs": b.dabs.iter().map(|d| [d.0, d.1]).collect::<Vec<_>>(), "radius": b.radius, "flow": b.flow, "feather": b.feather}),
+        MaskSource::Model(m) => json!({"kind": "model", "source": m.kind.key(), "subcategory": m.subcategory, "model_version": m.model_version}),
     };
     let blend = match m.blend {
         MaskBlend::Add => "add",
@@ -223,6 +224,20 @@ fn decode_mask(v: &Value, path: &str, dabs_left: &mut usize) -> Result<Mask, Ref
             *dabs_left = dabs_left.saturating_sub(raw.len());
             let dabs = raw.iter().map(|d| numbers::<2>(Some(d), &format!("{sp}.dabs")).map(|[x, y]| (x, y))).collect::<Result<Vec<_>, _>>()?;
             MaskSource::Brush(Brush { dabs, radius: num(b, "radius", &sp)?, flow: num(b, "flow", &sp)?, feather: num(b, "feather", &sp)? })
+        }
+        Some("model") => {
+            let m = object(s, &sp, &["kind", "source", "subcategory", "model_version"])?;
+            let kind = m.get("source").and_then(Value::as_str).and_then(hsk_studio_develop::ModelMaskKind::from_key).ok_or_else(|| field(&format!("{sp}.source")))?;
+            let subcategory = match m.get("subcategory") {
+                Some(Value::Null) => None,
+                Some(v) => Some(v.as_u64().and_then(|x| u32::try_from(x).ok()).ok_or_else(|| field(&format!("{sp}.subcategory")))?),
+                None => return Err(field(&format!("{sp}.subcategory"))),
+            };
+            let model_version = match m.get("model_version") {
+                Some(Value::Null) => None,
+                _ => Some(text(m, "model_version", &sp)?),
+            };
+            MaskSource::Model(hsk_studio_develop::ModelMask { kind, subcategory, model_version })
         }
         _ => return Err(field(&format!("{sp}.kind"))),
     };
