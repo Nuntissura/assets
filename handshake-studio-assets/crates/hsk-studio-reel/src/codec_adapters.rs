@@ -73,7 +73,10 @@ pub fn dnx_descriptor() -> CodecDescriptor {
         licence: STUDIO_OWNED_LICENCE,
         certification: Certification::NotCertified,
         can_decode: true,
-        can_encode: false,
+        // Studio's VC-3 encoder (`Vc3Encoder`, lane SMB-REEL-ENCODE): DNxHR LB/SQ/HQ (8-bit) and HQX
+        // (10-bit) 4:2:2/4:2:0 at any raster, DNxHD CIDs 1235/1237/1238/1253 (1080p) and 1250/1251/1252
+        // (720p) 4:2:2; tests/vc3_encode.rs.
+        can_encode: true,
     }
 }
 

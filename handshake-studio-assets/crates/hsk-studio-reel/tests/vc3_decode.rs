@@ -329,7 +329,8 @@ fn vc3_route_receipts_and_descriptor() {
         assert!(sink.frames == again.frames);
     }
     let dnx = dnx_descriptor();
-    assert!(dnx.can_decode && !dnx.can_encode);
+    // Encode landed in lane SMB-REEL-ENCODE (tests/vc3_encode.rs).
+    assert!(dnx.can_decode && dnx.can_encode);
     assert_eq!(dnx.decoder_id, DNX_DECODER_ID);
     assert_eq!(dnx.certification, Certification::NotCertified);
     let listed = Registry::standard().video_codec_descriptors();

@@ -35,12 +35,15 @@ pub mod audio;
 #[cfg(feature = "av1")]
 pub mod av1;
 mod av1_config;
+#[cfg(feature = "av1-encode")]
+mod av1_encode;
 mod bitreader;
 mod cache;
 mod codec_adapters;
 #[cfg(test)]
 mod delivery_tests;
 mod error;
+pub mod export;
 mod h264_config;
 mod idct8;
 mod identity;
@@ -66,6 +69,11 @@ pub use audio::{
     OGG_PROVIDER_ID, OPUS_DECODER_ID, VORBIS_DECODER_ID, audio_codec_descriptors,
     decode_audio_file, encode_flac,
 };
+#[cfg(feature = "av1-encode")]
+pub use av1_encode::{
+    AV1_ENCODER_ID, AV1_ENCODER_LICENCE, AV1_ENCODER_VERSION, AV1_MAX_BITRATE, AV1_MAX_PIXELS,
+    AV1_MAX_SIDE, Av1Encoder, Av1Packet,
+};
 pub use av1_config::{Av1Config, av1_descriptor, parse_av1c};
 pub use cache::{CacheStats, IndexCache};
 pub use codec_adapters::{
@@ -74,6 +82,11 @@ pub use codec_adapters::{
     dnx_descriptor, prores_descriptor, video_codec_descriptors,
 };
 pub use error::{DecoderFault, ReelError};
+pub use export::{
+    Av1Settings, ExportAudioSource, ExportHandle, ExportJob, ExportLimits, ExportOutcome,
+    ExportProgress, ExportQueue, ExportReceipt, ExportRecipe, ExportState, ExportVideoSource, PcmChoice,
+    SourceSpan, VideoCodecChoice,
+};
 pub use h264_config::{
     H264_DECODER_ID, H264_DISPLAY_NAME, H264_LICENCE, H264Config, START_CODE as H264_START_CODE,
     h264_descriptor, nal_unit_type as h264_nal_unit_type, parse_avcc, sample_to_annex_b,
@@ -111,6 +124,9 @@ pub use mux::{
 pub use registry::{ProxySource, Registry, detect_type};
 pub use report::{outcome_for, report};
 pub use vc3::decode_vc3_frame;
+pub use vc3::encode::{
+    VC3_ENCODER_ID, VC3_ENCODER_VERSION, Vc3Encoder, Vc3Profile, ri_frame_size as vc3_ri_frame_size,
+};
 pub use video::{
     DecodedPicture, DecoderIdentity, ExternalVideoDecoder, PictureSink, SourceTrust, VideoCodec,
     VideoDecodeError, VideoDecodeSession, VideoRoute, VideoStreamSpec,

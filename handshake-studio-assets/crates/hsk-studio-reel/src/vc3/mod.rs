@@ -17,6 +17,7 @@
 //! payload), so a lying index or an overlong codeword is `Corrupt`, never a read past the line; no other
 //! allocation depends on the bitstream. Tests: tests/vc3_decode.rs.
 #![deny(clippy::arithmetic_side_effects)]
+pub(crate) mod encode;
 mod entropy;
 mod header;
 mod tables;
