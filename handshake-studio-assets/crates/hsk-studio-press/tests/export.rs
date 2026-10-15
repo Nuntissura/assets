@@ -311,10 +311,10 @@ fn transparency_through_extgstate_groups_and_soft_masks() {
     ex.begin_group(p).unwrap();
     ex.fill_path(p, &rect_path(300.0, 0.0, 400.0, 100.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
     let mask_px = [255u8, 0];
-    let mask = SoftMask {
-        image: ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &mask_px, alpha: None },
-        placement: [100.0, 0.0, 0.0, 100.0, 300.0, 0.0],
-    };
+    let mask = SoftMask::luminosity(
+        ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &mask_px, alpha: None },
+        [100.0, 0.0, 0.0, 100.0, 300.0, 0.0],
+    );
     ex.end_group(p, GroupStyle { soft_mask: Some(mask), opacity: 1.0, ..plain }).unwrap();
     let (bytes, _) = ex.finish(&cancel).unwrap();
     let r = render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap();
@@ -323,8 +323,10 @@ fn transparency_through_extgstate_groups_and_soft_masks() {
     assert!(near(at(50), [255, 128, 128], 3), "alpha {:?}", at(50));
     assert!(near(at(150), [0, 255, 0], 3), "multiply {:?}", at(150));
     assert!(near(at(250), [128, 128, 128], 3), "group opacity {:?}", at(250));
-    assert!(r.notes.contains(&"soft_mask"), "{:?}", r.notes);
-    println!("NOT_PROVEN: soft mask compositing (press paint device skips soft-masked content; structure is checked in src/export/tests.rs)");
+    // D: the luminosity mask (255 | 0 over x 300..350 | 350..400) keeps the left half only.
+    assert!(near(at(325), [0, 0, 0], 3), "masked-in {:?}", at(325));
+    assert!(near(at(375), [255, 255, 255], 3), "masked-out {:?}", at(375));
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
     // Typed refusals.
     let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
     let p = ex.add_page(page([0.0, 0.0, 10.0, 10.0])).unwrap();
@@ -335,7 +337,7 @@ fn transparency_through_extgstate_groups_and_soft_masks() {
     ex.fill_path(p, &rect_path(0.0, 0.0, 5.0, 5.0), FillRule::NonZero, Colour::DeviceGray(0.0)).unwrap();
     assert_eq!(ex.end_group(p, GroupStyle { opacity: -0.1, ..plain }), Err(ExportError::AlphaOutOfRange));
     let rgb = [0u8; 6];
-    let bad = SoftMask { image: ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceRgb, samples: &rgb, alpha: None }, placement: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] };
+    let bad = SoftMask::luminosity(ImageSpec { width: 2, height: 1, bits: 8, colour: ImageColour::DeviceRgb, samples: &rgb, alpha: None }, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
     assert_eq!(ex.end_group(p, GroupStyle { soft_mask: Some(bad), ..plain }), Err(ExportError::InvalidMask));
     // One group is still open (the refused end_group calls left it); 31 more reach the 32 cap.
     for _ in 0..31 {
@@ -343,4 +345,99 @@ fn transparency_through_extgstate_groups_and_soft_masks() {
     }
     assert_eq!(ex.begin_group(p), Err(ExportError::UnbalancedGroup));
     assert_eq!(ex.finish(&cancel).err(), Some(ExportError::UnbalancedGroup));
+}
+
+/// Lane SMB-PRESS-PAINT-TRANSPARENCY: the paint device composites transparency groups as layers
+/// (ISO 32000-1 11.4) and renders soft masks (11.6.5); every oracle is hand-computed.
+#[test]
+fn paint_device_renders_groups_and_soft_masks() {
+    let cancel = CancellationToken::default();
+    let lim = Limits::default();
+    let plain = GroupStyle { opacity: 1.0, blend: BlendMode::Normal, isolated: true, knockout: false, soft_mask: None };
+    let render = |ex: PdfExport| {
+        let (bytes, _) = ex.finish(&cancel).unwrap();
+        render_page(&bytes, 0, 1.0, &lim, &cancel).unwrap()
+    };
+    let new = || {
+        let mut ex = PdfExport::new(ExportOptions::default(), &lim).unwrap();
+        let p = ex.add_page(page([0.0, 0.0, 100.0, 100.0])).unwrap();
+        (ex, p)
+    };
+    let black = Colour::DeviceGray(0.0);
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+    // Overlap inside a 50 percent group: one opaque group result, so 128 everywhere (not 64).
+    let (mut ex, p) = new();
+    ex.begin_group(p).unwrap();
+    ex.fill_path(p, &rect_path(10.0, 10.0, 60.0, 60.0), FillRule::NonZero, black).unwrap();
+    ex.fill_path(p, &rect_path(40.0, 40.0, 90.0, 90.0), FillRule::NonZero, black).unwrap();
+    ex.end_group(p, GroupStyle { opacity: 0.5, ..plain }).unwrap();
+    let r = render(ex);
+    assert!(near(r.pixel(20, 80).unwrap(), [128, 128, 128]), "{:?}", r.pixel(20, 80));
+    assert!(near(r.pixel(50, 50).unwrap(), [128, 128, 128]), "overlap {:?}", r.pixel(50, 50));
+    // Isolation: cyan under Multiply inside a group over a yellow page. Isolated: Multiply against a
+    // transparent backdrop leaves cyan. Non-isolated: cyan x yellow = green.
+    for (isolated, want) in [(true, [0, 255, 255]), (false, [0, 255, 0])] {
+        let (mut ex, p) = new();
+        ex.fill_path(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, Colour::DeviceRgb([1.0, 1.0, 0.0])).unwrap();
+        ex.begin_group(p).unwrap();
+        ex.set_draw_state(p, DrawState { blend: BlendMode::Multiply, ..DrawState::default() }).unwrap();
+        ex.fill_path(p, &rect_path(20.0, 20.0, 80.0, 80.0), FillRule::NonZero, Colour::DeviceRgb([0.0, 1.0, 1.0])).unwrap();
+        ex.end_group(p, GroupStyle { isolated, ..plain }).unwrap();
+        let r = render(ex);
+        assert!(near(r.pixel(50, 50).unwrap(), want), "isolated {isolated}: {:?}", r.pixel(50, 50));
+        assert!(near(r.pixel(5, 5).unwrap(), [255, 255, 0]), "outside");
+    }
+    // Knockout: two overlapping black squares at fill alpha 0.5. Knockout: the second replaces the
+    // first where it covers (0.5 -> 128); without knockout they accumulate (0.75 -> 64).
+    for (knockout, want) in [(true, 128u8), (false, 64u8)] {
+        let (mut ex, p) = new();
+        ex.begin_group(p).unwrap();
+        ex.set_draw_state(p, DrawState { fill_alpha: 0.5, ..DrawState::default() }).unwrap();
+        ex.fill_path(p, &rect_path(10.0, 10.0, 60.0, 60.0), FillRule::NonZero, black).unwrap();
+        ex.fill_path(p, &rect_path(40.0, 40.0, 90.0, 90.0), FillRule::NonZero, black).unwrap();
+        ex.end_group(p, GroupStyle { knockout, ..plain }).unwrap();
+        let r = render(ex);
+        assert!(near(r.pixel(50, 50).unwrap(), [want; 3]), "knockout {knockout}: {:?}", r.pixel(50, 50));
+        assert!(near(r.pixel(20, 80).unwrap(), [128; 3]), "single {:?}", r.pixel(20, 80));
+    }
+    // Soft masks over a black square covering the page; the mask image sits over x 0..50.
+    let masked = |mask_px: &'static [u8], alpha: bool, backdrop: f64, tr: Option<f64>| {
+        let (mut ex, p) = new();
+        ex.begin_group(p).unwrap();
+        ex.fill_path(p, &rect_path(0.0, 0.0, 100.0, 100.0), FillRule::NonZero, black).unwrap();
+        let image = ImageSpec { width: 1, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: mask_px, alpha: None };
+        let mask = SoftMask { image, placement: [50.0, 0.0, 0.0, 100.0, 0.0, 0.0], alpha, backdrop, transfer_exponent: tr };
+        ex.end_group(p, GroupStyle { soft_mask: Some(mask), ..plain }).unwrap();
+        render(ex)
+    };
+    // Luminosity, black backdrop: white image -> 1 (black shows), outside -> BC 0 (page stays white).
+    let r = masked(&[255], false, 0.0, None);
+    assert!(near(r.pixel(25, 50).unwrap(), [0; 3]) && near(r.pixel(75, 50).unwrap(), [255; 3]), "lum {:?} {:?}", r.pixel(25, 50), r.pixel(75, 50));
+    // Luminosity, white backdrop (/BC [1]): black image -> 0, outside -> 1.
+    let r = masked(&[0], false, 1.0, None);
+    assert!(near(r.pixel(25, 50).unwrap(), [255; 3]) && near(r.pixel(75, 50).unwrap(), [0; 3]), "BC {:?} {:?}", r.pixel(25, 50), r.pixel(75, 50));
+    // Transfer function x^2 on a 50 percent gray image: mask 0.25 -> 255 x 0.75 = 191.
+    let r = masked(&[128], false, 0.0, Some(2.0));
+    assert!(near(r.pixel(25, 50).unwrap(), [191; 3]), "TR {:?}", r.pixel(25, 50));
+    // Alpha mask: the group alpha (opaque image over x 0..50, nothing elsewhere).
+    let r = masked(&[0], true, 0.0, None);
+    assert!(near(r.pixel(25, 50).unwrap(), [0; 3]) && near(r.pixel(75, 50).unwrap(), [255; 3]), "alpha {:?} {:?}", r.pixel(25, 50), r.pixel(75, 50));
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    // Groups with different flags in one file: ISO defaults and a note.
+    let (mut ex, p) = new();
+    for knockout in [true, false] {
+        ex.begin_group(p).unwrap();
+        ex.fill_path(p, &rect_path(10.0, 10.0, 20.0, 20.0), FillRule::NonZero, black).unwrap();
+        ex.end_group(p, GroupStyle { knockout, ..plain }).unwrap();
+    }
+    assert!(render(ex).notes.contains(&"group_flags_mixed"));
+    // Typed refusals of the new mask parameters.
+    let (mut ex, p) = new();
+    ex.begin_group(p).unwrap();
+    ex.fill_path(p, &rect_path(0.0, 0.0, 5.0, 5.0), FillRule::NonZero, black).unwrap();
+    let image = ImageSpec { width: 1, height: 1, bits: 8, colour: ImageColour::DeviceGray, samples: &[0], alpha: None };
+    let bad = |backdrop, tr| GroupStyle { soft_mask: Some(SoftMask { image, placement: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], alpha: false, backdrop, transfer_exponent: tr }), ..plain };
+    assert_eq!(ex.end_group(p, bad(2.0, None)), Err(ExportError::ColourOutOfRange));
+    assert_eq!(ex.end_group(p, bad(0.0, Some(0.0))), Err(ExportError::ValueOutOfRange));
+    assert_eq!(ex.end_group(p, bad(0.0, Some(f64::NAN))), Err(ExportError::NonFinite));
 }

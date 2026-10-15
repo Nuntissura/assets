@@ -554,10 +554,10 @@ impl Cx<'_> {
             let h = page.handle;
             let soft_mask = g.mask.as_ref().map(|m| {
                 let (px, py) = page.map(m.rect[0], m.rect[3]);
-                SoftMask {
-                    image: ImageSpec { width: m.width, height: m.height, bits: m.bits, colour: ImageColour::DeviceGray, samples: &m.samples, alpha: None },
-                    placement: [m.rect[2] - m.rect[0], 0.0, 0.0, m.rect[3] - m.rect[1], px, py],
-                }
+                SoftMask::luminosity(
+                    ImageSpec { width: m.width, height: m.height, bits: m.bits, colour: ImageColour::DeviceGray, samples: &m.samples, alpha: None },
+                    [m.rect[2] - m.rect[0], 0.0, 0.0, m.rect[3] - m.rect[1], px, py],
+                )
             });
             self.ex.end_group(h, GroupStyle { opacity: g.opacity, blend: g.blend, isolated: g.isolated, knockout: false, soft_mask })?;
         }

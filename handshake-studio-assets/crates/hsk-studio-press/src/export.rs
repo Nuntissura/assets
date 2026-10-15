@@ -406,6 +406,18 @@ impl Default for DrawState {
 pub struct SoftMask<'a> {
     pub image: ImageSpec<'a>,
     pub placement: [f64; 6],
+    /// `/S`: luminosity (default) or alpha (the mask group's alpha).
+    pub alpha: bool,
+    /// `/BC` gray backdrop of a luminosity mask (0 = black, the ISO default).
+    pub backdrop: f64,
+    /// `/TR` as an exponential function (type 2, C0 0, C1 1) with this exponent; `None` = identity.
+    pub transfer_exponent: Option<f64>,
+}
+impl<'a> SoftMask<'a> {
+    /// A luminosity mask on a black backdrop with no transfer function.
+    pub fn luminosity(image: ImageSpec<'a>, placement: [f64; 6]) -> Self {
+        Self { image, placement, alpha: false, backdrop: 0.0, transfer_exponent: None }
+    }
 }
 
 /// How a closed group is painted: constant opacity, blend mode, isolated / knockout flags of the
@@ -750,6 +762,7 @@ impl PdfExport {
             return Err(ExportError::AlphaOutOfRange);
         }
         let media = p.spec.media_box_pt;
+        let mask_params = style.soft_mask.map(|m| (m.alpha, m.backdrop, m.transfer_exponent));
         let mask = match style.soft_mask {
             None => None,
             Some(m) => {
@@ -757,6 +770,16 @@ impl PdfExport {
                     return Err(ExportError::InvalidMask);
                 }
                 finite(&m.placement)?;
+                finite(&[m.backdrop])?;
+                if !(0.0..=1.0).contains(&m.backdrop) {
+                    return Err(ExportError::ColourOutOfRange);
+                }
+                if let Some(n) = m.transfer_exponent {
+                    finite(&[n])?;
+                    if n <= 0.0 {
+                        return Err(ExportError::ValueOutOfRange);
+                    }
+                }
                 Some((self.image_objects(m.image)?, m.placement))
             }
         };
@@ -859,9 +882,21 @@ impl PdfExport {
             self.insert(mnum, mform);
             let mut sm = Dict::default();
             sm.set("Type", name("Mask"));
-            sm.set("S", name("Luminosity"));
+            let (alpha_mask, backdrop, tr) = mask_params.unwrap_or((false, 0.0, None));
+            sm.set("S", name(if alpha_mask { "Alpha" } else { "Luminosity" }));
             sm.set("G", rf(mnum));
-            sm.set("BC", Object::Array(vec![real(0.0)]));
+            if !alpha_mask {
+                sm.set("BC", Object::Array(vec![real(backdrop)]));
+            }
+            if let Some(n) = tr {
+                let mut f = Dict::default();
+                f.set("FunctionType", int(2));
+                f.set("Domain", Object::Array(vec![real(0.0), real(1.0)]));
+                f.set("C0", Object::Array(vec![real(0.0)]));
+                f.set("C1", Object::Array(vec![real(1.0)]));
+                f.set("N", real(n));
+                sm.set("TR", Object::Dict(f));
+            }
             gs.set("SMask", Object::Dict(sm));
         }
         let gnum = self.alloc();

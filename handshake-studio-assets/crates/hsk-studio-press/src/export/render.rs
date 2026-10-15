@@ -13,7 +13,9 @@ use crate::paint::Painter;
 use crate::pdf_edit::PdfDoc;
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::{Context, InterpreterCache, InterpreterSettings, InterpreterWarning, interpret_page};
+use crate::syntax::Object;
 use hsk_studio_accord::CancellationToken;
+use std::collections::BTreeSet;
 use kurbo::Affine;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -46,6 +48,50 @@ impl RenderedPage {
     }
 }
 
+/// The `/I` and `/K` flags of the document's transparency groups (soft-mask groups excluded): the
+/// interpreter reports groups without them, so one pair is given to the paint device. When the groups
+/// disagree the ISO defaults (non-isolated, non-knockout) are used and `group_flags_mixed` is noted.
+fn group_flags(doc: &PdfDoc) -> ((bool, bool), bool) {
+    let mut mask_groups = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for e in doc.objects.values() {
+        let mut stack: Vec<&Object> = vec![&e.obj];
+        let mut visited = 0usize;
+        while let Some(o) = stack.pop() {
+            visited = visited.saturating_add(1);
+            if visited > 1 << 16 {
+                break;
+            }
+            match o {
+                Object::Array(a) => stack.extend(a.iter()),
+                Object::Dict(_) | Object::Stream(_) => {
+                    let Some(d) = o.as_dict() else { continue };
+                    let is_mask = d.get("S").is_some_and(|s| s.is_name("Luminosity") || s.is_name("Alpha"));
+                    if is_mask && let Some(r) = d.get("G").and_then(Object::as_ref) {
+                        mask_groups.insert(r.num);
+                    }
+                    stack.extend(d.entries.iter().map(|(_, v)| v));
+                }
+                _ => {}
+            }
+        }
+    }
+    for (num, e) in &doc.objects {
+        let Object::Stream(s) = &e.obj else { continue };
+        let Some(g) = s.dict.get("Group").map(|g| doc.resolve(g)).and_then(Object::as_dict) else { continue };
+        if !g.get("S").is_some_and(|v| v.is_name("Transparency")) || mask_groups.contains(num) {
+            continue;
+        }
+        let flag = |k: &str| matches!(g.get(k), Some(Object::Bool(true)));
+        seen.insert((flag("I"), flag("K")));
+    }
+    match seen.len() {
+        0 => ((false, false), false),
+        1 => (seen.into_iter().next().unwrap_or((false, false)), false),
+        _ => ((false, false), true),
+    }
+}
+
 /// Renders page `index` (0-based) at `px_per_pt` device pixels per point. Refusals: `NoSuchPage`,
 /// `NonFinite` / `ValueOutOfRange` for the scale, `RenderOverBudget` for a canvas over
 /// `max_flatten_pixels`, `RenderRefused` when the interpreter cannot open the file or panics,
@@ -58,6 +104,7 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
         return Err(ExportError::ValueOutOfRange);
     }
     let doc = PdfDoc::open(bytes, limits, cancel)?;
+    let (flags, mixed) = group_flags(&doc);
     let pages = doc.proposal(cancel)?.pages;
     let mb = pages.get(index).ok_or(ExportError::NoSuchPage)?.media_box.ok_or(ExportError::InvalidBox)?;
     let (w_pt, h_pt) = (mb[2] - mb[0], mb[3] - mb[1]);
@@ -96,6 +143,7 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
                 let mut ctx = Context::new(device, rect, &cache, pdf.xref(), settings);
                 let (pw, ph) = (usize::try_from(wu).map_err(|_| ExportError::RenderOverBudget)?, usize::try_from(hu).map_err(|_| ExportError::RenderOverBudget)?);
                 let mut painter = Painter::new(pw, ph, decode_budget, cancel).ok_or(ExportError::RenderOverBudget)?;
+                painter.group_flags = flags;
                 interpret_page(page, &mut ctx, &mut painter);
                 if painter.canceled {
                     return Err(ExportError::Canceled);
@@ -106,7 +154,7 @@ pub fn render_page(bytes: &[u8], index: usize, px_per_pt: f64, limits: &Limits, 
                     rgb: std::mem::take(&mut painter.px),
                     font_warnings: fonts.load(Ordering::Relaxed),
                     image_warnings: images.load(Ordering::Relaxed),
-                    notes: painter.notes.iter().map(|n| n.as_str()).collect(),
+                    notes: painter.notes.iter().map(|n| n.as_str()).chain(mixed.then_some("group_flags_mixed")).collect(),
                 })
             },
         );

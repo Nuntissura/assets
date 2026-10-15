@@ -825,7 +825,12 @@ fn folio_appearance_becomes_transparency_groups() {
     assert!(find(&masked.bytes, b"/S /Transparency /I true").is_some(), "transparency group");
     assert!(streams(&masked.bytes).contains(&vec![255u8, 0]), "mask coverage samples");
     let page2 = render_page(&masked.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();
-    assert!(page2.notes.contains(&"soft_mask"), "{:?}", page2.notes);
+    // The mask (coverage 255 | 0 over spread x 350..375 | 375..400, y 50..75; 0 outside) keeps
+    // the red-only pixel (spread 355, 52) and removes the blue-only pixel (spread 405, 55).
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 4);
+    assert!(near(page2.pixel(58, 61).unwrap(), [255, 191, 191]), "{:?}", page2.pixel(58, 61));
+    assert_eq!(page2.pixel(108, 64), Some([255, 255, 255]), "outside the mask");
+    assert!(page2.notes.is_empty(), "{:?}", page2.notes);
     // Without the mask the render-back shows the group opacity, the Multiply and the row alpha.
     let plain = run(false);
     let r = render_page(&plain.bytes, 1, 1.0, &Limits::default(), &cancel).unwrap();

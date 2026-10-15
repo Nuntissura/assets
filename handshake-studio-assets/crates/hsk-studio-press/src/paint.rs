@@ -4,11 +4,26 @@
 //!
 //! What it draws: fills and strokes with solid colours (non-zero and even-odd rules, kurbo stroke
 //! expansion, dashes), glyph outlines and Type 3 glyph procedures, raster and stencil images (nearest
-//! sample, image alpha), clip paths (nested, as coverage masks over their bounds), group and fill
-//! opacity, and the separable blend modes of ISO 32000-2 11.3.5.2 over the opaque white page.
+//! sample, image alpha), clip paths (nested, as coverage masks over their bounds), the blend modes of
+//! ISO 32000-1 11.3.5 (separable 11.3.5.2 and non-separable 11.3.5.3) over the opaque white page, and
+//! transparency (lane SMB-PRESS-PAINT-TRANSPARENCY, clean-room from ISO 32000-1 11.4-11.6):
+//! transparency groups as offscreen layers (11.4: each element composited with the basic compositing
+//! formula of 11.3.3, shape and opacity kept apart; a non-isolated group starts from its backdrop and
+//! removes the backdrop's contribution when it ends with the 11.4.8 formula
+//! C = Cn + (Cn - C0) x (a0 / agn - a0); a knockout group composites each element against the group's
+//! initial backdrop, weighted by the element's shape, 11.4.6.2), and soft masks (11.6.5): the mask
+//! group is rendered into its own layer over a backdrop of `/BC` (luminosity) or transparent (alpha),
+//! the mask value is the luminosity (0.30 R + 0.59 G + 0.11 B) or the group alpha, passed through the
+//! `/TR` transfer function, and multiplies the opacity of what it masks (an ExtGState soft mask for
+//! each later draw, a group's mask for the group result). The interpreter (hayro-interpret 0.7.0)
+//! reports groups without their `/I` and `/K` flags, so the flags come from [`Painter::group_flags`]
+//! (set by the caller from the document; ISO default non-isolated, non-knockout).
+//! Hostile groups (V4-02): nesting deeper than [`MAX_GROUP_DEPTH`] and group or soft-mask layers whose
+//! bytes exceed the layer memory cap are refused BEFORE allocation (their content is not drawn,
+//! [`FlattenNote::WorkBudget`]); a soft mask that cannot be built leaves what it masks undrawn
+//! ([`FlattenNote::SoftMask`]). Tests: the unit tests below and `tests/export.rs`.
 //! What it does not draw (absent from the raster, recorded as a [`FlattenNote`]): pattern and shading
-//! paints, content under a soft mask, the non-separable blend modes (drawn as Normal), content past the
-//! clip nesting cap or a budget. Absent content is not drawn, and an absent occluder uncovers what it
+//! paints, content past the clip nesting cap or a budget. Absent content is not drawn, and an absent occluder uncovers what it
 //! covered (R13-F3: such content shows in the raster where a viewer shows the occluder; it is the page's
 //! own content). Region pixels are painted after drawing, so this does not reach a region (test
 //! `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
@@ -25,7 +40,8 @@
 use crate::flatten::FlattenNote;
 use hayro_interpret::font::Glyph;
 use hayro_interpret::{
-    BlendMode, ClipPath, Device, FillRule, GlyphDrawMode, Image, ImageData, LumaData, Paint, PathDrawMode, SoftMask, StrokeProps,
+    BlendMode, CacheKey, ClipPath, Device, FillRule, GlyphDrawMode, Image, ImageData, LumaData, MaskType, Paint, PathDrawMode, SoftMask,
+    StrokeProps,
 };
 use hsk_studio_accord::CancellationToken;
 use kurbo::{Affine, BezPath, PathEl, Point};
@@ -47,6 +63,15 @@ const MAX_ELEMENTS: usize = 1 << 18;
 const MAX_CLIP_DEPTH: usize = 64;
 /// Cached glyph outlines.
 const MAX_GLYPH_CACHE: usize = 4096;
+/// Deepest nesting of transparency-group and soft-mask layers; deeper ones are refused before
+/// allocation.
+pub(crate) const MAX_GROUP_DEPTH: usize = 32;
+/// Bytes one layer pixel holds (colour, alpha, group alpha, initial backdrop colour and alpha).
+const LAYER_PIXEL_BYTES: usize = 36;
+/// Largest total of layer and mask bytes alive at once, whatever the canvas.
+const MAX_LAYER_BYTES: usize = 1 << 29;
+/// Soft masks kept for reuse (by mask and bounds).
+const MAX_MASK_CACHE: usize = 16;
 
 #[derive(Clone, Copy, Debug)]
 struct IRect {
@@ -90,10 +115,120 @@ impl Clip {
     }
 }
 
-struct Group {
-    alpha: f32,
-    masked: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayerKind {
+    Group,
+    Mask,
+    /// A refused group or mask: nothing inside it is drawn.
+    Dead,
+}
+
+/// One offscreen layer over `b` (canvas coordinates): straight colour `c`, alpha `a` (backdrop
+/// included), group alpha `ag` (backdrop excluded) and the initial backdrop `c0` / `a0` (kept for a
+/// non-isolated or knockout group; empty means transparent).
+struct Layer {
+    kind: LayerKind,
+    b: IRect,
+    c: Vec<[f32; 3]>,
+    a: Vec<f32>,
+    ag: Vec<f32>,
+    c0: Vec<[f32; 3]>,
+    a0: Vec<f32>,
+    isolated: bool,
+    knockout: bool,
+    opacity: f32,
     blend: BlendMode,
+    mask: Option<Rc<MaskBuf>>,
+    bytes: usize,
+}
+
+impl Layer {
+    fn dead() -> Self {
+        Self {
+            kind: LayerKind::Dead,
+            b: IRect { x0: 0, y0: 0, x1: 0, y1: 0 },
+            c: Vec::new(),
+            a: Vec::new(),
+            ag: Vec::new(),
+            c0: Vec::new(),
+            a0: Vec::new(),
+            isolated: true,
+            knockout: false,
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            mask: None,
+            bytes: 0,
+        }
+    }
+    fn index(&self, x: usize, y: usize) -> Option<usize> {
+        if x < self.b.x0 || x >= self.b.x1 || y < self.b.y0 || y >= self.b.y1 {
+            return None;
+        }
+        y.checked_sub(self.b.y0)?.checked_mul(self.b.width())?.checked_add(x.checked_sub(self.b.x0)?)
+    }
+    /// Composites one element pixel: colour `cs`, shape `f`, opacity `q` (ISO 32000-1 11.3.3, 11.4).
+    fn put(&mut self, x: usize, y: usize, cs: [f32; 3], f: f32, q: f32, mode: BlendMode) {
+        let Some(i) = self.index(x, y) else { return };
+        let (Some(c), Some(a), Some(ag)) = (self.c.get(i).copied(), self.a.get(i).copied(), self.ag.get(i).copied()) else { return };
+        let (nc, na, nag) = if self.knockout {
+            let (c0, a0) = match (self.c0.get(i), self.a0.get(i)) {
+                (Some(c0), Some(a0)) => (*c0, *a0),
+                _ => ([0.0; 3], 0.0),
+            };
+            let (r, ar) = blend_into(c0, a0, cs, q, mode);
+            let na = (1.0 - f) * a + f * ar;
+            let mut nc = [0.0f32; 3];
+            if na > 0.0 {
+                for k in 0..3 {
+                    nc[k] = ((1.0 - f) * a * c[k] + f * ar * r[k]) / na;
+                }
+            }
+            (nc, na, (1.0 - f) * ag + f * q)
+        } else {
+            let s = f * q;
+            let (r, ar) = blend_into(c, a, cs, s, mode);
+            (r, ar, ag + s - ag * s)
+        };
+        if let (Some(c), Some(a), Some(ag)) = (self.c.get_mut(i), self.a.get_mut(i), self.ag.get_mut(i)) {
+            *c = nc;
+            *a = na.clamp(0.0, 1.0);
+            *ag = nag.clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// Soft-mask values over `b` (0 outside).
+pub(crate) struct MaskBuf {
+    b: IRect,
+    v: Vec<f32>,
+}
+
+impl MaskBuf {
+    fn at(&self, x: usize, y: usize) -> f32 {
+        if x < self.b.x0 || x >= self.b.x1 || y < self.b.y0 || y >= self.b.y1 {
+            return 0.0;
+        }
+        let i = y.saturating_sub(self.b.y0).saturating_mul(self.b.width()).saturating_add(x.saturating_sub(self.b.x0));
+        self.v.get(i).copied().unwrap_or(0.0)
+    }
+}
+
+/// The basic compositing formula (ISO 32000-1 11.3.3): source `cs` with alpha `as_` over backdrop
+/// `cb` with alpha `ab` under blend mode `mode`; returns the result colour and alpha.
+fn blend_into(cb: [f32; 3], ab: f32, cs: [f32; 3], as_: f32, mode: BlendMode) -> ([f32; 3], f32) {
+    let as_ = as_.clamp(0.0, 1.0);
+    let ar = ab + as_ - ab * as_;
+    if ar <= 0.0 {
+        return (cb, 0.0);
+    }
+    let cs = [cs[0].clamp(0.0, 1.0), cs[1].clamp(0.0, 1.0), cs[2].clamp(0.0, 1.0)];
+    let mixed = blend(mode, cb, cs);
+    let t = as_ / ar;
+    let mut out = [0.0f32; 3];
+    for k in 0..3 {
+        out[k] = ((1.0 - t) * cb[k] + t * ((1.0 - ab) * cs[k] + ab * mixed[k])).clamp(0.0, 1.0);
+    }
+    (out, ar)
 }
 
 #[derive(Clone, Copy)]
@@ -113,8 +248,17 @@ pub(crate) struct Painter<'c> {
     /// The whole canvas (never popped); `clips` holds the pushed levels.
     base: Clip,
     clips: Vec<Clip>,
-    groups: Vec<Group>,
-    mask_on: bool,
+    /// Open transparency-group and soft-mask layers, innermost last.
+    layers: Vec<Layer>,
+    /// The ExtGState soft mask in force for the next draws.
+    active_mask: Option<Rc<MaskBuf>>,
+    /// The soft mask in force could not be built: the next draws are not drawn.
+    mask_dead: bool,
+    masks: HashMap<(u128, usize, usize, usize, usize), Rc<MaskBuf>>,
+    /// Layer and mask bytes that may still be allocated.
+    layer_mem_left: usize,
+    /// `/I` (isolated) and `/K` (knockout) of transparency groups (module docs).
+    pub group_flags: (bool, bool),
     blend: BlendMode,
     pub notes: BTreeSet<FlattenNote>,
     work_left: u64,
@@ -140,8 +284,12 @@ impl<'c> Painter<'c> {
             px: vec![255u8; px_len],
             base: Clip { b: IRect { x0: 0, y0: 0, x1: w, y1: h }, mask: None },
             clips: Vec::new(),
-            groups: Vec::new(),
-            mask_on: false,
+            layers: Vec::new(),
+            active_mask: None,
+            mask_dead: false,
+            masks: HashMap::new(),
+            layer_mem_left: canvas.checked_mul(LAYER_PIXEL_BYTES)?.checked_mul(4)?.min(MAX_LAYER_BYTES),
+            group_flags: (false, false),
             blend: BlendMode::Normal,
             notes: BTreeSet::new(),
             work_left: u64::try_from(canvas).ok()?.checked_mul(64)?,
@@ -183,24 +331,185 @@ impl<'c> Painter<'c> {
         }
     }
 
-    /// The drawing state for one draw: `None` when the draw must be skipped (soft mask in force).
+    /// The blend mode of one draw: `None` when the draw must be skipped (inside a refused group, or
+    /// under a soft mask that could not be built).
     fn state(&mut self) -> Option<(f32, BlendMode)> {
-        if self.mask_on || self.groups.iter().any(|g| g.masked) {
+        if self.mask_dead {
             self.notes.insert(FlattenNote::SoftMask);
             return None;
         }
-        let alpha = self.groups.iter().fold(1.0f32, |a, g| a * g.alpha);
-        let mut blend = self.blend;
-        if blend == BlendMode::Normal
-            && let Some(g) = self.groups.iter().rev().find(|g| g.blend != BlendMode::Normal)
-        {
-            blend = g.blend;
+        if self.layers.iter().any(|l| l.kind == LayerKind::Dead) {
+            return None;
         }
-        if matches!(blend, BlendMode::Hue | BlendMode::Saturation | BlendMode::Color | BlendMode::Luminosity) {
-            self.notes.insert(FlattenNote::BlendModeApproximated);
-            blend = BlendMode::Normal;
+        Some((1.0, self.blend))
+    }
+
+    /// Charges `bytes` of layer memory; `false` (and a note) when the cap is reached.
+    fn take_layer_mem(&mut self, bytes: usize) -> bool {
+        match self.layer_mem_left.checked_sub(bytes) {
+            Some(left) => {
+                self.layer_mem_left = left;
+                true
+            }
+            None => {
+                self.notes.insert(FlattenNote::WorkBudget);
+                false
+            }
         }
-        Some((alpha, blend))
+    }
+
+    /// Opens a layer over the current clip bounds; a [`LayerKind::Dead`] layer when the depth or
+    /// memory cap refuses it (checked before allocating).
+    fn open_layer(&mut self, kind: LayerKind, isolated: bool, knockout: bool, init: Option<([f32; 3], f32)>) -> Layer {
+        let b = self.clip().b;
+        if self.layers.len() >= MAX_GROUP_DEPTH {
+            self.notes.insert(FlattenNote::WorkBudget);
+            return Layer::dead();
+        }
+        let area = b.area();
+        let keep_backdrop = !isolated || knockout;
+        let Some(bytes) = area.checked_mul(LAYER_PIXEL_BYTES) else {
+            self.notes.insert(FlattenNote::WorkBudget);
+            return Layer::dead();
+        };
+        if !self.take_layer_mem(bytes) || !self.charge(area) {
+            return Layer::dead();
+        }
+        let mut l = Layer {
+            kind,
+            b,
+            c: vec![[0.0; 3]; area],
+            a: vec![0.0; area],
+            ag: vec![0.0; area],
+            c0: Vec::new(),
+            a0: Vec::new(),
+            isolated,
+            knockout,
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            mask: None,
+            bytes,
+        };
+        if let Some((c, a)) = init {
+            l.c.iter_mut().for_each(|v| *v = c);
+            l.a.iter_mut().for_each(|v| *v = a);
+        } else if !isolated {
+            // Non-isolated: the group starts from its backdrop (the enclosing layer or the page).
+            for y in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let (bc, ba) = self.backdrop_at(x, y);
+                    if let Some(i) = l.index(x, y) {
+                        l.c[i] = bc;
+                        l.a[i] = ba;
+                    }
+                }
+            }
+        }
+        if keep_backdrop {
+            l.c0 = l.c.clone();
+            l.a0 = l.a.clone();
+        }
+        l
+    }
+
+    /// Colour and alpha under the innermost layer at (x, y): the enclosing layer, or the opaque page.
+    fn backdrop_at(&self, x: usize, y: usize) -> ([f32; 3], f32) {
+        if let Some(l) = self.layers.last() {
+            return match l.index(x, y) {
+                Some(i) => (l.c.get(i).copied().unwrap_or([0.0; 3]), l.a.get(i).copied().unwrap_or(0.0)),
+                None => ([0.0; 3], 0.0),
+            };
+        }
+        let i = y.saturating_mul(self.w).saturating_add(x).saturating_mul(3);
+        match self.px.get(i..i.saturating_add(3)) {
+            Some(p) => ([f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0], 1.0),
+            None => ([1.0; 3], 1.0),
+        }
+    }
+
+    /// Renders `mask` (ISO 32000-1 11.6.5) over the current clip bounds into mask values; `None`
+    /// when it is refused (depth or memory cap).
+    fn build_mask<'a>(&mut self, mask: &SoftMask<'a>) -> Option<Rc<MaskBuf>>
+    where
+        Self: Device<'a>,
+    {
+        let b = self.clip().b;
+        let key = (mask.cache_key(), b.x0, b.y0, b.x1, b.y1);
+        if let Some(m) = self.masks.get(&key) {
+            return Some(m.clone());
+        }
+        let lum = mask.mask_type() == MaskType::Luminosity;
+        let bc = mask.background_color().to_rgba().components();
+        let init = if lum { Some(([bc[0], bc[1], bc[2]], 1.0)) } else { None };
+        let values_bytes = b.area().checked_mul(4)?;
+        if !self.take_layer_mem(values_bytes) {
+            return None;
+        }
+        let layer = self.open_layer(LayerKind::Mask, true, false, init);
+        if layer.kind == LayerKind::Dead {
+            self.layer_mem_left = self.layer_mem_left.saturating_add(values_bytes);
+            return None;
+        }
+        let depth = self.layers.len();
+        self.layers.push(layer);
+        let (saved_mask, saved_dead, saved_blend) = (self.active_mask.take(), self.mask_dead, self.blend);
+        self.mask_dead = false;
+        self.blend = BlendMode::Normal;
+        mask.interpret(self);
+        self.active_mask = saved_mask;
+        self.mask_dead = saved_dead;
+        self.blend = saved_blend;
+        // Pop anything the mask content left open, then the mask layer itself.
+        while self.layers.len() > depth.saturating_add(1) {
+            self.pop_layer();
+        }
+        let l = self.layers.pop()?;
+        self.layer_mem_left = self.layer_mem_left.saturating_add(l.bytes);
+        let tr = mask.transfer_function();
+        let mut v = Vec::with_capacity(l.c.len());
+        for (c, ag) in l.c.iter().zip(&l.ag) {
+            let raw = if lum { 0.30 * c[0] + 0.59 * c[1] + 0.11 * c[2] } else { *ag };
+            let raw = raw.clamp(0.0, 1.0);
+            v.push(tr.map_or(raw, |t| t.apply(raw)));
+        }
+        let m = Rc::new(MaskBuf { b: l.b, v });
+        if self.masks.len() < MAX_MASK_CACHE {
+            self.masks.insert(key, m.clone());
+        } else {
+            self.layer_mem_left = self.layer_mem_left.saturating_add(values_bytes);
+        }
+        Some(m)
+    }
+
+    /// Ends the innermost layer: a group result is composited into what encloses it (ISO 32000-1
+    /// 11.4.8 for a non-isolated group) with the group's opacity, soft mask, blend mode and the clip.
+    fn pop_layer(&mut self) {
+        let Some(l) = self.layers.pop() else { return };
+        self.layer_mem_left = self.layer_mem_left.saturating_add(l.bytes);
+        if l.kind != LayerKind::Group || !self.charge(l.b.area()) {
+            return;
+        }
+        for y in l.b.y0..l.b.y1 {
+            for x in l.b.x0..l.b.x1 {
+                let Some(i) = l.index(x, y) else { continue };
+                let (Some(cn), Some(agn)) = (l.c.get(i).copied(), l.ag.get(i).copied()) else { continue };
+                if agn <= 0.0 {
+                    continue;
+                }
+                let mut c = cn;
+                if !l.isolated
+                    && let (Some(c0), Some(a0)) = (l.c0.get(i), l.a0.get(i))
+                {
+                    let k = a0 / agn - a0;
+                    for j in 0..3 {
+                        c[j] = (cn[j] + (cn[j] - c0[j]) * k).clamp(0.0, 1.0);
+                    }
+                }
+                let q = l.opacity * l.mask.as_ref().map_or(1.0, |m| m.at(x, y));
+                let f = self.clip().at(x, y);
+                self.put_raw(x, y, c, f, agn * q, l.blend);
+            }
+        }
     }
 
     fn clip(&self) -> &Clip {
@@ -364,23 +673,38 @@ impl<'c> Painter<'c> {
         let color = [rgba[0], rgba[1], rgba[2]];
         self.cover(&segs, rule, bounds, |p, x, y, c| {
             let m = p.clip().at(x, y);
-            p.composite(x, y, color, c * m * a, blend);
+            p.composite(x, y, color, c * m, a, blend);
         });
     }
 
-    fn composite(&mut self, x: usize, y: usize, src: [f32; 3], alpha: f32, blend: BlendMode) {
-        if alpha <= 0.0 {
+    /// One element pixel with shape `shape` and opacity `opacity`, under the ExtGState soft mask in
+    /// force.
+    fn composite(&mut self, x: usize, y: usize, src: [f32; 3], shape: f32, opacity: f32, blend: BlendMode) {
+        let q = match &self.active_mask {
+            Some(m) => opacity * m.at(x, y),
+            None => opacity,
+        };
+        self.put_raw(x, y, src, shape, q, blend);
+    }
+
+    /// Composites into the innermost layer, or into the opaque page (backdrop alpha 1).
+    fn put_raw(&mut self, x: usize, y: usize, src: [f32; 3], shape: f32, opacity: f32, blend: BlendMode) {
+        let (f, q) = (shape.clamp(0.0, 1.0), opacity.clamp(0.0, 1.0));
+        if f <= 0.0 || q <= 0.0 {
+            return;
+        }
+        if let Some(l) = self.layers.last_mut() {
+            if l.kind != LayerKind::Dead {
+                l.put(x, y, src, f, q, blend);
+            }
             return;
         }
         let Some(i) = y.checked_mul(self.w).and_then(|v| v.checked_add(x)).and_then(|v| v.checked_mul(3)) else { return };
         let Some(px) = self.px.get_mut(i..i.saturating_add(3)) else { return };
-        let a = alpha.min(1.0);
-        for (k, slot) in px.iter_mut().enumerate() {
-            let cb = f32::from(*slot) / 255.0;
-            let cs = src[k].clamp(0.0, 1.0);
-            let mixed = blend_channel(blend, cb, cs);
-            let out = cb * (1.0 - a) + mixed * a;
-            *slot = (out.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        let cb = [f32::from(px[0]) / 255.0, f32::from(px[1]) / 255.0, f32::from(px[2]) / 255.0];
+        let (out, _) = blend_into(cb, 1.0, src, f * q, blend);
+        for (slot, v) in px.iter_mut().zip(out) {
+            *slot = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
         }
     }
 
@@ -497,7 +821,7 @@ impl<'c> Painter<'c> {
                                 _ => 1.0,
                             };
                             let c = p.clip().at(x, y);
-                            p.composite(x, y, [f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0], ma * c * alpha, blend);
+                            p.composite(x, y, [f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0], c, ma * alpha, blend);
                         }, mask_t);
                     },
                     hint,
@@ -513,7 +837,7 @@ impl<'c> Painter<'c> {
                         self.sample(t, dw, dh, bounds, |p, u, v, x, y, _| {
                             let Some(l) = luma.data.get(v.saturating_mul(luma.width as usize).saturating_add(u)) else { return };
                             let c = p.clip().at(x, y);
-                            p.composite(x, y, [rgba[0], rgba[1], rgba[2]], f32::from(*l) / 255.0 * rgba[3] * c * alpha, blend);
+                            p.composite(x, y, [rgba[0], rgba[1], rgba[2]], c, f32::from(*l) / 255.0 * rgba[3] * alpha, blend);
                         }, None);
                     },
                     hint,
@@ -652,7 +976,63 @@ fn add_span(acc: &mut [f32], x0: usize, xa: f64, xb: f64, w: f32) {
     }
 }
 
-/// ISO 32000-2 11.3.5.2 separable blend functions B(cb, cs); non-separable modes arrive as Normal.
+/// The blend function B(cb, cs) of ISO 32000-1 11.3.5: separable modes per channel (11.3.5.2), Hue,
+/// Saturation, Color and Luminosity through Lum / SetLum / Sat / SetSat (11.3.5.3).
+fn blend(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
+    match mode {
+        BlendMode::Hue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        BlendMode::Saturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        BlendMode::Color => set_lum(cs, lum(cb)),
+        BlendMode::Luminosity => set_lum(cb, lum(cs)),
+        _ => [blend_channel(mode, cb[0], cs[0]), blend_channel(mode, cb[1], cs[1]), blend_channel(mode, cb[2], cs[2])],
+    }
+}
+
+fn lum(c: [f32; 3]) -> f32 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+
+fn clip_color(c: [f32; 3]) -> [f32; 3] {
+    let l = lum(c);
+    let n = c[0].min(c[1]).min(c[2]);
+    let x = c[0].max(c[1]).max(c[2]);
+    let mut out = c;
+    if n < 0.0 && l - n > 0.0 {
+        for v in &mut out {
+            *v = l + (*v - l) * l / (l - n);
+        }
+    }
+    if x > 1.0 && x - l > 0.0 {
+        for v in &mut out {
+            *v = l + (*v - l) * (1.0 - l) / (x - l);
+        }
+    }
+    out
+}
+
+fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
+    let d = l - lum(c);
+    clip_color([c[0] + d, c[1] + d, c[2] + d])
+}
+
+fn sat(c: [f32; 3]) -> f32 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+
+/// SetSat: the largest component becomes `s`, the smallest 0, the middle one scaled between.
+fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
+    let mut idx = [0usize, 1, 2];
+    idx.sort_by(|a, b| c[*a].total_cmp(&c[*b]));
+    let (mn, md, mx) = (idx[0], idx[1], idx[2]);
+    let mut out = [0.0f32; 3];
+    if c[mx] > c[mn] {
+        out[md] = (c[md] - c[mn]) * s / (c[mx] - c[mn]);
+        out[mx] = s;
+    }
+    out
+}
+
+/// ISO 32000-1 11.3.5.2 separable blend function B(cb, cs) of one channel.
 fn blend_channel(mode: BlendMode, cb: f32, cs: f32) -> f32 {
     match mode {
         BlendMode::Multiply => cb * cs,
@@ -699,7 +1079,22 @@ fn hard_light(cb: f32, cs: f32) -> f32 {
 
 impl<'a> Device<'a> for Painter<'_> {
     fn set_soft_mask(&mut self, mask: Option<SoftMask<'a>>) {
-        self.mask_on = mask.is_some();
+        match mask {
+            None => {
+                self.active_mask = None;
+                self.mask_dead = false;
+            }
+            Some(m) => match self.build_mask(&m) {
+                Some(buf) => {
+                    self.active_mask = Some(buf);
+                    self.mask_dead = false;
+                }
+                None => {
+                    self.active_mask = None;
+                    self.mask_dead = true;
+                }
+            },
+        }
     }
 
     fn set_blend_mode(&mut self, blend_mode: BlendMode) {
@@ -770,7 +1165,23 @@ impl<'a> Device<'a> for Painter<'_> {
 
     fn push_transparency_group(&mut self, opacity: f32, mask: Option<SoftMask<'a>>, blend_mode: BlendMode) {
         let alpha = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 0.0 };
-        self.groups.push(Group { alpha, masked: mask.is_some(), blend: blend_mode });
+        let group_mask = match mask {
+            Some(m) => match self.build_mask(&m) {
+                Some(b) => Some(b),
+                None => {
+                    self.notes.insert(FlattenNote::SoftMask);
+                    self.layers.push(Layer::dead());
+                    return;
+                }
+            },
+            None => None,
+        };
+        let (isolated, knockout) = self.group_flags;
+        let mut l = self.open_layer(LayerKind::Group, isolated, knockout, None);
+        l.opacity = alpha;
+        l.blend = blend_mode;
+        l.mask = group_mask;
+        self.layers.push(l);
     }
 
     fn draw_glyph(&mut self, glyph: &Glyph<'a>, transform: Affine, glyph_transform: Affine, paint: &Paint<'a>, draw_mode: &GlyphDrawMode) {
@@ -813,7 +1224,7 @@ impl<'a> Device<'a> for Painter<'_> {
     }
 
     fn pop_transparency_group(&mut self) {
-        self.groups.pop();
+        self.pop_layer();
     }
 }
 
@@ -845,6 +1256,54 @@ mod tests {
         assert_eq!(at(&p, 0, 0), 255, "outside: untouched");
         p.fill_device(&path, FillRule::NonZero, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(at(&p, 10, 5), 0, "non-zero fills the inner square");
+    }
+
+    /// Hostile nesting: groups past MAX_GROUP_DEPTH are refused before allocation (their content
+    /// is not drawn) and pops stay balanced; a layer over the memory cap is refused the same way.
+    #[test]
+    fn deep_and_huge_groups_are_refused_before_allocation() {
+        let cancel = CancellationToken::default();
+        let mut p = painter(&cancel);
+        for _ in 0..(MAX_GROUP_DEPTH + 8) {
+            p.push_transparency_group(1.0, None, BlendMode::Normal);
+        }
+        assert_eq!(p.layers.len(), MAX_GROUP_DEPTH + 8);
+        assert!(p.layers.iter().skip(MAX_GROUP_DEPTH).all(|l| l.kind == LayerKind::Dead && l.c.capacity() == 0));
+        let mut sq = BezPath::new();
+        sq.move_to((0.0, 0.0));
+        sq.line_to((20.0, 0.0));
+        sq.line_to((20.0, 10.0));
+        sq.line_to((0.0, 10.0));
+        sq.close_path();
+        p.fill_device(&sq, FillRule::NonZero, [0.0, 0.0, 0.0, 1.0]);
+        for _ in 0..(MAX_GROUP_DEPTH + 8) {
+            p.pop_transparency_group();
+        }
+        assert!(p.layers.is_empty());
+        assert_eq!(p.px[0], 255, "content inside a refused group is not drawn");
+        assert!(p.notes.contains(&FlattenNote::WorkBudget));
+        // Memory cap: a 2000 x 2000 canvas with only 1000 layer bytes left refuses the group layer.
+        let mut big = Painter::new(2000, 2000, u64::MAX, &cancel).expect("canvas");
+        big.layer_mem_left = 1000;
+        big.push_transparency_group(0.5, None, BlendMode::Normal);
+        assert_eq!(big.layers[0].kind, LayerKind::Dead);
+        assert_eq!(big.layers[0].c.capacity(), 0, "nothing allocated");
+        big.pop_transparency_group();
+        assert_eq!(big.layer_mem_left, 1000);
+    }
+
+    /// Non-separable blend modes (ISO 32000-1 11.3.5.3): Luminosity takes the backdrop's hue and
+    /// saturation with the source's luminosity; Color the reverse.
+    #[test]
+    fn non_separable_blend_modes() {
+        let red = [1.0, 0.0, 0.0];
+        let gray = [0.5, 0.5, 0.5];
+        let l = blend(BlendMode::Luminosity, red, gray);
+        assert!((lum(l) - 0.5).abs() < 1e-5, "{l:?}");
+        assert!(l[0] > l[1] && (l[1] - l[2]).abs() < 1e-6, "keeps red's hue {l:?}");
+        let c = blend(BlendMode::Color, gray, red);
+        assert!((lum(c) - 0.5).abs() < 1e-5 && c[0] > c[1], "{c:?}");
+        assert_eq!(blend(BlendMode::Saturation, red, gray), [0.3, 0.3, 0.3].map(|v: f32| v), "zero saturation -> gray at red's lum");
     }
 
     #[test]
