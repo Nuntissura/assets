@@ -1046,3 +1046,87 @@ fn press_tj_runs_program_widths_and_navigation_refusals() {
     assert!(text.contains("/XYZ null 150 null]"), "outline destination");
     assert!(text.contains("/Fit]"));
 }
+
+/// SMB-LAYOUT-LONGDOC-2 item 3 in PDF: on the 300 x 400 page of slice 4 a footer frame (layer 23,
+/// y 360, 200 x 30) shows the running text "Page " + page number + " | " + section marker ("Page 1 |
+/// Front", baseline 376 -> PDF y 24); the body "Body note" (frame 21) has a sidenote "Side" outside
+/// the frame (single-sided page -> right: frame x 200 + gap 6 = 206, spread x 226, top = the reference
+/// line's top 0, baseline 16 -> PDF y 364) and an endnote whose generated story "Notes / 1 The end"
+/// is composed into frame 22 (PDF baselines 154, 130). Each drawn line is exactly its Type glyph ids.
+#[test]
+fn running_footer_sidenote_and_endnotes_export() {
+    let cancel = CancellationToken::default();
+    let mut doc = notes_document();
+    let mut footer = doc.layers[1].clone();
+    footer.layer_id = id("SLYR", 23);
+    footer.payload = Payload::Text { story_id: id("STXT", 30) };
+    let f = footer.text_frame.as_mut().unwrap();
+    f.bounds = Bounds { x: len(20.0), y: len(360.0), width: len(200.0), height: len(30.0) };
+    doc.layers.push(footer);
+    let snapshot = validate_document(doc, Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Body note";
+    let (body_story, body_paras, body_glyphs) = shaped_story(7, body, &[(0, 9, None)], &files, &fonts);
+    let request = ReflowRequest {
+        document: doc,
+        story: &body_story,
+        resolved_text: None,
+        paragraphs: &body_paras,
+        obstacles: &[],
+        composer: Composer::FirstFit,
+        space: SpaceParams::default(),
+        expected_revision: doc.revision,
+        limits: hsk_studio_interop_layout::layout::Limits::default(),
+    };
+    let body_place = reflow_typeset(&request, &TypesetOptions::default(), &cancel).unwrap();
+    use hsk_studio_interop_layout::layout::{NoteBody, NoteHost, VariableContext, compose_overlay, generate_endnotes, place_sidenotes, resolve_running_texts};
+    // Running footer.
+    let sections = [StudioSection { section_id: "a".into(), name: "Front".into(), page_start: "b1".into(), continue_numbering: true, page_number_start: None, page_number_style: StudioNumberStyle::Arabic, include_section_prefix: false, section_prefix: None, marker: Some("Front".into()) }];
+    let pages = number_pages(doc, &sections).unwrap();
+    let running = StudioRunningText {
+        running_id: "ftr".into(),
+        frame_ids: vec![id("SLYR", 23)],
+        parts: vec![StudioRunningPart::Text { text: "Page ".into() }, StudioRunningPart::PageNumber, StudioRunningPart::Text { text: " | ".into() }, StudioRunningPart::SectionMarker],
+    };
+    let resolved = resolve_running_texts(doc, &[], std::slice::from_ref(&running), &sections, &pages, &[], &VariableContext::default()).unwrap();
+    assert_eq!(resolved[0].text, "Page 1 | Front");
+    let ftext = resolved[0].text.clone();
+    let (footer_story, footer_paras, footer_glyphs) = shaped_story(30, &ftext, &[(0, ftext.len() as u64, None)], &files, &fonts);
+    let footer_place = compose_overlay(doc, &id("SLYR", 23), &footer_story, None, &footer_paras, Composer::FirstFit, &TypesetOptions::default(), hsk_studio_interop_layout::layout::Limits::default(), &cancel).unwrap();
+    // Sidenote and endnote.
+    let (side_story, side_paras, side_glyphs) = shaped_story(31, "Side", &[(0, 4, None)], &files, &fonts);
+    let (end_story, end_paras, _) = shaped_story(32, "The end", &[(0, 7, None)], &files, &fonts);
+    let side_note = StudioEndnote { note_id: "s1".into(), story_id: id("STXT", 7), anchor: 5, note_story_id: id("STXT", 31) };
+    let end_note = StudioEndnote { note_id: "e1".into(), story_id: id("STXT", 7), anchor: 9, note_story_id: id("STXT", 32) };
+    let host = NoteHost { story: &body_story, placement: Some(&body_place), paragraphs: &body_paras };
+    let side_options = StudioSidenoteOptions { width: len(60.0), gap: len(6.0), space_between: len(2.0), side: SidenoteSide::Outside, anchor: SidenoteAnchor::ReferenceLine, numbering_style: StudioNumberStyle::Arabic, start_at: 1, restart: FootnoteRestart::DontRestart };
+    let side = place_sidenotes(doc, &host, &[NoteBody { note: &side_note, story: &side_story, resolved_text: None, paragraphs: &side_paras }], &side_options, &pages, Composer::FirstFit, &TypesetOptions::default(), hsk_studio_interop_layout::layout::Limits::default(), &cancel).unwrap();
+    assert_eq!((side.notes[0].rect.x0_pt, side.notes[0].rect.y0_pt), (206.0, 0.0));
+    let end_options = StudioEndnoteOptions { title: "Notes".into(), title_style: None, text_style: None, numbering_style: StudioNumberStyle::Arabic, start_at: 1, restart: EndnoteRestart::Continuous, scope: EndnoteScope::Document, prefix: String::new(), suffix: String::new(), separator_text: " ".into() };
+    let ends = generate_endnotes(&[host], &[NoteBody { note: &end_note, story: &end_story, resolved_text: None, paragraphs: &end_paras }], &end_options, 1 << 20).unwrap();
+    let etext = ends.groups[0].story.text.clone();
+    assert_eq!(etext, "Notes\n1 The end");
+    let eranges: Vec<(u64, u64, Option<String>)> = ends.groups[0].story.paragraphs.iter().map(|p| (p.start, p.end, None)).collect();
+    let (estory, eparas, eglyphs) = shaped_story(8, &etext, &eranges, &files, &fonts);
+    let eplace = reflow_typeset(&ReflowRequest { story: &estory, paragraphs: &eparas, ..request }, &TypesetOptions::default(), &cancel).unwrap();
+    let stories = [
+        PdfStory { story: &body_story, text: body, placement: &body_place, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &estory, text: &etext, placement: &eplace, paragraphs: &eparas, glyphs: &eglyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let overlays = [
+        PdfStory { story: &footer_story, text: &ftext, placement: &footer_place, paragraphs: &footer_paras, glyphs: &footer_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &side_story, text: "Side", placement: &side.text[0].1, paragraphs: &side_paras, glyphs: &side_glyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let out = export_pdf_with(&input(&snapshot, &stories, &fonts, &NoAssets), &PdfLongDoc { overlays: &overlays, ..PdfLongDoc::default() }, &cancel).unwrap();
+    let g = shown(&out.bytes);
+    let at_y = |y: f64| -> Vec<u16> { g.iter().filter(|s| (s.2 - y).abs() < 1e-6).map(|s| s.0).collect() };
+    let ids = |gs: &[Vec<PdfGlyph>]| -> Vec<u16> { gs.iter().flatten().map(|x| x.glyph_id).collect() };
+    assert_eq!(at_y(24.0), ids(&footer_glyphs), "running footer");
+    let side_line: Vec<(u16, f64)> = g.iter().filter(|s| s.2 == 364.0 && s.1 >= 226.0 - 1e-9).map(|s| (s.0, s.1)).collect();
+    assert_eq!(side_line.first().map(|s| s.1), Some(226.0));
+    assert_eq!(side_line.iter().map(|s| s.0).collect::<Vec<_>>(), ids(&side_glyphs), "sidenote beside the frame");
+    let notes: Vec<u16> = [154.0, 130.0].iter().flat_map(|y| at_y(*y)).collect();
+    assert_eq!(notes, ids(&eglyphs), "endnotes");
+}
