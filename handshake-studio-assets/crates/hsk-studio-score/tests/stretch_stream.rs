@@ -103,7 +103,7 @@ fn stationary_material_sees_no_onsets_and_hostile_streams_are_refused() {
         let mut off = StreamingStretch::new(RATE, 1.25, params(), false).unwrap();
         let (a, b) = (stream(&mut on, &x, 1000, 1000), stream(&mut off, &x, 1000, 1000));
         // A steady tone has no onset after its start from silence, and keeps its amplitude.
-        println!("steady tone onsets {}", on.onsets());
+        println!("steady tone onsets {} last {:?}", on.onsets(), on.last_onset());
         assert!(on.onsets() <= 1, "{}", on.onsets());
         for y in [&a, &b] {
             let mid = &y[y.len() / 3..y.len() / 3 + 24_000];

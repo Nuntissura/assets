@@ -295,6 +295,7 @@ pub struct StreamingStretch {
     prev_centre: i64,
     transient_left: u32,
     onsets: u64,
+    last_onset: Option<(i64, i64)>,
 }
 
 impl StreamingStretch {
@@ -328,11 +329,16 @@ impl StreamingStretch {
             prev_centre: 0,
             transient_left: 0,
             onsets: 0,
+            last_onset: None,
         })
     }
     /// Onsets detected so far.
     pub fn onsets(&self) -> u64 {
         self.onsets
+    }
+    /// `(frame index, analysis centre sample)` of the latest onset (diagnostics).
+    pub fn last_onset(&self) -> Option<(i64, i64)> {
+        self.last_onset
     }
     /// Output samples that exist in total once the input is finished.
     fn total_output(&self) -> Option<u64> {
@@ -420,6 +426,7 @@ impl StreamingStretch {
             let ha = if k == -1 || onset { None } else { Some((ca - self.prev_centre) as f64) };
             if onset {
                 self.onsets += 1;
+                self.last_onset = Some((k, ca));
                 // Frames k+1 ..= k+4 also advance by H_s: frame k+4 is the first whose window
                 // starts past the onset region of frame k (centre + 4 H_s - N/2 = centre + N/2).
                 self.transient_left = 5;
