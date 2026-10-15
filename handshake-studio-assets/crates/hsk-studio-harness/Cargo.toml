@@ -17,7 +17,7 @@ viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pd
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
 desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
 # Program monitor decodes real media (lane SMB-PULSE-PLAYBACK-2): reel providers (VC-3, ProRes, Y4M in process).
-media = ["viewer", "dep:hsk-studio-reel", "hsk-studio-reel/prores"]
+media = ["viewer", "dep:hsk-studio-reel", "hsk-studio-reel/prores", "hsk-studio-composite/motion"]
 # Plus reel-native's isolated H.264 (Media Foundation) and AV1 worker hosts as reel's external decoder.
 media-native = ["media", "dep:hsk-studio-reel-native", "hsk-studio-reel-native/mf", "hsk-studio-reel-native/av1"]
 # Program monitor audio out through score-device (software device in tests; desktop adds the cpal backend).

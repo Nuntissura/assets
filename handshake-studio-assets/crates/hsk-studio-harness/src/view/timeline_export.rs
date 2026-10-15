@@ -14,6 +14,8 @@
 
 /// Render queue from compositions (lane SMB-AE-MOTION-TOOLS slice 4).
 pub mod composition;
+/// Render queue items from Folio records (lane SMB-AE-MOTION-RECORDS).
+pub mod render_queue;
 
 use super::monitor::{DropPolicy, FrameSource, MonitorFail, ProgramMonitor};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
