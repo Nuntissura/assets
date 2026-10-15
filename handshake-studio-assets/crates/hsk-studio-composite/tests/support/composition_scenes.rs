@@ -169,6 +169,7 @@ pub fn expected_scene(frame: u64, pixels: &Pixels) -> SceneComposition {
             fill_opacity: 1.0,
             matrix: Affine2::translate(8.0, 6.0),
             matte: None,
+            clipped: false,
         });
     }
     if (2..40).contains(&frame) {
@@ -186,6 +187,7 @@ pub fn expected_scene(frame: u64, pixels: &Pixels) -> SceneComposition {
             // anchor (3, 3): x' = position + R S (x - anchor).
             matrix: Affine2::from_parts(3.0, 3.0, s, s, rot, px - 3.0, py - 3.0),
             matte: None,
+            clipped: false,
         });
     }
     SceneComposition {
@@ -232,6 +234,7 @@ pub fn expected_scene2(frame: u64, pixels: &Pixels) -> SceneComposition {
                 fill_opacity: 1.0,
                 matrix: child.then(parent),
                 matte: None,
+                clipped: false,
             },
             SceneLayer {
                 layer_id: identity("SLYR", 6),
@@ -241,6 +244,7 @@ pub fn expected_scene2(frame: u64, pixels: &Pixels) -> SceneComposition {
                 fill_opacity: 1.0,
                 matrix: parent,
                 matte: None,
+                clipped: false,
             },
         ],
     }
@@ -277,6 +281,7 @@ pub fn inner_scene4(inner: u64, pixels: &Pixels) -> SceneComposition {
             fill_opacity: 1.0,
             matrix: Affine2::from_parts(3.0, 3.0, 1.0, 1.0, 0.0, px - 3.0, py - 3.0),
             matte: None,
+            clipped: false,
         }],
     }
 }
@@ -305,6 +310,7 @@ pub fn expected_scene3(frame: u64, pixels: &Pixels) -> SceneComposition {
             fill_opacity: 1.0,
             matrix: Affine2::from_parts(6.0, 5.0, 1.0, 1.0, 15.0, 10.0, 7.0),
             matte: None,
+            clipped: false,
         }],
     }
 }
@@ -323,6 +329,56 @@ pub fn expected_scene3_collapsed(frame: u64, pixels: &Pixels) -> SceneCompositio
     scene
 }
 
+/// Composition 7 (lane SMB-COMPOSITE-CLIP-RECORDS: clipped layers), 32x24, background
+/// (0.05, 0.05, 0.1, 1): layer 2 (tile `ta`) rotating as the clip base (frame 0: integer move
+/// (8, 6); frame 4: 12 deg); layer 3 (tile `tb`) clipped to it, multiply 80 %, moving; layer 7
+/// (tile `tc`) unclipped on top at (20, 14).
+pub fn expected_scene7(frame: u64, pixels: &Pixels) -> SceneComposition {
+    let ta = pixels.get(&tile_id(2, "ta")).unwrap();
+    let tb = pixels.get(&tile_id(3, "tb")).unwrap();
+    let tc = pixels.get(&tile_id(7, "tc")).unwrap();
+    let rot = 3.0 * frame as f64;
+    SceneComposition {
+        composition_id: identity("SCOM", 8),
+        width: W,
+        height: H,
+        background: Some([0.05, 0.05, 0.1, 1.0]),
+        filter: ResampleFilter::Bilinear,
+        layers: vec![
+            SceneLayer {
+                layer_id: identity("SLYR", 2),
+                content: SceneContent::Tiles(vec![ta.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Normal,
+                opacity: 0.9,
+                fill_opacity: 1.0,
+                matrix: Affine2::from_parts(4.0, 3.0, 1.0, 1.0, rot, 8.0, 6.0),
+                matte: None,
+                clipped: false,
+            },
+            SceneLayer {
+                layer_id: identity("SLYR", 3),
+                content: SceneContent::Tiles(vec![tb.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Multiply,
+                opacity: 0.8,
+                fill_opacity: 1.0,
+                matrix: Affine2::translate(10.0 + 0.5 * frame as f64, 5.0),
+                matte: None,
+                clipped: true,
+            },
+            SceneLayer {
+                layer_id: identity("SLYR", 7),
+                content: SceneContent::Tiles(vec![tc.scene_tile(0, 0)]),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                matrix: Affine2::translate(20.0, 14.0),
+                matte: None,
+                clipped: false,
+            },
+        ],
+    }
+}
+
 /// Every rendered case: `(label, scene)` for the renderer tests.
 pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     let mut out: Vec<(String, SceneComposition)> =
@@ -332,6 +388,7 @@ pub fn cases(pixels: &Pixels) -> Vec<(String, SceneComposition)> {
     out.extend(FRAMES5.iter().map(|f| (format!("comp5/frame{f}"), expected_scene5(*f, pixels))));
     out.extend(FRAMES6.iter().map(|f| (format!("comp6/frame{f}"), expected_scene6(*f, pixels))));
     out.extend([6u64, 12].iter().map(|f| (format!("comp3c/frame{f}"), expected_scene3_collapsed(*f, pixels))));
+    out.extend([0u64, 4].iter().map(|f| (format!("comp7/frame{f}"), expected_scene7(*f, pixels))));
     out
 }
 
@@ -358,6 +415,7 @@ pub fn matte_layer10(frame: u64, pixels: &Pixels) -> Option<SceneLayer> {
         fill_opacity: 1.0,
         matrix: Affine2::from_parts(5.0, 4.0, 1.0, 1.0, 0.0, px - 5.0, 12.0 - 4.0),
         matte: None,
+        clipped: false,
     })
 }
 
@@ -390,6 +448,7 @@ pub fn expected_scene5(frame: u64, pixels: &Pixels) -> SceneComposition {
                 fill_opacity: 1.0,
                 matrix: Affine2::translate(6.0, 5.0),
                 matte: Some(matte(SceneMatteMode::Alpha, false)),
+                clipped: false,
             },
             SceneLayer {
                 layer_id: identity("SLYR", 12),
@@ -399,6 +458,7 @@ pub fn expected_scene5(frame: u64, pixels: &Pixels) -> SceneComposition {
                 fill_opacity: 1.0,
                 matrix: Affine2::translate(2.0, 2.0),
                 matte: Some(matte(SceneMatteMode::Luma, true)),
+                clipped: false,
             },
         ],
     }
@@ -516,6 +576,7 @@ pub fn expected_scene6(frame: u64, pixels: &Pixels) -> SceneComposition {
                 fill_opacity: 1.0,
                 matrix: Affine2::translate(8.0, 6.0),
                 matte: None,
+                clipped: false,
             },
             SceneLayer {
                 layer_id: identity("SLYR", 13),
@@ -526,6 +587,7 @@ pub fn expected_scene6(frame: u64, pixels: &Pixels) -> SceneComposition {
                 // Content origin (2, 3), anchor = centre (5, 4) of the content.
                 matrix: Affine2::translate(-2.0, -3.0).then(Affine2::from_parts(5.0, 4.0, 1.0, 1.0, rot, 11.0, 8.0)),
                 matte: None,
+                clipped: false,
             },
             SceneLayer {
                 layer_id: identity("SLYR", 14),
@@ -535,6 +597,7 @@ pub fn expected_scene6(frame: u64, pixels: &Pixels) -> SceneComposition {
                 fill_opacity: 1.0,
                 matrix: Affine2::IDENTITY,
                 matte: None,
+                clipped: false,
             },
         ],
     }
@@ -616,20 +679,52 @@ pub fn oracle(scene: &SceneComposition, pixels: &Pixels) -> Vec<[f32; 4]> {
             if let Some(b) = scene.background {
                 acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, PixelSite::default()).unwrap();
             }
-            for step in &prepared {
-                let (l, texels, p, coverage) = match step {
+            let site = PixelSite { x, y, seed: 0 };
+            let sample = |texels: &Texels<'_>, p: &PreparedTransform| {
+                let s = p.sample_rgba(x, y, |i, j| Ok::<_, ()>(texels.at(i, j))).unwrap();
+                Rgba::new([s[0], s[1], s[2]], s[3])
+            };
+            let cov = |c: &Option<Vec<f32>>| c.as_ref().map_or(1.0, |c| c[(y * i64::from(scene.width) + x) as usize]);
+            let mut i = 0;
+            while i < prepared.len() {
+                let (l, texels, p, coverage) = match &prepared[i] {
                     Step::Draw(l, texels, p, coverage) => (l, texels, p, coverage),
                     Step::Adjust(l, prep) => {
                         let k = (l.opacity * l.fill_opacity) as f32;
                         acc = composite_adjustment(l.mode, acc, prep, k).unwrap();
+                        i += 1;
                         continue;
                     }
                 };
-                let s = p.sample_rgba(x, y, |i, j| Ok::<_, ()>(texels.at(i, j))).unwrap();
-                let src = Rgba::new([s[0], s[1], s[2]], s[3]);
-                let mask = coverage.as_ref().map_or(1.0, |c| c[(y * i64::from(scene.width) + x) as usize]);
-                let opacity = (l.opacity * l.fill_opacity) as f32 * mask;
-                acc = composite_over(l.mode, acc, src, opacity, PixelSite { x, y, seed: 0 }).unwrap();
+                let src = sample(texels, p);
+                // A clip run [base, c1..cn] (pigment's clip-to-base rule): G = the base content
+                // with its own coverage; each clipped layer composites onto G with its own mode,
+                // opacity and fill, its alpha times the base alpha, G's alpha held at the base
+                // alpha; G composites onto the backdrop with the base's mode, opacity and fill.
+                let mut j = i + 1;
+                let mut run = Vec::new();
+                while let Some(Step::Draw(cl, ct, cp, cc)) = prepared.get(j) {
+                    if !cl.clipped {
+                        break;
+                    }
+                    run.push((cl, ct, cp, cc));
+                    j += 1;
+                }
+                if run.is_empty() {
+                    let opacity = (l.opacity * l.fill_opacity) as f32 * cov(coverage);
+                    acc = composite_over(l.mode, acc, src, opacity, site).unwrap();
+                } else {
+                    let mut g = Rgba::new(src.rgb, src.a * cov(coverage));
+                    let base_alpha = g.a;
+                    for (cl, ct, cp, cc) in run {
+                        let c = sample(ct, cp);
+                        let c = Rgba::new(c.rgb, c.a * base_alpha);
+                        g = composite_over(cl.mode, g, c, (cl.opacity * cl.fill_opacity) as f32 * cov(cc), site).unwrap();
+                        g.a = base_alpha;
+                    }
+                    acc = composite_over(l.mode, acc, g, (l.opacity * l.fill_opacity) as f32, site).unwrap();
+                }
+                i = j;
             }
             out.push([acc.rgb[0], acc.rgb[1], acc.rgb[2], acc.a]);
         }

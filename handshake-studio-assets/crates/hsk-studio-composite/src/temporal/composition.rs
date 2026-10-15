@@ -175,6 +175,7 @@ struct CompLayer {
     timing: StudioLayerTiming,
     parent: Option<String>,
     matte: Option<StudioTrackMatte>,
+    clipped: bool,
     visible: bool,
     mode: StudioBlendMode,
     opacity: f64,
@@ -266,6 +267,8 @@ fn static_content(
     if let Some(a) = layer.appearance.as_mut() {
         a.opacity = 100.0;
         a.blend_mode = hsk_studio_folio::BLEND_NORMAL;
+        // Clipping applies in the composition stack (SceneLayer::clipped), not in the subtree.
+        a.clipped = false;
     }
     let snap = validate_document(frame, input.budget, cancel, input.resolver)
         .map_err(|e| TemporalError::Document(format!("{:?}:{}", e.code, e.target)))?;
@@ -638,9 +641,6 @@ impl CompositionTemporalSource {
                 _ => return Err(unsupported(id, COMPOSITION_LAYER_CONTENT)),
             };
             let a = dl.effective_appearance();
-            if a.clipped {
-                return Err(unsupported(id, COMPOSITION_LAYER_CLIPPED));
-            }
             // A precomposition layer is a Folio `group`, whose identity appearance is pass-through;
             // its rendered surface composites like any layer, so an UNAUTHORED appearance means
             // normal. An authored pass-through stays refused below.
@@ -660,6 +660,7 @@ impl CompositionTemporalSource {
                 timing: l.timing,
                 parent: l.parent.clone(),
                 matte: l.track_matte.clone(),
+                clipped: a.clipped,
                 visible: dl.visible,
                 mode,
                 opacity: a.opacity_fraction(),
@@ -1013,6 +1014,7 @@ impl CompositionTemporalSource {
             fill_opacity: l.fill_opacity,
             matrix: Self::matrix(comp, l, tick, cancel)?,
             matte,
+            clipped: l.clipped,
         }))
     }
 }

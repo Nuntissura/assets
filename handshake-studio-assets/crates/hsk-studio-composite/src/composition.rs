@@ -71,6 +71,9 @@ pub const MATTE_BYTES_PER_PIXEL: u64 = 2;
 /// Refusal keys of composition layers composite cannot lower.
 pub const ADJUSTMENT_TRANSFORM: &str = "composition_adjustment_transform";
 pub const ADJUSTMENT_MATTE: &str = "composition_adjustment_matte";
+pub const CLIP_WITHOUT_BASE: &str = "composition_clip_without_base";
+pub const CLIP_BASE_ADJUSTMENT: &str = "composition_clip_base_adjustment";
+pub const CLIPPED_MATTE: &str = "composition_clipped_matte";
 /// Exactness-ledger key of a track matte: the matte coverage is quantised to 16 bits and the
 /// luma weights are a Studio reading, so the class is `Approximate`.
 pub const TRACK_MATTE_KEY: &str = "track_matte";
@@ -210,6 +213,9 @@ pub struct SceneLayer {
     pub matrix: Affine2,
     /// Track matte applied after transform and opacity, before the blend (STU-CMP-010 step 7).
     pub matte: Option<SceneMatte>,
+    /// Clipped to the nearest earlier unclipped content layer of the composition (Folio
+    /// `clipped`; pigment's clip-to-base route, Approximate).
+    pub clipped: bool,
 }
 
 /// One evaluated frame of a composition.
@@ -458,6 +464,14 @@ fn invalid(layer_id: &str, field: &'static str) -> TemporalError {
     }
 }
 
+/// The clip base of the next clipped layer (see `lower_inner`).
+#[derive(Clone, Copy)]
+enum Base {
+    Rendered,
+    Skipped,
+    Adjustment,
+}
+
 /// How a content matrix moves the content.
 enum Placement {
     /// Exact integer translation (tiles move, no resampling).
@@ -592,6 +606,9 @@ fn lower_inner(
     let mut transforms: Vec<(usize, LayerTransform)> = Vec::new();
     // (root layer index, adjustment) per adjustment layer.
     let mut adjustments: Vec<(usize, AdjustmentOp)> = Vec::new();
+    // The clip base so far: `None` = no unclipped content layer yet, else whether it was rendered
+    // (`Some(true)`), skipped (`Some(false)`: its clipped layers drop with it) or an adjustment.
+    let mut base: Option<Base> = None;
     let mut rendered = Vec::new();
     let mut skipped = Vec::new();
     let surfaces_before = charges.surfaces;
@@ -620,6 +637,33 @@ fn lower_inner(
             }
         }
         let placement = classify(id, &layer.matrix)?;
+        if layer.clipped {
+            if layer.matte.is_some() {
+                return Err(TemporalError::Unsupported {
+                    layer_id: id.to_owned(),
+                    feature: CLIPPED_MATTE,
+                });
+            }
+            match base {
+                None => {
+                    return Err(TemporalError::Unsupported {
+                        layer_id: id.to_owned(),
+                        feature: CLIP_WITHOUT_BASE,
+                    });
+                }
+                Some(Base::Adjustment) => {
+                    return Err(TemporalError::Unsupported {
+                        layer_id: id.to_owned(),
+                        feature: CLIP_BASE_ADJUSTMENT,
+                    });
+                }
+                Some(Base::Skipped) => {
+                    skipped.push(id.to_owned());
+                    continue;
+                }
+                Some(Base::Rendered) => {}
+            }
+        }
         let has_content = match &layer.content {
             SceneContent::Tiles(t) => !t.is_empty(),
             SceneContent::Precomp(_) | SceneContent::Static(_) | SceneContent::Adjustment(_) => true,
@@ -634,6 +678,9 @@ fn lower_inner(
             || matte_empty
             || matches!(placement, Placement::Collapsed)
         {
+            if !layer.clipped && has_content {
+                base = Some(Base::Skipped);
+            }
             skipped.push(id.to_owned());
             continue;
         }
@@ -655,6 +702,7 @@ fn lower_inner(
                 rgba: [0.0; 4],
             })?;
             adjustments.push((root_layers.len(), op.clone()));
+            base = Some(Base::Adjustment);
             #[allow(clippy::cast_possible_truncation)]
             root_layers.push(Layer {
                 input,
@@ -761,6 +809,7 @@ fn lower_inner(
             ));
         }
         let mask = match &layer.matte {
+            None if layer.clipped => Some(MaskInput::clip_to_base()),
             None => None,
             Some(matte) => {
                 let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
@@ -788,6 +837,9 @@ fn lower_inner(
             fill_opacity: layer.fill_opacity as f32,
             mask,
         });
+        if !layer.clipped {
+            base = Some(Base::Rendered);
+        }
         rendered.push(id.to_owned());
     }
     if root_layers.is_empty() {

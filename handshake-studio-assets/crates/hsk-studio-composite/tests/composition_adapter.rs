@@ -6,7 +6,7 @@
 #![cfg(feature = "motion")]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
-    COMPOSITION_LAYER_CLIPPED, COMPOSITION_COLLAPSE_BLEND,
+    COMPOSITION_COLLAPSE_BLEND,
     COMPOSITION_PRECOMP_ON_DOCUMENT_GRAPH, COMPOSITION_PRECOMP_PAYLOAD,
     COMPOSITION_TRACK_MATTE_ON_DOCUMENT_GRAPH, CompositionInput, CompositionTemporalSource,
 };
@@ -335,11 +335,20 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         // lowers the layer's own graph operation; this fixture's vector layer has none.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 5))).unwrap_err();
         assert_eq!(unsupported(e), hsk_studio_composite::temporal::composition::COMPOSITION_LAYER_NOT_IN_GRAPH);
-        // A clipped layer.
+        // A clipped layer is carried (lane SMB-COMPOSITE-CLIP-RECORDS): it clips to the nearest
+        // earlier unclipped layer of the composition; with no such layer it is refused.
         let mut doc = document();
         doc["layers"][2]["appearance"] = json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":2,"clipped":true,"isolation":"isolated"});
-        let e = source_from(&doc, &records(), &pixels).unwrap_err();
-        assert_eq!(unsupported(e), COMPOSITION_LAYER_CLIPPED);
+        let clipped = source_from(&doc, &records(), &pixels).unwrap();
+        let mut scene = clipped.scene_at(f(5) as i64, &CancellationToken::default()).unwrap();
+        assert!(scene.layers[1].clipped && !scene.layers[0].clipped);
+        let ctx = context(&pixels, SceneLimits::default());
+        let low = lower_scene(&scene, &ctx, &CancellationToken::default()).unwrap();
+        let PlanNode::Group(root) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!() };
+        assert!(root.layers.last().unwrap().mask.unwrap().is_clip_to_base());
+        scene.layers[0].clipped = true;
+        let e = lower_scene(&scene, &ctx, &CancellationToken::default()).unwrap_err();
+        assert_eq!(unsupported(e), hsk_studio_composite::composition::CLIP_WITHOUT_BASE);
         // Folio refusals of the records surface as Document; unknown composition and stale revision.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 99))).unwrap_err();
         assert!(matches!(&e, TemporalError::Document(t) if t.starts_with("DanglingReference")), "{e:?}");
