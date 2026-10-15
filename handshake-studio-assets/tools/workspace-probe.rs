@@ -487,7 +487,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-nib", &["i_overlay", "kurbo", "sha2"]),
     ("hsk-studio-type", &["bitflags", "bytemuck", "harfrust", "serde_json", "sha2", "unicode-bidi-mirroring", "unicode-ccc", "unicode-properties", "unicode-script"]),
     ("hsk-studio-layout", &["unicode-linebreak"]),
-    ("hsk-studio-develop", &["sha2"]),
+    ("hsk-studio-develop", &["sha2", "zune-jpeg"]),
     ("hsk-studio-score", &["rubato"]),
     ("hsk-studio-reel", &["libc", "miniz_oxide", "rav1d", "sha2"]),
     ("hsk-studio-composite", &["kurbo", "serde_json"]),

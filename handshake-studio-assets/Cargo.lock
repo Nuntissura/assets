@@ -1705,6 +1705,7 @@ dependencies = [
  "hsk-studio-pigment",
  "hsk-studio-prism",
  "sha2 0.11.0",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1751,6 +1752,7 @@ dependencies = [
  "hsk-studio-components",
  "hsk-studio-composite",
  "hsk-studio-folio",
+ "hsk-studio-interop-raster",
  "hsk-studio-nib",
  "hsk-studio-observe",
  "hsk-studio-package",
@@ -1965,8 +1967,12 @@ name = "hsk-studio-pulse"
 version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
+ "hsk-studio-composite",
  "hsk-studio-folio",
  "hsk-studio-observe",
+ "hsk-studio-pigment",
+ "hsk-studio-prism",
+ "hsk-studio-render-cpu",
 ]
 
 [[package]]
