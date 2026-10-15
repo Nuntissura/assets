@@ -727,3 +727,197 @@ fn footnotes_and_index_export() {
     assert!(near(page.pixel(45, 193).unwrap(), [0, 0, 0]), "rule {:?}", page.pixel(45, 193));
     assert!(near(page.pixel(100, 193).unwrap(), [255, 255, 255]), "rule ends at 70 {:?}", page.pixel(100, 193));
 }
+
+/// PDF/X-4 + PDF/A-2b identification over the sRGB output intent (as tests/pdf_export.rs).
+fn archival() -> ExportOptions<'static> {
+    use hsk_studio_interop_layout::press::{OutputIntent, OutputIntentSubtype, PdfX4};
+    const SRGB: &[u8] = include_bytes!("../../hsk-studio-develop/tests/profiles/sRGB-v4.icc");
+    let intent = OutputIntent { icc: SRGB, components: 3, output_condition_identifier: "sRGB IEC61966-2.1", output_condition: None, registry: Some("http://www.color.org"), subtype: OutputIntentSubtype::GtsPdfx };
+    let x4 = PdfX4 { created: "D:20261015000000Z", modified: "D:20261015000000Z", trapped: false };
+    ExportOptions { version: "1.6", output_intent: Some(intent), info_title: Some("Studio long document"), pdfx4: Some(x4), pdfa2b: true, ..ExportOptions::default() }
+}
+/// Writes `bytes` as `name` into `HSK_STUDIO_PDF_CORPUS_DIR` when it is set (external veraPDF run).
+fn dump(name: &str, bytes: &[u8]) {
+    if let Some(dir) = std::env::var_os("HSK_STUDIO_PDF_CORPUS_DIR") {
+        std::fs::write(std::path::Path::new(&dir).join(name), bytes).unwrap();
+    }
+}
+
+/// Slice 5: one page carrying every long-document feature at once, exported with the archival
+/// identification: the body with its footnote, band rule and reference marker (as slice 4), a
+/// two-row table continuing the body frame at y 30 (FlowPosition, header red, body row blue), the
+/// picture in an ellipse frame at (230, 20) 60 x 60 filled proportionally, and the index in frame
+/// 22. Press's PDF/X-4 self-check passes on the bytes; pixels prove each feature in the one file.
+/// PDF/A-2b is not claimed: veraPDF 1.30.3 fails ISO 19005-2 6.2.11.5 on these bytes because `/W`
+/// takes the Type-shaped (kerned) advance of a glyph's first use, not the font program's width.
+#[test]
+fn long_document_archival_export() {
+    let cancel = CancellationToken::default();
+    let mut doc = notes_document();
+    doc.layers.push(raster_layer(3));
+    let snapshot = validate_document(doc, Budget::default(), &cancel, &Everything).unwrap();
+    let doc = snapshot.document();
+    let files = [common::text_shaping::FontFile::inter()];
+    let fonts = [PdfFont { bytes: &files[0].bytes, face_index: 0, hyphen: None }];
+    let body = "Body note";
+    let (body_story, body_paras, body_glyphs) = shaped_story(7, body, &[(0, 9, None)], &files, &fonts);
+    let (note_story, note_paras, note_glyphs) = shaped_story(9, "The footnote.", &[(0, 13, None)], &files, &fonts);
+    let footnote = StudioFootnote { note_id: "n1".into(), story_id: id("STXT", 7), anchor: 9, note_story_id: id("STXT", 9) };
+    let options = StudioFootnoteOptions {
+        numbering_style: StudioNumberStyle::Arabic,
+        start_at: 1,
+        restart: FootnoteRestart::DontRestart,
+        prefix: String::new(),
+        suffix: String::new(),
+        space_between: len(2.0),
+        spacer: len(6.0),
+        rule: Some(StudioFootnoteRule { weight: len(1.0), colour: rgb(0.0, 0.0, 0.0), tint: 100.0, left_indent: len(0.0), width: len(50.0), offset: len(2.5) }),
+        continuing_rule: None,
+        eos_placement: false,
+        no_splitting: false,
+    };
+    let notes = [hsk_studio_interop_layout::layout::NoteInput { note: &footnote, story: &note_story, resolved_text: None, paragraphs: &note_paras }];
+    let request = ReflowRequest {
+        document: doc,
+        story: &body_story,
+        resolved_text: None,
+        paragraphs: &body_paras,
+        obstacles: &[],
+        composer: Composer::FirstFit,
+        space: SpaceParams::default(),
+        expected_revision: doc.revision,
+        limits: hsk_studio_interop_layout::layout::Limits::default(),
+    };
+    let fp = hsk_studio_interop_layout::layout::layout_footnotes(
+        &hsk_studio_interop_layout::layout::FootnoteRequest { reflow: request, notes: &notes, options: &options, pages: &[], max_iterations: 8 },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    // Table in the body frame below the first line (y 30): header 24 pt ("Hi"), body row 20 pt.
+    let row = |t: TableRowType, h: f64| StudioTableRow { row_type: t, minimum_height: len(h), maximum_height: len(h), keep_with_next_row: false, start_row: TableStartRow::Anywhere, allow_split: false };
+    let cell = |r: u32, c: u32, fill: StudioColor| StudioTableCell {
+        row: r,
+        column: c,
+        row_span: 1,
+        column_span: 1,
+        content: (r == 0 && c == 0).then_some(StudioByteRange { start: 0, end: 2 }),
+        insets: edges(0.0),
+        fill: Some(fill),
+        fill_tint: Some(50.0),
+        strokes: StudioCellEdges::default(),
+        stroke_priorities: StudioEdgePriorities::default(),
+        vertical_justification: VerticalJustification::Top,
+    };
+    let table = StudioTable {
+        table_id: "t".into(),
+        story_id: id("STXT", 7),
+        anchor: 9,
+        cell_story_id: Some(id("STXT", 11)),
+        column_widths: vec![len(100.0), len(100.0)],
+        rows: vec![row(TableRowType::Header, 24.0), row(TableRowType::Body, 20.0)],
+        cells: vec![cell(0, 0, rgb(1.0, 0.0, 0.0)), cell(0, 1, rgb(1.0, 0.0, 0.0)), cell(1, 0, rgb(0.0, 0.0, 1.0)), cell(1, 1, rgb(0.0, 0.0, 1.0))],
+        break_headers: TableHeaderBreak::OncePerTextFrame,
+        break_footers: TableHeaderBreak::OncePerTextFrame,
+        skip_first_header: false,
+        skip_last_footer: false,
+        stroke_order: TableStrokeOrder::RowOnTop,
+    };
+    let (cell_story, cell_paras, cell_glyphs) = shaped_story(11, "Hi", &[(0, 2, None)], &files, &fonts);
+    let tp = layout_table(
+        &TableRequest {
+            document: doc,
+            table: &table,
+            host_story: &body_story,
+            host_resolved_text: None,
+            cell_story: Some(&cell_story),
+            cell_resolved_text: None,
+            cell_paragraphs: &cell_paras,
+            start: Some(FlowPosition { frame: 0, y_pt: 30.0 }),
+            composer: Composer::FirstFit,
+            space: SpaceParams::default(),
+            expected_revision: doc.revision,
+            limits: TableLimits::default(),
+        },
+        &TypesetOptions::default(),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(tp.end, Some(FlowPosition { frame: 0, y_pt: 74.0 }));
+    // Picture.
+    let graphic = StudioGraphicFrame {
+        layer_id: id("SLYR", 3),
+        page_id: "b1".into(),
+        bounds: Bounds { x: len(230.0), y: len(20.0), width: len(60.0), height: len(60.0) },
+        shape: StudioFrameShape::Ellipse,
+        content_width: len(120.0),
+        content_height: len(60.0),
+        fit: Some(StudioFit::FillProportionally),
+        frame_fitting: None,
+        anchor: StudioFitAnchor::Center,
+        crop: None,
+    };
+    let placed = [hsk_studio_interop_layout::layout::place_graphic(doc, &graphic).unwrap()];
+    // Index.
+    let pages = number_pages(doc, &[]).unwrap();
+    let mark = |m: &str, at: u64, topics: &[&str]| StudioIndexMark { mark_id: m.into(), story_id: id("STXT", 7), at, topics: topics.iter().map(|t| t.to_string()).collect(), sort_by: vec![], xref: None };
+    let index_options = StudioIndexOptions {
+        title: "Index".into(),
+        title_style: None,
+        index_format: IndexFormat::Nested,
+        include_section_headings: false,
+        include_empty_index_sections: false,
+        level_styles: vec![],
+        section_heading_style: None,
+        following_topic_separator: ", ".into(),
+        between_entries_separator: "; ".into(),
+        page_range_separator: "-".into(),
+        between_page_numbers_separator: ", ".into(),
+        before_cross_reference_separator: ". ".into(),
+        entry_end_separator: String::new(),
+    };
+    let index = hsk_studio_interop_layout::layout::generate_index(
+        doc,
+        &index_options,
+        &[mark("m1", 0, &["Body"]), mark("m2", 5, &["Notes", "footnote"])],
+        &[TocSource { story: &body_story, text: body, placement: Some(&fp.body) }],
+        &pages,
+        None,
+        hsk_studio_interop_layout::layout::IndexLimits::default(),
+        &cancel,
+    )
+    .unwrap();
+    let ranges: Vec<(u64, u64, Option<String>)> = index.story.paragraphs.iter().map(|p| (p.start, p.end, None)).collect();
+    let (index_story, index_paras, index_glyphs) = shaped_story(8, &index.story.text, &ranges, &files, &fonts);
+    let index_place = reflow_typeset(&ReflowRequest { story: &index_story, paragraphs: &index_paras, ..request }, &TypesetOptions::default(), &cancel).unwrap();
+    let stories = [
+        PdfStory { story: &body_story, text: body, placement: &fp.body, paragraphs: &body_paras, glyphs: &body_glyphs, default_fill: Colour::DeviceGray(0.0) },
+        PdfStory { story: &index_story, text: &index.story.text, placement: &index_place, paragraphs: &index_paras, glyphs: &index_glyphs, default_fill: Colour::DeviceGray(0.0) },
+    ];
+    let overlays = [PdfStory { story: &note_story, text: "The footnote.", placement: &fp.note_text[0].1, paragraphs: &note_paras, glyphs: &note_glyphs, default_fill: Colour::DeviceGray(0.0) }];
+    let tables = [PdfTable { proposal: &tp, cells: PdfStory { story: &cell_story, text: "Hi", placement: &tp.text, paragraphs: &cell_paras, glyphs: &cell_glyphs, default_fill: Colour::DeviceGray(0.0) } }];
+    let picture = Picture::new();
+    let longdoc = PdfLongDoc { tables: &tables, overlays: &overlays, graphics: &placed, rules: &fp.rules };
+    let out = export_pdf_with(&PdfExportInput { options: archival(), ..input(&snapshot, &stories, &fonts, &picture) }, &longdoc, &cancel).unwrap();
+    dump("layout-longdoc.pdf", &out.bytes);
+    let report = hsk_studio_interop_layout::press::check_pdfx4(&out.bytes, &Limits::default(), &cancel).unwrap();
+    assert!(report.all_passed(), "{:?}", report.failed());
+    assert_eq!(out.receipt.effective_pdfx_profile.as_deref(), Some("PDF/X-4"));
+    let page = render_page(&out.bytes, 0, 1.0, &Limits::default(), &cancel).unwrap();
+    let px = |x, y| page.pixel(x, y).unwrap();
+    let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 6);
+    // Table: frame 21 at (20, 20); header 30..54 -> spread 50..74 red at 50 % tint, body 54..74 ->
+    // spread 74..94 blue at 50 % tint.
+    assert!(close(px(170, 60), [255, 128, 128]), "header {:?}", px(170, 60));
+    assert!(close(px(120, 85), [128, 128, 255]), "body row {:?}", px(120, 85));
+    // Picture: fill_proportionally s = 1, content 120 x 60 over the 60 x 60 ellipse frame from x
+    // 200: columns 0-1 (content x < 60, spread < 260) red, 2-3 blue; frame corner outside.
+    assert!(close(px(250, 50), [255, 0, 0]), "picture red {:?}", px(250, 50));
+    assert!(close(px(270, 50), [0, 0, 255]), "picture blue {:?}", px(270, 50));
+    assert!(close(px(232, 22), [255, 255, 255]), "ellipse corner {:?}", px(232, 22));
+    // Footnote rule (spread y 193.5) and the note and index glyphs (as slice 4).
+    assert!(close(px(45, 193), [0, 0, 0]), "rule {:?}", px(45, 193));
+    let g = shown(&out.bytes);
+    assert!(g.iter().any(|s| s.2 == 188.0), "note line");
+    assert_eq!(g.iter().filter(|s| [154.0, 130.0, 106.0, 82.0].contains(&s.2)).count(), index_glyphs.iter().flatten().count());
+}
