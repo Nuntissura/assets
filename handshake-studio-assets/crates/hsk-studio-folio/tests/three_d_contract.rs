@@ -120,3 +120,44 @@ fn three_d_records_are_serde_default_round_trip_and_are_bounded() {
     s[0]["three_d"]["material"]["glow"] = json!(1);
     assert!(serde_json::from_value::<StudioCompositionRecords>(records(s)).is_err());
 }
+
+#[test]
+fn immersive_settings_are_serde_default_and_bounded() {
+    // Lane SMB-AE-3D-2 (STU-CMP-055a / STU-VID-018): the nine immersive fields on a composition.
+    let plain = records(vec![layer(1)]);
+    let r: StudioCompositionRecords = serde_json::from_value(plain.clone()).unwrap();
+    assert!(!String::from_utf8_lossy(&serde_json::to_vec(&r).unwrap()).contains("immersive"), "absent: bytes unchanged");
+    let settings = json!({"projection_type":1,"stereoscopic_type":0,"stereoscopic_eye":0,
+        "captured_horizontal_view":360.0,"captured_vertical_view":180.0,
+        "field_of_horizontal_view":108.0,"field_of_vertical_view":108.0,"ambisonics_monitoring_type":0,
+        "ambisonics_hrir":"hrir-default"});
+    let mut with = records(scene());
+    with["compositions"][0]["immersive"] = settings.clone();
+    let r: StudioCompositionRecords = serde_json::from_value(with.clone()).unwrap();
+    let bytes = serde_json::to_vec(&r).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), with, "round trip");
+    check(&with).unwrap();
+    assert_eq!(r.compositions[0].immersive.as_ref().unwrap().projection_type, IMMERSIVE_PROJECTION_EQUIRECTANGULAR);
+    for (field, bad) in [
+        ("projection_type", json!(7)),
+        ("stereoscopic_type", json!(3)),
+        ("stereoscopic_eye", json!(2)),
+        ("captured_horizontal_view", json!(0.0)),
+        ("captured_vertical_view", json!(181.0)),
+        ("field_of_horizontal_view", json!(400.0)),
+        ("field_of_vertical_view", json!(-1.0)),
+        ("ambisonics_monitoring_type", json!(1)),
+        ("ambisonics_hrir", json!("")),
+    ] {
+        let mut v = with.clone();
+        v["compositions"][0]["immersive"][field] = bad;
+        let d = check(&v).expect_err(field);
+        assert!(d.target.contains(field), "{field}: {d:?}");
+    }
+    let mut v = with.clone();
+    v["compositions"][0]["immersive"]["projection"] = json!("equirect");
+    assert!(serde_json::from_value::<StudioCompositionRecords>(v).is_err(), "unknown members are shape errors");
+    let mut v = with;
+    v["compositions"][0]["immersive"].as_object_mut().unwrap().remove("stereoscopic_eye");
+    assert!(serde_json::from_value::<StudioCompositionRecords>(v).is_err(), "every field but the hrir reference is required");
+}

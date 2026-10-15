@@ -1583,6 +1583,134 @@ fn apply_layer_mask(id: &str, surface: &mut Surface, mask: Option<&[f32]>) -> Re
     Ok(())
 }
 
+/// STU-CMP-055 "Plane to sphere" (lane SMB-AE-3D-2; [`crate::three_d::immersive`] module docs):
+/// the immersive scene rendered as one equirectangular frame. Each plane's content is rendered
+/// over its rectangle by the context's backend (lights, shadows and layer masks as in a 3D run);
+/// the spherical ray cast, the bilinear sample and the normal composite run here. Refused typed:
+/// a non-normal blend, a track matte or depth of field ([`crate::three_d::immersive::IMMERSIVE_LAYER`]),
+/// a zero or oversized frame, more than [`crate::three_d::MAX_RUN_PLANES`] planes; surfaces are
+/// charged before allocation.
+pub fn render_equirect(
+    scene: &crate::three_d::immersive::ImmersiveScene,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+) -> Result<Surface, TemporalError> {
+    use crate::three_d::immersive::{IMMERSIVE_LAYER, IMMERSIVE_PARAMETERS, MAX_IMMERSIVE_SIDE, equirect_direction};
+    use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over};
+    let refuse = |id: &str, feature: &'static str| TemporalError::Unsupported { layer_id: id.to_owned(), feature };
+    let (w, h) = (scene.width, scene.height);
+    if w == 0 || h == 0 || w > MAX_IMMERSIVE_SIDE || h > MAX_IMMERSIVE_SIDE {
+        return Err(refuse("frame", IMMERSIVE_PARAMETERS));
+    }
+    if scene.camera.dof.is_some() {
+        return Err(refuse("camera", IMMERSIVE_LAYER));
+    }
+    if scene.planes.len() > crate::three_d::MAX_RUN_PLANES {
+        return Err(refuse(scene.planes.first().map_or("", |p| p.layer_id.as_str()), crate::three_d::COMPOSITION_3D_RUN_LIMIT));
+    }
+    let mut charges = Charges::default();
+    let mut ledger = ExactnessLedger::default();
+    charges.surface(ctx, w, h)?;
+    // Per plane: straight colour, alpha, its rectangle and its transform.
+    struct Src<'a> {
+        plane: &'a crate::three_d::Plane3d,
+        rgb: Vec<f32>,
+        alpha: Vec<f32>,
+    }
+    let mut srcs = Vec::with_capacity(scene.planes.len());
+    for (i, p) in scene.planes.iter().enumerate() {
+        cancel.check().map_err(|_| canceled())?;
+        if p.mode != StudioBlendMode::Normal || p.track_matte.is_some() {
+            return Err(refuse(&p.layer_id, IMMERSIVE_LAYER));
+        }
+        let surface = match crate::three_d::plane_content(&scene.planes, i, &scene.materials, &scene.lights, &scene.camera) {
+            SceneContent::Lit(lit) => lit_surface(&p.layer_id, &lit, filter, ctx, cancel, 0, &mut charges, &mut ledger)?,
+            other => content_surface(&p.layer_id, &other, p.bounds, filter, ctx, cancel, 0, &mut charges, &mut ledger)?,
+        };
+        let n = usize::try_from(u64::from(surface.width).checked_mul(u64::from(surface.height)).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+        let rgb = (0..n.checked_mul(3).ok_or(CompositeError::Overflow)?).map(|k| f32_at(&surface.colour, k)).collect();
+        let alpha = (0..n).map(|k| f32_at(&surface.alpha, k)).collect();
+        srcs.push(Src { plane: p, rgb, alpha });
+    }
+    // Premultiplied bilinear sample at content plan point (px, py); transparent outside.
+    let sample = |s: &Src<'_>, px: f64, py: f64| -> [f64; 4] {
+        #[allow(clippy::cast_precision_loss)]
+        let (fx, fy) = (px - s.plane.bounds.x as f64 - 0.5, py - s.plane.bounds.y as f64 - 0.5);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = (fx - x0, fy - y0);
+        let (bw, bh) = (f64::from(s.plane.bounds.width), f64::from(s.plane.bounds.height));
+        let mut acc = [0.0f64; 4];
+        for (dy, wy) in [(0.0, 1.0 - ty), (1.0, ty)] {
+            for (dx, wx) in [(0.0, 1.0 - tx), (1.0, tx)] {
+                let (ix, iy) = (x0 + dx, y0 + dy);
+                if !(ix >= 0.0 && iy >= 0.0 && ix < bw && iy < bh) || wx * wy == 0.0 {
+                    continue;
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let k = (iy as usize).saturating_mul(s.plane.bounds.width as usize).saturating_add(ix as usize);
+                let a = f64::from(s.alpha.get(k).copied().unwrap_or(0.0));
+                let c = |o: usize| f64::from(k.checked_mul(3).and_then(|b| b.checked_add(o)).and_then(|b| s.rgb.get(b)).copied().unwrap_or(0.0));
+                let wt = wx * wy;
+                acc[0] += wt * a * c(0);
+                acc[1] += wt * a * c(1);
+                acc[2] += wt * a * c(2);
+                acc[3] += wt * a;
+            }
+        }
+        acc
+    };
+    let blend_err = |id: &str| invalid(id, "blend");
+    let mut colour = Vec::with_capacity(usize::try_from(surface_bytes(w, h)?).map_err(|_| CompositeError::Overflow)?);
+    let mut alpha_out = Vec::new();
+    let eye = scene.camera.position;
+    let mut hits: Vec<(f64, usize, [f64; 4])> = Vec::with_capacity(srcs.len());
+    for y in 0..h {
+        cancel.check().map_err(|_| canceled())?;
+        for x in 0..w {
+            let dir = crate::three_d::mat_vec(&scene.camera.rotation, equirect_direction(x, y, w, h));
+            hits.clear();
+            for (i, s) in srcs.iter().enumerate() {
+                let Some((t, lx, ly)) = crate::three_d::ray_hit(&s.plane.transform, eye, dir) else { continue };
+                if t.is_nan() || t <= crate::three_d::NEAR_DEPTH {
+                    continue;
+                }
+                let v = sample(s, lx + s.plane.origin[0], ly + s.plane.origin[1]);
+                if v[3] > 0.0 {
+                    hits.push((t, i, v));
+                }
+            }
+            // Farthest first; equal distance: stack order.
+            hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let site = PixelSite { x: i64::from(x), y: i64::from(y), seed: 0 };
+            let mut acc = match scene.background {
+                Some(b) => composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, site).map_err(|_| blend_err("background"))?,
+                None => Rgba::TRANSPARENT,
+            };
+            for (_, i, v) in &hits {
+                let Some(s) = srcs.get(*i) else { continue };
+                #[allow(clippy::cast_possible_truncation)]
+                let src = Rgba::new([(v[0] / v[3]) as f32, (v[1] / v[3]) as f32, (v[2] / v[3]) as f32], v[3] as f32);
+                #[allow(clippy::cast_possible_truncation)]
+                let opacity = s.plane.opacity as f32;
+                acc = composite_over(StudioBlendMode::Normal, acc, src, opacity, site).map_err(|_| blend_err(&s.plane.layer_id))?;
+            }
+            for c in acc.rgb {
+                colour.extend_from_slice(&c.to_le_bytes());
+            }
+            alpha_out.extend_from_slice(&acc.a.to_le_bytes());
+        }
+    }
+    Ok(Surface {
+        width: w,
+        height: h,
+        colour_sha256: hsk_studio_prism::profile_hash(&colour),
+        alpha_sha256: hsk_studio_prism::profile_hash(&alpha_out),
+        colour,
+        alpha: alpha_out,
+    })
+}
+
 /// STU-CMP-050 auxiliary channels of 3D planes (lane SMB-AE-3D-2): every plane's content rendered
 /// over its rectangle by the context's backend (layer mask applied), then
 /// [`crate::three_d::aux_channels`] per pixel centre. Surfaces are charged before allocation.

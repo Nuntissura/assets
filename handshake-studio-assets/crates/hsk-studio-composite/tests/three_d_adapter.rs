@@ -439,3 +439,53 @@ fn three_d_planes_and_object_ids_from_records() {
         Err(TemporalError::Composite(hsk_studio_composite::CompositeError::BudgetExceeded))
     ));
 }
+
+#[test]
+fn immersive_scene_and_capability_refusals_from_records() {
+    // Lane SMB-AE-3D-2 (STU-CMP-055 / 055a): an equirectangular composition of the two planes and
+    // the camera; every refusal is typed; the 18 unbuilt capabilities are refused by name.
+    let pixels = Pixels::fixture();
+    let settings = json!({"projection_type":1,"stereoscopic_type":0,"stereoscopic_eye":0,
+        "captured_horizontal_view":360.0,"captured_vertical_view":180.0,
+        "field_of_horizontal_view":108.0,"field_of_vertical_view":108.0,"ambisonics_monitoring_type":0});
+    let with = |l: Vec<Value>, s: Value| {
+        let mut r = records(l);
+        r["compositions"][0]["immersive"] = s;
+        r
+    };
+    let mut l = layers();
+    l.remove(3); // the 2D layer "tb"
+    let src = source(&with(l.clone(), settings.clone()), &pixels).expect("source");
+    let scene = src.immersive_scene_at(0, &CancellationToken::default()).expect("immersive scene");
+    assert_eq!((scene.width, scene.height, scene.background), (32, 24, Some([0.1, 0.2, 0.3, 1.0])));
+    assert_eq!(scene.planes.iter().map(|p| p.layer_id.clone()).collect::<Vec<_>>(), vec![identity("SLYR", 10), identity("SLYR", 11)]);
+    assert_eq!(scene.materials.len(), 2);
+    assert!(scene.lights.is_empty(), "the light starts at frame 10");
+    let parameters = three_d::immersive::IMMERSIVE_PARAMETERS;
+    let layer = three_d::immersive::IMMERSIVE_LAYER;
+    let at = |r: Value, feature: &str| refused(source(&r, &pixels).unwrap().immersive_scene_at(0, &CancellationToken::default()).unwrap_err(), feature);
+    at(records(l.clone()), parameters);
+    for (field, v) in [("projection_type", json!(0)), ("stereoscopic_type", json!(2)), ("captured_horizontal_view", json!(180.0))] {
+        let mut s = settings.clone();
+        s[field] = v;
+        at(with(l.clone(), s), parameters);
+    }
+    at(with(layers(), settings.clone()), layer);
+    let mut m = l.clone();
+    m[3]["track_matte"] = json!({"source_layer_id":identity("SLYR",11),"mode":"alpha","inverted":false});
+    at(with(m, settings.clone()), layer);
+    let mut dof = l.clone();
+    dof[0]["camera"]["depth_of_field"] = json!(true);
+    at(with(dof, settings), layer);
+    // The capability surface: two built, eighteen refused by name, unknown names refused apart.
+    let built: Vec<&str> = three_d::immersive::IMMERSIVE_CAPABILITIES.iter().copied().filter(|c| three_d::immersive::immersive_capability(c).is_ok()).collect();
+    assert_eq!(built, vec!["plane_to_sphere", "sphere_rotate"]);
+    for c in three_d::immersive::IMMERSIVE_CAPABILITIES.iter().filter(|c| !built.contains(c)) {
+        refused(three_d::immersive::immersive_capability(c).unwrap_err(), three_d::immersive::IMMERSIVE_UNSUPPORTED);
+    }
+    refused(three_d::immersive::immersive_capability("immersive_teleport").unwrap_err(), three_d::immersive::IMMERSIVE_UNKNOWN);
+    // Hostile sphere rotations are refused before allocation.
+    assert!(three_d::immersive::sphere_rotate(&[0.0; 3], &[1.0], 1, 1, f64::NAN, 0.0, 0.0).is_err());
+    assert!(three_d::immersive::sphere_rotate(&[0.0; 3], &[1.0], 1, 2, 0.0, 0.0, 0.0).is_err(), "shape mismatch");
+    assert!(three_d::immersive::sphere_rotate(&[], &[], 0, 0, 0.0, 0.0, 0.0).is_err());
+}

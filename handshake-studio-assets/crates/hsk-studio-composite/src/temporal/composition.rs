@@ -313,6 +313,8 @@ struct Comp {
     ticks_per_frame: u64,
     duration: u64,
     background: Option<[f32; 4]>,
+    /// STU-CMP-055a immersive frame parameters (lane SMB-AE-3D-2).
+    immersive: Option<hsk_studio_folio::StudioImmersiveSettings>,
     /// Topmost first, as stored (STU-MOT-009).
     layers: Vec<CompLayer>,
 }
@@ -911,6 +913,7 @@ impl CompositionTemporalSource {
             ticks_per_frame,
             duration: comp.duration,
             background,
+            immersive: comp.immersive.clone(),
             layers,
         })
     }
@@ -1468,6 +1471,54 @@ impl CompositionTemporalSource {
         let comp = self.root()?;
         let (planes, ids, cam) = self.three_d_planes_at(tick, cancel)?;
         crate::composition::three_d_aux_channels(&planes, &ids, &cam, comp.width, comp.height, self.filter, ctx, cancel)
+    }
+
+    /// The immersive frame of the root composition at `tick` (lane SMB-AE-3D-2; STU-CMP-055 /
+    /// 055a; `crate::three_d::immersive` module docs), rendered by
+    /// `crate::composition::render_equirect` at the composition size. Refused typed
+    /// (`IMMERSIVE_PARAMETERS`): no immersive settings, a projection other than equirectangular,
+    /// stereoscopic output, captured views other than 360 x 180; (`IMMERSIVE_LAYER`): a visible 2D
+    /// content layer (it has no place on the sphere), a track matte, a camera with depth of field.
+    pub fn immersive_scene_at(&self, tick: i64, cancel: &CancellationToken) -> Result<crate::three_d::immersive::ImmersiveScene, TemporalError> {
+        use crate::three_d::immersive::{IMMERSIVE_LAYER, IMMERSIVE_PARAMETERS};
+        let comp = self.root()?;
+        let settings = comp.immersive.as_ref().ok_or_else(|| unsupported(&comp.composition_id, IMMERSIVE_PARAMETERS))?;
+        let full = settings.captured_horizontal_view == 360.0 && settings.captured_vertical_view == 180.0;
+        if settings.projection_type != hsk_studio_folio::IMMERSIVE_PROJECTION_EQUIRECTANGULAR
+            || settings.stereoscopic_type != hsk_studio_folio::IMMERSIVE_STEREO_MONOSCOPIC
+            || !full
+        {
+            return Err(unsupported(&comp.composition_id, IMMERSIVE_PARAMETERS));
+        }
+        let sources = Self::matte_sources(comp);
+        for l in &comp.layers {
+            let exists = u64::try_from(tick).is_ok_and(|t| l.timing.contains(t));
+            if !l.visible || !exists || matches!(l.content, Content::None) {
+                continue;
+            }
+            if l.matte.is_some() || (l.three_d.is_none() && !sources.contains(l.layer_id.as_str())) {
+                return Err(unsupported(&l.layer_id, IMMERSIVE_LAYER));
+            }
+        }
+        let (planes, _, camera) = self.three_d_planes_at(tick, cancel)?;
+        if camera.dof.is_some() {
+            return Err(unsupported("camera", IMMERSIVE_LAYER));
+        }
+        let mut materials = Vec::with_capacity(planes.len());
+        for p in &planes {
+            let l = comp.layers.iter().find(|l| l.layer_id == p.layer_id).ok_or_else(|| CompositeError::DanglingInput(p.layer_id.clone()))?;
+            let d = l.three_d.as_deref().ok_or_else(|| unsupported(&l.layer_id, IMMERSIVE_LAYER))?;
+            materials.push(Self::material_at(l, d, tick, cancel)?);
+        }
+        Ok(crate::three_d::immersive::ImmersiveScene {
+            width: comp.width,
+            height: comp.height,
+            background: comp.background,
+            planes,
+            materials,
+            lights: Self::lights_at(comp, tick, cancel)?,
+            camera,
+        })
     }
 
     /// The layers some layer uses as its track matte (they do not render on their own).

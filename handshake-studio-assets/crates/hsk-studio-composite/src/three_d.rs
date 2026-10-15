@@ -62,6 +62,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod exr;
+pub mod immersive;
 
 use crate::CompositeError;
 use crate::composition::{PinnedContent, SceneContent, SceneLayer};
@@ -946,6 +947,31 @@ pub fn shade(lit: &LitContent, x: f64, y: f64, albedo: [f32; 3], caster_alpha: C
         out[ch] = f;
     }
     out
+}
+
+/// The ray `origin + t dir` against the plane of `t3` (any parent chain): `(t, x, y)` with `(x, y)`
+/// the layer point, by Cramer's rule on `world(0, 0) + x ex + y ey = origin + t dir`; `None` when
+/// the ray is parallel to the plane (lane SMB-AE-3D-2, the immersive ray cast).
+pub fn ray_hit(t3: &Transform3d, origin: Vec3, dir: Vec3) -> Option<(f64, f64, f64)> {
+    let w0 = t3.world(0.0, 0.0);
+    let ex = sub(t3.world(1.0, 0.0), w0);
+    let ey = sub(t3.world(0.0, 1.0), w0);
+    let nd = scale(dir, -1.0);
+    let rhs = sub(origin, w0);
+    let det3 = |a: Vec3, b: Vec3, c: Vec3| dot(a, cross(b, c));
+    let den = det3(ex, ey, nd);
+    if !(den.is_finite() && den.abs() > 1e-12) {
+        return None;
+    }
+    Some((det3(ex, ey, rhs) / den, det3(rhs, ey, nd) / den, det3(ex, rhs, nd) / den))
+}
+
+/// The content plane `i` of a run renders with: shaded, defocused or masked through
+/// [`SceneContent::Lit`] when any applies, else its own content (crate-internal entry of the
+/// immersive renderer).
+pub(crate) fn plane_content(planes: &[Plane3d], i: usize, materials: &[Material], lights: &[Light], cam: &Camera) -> SceneContent {
+    let material = |k: usize| materials.get(k).copied().unwrap_or(Material::DEFAULT);
+    lit_content(planes, i, &material, lights, cam)
 }
 
 /// Distance along the unit ray `p + t u` to the plane of `t3`, for `1e-9 < t < max` (a shadow

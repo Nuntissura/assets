@@ -747,3 +747,122 @@ pub fn read_exr_f32(b: &[u8]) -> Vec<(String, Vec<f32>)> {
     }
     planes
 }
+
+/// Lane SMB-AE-3D-2 (STU-CMP-055 "plane to sphere"): the equirectangular frame size of
+/// [`immersive_scene`] (one degree per pixel).
+pub const EW: u32 = 360;
+pub const EH: u32 = 180;
+/// The run's planes, unlit, under the two-node camera, as one immersive scene.
+pub fn immersive_scene(pixels: &Pixels) -> hsk_studio_composite::three_d::immersive::ImmersiveScene {
+    hsk_studio_composite::three_d::immersive::ImmersiveScene {
+        width: EW,
+        height: EH,
+        background: Some(BACKGROUND),
+        planes: planes(pixels),
+        materials: Vec::new(),
+        lights: Vec::new(),
+        camera: camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera"),
+    }
+}
+/// The oracle of [`immersive_scene`]: per output pixel its own longitude / latitude direction in
+/// the oracle's camera basis, the ray solved against every plane (`hit_any`), the tile sampled
+/// bilinearly in premultiplied colour at texel centres (transparent outside), the hits
+/// composited farthest first over the background.
+pub fn immersive_oracle(pixels: &Pixels) -> Vec<[f32; 4]> {
+    let (r, d, f) = basis();
+    let specs = specs();
+    let mut out = Vec::new();
+    for y in 0..EH {
+        for x in 0..EW {
+            let lon = 2.0 * std::f64::consts::PI * ((f64::from(x) + 0.5) / f64::from(EW) - 0.5);
+            let lat = std::f64::consts::PI * (0.5 - (f64::from(y) + 0.5) / f64::from(EH));
+            let c = [lat.cos() * lon.sin(), -lat.sin(), lat.cos() * lon.cos()];
+            let dir = add(add(scale(r, c[0]), scale(d, c[1])), scale(f, c[2]));
+            let mut hits: Vec<(f64, usize, [f64; 4])> = Vec::new();
+            for (i, s) in specs.iter().enumerate() {
+                let Some((t, lx, ly)) = hit_any(s, CAMERA_POSITION, dir) else { continue };
+                if t <= 1e-3 {
+                    continue;
+                }
+                let tile = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+                let (fx, fy) = (lx - 0.5, ly - 0.5);
+                let (x0, y0) = (fx.floor(), fy.floor());
+                let mut acc = [0.0f64; 4];
+                for (dy, wy) in [(0.0, 1.0 - (fy - y0)), (1.0, fy - y0)] {
+                    for (dx, wx) in [(0.0, 1.0 - (fx - x0)), (1.0, fx - x0)] {
+                        let (ix, iy) = (x0 + dx, y0 + dy);
+                        if ix < 0.0 || iy < 0.0 || ix >= f64::from(tile.width) || iy >= f64::from(tile.height) {
+                            continue;
+                        }
+                        let t4 = tile.at(ix as u32, iy as u32);
+                        let a = f64::from(t4[3]);
+                        for k in 0..3 {
+                            acc[k] += wx * wy * a * f64::from(t4[k]);
+                        }
+                        acc[3] += wx * wy * a;
+                    }
+                }
+                if acc[3] > 0.0 {
+                    hits.push((t, i, acc));
+                }
+            }
+            hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let b = BACKGROUND;
+            let mut acc = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, PixelSite { x: i64::from(x), y: i64::from(y), seed: 0 }).unwrap();
+            for (_, i, v) in hits {
+                let src = Rgba::new([(v[0] / v[3]) as f32, (v[1] / v[3]) as f32, (v[2] / v[3]) as f32], v[3] as f32);
+                acc = composite_over(StudioBlendMode::Normal, acc, src, specs[i].opacity as f32, PixelSite { x: i64::from(x), y: i64::from(y), seed: 0 }).unwrap();
+            }
+            out.push([acc.rgb[0], acc.rgb[1], acc.rgb[2], acc.a]);
+        }
+    }
+    out
+}
+/// Straight RGBA of a composite `Surface` (row-major).
+pub fn surface_pixels(s: &hsk_studio_composite::Surface) -> Vec<[f32; 4]> {
+    let f = |b: &[u8], i: usize| f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
+    (0..(s.width * s.height) as usize).map(|i| [f(&s.colour, i * 3), f(&s.colour, i * 3 + 1), f(&s.colour, i * 3 + 2), f(&s.alpha, i)]).collect()
+}
+/// Largest difference on alpha and premultiplied colour.
+pub fn max_delta_px(a: &[[f32; 4]], b: &[[f32; 4]]) -> f32 {
+    a.iter().zip(b).map(|(p, q)| (0..4).map(|k| if k == 3 { (p[3] - q[3]).abs() } else { (p[k] * p[3] - q[k] * q[3]).abs() }).fold(0.0, f32::max)).fold(0.0, f32::max)
+}
+/// The sphere-rotate oracle: output direction `d` reads the source at `R^T d` (`R` the X, then
+/// Y, then Z turns), bilinear in premultiplied colour, longitude wrapped, latitude clamped.
+pub fn sphere_rotate_oracle(src: &[[f32; 4]], w: u32, h: u32, rot: [f64; 3]) -> Vec<[f32; 4]> {
+    let inv = |v: V| -> V {
+        let mut v = v;
+        for (axis, deg) in [(2, -rot[2]), (1, -rot[1]), (0, -rot[0])] {
+            v = turn(v, axis, deg);
+        }
+        v
+    };
+    let mut out = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let lon = 2.0 * std::f64::consts::PI * ((f64::from(x) + 0.5) / f64::from(w) - 0.5);
+            let lat = std::f64::consts::PI * (0.5 - (f64::from(y) + 0.5) / f64::from(h));
+            let s = inv([lat.cos() * lon.sin(), -lat.sin(), lat.cos() * lon.cos()]);
+            let (slon, slat) = (s[0].atan2(s[2]), (-s[1]).clamp(-1.0, 1.0).asin());
+            let u = (slon / (2.0 * std::f64::consts::PI) + 0.5) * f64::from(w) - 0.5;
+            let v = (0.5 - slat / std::f64::consts::PI) * f64::from(h) - 0.5;
+            let (u0, v0) = (u.floor(), v.floor());
+            let mut acc = [0.0f64; 4];
+            for (dy, wy) in [(0i64, 1.0 - (v - v0)), (1, v - v0)] {
+                for (dx, wx) in [(0i64, 1.0 - (u - u0)), (1, u - u0)] {
+                    let ix = (u0 as i64 + dx).rem_euclid(i64::from(w));
+                    let iy = (v0 as i64 + dy).clamp(0, i64::from(h) - 1);
+                    let p = src[(iy * i64::from(w) + ix) as usize];
+                    let a = f64::from(p[3]);
+                    for k in 0..3 {
+                        acc[k] += wx * wy * a * f64::from(p[k]);
+                    }
+                    acc[3] += wx * wy * a;
+                }
+            }
+            let rgb = |k: usize| if acc[3] > 0.0 { (acc[k] / acc[3]) as f32 } else { 0.0 };
+            out.push([rgb(0), rgb(1), rgb(2), acc[3] as f32]);
+        }
+    }
+    out
+}

@@ -171,3 +171,47 @@ fn three_d_aux_channels_match_the_ray_cast_oracle() {
     std::fs::write(dir.join("three_d_aux.exr"), &exr).unwrap();
     std::fs::write(dir.join("three_d_aux_normals_rgb.exr"), &rgb).unwrap();
 }
+
+#[test]
+fn equirectangular_plane_to_sphere_and_sphere_rotate_match_the_oracles() {
+    // Lane SMB-AE-3D-2 (STU-CMP-055 "plane to sphere", "sphere rotate"; computed in the spherical
+    // domain): the run's planes ray-cast into a 360 x 180 equirectangular frame, then the frame
+    // turned about X, Y and Z with the longitude wrapping.
+    let pixels = scenes::Pixels::fixture();
+    let renderer = Renderer::new(64).unwrap();
+    let ctx = SceneContext {
+        backend: &renderer,
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let frame = hsk_studio_composite::composition::render_equirect(&three_d::immersive_scene(&pixels), ResampleFilter::Bilinear, &ctx, &CancellationToken::default()).expect("frame");
+    let got = three_d::surface_pixels(&frame);
+    let want = three_d::immersive_oracle(&pixels);
+    let b = scenes::BACKGROUND;
+    let drawn = want.iter().filter(|p| (0..3).any(|c| (p[c] - b[c]).abs() > 1e-3)).count();
+    let delta = three_d::max_delta_px(&got, &want);
+    println!("three_d equirect: {drawn} drawn pixels, max |delta| vs oracle {delta:e}");
+    assert!(drawn > 200 && delta <= 1e-6, "{drawn} {delta}");
+    // Sphere rotate on the rendered frame (straight in, straight out).
+    let rgb: Vec<f32> = got.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let alpha: Vec<f32> = got.iter().map(|p| p[3]).collect();
+    let rot = [10.0, 35.0, -5.0];
+    let (r2, a2) = hsk_studio_composite::three_d::immersive::sphere_rotate(&rgb, &alpha, three_d::EW, three_d::EH, rot[0], rot[1], rot[2]).unwrap();
+    let turned: Vec<[f32; 4]> = a2.iter().enumerate().map(|(i, a)| [r2[i * 3], r2[i * 3 + 1], r2[i * 3 + 2], *a]).collect();
+    let rdelta = three_d::max_delta_px(&turned, &three_d::sphere_rotate_oracle(&got, three_d::EW, three_d::EH, rot));
+    // A quarter turn about Y moves every row by exactly a quarter of the width, across the seam.
+    let (q, qa) = hsk_studio_composite::three_d::immersive::sphere_rotate(&rgb, &alpha, three_d::EW, three_d::EH, 0.0, 90.0, 0.0).unwrap();
+    let w = three_d::EW as usize;
+    let mut seam = 0.0f32;
+    for y in 0..three_d::EH as usize {
+        for x in 0..w {
+            let s = got[y * w + (x + w - w / 4) % w];
+            let i = y * w + x;
+            seam = seam.max((qa[i] - s[3]).abs()).max((0..3).map(|k| (q[i * 3 + k] * qa[i] - s[k] * s[3]).abs()).fold(0.0, f32::max));
+        }
+    }
+    println!("three_d sphere rotate: max |delta| vs oracle {rdelta:e}, quarter-turn shift {seam:e}");
+    assert!(rdelta <= 1e-6 && seam <= 1e-5, "{rdelta} {seam}");
+}

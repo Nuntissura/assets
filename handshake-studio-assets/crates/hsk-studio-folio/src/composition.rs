@@ -662,6 +662,56 @@ impl StudioCompositionLayer {
     }
 }
 
+/// Studio-authored members of the STU-VID-018 enumerations (declared gaps STU-VID-082 /
+/// STU-CMP-106: "their member sets are authored deliberately"; After Effects / Premiere values
+/// UNVERIFIED, D5). `projection_type`: 0 flat, 1 equirectangular.
+pub const IMMERSIVE_PROJECTION_FLAT: u32 = 0;
+pub const IMMERSIVE_PROJECTION_EQUIRECTANGULAR: u32 = 1;
+/// `stereoscopic_type`: 0 monoscopic, 1 over-under, 2 side-by-side.
+pub const IMMERSIVE_STEREO_MONOSCOPIC: u32 = 0;
+pub const IMMERSIVE_STEREO_OVER_UNDER: u32 = 1;
+pub const IMMERSIVE_STEREO_SIDE_BY_SIDE: u32 = 2;
+/// `ambisonics_monitoring_type`: 0 none (the only authored member).
+pub const IMMERSIVE_AMBISONICS_NONE: u32 = 0;
+
+/// STU-VID-018 immersive settings, all nine fields ("`projection_type` (integer; 0 in every shipped
+/// configuration read), `stereoscopic_type`, `stereoscopic_eye`, `captured_horizontal_view`,
+/// `captured_vertical_view`, `field_of_horizontal_view` and `field_of_vertical_view` ...,
+/// `ambisonics_monitoring_type`, and an `ambisonics_hrir` reference"). Views are degrees:
+/// horizontal `(0, 360]`, vertical `(0, 180]`. `stereoscopic_eye`: 0 left, 1 right.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioImmersiveSettings {
+    pub projection_type: u32,
+    pub stereoscopic_type: u32,
+    pub stereoscopic_eye: u32,
+    pub captured_horizontal_view: f64,
+    pub captured_vertical_view: f64,
+    pub field_of_horizontal_view: f64,
+    pub field_of_vertical_view: f64,
+    pub ambisonics_monitoring_type: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambisonics_hrir: Option<String>,
+}
+
+fn validate_immersive(i: &StudioImmersiveSettings, t: &str, cx: &mut Ctx) -> Result<()> {
+    check(matches!(i.projection_type, IMMERSIVE_PROJECTION_FLAT | IMMERSIVE_PROJECTION_EQUIRECTANGULAR), t, "projection_type")?;
+    check(i.stereoscopic_type <= IMMERSIVE_STEREO_SIDE_BY_SIDE, t, "stereoscopic_type")?;
+    check(i.stereoscopic_eye <= 1, t, "stereoscopic_eye")?;
+    let h = |v: f64| v.is_finite() && v > 0.0 && v <= 360.0;
+    let v = |x: f64| x.is_finite() && x > 0.0 && x <= 180.0;
+    check(h(i.captured_horizontal_view), t, "captured_horizontal_view")?;
+    check(v(i.captured_vertical_view), t, "captured_vertical_view")?;
+    check(h(i.field_of_horizontal_view), t, "field_of_horizontal_view")?;
+    check(v(i.field_of_vertical_view), t, "field_of_vertical_view")?;
+    check(i.ambisonics_monitoring_type == IMMERSIVE_AMBISONICS_NONE, t, "ambisonics_monitoring_type")?;
+    if let Some(r) = &i.ambisonics_hrir {
+        check(label(r), t, "ambisonics_hrir")?;
+        cx.text(r, t)?;
+    }
+    Ok(())
+}
+
 /// One `StudioComposition`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -679,6 +729,11 @@ pub struct StudioComposition {
     pub duration: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<StudioRgba>,
+    /// Immersive frame parameters (lane SMB-AE-3D-2; STU-CMP-055a: "The composition carries the
+    /// immersive frame parameters ([STU-VID-018]'s record shape applies to compositions as well
+    /// as to sequences)"). Absent = a flat composition; records without it are byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub immersive: Option<StudioImmersiveSettings>,
     /// Stack order, topmost first (STU-MOT-009: index 1 is topmost and composited last).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<StudioCompositionLayer>,
@@ -1010,6 +1065,9 @@ fn validate_composition(
     check(c.duration > 0, t, "duration")?;
     if let Some(b) = &c.background {
         b.validate(&format!("{t}/background"), cx)?;
+    }
+    if let Some(i) = &c.immersive {
+        validate_immersive(i, &format!("{t}/immersive"), cx)?;
     }
     if c.layers.len() > MAX_COMPOSITION_LAYERS {
         return Err(err(Code::BudgetExceeded, format!("{t}/layers")));
