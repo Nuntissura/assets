@@ -543,6 +543,114 @@ pub fn blend_rgb(
     ])
 }
 
+// ---- extended sample range (lane SMB-PIGMENT-EXTENDED-RANGE) ----
+//
+// STU-COL-120: 32-bit is "floating point, linear-light, unbounded"; tool availability "is
+// legitimately reduced at 32-bit; the reduction MUST be reported per operation". A mode is DEFINED
+// above 1 when its formula above makes no reference to the unit white point: no constant 1 (as in
+// screen `b + s - b s` or the burns and dodges), no 0.5 threshold (overlay, the lights, pin light,
+// hard mix) and no clip of the result to [0, 1] beyond the unit range's own final clamp. That
+// holds for normal / dissolve (`B = Cs`), multiply (`b s`), darken (`min`), lighten (`max`),
+// difference (`|b - s|`), subtract (`max(b - s, 0)`), darker / lighter colour (choice by channel
+// sum) and linear dodge (add), whose `min(1, a + b)` is exactly that unit clamp and becomes
+// `a + b`. Every other mode is UNDEFINED above 1 and refused (the non-separable hue / saturation /
+// colour / luminosity go through ClipColor, which clips to [0, 1]; divide saturates at 1).
+// Photoshop's 32-bit mode list is UNVERIFIED (D5); this is pigment's formula reading.
+
+/// Is `mode` defined on extended-range samples (see the rule above)?
+pub fn extended_defined(mode: StudioBlendMode) -> bool {
+    use StudioBlendMode::*;
+    matches!(
+        mode,
+        Normal
+            | Dissolve
+            | Multiply
+            | Darken
+            | Lighten
+            | Difference
+            | Subtract
+            | LinearDodgeAdd
+            | DarkerColour
+            | LighterColour
+    )
+}
+fn check_rgb_finite(c: [f32; 3]) -> Result<(), BlendError> {
+    if c.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err(BlendError::OutOfDomain)
+    }
+}
+
+/// [`blend_rgb`] on extended-range straight colours: any finite channel, no final clamp. A mode
+/// that is not [`extended_defined`] is `BlendError::Unsupported(mode)` (structural and tool modes
+/// keep their own errors); non-finite input is `OutOfDomain`.
+pub fn blend_rgb_extended(
+    mode: StudioBlendMode,
+    cb: [f32; 3],
+    cs: [f32; 3],
+) -> Result<[f32; 3], BlendError> {
+    use StudioBlendMode::*;
+    match mode {
+        PassThrough => return Err(BlendError::GroupOnly(mode)),
+        Behind | Clear => return Err(BlendError::ToolOnly(mode)),
+        _ if !extended_defined(mode) => return Err(BlendError::Unsupported(mode)),
+        _ => {}
+    }
+    check_rgb_finite(cb)?;
+    check_rgb_finite(cs)?;
+    Ok(match mode {
+        Normal | Dissolve => cs,
+        LinearDodgeAdd => [cb[0] + cs[0], cb[1] + cs[1], cb[2] + cs[2]],
+        DarkerColour | LighterColour => {
+            let (sum_s, sum_b) = (cs.iter().sum::<f32>(), cb.iter().sum::<f32>());
+            let take_source = if mode == DarkerColour { sum_s < sum_b } else { sum_s > sum_b };
+            if take_source { cs } else { cb }
+        }
+        _ => {
+            let f = separable_fn(mode).ok_or(BlendError::Unsupported(mode))?;
+            [f(cb[0], cs[0]), f(cb[1], cs[1]), f(cb[2], cs[2])]
+        }
+    })
+}
+
+/// [`composite_over`] on extended-range straight colours: the same W3C source-over with blend
+/// (`Cs' = (1-ab) Cs + ab B(Cb,Cs)`, `ao = as + ab(1-as)`, `co = as Cs' + (1-as) ab Cb`,
+/// `Cr = co/ao`) in binary32 without the final clamp. Colour channels may be any finite value;
+/// alpha and opacity stay in `[0, 1]`. A result that overflows to a non-finite value is
+/// `OutOfDomain` (typed, never returned).
+pub fn composite_over_extended(
+    mode: StudioBlendMode,
+    backdrop: Rgba,
+    source: Rgba,
+    opacity: f32,
+    site: PixelSite,
+) -> Result<Rgba, BlendError> {
+    check_rgb_finite(backdrop.rgb)?;
+    check_rgb_finite(source.rgb)?;
+    if !in_unit(backdrop.a) || !in_unit(source.a) || !in_unit(opacity) {
+        return Err(BlendError::OutOfDomain);
+    }
+    let blended = blend_rgb_extended(mode, backdrop.rgb, source.rgb)?;
+    let mut a_s = source.a * opacity;
+    if mode == StudioBlendMode::Dissolve {
+        a_s = if site_unit(site) < a_s { 1.0 } else { 0.0 };
+    }
+    let a_b = backdrop.a;
+    let a_o = a_s + a_b * (1.0 - a_s);
+    if a_o <= 0.0 {
+        return Ok(Rgba::TRANSPARENT);
+    }
+    let mut rgb = [0.0f32; 3];
+    for (i, out) in rgb.iter_mut().enumerate() {
+        let cs_prime = (1.0 - a_b) * source.rgb[i] + a_b * blended[i];
+        let co = a_s * cs_prime + (1.0 - a_s) * a_b * backdrop.rgb[i];
+        *out = co / a_o;
+    }
+    check_rgb_finite(rgb)?;
+    Ok(Rgba { rgb, a: a_o })
+}
+
 /// Straight (non-premultiplied) colour with alpha (STU-CMP-022: alpha convention is explicit).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgba {

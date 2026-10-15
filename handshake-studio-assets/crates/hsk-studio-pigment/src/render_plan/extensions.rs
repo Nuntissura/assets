@@ -12,8 +12,12 @@ use super::{
     PlanError, PlanLimits, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
     admit_plan_rules,
 };
+use super::output::{
+    DISPLAY_CLIP_OPERATOR, DisplayTransform, EXTENDED_RANGE_COMBINATION_OPERATOR,
+    EXTENDED_RANGE_MODE_OPERATOR, EXTENDED_RANGE_OPERATOR, OutputStage,
+};
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
-use crate::blend_math::{Exactness, StudioBlendMode};
+use crate::blend_math::{Exactness, StudioBlendMode, extended_defined};
 use crate::blur_math::{BLUR_EXACTNESS, BlurScope, LayerBlur};
 use crate::coverage_math::{
     BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
@@ -224,6 +228,11 @@ impl LayerExtension {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PlanExtensions {
     pub layers: Vec<LayerExtension>,
+    /// The plan's output stage (sample range, stage-6a display transform; lane
+    /// SMB-PIGMENT-EXTENDED-RANGE). The default (unit range, no display transform) is not
+    /// serialised, so it leaves every digest unchanged.
+    #[serde(skip_serializing_if = "OutputStage::is_default")]
+    pub output: OutputStage,
 }
 
 /// One envelope feature a plan uses; the unit of capability and exactness accounting next to the
@@ -295,6 +304,21 @@ pub enum ExtOperator {
     /// `content_aware_fill`. Declared by no backend yet (render-cpu and render-gpu answer
     /// `Unsupported` for operators they do not list), so admission refuses it typed.
     ContentAwareFill,
+    /// An extended-range output stage ([`OutputStage::sample_range`] `Extended`): blend modes run
+    /// unclamped (`blend_math::composite_over_extended`). Class Approximate: the extension of the
+    /// unit-range formulas past 1 is pigment's reading (Photoshop 32-bit parity UNVERIFIED, D5).
+    /// Key `sample_range_extended`; each backend declares it.
+    ExtendedRange,
+    /// A reachable layer whose mode is not `blend_math::extended_defined` in an extended-range
+    /// plan; intrinsically Unsupported (STU-COL-120: the reduction is reported per operation).
+    /// Key `sample_range_extended_mode`.
+    ExtendedRangeMode,
+    /// An envelope layer entry on a reachable group in an extended-range plan (adjustment,
+    /// Blend-If, effects, feather, transform, blur, filters, content-aware fill: unit-domain maths);
+    /// intrinsically Unsupported. Key `sample_range_extended_combination`.
+    ExtendedRangeCombination,
+    /// The stage-6a clip ([`DisplayTransform::Clip`]); class Exact. Key `display_clip`.
+    DisplayClip,
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -319,6 +343,10 @@ impl ExtOperator {
             Self::Blur(scope) => scope.key(),
             Self::Filter(kind) => kind.key(),
             Self::ContentAwareFill => "content_aware_fill",
+            Self::ExtendedRange => EXTENDED_RANGE_OPERATOR,
+            Self::ExtendedRangeMode => EXTENDED_RANGE_MODE_OPERATOR,
+            Self::ExtendedRangeCombination => EXTENDED_RANGE_COMBINATION_OPERATOR,
+            Self::DisplayClip => DISPLAY_CLIP_OPERATOR,
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -338,6 +366,9 @@ impl ExtOperator {
             Self::Blur(_) => BLUR_EXACTNESS,
             Self::Filter(_) => FILTER_EXACTNESS,
             Self::ContentAwareFill => CONTENT_AWARE_EXACTNESS,
+            Self::ExtendedRange => Exactness::Approximate,
+            Self::ExtendedRangeMode | Self::ExtendedRangeCombination => Exactness::Unsupported,
+            Self::DisplayClip => Exactness::Exact,
         }
     }
 }
@@ -353,10 +384,19 @@ fn is_clip(l: &super::Layer) -> bool {
 impl PlanExtensions {
     /// An envelope holding `layers` (validated by [`PlanExtensions::validate`]).
     pub fn from_layers(layers: Vec<LayerExtension>) -> Self {
-        Self { layers }
+        Self {
+            layers,
+            output: OutputStage::default(),
+        }
     }
+    /// This envelope with output stage `output` (sample range, display transform).
+    pub fn with_output(mut self, output: OutputStage) -> Self {
+        self.output = output;
+        self
+    }
+    /// No layer entry and the default output stage: the plain v1 plan.
     pub fn is_empty(&self) -> bool {
-        self.layers.is_empty()
+        self.layers.is_empty() && self.output.is_default()
     }
     /// The extension of `(group, layer)`, if any.
     pub fn extension(&self, group: PlanNodeId, layer: u32) -> Option<&LayerExtension> {
@@ -662,6 +702,30 @@ impl PlanExtensions {
         if plan.has_mask_density() && !ops.contains(&ExtOperator::MaskDensity) {
             ops.push(ExtOperator::MaskDensity);
         }
+        // Output stage, over the nodes reachable from the root (like the layers a backend runs).
+        if self.output.is_extended() {
+            ops.push(ExtOperator::ExtendedRange);
+            let undefined = plan.nodes.iter().enumerate().any(|(i, n)| match n {
+                PlanNode::Group(g) if reachable.get(i).copied().unwrap_or(false) => g
+                    .layers
+                    .iter()
+                    .any(|l| l.mode != StudioBlendMode::PassThrough && !extended_defined(l.mode)),
+                _ => false,
+            });
+            if undefined {
+                ops.push(ExtOperator::ExtendedRangeMode);
+            }
+            let entry = self
+                .layers
+                .iter()
+                .any(|e| reachable.get(e.group.0 as usize).copied().unwrap_or(false));
+            if entry {
+                ops.push(ExtOperator::ExtendedRangeCombination);
+            }
+        }
+        if self.output.display == Some(DisplayTransform::Clip) {
+            ops.push(ExtOperator::DisplayClip);
+        }
         Ok(ops)
     }
 
@@ -754,7 +818,14 @@ pub fn admit_extended_with_limits<V, B: RenderBackend<V> + ?Sized>(
     request: &ExecuteRequest,
     cancel: &CancellationToken,
 ) -> Result<ExactnessLedger, BackendError> {
-    let mut ledger = admit_core(plan, limits, backend, request, cancel)?;
+    let mut ledger = admit_core(
+        plan,
+        limits,
+        backend,
+        request,
+        cancel,
+        extensions.output.sample_range,
+    )?;
     let operators = extensions.validate(plan).map_err(|e| match e {
         PlanError::KnockoutUnsupported { depth, .. } => BackendError::Unsupported {
             operator: depth.key(),
