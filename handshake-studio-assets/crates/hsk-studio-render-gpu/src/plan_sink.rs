@@ -1373,6 +1373,14 @@ impl GpuBackend {
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
         let alias = display::aliased(extensions, self.display);
         let extensions = alias.as_ref().or(extensions);
+        // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM) runs on the host after the
+        // read-back; the shared-texture output never reads back, so it refuses the view typed,
+        // before admission and before any device work.
+        if texture.is_some()
+            && extensions.is_some_and(|e| matches!(e.output.display, Some(DisplayTransform::View(_))))
+        {
+            return Err(unsupported(ExtOperator::DisplayView.key()));
+        }
         let mut ledger = match extensions {
             None => admit::<NoVector>(plan, self, request, cancel)?,
             Some(e) => admit_extended(plan, e, self, request, cancel)?,
@@ -1562,6 +1570,10 @@ impl RenderBackend<NoVector> for GpuBackend {
             // Output stage (lane SMB-PIGMENT-EXTENDED-RANGE): `EXTENDED_FLAG` dispatches and the
             // host-side clip (tests/gpu_extended_range.rs).
             ExtOperator::ExtendedRange | ExtOperator::DisplayClip => true,
+            // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM): Prism's view applied on
+            // the host to the read-back (tests/gpu_view_transform.rs); the shared-texture output
+            // refuses it (execute_inner).
+            ExtOperator::DisplayView => true,
             ExtOperator::AdjustmentLayer
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
@@ -3223,6 +3235,10 @@ fn run(
         })?;
 
     let clip = prepared.output.display == Some(DisplayTransform::Clip);
+    let view_transform = match prepared.output.display {
+        Some(DisplayTransform::View(id)) => Some(id),
+        _ => None,
+    };
     let mut ex = Exec {
         ctx,
         cancel,
@@ -3386,6 +3402,15 @@ fn run(
                         for value in &mut values[..3] {
                             *value = value.clamp(0.0, 1.0);
                         }
+                    }
+                    if let Some(id) = view_transform {
+                        // Stage 6a view transform (lane SMB-PRISM-VIEW-TRANSFORM), on the host:
+                        // Prism's per-pixel view of the read-back colour; a non-finite composite
+                        // (binary32 overflow on the device) is refused typed.
+                        let out = id
+                            .apply([values[0], values[1], values[2]])
+                            .map_err(|_| unsupported(SAMPLE_RANGE_OPERATOR))?;
+                        values[..3].copy_from_slice(&out);
                     }
                     for value in &values[..3] {
                         colour.extend_from_slice(&value.to_le_bytes());

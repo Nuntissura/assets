@@ -319,6 +319,10 @@ pub enum ExtOperator {
     ExtendedRangeCombination,
     /// The stage-6a clip ([`DisplayTransform::Clip`]); class Exact. Key `display_clip`.
     DisplayClip,
+    /// A stage-6a view transform ([`DisplayTransform::View`], Prism's ACES 1.x RRT + ODT from the
+    /// published CTL, evaluated per pixel by `hsk_studio_prism::ViewTransformId::apply`); class
+    /// Exact. Key `display_view_transform`.
+    DisplayView,
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -347,6 +351,7 @@ impl ExtOperator {
             Self::ExtendedRangeMode => EXTENDED_RANGE_MODE_OPERATOR,
             Self::ExtendedRangeCombination => EXTENDED_RANGE_COMBINATION_OPERATOR,
             Self::DisplayClip => DISPLAY_CLIP_OPERATOR,
+            Self::DisplayView => super::output::DISPLAY_VIEW_OPERATOR,
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -368,7 +373,7 @@ impl ExtOperator {
             Self::ContentAwareFill => CONTENT_AWARE_EXACTNESS,
             Self::ExtendedRange => Exactness::Approximate,
             Self::ExtendedRangeMode | Self::ExtendedRangeCombination => Exactness::Unsupported,
-            Self::DisplayClip => Exactness::Exact,
+            Self::DisplayClip | Self::DisplayView => Exactness::Exact,
         }
     }
 }
@@ -725,6 +730,9 @@ impl PlanExtensions {
         }
         if self.output.display == Some(DisplayTransform::Clip) {
             ops.push(ExtOperator::DisplayClip);
+        }
+        if matches!(self.output.display, Some(DisplayTransform::View(_))) {
+            ops.push(ExtOperator::DisplayView);
         }
         Ok(ops)
     }

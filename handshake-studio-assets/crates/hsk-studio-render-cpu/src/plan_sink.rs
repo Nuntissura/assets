@@ -1897,10 +1897,19 @@ impl Renderer {
         // Stage 6a (output stage `display: Some(Clip)`): the composite's colour clamped into [0, 1]
         // before the chunk reaches the sink.
         let clip = prepared.ext.output.display == Some(DisplayTransform::Clip);
+        // Stage 6a view transform (output stage `display: Some(View(id))`, lane
+        // SMB-PRISM-VIEW-TRANSFORM): Prism's per-pixel view on the composite's colour.
+        let view = match prepared.ext.output.display {
+            Some(DisplayTransform::View(id)) => Some(id),
+            _ => None,
+        };
         let compute = |rect: Rect, scratch: &mut Scratch| {
             compute_chunk(&eval, rect, scratch)?;
             if clip {
                 display::clip_chunk(&mut scratch.colour)?;
+            }
+            if let Some(id) = view {
+                display::view_chunk(&mut scratch.colour, id)?;
             }
             Ok(())
         };
@@ -2170,6 +2179,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // pigment's `composite_over_extended`, the clip is `f32::clamp` on the delivered chunk
             // (tests/cpu_extended_range.rs).
             ExtOperator::ExtendedRange | ExtOperator::DisplayClip => operator.intrinsic(),
+            // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM): Prism's
+            // `ViewTransformId::apply` on the delivered chunk (tests/cpu_view_transform.rs).
+            ExtOperator::DisplayView => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

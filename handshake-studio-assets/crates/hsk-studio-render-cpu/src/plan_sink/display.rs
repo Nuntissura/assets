@@ -65,6 +65,32 @@ pub(crate) fn sample_ok(extended: bool, v: f32) -> bool {
     v.is_finite() && (extended || (0.0..=1.0).contains(&v))
 }
 
+/// Stage 6a, view transform (lane SMB-PRISM-VIEW-TRANSFORM): every colour triple of a delivered
+/// chunk (`rgb_f32le`) through Prism's `ViewTransformId::apply` (alpha is a separate plane and
+/// untouched). The composite reaching this point is finite (extended composites refuse a
+/// non-finite result typed), so a non-finite triple is refused as `sample_range_outside_unit`.
+pub(crate) fn view_chunk(
+    colour: &mut [u8],
+    view: hsk_studio_prism::ViewTransformId,
+) -> Result<(), RenderError> {
+    let mut at = 0usize;
+    while at < colour.len() {
+        let g = add_u(at, 4)?;
+        let b = add_u(g, 4)?;
+        let end = add_u(b, 4)?;
+        let rgb = [f32_at(colour, at)?, f32_at(colour, g)?, f32_at(colour, b)?];
+        let out = view
+            .apply(rgb)
+            .map_err(|_| super::unsupported(super::SAMPLE_RANGE_OPERATOR))?;
+        let dst = colour.get_mut(at..end).ok_or_else(overflow)?;
+        for (chunk, v) in dst.chunks_exact_mut(4).zip(out) {
+            chunk.copy_from_slice(&v.to_le_bytes());
+        }
+        at = end;
+    }
+    Ok(())
+}
+
 /// Stage 6a: clamp every colour sample of a delivered chunk (`rgb_f32le`) into `[0, 1]`.
 pub(crate) fn clip_chunk(colour: &mut [u8]) -> Result<(), RenderError> {
     let mut at = 0usize;

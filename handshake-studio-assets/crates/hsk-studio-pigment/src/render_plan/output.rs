@@ -29,6 +29,16 @@ pub enum SampleRange {
 pub enum DisplayTransform {
     /// Clamp every output colour channel into `[0, 1]` (alpha untouched).
     Clip,
+    /// A Prism view transform (lane SMB-PRISM-VIEW-TRANSFORM, STU-COL-313): every composite
+    /// colour goes through `hsk_studio_prism::ViewTransformId::apply` (scene-referred working
+    /// space -> display-referred linear `[0, 1]`), alpha untouched. Serialised as the view's key.
+    View(#[serde(serialize_with = "serialize_view")] hsk_studio_prism::ViewTransformId),
+}
+fn serialize_view<S: serde::Serializer>(
+    view: &hsk_studio_prism::ViewTransformId,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(view.key())
 }
 
 /// The output stage of a plan: sample range plus optional display transform.
@@ -63,3 +73,5 @@ pub const EXTENDED_RANGE_MODE_OPERATOR: &str = "sample_range_extended_mode";
 pub const EXTENDED_RANGE_COMBINATION_OPERATOR: &str = "sample_range_extended_combination";
 /// Operator key of the stage-6a clip (`ExtOperator::DisplayClip`).
 pub const DISPLAY_CLIP_OPERATOR: &str = "display_clip";
+/// Operator key of a stage-6a view transform (`ExtOperator::DisplayView`).
+pub const DISPLAY_VIEW_OPERATOR: &str = "display_view_transform";
