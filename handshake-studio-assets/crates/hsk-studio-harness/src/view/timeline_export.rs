@@ -12,6 +12,9 @@
 //! anything renders.
 #![deny(clippy::arithmetic_side_effects)]
 
+/// Render queue from compositions (lane SMB-AE-MOTION-TOOLS slice 4).
+pub mod composition;
+
 use super::monitor::{DropPolicy, FrameSource, MonitorFail, ProgramMonitor};
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
 use hsk_studio_folio::StudioSequence;
