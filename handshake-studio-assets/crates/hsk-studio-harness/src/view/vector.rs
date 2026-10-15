@@ -20,10 +20,13 @@
 //! creates its result layers above the topmost operand and deletes the operands, in one
 //! transaction; offset path creates a copy (STU-VEC-006 "numeric inset/outset copy").
 //!
-//! Rendering: each vector layer is drawn by composite's folio-free vector path
-//! ([`hsk_studio_composite::prepare_vector_layers`]: nib exact coverage, nib strokes) and lowered
-//! with `evaluate_with_inputs` / `lower_with_inputs` ([`super::render::render_full`]). Colours are
-//! 8-bit sRGB in the entry and linear light in the plan (the plan's blend space).
+//! Rendering (lane SMB-VECTOR-STYLES): every vector layer is prepared by composite's Folio adapter
+//! ([`hsk_studio_composite::prepare_vectors`]: nib exact coverage, nib strokes, networks, region
+//! fill styles, width profiles) from the entry's Folio records: its paint styles ([`style`]; an
+//! unstyled layer through a style synthesised from its 8-bit colours) and its width profiles
+//! (Folio `StudioWidthProfile`, entry member `vector_records`); then lowered with
+//! `evaluate_with_inputs` / `lower_with_inputs` ([`super::render::render_full`]). Colours are 8-bit
+//! sRGB in the entry and linear light in the plan (the plan's blend space, [`style::plan_colour`]).
 //!
 //! Studio choices (Illustrator parity UNVERIFIED, D5): new pen paths have no fill and a 2 px stroke
 //! in the brush colour; shapes are filled with the brush colour and have no stroke; the pen closes
@@ -33,7 +36,7 @@
 use super::Viewer;
 use super::edit::Tool;
 use crate::{Place, PlacementWrite};
-use hsk_studio_composite::{FillPaint, FillSpec, PreparedVectors, VectorGeometry, VectorLayerSpec, VectorResolution, prepare_vector_layers};
+use hsk_studio_composite::{PreparedVectors, VectorResolution};
 use hsk_studio_folio::{self as folio, GeometryUnit, Length, Parent, Payload, StudioDocument, StudioLiveShape, StudioLiveShapes, StudioShapeParameters};
 use hsk_studio_nib::anchor_path::{
     self as ap, AnchorAddr, AnchorPath, AnchorSelection, Constraint, Contour, EditAnchor, EndAddr, HandleSide,
@@ -41,13 +44,12 @@ use hsk_studio_nib::anchor_path::{
 use hsk_studio_nib::boolean::BooleanOptions;
 use hsk_studio_nib::freeform::{self, CornerTreatment};
 use hsk_studio_nib::network::{NetworkRegion, NetworkSegment, NetworkVertex, VectorNetwork};
-use hsk_studio_nib::width::{WidthCap, WidthPoint, WidthProfile, outline_variable};
+use hsk_studio_nib::width::{WidthPoint, WidthProfile};
 use hsk_studio_nib::OwnedPath;
 use hsk_studio_nib::pathfinder::{PathfinderOp, pathfinder};
 use hsk_studio_nib::shape::{self, CornerKind, EllipseSpec, RectSpec};
 use hsk_studio_nib::stroke::{LineJoin, StrokeOptions, StrokeStyle, outline_stroke};
 use hsk_studio_nib::{FillRule, Mirroring, PathPoint};
-use hsk_studio_pigment::blend_math::StudioBlendMode;
 use serde_json::{Value, json};
 
 /// Session document entry token of the vector records.
@@ -62,6 +64,9 @@ pub const MAX_ENTRY_ANCHORS: usize = 1 << 20;
 pub const MAX_STROKE_WIDTH: f64 = 1000.0;
 /// Default hit radius of the canvas gestures (screen pixels; divided by the zoom).
 pub const HIT_RADIUS_SCREEN: f64 = 6.0;
+
+pub mod style;
+pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel, SwatchLink};
 
 /// Stable widget ids of the vector tools.
 pub mod widget {
@@ -282,6 +287,11 @@ pub struct VectorEntry {
     /// Live shape records (Folio `StudioLiveShape`); only those whose layer and path are in the
     /// document are validated and offered (the others belong to revisions the history can return to).
     pub live: Vec<StudioLiveShape>,
+    /// Folio paint styles of styled layers and swatches (lane SMB-VECTOR-STYLES, [`style`]; entry
+    /// member `design`, absent when `None`).
+    pub design: Option<folio::StudioDesignRecords>,
+    /// Swatch links (entry member `swatch_links`, absent when empty).
+    pub links: Vec<SwatchLink>,
 }
 
 /// Shape tools.
@@ -484,7 +494,7 @@ fn path_of(v: &Value, budget: &mut usize) -> Result<AnchorPath, String> {
 
 impl VectorEntry {
     pub fn empty() -> Self {
-        Self { paths: Vec::new(), live: Vec::new() }
+        Self { paths: Vec::new(), live: Vec::new(), design: None, links: Vec::new() }
     }
 
     pub fn path(&self, path_id: &str) -> Option<&PathRecord> {
@@ -496,7 +506,7 @@ impl VectorEntry {
     pub fn decode(bytes: &[u8], doc: &StudioDocument, cancel: &hsk_studio_accord::CancellationToken) -> Result<Self, String> {
         let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("vector_entry_json: {e}"))?;
         let object = v.as_object().ok_or("vector_entry_json: not an object")?;
-        if object.keys().any(|k| !["schema", "paths", "live_shapes"].contains(&k.as_str())) {
+        if object.keys().any(|k| !["schema", "paths", "live_shapes", "design", "swatch_links", "vector_records"].contains(&k.as_str())) {
             return Err("vector_entry_unknown_field".into());
         }
         if v["schema"] != ENTRY_SCHEMA {
@@ -552,7 +562,52 @@ impl VectorEntry {
         if live.document_id != doc.document_id {
             return Err("vector_entry_document".into());
         }
-        let entry = Self { paths: records, live: live.shapes };
+        let design = match object.get("design") {
+            None => None,
+            Some(d) => {
+                if ["nodes", "paint_styles"].iter().any(|m| d.get(m).and_then(Value::as_array).is_some_and(|a| a.len() > style::MAX_STYLES)) {
+                    return Err("vector_entry_design: members".into());
+                }
+                Some(serde_json::from_value::<folio::StudioDesignRecords>(d.clone()).map_err(|e| format!("vector_entry_design: {e}"))?)
+            }
+        };
+        let links = match object.get("swatch_links") {
+            None => Vec::new(),
+            Some(l) => {
+                let arr = l.as_array().filter(|a| a.len() <= style::MAX_LINKS).ok_or("vector_entry_swatch_links")?;
+                arr.iter()
+                    .map(|x| {
+                        let o = x.as_object().filter(|o| o.len() == 3).ok_or("vector_entry_swatch_links")?;
+                        let text = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| "vector_entry_swatch_links".to_string());
+                        let kind = RowKind::from_token(&text("kind")?).ok_or("vector_entry_swatch_links")?;
+                        Ok(SwatchLink { layer_id: text("layer_id")?, kind, swatch_id: text("swatch_id")? })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?
+            }
+        };
+        style::validate_entry_styles(design.as_ref(), &links, &doc.document_id)?;
+        if let Some(r) = object.get("vector_records") {
+            if r.get("width_profiles").and_then(Value::as_array).is_some_and(|a| a.len() > MAX_PATHS) {
+                return Err("vector_entry_over_budget".into());
+            }
+            let r: folio::StudioVectorRecords = serde_json::from_value(r.clone()).map_err(|e| format!("vector_entry_vector_records: {e}"))?;
+            let mut rest = r.clone();
+            rest.width_profiles.clear();
+            if rest != folio::StudioVectorRecords::new(doc.document_id.clone()) {
+                return Err("vector_entry_vector_records: members".into());
+            }
+            for w in &r.width_profiles {
+                folio::validate_width_profile(w).map_err(|d| format!("vector_entry_width: {:?} {}", d.code, d.target))?;
+                if !w.is_symmetric() || w.adjust_adjoining_width_points || w.single_width_only_incoming || w.single_width_only_outgoing {
+                    return Err(format!("vector_entry_width: {} not editable here (independent widths or editing flags)", w.path_id));
+                }
+                let pts: Vec<[f64; 2]> = w.points.iter().map(|q| [q.position, q.width]).collect();
+                width_profile(&pts)?;
+                let record = records.iter_mut().find(|p| p.path_id == w.path_id).ok_or_else(|| format!("vector_entry_width: path {}", w.path_id))?;
+                record.width = Some(pts);
+            }
+        }
+        let entry = Self { paths: records, live: live.shapes, design, links };
         entry.validate(doc, cancel)?;
         Ok(entry)
     }
@@ -600,16 +655,44 @@ impl VectorEntry {
                 if let Some(n) = &p.network {
                     v["network"] = serde_json::to_value(n).unwrap_or(Value::Null);
                 }
-                if let Some(w) = &p.width {
-                    v["width"] = json!(w);
-                }
                 v
             })
             .collect();
         let mut live = StudioLiveShapes::new(document_id);
         live.shapes.clone_from(&self.live);
-        let v = json!({"schema": ENTRY_SCHEMA, "paths": paths, "live_shapes": live});
+        let mut v = json!({"schema": ENTRY_SCHEMA, "paths": paths, "live_shapes": live});
+        let records = self.folio_records(document_id);
+        if !records.width_profiles.is_empty() {
+            v["vector_records"] = serde_json::to_value(&records).map_err(|e| format!("vector_entry_json: {e}"))?;
+        }
+        if let Some(d) = &self.design {
+            v["design"] = serde_json::to_value(d).map_err(|e| format!("vector_entry_json: {e}"))?;
+        }
+        if !self.links.is_empty() {
+            v["swatch_links"] = Value::Array(self.links.iter().map(|l| json!({"layer_id": l.layer_id, "kind": l.kind.token(), "swatch_id": l.swatch_id})).collect());
+        }
         serde_json::to_vec(&v).map_err(|e| format!("vector_entry_json: {e}"))
+    }
+
+    /// The Folio vector records of the entry: a `StudioWidthProfile` per path with a width profile
+    /// (lane SMB-VECTOR-STYLES; composite strokes them with nib's variable outline).
+    pub fn folio_records(&self, document_id: &str) -> folio::StudioVectorRecords {
+        let mut r = folio::StudioVectorRecords::new(document_id.to_string());
+        r.width_profiles = self
+            .paths
+            .iter()
+            .filter_map(|p| {
+                let w = p.width.as_ref()?;
+                Some(folio::StudioWidthProfile {
+                    path_id: p.path_id.clone(),
+                    points: w.iter().map(|q| folio::StudioWidthPoint { position: q[0], width: q[1], width_out: None }).collect(),
+                    adjust_adjoining_width_points: false,
+                    single_width_only_incoming: false,
+                    single_width_only_outgoing: false,
+                })
+            })
+            .collect();
+        r
     }
 }
 
@@ -620,100 +703,6 @@ impl VectorEntry {
 /// (lead request in lane SMB-ILLUSTRATOR-PEN).
 pub fn entry_persistable() -> bool {
     hsk_studio_session::DOCUMENT_ENTRY_TOKENS.contains(&ENTRY)
-}
-
-/// IEC 61966-2-1 decode of an 8-bit sRGB value into linear light.
-fn linear(v: u8) -> f32 {
-    let c = f32::from(v) / 255.0;
-    if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-}
-
-fn solid(c: [u8; 3]) -> FillPaint {
-    FillPaint::Solid([linear(c[0]), linear(c[1]), linear(c[2]), 1.0])
-}
-
-/// Composite specs of every vector layer of `doc` (paths resolved from `entry`; a layer whose path
-/// the entry lacks is drawn without that path and reported by the caller's render notes).
-pub fn specs(doc: &StudioDocument, entry: &VectorEntry) -> Result<Vec<VectorLayerSpec>, String> {
-    let mut out = Vec::new();
-    for layer in &doc.layers {
-        let Payload::Vector { path_ids } = &layer.payload else { continue };
-        let mut paths = Vec::with_capacity(path_ids.len());
-        let mut style = None;
-        for id in path_ids {
-            let record = entry.path(id).ok_or_else(|| format!("vector_path_unresolved: {} {id}", layer.layer_id))?;
-            paths.push(record.path.to_owned_path().map_err(|e| format!("vector_path: {id} {}", e.code()))?);
-            style.get_or_insert(record.style);
-        }
-        let style = style.unwrap_or(VectorStyle { fill: None, stroke: None, stroke_width: 0.0 });
-        // Networks and variable-width strokes draw through explicit fill and stroke-outline geometry.
-        if let Some(record) = path_ids.first().and_then(|id| entry.path(id))
-            && (record.network.is_some() || record.width.is_some())
-        {
-            out.push(outline_spec(&layer.layer_id, record)?);
-            continue;
-        }
-        let mut fills = Vec::new();
-        if let Some(c) = style.fill {
-            fills.push(FillSpec { paint: solid(c), mode: StudioBlendMode::Normal, opacity: 1.0 });
-        }
-        if let Some(c) = style.stroke
-            && style.stroke_width > 0.0
-        {
-            fills.push(FillSpec { paint: FillPaint::Stroke { style: StrokeStyle::new(style.stroke_width), paint: Box::new(solid(c)) }, mode: StudioBlendMode::Normal, opacity: 1.0 });
-        }
-        out.push(VectorLayerSpec { layer_id: layer.layer_id.clone(), geometry: VectorGeometry::Paths(paths), fills });
-    }
-    Ok(out)
-}
-
-/// The spec of a network or variable-width layer (lane SMB-ILLUSTRATOR-PEN-3): fill geometry (a
-/// network's filled regions, else the path) and the stroke's filled outline (a network's stroke
-/// geometry, else the path; outlined by the width profile or the uniform width) as two
-/// geometry rows: the fill row over the fill geometry, a composite `StrokeGeometry` row over the
-/// stroke outline (painted above the fill, each with its own exact coverage).
-fn outline_spec(layer_id: &str, record: &PathRecord) -> Result<VectorLayerSpec, String> {
-    let style = record.style;
-    let err = |e: hsk_studio_nib::Error| format!("vector_outline: {e:?}");
-    let network = record.network.as_ref().map(network_of).transpose()?;
-    let fill_paths: Vec<OwnedPath> = match (&network, style.fill) {
-        (_, None) => Vec::new(),
-        (Some(n), Some(_)) => n.fill_geometry().map_err(|e| e.code().to_string())?.iter().map(|g| g.to_owned_path().map_err(|e| e.code().to_string())).collect::<Result<_, _>>()?,
-        (None, Some(_)) => vec![record.path.to_owned_path().map_err(|e| e.code().to_string())?],
-    };
-    let outline = match style.stroke {
-        Some(_) if style.stroke_width > 0.0 || record.width.is_some() => {
-            let base = match &network {
-                Some(n) => n.stroke_geometry().map_err(|e| e.code().to_string())?,
-                None => record.path.clone(),
-            };
-            let owned = base.to_owned_path().map_err(|e| e.code().to_string())?;
-            if owned.elements.is_empty() {
-                None
-            } else {
-                let r = match &record.width {
-                    Some(w) => outline_variable(&owned, &width_profile(w)?, WidthCap::Butt, &BooleanOptions::default()),
-                    None => outline_stroke(&owned, &StrokeStyle::new(style.stroke_width), &StrokeOptions::default()),
-                };
-                match r {
-                    Ok(g) => Some(g.path),
-                    Err(hsk_studio_nib::Error::EmptyPathfinderResult) => None,
-                    Err(e) => return Err(err(e)),
-                }
-            }
-        }
-        _ => None,
-    };
-    // Exact: the fill row covers the fill geometry, the stroke row its own outline (composite
-    // `FillPaint::StrokeGeometry`, lane SMB-COMPOSITE-STROKE-GEOMETRY).
-    let mut fills = Vec::new();
-    if let (Some(f), false) = (style.fill, fill_paths.is_empty()) {
-        fills.push(FillSpec { paint: solid(f), mode: StudioBlendMode::Normal, opacity: 1.0 });
-    }
-    if let (Some(s), Some(o)) = (style.stroke, outline) {
-        fills.push(FillSpec { paint: FillPaint::StrokeGeometry { outline: vec![o], paint: Box::new(solid(s)) }, mode: StudioBlendMode::Normal, opacity: 1.0 });
-    }
-    Ok(VectorLayerSpec { layer_id: layer_id.to_string(), geometry: VectorGeometry::Paths(fill_paths), fills })
 }
 
 /// Composite's view of a saved vector entry: path geometry and network records by `SVPT` id
@@ -729,6 +718,9 @@ impl hsk_studio_composite::VectorAssets for EntryAssets<'_> {
     }
     fn network(&self, path_id: &str) -> Option<folio::StudioVectorNetwork> {
         self.0.path(path_id)?.network.clone()
+    }
+    fn plan_colour(&self, colour: &folio::StudioColor, space: hsk_studio_composite::BlendSpace) -> Option<[f32; 3]> {
+        style::plan_colour(colour, space)
     }
 }
 
@@ -992,14 +984,25 @@ impl Viewer {
         super::render::render_full(snap, &self.assets, Some(&text), Some(&prepared), super::render::Prefer::Cpu, None, None, self.cancel).map_err(|e| format!("render: {e}"))
     }
 
-    /// Prepared vector layers of the open document (`None` without vector layers).
+    /// Prepared vector layers of the open document (`None` without vector layers): composite's
+    /// Folio adapter over the entry's records (module docs); a refused layer is an error.
     pub(super) fn prepared_vectors(&self) -> Result<Option<PreparedVectors>, String> {
         let doc = self.vdoc()?;
         if !doc.layers.iter().any(|l| matches!(l.payload, Payload::Vector { .. })) {
             return Ok(None);
         }
-        let specs = specs(doc, &self.vector_entry()?)?;
-        prepare_vector_layers(&specs, &VectorResolution::default(), self.cancel).map(Some).map_err(|e| format!("vector_prepare: {e:?}"))
+        let snap = self.run.snapshot().ok_or("vector_prepare: nothing open")?;
+        let entry = self.vector_entry()?;
+        let design = style::effective_design(doc, &entry)?;
+        let records = entry.folio_records(&doc.document_id);
+        let prepared = hsk_studio_composite::prepare_vectors(snap, &design, &records, &EntryAssets(&entry), hsk_studio_composite::BlendSpace::LinearLight, &VectorResolution::default(), self.cancel)
+            .map_err(|e| format!("vector_prepare: {e:?}"))?;
+        for l in &doc.layers {
+            if let Some(code) = prepared.refusal(&l.layer_id) {
+                return Err(format!("vector_refused: {} {code}", l.layer_id));
+            }
+        }
+        Ok(Some(prepared))
     }
 
     /// The anchor path of a vector layer (its first path) and that path's record.
@@ -1454,15 +1457,49 @@ impl Viewer {
     /// typed `paint_bucket: no enclosed region` when the point is in no face. Studio reading,
     /// Illustrator Live Paint parity UNVERIFIED (D5).
     pub fn network_paint_bucket(&mut self, layer_id: &str, p: [f64; 2], fill: bool) -> Result<String, String> {
+        let r = self.paint_bucket_inner("paint_bucket", layer_id, p, fill, None);
+        self.report(r)
+    }
+
+    /// Paint bucket with a swatch (lane SMB-VECTOR-STYLES): the face at `p` is filled and names
+    /// swatch `swatch_id` as its region fill style (`None`: back to the layer's fill), so composite
+    /// paints it with the swatch and a swatch edit repaints it. ONE transaction.
+    pub fn network_region_swatch(&mut self, layer_id: &str, p: [f64; 2], swatch_id: Option<&str>) -> Result<String, String> {
         let r = (|| {
-            if !p.iter().all(|v| v.is_finite()) {
-                return Err("paint_bucket: non_finite".into());
+            if let Some(id) = swatch_id {
+                let entry = self.vector_entry()?;
+                let known = entry.design.as_ref().is_some_and(|d| d.paint_styles.iter().any(|s| s.style_id == id && style::is_swatch(s)));
+                if !known {
+                    return Err(format!("region_swatch: unknown swatch {id}"));
+                }
             }
-            let code = |e: hsk_studio_nib::network::NetworkError| format!("paint_bucket: {}", e.code());
-            let planar = self.vector_network(layer_id)?.planarize(PLANAR_TOLERANCE).map_err(code)?;
-            // Fill state only shows where the layer has a fill colour: without one nothing was filled.
-            let painted = self.vector_path(layer_id)?.style.fill.is_some();
-            let old_fill = if painted { planar.fill_geometry().map_err(code)? } else { Vec::new() };
+            self.paint_bucket_inner("region_swatch", layer_id, p, true, Some(swatch_id.map(str::to_string)))
+        })();
+        self.report(r)
+    }
+
+    /// Re-detects the faces of the planarized network, carrying each old filled region's fill state
+    /// and region style to the faces inside it, then sets the face at `p` (`style`: `Some` sets its
+    /// region style).
+    fn paint_bucket_inner(&mut self, op: &str, layer_id: &str, p: [f64; 2], fill: bool, style: Option<Option<String>>) -> Result<String, String> {
+        {
+            if !p.iter().all(|v| v.is_finite()) {
+                return Err(format!("{op}: non_finite"));
+            }
+            let code = |e: hsk_studio_nib::network::NetworkError| format!("{op}: {}", e.code());
+            let network = self.vector_network(layer_id)?;
+            let planar = network.planarize(PLANAR_TOLERANCE).map_err(code)?;
+            // Fill state only shows where the layer has a fill: without one nothing was filled.
+            let record = self.vector_path(layer_id)?;
+            let painted = style::has_fill(&self.vector_entry()?, layer_id, &record);
+            let mut old: Vec<(AnchorPath, Option<String>)> = Vec::new();
+            for r in planar.regions.iter().filter(|r| r.fills) {
+                let probe = VectorNetwork { regions: vec![r.clone()], ..planar.clone() };
+                if r.fill_style_id.is_none() && !painted {
+                    continue;
+                }
+                old.extend(probe.fill_geometry().map_err(code)?.into_iter().map(|g| (g, r.fill_style_id.clone())));
+            }
             let q = PathPoint::new(p[0], p[1]);
             let mut faces = planar.detect_regions(false).map_err(code)?;
             let mut found = false;
@@ -1471,25 +1508,31 @@ impl Viewer {
                 let geometry = probe.fill_geometry().map_err(code)?;
                 let Some(shape) = geometry.first() else { continue };
                 if let Some(inner) = interior_point(shape) {
-                    face.fills = old_fill.iter().any(|g| region_contains(g, inner));
+                    let carried = old.iter().find(|(g, _)| region_contains(g, inner));
+                    face.fills = carried.is_some();
+                    face.fill_style_id = carried.and_then(|(_, s)| s.clone());
                 }
                 if !found && region_contains(shape, q) {
                     face.fills = fill;
+                    if let Some(s) = &style {
+                        face.fill_style_id.clone_from(s);
+                    }
+                    if !fill {
+                        face.fill_style_id = None;
+                    }
                     found = true;
                 }
             }
             if !found {
-                return Err("paint_bucket: no enclosed region at the point".into());
+                return Err(format!("{op}: no enclosed region at the point"));
             }
             let next = VectorNetwork { regions: faces, ..planar };
-            let record = self.vector_path(layer_id)?;
-            let mut style = record.style;
-            if fill && style.fill.is_none() {
-                style.fill = Some(self.edit.vector.fill);
+            let mut paint = record.style;
+            if fill && !painted && style.is_none() {
+                paint.fill = Some(self.edit.vector.fill);
             }
-            self.set_network_styled("paint_bucket", layer_id, &next, style)
-        })();
-        self.report(r)
+            self.set_network_styled(op, layer_id, &next, paint)
+        }
     }
 
     /// Width tool (STU-VEC-007, STU-VEC-122): sets the stroke width at arc-length fraction `t`
@@ -2079,7 +2122,9 @@ impl Viewer {
                 "layer_id": id, "path_id": r.path_id, "path": path_json(&r.path),
                 "point_types": r.path.contours.iter().map(|c| c.anchors.iter().map(|a| a.point_type() as u8).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "live_shape": self.live_shape(id).ok().flatten().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
+                "paint_style": self.layer_paint_style(id).ok().map(|s| serde_json::to_value(s).unwrap_or(Value::Null)),
             })),
+            "swatches": self.swatches().unwrap_or_default().into_iter().map(|(id, name)| json!({"style_id": id, "name": name})).collect::<Vec<_>>(),
             "pathfinder_ops": PathfinderOp::ALL.iter().map(|o| o.wire()).collect::<Vec<_>>(),
         })
     }
