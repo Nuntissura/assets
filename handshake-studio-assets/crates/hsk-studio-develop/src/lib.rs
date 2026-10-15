@@ -69,7 +69,7 @@ pub use lens_profile::{
     PerspectiveModel,
 };
 pub use optics::{Defringe, Optics};
-pub use upright::{UprightAnalysis, analyse as analyse_upright};
+pub use upright::{DetectedLine, UprightAnalysis, analyse as analyse_upright};
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{recipe_for_white_point, ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
 pub use output::{
