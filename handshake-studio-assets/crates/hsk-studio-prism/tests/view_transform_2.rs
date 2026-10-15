@@ -165,11 +165,25 @@ fn view_selection_refuses_unbuilt_targets_and_hdr_views_are_bounded() {
     assert_eq!(ViewSelectError::NotBuilt.code(), "view_not_built");
 
     // HDR views on a working-space neutral ramp: luminance (Rec.2020 Y) non-decreasing, every channel
-    // in [0, 1.0001 * peak]. Channels themselves are not monotonic near the peak: the CTL limits to Rec.2020
+    // in [0, overshoot * peak]. Channels themselves are not monotonic near the peak: the CTL limits to Rec.2020
     // in D60-adapted XYZ (limit_to_primaries before the D60 -> D65 CAT), so the red channel of a
     // D60 neutral clips first and the CAT then mixes it (observed: R 9.764766 -> 9.764666 at 295
     // for 1000 nits); for the same reason a saturated neutral lands at about 97.7 % of the peak.
     let y2020 = npm(REC2020)[1];
+    // Upper bound of the HDR output relative to the peak: the limited Rec.2020 values lie in
+    // [0, 1] and then pass Rec.2020 -> XYZ, the Bradford D60 -> D65 adaptation and XYZ -> Rec.2020,
+    // so no channel exceeds the largest positive row sum of that matrix (observed worst 1.0023 for
+    // ACEScg (-1e30, 5, 0.3)).
+    let overshoot = {
+        let b: M3 = [[0.8951, 0.2664, -0.1614], [-0.7502, 1.7135, 0.0367], [0.0389, -0.0685, 1.0296]];
+        let xyz = |xy: [f64; 2]| [xy[0] / xy[1], 1.0, (1.0 - xy[0] - xy[1]) / xy[1]];
+        let (sc, dc) = (mv(&b, xyz([0.32168, 0.33767])), mv(&b, xyz([0.3127, 0.3290])));
+        let mul = |a: M3, c: M3| -> M3 { [0, 1, 2].map(|i| [0, 1, 2].map(|j| (0..3).map(|k| a[i][k] * c[k][j]).sum())) };
+        let vk = [[dc[0] / sc[0], 0.0, 0.0], [0.0, dc[1] / sc[1], 0.0], [0.0, 0.0, dc[2] / sc[2]]];
+        let m = mul(inv(npm(REC2020)), mul(mul(inv(b), mul(vk, b)), npm(REC2020)));
+        m.iter().map(|row| row.iter().map(|v| v.max(0.0)).sum::<f64>()).fold(0.0, f64::max) as f32
+    };
+    assert!(overshoot > 1.0 && overshoot < 1.05, "{overshoot}");
     for view in [V::Aces1HdrVideo1000Nits, V::Aces1HdrVideo2000Nits, V::Aces1HdrVideo4000Nits] {
         let peak = view.peak_nits() as f32 / 100.0;
         assert_eq!(view.apply([0.0; 3]).unwrap(), [0.0; 3], "{}", view.key());
@@ -180,12 +194,12 @@ fn view_selection_refuses_unbuilt_targets_and_hdr_views_are_bounded() {
             let y: f64 = (0..3).map(|c| y2020[c] * f64::from(out[c])).sum();
             assert!(y + 1e-6 >= prev_y, "{} luminance at {k}: {prev_y} -> {y}", view.key());
             // The CTL clamps the HDR output at 0 only; after the CAT a channel may pass the peak
-            // slightly (observed G 10.000127 for 1000 nits).
-            assert!(out.iter().all(|v| (0.0..=peak * 1.0001).contains(v)), "{} at {k}: {out:?}", view.key());
+            // (observed G 10.000127 for 1000 nits); bound: `overshoot` below.
+            assert!(out.iter().all(|v| (0.0..=peak * overshoot).contains(v)), "{} at {k}: {out:?}", view.key());
             prev_y = y;
         }
         let top = view.apply([f32::MAX; 3]).unwrap();
-        assert!(top.iter().all(|v| *v >= 0.95 * peak && *v <= peak * 1.0001), "{} f32::MAX {top:?}", view.key());
+        assert!(top.iter().all(|v| *v >= 0.95 * peak && *v <= peak * overshoot), "{} f32::MAX {top:?}", view.key());
     }
     for view in V::ALL {
         for input in SceneInput::ALL {
@@ -195,7 +209,7 @@ fn view_selection_refuses_unbuilt_targets_and_hdr_views_are_bounded() {
             }
             for px in [[-1e30, 5.0, 0.3], [f32::MAX, -f32::MAX, 0.0], [1e-45, 0.0, -0.0]] {
                 let out = vt.apply(px).unwrap();
-                let top = view.peak_nits() as f32 / 100.0 * 1.0001;
+                let top = view.peak_nits() as f32 / 100.0 * overshoot;
                 assert!(out.iter().all(|v| (0.0..=top).contains(v)), "{} {} {px:?} -> {out:?}", view.key(), input.key());
             }
             let mut odd = [0.1f32; 5];
