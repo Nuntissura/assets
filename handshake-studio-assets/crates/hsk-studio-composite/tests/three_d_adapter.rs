@@ -217,6 +217,28 @@ fn lights_materials_and_shadow_diagnostics_from_records() {
     assert_eq!(off(3, 11, 10), Some(vec![three_d::SHADOW_LIGHT_OFF]));
     assert_eq!(off(3, 10, 11), None, "all three off: the default, no diagnostic");
     assert_eq!(diag.len(), 2);
+    // Slice 3: the camera's depth of field reaches every plane (thin lens, members from records).
+    let mut l = layers();
+    l[0]["camera"]["depth_of_field"] = json!(true);
+    l[0]["camera"]["values"] = json!({"focus_distance":s(61.0),"aperture":s(30.0),"blur_level":s(150.0)});
+    let dof = source(&records(l), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap();
+    let lens = dof
+        .layers
+        .iter()
+        .filter_map(|x| match &x.content {
+            SceneContent::Pinned(p) => match &p.content {
+                SceneContent::Lit(lit) => Some((lit.lights.len(), lit.dof.map(|d| (d.1, d.2)))),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let want = three_d::DepthOfField { focus_distance: 61.0, aperture: 30.0, blur_level: 1.5 };
+    assert!(!lens.is_empty() && lens.iter().all(|x| *x == (0, Some((50.0, want)))), "{lens:?}");
+    // Hostile defocus is refused before any output is allocated.
+    assert!(three_d::defocus(&[0.0; 3], &[1.0], 1, 1, &[three_d::MAX_DOF_RADIUS + 1.0]).is_err());
+    assert!(three_d::defocus(&[0.0; 3], &[1.0], 1, 1, &[f64::NAN]).is_err());
+    assert!(three_d::defocus(&[0.0; 3], &[1.0], 1, 2, &[0.0]).is_err(), "shape mismatch");
     // A light outside its window lights nothing: the planes stay unlit.
     let plain = source(&records(layers()), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap();
     assert!(plain.layers.iter().all(|x| !matches!(&x.content, SceneContent::Pinned(p) if matches!(p.content, SceneContent::Lit(_)))));

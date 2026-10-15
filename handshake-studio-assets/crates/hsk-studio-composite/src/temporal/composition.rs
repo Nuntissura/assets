@@ -204,6 +204,9 @@ struct Layer3d {
     rotation_y: Option<Property>,
     orientation: Option<Property>,
     camera: Option<(Property, Option<Property>)>,
+    /// The camera's `depth_of_field` switch and keyed members by name (STU-CMP-040).
+    camera_dof: bool,
+    camera_values: BTreeMap<String, Property>,
     light: Option<Box<LightStreams>>,
     /// Material switches (STU-CMP-045a) and the keyed material members by name.
     material: hsk_studio_folio::StudioMaterialOptions,
@@ -863,6 +866,11 @@ impl CompositionTemporalSource {
                                 None => None,
                                 Some(c) => Some((keyed_property(id, &c.zoom)?, opt(&c.point_of_interest)?)),
                             },
+                            camera_dof: l.camera.as_ref().is_some_and(|c| c.depth_of_field),
+                            camera_values: match &l.camera {
+                                None => BTreeMap::new(),
+                                Some(c) => keyed_map(id, &c.values)?,
+                            },
                             light: match &l.light {
                                 None => None,
                                 Some(li) => Some(Box::new(LightStreams {
@@ -1235,8 +1243,19 @@ impl CompositionTemporalSource {
             let rx = one(d.rotation_x.as_ref())?.unwrap_or(0.0);
             let ry = one(d.rotation_y.as_ref())?.unwrap_or(0.0);
             let rz = one(l.streams.rotation.as_ref())?.unwrap_or(0.0);
-            return crate::three_d::camera(position, orientation, rx, ry, rz, poi, zoom, comp.width, comp.height)
-                .ok_or_else(|| unsupported(id, crate::three_d::COMPOSITION_3D_CAMERA_DEGENERATE));
+            let mut cam = crate::three_d::camera(position, orientation, rx, ry, rz, poi, zoom, comp.width, comp.height)
+                .ok_or_else(|| unsupported(id, crate::three_d::COMPOSITION_3D_CAMERA_DEGENERATE))?;
+            if d.camera_dof {
+                let named = |name: &str| -> Result<f64, TemporalError> {
+                    Ok(named_at(id, &d.camera_values, name, tick, cancel)?.first().copied().unwrap_or(0.0))
+                };
+                cam.dof = Some(crate::three_d::DepthOfField {
+                    focus_distance: named("focus_distance")?,
+                    aperture: named("aperture")?,
+                    blur_level: named("blur_level")? / 100.0,
+                });
+            }
+            return Ok(cam);
         }
         Ok(crate::three_d::default_camera(comp.width, comp.height))
     }

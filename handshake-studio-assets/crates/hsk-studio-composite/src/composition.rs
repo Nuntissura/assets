@@ -1493,7 +1493,9 @@ fn lit_surface(
     };
     let w = usize::try_from(surface.width).map_err(|_| CompositeError::Overflow)?;
     let h = usize::try_from(surface.height).map_err(|_| CompositeError::Overflow)?;
-    for row in 0..h {
+    // No lights (a defocus-only plane): the albedo is kept.
+    let shade_rows = if lit.lights.is_empty() { 0 } else { h };
+    for row in 0..shade_rows {
         cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
         for col in 0..w {
             let at = row.checked_mul(w).and_then(|r| r.checked_add(col)).ok_or(CompositeError::Overflow)?;
@@ -1509,6 +1511,28 @@ fn lit_surface(
                 }
             }
         }
+    }
+    // Depth of field (STU-CMP-040): a per-texel defocus radius from the camera depth.
+    if let Some((view, zoom, dof)) = &lit.dof {
+        let n = w.checked_mul(h).ok_or(CompositeError::Overflow)?;
+        let floats = |b: &[u8], count: usize| -> Vec<f32> { (0..count).map(|i| f32_at(b, i)).collect() };
+        let rgb = floats(&surface.colour, n.checked_mul(3).ok_or(CompositeError::Overflow)?);
+        let alpha = floats(&surface.alpha, n);
+        let mut radii = Vec::with_capacity(n);
+        for row in 0..h {
+            for col in 0..w {
+                #[allow(clippy::cast_precision_loss)]
+                let (x, y) = (lit.rect.x as f64 + col as f64 + 0.5, lit.rect.y as f64 + row as f64 + 0.5);
+                radii.push(crate::three_d::defocus_radius(view, *zoom, dof, x, y));
+            }
+        }
+        let (rgb, alpha) = crate::three_d::defocus(&rgb, &alpha, w, h, &radii).map_err(|()| TemporalError::Unsupported {
+            layer_id: id.to_owned(),
+            feature: crate::three_d::COMPOSITION_3D_DOF_BUDGET,
+        })?;
+        surface.colour = rgb.iter().flat_map(|v| v.to_le_bytes()).collect();
+        surface.alpha = alpha.iter().flat_map(|v| v.to_le_bytes()).collect();
+        surface.alpha_sha256 = hsk_studio_prism::profile_hash(&surface.alpha);
     }
     surface.colour_sha256 = hsk_studio_prism::profile_hash(&surface.colour);
     Ok(surface)

@@ -16,7 +16,7 @@
 //! planes' nearest-texel alpha), then samples and composites as above.
 #![allow(dead_code)]
 use crate::scenes::{BACKGROUND, Pixels, space, tile_id};
-use hsk_studio_composite::three_d::{Falloff, Light, LightKind, Material, Plane3d, Transform3d, camera, expand_run, expand_run_lit, layer_rotation};
+use hsk_studio_composite::three_d::{DepthOfField, Falloff, Light, LightKind, Material, Plane3d, Transform3d, camera, expand_run, expand_run_lit, layer_rotation};
 use hsk_studio_composite::{SceneComposition, SceneContent};
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::transform_math::{LayerTransform, PreparedTransform, Projective2, ResampleFilter};
@@ -146,7 +146,82 @@ fn project(p: V) -> [f64; 2] {
 /// "tf" is in front of "te" and the count where "te" is in front of "tf" (both must be non-zero:
 /// the planes intersect inside the frame).
 pub fn three_d_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
-    oracle(pixels, false)
+    let (out, crossing, _) = oracle(pixels, false, false);
+    (out, crossing)
+}
+
+/// The lens of [`dof_scene`]: focus near "tf" / "te", "tg" behind it out of focus.
+pub const LENS: DepthOfField = DepthOfField { focus_distance: 61.0, aperture: 30.0, blur_level: 1.0 };
+/// The unlit run under a camera with [`LENS`].
+pub fn dof_scene(pixels: &Pixels) -> SceneComposition {
+    let mut cam = camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera");
+    cam.dof = Some(LENS);
+    SceneComposition {
+        composition_id: "three-d-dof".to_owned(),
+        width: W,
+        height: H,
+        background: Some(BACKGROUND),
+        filter: ResampleFilter::Bilinear,
+        layers: expand_run_lit(&planes(pixels), &[], &[], &cam, W, H, space(), 7).expect("run expands"),
+    }
+}
+/// The oracle of [`dof_scene`], plus the largest layer-space defocus radius.
+pub fn dof_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, f64) {
+    let (out, _, r) = oracle(pixels, false, true);
+    (out, r)
+}
+
+/// Layer-space defocus radius of plane `s` at layer point (x, y): screen circle of confusion over
+/// the local screen scale, from the analytic Jacobian of the pinhole projection.
+fn radius_at(s: &Spec, x: f64, y: f64) -> f64 {
+    let (r, d, f) = basis();
+    let q = sub(world(s, x, y), CAMERA_POSITION);
+    let (qx, qy, qz) = (dot(q, r), dot(q, d), dot(q, f));
+    let ex = scale(rotate(s, [1.0, 0.0, 0.0]), s.scale[0]);
+    let ey = scale(rotate(s, [0.0, 1.0, 0.0]), s.scale[1]);
+    let j = |e: V| -> (f64, f64) {
+        let (dx, dy, dz) = (dot(e, r), dot(e, d), dot(e, f));
+        (ZOOM * (dx * qz - qx * dz) / (qz * qz), ZOOM * (dy * qz - qy * dz) / (qz * qz))
+    };
+    let (a, c) = j(ex);
+    let (b, e) = j(ey);
+    let screen_scale = (a * e - b * c).abs().sqrt();
+    let coc = LENS.blur_level * LENS.aperture * ZOOM * (qz - LENS.focus_distance).abs() / (2.0 * qz * LENS.focus_distance);
+    coc / screen_scale
+}
+/// Fast-rectangle gather blur of one plane's texels (straight in, straight out).
+fn blur_plane(tex: &[[f32; 4]], w: usize, h: usize, radius: &dyn Fn(usize, usize) -> f64) -> Vec<[f32; 4]> {
+    let cov = |d: f64, r: f64| (r + 0.5 - d).clamp(0.0, 1.0);
+    let mut out = Vec::with_capacity(tex.len());
+    for y in 0..h {
+        for x in 0..w {
+            let r = radius(x, y);
+            let reach = (r + 0.5).ceil() as i64;
+            let (mut sw, mut sa, mut sc) = (0.0f64, 0.0f64, [0.0f64; 3]);
+            for dy in -reach..=reach {
+                for dx in -reach..=reach {
+                    let wt = cov(dx.abs() as f64, r) * cov(dy.abs() as f64, r);
+                    if wt == 0.0 {
+                        continue;
+                    }
+                    sw += wt;
+                    let (xx, yy) = (x as i64 + dx, y as i64 + dy);
+                    if xx < 0 || yy < 0 || xx >= w as i64 || yy >= h as i64 {
+                        continue;
+                    }
+                    let t = tex[yy as usize * w + xx as usize];
+                    let a = f64::from(t[3]);
+                    sa += wt * a;
+                    for c in 0..3 {
+                        sc[c] += wt * a * f64::from(t[c]);
+                    }
+                }
+            }
+            let rgb = |c: usize| if sa > 0.0 { (sc[c] / sa) as f32 } else { 0.0 };
+            out.push([rgb(0), rgb(1), rgb(2), (sa / sw) as f32]);
+        }
+    }
+    out
 }
 
 /// The lit run's materials (bottom first: tg, tf, te).
@@ -200,7 +275,7 @@ pub fn lit_scene(pixels: &Pixels) -> SceneComposition {
 }
 /// [`three_d_oracle`] of [`lit_scene`], plus the count of texels a shadow darkens.
 pub fn lit_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, usize) {
-    let (out, _) = oracle(pixels, true);
+    let (out, _, _) = oracle(pixels, true, false);
     (out, shadowed_texels(pixels))
 }
 
@@ -351,10 +426,23 @@ fn shadowed_texels(pixels: &Pixels) -> usize {
     n
 }
 
-fn oracle(pixels: &Pixels, lit: bool) -> (Vec<[f32; 4]>, [usize; 2]) {
+fn oracle(pixels: &Pixels, lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], f64) {
     let (r, d, f) = basis();
     let specs = specs();
-    let shaded = texels(pixels, &specs, lit);
+    let mut shaded = texels(pixels, &specs, lit);
+    let mut max_radius = 0.0f64;
+    if dof {
+        for (i, s) in specs.iter().enumerate() {
+            let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+            let radius = |x: usize, y: usize| radius_at(s, x as f64 + 0.5, y as f64 + 0.5);
+            for y in 0..t.height as usize {
+                for x in 0..t.width as usize {
+                    max_radius = max_radius.max(radius(x, y));
+                }
+            }
+            shaded[i] = blur_plane(&shaded[i], t.width as usize, t.height as usize, &radius);
+        }
+    }
     let mut draws = Vec::new();
     for s in &specs {
         let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
@@ -414,5 +502,5 @@ fn oracle(pixels: &Pixels, lit: bool) -> (Vec<[f32; 4]>, [usize; 2]) {
             out.push([acc.rgb[0], acc.rgb[1], acc.rgb[2], acc.a]);
         }
     }
-    (out, crossing)
+    (out, crossing, max_radius)
 }

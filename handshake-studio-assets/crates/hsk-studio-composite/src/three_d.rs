@@ -104,6 +104,16 @@ pub const PLANAR_RENDERER: RendererCapabilities = RendererCapabilities {
         ("background_opacity", "planar renderer: no environment lighting"),
         ("background_blur", "planar renderer: no environment lighting"),
         ("shadow_diffusion", "planar renderer: hard shadows only"),
+        ("iris_shape", "planar renderer: every iris renders as the fast rectangle"),
+        ("iris_rotation", "planar renderer: fast rectangle iris only"),
+        ("iris_roundness", "planar renderer: fast rectangle iris only"),
+        ("iris_aspect_ratio", "planar renderer: fast rectangle iris only"),
+        ("iris_diffraction_fringe", "planar renderer: no diffraction fringe"),
+        ("highlight_gain", "planar renderer: no bokeh highlights"),
+        ("highlight_threshold", "planar renderer: no bokeh highlights"),
+        ("highlight_saturation", "planar renderer: no bokeh highlights"),
+        ("focus_area_width", "planar renderer: thin-lens focus at one distance"),
+        ("split_blur_level", "planar renderer: one blur level"),
         ("light_colour_profile", "planar renderer: light colour is used in the plan's colour space, unconverted"),
     ],
 };
@@ -190,14 +200,39 @@ pub struct Camera {
     pub zoom: f64,
     /// The composition centre in screen pixels.
     pub centre: [f64; 2],
+    /// Depth of field when the camera enables it (STU-CMP-040 `depth_of_field`).
+    pub dof: Option<DepthOfField>,
 }
+
+/// Thin-lens depth of field of a camera (STU-CMP-040 `focus_distance`, `aperture`, `blur_level`),
+/// in pixels and as a fraction. The circle of confusion of a point at camera depth `z` has the
+/// screen radius `blur aperture zoom |z - focus| / (2 z focus)` (thin lens with the focal length
+/// small against the distances; Studio reading, UNVERIFIED).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthOfField {
+    pub focus_distance: f64,
+    pub aperture: f64,
+    pub blur_level: f64,
+}
+impl DepthOfField {
+    /// Screen-space circle-of-confusion radius (pixels) at camera depth `z` for `zoom`.
+    pub fn screen_radius(&self, zoom: f64, z: f64) -> f64 {
+        self.blur_level * self.aperture * zoom * (z - self.focus_distance).abs() / (2.0 * z * self.focus_distance)
+    }
+}
+/// Largest layer-space defocus radius (texels).
+pub const MAX_DOF_RADIUS: f64 = 32.0;
+/// Most kernel taps one defocused surface may take.
+pub const MAX_DOF_TAPS: u64 = 1 << 26;
+/// A defocus radius above [`MAX_DOF_RADIUS`] or a surface above [`MAX_DOF_TAPS`].
+pub const COMPOSITION_3D_DOF_BUDGET: &str = "composition_3d_dof_budget";
 /// Studio's default camera for a `width x height` composition: zoom for a 39.5978 degree horizontal
 /// angle of view (a 50 mm lens on a 36 mm film back; UNVERIFIED as After Effects' default), placed at
 /// `(w/2, h/2, -zoom)` looking along +z, so the plane z = 0 maps one to one.
 pub fn default_camera(width: u32, height: u32) -> Camera {
     let (w, h) = (f64::from(width), f64::from(height));
     let zoom = hsk_studio_folio::camera_zoom_of_angle(39.5978, w);
-    Camera { position: [w / 2.0, h / 2.0, -zoom], rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], zoom, centre: [w / 2.0, h / 2.0] }
+    Camera { position: [w / 2.0, h / 2.0, -zoom], rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], zoom, centre: [w / 2.0, h / 2.0], dof: None }
 }
 /// A two-node camera's base rotation: forward towards `poi`, screen-down along world-down made
 /// orthogonal; `None` when forward is (anti)parallel to world-down or `poi == position`.
@@ -234,6 +269,7 @@ pub fn camera(
         rotation,
         zoom,
         centre: [f64::from(width) / 2.0, f64::from(height) / 2.0],
+        dof: None,
     })
 }
 
@@ -512,6 +548,9 @@ pub struct LitContent {
     /// The camera position (view vector of the specular term).
     pub eye: Vec3,
     pub casters: Vec<Caster>,
+    /// Depth of field: the plane's content-plan -> screen homography (its third row is the camera
+    /// depth), the camera zoom and the lens (`None` = in focus everywhere).
+    pub dof: Option<(Projective2, f64, DepthOfField)>,
 }
 
 fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Material, lights: &[Light], cam: &Camera) -> SceneContent {
@@ -519,9 +558,13 @@ fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Materia
         return SceneContent::None;
     };
     let m = material(i);
-    if lights.is_empty() || !m.accepts_lights {
+    let lit = !lights.is_empty() && m.accepts_lights;
+    if !lit && cam.dof.is_none() {
         return p.content.clone();
     }
+    let lights = if lit { lights } else { &[] };
+    let to_layer = Projective2::from_affine(&Affine2::translate(-p.origin[0], -p.origin[1]));
+    let dof = cam.dof.map(|d| (to_layer.then(&plane_homography(&p.transform, cam)), cam.zoom, d));
     let casters = planes
         .iter()
         .enumerate()
@@ -545,7 +588,98 @@ fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Materia
         lights: lights.to_vec(),
         eye: cam.position,
         casters,
+        dof,
     }))
+}
+
+/// Layer-space defocus radius (texels) of the content texel centred at plan point `(x, y)`: the
+/// screen circle-of-confusion radius divided by the local screen scale `sqrt(|det J|)` of the
+/// content -> screen homography at that point.
+pub fn defocus_radius(view: &Projective2, zoom: f64, dof: &DepthOfField, x: f64, y: f64) -> f64 {
+    let h = &view.m;
+    let (sx, sy, w) = view.apply_h(x, y);
+    let w2 = w * w;
+    let j00 = (h[0] * w - sx * h[6]) / w2;
+    let j01 = (h[1] * w - sx * h[7]) / w2;
+    let j10 = (h[3] * w - sy * h[6]) / w2;
+    let j11 = (h[4] * w - sy * h[7]) / w2;
+    let scale = (j00 * j11 - j01 * j10).abs().sqrt();
+    dof.screen_radius(zoom, w) / scale
+}
+
+fn coverage(d: f64, r: f64) -> f64 {
+    (r + 0.5 - d).clamp(0.0, 1.0)
+}
+
+/// Defocuses a straight RGB + alpha surface (`w x h`, row-major) with a per-texel radius: each
+/// output texel gathers its neighbours under the fast-rectangle iris, a square of half-width `r`
+/// with anti-aliased edges (`weight = c(|dx|) c(|dy|)`, `c(d) = clamp(r + 0.5 - d, 0, 1)`), in
+/// premultiplied colour, normalised by the full kernel weight (texels outside the surface are
+/// transparent). The blur stays inside the plane's footprint. Refuses (`Err(())`) a radius above
+/// [`MAX_DOF_RADIUS`], a non-finite radius or more than [`MAX_DOF_TAPS`] taps, before allocating.
+// Indices stay below `w * h` (checked) and `reach <= 33`.
+#[allow(clippy::type_complexity, clippy::arithmetic_side_effects, clippy::result_unit_err)]
+pub fn defocus(rgb: &[f32], alpha: &[f32], w: usize, h: usize, radii: &[f64]) -> Result<(Vec<f32>, Vec<f32>), ()> {
+    let n = w.checked_mul(h).ok_or(())?;
+    if rgb.len() != n.checked_mul(3).ok_or(())? || alpha.len() != n || radii.len() != n {
+        return Err(());
+    }
+    let mut taps: u64 = 0;
+    for r in radii {
+        if !(r.is_finite() && *r >= 0.0 && *r <= MAX_DOF_RADIUS) {
+            return Err(());
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let side = 2 * ((r + 0.5).ceil() as u64) + 1;
+        taps = taps.checked_add(side.checked_mul(side).ok_or(())?).ok_or(())?;
+    }
+    if taps > MAX_DOF_TAPS {
+        return Err(());
+    }
+    let mut out_rgb = vec![0.0f32; rgb.len()];
+    let mut out_a = vec![0.0f32; n];
+    for y in 0..h {
+        for x in 0..w {
+            let at = y * w + x;
+            let r = radii[at];
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let reach = (r + 0.5).ceil() as usize;
+            let (mut sw, mut sa, mut sc) = (0.0f64, 0.0f64, [0.0f64; 3]);
+            for dy in 0..=2 * reach {
+                let wy = coverage((dy as f64 - reach as f64).abs(), r);
+                if wy == 0.0 {
+                    continue;
+                }
+                for dx in 0..=2 * reach {
+                    let wx = coverage((dx as f64 - reach as f64).abs(), r);
+                    let wt = wx * wy;
+                    if wt == 0.0 {
+                        continue;
+                    }
+                    sw += wt;
+                    let (Some(yy), Some(xx)) = ((y + dy).checked_sub(reach), (x + dx).checked_sub(reach)) else { continue };
+                    if yy >= h || xx >= w {
+                        continue;
+                    }
+                    let k = yy * w + xx;
+                    let a = f64::from(alpha[k]);
+                    sa += wt * a;
+                    for c in 0..3 {
+                        sc[c] += wt * a * f64::from(rgb[k * 3 + c]);
+                    }
+                }
+            }
+            let a = sa / sw;
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                out_a[at] = a as f32;
+                for c in 0..3 {
+                    out_rgb[at * 3 + c] = if sa > 0.0 { (sc[c] / sa) as f32 } else { 0.0 };
+                }
+            }
+        }
+    }
+    Ok((out_rgb, out_a))
 }
 
 fn smoothstep(t: f64) -> f64 {

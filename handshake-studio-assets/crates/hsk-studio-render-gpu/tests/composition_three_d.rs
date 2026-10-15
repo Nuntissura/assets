@@ -83,3 +83,24 @@ fn gpu_lit_three_d_run_matches_the_shading_oracle() {
     println!("three_d lit: gpu max |delta| vs oracle {delta:e}");
     assert!(delta <= GPU_TOLERANCE, "{delta}");
 }
+
+#[test]
+fn gpu_depth_of_field_matches_the_defocus_oracle() {
+    if !gate("gpu_depth_of_field_matches_the_defocus_oracle") {
+        return;
+    }
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::dof_scene(&pixels);
+    let (want, _) = three_d::dof_oracle(&pixels);
+    let ctx = SceneContext {
+        backend: backend(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let got = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
+    let delta = scenes::max_delta(&got, &want);
+    println!("three_d dof: gpu max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "{delta}");
+}

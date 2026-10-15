@@ -60,3 +60,21 @@ fn lit_three_d_run_matches_the_shading_oracle() {
     let other = render(&Renderer::with_threads(7, 4).unwrap(), &scene, &pixels);
     assert_eq!(other.digest(), base.digest());
 }
+
+#[test]
+fn depth_of_field_matches_the_defocus_oracle() {
+    // Lane SMB-AE-3D slice 3: a thin-lens camera focused near "tf"/"te"; every plane texel is
+    // defocused by its own circle of confusion (fast-rectangle iris) before the resample.
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::dof_scene(&pixels);
+    let (want, max_radius) = three_d::dof_oracle(&pixels);
+    assert!(max_radius > 1.0, "the far plane is out of focus: {max_radius}");
+    let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
+    let delta = scenes::max_delta(&base, &want);
+    let sharp = render(&Renderer::new(64).unwrap(), &three_d::three_d_scene(&pixels), &pixels);
+    println!("three_d dof: max layer radius {max_radius:.3}, cpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&base.digest()));
+    assert!(delta <= 1e-6, "{delta}");
+    assert_ne!(sharp.digest(), base.digest(), "the lens changes the frame");
+    let other = render(&Renderer::with_threads(5, 3).unwrap(), &scene, &pixels);
+    assert_eq!(other.digest(), base.digest());
+}
