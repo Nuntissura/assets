@@ -119,8 +119,9 @@ fn tool_refusals_are_typed() {
     assert!(e.contains("unknown layer"), "{e}");
     let e = v.select_wand(&art, -5, 1, &WandOptions::default()).unwrap_err();
     assert!(e.contains("invalid_input"), "{e}");
-    let e = v.select_wand(&art, 1, 1, &WandOptions { sample_merged: true, ..WandOptions::default() }).unwrap_err();
-    assert!(e.contains("sample_merged"), "{e}");
+    // Sample merged reads the rendered composite (lane SMB-PS-SELECT-LIQUIFY-2): one step, undone.
+    v.select_wand(&art, 1, 1, &WandOptions { sample_merged: true, ..WandOptions::default() }).unwrap_or_else(|e| panic!("{e}"));
+    v.undo_selection().unwrap();
     let e = v.select_quick(&art, &[s(f64::NAN, 1.0)], 4.0, StrokeMode::Add).unwrap_err();
     assert!(e.contains("nonfinite"), "{e}");
     let e = v.liquify(&art, LiquifyTool::Twirl { clockwise: true }, &[s(1.0, 1.0)], &LiquifyBrush { size: 1.0e9, ..LiquifyBrush::default() }).unwrap_err();

@@ -65,10 +65,15 @@ pub enum Tool {
     Reshape,
     BlobBrush,
     PaintBucket,
+    /// Lane SMB-PS-SELECT-LIQUIFY-2 (module [`super::select_liquify`]).
+    MagicWand,
+    QuickSelect,
+    MagneticLasso,
+    Liquify,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 26] = [
+    pub const ALL: [Tool; 30] = [
         Tool::View,
         Tool::RectSelect,
         Tool::EllipseSelect,
@@ -95,6 +100,10 @@ impl Tool {
         Tool::Reshape,
         Tool::BlobBrush,
         Tool::PaintBucket,
+        Tool::MagicWand,
+        Tool::QuickSelect,
+        Tool::MagneticLasso,
+        Tool::Liquify,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -124,6 +133,10 @@ impl Tool {
             Tool::Reshape => "reshape",
             Tool::BlobBrush => "blob_brush",
             Tool::PaintBucket => "paint_bucket",
+            Tool::MagicWand => "magic_wand",
+            Tool::QuickSelect => "quick_selection",
+            Tool::MagneticLasso => "magnetic_lasso",
+            Tool::Liquify => "liquify",
         }
     }
     pub fn label(self) -> &'static str {
@@ -154,6 +167,10 @@ impl Tool {
             Tool::Reshape => "Reshape",
             Tool::BlobBrush => "Blob brush",
             Tool::PaintBucket => "Paint bucket",
+            Tool::MagicWand => "Magic wand",
+            Tool::QuickSelect => "Quick select",
+            Tool::MagneticLasso => "Magnetic lasso",
+            Tool::Liquify => "Liquify",
         }
     }
 }
@@ -201,6 +218,9 @@ pub struct EditState {
     pub vector: super::vector::VectorTool,
     /// The vector entry of the open document while the session has no `vector` token.
     pub(super) vector_local: Option<Vec<u8>>,
+    /// Magic wand, quick select, magnetic lasso and liquify settings (module
+    /// [`super::select_liquify`]).
+    pub ps: super::select_liquify::PsSettings,
 }
 
 impl Default for EditState {
@@ -215,6 +235,7 @@ impl Default for EditState {
             gesture: Vec::new(),
             vector: super::vector::VectorTool::default(),
             vector_local: None,
+            ps: super::select_liquify::PsSettings::default(),
         }
     }
 }
