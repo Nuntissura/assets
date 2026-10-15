@@ -591,26 +591,3 @@ fn gpu_projective_parity_vs_pigment_reference() {
     }
     println!("projective parity worst: {:e} premultiplied/alpha, {:e} straight", worst.0, worst.1);
 }
-
-/// Key pipelines (lane SMB-AE-KEY-TRACK-2) have no GPU pass: every stage kind is declared
-/// Unsupported, so shared admission refuses the plan under the stage's key before any device work
-/// or sink call, on any machine (no adapter needed).
-#[test]
-fn gpu_keying_is_refused_before_any_device_work() {
-    use hsk_studio_pigment::keying::{ChromaKey, ChromaSpace, KeyStage, MatteCombine};
-    use hsk_studio_pigment::render_plan::ExtOperator;
-    let tile = Tile::new(9, 7);
-    let sources = Sources { tile: &tile, mask: None };
-    for stage in [
-        KeyStage::Chroma(ChromaKey { key: [0.0, 1.0, 0.0], space: ChromaSpace::YCbCr, tolerance: 0.1, softness: 0.1, luma_weight: 0.0 }, MatteCombine::Replace),
-        KeyStage::ChokeSpread { radius_px: 1 },
-        KeyStage::Feather { radius_px: 1.0 },
-        KeyStage::Levels { black: 0.1, white: 0.9 },
-    ] {
-        assert_eq!(backend().extension_exactness(ExtOperator::Key(stage.kind())), Exactness::Unsupported);
-        let ext = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1).with_keys(vec![stage.clone()])]);
-        let (result, image) = execute(backend(), &plan(&tile, NORMAL, None), &ext, &sources);
-        assert_eq!(result, Err(BackendError::Unsupported { operator: stage.key(), exactness: Exactness::Unsupported }), "{stage:?}");
-        assert_eq!(image.calls, 0);
-    }
-}

@@ -1390,7 +1390,17 @@ impl GpuBackend {
             Some(e) => admit_extended(plan, e, self, request, cancel)?,
         };
         leaf_root_class(plan, self, &mut ledger);
-        let prepared = prepare(plan, sources, extensions, request.max_working_bytes)?;
+        // Key pipelines (lane SMB-AE-KEY-TRACK-3): the host refusals run here, before the device
+        // state is read; the keys run on the device below and the plan is prepared rewritten.
+        let keyed_plan = key::has_keys(extensions);
+        if let (true, Some(e)) = (keyed_plan, extensions) {
+            key::check(plan, e)?;
+        }
+        let prepared_plain = if keyed_plan {
+            None
+        } else {
+            Some(prepare(plan, sources, extensions, request.max_working_bytes)?)
+        };
         let digest = match extensions {
             None => plan.digest(),
             Some(e) => e.digest_with(plan),
@@ -1409,6 +1419,20 @@ impl GpuBackend {
             State::Unavailable(reason) => return Err(GpuError::Unavailable(*reason)),
             State::Failed(error) => return Err(*error),
         };
+        let keyed = match (keyed_plan, extensions) {
+            (true, Some(e)) => Some(key::run(ctx, plan, e, sources, request, cancel)?),
+            _ => None,
+        };
+        let keyed_sources = keyed.as_ref().map(|k| k.sources(sources));
+        let prepared_keyed = match (&keyed, &keyed_sources) {
+            (Some(k), Some(s)) => Some(prepare(&k.plan, s, Some(&k.ext), request.max_working_bytes)?),
+            _ => None,
+        };
+        let (run_plan, prepared) = match (&keyed, &prepared_keyed, &prepared_plain) {
+            (Some(k), Some(p), _) => (&k.plan, p),
+            (_, _, Some(p)) => (plan, p),
+            _ => return Err(unsupported("plan_shape")),
+        };
 
         let residency = &mut inner.residency;
         let mark = residency.mark();
@@ -1425,8 +1449,8 @@ impl GpuBackend {
                 ctx,
                 residency,
                 &self.options,
-                &prepared,
-                plan,
+                prepared,
+                run_plan,
                 request,
                 cancel,
                 sink,
@@ -1591,6 +1615,9 @@ impl RenderBackend<NoVector> for GpuBackend {
             | ExtOperator::Blur(_)
             | ExtOperator::Filter(_) => true,
             ExtOperator::AlphaPremultiplied => false,
+            // Key pipelines (lane SMB-AE-KEY-TRACK-3): `key.wgsl` on keyed tile layers
+            // (tests/gpu_keying.rs); inner/outer key, key cleaner and wire removal are not run.
+            ExtOperator::Key(kind) => key::gpu_key_supported(kind),
             ExtOperator::Adjustment(kind) => gpu_adjust_supported(kind),
             ExtOperator::Effect(kind) => matches!(
                 kind,
@@ -3482,6 +3509,7 @@ fn submit_fault(
 }
 
 mod display;
+mod key;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
 pub(crate) use display::EXTENDED_FLAG;
 use display::sample_ok;
