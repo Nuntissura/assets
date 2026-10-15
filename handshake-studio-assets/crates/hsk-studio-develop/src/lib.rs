@@ -18,6 +18,9 @@ pub mod colour;
 pub mod color;
 pub mod convert;
 mod cr2;
+mod cr3;
+mod crx;
+mod crx_wavelet;
 pub mod curves;
 pub mod detail;
 pub mod local;
@@ -235,6 +238,9 @@ impl From<hsk_studio_accord::ValidationError> for DevelopError {
 /// the family; anything else is
 /// `decoder_unavailable:unknown` (STU-CON-042: typed refusal).
 pub fn decode_container(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
+    if cr3::is_cr3(bytes) {
+        return cr3::decode(bytes);
+    }
     // TIFF family (classic + BigTIFF magic); BigTIFF is then refused by the reader, not mislabeled.
     if [&b"II*\0"[..], b"MM\0*", b"II+\0", b"MM\0+"]
         .iter()

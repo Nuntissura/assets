@@ -138,9 +138,15 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
     sab / (saa.sqrt() * sbb.sqrt()).max(f64::MIN_POSITIVE)
 }
 
-/// Correlation of the decoded CFA plane with the embedded preview on a 48-cell-wide grid; a
-/// portrait preview of a landscape frame is compared after both quarter turns (max taken).
+/// Correlation of the decoded CFA plane with the embedded preview. The raw (minus its floor) is
+/// reduced to 8x8 block means and square-rooted (rough display gamma); the preview covers a window
+/// of `k` raw pixels per preview pixel (`k` = the raw/preview size ratio rounded down to a half,
+/// e.g. 1.0 when the preview is the camera's crop, 1.5 for a reduced preview); that window is slid
+/// over the raw in 8-pixel steps (masked borders and crop offsets differ per body) and the best
+/// Pearson r on a 48-cell-wide grid is kept. A portrait preview of a landscape frame is compared
+/// against both quarter turns. Returns (r, preview width, preview height).
 fn preview_r(raw: &DngRaw, bytes: &[u8]) -> Option<(f64, usize, usize)> {
+    const B: usize = 8;
     let (pw, ph, luma) = preview_luma(bytes)?;
     let (w, h) = (raw.width as usize, raw.height as usize);
     let mut floor = u16::MAX;
@@ -149,21 +155,48 @@ fn preview_r(raw: &DngRaw, bytes: &[u8]) -> Option<(f64, usize, usize)> {
             floor = floor.min(raw.sample(x, y));
         }
     }
-    let rawv = |x: usize, y: usize| f64::from(raw.sample(x as u32, y as u32).saturating_sub(floor)).sqrt();
-    let gx = 48;
+    let (sw, sh) = (w / B, h / B);
+    let mut small = vec![0.0f64; sw * sh];
+    for by in 0..sh {
+        for bx in 0..sw {
+            let mut s = 0.0;
+            for y in by * B..(by + 1) * B {
+                for x in bx * B..(bx + 1) * B {
+                    s += f64::from(raw.sample(x as u32, y as u32).saturating_sub(floor));
+                }
+            }
+            small[by * sw + bx] = (s / (B * B) as f64).sqrt();
+        }
+    }
     let rotated = (pw > ph) != (w > h);
-    let gy = (gx * if rotated { w } else { h } / if rotated { h } else { w }).max(8);
-    let prev = |x: usize, y: usize| luma[y * pw + x];
-    let p = grid(prev, pw, ph, gx, gy);
-    let r = if !rotated {
-        pearson(&grid(rawv, w, h, gx, gy), &p)
+    // Orient the reduced raw like the preview (both quarter turns when rotated).
+    let turns: Vec<(usize, usize, Vec<f64>)> = if !rotated {
+        vec![(sw, sh, small)]
     } else {
-        // raw rotated 90 cw: (x, y) of the turned frame (h wide, w tall) maps to raw (y, h-1-x).
-        let cw = grid(|x, y| rawv(y, h - 1 - x), h, w, gx, gy);
-        let ccw = grid(|x, y| rawv(w - 1 - y, x), h, w, gx, gy);
-        pearson(&cw, &p).max(pearson(&ccw, &p))
+        let cw: Vec<f64> = (0..sw * sh).map(|i| { let (x, y) = (i % sh, i / sh); small[(sh - 1 - x) * sw + y] }).collect();
+        let ccw: Vec<f64> = (0..sw * sh).map(|i| { let (x, y) = (i % sh, i / sh); small[x * sw + (sw - 1 - y)] }).collect();
+        vec![(sh, sw, cw), (sh, sw, ccw)]
     };
-    Some((r, pw, ph))
+    let gx = 48;
+    let gy = (gx * ph / pw).max(8);
+    let p = grid(|x, y| luma[y * pw + x], pw, ph, gx, gy);
+    let mut best = f64::MIN;
+    for (tw, th, img) in &turns {
+        let ratio = (*tw * B) as f64 / pw as f64;
+        let ratio = ratio.min((*th * B) as f64 / ph as f64);
+        let k = ((ratio * 2.0).floor() / 2.0).max(0.5).min(ratio);
+        let (cw, ch) = (((pw as f64 * k) / B as f64) as usize, ((ph as f64 * k) / B as f64) as usize);
+        if cw < gx || ch < gy || cw > *tw || ch > *th {
+            continue;
+        }
+        for oy in 0..=(th - ch) {
+            for ox in 0..=(tw - cw) {
+                let g = grid(|x, y| img[(oy + y) * tw + ox + x], cw, ch, gx, gy);
+                best = best.max(pearson(&g, &p));
+            }
+        }
+    }
+    (best > f64::MIN).then_some((best, pw, ph))
 }
 
 /// Same-colour steps two columns and two rows apart: a wrong bit layout makes one explode.
@@ -266,4 +299,23 @@ fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
             r_floor: 0.85,
         },
     ]);
+}
+
+/// EOS R6 (raw.pixls.us id 4659): main CRAW track CMP1 version 0x200, 3584 x 2386 stored sensor
+/// (displayed 3408 x 2272), 14 bit, 4 planes, CFA code 0 (RGGB), 3 wavelet levels, one tile,
+/// header 872 bytes (byte inspection 2026-10-15).
+#[test]
+#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+fn cr3_crx_r6_decodes_and_matches_the_embedded_preview() {
+    const TEST: &str = "cr3_crx_r6_decodes_and_matches_the_embedded_preview";
+    check_all(TEST, &[Expect {
+        file: "canon-eos-r6.cr3",
+        sha256: "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778",
+        dims: (3584, 2386, 14),
+        white: 16383,
+        cfa: CfaPattern::Bayer(Bayer::Rggb),
+        model: "Canon EOS R6",
+        digest: "",
+        r_floor: 0.0,
+    }]);
 }

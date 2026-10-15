@@ -185,8 +185,8 @@ fn samples_digest(raw: &DngRaw) -> String {
 fn vendor_files_route_to_typed_outcomes() {
     const TEST: &str = "vendor_files_route_to_typed_outcomes";
     // Compressed NEF (D70s, Z6) decodes since SMB-DEVELOP-RAW-COMPRESSED (tests/real_raw_compressed.rs).
-    let cases: [(&str, &str, DevelopError); 5] = [
-        ("canon-eos-r6.cr3", "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778", DevelopError::DecoderUnavailable("cr3")),
+    // CR3 (R6) decodes since SMB-DEVELOP-RAW-COMPRESSED slice 2 (tests/real_raw_compressed.rs).
+    let cases: [(&str, &str, DevelopError); 4] = [
         ("fujifilm-finepix-s5000.raf", RAF_S5000, DevelopError::DecoderUnavailable("raf")),
         ("fujifilm-x-s10-14bit-compressed-xtrans.raf", RAF_XS10, DevelopError::DecoderUnavailable("raf")),
         ("olympus-c5060wz-12bit.orf", ORF_C5060, DevelopError::DecoderUnavailable("orf")),
