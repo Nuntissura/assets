@@ -314,8 +314,21 @@ fn viewer_frame_renders_the_raster_records_like_a_direct_composite_render() {
     println!("viewer vs direct composite + render-cpu: {differ} of {} bytes differ", direct.len());
     assert_eq!(frame.rgba8, direct);
 
-    // The records-free frame of the same document is different (the records are applied).
+    // Without its records the same document does not render as the viewer shows it: the
+    // adjustment layer has nothing to lower (composite `unsupported_payload`).
     let opened = read_package(&package, &Limits::default(), folio::Budget::default(), &TrustAll, &cancel).unwrap();
-    let plain = render::render(opened.snapshot().unwrap(), &opened.assets, Prefer::Cpu, None, &cancel).expect("plain frame");
-    assert_ne!(plain.rgba8, frame.rgba8);
+    match render::render(opened.snapshot().unwrap(), &opened.assets, Prefer::Cpu, None, &cancel) {
+        Err(e) => assert!(e.detail.contains("unsupported_payload"), "{e}"),
+        Ok(plain) => assert_ne!(plain.rgba8, frame.rgba8),
+    }
+    // The records change pixels: the same records minus the smart filters and effects (only the
+    // importer's adjustment record) render differently.
+    let mut adjust_only = records.clone();
+    for r in &mut adjust_only.layers {
+        r.smart_filters = None;
+        r.effects = None;
+    }
+    let snap = opened.snapshot().unwrap();
+    let other = render::render_full_with_records(snap, &opened.assets, None, None, Some(&adjust_only), Prefer::Cpu, None, None, &cancel).expect("adjustment-only frame");
+    assert_ne!(other.rgba8, frame.rgba8);
 }
