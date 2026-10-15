@@ -10,6 +10,7 @@ mod proposal;
 pub use proposal::*;
 
 mod descriptor;
+pub mod anchor_path;
 pub mod boolean;
 pub mod edit;
 pub mod flatten;
