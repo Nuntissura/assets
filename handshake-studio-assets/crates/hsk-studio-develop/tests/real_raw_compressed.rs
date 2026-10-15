@@ -265,14 +265,18 @@ fn check(test: &str, e: &Expect) -> Vec<String> {
 
 fn check_all(test: &str, files: &[Expect]) {
     let bad: Vec<String> = files.iter().flat_map(|e| check(test, e)).collect();
+    for e in files {
+        println!("NOT_PROVEN: {test} {} cfa_samples_vs_independent_dng reason=no_approved_converter_run", e.file);
+    }
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
 /// D70s (lossy type 1): raw SubIFD 3040 x 2014, 12 bit, Compression 34713, BGGR, curve maximum
 /// 4095. Z6 (12-bit compressed): 4548 x 3030, 12 bit, RGGB, as in the raw.pixls.us Exif dump
 /// (https://raw.pixls.us/getfile.php/3587/exif/: SubImage2 4548 x 3030, "Nikon NEF Compressed").
-/// Preview r measured at 1dcc906: D70s 0.938 (3008 x 2000 preview), Z6 0.885 (3024 x 2016); floors
-/// 0.90 / 0.85. Digests pinned from the same run.
+/// Preview r measured at ec53c53 (sliding window): D70s 0.994 (3008 x 2000 preview), Z6 0.938
+/// (3024 x 2016); floors 0.97 / 0.90. Negative control: the D70s CFA against the Z6 preview (another
+/// scene) must stay below 0.8. Digests pinned at 1dcc906.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
@@ -286,7 +290,7 @@ fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
             cfa: CfaPattern::Bayer(Bayer::Bggr),
             model: "NIKON D70s",
             digest: "291da6d41094b5da303e2cb7d704e464daa0edf03245fb14a9d8e592c92b4e11",
-            r_floor: 0.90,
+            r_floor: 0.97,
         },
         Expect {
             file: "nikon-z6-12bit-compressed.nef",
@@ -296,14 +300,24 @@ fn nef_huffman_d70s_and_z6_decode_and_match_the_embedded_preview() {
             cfa: CfaPattern::Bayer(Bayer::Rggb),
             model: "NIKON Z 6",
             digest: "af18a3a222d77b3e2f19ff416cba8d5c62488a2d1d6bf149db1f84b5c93ebe22",
-            r_floor: 0.85,
+            r_floor: 0.90,
         },
     ]);
+    // Negative control: the oracle must not accept a frame of another scene.
+    if let (Some(d70s), Some(z6)) = (
+        read(TEST, "nikon-d70s-12bit-lossy-type1.nef", "6c46f9854033e7623ebbb5de8c951df6762ca44f05d45035ccc5cb7e9f4e5692"),
+        read(TEST, "nikon-z6-12bit-compressed.nef", "f0ab08da469ee205f2bc08efd9005778c64cdcb064893cee03768e32e5da1a36"),
+    ) {
+        let (r, _, _) = preview_r(&decode_container(&d70s).unwrap(), &z6).unwrap();
+        println!("control: d70s cfa vs z6 preview r={r}");
+        assert!(r < 0.8, "the preview oracle accepted another scene: r={r}");
+    }
 }
 
 /// EOS R6 (raw.pixls.us id 4659): main CRAW track CMP1 version 0x200, 3584 x 2386 stored sensor
 /// (displayed 3408 x 2272), 14 bit, 4 planes, CFA code 0 (RGGB), 3 wavelet levels, one tile,
-/// header 872 bytes (byte inspection 2026-10-15).
+/// header 872 bytes (byte inspection 2026-10-15). Preview r measured at ec53c53: 0.986 (3408 x 2272
+/// preview); floor 0.96. Digest pinned from the same run.
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn cr3_crx_r6_decodes_and_matches_the_embedded_preview() {
@@ -315,7 +329,7 @@ fn cr3_crx_r6_decodes_and_matches_the_embedded_preview() {
         white: 16383,
         cfa: CfaPattern::Bayer(Bayer::Rggb),
         model: "Canon EOS R6",
-        digest: "",
-        r_floor: 0.0,
+        digest: "73d26ba5f75c2361d8eb197336335f95e1e41f8fffb2714fe3f7bb2b3e4b0c27",
+        r_floor: 0.96,
     }]);
 }
