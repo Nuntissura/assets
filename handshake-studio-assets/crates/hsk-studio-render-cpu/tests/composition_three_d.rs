@@ -42,3 +42,21 @@ fn three_d_run_matches_the_ray_cast_oracle_on_every_chunking() {
         assert_eq!(other.digest(), base.digest(), "chunk {chunk} threads {threads}");
     }
 }
+
+#[test]
+fn lit_three_d_run_matches_the_shading_oracle() {
+    // Lane SMB-AE-3D slice 2: ambient, point (shadows), spot and parallel lights; the lit planes are
+    // shaded per texel in composite, then resampled and depth-composited as above.
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::lit_scene(&pixels);
+    let (want, shadowed) = three_d::lit_oracle(&pixels);
+    assert!(shadowed > 0, "the point light casts a shadow onto a plane");
+    let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
+    let delta = scenes::max_delta(&base, &want);
+    let unlit = render(&Renderer::new(64).unwrap(), &three_d::three_d_scene(&pixels), &pixels);
+    println!("three_d lit: {shadowed} shadowed texels, cpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&base.digest()));
+    assert!(delta <= 1e-6, "{delta}");
+    assert_ne!(unlit.digest(), base.digest(), "lights change the frame");
+    let other = render(&Renderer::with_threads(7, 4).unwrap(), &scene, &pixels);
+    assert_eq!(other.digest(), base.digest());
+}

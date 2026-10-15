@@ -117,6 +117,10 @@ pub enum SceneContent {
     /// `LayerTransform::projective`). The inner content is tiles, a static subtree or a
     /// precomposition (else `composition_corner_pin_content`).
     Pinned(Box<PinnedContent>),
+    /// Content shaded by 3D lights (lane SMB-AE-3D, STU-CMP-045; [`crate::three_d::LitContent`]):
+    /// the inner content is rendered over its rect, shaded per texel by
+    /// [`crate::three_d::shade`], then placed like a tile (inside a 3D run's pinned layer).
+    Lit(Box<crate::three_d::LitContent>),
 }
 
 /// The inner content and the pin of [`SceneContent::Pinned`].
@@ -803,7 +807,7 @@ fn lower_inner(
             SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
             other => (other, None),
         };
-        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_)) {
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_)) {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
@@ -842,7 +846,7 @@ fn lower_inner(
         }
         let has_content = match content {
             SceneContent::Tiles(t) => !t.is_empty(),
-            SceneContent::Precomp(_) | SceneContent::Static(_) | SceneContent::Adjustment(_) => true,
+            SceneContent::Precomp(_) | SceneContent::Static(_) | SceneContent::Adjustment(_) | SceneContent::Lit(_) => true,
             SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
@@ -948,6 +952,20 @@ fn lower_inner(
                 };
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, content.rect, tile));
+            }
+            SceneContent::Lit(lit) => {
+                let surface = lit_surface(id, lit, scene.filter, ctx, cancel, depth, charges, &mut exactness)?;
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/lit"),
+                    placement: lit.rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, lit.rect, tile));
             }
             SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
         }
@@ -1391,6 +1409,109 @@ pub fn render_scene(
     cancel: &CancellationToken,
 ) -> Result<RenderedScene, TemporalError> {
     render_inner(scene, ctx, cancel, 0, &mut Charges::default())
+}
+
+/// `content` rendered over its plan rect `rect` into a surface (integer placement, no resample).
+#[allow(clippy::too_many_arguments)]
+fn content_surface(
+    id: &str,
+    content: &SceneContent,
+    rect: Rect,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    if depth >= ctx.limits.max_depth {
+        return Err(CompositeError::BudgetExceeded.into());
+    }
+    let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+    #[allow(clippy::cast_precision_loss)]
+    let matrix = Affine2::translate(-(rect.x as f64), -(rect.y as f64));
+    let nested = SceneComposition {
+        composition_id: format!("{id}/lit"),
+        width: rect.width,
+        height: rect.height,
+        background: None,
+        filter,
+        layers: vec![SceneLayer {
+            layer_id: id.to_owned(),
+            content: content.clone(),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix,
+            matte: None,
+            clipped: false,
+        }],
+    };
+    let r = render_inner(&nested, ctx, cancel, depth, charges)?;
+    for op in &r.exactness.operators {
+        exactness.record(op.key, op.exactness);
+    }
+    Ok(Surface::from_rendered(r))
+}
+
+fn f32_at(bytes: &[u8], index: usize) -> f32 {
+    index
+        .checked_mul(4)
+        .and_then(|o| bytes.get(o..o.checked_add(4)?))
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map_or(0.0, f32::from_le_bytes)
+}
+
+/// The lit plane's surface: its content rendered over `lit.rect`, every texel shaded by
+/// [`crate::three_d::shade`] with the casters' rendered alpha (nearest texel).
+#[allow(clippy::too_many_arguments)]
+fn lit_surface(
+    id: &str,
+    lit: &crate::three_d::LitContent,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    let mut surface = content_surface(id, &lit.content, lit.rect, filter, ctx, cancel, depth, charges, exactness)?;
+    let mut casters = Vec::with_capacity(lit.casters.len());
+    for c in &lit.casters {
+        casters.push(content_surface(&c.layer_id, &c.content, c.bounds, filter, ctx, cancel, depth, charges, exactness)?);
+    }
+    let caster_alpha = |i: usize, x: f64, y: f64| -> f32 {
+        let (Some(c), Some(s)) = (lit.casters.get(i), casters.get(i)) else { return 0.0 };
+        #[allow(clippy::cast_precision_loss)]
+        let (ix, iy) = (x.floor() - c.bounds.x as f64, y.floor() - c.bounds.y as f64);
+        if !(ix >= 0.0 && iy >= 0.0 && ix < f64::from(s.width) && iy < f64::from(s.height)) {
+            return 0.0;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let at = (iy as usize).checked_mul(s.width as usize).and_then(|r| r.checked_add(ix as usize));
+        at.map_or(0.0, |at| f32_at(&s.alpha, at))
+    };
+    let w = usize::try_from(surface.width).map_err(|_| CompositeError::Overflow)?;
+    let h = usize::try_from(surface.height).map_err(|_| CompositeError::Overflow)?;
+    for row in 0..h {
+        cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
+        for col in 0..w {
+            let at = row.checked_mul(w).and_then(|r| r.checked_add(col)).ok_or(CompositeError::Overflow)?;
+            let base = at.checked_mul(3).ok_or(CompositeError::Overflow)?;
+            let albedo = [f32_at(&surface.colour, base), f32_at(&surface.colour, base.saturating_add(1)), f32_at(&surface.colour, base.saturating_add(2))];
+            #[allow(clippy::cast_precision_loss)]
+            let (x, y) = (lit.rect.x as f64 + col as f64 + 0.5 - lit.origin[0], lit.rect.y as f64 + row as f64 + 0.5 - lit.origin[1]);
+            let shaded = crate::three_d::shade(lit, x, y, albedo, &caster_alpha);
+            for (k, v) in shaded.iter().enumerate() {
+                let o = base.saturating_add(k).saturating_mul(4);
+                if let Some(dst) = surface.colour.get_mut(o..o.saturating_add(4)) {
+                    dst.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+    }
+    surface.colour_sha256 = hsk_studio_prism::profile_hash(&surface.colour);
+    Ok(surface)
 }
 
 fn render_inner(

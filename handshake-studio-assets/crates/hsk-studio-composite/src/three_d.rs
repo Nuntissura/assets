@@ -103,6 +103,8 @@ pub const PLANAR_RENDERER: RendererCapabilities = RendererCapabilities {
         ("background_visible", "planar renderer: no environment lighting"),
         ("background_opacity", "planar renderer: no environment lighting"),
         ("background_blur", "planar renderer: no environment lighting"),
+        ("shadow_diffusion", "planar renderer: hard shadows only"),
+        ("light_colour_profile", "planar renderer: light colour is used in the plan's colour space, unconverted"),
     ],
 };
 
@@ -293,6 +295,28 @@ pub fn expand_run(
     space: ColourTag,
     revision: u64,
 ) -> Result<Vec<SceneLayer>, TemporalError> {
+    expand_run_lit(planes, &[], &[], cam, width, height, space, revision)
+}
+
+/// [`expand_run`] with lights (STU-CMP-045): with at least one light, every plane whose material
+/// accepts lights becomes [`SceneContent::Lit`] (shaded per content texel by [`shade`] before the
+/// projective resample), with the other planes of the run as shadow casters (STU-CMP-035a: planes
+/// of other runs neither intersect nor shadow). `materials` is per plane (missing = default).
+#[allow(clippy::too_many_arguments)]
+pub fn expand_run_lit(
+    planes: &[Plane3d],
+    materials: &[Material],
+    lights: &[Light],
+    cam: &Camera,
+    width: u32,
+    height: u32,
+    space: ColourTag,
+    revision: u64,
+) -> Result<Vec<SceneLayer>, TemporalError> {
+    if lights.len() > MAX_LIGHTS {
+        return Err(TemporalError::Unsupported { layer_id: lights.first().map(|l| l.layer_id.clone()).unwrap_or_default(), feature: COMPOSITION_3D_LIGHT_LIMIT });
+    }
+    let material = |i: usize| materials.get(i).copied().unwrap_or(Material::DEFAULT);
     if planes.len() > MAX_RUN_PLANES {
         return Err(TemporalError::Unsupported { layer_id: planes.first().map(|p| p.layer_id.clone()).unwrap_or_default(), feature: COMPOSITION_3D_RUN_LIMIT });
     }
@@ -371,7 +395,7 @@ pub fn expand_run(
             let matte = crate::mask_paths::coverage_matte(&coverage, rect, &p.layer_id, space, revision)?;
             out.push(SceneLayer {
                 layer_id: p.layer_id.clone(),
-                content: SceneContent::Pinned(Box::new(PinnedContent { content: p.content.clone(), pin: pr.pin })),
+                content: SceneContent::Pinned(Box::new(PinnedContent { content: lit_content(planes, i, &material, lights, cam), pin: pr.pin })),
                 mode: p.mode,
                 opacity: p.opacity,
                 fill_opacity: p.fill_opacity,
@@ -382,4 +406,307 @@ pub fn expand_run(
         }
     }
     Ok(out)
+}
+
+/// Most lights one run is shaded with.
+pub const MAX_LIGHTS: usize = 16;
+/// More active lights than [`MAX_LIGHTS`].
+pub const COMPOSITION_3D_LIGHT_LIMIT: &str = "composition_3d_light_limit";
+/// A 3D layer on the document-graph path (`lower_document_frame`), which has no 3D runs.
+pub const COMPOSITION_3D_ON_DOCUMENT_GRAPH: &str = "composition_3d_on_document_graph";
+
+/// Material options of one plane at a tick (STU-MOT-014), as fractions (percent / 100) except
+/// `specular_shininess` (percent). Members the planar renderer does not honour are not here
+/// ([`PLANAR_RENDERER`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Material {
+    pub accepts_lights: bool,
+    pub accepts_shadows: bool,
+    pub casts_shadows: bool,
+    pub ambient: f64,
+    pub diffuse: f64,
+    pub specular_intensity: f64,
+    pub specular_shininess: f64,
+    pub metal: f64,
+    pub light_transmission: f64,
+}
+impl Material {
+    /// The Folio defaults (`hsk_studio_folio::STUDIO_3D_BOUNDS`): ambient 100 %, diffuse 50 %,
+    /// specular 50 %, shininess 5 %, metal 100 %, transmission 0; lit, no shadows.
+    pub const DEFAULT: Self = Self {
+        accepts_lights: true,
+        accepts_shadows: false,
+        casts_shadows: false,
+        ambient: 1.0,
+        diffuse: 0.5,
+        specular_intensity: 0.5,
+        specular_shininess: 5.0,
+        metal: 1.0,
+        light_transmission: 0.0,
+    };
+}
+
+/// STU-CMP-045 light type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightKind {
+    Parallel,
+    Spot,
+    Point,
+    Ambient,
+}
+/// STU-CMP-045 falloff type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Falloff {
+    None,
+    Smooth,
+    InverseSquareClamped,
+}
+
+/// One light at a tick, in world space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Light {
+    pub layer_id: String,
+    pub kind: LightKind,
+    /// Plan-space colour (no conversion).
+    pub colour: [f64; 3],
+    /// Intensity as a fraction (100 % = 1); unbounded, may be negative (STU-CMP-045).
+    pub intensity: f64,
+    pub position: Vec3,
+    /// Unit direction the light points (towards its point of interest).
+    pub direction: Vec3,
+    /// Full cone angle, degrees (spot).
+    pub cone_angle: f64,
+    /// Cone feather as a fraction of the half angle (spot).
+    pub cone_feather: f64,
+    pub falloff: Falloff,
+    pub falloff_start: f64,
+    pub falloff_distance: f64,
+    pub casts_shadows: bool,
+    /// Shadow darkness as a fraction.
+    pub shadow_darkness: f64,
+}
+
+/// A plane of the run that may cast a shadow onto the lit plane.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Caster {
+    pub layer_id: String,
+    pub content: SceneContent,
+    pub bounds: Rect,
+    pub origin: [f64; 2],
+    pub transform: Transform3d,
+    pub opacity: f64,
+    pub light_transmission: f64,
+}
+
+/// Content shaded by lights before its projective resample ([`SceneContent::Lit`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LitContent {
+    /// Tiles, a static subtree or a precomposition.
+    pub content: SceneContent,
+    /// The content plan rectangle that is rendered and shaded.
+    pub rect: Rect,
+    pub origin: [f64; 2],
+    pub transform: Transform3d,
+    pub material: Material,
+    pub lights: Vec<Light>,
+    /// The camera position (view vector of the specular term).
+    pub eye: Vec3,
+    pub casters: Vec<Caster>,
+}
+
+fn lit_content(planes: &[Plane3d], i: usize, material: &dyn Fn(usize) -> Material, lights: &[Light], cam: &Camera) -> SceneContent {
+    let Some(p) = planes.get(i) else {
+        return SceneContent::None;
+    };
+    let m = material(i);
+    if lights.is_empty() || !m.accepts_lights {
+        return p.content.clone();
+    }
+    let casters = planes
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| *j != i && material(*j).casts_shadows && m.accepts_shadows)
+        .map(|(j, c)| Caster {
+            layer_id: c.layer_id.clone(),
+            content: c.content.clone(),
+            bounds: c.bounds,
+            origin: c.origin,
+            transform: c.transform,
+            opacity: c.opacity,
+            light_transmission: material(j).light_transmission,
+        })
+        .collect();
+    SceneContent::Lit(Box::new(LitContent {
+        content: p.content.clone(),
+        rect: p.bounds,
+        origin: p.origin,
+        transform: p.transform,
+        material: m,
+        lights: lights.to_vec(),
+        eye: cam.position,
+        casters,
+    }))
+}
+
+fn smoothstep(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+fn scale(a: Vec3, k: f64) -> Vec3 {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+
+/// Distance attenuation (Studio reading of STU-CMP-045 falloff, UNVERIFIED): none = 1; smooth =
+/// 1 up to `start`, smoothstep down to 0 over `distance`; inverse square clamped = 1 up to the
+/// radius `start`, then `(start / d)^2`.
+pub fn attenuation(falloff: Falloff, start: f64, distance: f64, d: f64) -> f64 {
+    match falloff {
+        Falloff::None => 1.0,
+        Falloff::Smooth if d <= start => 1.0,
+        Falloff::Smooth if distance <= 0.0 => 0.0,
+        Falloff::Smooth => 1.0 - smoothstep((d - start) / distance),
+        Falloff::InverseSquareClamped if d <= start => 1.0,
+        Falloff::InverseSquareClamped => (start / d) * (start / d),
+    }
+}
+
+/// Spot cone factor: 1 inside `half (1 - feather)`, smoothstep to 0 at the half angle.
+pub fn spot_factor(cone_angle: f64, feather: f64, angle_from_axis: f64) -> f64 {
+    let half = cone_angle / 2.0;
+    let inner = half * (1.0 - feather.clamp(0.0, 1.0));
+    if angle_from_axis <= inner {
+        1.0
+    } else if angle_from_axis >= half {
+        0.0
+    } else {
+        smoothstep((half - angle_from_axis) / (half - inner))
+    }
+}
+
+/// Straight alpha of a caster at world point `p` (its plane), nearest content texel; 0 outside.
+pub type CasterAlpha<'a> = &'a dyn Fn(usize, f64, f64) -> f32;
+
+/// Shades one straight RGB texel of a lit plane at layer point `(x, y)` (module docs of slice 2):
+/// `albedo (ambient A + diffuse D) + specular S mix(1, albedo, metal)`, `A` the sum of ambient
+/// lights, `D` the sum of `colour intensity attenuation spot shadow max(0, N.L)`, `S` the sum of
+/// `colour intensity attenuation spot shadow max(0, R.V)^(1 + shininess)`; `N` faces the eye
+/// (two-sided planes). Shadows: every caster the segment from the point towards the light crosses
+/// in front of the light multiplies by `1 - darkness alpha opacity (1 - transmission)` (hard
+/// shadows; `caster_alpha(i, x, y)` reads caster `i` at its plan point). The result is clamped
+/// into [0, 1], the composition's unit sample range (the light intensities themselves are never
+/// clamped). Studio reading of the classic renderer, UNVERIFIED (D5).
+pub fn shade(lit: &LitContent, x: f64, y: f64, albedo: [f32; 3], caster_alpha: CasterAlpha<'_>) -> [f32; 3] {
+    let p = lit.transform.world(x, y);
+    let mut n = normalize(mat_vec(&lit.transform.rotation, [0.0, 0.0, 1.0])).unwrap_or([0.0, 0.0, 1.0]);
+    let to_eye = sub(lit.eye, p);
+    if dot(n, to_eye) < 0.0 {
+        n = scale(n, -1.0);
+    }
+    let v = normalize(to_eye).unwrap_or([0.0, 0.0, -1.0]);
+    let m = &lit.material;
+    let (mut amb, mut dif, mut spe) = ([0.0f64; 3], [0.0f64; 3], [0.0f64; 3]);
+    for l in &lit.lights {
+        let c = scale(l.colour, l.intensity);
+        if l.kind == LightKind::Ambient {
+            amb = [amb[0] + c[0], amb[1] + c[1], amb[2] + c[2]];
+            continue;
+        }
+        let (dir_to_light, dist) = match l.kind {
+            LightKind::Parallel => (scale(l.direction, -1.0), f64::INFINITY),
+            _ => {
+                let d = sub(l.position, p);
+                let len = dot(d, d).sqrt();
+                match normalize(d) {
+                    Some(u) => (u, len),
+                    None => continue,
+                }
+            }
+        };
+        let att = if l.kind == LightKind::Parallel { 1.0 } else { attenuation(l.falloff, l.falloff_start, l.falloff_distance, dist) };
+        let spot = if l.kind == LightKind::Spot {
+            let cos = (-dot(dir_to_light, l.direction)).clamp(-1.0, 1.0);
+            spot_factor(l.cone_angle, l.cone_feather, cos.acos().to_degrees())
+        } else {
+            1.0
+        };
+        let ndl = dot(n, dir_to_light);
+        if ndl <= 0.0 || att * spot == 0.0 {
+            continue;
+        }
+        let mut shadow = 1.0;
+        if l.casts_shadows && m.accepts_shadows {
+            for (i, c) in lit.casters.iter().enumerate() {
+                let Some(t) = segment_hit(&c.transform, p, dir_to_light, dist) else { continue };
+                let hit = [p[0] + dir_to_light[0] * t, p[1] + dir_to_light[1] * t, p[2] + dir_to_light[2] * t];
+                let Some((lx, ly)) = layer_point(&c.transform, hit) else { continue };
+                let a = f64::from(caster_alpha(i, lx + c.origin[0], ly + c.origin[1]));
+                shadow *= 1.0 - l.shadow_darkness * a * c.opacity * (1.0 - c.light_transmission);
+            }
+        }
+        let k = att * spot * shadow;
+        let r = sub(scale(n, 2.0 * ndl), dir_to_light);
+        let rv = dot(r, v).max(0.0);
+        let sp = rv.powf(1.0 + m.specular_shininess);
+        for ch in 0..3 {
+            dif[ch] += c[ch] * k * ndl;
+            spe[ch] += c[ch] * k * sp;
+        }
+    }
+    let mut out = [0.0f32; 3];
+    for ch in 0..3 {
+        let a = f64::from(albedo[ch]);
+        let lit_v = a * (m.ambient * amb[ch] + m.diffuse * dif[ch]) + m.specular_intensity * spe[ch] * (1.0 + m.metal * (a - 1.0));
+        #[allow(clippy::cast_possible_truncation)]
+        let f = lit_v.clamp(0.0, 1.0) as f32;
+        out[ch] = f;
+    }
+    out
+}
+
+/// Distance along the unit ray `p + t u` to the plane of `t3`, for `1e-9 < t < max` (a shadow
+/// segment towards the light).
+fn segment_hit(t3: &Transform3d, p: Vec3, u: Vec3, max: f64) -> Option<f64> {
+    let n = mat_vec(&t3.rotation, [0.0, 0.0, 1.0]);
+    let o = t3.world(t3.anchor[0], t3.anchor[1]);
+    let den = dot(n, u);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let t = dot(n, sub(o, p)) / den;
+    (t > 1e-9 && t < max).then_some(t)
+}
+
+/// Layer point of world point `w` on the plane of `t3` (inverse of [`Transform3d::world`]).
+fn layer_point(t3: &Transform3d, w: Vec3) -> Option<(f64, f64)> {
+    let u = mat_vec(&transpose(&t3.rotation), sub(w, t3.position));
+    (t3.scale[0] != 0.0 && t3.scale[1] != 0.0).then(|| (u[0] / t3.scale[0] + t3.anchor[0], u[1] / t3.scale[1] + t3.anchor[1]))
+}
+
+/// STU-CMP-045a: a shadow needs the light's `casts_shadows`, the caster's material
+/// `casts_shadows` and the receiver's `accepts_shadows`; all default off.
+pub const SHADOW_LIGHT_OFF: &str = "light_casts_shadows_off";
+pub const SHADOW_CASTER_OFF: &str = "caster_casts_shadows_off";
+pub const SHADOW_RECEIVER_OFF: &str = "receiver_accepts_shadows_off";
+/// The determinate STU-CMP-045a diagnostic: which of the three switches are off (empty = the
+/// shadow is cast), in that fixed order.
+pub fn shadow_switches_off(light_casts: bool, caster_casts: bool, receiver_accepts: bool) -> Vec<&'static str> {
+    let mut off = Vec::new();
+    if !light_casts {
+        off.push(SHADOW_LIGHT_OFF);
+    }
+    if !caster_casts {
+        off.push(SHADOW_CASTER_OFF);
+    }
+    if !receiver_accepts {
+        off.push(SHADOW_RECEIVER_OFF);
+    }
+    off
+}
+/// One (light, caster, receiver) triple with some but not all shadow switches on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShadowDiagnostic {
+    pub light: String,
+    pub caster: String,
+    pub receiver: String,
+    pub off: Vec<&'static str>,
 }

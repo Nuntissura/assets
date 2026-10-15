@@ -204,15 +204,43 @@ struct Layer3d {
     rotation_y: Option<Property>,
     orientation: Option<Property>,
     camera: Option<(Property, Option<Property>)>,
-    light: bool,
+    light: Option<Box<LightStreams>>,
+    /// Material switches (STU-CMP-045a) and the keyed material members by name.
+    material: hsk_studio_folio::StudioMaterialOptions,
+    material_values: BTreeMap<String, Property>,
     /// Colour tag and revision of the run's rank mattes.
     space: ColourTag,
     revision: u64,
 }
 
+/// A light layer's streams (STU-CMP-045).
+#[derive(Clone, Debug)]
+struct LightStreams {
+    kind: hsk_studio_folio::StudioLightType,
+    falloff: hsk_studio_folio::StudioLightFalloff,
+    casts_shadows: bool,
+    colour: Property,
+    intensity: Property,
+    point_of_interest: Option<Property>,
+    values: BTreeMap<String, Property>,
+}
+
+fn keyed_map(layer_id: &str, m: &BTreeMap<String, hsk_studio_folio::StudioKeyedValue>) -> Result<BTreeMap<String, Property>, TemporalError> {
+    m.iter().map(|(k, v)| Ok((k.clone(), keyed_property(layer_id, v)?))).collect()
+}
+
+/// A named member at `tick`, else its Folio default (`hsk_studio_folio::bound`).
+fn named_at(layer_id: &str, values: &BTreeMap<String, Property>, name: &str, tick: i64, cancel: &CancellationToken) -> Result<Vec<f64>, TemporalError> {
+    let n = hsk_studio_folio::bound(name).map_or(1, |b| b.components);
+    match sample(layer_id, values.get(name), n, tick, cancel)? {
+        Some(v) => Ok(v),
+        None => Ok(hsk_studio_folio::bound(name).map(|b| b.default.to_vec()).unwrap_or_else(|| vec![0.0; n])),
+    }
+}
+
 /// The motion `Property` of a Folio keyed value, through the same keyframe conversion as a
 /// transform stream.
-fn keyed_property(layer_id: &str, v: &hsk_studio_folio::StudioKeyedValue) -> Result<Property, TemporalError> {
+pub(crate) fn keyed_property(layer_id: &str, v: &hsk_studio_folio::StudioKeyedValue) -> Result<Property, TemporalError> {
     property(
         layer_id,
         &StudioPropertyStream {
@@ -286,6 +314,9 @@ struct Comp {
 /// A stored composition ready to be evaluated at any tick (module docs).
 #[derive(Clone, Debug)]
 pub struct CompositionTemporalSource {
+    /// Procedural layers from Folio motion records (lane SMB-AE-MOTION-RECORDS,
+    /// `super::motion_records`); `None` = none.
+    pub(super) motion: Option<Box<super::motion_records::MotionLayers>>,
     root: String,
     /// The root and every composition it reaches through precomposition layers.
     comps: BTreeMap<String, Comp>,
@@ -650,6 +681,7 @@ impl CompositionTemporalSource {
             comps.insert(id, read);
         }
         Ok(Self {
+            motion: None,
             root: input.composition_id.to_owned(),
             comps,
             filter: DEFAULT_COMPOSITION_FILTER,
@@ -831,7 +863,20 @@ impl CompositionTemporalSource {
                                 None => None,
                                 Some(c) => Some((keyed_property(id, &c.zoom)?, opt(&c.point_of_interest)?)),
                             },
-                            light: l.light.is_some(),
+                            light: match &l.light {
+                                None => None,
+                                Some(li) => Some(Box::new(LightStreams {
+                                    kind: li.light_type,
+                                    falloff: li.falloff_type,
+                                    casts_shadows: li.casts_shadows,
+                                    colour: keyed_property(id, &li.colour)?,
+                                    intensity: keyed_property(id, &li.intensity)?,
+                                    point_of_interest: opt(&li.point_of_interest)?,
+                                    values: keyed_map(id, &li.values)?,
+                                })),
+                            },
+                            material: d.material.clone(),
+                            material_values: keyed_map(id, &d.material.values)?,
                             space: input.space,
                             revision: doc.revision,
                         }))
@@ -920,6 +965,7 @@ impl CompositionTemporalSource {
             Some(l) if l.pin.is_some() => {
                 Err(unsupported(layer_id, crate::track_apply::COMPOSITION_CORNER_PIN_ON_DOCUMENT_GRAPH))
             }
+            Some(l) if l.three_d.is_some() => Err(unsupported(layer_id, crate::three_d::COMPOSITION_3D_ON_DOCUMENT_GRAPH)),
             Some(l) if l.masks.is_some() => {
                 Err(unsupported(layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_ON_DOCUMENT_GRAPH))
             }
@@ -1072,21 +1118,21 @@ impl CompositionTemporalSource {
             .collect();
         let mut layers = Vec::new();
         // Contiguous 3D layers form one run (STU-CMP-035a), expanded when a 2D layer breaks it.
-        let mut run: Vec<(crate::three_d::Plane3d, ColourTag, u64)> = Vec::new();
-        let mut camera: Option<crate::three_d::Camera> = None;
+        let mut run: Vec<(crate::three_d::Plane3d, crate::three_d::Material, ColourTag, u64)> = Vec::new();
+        let mut camera: Option<(crate::three_d::Camera, Vec<crate::three_d::Light>)> = None;
         for l in comp.layers.iter().rev() {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
             if !l.visible || matte_sources.contains(l.layer_id.as_str()) {
                 continue;
             }
             if let Some(d) = &l.three_d {
-                if d.camera.is_some() || d.light || matches!(l.content, Content::None) {
+                if d.camera.is_some() || d.light.is_some() || matches!(l.content, Content::None) {
                     continue;
                 }
                 let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
                     continue;
                 };
-                run.push((Self::plane(l, d, layer, tick, cancel)?, d.space, d.revision));
+                run.push((Self::plane(l, d, layer, tick, cancel)?, Self::material_at(l, d, tick, cancel)?, d.space, d.revision));
                 continue;
             }
             Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers)?;
@@ -1198,22 +1244,170 @@ impl CompositionTemporalSource {
     /// Expands a pending 3D run into `layers` (`crate::three_d::expand_run`).
     fn flush_run(
         comp: &Comp,
-        run: &mut Vec<(crate::three_d::Plane3d, ColourTag, u64)>,
-        camera: &mut Option<crate::three_d::Camera>,
+        run: &mut Vec<(crate::three_d::Plane3d, crate::three_d::Material, ColourTag, u64)>,
+        camera: &mut Option<(crate::three_d::Camera, Vec<crate::three_d::Light>)>,
         tick: i64,
         cancel: &CancellationToken,
         layers: &mut Vec<SceneLayer>,
     ) -> Result<(), TemporalError> {
-        let Some((_, space, revision)) = run.first().map(|r| (0, r.1, r.2)) else {
+        let Some((space, revision)) = run.first().map(|r| (r.2, r.3)) else {
             return Ok(());
         };
-        let cam = match camera {
-            Some(c) => *c,
-            None => *camera.insert(Self::camera_at(comp, tick, cancel)?),
+        if camera.is_none() {
+            let cam = Self::camera_at(comp, tick, cancel)?;
+            let lights = Self::lights_at(comp, tick, cancel)?;
+            *camera = Some((cam, lights));
+        }
+        let Some((cam, lights)) = camera.as_ref() else {
+            return Ok(());
         };
-        let planes: Vec<crate::three_d::Plane3d> = run.drain(..).map(|r| r.0).collect();
-        layers.extend(crate::three_d::expand_run(&planes, &cam, comp.width, comp.height, space, revision)?);
+        let (planes, materials): (Vec<crate::three_d::Plane3d>, Vec<crate::three_d::Material>) = run.drain(..).map(|r| (r.0, r.1)).unzip();
+        layers.extend(crate::three_d::expand_run_lit(&planes, &materials, lights, cam, comp.width, comp.height, space, revision)?);
         Ok(())
+    }
+
+    /// A 3D layer's material at `tick` (STU-MOT-014; members as fractions, shininess in percent).
+    fn material_at(l: &CompLayer, d: &Layer3d, tick: i64, cancel: &CancellationToken) -> Result<crate::three_d::Material, TemporalError> {
+        let v = |name: &str| -> Result<f64, TemporalError> {
+            Ok(named_at(&l.layer_id, &d.material_values, name, tick, cancel)?.first().copied().unwrap_or(0.0))
+        };
+        Ok(crate::three_d::Material {
+            accepts_lights: d.material.accepts_lights,
+            accepts_shadows: d.material.accepts_shadows,
+            casts_shadows: d.material.casts_shadows,
+            ambient: v("ambient")? / 100.0,
+            diffuse: v("diffuse")? / 100.0,
+            specular_intensity: v("specular_intensity")? / 100.0,
+            specular_shininess: v("specular_shininess")?,
+            metal: v("metal")? / 100.0,
+            light_transmission: v("light_transmission")? / 100.0,
+        })
+    }
+
+    /// Every visible light layer whose window holds `tick`, topmost first (STU-CMP-045). Position
+    /// defaults to the composition centre at the default camera's depth; the light points at its
+    /// point of interest, else along its own rotation's +Z (Studio readings, UNVERIFIED).
+    fn lights_at(comp: &Comp, tick: i64, cancel: &CancellationToken) -> Result<Vec<crate::three_d::Light>, TemporalError> {
+        use hsk_studio_folio::{StudioLightFalloff as F, StudioLightType as T};
+        let mut out = Vec::new();
+        for l in &comp.layers {
+            let Some(d) = l.three_d.as_deref() else { continue };
+            let Some(ls) = d.light.as_deref() else { continue };
+            if !l.visible || !u64::try_from(tick).is_ok_and(|t| l.timing.contains(t)) {
+                continue;
+            }
+            let id = l.layer_id.as_str();
+            let one = |p: Option<&Property>| -> Result<Option<f64>, TemporalError> {
+                Ok(sample(id, p, 1, tick, cancel)?.and_then(|v| v.first().copied()))
+            };
+            let named = |name: &str| -> Result<f64, TemporalError> { Ok(named_at(id, &ls.values, name, tick, cancel)?.first().copied().unwrap_or(0.0)) };
+            let default_z = crate::three_d::default_camera(comp.width, comp.height).position[2];
+            let xy = sample(id, l.streams.position.as_ref(), 2, tick, cancel)?
+                .map_or([f64::from(comp.width) / 2.0, f64::from(comp.height) / 2.0], |v| [v[0], v[1]]);
+            let position = [xy[0], xy[1], one(d.position_z.as_ref())?.unwrap_or(default_z)];
+            let orientation = match sample(id, d.orientation.as_ref(), 3, tick, cancel)? {
+                Some(v) => [v[0], v[1], v[2]],
+                None => [0.0; 3],
+            };
+            let own = crate::three_d::layer_rotation(
+                orientation,
+                one(d.rotation_x.as_ref())?.unwrap_or(0.0),
+                one(d.rotation_y.as_ref())?.unwrap_or(0.0),
+                one(l.streams.rotation.as_ref())?.unwrap_or(0.0),
+            );
+            let forward = crate::three_d::mat_vec(&own, [0.0, 0.0, 1.0]);
+            let direction = match sample(id, ls.point_of_interest.as_ref(), 3, tick, cancel)? {
+                Some(t) => {
+                    let v = [t[0] - position[0], t[1] - position[1], t[2] - position[2]];
+                    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    if n > 1e-12 { [v[0] / n, v[1] / n, v[2] / n] } else { forward }
+                }
+                None => forward,
+            };
+            let colour = sample(id, Some(&ls.colour), 3, tick, cancel)?.unwrap_or_else(|| vec![1.0; 3]);
+            out.push(crate::three_d::Light {
+                layer_id: l.layer_id.clone(),
+                kind: match ls.kind {
+                    T::Parallel => crate::three_d::LightKind::Parallel,
+                    T::Spot => crate::three_d::LightKind::Spot,
+                    T::Point => crate::three_d::LightKind::Point,
+                    T::Ambient => crate::three_d::LightKind::Ambient,
+                },
+                colour: [colour[0], colour[1], colour[2]],
+                intensity: one(Some(&ls.intensity))?.unwrap_or(100.0) / 100.0,
+                position,
+                direction,
+                cone_angle: named("cone_angle")?,
+                cone_feather: named("cone_feather")? / 100.0,
+                falloff: match ls.falloff {
+                    F::None => crate::three_d::Falloff::None,
+                    F::Smooth => crate::three_d::Falloff::Smooth,
+                    F::InverseSquareClamped => crate::three_d::Falloff::InverseSquareClamped,
+                },
+                falloff_start: named("falloff_start")?,
+                falloff_distance: named("falloff_distance")?,
+                casts_shadows: ls.casts_shadows,
+                shadow_darkness: named("shadow_darkness")? / 100.0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// STU-CMP-045a diagnostics of the root composition: every (light, caster, receiver) triple
+    /// of 3D planes in one run with some but not all of the three shadow switches on, naming the
+    /// switches that are off (`crate::three_d::shadow_switches_off`). At most 65536 triples are
+    /// examined (`BudgetExceeded` beyond, checked before any work).
+    pub fn three_d_shadow_diagnostics(&self) -> Result<Vec<crate::three_d::ShadowDiagnostic>, TemporalError> {
+        let comp = self.root()?;
+        let lights: Vec<&CompLayer> = comp.layers.iter().filter(|l| l.three_d.as_deref().is_some_and(|d| d.light.is_some())).collect();
+        // Runs, bottom first: consecutive visible 3D planes; a 2D or adjustment layer ends a run.
+        let mut runs: Vec<Vec<&CompLayer>> = vec![Vec::new()];
+        for l in comp.layers.iter().rev() {
+            if !l.visible || matches!(l.content, Content::None) {
+                continue;
+            }
+            match l.three_d.as_deref() {
+                Some(d) if d.camera.is_none() && d.light.is_none() => {
+                    if let Some(r) = runs.last_mut() {
+                        r.push(l);
+                    }
+                }
+                Some(_) => {}
+                None => runs.push(Vec::new()),
+            }
+        }
+        let triples = runs.iter().try_fold(0u64, |acc, r| {
+            let n = u64::try_from(r.len()).ok()?;
+            acc.checked_add(n.checked_mul(n)?.checked_mul(u64::try_from(lights.len()).ok()?)?)
+        });
+        if triples.is_none_or(|t| t > 65_536) {
+            return Err(CompositeError::BudgetExceeded.into());
+        }
+        let mut out = Vec::new();
+        for light in &lights {
+            let lc = light.three_d.as_deref().and_then(|d| d.light.as_deref()).is_some_and(|ls| ls.casts_shadows);
+            for run in &runs {
+                for caster in run {
+                    for receiver in run {
+                        if caster.layer_id == receiver.layer_id {
+                            continue;
+                        }
+                        let cc = caster.three_d.as_deref().is_some_and(|d| d.material.casts_shadows);
+                        let ra = receiver.three_d.as_deref().is_some_and(|d| d.material.accepts_shadows);
+                        let off = crate::three_d::shadow_switches_off(lc, cc, ra);
+                        if !off.is_empty() && off.len() < 3 {
+                            out.push(crate::three_d::ShadowDiagnostic {
+                                light: light.layer_id.clone(),
+                                caster: caster.layer_id.clone(),
+                                receiver: receiver.layer_id.clone(),
+                                off,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The STU-CMP-035a run breaks of the root composition: every visible 2D or adjustment layer
@@ -1222,7 +1416,7 @@ impl CompositionTemporalSource {
     pub fn three_d_run_breaks(&self) -> Result<Vec<crate::three_d::RunBreak>, TemporalError> {
         let comp = self.root()?;
         let is_plane = |l: &CompLayer| {
-            l.visible && !matches!(l.content, Content::None) && l.three_d.as_deref().is_some_and(|d| d.camera.is_none() && !d.light)
+            l.visible && !matches!(l.content, Content::None) && l.three_d.as_deref().is_some_and(|d| d.camera.is_none() && d.light.is_none())
         };
         let order: Vec<&CompLayer> = comp.layers.iter().rev().collect();
         let (Some(first), Some(last)) = (order.iter().position(|l| is_plane(l)), order.iter().rposition(|l| is_plane(l))) else {
@@ -1290,6 +1484,10 @@ impl CompositionTemporalSource {
                 scene.background = None;
                 SceneContent::Precomp(Box::new(scene))
             }
+        };
+        let content = match self.motion.as_deref() {
+            Some(m) => m.content(&l.layer_id, tick, cancel)?.unwrap_or(content),
+            None => content,
         };
         let unlinked = match &l.content {
             Content::Static { unlinked: Some(u), .. } => Some(u),

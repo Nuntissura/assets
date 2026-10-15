@@ -8,9 +8,15 @@
 //! homography fitted to the four projected content corners (`Projective2::from_quads`), so the
 //! renderers' plane homography is checked as well. Include next to `composition_scenes.rs` as
 //! module `scenes`.
+//!
+//! The lit variant ([`lit_scene`] / [`lit_oracle`]) adds an ambient, a point (shadow casting,
+//! smooth falloff), a spot and a parallel light and per-plane materials; the oracle shades every
+//! content texel with its own implementation of the documented model (`three_d::shade`: Lambert
+//! diffuse, Phong specular with exponent 1 + shininess, metal tint, hard shadows through the other
+//! planes' nearest-texel alpha), then samples and composites as above.
 #![allow(dead_code)]
 use crate::scenes::{BACKGROUND, Pixels, space, tile_id};
-use hsk_studio_composite::three_d::{Plane3d, Transform3d, camera, expand_run, layer_rotation};
+use hsk_studio_composite::three_d::{Falloff, Light, LightKind, Material, Plane3d, Transform3d, camera, expand_run, expand_run_lit, layer_rotation};
 use hsk_studio_composite::{SceneComposition, SceneContent};
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::transform_math::{LayerTransform, PreparedTransform, Projective2, ResampleFilter};
@@ -140,8 +146,215 @@ fn project(p: V) -> [f64; 2] {
 /// "tf" is in front of "te" and the count where "te" is in front of "tf" (both must be non-zero:
 /// the planes intersect inside the frame).
 pub fn three_d_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
+    oracle(pixels, false)
+}
+
+/// The lit run's materials (bottom first: tg, tf, te).
+pub fn materials() -> [Material; 3] {
+    let base = Material { accepts_shadows: true, ..Material::DEFAULT };
+    [
+        base,
+        Material { casts_shadows: true, diffuse: 0.8, specular_intensity: 0.6, specular_shininess: 20.0, metal: 0.3, ..base },
+        Material { casts_shadows: true, light_transmission: 0.25, ambient: 0.7, ..base },
+    ]
+}
+fn unit3(v: [f64; 3]) -> [f64; 3] {
+    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    [v[0] / l, v[1] / l, v[2] / l]
+}
+/// Ambient, point (shadows), spot and parallel lights.
+pub fn lights() -> Vec<Light> {
+    let l = |id: &str, kind: LightKind, colour: [f64; 3], intensity: f64, position: [f64; 3], target: [f64; 3]| Light {
+        layer_id: id.to_owned(),
+        kind,
+        colour,
+        intensity,
+        position,
+        direction: unit3(sub(target, position)),
+        cone_angle: 60.0,
+        cone_feather: 0.5,
+        falloff: Falloff::None,
+        falloff_start: 0.0,
+        falloff_distance: 500.0,
+        casts_shadows: false,
+        shadow_darkness: 1.0,
+    };
+    vec![
+        l("SLYR-ambient", LightKind::Ambient, [1.0, 0.9, 0.8], 0.3, [0.0; 3], [0.0, 0.0, 1.0]),
+        Light { falloff: Falloff::Smooth, falloff_start: 20.0, falloff_distance: 80.0, casts_shadows: true, shadow_darkness: 0.8, ..l("SLYR-point", LightKind::Point, [1.0, 1.0, 1.0], 1.2, [14.0, 6.0, -30.0], [16.0, 12.0, 0.0]) },
+        l("SLYR-spot", LightKind::Spot, [0.6, 0.8, 1.0], 0.9, [30.0, 0.0, -40.0], [16.0, 12.0, 0.0]),
+        l("SLYR-parallel", LightKind::Parallel, [1.0, 1.0, 1.0], 0.4, [0.0, 0.0, 0.0], [0.3, 0.5, 1.0]),
+    ]
+}
+/// The run with [`lights`] and [`materials`].
+pub fn lit_scene(pixels: &Pixels) -> SceneComposition {
+    let cam = camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera");
+    SceneComposition {
+        composition_id: "three-d-lit".to_owned(),
+        width: W,
+        height: H,
+        background: Some(BACKGROUND),
+        filter: ResampleFilter::Bilinear,
+        layers: expand_run_lit(&planes(pixels), &materials(), &lights(), &cam, W, H, space(), 7).expect("run expands"),
+    }
+}
+/// [`three_d_oracle`] of [`lit_scene`], plus the count of texels a shadow darkens.
+pub fn lit_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, usize) {
+    let (out, _) = oracle(pixels, true);
+    (out, shadowed_texels(pixels))
+}
+
+fn smooth(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+/// Alpha of plane `j` at layer point (lx, ly), nearest texel.
+fn alpha_at(pixels: &Pixels, specs: &[Spec], j: usize, lx: f64, ly: f64) -> f64 {
+    let s = &specs[j];
+    let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+    let (i, k) = ((lx + s.at.0 as f64).floor() - s.at.0 as f64, (ly + s.at.1 as f64).floor() - s.at.1 as f64);
+    if i < 0.0 || k < 0.0 || i >= f64::from(t.width) || k >= f64::from(t.height) {
+        return 0.0;
+    }
+    f64::from(t.at(i as u32, k as u32)[3])
+}
+/// Layer point of world point `w` on plane `s`, and the ray parameter of `p + t u` hitting it.
+fn hit(s: &Spec, p: V, u: V) -> Option<(f64, f64, f64)> {
+    let ex = rotate(s, [1.0, 0.0, 0.0]);
+    let ey = rotate(s, [0.0, 1.0, 0.0]);
+    let ez = rotate(s, [0.0, 0.0, 1.0]);
+    let c = sub(p, s.position);
+    let den = dot(u, ez);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let t = (-s.anchor[2] - dot(c, ez)) / den;
+    let q = add(c, scale(u, t));
+    Some((t, dot(q, ex) / s.scale[0] + s.anchor[0], dot(q, ey) / s.scale[1] + s.anchor[1]))
+}
+/// Shaded straight RGB of plane `i` at layer point (x, y) with albedo `a`; `shadowed` set when a
+/// shadow darkens it.
+fn shade_texel(pixels: &Pixels, specs: &[Spec], i: usize, x: f64, y: f64, a: [f32; 3], shadowed: &mut bool) -> [f32; 3] {
+    let s = &specs[i];
+    let m = materials()[i];
+    let p = world(s, x, y);
+    let mut n = rotate(s, [0.0, 0.0, 1.0]);
+    let e = sub(CAMERA_POSITION, p);
+    if dot(n, e) < 0.0 {
+        n = scale(n, -1.0);
+    }
+    let v = unit(e);
+    let mut amb = [0.0; 3];
+    let mut dif = [0.0; 3];
+    let mut spe = [0.0; 3];
+    for l in lights() {
+        let c = scale(l.colour, l.intensity);
+        if l.kind == LightKind::Ambient {
+            amb = add(amb, c);
+            continue;
+        }
+        let (lv, dist) = if l.kind == LightKind::Parallel {
+            (scale(l.direction, -1.0), f64::INFINITY)
+        } else {
+            let d = sub(l.position, p);
+            (unit(d), dot(d, d).sqrt())
+        };
+        let att = match (l.kind, l.falloff) {
+            (LightKind::Parallel, _) | (_, Falloff::None) => 1.0,
+            (_, Falloff::Smooth) => {
+                if dist <= l.falloff_start { 1.0 } else { 1.0 - smooth((dist - l.falloff_start) / l.falloff_distance) }
+            }
+            (_, Falloff::InverseSquareClamped) => {
+                if dist <= l.falloff_start { 1.0 } else { (l.falloff_start / dist).powi(2) }
+            }
+        };
+        let cone = if l.kind == LightKind::Spot {
+            let ang = dot(scale(lv, -1.0), l.direction).clamp(-1.0, 1.0).acos().to_degrees();
+            let half = l.cone_angle / 2.0;
+            let inner = half * (1.0 - l.cone_feather);
+            if ang <= inner { 1.0 } else if ang >= half { 0.0 } else { smooth((half - ang) / (half - inner)) }
+        } else {
+            1.0
+        };
+        let ndl = dot(n, lv);
+        if ndl <= 0.0 || att * cone == 0.0 {
+            continue;
+        }
+        let mut sh = 1.0;
+        if l.casts_shadows && m.accepts_shadows {
+            for j in 0..specs.len() {
+                if j == i || !materials()[j].casts_shadows {
+                    continue;
+                }
+                let Some((t, lx, ly)) = hit(&specs[j], p, lv) else { continue };
+                if !(t > 1e-9 && t < dist) {
+                    continue;
+                }
+                let al = alpha_at(pixels, specs, j, lx, ly);
+                if al > 0.0 {
+                    *shadowed = true;
+                }
+                sh *= 1.0 - l.shadow_darkness * al * specs[j].opacity * (1.0 - materials()[j].light_transmission);
+            }
+        }
+        let k = att * cone * sh;
+        let r = sub(scale(n, 2.0 * ndl), lv);
+        let sp = dot(r, v).max(0.0).powf(1.0 + m.specular_shininess);
+        dif = add(dif, scale(c, k * ndl));
+        spe = add(spe, scale(c, k * sp));
+    }
+    let mut out = [0.0f32; 3];
+    for ch in 0..3 {
+        let al = f64::from(a[ch]);
+        out[ch] = (al * (m.ambient * amb[ch] + m.diffuse * dif[ch]) + m.specular_intensity * spe[ch] * (1.0 + m.metal * (al - 1.0))).clamp(0.0, 1.0) as f32;
+    }
+    out
+}
+/// Texels of every plane, shaded or not: `[plane][row-major texel]`.
+fn texels(pixels: &Pixels, specs: &[Spec], lit: bool) -> Vec<Vec<[f32; 4]>> {
+    specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+            let mut v = Vec::new();
+            for k in 0..t.height {
+                for j in 0..t.width {
+                    let c = t.at(j, k);
+                    if !lit {
+                        v.push(c);
+                        continue;
+                    }
+                    let mut sh = false;
+                    let rgb = shade_texel(pixels, specs, i, f64::from(j) + 0.5, f64::from(k) + 0.5, [c[0], c[1], c[2]], &mut sh);
+                    v.push([rgb[0], rgb[1], rgb[2], c[3]]);
+                }
+            }
+            v
+        })
+        .collect()
+}
+fn shadowed_texels(pixels: &Pixels) -> usize {
+    let specs = specs();
+    let mut n = 0;
+    for (i, s) in specs.iter().enumerate() {
+        let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+        for k in 0..t.height {
+            for j in 0..t.width {
+                let mut sh = false;
+                let c = t.at(j, k);
+                shade_texel(pixels, &specs, i, f64::from(j) + 0.5, f64::from(k) + 0.5, [c[0], c[1], c[2]], &mut sh);
+                n += usize::from(sh && c[3] > 0.0);
+            }
+        }
+    }
+    n
+}
+
+fn oracle(pixels: &Pixels, lit: bool) -> (Vec<[f32; 4]>, [usize; 2]) {
     let (r, d, f) = basis();
     let specs = specs();
+    let shaded = texels(pixels, &specs, lit);
     let mut draws = Vec::new();
     for s in &specs {
         let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
@@ -194,7 +407,8 @@ pub fn three_d_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, [usize; 2]) {
             let mut acc = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, Rgba::new([b[0], b[1], b[2]], b[3]), 1.0, PixelSite::default()).unwrap();
             for i in order {
                 let (tile, prep, _) = &draws[i];
-                let s = prep.sample_rgba(x, y, |u, v| Ok::<_, ()>(tile.at(u, v))).unwrap();
+                let tex = &shaded[i];
+                let s = prep.sample_rgba(x, y, |u, v| Ok::<_, ()>(tex[(v * tile.width + u) as usize])).unwrap();
                 acc = composite_over(StudioBlendMode::Normal, acc, Rgba::new([s[0], s[1], s[2]], s[3]), specs[i].opacity as f32, PixelSite { x, y, seed: 0 }).unwrap();
             }
             out.push([acc.rgb[0], acc.rgb[1], acc.rgb[2], acc.a]);

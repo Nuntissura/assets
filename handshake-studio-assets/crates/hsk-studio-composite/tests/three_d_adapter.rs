@@ -51,13 +51,13 @@ fn timing() -> Value {
 fn s(v: f64) -> Value {
     json!({"static_value":[v]})
 }
-/// Topmost first: camera, light, plane "tf", 2D "tb", plane "te".
+/// Topmost first: camera, light (from frame 10), plane "tf", 2D "tb", plane "te".
 fn layers() -> Vec<Value> {
     vec![
         json!({"layer_id":identity("SLYR",6),"timing":timing(),"streams":[{"property":"position","static_value":[10.0,4.0]}],
             "three_d":{"position_z":s(-60.0)},
             "camera":{"zoom":s(50.0),"point_of_interest":{"static_value":[16.0,12.0,0.0]}}}),
-        json!({"layer_id":identity("SLYR",8),"timing":timing(),"three_d":{},
+        json!({"layer_id":identity("SLYR",8),"timing":{"in_point":10_584_000_000u64 * 10,"out_point":10_584_000_000u64 * 48,"start_time":0,"stretch":{"numerator":1,"denominator":1}},"three_d":{},
             "light":{"light_type":"point","colour":{"static_value":[1.0,1.0,1.0]},"intensity":s(120.0)}}),
         json!({"layer_id":identity("SLYR",11),"timing":timing(),"streams":[{"property":"position","static_value":[16.0,12.0]}],
             "three_d":{"rotation_y":s(35.0)}}),
@@ -157,4 +157,67 @@ fn three_d_runs_camera_breaks_and_refusals() {
         three_d::COMPOSITION_3D_CAMERA_DEGENERATE,
     );
     at_tick(&|l| l[2]["three_d"] = json!({"position_z":s(-60.0),"rotation_y":s(90.0)}), three_d::COMPOSITION_3D_CROSSES_CAMERA);
+}
+
+#[test]
+fn lights_materials_and_shadow_diagnostics_from_records() {
+    // Lane SMB-AE-3D slice 2: no 2D layer between the planes (one run), a shadow-casting point light
+    // and an ambient light; "tf" casts, "te" accepts.
+    let pixels = Pixels::fixture();
+    let mut l = layers();
+    l.remove(3);
+    l[1] = json!({"layer_id":identity("SLYR",8),"timing":timing(),"streams":[{"property":"position","static_value":[14.0,6.0]}],
+        "three_d":{"position_z":s(-30.0)},
+        "light":{"light_type":"point","colour":{"static_value":[1.0,0.5,0.25]},"intensity":s(120.0),"falloff_type":"smooth",
+            "casts_shadows":true,"point_of_interest":{"static_value":[16.0,12.0,0.0]},
+            "values":{"falloff_start":s(20.0),"falloff_distance":s(80.0),"shadow_darkness":s(80.0)}}});
+    l.push(json!({"layer_id":identity("SLYR",3),"timing":timing(),"three_d":{},
+        "light":{"light_type":"ambient","colour":{"static_value":[1.0,1.0,1.0]},"intensity":s(-25.0)}}));
+    l[1]["three_d"]["material"] = json!({});
+    l[2]["three_d"]["material"] = json!({"casts_shadows":true,"values":{"diffuse":s(80.0),"specular_shininess":s(20.0)}});
+    l[3]["three_d"]["material"] = json!({"accepts_shadows":true,"values":{"light_transmission":s(25.0)}});
+    let src = source(&records(l), &pixels).expect("source");
+    let scene = src.scene_at(0, &CancellationToken::default()).expect("scene");
+    let lit = |id: u8| -> Vec<&three_d::LitContent> {
+        scene
+            .layers
+            .iter()
+            .filter(|x| x.layer_id == identity("SLYR", id))
+            .map(|x| match &x.content {
+                SceneContent::Pinned(p) => match &p.content {
+                    SceneContent::Lit(lit) => &**lit,
+                    other => panic!("lit content: {other:?}"),
+                },
+                other => panic!("pinned: {other:?}"),
+            })
+            .collect()
+    };
+    let (tf, te) = (lit(11), lit(10));
+    assert!(!tf.is_empty() && !te.is_empty());
+    let point = &te[0].lights[0];
+    assert_eq!((point.kind, point.position, point.intensity), (three_d::LightKind::Point, [14.0, 6.0, -30.0], 1.2));
+    assert_eq!((point.falloff, point.falloff_start, point.falloff_distance, point.shadow_darkness), (three_d::Falloff::Smooth, 20.0, 80.0, 0.8));
+    let dir = [2.0 / 940f64.sqrt(), 6.0 / 940f64.sqrt(), 30.0 / 940f64.sqrt()];
+    assert!((0..3).all(|k| (point.direction[k] - dir[k]).abs() < 1e-12), "{:?}", point.direction);
+    assert_eq!((te[0].lights[1].kind, te[0].lights[1].intensity), (three_d::LightKind::Ambient, -0.25), "intensity is never clamped");
+    assert_eq!(te[0].casters.iter().map(|c| c.layer_id.clone()).collect::<Vec<_>>(), vec![identity("SLYR", 11)], "te receives tf's shadow");
+    assert_eq!(te[0].casters[0].light_transmission, 0.0);
+    assert!(tf[0].casters.is_empty(), "tf does not accept shadows");
+    assert_eq!((tf[0].material.diffuse, tf[0].material.specular_shininess, tf[0].material.ambient), (0.8, 20.0, 1.0));
+    assert_eq!(te[0].material.light_transmission, 0.25);
+    // STU-CMP-045a: the triples with some but not all switches on, naming the switches that are off.
+    let diag = src.three_d_shadow_diagnostics().unwrap();
+    let off = |light: u8, caster: u8, receiver: u8| {
+        diag.iter()
+            .find(|d| d.light == identity("SLYR", light) && d.caster == identity("SLYR", caster) && d.receiver == identity("SLYR", receiver))
+            .map(|d| d.off.clone())
+    };
+    assert_eq!(off(8, 11, 10), None, "all three on: the shadow is cast, no diagnostic");
+    assert_eq!(off(8, 10, 11), Some(vec![three_d::SHADOW_CASTER_OFF, three_d::SHADOW_RECEIVER_OFF]));
+    assert_eq!(off(3, 11, 10), Some(vec![three_d::SHADOW_LIGHT_OFF]));
+    assert_eq!(off(3, 10, 11), None, "all three off: the default, no diagnostic");
+    assert_eq!(diag.len(), 2);
+    // A light outside its window lights nothing: the planes stay unlit.
+    let plain = source(&records(layers()), &pixels).unwrap().scene_at(0, &CancellationToken::default()).unwrap();
+    assert!(plain.layers.iter().all(|x| !matches!(&x.content, SceneContent::Pinned(p) if matches!(p.content, SceneContent::Lit(_)))));
 }

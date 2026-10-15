@@ -61,3 +61,25 @@ fn gpu_three_d_run_matches_the_ray_cast_oracle() {
     println!("three_d: gpu max |delta| vs oracle {delta:e}");
     assert!(delta <= GPU_TOLERANCE, "{delta}");
 }
+
+#[test]
+fn gpu_lit_three_d_run_matches_the_shading_oracle() {
+    if !gate("gpu_lit_three_d_run_matches_the_shading_oracle") {
+        return;
+    }
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::lit_scene(&pixels);
+    let (want, shadowed) = three_d::lit_oracle(&pixels);
+    assert!(shadowed > 0);
+    let ctx = SceneContext {
+        backend: backend(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let got = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
+    let delta = scenes::max_delta(&got, &want);
+    println!("three_d lit: gpu max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "{delta}");
+}
