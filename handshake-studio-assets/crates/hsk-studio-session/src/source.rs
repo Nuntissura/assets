@@ -136,9 +136,11 @@ pub(crate) struct Parts {
 /// Reserved name prefix of the typed document entries a session keeps beside the document (lane
 /// SMB-HARNESS-UI-3): `studio/<token>.<sha256hex>`, carried in the package as opaque entries.
 pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
-/// Tokens of [`DOCUMENT_ENTRY_PREFIX`] entries: the active selection (`selection`) and the text
-/// stories and type styles of text layers (`text`). The bytes belong to their producer.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text"];
+/// Tokens of [`DOCUMENT_ENTRY_PREFIX`] entries: the active selection (`selection`), the text
+/// stories and type styles of text layers (`text`) and the camera-raw develop recipe of the
+/// harness develop panel (`develop`, lane SMB-HARNESS-DEVELOP-2; interim persistence approved by
+/// the lead 2026-10-15). The bytes belong to their producer.
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

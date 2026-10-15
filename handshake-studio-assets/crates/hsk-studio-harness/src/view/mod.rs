@@ -19,6 +19,7 @@
 #[cfg(feature = "desktop")]
 pub mod display;
 pub mod develop;
+pub mod develop_entry;
 pub mod edit;
 pub mod export;
 pub mod brush_mix;
@@ -81,6 +82,13 @@ pub mod widget {
     pub const DEVELOP_PANEL: &str = "develop";
     pub const DEVELOP_EXPORT_PNG: &str = "develop.export.png";
     pub const DEVELOP_EXPORT_JPEG: &str = "develop.export.jpeg";
+    /// Develop structure buttons (lane SMB-HARNESS-DEVELOP-2); per item `develop.point.<i>.remove`,
+    /// `develop.local.<i>.remove`.
+    pub const DEVELOP_KELVIN: &str = "develop.wb.kelvin";
+    pub const DEVELOP_AS_SHOT: &str = "develop.wb.as_shot";
+    pub const DEVELOP_ADD_POINT: &str = "develop.point.add";
+    pub const DEVELOP_ADD_LUMINANCE: &str = "develop.local.add_luminance";
+    pub const DEVELOP_ADD_COLOUR: &str = "develop.local.add_colour";
     pub fn tool(key: &str) -> String {
         format!("tool.{key}")
     }
@@ -413,6 +421,12 @@ impl Viewer {
             self.say(e.clone());
             return Err(e);
         }
+        // The develop edit of a camera raw is saved with the document (session entry `develop`).
+        if let Err(r) = self.store_develop_entry() {
+            let e = format!("save {}: develop {r}", path.display());
+            self.say(e.clone());
+            return Err(e);
+        }
         if self.run.save_to(path) {
             self.say(format!("saved {}", path.display()));
             Ok(())
@@ -635,12 +649,12 @@ impl Viewer {
         }
 
         let mut commits = Vec::new();
-        let mut develop_changes = Vec::new();
+        let (mut develop_changes, mut develop_ops) = (Vec::new(), Vec::new());
         egui::SidePanel::right(widget::id(widget::PROPERTIES_PANEL)).resizable(true).default_width(300.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if self.develop.is_some() {
                     ui.heading("Develop");
-                    develop_changes = self.develop_ui(ui);
+                    (develop_changes, develop_ops) = self.develop_ui(ui);
                     self.drawn.push(widget::DEVELOP_PANEL.into());
                     ui.separator();
                 }
@@ -657,7 +671,11 @@ impl Viewer {
             let _ = self.commit(&layer, &control, &text);
         }
         if !develop_changes.is_empty() {
-            let _ = self.set_develop_many(&develop_changes);
+            let changes: Vec<(&str, f64)> = develop_changes.iter().map(|(id, v)| (id.as_str(), *v)).collect();
+            let _ = self.set_develop_many(&changes);
+        }
+        for op in develop_ops {
+            let _ = self.develop_op(op);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(if self.edit.selection.is_some() { 120 } else { 1000 }));
         self.render_if_dirty();

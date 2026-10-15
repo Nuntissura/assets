@@ -407,6 +407,10 @@ mod with_package {
         pub window_report: hsk_studio_develop::WindowReport,
         pub plane: hsk_studio_develop::CfaPlane,
         pub recipe: hsk_studio_develop::DevelopRecipe,
+        /// The file's DNG colour tags (raw-form white balance re-solves them: `recipe_for_white_point`).
+        pub colour: hsk_studio_develop::DngColor,
+        /// XYZ D50 -> linear sRGB primaries, the profile matrix of `recipe`.
+        pub to_profile: hsk_studio_develop::color::Mat3,
         source: hsk_studio_interop_psd::SourceIdentity,
         /// The id mint after the working-profile id: every developed raster is tiled from a clone
         /// of it, so document, layer and tile ids are those of the import.
@@ -447,7 +451,7 @@ mod with_package {
         };
         let to_srgb = develop::color::xyz_d50_to_linear_srgb().map_err(refusal)?;
         let (recipe, _) = raw.recipe(&to_srgb, binding, develop::BaselineExposure::Ignore).map_err(refusal)?;
-        Ok(RawPrepared { format, window, window_report, plane, recipe, source, mint })
+        Ok(RawPrepared { format, window, window_report, plane, recipe, colour: raw.color, to_profile: to_srgb, source, mint })
     }
 
     /// One developed image as interop-psd's raster proposal (one 32-bit `Background` layer through
