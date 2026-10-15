@@ -31,13 +31,13 @@ pub const DENOISE_FREQ_SMOOTHING_BINS: usize = 8;
 pub const DENOISE_MIN_PROFILE_FRAMES: u64 = 8;
 
 /// In-place radix-2 complex FFT (forward, and inverse scaled by 1/N).
-struct Fft {
+pub(crate) struct Fft {
     size: usize,
     twiddle: Vec<(f64, f64)>,
 }
 
 impl Fft {
-    fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         Self {
             size,
             twiddle: (0..size / 2)
@@ -48,7 +48,7 @@ impl Fft {
                 .collect(),
         }
     }
-    fn transform(&self, re: &mut [f64], im: &mut [f64], inverse: bool) {
+    pub(crate) fn transform(&self, re: &mut [f64], im: &mut [f64], inverse: bool) {
         let n = self.size;
         let bits = n.trailing_zeros();
         for i in 0..n {
