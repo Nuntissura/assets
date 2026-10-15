@@ -276,6 +276,13 @@ impl SharedDevice {
         })
     }
 
+    /// Declares the display transform of the backend over the shared device (see
+    /// [`GpuBackend::with_display_transform`]).
+    pub fn with_display_transform(mut self, transform: super::DisplayTransform) -> Self {
+        self.backend = self.backend.with_display_transform(transform);
+        self
+    }
+
     /// The backend over the shared device (read-back path through a `TileSink`, state queries).
     pub fn backend(&self) -> &GpuBackend {
         &self.backend

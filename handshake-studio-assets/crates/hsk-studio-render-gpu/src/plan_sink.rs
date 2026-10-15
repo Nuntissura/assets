@@ -476,12 +476,15 @@ fn plane_ok(bytes: &[u8], stride: u64, width: u32, height: u32, bpp: u64) -> boo
             .is_some_and(|size| u64::try_from(bytes.len()).ok() == Some(size))
 }
 
-/// Shape, plane hashes and values of a resolved tile against the plan's declaration.
+/// Shape, plane hashes and values of a resolved tile against the plan's declaration. A colour
+/// sample outside `[0, 1]` is refused unless `display_declared` (a declared display transform,
+/// `display.rs`); the result says whether the tile holds such a sample.
 fn verify_tile(
     input: &TileInput,
     planes: &TilePlanes<'_>,
     plan_space: ColourTag,
-) -> Result<(), GpuError> {
+    display_declared: bool,
+) -> Result<bool, GpuError> {
     let key = input.key;
     // Defence in depth: shared admission refuses a premultiplied convention first, because this
     // backend declares `ExtOperator::AlphaPremultiplied` Unsupported (key is pigment's).
@@ -521,10 +524,10 @@ fn verify_tile(
             out_of_unit |= ![r, g, b].iter().all(|v| (0.0..=1.0).contains(v));
         }
     }
-    if out_of_unit {
+    if out_of_unit && !display_declared {
         return Err(unsupported(SAMPLE_RANGE_OPERATOR));
     }
-    Ok(())
+    Ok(out_of_unit)
 }
 
 /// Map a feather failure to the typed refusal (before any device work).
@@ -549,6 +552,7 @@ fn prepare<'a>(
     sources: &'a dyn PlanSources,
     extensions: Option<&PlanExtensions>,
     scratch_limit: u64,
+    clip: Option<&'a display::ClipStore>,
 ) -> Result<Prepared<'a>, GpuError> {
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
@@ -600,7 +604,11 @@ fn prepare<'a>(
                 let planes = sources
                     .tile(t.key)
                     .ok_or(GpuError::Backend(BackendError::UnresolvedSource(t.key)))?;
-                verify_tile(t, &planes, target.space)?;
+                let out_of_unit = verify_tile(t, &planes, target.space, clip.is_some())?;
+                let planes = match clip {
+                    Some(store) if out_of_unit => store.substitute(t.key, planes)?,
+                    _ => planes,
+                };
                 end(t.placement)?;
                 has_tiles = true;
                 (
@@ -1061,6 +1069,8 @@ pub struct GpuBackend {
     options: DeviceOptions,
     /// WGSL override for fault injection (`None` = the generated shader).
     shader: Option<String>,
+    /// Declared display transform for tile samples outside `[0, 1]` (`None` = typed refusal).
+    display: Option<DisplayTransform>,
     inner: Mutex<Inner>,
 }
 
@@ -1126,6 +1136,7 @@ impl GpuBackend {
         Self {
             options,
             shader: None,
+            display: None,
             inner: Mutex::new(Inner {
                 state,
                 residency: Residency::new(options.residency_budget_bytes),
@@ -1157,6 +1168,19 @@ impl GpuBackend {
 
     pub fn options(&self) -> DeviceOptions {
         self.options
+    }
+    /// Declares the display transform for tile colour samples outside `[0, 1]` (lane
+    /// SMB-RENDER-SCENE-DISPLAY, `plan_sink/display.rs`): `Clip` clips them on the host before
+    /// upload, exactly as render-cpu does, and records `display_clip_sources` (Approximate) in the
+    /// receipt ledger when anything was clipped. Without a declaration the typed refusal
+    /// `sample_range_outside_unit` is unchanged (test `tests/gpu_scene_display.rs`).
+    pub fn with_display_transform(mut self, transform: DisplayTransform) -> Self {
+        self.display = Some(transform);
+        self
+    }
+    /// The declared display transform (`None` = samples outside `[0, 1]` are refused).
+    pub fn display_transform(&self) -> Option<DisplayTransform> {
+        self.display
     }
     /// Description of the live device, `None` when unavailable or lost.
     pub fn device_info(&self) -> Option<DeviceInfo> {
@@ -1352,7 +1376,27 @@ impl GpuBackend {
             Some(e) => admit_extended(plan, e, self, request, cancel)?,
         };
         leaf_root_class(plan, self, &mut ledger);
-        let prepared = prepare(plan, sources, extensions, request.max_working_bytes)?;
+        // Declared display transform: clipped host copies of the out-of-range tiles (checked
+        // against `max_working_bytes` before allocation), read by `prepare` instead of the sources.
+        let clip_store = match self.display {
+            Some(DisplayTransform::Clip) => Some(display::ClipStore::build(
+                plan,
+                sources,
+                plan.target.space,
+                request.min_exactness,
+                &mut ledger,
+                request.max_working_bytes,
+            )?),
+            None => None,
+        };
+        let clip_bytes = clip_store.as_ref().map_or(0, display::ClipStore::bytes);
+        let prepared = prepare(
+            plan,
+            sources,
+            extensions,
+            request.max_working_bytes.saturating_sub(clip_bytes),
+            clip_store.as_ref(),
+        )?;
         let digest = match extensions {
             None => plan.digest(),
             Some(e) => e.digest_with(plan),
@@ -3393,6 +3437,8 @@ fn submit_fault(
     error
 }
 
+mod display;
+pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
 #[cfg(test)]
 mod refusal_keys;
 

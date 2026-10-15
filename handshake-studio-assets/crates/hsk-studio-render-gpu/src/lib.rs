@@ -22,7 +22,10 @@ pub use device::{AdapterKind, BackendChoice, DeviceInfo, DeviceOptions, GpuConte
 pub use error::{GpuError, Reason};
 pub use kernel::{gpu_adjust_supported, gpu_blend_qualifies, gpu_blend_supported};
 pub use pipeline::{FAULT_MESSAGE_MAX_BYTES, PipelineFault, redact_paths};
-pub use plan_sink::{GpuBackend, GpuStats, RENDERER_NAME, RENDERER_VERSION};
+pub use plan_sink::{
+    DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform, GpuBackend, GpuStats,
+    RENDERER_NAME, RENDERER_VERSION,
+};
 /// Shared-device output (feature `shared-device`, lane SMB-RENDER-GPU-SHARED-DEVICE): the only
 /// public items that name wgpu types; see `plan_sink::shared`.
 #[cfg(feature = "shared-device")]
