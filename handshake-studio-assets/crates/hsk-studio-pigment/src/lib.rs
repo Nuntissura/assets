@@ -18,6 +18,7 @@ pub mod retouch;
 pub mod select_tools;
 pub mod selection;
 pub mod tile;
+pub mod track_math;
 pub mod transform_math;
 pub mod wire;
 use hsk_studio_observe::ResourceCode;
