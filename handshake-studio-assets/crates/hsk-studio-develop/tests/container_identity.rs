@@ -19,13 +19,14 @@ const PINNED: &[(&str, &str, &str)] = &[
     ("dng", "samsung-sm-g950u-16bit-uncompressed.dng", "4032x2268|16|cfa=ae7f8e1f45b0458f7f8d493efc88719f3b56b699843af7e4d917ef073e370454|dev=4032x2268:(0, 0):892662340a7743c4ccc880dc907d69484980087905b2f51344f3e8160c0a4987"),
     ("dng", "samsung-sm-g973u-16bit-uncompressed.dng.jfif-preview", "decode_err=DecoderUnavailable(\"jpeg\")"),
     ("raw-vendor", "canon-eos-350d-raw.cr2", "3516x2328|12|cfa=29f020448207b8283fab983dc6e200d7acf569883940524003973edfc1015756|dev=recipe_err=MissingColourData"),
-    ("raw-vendor", "canon-eos-r6.cr3", "3584x2386|14|cfa=73d26ba5f75c2361d8eb197336335f95e1e41f8fffb2714fe3f7bb2b3e4b0c27|dev=recipe_err=MissingColourData"),
+    // CR3 and ORF developed since SMB-DEVELOP-CAMERA-COLOUR (spectral table / maker-note matrix); re-pinned from that lane's run.
+    ("raw-vendor", "canon-eos-r6.cr3", "3584x2386|14|cfa=73d26ba5f75c2361d8eb197336335f95e1e41f8fffb2714fe3f7bb2b3e4b0c27|dev=3584x2386:(54013, 0):53f2485b379ebc2bc53c942d348d4b1e7078df526f7fcdc02da94614188d4111"),
     ("raw-vendor", "fujifilm-finepix-s5000.raf", "decode_err=DecoderUnavailable(\"raf\")"),
     ("raw-vendor", "fujifilm-x-s10-14bit-compressed-xtrans.raf", "6384x4182|14|cfa=a7ccc3650bdead2da2dba81c3b56c98061d259d83444f1a8f872e9abe193fbf1|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "nikon-d1h-12bit-uncompressed.nef", "2012x1324|12|cfa=25c44149c9b10f0b11ec8e99d4ee6f1bdfe2b1095cc7bbeebb5809901fbbdbba|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "nikon-d70s-12bit-lossy-type1.nef", "3040x2014|12|cfa=291da6d41094b5da303e2cb7d704e464daa0edf03245fb14a9d8e592c92b4e11|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "nikon-z6-12bit-compressed.nef", "4548x3030|12|cfa=af18a3a222d77b3e2f19ff416cba8d5c62488a2d1d6bf149db1f84b5c93ebe22|dev=recipe_err=MissingColourData"),
-    ("raw-vendor", "olympus-c5060wz-12bit.orf", "2608x1949|12|cfa=1e6a220bfa5fbdced0bc9acf6c62cecc3cf287ad3df527e3fe980f154534ab37|dev=recipe_err=MissingColourData"),
+    ("raw-vendor", "olympus-c5060wz-12bit.orf", "2608x1949|12|cfa=1e6a220bfa5fbdced0bc9acf6c62cecc3cf287ad3df527e3fe980f154534ab37|dev=2608x1949:(0, 1415):35b0178b414a3b6f0ccf614498368da728dc18acb26508aa9b8ca0449b6f5531"),
     ("raw-vendor", "panasonic-dmc-lx7.rw2", "1904x1276|12|cfa=148fcc6e0589faf945c490b6abb210e8c8d9688035bdd8e69b1a732999b4f3f4|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "sony-ilce-7s-14bit-compressed.arw", "2816x1872|14|cfa=3fd53781275f0e7c114ed54873071d49cc6f7677090445dc0e92fbd9feebe8a2|dev=recipe_err=MissingColourData"),
 ];

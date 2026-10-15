@@ -11,6 +11,7 @@
 // bounded by an explicit validation above it.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::camera_colour::{self, ColourRoute, VendorColour};
 use crate::color::{self, CameraSolution, DngColor, Mat3};
 use crate::ljpeg;
 use crate::pipeline::{Cfa, CfaPattern, CfaPlane, Limits, PlaneInit, XTRANS};
@@ -134,6 +135,9 @@ pub struct DngRaw {
     pub white_level: u32,
     pub linearized: bool,
     pub color: DngColor,
+    /// Where `color` came from: the DNG tags, a vendor matrix tag, the spectral table, or none
+    /// (lane SMB-DEVELOP-CAMERA-COLOUR, [`crate::camera_colour`]).
+    pub colour_route: ColourRoute,
     pub unique_camera_model: Option<String>,
     /// SHA-256 of the complete container bytes.
     pub container_sha256: [u8; 32],
@@ -728,6 +732,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         black_delta_v,
         white_level,
         linearized,
+        colour_route: if color.color_matrix.iter().any(Option::is_some) { ColourRoute::DngTags } else { ColourRoute::None },
         color,
         unique_camera_model,
         unapplied,
@@ -757,6 +762,8 @@ pub(crate) struct VendorFrame {
     pub black_repeat: (u32, u32),
     /// Black level per repeat site (row-major); each finite, >= 0 and below `white_level`.
     pub black_level: Vec<f64>,
+    /// Make, as-shot neutral and any matrix the file carries ([`crate::camera_colour`]).
+    pub colour: VendorColour,
 }
 
 impl VendorFrame {
@@ -798,6 +805,7 @@ impl DngRaw {
         {
             return Err(DevelopError::InvalidLevels);
         }
+        let (color, colour_route) = camera_colour::resolve(&frame.colour, frame.unique_camera_model.as_deref());
         Ok(Self {
             width: frame.width,
             height: frame.height,
@@ -816,7 +824,8 @@ impl DngRaw {
             black_delta_v: Vec::new(),
             white_level,
             linearized: false,
-            color: DngColor::empty(),
+            color,
+            colour_route,
             unique_camera_model: frame.unique_camera_model,
             container_sha256: Sha256::digest(container).into(),
             unapplied: frame.unapplied,
@@ -827,6 +836,15 @@ impl DngRaw {
     /// Raw sample after the optional linearization table (before black subtraction).
     pub fn sample(&self, x: u32, y: u32) -> u16 {
         self.samples[(y as usize).saturating_mul(self.width as usize).saturating_add(x as usize)]
+    }
+
+    /// CFA channel (R = 0, G = 1, B = 2) of site (`x`, `y`) inside the active area and its signal:
+    /// sample minus black, divided by white minus black (the camera-native value develop starts
+    /// from; for oracles and tests).
+    pub fn site(&self, x: u32, y: u32) -> (u8, f64) {
+        let black = self.black_at(x, y);
+        let v = (f64::from(self.sample(x, y)) - black) / (f64::from(self.white_level) - black);
+        (self.channel_at(x, y), v)
     }
 
     fn channel_at(&self, x: u32, y: u32) -> u8 {

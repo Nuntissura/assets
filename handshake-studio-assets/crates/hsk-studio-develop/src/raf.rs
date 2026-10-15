@@ -25,11 +25,12 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::camera_colour::VendorColour;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::pipeline::{Bayer, CfaPattern, XTRANS};
 use crate::levels;
 use crate::rafc;
-use crate::tiffep::{self, Tiff};
+use crate::tiffep::{self, Ifd, Tiff};
 
 pub const UNAPPLIED: [&str; 3] = ["raf_black_level_unread", "raf_white_level_unread", "raf_crop_unread"];
 
@@ -167,9 +168,23 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level: white.unwrap_or(full),
             black_repeat,
             black_level,
+            colour: VendorColour {
+                make: Some("FUJIFILM".to_string()),
+                as_shot_neutral: raf_neutral(&tiff, &raw_ifd),
+                neutral_tag: Some("raf_raw_ifd_0xf00e"),
+                file_matrix: None,
+            },
         },
         bytes,
     )
+}
+
+/// Raw IFD 0xF00E WB_GRBLevels (green, red, blue; ExifTool FujiFilm tag names, LightCraft's
+/// reading) as the as-shot neutral.
+fn raf_neutral(tiff: &Tiff<'_>, raw_ifd: &Ifd) -> Option<[f64; 3]> {
+    let v = tiff.f64s(raw_ifd.find(0xf00e)?).ok()?;
+    let (g, r, b) = (*v.first()?, *v.get(1)?, *v.get(2)?);
+    (g > 0.0).then(|| VendorColour::neutral_from_multipliers(r / g, b / g)).flatten()
 }
 
 /// Header records 0x0110 (crop top, left) and 0x0111 (cropped height, width) as a frame region.

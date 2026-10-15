@@ -289,7 +289,14 @@ fn check(test: &str, e: &Expect) -> Vec<String> {
     want(raw.white_level == e.white, format!("white {} != {}", raw.white_level, e.white));
     want(raw.cfa_pattern == e.cfa, format!("cfa {:?} != {:?}", raw.cfa_pattern, e.cfa));
     want(raw.unique_camera_model.as_deref() == Some(e.model), format!("model {:?}", raw.unique_camera_model));
-    want(raw.solve_colour().err() == Some(DevelopError::MissingColourData), "colour not refused".into());
+    // Colour (SMB-DEVELOP-CAMERA-COLOUR): solved exactly when a colour route exists (the R6 through
+    // the spectral table, the C5060WZ through its maker-note matrix; tests/camera_colour.rs), else
+    // refused as missing_colour_data.
+    let colour = raw.solve_colour();
+    want(
+        (raw.colour_route == ColourRoute::None) == (colour.as_ref().err() == Some(&DevelopError::MissingColourData)),
+        format!("colour route {:?} vs solve {:?}", raw.colour_route, colour.as_ref().map(|s| s.cct)),
+    );
     want(hs < vs.max(1) * 3 && vs < hs.max(1) * 3, format!("hstep {hs} vstep {vs}"));
     match r {
         Some((r, _, _)) => want(r >= e.r_floor, format!("preview correlation {r} < {}", e.r_floor)),

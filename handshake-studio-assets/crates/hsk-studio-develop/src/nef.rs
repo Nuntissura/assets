@@ -20,6 +20,7 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::camera_colour::VendorColour;
 use crate::dng::{DngRaw, VendorFrame};
 use crate::levels;
 use crate::nefc;
@@ -30,6 +31,7 @@ const EXIF_IFD: u16 = 0x8769;
 const MAKER_NOTE: u16 = 0x927C;
 const LINEARIZATION_TABLE: u16 = 0x0096;
 const BLACK_LEVEL: u16 = 0x003d;
+const WB_RB_LEVELS: u16 = 0x000c;
 const COMPRESSION_NIKON_HUFFMAN: u32 = 34713;
 
 /// Compressed frames apply the maker-note decode table (curve) but still read no levels.
@@ -102,6 +104,12 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level,
             black_repeat,
             black_level,
+            colour: VendorColour {
+                make: tiffep::ascii(&tiff, root, tiffep::MAKE)?,
+                as_shot_neutral: nikon_neutral(&tiff, root),
+                neutral_tag: Some("nikon_makernote_0x000c"),
+                file_matrix: None,
+            },
         },
         bytes,
     )
@@ -127,6 +135,15 @@ fn linearization_table<'a>(tiff: &Tiff<'a>, root: &Ifd) -> Result<(&'a [u8], boo
     let (mn, ifd) = nikon_note(tiff, root).ok_or(unavailable)?;
     let table = mn.bytes(ifd.find(LINEARIZATION_TABLE).ok_or(unavailable)?)?;
     Ok((table, mn.is_big_endian()))
+}
+
+/// Maker note 0x000C WB_RBLevels (ExifTool Nikon tag names, LightCraft's reading): red and blue
+/// white-balance multipliers (RATIONAL), as the camera neutral. Older bodies (D70s) store white
+/// balance only in the encrypted 0x0097 ColorBalance: `None`.
+fn nikon_neutral(tiff: &Tiff<'_>, root: &Ifd) -> Option<[f64; 3]> {
+    let (mn, ifd) = nikon_note(tiff, root)?;
+    let v = mn.f64s(ifd.find(WB_RB_LEVELS)?).ok()?;
+    VendorColour::neutral_from_multipliers(*v.first()?, *v.get(1)?)
 }
 
 /// Maker note 0x003D BlackLevel (ExifTool Nikon tag names; four values in 14-bit units, scaled to

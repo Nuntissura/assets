@@ -23,6 +23,7 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::camera_colour::{FileMatrix, VendorColour};
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::levels;
 use crate::pipeline::{Bayer, CfaPattern};
@@ -171,20 +172,46 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level: white.unwrap_or(full),
             black_repeat: (1, 1),
             black_level: vec![black.unwrap_or(0.0)],
+            colour: olympus_colour(&tiff, &root)?,
         },
         bytes,
     )
 }
 
 /// Old-style Olympus maker note (`OLYMP\0` + 2 version bytes, then an IFD whose offsets are file
-/// offsets): 0x1012 BlackLevel (four values; mean) in 0x102C ValidBits units, scaled to `bits`.
-fn olympus_black(tiff: &Tiff<'_>, root: &Ifd, bits: u16) -> Option<f64> {
+/// offsets).
+fn olympus_note(tiff: &Tiff<'_>, root: &Ifd) -> Option<Ifd> {
     let exif = tiff.ifd(tiffep::first_u32(tiff, root.find(EXIF_IFD)?).ok()?).ok()?;
     let entry = exif.find(0x927c)?;
     if !tiff.bytes(entry).ok()?.starts_with(b"OLYMP\0") {
         return None;
     }
-    let note = tiff.ifd(u32::try_from(entry.value_offset.checked_add(8)?).ok()?).ok()?;
+    tiff.ifd(u32::try_from(entry.value_offset.checked_add(8)?).ok()?).ok()
+}
+
+/// Colour the old-style maker note carries (ExifTool Olympus tag names; LightCraft reads the same
+/// white balance): 0x1017 RedBalance / 0x1018 BlueBalance (first value, 256 = 1.0) as the as-shot
+/// neutral, and 0x1011 ColorMatrix (nine SHORTs read as signed, rows summing to 256) as the
+/// white-balanced camera -> sRGB matrix ([`crate::camera_colour::FileMatrix`]). A matrix whose rows
+/// do not sum to 256 is not used.
+fn olympus_colour(tiff: &Tiff<'_>, root: &Ifd) -> Result<VendorColour, DevelopError> {
+    let make = tiffep::ascii(tiff, root, tiffep::MAKE)?.map(|m| m.trim().to_string());
+    let Some(note) = olympus_note(tiff, root) else {
+        return Ok(VendorColour { make, ..VendorColour::default() });
+    };
+    let gain = |tag: u16| -> Option<f64> { note.find(tag).and_then(|e| tiff.u32s(e).ok()).and_then(|v| v.first().map(|g| f64::from(*g) / 256.0)) };
+    let as_shot_neutral = gain(0x1017).zip(gain(0x1018)).and_then(|(r, b)| VendorColour::neutral_from_multipliers(r, b));
+    let file_matrix = note
+        .find(0x1011)
+        .and_then(|e| tiff.u32s(e).ok())
+        .and_then(|v| <[u32; 9]>::try_from(v).ok())
+        .and_then(|v| FileMatrix::from_scaled(v.map(|w| f64::from(u16::try_from(w).map_or(0, |w| w.cast_signed()))), 256.0, "olympus_makernote_0x1011"));
+    Ok(VendorColour { make, as_shot_neutral, neutral_tag: Some("olympus_makernote_0x1017_0x1018"), file_matrix })
+}
+
+/// Maker note 0x1012 BlackLevel (four values; mean) in 0x102C ValidBits units, scaled to `bits`.
+fn olympus_black(tiff: &Tiff<'_>, root: &Ifd, bits: u16) -> Option<f64> {
+    let note = olympus_note(tiff, root)?;
     let v = tiff.u32s(note.find(0x1012)?).ok()?;
     if v.len() != 4 {
         return None;

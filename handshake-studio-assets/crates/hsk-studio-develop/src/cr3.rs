@@ -20,6 +20,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::crx::{self, Coding};
+use crate::camera_colour::VendorColour;
 use crate::dng::{DngRaw, VendorFrame};
 use crate::levels;
 use crate::pipeline::{Bayer, CfaPattern};
@@ -256,21 +257,34 @@ fn timed_maker_notes(sample: &[u8]) -> Vec<&[u8]> {
 /// version (word index offsets per the ExifTool Canon ColorData tables, as LightCraft reads them:
 /// versions 16-19 black 329 white 797; 32/33 black 343 white 811; 34/48 black 363 white 641; 64/65
 /// black 383 white 661; 66 black 383, no white). Timed-metadata maker notes win over `CMT3`.
-fn color_data_levels(parts: &Parts<'_>, bits: u16) -> (Option<[f64; 4]>, Option<u32>) {
+/// The as-shot neutral comes from WB_RGGBLevelsAsShot (R, G, G, B, independent of the CFA; word
+/// 71 for versions 16-19, 85 for 32/33, 105 for 34/48/64-66, as LightCraft reads them): green the
+/// mean of the two greens, which must agree within 10 %.
+fn color_data_levels(parts: &Parts<'_>, bits: u16) -> (Option<[f64; 4]>, Option<u32>, Option<[f64; 3]>) {
     let mut notes: Vec<&[u8]> = parts.ctmd.map(timed_maker_notes).unwrap_or_default();
     notes.extend(parts.cmt3);
     for note in notes {
         let Ok((tiff, first)) = Tiff::parse(note) else { continue };
         let Ok(ifd) = tiff.ifd(first) else { continue };
         let Some(values) = ifd.find(0x4001).and_then(|e| tiff.u32s(e).ok()) else { continue };
-        let (black_at, white_at) = match values.first() {
-            Some(16..=19) => (329usize, Some(797usize)),
-            Some(32 | 33) => (343, Some(811)),
-            Some(34 | 48) => (363, Some(641)),
-            Some(64 | 65) => (383, Some(661)),
-            Some(66) => (383, None),
-            _ => return (None, None),
+        let (wb_at, black_at, white_at) = match values.first() {
+            Some(16..=19) => (71usize, 329usize, Some(797usize)),
+            Some(32 | 33) => (85, 343, Some(811)),
+            Some(34 | 48) => (105, 363, Some(641)),
+            Some(64 | 65) => (105, 383, Some(661)),
+            Some(66) => (105, 383, None),
+            _ => return (None, None, None),
         };
+        let as_shot = values
+            .get(wb_at..wb_at.saturating_add(4))
+            .and_then(|v| <[u32; 4]>::try_from(v).ok())
+            .and_then(|[r, g1, g2, b]| {
+                let (r, g1, g2, b) = (f64::from(r), f64::from(g1), f64::from(g2), f64::from(b));
+                let g = (g1 + g2) / 2.0;
+                ((64.0..=32767.0).contains(&g) && (g1 - g2).abs() <= g * 0.1)
+                    .then(|| VendorColour::neutral_from_multipliers(r / g, b / g))
+                    .flatten()
+            });
         let full = VendorFrame::full_scale(bits).unwrap_or(0);
         let black = values
             .get(black_at..black_at.saturating_add(4))
@@ -281,9 +295,9 @@ fn color_data_levels(parts: &Parts<'_>, bits: u16) -> (Option<[f64; 4]>, Option<
         let white = white_at
             .and_then(|at| values.get(at).copied())
             .filter(|w| f64::from(*w) > max_black && *w >= full / 2 && *w <= full);
-        return (black, white);
+        return (black, white, as_shot);
     }
-    (None, None)
+    (None, None, None)
 }
 
 fn cfa(code: u8) -> Option<CfaPattern> {
@@ -297,9 +311,17 @@ fn cfa(code: u8) -> Option<CfaPattern> {
 }
 
 fn model(cmt1: Option<&[u8]>) -> Option<String> {
+    ifd0_ascii(cmt1, tiffep::MODEL)
+}
+
+fn make(cmt1: Option<&[u8]>) -> Option<String> {
+    ifd0_ascii(cmt1, tiffep::MAKE)
+}
+
+fn ifd0_ascii(cmt1: Option<&[u8]>, tag: u16) -> Option<String> {
     let (tiff, first) = Tiff::parse(cmt1?).ok()?;
     let ifd = tiff.ifd(first).ok()?;
-    tiffep::ascii(&tiff, &ifd, tiffep::MODEL).ok().flatten()
+    tiffep::ascii(&tiff, &ifd, tag).ok().flatten()
 }
 
 pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
@@ -323,7 +345,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // Levels from ColorData: black per channel mapped to the CMP1 CFA's 2x2 site order (sites are
     // anchored at the stored frame origin, as the CMP1 CFA code is); white from ColorData, else
     // what the frame proves (saturation plateau or >= 16 samples at full scale), else unread.
-    let (black, tagged_white) = color_data_levels(&parts, bits);
+    let (black, tagged_white, as_shot) = color_data_levels(&parts, bits);
     let mut applied = Vec::new();
     let (black_repeat, black_level) = match black {
         Some([r, g1, g2, b]) => {
@@ -356,6 +378,12 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level: white.unwrap_or(full),
             black_repeat,
             black_level,
+            colour: VendorColour {
+                make: make(parts.cmt1).or_else(|| Some("Canon".to_string())),
+                as_shot_neutral: as_shot,
+                neutral_tag: Some("canon_colordata_wb_rggb_levels_as_shot"),
+                file_matrix: None,
+            },
         },
         bytes,
     )

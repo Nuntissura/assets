@@ -25,6 +25,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::{levels, sr2};
+use crate::camera_colour::VendorColour;
 use crate::dng::{DngRaw, VendorFrame};
 use crate::tiffep::{Ifd, Tiff};
 use crate::tiffep;
@@ -198,6 +199,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level: measured.unwrap_or(white_level),
             black_repeat: (1, 1),
             black_level: vec![black.unwrap_or(0.0)],
+            colour: VendorColour { make: tiffep::ascii(&tiff, root, tiffep::MAKE).ok().flatten(), ..VendorColour::default() },
         },
         bytes,
     )

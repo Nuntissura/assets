@@ -33,6 +33,7 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::camera_colour::VendorColour;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::levels;
 use crate::pipeline::{Bayer, CfaPattern};
@@ -309,6 +310,16 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level: white.unwrap_or(full),
             black_repeat,
             black_level,
+            colour: VendorColour {
+                make: tiffep::ascii(&tiff, &root, tiffep::MAKE)?.map(|m| m.trim().to_string()),
+                as_shot_neutral: match [0x0024, 0x0025, 0x0026].map(|t| tag_u32(&tiff, &root, t).ok().flatten().map(f64::from)) {
+                    // WB_RGBLevels (ExifTool Panasonic tag names, LightCraft's reading).
+                    [Some(r), Some(g), Some(b)] if g > 0.0 => VendorColour::neutral_from_multipliers(r / g, b / g),
+                    _ => None,
+                },
+                neutral_tag: Some("panasonic_0x0024_0x0026"),
+                file_matrix: None,
+            },
         },
         bytes,
     )

@@ -23,6 +23,7 @@
 // V4-01: this module decodes untrusted bytes; every integer operation is checked or saturating.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
+use crate::camera_colour::VendorColour;
 use crate::dng::{DngRaw, MAX_DNG_PIXELS, VendorFrame};
 use crate::levels;
 use crate::ljpeg;
@@ -251,6 +252,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             white_level,
             black_repeat,
             black_level,
+            colour: VendorColour { make: root.find(271).and_then(|e| tiff.ascii(e).ok()), ..VendorColour::default() },
         },
         bytes,
     )
