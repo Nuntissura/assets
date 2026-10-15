@@ -56,7 +56,10 @@ fn apply_keystream(block: &mut [u8]) {
 /// file has none, uses another key, or the values are implausible (outside 64..=4096 or spread
 /// over more than 64 codes, LightCraft's plausibility rule).
 pub(crate) fn black_level(tiff: &Tiff<'_>, root: &Ifd, bytes: &[u8]) -> Option<f64> {
-    let private = tiff.ifd(tiffep::first_u32(tiff, root.find(0xc634)?).ok()?).ok()?;
+    // DNGPrivateData is 4 BYTEs holding the SR2Private IFD offset in the file's byte order.
+    let at: [u8; 4] = tiff.bytes(root.find(0xc634)?).ok()?.get(..4)?.try_into().ok()?;
+    let at = if tiff.is_big_endian() { u32::from_be_bytes(at) } else { u32::from_le_bytes(at) };
+    let private = tiff.ifd(at).ok()?;
     let key = tiff.bytes(private.find(0x7221)?).ok()?;
     if key != KEY {
         return None;

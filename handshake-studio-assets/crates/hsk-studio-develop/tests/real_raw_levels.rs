@@ -238,6 +238,7 @@ fn vendor_levels_agree_with_sample_statistics() {
         let (_, floor) = site_stats(&raw, c.image);
         let top = at_or_above(&raw, c.image, raw.white_level);
         let mut masked_means = Vec::new();
+        #[allow(clippy::needless_range_loop)]
         for s in 0..4 {
             let b = black_at(&raw, s);
             if (b - c.black[s]).abs() > 0.01 {
@@ -251,6 +252,7 @@ fn vendor_levels_agree_with_sample_statistics() {
         for &m in c.masked {
             let (mean, _) = site_stats(&raw, m);
             masked_means.push(mean);
+            #[allow(clippy::needless_range_loop)]
             for s in 0..4 {
                 if (mean[s] - black_at(&raw, s)).abs() > 1.5 {
                     bad.push(format!("{}: masked {m:?} site {s} mean {} vs black {}", c.file, mean[s], black_at(&raw, s)));
