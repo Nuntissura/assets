@@ -1174,15 +1174,15 @@ fn knockout_and_effect_stack_are_refused() {
         let none = records(json!([{"layer_id":identity("SLYR",2),"advanced_blending":blending("inherited")}]));
         assert!(flow(&nested, &none).1.unwrap().extensions.is_empty());
 
-        // An enabled effect instance of a kind pigment does not render (here a satin; pigment
-        // renders drop shadow, colour overlay, stroke, inner shadow and the glows) is refused; a
+        // An enabled effect instance of a kind pigment does not render (here a pattern overlay;
+        // satin rendered since lane SMB-PS-ADJUST-STYLES) is refused; a
         // disabled stack, or one without enabled instances, is not.
         let stack = |enabled: bool, instance_enabled: bool| {
             json!({"effect_stack_id":"SEFX-019abcde-0000-7000-8000-000000000001","enabled":enabled,"scale":100.0,
                 "effects":[{"instance_id":"fx_1","enabled":instance_enabled,"visible_in_editor":true,
                     "blend_mode":5,"opacity":75.0,"colour":{"r":0.0,"g":0.0,"b":0.0,"colour_profile_id":null},
                     "anti_alias":false,"noise":0.0,"angle":120.0,"use_global_light":true,
-                    "params":{"effect_kind":"satin","distance":5.0,"size":5.0,"invert":false}}]})
+                    "params":{"effect_kind":"pattern_overlay","pattern":{"schema_id":"hsk.studio.pattern@1","object_id":"p1"},"scale":100.0,"phase_x":0.0,"phase_y":0.0,"link_with_layer":true}}]})
         };
         let with = |enabled, instance_enabled| {
             records(json!([{"layer_id":identity("SLYR",3),"effects":stack(enabled, instance_enabled)}]))
@@ -1487,7 +1487,8 @@ fn effect_refusals_are_typed_and_nothing_is_dropped_or_approximated_silently() {
         assert_eq!(s.angle_deg, 120.0);
         assert!(ok(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), true, overlay())), enc).extensions.layers.len() == 1);
         // A kind pigment does not render, and stack scale other than 100 percent.
-        let glow = json!({"effect_kind":"satin","distance":5.0,"size":5.0,"invert":false});
+        let glow = json!({"effect_kind":"pattern_overlay","pattern":{"schema_id":"hsk.studio.pattern@1","object_id":"p1"},
+            "scale":100.0,"phase_x":0.0,"phase_y":0.0,"link_with_layer":true}); // satin renders since SMB-PS-ADJUST-STYLES
         refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, glow.clone())), enc, "layer_effects_not_rendered");
         let mut scaled = on_layer_3(fx_effect("e1", 100.0, black(), false, overlay()));
         scaled.layers[0].effects.as_mut().unwrap().scale = 150.0;

@@ -22,6 +22,8 @@ use hsk_studio_folio::{
     StudioContour, StudioCurve, StudioEffect, StudioEffectKind, StudioEffectStack,
     StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioLutKind,
     StudioRasterRecords, StudioSelectiveColourMethod, StudioToneMethod,
+    BevelDirection as FolioBevelDirection, BevelStyle as FolioBevelStyle,
+    BevelTechnique as FolioBevelTechnique,
 };
 use hsk_studio_pigment::adjust_math::{
     BrightnessContrast, Curves, Exposure, HueSaturation, Levels, LevelsRecord,
@@ -33,6 +35,8 @@ use hsk_studio_pigment::effect_math::{
     ColourOverlayOp, DropShadowOp, EffectError, EffectFeature, EffectOp, GlowSource,
     GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
+    BevelEmbossOp, BevelPart, BevelShape, BevelStyle, BevelTechnique, GradientOverlayOp,
+    GradientStopOp, GradientStyle, SatinOp,
 };
 use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout, PlanError};
 use std::collections::BTreeMap;
@@ -817,7 +821,60 @@ fn convert_effect(
                 position,
             ))
         }
-        // Bevel and emboss, satin, gradient and pattern overlay.
+        // Satin (lane SMB-PS-ADJUST-STYLES): STU-FX-132 gives satin a local angle and no Global
+        // Light subscription, so `use_global_light` is not read.
+        StudioEffectKind::Satin {
+            distance,
+            size,
+            invert,
+        } => EffectOp::Satin(SatinOp::new(
+            effect_colour(e, cx)?,
+            mode,
+            opacity,
+            e.angle as f32,
+            *distance as f32,
+            *size as f32,
+            *invert,
+        )),
+        StudioEffectKind::GradientOverlay {
+            gradient_type,
+            reverse,
+            dither,
+            align_with_layer,
+            scale,
+            offset_x,
+            offset_y,
+            stops,
+            ..
+        } => {
+            if *dither {
+                return Err(REFUSE_EFFECT_GRADIENT_DITHER);
+            }
+            if !*align_with_layer {
+                return Err(REFUSE_EFFECT_GRADIENT_UNALIGNED);
+            }
+            let style = gradient_style(gradient_type).ok_or(REFUSE_EFFECT_GRADIENT_STYLE)?;
+            let stops = stops.as_ref().ok_or(REFUSE_EFFECT_GRADIENT_UNRESOLVED)?;
+            let mut out = Vec::with_capacity(stops.len());
+            for s in stops {
+                if s.midpoint.is_some_and(|m| m != 50.0) {
+                    return Err(REFUSE_EFFECT_GRADIENT_MIDPOINT);
+                }
+                out.push(GradientStopOp {
+                    position: (s.position / 100.0) as f32,
+                    colour: profile_colour(&s.colour, cx)?,
+                    opacity: (s.opacity / 100.0) as f32,
+                });
+            }
+            let op = GradientOverlayOp::new(mode, opacity, style, e.angle as f32, &out)
+                .map_err(|_| EffectFeature::GradientStops.key())?
+                .with_scale((*scale / 100.0) as f32)
+                .with_reverse(*reverse)
+                .with_offset([(*offset_x / 100.0) as f32, (*offset_y / 100.0) as f32]);
+            EffectOp::GradientOverlay(op)
+        }
+        // Pattern overlay (no pattern pixels in the plan) and bevel & emboss (two ops, converted
+        // by `convert_bevel`).
         _ => return Err(REFUSE_EFFECTS),
     };
     // Pigment's own parameter and limit judgement, mapped to the code the lowering reports.
@@ -831,6 +888,139 @@ fn convert_effect(
         _ => REFUSE_EFFECT_PARAMETER,
     })?;
     Ok(op)
+}
+
+/// The pigment effect ops of a Folio stack exactly as the render-plan lowering converts them (notes
+/// and the blur dropped), or the refusal code. Public so importers and tests can check a stack
+/// without a document (lane SMB-PS-ADJUST-STYLES, `tests/layer_style_records.rs`).
+pub fn effect_ops(
+    stack: &StudioEffectStack,
+    global_light: Option<&StudioGlobalLight>,
+    blending: &ProfileBinding,
+    space: BlendSpace,
+) -> Result<Vec<EffectOp>, &'static str> {
+    let cx = EffectContext {
+        global_light,
+        blending,
+        space,
+    };
+    convert_effects(stack, &cx).map(|c| c.ops)
+}
+
+/// Refusal codes of the lane SMB-PS-ADJUST-STYLES styles.
+pub const REFUSE_EFFECT_GRADIENT_DITHER: &str = "effect_gradient_dither";
+pub const REFUSE_EFFECT_GRADIENT_UNALIGNED: &str = "effect_gradient_not_aligned_with_layer";
+pub const REFUSE_EFFECT_GRADIENT_STYLE: &str = "effect_gradient_style_unknown";
+pub const REFUSE_EFFECT_GRADIENT_UNRESOLVED: &str = "effect_gradient_unresolved";
+pub const REFUSE_EFFECT_GRADIENT_MIDPOINT: &str = "effect_gradient_midpoint";
+pub const REFUSE_BEVEL_TEXTURE: &str = "bevel_texture";
+pub const REFUSE_BEVEL_GLOSS_CONTOUR: &str = "bevel_gloss_contour";
+
+/// The gradient `type` token (Studio names or the PSD descriptor enum ids).
+fn gradient_style(token: &str) -> Option<GradientStyle> {
+    Some(match token {
+        "linear" | "Lnr " | "Lnr" => GradientStyle::Linear,
+        "radial" | "Rdl " | "Rdl" => GradientStyle::Radial,
+        "angle" | "Angl" => GradientStyle::Angle,
+        "reflected" | "Rflc" => GradientStyle::Reflected,
+        "diamond" | "Dmnd" => GradientStyle::Diamond,
+        _ => return None,
+    })
+}
+
+/// A colour in plan units (the rule of [`effect_colour`] for a colour that is not the common one).
+fn profile_colour(c: &StudioColor, cx: &EffectContext<'_>) -> Result<[f32; 3], &'static str> {
+    if let ProfileBinding::Assigned(p) = &c.colour_profile_id
+        && !matches!(cx.blending, ProfileBinding::Assigned(b) if b == p)
+    {
+        return Err(REFUSE_EFFECT_COLOUR_PROFILE);
+    }
+    let rgb = [c.r as f32, c.g as f32, c.b as f32];
+    if cx.space == BlendSpace::LinearLight && rgb.iter().any(|v| *v != 0.0 && *v != 1.0) {
+        return Err(REFUSE_EFFECT_COLOUR_LINEAR);
+    }
+    Ok(rgb)
+}
+
+/// Bevel & emboss as two pigment ops, shadow then highlight, each with its own colour, mode and
+/// opacity (STU-RAS-157 highlight/shadow blocks). The angle follows Global Light when subscribed,
+/// and so does the altitude (STU-RAS-158: Global Light is `{angle, altitude}`).
+fn convert_bevel(e: &StudioEffect, cx: &EffectContext<'_>) -> Result<[EffectOp; 2], &'static str> {
+    let StudioEffectKind::BevelEmboss {
+        style,
+        technique,
+        direction,
+        depth,
+        size,
+        soften,
+        altitude,
+        gloss_contour,
+        highlight_mode,
+        highlight_colour,
+        highlight_opacity,
+        shadow_mode,
+        shadow_colour,
+        shadow_opacity,
+        use_contour,
+        use_texture,
+        ..
+    } = &e.params
+    else {
+        return Err(REFUSE_EFFECTS);
+    };
+    if e.noise > 0.0 {
+        return Err(REFUSE_EFFECT_NOISE);
+    }
+    if *use_texture {
+        return Err(REFUSE_BEVEL_TEXTURE);
+    }
+    if *use_contour && e.contour.as_ref().is_some_and(|c| !linear_contour(c)) {
+        return Err(REFUSE_EFFECT_CONTOUR);
+    }
+    if gloss_contour.as_ref().is_some_and(|c| !linear_contour(c)) {
+        return Err(REFUSE_BEVEL_GLOSS_CONTOUR);
+    }
+    let (angle, altitude) = if e.use_global_light {
+        let g = cx.global_light.ok_or(REFUSE_EFFECT_GLOBAL_LIGHT)?;
+        (g.angle, g.altitude)
+    } else {
+        (e.angle, *altitude)
+    };
+    let shape = BevelShape {
+        style: match style {
+            FolioBevelStyle::InnerBevel => BevelStyle::InnerBevel,
+            FolioBevelStyle::OuterBevel => BevelStyle::OuterBevel,
+            FolioBevelStyle::Emboss => BevelStyle::Emboss,
+            FolioBevelStyle::PillowEmboss => BevelStyle::PillowEmboss,
+            FolioBevelStyle::StrokeEmboss => BevelStyle::StrokeEmboss,
+        },
+        technique: match technique {
+            FolioBevelTechnique::Smooth => BevelTechnique::Smooth,
+            FolioBevelTechnique::ChiselHard => BevelTechnique::ChiselHard,
+            FolioBevelTechnique::ChiselSoft => BevelTechnique::ChiselSoft,
+        },
+        up: *direction == FolioBevelDirection::Up,
+        depth: *depth as f32,
+        size_px: *size as f32,
+        soften_px: *soften as f32,
+        angle_deg: angle as f32,
+        altitude_deg: altitude as f32,
+    };
+    let part = |p: BevelPart, mode: u16, colour: &StudioColor, opacity: f64| -> Result<EffectOp, &'static str> {
+        let mode = StudioBlendMode::try_from(mode).map_err(|_| REFUSE_EFFECT_BLEND_MODE)?;
+        let op = EffectOp::BevelEmboss(BevelEmbossOp::new(p, profile_colour(colour, cx)?, mode, (opacity / 100.0) as f32 * (e.opacity / 100.0) as f32, shape));
+        op.validate().map_err(|err| match err {
+            EffectError::SizeOutOfRange => REFUSE_EFFECT_LIMIT,
+            EffectError::ModeNotApplicable(_) => REFUSE_EFFECT_BLEND_MODE,
+            EffectError::Unsupported(feature) => feature.key(),
+            _ => REFUSE_EFFECT_PARAMETER,
+        })?;
+        Ok(op)
+    };
+    Ok([
+        part(BevelPart::Shadow, *shadow_mode, shadow_colour, *shadow_opacity)?,
+        part(BevelPart::Highlight, *highlight_mode, highlight_colour, *highlight_opacity)?,
+    ])
 }
 
 /// A Folio blur instance as pigment's [`LayerBlur`] (`layer` -> layer blur, `below` -> backdrop
@@ -898,6 +1088,8 @@ pub(crate) fn convert_effects(
                 return Err(REFUSE_BLUR_MULTIPLE);
             }
             out.blur = Some(convert_blur(e, *render_scope, *radius)?);
+        } else if matches!(e.params, StudioEffectKind::BevelEmboss { .. }) {
+            out.ops.extend(convert_bevel(e, cx)?);
         } else {
             out.ops.push(convert_effect(e, cx, &mut out.notes)?);
         }

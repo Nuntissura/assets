@@ -2281,7 +2281,12 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                 | EffectKind::Stroke
                 | EffectKind::InnerShadow
                 | EffectKind::OuterGlow
-                | EffectKind::InnerGlow,
+                | EffectKind::InnerGlow
+                // Lane SMB-PS-ADJUST-STYLES: evaluated by pigment's windowed style functions like
+                // every other kind (tests/cpu_layer_styles.rs).
+                | EffectKind::Satin
+                | EffectKind::BevelEmboss
+                | EffectKind::GradientOverlay,
             ) => operator.intrinsic(),
             // Declared Unsupported on purpose (lane SMB-FX-OPS-ADOPT), so shared admission refuses
             // them under pigment's keys before any sink call: a layer with effects whose content

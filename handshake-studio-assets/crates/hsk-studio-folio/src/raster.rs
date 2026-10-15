@@ -626,6 +626,11 @@ pub enum StudioEffectKind {
         scale: f64,
         offset_x: f64,
         offset_y: f64,
+        /// The referenced gradient's stops carried by value beside the reference (as a contour
+        /// carries its points, STU-RAS-158), so a renderer needs no gradient resolver; absent =
+        /// unresolved (lane SMB-PS-ADJUST-STYLES). Not encoded when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stops: Option<Vec<crate::StudioGradientStop>>,
     },
     PatternOverlay {
         pattern: StudioEffectFill,
@@ -1321,6 +1326,7 @@ fn validate_effects(s: &StudioEffectStack, target: &str, cx: &mut Ctx) -> Result
                 scale,
                 offset_x,
                 offset_y,
+                stops,
                 ..
             } => {
                 fill_ref(gradient, GRADIENT_SCHEMA, &t)?;
@@ -1330,6 +1336,33 @@ fn validate_effects(s: &StudioEffectStack, target: &str, cx: &mut Ctx) -> Result
                     &t,
                     "gradient_overlay",
                 )?;
+                if let Some(stops) = stops {
+                    check(
+                        (2..=MAX_GRADIENT_MAP_STOPS).contains(&stops.len()),
+                        &t,
+                        "gradient_overlay/stops",
+                    )?;
+                    cx.nodes(stops.len(), &t)?;
+                    for s in stops {
+                        check(
+                            percent(s.position)
+                                && percent(s.opacity)
+                                && s.midpoint
+                                    .is_none_or(|m| m.is_finite() && (13.0..=87.0).contains(&m)),
+                            &t,
+                            "gradient_overlay/stop",
+                        )?;
+                        colour(&s.colour, &t, cx)?;
+                    }
+                    check(
+                        stops.windows(2).all(|w| match w {
+                            [a, b] => a.position <= b.position,
+                            _ => true,
+                        }),
+                        &t,
+                        "gradient_overlay/order",
+                    )?;
+                }
             }
             StudioEffectKind::PatternOverlay {
                 pattern,

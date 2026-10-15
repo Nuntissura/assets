@@ -2709,6 +2709,13 @@ fn slice3_modes_in_groups_masks_clip_parity() {
 // never with render-cpu. Tolerances are declared per operator before the run and the observed
 // maximum is printed (`EXT_*` lines).
 
+/// Effect kinds without GPU passes (lane SMB-PS-ADJUST-STYLES layer styles): typed refusal.
+const GPU_REFUSED_EFFECTS: [EffectKind; 3] = [
+    EffectKind::Satin,
+    EffectKind::BevelEmboss,
+    EffectKind::GradientOverlay,
+];
+
 /// Adjustment kinds the shader must refuse, pinned independently of `gpu_adjust_supported`. The
 /// second STU-RAS-151 set (lane SMB-PS-ADJUST-STYLES) has no WGSL body yet: typed refusal on GPU,
 /// rendered by the CPU backend.
@@ -3479,11 +3486,18 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
         assert_eq!(op.intrinsic(), Exactness::Unsupported);
         assert_eq!(backend.extension_exactness(op), Exactness::Unsupported);
     }
-    // effects are implemented (fx_* tests); their class is pigment's (Approximate)
+    // effects are implemented (fx_* tests); their class is pigment's (Approximate). The layer
+    // styles of lane SMB-PS-ADJUST-STYLES (satin, bevel & emboss, gradient overlay) have no GPU
+    // passes yet: typed refusal (the CPU backend renders them).
     for kind in EffectKind::ALL {
+        let want = if GPU_REFUSED_EFFECTS.contains(&kind) {
+            Exactness::Unsupported
+        } else {
+            Exactness::Approximate
+        };
         assert_eq!(
             backend.extension_exactness(ExtOperator::Effect(kind)),
-            Exactness::Approximate,
+            want,
             "{}",
             kind.key()
         );
@@ -4715,9 +4729,14 @@ fn fx_admission_and_refusals_run_without_adapter() {
         0.5,
     ));
 
-    // capability: all six kinds are supported and report pigment's class, never a better one
+    // capability: the six kinds of waves 1 and 2 are supported and report pigment's class, never
+    // a better one; the lane SMB-PS-ADJUST-STYLES styles are refused (GPU_REFUSED_EFFECTS)
     for kind in EffectKind::ALL {
         let op = ExtOperator::Effect(kind);
+        if GPU_REFUSED_EFFECTS.contains(&kind) {
+            assert_eq!(backend.extension_exactness(op), Exactness::Unsupported, "{}", kind.key());
+            continue;
+        }
         assert_eq!(
             backend.extension_exactness(op),
             Exactness::Approximate,
