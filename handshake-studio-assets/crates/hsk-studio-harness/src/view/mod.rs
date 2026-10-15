@@ -32,6 +32,10 @@ pub mod media;
 /// `audio-device`).
 #[cfg(feature = "audio-device")]
 pub mod audio_out;
+/// Audio file import into a score mixdown and FLAC / AIFF mixdown export (lane
+/// SMB-AUDIO-IMPORT-WIRING, feature `media`).
+#[cfg(feature = "media")]
+pub mod audio_import;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).

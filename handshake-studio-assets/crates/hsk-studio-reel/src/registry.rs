@@ -120,6 +120,18 @@ impl Registry {
         Ok(())
     }
 
+    /// `standard()` plus every standalone audio file provider (FLAC, Ogg, MPEG audio, ADTS AAC, AIFF):
+    /// the opt-in constructor for hosts that import audio files. `standard()` itself is unchanged
+    /// (whether AAC / MP3 ship by default is an Operator licensing decision, STU-VID-084).
+    pub fn with_audio() -> Self {
+        let mut registry = Self::standard();
+        for provider in AudioFileProvider::all() {
+            // The standard set holds none of the audio ids, so registration cannot collide.
+            registry.providers.push(Box::new(provider));
+        }
+        registry
+    }
+
     /// Builder form of `register_audio_codecs` (a registry that already holds one of the ids refuses).
     pub fn with_audio_codecs(mut self) -> Result<Self, ReelError> {
         self.register_audio_codecs()?;
