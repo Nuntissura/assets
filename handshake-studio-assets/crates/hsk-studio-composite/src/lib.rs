@@ -10,6 +10,7 @@ pub mod lower_render_plan;
 pub mod mask_paths;
 pub mod temporal;
 pub mod text;
+pub mod three_d;
 pub mod track_apply;
 pub mod tracker;
 pub mod vector;

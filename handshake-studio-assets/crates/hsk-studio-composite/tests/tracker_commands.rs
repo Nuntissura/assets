@@ -77,6 +77,9 @@ fn a_shot_is_tracked_corrected_and_stabilised_by_typed_commands() {
         streams: vec![],
         corner_pin: None,
         masks: vec![],
+        three_d: None,
+        camera: None,
+        light: None,
     };
     let timing = TrackTiming { first_tick: 0, ticks_per_frame: 100 };
     let out = stabilize(&layer, &track, timing, TrackAxes { position: true, ..TrackAxes::default() }, 2, 0).unwrap();

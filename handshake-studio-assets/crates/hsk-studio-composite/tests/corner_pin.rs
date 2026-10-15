@@ -23,6 +23,9 @@ fn layer() -> StudioCompositionLayer {
         streams: vec![],
         corner_pin: None,
         masks: vec![],
+        three_d: None,
+        camera: None,
+        light: None,
     }
 }
 

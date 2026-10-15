@@ -29,6 +29,9 @@ fn layer(streams: Vec<StudioPropertyStream>) -> StudioCompositionLayer {
         streams,
         corner_pin: None,
         masks: vec![],
+        three_d: None,
+        camera: None,
+        light: None,
     }
 }
 

@@ -282,7 +282,311 @@ pub struct StudioCompositionLayer {
     /// them serialises byte for byte as before.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<StudioCompositionMask>,
+    /// 3D (lane SMB-AE-3D; STU-CMP-035): `Some` promotes the layer's transform to three dimensions
+    /// and enrols it in the composition's 3D space. Absent = a 2D layer; records without it are
+    /// byte-identical to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub three_d: Option<StudioLayer3d>,
+    /// Camera (STU-CMP-040/040a): this layer is a camera; it requires `three_d` (its position and
+    /// orientation) and has no content of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<StudioCameraOptions>,
+    /// Light (STU-CMP-045): this layer is a light; it requires `three_d` and has no content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light: Option<StudioLightOptions>,
 }
+
+/// A keyframable value of a fixed component count (static value plus keys; the keyframe rules of a
+/// transform stream).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioKeyedValue {
+    pub static_value: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<StudioCompositionKeyframe>,
+}
+impl StudioKeyedValue {
+    /// A static value.
+    pub fn constant(value: Vec<f64>) -> Self {
+        Self { static_value: value, keyframes: Vec::new() }
+    }
+}
+
+/// The 3D transform members of [STU-MOT-013] beyond the 2D group, and the material options of
+/// [STU-MOT-014] (STU-CMP-035). Absent streams take the authored default (module docs of the 3D
+/// bounds table [`STUDIO_3D_BOUNDS`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioLayer3d {
+    /// Z position, composition pixels (positive = away from the default camera). Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_z: Option<StudioKeyedValue>,
+    /// Anchor Z, layer pixels. Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_z: Option<StudioKeyedValue>,
+    /// Rotation about X, degrees, unwrapped. Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_x: Option<StudioKeyedValue>,
+    /// Rotation about Y, degrees, unwrapped. Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_y: Option<StudioKeyedValue>,
+    /// Orientation (X, Y, Z degrees). Default 0, 0, 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<StudioKeyedValue>,
+    #[serde(default, skip_serializing_if = "StudioMaterialOptions::is_default")]
+    pub material: StudioMaterialOptions,
+}
+
+/// Geometry bevel style ([STU-MOT-014]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioBevelStyle {
+    #[default]
+    None,
+    Angular,
+    Concave,
+    Convex,
+}
+/// Geometry bevel direction ([STU-MOT-014]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioBevelDirection {
+    #[default]
+    Inward,
+    Outward,
+}
+
+fn yes_flag() -> bool {
+    true
+}
+fn is_true_flag(v: &bool) -> bool {
+    *v
+}
+
+/// [STU-MOT-014] material and geometry options. Booleans are static; numeric members are
+/// keyframable (absent = the authored default of [`STUDIO_3D_BOUNDS`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioMaterialOptions {
+    #[serde(default = "yes_flag", skip_serializing_if = "is_true_flag")]
+    pub accepts_lights: bool,
+    #[serde(default, skip_serializing_if = "is_false_flag")]
+    pub accepts_shadows: bool,
+    #[serde(default, skip_serializing_if = "is_false_flag")]
+    pub casts_shadows: bool,
+    #[serde(default = "yes_flag", skip_serializing_if = "is_true_flag")]
+    pub appears_in_reflections: bool,
+    /// Numeric members by name (`light_transmission`, `ambient`, `diffuse`, `specular_intensity`,
+    /// `specular_shininess`, `metal`, `reflection`, `glossiness`, `fresnel`, `index_of_refraction`,
+    /// `transparency`, `transparency_rolloff`, `extrusion_depth`, `bevel_depth`, `plane_curvature`,
+    /// `plane_subdivision`: one component; `shadow_colour`: three); unknown names are refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, StudioKeyedValue>,
+    #[serde(default, skip_serializing_if = "is_default_bevel_style")]
+    pub bevel_style: StudioBevelStyle,
+    #[serde(default, skip_serializing_if = "is_default_bevel_direction")]
+    pub bevel_direction: StudioBevelDirection,
+}
+fn is_default_bevel_style(v: &StudioBevelStyle) -> bool {
+    *v == StudioBevelStyle::None
+}
+fn is_default_bevel_direction(v: &StudioBevelDirection) -> bool {
+    *v == StudioBevelDirection::Inward
+}
+impl Default for StudioMaterialOptions {
+    fn default() -> Self {
+        Self {
+            accepts_lights: true,
+            accepts_shadows: false,
+            casts_shadows: false,
+            appears_in_reflections: true,
+            values: BTreeMap::new(),
+            bevel_style: StudioBevelStyle::None,
+            bevel_direction: StudioBevelDirection::Inward,
+        }
+    }
+}
+impl StudioMaterialOptions {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+    /// The value of member `name` at its static value or the authored default.
+    pub fn static_or_default(&self, name: &str) -> Option<Vec<f64>> {
+        self.values.get(name).map(|v| v.static_value.clone()).or_else(|| bound(name).map(|b| b.default.to_vec()))
+    }
+}
+
+/// Camera iris shape (STU-CMP-040 `iris_shape`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioIrisShape {
+    #[default]
+    FastRectangle,
+    Triangle,
+    Square,
+    Pentagon,
+    Hexagon,
+    Heptagon,
+    Octagon,
+    Nonagon,
+    Decagon,
+}
+
+/// STU-CMP-040 / 040a camera options. `zoom` is the focal distance in pixels (angle of view is the
+/// same value presented as an angle, [`camera_angle_of_view`]); `point_of_interest` `Some` = a
+/// two-node camera aimed at that world point, `None` = one-node. Numeric optical members are
+/// keyframable by name in `values` (`focus_distance`, `aperture`, `blur_level`, `focus_area_width`,
+/// `split_blur_level`, `iris_rotation`, `iris_roundness`, `iris_aspect_ratio`,
+/// `iris_diffraction_fringe`, `highlight_gain`, `highlight_threshold`, `highlight_saturation`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCameraOptions {
+    pub zoom: StudioKeyedValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_of_interest: Option<StudioKeyedValue>,
+    #[serde(default, skip_serializing_if = "is_false_flag")]
+    pub depth_of_field: bool,
+    #[serde(default, skip_serializing_if = "is_default_iris")]
+    pub iris_shape: StudioIrisShape,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, StudioKeyedValue>,
+}
+
+fn is_default_iris(v: &StudioIrisShape) -> bool {
+    *v == StudioIrisShape::FastRectangle
+}
+fn is_default_falloff(v: &StudioLightFalloff) -> bool {
+    *v == StudioLightFalloff::None
+}
+/// Angle of view (degrees, along the composition width) of `zoom` pixels: `2 atan(width / (2 zoom))`.
+pub fn camera_angle_of_view(zoom: f64, width: f64) -> f64 {
+    2.0 * (width / (2.0 * zoom)).atan().to_degrees()
+}
+/// The zoom of an angle of view (inverse of [`camera_angle_of_view`]).
+pub fn camera_zoom_of_angle(degrees: f64, width: f64) -> f64 {
+    width / (2.0 * (degrees.to_radians() / 2.0).tan())
+}
+
+/// STU-CMP-045 light type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioLightType {
+    Parallel,
+    Spot,
+    Point,
+    Ambient,
+}
+/// STU-CMP-045 falloff model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioLightFalloff {
+    #[default]
+    None,
+    Smooth,
+    InverseSquareClamped,
+}
+
+/// STU-CMP-045 light options. `colour` is three components in `0..=1` in `colour_profile_id`'s
+/// space (absent = the composition's working space); `intensity` (percent) is unbounded both ways
+/// (a negative light subtracts). Numeric members by name in `values` (`cone_angle`,
+/// `cone_feather`, `falloff_start`, `falloff_distance`, `shadow_darkness`, `shadow_diffusion`,
+/// `background_opacity`, `background_blur`). `point_of_interest` aims a parallel or spot light.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioLightOptions {
+    pub light_type: StudioLightType,
+    pub colour: StudioKeyedValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour_profile_id: Option<String>,
+    pub intensity: StudioKeyedValue,
+    #[serde(default, skip_serializing_if = "is_default_falloff")]
+    pub falloff_type: StudioLightFalloff,
+    #[serde(default, skip_serializing_if = "is_false_flag")]
+    pub casts_shadows: bool,
+    #[serde(default, skip_serializing_if = "is_false_flag")]
+    pub background_visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_atom: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_of_interest: Option<StudioKeyedValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, StudioKeyedValue>,
+}
+
+/// One authored bound of a 3D numeric member (STU-CMP-046: the recovered surface carries none;
+/// these are Studio's explicit authoring under 14.9.1, not inferred from names or observed values).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Studio3dBound {
+    pub name: &'static str,
+    pub components: usize,
+    pub hard_min: f64,
+    pub hard_max: f64,
+    pub default: &'static [f64],
+    pub unit: &'static str,
+}
+const UNBOUNDED: f64 = MAX_STREAM_ABS_VALUE;
+/// Authored bounds of every named 3D numeric member (material, camera, light).
+pub const STUDIO_3D_BOUNDS: &[Studio3dBound] = &[
+    Studio3dBound { name: "light_transmission", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "ambient", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "diffuse", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[50.0], unit: "percent" },
+    Studio3dBound { name: "specular_intensity", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[50.0], unit: "percent" },
+    Studio3dBound { name: "specular_shininess", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[5.0], unit: "percent" },
+    Studio3dBound { name: "metal", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "reflection", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "glossiness", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "fresnel", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "index_of_refraction", components: 1, hard_min: 1.0, hard_max: 5.0, default: &[1.0], unit: "ratio" },
+    Studio3dBound { name: "transparency", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "transparency_rolloff", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "shadow_colour", components: 3, hard_min: 0.0, hard_max: 1.0, default: &[0.0, 0.0, 0.0], unit: "colour" },
+    Studio3dBound { name: "extrusion_depth", components: 1, hard_min: 0.0, hard_max: 10000.0, default: &[0.0], unit: "px" },
+    Studio3dBound { name: "bevel_depth", components: 1, hard_min: 0.0, hard_max: 10000.0, default: &[0.0], unit: "px" },
+    Studio3dBound { name: "plane_curvature", components: 1, hard_min: -100.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "plane_subdivision", components: 1, hard_min: 1.0, hard_max: 256.0, default: &[1.0], unit: "count" },
+    Studio3dBound { name: "zoom", components: 1, hard_min: 1.0, hard_max: 1.0e6, default: &[0.0], unit: "px" },
+    Studio3dBound { name: "point_of_interest", components: 3, hard_min: -UNBOUNDED, hard_max: UNBOUNDED, default: &[0.0, 0.0, 0.0], unit: "px" },
+    Studio3dBound { name: "focus_distance", components: 1, hard_min: 1.0, hard_max: 1.0e6, default: &[1000.0], unit: "px" },
+    Studio3dBound { name: "aperture", components: 1, hard_min: 0.0, hard_max: 10000.0, default: &[25.0], unit: "px" },
+    Studio3dBound { name: "blur_level", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "focus_area_width", components: 1, hard_min: 0.0, hard_max: 1.0e6, default: &[0.0], unit: "px" },
+    Studio3dBound { name: "split_blur_level", components: 2, hard_min: 0.0, hard_max: 1000.0, default: &[100.0, 100.0], unit: "percent" },
+    Studio3dBound { name: "iris_rotation", components: 1, hard_min: -UNBOUNDED, hard_max: UNBOUNDED, default: &[0.0], unit: "degrees" },
+    Studio3dBound { name: "iris_roundness", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "iris_aspect_ratio", components: 1, hard_min: 0.01, hard_max: 100.0, default: &[1.0], unit: "ratio" },
+    Studio3dBound { name: "iris_diffraction_fringe", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "highlight_gain", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "highlight_threshold", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "highlight_saturation", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[0.0], unit: "percent" },
+    Studio3dBound { name: "colour", components: 3, hard_min: 0.0, hard_max: 1.0, default: &[1.0, 1.0, 1.0], unit: "colour" },
+    Studio3dBound { name: "intensity", components: 1, hard_min: -UNBOUNDED, hard_max: UNBOUNDED, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "cone_angle", components: 1, hard_min: 0.0, hard_max: 180.0, default: &[90.0], unit: "degrees" },
+    Studio3dBound { name: "cone_feather", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[50.0], unit: "percent" },
+    Studio3dBound { name: "falloff_start", components: 1, hard_min: 0.0, hard_max: 1.0e6, default: &[0.0], unit: "px" },
+    Studio3dBound { name: "falloff_distance", components: 1, hard_min: 0.0, hard_max: 1.0e6, default: &[500.0], unit: "px" },
+    Studio3dBound { name: "shadow_darkness", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "shadow_diffusion", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[0.0], unit: "px" },
+    Studio3dBound { name: "background_opacity", components: 1, hard_min: 0.0, hard_max: 100.0, default: &[100.0], unit: "percent" },
+    Studio3dBound { name: "background_blur", components: 1, hard_min: 0.0, hard_max: 1000.0, default: &[0.0], unit: "px" },
+];
+/// The authored bound of `name`.
+pub fn bound(name: &str) -> Option<&'static Studio3dBound> {
+    STUDIO_3D_BOUNDS.iter().find(|b| b.name == name)
+}
+const MATERIAL_NAMES: &[&str] = &[
+    "light_transmission", "ambient", "diffuse", "specular_intensity", "specular_shininess", "metal", "reflection",
+    "glossiness", "fresnel", "index_of_refraction", "transparency", "transparency_rolloff", "shadow_colour",
+    "extrusion_depth", "bevel_depth", "plane_curvature", "plane_subdivision",
+];
+const CAMERA_NAMES: &[&str] = &[
+    "focus_distance", "aperture", "blur_level", "focus_area_width", "split_blur_level", "iris_rotation",
+    "iris_roundness", "iris_aspect_ratio", "iris_diffraction_fringe", "highlight_gain", "highlight_threshold",
+    "highlight_saturation",
+];
+const LIGHT_NAMES: &[&str] = &[
+    "cone_angle", "cone_feather", "falloff_start", "falloff_distance", "shadow_darkness", "shadow_diffusion",
+    "background_opacity", "background_blur",
+];
 
 /// Most vertices one mask path may carry.
 pub const MAX_MASK_PATH_VERTICES: usize = 1024;
@@ -509,6 +813,39 @@ fn validate_mask(m: &StudioCompositionMask, layer: &str, cx: &mut Ctx) -> Result
     validate_keyed(&t, len, &value_ok, &m.static_value, &m.keyframes, cx)
 }
 
+/// A keyed value against its authored bound (component count, hard range, keyframe rules).
+fn validate_value(v: &StudioKeyedValue, name: &str, t: &str, cx: &mut Ctx) -> Result<()> {
+    let b = bound(name).ok_or_else(|| err(Code::InvalidField, format!("{t}/{name}")))?;
+    let t = format!("{t}/{name}");
+    let value_ok = |x: &[f64]| x.len() == b.components && x.iter().all(|v| v.is_finite() && *v >= b.hard_min && *v <= b.hard_max);
+    validate_keyed(&t, b.components, &value_ok, &v.static_value, &v.keyframes, cx)
+}
+fn validate_named(values: &BTreeMap<String, StudioKeyedValue>, allowed: &[&str], t: &str, cx: &mut Ctx) -> Result<()> {
+    for (name, v) in values {
+        check(allowed.contains(&name.as_str()), t, "values")?;
+        validate_value(v, name, t, cx)?;
+    }
+    Ok(())
+}
+/// 3D transform streams (finite, bounded, one or three components) and the material options.
+fn validate_3d(d: &StudioLayer3d, layer: &str, cx: &mut Ctx) -> Result<()> {
+    let t = format!("{layer}/three_d");
+    for (name, v, n) in [
+        ("position_z", &d.position_z, 1usize),
+        ("anchor_z", &d.anchor_z, 1),
+        ("rotation_x", &d.rotation_x, 1),
+        ("rotation_y", &d.rotation_y, 1),
+        ("orientation", &d.orientation, 3),
+    ] {
+        if let Some(v) = v {
+            let tn = format!("{t}/{name}");
+            let value_ok = |x: &[f64]| x.len() == n && x.iter().all(|v| v.is_finite() && v.abs() <= MAX_STREAM_ABS_VALUE);
+            validate_keyed(&tn, n, &value_ok, &v.static_value, &v.keyframes, cx)?;
+        }
+    }
+    validate_named(&d.material.values, MATERIAL_NAMES, &format!("{t}/material"), cx)
+}
+
 fn validate_keyed(
     t: &str,
     dim: usize,
@@ -588,6 +925,29 @@ fn validate_layer(
     }
     if let Some(p) = &l.corner_pin {
         validate_corner_pin(p, t, cx)?;
+    }
+    if let Some(d) = &l.three_d {
+        validate_3d(d, t, cx)?;
+    }
+    check(!(l.camera.is_some() && l.light.is_some()), t, "camera")?;
+    if let Some(c) = &l.camera {
+        check(l.three_d.is_some(), t, "camera")?;
+        let tc = format!("{t}/camera");
+        validate_value(&c.zoom, "zoom", &tc, cx)?;
+        if let Some(p) = &c.point_of_interest {
+            validate_value(p, "point_of_interest", &tc, cx)?;
+        }
+        validate_named(&c.values, CAMERA_NAMES, &tc, cx)?;
+    }
+    if let Some(li) = &l.light {
+        check(l.three_d.is_some(), t, "light")?;
+        let tl = format!("{t}/light");
+        validate_value(&li.colour, "colour", &tl, cx)?;
+        validate_value(&li.intensity, "intensity", &tl, cx)?;
+        if let Some(p) = &li.point_of_interest {
+            validate_value(p, "point_of_interest", &tl, cx)?;
+        }
+        validate_named(&li.values, LIGHT_NAMES, &tl, cx)?;
     }
     if l.masks.len() > MAX_LAYER_MASKS {
         return Err(err(Code::BudgetExceeded, format!("{t}/masks")));
