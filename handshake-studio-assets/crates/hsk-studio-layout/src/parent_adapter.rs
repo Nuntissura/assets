@@ -13,6 +13,7 @@
 //! direction refuses a binding that has any ([`ParentAdapterError::PageLocalItemsNoRecord`]) instead
 //! of dropping them. Layout replacement ids must equal the replaced item id (Folio names no other).
 //! InDesign override equality is UNVERIFIED (D5 oracle).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::parents::{MAX_BINDINGS, MAX_ITEMS_PER_PARENT, MAX_PARENTS};
 use crate::{
     ItemOverride, LayoutError, PageBinding, ParentItem, ParentItemKind, ParentPage, ParentSet,

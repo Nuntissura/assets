@@ -19,6 +19,7 @@
 //! [`DevelopedImage`]) with the ICC bytes the Prism/ArtifactService owner resolved for
 //! `recipe.output_profile`, then pass `width`, `height`, `depth_bits`, `data` and `icc` to the
 //! JPEG (8-bit only) or PNG encoder. The JPEG/PNG writers themselves are not in this crate.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::adjust::enc;
 use crate::par::Threads;
@@ -93,10 +94,10 @@ fn encode_sample(value: f32, max: f64, clip: &mut ClipReport) -> Result<u32, Dev
     }
     let linear = f64::from(value);
     let clamped = if linear < 0.0 {
-        clip.below_zero += 1;
+        clip.below_zero = clip.below_zero.checked_add(1).ok_or(DevelopError::Overflow)?;
         0.0
     } else if linear > 1.0 {
-        clip.above_one += 1;
+        clip.above_one = clip.above_one.checked_add(1).ok_or(DevelopError::Overflow)?;
         1.0
     } else {
         linear
@@ -128,7 +129,10 @@ pub fn render_output(
     let bytes_per_sample = usize::from(depth.bits() / 8);
     let mut data = Vec::with_capacity(image.rgb.len().checked_mul(bytes_per_sample).ok_or(DevelopError::Overflow)?);
     let mut clip = ClipReport::default();
-    let max = f64::from((1u32 << depth.bits()) - 1);
+    let max = match depth {
+        OutputDepth::Eight => f64::from(u8::MAX),
+        OutputDepth::Sixteen => f64::from(u16::MAX),
+    };
     for value in &image.rgb {
         let sample = encode_sample(*value, max, &mut clip)?;
         match depth {
