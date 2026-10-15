@@ -228,6 +228,11 @@ fn program_monitor_plays_pauses_steps_and_scrubs_through_composite() {
             monitor::widget::PAUSE,
             monitor::widget::STEP_BACK,
             monitor::widget::STEP_FORWARD,
+            monitor::widget::SHUTTLE_LEFT,
+            monitor::widget::SHUTTLE_STOP,
+            monitor::widget::SHUTTLE_RIGHT,
+            monitor::widget::PLAY_IN_OUT,
+            monitor::widget::LOOP,
             monitor::widget::SCRUB,
             monitor::widget::FRAME
         ]

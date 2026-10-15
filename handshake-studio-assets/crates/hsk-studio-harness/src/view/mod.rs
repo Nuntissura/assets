@@ -24,6 +24,10 @@ pub mod edit;
 pub mod export;
 pub mod brush_mix;
 pub mod layers;
+/// Decode hook of the program monitor: reel decoders behind pulse's frame cache (lane
+/// SMB-PULSE-PLAYBACK-2, feature `media`).
+#[cfg(feature = "media")]
+pub mod media;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).

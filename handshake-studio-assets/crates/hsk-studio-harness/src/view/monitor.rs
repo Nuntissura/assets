@@ -25,9 +25,10 @@ use hsk_studio_pigment::render_plan::{
 };
 use hsk_studio_pigment::transform_math::{Affine2, ResampleFilter};
 pub use hsk_studio_pulse::{
-    AudioClock, DropPolicy, FrameAction, HeadlessClock, PlaybackScheduler, Transport,
+    AudioClock, DropPolicy, FrameAction, FrameLayer, HeadlessClock, PlaySpeed, PlaybackScheduler,
+    Transport,
 };
-use hsk_studio_pulse::{SourceExtents, frame_layers};
+use hsk_studio_pulse::{SourceExtents, frame_layers, prefetch_layers};
 use hsk_studio_render_cpu::Renderer;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -42,6 +43,12 @@ pub mod widget {
     pub const STEP_FORWARD: &str = "monitor.step_forward";
     pub const SCRUB: &str = "monitor.scrub";
     pub const FRAME: &str = "monitor.frame";
+    /// Lane SMB-PULSE-PLAYBACK-2: J / K / L, play in to out, loop toggle.
+    pub const SHUTTLE_LEFT: &str = "monitor.shuttle_left";
+    pub const SHUTTLE_STOP: &str = "monitor.shuttle_stop";
+    pub const SHUTTLE_RIGHT: &str = "monitor.shuttle_right";
+    pub const PLAY_IN_OUT: &str = "monitor.play_in_out";
+    pub const LOOP: &str = "monitor.loop";
 }
 
 /// Largest monitor raster (pixels).
@@ -62,6 +69,21 @@ pub struct SourceFrame {
 /// Typed port: the decoded frame of `source` at `source_tick`.
 pub trait FrameSource {
     fn frame(&self, source: &ClipSource, source_tick: Ticks) -> Option<Arc<SourceFrame>>;
+    /// The frame or the decoder's typed refusal (for example `codec_unavailable`); the default
+    /// maps a missing frame to `frame_unavailable`.
+    fn frame_result(
+        &self,
+        source: &ClipSource,
+        source_tick: Ticks,
+    ) -> Result<Arc<SourceFrame>, MonitorFail> {
+        self.frame(source, source_tick)
+            .ok_or_else(|| fail("frame_unavailable", "no decoded frame"))
+    }
+    /// Decodes ahead the layers the monitor will present next (bounded by the source); returns
+    /// the frames made ready. The default does nothing.
+    fn prefetch(&self, _layers: &[FrameLayer], _cancel: &CancellationToken) -> u64 {
+        0
+    }
 }
 
 /// Wall-clock master for a viewer without an audio device: samples elapsed since creation.
@@ -120,7 +142,13 @@ pub struct ProgramMonitor {
     shown: Option<ProgramFrame>,
     last_error: Option<MonitorFail>,
     renderer: Renderer,
+    /// Frames named to the source's prefetch after each presented frame (0 disables).
+    prefetch_ahead: usize,
+    prefetched: u64,
 }
+
+/// Default prefetch distance in frames.
+pub const DEFAULT_PREFETCH_AHEAD: usize = 8;
 
 fn space() -> ColourTag {
     ColourTag {
@@ -171,7 +199,59 @@ impl ProgramMonitor {
             shown: None,
             last_error: None,
             renderer: Renderer::new(64).map_err(|e| fail("renderer", format!("{e:?}")))?,
+            prefetch_ahead: DEFAULT_PREFETCH_AHEAD,
+            prefetched: 0,
         })
+    }
+    /// Sets the prefetch distance; `prefetch_ahead` above pulse's `MAX_PREFETCH_FRAMES`.
+    pub fn set_prefetch_ahead(&mut self, frames: usize) -> Result<(), MonitorFail> {
+        if frames > hsk_studio_pulse::MAX_PREFETCH_FRAMES {
+            return Err(fail("prefetch_ahead", frames.to_string()));
+        }
+        self.prefetch_ahead = frames;
+        Ok(())
+    }
+    /// Frames made ready by prefetch so far.
+    pub fn prefetched(&self) -> u64 {
+        self.prefetched
+    }
+    /// In point and out point (inclusive), whole frames (STU-VID-023).
+    pub fn set_in_out(&mut self, in_frame: u64, out_frame: u64) -> Result<(), MonitorFail> {
+        self.scheduler
+            .set_in_out(in_frame, out_frame)
+            .map(|_| ())
+            .map_err(|e| fail("in_out", e.code()))
+    }
+    pub fn play_in_to_out(&mut self, clock: &dyn AudioClock) -> Result<(), MonitorFail> {
+        self.scheduler
+            .play_in_to_out(clock)
+            .map_err(|e| fail("play_in_out", e.code()))
+    }
+    pub fn set_looping(&mut self, looping: bool, clock: &dyn AudioClock) -> Result<(), MonitorFail> {
+        self.scheduler
+            .set_looping(looping, clock)
+            .map_err(|e| fail("loop", e.code()))
+    }
+    /// `J` / `L`: shuttle left / right (see pulse `PlaybackScheduler::shuttle_right`).
+    pub fn shuttle(&mut self, reverse: bool, clock: &dyn AudioClock) -> Result<PlaySpeed, MonitorFail> {
+        let r = if reverse {
+            self.scheduler.shuttle_left(clock)
+        } else {
+            self.scheduler.shuttle_right(clock)
+        };
+        r.map_err(|e| fail("shuttle", e.code()))
+    }
+    /// `Shift+J` / `Shift+L`: slow shuttle.
+    pub fn shuttle_slow(&mut self, reverse: bool, clock: &dyn AudioClock) -> Result<PlaySpeed, MonitorFail> {
+        self.scheduler
+            .shuttle_slow(reverse, clock)
+            .map_err(|e| fail("shuttle", e.code()))
+    }
+    /// `K`: stop the shuttle (pause).
+    pub fn shuttle_stop(&mut self, clock: &dyn AudioClock) -> Result<(), MonitorFail> {
+        self.scheduler
+            .shuttle_stop(clock)
+            .map_err(|e| fail("shuttle", e.code()))
     }
     pub fn scheduler(&self) -> &PlaybackScheduler {
         &self.scheduler
@@ -223,6 +303,7 @@ impl ProgramMonitor {
             Ok(image) => {
                 self.shown = Some(ProgramFrame { frame, tick, image });
                 self.last_error = None;
+                self.prefetch(sources, extents, cancel);
                 Ok(Some(frame))
             }
             Err(e) => {
@@ -232,7 +313,21 @@ impl ProgramMonitor {
         }
     }
 
-    /// Renders the program frame at `tick` (black opaque background, layers bottom-first).
+    /// Names the next `prefetch_ahead` presentation frames' layers to the source.
+    fn prefetch(&mut self, sources: &dyn FrameSource, extents: &dyn SourceExtents, cancel: &CancellationToken) {
+        if self.prefetch_ahead == 0 {
+            return;
+        }
+        let Ok(frames) = self.scheduler.upcoming_frames(self.prefetch_ahead) else {
+            return;
+        };
+        if let Ok(layers) = prefetch_layers(&self.sequence, &self.scheduler, &frames, extents, cancel) {
+            self.prefetched = self.prefetched.saturating_add(sources.prefetch(&layers, cancel));
+        }
+    }
+
+    /// Renders the program frame at `tick` (black opaque background, layers bottom-first). A
+    /// source frame of another size is fitted (uniform scale, centred, bilinear).
     pub fn render_at(
         &self,
         tick: Ticks,
@@ -246,14 +341,25 @@ impl ProgramMonitor {
         let mut scene_layers = Vec::with_capacity(layers.len());
         for (i, layer) in layers.iter().enumerate() {
             let f = sources
-                .frame(&layer.source, layer.source_tick)
-                .ok_or_else(|| fail("frame_unavailable", layer.clip_id.clone()))?;
-            if (f.width, f.height) != (self.width, self.height) {
-                return Err(fail(
-                    "frame_size",
-                    format!("{}: {}x{}", layer.clip_id, f.width, f.height),
-                ));
+                .frame_result(&layer.source, layer.source_tick)
+                .map_err(|e| MonitorFail {
+                    code: e.code,
+                    detail: format!("{}: {}", layer.clip_id, e.detail),
+                })?;
+            if f.width == 0 || f.height == 0 {
+                return Err(fail("frame_size", format!("{}: empty", layer.clip_id)));
             }
+            let matrix = if (f.width, f.height) == (self.width, self.height) {
+                Affine2::IDENTITY
+            } else {
+                let s = (f64::from(self.width) / f64::from(f.width))
+                    .min(f64::from(self.height) / f64::from(f.height));
+                let tx = (f64::from(self.width) - f64::from(f.width) * s) / 2.0;
+                let ty = (f64::from(self.height) - f64::from(f.height) * s) / 2.0;
+                Affine2 {
+                    m: [s, 0.0, tx, 0.0, s, ty],
+                }
+            };
             scene_layers.push(SceneLayer {
                 layer_id: format!("SLYR-019abcde-0000-7000-8000-{i:012x}"),
                 content: SceneContent::Tiles(vec![SceneTile {
@@ -261,8 +367,8 @@ impl ProgramMonitor {
                     placement: Rect {
                         x: 0,
                         y: 0,
-                        width: self.width,
-                        height: self.height,
+                        width: f.width,
+                        height: f.height,
                     },
                     format: SampleFormat::RgbF32Le,
                     alpha: AlphaConvention::Straight,
@@ -272,7 +378,7 @@ impl ProgramMonitor {
                 mode: StudioBlendMode::Normal,
                 opacity: layer.weight,
                 fill_opacity: 1.0,
-                matrix: Affine2::IDENTITY,
+                matrix,
                 matte: None,
                 clipped: false,
             });
@@ -311,8 +417,14 @@ impl ProgramMonitor {
             "frame": s.frame_of(s.playhead()),
             "range_ticks": [s.range().start().value(), s.range().end().value()],
             "shown_frame": self.shown.as_ref().map(|f| f.frame),
-            "stats": {"presented": s.stats().presented, "dropped": s.stats().dropped, "max_lag_ticks": s.stats().max_lag_ticks},
+            "stats": {"presented": s.stats().presented, "dropped": s.stats().dropped, "max_lag_ticks": s.stats().max_lag_ticks, "wraps": s.stats().wraps},
+            "speed": [s.speed().numerator(), s.speed().denominator()],
+            "looping": s.looping(),
+            "in_out_ticks": s.in_out().map(|r| [r.start().value(), r.end().value()]),
+            "active_range_ticks": [s.active_range().start().value(), s.active_range().end().value()],
+            "prefetched": self.prefetched,
             "error": self.last_error.as_ref().map(|e| e.code),
+            "error_detail": self.last_error.as_ref().map(|e| e.detail.clone()),
         })
     }
 
@@ -353,6 +465,31 @@ impl ProgramMonitor {
                     let _ = self.step(1, clock);
                 }
                 drawn.push(widget::STEP_FORWARD);
+                if ui.button("J").on_hover_text("Shuttle left").clicked() {
+                    let _ = self.shuttle(true, clock);
+                }
+                drawn.push(widget::SHUTTLE_LEFT);
+                if ui.button("K").on_hover_text("Stop shuttle").clicked() {
+                    let _ = self.shuttle_stop(clock);
+                }
+                drawn.push(widget::SHUTTLE_STOP);
+                if ui.button("L").on_hover_text("Shuttle right").clicked() {
+                    let _ = self.shuttle(false, clock);
+                }
+                drawn.push(widget::SHUTTLE_RIGHT);
+                if ui
+                    .add_enabled(self.scheduler.in_out().is_some(), egui::Button::new("In-Out"))
+                    .on_hover_text("Play in to out")
+                    .clicked()
+                {
+                    let _ = self.play_in_to_out(clock);
+                }
+                drawn.push(widget::PLAY_IN_OUT);
+                let mut looping = self.scheduler.looping();
+                if ui.checkbox(&mut looping, "Loop").changed() {
+                    let _ = self.set_looping(looping, clock);
+                }
+                drawn.push(widget::LOOP);
                 let range = self.scheduler.range();
                 let first = self.scheduler.frame_of(range.start());
                 let last = self
@@ -366,9 +503,10 @@ impl ProgramMonitor {
                     let _ = self.scrub(tick, clock);
                 }
                 drawn.push(widget::SCRUB);
-                ui.label(match &self.shown {
-                    Some(f) => format!("frame {}", f.frame),
-                    None => "no frame".to_owned(),
+                ui.label(match (&self.shown, &self.last_error) {
+                    (_, Some(e)) => format!("{}: {}", e.code, e.detail),
+                    (Some(f), None) => format!("frame {}", f.frame),
+                    (None, None) => "no frame".to_owned(),
                 });
                 drawn.push(widget::FRAME);
             });
