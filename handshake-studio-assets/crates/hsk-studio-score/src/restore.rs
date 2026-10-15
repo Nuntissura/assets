@@ -11,9 +11,10 @@
 //!
 //! 1. AR(p) fit: autocorrelation `r[0..=p]` of the window, Levinson-Durbin recursion
 //!    (`a_0 = 1`, `e[n] = sum_k a_k x[n-k]` is the prediction error).
-//! 2. Detection: `|e[n]| > threshold * sigma`, `sigma = 1.4826 * median|e|` (robust scale; floored
-//!    at 1e-5 of the window RMS so numerically perfect fits do not flag rounding noise). Flags
-//!    closer than `p` samples are merged into one gap `[first, last]`.
+//! 2. Detection: `|e[n]| > threshold * sigma_n`; `sigma` is the robust scale `1.4826 * median|e|`
+//!    of each 256-sample segment, `sigma_n` the largest of the segment of `n` and its two
+//!    neighbours (floored at 1e-5 of the window RMS so numerically perfect fits do not flag
+//!    rounding noise). Flags closer than `p` samples are merged into one gap `[first, last]`.
 //! 3. Interpolation (LSAR): the gap samples `x_u` minimise `sum_n e[n]^2` over every residual
 //!    that touches them, i.e. `(A_u^T A_u) x_u = -A_u^T A_k x_k`; `A_u^T A_u` is the Toeplitz
 //!    matrix of the coefficient autocorrelation, solved by Cholesky. A second pass refits the AR
@@ -42,6 +43,10 @@ use hsk_studio_accord::CancellationToken;
 
 /// Analysis window length in samples.
 pub const CLICK_WINDOW: usize = 2048;
+/// Residual-scale segment length (the scale at a sample is the largest of its own and the two
+/// neighbouring segments' robust scales).
+const SEGMENT: usize = 256;
+const SEGMENTS: usize = CLICK_WINDOW / SEGMENT;
 /// Context each side of a window's repaired centre.
 pub const CLICK_CONTEXT: usize = 256;
 /// Window advance (= repaired centre length).
@@ -185,19 +190,27 @@ impl ClickRepair {
         for n in p..w {
             s.residual[n] = (0..=p).map(|k| s.a[k] * s.window[n - k]).sum();
         }
-        let count = w - p;
-        for (dst, e) in s.abs[..count].iter_mut().zip(&s.residual[p..w]) {
-            *dst = e.abs();
+        // Segment-local robust scale: a window-wide median is biased low by silent or faded parts
+        // of the window (measured: leading silence pushed a clean onset to 8.8 sigma).
+        let mut seg_sigma = [0.0_f64; SEGMENTS];
+        for (i, sigma) in seg_sigma.iter_mut().enumerate() {
+            let lo = (i * SEGMENT).max(p);
+            let hi = (i + 1) * SEGMENT;
+            let count = hi - lo;
+            for (dst, e) in s.abs[..count].iter_mut().zip(&s.residual[lo..hi]) {
+                *dst = e.abs();
+            }
+            let (_, median, _) = s.abs[..count].select_nth_unstable_by(count / 2, f64::total_cmp);
+            *sigma = 1.4826 * *median;
         }
-        let (_, median, _) = s.abs[..count].select_nth_unstable_by(count / 2, f64::total_cmp);
-        let rms = (s.r[0] / w as f64).sqrt();
-        let sigma = (1.4826 * *median).max(1e-5 * rms);
-        let limit = threshold * sigma;
+        let floor = 1e-5 * (s.r[0] / w as f64).sqrt();
         // Clusters of flags closer than p samples.
         s.gaps.clear();
         let mut current: Option<(usize, usize)> = None;
         for n in p..w {
-            if s.residual[n].abs() > limit {
+            let seg = n / SEGMENT;
+            let local = seg_sigma[seg.saturating_sub(1)..(seg + 2).min(SEGMENTS)].iter().fold(floor, |a, b| a.max(*b));
+            if s.residual[n].abs() > threshold * local {
                 current = match current {
                     Some((first, last)) if n - last < p => Some((first, n)),
                     Some(done) => {
