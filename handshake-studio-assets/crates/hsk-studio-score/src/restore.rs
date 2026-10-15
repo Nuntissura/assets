@@ -15,11 +15,13 @@
 //!    of each 256-sample segment, `sigma_n` the largest of the segment of `n` and its two
 //!    neighbours (floored at 1e-5 of the window RMS so numerically perfect fits do not flag
 //!    rounding noise). Flags closer than `p` samples are merged into one gap `[first, last]`.
+//!    Then, twice: the AR model is refitted by the covariance method over the rows that touch no
+//!    detected sample, the residual is recomputed and detection repeats with the scale taken from
+//!    those clean rows only (a burst would otherwise inflate its own segment's scale).
 //! 3. Interpolation (LSAR): the gap samples `x_u` minimise `sum_n e[n]^2` over every residual
 //!    that touches them, i.e. `(A_u^T A_u) x_u = -A_u^T A_k x_k`; `A_u^T A_u` is the Toeplitz
-//!    matrix of the coefficient autocorrelation, solved by Cholesky. Before interpolating, the AR
-//!    model is refitted by the covariance method over only the residual rows that touch no
-//!    detected sample, so the corruption does not bias the model.
+//!    matrix of the coefficient autocorrelation, solved by Cholesky, with the final clean-row AR
+//!    model, so the corruption does not bias the model.
 //!    Gaps longer than `max_gap_ms` are left untouched and counted in `skipped_gaps`.
 //!
 //! Samples outside repaired gaps are passed through bit-exact. Latency `H + C = 1792` samples.
@@ -192,66 +194,42 @@ impl ClickRepair {
         if !fit_ar(&s.window, &mut s.r, &mut s.a, &mut s.tmp) {
             return (0, 0);
         }
-        for n in p..w {
-            s.residual[n] = (0..=p).map(|k| s.a[k] * s.window[n - k]).sum();
-        }
-        // Segment-local robust scale: a window-wide median is biased low by silent or faded parts
-        // of the window (measured: leading silence pushed a clean onset to 8.8 sigma).
-        let mut seg_sigma = [0.0_f64; SEGMENTS];
-        for (i, sigma) in seg_sigma.iter_mut().enumerate() {
-            let lo = (i * SEGMENT).max(p);
-            let hi = (i + 1) * SEGMENT;
-            let count = hi - lo;
-            for (dst, e) in s.abs[..count].iter_mut().zip(&s.residual[lo..hi]) {
-                *dst = e.abs();
-            }
-            let (_, median, _) = s.abs[..count].select_nth_unstable_by(count / 2, f64::total_cmp);
-            *sigma = 1.4826 * *median;
-        }
         let floor = 1e-5 * (s.r[0] / w as f64).sqrt();
-        // Clusters of flags closer than p samples.
-        s.gaps.clear();
-        let mut current: Option<(usize, usize)> = None;
-        for n in p..w {
-            let seg = n / SEGMENT;
-            let local = seg_sigma[seg.saturating_sub(1)..(seg + 2).min(SEGMENTS)].iter().fold(floor, |a, b| a.max(*b));
-            if s.residual[n].abs() > threshold * local {
-                current = match current {
-                    Some((first, last)) if n - last < p => Some((first, n)),
-                    Some(done) => {
-                        s.gaps.push(done);
-                        Some((n, n))
-                    }
-                    None => Some((n, n)),
-                };
-            }
-        }
-        if let Some(done) = current {
-            s.gaps.push(done);
-        }
-        // Counts cover only gaps that touch this window's centre, so a click seen by two
-        // overlapping windows is counted once.
-        let in_centre = |first: usize, last: usize| last >= CLICK_CONTEXT && first < CLICK_CONTEXT + CLICK_HOP;
-        // Every detected cluster (repaired or not) is excluded from the AR refit.
+        // Stage 1: autocorrelation model, scale from every residual row.
+        residual(s, p);
         s.masked.fill(false);
-        for &(first, last) in &s.gaps {
-            s.masked[first..=last].fill(true);
+        detect(s, p, threshold, floor);
+        if s.gaps.is_empty() {
+            return (0, 0);
         }
+        // Stage 2 (twice): refit by the covariance method over rows that touch no detected
+        // sample (Godsill and Rayner: the model must not see the corruption), recompute the
+        // residual and detect again with the scale taken from clean rows only. A burst inflates
+        // the stage-1 scale of its own segment, which leaves its edge samples undetected
+        // (measured: an 80-sample burst kept 6 corrupted edge samples and the interpolation
+        // diverged).
+        for _ in 0..2 {
+            mask(s);
+            fit_ar_clean(s, p);
+            residual(s, p);
+            detect(s, p, threshold, floor);
+        }
+        mask(s);
+        fit_ar_clean(s, p);
+        // Counts cover only gaps that start in this window's centre, so a click seen by two
+        // overlapping windows is counted once.
+        let starts_in_centre = |first: usize| (CLICK_CONTEXT..CLICK_CONTEXT + CLICK_HOP).contains(&first);
         let mut skipped = 0;
         // Keep only gaps with p known samples each side and LSAR rows inside the window.
         s.gaps.retain(|&(first, last)| {
             let len = last - first + 1;
             let fits = first >= p && last + 1 + p <= w;
-            if len > max_gap && in_centre(first, last) {
+            if len > max_gap && starts_in_centre(first) {
                 skipped += 1;
             }
             fits && len <= max_gap
         });
         if !s.gaps.is_empty() {
-            // Refit by the covariance method over residual rows that touch no detected sample
-            // (Godsill and Rayner: the AR estimate must not see the corruption); keep the
-            // autocorrelation fit if the refit is degenerate.
-            fit_ar_clean(s, p);
             for (k, ra) in s.ra.iter_mut().enumerate() {
                 *ra = (0..=p - k).map(|j| s.a[j] * s.a[j + k]).sum();
             }
@@ -260,8 +238,68 @@ impl ClickRepair {
                 lsar(s, p, first, last + 1 - first);
             }
         }
-        let repaired = s.gaps.iter().filter(|(first, last)| in_centre(*first, *last)).count() as u64;
+        let repaired = s.gaps.iter().filter(|(first, _)| starts_in_centre(*first)).count() as u64;
         (repaired, skipped)
+    }
+}
+
+/// `s.residual[n] = sum_k a_k original[n - k]` for `n >= p`.
+fn residual(s: &mut Scratch, p: usize) {
+    for n in p..CLICK_WINDOW {
+        s.residual[n] = (0..=p).map(|k| s.a[k] * s.original[n - k]).sum();
+    }
+}
+
+/// Marks every sample of every cluster in `s.gaps`.
+fn mask(s: &mut Scratch) {
+    s.masked.fill(false);
+    for &(first, last) in &s.gaps {
+        s.masked[first..=last].fill(true);
+    }
+}
+
+/// Flags `|e[n]| > threshold * sigma_n` and merges flags closer than `p` into `s.gaps`.
+/// `sigma` per 256-sample segment is `1.4826 * median|e|` over the segment's rows whose span
+/// `[n - p, n]` holds no masked sample (segments with fewer than 32 such rows borrow from the
+/// neighbours); `sigma_n` is the largest of the own and neighbouring segments, at least `floor`.
+fn detect(s: &mut Scratch, p: usize, threshold: f64, floor: f64) {
+    let mut seg_sigma = [f64::NAN; SEGMENTS];
+    for (i, sigma) in seg_sigma.iter_mut().enumerate() {
+        let lo = (i * SEGMENT).max(p);
+        let hi = (i + 1) * SEGMENT;
+        let mut count = 0;
+        for n in lo..hi {
+            if !s.masked[n - p..=n].contains(&true) {
+                s.abs[count] = s.residual[n].abs();
+                count += 1;
+            }
+        }
+        if count >= 32 {
+            let (_, median, _) = s.abs[..count].select_nth_unstable_by(count / 2, f64::total_cmp);
+            *sigma = 1.4826 * *median;
+        }
+    }
+    s.gaps.clear();
+    let mut current: Option<(usize, usize)> = None;
+    for n in p..CLICK_WINDOW {
+        let seg = n / SEGMENT;
+        let local = seg_sigma[seg.saturating_sub(1)..(seg + 2).min(SEGMENTS)]
+            .iter()
+            .filter(|v| !v.is_nan())
+            .fold(floor, |a, b| a.max(*b));
+        if s.residual[n].abs() > threshold * local {
+            current = match current {
+                Some((first, last)) if n - last < p => Some((first, n)),
+                Some(done) => {
+                    s.gaps.push(done);
+                    Some((n, n))
+                }
+                None => Some((n, n)),
+            };
+        }
+    }
+    if let Some(done) = current {
+        s.gaps.push(done);
     }
 }
 
