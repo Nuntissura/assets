@@ -121,6 +121,22 @@ pub enum SceneContent {
     /// the inner content is rendered over its rect, shaded per texel by
     /// [`crate::three_d::shade`], then placed like a tile (inside a 3D run's pinned layer).
     Lit(Box<crate::three_d::LitContent>),
+    /// Content under a smart-filter stack (lane SMB-PS-ADJUST-STYLES-2; STU-RAS-037 live filters
+    /// on a placed asset, `lower_extensions::placed`): [`FilteredContent::content`] is rendered over
+    /// [`FilteredContent::rect`], the stack runs on that surface as pigment's envelope entry
+    /// `LayerExtension::smart_filters` of a one-tile static plan (the backend's smart-filter
+    /// operator: pigment's stack bit for bit on render-cpu), and the filtered surface is placed
+    /// like a raster layer with the layer matrix (STU-CMP-010: effects before the transform).
+    Filtered(Box<FilteredContent>),
+}
+
+/// The inner content, its rect and the stack of [`SceneContent::Filtered`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct FilteredContent {
+    pub content: SceneContent,
+    /// The content's plan rect the stack runs over (the surface rect).
+    pub rect: Rect,
+    pub filters: hsk_studio_pigment::smart_filter::SmartFilterOp,
 }
 
 /// The inner content and the pin of [`SceneContent::Pinned`].
@@ -807,7 +823,7 @@ fn lower_inner(
             SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
             other => (other, None),
         };
-        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_)) {
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_)) {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
@@ -846,7 +862,11 @@ fn lower_inner(
         }
         let has_content = match content {
             SceneContent::Tiles(t) => !t.is_empty(),
-            SceneContent::Precomp(_) | SceneContent::Static(_) | SceneContent::Adjustment(_) | SceneContent::Lit(_) => true,
+            SceneContent::Precomp(_)
+            | SceneContent::Static(_)
+            | SceneContent::Adjustment(_)
+            | SceneContent::Lit(_)
+            | SceneContent::Filtered(_) => true,
             SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
@@ -966,6 +986,20 @@ fn lower_inner(
                 };
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, lit.rect, tile));
+            }
+            SceneContent::Filtered(f) => {
+                let surface = filtered_surface(id, f, scene.filter, ctx, cancel, depth, charges, &mut exactness)?;
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/filtered"),
+                    placement: f.rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, f.rect, tile));
             }
             SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
         }
@@ -1409,6 +1443,74 @@ pub fn render_scene(
     cancel: &CancellationToken,
 ) -> Result<RenderedScene, TemporalError> {
     render_inner(scene, ctx, cancel, 0, &mut Charges::default())
+}
+
+/// [`SceneContent::Filtered`]: the inner content rendered over `f.rect` (every surface charged),
+/// then the one-tile static plan `[surface]` with the stack as the layer's envelope entry rendered
+/// by the same backend over the same rect (pigment's smart-filter evaluation owns the maths).
+#[allow(clippy::too_many_arguments)]
+fn filtered_surface(
+    id: &str,
+    f: &FilteredContent,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    if f.rect.width == 0 || f.rect.height == 0 {
+        return Err(invalid(id, "filtered_rect"));
+    }
+    let inner = content_surface(id, &f.content, f.rect, filter, ctx, cancel, depth, charges, exactness)?;
+    let key = SourceKey(0);
+    let nodes = vec![
+        PlanNode::Tile(TileInput {
+            key,
+            placement: f.rect,
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            colour_sha256: inner.colour_sha256,
+            alpha_sha256: inner.alpha_sha256,
+        }),
+        PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![Layer {
+                input: PlanNodeId(0),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: None,
+            }],
+        }),
+    ];
+    let plan = RenderPlan {
+        revision: ctx.request.expected_revision,
+        target: OutputTarget {
+            extent: f.rect,
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            space: ctx.space,
+        },
+        nodes,
+        root: PlanNodeId(1),
+    };
+    plan.validate(&PlanLimits::default())
+        .map_err(|e| TemporalError::from(CompositeError::Plan(e)))?;
+    let mut owned_tiles = BTreeMap::new();
+    owned_tiles.insert(key, inner);
+    let content = StaticContent {
+        plan,
+        extensions: PlanExtensions::from_layers(vec![
+            LayerExtension::new(PlanNodeId(1), 0).with_smart_filters(f.filters.clone()),
+        ]),
+        rect: f.rect,
+        tiles: BTreeMap::new(),
+        masks: BTreeMap::new(),
+        owned_masks: BTreeMap::new(),
+        owned_tiles,
+    };
+    render_static(&format!("{id}/filtered"), &content, ctx, cancel, charges, exactness)
 }
 
 /// `content` rendered over its plan rect `rect` into a surface (integer placement, no resample).
