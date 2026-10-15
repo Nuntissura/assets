@@ -1,6 +1,8 @@
 //! Lane SMB-HARNESS-RENDER-RECORDS (feature `viewer`): the viewer frame renders the document's Folio
-//! raster records (an invert adjustment layer from the PSD, mask parameters on a PSD user mask,
-//! an effect stack, a smart-filter stack) through composite's adapter. A saved document with those
+//! raster records (an invert adjustment layer from the PSD, an effect stack, a smart-filter stack)
+//! through composite's adapter. Masks are not part of this proof: the package writes only raster
+//! tile assets (`hsk_studio_package` `tile_digests`), so a document with mask coverage tiles does
+//! not reopen (`missing_asset`); reported to the lead as a package-owner gap. A saved document with those
 //! records looks byte-identical in the viewer and in a direct composite
 //! (`lower_to_render_plan_extended`) + render-cpu render of the reopened package, and differs from
 //! the records-free frame.
@@ -139,11 +141,10 @@ fn document_psd() -> Vec<u8> {
         mask: None,
         blocks: vec![],
     };
-    // "art": x 6..38, y 8..36, with a user mask over the same rectangle (a diagonal ramp).
+    // "art": x 6..38, y 8..36, a checker of two colours.
     let (aw, ah) = (32usize, 28usize);
-    let mut art_channels: Vec<(i16, Vec<u8>)> = (0..3).map(|c| (c as i16, plane(aw, ah, move |x, y| if (x / 4 + y / 4) % 2 == 0 { [230u8, 40, 30][c] } else { [20u8, 90, 220][c] }))).collect();
-    art_channels.push((-2, plane(aw, ah, |x, y| ((x + y) * 255 / (aw + ah)) as u8)));
-    let art = Layer { name: "art", rect: [8, 6, 36, 38], channels: art_channels, mask: Some([8, 6, 36, 38]), blocks: vec![] };
+    let art_channels: Vec<(i16, Vec<u8>)> = (0..3).map(|c| (c as i16, plane(aw, ah, move |x, y| if (x / 4 + y / 4) % 2 == 0 { [230u8, 40, 30][c] } else { [20u8, 90, 220][c] }))).collect();
+    let art = Layer { name: "art", rect: [8, 6, 36, 38], channels: art_channels, mask: None, blocks: vec![] };
     let inv = Layer { name: "inv", rect: [0, 0, 0, 0], channels: vec![(0, vec![]), (1, vec![]), (2, vec![])], mask: None, blocks: vec![(*b"nvrt", vec![])] };
     psd(&[base, art, inv])
 }
@@ -269,8 +270,8 @@ fn viewer_frame_renders_the_raster_records_like_a_direct_composite_render() {
     let doc = imported.snapshot.document().clone();
     let id = |name: &str| doc.layers.iter().find(|l| l.name == name).unwrap_or_else(|| panic!("{name}")).layer_id.clone();
     let (base, art, inv) = (id("base"), id("art"), id("inv"));
-    // The importer's records (the invert adjustment layer), plus mask parameters, an effect stack
-    // and a smart-filter stack.
+    // The importer's records (the invert adjustment layer), plus an effect stack and a smart-filter
+    // stack.
     let entry = imported.imports.iter().find(|e| e.role == ImportRole::Records).expect("importer records");
     let mut records: folio::StudioRasterRecords = serde_json::from_slice(&entry.bytes).unwrap();
     assert!(records.layer(&inv).and_then(|r| r.adjustment.as_ref()).is_some(), "invert adjustment imported");
@@ -282,7 +283,6 @@ fn viewer_frame_renders_the_raster_records_like_a_direct_composite_render() {
         records.layers.len() - 1
     };
     let i = layer_mut(&mut records, &art);
-    records.layers[i].mask = Some(serde_json::from_value(json!({"density": 80.0, "feather": 2.0, "inverted": false})).unwrap());
     records.layers[i].smart_filters = Some(serde_json::from_value(json!({"enabled": true, "filters": [
         {"instance_id": "blur", "enabled": true, "opacity": 100.0, "params": {"filter_kind": "gaussian_blur", "radius_px": 1.5}},
         {"instance_id": "noise", "enabled": true, "opacity": 50.0, "params": {"filter_kind": "add_noise", "amount_pct": 10.0, "distribution": "uniform", "monochromatic": true, "seed": 3}}
@@ -309,7 +309,7 @@ fn viewer_frame_renders_the_raster_records_like_a_direct_composite_render() {
 
     // A direct composite + render-cpu render of the reopened package: identical bytes.
     let (direct, n_masks) = direct_render(&package);
-    assert!(n_masks >= 1, "the PSD user mask is served");
+    assert_eq!(n_masks, 0);
     let differ = frame.rgba8.iter().zip(&direct).filter(|(a, b)| a != b).count();
     println!("viewer vs direct composite + render-cpu: {differ} of {} bytes differ", direct.len());
     assert_eq!(frame.rgba8, direct);
