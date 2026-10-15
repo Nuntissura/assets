@@ -33,6 +33,7 @@ use hsk_studio_pigment::effect_math::window::{
     WindowBudget, WindowError, WindowLimits, layer_window_cost, stack_support_px,
 };
 use hsk_studio_pigment::effect_math::{EffectError, EffectOp};
+use hsk_studio_pigment::render_plan::OutputStage;
 use hsk_studio_pigment::render_plan::{
     BackendError, ContentAwareFillOp, ExtOperator, PlanError, PlanExtensions, SAMPLE_RANGE_OPERATOR,
 };
@@ -184,6 +185,8 @@ pub(super) struct ExtPrep {
     max_support: usize,
     /// The envelope path admits `MaskInput.density < 1`; the v1 path refuses it.
     pub(super) allow_density: bool,
+    /// The plan's output stage (sample range, display transform); default on the v1 path.
+    pub(super) output: OutputStage,
 }
 
 /// Typed mapping of a coverage failure; the keys are pigment's (PLR-006): [`SAMPLE_RANGE_OPERATOR`]
@@ -293,6 +296,7 @@ impl ExtPrep {
     ) -> Result<Self, RenderError> {
         let mut prep = Self {
             allow_density: true,
+            output: extensions.output,
             ..Self::default()
         };
         let mut kernel_of: BTreeMap<u32, usize> = BTreeMap::new();

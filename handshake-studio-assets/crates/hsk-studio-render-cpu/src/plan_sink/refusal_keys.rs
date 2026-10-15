@@ -106,7 +106,7 @@ fn admission_and_prepare(plan: &RenderPlan) -> (BackendError, RenderError) {
     let renderer = Renderer::new(4).unwrap();
     let admitted = admit::<NoVector>(plan, &renderer, &request(), &CancellationToken::default())
         .expect_err("shared admission refuses this plan");
-    let prepared = prepare(plan, &NoSources, ExtPrep::default(), None)
+    let prepared = prepare(plan, &NoSources, ExtPrep::default())
         .err()
         .expect("prepare refuses this plan on its own");
     (admitted, prepared)
@@ -447,7 +447,7 @@ fn fx_ops_declarations_and_refusals_equal_pigments() {
         assert_eq!(admitted, refusal(key), "pigment admission, {rule}");
         let ext =
             ExtPrep::build(&envelope, &reachable(&plan), 1 << 20).expect("envelope preparation");
-        let prepared = prepare(&plan, &NoSources, ext, None)
+        let prepared = prepare(&plan, &NoSources, ext)
             .err()
             .expect("prepare refuses the rule on its own");
         assert_eq!(

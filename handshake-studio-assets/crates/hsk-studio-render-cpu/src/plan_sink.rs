@@ -38,12 +38,13 @@ use crate::px::{
 };
 use crate::vector::VectorSource;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
+use display::{over, sample_ok};
 pub use extended::MAX_EFFECT_WINDOW_WORK;
 use extended::{ExtPrep, FrameShape, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba};
 use hsk_studio_pigment::blur_math::BlurScope;
 use hsk_studio_pigment::coverage_math::mask_coverage;
 use hsk_studio_pigment::effect_math::EffectKind;
@@ -179,7 +180,7 @@ pub struct Renderer {
     /// Plan budgets handed to shared admission: the maxima unless the host tightened them with
     /// [`Renderer::with_plan_limits`].
     limits: PlanLimits,
-    /// Declared display transform for tile samples outside `[0, 1]` (`None` = typed refusal).
+    /// Deprecated alias (`with_display_transform`): the output stage a plan without one runs with.
     display: Option<DisplayTransform>,
     live: AtomicU64,
     peak: AtomicU64,
@@ -414,10 +415,11 @@ impl<'a> Prepared<'a> {
     }
 }
 
-fn unit_rgb(rgba: [f32; 4]) -> Result<(), RenderError> {
-    if rgba
-        .iter()
-        .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+/// Solid / vector fill colour in the plan's sample range (alpha always `[0, 1]`).
+fn unit_rgb(rgba: [f32; 4], extended: bool) -> Result<(), RenderError> {
+    if rgba[..3].iter().all(|c| sample_ok(extended, *c))
+        && rgba[3].is_finite()
+        && (0.0..=1.0).contains(&rgba[3])
     {
         Ok(())
     } else {
@@ -469,14 +471,14 @@ fn tile_at(p: &TilePlanes<'_>, rect: Rect, x: i64, y: i64) -> Result<[f32; 4], R
 }
 
 /// Shape, plane hashes and values of a resolved tile against the plan's declaration. A colour
-/// sample outside `[0, 1]` is refused unless `display_declared` (a declared display transform,
-/// `display.rs`); the result says whether the tile holds such a sample.
+/// sample outside `[0, 1]` is refused unless the plan's output stage is `extended` (any finite
+/// colour, `display.rs`).
 fn verify_tile(
     input: &TileInput,
     planes: &TilePlanes<'_>,
     plan_space: hsk_studio_pigment::render_plan::ColourTag,
-    display_declared: bool,
-) -> Result<bool, RenderError> {
+    extended: bool,
+) -> Result<(), RenderError> {
     let key = input.key;
     // Defence in depth: this backend declares `ExtOperator::AlphaPremultiplied` Unsupported, so
     // shared admission refuses a premultiplied convention first (key is pigment's).
@@ -518,13 +520,13 @@ fn verify_tile(
             if !(0.0..=1.0).contains(&a) {
                 return Err(source(key, SourceFault::AlphaRange));
             }
-            out_of_unit |= ![r, g, b].iter().all(|v| (0.0..=1.0).contains(v));
+            out_of_unit |= ![r, g, b].iter().all(|v| sample_ok(extended, *v));
         }
     }
-    if out_of_unit && !display_declared {
+    if out_of_unit {
         return Err(unsupported(SAMPLE_RANGE_OPERATOR));
     }
-    Ok(out_of_unit)
+    Ok(())
 }
 
 /// `reach[i]`: node `i` is the root or the input of a layer of a reachable group. Both callers
@@ -554,8 +556,8 @@ fn prepare<'a, V: VectorSource>(
     plan: &RenderPlan<V>,
     sources: &'a dyn PlanSources,
     mut ext: ExtPrep,
-    clip: Option<&'a display::ClipStore>,
 ) -> Result<Prepared<'a>, RenderError> {
+    let extended = ext.output.is_extended();
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
         return Err(unsupported(ExtOperator::AlphaPremultiplied.key()));
@@ -592,11 +594,7 @@ fn prepare<'a, V: VectorSource>(
                 let planes = sources
                     .tile(t.key)
                     .ok_or(BackendError::UnresolvedSource(t.key))?;
-                let out_of_unit = verify_tile(t, &planes, target.space, clip.is_some())?;
-                let planes = match clip {
-                    Some(store) if out_of_unit => store.substitute(t.key, planes)?,
-                    _ => planes,
-                };
+                verify_tile(t, &planes, target.space, extended)?;
                 end(t.placement)?;
                 (
                     PNode::Tile {
@@ -608,13 +606,13 @@ fn prepare<'a, V: VectorSource>(
                 )
             }
             PlanNode::Solid { rect, rgba } => {
-                unit_rgb(*rgba)?;
+                unit_rgb(*rgba, extended)?;
                 end(*rect)?;
                 (PNode::Solid { rgba: *rgba }, Some(*rect), 0)
             }
             PlanNode::Vector(v) => {
                 let fill = v.fill();
-                unit_rgb(fill.rgba)?;
+                unit_rgb(fill.rgba, extended)?;
                 let path =
                     PreparedPath::prepare(&fill.path, fill.aa_samples, &PathLimits::default())?;
                 end(path.bounds)?;
@@ -1241,7 +1239,8 @@ impl Eval<'_, '_> {
                 if opacity <= 0.0 || source_alpha <= 0.0 {
                     continue;
                 }
-                let out = composite_over(
+                let out = over(
+                    self.prepared.ext.output.is_extended(),
                     layer.mode,
                     Rgba::new([b[0], b[1], b[2]], base_alpha),
                     Rgba::new([rgba[0], rgba[1], rgba[2]], source_alpha),
@@ -1372,7 +1371,8 @@ impl Eval<'_, '_> {
                         continue;
                     }
                 }
-                let out = composite_over(
+                let out = over(
+                    self.prepared.ext.output.is_extended(),
                     layer.mode,
                     Rgba::new([b[0], b[1], b[2]], b[3]),
                     Rgba::new([rgba[0], rgba[1], rgba[2]], source_alpha),
@@ -1682,16 +1682,18 @@ impl Renderer {
         self.limits = limits;
         Ok(self)
     }
-    /// Declares the display transform for tile colour samples outside `[0, 1]` (lane
-    /// SMB-RENDER-SCENE-DISPLAY, `plan_sink/display.rs`): `Clip` clips them at the source boundary
-    /// and records `display_clip_sources` (Approximate) in the receipt ledger when anything was
-    /// clipped. A renderer without a declaration keeps the typed refusal
-    /// `sample_range_outside_unit` (tests `tests/cpu_scene_display.rs`).
+    /// Deprecated alias (lane SMB-RENDER-SCENE-DISPLAY; the output stage now lives in the plan,
+    /// pigment `PlanExtensions::with_output`): a plan executed by this renderer whose envelope has
+    /// the default output stage runs as if it declared `OutputStage { Extended, Some(transform) }`
+    /// (extended-range composite, then the stage-6a clip); a plan that declares its own stage is
+    /// unchanged. The receipt digest is that of the envelope executed (tests
+    /// `tests/cpu_scene_display.rs`).
+    #[deprecated(note = "declare the output stage in the plan: PlanExtensions::with_output")]
     pub fn with_display_transform(mut self, transform: DisplayTransform) -> Self {
         self.display = Some(transform);
         self
     }
-    /// The declared display transform (`None` = samples outside `[0, 1]` are refused).
+    /// The deprecated alias's display transform (`None` = plans run with their own stage).
     pub fn display_transform(&self) -> Option<DisplayTransform> {
         self.display
     }
@@ -1760,6 +1762,16 @@ impl Renderer {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
+        if self.display.is_some() {
+            return self.execute_extended_detailed(
+                plan,
+                &PlanExtensions::default(),
+                request,
+                sources,
+                cancel,
+                sink,
+            );
+        }
         let ledger = admit_with_limits::<V>(plan, &self.limits, self, request, cancel)?;
         self.run(
             plan,
@@ -1793,6 +1805,8 @@ impl Renderer {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
+        let alias = display::aliased(extensions, self.display);
+        let extensions = alias.as_ref().unwrap_or(extensions);
         if extensions.is_empty() && !plan.has_mask_density() {
             return self.execute_detailed(plan, request, sources, cancel, sink);
         }
@@ -1827,31 +1841,14 @@ impl Renderer {
         &self,
         plan: &RenderPlan<V>,
         ext: ExtPrep,
-        mut ledger: ExactnessLedger,
+        ledger: ExactnessLedger,
         digest: &dyn Fn() -> Result<[u8; 32], hsk_studio_pigment::Error>,
         request: &ExecuteRequest,
         sources: &dyn PlanSources,
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
-        // Declared display transform: clipped copies of the out-of-range tiles, charged first
-        // (before allocation) and held for the whole run; `prepare` reads them instead.
-        let (clip_store, _clip_lease) = match self.display {
-            Some(DisplayTransform::Clip) => {
-                let (store, lease) = display::ClipStore::build(
-                    plan,
-                    sources,
-                    plan.target.space,
-                    request.min_exactness,
-                    &mut ledger,
-                    |bytes| self.reserve(bytes, request.max_working_bytes),
-                )?;
-                (Some(store), Some(lease))
-            }
-            None => (None, None),
-        };
-        let clip_bytes = clip_store.as_ref().map_or(0, display::ClipStore::bytes);
-        let mut prepared = prepare(plan, sources, ext, clip_store.as_ref())?;
+        let mut prepared = prepare(plan, sources, ext)?;
         let digest = digest().map_err(|_| BackendError::Unavailable("plan_digest"))?;
 
         let extent = plan.target.extent;
@@ -1882,11 +1879,7 @@ impl Renderer {
             .and_then(|fx| fx.checked_add(prepared.ext.resident_bytes))
             .and_then(|fx| fx.checked_add(base))
             .ok_or(BackendError::Overflow)?;
-        let _lease = self.reserve(
-            scratch_bytes,
-            request.max_working_bytes.saturating_sub(clip_bytes),
-        )?;
-        let scratch_bytes = scratch_bytes.checked_add(clip_bytes).ok_or(BackendError::Overflow)?;
+        let _lease = self.reserve(scratch_bytes, request.max_working_bytes)?;
         // Content-aware fills (lane SMB-RENDER-CONTENT-AWARE): their planes are charged next to the
         // chunk scratch, pigment gets what remains of the budget; all before the first sink call.
         let fill_bytes = content_aware::fill_bytes(&prepared)?;
@@ -1901,7 +1894,16 @@ impl Renderer {
         let eval = Eval {
             prepared: &prepared,
         };
-        let compute = |rect: Rect, scratch: &mut Scratch| compute_chunk(&eval, rect, scratch);
+        // Stage 6a (output stage `display: Some(Clip)`): the composite's colour clamped into [0, 1]
+        // before the chunk reaches the sink.
+        let clip = prepared.ext.output.display == Some(DisplayTransform::Clip);
+        let compute = |rect: Rect, scratch: &mut Scratch| {
+            compute_chunk(&eval, rect, scratch)?;
+            if clip {
+                display::clip_chunk(&mut scratch.colour)?;
+            }
+            Ok(())
+        };
         let shape = ScratchShape {
             pixels: max_pixels as usize,
             depth,
@@ -2164,6 +2166,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // synthesizes the whole layer content once, so the bytes are pigment's
             // (tests/cpu_content_aware.rs).
             ExtOperator::ContentAwareFill => operator.intrinsic(),
+            // Output stage (lane SMB-PIGMENT-EXTENDED-RANGE): extended range composites through
+            // pigment's `composite_over_extended`, the clip is `f32::clamp` on the delivered chunk
+            // (tests/cpu_extended_range.rs).
+            ExtOperator::ExtendedRange | ExtOperator::DisplayClip => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }
