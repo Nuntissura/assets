@@ -1148,11 +1148,12 @@ fn knockout_and_effect_stack_are_refused() {
             admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token),
             Err(BackendError::Unsupported { operator: "knockout_shallow", exactness: Exactness::Unsupported })
         );
-        assert_eq!(low.exactness.lowest, Exactness::Unsupported);
-        // Evaluation says so too: Unsupported in the receipt (the outcome mapping is checked in
-        // `evaluation_ledger_keys_and_classes_are_pigments`, on a document without unrelated
-        // vector/text outputs, which would make this report Unavailable for another reason).
-        assert_eq!(report.receipt.exactness.lowest, Exactness::Unsupported);
+        // Lane SMB-PS-ADJUST-STYLES: shallow knockout has a pigment rule (class Approximate) for
+        // an isolated non-root group; this layer sits in the ROOT group, where pigment's admission
+        // refuses it (above). The lowering and the evaluation report pigment's class for the
+        // operator; the refusal is admission's.
+        assert_eq!(low.exactness.lowest, Exactness::Approximate);
+        assert_eq!(report.receipt.exactness.lowest, Exactness::Approximate);
 
         // Inherited resolves through containment: layer 2 inherits from group 1 (enabled), the
         // group itself composites into nothing but is wrapped so its own entry is kept. Layer 3
@@ -1231,8 +1232,9 @@ fn evaluation_ledger_keys_and_classes_are_pigments() {
             let want = OperatorExactness { key: op.key(), exactness: op.intrinsic() };
             assert!(ledger.operators.contains(&want), "{want:?} missing from {:?}", ledger.operators);
         }
-        assert_eq!(ledger.lowest, Exactness::Unsupported, "knockout is intrinsically unsupported");
-        assert_eq!(eval_outcome(&Ok(report)), Outcome::Failure(FailureCode::Unsupported));
+        // Knockout shallow is Approximate since lane SMB-PS-ADJUST-STYLES (pigment knockout_math).
+        assert_eq!(ledger.lowest, Exactness::Approximate, "every envelope operator here is Approximate or better");
+        assert_ne!(eval_outcome(&Ok(report)), Outcome::Failure(FailureCode::Unsupported));
 
         // The v1 operators composite used to hand-code are pigment's too: a fill-scaled non-Normal
         // layer, a pass-through group below full opacity, and a clipped layer.

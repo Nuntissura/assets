@@ -1377,6 +1377,9 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
+        if layer.fx.knockout {
+            return self.knockout_layer(layer, chunk, dst, spare, fx);
+        }
         // A layer with effects is evaluated per tile of an effect frame (see `effects`), a layer
         // with a layer blur per window of a blur frame (see `blur`).
         if layer.fx.effect.is_some() {
@@ -1442,6 +1445,91 @@ impl Eval<'_, '_> {
             }
             PNode::Unused => Err(unsupported("plan_shape")),
         }
+    }
+
+    /// A shallow-knockout layer (lane SMB-PS-ADJUST-STYLES): every pixel of its bounds is pigment
+    /// `knockout_math::knockout_over` with the group's initial backdrop, which pigment's admission
+    /// guarantees is transparent (an isolated group other than the root), shape = content alpha x
+    /// coverage x mask x LAYER opacity, the content composited at opacity x fill. Per pixel, so
+    /// the result is independent of chunking.
+    fn knockout_layer(
+        &self,
+        layer: &PLayer<'_>,
+        chunk: Rect,
+        dst: &mut [[f32; 4]],
+        spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
+    ) -> Result<(), RenderError> {
+        let Some(region) = self.prepared.bound(layer.input)
+            .map(|b| intersect(b, chunk))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(());
+        };
+        // The content of an isolated-group input, evaluated once per chunk.
+        let group_result = match self.prepared.node(layer.input)? {
+            PNode::Group { isolated: true, .. } => {
+                let count = area(chunk)?;
+                let (buffer, deeper) = spare
+                    .split_first_mut()
+                    .ok_or(BackendError::Unavailable("group_scratch"))?;
+                let buffer = &mut buffer[..count];
+                buffer.fill([0.0; 4]);
+                self.group(layer.input, chunk, buffer, deeper, fx)?;
+                Some(&*buffer)
+            }
+            PNode::Group { isolated: false, .. } | PNode::Unused => {
+                return Err(unsupported(ExtOperator::Knockout(
+                    hsk_studio_pigment::render_plan::Knockout::Shallow,
+                ).key()));
+            }
+            _ => None,
+        };
+        let feathered = self.feather(layer, region, chunk, fx)?;
+        let plane = feathered.then_some(fx.plane.as_slice());
+        let (x1, y1) = end(region)?;
+        for y in region.y..y1 {
+            for x in region.x..x1 {
+                let at = index_in(chunk, x, y)?;
+                let mask = mask_value(layer, plane, x, y, at)?;
+                let (rgba, coverage) = match (group_result, self.prepared.node(layer.input)?) {
+                    (Some(g), _) => (*g.get(at).ok_or_else(overflow)?, 1.0),
+                    (None, PNode::Tile { planes, rect }) => (tile_at(planes, *rect, x, y)?, 1.0),
+                    (None, PNode::Transformed { planes, prep }) => (
+                        transformed_at(self.prepared.ext.output.sample_range, planes, prep, x, y)?,
+                        1.0,
+                    ),
+                    (None, PNode::Filled { rect, data }) => {
+                        (content_aware::filled_at(*rect, data, x, y)?, 1.0)
+                    }
+                    (None, PNode::Solid { rgba }) => (*rgba, 1.0),
+                    (None, PNode::Vector { path, rgba }) => (*rgba, path.coverage(x, y)),
+                    _ => return Err(unsupported("plan_shape")),
+                };
+                let shape = (rgba[3] * coverage * mask * layer.layer_opacity).clamp(0.0, 1.0);
+                if shape <= 0.0 {
+                    continue;
+                }
+                let b = *dst.get(at).ok_or_else(overflow)?;
+                let out = hsk_studio_pigment::knockout_math::knockout_over(
+                    layer.mode,
+                    Rgba::new([b[0], b[1], b[2]], b[3]),
+                    Rgba::TRANSPARENT,
+                    Rgba::new([rgba[0], rgba[1], rgba[2]], rgba[3]),
+                    layer.opacity,
+                    shape,
+                    PixelSite {
+                        x,
+                        y,
+                        seed: self.prepared.seed,
+                    },
+                )
+                .map_err(blend_error)?;
+                *dst.get_mut(at).ok_or_else(overflow)? = [out.rgb[0], out.rgb[1], out.rgb[2], out.a];
+            }
+        }
+        Ok(())
     }
 
     /// Blend `source(x, y, index) = (straight RGBA, coverage)` into `dst` over `region`. The layer's
@@ -2287,6 +2375,12 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                 | EffectKind::Satin
                 | EffectKind::BevelEmboss
                 | EffectKind::GradientOverlay,
+            )
+            // Shallow knockout (lane SMB-PS-ADJUST-STYLES): pigment `knockout_over` per pixel
+            // (`Eval::knockout_layer`, tests/cpu_knockout.rs); deep stays refused by pigment.
+            | ExtOperator::Knockout(
+                hsk_studio_pigment::render_plan::Knockout::None
+                | hsk_studio_pigment::render_plan::Knockout::Shallow,
             ) => operator.intrinsic(),
             // Declared Unsupported on purpose (lane SMB-FX-OPS-ADOPT), so shared admission refuses
             // them under pigment's keys before any sink call: a layer with effects whose content

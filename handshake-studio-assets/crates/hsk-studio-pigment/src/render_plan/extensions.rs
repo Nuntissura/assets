@@ -38,9 +38,12 @@ use hsk_studio_accord::CancellationToken;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-/// Knockout depth of a layer (Photoshop advanced blending: none, shallow, deep). Only `None` is
-/// admitted until a knockout implementation exists; the others are refused by
-/// [`PlanExtensions::validate`] with [`PlanError::KnockoutUnsupported`].
+/// Knockout depth of a layer (Photoshop advanced blending: none, shallow, deep). `Shallow` is
+/// admitted (lane SMB-PS-ADJUST-STYLES, rule [`crate::knockout_math::knockout_over`]) on an
+/// unclipped, non-pass-through layer of an ISOLATED group other than the plan root, without an
+/// adjustment, effects, blur, filters, content-aware fill, keys, smart filters or Blend-If; `Deep`
+/// and every other `Shallow` placement are refused by [`PlanExtensions::validate`] with
+/// [`PlanError::KnockoutUnsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum Knockout {
     None,
@@ -414,7 +417,8 @@ impl ExtOperator {
                 Exactness::Unsupported
             }
             Self::Knockout(Knockout::None) => Exactness::Exact,
-            Self::Knockout(_) => Exactness::Unsupported,
+            Self::Knockout(Knockout::Shallow) => crate::knockout_math::KNOCKOUT_EXACTNESS,
+            Self::Knockout(Knockout::Deep) => Exactness::Unsupported,
             Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
             Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
             Self::Transform(_) => TRANSFORM_EXACTNESS,
@@ -550,10 +554,30 @@ impl PlanExtensions {
                 return Err(PlanError::ExtensionDuplicate { node });
             }
             if e.knockout != Knockout::None {
-                return Err(PlanError::KnockoutUnsupported {
+                let refused = Err(PlanError::KnockoutUnsupported {
                     node,
                     depth: e.knockout,
                 });
+                if e.knockout != Knockout::Shallow
+                    || !g.isolated
+                    || node == plan.root.0
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || g.clip_role(e.layer as usize) != Some(ClipRole::Unclipped)
+                    || e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || e.content_aware_fill.is_some()
+                    || !e.keys.is_empty()
+                    || e.smart_filters.is_some()
+                    || e.blend_if.iter().any(|b| {
+                        b.source != crate::coverage_math::IDENTITY_RANGE
+                            || b.destination != crate::coverage_math::IDENTITY_RANGE
+                    })
+                {
+                    return refused;
+                }
+                add(ExtOperator::Knockout(Knockout::Shallow));
             }
             if let Some(op) = &e.adjustment {
                 match plan.nodes.get(layer.input.0 as usize) {

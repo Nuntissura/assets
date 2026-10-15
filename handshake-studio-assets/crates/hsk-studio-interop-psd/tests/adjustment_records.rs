@@ -337,7 +337,9 @@ fn blending_ranges_mask_parameters_and_knockout_map_to_records() {
         assert_eq!((gray.source_black, gray.source_white), ([50.0, 100.0], [200.0, 240.0]));
         assert_eq!((gray.destination_black, gray.destination_white), ([0.0, 0.0], [255.0, 255.0]));
         assert_eq!(blending.knockout, StudioKnockout::Enabled);
-        assert!(p.loss.has_code("knockout_depth_not_represented"));
+        // knko 2 = deep: carried as the Folio knockout depth since lane SMB-PS-ADJUST-STYLES.
+        assert_eq!(blending.knockout_depth, Some(hsk_studio_folio::StudioKnockoutDepth::Deep));
+        assert!(!p.loss.has_code("knockout_depth_not_represented"));
         assert_eq!(doc.layers()[0].block(b"knko").unwrap().data[0], 2, "the raw knockout byte is preserved");
         assert!(!p.loss.has_code("blend_if_not_applied"), "Blend-If is recorded now");
 

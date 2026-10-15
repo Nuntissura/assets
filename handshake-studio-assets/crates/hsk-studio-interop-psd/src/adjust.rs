@@ -644,16 +644,15 @@ pub(crate) fn advanced_blending(layer: &PsdLayer) -> std::result::Result<Option<
             notes.push((LossKind::PreservedOpaque, "blend_ranges_extra_channels_preserved"));
         }
     }
-    let knockout = match knockout_raw {
-        None | Some(0) => StudioKnockout::Disabled,
-        Some(1) => StudioKnockout::Enabled,
-        Some(2) => {
-            notes.push((LossKind::Transformed, "knockout_depth_not_represented"));
-            StudioKnockout::Enabled
-        }
+    // `knko` 1 = shallow, 2 = deep (psd-tools corpus transparency/knockout-shallow-*.psd and
+    // knockout-deep-*.psd, bytes inspected 2026-10-15; lane SMB-PS-ADJUST-STYLES).
+    let (knockout, knockout_depth) = match knockout_raw {
+        None | Some(0) => (StudioKnockout::Disabled, None),
+        Some(1) => (StudioKnockout::Enabled, Some(hsk_studio_folio::StudioKnockoutDepth::Shallow)),
+        Some(2) => (StudioKnockout::Enabled, Some(hsk_studio_folio::StudioKnockoutDepth::Deep)),
         Some(_) => {
             notes.push((LossKind::Transformed, "knockout_value_unknown"));
-            StudioKnockout::Unknown
+            (StudioKnockout::Unknown, None)
         }
     };
     if knockout_raw.is_none() || interior.is_none() || clipped.is_none() || shapes.is_none() {
@@ -669,6 +668,7 @@ pub(crate) fn advanced_blending(layer: &PsdLayer) -> std::result::Result<Option<
             blend_interior_effects: interior.unwrap_or(false),
             blend_clipped_effects: clipped.unwrap_or(true),
             transparency_shapes_layer: shapes.unwrap_or(true),
+            knockout_depth,
         },
         notes,
     }))

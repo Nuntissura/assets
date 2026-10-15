@@ -720,12 +720,16 @@ fn refusals_stay_typed_and_the_v1_path_is_unchanged() {
         backend.extension_exactness(ExtOperator::MaskFeather),
         Exactness::Approximate
     );
-    for depth in [Knockout::Shallow, Knockout::Deep] {
-        assert_eq!(
-            backend.extension_exactness(ExtOperator::Knockout(depth)),
-            Exactness::Unsupported
-        );
-    }
+    // Shallow knockout renders since lane SMB-PS-ADJUST-STYLES (pigment knockout_math, class
+    // Approximate, tests/cpu_knockout.rs); deep stays Unsupported.
+    assert_eq!(
+        backend.extension_exactness(ExtOperator::Knockout(Knockout::Shallow)),
+        Exactness::Approximate
+    );
+    assert_eq!(
+        backend.extension_exactness(ExtOperator::Knockout(Knockout::Deep)),
+        Exactness::Unsupported
+    );
 
     let p = adjustment_plan([0.2, 0.4, 0.6, 1.0], StudioBlendMode::Normal, 0.5);
     let refused = |ext: &PlanExtensions, min: Exactness| {
@@ -733,7 +737,8 @@ fn refusals_stay_typed_and_the_v1_path_is_unchanged() {
         assert_eq!(grid.calls, 0, "refusal happens before the first sink call");
         result
     };
-    // Knockout (shallow and deep) before any sink call.
+    // Knockout (shallow on the root group, where pigment defines none; deep) before any sink
+    // call.
     for (depth, key) in [
         (Knockout::Shallow, "knockout_shallow"),
         (Knockout::Deep, "knockout_deep"),

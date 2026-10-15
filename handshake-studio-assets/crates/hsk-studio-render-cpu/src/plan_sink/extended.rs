@@ -93,6 +93,10 @@ pub(super) struct LayerFx {
     /// Smart-filter stack (pigment `smart_filter`, lane SMB-PS-SELECT-LIQUIFY-2): index into
     /// [`ExtPrep::smart`].
     pub(super) smart: Option<usize>,
+    /// Shallow knockout (pigment `knockout_math`, lane SMB-PS-ADJUST-STYLES): pigment's admission
+    /// already restricted it to an unclipped layer of an isolated non-root group with no other
+    /// envelope operation but a mask feather or a transform.
+    pub(super) knockout: bool,
 }
 
 /// The filters of one layer (list order), the growth of the layer's pixels each stage causes
@@ -321,7 +325,10 @@ impl ExtPrep {
             {
                 continue;
             }
-            let mut fx = LayerFx::default();
+            let mut fx = LayerFx {
+                knockout: e.knockout == hsk_studio_pigment::render_plan::Knockout::Shallow,
+                ..LayerFx::default()
+            };
             if let Some(op) = &e.adjustment {
                 prep.charge(ADJUSTMENT_STATE_BYTES, limit)?;
                 let prepared = op.prepare().map_err(adjust_error)?;

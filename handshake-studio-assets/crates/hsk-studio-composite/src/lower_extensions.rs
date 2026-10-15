@@ -594,8 +594,9 @@ pub(crate) fn blend_if(b: &StudioAdvancedBlending) -> Vec<BlendRangeEntry> {
         .collect()
 }
 
-/// Knockout of `layer_id`: `Enabled` is `Shallow` (pigment refuses it until implemented);
-/// `Inherited` takes the state of the nearest containing layer that is not itself `Inherited`;
+/// Knockout of `layer_id`: `Enabled` is `Shallow`, or `Deep` when the record's `knockout_depth` says
+/// so (lane SMB-PS-ADJUST-STYLES; pigment renders shallow in isolated non-root groups and refuses
+/// deep); `Inherited` takes the state of the nearest containing layer that is not itself `Inherited`;
 /// `Disabled`, `Unknown` and an unresolved inheritance are `None`. Photoshop's inheritance rule is
 /// UNVERIFIED (D5 11).
 pub(crate) fn resolve_knockout(
@@ -606,12 +607,15 @@ pub(crate) fn resolve_knockout(
     let mut id = layer_id;
     // Folio rejects containment cycles; the bound only guards a hand-built snapshot.
     for _ in 0..=layers.len() {
-        let state = records
-            .layer(id)
-            .and_then(|r| r.advanced_blending.as_ref())
-            .map(|a| a.knockout);
+        let blending = records.layer(id).and_then(|r| r.advanced_blending.as_ref());
+        let state = blending.map(|a| a.knockout);
         match state {
-            Some(StudioKnockout::Enabled) => return Knockout::Shallow,
+            Some(StudioKnockout::Enabled) => {
+                return match blending.and_then(|a| a.knockout_depth) {
+                    Some(hsk_studio_folio::StudioKnockoutDepth::Deep) => Knockout::Deep,
+                    _ => Knockout::Shallow,
+                };
+            }
             Some(StudioKnockout::Inherited) => {}
             Some(StudioKnockout::Disabled | StudioKnockout::Unknown) | None => {
                 return Knockout::None;

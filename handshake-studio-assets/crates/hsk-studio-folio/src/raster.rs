@@ -441,6 +441,19 @@ pub struct StudioAdvancedBlending {
     pub blend_interior_effects: bool,
     pub blend_clipped_effects: bool,
     pub transparency_shapes_layer: bool,
+    /// Knockout depth when `knockout` is enabled (Photoshop shallow | deep, PSD `knko` 1 | 2; lane
+    /// SMB-PS-ADJUST-STYLES). The spec has no depth field (declared gap, STU-RAS-041 names
+    /// "knockout" only): absent = shallow, not encoded when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knockout_depth: Option<StudioKnockoutDepth>,
+}
+
+/// Knockout depth (see [`StudioAdvancedBlending::knockout_depth`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioKnockoutDepth {
+    Shallow,
+    Deep,
 }
 
 /// Contour point (`levels_0_255`, hard `0..=255` declared) with the smoothing-suppressing corner.
