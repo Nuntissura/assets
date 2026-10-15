@@ -425,7 +425,10 @@ impl VectorNetwork {
                 let q = pts.get(i.saturating_add(1).checked_rem(pts.len()).unwrap_or(0)).copied().unwrap_or(*p);
                 area += p.x * (-q.y) - q.x * (-p.y);
             }
-            if area > 0.0 {
+            // Degenerate walks (a dangling edge out and back) have zero area up to rounding: they are
+            // not faces. The threshold is relative to the face's extent.
+            let extent = pts.iter().fold(1.0_f64, |m, q| m.max(q.x.abs()).max(q.y.abs()));
+            if area > 1e-9 * extent * extent {
                 faces.push(NetworkRegion { winding_rule: FillRule::NonZero, loops: vec![face.iter().map(|e| e / 2).collect()], fills, fill_style_id: None });
             }
         }
