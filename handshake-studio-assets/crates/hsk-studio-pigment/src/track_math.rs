@@ -66,7 +66,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::retouch::RgbaPlane;
 use hsk_studio_accord::CancellationToken;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Largest pyramid depth (levels below level 0).
@@ -213,7 +213,7 @@ impl TrackParams {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TrackDirection {
     Forward,
     Backward,
@@ -1238,4 +1238,65 @@ pub fn track_planar(
     }
     out.sort_by_key(|f| f.frame);
     Ok(out)
+}
+
+// ---- tracker command vocabulary (lane SMB-AE-KEY-TRACK-3) ----
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Nudge {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NudgeStep {
+    /// 1 screen pixel.
+    One,
+    /// 10 screen pixels.
+    Ten,
+}
+
+/// One typed tracker command of composite's `TrackerSession` (lanes SMB-AE-KEY-TRACK-2/-3,
+/// STU-CMP-065a). Wire form (JSON): internally tagged by `command` with the snake_case variant
+/// name (`{"command":"move_track_point","point":0,"direction":"up","step":"ten","keep_attach":false}`),
+/// unknown fields refused; the round trip is byte-identical (composite `tests/tracker_commands.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TrackerCommand {
+    /// Recovered (16): move track point `point` at the current frame by 1 or 10 screen pixels.
+    /// `keep_attach`: the "(Not Attach Point)" form, the attach point stays where it is.
+    MoveTrackPoint { point: usize, direction: Nudge, step: NudgeStep, keep_attach: bool },
+    /// Recovered: the in point of the Motion Tracker Points bar := the current frame.
+    SetPointsBarIn {},
+    /// Recovered: the out point of the Motion Tracker Points bar := the current frame.
+    SetPointsBarOut {},
+    /// A new point at the current frame (feature centre `position`, layer pixels).
+    AddPoint { position: [f64; 2], feature_radius: u32, search_radius: u32, attach_offset: [f64; 2] },
+    RemovePoint { point: usize },
+    SetCurrentFrame { frame: usize },
+    SetZoom { screen_px_per_layer_px: f64 },
+    /// Manual correction: point `point` sits at `position` on `frame`.
+    PlacePoint { point: usize, frame: usize, position: [f64; 2] },
+    /// Analyse every point that has a position at the current frame, from the current frame to
+    /// the bar's out point (`Forward`) or in point (`Backward`).
+    Analyze { direction: TrackDirection },
+}
+impl TrackerCommand {
+    pub const fn key(&self) -> &'static str {
+        match self {
+            Self::MoveTrackPoint { keep_attach: false, .. } => "tracker_move_track_point",
+            Self::MoveTrackPoint { keep_attach: true, .. } => "tracker_move_track_point_not_attach",
+            Self::SetPointsBarIn { .. } => "tracker_set_points_bar_in",
+            Self::SetPointsBarOut { .. } => "tracker_set_points_bar_out",
+            Self::AddPoint { .. } => "tracker_add_point",
+            Self::RemovePoint { .. } => "tracker_remove_point",
+            Self::SetCurrentFrame { .. } => "tracker_set_current_frame",
+            Self::SetZoom { .. } => "tracker_set_zoom",
+            Self::PlacePoint { .. } => "tracker_place_point",
+            Self::Analyze { .. } => "tracker_analyze",
+        }
+    }
 }

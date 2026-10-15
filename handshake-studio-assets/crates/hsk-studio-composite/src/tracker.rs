@@ -5,7 +5,7 @@
 //!
 //! The 18 recovered MotionTracker commands are [`TrackerCommand::MoveTrackPoint`] (16: up, down,
 //! left, right by 1 or 10 screen pixels, with the attach point or, `keep_attach`, without it) and
-//! [`TrackerCommand::SetPointsBarIn`] / [`TrackerCommand::SetPointsBarOut`] (the in and out point
+//! `TrackerCommand::SetPointsBarIn {}` / `TrackerCommand::SetPointsBarOut {}` (the in and out point
 //! of the "Motion Tracker Points" bar, set to the current frame). The rest of the enum is the
 //! typed surface that makes the analysis drivable: add and remove points, set the current frame
 //! and the view zoom (screen pixels per layer pixel, which the screen-pixel nudges divide by),
@@ -36,58 +36,9 @@ pub const MAX_SESSION_FRAMES: usize = 100_000;
 pub const MIN_ZOOM: f64 = 1.0 / 64.0;
 pub const MAX_ZOOM: f64 = 64.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Nudge {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NudgeStep {
-    /// 1 screen pixel.
-    One,
-    /// 10 screen pixels.
-    Ten,
-}
-
-/// One typed tracker command.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum TrackerCommand {
-    /// Recovered (16): move track point `point` at the current frame by 1 or 10 screen pixels.
-    /// `keep_attach`: the "(Not Attach Point)" form, the attach point stays where it is.
-    MoveTrackPoint { point: usize, direction: Nudge, step: NudgeStep, keep_attach: bool },
-    /// Recovered: the in point of the Motion Tracker Points bar := the current frame.
-    SetPointsBarIn,
-    /// Recovered: the out point of the Motion Tracker Points bar := the current frame.
-    SetPointsBarOut,
-    /// A new point at the current frame (feature centre `position`, layer pixels).
-    AddPoint { position: [f64; 2], feature_radius: u32, search_radius: u32, attach_offset: [f64; 2] },
-    RemovePoint { point: usize },
-    SetCurrentFrame { frame: usize },
-    SetZoom { screen_px_per_layer_px: f64 },
-    /// Manual correction: point `point` sits at `position` on `frame`.
-    PlacePoint { point: usize, frame: usize, position: [f64; 2] },
-    /// Analyse every point that has a position at the current frame, from the current frame to
-    /// the bar's out point (`Forward`) or in point (`Backward`).
-    Analyze { direction: TrackDirection },
-}
-impl TrackerCommand {
-    pub const fn key(&self) -> &'static str {
-        match self {
-            Self::MoveTrackPoint { keep_attach: false, .. } => "tracker_move_track_point",
-            Self::MoveTrackPoint { keep_attach: true, .. } => "tracker_move_track_point_not_attach",
-            Self::SetPointsBarIn => "tracker_set_points_bar_in",
-            Self::SetPointsBarOut => "tracker_set_points_bar_out",
-            Self::AddPoint { .. } => "tracker_add_point",
-            Self::RemovePoint { .. } => "tracker_remove_point",
-            Self::SetCurrentFrame { .. } => "tracker_set_current_frame",
-            Self::SetZoom { .. } => "tracker_set_zoom",
-            Self::PlacePoint { .. } => "tracker_place_point",
-            Self::Analyze { .. } => "tracker_analyze",
-        }
-    }
-}
+/// The command vocabulary lives in pigment (`track_math`, the tracking owner, which has serde), so
+/// a command has one serialisable definition (lane SMB-AE-KEY-TRACK-3) without serde in composite.
+pub use hsk_studio_pigment::track_math::{Nudge, NudgeStep, TrackerCommand};
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,13 +188,13 @@ impl TrackerSession {
                     p.attach_offset = [p.attach_offset[0] - dx, p.attach_offset[1] - dy];
                 }
             }
-            TrackerCommand::SetPointsBarIn => {
+            TrackerCommand::SetPointsBarIn {} => {
                 if self.current > self.bar_out {
                     return Err(TrackerError::BarOrder);
                 }
                 self.bar_in = self.current;
             }
-            TrackerCommand::SetPointsBarOut => {
+            TrackerCommand::SetPointsBarOut {} => {
                 if self.current < self.bar_in {
                     return Err(TrackerError::BarOrder);
                 }

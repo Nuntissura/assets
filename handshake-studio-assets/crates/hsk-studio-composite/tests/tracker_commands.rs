@@ -43,9 +43,9 @@ fn a_shot_is_tracked_corrected_and_stabilised_by_typed_commands() {
     run(&mut s, TrackerCommand::AddPoint { position: p0, feature_radius: 7, search_radius: 6, attach_offset: [3.0, -2.0] }, &f).unwrap();
     // Bar 2..=8, analyse forward from 2 needs a position at frame 2: place it (manual placement).
     run(&mut s, TrackerCommand::SetCurrentFrame { frame: 8 }, &f).unwrap();
-    run(&mut s, TrackerCommand::SetPointsBarOut, &f).unwrap();
+    run(&mut s, TrackerCommand::SetPointsBarOut {}, &f).unwrap();
     run(&mut s, TrackerCommand::SetCurrentFrame { frame: 2 }, &f).unwrap();
-    run(&mut s, TrackerCommand::SetPointsBarIn, &f).unwrap();
+    run(&mut s, TrackerCommand::SetPointsBarIn {}, &f).unwrap();
     assert_eq!(s.bar(), (2, 8));
     run(&mut s, TrackerCommand::PlacePoint { point: 0, frame: 2, position: truth(p0, 2) }, &f).unwrap();
     let r = run(&mut s, TrackerCommand::Analyze { direction: TrackDirection::Forward }, &f).unwrap();
@@ -127,10 +127,10 @@ fn the_eighteen_recovered_commands_and_refusals() {
     assert_eq!(s.points()[0], before);
     // The 2 bar commands, and their order rule.
     run(&mut s, TrackerCommand::SetCurrentFrame { frame: 1 }, &f).unwrap();
-    assert_eq!(run(&mut s, TrackerCommand::SetPointsBarIn, &f).unwrap().command, "tracker_set_points_bar_in");
-    assert_eq!(run(&mut s, TrackerCommand::SetPointsBarOut, &f).unwrap().command, "tracker_set_points_bar_out");
+    assert_eq!(run(&mut s, TrackerCommand::SetPointsBarIn {}, &f).unwrap().command, "tracker_set_points_bar_in");
+    assert_eq!(run(&mut s, TrackerCommand::SetPointsBarOut {}, &f).unwrap().command, "tracker_set_points_bar_out");
     run(&mut s, TrackerCommand::SetCurrentFrame { frame: 2 }, &f).unwrap();
-    assert_eq!(run(&mut s, TrackerCommand::SetPointsBarIn, &f).unwrap_err(), TrackerError::BarOrder);
+    assert_eq!(run(&mut s, TrackerCommand::SetPointsBarIn {}, &f).unwrap_err(), TrackerError::BarOrder);
     // Refusals change nothing.
     let snapshot = s.clone();
     let bad = [
@@ -152,10 +152,52 @@ fn the_eighteen_recovered_commands_and_refusals() {
     }
     // A canceled analysis is pigment's typed refusal.
     run(&mut s, TrackerCommand::SetCurrentFrame { frame: 0 }, &f).unwrap();
-    run(&mut s, TrackerCommand::SetPointsBarIn, &f).unwrap();
+    run(&mut s, TrackerCommand::SetPointsBarIn {}, &f).unwrap();
     let cancel = CancellationToken::default();
     cancel.cancel();
     let e = s.apply(TrackerCommand::Analyze { direction: TrackDirection::Forward }, &f, &TrackParams::DEFAULT, &TrackLimits::DEFAULT, &cancel, &mut |_, _| {});
     assert_eq!(e.unwrap_err(), TrackerError::Track(TrackError::Canceled));
     assert!(TrackerSession::new(0).is_err() && TrackerSession::new(MAX_SESSION_FRAMES + 1).is_err());
+}
+
+/// Wire form (lane SMB-AE-KEY-TRACK-3): every command serialises to tagged JSON and back
+/// byte-identically, unknown fields and tags are refused, and a JSON script drives a session.
+#[test]
+fn tracker_commands_have_a_byte_identical_json_wire_form() {
+    let all = [
+        TrackerCommand::MoveTrackPoint { point: 0, direction: Nudge::Left, step: NudgeStep::Ten, keep_attach: true },
+        TrackerCommand::SetPointsBarIn {},
+        TrackerCommand::SetPointsBarOut {},
+        TrackerCommand::AddPoint { position: [24.125, 30.5], feature_radius: 7, search_radius: 6, attach_offset: [3.0, -2.0] },
+        TrackerCommand::RemovePoint { point: 2 },
+        TrackerCommand::SetCurrentFrame { frame: 5 },
+        TrackerCommand::SetZoom { screen_px_per_layer_px: 0.5 },
+        TrackerCommand::PlacePoint { point: 1, frame: 3, position: [0.1, 0.2] },
+        TrackerCommand::Analyze { direction: TrackDirection::Backward },
+    ];
+    for c in all {
+        let bytes = serde_json::to_vec(&c).unwrap();
+        let back: TrackerCommand = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(serde_json::to_vec(&back).unwrap(), bytes);
+    }
+    assert_eq!(
+        serde_json::to_string(&all[0]).unwrap(),
+        r#"{"command":"move_track_point","point":0,"direction":"left","step":"ten","keep_attach":true}"#
+    );
+    assert!(serde_json::from_str::<TrackerCommand>(r#"{"command":"set_points_bar_in","extra":1}"#).is_err());
+    assert!(serde_json::from_str::<TrackerCommand>(r#"{"command":"warp_drive"}"#).is_err());
+    // A JSON script drives a session exactly as the typed commands do.
+    let script = r#"[{"command":"add_point","position":[24.0,30.0],"feature_radius":7,"search_radius":6,"attach_offset":[0.0,0.0]},
+        {"command":"set_zoom","screen_px_per_layer_px":2.0},
+        {"command":"move_track_point","point":0,"direction":"right","step":"one","keep_attach":false},
+        {"command":"analyze","direction":"Forward"}]"#;
+    let commands: Vec<TrackerCommand> = serde_json::from_str(script).unwrap();
+    let f = frames(4);
+    let mut s = TrackerSession::new(4).unwrap();
+    for c in commands {
+        run(&mut s, c, &f).unwrap();
+    }
+    let last = s.samples(0).unwrap().into_iter().find(|x| x.frame == 3).unwrap();
+    assert!(dist(last.position, truth([24.5, 30.0], 3)) < 0.05, "{last:?}");
 }
