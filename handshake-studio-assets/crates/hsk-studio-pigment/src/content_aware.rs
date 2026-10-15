@@ -98,6 +98,7 @@ use crate::retouch::{
 use crate::transform_math::ResampleFilter;
 use crate::selection::CoveragePlane;
 use crate::{Error, Rect};
+use serde::Serialize;
 
 pub mod scale;
 pub use scale::{ScaleReceipt, ScaleResult, content_aware_scale};
@@ -121,7 +122,8 @@ const MAX_JUMP_SHIFT: u32 = 4;
 const NONE: u32 = u32::MAX;
 
 /// STU-RAS-143 `colour_adaptation` (closed set).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ColourAdaptation {
     None,
     #[default]
@@ -160,7 +162,8 @@ pub const SCALE_STEPS: i8 = 3;
 pub const MAX_PATCH_RADIUS: u32 = 8;
 
 /// STU-RAS-143 `rotation_adaptation` (closed set).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RotationAdaptation {
     #[default]
     None,
@@ -223,7 +226,7 @@ impl SamplingArea<'_> {
 }
 
 /// Synthesis options (ranges checked by [`ContentAwareOptions::validate`], never clamped).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct ContentAwareOptions {
     /// Patch radius `r` (patch `(2r+1)^2`), `1 ..= 8`; default 3 (7 x 7).
     pub patch_radius: u32,
@@ -235,7 +238,9 @@ pub struct ContentAwareOptions {
     pub max_levels: u32,
     /// Random seed (fixed seed = fixed bytes).
     pub seed: u64,
-    /// Worker threads, `1 ..= 64`; the bytes do not depend on it.
+    /// Worker threads, `1 ..= 64`; the bytes do not depend on it, so it is not serialized (a plan
+    /// digest does not change with the thread count).
+    #[serde(skip)]
     pub threads: u32,
     /// Hole pixels at most (else `content_aware_hole_too_large`); default `1 << 20`.
     pub max_hole_pixels: u64,

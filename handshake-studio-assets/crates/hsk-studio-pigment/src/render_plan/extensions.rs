@@ -8,7 +8,7 @@
 //! its envelope; a backend opts in per operator through
 //! [`RenderBackend::extension_exactness`] (default: nothing supported).
 use super::{
-    Applicability, BackendError, ClipRole, ExactnessLedger, ExecuteRequest, MaskFormat, Operator,
+    Applicability, BackendError, ClipRole, ExactnessLedger, ExecuteRequest, MaskFormat, MaskInput, Operator,
     PlanError, PlanLimits, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
     admit_plan_rules,
 };
@@ -18,6 +18,8 @@ use crate::blur_math::{BLUR_EXACTNESS, BlurScope, LayerBlur};
 use crate::coverage_math::{
     BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
 };
+use crate::Rect;
+use crate::content_aware::{CONTENT_AWARE_EXACTNESS, ContentAwareOptions};
 use crate::filter_math::{FILTER_EXACTNESS, FilterKind, LayerFilter, MAX_FILTERS_PER_LAYER};
 use crate::effect_math::{
     EFFECT_EXACTNESS, EffectError, EffectKind, EffectOp, MAX_EFFECTS_PER_LAYER,
@@ -101,6 +103,17 @@ impl Knockout {
 ///   parameter outside its range or too many filters is [`PlanError::FilterParameter`]. Reported
 ///   as [`ExtOperator::Filter`] (Approximate). Empty = no filters (and absent from the digest).
 ///
+/// - `content_aware_fill`: a native content-aware fill of the layer's content before it
+///   composites ([`ContentAwareFillOp`], [`crate::content_aware::fill`], STU-RAS-143; lane
+///   SMB-PIGMENT-FILTER-DESCRIPTOR). Options out of range, a hole mask that is not a coverage
+///   plane (clip-to-base) or whose density is not 1, or a non-finite / overflowing hole or
+///   sampling rectangle is [`PlanError::ContentAwareParameter`]; together with an adjustment layer,
+///   effects, a transform, a blur or filters on the same layer, a pass-through layer, a clipped
+///   layer or a clip base it is [`PlanError::ContentAwareCombination`]. Reported as
+///   [`ExtOperator::ContentAwareFill`] (Approximate); no backend declares it yet, so shared
+///   admission refuses it under the key `content_aware_fill` before any sink call. `None` = no
+///   fill (and absent from the digest).
+///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
 #[non_exhaustive]
@@ -120,6 +133,34 @@ pub struct LayerExtension {
     pub blur: Option<LayerBlur>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<LayerFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_aware_fill: Option<ContentAwareFillOp>,
+}
+
+/// A content-aware fill on a layer's content ([`LayerExtension::content_aware_fill`]): the pixels
+/// where `hole` (a plan coverage mask source; coverage > 0, inverted honoured, density 1) is set
+/// are synthesized by [`crate::content_aware::fill`] from the rest of the content (`sampling`
+/// `None` = auto, `Some(rect)` = rectangular, plan coordinates) with `options` (its `threads` is
+/// not part of the digest).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct ContentAwareFillOp {
+    pub hole: MaskInput,
+    pub sampling: Option<Rect>,
+    pub options: ContentAwareOptions,
+}
+impl ContentAwareFillOp {
+    /// A fill of `hole` with auto sampling and the default options.
+    pub fn new(hole: MaskInput) -> Self {
+        Self { hole, sampling: None, options: ContentAwareOptions::default() }
+    }
+    /// Parameter check of [`PlanExtensions::validate`] (never clamped).
+    fn check(&self) -> bool {
+        self.options.validate().is_ok()
+            && self.hole.format != MaskFormat::BaseAlpha
+            && self.hole.density == 1.0
+            && self.hole.placement.end().is_ok()
+            && self.sampling.is_none_or(|r| r.end().is_ok() && r.width > 0 && r.height > 0)
+    }
 }
 impl LayerExtension {
     /// An extension that changes nothing (fill in the fields you need).
@@ -135,6 +176,7 @@ impl LayerExtension {
             transform: None,
             blur: None,
             filters: Vec::new(),
+            content_aware_fill: None,
         }
     }
     pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
@@ -167,6 +209,10 @@ impl LayerExtension {
     }
     pub fn with_filters(mut self, filters: Vec<LayerFilter>) -> Self {
         self.filters = filters;
+        self
+    }
+    pub fn with_content_aware_fill(mut self, op: ContentAwareFillOp) -> Self {
+        self.content_aware_fill = Some(op);
         self
     }
 }
@@ -244,6 +290,11 @@ pub enum ExtOperator {
     /// A core pixel filter on the layer content ([`LayerExtension::filters`],
     /// [`crate::filter_math`]); class [`FILTER_EXACTNESS`] (Approximate). Keys `filter_*`.
     Filter(FilterKind),
+    /// A content-aware fill of the layer content ([`LayerExtension::content_aware_fill`],
+    /// [`crate::content_aware`]); class [`CONTENT_AWARE_EXACTNESS`] (Approximate). Key
+    /// `content_aware_fill`. Declared by no backend yet (render-cpu and render-gpu answer
+    /// `Unsupported` for operators they do not list), so admission refuses it typed.
+    ContentAwareFill,
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -267,6 +318,7 @@ impl ExtOperator {
             },
             Self::Blur(scope) => scope.key(),
             Self::Filter(kind) => kind.key(),
+            Self::ContentAwareFill => "content_aware_fill",
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -285,6 +337,7 @@ impl ExtOperator {
             Self::Transform(_) => TRANSFORM_EXACTNESS,
             Self::Blur(_) => BLUR_EXACTNESS,
             Self::Filter(_) => FILTER_EXACTNESS,
+            Self::ContentAwareFill => CONTENT_AWARE_EXACTNESS,
         }
     }
 }
@@ -537,6 +590,23 @@ impl PlanExtensions {
                 for f in &e.filters {
                     add(ExtOperator::Filter(f.kind()));
                 }
+            }
+            if let Some(ca) = &e.content_aware_fill {
+                if !ca.check() {
+                    return Err(PlanError::ContentAwareParameter { node });
+                }
+                if e.adjustment.is_some()
+                    || !e.effects.is_empty()
+                    || e.transform.is_some()
+                    || e.blur.is_some()
+                    || !e.filters.is_empty()
+                    || layer.mode == StudioBlendMode::PassThrough
+                    || is_clip(layer)
+                    || g.layers.get(e.layer as usize + 1).is_some_and(is_clip)
+                {
+                    return Err(PlanError::ContentAwareCombination { node });
+                }
+                add(ExtOperator::ContentAwareFill);
             }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {
