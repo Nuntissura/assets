@@ -277,6 +277,55 @@ pub struct StudioCompositionLayer {
     /// byte as before (serde default, skipped when `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corner_pin: Option<StudioCornerPin>,
+    /// Masks (lane SMB-AE-KEY-TRACK-3; STU-CMP-025 mask collection, ordered): animated bezier mask
+    /// paths in layer space, written for example by a planar track. Empty = none; a record without
+    /// them serialises byte for byte as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<StudioCompositionMask>,
+}
+
+/// Most vertices one mask path may carry.
+pub const MAX_MASK_PATH_VERTICES: usize = 1024;
+/// Most masks one composition layer may carry.
+pub const MAX_LAYER_MASKS: usize = 64;
+
+/// STU-CMP-025a mask mode (seven members; masks combine in order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioCompositionMaskMode {
+    None,
+    Add,
+    Subtract,
+    Intersect,
+    Lighten,
+    Darken,
+    Difference,
+}
+
+/// One mask of a composition layer (STU-CMP-025): an animated bezier path, its mode and inversion.
+/// The `path` stream's value is the vertex list in layer-space pixels, six numbers per vertex:
+/// `x, y, in_dx, in_dy, out_dx, out_dy` (the incoming and outgoing tangent handles relative to the
+/// vertex; all four zero for a corner), the same vertex count on every keyframe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCompositionMask {
+    /// `1..=64` bytes, no control characters; unique on the layer.
+    pub mask_id: String,
+    pub mode: StudioCompositionMaskMode,
+    #[serde(default, skip_serializing_if = "is_false_flag")]
+    pub inverted: bool,
+    /// Closed path (a mask region); an open path is geometry only (mode `none`).
+    pub closed: bool,
+    pub static_value: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<StudioCompositionKeyframe>,
+}
+fn is_false_flag(v: &bool) -> bool {
+    !*v
+}
+impl StudioCompositionMask {
+    /// Numbers per vertex of the path value.
+    pub const VERTEX_COMPONENTS: usize = 6;
 }
 
 /// A corner pin of a composition layer: `from` (four layer-space corners, upper left, upper
@@ -442,6 +491,24 @@ fn validate_corner_pin(p: &StudioCornerPin, layer: &str, cx: &mut Ctx) -> Result
     validate_keyed(&t, StudioCornerPin::DIMENSION, &value_ok, &p.static_value, &p.keyframes, cx)
 }
 
+/// A mask: id shape, an open path only as geometry (`none`), and the path stream (a fixed vertex
+/// count `1..=MAX_MASK_PATH_VERTICES`, six finite bounded numbers per vertex, keyframe rules of a
+/// transform stream).
+fn validate_mask(m: &StudioCompositionMask, layer: &str, cx: &mut Ctx) -> Result<()> {
+    cx.tick()?;
+    let id_ok = !m.mask_id.is_empty() && m.mask_id.len() <= 64 && !m.mask_id.chars().any(char::is_control);
+    check(id_ok, &format!("{layer}/masks"), "mask_id")?;
+    let t = format!("{layer}/masks/{}", m.mask_id);
+    check(m.closed || m.mode == StudioCompositionMaskMode::None, &t, "closed")?;
+    let len = m.static_value.len();
+    let vertices = len.checked_div(StudioCompositionMask::VERTEX_COMPONENTS).unwrap_or(0);
+    let shape_ok = len.checked_rem(StudioCompositionMask::VERTEX_COMPONENTS) == Some(0)
+        && (1..=MAX_MASK_PATH_VERTICES).contains(&vertices);
+    check(shape_ok, &t, "static_value")?;
+    let value_ok = |v: &[f64]| v.len() == len && v.iter().all(|x| x.is_finite() && x.abs() <= MAX_STREAM_ABS_VALUE);
+    validate_keyed(&t, len, &value_ok, &m.static_value, &m.keyframes, cx)
+}
+
 fn validate_keyed(
     t: &str,
     dim: usize,
@@ -521,6 +588,17 @@ fn validate_layer(
     }
     if let Some(p) = &l.corner_pin {
         validate_corner_pin(p, t, cx)?;
+    }
+    if l.masks.len() > MAX_LAYER_MASKS {
+        return Err(err(Code::BudgetExceeded, format!("{t}/masks")));
+    }
+    cx.nodes(l.masks.len(), t)?;
+    let mut ids = BTreeSet::new();
+    for m in &l.masks {
+        validate_mask(m, t, cx)?;
+        if !ids.insert(m.mask_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, format!("{t}/masks/{}", m.mask_id)));
+        }
     }
     Ok(())
 }

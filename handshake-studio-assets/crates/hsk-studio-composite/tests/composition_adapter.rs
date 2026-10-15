@@ -341,6 +341,21 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         let (ox, oy) = (t[0].placement.x as f64, t[0].placement.y as f64);
         let (x, y) = p.pin.apply(ox + 4.0, oy + 4.0).unwrap();
         assert!((x - ox - 5.0).abs() < 1e-9 && (y - oy - 5.0).abs() < 1e-9, "({x}, {y})");
+        // Mask paths (lane SMB-AE-KEY-TRACK-3) become the layer's composition-space matte; with a
+        // corner pin or on the document graph they are refused typed.
+        let mask = json!([{"mask_id":"m","mode":"add","closed":true,
+            "static_value":[0.0,0.0,0.0,0.0,0.0,0.0,3.0,0.0,0.0,0.0,0.0,0.0,3.0,3.0,0.0,0.0,0.0,0.0,0.0,3.0,0.0,0.0,0.0,0.0]}]);
+        let masked = edit(&|r| r.pointer_mut(layer0).unwrap()["masks"] = mask.clone()).unwrap();
+        let scene = masked.scene_at(f(5) as i64, &CancellationToken::default()).unwrap();
+        let matte = scene.layers.last().unwrap().matte.as_ref().expect("mask matte");
+        assert!(matches!(&matte.layer.as_ref().unwrap().content, SceneContent::Static(s) if s.owned_masks.len() == 1));
+        let both = edit(&|r| {
+            r.pointer_mut(layer0).unwrap()["masks"] = mask.clone();
+            r.pointer_mut(layer0).unwrap()["corner_pin"] = pin.clone();
+        })
+        .unwrap();
+        let e = both.scene_at(f(5) as i64, &CancellationToken::default()).unwrap_err();
+        assert_eq!(unsupported(e), hsk_studio_composite::mask_paths::COMPOSITION_MASK_PATH_WITH_CORNER_PIN);
         // A vector layer goes through the static path (lane SMB-COMPOSITE-COMPOSITION-2), which
         // lowers the layer's own graph operation; this fixture's vector layer has none.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 5))).unwrap_err();

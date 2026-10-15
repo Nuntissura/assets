@@ -435,3 +435,67 @@ pub fn corner_pin_quad_at(pin: &StudioCornerPin, tick: i64) -> Result<Quad, Trac
         .map_err(|_| TrackApplyError::Parameter)?;
     Ok([[v[0], v[1]], [v[2], v[3]], [v[4], v[5]], [v[6], v[7]]])
 }
+
+// ---- planar track -> mask path (lane SMB-AE-KEY-TRACK-3) ------------------------------------
+
+/// Writes a planar track as an animated mask path on `target` (a new record; the input is
+/// untouched): `path` is the start-frame mask (layer space, six numbers per vertex: `x, y, in_dx,
+/// in_dy, out_dx, out_dy`), mapped through each `Tracked` frame's homography (a vertex `v` to
+/// `H(v)`, a handle `t` to `H(v + t) - H(v)`), one linear keyframe per frame at its tick (STU-CMP-065
+/// "Planar / mask tracking ... producing an animated mask path"). A mask with the same id is
+/// replaced, otherwise the mask is appended. Layer space is the tracked footage's pixel space (the
+/// footage placed at the layer origin).
+pub fn apply_planar_mask(
+    target: &StudioCompositionLayer,
+    mask_id: &str,
+    mode: hsk_studio_folio::StudioCompositionMaskMode,
+    path: &[f64],
+    planar: &[PlanarFrame],
+    timing: TrackTiming,
+) -> Result<StudioCompositionLayer, TrackApplyError> {
+    let vertices = path.len().checked_div(6).ok_or(TrackApplyError::Parameter)?;
+    if path.len().checked_rem(6) != Some(0)
+        || !(1..=hsk_studio_folio::MAX_MASK_PATH_VERTICES).contains(&vertices)
+        || !path.iter().all(|v| v.is_finite())
+        || mask_id.is_empty()
+    {
+        return Err(TrackApplyError::Parameter);
+    }
+    let frames: Vec<&PlanarFrame> = planar.iter().filter(|f| f.status == PlanarStatus::Tracked).collect();
+    if frames.is_empty() {
+        return Err(TrackApplyError::Parameter);
+    }
+    if frames.len() > MAX_TRACK_KEYS {
+        return Err(TrackApplyError::KeyLimit);
+    }
+    if frames.windows(2).any(|w| w[0].frame >= w[1].frame) {
+        return Err(TrackApplyError::Parameter);
+    }
+    let mut keys = Vec::with_capacity(frames.len());
+    for f in frames {
+        let mut value = Vec::with_capacity(path.len());
+        for v in path.chunks_exact(6) {
+            let p = f.homography.apply([v[0], v[1]]);
+            let i = f.homography.apply([v[0] + v[2], v[1] + v[3]]);
+            let o = f.homography.apply([v[0] + v[4], v[1] + v[5]]);
+            value.extend_from_slice(&[p[0], p[1], i[0] - p[0], i[1] - p[1], o[0] - p[0], o[1] - p[1]]);
+        }
+        finite(&value)?;
+        keys.push(key(timing.tick(f.frame)?, value));
+    }
+    let static_value = keys.first().map(|k| k.value.clone()).unwrap_or_default();
+    let mask = hsk_studio_folio::StudioCompositionMask {
+        mask_id: mask_id.to_owned(),
+        mode,
+        inverted: false,
+        closed: true,
+        static_value,
+        keyframes: keys,
+    };
+    let mut out = target.clone();
+    match out.masks.iter_mut().find(|m| m.mask_id == mask_id) {
+        Some(m) => *m = mask,
+        None => out.masks.push(mask),
+    }
+    Ok(out)
+}

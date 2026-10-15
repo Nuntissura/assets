@@ -22,6 +22,7 @@ fn layer() -> StudioCompositionLayer {
         track_matte: None,
         streams: vec![],
         corner_pin: None,
+        masks: vec![],
     }
 }
 

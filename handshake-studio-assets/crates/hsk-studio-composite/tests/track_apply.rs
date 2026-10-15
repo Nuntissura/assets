@@ -28,6 +28,7 @@ fn layer(streams: Vec<StudioPropertyStream>) -> StudioCompositionLayer {
         track_matte: None,
         streams,
         corner_pin: None,
+        masks: vec![],
     }
 }
 

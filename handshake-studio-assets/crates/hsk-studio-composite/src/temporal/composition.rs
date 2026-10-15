@@ -188,6 +188,31 @@ struct CompLayer {
     content: Content,
     /// Corner pin (lane SMB-AE-KEY-TRACK-3): the layer-space quad `from` and the `to` stream.
     pin: Option<(Quad, Property)>,
+    /// Mask paths (lane SMB-AE-KEY-TRACK-3), in order.
+    masks: Option<LayerMasks>,
+}
+
+/// The masks of one layer: mode, inverted, closed and the path stream, plus the colour tag and
+/// revision their matte plan is built with.
+#[derive(Clone, Debug)]
+struct LayerMasks {
+    masks: Vec<(hsk_studio_folio::StudioCompositionMaskMode, bool, bool, Property)>,
+    space: ColourTag,
+    revision: u64,
+}
+
+/// The motion `Property` of a mask's path stream (the vertex list), through the same keyframe
+/// conversion as a transform stream.
+fn mask_property(layer_id: &str, m: &hsk_studio_folio::StudioCompositionMask) -> Result<Property, TemporalError> {
+    property(
+        layer_id,
+        &StudioPropertyStream {
+            // Only the keyframe conversion of `property` is used; the component count is the path's.
+            property: StudioLayerProperty::Position,
+            static_value: m.static_value.clone(),
+            keyframes: m.keyframes.clone(),
+        },
+    )
 }
 
 type Quad = [[f64; 2]; 4];
@@ -738,6 +763,18 @@ impl CompositionTemporalSource {
                         Some((p.from, pin_property(id, p)?))
                     }
                 },
+                masks: if l.masks.is_empty() {
+                    None
+                } else {
+                    if !matches!(content, Content::Tiles { .. } | Content::Static { .. } | Content::Precomp { collapse: false, .. }) {
+                        return Err(unsupported(id, crate::mask_paths::COMPOSITION_MASK_PATH_CONTENT));
+                    }
+                    let mut masks = Vec::with_capacity(l.masks.len());
+                    for m in &l.masks {
+                        masks.push((m.mode, m.inverted, m.closed, mask_property(id, m)?));
+                    }
+                    Some(LayerMasks { masks, space: input.space, revision: doc.revision })
+                },
                 content,
             });
         }
@@ -814,6 +851,9 @@ impl CompositionTemporalSource {
             }
             Some(l) if l.pin.is_some() => {
                 Err(unsupported(layer_id, crate::track_apply::COMPOSITION_CORNER_PIN_ON_DOCUMENT_GRAPH))
+            }
+            Some(l) if l.masks.is_some() => {
+                Err(unsupported(layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_ON_DOCUMENT_GRAPH))
             }
             Some(l)
                 if l.matte.is_some()
@@ -1080,6 +1120,32 @@ impl CompositionTemporalSource {
                     },
                     inverted: m.inverted,
                 })
+            }
+        };
+        // Mask paths (lane SMB-AE-KEY-TRACK-3): sampled at `tick`, mapped from layer space by the
+        // layer's matrix (content origin first) and combined into a composition-space alpha matte.
+        let matte = match &l.masks {
+            None => matte,
+            Some(lm) => {
+                if matte.is_some() {
+                    return Err(unsupported(&l.layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_WITH_MATTE));
+                }
+                if l.pin.is_some() {
+                    return Err(unsupported(&l.layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_WITH_CORNER_PIN));
+                }
+                let o = l.content.origin();
+                let to_comp = Affine2::translate(o[0], o[1]).then(Self::matrix(comp, l, tick, cancel)?);
+                let mut at = Vec::with_capacity(lm.masks.len());
+                for (mode, inverted, closed, p) in &lm.masks {
+                    let path = sample(&l.layer_id, Some(p), p.dimension(), tick, cancel)?.unwrap_or_default();
+                    at.push(crate::mask_paths::MaskAtTick { mode: *mode, inverted: *inverted, closed: *closed, path });
+                }
+                let rect = Rect { x: 0, y: 0, width: comp.width, height: comp.height };
+                let px = u64::from(comp.width).checked_mul(u64::from(comp.height)).ok_or(CompositeError::Overflow)?;
+                match crate::mask_paths::mask_coverage(&at, &to_comp, rect, px).map_err(|code| unsupported(&l.layer_id, code))? {
+                    None => None,
+                    Some(cov) => Some(crate::mask_paths::coverage_matte(&cov, rect, &l.layer_id, lm.space, lm.revision)?),
+                }
             }
         };
         // Corner pin (lane SMB-AE-KEY-TRACK-3): the pinned quad at `tick` (motion samples the
@@ -1537,6 +1603,9 @@ impl TemporalSource for DocumentGraphSource<'_> {
         };
         if l.pin.is_some() {
             return Err(unsupported(layer_id, crate::track_apply::COMPOSITION_CORNER_PIN_ON_DOCUMENT_GRAPH));
+        }
+        if l.masks.is_some() {
+            return Err(unsupported(layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_ON_DOCUMENT_GRAPH));
         }
         CompositionTemporalSource::matrix(self.inner.root()?, l, tick, cancel).map(Some)
     }

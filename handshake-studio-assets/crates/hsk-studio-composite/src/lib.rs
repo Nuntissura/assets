@@ -7,6 +7,7 @@ pub mod evaluate_static;
 pub mod lower_extensions;
 pub mod lower_plan;
 pub mod lower_render_plan;
+pub mod mask_paths;
 pub mod temporal;
 pub mod text;
 pub mod track_apply;
