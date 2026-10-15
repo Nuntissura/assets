@@ -1732,11 +1732,13 @@ dependencies = [
  "hsk-studio-interop-psd",
  "hsk-studio-interop-raster",
  "hsk-studio-interop-tiff",
+ "hsk-studio-nib",
  "hsk-studio-observe",
  "hsk-studio-package",
  "hsk-studio-pigment",
  "hsk-studio-press",
  "hsk-studio-prism",
+ "hsk-studio-pulse",
  "hsk-studio-render-cpu",
  "hsk-studio-render-gpu",
  "hsk-studio-session",
@@ -1974,6 +1976,7 @@ dependencies = [
  "hsk-studio-pigment",
  "hsk-studio-prism",
  "hsk-studio-render-cpu",
+ "hsk-studio-score",
 ]
 
 [[package]]
