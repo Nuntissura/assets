@@ -713,15 +713,11 @@ pub fn specs(doc: &StudioDocument, entry: &VectorEntry) -> Result<Vec<VectorLaye
     Ok(out)
 }
 
-/// Largest pattern tile (pixels) a fill-and-stroke outline layer paints with.
-pub const MAX_OUTLINE_TILE_PIXELS: u64 = 16 << 20;
-
 /// The spec of a network or variable-width layer (lane SMB-ILLUSTRATOR-PEN-3): fill geometry (a
 /// network's filled regions, else the path) and the stroke's filled outline (a network's stroke
-/// geometry, else the path; outlined by the width profile or the uniform width) united as the layer
-/// geometry. With both a fill and a stroke the colour comes from a pattern tile over their bounds:
-/// `stroke * s + fill * f (1 - s)` over `s + f (1 - s)` from Nib's exact coverage of each (the
-/// stroke paints above the fill), so composite draws one coverage plane.
+/// geometry, else the path; outlined by the width profile or the uniform width) as two
+/// geometry rows: the fill row over the fill geometry, a composite `StrokeGeometry` row over the
+/// stroke outline (painted above the fill, each with its own exact coverage).
 fn outline_spec(layer_id: &str, record: &PathRecord) -> Result<VectorLayerSpec, String> {
     let style = record.style;
     let err = |e: hsk_studio_nib::Error| format!("vector_outline: {e:?}");
@@ -754,73 +750,16 @@ fn outline_spec(layer_id: &str, record: &PathRecord) -> Result<VectorLayerSpec, 
         }
         _ => None,
     };
-    let mut geometry = fill_paths.clone();
-    geometry.extend(outline.iter().cloned());
-    let fills = match (style.fill, style.stroke, &outline, fill_paths.is_empty()) {
-        (Some(f), Some(s), Some(o), false) => {
-            let tile = blend_tile(&fill_paths, o, f, s)?;
-            vec![FillSpec { paint: FillPaint::Pattern(tile), mode: StudioBlendMode::Normal, opacity: 1.0 }]
-        }
-        (Some(f), _, None, false) => vec![FillSpec { paint: solid(f), mode: StudioBlendMode::Normal, opacity: 1.0 }],
-        (_, Some(s), Some(_), true) | (None, Some(s), Some(_), _) => vec![FillSpec { paint: solid(s), mode: StudioBlendMode::Normal, opacity: 1.0 }],
-        _ => Vec::new(),
-    };
-    Ok(VectorLayerSpec { layer_id: layer_id.to_string(), geometry: VectorGeometry::Paths(geometry), fills })
-}
-
-/// The colour tile of a fill-and-stroke outline layer (module docs of [`outline_spec`]).
-fn blend_tile(fills: &[OwnedPath], outline: &OwnedPath, fill: [u8; 3], stroke: [u8; 3]) -> Result<hsk_studio_nib::raster::PatternTile, String> {
-    use hsk_studio_nib::raster::{PatternTile, PixelFrame, RasterOptions, rasterize};
-    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-    for path in fills.iter().chain(std::iter::once(outline)) {
-        for e in &path.elements {
-            let pts: &[PathPoint] = match e {
-                hsk_studio_nib::PathElement::MoveTo(p) | hsk_studio_nib::PathElement::LineTo(p) => std::slice::from_ref(p),
-                hsk_studio_nib::PathElement::QuadTo(a, p) => &[*a, *p][..],
-                hsk_studio_nib::PathElement::CubicTo(a, c, p) => &[*a, *c, *p][..],
-                hsk_studio_nib::PathElement::Close => &[],
-            };
-            for p in pts {
-                b = [b[0].min(p.x), b[1].min(p.y), b[2].max(p.x), b[3].max(p.y)];
-            }
-        }
+    // Exact: the fill row covers the fill geometry, the stroke row its own outline (composite
+    // `FillPaint::StrokeGeometry`, lane SMB-COMPOSITE-STROKE-GEOMETRY).
+    let mut fills = Vec::new();
+    if let (Some(f), false) = (style.fill, fill_paths.is_empty()) {
+        fills.push(FillSpec { paint: solid(f), mode: StudioBlendMode::Normal, opacity: 1.0 });
     }
-    if !b.iter().all(|v| v.is_finite()) {
-        return Err("vector_outline: empty".into());
+    if let (Some(s), Some(o)) = (style.stroke, outline) {
+        fills.push(FillSpec { paint: FillPaint::StrokeGeometry { outline: vec![o], paint: Box::new(solid(s)) }, mode: StudioBlendMode::Normal, opacity: 1.0 });
     }
-    let (x0, y0) = (b[0].floor(), b[1].floor());
-    let (w, h) = ((b[2].ceil() - x0).max(1.0), (b[3].ceil() - y0).max(1.0));
-    if w * h > MAX_OUTLINE_TILE_PIXELS as f64 || x0.abs() > 1.0e8 || y0.abs() > 1.0e8 {
-        return Err("vector_outline: tile_too_large".into());
-    }
-    // In range after the checks above.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let frame = PixelFrame { x: x0 as i32, y: y0 as i32, width: w as u32, height: h as u32 };
-    let opts = RasterOptions::default();
-    let cover = |p: &OwnedPath| rasterize(p, frame, &opts).map(|(c, _)| c.data).map_err(|e| format!("vector_outline: {e:?}"));
-    let s_cov = cover(outline)?;
-    let mut f_cov = vec![0.0_f32; s_cov.len()];
-    for p in fills {
-        for (acc, c) in f_cov.iter_mut().zip(cover(p)?) {
-            let a = f32::from(c) / 255.0;
-            *acc = 1.0 - (1.0 - *acc) * (1.0 - a);
-        }
-    }
-    let (fl, sl) = (fill.map(linear), stroke.map(linear));
-    let pixels = s_cov
-        .iter()
-        .zip(&f_cov)
-        .map(|(sc, f)| {
-            let s = f32::from(*sc) / 255.0;
-            let a = s + f * (1.0 - s);
-            if a <= 0.0 {
-                return [fl[0], fl[1], fl[2], 1.0];
-            }
-            let mix = |k: usize| (sl[k] * s + fl[k] * f * (1.0 - s)) / a;
-            [mix(0), mix(1), mix(2), 1.0]
-        })
-        .collect();
-    Ok(PatternTile { width: frame.width, height: frame.height, pixels, transform: [1.0, 0.0, 0.0, 1.0, f64::from(frame.x), f64::from(frame.y)] })
+    Ok(VectorLayerSpec { layer_id: layer_id.to_string(), geometry: VectorGeometry::Paths(fill_paths), fills })
 }
 
 /// A fresh `SVPT` id (the document id's time fields, never one the entry holds).

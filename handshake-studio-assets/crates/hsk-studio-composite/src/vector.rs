@@ -151,6 +151,42 @@ pub enum FillPaint {
         style: StrokeStyle,
         paint: Box<FillPaint>,
     },
+    /// A stroke row with its own geometry (lane SMB-COMPOSITE-STROKE-GEOMETRY): `paint` (solid,
+    /// gradient or pattern) inside `outline`, the filled outline of the stroke as the caller drew it
+    /// (several paths are united, each under its own fill rule), instead of the nib stroke of the
+    /// layer's fill geometry. Vector networks (stroke geometry differs from fill geometry) and
+    /// variable-width strokes use it. Like [`FillPaint::Stroke`] it follows every fill row and has
+    /// its own coverage plane ([`StrokePlane`]).
+    StrokeGeometry {
+        outline: Vec<OwnedPath>,
+        paint: Box<FillPaint>,
+    },
+}
+
+/// The stroke of a stroke row: a nib stroke style over the layer geometry, or an explicit outline.
+#[derive(Clone, Copy)]
+enum RowStroke<'a> {
+    Style(&'a StrokeStyle),
+    Outline(&'a [OwnedPath]),
+}
+
+/// The united filled outline of a [`FillPaint::StrokeGeometry`] row (`None` when empty).
+fn explicit_outline(outline: &[OwnedPath], limits: &PathLimits) -> Result<Option<OwnedPath>, &'static str> {
+    for p in outline {
+        p.validate(limits).map_err(|_| REFUSE_VECTOR_GEOMETRY)?;
+    }
+    let drawn: Vec<OwnedPath> = outline.iter().filter(|p| !p.elements.is_empty()).cloned().collect();
+    let united = match drawn.len() {
+        0 => return Ok(None),
+        1 => hsk_studio_nib::boolean::normalise_path(&drawn[0], &hsk_studio_nib::boolean::BooleanOptions::default()),
+        _ => hsk_studio_nib::boolean::boolean(&drawn, hsk_studio_nib::boolean::BooleanOp::Union, &hsk_studio_nib::boolean::BooleanOptions::default()),
+    };
+    match united {
+        Ok(g) => Ok(Some(g.path)),
+        Err(hsk_studio_nib::Error::EmptyPathfinderResult) => Ok(None),
+        Err(hsk_studio_nib::Error::BudgetExceeded) => Err(crate::vector_nib::REFUSE_NIB_BUDGET),
+        Err(_) => Err(REFUSE_VECTOR_GEOMETRY),
+    }
 }
 
 /// One fill row (bottom first): its paint, blend mode and opacity fraction.
@@ -664,7 +700,7 @@ fn prepare_one(
     // Rows: fills first, then strokes (strokes paint above fills, Figma order; a fill row above a
     // stroke row is refused, never reordered silently).
     let mut seen_stroke = false;
-    let mut rows: Vec<(&FillPaint, Option<&hsk_studio_nib::stroke::StrokeStyle>, &FillSpec)> =
+    let mut rows: Vec<(&FillPaint, Option<RowStroke<'_>>, &FillSpec)> =
         Vec::with_capacity(spec.fills.len());
     for f in &spec.fills {
         if !(f.opacity.is_finite() && (0.0..=1.0).contains(&f.opacity)) {
@@ -672,11 +708,18 @@ fn prepare_one(
         }
         match &f.paint {
             FillPaint::Stroke { style, paint } => {
-                if matches!(**paint, FillPaint::Stroke { .. } | FillPaint::Image(_)) {
+                if matches!(**paint, FillPaint::Stroke { .. } | FillPaint::StrokeGeometry { .. } | FillPaint::Image(_)) {
                     return Ok(Err(REFUSE_STROKE_PAINT));
                 }
                 seen_stroke = true;
-                rows.push((paint, Some(style), f));
+                rows.push((paint, Some(RowStroke::Style(style)), f));
+            }
+            FillPaint::StrokeGeometry { outline, paint } => {
+                if matches!(**paint, FillPaint::Stroke { .. } | FillPaint::StrokeGeometry { .. } | FillPaint::Image(_)) {
+                    return Ok(Err(REFUSE_STROKE_PAINT));
+                }
+                seen_stroke = true;
+                rows.push((paint, Some(RowStroke::Outline(outline)), f));
             }
             other => {
                 if seen_stroke {
@@ -689,9 +732,13 @@ fn prepare_one(
     // Stroke outlines (nib) and their bounds join the plane rect.
     let mut stroke_paths = Vec::new();
     let mut bbox = built.bbox;
-    for (_, style, _) in &rows {
-        let Some(style) = style else { continue };
-        let path = match crate::vector_nib::stroke_outline(&spec.geometry, style) {
+    for (_, stroke, _) in &rows {
+        let Some(stroke) = stroke else { continue };
+        let path = match stroke {
+            RowStroke::Style(style) => crate::vector_nib::stroke_outline(&spec.geometry, style),
+            RowStroke::Outline(outline) => explicit_outline(outline, &res.path_limits),
+        };
+        let path = match path {
             Ok(p) => p,
             Err(code) => return Ok(Err(code)),
         };
