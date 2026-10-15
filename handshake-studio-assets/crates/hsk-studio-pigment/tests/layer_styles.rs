@@ -23,11 +23,12 @@ fn plane(w: u32, h: u32, alpha: Vec<f32>) -> EffectPlane {
     let n = alpha.len();
     EffectPlane::new(w, h, vec![[0.2, 0.4, 0.6]; n], alpha).unwrap()
 }
-/// 8 wide x 10 high, columns 0..=3 opaque (row 5 and its neighbours 4, 6 see the full vertical
-/// kernel, so the vertical gradient there is 0).
+/// 12 wide x 10 high, columns 0..=6 opaque. Rows 4..=6 and columns 2..=11 around the probes see
+/// the full kernel inside the plane, so the vertical gradient at row 5 is 0 and no plane edge
+/// enters the hand values.
 fn half_plane() -> EffectPlane {
-    let alpha = (0..80).map(|i| if i % 8 <= 3 { 1.0 } else { 0.0 }).collect();
-    plane(8, 10, alpha)
+    let alpha = (0..120).map(|i| if i % 12 <= 6 { 1.0 } else { 0.0 }).collect();
+    plane(12, 10, alpha)
 }
 fn bevel(part: BevelPart, style: BevelStyle, angle: f32) -> EffectOp {
     EffectOp::BevelEmboss(BevelEmbossOp::new(
@@ -51,29 +52,29 @@ fn at(m: &[f32], x: usize, y: usize, w: usize) -> f32 {
 #[test]
 fn bevel_hand_values() {
     // Size 2 -> sigma 1 kernel (taps k0 0.3990503, k1 0.2420362, k2 0.0540056, k3 0.0044330).
-    // Row 5 of the blurred alpha: H(2) = 1 - k2 - k3 = 0.9415614, H(4) = k1 + k2 + k3 =
-    // 0.3004749, so dH/dx at x = 3 is (0.3004749 - 0.9415614) / 2 = -0.3205433; height scale
+    // Row 5 of the blurred alpha: H(5) = 1 - k2 - k3 = 0.9415614, H(7) = k1 + k2 + k3 =
+    // 0.3004749, so dH/dx at x = 6 is (0.3004749 - 0.9415614) / 2 = -0.3205433; height scale
     // depth 100 % x size 2 = 2 -> N = (0.6410865, 0, 1) / 1.1878518. Light angle 0 at altitude 30:
     // L = (0.8660254, 0, 0.5), s = (0.5551975 + 0.5) / 1.1878518 = 0.8883239, flat s0 = 0.5,
     // highlight (s - s0) / (1 - s0) = 0.7766479. Light from 180: s = -0.0464681, shadow
     // (0.5 + 0.0464681) / 0.5 > 1 -> 1.
     let p = half_plane();
     let hi = reference_matte(&p, &bevel(BevelPart::Highlight, BevelStyle::InnerBevel, 0.0)).unwrap();
-    assert!((at(&hi, 3, 5, 8) - 0.776_647_9).abs() < 2e-5, "{}", at(&hi, 3, 5, 8));
+    assert!((at(&hi, 6, 5, 12) - 0.776_647_9).abs() < 2e-5, "{}", at(&hi, 6, 5, 12));
     let sh = reference_matte(&p, &bevel(BevelPart::Shadow, BevelStyle::InnerBevel, 0.0)).unwrap();
-    assert_eq!(at(&sh, 3, 5, 8), 0.0, "lit side has no shadow");
+    assert_eq!(at(&sh, 6, 5, 12), 0.0, "lit side has no shadow");
     let sh = reference_matte(&p, &bevel(BevelPart::Shadow, BevelStyle::InnerBevel, 180.0)).unwrap();
-    assert_eq!(at(&sh, 3, 5, 8), 1.0);
-    // At x = 4 the slope is the same (H(5) - H(3) = 0.0584386 - 0.6995251, /2 = -0.3205433):
+    assert_eq!(at(&sh, 6, 5, 12), 1.0);
+    // At x = 7 the slope is the same (H(8) - H(6) = 0.0584386 - 0.6995251, /2 = -0.3205433):
     // an inner bevel draws nothing outside the shape, an outer bevel and an emboss draw 0.7766.
-    assert_eq!(at(&hi, 4, 5, 8), 0.0);
+    assert_eq!(at(&hi, 7, 5, 12), 0.0);
     for style in [BevelStyle::OuterBevel, BevelStyle::Emboss] {
         let m = reference_matte(&p, &bevel(BevelPart::Highlight, style, 0.0)).unwrap();
-        assert!((at(&m, 4, 5, 8) - 0.776_647_9).abs() < 2e-5, "{style:?}");
+        assert!((at(&m, 7, 5, 12) - 0.776_647_9).abs() < 2e-5, "{style:?}");
     }
     // Pillow emboss outside the shape uses the negated height: lit side becomes shadow.
     let m = reference_matte(&p, &bevel(BevelPart::Highlight, BevelStyle::PillowEmboss, 0.0)).unwrap();
-    assert_eq!(at(&m, 4, 5, 8), 0.0);
+    assert_eq!(at(&m, 7, 5, 12), 0.0);
     // Direction down flips the lighting.
     let down = EffectOp::BevelEmboss(BevelEmbossOp::new(
         BevelPart::Shadow,
@@ -89,7 +90,7 @@ fn bevel_hand_values() {
         },
     ));
     let m = reference_matte(&p, &down).unwrap();
-    assert_eq!(at(&m, 3, 5, 8), 1.0);
+    assert_eq!(at(&m, 6, 5, 12), 1.0);
 }
 
 #[test]
