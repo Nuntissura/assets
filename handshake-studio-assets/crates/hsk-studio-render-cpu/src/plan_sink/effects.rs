@@ -303,6 +303,11 @@ impl Eval<'_, '_> {
                     transformed_at(planes, prep, x, y)
                 })?;
             }
+            PNode::Filled { rect, data } => {
+                fill_region(content, frame_rect, region, |x, y| {
+                    super::content_aware::filled_at(*rect, data, x, y)
+                })?;
+            }
             PNode::Tile { planes, rect } => {
                 fill_region(content, frame_rect, region, |x, y| {
                     tile_at(planes, *rect, x, y)

@@ -24,6 +24,7 @@
 //! and coordinates go through the checked helpers of `crate::px`.
 #![deny(clippy::arithmetic_side_effects)]
 mod blur;
+mod content_aware;
 mod effects;
 mod extended;
 mod filter;
@@ -347,6 +348,13 @@ enum PNode<'a> {
         planes: TilePlanes<'a>,
         prep: PreparedTransform,
     },
+    /// The output of a content-aware fill (envelope `LayerExtension::content_aware_fill`): a node
+    /// of [`Prepared::extra`] holding pigment's filled plane (straight RGBA over `rect`), written
+    /// by `content_aware::run_fills` before the first chunk (empty until then).
+    Filled {
+        rect: Rect,
+        data: Vec<[f32; 4]>,
+    },
 }
 /// Straight RGBA at plan pixel `(x, y)` of a transformed tile: pigment's
 /// `PreparedTransform::sample_rgba` over the verified planes.
@@ -380,6 +388,8 @@ struct Prepared<'a> {
     seed: u64,
     /// Envelope tables (adjustments, Blend-If sets, feather kernels); empty on the v1 path.
     ext: ExtPrep,
+    /// Content-aware fills to run before the first chunk (lane SMB-RENDER-CONTENT-AWARE).
+    fills: Vec<content_aware::FillJob<'a>>,
 }
 
 impl<'a> Prepared<'a> {
@@ -555,13 +565,18 @@ fn prepare<'a, V: VectorSource>(
     let mut has_effects: Vec<bool> = Vec::with_capacity(n);
     let mut extra: Vec<PNode<'a>> = Vec::new();
     let mut extra_bounds: Vec<Option<Rect>> = Vec::new();
+    // Does the node's subtree hold a content-aware fill? (A filled layer's content may not.)
+    let mut has_fill: Vec<bool> = Vec::with_capacity(n);
+    let mut fills: Vec<content_aware::FillJob<'a>> = Vec::new();
     for (i, node) in plan.nodes.iter().enumerate() {
         let mut group_has_effects = false;
+        let mut group_has_fill = false;
         if !reach[i] {
             nodes.push(PNode::Unused);
             bounds.push(None);
             need.push(0);
             has_effects.push(false);
+            has_fill.push(false);
             continue;
         }
         let (pnode, node_bounds, node_need) = match node {
@@ -778,6 +793,61 @@ fn prepare<'a, V: VectorSource>(
                         ext.frame_depth = ext.frame_depth.max(need[input]);
                         ext.set_filter_bounds(index, content_bounds);
                     }
+                    // Content-aware fill (pigment `content_aware::fill`): the layer reads a filled
+                    // node of `extra`, written before the first chunk (see `content_aware`).
+                    // Pigment validated the combinations (`ContentAwareCombination`); kept as
+                    // defence in depth with its error.
+                    let source_index = match layer_fx.content_aware {
+                        None => source_index,
+                        Some(index) => {
+                            if layer_fx.effect.is_some()
+                                || layer_fx.blur.is_some()
+                                || layer_fx.filter.is_some()
+                                || layer_fx.transform.is_some()
+                                || layer_fx.adjustment.is_some()
+                                || pass_through
+                                || clipped
+                                || starts_run
+                            {
+                                return Err(RenderError::Backend(BackendError::InvalidPlan(
+                                    PlanError::ContentAwareCombination { node: node_id },
+                                )));
+                            }
+                            if has_effects[input] || has_fill[input] {
+                                return Err(unsupported(content_aware::CONTENT_AWARE_NESTED));
+                            }
+                            let op = ext
+                                .content_aware(index)
+                                .ok_or_else(|| unsupported("plan_shape"))?;
+                            let hole = content_aware::hole_view(sources, &op.hole, node_id)?;
+                            // The plane handed to pigment: the content inside the plan extent.
+                            let plane = content_bounds
+                                .map(|b| intersect(b, target.extent))
+                                .transpose()?
+                                .flatten();
+                            let slot = extra.len();
+                            let at = add_u(n, slot)?;
+                            extra.push(PNode::Filled {
+                                rect: plane.unwrap_or(target.extent),
+                                data: Vec::new(),
+                            });
+                            extra_bounds.push(plane);
+                            if let Some(bounds) = plane {
+                                fills.push(content_aware::FillJob {
+                                    extra: slot,
+                                    input,
+                                    bounds,
+                                    hole,
+                                    op,
+                                    node: node_id,
+                                });
+                            }
+                            layer_bounds = plane;
+                            group_has_fill = true;
+                            at
+                        }
+                    };
+                    group_has_fill |= has_fill[input];
                     group_effects |= layer_fx.effect.is_some()
                         || layer_fx.blur.is_some()
                         || layer_fx.filter.is_some()
@@ -899,6 +969,7 @@ fn prepare<'a, V: VectorSource>(
         bounds.push(node_bounds);
         need.push(node_need);
         has_effects.push(group_has_effects);
+        has_fill.push(group_has_fill);
     }
     Ok(Prepared {
         nodes,
@@ -910,6 +981,7 @@ fn prepare<'a, V: VectorSource>(
         reachable: reach.iter().filter(|r| **r).count() as u64,
         seed: plan.revision,
         ext,
+        fills,
     })
 }
 
@@ -1057,10 +1129,12 @@ impl Eval<'_, '_> {
                     Ok((*rgba, path.coverage(x, y)))
                 })?;
             }
-            // A pass-through base is refused by `prepare`.
+            // A pass-through base is refused by `prepare`, a filled clip base by pigment validation
+            // and `prepare` (`ContentAwareCombination`).
             PNode::Group {
                 isolated: false, ..
             }
+            | PNode::Filled { .. }
             | PNode::Unused => return Err(unsupported("plan_shape")),
         }
         Ok(())
@@ -1119,10 +1193,11 @@ impl Eval<'_, '_> {
                 })
             }
             // Pass-through clipped layers are refused by pigment validation, non-isolated
-            // blended groups by `prepare`.
+            // blended groups by `prepare`, filled clipped layers by both.
             PNode::Group {
                 isolated: false, ..
             }
+            | PNode::Filled { .. }
             | PNode::Unused => Err(unsupported("plan_shape")),
         }
     }
@@ -1229,6 +1304,11 @@ impl Eval<'_, '_> {
             PNode::Transformed { planes, prep } => {
                 self.composite(layer, region, chunk, dst, fx, |x, y, _| {
                     Ok((transformed_at(planes, prep, x, y)?, 1.0))
+                })
+            }
+            PNode::Filled { rect, data } => {
+                self.composite(layer, region, chunk, dst, fx, |x, y, _| {
+                    Ok((content_aware::filled_at(*rect, data, x, y)?, 1.0))
                 })
             }
             PNode::Solid { rgba } => {
@@ -1727,7 +1807,7 @@ impl Renderer {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
-        let prepared = prepare(plan, sources, ext)?;
+        let mut prepared = prepare(plan, sources, ext)?;
         let digest = digest().map_err(|_| BackendError::Unavailable("plan_digest"))?;
 
         let extent = plan.target.extent;
@@ -1759,6 +1839,17 @@ impl Renderer {
             .and_then(|fx| fx.checked_add(base))
             .ok_or(BackendError::Overflow)?;
         let _lease = self.reserve(scratch_bytes, request.max_working_bytes)?;
+        // Content-aware fills (lane SMB-RENDER-CONTENT-AWARE): their planes are charged next to the
+        // chunk scratch, pigment gets what remains of the budget; all before the first sink call.
+        let fill_bytes = content_aware::fill_bytes(&prepared)?;
+        let remaining = request
+            .max_working_bytes
+            .saturating_sub(scratch_bytes);
+        let _fill_lease = self.reserve(fill_bytes, remaining)?;
+        if !prepared.fills.is_empty() {
+            content_aware::run_fills(&mut prepared, remaining.saturating_sub(fill_bytes), cancel)?;
+        }
+        let scratch_bytes = scratch_bytes.checked_add(fill_bytes).ok_or(BackendError::Overflow)?;
         let eval = Eval {
             prepared: &prepared,
         };
@@ -2021,6 +2112,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Layer filters (lane SMB-RENDER-FILTERS): pigment's `filter_window` evaluates every
             // kind, so the bytes are pigment's (tests/cpu_filters.rs).
             ExtOperator::Filter(_) => operator.intrinsic(),
+            // Content-aware fill (lane SMB-RENDER-CONTENT-AWARE): pigment's `content_aware::fill`
+            // synthesizes the whole layer content once, so the bytes are pigment's
+            // (tests/cpu_content_aware.rs).
+            ExtOperator::ContentAwareFill => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

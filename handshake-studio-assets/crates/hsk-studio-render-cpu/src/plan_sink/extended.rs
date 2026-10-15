@@ -34,7 +34,7 @@ use hsk_studio_pigment::effect_math::window::{
 };
 use hsk_studio_pigment::effect_math::{EffectError, EffectOp};
 use hsk_studio_pigment::render_plan::{
-    BackendError, ExtOperator, PlanExtensions, SAMPLE_RANGE_OPERATOR,
+    BackendError, ContentAwareFillOp, ExtOperator, PlanError, PlanExtensions, SAMPLE_RANGE_OPERATOR,
 };
 use hsk_studio_pigment::transform_math::LayerTransform;
 use std::collections::BTreeMap;
@@ -50,6 +50,8 @@ const SAMPLE_BYTES: u64 = 4;
 const EFFECT_OP_BYTES: u64 = 64;
 /// Resident bytes charged per layer filter instance (the `LayerFilter` record and its growth).
 const FILTER_OP_BYTES: u64 = 64;
+/// Resident bytes charged per content-aware fill (the `ContentAwareFillOp` record).
+const CONTENT_AWARE_OP_BYTES: u64 = 256;
 /// Resident bytes charged per layer transform (the record plus its prepared inverse and bounds).
 const TRANSFORM_STATE_BYTES: u64 = 256;
 /// Bytes the window arrays of one effect call hold next to pigment's own peak: the backdrop plane
@@ -77,6 +79,9 @@ pub(super) struct LayerFx {
     /// Layer filters (pigment `filter_math`, lane SMB-RENDER-FILTERS): index into
     /// [`ExtPrep::filters`].
     pub(super) filter: Option<usize>,
+    /// Content-aware fill (pigment `content_aware::fill`, lane SMB-RENDER-CONTENT-AWARE): index
+    /// into [`ExtPrep::content_aware`].
+    pub(super) content_aware: Option<usize>,
 }
 
 /// The filters of one layer (list order), the growth of the layer's pixels each stage causes
@@ -170,6 +175,7 @@ pub(super) struct ExtPrep {
     transforms: Vec<LayerTransform>,
     blurs: Vec<BlurLayer>,
     filters: Vec<FilterLayer>,
+    content_aware: Vec<ContentAwareFillOp>,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -375,6 +381,17 @@ impl ExtPrep {
                     bounds: None,
                 });
             }
+            if let Some(op) = &e.content_aware_fill {
+                // Defence in depth for pigment's `ContentAwareParameter` (validated at admission).
+                if op.options.validate().is_err() {
+                    return Err(RenderError::Backend(BackendError::InvalidPlan(
+                        PlanError::ContentAwareParameter { node: e.group.0 },
+                    )));
+                }
+                prep.charge(CONTENT_AWARE_OP_BYTES, limit)?;
+                fx.content_aware = Some(prep.content_aware.len());
+                prep.content_aware.push(*op);
+            }
             if let Some(t) = &e.transform {
                 prep.charge(TRANSFORM_STATE_BYTES, limit)?;
                 fx.transform = Some(prep.transforms.len());
@@ -436,6 +453,11 @@ impl ExtPrep {
         if let Some(layer) = self.filters.get_mut(index) {
             layer.bounds = bounds;
         }
+    }
+
+    /// Content-aware fill `index` (see [`LayerFx::content_aware`]).
+    pub(super) fn content_aware(&self, index: usize) -> Option<ContentAwareFillOp> {
+        self.content_aware.get(index).copied()
     }
 
     /// Layer transform `index` (see [`LayerFx::transform`]).
