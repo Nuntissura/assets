@@ -62,13 +62,17 @@ const KIND_ERROR: u8 = 8;
 /// MF worker only (the host accepts it only from a pool with a heartbeat timeout): decode progress counter,
 /// advanced by the decode loop, never by a timer.
 const KIND_HEARTBEAT: u8 = 9;
+/// MF AAC worker only (lane SMB-D24A-CODEC-DEFAULTS, D24-A): decoded audio of one access unit.
+const KIND_AUDIO: u8 = 10;
+/// MF encoder worker only (feature `os-encode`, D24-A): one coded access unit.
+const KIND_CODED: u8 = 11;
 
 /// Fixed table of the `what` strings a decoder error can carry: errors cross the wire as an index, so a
 /// peer can never make the host invent or leak a new static string. Index 0 is the catch-all.
 /// Entries 0..=19 are the AV1 worker's (validated wire, never renumbered); 20.. were appended for the
 /// Media Foundation H.264 worker (`mf-worker`). Class 4 (`CodecUnavailable`) carries the codec name as its
 /// `what` (only `h264` is in the table).
-const WHATS: [&str; 36] = [
+const WHATS: [&str; 51] = [
     "av1-worker-error",
     "av1-frame-resources",
     "av1-unsupported-stream-feature",
@@ -106,6 +110,22 @@ const WHATS: [&str; 36] = [
     "mf-reorder-needs-packet-timing",
     "mf-output-time-unknown",
     "mf-dxva-unavailable",
+    // Appended for the D24-A AAC decoder and the os-encode encoders (lane SMB-D24A-CODEC-DEFAULTS).
+    "aac-lc",
+    "hevc",
+    "mf-no-aac-decoder",
+    "mf-aac-config",
+    "mf-aac-output-type",
+    "mf-aac-channel-layout",
+    "mf-aac-decode",
+    "mf-no-encoder",
+    "mf-encoder-config",
+    "mf-encode",
+    "mf-encoder-output",
+    "mf-encode-frame-bytes",
+    "mf-encode-time-unknown",
+    "mf-worker-mode",
+    "mf-aac-sample-bytes",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,18 +424,60 @@ pub(crate) struct WireFrame {
     pub planes: Vec<Vec<u8>>,
 }
 
+/// Decoded audio of one access unit (AAC worker): interleaved f32 in the stream's channel order.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct WireAudio {
+    pub tag: u64,
+    pub channels: u16,
+    pub rate: u32,
+    pub samples: Vec<f32>,
+}
+
+/// One coded access unit (encoder worker): Annex B bytes, the input tag (frame index) it presents at.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WireCoded {
+    pub tag: u64,
+    pub keyframe: bool,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Reply {
     Opened,
     Frame(WireFrame),
     BatchEnd(u32),
     Error(ReelError),
     Heartbeat(u64),
+    Audio(WireAudio),
+    Coded(WireCoded),
 }
 
 #[cfg(any(test, feature = "av1-worker", feature = "mf-worker"))]
 pub(crate) fn encode_opened(id: u64) -> Vec<u8> {
     Out::header(KIND_OPENED, id).0
+}
+
+#[cfg(any(test, feature = "mf-worker"))]
+pub(crate) fn encode_audio(id: u64, audio: &WireAudio) -> Vec<u8> {
+    let mut out = Out::header(KIND_AUDIO, id);
+    out.u64(audio.tag);
+    out.u16(audio.channels);
+    out.u32(audio.rate);
+    out.u32(u32::try_from(audio.samples.len()).unwrap_or(u32::MAX));
+    out.0.reserve(audio.samples.len().saturating_mul(4));
+    for sample in &audio.samples {
+        out.0.extend_from_slice(&sample.to_le_bytes());
+    }
+    out.0
+}
+
+#[cfg(any(test, feature = "mf-worker"))]
+pub(crate) fn encode_coded(id: u64, coded: &WireCoded) -> Vec<u8> {
+    let mut out = Out::header(KIND_CODED, id);
+    out.u64(coded.tag);
+    out.u8(u8::from(coded.keyframe));
+    out.bytes(&coded.bytes);
+    out.0
 }
 
 #[cfg(any(test, feature = "mf-worker"))]
@@ -605,6 +667,46 @@ pub(crate) fn decode_reply(frame: &[u8], id: u64) -> Res<Reply> {
             }))
         }
         KIND_FRAME => decode_frame(&mut reader).map(Reply::Frame),
+        KIND_AUDIO => {
+            let tag = reader.u64()?;
+            let channels = reader.u16()?;
+            let rate = reader.u32()?;
+            let count = usize::try_from(reader.u32()?).map_err(|_| WireError::Malformed)?;
+            // Whole frames of a non-zero channel count, exactly `count` f32 present, nothing after.
+            if channels == 0 || rate == 0 || count.checked_rem(usize::from(channels)) != Some(0) {
+                return Err(WireError::Malformed);
+            }
+            let bytes = reader.take(count.checked_mul(4).ok_or(WireError::Malformed)?)?;
+            reader.done()?;
+            let samples = bytes
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            Ok(Reply::Audio(WireAudio {
+                tag,
+                channels,
+                rate,
+                samples,
+            }))
+        }
+        KIND_CODED => {
+            let tag = reader.u64()?;
+            let keyframe = match reader.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(WireError::Malformed),
+            };
+            let bytes = reader.bytes()?.to_vec();
+            reader.done()?;
+            if bytes.is_empty() {
+                return Err(WireError::Malformed);
+            }
+            Ok(Reply::Coded(WireCoded {
+                tag,
+                keyframe,
+                bytes,
+            }))
+        }
         _ => Err(WireError::Malformed),
     }
 }
@@ -832,6 +934,52 @@ mod tests {
             })
         );
         assert!(is_terminal(&encode_batch_end(1, 0)) && !is_terminal(&encoded));
+    }
+
+    /// D24-A audio and coded replies: round trip; every truncation, a trailing byte, a partial frame of
+    /// samples, zero channels and an empty coded unit are malformed, never a panic.
+    #[test]
+    fn audio_and_coded_replies_roundtrip_and_bounds() {
+        let audio = WireAudio {
+            tag: 9,
+            channels: 2,
+            rate: 44_100,
+            samples: vec![0.5, -0.25, 1.0, 0.0],
+        };
+        let coded = WireCoded {
+            tag: 3,
+            keyframe: true,
+            bytes: vec![0, 0, 0, 1, 0x65, 1],
+        };
+        for (bytes, reply) in [
+            (encode_audio(4, &audio), Reply::Audio(audio.clone())),
+            (encode_coded(4, &coded), Reply::Coded(coded.clone())),
+        ] {
+            assert_eq!(decode_reply(&bytes, 4), Ok(reply));
+            assert!(!is_terminal(&bytes));
+            for cut in 0..bytes.len() {
+                assert_eq!(decode_reply(&bytes[..cut], 4), Err(WireError::Malformed), "cut {cut}");
+            }
+            let mut long = bytes.clone();
+            long.push(0);
+            assert_eq!(decode_reply(&long, 4), Err(WireError::Malformed));
+        }
+        let odd = WireAudio {
+            samples: vec![0.0; 3],
+            ..audio.clone()
+        };
+        assert_eq!(decode_reply(&encode_audio(4, &odd), 4), Err(WireError::Malformed));
+        let silent = WireAudio {
+            channels: 0,
+            samples: Vec::new(),
+            ..audio
+        };
+        assert_eq!(decode_reply(&encode_audio(4, &silent), 4), Err(WireError::Malformed));
+        let empty = WireCoded {
+            bytes: Vec::new(),
+            ..coded
+        };
+        assert_eq!(decode_reply(&encode_coded(4, &empty), 4), Err(WireError::Malformed));
     }
 
     /// MF heartbeat frames: round trip, id check, never terminal, every truncation and a trailing byte refused.

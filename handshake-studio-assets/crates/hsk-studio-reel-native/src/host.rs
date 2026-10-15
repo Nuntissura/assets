@@ -71,7 +71,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 #[cfg(feature = "test-faults")]
 use crate::test_fault::WorkerTestFault;
-use crate::wire::{self, OpenRequest, Reply, WireError, WireFrame};
+use crate::wire::{self, OpenRequest, Reply, WireAudio, WireCoded, WireError, WireFrame};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_worker::{
     EXIT_PATIENCE, ReadFailure, RespawnGate, Session, StartError, StartRequest, Supervisor,
@@ -428,29 +428,46 @@ enum Failure {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Want {
+pub(crate) enum Want {
     Opened,
     BatchEnd,
 }
 
 /// One request to a worker: what to send, the reply cap, and the terminal reply that ends it.
-struct Call<'a> {
-    id: u64,
-    frame: Vec<u8>,
-    cap: usize,
-    want: Want,
+pub(crate) struct Call<'a> {
+    pub id: u64,
+    pub frame: Vec<u8>,
+    pub cap: usize,
+    pub want: Want,
     /// `(width, height)` the container declares for the track (0 = that side is not declared): a reply
     /// picture above it is a worker protocol fault (`within_declared_size`).
-    declared: (u32, u32),
+    pub declared: (u32, u32),
     /// Tags of the PACKETs sent in this session so far: a reply picture with any other tag is a worker
     /// protocol fault (reel's route would drop it without a word).
-    sent: &'a HashSet<u64>,
+    pub sent: &'a HashSet<u64>,
+}
+
+/// What a batch reply may carry: pictures (video decoders), decoded audio (the D24-A AAC worker) or coded
+/// access units (the `os-encode` encoder worker). A reply of another kind is a worker protocol fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PayloadKind {
+    Picture,
+    /// Decoded audio of exactly this `(channels, rate)`.
+    Audio(u16, u32),
+    Coded,
+}
+
+/// One accepted batch reply, handed on as it arrives.
+pub(crate) enum Payload {
+    Picture(WireFrame),
+    Audio(WireAudio),
+    Coded(WireCoded),
 }
 
 /// Per-segment time and cancel context shared by every request of the segment.
-struct Clock<'a> {
-    cancel: &'a CancellationToken,
-    segment_wall: Instant,
+pub(crate) struct Clock<'a> {
+    pub cancel: &'a CancellationToken,
+    pub segment_wall: Instant,
 }
 
 pub(crate) struct Pool {
@@ -478,7 +495,7 @@ pub(crate) struct Pool {
 const MAX_HEARTBEATS_PER_REQUEST: usize = 1 << 16;
 
 impl Pool {
-    fn next_id(&self) -> u64 {
+    pub(crate) fn next_id(&self) -> u64 {
         self.request_ids.fetch_add(1, Ordering::AcqRel)
     }
 
@@ -587,7 +604,7 @@ impl Pool {
         &[]
     }
 
-    fn checkout(&self, cancel: &CancellationToken) -> Result<Proc, Av1Error> {
+    pub(crate) fn checkout(&self, cancel: &CancellationToken) -> Result<Proc, Av1Error> {
         loop {
             let idle = lock(&self.idle).pop();
             let Some(mut session) = idle else {
@@ -600,7 +617,7 @@ impl Pool {
         }
     }
 
-    fn checkin(&self, mut session: Proc) {
+    pub(crate) fn checkin(&self, mut session: Proc) {
         if !session.is_alive() {
             return;
         }
@@ -654,6 +671,26 @@ impl Pool {
         clock: &Clock<'_>,
         on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
     ) -> Result<(), Av1Error> {
+        self.exchange_any(session, call, clock, PayloadKind::Picture, &mut |payload| match payload {
+            Payload::Picture(picture) => on_frame(picture),
+            // `exchange_any` hands on only the kind it was asked for.
+            Payload::Audio(_) | Payload::Coded(_) => Err(ReelError::DecoderFault {
+                fault: DecoderFault::Protocol,
+            }),
+        })
+    }
+
+    /// `exchange` for any batch payload kind (pictures, decoded audio, coded units). Audio blocks must have
+    /// the declared channel count and rate and a sent tag; coded units a sent tag; at most
+    /// `MAX_FRAMES_PER_BATCH` of either per batch. Every breach is a counted protocol fault.
+    pub(crate) fn exchange_any(
+        &self,
+        session: &mut Proc,
+        call: Call<'_>,
+        clock: &Clock<'_>,
+        kind: PayloadKind,
+        on_payload: &mut dyn FnMut(Payload) -> Result<(), ReelError>,
+    ) -> Result<(), Av1Error> {
         let Call {
             id,
             frame,
@@ -697,7 +734,9 @@ impl Pool {
             match wire::decode_reply(&bytes, id) {
                 // A FRAME belongs to a batch reply only. A FRAME answering OPEN falls to the catch-all arm
                 // below: `Failure::Protocol`, counted (test `frame_reply_to_open_is_a_protocol_fault`).
-                Ok(Reply::Frame(picture)) if want == Want::BatchEnd => {
+                Ok(Reply::Frame(picture))
+                    if want == Want::BatchEnd && kind == PayloadKind::Picture =>
+                {
                     frames = frames.saturating_add(1);
                     if frames > wire::MAX_FRAMES_PER_BATCH
                         || !within_declared_size(&picture.format, declared)
@@ -708,8 +747,31 @@ impl Pool {
                         // counted, and drops a picture whose tag matches no packet without a word).
                         return Err(self.fail(session, Failure::Protocol));
                     }
-                    if let Err(error) = on_frame(picture) {
+                    if let Err(error) = on_payload(Payload::Picture(picture)) {
                         // The rest of this batch is still in the pipe: the stream is out of sync.
+                        session.terminate(Duration::ZERO);
+                        return Err(Av1Error::Reel(error));
+                    }
+                }
+                Ok(Reply::Audio(block))
+                    if want == Want::BatchEnd
+                        && kind == PayloadKind::Audio(block.channels, block.rate) =>
+                {
+                    frames = frames.saturating_add(1);
+                    if frames > wire::MAX_FRAMES_PER_BATCH || !sent.contains(&block.tag) {
+                        return Err(self.fail(session, Failure::Protocol));
+                    }
+                    if let Err(error) = on_payload(Payload::Audio(block)) {
+                        session.terminate(Duration::ZERO);
+                        return Err(Av1Error::Reel(error));
+                    }
+                }
+                Ok(Reply::Coded(unit)) if want == Want::BatchEnd && kind == PayloadKind::Coded => {
+                    frames = frames.saturating_add(1);
+                    if frames > wire::MAX_FRAMES_PER_BATCH || !sent.contains(&unit.tag) {
+                        return Err(self.fail(session, Failure::Protocol));
+                    }
+                    if let Err(error) = on_payload(Payload::Coded(unit)) {
                         session.terminate(Duration::ZERO);
                         return Err(Av1Error::Reel(error));
                     }
@@ -1159,6 +1221,16 @@ impl Pool {
             #[cfg(feature = "test-faults")]
             first_spawn_args: Vec::new(),
         }
+    }
+
+    /// The worker kind of this pool.
+    pub(crate) fn spec(&self) -> &'static WorkerSpec {
+        self.spec
+    }
+
+    /// Time one session (segment) may take.
+    pub(crate) fn segment_deadline(&self) -> Duration {
+        self.segment_deadline
     }
 
     /// Turns on the heartbeat watch (MF pool).

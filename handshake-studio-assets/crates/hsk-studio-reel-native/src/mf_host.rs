@@ -164,7 +164,7 @@ impl MfWorkerOptions {
         pool
     }
 
-    fn pool_options(&self) -> Av1WorkerOptions {
+    pub(crate) fn pool_options(&self) -> Av1WorkerOptions {
         Av1WorkerOptions {
             program: self.program.clone(),
             max_workers: self.max_workers,

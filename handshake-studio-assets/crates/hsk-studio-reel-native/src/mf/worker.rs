@@ -283,12 +283,12 @@ impl Segment {
     }
 }
 
-fn reply(out: &mut impl Write, payload: &[u8]) -> bool {
+pub(super) fn reply(out: &mut impl Write, payload: &[u8]) -> bool {
     wire::write_frame(out, payload).is_ok()
 }
 
 /// Answer of a batch request: its frames were written; now BATCH_END or the typed ERROR.
-fn end_batch(out: &mut impl Write, id: u64, result: Result<(bool, u32), ReelError>) -> (bool, bool) {
+pub(super) fn end_batch(out: &mut impl Write, id: u64, result: Result<(bool, u32), ReelError>) -> (bool, bool) {
     match result {
         Ok((true, count)) => (reply(out, &wire::encode_batch_end(id, count)), true),
         Ok((false, _)) => (false, true),
@@ -297,6 +297,22 @@ fn end_batch(out: &mut impl Write, id: u64, result: Result<(bool, u32), ReelErro
 }
 
 fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
+    // D24-A modes (lane SMB-D24A-CODEC-DEFAULTS): the OS AAC decoder, and with `os-encode` the encoders.
+    if std::env::args().any(|arg| arg == super::media::AAC_ARG) {
+        return super::media::serve_aac(requests);
+    }
+    if let Some(codec) = std::env::args().find_map(|arg| {
+        arg.strip_prefix(super::media::ENCODE_ARG)
+            .map(str::to_owned)
+    }) {
+        #[cfg(feature = "os-encode")]
+        if codec == "h264" || codec == "hevc" {
+            return super::media::serve_encode(requests, codec == "hevc");
+        }
+        // An encode mode this build does not serve: the worker refuses to start (the host sees no HELLO).
+        let _ = codec;
+        return 3;
+    }
     #[cfg(feature = "test-faults")]
     let fault = WorkerTestFault::from_env();
     // First-worker-only fault (the host passes it to the first worker of a pool): exit at this packet tag.

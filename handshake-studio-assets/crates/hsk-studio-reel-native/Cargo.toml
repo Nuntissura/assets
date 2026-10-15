@@ -10,6 +10,9 @@ av1 = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
 av1-worker = ["av1", "hsk-studio-reel/av1"]
 mf = ["dep:hsk-studio-accord", "dep:hsk-studio-reel", "dep:hsk-studio-worker"]
 mf-worker = ["mf", "dep:windows"]
+# H.264 / HEVC ENCODE only through the OS encoder MFT in the isolated worker (Operator decision D24-A, lane
+# SMB-D24A-CODEC-DEFAULTS); default off. Host: WorkerMfEncoder; worker: --encode=h264|hevc modes.
+os-encode = ["mf"]
 test-faults = []
 
 [dependencies]
@@ -45,3 +48,13 @@ required-features = ["av1-worker", "test-faults"]
 name = "worker_fault_env"
 path = "tests/worker_fault_env.rs"
 required-features = ["av1-worker"]
+
+[[test]]
+name = "mf_aac"
+path = "tests/mf_aac.rs"
+required-features = ["mf-worker", "test-faults"]
+
+[[test]]
+name = "mf_encode"
+path = "tests/mf_encode.rs"
+required-features = ["mf-worker", "test-faults", "os-encode"]

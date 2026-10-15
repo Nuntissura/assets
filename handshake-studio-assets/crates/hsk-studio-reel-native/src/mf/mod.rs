@@ -8,4 +8,6 @@ compile_error!("feature mf-worker builds the Windows Media Foundation worker and
 #[cfg(all(feature = "mf-worker", windows))]
 mod ffi;
 #[cfg(all(feature = "mf-worker", windows))]
+pub(crate) mod media;
+#[cfg(all(feature = "mf-worker", windows))]
 pub(crate) mod worker;

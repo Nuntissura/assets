@@ -20,6 +20,12 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
     MFT_REGISTER_TYPE_INFO, MFT_TRANSFORM_CLSID_Attribute, MFVideoFormat_H264, MFVideoFormat_NV12,
+    MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, MF_MT_AAC_PAYLOAD_TYPE, MF_MT_AUDIO_BITS_PER_SAMPLE,
+    MF_MT_AUDIO_CHANNEL_MASK, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
+    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_INTERLACE_MODE, MF_MT_MPEG2_PROFILE,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_USER_DATA, MFAudioFormat_AAC, MFAudioFormat_Float,
+    MFAudioFormat_PCM, MFMediaType_Audio, MFSampleExtension_CleanPoint, MFT_CATEGORY_AUDIO_DECODER,
+    MFT_CATEGORY_VIDEO_ENCODER, MFVideoFormat_HEVC, MFVideoInterlace_Progressive,
 };
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -158,6 +164,34 @@ pub(crate) fn enumerate_h264_decoders() -> Result<Vec<DecoderEntry>, i32> {
         guidMajorType: MFMediaType_Video,
         guidSubtype: MFVideoFormat_H264,
     };
+    enumerate_mfts(MFT_CATEGORY_VIDEO_DECODER, Some(&input), None)
+}
+
+/// The AAC decoder MFTs (`MFT_CATEGORY_AUDIO_DECODER`, input `{Audio, AAC}`), ranked (lane
+/// SMB-D24A-CODEC-DEFAULTS, D24-A).
+pub(crate) fn enumerate_aac_decoders() -> Result<Vec<DecoderEntry>, i32> {
+    let input = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Audio,
+        guidSubtype: MFAudioFormat_AAC,
+    };
+    enumerate_mfts(MFT_CATEGORY_AUDIO_DECODER, Some(&input), None)
+}
+
+/// The video encoder MFTs whose output is `subtype` (H.264 or HEVC), ranked (feature `os-encode`, D24-A).
+#[cfg_attr(not(feature = "os-encode"), allow(dead_code))]
+pub(crate) fn enumerate_video_encoders(subtype: &GUID) -> Result<Vec<DecoderEntry>, i32> {
+    let output = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: *subtype,
+    };
+    enumerate_mfts(MFT_CATEGORY_VIDEO_ENCODER, None, Some(&output))
+}
+
+fn enumerate_mfts(
+    category: GUID,
+    input: Option<&MFT_REGISTER_TYPE_INFO>,
+    output: Option<&MFT_REGISTER_TYPE_INFO>,
+) -> Result<Vec<DecoderEntry>, i32> {
     let flags = MFT_ENUM_FLAG_SYNCMFT
         | MFT_ENUM_FLAG_ASYNCMFT
         | MFT_ENUM_FLAG_HARDWARE
@@ -167,10 +201,10 @@ pub(crate) fn enumerate_h264_decoders() -> Result<Vec<DecoderEntry>, i32> {
     // SAFETY: `input` outlives the call; the out pointers are valid locals.
     unsafe {
         windows::Win32::Media::MediaFoundation::MFTEnumEx(
-            MFT_CATEGORY_VIDEO_DECODER,
+            category,
             flags,
-            Some(&input),
-            None,
+            input.map(std::ptr::from_ref),
+            output.map(std::ptr::from_ref),
             &mut array,
             &mut count,
         )
@@ -523,5 +557,388 @@ impl Decoder {
                 gpu_surface,
             })
         }
+    }
+}
+
+// ---- D24-A: AAC decoder and video encoders (lane SMB-D24A-CODEC-DEFAULTS) -------------------------------
+
+/// One output sample of a non-video transform: its time, clean-point flag and an owned copy of its bytes.
+pub(crate) struct RawSample {
+    pub time: i64,
+    pub clean_point: bool,
+    pub bytes: Vec<u8>,
+}
+
+/// A synchronous MFT on one stream: feed, drain, pull owned samples (shared by the AAC decoder and the
+/// encoders; the H.264 decoder above keeps its own picture path).
+struct Stream {
+    mft: IMFTransform,
+    provides_samples: bool,
+    sample_bytes: u32,
+}
+
+impl Stream {
+    fn new(mft: IMFTransform) -> Result<Self, MfFail> {
+        let mut stream = Self {
+            mft,
+            provides_samples: false,
+            sample_bytes: 0,
+        };
+        stream.read_info()?;
+        // SAFETY: documented start-up messages of the basic processing model; no parameter.
+        unsafe {
+            call(
+                "ProcessMessage",
+                stream.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0),
+            )?;
+            call(
+                "ProcessMessage",
+                stream.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0),
+            )?;
+        }
+        Ok(stream)
+    }
+
+    fn read_info(&mut self) -> Result<(), MfFail> {
+        // SAFETY: stream info read of stream 0.
+        let info = call("GetOutputStreamInfo", unsafe { self.mft.GetOutputStreamInfo(0) })?;
+        let provides =
+            (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32;
+        self.provides_samples = info.dwFlags & provides != 0;
+        self.sample_bytes = info.cbSize.max(1);
+        Ok(())
+    }
+
+    /// `Ok(false)`: `MF_E_NOTACCEPTING` (pull, then retry).
+    fn push(&self, bytes: &[u8], time: i64, duration: i64) -> Result<bool, MfFail> {
+        let len = u32::try_from(bytes.len()).map_err(|_| MfFail::Call("input-bytes", 0))?;
+        // SAFETY: as `Decoder::push`: a new buffer is locked, filled with exactly `len` bytes, unlocked and
+        // attached to a new sample; ProcessInput takes its own reference.
+        unsafe {
+            let buffer = call("MFCreateMemoryBuffer", MFCreateMemoryBuffer(len.max(1)))?;
+            let mut data: *mut u8 = std::ptr::null_mut();
+            let mut max = 0_u32;
+            call("Lock", buffer.Lock(&mut data, Some(&mut max), None))?;
+            if data.is_null() || max < len {
+                let _ = buffer.Unlock();
+                return Err(MfFail::Call("Lock-size", 0));
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
+            call("Unlock", buffer.Unlock())?;
+            call("SetCurrentLength", buffer.SetCurrentLength(len))?;
+            let sample = call("MFCreateSample", MFCreateSample())?;
+            call("AddBuffer", sample.AddBuffer(&buffer))?;
+            call("SetSampleTime", sample.SetSampleTime(time))?;
+            call("SetSampleDuration", sample.SetSampleDuration(duration))?;
+            let result = self.mft.ProcessInput(0, &sample, 0);
+            if code_of(&result) == Some(MF_E_NOTACCEPTING) {
+                return Ok(false);
+            }
+            call("ProcessInput", result)?;
+        }
+        Ok(true)
+    }
+
+    fn drain(&self) -> Result<(), MfFail> {
+        // SAFETY: documented end-of-stream messages; no parameter.
+        unsafe {
+            call(
+                "ProcessMessage",
+                self.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0),
+            )?;
+            call(
+                "ProcessMessage",
+                self.mft.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Pulls every sample the transform releases now (until `MF_E_TRANSFORM_NEED_MORE_INPUT`); more than
+    /// `max` samples is `Call("too-many-outputs")`. A stream change calls `renegotiate`.
+    fn pull(
+        &mut self,
+        max: usize,
+        renegotiate: &mut dyn FnMut(&IMFTransform) -> Result<(), MfFail>,
+    ) -> Result<Vec<RawSample>, MfFail> {
+        let mut out = Vec::new();
+        loop {
+            let provided = if self.provides_samples {
+                None
+            } else {
+                // SAFETY: a new sample holding one new memory buffer of the size the stream info states.
+                Some(unsafe {
+                    let buffer =
+                        call("MFCreateMemoryBuffer", MFCreateMemoryBuffer(self.sample_bytes))?;
+                    let sample = call("MFCreateSample", MFCreateSample())?;
+                    call("AddBuffer", sample.AddBuffer(&buffer))?;
+                    sample
+                })
+            };
+            let mut buffer = [MFT_OUTPUT_DATA_BUFFER {
+                dwStreamID: 0,
+                pSample: ManuallyDrop::new(provided),
+                dwStatus: 0,
+                pEvents: ManuallyDrop::new(None),
+            }];
+            let mut status = 0_u32;
+            // SAFETY: one output buffer for stream 0; both reference slots are taken back afterwards.
+            let result = unsafe { self.mft.ProcessOutput(0, &mut buffer, &mut status) };
+            let [slot] = buffer;
+            let sample = ManuallyDrop::into_inner(slot.pSample);
+            drop(ManuallyDrop::into_inner(slot.pEvents));
+            match code_of(&result) {
+                None => {}
+                Some(code) if code == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(out),
+                Some(code) if code == MF_E_TRANSFORM_STREAM_CHANGE => {
+                    renegotiate(&self.mft)?;
+                    self.read_info()?;
+                    continue;
+                }
+                Some(code) => return Err(MfFail::Call("ProcessOutput", code.0)),
+            }
+            let Some(sample) = sample else {
+                return Err(MfFail::Call("ProcessOutput-no-sample", 0));
+            };
+            out.push(read_raw(&sample)?);
+            if out.len() > max {
+                return Err(MfFail::Call("too-many-outputs", 0));
+            }
+        }
+    }
+}
+
+fn read_raw(sample: &IMFSample) -> Result<RawSample, MfFail> {
+    // SAFETY: the contiguous buffer is locked, exactly `current` bytes are copied out, then unlocked.
+    unsafe {
+        let time = sample.GetSampleTime().unwrap_or(i64::MIN);
+        let clean_point = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
+        let buffer = call(
+            "ConvertToContiguousBuffer",
+            sample.ConvertToContiguousBuffer(),
+        )?;
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let mut current = 0_u32;
+        call("Lock", buffer.Lock(&mut data, None, Some(&mut current)))?;
+        let bytes = if data.is_null() {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(data, usize::try_from(current).unwrap_or(0)).to_vec()
+        };
+        call("Unlock", buffer.Unlock())?;
+        Ok(RawSample {
+            time,
+            clean_point,
+            bytes,
+        })
+    }
+}
+
+/// Decoded PCM layout the AAC decoder delivers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PcmOut {
+    pub float: bool,
+    pub channels: u32,
+    pub rate: u32,
+    /// `MF_MT_AUDIO_CHANNEL_MASK` of the output type (0 when not set).
+    pub mask: u32,
+}
+
+/// Picks the output type: 32-bit float of the stream's channel count, else 16-bit PCM of it.
+fn negotiate_pcm(mft: &IMFTransform, channels: u32) -> Result<PcmOut, MfFail> {
+    let mut chosen: Option<(bool, IMFMediaType)> = None;
+    for index in 0..64_u32 {
+        // SAFETY: enumeration of the output types of stream 0.
+        let offered = unsafe { mft.GetOutputAvailableType(0, index) };
+        if code_of(&offered) == Some(MF_E_NO_MORE_TYPES) {
+            break;
+        }
+        let offered = call("GetOutputAvailableType", offered)?;
+        // SAFETY: attribute reads on the offered type.
+        let (subtype, count, bits) = unsafe {
+            (
+                offered.GetGUID(&MF_MT_SUBTYPE).unwrap_or_default(),
+                offered.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS).unwrap_or(0),
+                offered.GetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE).unwrap_or(0),
+            )
+        };
+        if count != channels {
+            continue;
+        }
+        if subtype == MFAudioFormat_Float && bits == 32 {
+            chosen = Some((true, offered));
+            break;
+        }
+        if subtype == MFAudioFormat_PCM && bits == 16 && chosen.is_none() {
+            chosen = Some((false, offered));
+        }
+    }
+    let Some((float, chosen)) = chosen else {
+        return Err(MfFail::NoNv12);
+    };
+    // SAFETY: sets an offered type on stream 0, then reads the current type.
+    unsafe {
+        call("SetOutputType", mft.SetOutputType(0, &chosen, 0))?;
+        let current = call("GetOutputCurrentType", mft.GetOutputCurrentType(0))?;
+        Ok(PcmOut {
+            float,
+            channels: call("GetUINT32", current.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS))?,
+            rate: call(
+                "GetUINT32",
+                current.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND),
+            )?,
+            mask: current.GetUINT32(&MF_MT_AUDIO_CHANNEL_MASK).unwrap_or(0),
+        })
+    }
+}
+
+/// The OS AAC decoder MFT for one stream (raw access units in, PCM out).
+pub(crate) struct AacDecoder {
+    stream: Stream,
+    pub out: PcmOut,
+}
+
+impl AacDecoder {
+    /// Activates `entry` with input `{Audio, AAC}` raw payload (Learn "AAC Decoder": `MF_MT_USER_DATA` is the
+    /// HEAACWAVEINFO tail after the WAVEFORMATEX, wPayloadType 0 = raw, then the AudioSpecificConfig) and a
+    /// float (else 16-bit) PCM output type of the same channel count; `NoNv12` when it offers neither.
+    pub(crate) fn open(
+        entry: &DecoderEntry,
+        rate: u32,
+        channels: u32,
+        asc: &[u8],
+    ) -> Result<Self, MfFail> {
+        // SAFETY: activation of an object MFTEnumEx returned; the result is an owned interface.
+        let mft: IMFTransform = call("ActivateObject", unsafe { entry.activate.ActivateObject() })?;
+        let mut user = Vec::with_capacity(12_usize.saturating_add(asc.len()));
+        user.extend_from_slice(&0_u16.to_le_bytes()); // wPayloadType: raw access units
+        user.extend_from_slice(&0xFE_u16.to_le_bytes()); // wAudioProfileLevelIndication: unknown
+        user.extend_from_slice(&0_u16.to_le_bytes()); // wStructType
+        user.extend_from_slice(&0_u16.to_le_bytes()); // wReserved1
+        user.extend_from_slice(&0_u32.to_le_bytes()); // dwReserved2
+        user.extend_from_slice(asc);
+        // SAFETY: plain COM object creation and attribute writes on the new type; stream 0 of the MFT.
+        unsafe {
+            let input = call("MFCreateMediaType", MFCreateMediaType())?;
+            call("SetGUID", input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio))?;
+            call("SetGUID", input.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC))?;
+            call("SetUINT32", input.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, rate))?;
+            call("SetUINT32", input.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, channels))?;
+            call("SetUINT32", input.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16))?;
+            call("SetUINT32", input.SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 0))?;
+            call(
+                "SetUINT32",
+                input.SetUINT32(&MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0xFE),
+            )?;
+            call("SetBlob", input.SetBlob(&MF_MT_USER_DATA, &user))?;
+            call("SetInputType", mft.SetInputType(0, &input, 0))?;
+        }
+        let out = negotiate_pcm(&mft, channels)?;
+        Ok(Self {
+            stream: Stream::new(mft)?,
+            out,
+        })
+    }
+
+    pub(crate) fn push(&self, bytes: &[u8], time: i64, duration: i64) -> Result<bool, MfFail> {
+        self.stream.push(bytes, time, duration)
+    }
+
+    pub(crate) fn drain(&self) -> Result<(), MfFail> {
+        self.stream.drain()
+    }
+
+    /// Every PCM sample the decoder releases now; a format change is `FormatChange`.
+    pub(crate) fn pull(&mut self, max: usize) -> Result<Vec<RawSample>, MfFail> {
+        let expected = self.out;
+        self.stream.pull(max, &mut |mft| {
+            if negotiate_pcm(mft, expected.channels)? == expected {
+                Ok(())
+            } else {
+                Err(MfFail::FormatChange)
+            }
+        })
+    }
+}
+
+/// What an encoder session is opened for.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(feature = "os-encode"), allow(dead_code))]
+pub(crate) struct EncodeSetup {
+    pub hevc: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub bitrate: u32,
+    /// `MF_MT_MPEG2_PROFILE` (H.264 eAVEncH264VProfile 66/77/100; HEVC eAVEncH265VProfile_Main_420_8 = 1).
+    pub profile: u32,
+}
+
+/// One OS video encoder MFT (NV12 in, Annex B out).
+#[cfg_attr(not(feature = "os-encode"), allow(dead_code))]
+pub(crate) struct Encoder {
+    stream: Stream,
+}
+
+#[cfg_attr(not(feature = "os-encode"), allow(dead_code))]
+impl Encoder {
+    /// Activates `entry`; output type first (encoders need it before the input type, Learn "H.264 Video
+    /// Encoder"): `{Video, H264|HEVC}`, frame size, frame rate, average bitrate, progressive, square
+    /// pixels, profile; then input NV12 of the same size and rate.
+    pub(crate) fn open(entry: &DecoderEntry, setup: &EncodeSetup) -> Result<Self, MfFail> {
+        // SAFETY: activation of an object MFTEnumEx returned; the result is an owned interface.
+        let mft: IMFTransform = call("ActivateObject", unsafe { entry.activate.ActivateObject() })?;
+        let subtype = if setup.hevc {
+            MFVideoFormat_HEVC
+        } else {
+            MFVideoFormat_H264
+        };
+        let size = (u64::from(setup.width) << 32) | u64::from(setup.height);
+        let rate = (u64::from(setup.fps_num) << 32) | u64::from(setup.fps_den);
+        let progressive = u32::try_from(MFVideoInterlace_Progressive.0).unwrap_or(2);
+        // SAFETY: plain COM object creation and attribute writes on the new types; stream 0 of the MFT.
+        unsafe {
+            let output = call("MFCreateMediaType", MFCreateMediaType())?;
+            call("SetGUID", output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video))?;
+            call("SetGUID", output.SetGUID(&MF_MT_SUBTYPE, &subtype))?;
+            call("SetUINT64", output.SetUINT64(&MF_MT_FRAME_SIZE, size))?;
+            call("SetUINT64", output.SetUINT64(&MF_MT_FRAME_RATE, rate))?;
+            call(
+                "SetUINT64",
+                output.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1_u64 << 32) | 1),
+            )?;
+            call("SetUINT32", output.SetUINT32(&MF_MT_AVG_BITRATE, setup.bitrate))?;
+            call("SetUINT32", output.SetUINT32(&MF_MT_INTERLACE_MODE, progressive))?;
+            call("SetUINT32", output.SetUINT32(&MF_MT_MPEG2_PROFILE, setup.profile))?;
+            call("SetOutputType", mft.SetOutputType(0, &output, 0))?;
+            let input = call("MFCreateMediaType", MFCreateMediaType())?;
+            call("SetGUID", input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video))?;
+            call("SetGUID", input.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12))?;
+            call("SetUINT64", input.SetUINT64(&MF_MT_FRAME_SIZE, size))?;
+            call("SetUINT64", input.SetUINT64(&MF_MT_FRAME_RATE, rate))?;
+            call(
+                "SetUINT64",
+                input.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1_u64 << 32) | 1),
+            )?;
+            call("SetUINT32", input.SetUINT32(&MF_MT_INTERLACE_MODE, progressive))?;
+            call("SetInputType", mft.SetInputType(0, &input, 0))?;
+        }
+        Ok(Self {
+            stream: Stream::new(mft)?,
+        })
+    }
+
+    pub(crate) fn push(&self, nv12: &[u8], time: i64, duration: i64) -> Result<bool, MfFail> {
+        self.stream.push(nv12, time, duration)
+    }
+
+    pub(crate) fn drain(&self) -> Result<(), MfFail> {
+        self.stream.drain()
+    }
+
+    /// Every coded unit the encoder releases now (a stream change after start is refused).
+    pub(crate) fn pull(&mut self, max: usize) -> Result<Vec<RawSample>, MfFail> {
+        self.stream.pull(max, &mut |_| Err(MfFail::FormatChange))
     }
 }

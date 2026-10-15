@@ -99,6 +99,31 @@ pub(crate) fn nv12_to_i420(
     Ok([y, u, v])
 }
 
+/// Tight `[Y | U | V]` 8-bit 4:2:0 planes of an even `width x height` picture (one buffer, as the encoder
+/// PACKET carries them) -> NV12 (Y, then interleaved U,V), for the `os-encode` encoder worker. `None` when
+/// a side is zero or odd or the buffer is not exactly the three planes.
+#[cfg_attr(not(all(feature = "mf-worker", feature = "os-encode")), allow(dead_code))]
+pub(crate) fn i420_to_nv12(planes: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        return None;
+    }
+    let total = usize::try_from(i420_bytes(width, height)?).ok()?;
+    if planes.len() != total {
+        return None;
+    }
+    let luma = usize::try_from(u64::from(width).checked_mul(u64::from(height))?).ok()?;
+    let chroma = luma.checked_div(4)?;
+    let (y, rest) = planes.split_at_checked(luma)?;
+    let (u, v) = rest.split_at_checked(chroma)?;
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(y);
+    for (cb, cr) in u.iter().zip(v) {
+        out.push(*cb);
+        out.push(*cr);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 #[allow(clippy::arithmetic_side_effects)] // constant fixture indices
 mod tests {
