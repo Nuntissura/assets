@@ -738,6 +738,10 @@ pub struct StudioRasterLayerRecord {
     /// is not encoded, so earlier record sets stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smart_filters: Option<super::StudioSmartFilterStack>,
+    /// Placed-asset (smart object) instance of this raster layer (lane SMB-PS-ADJUST-STYLES); absent
+    /// is not encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed_asset: Option<StudioPlacedAsset>,
 }
 impl StudioRasterLayerRecord {
     /// An empty entry for `layer_id`.
@@ -749,8 +753,172 @@ impl StudioRasterLayerRecord {
             advanced_blending: None,
             effects: None,
             smart_filters: None,
+            placed_asset: None,
         }
     }
+}
+
+/// Placed-asset sources a document can hold (a Folio hard ceiling).
+pub const MAX_PLACED_SOURCES: usize = 4096;
+/// Placed-asset nesting depth (a source placing a source ...; a Folio hard ceiling).
+pub const MAX_PLACED_DEPTH: usize = 16;
+
+/// Link health of a linked source (STU-RAS-012: up-to-date / modified / missing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioLinkHealth {
+    UpToDate,
+    Modified,
+    Missing,
+}
+
+/// Where a placed asset's source content lives (STU-RAS-012 embedded / linked mode).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioPlacedMode {
+    /// The source is a Studio document stored with this one (`SDOC` id) at a content digest.
+    Embedded {
+        document_id: String,
+        content_digest: String,
+    },
+    /// The source is an external file (relative URI, [GLOBAL-PORTABILITY]) with the digest last
+    /// seen and its health.
+    Linked {
+        uri: String,
+        content_digest: String,
+        health: StudioLinkHealth,
+    },
+}
+
+/// One shared source (STU-RAS-013: duplicates are instances of one source, so editing the source
+/// changes every instance). `uses` lists the sources the source document itself places, so a
+/// cycle (a source placing itself, directly or through others) is refused here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioPlacedSource {
+    pub source_id: String,
+    /// Embedded or linked (tag `mode`).
+    pub location: StudioPlacedMode,
+    /// Source size in its own pixels.
+    pub width: f64,
+    pub height: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
+}
+
+/// A placed-asset instance (STU-RAS-014: non-destructive accumulated transform): its shared source
+/// and the affine `[a, b, c, d, e, f]` (document point = `[a c e; b d f] * [x y 1]` of a source
+/// point). The layer's raster tiles stay its cached display pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioPlacedAsset {
+    pub source_id: String,
+    pub transform: [f64; 6],
+}
+
+fn placed_sources(r: &StudioRasterRecords, cx: &mut Ctx) -> Result<BTreeSet<String>> {
+    check(
+        r.placed_sources.len() <= MAX_PLACED_SOURCES,
+        "placed_sources",
+        "count",
+    )?;
+    cx.nodes(r.placed_sources.len(), "placed_sources")?;
+    let mut ids = BTreeSet::new();
+    for s in &r.placed_sources {
+        cx.tick()?;
+        let t = s.source_id.as_str();
+        check(key(t) && ids.insert(s.source_id.clone()), "placed_sources", "source_id")?;
+        check(
+            s.width.is_finite() && s.width > 0.0 && s.height.is_finite() && s.height > 0.0,
+            t,
+            "size",
+        )?;
+        match &s.location {
+            StudioPlacedMode::Embedded {
+                document_id,
+                content_digest,
+            } => {
+                id(document_id, "SDOC", t)?;
+                // The annotated document cannot embed itself.
+                check(document_id != &r.document_id, t, "document_id")?;
+                check(label(content_digest), t, "content_digest")?;
+            }
+            StudioPlacedMode::Linked {
+                uri,
+                content_digest,
+                ..
+            } => {
+                check(
+                    label(uri) && !uri.contains(':') && !uri.starts_with('/'),
+                    t,
+                    "uri",
+                )?;
+                check(label(content_digest), t, "content_digest")?;
+            }
+        }
+        check(s.uses.len() <= MAX_PLACED_SOURCES, t, "uses")?;
+        cx.nodes(s.uses.len(), t)?;
+    }
+    // References, then cycles and depth: an iterative walk from every source, bounded by
+    // MAX_PLACED_DEPTH (a longer chain is refused, so a hostile chain costs at most
+    // sources x depth steps).
+    let uses: BTreeMap<&str, &[String]> = r
+        .placed_sources
+        .iter()
+        .map(|s| (s.source_id.as_str(), s.uses.as_slice()))
+        .collect();
+    for s in &r.placed_sources {
+        for u in &s.uses {
+            check(ids.contains(u), &s.source_id, "uses")?;
+        }
+    }
+    // Cycles first (a source reaching itself), then depth, over every source: iterative and
+    // bounded (each level is deduplicated, at most MAX_PLACED_DEPTH + 1 levels).
+    for pass in [true, false] {
+        for s in &r.placed_sources {
+            let mut frontier: Vec<&str> = vec![s.source_id.as_str()];
+            let mut depth = 0usize;
+            while !frontier.is_empty() {
+                cx.tick()?;
+                if depth > MAX_PLACED_DEPTH {
+                    if pass {
+                        break;
+                    }
+                    return Err(err(Code::InvalidField, format!("{}/depth", s.source_id)));
+                }
+                let mut next = Vec::new();
+                for f in &frontier {
+                    for u in uses.get(f).copied().unwrap_or(&[]) {
+                        if pass && u == &s.source_id {
+                            return Err(err(Code::RenderCycle, &s.source_id));
+                        }
+                        next.push(u.as_str());
+                    }
+                }
+                next.sort_unstable();
+                next.dedup();
+                frontier = next;
+                depth = depth.saturating_add(1);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+fn placed_asset(a: &StudioPlacedAsset, layer: &StudioLayer, ids: &BTreeSet<String>, t: &str) -> Result<()> {
+    if !matches!(layer.payload, Payload::Raster { .. }) {
+        return Err(err(Code::PayloadMismatch, t));
+    }
+    if !ids.contains(&a.source_id) {
+        return Err(err(Code::DanglingReference, format!("{t}/placed_asset")));
+    }
+    let [m0, m1, m2, m3, m4, m5] = a.transform;
+    let det = m0 * m3 - m1 * m2;
+    check(
+        a.transform.iter().all(|v| v.is_finite()) && det.is_finite() && det != 0.0 && m4.is_finite() && m5.is_finite(),
+        t,
+        "placed_asset/transform",
+    )
 }
 
 /// The raster records of one document.
@@ -764,6 +932,9 @@ pub struct StudioRasterRecords {
     pub global_light: Option<StudioGlobalLight>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<StudioRasterLayerRecord>,
+    /// Shared placed-asset sources (lane SMB-PS-ADJUST-STYLES); empty is not encoded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placed_sources: Vec<StudioPlacedSource>,
 }
 impl StudioRasterRecords {
     /// An empty set for `document_id`.
@@ -773,7 +944,12 @@ impl StudioRasterRecords {
             document_id: document_id.into(),
             global_light: None,
             layers: Vec::new(),
+            placed_sources: Vec::new(),
         }
+    }
+    /// The placed source `source_id`.
+    pub fn placed_source(&self, source_id: &str) -> Option<&StudioPlacedSource> {
+        self.placed_sources.iter().find(|s| s.source_id == source_id)
     }
     /// The entry of a layer.
     pub fn layer(&self, layer_id: &str) -> Option<&StudioRasterLayerRecord> {
@@ -1499,6 +1675,7 @@ pub fn validate_raster_records(
     }
     let layers: BTreeMap<&str, &super::StudioLayer> =
         d.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
+    let placed_ids = placed_sources(r, &mut cx)?;
     cx.nodes(r.layers.len(), "layers")?;
     let mut seen = BTreeSet::new();
     for e in &r.layers {
@@ -1543,6 +1720,9 @@ pub fn validate_raster_records(
         }
         if let Some(s) = &e.smart_filters {
             super::smart_filter::validate_smart_filters(s, layer, &mut cx)?;
+        }
+        if let Some(a) = &e.placed_asset {
+            placed_asset(a, layer, &placed_ids, t)?;
         }
     }
     // Every adjustment layer must have its adjustment record.

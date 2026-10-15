@@ -43,6 +43,11 @@ use std::collections::BTreeMap;
 
 pub use hsk_studio_pigment::adjust_math::AdjustmentOp;
 
+/// Placed assets (smart objects) through the composition path (lane SMB-PS-ADJUST-STYLES; declared
+/// here, beside the other raster-record conversions, file `src/placed.rs`).
+#[path = "placed.rs"]
+pub mod placed;
+
 /// Refusal code: a hue band with a non-zero shift (pigment carries master values only).
 pub const REFUSE_HUE_BANDS: &str = "hue_saturation_bands";
 /// Refusal code: a threshold with a non-default false or true colour.
