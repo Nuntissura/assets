@@ -49,6 +49,22 @@ pub enum MotionError {
     /// Date clock value outside the exact +-8.64e15 ms range (MOT-256).
     DateOutOfRange,
     InvalidDateProfile,
+    /// Graph sample count 0 or above the caller's bound (refused before allocation).
+    SampleLimit,
+    /// A keyframe selection index beyond the property's keyframes.
+    SelectionOutOfRange,
+    /// The first or last keyframe of a property may never rove (STU-MOT-035).
+    RovingEndpoint,
+    /// Roving retiming would put two keyframes on the same tick.
+    RovingCollapse,
+    /// A parameter outside its domain (named; text selectors, shape operators, assistants).
+    InvalidParameter {
+        parameter: &'static str,
+    },
+    /// A count bound exceeded before allocation (named: characters, copies, layers, points).
+    CountLimit {
+        what: &'static str,
+    },
 }
 
 impl MotionError {
@@ -80,6 +96,12 @@ impl MotionError {
             Self::UnknownProperty => "unknown_property",
             Self::DateOutOfRange => "date_out_of_range",
             Self::InvalidDateProfile => "invalid_date_profile",
+            Self::SampleLimit => "sample_limit",
+            Self::SelectionOutOfRange => "selection_out_of_range",
+            Self::RovingEndpoint => "roving_endpoint",
+            Self::RovingCollapse => "roving_collapse",
+            Self::InvalidParameter { .. } => "invalid_parameter",
+            Self::CountLimit { .. } => "count_limit",
         }
     }
 

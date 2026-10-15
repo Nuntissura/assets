@@ -4,10 +4,12 @@
 //! dependency.
 #![forbid(unsafe_code)]
 
+mod assistants;
 mod date;
 mod depgraph;
 mod error;
 mod expression;
+mod graph;
 mod keyframe;
 mod path;
 mod property;
@@ -22,10 +24,18 @@ pub use depgraph::{
     DepGraph, MAX_GRAPH_NODES, MAX_READS_PER_EXPRESSION, ReferenceResolver, Resolution,
     resolve_references,
 };
+pub use assistants::{
+    EaseSide, LayerSpan, MAX_SEQUENCE_LAYERS, SequenceTransition, SequencedLayer, auto_bezier, ease,
+    make_continuous, rove, sequence_layers, set_interpolation, toggle_hold,
+};
 pub use error::MotionError;
 pub use expression::{
     ExprError, ExprErrorCode, ExprRequest, ExpressionProvider, Fuel, HostRead, NoHost, NoProvider,
     SourceSpan,
+};
+pub use graph::{
+    GraphChannel, GraphKind, GraphPoint, MAX_GRAPH_SAMPLES, VelocityRecord, fit_range, graph,
+    join_dimensions, path_speed_at, separate_dimensions, set_velocity, speed_at, velocity_record,
 };
 pub use keyframe::{
     DEFAULT_INFLUENCE, Interpolation, Keyframe, MAX_DIMENSION, MAX_KEYFRAMES, TemporalTangent,

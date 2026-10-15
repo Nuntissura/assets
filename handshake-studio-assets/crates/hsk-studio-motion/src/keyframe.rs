@@ -236,7 +236,7 @@ fn bezier(p: [f64; 4], s: f64) -> f64 {
     m * m * m * p[0] + 3.0 * m * m * s * p[1] + 3.0 * m * s * s * p[2] + s * s * s * p[3]
 }
 
-fn solve_cubic(cubic: &Cubic, u: f64) -> f64 {
+fn solve_parameter(cubic: &Cubic, u: f64) -> f64 {
     let x = [0.0, cubic.x1, cubic.x2, 1.0];
     let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
     for _ in 0..BISECTION_STEPS {
@@ -247,7 +247,69 @@ fn solve_cubic(cubic: &Cubic, u: f64) -> f64 {
             hi = mid;
         }
     }
-    bezier(cubic.y, 0.5 * (lo + hi))
+    0.5 * (lo + hi)
+}
+
+fn solve_cubic(cubic: &Cubic, u: f64) -> f64 {
+    bezier(cubic.y, solve_parameter(cubic, u))
+}
+
+/// First derivative of a cubic Bezier coordinate in its parameter.
+fn bezier_d1(p: [f64; 4], s: f64) -> f64 {
+    let m = 1.0 - s;
+    3.0 * (m * m * (p[1] - p[0]) + 2.0 * m * s * (p[2] - p[1]) + s * s * (p[3] - p[2]))
+}
+
+/// Second derivative of a cubic Bezier coordinate in its parameter.
+fn bezier_d2(p: [f64; 4], s: f64) -> f64 {
+    6.0 * ((1.0 - s) * (p[2] - 2.0 * p[1] + p[0]) + s * (p[3] - 2.0 * p[2] + p[1]))
+}
+
+/// Rate of change (value units per second) of component `component` of the segment `k0 -> k1` at
+/// `tick` with `t0 <= tick < t1` (STU-MOT-051 speed graph). Step: 0. Lerp: the chord slope. Cubic:
+/// `(dy/ds) / (dx/ds) / dt_s` at the parameter `s` solving `x(s) = u`; where `dx/ds` vanishes (an
+/// influence of 0 at an end) the ratio of second derivatives (L'Hopital) is used, and when both
+/// vanish the speed is 0.
+pub(crate) fn segment_speed(
+    k0: &Keyframe,
+    k1: &Keyframe,
+    t0: i64,
+    t1: i64,
+    tick: i64,
+    interpolable: bool,
+    component: usize,
+) -> Result<f64, MotionError> {
+    let dt = i128::from(t1) - i128::from(t0);
+    let elapsed = i128::from(tick) - i128::from(t0);
+    let dt_i64 = i64::try_from(dt).map_err(|_| MotionError::TickOverflow)?;
+    let u = elapsed as f64 / dt as f64;
+    let dts = segment_seconds(dt_i64);
+    let (Some(v0), Some(v1)) = (k0.value.get(component), k1.value.get(component)) else {
+        return Err(MotionError::ComponentMismatch);
+    };
+    let speed = match shape(k0, k1, component, dts, interpolable) {
+        Shape::Step => 0.0,
+        Shape::Lerp => (v1 - v0) / dts,
+        Shape::Cubic(cubic) => {
+            let s = if elapsed == 0 { 0.0 } else { solve_parameter(&cubic, u) };
+            let x = [0.0, cubic.x1, cubic.x2, 1.0];
+            let dx = bezier_d1(x, s);
+            if dx > 1e-12 {
+                bezier_d1(cubic.y, s) / dx / dts
+            } else {
+                let ddx = bezier_d2(x, s);
+                if ddx.abs() > 1e-12 {
+                    bezier_d2(cubic.y, s) / ddx / dts
+                } else {
+                    0.0
+                }
+            }
+        }
+    };
+    if !speed.is_finite() {
+        return Err(MotionError::NonFinite);
+    }
+    Ok(speed)
 }
 
 /// Rejects segments whose time curve is not monotone (checked for every component).
@@ -304,4 +366,39 @@ pub(crate) fn sample_segment(
         out.push(value);
     }
     Ok(out)
+}
+
+/// Speed of component `component` at the END of the segment `k0 -> k1` (the arriving side, s = 1),
+/// analytic like [`segment_speed`].
+pub(crate) fn segment_end_speed(
+    k0: &Keyframe,
+    k1: &Keyframe,
+    t0: i64,
+    t1: i64,
+    interpolable: bool,
+    component: usize,
+) -> Result<f64, MotionError> {
+    let dt = i64::try_from(i128::from(t1) - i128::from(t0)).map_err(|_| MotionError::TickOverflow)?;
+    let dts = segment_seconds(dt);
+    let (Some(v0), Some(v1)) = (k0.value.get(component), k1.value.get(component)) else {
+        return Err(MotionError::ComponentMismatch);
+    };
+    let speed = match shape(k0, k1, component, dts, interpolable) {
+        Shape::Step => 0.0,
+        Shape::Lerp => (v1 - v0) / dts,
+        Shape::Cubic(cubic) => {
+            let x = [0.0, cubic.x1, cubic.x2, 1.0];
+            let dx = bezier_d1(x, 1.0);
+            if dx > 1e-12 {
+                bezier_d1(cubic.y, 1.0) / dx / dts
+            } else {
+                let ddx = bezier_d2(x, 1.0);
+                if ddx.abs() > 1e-12 { bezier_d2(cubic.y, 1.0) / ddx / dts } else { 0.0 }
+            }
+        }
+    };
+    if !speed.is_finite() {
+        return Err(MotionError::NonFinite);
+    }
+    Ok(speed)
 }

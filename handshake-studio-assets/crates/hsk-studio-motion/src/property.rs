@@ -132,6 +132,34 @@ impl Property {
         &self.keys
     }
 
+    /// MOT-031b interpolable flag (false = every segment holds).
+    pub fn interpolable(&self) -> bool {
+        self.interpolable
+    }
+
+    /// Hard bounds `(min, max)`.
+    pub fn bounds(&self) -> (Option<f64>, Option<f64>) {
+        (self.hard_min, self.hard_max)
+    }
+
+    /// Validated key times as signed ticks (same order as `keyframes`).
+    pub(crate) fn key_ticks(&self) -> &[i64] {
+        &self.key_ticks
+    }
+
+    /// Replaces the keyframes (STU-MOT-038 typed keyframe commands); validated like `new`, the
+    /// property is unchanged on refusal, the revision advances on success.
+    pub fn set_keyframes(&mut self, keys: Vec<Keyframe>) -> Result<(), MotionError> {
+        let previous = std::mem::replace(&mut self.keys, keys);
+        if let Err(error) = self.revalidate() {
+            self.keys = previous;
+            self.revalidate()?;
+            return Err(error);
+        }
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn expression(&self) -> Option<&str> {
         self.expression.as_deref()
     }
