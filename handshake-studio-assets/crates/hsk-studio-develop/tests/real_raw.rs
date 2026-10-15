@@ -187,9 +187,9 @@ fn vendor_files_route_to_typed_outcomes() {
     // Compressed NEF (D70s, Z6) decodes since SMB-DEVELOP-RAW-COMPRESSED (tests/real_raw_compressed.rs).
     // CR3 (R6) decodes since SMB-DEVELOP-RAW-COMPRESSED slice 2 (tests/real_raw_compressed.rs).
     // RAF X-S10 (compressed X-Trans) decodes since slice 3 (tests/real_raw_compressed.rs).
-    let cases: [(&str, &str, DevelopError); 3] = [
+    // ORF C5060WZ (two-field 12-bit) decodes since slice 4 (tests/real_raw_compressed.rs).
+    let cases: [(&str, &str, DevelopError); 2] = [
         ("fujifilm-finepix-s5000.raf", RAF_S5000, DevelopError::DecoderUnavailable("raf")),
-        ("olympus-c5060wz-12bit.orf", ORF_C5060, DevelopError::DecoderUnavailable("orf")),
         ("panasonic-dmc-lx7.rw2", RW2_LX7, DevelopError::DecoderUnavailable("rw2")),
     ];
     for (file, sha, expected) in cases {
@@ -201,5 +201,4 @@ fn vendor_files_route_to_typed_outcomes() {
 
 const ARW_7S: &str = "a35ebb2fbec929daa5beb20d1ce5c15a8aac7b1a7a231455387f3df8a7442e07";
 const RAF_S5000: &str = "dabd5e74521a6980156be9fd4b88d0c37b0fe4d0e0e6f5c12db8cffff1b76297";
-const ORF_C5060: &str = "3fc12bc3f6320cfab456111d7805b446e329fdd1907680be55e2e163e5e084bd";
 const RW2_LX7: &str = "18dfc3877e944020299635a8c2fad61fca2485b1c9b67645a495ee870a86e599";

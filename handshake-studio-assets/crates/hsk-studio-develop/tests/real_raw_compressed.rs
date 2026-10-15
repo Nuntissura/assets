@@ -392,3 +392,24 @@ fn raf_xtrans_lossy_x_s10_decodes_and_matches_the_embedded_preview() {
         r_floor: 0.92,
     }]);
 }
+
+/// C5060WZ (raw.pixls.us id 1799): `IIRS` magic, IFD0 2608 x 1949, 12 bit, Compression 1, 122
+/// strips summing to 2608 * 1949 * 1.5 bytes with one gap (two-field layout), Exif CFAPattern
+/// (byte inspection 2026-10-15; the previous lane's SMB-DEVELOP-RAW-VENDOR blocker). The only
+/// embedded JPEG is the 160 x 120 thumbnail: preview r measured 0.984, floor 0.95; digest pinned
+/// from the same run.
+#[test]
+#[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
+fn orf_two_field_c5060wz_decodes_and_matches_the_embedded_preview() {
+    const TEST: &str = "orf_two_field_c5060wz_decodes_and_matches_the_embedded_preview";
+    check_all(TEST, &[Expect {
+        file: "olympus-c5060wz-12bit.orf",
+        sha256: "3fc12bc3f6320cfab456111d7805b446e329fdd1907680be55e2e163e5e084bd",
+        dims: (2608, 1949, 12),
+        white: 4095,
+        cfa: CfaPattern::Bayer(Bayer::Rggb),
+        model: "C5060WZ",
+        digest: "1e6a220bfa5fbdced0bc9acf6c62cecc3cf287ad3df527e3fe980f154534ab37",
+        r_floor: 0.95,
+    }]);
+}
