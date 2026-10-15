@@ -129,7 +129,14 @@ fn tool_records_round_trip_byte_identically_and_refuse_hostile_input() {
 fn icc_profile_records_pin_the_swatch_profiles() {
     // Lane SMB-ILLUSTRATOR-INTEROP: the CMYK profile swatch 1 converts through is a Folio record.
     let digest = json!({"algorithm":"sha256","digest":"ab".repeat(32)});
-    let profile = |n: u32, space: &str, working: bool| json!({"profile_id":identity("SCPF",n),"name":format!("p{n}"),"colour_space":space,"content_digest":digest,"working_space":working});
+    // `working_space` is skipped at false on the wire.
+    let profile = |n: u32, space: &str, working: bool| {
+        let mut p = json!({"profile_id":identity("SCPF",n),"name":format!("p{n}"),"colour_space":space,"content_digest":digest});
+        if working {
+            p["working_space"] = json!(true);
+        }
+        p
+    };
     let mut f = full();
     f["icc_profiles"] = json!([profile(1, "CMYK", true), profile(2, "RGB", false)]);
     assert_eq!(check(&f), Ok(()));
