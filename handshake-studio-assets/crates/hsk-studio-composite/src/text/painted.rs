@@ -16,7 +16,7 @@ use hsk_studio_nib::{OwnedPath, PathElement, PathPoint};
 use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, ColourTag, Group, Layer, MaskFormat, MaskInput, OutputTarget, PlanExtensions,
-    PlanLimits, PlanNode, PlanNodeId, RenderPlan, SampleFormat, SourceKey,
+    PlanLimits, PlanNode, PlanNodeId, RenderPlan, SampleFormat, SourceKey, TileInput,
 };
 use hsk_studio_pigment::Rect;
 use std::collections::BTreeMap;
@@ -30,10 +30,13 @@ pub const DEFAULT_MAX_PAINTED_BYTES: u64 = 1 << 28;
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaintedPlane {
     pub coverage: CoveragePlane,
-    /// Straight RGBA, each channel in `[0, 1]`.
+    /// Straight RGBA, each channel in `[0, 1]` (the solid colour; ignored with `tile`).
     pub rgba: [f32; 4],
     /// Layer opacity in `[0, 1]`.
     pub opacity: f32,
+    /// A gradient or pattern evaluated over the coverage frame (straight planes, placement = the
+    /// coverage frame): drawn instead of the solid colour, then cut by the coverage.
+    pub tile: Option<crate::vector_nib::PaintedTile>,
 }
 
 fn rect_of(c: &CoveragePlane) -> Rect {
@@ -124,6 +127,9 @@ pub fn painted_content(
         if usize::try_from(bytes).ok() != Some(p.coverage.data.len()) {
             return Err(CompositeError::Unavailable(format!("{layer_id}:painted_plane_size")));
         }
+        if p.tile.as_ref().is_some_and(|t| t.placement != rect_of(&p.coverage)) {
+            return Err(CompositeError::Unavailable(format!("{layer_id}:painted_tile_placement")));
+        }
         let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
         if !p.rgba.iter().all(|v| unit(*v)) || !unit(p.opacity) {
             return Err(CompositeError::Unavailable(format!("{layer_id}:painted_colour")));
@@ -143,11 +149,35 @@ pub fn painted_content(
     let mut nodes = Vec::with_capacity(kept.len().saturating_add(1));
     let mut layers = Vec::with_capacity(kept.len());
     let mut owned_masks = BTreeMap::new();
+    let mut owned_tiles = BTreeMap::new();
     for (i, p) in kept.into_iter().enumerate() {
         let placement = rect_of(&p.coverage);
         let key = SourceKey(u32::try_from(i).map_err(|_| CompositeError::Overflow)?);
         let sha256 = hsk_studio_prism::profile_hash(&p.coverage.data);
-        nodes.push(PlanNode::Solid { rect: placement, rgba: p.rgba });
+        match p.tile {
+            None => nodes.push(PlanNode::Solid { rect: placement, rgba: p.rgba }),
+            Some(t) => {
+                nodes.push(PlanNode::Tile(TileInput {
+                    key,
+                    placement,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: t.colour_sha256,
+                    alpha_sha256: t.alpha_sha256,
+                }));
+                owned_tiles.insert(
+                    key,
+                    crate::composition::Surface {
+                        width: placement.width,
+                        height: placement.height,
+                        colour: t.colour,
+                        alpha: t.alpha,
+                        colour_sha256: t.colour_sha256,
+                        alpha_sha256: t.alpha_sha256,
+                    },
+                );
+            }
+        }
         layers.push(Layer {
             input: PlanNodeId(u32::try_from(i).map_err(|_| CompositeError::Overflow)?),
             mode: StudioBlendMode::Normal,
@@ -194,6 +224,6 @@ pub fn painted_content(
         tiles: BTreeMap::new(),
         masks: BTreeMap::new(),
         owned_masks,
-        owned_tiles: BTreeMap::new(),
+        owned_tiles,
     }))
 }

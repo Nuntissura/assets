@@ -78,6 +78,8 @@ use std::fmt;
 pub mod composition;
 #[cfg(feature = "motion")]
 pub mod motion;
+#[cfg(feature = "motion")]
+pub mod motion_records;
 
 /// Refusal key: the frame needs pixel resampling, which pigment's plan IR cannot express.
 pub const TRANSFORM_REQUIRES_RESAMPLING: &str = "transform_requires_resampling";

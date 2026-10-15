@@ -247,7 +247,7 @@ pub fn animated_text_content(
             Some(f) => [f[0] as f32, f[1] as f32, f[2] as f32, f[3] as f32],
             None => base_fill,
         };
-        planes.push(PaintedPlane { coverage, rgba: fill, opacity: t.opacity.clamp(0.0, 1.0) as f32 });
+        planes.push(PaintedPlane { coverage, rgba: fill, opacity: t.opacity.clamp(0.0, 1.0) as f32, tile: None });
     }
     painted_content(layer_id, planes, space, revision, DEFAULT_MAX_PAINTED_BYTES)
 }

@@ -30,9 +30,9 @@ use crate::composition::StaticContent;
 use crate::text::painted::{DEFAULT_MAX_PAINTED_BYTES, PaintedPlane, painted_content, path_frame};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::boolean::BooleanOptions;
-use hsk_studio_nib::raster::{Affine, RasterOptions, rasterize};
+use hsk_studio_nib::raster::{Affine, Gradient, GradientGeometry, GradientStop, Interpolation, Paint, RasterOptions, Spread, rasterize};
 use hsk_studio_nib::shape_ops::{
-    MergeMode, Polystar, RepeaterTransform, TrimMode, WiggleParams, anchored_transform,
+    MergeMode, Polystar, RepeaterTransform, TrimMode, WiggleParams, affine_mul, anchored_transform,
     ellipse_path, merge_paths, offset_path, path_noise, polystar_path, pucker_bloat, rect_path,
     repeater, reverse_path, round_corners, transform_path, trim_many, twist, wiggle_path, zig_zag,
 };
@@ -81,6 +81,20 @@ pub struct ShapeStroke {
     pub dash: Option<DashPattern>,
 }
 
+/// A shape gradient (After Effects gradient fill / stroke, lane SMB-AE-MOTION-RECORDS slice 3):
+/// linear from `start` to `end`, or radial centred at `start` with radius `|end - start|`, in the
+/// coordinates of the group that holds the paint; the paint's accumulated group, repeater and
+/// wiggle transforms move it with the geometry. Evaluated by nib (`raster::paint_coverage`, classic
+/// straight interpolation, pad spread) over the coverage frame. AE gradient parity UNVERIFIED (D5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeGradient {
+    pub radial: bool,
+    pub start: [f64; 2],
+    pub end: [f64; 2],
+    /// `(offset 0..=1, straight RGBA)`, offsets non-decreasing.
+    pub stops: Vec<(f64, [f32; 4])>,
+}
+
 /// Seeded temporal noise on the transform of everything above it (STU-MOT-103 wiggle transform):
 /// `n_k = path_noise(seed, k, time * frequency + temporal_phase / 360)`; translate `position * (n_0,
 /// n_1)`, rotate `rotation * n_2`, scale `1 + scale / 100 * (n_3, n_4)` about `anchor`.
@@ -104,6 +118,10 @@ pub enum ShapeItem {
     Path { path: OwnedPath, reversed: bool },
     Fill(ShapeFill),
     Stroke(ShapeStroke),
+    /// Opacity in percent.
+    GradientFill { gradient: ShapeGradient, opacity: f64, rule: FillRule },
+    /// The stroke's `rgba` is unused; its opacity applies.
+    GradientStroke { gradient: ShapeGradient, stroke: ShapeStroke },
     Trim { start: f64, end: f64, offset: f64, mode: TrimMode },
     Offset { amount: f64, join: LineJoin, miter_limit: f64, copies: u32 },
     Merge(MergeMode),
@@ -130,6 +148,8 @@ pub struct ShapeGroup {
 pub enum ShapePaint {
     Fill(ShapeFill),
     Stroke(ShapeStroke),
+    GradientFill(ShapeGradient, FillRule),
+    GradientStroke(ShapeGradient, ShapeStroke),
 }
 
 /// One evaluated paint: its final geometry (the captured slots as one path), paint and opacity
@@ -139,6 +159,8 @@ pub struct PaintedShape {
     pub path: OwnedPath,
     pub paint: ShapePaint,
     pub opacity: f64,
+    /// Accumulated transform of the paint's gradient space.
+    pub transform: Affine,
 }
 
 #[derive(Clone, Debug)]
@@ -146,6 +168,7 @@ struct PaintRec {
     slots: Vec<usize>,
     paint: ShapePaint,
     opacity: f64,
+    xform: Affine,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -184,7 +207,36 @@ fn map_slots(st: &mut State, f: impl Fn(&OwnedPath) -> Result<OwnedPath, NibErro
 }
 
 fn transform_state(st: &mut State, m: &Affine) -> Result<(), &'static str> {
+    for p in st.paints.iter_mut() {
+        p.xform = affine_mul(m, &p.xform);
+    }
     map_slots(st, |p| transform_path(p, m))
+}
+
+fn gradient_ok(g: &ShapeGradient) -> Result<(), &'static str> {
+    finite(&[g.start[0], g.start[1], g.end[0], g.end[1]])?;
+    let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+    if g.stops.is_empty()
+        || g.stops.len() > hsk_studio_nib::raster::MAX_STOPS
+        || !g.stops.iter().all(|(o, c)| o.is_finite() && (0.0..=1.0).contains(o) && c.iter().all(|v| unit(*v)))
+        || g.stops.windows(2).any(|w| w[0].0 > w[1].0)
+    {
+        return Err("shape_gradient");
+    }
+    Ok(())
+}
+
+fn push_paint(st: &mut State, paint: ShapePaint, opacity: f64) -> Result<(), &'static str> {
+    finite(&[opacity])?;
+    if !(0.0..=100.0).contains(&opacity) {
+        return Err("shape_parameter");
+    }
+    if st.paints.len() >= MAX_SHAPE_PAINTS {
+        return Err("shape_paint_count");
+    }
+    let slots = (0..st.slots.len()).collect();
+    st.paints.push(PaintRec { slots, paint, opacity: opacity / 100.0, xform: hsk_studio_nib::raster::IDENTITY });
+    Ok(())
 }
 
 fn group_matrix(t: &GroupTransform) -> Result<Affine, &'static str> {
@@ -221,27 +273,19 @@ fn eval_group(g: &ShapeGroup, time_s: f64, depth: usize, cancel: &CancellationTo
                 let p = if *reversed { reverse_path(path).map_err(nib)? } else { transform_path(path, &hsk_studio_nib::raster::IDENTITY).map_err(nib)? };
                 add_slot(&mut st, p)?;
             }
-            ShapeItem::Fill(f) => {
-                finite(&[f.opacity])?;
-                if !(0.0..=100.0).contains(&f.opacity) {
-                    return Err("shape_parameter");
-                }
-                if st.paints.len() >= MAX_SHAPE_PAINTS {
-                    return Err("shape_paint_count");
-                }
-                let slots = (0..st.slots.len()).collect();
-                st.paints.push(PaintRec { slots, paint: ShapePaint::Fill(*f), opacity: f.opacity / 100.0 });
-            }
+            ShapeItem::Fill(f) => push_paint(&mut st, ShapePaint::Fill(*f), f.opacity)?,
             ShapeItem::Stroke(s) => {
-                finite(&[s.opacity, s.width, s.miter_limit])?;
-                if !(0.0..=100.0).contains(&s.opacity) {
-                    return Err("shape_parameter");
-                }
-                if st.paints.len() >= MAX_SHAPE_PAINTS {
-                    return Err("shape_paint_count");
-                }
-                let slots = (0..st.slots.len()).collect();
-                st.paints.push(PaintRec { slots, paint: ShapePaint::Stroke(s.clone()), opacity: s.opacity / 100.0 });
+                finite(&[s.width, s.miter_limit])?;
+                push_paint(&mut st, ShapePaint::Stroke(s.clone()), s.opacity)?;
+            }
+            ShapeItem::GradientFill { gradient, opacity, rule } => {
+                gradient_ok(gradient)?;
+                push_paint(&mut st, ShapePaint::GradientFill(gradient.clone(), *rule), *opacity)?;
+            }
+            ShapeItem::GradientStroke { gradient, stroke } => {
+                gradient_ok(gradient)?;
+                finite(&[stroke.width, stroke.miter_limit])?;
+                push_paint(&mut st, ShapePaint::GradientStroke(gradient.clone(), stroke.clone()), stroke.opacity)?;
             }
             ShapeItem::Trim { start, end, offset, mode } => {
                 st.slots = trim_many(&st.slots, *start, *end, *offset, *mode).map_err(nib)?;
@@ -299,7 +343,7 @@ fn eval_group(g: &ShapeGroup, time_s: f64, depth: usize, cancel: &CancellationTo
                     let base = c.checked_mul(m).ok_or("shape_repeater_budget")?;
                     for p in &st.paints {
                         let remapped = p.slots.iter().map(|s| base.checked_add(*s).ok_or("shape_repeater_budget")).collect::<Result<_, _>>()?;
-                        paints.push(PaintRec { slots: remapped, paint: p.paint.clone(), opacity: p.opacity * list[c].1 });
+                        paints.push(PaintRec { slots: remapped, paint: p.paint.clone(), opacity: p.opacity * list[c].1, xform: affine_mul(&list[c].0, &p.xform) });
                     }
                 }
                 st.slots = slots;
@@ -320,7 +364,7 @@ fn eval_group(g: &ShapeGroup, time_s: f64, depth: usize, cancel: &CancellationTo
                 st.slots.extend(inner.slots);
                 for p in inner.paints {
                     let slots = p.slots.iter().map(|s| base.checked_add(*s).ok_or("shape_path_count")).collect::<Result<_, _>>()?;
-                    st.paints.push(PaintRec { slots, paint: p.paint, opacity: p.opacity * factor });
+                    st.paints.push(PaintRec { slots, paint: p.paint, opacity: p.opacity * factor, xform: p.xform });
                 }
             }
         }
@@ -342,7 +386,8 @@ pub fn evaluate_shape_layer(root: &ShapeGroup, time_s: f64, cancel: &Cancellatio
     for p in st.paints.iter().rev() {
         let rule = match &p.paint {
             ShapePaint::Fill(f) => f.rule,
-            ShapePaint::Stroke(_) => FillRule::NonZero,
+            ShapePaint::GradientFill(_, r) => *r,
+            ShapePaint::Stroke(_) | ShapePaint::GradientStroke(..) => FillRule::NonZero,
         };
         let mut path = OwnedPath::new(rule);
         for s in &p.slots {
@@ -351,7 +396,7 @@ pub fn evaluate_shape_layer(root: &ShapeGroup, time_s: f64, cancel: &Cancellatio
                 return Err("shape_budget");
             }
         }
-        out.push(PaintedShape { path, paint: p.paint.clone(), opacity: p.opacity * factor });
+        out.push(PaintedShape { path, paint: p.paint.clone(), opacity: p.opacity * factor, transform: p.xform });
     }
     Ok(out)
 }
@@ -377,16 +422,25 @@ pub fn shape_layer_content(
         if s.path.elements.is_empty() || s.opacity <= 0.0 {
             continue;
         }
-        let (geometry, rgba) = match &s.paint {
-            ShapePaint::Fill(f) => (s.path.clone(), f.rgba),
-            ShapePaint::Stroke(k) => {
-                let style = StrokeStyle { cap: k.cap, join: k.join, miter_limit: k.miter_limit, dash: k.dash.clone(), ..StrokeStyle::new(k.width) };
-                match outline_stroke(&s.path, &style, &StrokeOptions::default()) {
-                    Ok(r) => (r.path, k.rgba),
-                    Err(NibError::EmptyPathfinderResult) => continue,
-                    Err(e) => return Err(refuse(nib(e))),
-                }
+        let outline = |k: &ShapeStroke| {
+            let style = StrokeStyle { cap: k.cap, join: k.join, miter_limit: k.miter_limit, dash: k.dash.clone(), ..StrokeStyle::new(k.width) };
+            match outline_stroke(&s.path, &style, &StrokeOptions::default()) {
+                Ok(r) => Ok(Some(r.path)),
+                Err(NibError::EmptyPathfinderResult) => Ok(None),
+                Err(e) => Err(refuse(nib(e))),
             }
+        };
+        let (geometry, rgba, gradient) = match &s.paint {
+            ShapePaint::Fill(f) => (s.path.clone(), f.rgba, None),
+            ShapePaint::GradientFill(g, _) => (s.path.clone(), [1.0; 4], Some(g)),
+            ShapePaint::Stroke(k) => match outline(k)? {
+                Some(p) => (p, k.rgba, None),
+                None => continue,
+            },
+            ShapePaint::GradientStroke(g, k) => match outline(k)? {
+                Some(p) => (p, [1.0; 4], Some(g)),
+                None => continue,
+            },
         };
         let Some(frame) = path_frame(&geometry) else { continue };
         let px = u64::from(frame.width).checked_mul(u64::from(frame.height)).ok_or(CompositeError::Overflow)?;
@@ -395,7 +449,28 @@ pub fn shape_layer_content(
         }
         budget = budget.saturating_sub(px);
         let (coverage, _) = rasterize(&geometry, frame, raster).map_err(|e| refuse(nib(e)))?;
-        planes.push(PaintedPlane { coverage, rgba, opacity: s.opacity.clamp(0.0, 1.0) as f32 });
+        let tile = match gradient {
+            None => None,
+            Some(g) => {
+                let rect = hsk_studio_pigment::Rect { x: i64::from(frame.x), y: i64::from(frame.y), width: frame.width, height: frame.height };
+                let geometry = if g.radial {
+                    let r = ((g.end[0] - g.start[0]).powi(2) + (g.end[1] - g.start[1]).powi(2)).sqrt();
+                    GradientGeometry::Radial { cx: g.start[0], cy: g.start[1], r, fx: g.start[0], fy: g.start[1], fr: 0.0 }
+                } else {
+                    GradientGeometry::Linear { x1: g.start[0], y1: g.start[1], x2: g.end[0], y2: g.end[1] }
+                };
+                let paint = Paint::Gradient(Gradient {
+                    geometry,
+                    transform: s.transform,
+                    spread: Spread::Pad,
+                    interpolation: Interpolation::Classic,
+                    dither: false,
+                    stops: g.stops.iter().map(|(offset, colour)| GradientStop { offset: *offset, colour: *colour, midpoint: None }).collect(),
+                });
+                Some(crate::vector_nib::painted(&paint, rect, raster.max_pixels).map_err(refuse)?)
+            }
+        };
+        planes.push(PaintedPlane { coverage, rgba, opacity: s.opacity.clamp(0.0, 1.0) as f32, tile });
     }
     painted_content(layer_id, planes, space, revision, DEFAULT_MAX_PAINTED_BYTES)
 }
