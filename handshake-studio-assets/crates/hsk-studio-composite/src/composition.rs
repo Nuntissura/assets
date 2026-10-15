@@ -568,6 +568,129 @@ impl Charges {
     }
 }
 
+/// An unlinked vector mask (Folio `StudioVectorMaskParameters.linked == false`, STU-RAS-016; lane
+/// SMB-COMPOSITE-VECTOR-MASK-2) of composition layer `layer_id` as an alpha track matte that stays
+/// in composition space while the layer moves: the matte layer is a white `Solid` over the mask
+/// plane (`crate::vector_mask`: source bounds united with the region, invert / region baked as in
+/// the static lowering, no clip) cut by the plane, identity matrix, with the mask feather as its
+/// envelope `mask_feather_px`; a pure invert is the matte's invert (full outside the plane). The
+/// mask plane is in the layer's content coordinates, which are composition pixels under the
+/// identity layer matrix (the unlinked mask stays where the unmoved layer's mask was). An empty
+/// plane is an absent matte (coverage 0, or full when inverted). Density below 1 is refused
+/// (`vector_mask_unlinked_density`: a matte has no density). `revision` = the plan revision the
+/// scene request expects.
+pub fn unlinked_mask_matte(
+    mask: &crate::vector_mask::VectorMask,
+    layer_id: &str,
+    space: ColourTag,
+    revision: u64,
+) -> Result<SceneMatte, CompositeError> {
+    use crate::vector_mask::{REFUSE_MASK_UNLINKED_DENSITY, plane, source_bounds};
+    let unavailable = |code: &str| CompositeError::Unavailable(format!("{layer_id}:{code}"));
+    if mask.density < 1.0 {
+        return Err(unavailable(REFUSE_MASK_UNLINKED_DENSITY));
+    }
+    let mut rect = source_bounds(mask).map_err(unavailable)?;
+    if let Some([x0, y0, x1, y1]) = mask.region {
+        let (fx, fy, gx, gy) = (x0.floor(), y0.floor(), x1.ceil(), y1.ceil());
+        let ok = |v: f64| v.is_finite() && v.abs() < 9.0e15;
+        if !(ok(fx) && ok(fy) && ok(gx) && ok(gy)) || gx - fx > f64::from(u32::MAX) || gy - fy > f64::from(u32::MAX) {
+            return Err(unavailable(crate::vector_mask::REFUSE_MASK_REGION));
+        }
+        // Finite, integral and in range by the checks above.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let r = Rect { x: fx as i64, y: fy as i64, width: (gx - fx) as u32, height: (gy - fy) as u32 };
+        if r.width > 0 && r.height > 0 {
+            rect = crate::evaluate_static::union(rect, r)?;
+        }
+    }
+    let content_outside = match &mask.source {
+        crate::vector_mask::VectorMaskSource::Content { outside, .. } => *outside,
+        crate::vector_mask::VectorMaskSource::Outline(_) => 0.0,
+    };
+    let pure_invert = mask.invert && mask.region.is_none() && content_outside == 0.0;
+    let Some(rect) = rect else {
+        return Ok(SceneMatte { layer: None, mode: SceneMatteMode::Alpha, inverted: pure_invert });
+    };
+    let (coverage, inverted) = plane(mask, None, rect).map_err(unavailable)?;
+    let sha256 = hsk_studio_prism::profile_hash(&coverage);
+    let stride_bytes = u64::from(rect.width).checked_mul(2).ok_or(CompositeError::Overflow)?;
+    let key = SourceKey(0);
+    let nodes = vec![
+        PlanNode::Solid { rect, rgba: [1.0, 1.0, 1.0, 1.0] },
+        PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![Layer {
+                input: PlanNodeId(0),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: Some(MaskInput {
+                    key,
+                    placement: rect,
+                    format: MaskFormat::CoverageU16Le,
+                    sha256,
+                    inverted: false,
+                    density: 1.0,
+                }),
+            }],
+        }),
+    ];
+    let plan = RenderPlan {
+        revision,
+        target: OutputTarget {
+            extent: rect,
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            space,
+        },
+        nodes,
+        root: PlanNodeId(1),
+    };
+    plan.validate(&PlanLimits::default()).map_err(CompositeError::Plan)?;
+    let extensions = if mask.feather_px > 0.0 {
+        PlanExtensions::from_layers(vec![
+            LayerExtension::new(PlanNodeId(1), 0).with_mask_feather(mask.feather_px),
+        ])
+    } else {
+        PlanExtensions::default()
+    };
+    let mut owned_masks = BTreeMap::new();
+    owned_masks.insert(
+        key,
+        OwnedMask {
+            bounds: rect,
+            sample_format: "coverage_u16le".into(),
+            bytes: coverage,
+            stride_bytes,
+            sha256,
+        },
+    );
+    let content = StaticContent {
+        plan,
+        extensions,
+        rect,
+        tiles: BTreeMap::new(),
+        masks: BTreeMap::new(),
+        owned_masks,
+        owned_tiles: BTreeMap::new(),
+    };
+    Ok(SceneMatte {
+        layer: Some(Box::new(SceneLayer {
+            layer_id: format!("{layer_id}/unlinked-vector-mask"),
+            content: SceneContent::Static(Box::new(content)),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2::IDENTITY,
+            matte: None,
+            clipped: false,
+        })),
+        mode: SceneMatteMode::Alpha,
+        inverted,
+    })
+}
+
 /// Lower one scene (module docs). Refuses before any work: more layers than
 /// `limits.max_layers` (`BudgetExceeded`), an empty composition rect. Per layer: non-finite or
 /// out-of-range opacities and non-finite matrices (`InvalidState`), a resample of a multi-tile

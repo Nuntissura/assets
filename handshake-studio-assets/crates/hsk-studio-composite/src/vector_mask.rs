@@ -31,14 +31,25 @@
 //!
 //! `mask_clip` = Illustrator's Clip (black mask background): outside the source content the mask is
 //! zero, which is also the SVG and Figma reading both importers store as `mask_clip: false`; so both
-//! values render the same. Illustrator's unclipped reading (white background outside the mask art)
-//! has no distinct Folio encoding (SPEC GAP; UNVERIFIED against Illustrator, D5).
+//! values render the same. Illustrator's unclipped reading is Folio's
+//! `StudioVectorMaskParameters.reveal_outside` (lane SMB-COMPOSITE-VECTOR-MASK-2,
+//! [`MaskContentMode::LuminanceRevealed`]): the luminance of the content composited over opaque
+//! white, so the mask is full outside the mask art (UNVERIFIED against Illustrator, D5).
 //!
-//! Folio's vector mask record carries no density, feather or link flag (STU-RAS-016 applies them to
-//! raster masks, which the extended lowering already honours): a vector mask is anchored to the
-//! source layer's own geometry in document space. In a composition the masked layer's static
-//! subtree (mask included) is transformed by the layer matrix, so the mask moves with its layer
-//! (linked, STU-CMP-010: masks before transform).
+//! Parameters (Folio `StudioVectorMaskParameters`, STU-RAS-016, lane SMB-COMPOSITE-VECTOR-MASK-2):
+//! density is the masked layer's `MaskInput.density` (pigment's `mask_coverage`), feather is the
+//! layer's envelope `mask_feather_px` (pigment's `feather_kernel` on the stored plane), both executed
+//! by the backends. A vector mask is anchored to the source layer's own geometry in document space;
+//! in a composition a linked mask (the default) belongs to the masked layer's static subtree and
+//! moves with the layer matrix (STU-CMP-010: masks before transform), an unlinked one stays in
+//! composition space as an alpha matte of its plane ([`crate::composition::unlinked_mask_matte`]).
+//!
+//! Sources composite cannot draw on the host (raster or text layers, image paint rows) are rendered
+//! by the caller's backend: preparation records them as pending
+//! ([`PreparedVectors::pending_mask_sources`], masked layers `vector_mask_source_not_rendered`
+//! until then), [`crate::mask_source_lowerings`] lowers each source alone through the document's
+//! own static path, and [`PreparedVectors::resolve_mask_source`] turns the rendered straight RGBA
+//! into the same content values.
 //!
 //! Typed refusals, never silent: unresolved record or source, source kinds composite cannot draw on
 //! the host (raster, text, image paint rows), nested masks inside the source (or a vector clip on a source group), a region in
@@ -71,9 +82,20 @@ pub const REFUSE_MASK_ADJUSTMENT: &str = "vector_mask_adjustment";
 /// Lowering-note key of a content (alpha or luminance) mask: 16-bit quantisation and the luma
 /// reading make it Approximate.
 pub const NOTE_MASK_CONTENT: &str = "vector_mask_content";
-/// Lowering-note key of a pass-through group made isolated by its vector mask (CSS Compositing:
-/// a masked element is an isolated group; Photoshop's pass-through group mask UNVERIFIED).
-pub const NOTE_MASK_ISOLATES: &str = "vector_mask_isolates_pass_through";
+/// Lowering-note key of a pass-through group made isolated by its vector clip or mask: pigment's
+/// rule and key (`RenderPlan::isolate_masked_pass_through`).
+pub const NOTE_MASK_ISOLATES: &str = hsk_studio_pigment::render_plan::PASS_THROUGH_MASK_ISOLATED;
+/// The masked layer waits for its source to be rendered by the caller's backend
+/// ([`PreparedVectors::pending_mask_sources`]).
+pub const REFUSE_MASK_SOURCE_NOT_RENDERED: &str = "vector_mask_source_not_rendered";
+/// The pending source is not a graph operation of the document (nothing to root its lowering at).
+pub const REFUSE_MASK_SOURCE_NOT_IN_GRAPH: &str = "vector_mask_source_not_in_graph";
+/// `reveal_outside` on a mode other than `LUMINANCE` (Illustrator's reading is a luminance mask).
+pub const REFUSE_MASK_REVEAL_MODE: &str = "vector_mask_reveal_outside_mode";
+/// An unlinked mask in a composition with a density below 100 % (the matte route has no density).
+pub const REFUSE_MASK_UNLINKED_DENSITY: &str = "vector_mask_unlinked_density";
+/// An unlinked mask on a composition layer that also has a track matte (one matte slot).
+pub const REFUSE_MASK_UNLINKED_MATTE: &str = "vector_mask_unlinked_with_matte";
 /// Aggregate pixels of every content plane one preparation computes.
 pub const MAX_MASK_CONTENT_PIXELS: u64 = 64 << 20;
 /// Members (layers) of one mask source.
@@ -84,6 +106,43 @@ pub const MAX_MASK_MEMBERS: usize = 4096;
 pub enum MaskContentMode {
     Alpha,
     Luminance,
+    /// Illustrator's unclipped opacity mask (`reveal_outside`): the luminance of the content
+    /// composited over opaque white; full (1) outside the content.
+    LuminanceRevealed,
+}
+impl MaskContentMode {
+    /// The mask value of one straight RGBA pixel of the rendered source.
+    pub fn value(self, c: Rgba) -> f32 {
+        let w = crate::composition::LUMA_WEIGHTS;
+        let luma = |rgb: [f32; 3]| w[0] * rgb[0] + w[1] * rgb[1] + w[2] * rgb[2];
+        match self {
+            Self::Alpha => c.a,
+            Self::Luminance => luma(c.rgb) * c.a,
+            // Over opaque white: colour = c * a + (1 - a).
+            Self::LuminanceRevealed => luma([
+                c.rgb[0] * c.a + (1.0 - c.a),
+                c.rgb[1] * c.a + (1.0 - c.a),
+                c.rgb[2] * c.a + (1.0 - c.a),
+            ]),
+        }
+    }
+    /// The value outside the source content (transparent).
+    pub fn outside(self) -> f32 {
+        if self == Self::LuminanceRevealed { 1.0 } else { 0.0 }
+    }
+}
+
+/// A mask whose source the caller's backend renders (raster, text, image paint;
+/// [`PreparedVectors::pending_mask_sources`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingMaskSource {
+    pub mask_id: String,
+    pub source_layer_id: String,
+    pub mode: MaskContentMode,
+    /// The masked layers.
+    pub layers: Vec<String>,
+    /// The mask's invert / region / density / feather / link, applied once resolved.
+    pub template: VectorMask,
 }
 
 /// A mask source evaluated for its content: a prepared vector layer (or boolean group), or a group
@@ -115,9 +174,9 @@ impl MaskNode {
 pub enum VectorMaskSource {
     /// `VECTOR`: the source outline (`None` = empty: zero everywhere).
     Outline(Option<OwnedPath>),
-    /// `ALPHA` / `LUMINANCE`: one value per pixel of `rect`, row-major (zero outside; `None` rect =
-    /// no content).
-    Content { rect: Option<Rect>, values: Vec<f32> },
+    /// `ALPHA` / `LUMINANCE`: one value per pixel of `rect`, row-major (`outside` outside; `None`
+    /// rect = no content).
+    Content { rect: Option<Rect>, values: Vec<f32>, outside: f32 },
 }
 
 /// One resolved vector mask.
@@ -127,6 +186,19 @@ pub struct VectorMask {
     pub invert: bool,
     /// `[x0, y0, x1, y1]` in plan pixels; outside it the mask is zero.
     pub region: Option<[f64; 4]>,
+    /// STU-RAS-016 density, `0..=1` (pigment `MaskInput.density`).
+    pub density: f32,
+    /// STU-RAS-016 feather, Gaussian radius in pixels (pigment envelope `mask_feather_px`).
+    pub feather_px: f32,
+    /// STU-RAS-016 link: moves with the masked layer's transform (compositions).
+    pub linked: bool,
+}
+impl VectorMask {
+    /// A mask of `source` with every parameter at its default (not inverted, no region, density
+    /// 1, no feather, linked).
+    pub fn of(source: VectorMaskSource) -> Self {
+        Self { source, invert: false, region: None, density: 1.0, feather_px: 0.0, linked: true }
+    }
 }
 
 fn charge(budget: &mut u64, pixels: u64) -> Result<(), &'static str> {
@@ -272,7 +344,7 @@ pub fn mask_content(
         rows = rows.checked_add(n.checked_add(1).ok_or(REFUSE_MASK_BUDGET)?).ok_or(REFUSE_MASK_BUDGET)?;
     }
     let Some(r) = rect else {
-        return Ok(VectorMaskSource::Content { rect: None, values: Vec::new() });
+        return Ok(VectorMaskSource::Content { rect: None, values: Vec::new(), outside: mode.outside() });
     };
     let pixels = u64::from(r.width).checked_mul(u64::from(r.height)).ok_or(REFUSE_MASK_BUDGET)?;
     if pixels > MAX_CLIP_PIXELS || pixels.checked_mul(rows).is_none_or(|w| w > MAX_VECTOR_WORK) {
@@ -299,16 +371,10 @@ pub fn mask_content(
             let c = node_rgba(vectors, &clips, node, x, y, site)?;
             let c = composite_over(StudioBlendMode::Normal, Rgba::TRANSPARENT, c, own, site)
                 .map_err(|_| REFUSE_MASK_SOURCE)?;
-            values.push(match mode {
-                MaskContentMode::Alpha => c.a,
-                MaskContentMode::Luminance => {
-                    let w = crate::composition::LUMA_WEIGHTS;
-                    (w[0] * c.rgb[0] + w[1] * c.rgb[1] + w[2] * c.rgb[2]) * c.a
-                }
-            });
+            values.push(mode.value(c));
         }
     }
-    Ok(VectorMaskSource::Content { rect: Some(r), values })
+    Ok(VectorMaskSource::Content { rect: Some(r), values, outside: mode.outside() })
 }
 
 /// Conservative pixel bounds of the mask's source (outline or content); `None` = empty. A
@@ -373,7 +439,11 @@ pub(crate) fn plane(
     };
     // Pure invert: pigment's mask invert (full coverage outside the plane, like the source's
     // zero outside its bounds inverted).
-    let flag = mask.invert && mask.region.is_none() && clip.is_none();
+    let outside = match &mask.source {
+        VectorMaskSource::Content { outside, .. } => f64::from(*outside),
+        VectorMaskSource::Outline(_) => 0.0,
+    };
+    let flag = mask.invert && mask.region.is_none() && clip.is_none() && outside == 0.0;
     let mut out = Vec::with_capacity(n.checked_mul(2).ok_or(REFUSE_MASK_BUDGET)?);
     let x1 = rect.x.checked_add(i64::from(rect.width)).ok_or(REFUSE_MASK_BUDGET)?;
     let y1 = rect.y.checked_add(i64::from(rect.height)).ok_or(REFUSE_MASK_BUDGET)?;
@@ -382,11 +452,11 @@ pub(crate) fn plane(
         for x in rect.x..x1 {
             let mut v = match (&outline, &mask.source) {
                 (Some(c), _) => f64::from(*c.get(i).ok_or(REFUSE_MASK_BUDGET)?) / 255.0,
-                (None, VectorMaskSource::Content { rect: Some(r), values }) => match inside(*r, x, y) {
+                (None, VectorMaskSource::Content { rect: Some(r), values, .. }) => match inside(*r, x, y) {
                     Some(j) => f64::from(*values.get(j).ok_or(REFUSE_MASK_BUDGET)?),
-                    None => 0.0,
+                    None => outside,
                 },
-                (None, _) => 0.0,
+                (None, _) => outside,
             };
             if mask.invert && !flag {
                 v = 1.0 - v;

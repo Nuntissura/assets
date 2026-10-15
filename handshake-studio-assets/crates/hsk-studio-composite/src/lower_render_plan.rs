@@ -142,6 +142,10 @@ struct Emitter<'a> {
     clip_planes: Vec<(SourceKey, crate::vector::ClipPlane)>,
     /// Layers whose vector mask is a content (alpha or luminance) plane: one Approximate note each.
     content_masks: Vec<String>,
+    /// Vector mask plane key -> its feather (pigment envelope `mask_feather_px`).
+    feathers: Vec<(SourceKey, f32)>,
+    /// A vector mask with density below 1 was emitted (the envelope ledger records it).
+    density_below_one: bool,
     next_key: u32,
     info: &'a dyn TileInfoSource,
 }
@@ -219,8 +223,12 @@ impl Emitter<'_> {
                 format: MaskFormat::CoverageU16Le,
                 sha256,
                 inverted,
-                density: 1.0,
+                density: mask.density,
             };
+            if mask.feather_px > 0.0 {
+                self.feathers.push((key, mask.feather_px));
+            }
+            self.density_below_one |= mask.density < 1.0;
             return Ok(Some((input, crate::vector_mask::REFUSE_MASK_WITH_MASK)));
         }
         let Some(outline) = outline else {
@@ -522,17 +530,10 @@ impl Emitter<'_> {
                 layer.layer_id
             )));
         }
-        // A vector-masked pass-through group is lowered isolated (its group node, see the caller),
-        // so it composites Normal: a masked element is an isolated group (CSS Compositing).
-        let vector_masked = clip
-            .as_ref()
-            .is_some_and(|(_, c)| *c == crate::vector_mask::REFUSE_MASK_WITH_MASK);
+        // A vector-clipped or vector-masked pass-through layer is rewritten after emission by
+        // pigment's rule (`vector_cut_post_pass`).
         let clip = clip.map(|(m, _)| m);
-        let mode = if vector_masked && appearance.mode == StudioBlendMode::PassThrough {
-            StudioBlendMode::Normal
-        } else {
-            appearance.mode
-        };
+        let mode = appearance.mode;
         let mask = match (appearance.clipped, appearance.mask) {
             (false, false) if clip.is_some() => clip,
             (true, true) => {
@@ -862,6 +863,8 @@ pub(crate) fn text_root_plan(
         clips: None,
         clip_planes: Vec::new(),
         content_masks: Vec::new(),
+        feathers: Vec::new(),
+        density_below_one: false,
         next_key: 0,
         info: &none,
     };
@@ -1062,6 +1065,8 @@ pub(crate) fn lower_inner(
         clips: vectors,
         clip_planes: Vec::new(),
         content_masks: Vec::new(),
+        feathers: Vec::new(),
+        density_below_one: false,
         next_key: 0,
         info,
     };
@@ -1212,23 +1217,11 @@ pub(crate) fn lower_inner(
                     node_of.insert(i, id);
                 }
             }
-            Step::Composite { addr, inputs, appearance, .. } => {
+            Step::Composite { inputs, appearance, .. } => {
                 let is_root = i == root_index;
-                // A vector-masked group is an isolated group (CSS Compositing: a masked element
-                // is isolated); its referencing layer composites Normal (`Emitter::layer`).
-                let vector_masked = vectors.is_some_and(|v| v.mask(&addr.layer_id).is_some());
-                if vector_masked && appearance.mode == StudioBlendMode::PassThrough {
-                    notes.push(LoweringNote {
-                        layer_id: addr.layer_id.clone(),
-                        key: crate::vector_mask::NOTE_MASK_ISOLATES,
-                        exactness: hsk_studio_pigment::blend_math::Exactness::Approximate,
-                        detail: "pass-through group with a vector mask lowered isolated, Normal".into(),
-                    });
-                }
                 // A neutral root renders over a transparent backdrop, where isolated and
                 // pass-through are equivalent; every other group follows its mode.
                 let group_isolated = (is_root && root_neutral)
-                    || vector_masked
                     || appearance.mode != StudioBlendMode::PassThrough;
                 // Where an adjustment layer of this group acts: an isolated group starts from a
                 // transparent backdrop, so only where its own content is (`None`: nowhere); a
@@ -1451,12 +1444,13 @@ pub(crate) fn lower_inner(
         }
     }
     notes.extend(content_mask_notes(std::mem::take(&mut out.content_masks)));
-    let render = RenderPlan {
+    let mut render = RenderPlan {
         revision: plan.revision,
         target,
         nodes: out.nodes,
         root: root_node,
     };
+    vector_cut_post_pass(&mut render, &mut entries, &out.clip_planes, &out.feathers, &mut notes)?;
     let operators = render
         .validate(&PlanLimits::default())
         .map_err(CompositeError::Plan)?;
@@ -1465,7 +1459,7 @@ pub(crate) fn lower_inner(
         exactness.record(op.key(), op.intrinsic());
     }
     let extensions = PlanExtensions::from_layers(entries);
-    if records.is_some() || !extensions.is_empty() {
+    if records.is_some() || !extensions.is_empty() || out.density_below_one {
         record_envelope(&render, &extensions, &mut exactness)?;
     }
     // Notes exist only with raster records (features) or vector masks; each is a ledger entry.
@@ -1654,6 +1648,75 @@ pub fn lower_with_inputs(
     .map(InputsLowering::of)
 }
 
+/// One pending vector-mask source lowered alone ([`mask_source_lowerings`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaskSourceLowering {
+    pub mask_id: String,
+    /// The source's extent (`None` = it draws nothing: resolve with an empty frame).
+    pub rect: Option<Rect>,
+    /// The source subtree as a root over `rect` (`None` when `rect` is `None`), or why it cannot
+    /// be lowered (then call `PreparedVectors::fail_mask_source`).
+    pub lowering: Result<Option<InputsLowering>, CompositeError>,
+}
+
+/// Lowers every pending vector-mask source of `inputs.vectors` (raster, text or image-paint
+/// content, `crate::vector_mask` module docs) alone, through the document's own static path rooted
+/// at the source layer's graph operation (its own appearance included, its visibility ignored like
+/// any requested root), over its evaluated extent, in `space`. The caller executes each lowering
+/// with its backend and its `PlanSources` (raster tiles, text masks, image paints, vector planes)
+/// and passes the straight RGBA to `PreparedVectors::resolve_mask_source`. A source without a
+/// graph operation is `vector_mask_source_not_in_graph`; an unavailable source carries its step's
+/// code.
+pub fn mask_source_lowerings(
+    plan: &LoweredPlan,
+    snap: &Snapshot,
+    inputs: &RenderInputs<'_>,
+    space: hsk_studio_pigment::render_plan::ColourTag,
+    info: &dyn TileInfoSource,
+    cancel: &hsk_studio_accord::CancellationToken,
+) -> Result<Vec<MaskSourceLowering>, CompositeError> {
+    let Some(vectors) = inputs.vectors else {
+        return Ok(Vec::new());
+    };
+    if vectors.pending_mask_sources().is_empty() {
+        return Ok(Vec::new());
+    }
+    let report = evaluate_with_inputs(plan, snap, inputs, cancel)?;
+    let mut out = Vec::new();
+    for p in vectors.pending_mask_sources() {
+        cancel.check().map_err(|_| CompositeError::Canceled)?;
+        let src = &p.source_layer_id;
+        let unavailable = |code: &str| CompositeError::Unavailable(format!("{src}:{code}"));
+        let root = plan
+            .steps
+            .iter()
+            .map(Step::addr)
+            .find(|a| &a.layer_id == src)
+            .cloned();
+        let (rect, lowering) = match root.as_ref().and_then(|r| report.step(r).map(|e| (r, e))) {
+            None => (None, Err(unavailable(crate::vector_mask::REFUSE_MASK_SOURCE_NOT_IN_GRAPH))),
+            Some((_, e)) if matches!(e.status, StepStatus::Unavailable(_)) => {
+                let StepStatus::Unavailable(code) = &e.status else {
+                    return Err(CompositeError::Overflow);
+                };
+                (None, Err(unavailable(code)))
+            }
+            Some((_, e)) if e.extent.is_none() => (None, Ok(None)),
+            Some((r, e)) => {
+                let target = OutputTarget {
+                    extent: e.extent.ok_or(CompositeError::Overflow)?,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    space,
+                };
+                (e.extent, lower_with_inputs(plan, &report, snap, inputs, r, target, info).map(Some))
+            }
+        };
+        out.push(MaskSourceLowering { mask_id: p.mask_id.clone(), rect, lowering });
+    }
+    Ok(out)
+}
+
 /// Folio-free plan of one prepared vector layer as a neutral root: the node layout a document
 /// lowering emits for it (renderer tests execute this; renderers may not depend on Folio).
 /// `Unavailable <layer>:vector_layer_not_prepared | vector_layer_empty`.
@@ -1678,6 +1741,8 @@ pub fn vector_layer_render_plan(
         clips: Some(vectors),
         clip_planes: Vec::new(),
         content_masks: Vec::new(),
+        feathers: Vec::new(),
+        density_below_one: false,
         next_key: 0,
         info: &none,
     };
@@ -1699,13 +1764,14 @@ pub fn vector_layer_render_plan(
             }],
         }))?;
     }
-    let notes = content_mask_notes(std::mem::take(&mut out.content_masks));
-    let render = RenderPlan {
+    let mut notes = content_mask_notes(std::mem::take(&mut out.content_masks));
+    let mut render = RenderPlan {
         revision,
         target,
         nodes: out.nodes,
         root,
     };
+    vector_cut_post_pass(&mut render, &mut entries, &out.clip_planes, &out.feathers, &mut notes)?;
     let operators = render
         .validate(&PlanLimits::default())
         .map_err(CompositeError::Plan)?;
@@ -1714,7 +1780,7 @@ pub fn vector_layer_render_plan(
         exactness.record(op.key(), op.intrinsic());
     }
     let extensions = PlanExtensions::from_layers(entries);
-    if !extensions.is_empty() {
+    if !extensions.is_empty() || out.density_below_one {
         record_envelope(&render, &extensions, &mut exactness)?;
     }
     for n in &notes {
@@ -1733,6 +1799,50 @@ pub fn vector_layer_render_plan(
         exactness,
         notes,
     })
+}
+
+/// After emission (lane SMB-COMPOSITE-VECTOR-MASK-2): every layer whose mask is a vector clip or
+/// vector mask plane gets its mask feather as an envelope entry (merged into an existing entry of
+/// the same layer), and a pass-through one pigment's isolation rule
+/// (`RenderPlan::isolate_masked_pass_through`, noted Approximate).
+fn vector_cut_post_pass(
+    render: &mut RenderPlan,
+    entries: &mut Vec<LayerExtension>,
+    clip_planes: &[(SourceKey, crate::vector::ClipPlane)],
+    feathers: &[(SourceKey, f32)],
+    notes: &mut Vec<LoweringNote>,
+) -> Result<(), CompositeError> {
+    let mut isolate = Vec::new();
+    for (n, node) in render.nodes.iter().enumerate() {
+        let PlanNode::Group(g) = node else { continue };
+        let n32 = u32::try_from(n).map_err(|_| CompositeError::Overflow)?;
+        for (li, l) in g.layers.iter().enumerate() {
+            let Some(m) = l.mask.filter(|m| !m.is_clip_to_base()) else { continue };
+            let Some((_, plane)) = clip_planes.iter().find(|(k, _)| *k == m.key) else { continue };
+            let li32 = u32::try_from(li).map_err(|_| CompositeError::Overflow)?;
+            if let Some((_, f)) = feathers.iter().find(|(k, _)| *k == m.key) {
+                match entries.iter_mut().find(|e| e.group == PlanNodeId(n32) && e.layer == li32) {
+                    Some(e) => e.mask_feather_px = *f,
+                    None => entries.push(LayerExtension::new(PlanNodeId(n32), li32).with_mask_feather(*f)),
+                }
+            }
+            if l.mode == StudioBlendMode::PassThrough {
+                isolate.push((n32, li, plane.layer_id.clone()));
+            }
+        }
+    }
+    for (n, li, layer_id) in isolate {
+        render
+            .isolate_masked_pass_through(PlanNodeId(n), li)
+            .map_err(CompositeError::Plan)?;
+        notes.push(LoweringNote {
+            layer_id,
+            key: crate::vector_mask::NOTE_MASK_ISOLATES,
+            exactness: Exactness::Approximate,
+            detail: "pass-through layer with a vector clip or mask: isolated group, Normal (pigment rule)".into(),
+        });
+    }
+    Ok(())
 }
 
 /// One Approximate lowering note per content (alpha or luminance) vector mask: the plane is

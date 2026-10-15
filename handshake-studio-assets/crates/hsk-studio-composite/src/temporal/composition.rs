@@ -143,7 +143,9 @@ enum Content {
     None,
     Tiles { tiles: Vec<SceneTile>, bounds: Rect },
     /// A static subtree; `bounds` = the content extent (layer space), `content.rect` adds support.
-    Static { content: Box<StaticContent>, bounds: Rect },
+    /// `unlinked`: the layer's unlinked vector mask as a composition-space alpha matte
+    /// (`crate::composition::unlinked_mask_matte`, lane SMB-COMPOSITE-VECTOR-MASK-2).
+    Static { content: Box<StaticContent>, bounds: Rect, unlinked: Option<Box<SceneMatte>> },
     /// An adjustment layer.
     Adjustment(AdjustmentOp),
     /// A nested composition; `bounds` = `(0, 0, width, height)` of it.
@@ -245,8 +247,30 @@ fn static_content(
     input: &CompositionInput<'_>,
     layer_id: &str,
     cancel: &CancellationToken,
-) -> Result<Option<(StaticContent, Rect)>, TemporalError> {
+) -> Result<Option<(StaticContent, Rect, Option<SceneMatte>)>, TemporalError> {
     let doc = input.snapshot.document();
+    // An unlinked vector mask stays in composition space: it leaves the static subtree and becomes
+    // an alpha matte of its plane (lane SMB-COMPOSITE-VECTOR-MASK-2).
+    let unlinked = input.inputs.vectors.and_then(|v| match v.mask(layer_id) {
+        Some(Ok(m)) if !m.linked => Some(m.clone()),
+        _ => None,
+    });
+    let stripped = match (&unlinked, input.inputs.vectors) {
+        (Some(_), Some(v)) => Some(v.without_mask(layer_id)),
+        _ => None,
+    };
+    let inputs = RenderInputs {
+        records: input.inputs.records,
+        text: input.inputs.text,
+        vectors: stripped.as_ref().or(input.inputs.vectors),
+    };
+    let unlinked = match unlinked {
+        Some(m) => Some(
+            crate::composition::unlinked_mask_matte(&m, layer_id, input.space, doc.revision)
+                .map_err(TemporalError::from)?,
+        ),
+        None => None,
+    };
     let op = doc
         .graph
         .operations
@@ -278,7 +302,7 @@ fn static_content(
     let snap = validate_document(frame, input.budget, cancel, input.resolver)
         .map_err(|e| TemporalError::Document(format!("{:?}:{}", e.code, e.target)))?;
     let plan = lower(&snap, doc.revision, input.space.blend_space, &Limits::default(), cancel)?;
-    let report = evaluate_with_inputs(&plan, &snap, &input.inputs, cancel)?;
+    let report = evaluate_with_inputs(&plan, &snap, &inputs, cancel)?;
     let step = report
         .step(&root)
         .ok_or_else(|| CompositeError::DanglingInput(layer_id.to_owned()))?;
@@ -294,7 +318,7 @@ fn static_content(
         alpha: AlphaConvention::Straight,
         space: input.space,
     };
-    let low = lower_with_inputs(&plan, &report, &snap, &input.inputs, &root, target, input.info)?;
+    let low = lower_with_inputs(&plan, &report, &snap, &inputs, &root, target, input.info)?;
     // Effect and blur support around the content (the static extent is the content's own).
     let mut margin = 0u32;
     for e in &low.extensions.layers {
@@ -357,7 +381,7 @@ fn static_content(
             .ok_or_else(|| CompositeError::Unavailable(format!("{layer}:text_layer_not_prepared")))?;
         content.owned_masks.insert(*key, own(m));
     }
-    if let Some(vectors) = input.inputs.vectors {
+    if let Some(vectors) = inputs.vectors {
         let keys = low
             .vector_masks
             .iter()
@@ -384,7 +408,7 @@ fn static_content(
             }
         }
     }
-    Ok(Some((content, bounds)))
+    Ok(Some((content, bounds, unlinked)))
 }
 
 fn unsupported(layer_id: &str, feature: &'static str) -> TemporalError {
@@ -604,9 +628,10 @@ impl CompositionTemporalSource {
                     if needs_static(input, dl) =>
                 {
                     match static_content(input, id, cancel)? {
-                        Some((content, bounds)) => Content::Static {
+                        Some((content, bounds, unlinked)) => Content::Static {
                             content: Box::new(content),
                             bounds,
+                            unlinked: unlinked.map(Box::new),
                         },
                         None => Content::None,
                     }
@@ -988,8 +1013,15 @@ impl CompositionTemporalSource {
                 SceneContent::Precomp(Box::new(scene))
             }
         };
+        let unlinked = match &l.content {
+            Content::Static { unlinked: Some(u), .. } => Some(u),
+            _ => None,
+        };
+        if unlinked.is_some() && l.matte.is_some() {
+            return Err(unsupported(&l.layer_id, crate::vector_mask::REFUSE_MASK_UNLINKED_MATTE));
+        }
         let matte = match &l.matte {
-            None => None,
+            None => unlinked.map(|u| (**u).clone()),
             Some(m) => {
                 // Folio refuses matte loops; the chain is bounded by the layer count anyway.
                 if matte_depth >= comp.layers.len() {

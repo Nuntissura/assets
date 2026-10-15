@@ -35,7 +35,9 @@ pub use lower_plan::{
     DOCUMENT_ROOT_LAYER, Limits, LoweredPlan, NodeAddr, SourceValue, Step, StepAppearance,
     layer_projection, lower, node_projection,
 };
-pub use vector_mask::{MaskContentMode, MaskNode, VectorMask, VectorMaskSource, mask_content};
+pub use vector_mask::{
+    MaskContentMode, MaskNode, PendingMaskSource, VectorMask, VectorMaskSource, mask_content,
+};
 pub use lower_render_plan::{
     ExtendedLowering, MaskTable, RenderLowering, SourceTable, TileInfo, TileInfoSource,
     lower_to_render_plan, lower_to_render_plan_extended,
@@ -52,12 +54,13 @@ pub use vector::{
     image_source_id, prepare_vector_layers, prepare_vectors,
 };
 pub use lower_render_plan::{
-    InputsLowering, RenderInputs, evaluate_with_inputs, lower_with_inputs, vector_layer_render_plan,
+    InputsLowering, MaskSourceLowering, RenderInputs, evaluate_with_inputs, lower_with_inputs,
+    mask_source_lowerings, vector_layer_render_plan,
 };
 pub use composition::{
     MattePlane, RenderedScene, SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits,
     OwnedMask, SceneMatte, SceneMatteMode, StaticContent, Surface,
-    SceneLowering, ScenePixels, SceneSources, SceneTile, lower_scene, render_scene,
+    SceneLowering, ScenePixels, SceneSources, SceneTile, lower_scene, render_scene, unlinked_mask_matte,
 };
 pub use temporal::{
     FrameLowering, FrameRequest, LayerFrameState, LayerTiming, NoTemporalSource, TemporalError,

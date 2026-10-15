@@ -91,13 +91,13 @@ pub fn source() -> MaskNode {
 pub fn mask(name: &str, vectors: &PreparedVectors) -> VectorMask {
     let content = |mode| mask_content(vectors, &source(), mode, &mut (1 << 24)).unwrap();
     match name {
-        "vector" => VectorMask { source: VectorMaskSource::Outline(Some(base::clip_outline())), invert: false, region: None },
-        "vector_inverted" => VectorMask { source: VectorMaskSource::Outline(Some(base::clip_outline())), invert: true, region: None },
-        "alpha" => VectorMask { source: content(MaskContentMode::Alpha), invert: false, region: None },
+        "vector" => VectorMask::of(VectorMaskSource::Outline(Some(base::clip_outline()))),
+        "vector_inverted" => VectorMask { invert: true, ..VectorMask::of(VectorMaskSource::Outline(Some(base::clip_outline()))) },
+        "alpha" => VectorMask::of(content(MaskContentMode::Alpha)),
         "luminance_inverted_region" => VectorMask {
-            source: content(MaskContentMode::Luminance),
             invert: true,
             region: Some([3.25, 2.0, 26.5, 20.75]),
+            ..VectorMask::of(content(MaskContentMode::Luminance))
         },
         other => panic!("case {other}"),
     }

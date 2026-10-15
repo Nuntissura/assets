@@ -313,8 +313,95 @@ pub struct PreparedVectors {
     /// Masked layer -> its vector mask (`crate::vector_mask`, Folio `StudioMaskAttachment::mask_id`)
     /// or the refusal code of a mask that could not be resolved.
     masks: Vec<(String, Result<std::sync::Arc<crate::vector_mask::VectorMask>, &'static str>)>,
+    /// Masks whose source the caller's backend renders (`crate::vector_mask` module docs).
+    pending: Vec<crate::vector_mask::PendingMaskSource>,
 }
 impl PreparedVectors {
+    /// Masks waiting for their source to be rendered by the caller's backend (raster, text or
+    /// image-paint content): lower each with [`crate::mask_source_lowerings`], execute it, then
+    /// [`Self::resolve_mask_source`] (or [`Self::fail_mask_source`]).
+    pub fn pending_mask_sources(&self) -> &[crate::vector_mask::PendingMaskSource] {
+        &self.pending
+    }
+    /// Folio-free: a mask whose source the caller renders; its layers are
+    /// `vector_mask_source_not_rendered` until [`Self::resolve_mask_source`].
+    pub fn with_pending_mask(mut self, pending: crate::vector_mask::PendingMaskSource) -> Self {
+        for layer in &pending.layers {
+            self.masks.retain(|(l, _)| l != layer);
+            self.masks.push((
+                layer.clone(),
+                Err(crate::vector_mask::REFUSE_MASK_SOURCE_NOT_RENDERED),
+            ));
+        }
+        self.pending.retain(|p| p.mask_id != pending.mask_id);
+        self.pending.push(pending);
+        self
+    }
+    /// The rendered source of pending mask `mask_id`: `frame` = straight RGBA of `rect`
+    /// (row-major; `None` rect = empty content, empty frame), the source's own appearance already
+    /// applied by its lowering. Its values become the mask content ([`crate::MaskContentMode::value`])
+    /// and every masked layer gets the resolved mask. Typed refusals: unknown id
+    /// (`vector_mask_unresolved`), a frame of the wrong size or over `MAX_CLIP_PIXELS`
+    /// (`vector_mask_budget`), a non-finite or out-of-unit sample (`vector_mask_source_unavailable`);
+    /// the pending entry stays on refusal.
+    pub fn resolve_mask_source(
+        &mut self,
+        mask_id: &str,
+        rect: Option<Rect>,
+        frame: &[[f32; 4]],
+    ) -> Result<(), &'static str> {
+        use crate::vector_mask::{REFUSE_MASK_BUDGET, REFUSE_MASK_SOURCE, REFUSE_MASK_UNRESOLVED, VectorMaskSource};
+        let at = self
+            .pending
+            .iter()
+            .position(|p| p.mask_id == mask_id)
+            .ok_or(REFUSE_MASK_UNRESOLVED)?;
+        let pixels = match rect {
+            Some(r) => u64::from(r.width)
+                .checked_mul(u64::from(r.height))
+                .filter(|p| *p <= MAX_CLIP_PIXELS)
+                .ok_or(REFUSE_MASK_BUDGET)?,
+            None => 0,
+        };
+        if u64::try_from(frame.len()).map_err(|_| REFUSE_MASK_BUDGET)? != pixels {
+            return Err(REFUSE_MASK_BUDGET);
+        }
+        let p = &self.pending[at];
+        let mut values = Vec::with_capacity(frame.len());
+        for px in frame {
+            if !px.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+                return Err(REFUSE_MASK_SOURCE);
+            }
+            values.push(p.mode.value(hsk_studio_pigment::blend_math::Rgba::new([px[0], px[1], px[2]], px[3])));
+        }
+        let p = self.pending.remove(at);
+        let mut mask = p.template;
+        mask.source = VectorMaskSource::Content { rect, values, outside: p.mode.outside() };
+        let mask = std::sync::Arc::new(mask);
+        for layer in &p.layers {
+            self.masks.retain(|(l, _)| l != layer);
+            self.masks.push((layer.clone(), Ok(mask.clone())));
+        }
+        Ok(())
+    }
+    /// A copy without the vector mask of `layer_id` (an unlinked mask leaves a composition layer's
+    /// static subtree, `crate::composition::unlinked_mask_matte`).
+    pub(crate) fn without_mask(&self, layer_id: &str) -> Self {
+        let mut v = self.clone();
+        v.masks.retain(|(l, _)| l != layer_id);
+        v
+    }
+    /// The source of pending mask `mask_id` could not be rendered: its layers carry `code`.
+    pub fn fail_mask_source(&mut self, mask_id: &str, code: &'static str) {
+        let Some(at) = self.pending.iter().position(|p| p.mask_id == mask_id) else {
+            return;
+        };
+        let p = self.pending.remove(at);
+        for layer in &p.layers {
+            self.masks.retain(|(l, _)| l != layer);
+            self.masks.push((layer.clone(), Err(code)));
+        }
+    }
     /// The vector mask of `layer_id` (Folio `StudioMaskAttachment::mask_id`, or [`Self::with_mask`]).
     pub fn mask(&self, layer_id: &str) -> Option<Result<&crate::vector_mask::VectorMask, &'static str>> {
         self.masks
@@ -1238,12 +1325,13 @@ pub fn prepare_vectors(
     // Vector masks (StudioVectorMask, crate::vector_mask): one resolution per mask record, shared by
     // every layer attached to it; content planes are charged against one aggregate budget.
     let mut budget = crate::vector_mask::MAX_MASK_CONTENT_PIXELS;
-    let mut resolved: Vec<(&str, MaskResult)> = Vec::new();
+    let mut resolved: Vec<(&str, Result<MaskOutcome, &'static str>)> = Vec::new();
     let mut attached: Vec<(String, MaskResult)> = Vec::new();
+    let mut pending: Vec<crate::vector_mask::PendingMaskSource> = Vec::new();
     for a in &vectors.attachments {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
         let Some(mask_id) = &a.mask_id else { continue };
-        let mask = match resolved.iter().find(|(id, _)| *id == mask_id.as_str()) {
+        let outcome = match resolved.iter().find(|(id, _)| *id == mask_id.as_str()) {
             Some((_, m)) => m.clone(),
             None => {
                 let m = cx.vector_mask(mask_id, &out, doc.geometry_unit, &mut budget);
@@ -1251,13 +1339,36 @@ pub fn prepare_vectors(
                 m
             }
         };
+        let mask = match outcome {
+            Ok(MaskOutcome::Ready(m)) => Ok(m),
+            Ok(MaskOutcome::Pending(p)) => {
+                match pending.iter_mut().find(|q| q.mask_id == p.mask_id) {
+                    Some(q) => q.layers.push(a.layer_id.clone()),
+                    None => {
+                        let mut p = *p;
+                        p.layers.push(a.layer_id.clone());
+                        pending.push(p);
+                    }
+                }
+                Err(crate::vector_mask::REFUSE_MASK_SOURCE_NOT_RENDERED)
+            }
+            Err(code) => Err(code),
+        };
         attached.push((a.layer_id.clone(), mask));
     }
     out.masks.extend(attached);
+    out.pending.extend(pending);
     Ok(out)
 }
 
 type MaskResult = Result<std::sync::Arc<crate::vector_mask::VectorMask>, &'static str>;
+
+/// A resolved mask record: ready, or waiting for the caller's backend to render its source.
+#[derive(Clone)]
+enum MaskOutcome {
+    Ready(std::sync::Arc<crate::vector_mask::VectorMask>),
+    Pending(Box<crate::vector_mask::PendingMaskSource>),
+}
 
 impl FolioCx<'_> {
     /// Is `layer` masked itself (a vector mask attachment, an enabled raster mask or the
@@ -1388,9 +1499,10 @@ impl FolioCx<'_> {
         prepared: &PreparedVectors,
         unit: hsk_studio_folio::GeometryUnit,
         budget: &mut u64,
-    ) -> MaskResult {
+    ) -> Result<MaskOutcome, &'static str> {
         use crate::vector_mask::{
-            MaskContentMode, REFUSE_MASK_REGION, REFUSE_MASK_UNRESOLVED, VectorMask,
+            MaskContentMode, PendingMaskSource, REFUSE_MASK_REGION, REFUSE_MASK_REVEAL_MODE,
+            REFUSE_MASK_SOURCE_IMAGE, REFUSE_MASK_SOURCE_KIND, REFUSE_MASK_UNRESOLVED, VectorMask,
             VectorMaskSource,
         };
         use hsk_studio_folio::StudioMaskMode;
@@ -1420,29 +1532,64 @@ impl FolioCx<'_> {
                 Some([x, y, x + w, y + h])
             }
         };
-        let mut members = 0usize;
-        let source = match rec.mode {
-            StudioMaskMode::Vector => {
-                let g = self.mask_geometry(&rec.source_layer_id, 0, &mut members)?;
-                VectorMaskSource::Outline(crate::vector_nib::outline(&g, 0)?)
-            }
-            StudioMaskMode::Alpha | StudioMaskMode::Luminance => {
-                let node = self.mask_node(&rec.source_layer_id, 0, &mut members)?;
-                let mode = if rec.mode == StudioMaskMode::Alpha {
-                    MaskContentMode::Alpha
-                } else {
-                    MaskContentMode::Luminance
-                };
-                crate::vector_mask::mask_content(prepared, &node, mode, budget)?
-            }
+        // Parameters (Folio StudioVectorMaskParameters, lane SMB-COMPOSITE-VECTOR-MASK-2); Folio
+        // validates the ranges, these are defence in depth.
+        let params = self.records.mask_parameters(mask_id);
+        let density = params.map_or(100.0, |p| p.density);
+        let feather = params.map_or(0.0, |p| p.feather);
+        if !(0.0..=100.0).contains(&density) || !(0.0..=10_000.0).contains(&feather) {
+            return Err(REFUSE_MASK_UNRESOLVED);
+        }
+        let reveal = params.is_some_and(|p| p.reveal_outside);
+        let mode = match (rec.mode, reveal) {
+            (StudioMaskMode::Luminance, true) => Some(MaskContentMode::LuminanceRevealed),
+            (_, true) => return Err(REFUSE_MASK_REVEAL_MODE),
+            (StudioMaskMode::Alpha, false) => Some(MaskContentMode::Alpha),
+            (StudioMaskMode::Luminance, false) => Some(MaskContentMode::Luminance),
+            (StudioMaskMode::Vector, false) => None,
         };
-        let mask = VectorMask {
+        let template = |source| VectorMask {
             source,
             invert: rec.invert_mask,
             region,
+            density: (density / 100.0) as f32,
+            feather_px: feather as f32,
+            linked: params.is_none_or(|p| p.linked),
         };
+        let mut members = 0usize;
+        let source = match mode {
+            None => {
+                let g = self.mask_geometry(&rec.source_layer_id, 0, &mut members)?;
+                VectorMaskSource::Outline(crate::vector_nib::outline(&g, 0)?)
+            }
+            Some(mode) => {
+                let content = self
+                    .mask_node(&rec.source_layer_id, 0, &mut members)
+                    .and_then(|node| crate::vector_mask::mask_content(prepared, &node, mode, budget));
+                match content {
+                    Ok(c) => c,
+                    // Raster, text or image-paint content: the caller's backend renders the source
+                    // (crate::vector_mask module docs).
+                    Err(REFUSE_MASK_SOURCE_KIND | REFUSE_MASK_SOURCE_IMAGE) => {
+                        return Ok(MaskOutcome::Pending(Box::new(PendingMaskSource {
+                            mask_id: mask_id.to_owned(),
+                            source_layer_id: rec.source_layer_id.clone(),
+                            mode,
+                            layers: Vec::new(),
+                            template: template(VectorMaskSource::Content {
+                                rect: None,
+                                values: Vec::new(),
+                                outside: mode.outside(),
+                            }),
+                        })));
+                    }
+                    Err(code) => return Err(code),
+                }
+            }
+        };
+        let mask = template(source);
         // A non-finite or out-of-range source is refused here, so evaluation reports it.
         crate::vector_mask::source_bounds(&mask)?;
-        Ok(std::sync::Arc::new(mask))
+        Ok(MaskOutcome::Ready(std::sync::Arc::new(mask)))
     }
 }

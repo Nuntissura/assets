@@ -253,7 +253,7 @@ fn vector_alpha_and_luminance_masks_lower_to_the_expected_planes() {
         assert_eq!(wrap.layers[0].mask.unwrap().format, MaskFormat::CoverageU16Le);
         let PlanNode::Group(inner) = &low.plan.nodes[wrap.layers[0].input.0 as usize] else { panic!() };
         assert!(inner.isolated);
-        assert!(low.notes.iter().any(|n| n.key == "vector_mask_isolates_pass_through"));
+        assert!(low.notes.iter().any(|n| n.key == "mask_isolates_pass_through"));
 
         // A clip and a mask on one layer: one u16 plane = mask x clip; no attachments: unchanged.
         let mut both = records(attach(&[(2, "m-alpha")]));
@@ -269,7 +269,8 @@ fn vector_alpha_and_luminance_masks_lower_to_the_expected_planes() {
         let un = |code: &str| StepStatus::Unavailable(code.into());
         for (pairs, layer_n, code) in [
             (attach(&[(2, "nope")]), 2, "vector_mask_unresolved"),
-            (attach(&[(3, "m-raster")]), 3, "vector_mask_source_kind"),
+            // A raster source waits for the caller's backend (lane SMB-COMPOSITE-VECTOR-MASK-2).
+            (attach(&[(3, "m-raster")]), 3, "vector_mask_source_not_rendered"),
             // A layer masked by its own content: the source carries a mask (itself).
             (attach(&[(2, "m-raster")]), 2, "vector_mask_source_nested"),
             (attach(&[(2, "m-pt")]), 2, "vector_mask_region"),
@@ -332,11 +333,7 @@ fn hostile_mask_sources_are_refused_or_bounded_before_allocation() {
         assert!(budget < 1 << 20, "charged");
         // A mask whose source lies far away: the plane over extent + source bounds is over the
         // pixel budget and refused at lowering (typed), never allocated.
-        let far = VectorMask {
-            source: VectorMaskSource::Outline(Some(poly(&[(9.0e6, 9.0e6), (9.0e6 + 4.0, 9.0e6), (9.0e6, 9.0e6 + 4.0)], FillRule::NonZero))),
-            invert: false,
-            region: None,
-        };
+        let far = VectorMask::of(VectorMaskSource::Outline(Some(poly(&[(9.0e6, 9.0e6), (9.0e6 + 4.0, 9.0e6), (9.0e6, 9.0e6 + 4.0)], FillRule::NonZero))));
         let vectors = vectors.with_mask("L", far);
         let t = OutputTarget { extent: Rect { x: 0, y: 0, width: 64, height: 64 }, ..target() };
         let e = vector_layer_render_plan(&vectors, "L", 1, t).unwrap_err();
