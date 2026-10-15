@@ -2709,8 +2709,24 @@ fn slice3_modes_in_groups_masks_clip_parity() {
 // never with render-cpu. Tolerances are declared per operator before the run and the observed
 // maximum is printed (`EXT_*` lines).
 
-/// Adjustment kinds the shader must refuse, pinned independently of `gpu_adjust_supported`.
-const REFUSED_ADJUSTMENTS: [AdjustmentKind; 1] = [AdjustmentKind::BrightnessContrast];
+/// Adjustment kinds the shader must refuse, pinned independently of `gpu_adjust_supported`. The
+/// second STU-RAS-151 set (lane SMB-PS-ADJUST-STYLES) has no WGSL body yet: typed refusal on GPU,
+/// rendered by the CPU backend.
+const REFUSED_ADJUSTMENTS: [AdjustmentKind; 13] = [
+    AdjustmentKind::BrightnessContrast,
+    AdjustmentKind::Vibrance,
+    AdjustmentKind::ColourBalance,
+    AdjustmentKind::PhotoFilter,
+    AdjustmentKind::BlackAndWhite,
+    AdjustmentKind::ChannelMixer,
+    AdjustmentKind::SelectiveColour,
+    AdjustmentKind::GradientMap,
+    AdjustmentKind::ColourLookup,
+    AdjustmentKind::ShadowsHighlights,
+    AdjustmentKind::ToneCompression,
+    AdjustmentKind::MatchColour,
+    AdjustmentKind::ReplaceColour,
+];
 
 fn run_ext(
     backend: &GpuBackend,

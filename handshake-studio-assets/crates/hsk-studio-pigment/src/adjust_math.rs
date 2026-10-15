@@ -13,6 +13,12 @@
 //! on the D5 oracle list.
 use crate::render_plan::SampleRange;
 use crate::blend_math::{BlendError, Exactness, Rgba, StudioBlendMode, blend_rgb};
+use crate::adjust_colour::ColourOp;
+pub use crate::adjust_colour::{
+    BlackAndWhite, ChannelMixer, ColourBalance, ColourLookup, GradientMap, GradientMapStop,
+    MatchColour, PhotoFilter, ReplaceColour, SelectiveColour, SelectiveColourMethod,
+    ShadowsHighlights, ToneCompression, ToneCompressionMethod, Vibrance,
+};
 use serde::Serialize;
 use std::fmt;
 
@@ -28,6 +34,20 @@ pub enum AdjustmentKind {
     Invert,
     Threshold,
     Posterize,
+    // Second set (lane SMB-PS-ADJUST-STYLES, maths in `adjust_colour`). Appended so the position
+    // of every earlier kind in `ALL` (the GPU opcode) is unchanged.
+    Vibrance,
+    ColourBalance,
+    PhotoFilter,
+    BlackAndWhite,
+    ChannelMixer,
+    SelectiveColour,
+    GradientMap,
+    ColourLookup,
+    ShadowsHighlights,
+    ToneCompression,
+    MatchColour,
+    ReplaceColour,
 }
 
 /// Static facts of one kind: key, formula-provenance class and reference.
@@ -40,7 +60,7 @@ pub struct AdjustmentFacts {
 }
 
 impl AdjustmentKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 20] = [
         Self::Levels,
         Self::Curves,
         Self::HueSaturation,
@@ -49,6 +69,18 @@ impl AdjustmentKind {
         Self::Invert,
         Self::Threshold,
         Self::Posterize,
+        Self::Vibrance,
+        Self::ColourBalance,
+        Self::PhotoFilter,
+        Self::BlackAndWhite,
+        Self::ChannelMixer,
+        Self::SelectiveColour,
+        Self::GradientMap,
+        Self::ColourLookup,
+        Self::ShadowsHighlights,
+        Self::ToneCompression,
+        Self::MatchColour,
+        Self::ReplaceColour,
     ];
     pub const fn facts(self) -> AdjustmentFacts {
         use Exactness::{Approximate, Exact};
@@ -92,6 +124,66 @@ impl AdjustmentKind {
                 "posterize",
                 Approximate,
                 "floor(x n 255/256) / (n-1) per channel (psd-tools apply_posterize, 8-bit LUT correction fitted toward Photoshop); Photoshop mapping UNVERIFIED (D5 8)",
+            ),
+            Self::Vibrance => (
+                "vibrance",
+                Approximate,
+                "Studio formula: chroma about Lum scaled by 1 + v(1 - (max - min)), then by 1 + saturation (adjust_colour::vibrance); Photoshop vibrance unpublished, UNVERIFIED (D5)",
+            ),
+            Self::ColourBalance => (
+                "colour_balance",
+                Approximate,
+                "GIMP gimpoperationcolorbalance.c transfer weights on HSL lightness (a 0.25, b 0.333, scale 0.7; behaviour reference, no code copied), optional HSL lightness preservation; Photoshop transfer UNVERIFIED (D5)",
+            ),
+            Self::PhotoFilter => (
+                "photo_filter",
+                Approximate,
+                "multiply by the filter colour faded by density, optional W3C SetLum to the original Lum (adjust_colour::photo_filter); Photoshop lens model UNVERIFIED (D5)",
+            ),
+            Self::BlackAndWhite => (
+                "black_and_white",
+                Approximate,
+                "gray = min + (max - mid) w_primary + (mid - min) w_secondary over the six weights, tint = HSL(hue, sat, gray) (adjust_colour::black_and_white); Photoshop mix UNVERIFIED (D5)",
+            ),
+            Self::ChannelMixer => (
+                "channel_mixer",
+                Approximate,
+                "out_i = (w_r R + w_g G + w_b B + constant) / 100, monochrome = red row; constant as percent of full scale UNVERIFIED (D5)",
+            ),
+            Self::SelectiveColour => (
+                "selective_colour",
+                Approximate,
+                "nine range memberships (Studio reading) times ink deltas (a + k) ink relative / (a + k) absolute after the Adobe help 50 % + 10 % example; Photoshop maths UNVERIFIED (D5)",
+            ),
+            Self::GradientMap => (
+                "gradient_map",
+                Approximate,
+                "W3C Lum mapped through linearly interpolated stops, optional reverse; Photoshop luminance metric and smoothness UNVERIFIED (D5)",
+            ),
+            Self::ColourLookup => (
+                "colour_lookup",
+                Approximate,
+                "trilinear interpolation of a resolved 3D cube (side 2..=65, red fastest); Photoshop interpolation UNVERIFIED (D5)",
+            ),
+            Self::ShadowsHighlights => (
+                "shadows_highlights",
+                Approximate,
+                "Studio global form only (radius 0; radius > 0 refused): quadratic tone-width weights lift shadows / pull highlights, midtone contrast about 0.5, SetLum, chroma scaled by colour correction; not a Photoshop parity claim, UNVERIFIED (D5)",
+            ),
+            Self::ToneCompression => (
+                "tone_compression",
+                Approximate,
+                "global methods only: exposure-gamma clamp(x 2^e)^(1/g); highlight compression (y/(1+y))^(1/g) (Reinhard 2002 global); local adaptation and equalize histogram refused; Photoshop HDR toning UNVERIFIED (D5)",
+            ),
+            Self::MatchColour => (
+                "match_colour",
+                Approximate,
+                "per-channel statistics transfer (Reinhard 2001 in RGB) with neutralize, colour intensity, luminance and fade; Photoshop colour space and statistics UNVERIFIED (D5)",
+            ),
+            Self::ReplaceColour => (
+                "replace_colour",
+                Approximate,
+                "colour-range membership clamp(1 - 255 d / fuzziness) over the samples, then the Hue/Saturation master shift blended by membership; Photoshop falloff UNVERIFIED (D5)",
             ),
         };
         AdjustmentFacts {
@@ -331,6 +423,18 @@ pub enum AdjustmentOp {
     Posterize {
         levels: u16,
     },
+    Vibrance(Vibrance),
+    ColourBalance(ColourBalance),
+    PhotoFilter(PhotoFilter),
+    BlackAndWhite(BlackAndWhite),
+    ChannelMixer(ChannelMixer),
+    SelectiveColour(SelectiveColour),
+    GradientMap(GradientMap),
+    ColourLookup(ColourLookup),
+    ShadowsHighlights(ShadowsHighlights),
+    ToneCompression(ToneCompression),
+    MatchColour(MatchColour),
+    ReplaceColour(ReplaceColour),
 }
 
 /// An [`AdjustmentOp`] with prepared state (splines), ready for per-pixel evaluation.
@@ -351,7 +455,38 @@ impl AdjustmentOp {
             Self::Invert => AdjustmentKind::Invert,
             Self::Threshold { .. } => AdjustmentKind::Threshold,
             Self::Posterize { .. } => AdjustmentKind::Posterize,
+            Self::Vibrance(_) => AdjustmentKind::Vibrance,
+            Self::ColourBalance(_) => AdjustmentKind::ColourBalance,
+            Self::PhotoFilter(_) => AdjustmentKind::PhotoFilter,
+            Self::BlackAndWhite(_) => AdjustmentKind::BlackAndWhite,
+            Self::ChannelMixer(_) => AdjustmentKind::ChannelMixer,
+            Self::SelectiveColour(_) => AdjustmentKind::SelectiveColour,
+            Self::GradientMap(_) => AdjustmentKind::GradientMap,
+            Self::ColourLookup(_) => AdjustmentKind::ColourLookup,
+            Self::ShadowsHighlights(_) => AdjustmentKind::ShadowsHighlights,
+            Self::ToneCompression(_) => AdjustmentKind::ToneCompression,
+            Self::MatchColour(_) => AdjustmentKind::MatchColour,
+            Self::ReplaceColour(_) => AdjustmentKind::ReplaceColour,
         }
+    }
+
+    /// The second-set view of this op (`None` for the first set).
+    fn colour_op(&self) -> Option<ColourOp<'_>> {
+        Some(match self {
+            Self::Vibrance(p) => ColourOp::Vibrance(p),
+            Self::ColourBalance(p) => ColourOp::ColourBalance(p),
+            Self::PhotoFilter(p) => ColourOp::PhotoFilter(p),
+            Self::BlackAndWhite(p) => ColourOp::BlackAndWhite(p),
+            Self::ChannelMixer(p) => ColourOp::ChannelMixer(p),
+            Self::SelectiveColour(p) => ColourOp::SelectiveColour(p),
+            Self::GradientMap(p) => ColourOp::GradientMap(p),
+            Self::ColourLookup(p) => ColourOp::ColourLookup(p),
+            Self::ShadowsHighlights(p) => ColourOp::ShadowsHighlights(p),
+            Self::ToneCompression(p) => ColourOp::ToneCompression(p),
+            Self::MatchColour(p) => ColourOp::MatchColour(p),
+            Self::ReplaceColour(p) => ColourOp::ReplaceColour(p),
+            _ => return None,
+        })
     }
 
     /// Validate parameters and prepare per-pixel state. Every refusal is typed.
@@ -436,6 +571,11 @@ impl AdjustmentOp {
             Self::Posterize { levels } => {
                 param((2..=255).contains(levels), "posterize.levels")?;
             }
+            other => {
+                if let Some(op) = other.colour_op() {
+                    crate::adjust_colour::validate(&op)?;
+                }
+            }
         }
         Ok(PreparedAdjustment {
             op: self.clone(),
@@ -449,7 +589,7 @@ impl AdjustmentOp {
     }
 }
 
-fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
+pub(crate) fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
     let [r, g, b] = c.map(f64::from);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -475,7 +615,7 @@ fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
     }
     [h, s, l]
 }
-fn hsl_to_rgb(hsl: [f64; 3]) -> [f32; 3] {
+pub(crate) fn hsl_to_rgb(hsl: [f64; 3]) -> [f32; 3] {
     let [h, s, l] = hsl;
     if s == 0.0 {
         let v = l as f32;
@@ -663,6 +803,10 @@ impl PreparedAdjustment {
                 let n = f32::from(*levels);
                 rgb.map(|x| ((x * n * (255.0 / 256.0)).floor() / (n - 1.0)).min(1.0))
             }
+            other => match other.colour_op() {
+                Some(op) => crate::adjust_colour::apply(&op, rgb)?,
+                None => return Err(AdjustError::Unsupported("adjustment_kind")),
+            },
         };
         Ok(out.map(|v| v.clamp(0.0, 1.0)))
     }
