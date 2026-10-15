@@ -52,6 +52,9 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::idml_decode::LossBook;
 use crate::model::{LossEntry, LossKind};
+
+mod longdoc;
+pub use longdoc::{PdfLongDoc, PdfTable};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     BLEND_PASS_THROUGH, GeometryUnit, Isolation, Length, NodeKind, OperationKind, PageSide, Parent, Payload, PortAddress, ProfileBinding, Snapshot,
@@ -264,6 +267,8 @@ struct Placed {
 
 struct Cx<'a> {
     input: &'a PdfExportInput<'a>,
+    /// Long-document content drawn with its host frames (tables, overlays, placed graphics).
+    longdoc: &'a PdfLongDoc<'a>,
     doc: &'a StudioDocument,
     ex: PdfExport,
     pages: Vec<PageInfo>,
@@ -280,11 +285,20 @@ struct Cx<'a> {
 /// Lowers the snapshot onto a fresh PDF (module docs). Only cancellation, revision mismatches,
 /// misaligned inputs and press refusals fail the call; everything else is a loss entry.
 pub fn export_pdf(input: &PdfExportInput<'_>, cancel: &CancellationToken) -> Result<PdfExportOutput> {
+    export_pdf_with(input, &PdfLongDoc::default(), cancel)
+}
+
+/// [`export_pdf`] plus long-document content (lane SMB-LAYOUT-LONGDOC, see [`PdfLongDoc`]): tables,
+/// stories placed into frames they do not own (footnote bodies, generated text) and placed
+/// graphics are drawn with the frame layer they belong to, in its paint-order position.
+pub fn export_pdf_with(input: &PdfExportInput<'_>, longdoc: &PdfLongDoc<'_>, cancel: &CancellationToken) -> Result<PdfExportOutput> {
     canceled(cancel)?;
     let doc = input.snapshot.document();
     check_stories(input, doc)?;
+    longdoc.check(input, doc)?;
     let mut cx = Cx {
         input,
+        longdoc,
         doc,
         ex: PdfExport::new(input.options, &input.limits)?,
         pages: Vec::new(),
@@ -315,7 +329,12 @@ pub fn export_pdf(input: &PdfExportInput<'_>, cancel: &CancellationToken) -> Res
 }
 
 fn check_stories(input: &PdfExportInput<'_>, doc: &StudioDocument) -> Result<()> {
-    for s in input.stories {
+    check_story_list(input, doc, input.stories.iter())
+}
+
+/// The alignment checks of one set of stories (glyphs per paragraph, fonts, line glyph ranges).
+fn check_story_list<'s, 'a: 's>(input: &PdfExportInput<'_>, doc: &StudioDocument, stories: impl Iterator<Item = &'s PdfStory<'a>>) -> Result<()> {
+    for s in stories {
         if s.placement.base_revision != doc.revision {
             return Err(PdfExportError::StaleRevision { expected: s.placement.base_revision, current: doc.revision });
         }
@@ -896,7 +915,8 @@ impl Cx<'_> {
         let mut widths: Vec<BTreeMap<u16, u16>> = vec![BTreeMap::new(); fonts.len()];
         let mut unicode: Vec<BTreeMap<u16, String>> = vec![BTreeMap::new(); fonts.len()];
         let mut used = vec![false; fonts.len()];
-        for s in self.input.stories {
+        let longdoc = self.longdoc;
+        for s in self.input.stories.iter().chain(longdoc.stories()) {
             for (gs, p) in s.glyphs.iter().zip(s.paragraphs) {
                 let mut last_cluster = None;
                 for (g, lg) in gs.iter().zip(&p.glyphs) {
@@ -961,6 +981,11 @@ impl Cx<'_> {
     }
 
     fn text_layer(&mut self, layer: &StudioLayer, story_id: &str) -> Result<()> {
+        self.own_text(layer, story_id)?;
+        self.frame_extras(layer)
+    }
+
+    fn own_text(&mut self, layer: &StudioLayer, story_id: &str) -> Result<()> {
         let Some(story) = self.input.stories.iter().find(|s| s.story.story_id == story_id) else {
             self.loss.note(&layer.layer_id, &layer.kind, LossKind::Unsupported, "story_not_supplied");
             return Ok(());
