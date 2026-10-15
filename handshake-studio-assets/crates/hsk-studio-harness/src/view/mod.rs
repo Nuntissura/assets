@@ -89,6 +89,12 @@ pub mod widget {
     pub const DEVELOP_ADD_POINT: &str = "develop.point.add";
     pub const DEVELOP_ADD_LUMINANCE: &str = "develop.local.add_luminance";
     pub const DEVELOP_ADD_COLOUR: &str = "develop.local.add_colour";
+    /// Lane SMB-HARNESS-DEVELOP-3: gradient and brush corrections, grayscale convert; per mask
+    /// `develop.local.<i>.mask.<j>.invert` and `.remove`.
+    pub const DEVELOP_ADD_LINEAR: &str = "develop.local.add_linear";
+    pub const DEVELOP_ADD_RADIAL: &str = "develop.local.add_radial";
+    pub const DEVELOP_ADD_BRUSH: &str = "develop.local.add_brush";
+    pub const DEVELOP_GRAYSCALE: &str = "develop.grayscale.convert";
     pub fn tool(key: &str) -> String {
         format!("tool.{key}")
     }
@@ -447,7 +453,9 @@ impl Viewer {
             return;
         }
         if self.prefer == Prefer::Gpu && self.gpu.is_none() && self.display.is_none() {
-            self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options));
+            // Preview only: scene-referred values outside [0, 1] are clipped for display (render-gpu
+            // DisplayTransform::Clip, lane SMB-RENDER-SCENE-DISPLAY); exports keep their own clamping.
+            self.gpu = Some(hsk_studio_render_gpu::GpuBackend::new(self.gpu_options).with_display_transform(hsk_studio_render_gpu::DisplayTransform::Clip));
         }
         let result = match self.prepared_text() {
             Ok(text) => {

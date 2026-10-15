@@ -132,18 +132,17 @@ fn srational(v: &[f64]) -> Vec<u8> {
 }
 
 /// A `width` x `height` RGGB DNG 1.4 (black 64, white 4095, as-shot neutral, D50 forward matrix)
-/// with a smooth per-channel gradient, so every slider visibly changes pixels. Levels stay low (at
-/// most about a quarter of white before the as-shot gains) so the developed values, also after
-/// exposure +1, stay inside 0..1: render-cpu refuses samples outside the unit range
-/// (`sample_range_outside_unit`) and the viewer test reads the composite.
+/// with a smooth per-channel gradient, so every slider visibly changes pixels. The red and blue
+/// levels reach past white after the as-shot gains: the developed values exceed 1 and the viewer
+/// shows them through the renderers' declared display transform Clip (lane SMB-RENDER-SCENE-DISPLAY).
 pub fn synthetic_dng(width: u32, height: u32) -> Vec<u8> {
     let mut samples = Vec::with_capacity((width * height * 2) as usize);
     for y in 0..height {
         for x in 0..width {
             let base = match (x % 2, y % 2) {
-                (0, 0) => 120 + (x * 3) % 700,   // R
-                (1, 1) => 100 + (y * 5) % 800,   // B
-                _ => 150 + ((x + y) * 2) % 900,  // G
+                (0, 0) => 300 + (x * 9) % 2600,          // R
+                (1, 1) => 200 + (y * 11) % 2400,         // B
+                _ => 400 + ((x + y) * 5) % 3000,         // G
             };
             samples.extend_from_slice(&(base as u16).to_le_bytes());
         }

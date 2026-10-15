@@ -28,7 +28,9 @@ impl WgpuDisplay {
     /// typed error text; the viewer then keeps the read-back path.
     pub fn new(state: &egui_wgpu::RenderState) -> Result<Self, String> {
         let shared = SharedDevice::new(&state.device, &state.queue, state.adapter.get_info(), DeviceOptions::default())
-            .map_err(|e| format!("render-gpu shared device: {e}"))?;
+            .map_err(|e| format!("render-gpu shared device: {e}"))?
+            // Preview: values outside [0, 1] clipped for display (lane SMB-RENDER-SCENE-DISPLAY).
+            .with_display_transform(hsk_studio_render_gpu::DisplayTransform::Clip);
         Ok(Self { state: state.clone(), shared, target: None })
     }
 

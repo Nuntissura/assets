@@ -176,7 +176,10 @@ pub fn render_inner(
         match gpu {
             None => notes.push("gpu_not_created: render-cpu used".into()),
             Some(gpu) => match gpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink) {
-                Ok(_) => {
+                Ok((receipt, _)) => {
+                    if receipt.exactness.operators.iter().any(|o| o.key == hsk_studio_render_gpu::DISPLAY_CLIP_OPERATOR) {
+                        notes.push(format!("{}: samples outside [0, 1] clipped for display (render-gpu DisplayTransform::Clip, Approximate)", hsk_studio_render_gpu::DISPLAY_CLIP_OPERATOR));
+                    }
                     backend = "gpu";
                     done = true;
                 }
@@ -188,8 +191,16 @@ pub fn render_inner(
         }
     }
     if !done {
-        let cpu = hsk_studio_render_cpu::Renderer::new(hsk_studio_render_cpu::DEFAULT_CHUNK_SIDE).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
-        cpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
+        // Scene-referred values outside [0, 1] (a developed camera raw with strong gains) are shown
+        // through render-cpu's declared display transform Clip (lane SMB-RENDER-SCENE-DISPLAY;
+        // Approximate, recorded in the receipt ledger); the document keeps the unclipped values.
+        let cpu = hsk_studio_render_cpu::Renderer::new(hsk_studio_render_cpu::DEFAULT_CHUNK_SIDE)
+            .map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?
+            .with_display_transform(hsk_studio_render_cpu::DisplayTransform::Clip);
+        let receipt = cpu.execute_detailed(&lowering.plan, &request, &sources, cancel, &mut sink).map_err(|e| RenderFail::new("render_cpu", format!("{e:?}")))?;
+        if receipt.exactness.operators.iter().any(|o| o.key == hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR) {
+            notes.push(format!("{}: samples outside [0, 1] clipped for display (render-cpu DisplayTransform::Clip, Approximate)", hsk_studio_render_cpu::DISPLAY_CLIP_OPERATOR));
+        }
     }
     Ok(Frame { width: extent.width, height: extent.height, x: extent.x, y: extent.y, rgba8: sink.to_rgba8(), backend, texture: None, revision: doc.revision, notes })
 }

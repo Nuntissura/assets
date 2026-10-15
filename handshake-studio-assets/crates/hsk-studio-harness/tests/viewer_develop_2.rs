@@ -91,7 +91,7 @@ fn develop_edit_saves_and_reopens_through_the_develop_entry() {
     let mut w = open(&saved);
     assert_eq!(w.run().ops()[0]["detail"]["loss_notes"], 0, "the develop entry is a known session entry: {}", w.run().ops()[0]);
     let state = w.develop_json();
-    assert_eq!((state["entry"].as_str(), state["values_known"].as_bool()), (Some("Restored"), Some(true)), "{state}");
+    assert_eq!((state["entry"].as_str(), state["values_known"].as_bool()), (Some("Current"), Some(true)), "{state}");
     assert_eq!(w.develop_edit().as_ref(), Some(&edit));
     assert_eq!(w.develop_recipe(), Some(recipe));
     let again = w.export_develop(&scratch.0.join("b.png"), DevelopExport::Png { depth: OutputDepth::Sixteen }, false).unwrap();
@@ -191,7 +191,7 @@ fn hostile_develop_entries_are_typed_refusals() {
         ("string number", mutate(&|v| v["edit"]["tone"]["contrast"] = json!("10")), "develop_entry_field"),
         ("short mixer", mutate(&|v| { v["edit"]["mixer"].as_array_mut().unwrap().pop(); }), "develop_entry_field"),
         ("too many points", mutate(&|v| v["edit"]["point_colours"] = json!(vec![json!({"source":[0.1,0.1,0.1],"hue_shift":0.0,"saturation":0.0,"luminance":0.0,"hue_range":50.0,"saturation_range":50.0,"luminance_range":50.0}); 17])), "develop_entry_limit"),
-        ("gradient mask", mutate(&|v| v["edit"]["local"][0]["masks"][0]["source"] = json!({"kind":"linear_gradient","zero":[0,0],"full":[1,1]})), "develop_entry_field"),
+        ("unknown mask kind", mutate(&|v| v["edit"]["local"][0]["masks"][0]["source"] = json!({"kind":"ellipse","zero":[0,0],"full":[1,1]})), "develop_entry_field"),
         ("bad signature", mutate(&|v| v["tiles_signature"] = json!("../../etc")), "develop_entry_field"),
         ("long id", mutate(&|v| v["edit"]["local"][0]["id"] = json!("x".repeat(300))), "develop_entry_field"),
     ];

@@ -41,9 +41,11 @@ use super::export::write_atomic;
 use crate::import::{RawPrepared, SourceFormat, raw_prepare, raw_proposal};
 use hsk_studio_controls::{ChangeSource, ControlError, ControlSpec, NumberSpec, Registry, SectionSpec, Value as ControlValue, ValueStore};
 use hsk_studio_develop::{
-    AbsoluteWhiteBalance, Adjustments, BaselineExposure, ColourGrading, ColourRange, Correction, Detail, DevelopError, DevelopRecipe,
-    LocalStack, LuminanceRange, Mask, MaskBlend, MaskSource, OutputDepth, PointColour, Threads,
+    AbsoluteWhiteBalance, Adjustments, BAND_NAMES, BaselineExposure, Brush, ColourGrading, ColourMixer, ColourRange, Correction, Detail,
+    DevelopError, DevelopRecipe, GrayscaleMix, LinearGradient, LocalStack, LuminanceRange, Mask, MaskBlend, MaskSource, OutputDepth,
+    ParametricCurve, PointColour, RadialGradient, Threads,
 };
+use std::cell::RefCell;
 use hsk_studio_folio::{Payload, TileRef};
 use hsk_studio_interop_raster as raster;
 use serde_json::{Value, json};
@@ -51,9 +53,6 @@ use std::path::Path;
 
 /// The output profile of the develop export (CC0, see `profiles/README.md`).
 pub const SRGB_V4_ICC: &[u8] = include_bytes!("profiles/sRGB-v4.icc");
-
-/// Remembered pixel states (tile-list signature -> edit) per opened raw.
-const MAX_STATES: usize = 64;
 
 /// Kelvin / tint a raw-form white balance starts at when switched on.
 pub const KELVIN_START: (f64, f64) = (5000.0, 0.0);
@@ -134,6 +133,20 @@ pub fn controls(edit: &DevelopEdit) -> Vec<DevelopControl> {
         out.push(c(format!("develop.grading.{w}.saturation"), format!("{w} saturation"), "grading", POSITIVE, 0));
         out.push(c(format!("develop.grading.{w}.luminance"), format!("{w} luminance"), "grading", COUNT, 0));
     }
+    for band in BAND_NAMES {
+        for f in ["hue", "saturation", "luminance"] {
+            out.push(c(format!("develop.mixer.{band}.{f}"), format!("{band} {f}"), "mixer", COUNT, 0));
+        }
+    }
+    for f in ["highlights", "lights", "darks", "shadows"] {
+        out.push(c(format!("develop.parametric.{f}"), format!("curve {f}"), "curve", COUNT, 0));
+    }
+    for f in ["shadow_split", "midtone_split", "highlight_split"] {
+        out.push(c(format!("develop.parametric.{f}"), format!("curve {f}"), "curve", POSITIVE, 0));
+    }
+    for band in BAND_NAMES {
+        out.push(c(format!("develop.grayscale.{band}"), format!("gray {band}"), "grayscale", COUNT, 0));
+    }
     for i in 0..edit.adjust.point_colours.len() {
         for (f, range, p) in POINT_FIELDS {
             out.push(c(format!("develop.point.{i}.{f}"), format!("point {i} {f}"), "point", range, p));
@@ -146,13 +159,24 @@ pub fn controls(edit: &DevelopEdit) -> Vec<DevelopControl> {
         }
         for (j, m) in corr.masks.iter().enumerate() {
             out.push(c(format!("develop.local.{i}.mask.{j}.value"), format!("local {i} mask {j} value"), "local", (0.0, 1.0), 2));
-            let fields: &[&str] = match m.source {
-                MaskSource::LuminanceRange(_) => &["lo", "hi", "feather"],
-                MaskSource::ColourRange(_) => &["breadth"],
-                _ => &[],
+            let fields: &[(&str, (f64, f64), u8)] = match m.source {
+                MaskSource::LuminanceRange(_) => &[("lo", (0.0, 1.0), 3), ("hi", (0.0, 1.0), 3), ("feather", (0.0, 1.0), 3)],
+                MaskSource::ColourRange(_) => &[("breadth", (0.0, 1.0), 3)],
+                MaskSource::LinearGradient(_) => &[("zero_x", (0.0, 1.0), 3), ("zero_y", (0.0, 1.0), 3), ("full_x", (0.0, 1.0), 3), ("full_y", (0.0, 1.0), 3)],
+                MaskSource::RadialGradient(_) => &[
+                    ("left", (0.0, 1.0), 3),
+                    ("top", (0.0, 1.0), 3),
+                    ("right", (0.0, 1.0), 3),
+                    ("bottom", (0.0, 1.0), 3),
+                    ("angle", (-180.0, 180.0), 0),
+                    ("midpoint", POSITIVE, 0),
+                    ("roundness", COUNT, 0),
+                    ("feather", POSITIVE, 0),
+                ],
+                MaskSource::Brush(_) => &[("radius", (0.001, 1.0), 3), ("flow", (0.0, 1.0), 2), ("feather", (0.0, 1.0), 2)],
             };
-            for f in fields {
-                out.push(c(format!("develop.local.{i}.mask.{j}.{f}"), format!("local {i} mask {j} {f}"), "local", (0.0, 1.0), 3));
+            for (f, range, p) in fields {
+                out.push(c(format!("develop.local.{i}.mask.{j}.{f}"), format!("local {i} mask {j} {f}"), "local", *range, *p));
             }
         }
     }
@@ -200,6 +224,21 @@ fn slot<'a>(e: &'a mut DevelopEdit, id: &str) -> Option<&'a mut f64> {
                 (MaskSource::LuminanceRange(l), "hi") => Some(&mut l.hi),
                 (MaskSource::LuminanceRange(l), "feather") => Some(&mut l.feather),
                 (MaskSource::ColourRange(c), "breadth") => Some(&mut c.breadth),
+                (MaskSource::LinearGradient(l), "zero_x") => Some(&mut l.zero.0),
+                (MaskSource::LinearGradient(l), "zero_y") => Some(&mut l.zero.1),
+                (MaskSource::LinearGradient(l), "full_x") => Some(&mut l.full.0),
+                (MaskSource::LinearGradient(l), "full_y") => Some(&mut l.full.1),
+                (MaskSource::RadialGradient(r), "left") => Some(&mut r.left),
+                (MaskSource::RadialGradient(r), "top") => Some(&mut r.top),
+                (MaskSource::RadialGradient(r), "right") => Some(&mut r.right),
+                (MaskSource::RadialGradient(r), "bottom") => Some(&mut r.bottom),
+                (MaskSource::RadialGradient(r), "angle") => Some(&mut r.angle),
+                (MaskSource::RadialGradient(r), "midpoint") => Some(&mut r.midpoint),
+                (MaskSource::RadialGradient(r), "roundness") => Some(&mut r.roundness),
+                (MaskSource::RadialGradient(r), "feather") => Some(&mut r.feather),
+                (MaskSource::Brush(b), "radius") => Some(&mut b.radius),
+                (MaskSource::Brush(b), "flow") => Some(&mut b.flow),
+                (MaskSource::Brush(b), "feather") => Some(&mut b.feather),
                 _ => None,
             };
         }
@@ -218,6 +257,32 @@ fn slot<'a>(e: &'a mut DevelopEdit, id: &str) -> Option<&'a mut f64> {
             "tint" => &mut s.tint,
             _ => return None,
         });
+    }
+    if let Some(r) = rest.strip_prefix("mixer.") {
+        let (band, f) = r.split_once('.')?;
+        let b = a.mixer.bands.get_mut(BAND_NAMES.iter().position(|n| *n == band)?)?;
+        return Some(match f {
+            "hue" => &mut b.hue,
+            "saturation" => &mut b.saturation,
+            "luminance" => &mut b.luminance,
+            _ => return None,
+        });
+    }
+    if let Some(f) = rest.strip_prefix("parametric.") {
+        let p = &mut a.parametric;
+        return Some(match f {
+            "highlights" => &mut p.highlights,
+            "lights" => &mut p.lights,
+            "darks" => &mut p.darks,
+            "shadows" => &mut p.shadows,
+            "shadow_split" => &mut p.shadow_split,
+            "midtone_split" => &mut p.midtone_split,
+            "highlight_split" => &mut p.highlight_split,
+            _ => return None,
+        });
+    }
+    if let Some(band) = rest.strip_prefix("grayscale.") {
+        return a.grayscale.bands.get_mut(BAND_NAMES.iter().position(|n| *n == band)?);
     }
     if let Some(r) = rest.strip_prefix("grading.") {
         let g = &mut a.grading;
@@ -282,7 +347,19 @@ pub enum DevelopOp {
     AddLuminanceRange { lo: f64, hi: f64, feather: f64 },
     /// A local correction masked by colour samples (develop `MaskSource::ColourRange`).
     AddColourRange { samples: Vec<[f64; 3]>, breadth: f64 },
+    /// A local correction with one mask of any develop source (linear / radial gradient, brush,
+    /// luminance or colour range).
+    AddCorrection(MaskSource),
     RemoveCorrection(usize),
+    /// Another mask on correction `correction` (`subtract` = blend subtract, else add).
+    AddMask { correction: usize, source: MaskSource, subtract: bool },
+    RemoveMask { correction: usize, mask: usize },
+    /// Mask flags: inverted, blend subtract (else add), and for a gradient `flipped`.
+    MaskFlags { correction: usize, mask: usize, inverted: bool, subtract: bool, flipped: bool },
+    /// Appends normalised dabs to a brush mask (develop `Brush::dabs`).
+    AddBrushDabs { correction: usize, mask: usize, dabs: Vec<(f64, f64)> },
+    /// Grayscale mix `convert` (develop `GrayscaleMix::convert`).
+    Grayscale(bool),
 }
 
 impl DevelopOp {
@@ -295,6 +372,12 @@ impl DevelopOp {
             Self::AddLuminanceRange { .. } => "add luminance-range correction".into(),
             Self::AddColourRange { .. } => "add colour-range correction".into(),
             Self::RemoveCorrection(i) => format!("remove correction {i}"),
+            Self::AddCorrection(source) => format!("add {} correction", source_kind(source)),
+            Self::AddMask { correction, source, .. } => format!("add {} mask to correction {correction}", source_kind(source)),
+            Self::RemoveMask { correction, mask } => format!("remove mask {mask} of correction {correction}"),
+            Self::MaskFlags { correction, mask, .. } => format!("mask flags {correction}.{mask}"),
+            Self::AddBrushDabs { correction, mask, dabs } => format!("{} dabs on {correction}.{mask}", dabs.len()),
+            Self::Grayscale(on) => format!("grayscale {on}"),
         }
     }
 
@@ -332,12 +415,92 @@ impl DevelopOp {
                 }
                 a.local.remove(*i);
             }
+            Self::AddCorrection(source) => {
+                let n = next_id(a);
+                a.local.push(Correction::new(&format!("c{n}"), vec![mask(1, source.clone())], LocalStack::default()));
+            }
+            Self::AddMask { correction, source, subtract } => {
+                let len = a.local.len();
+                let c = a.local.get_mut(*correction).ok_or_else(|| range("correction", *correction, len))?;
+                if c.masks.len() >= hsk_studio_develop::local::MAX_MASKS {
+                    return Err(Refusal::new("develop_limit", format!("at most {} masks per correction", hsk_studio_develop::local::MAX_MASKS)));
+                }
+                let n = c.masks.iter().filter_map(|m| m.id.strip_prefix('m').and_then(index)).max().map_or(1, |n| n.saturating_add(1));
+                let mut m = mask(n, source.clone());
+                if *subtract {
+                    m.blend = MaskBlend::Subtract;
+                }
+                c.masks.push(m);
+            }
+            Self::RemoveMask { correction, mask: j } => {
+                let len = a.local.len();
+                let c = a.local.get_mut(*correction).ok_or_else(|| range("correction", *correction, len))?;
+                if *j >= c.masks.len() {
+                    return Err(range("mask", *j, c.masks.len()));
+                }
+                c.masks.remove(*j);
+            }
+            Self::MaskFlags { correction, mask: j, inverted, subtract, flipped } => {
+                let len = a.local.len();
+                let c = a.local.get_mut(*correction).ok_or_else(|| range("correction", *correction, len))?;
+                let mlen = c.masks.len();
+                let m = c.masks.get_mut(*j).ok_or_else(|| range("mask", *j, mlen))?;
+                m.inverted = *inverted;
+                m.blend = if *subtract { MaskBlend::Subtract } else { MaskBlend::Add };
+                match &mut m.source {
+                    MaskSource::LinearGradient(g) => g.flipped = *flipped,
+                    MaskSource::RadialGradient(g) => g.flipped = *flipped,
+                    _ if *flipped => return Err(Refusal::new("not_a_gradient", format!("mask {correction}.{j} has no flipped flag"))),
+                    _ => {}
+                }
+            }
+            Self::AddBrushDabs { correction, mask: j, dabs } => {
+                let len = a.local.len();
+                let c = a.local.get_mut(*correction).ok_or_else(|| range("correction", *correction, len))?;
+                let mlen = c.masks.len();
+                match c.masks.get_mut(*j).map(|m| &mut m.source) {
+                    Some(MaskSource::Brush(b)) => {
+                        if b.dabs.len().saturating_add(dabs.len()) > hsk_studio_develop::local::MAX_DABS {
+                            return Err(Refusal::new("develop_limit", format!("at most {} dabs per brush", hsk_studio_develop::local::MAX_DABS)));
+                        }
+                        b.dabs.extend_from_slice(dabs);
+                    }
+                    Some(_) => return Err(Refusal::new("not_a_brush", format!("mask {correction}.{j} is not a brush"))),
+                    None => return Err(range("mask", *j, mlen)),
+                }
+            }
+            Self::Grayscale(on) => a.grayscale.convert = *on,
         }
         if a.local.len() > hsk_studio_develop::local::MAX_CORRECTIONS {
             return Err(Refusal::new("develop_limit", format!("at most {} corrections", hsk_studio_develop::local::MAX_CORRECTIONS)));
         }
         Ok(())
     }
+}
+
+fn source_kind(s: &MaskSource) -> &'static str {
+    match s {
+        MaskSource::LinearGradient(_) => "linear_gradient",
+        MaskSource::RadialGradient(_) => "radial_gradient",
+        MaskSource::Brush(_) => "brush",
+        MaskSource::LuminanceRange(_) => "luminance_range",
+        MaskSource::ColourRange(_) => "colour_range",
+    }
+}
+
+/// Default source of the panel's "Add linear gradient" button (normalised image coordinates).
+pub fn default_linear() -> MaskSource {
+    MaskSource::LinearGradient(LinearGradient { zero: (0.5, 0.3), full: (0.5, 0.7), flipped: false })
+}
+
+/// Default source of the panel's "Add radial gradient" button.
+pub fn default_radial() -> MaskSource {
+    MaskSource::RadialGradient(RadialGradient { left: 0.25, top: 0.25, right: 0.75, bottom: 0.75, angle: 0.0, midpoint: 50.0, roundness: 0.0, feather: 50.0, flipped: false })
+}
+
+/// Default source of the panel's "Add brush" button (one dab at the centre).
+pub fn default_brush() -> MaskSource {
+    MaskSource::Brush(Brush { dabs: vec![(0.5, 0.5)], radius: 0.1, flow: 1.0, feather: 0.5 })
 }
 
 /// A typed refusal: a stable code (develop's, interop-raster's, or this module's) and a detail.
@@ -381,30 +544,36 @@ impl DevelopExport {
     }
 }
 
-/// How the develop entry of a reopened package was handled.
+/// The session entry `develop` against the shown pixels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum EntryStatus {
-    /// A fresh import (no entry expected).
+    /// No entry and the pixels are the import's identity develop.
     Imported,
+    /// No entry (a package saved without one).
     Absent,
-    /// Restored; its tile signature matches the layer.
-    Restored,
-    /// Decoded and valid, but saved for other pixels (or none): the edit is shown, values_known false.
+    /// The entry decodes, develop accepts it and its tile signature matches the layer.
+    Current,
+    /// Decoded and valid, but written for other pixels (painted since): shown, values_known false.
     Stale,
     Refused(&'static str),
 }
 
-/// The develop state of an opened raw.
+/// A decoded and develop-validated entry: (edit or refusal, tile signature, layer id).
+type EntryView = (Result<DevelopEdit, Refusal>, Option<String>, String);
+
+/// The develop state of an opened raw. The edit itself lives in the session document entry
+/// `develop`, written with every change inside the same undo step (`Run::set_tiles_and_entry`), so
+/// undo/redo restore pixels and edit together and a save carries it.
 pub struct DevelopDoc {
     prepared: RawPrepared,
     /// The file's as-shot recipe with the export profile bound (identity adjustments).
     base: DevelopRecipe,
     layer_id: String,
-    /// The last committed (or opened) edit.
-    last: DevelopEdit,
-    states: Vec<(String, DevelopEdit)>,
+    /// Tile signature of the import's identity develop (fresh imports only).
+    import_signature: Option<String>,
     threads: Threads,
-    entry: EntryStatus,
+    /// Last decoded entry by bytes (the panel reads the entry every frame).
+    cache: RefCell<Option<(Vec<u8>, EntryView)>>,
 }
 
 /// Signature of a raster layer's tile list (placement and content digests, in order).
@@ -440,12 +609,19 @@ impl DevelopDoc {
         recipe.exposure_stops = edit.exposure_stops;
         recipe.adjust = edit.adjust.clone();
         let a = &edit.adjust;
-        let colour = a.presence.vibrance != 0.0 || a.presence.saturation != 0.0 || !a.point_colours.is_empty() || a.grading != ColourGrading::default();
+        let colour = a.presence.vibrance != 0.0
+            || a.presence.saturation != 0.0
+            || !a.point_colours.is_empty()
+            || a.grading != ColourGrading::default()
+            || a.mixer != ColourMixer::default();
         let detail = a.presence.clarity != 0.0 || a.detail != Detail::default();
+        let b = &self.base.enables;
         let e = &mut recipe.enables;
-        e.enable_colour_adjustments = self.base.enables.enable_colour_adjustments || colour;
-        e.enable_detail = self.base.enables.enable_detail || detail;
-        e.enable_mask_group_based_corrections = self.base.enables.enable_mask_group_based_corrections || !a.local.is_empty();
+        e.enable_colour_adjustments = b.enable_colour_adjustments || colour;
+        e.enable_detail = b.enable_detail || detail;
+        e.enable_mask_group_based_corrections = b.enable_mask_group_based_corrections || !a.local.is_empty();
+        e.enable_tone_curve = b.enable_tone_curve || a.parametric != ParametricCurve::default();
+        e.enable_grayscale_mix = b.enable_grayscale_mix || a.grayscale != GrayscaleMix::default();
         recipe.validate().map_err(|e| Refusal::develop(e, "recipe"))?;
         Ok(recipe)
     }
@@ -459,13 +635,45 @@ impl DevelopDoc {
         }
     }
 
-    /// The edit of the shown pixels and whether it is known (a committed, imported or restored state).
-    fn current(&self, viewer: &Viewer) -> (DevelopEdit, bool) {
-        let sig = self.layer_tiles(viewer).map(signature);
-        match sig.and_then(|s| self.states.iter().rev().find(|(k, _)| *k == s)) {
-            Some((_, e)) => (e.clone(), true),
-            None => (self.last.clone(), false),
+    fn identity(&self) -> DevelopEdit {
+        DevelopEdit { exposure_stops: self.base.exposure_stops, adjust: self.base.adjust.clone() }
+    }
+
+    /// The entry decoded (hostile input, `develop_entry::decode`) and validated by develop.
+    fn entry(&self, viewer: &Viewer) -> Option<EntryView> {
+        let bytes = viewer.run.document_entry("develop")?;
+        let mut cache = self.cache.borrow_mut();
+        if let Some((cached, view)) = cache.as_ref()
+            && cached.as_slice() == bytes
+        {
+            return Some(view.clone());
         }
+        let view: EntryView = match develop_entry::decode(bytes) {
+            Ok(stored) => (self.recipe(&stored.edit).map(|_| stored.edit), stored.tiles_signature, stored.layer_id),
+            Err(r) => (Err(r), None, String::new()),
+        };
+        *cache = Some((bytes.to_vec(), view.clone()));
+        Some(view)
+    }
+
+    fn status(&self, viewer: &Viewer) -> (DevelopEdit, EntryStatus) {
+        let sig = self.layer_tiles(viewer).map(signature);
+        match self.entry(viewer) {
+            None if sig.is_some() && sig == self.import_signature => (self.identity(), EntryStatus::Imported),
+            None => (self.identity(), EntryStatus::Absent),
+            Some((Err(r), _, _)) => (self.identity(), EntryStatus::Refused(r.code)),
+            Some((Ok(edit), stored, layer)) => {
+                let current = layer == self.layer_id && stored.is_some() && stored == sig;
+                (edit, if current { EntryStatus::Current } else { EntryStatus::Stale })
+            }
+        }
+    }
+
+    /// The edit of the shown pixels and whether it is known (the import's identity develop or the
+    /// entry written for exactly these pixels).
+    fn current(&self, viewer: &Viewer) -> (DevelopEdit, bool) {
+        let (edit, status) = self.status(viewer);
+        (edit, matches!(status, EntryStatus::Imported | EntryStatus::Current))
     }
 }
 
@@ -510,35 +718,16 @@ impl Viewer {
         let mut base = prepared.recipe.clone();
         base.working_profile.sha256 = digest;
         base.output_profile.sha256 = digest;
-        let identity = DevelopEdit { exposure_stops: base.exposure_stops, adjust: base.adjust.clone() };
-        let mut develop = DevelopDoc { prepared, base, layer_id, last: identity.clone(), states: Vec::new(), threads: Threads::auto(), entry: EntryStatus::Imported };
-        let sig = develop.layer_tiles(self).map(signature);
+        let mut develop = DevelopDoc { prepared, base, layer_id, import_signature: None, threads: Threads::auto(), cache: RefCell::new(None) };
         if just_imported {
             // Right after the import the layer holds the identity develop (same route, same recipe).
-            if let Some(sig) = sig {
-                develop.states.push((sig, identity));
-            }
-        } else {
-            develop.entry = match self.run.document_entry("develop").map(develop_entry::decode) {
-                None => EntryStatus::Absent,
-                Some(Err(r)) => EntryStatus::Refused(r.code),
-                Some(Ok(stored)) => match develop.recipe(&stored.edit) {
-                    Err(r) => EntryStatus::Refused(r.code),
-                    Ok(_) => {
-                        let matches = stored.layer_id == develop.layer_id && stored.tiles_signature.is_some() && stored.tiles_signature == sig;
-                        if matches && let Some(sig) = sig {
-                            develop.states.push((sig, stored.edit.clone()));
-                        }
-                        develop.last = stored.edit;
-                        if matches { EntryStatus::Restored } else { EntryStatus::Stale }
-                    }
-                },
-            };
-            if let EntryStatus::Refused(code) = develop.entry {
-                self.say(format!("develop: the saved develop entry is refused ({code}); the panel starts from the file recipe"));
-            }
+            develop.import_signature = develop.layer_tiles(self).map(signature);
         }
-        self.say(format!("develop: panel on layer {} (entry {:?})", develop.layer_id, develop.entry));
+        let status = develop.status(self).1;
+        if let EntryStatus::Refused(code) = status {
+            self.say(format!("develop: the saved develop entry is refused ({code}); the panel starts from the file recipe"));
+        }
+        self.say(format!("develop: panel on layer {} (entry {status:?})", develop.layer_id));
         self.develop = Some(develop);
     }
 
@@ -582,14 +771,14 @@ impl Viewer {
             "window": [d.prepared.window.x, d.prepared.window.y, d.prepared.window.width, d.prepared.window.height],
             "values": values_json(&edit),
             "values_known": known,
-            "entry": format!("{:?}", d.entry),
+            "entry": format!("{:?}", d.status(self).1),
             "white_balance": a.absolute_white_balance.map_or_else(|| json!("as_shot"), |w| json!({"kelvin": w.kelvin, "tint": w.tint})),
             "point_colours": a.point_colours.iter().map(|p| json!(p.source)).collect::<Vec<_>>(),
-            "local": a.local.iter().map(|c| json!({"id": c.id, "masks": c.masks.iter().map(|m| match m.source { MaskSource::LuminanceRange(_) => "luminance_range", MaskSource::ColourRange(_) => "colour_range", _ => "other" }).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "local": a.local.iter().map(|c| json!({"id": c.id, "masks": c.masks.iter().map(|m| source_kind(&m.source)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "grayscale": a.grayscale.convert,
             "enables": recipe.as_ref().map(|r| json!({"enable_colour_adjustments": r.enables.enable_colour_adjustments, "enable_detail": r.enables.enable_detail, "enable_mask_group_based_corrections": r.enables.enable_mask_group_based_corrections})),
             "controls": controls(&edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
             "threads": d.threads.get(),
-            "states": d.states.len(),
             "export": {"profile": "sRGB-v4.icc", "profile_sha256": hex(&sha256(SRGB_V4_ICC)), "formats": ["png8", "png16", "jpeg"]},
         })
     }
@@ -642,9 +831,14 @@ impl Viewer {
             return Err(Refusal::new("not_open", "nothing open"));
         }
         let d = self.develop.as_ref().ok_or_else(|| Refusal::new("not_a_raw_document", "the open document was not imported from a camera raw or DNG"))?;
-        let (mut edit, _) = d.current(self);
+        let (before, known) = d.current(self);
+        let mut edit = before.clone();
         change(&mut edit)?;
         let recipe = d.recipe(&edit)?;
+        if known && edit == before {
+            // Nothing changed: no step.
+            return Ok(self.run.snapshot().map_or(0, |s| s.document().revision));
+        }
         let revision = self.run.snapshot().map_or(0, |s| s.document().revision);
         let (image, _) = hsk_studio_develop::develop_to_image_threads(&d.prepared.plane, &recipe, revision, d.threads, self.cancel).map_err(|e| Refusal::develop(e, "develop"))?;
         let (proposal, _) = raw_proposal(&d.prepared, image, &crate::harness::TrustAll, self.cancel).map_err(|e| Refusal::new(e.code(), format!("tiling: {e}")))?;
@@ -671,33 +865,30 @@ impl Viewer {
         }
         drop(proposal);
         let sig = signature(&edited);
-        if !staged.is_empty() {
-            self.assets.extend(staged);
-            if !self.run.set_tiles("develop", &layer_id, edited) {
-                return Err(Refusal::new("develop_commit_refused", self.op_error()));
-            }
-            self.dirty = true;
+        let bytes = develop_entry::encode(&layer_id, Some(&sig), &edit)?;
+        // One undo step: the changed tiles (when any) and the entry (always). A structure change
+        // that moves no pixel (a new identity point colour or correction) is still its own step.
+        let tiles = if staged.is_empty() { None } else { Some(edited) };
+        self.assets.extend(staged);
+        if !self.run.set_tiles_and_entry("develop", &layer_id, tiles, "develop", bytes) {
+            return Err(Refusal::new("develop_commit_refused", self.op_error()));
         }
-        if let Some(d) = self.develop.as_mut() {
-            d.states.retain(|(k, _)| *k != sig);
-            d.states.push((sig, edit.clone()));
-            if d.states.len() > MAX_STATES {
-                d.states.remove(0);
-            }
-            d.last = edit;
-        }
+        self.dirty = true;
         Ok(self.run.snapshot().map_or(0, |s| s.document().revision))
     }
 
-    /// Writes (or removes) the session document entry `develop` for the next save: the edit of the
-    /// shown pixels with their tile signature, or the last edit without one when the pixels are not
-    /// a develop state. Nothing when the document is not a developed raw.
+    /// Before a save: a fresh import that was never developed gets its identity entry (so the
+    /// reopened package knows the pixels are the identity develop). Every develop change already
+    /// wrote the entry; nothing else is touched.
     pub(super) fn store_develop_entry(&mut self) -> Result<(), Refusal> {
         let Some(d) = self.develop.as_ref() else {
             return Ok(());
         };
-        let (edit, known) = d.current(self);
-        let sig = if known { d.layer_tiles(self).map(signature) } else { None };
+        let (edit, status) = d.status(self);
+        if status != EntryStatus::Imported {
+            return Ok(());
+        }
+        let sig = d.layer_tiles(self).map(signature);
         let bytes = develop_entry::encode(&d.layer_id, sig.as_deref(), &edit)?;
         self.run.set_document_entry("develop", Some(bytes)).map_err(|code| Refusal::new(code, "session document entry develop"))
     }
@@ -837,6 +1028,11 @@ impl Viewer {
             button(super::widget::DEVELOP_ADD_POINT, "Add point colour", "Point colour sampled at the image centre", DevelopOp::AddPointColour { source: sample }, &mut ops, &mut drawn);
             button(super::widget::DEVELOP_ADD_LUMINANCE, "Add luminance mask", "Local correction masked by a luminance range (highlights 0.6..1)", DevelopOp::AddLuminanceRange { lo: 0.6, hi: 1.0, feather: 0.2 }, &mut ops, &mut drawn);
             button(super::widget::DEVELOP_ADD_COLOUR, "Add colour mask", "Local correction masked by the colour at the image centre", DevelopOp::AddColourRange { samples: vec![sample], breadth: 0.3 }, &mut ops, &mut drawn);
+            button(super::widget::DEVELOP_ADD_LINEAR, "Add linear gradient", "Local correction masked by a linear gradient (develop LinearGradient)", DevelopOp::AddCorrection(default_linear()), &mut ops, &mut drawn);
+            button(super::widget::DEVELOP_ADD_RADIAL, "Add radial gradient", "Local correction masked by a radial gradient (develop RadialGradient)", DevelopOp::AddCorrection(default_radial()), &mut ops, &mut drawn);
+            button(super::widget::DEVELOP_ADD_BRUSH, "Add brush", "Local correction masked by a brush (one dab at the centre; develop Brush)", DevelopOp::AddCorrection(default_brush()), &mut ops, &mut drawn);
+            let gray = edit.adjust.grayscale.convert;
+            button(super::widget::DEVELOP_GRAYSCALE, if gray { "Colour" } else { "Grayscale" }, "Grayscale mix convert (develop GrayscaleMix)", DevelopOp::Grayscale(!gray), &mut ops, &mut drawn);
             self.drawn.extend(drawn);
         });
         for i in 0..edit.adjust.point_colours.len() {
@@ -846,12 +1042,30 @@ impl Viewer {
             }
             self.drawn.push(name);
         }
-        for i in 0..edit.adjust.local.len() {
+        for (i, c) in edit.adjust.local.iter().enumerate() {
             let name = format!("develop.local.{i}.remove");
             if ui.push_id(w(&name), |ui| ui.small_button(format!("Remove correction {i}"))).inner.clicked() {
                 ops.push(DevelopOp::RemoveCorrection(i));
             }
             self.drawn.push(name);
+            for (j, m) in c.masks.iter().enumerate() {
+                let flipped = match &m.source {
+                    MaskSource::LinearGradient(g) => g.flipped,
+                    MaskSource::RadialGradient(g) => g.flipped,
+                    _ => false,
+                };
+                let subtract = m.blend == MaskBlend::Subtract;
+                let name = format!("develop.local.{i}.mask.{j}.invert");
+                if ui.push_id(w(&name), |ui| ui.small_button(format!("Invert mask {i}.{j}"))).inner.clicked() {
+                    ops.push(DevelopOp::MaskFlags { correction: i, mask: j, inverted: !m.inverted, subtract, flipped });
+                }
+                self.drawn.push(name);
+                let name = format!("develop.local.{i}.mask.{j}.remove");
+                if ui.push_id(w(&name), |ui| ui.small_button(format!("Remove mask {i}.{j}"))).inner.clicked() {
+                    ops.push(DevelopOp::RemoveMask { correction: i, mask: j });
+                }
+                self.drawn.push(name);
+            }
         }
         ui.horizontal_wrapped(|ui| {
             let base = std::path::PathBuf::from(self.save_input.trim());

@@ -4,9 +4,8 @@
 //!
 //! Wire: one JSON object, schema `hsk.studio.harness.develop@1`; every field of `Adjustments` is
 //! written (lossless round trip; numbers are finite binary64, which JSON round-trips exactly).
-//! Local-correction masks: `luminance_range` and `colour_range` (the sources the panel creates);
-//! a gradient or brush mask is refused when encoding (`develop_entry_mask_unsupported`) and when
-//! decoding (`develop_entry_field`).
+//! Local-correction masks: every develop `MaskSource` (`linear_gradient`, `radial_gradient`,
+//! `brush`, `luminance_range`, `colour_range`; lane SMB-HARNESS-DEVELOP-3 added the first three).
 //!
 //! The decoder treats the bytes as hostile: size cap before parsing, serde_json's nesting limit,
 //! exact array lengths, finite numbers only, list and string caps (develop's own `MAX_*` limits),
@@ -16,15 +15,16 @@
 
 use super::develop::{DevelopEdit, Refusal};
 use hsk_studio_develop::{
-    AbsoluteWhiteBalance, Adjustments, ColourGrading, ColourRange, Correction, Detail, GrayscaleMix, HslBand, LocalStack,
-    LuminanceRange, MAX_COLOUR_SAMPLES, MAX_POINT_COLOURS, Mask, MaskBlend, MaskSource, NoiseReduction, PointColour, Sharpen,
-    Wheel,
+    AbsoluteWhiteBalance, Adjustments, Brush, ColourGrading, ColourRange, Correction, Detail, GrayscaleMix, HslBand, LinearGradient,
+    LocalStack, LuminanceRange, MAX_COLOUR_SAMPLES, MAX_POINT_COLOURS, Mask, MaskBlend, MaskSource, NoiseReduction, PointColour,
+    RadialGradient, Sharpen, Wheel,
 };
+use hsk_studio_develop::local::MAX_DABS;
 use serde_json::{Map, Value, json};
 
 pub const SCHEMA: &str = "hsk.studio.harness.develop@1";
-/// Largest entry the decoder parses.
-pub const MAX_ENTRY_BYTES: usize = 1 << 20;
+/// Largest entry the decoder parses (room for one full brush of `MAX_DABS` dabs).
+pub const MAX_ENTRY_BYTES: usize = 8 << 20;
 const MAX_TEXT: usize = 256;
 
 /// A decoded entry.
@@ -50,7 +50,10 @@ fn mask(m: &Mask) -> Result<Value, Refusal> {
     let source = match &m.source {
         MaskSource::LuminanceRange(r) => json!({"kind": "luminance_range", "lo": r.lo, "hi": r.hi, "feather": r.feather}),
         MaskSource::ColourRange(r) => json!({"kind": "colour_range", "samples": r.samples, "breadth": r.breadth}),
-        _ => return Err(Refusal { code: "develop_entry_mask_unsupported", detail: format!("mask {}: only luminance_range and colour_range are stored", m.id) }),
+        MaskSource::LinearGradient(g) => json!({"kind": "linear_gradient", "zero": [g.zero.0, g.zero.1], "full": [g.full.0, g.full.1], "flipped": g.flipped}),
+        MaskSource::RadialGradient(r) => json!({"kind": "radial_gradient", "left": r.left, "top": r.top, "right": r.right, "bottom": r.bottom,
+            "angle": r.angle, "midpoint": r.midpoint, "roundness": r.roundness, "feather": r.feather, "flipped": r.flipped}),
+        MaskSource::Brush(b) => json!({"kind": "brush", "dabs": b.dabs.iter().map(|d| [d.0, d.1]).collect::<Vec<_>>(), "radius": b.radius, "flow": b.flow, "feather": b.feather}),
     };
     let blend = match m.blend {
         MaskBlend::Add => "add",
@@ -171,7 +174,7 @@ fn decode_stack(v: Option<&Value>, path: &str) -> Result<LocalStack, Refusal> {
     })
 }
 
-fn decode_mask(v: &Value, path: &str) -> Result<Mask, Refusal> {
+fn decode_mask(v: &Value, path: &str, dabs_left: &mut usize) -> Result<Mask, Refusal> {
     let o = object(v, path, &["id", "active", "inverted", "value", "blend", "source"])?;
     let blend = match o.get("blend").and_then(Value::as_str) {
         Some("add") => MaskBlend::Add,
@@ -193,17 +196,45 @@ fn decode_mask(v: &Value, path: &str) -> Result<Mask, Refusal> {
                 .collect::<Result<Vec<_>, _>>()?;
             MaskSource::ColourRange(ColourRange { samples, breadth: num(r, "breadth", &sp)? })
         }
+        Some("linear_gradient") => {
+            let g = object(s, &sp, &["kind", "zero", "full", "flipped"])?;
+            let [zx, zy] = numbers::<2>(g.get("zero"), &format!("{sp}.zero"))?;
+            let [fx, fy] = numbers::<2>(g.get("full"), &format!("{sp}.full"))?;
+            MaskSource::LinearGradient(LinearGradient { zero: (zx, zy), full: (fx, fy), flipped: boolean(g, "flipped", &sp)? })
+        }
+        Some("radial_gradient") => {
+            let r = object(s, &sp, &["kind", "left", "top", "right", "bottom", "angle", "midpoint", "roundness", "feather", "flipped"])?;
+            let n = |k: &str| num(r, k, &sp);
+            MaskSource::RadialGradient(RadialGradient {
+                left: n("left")?,
+                top: n("top")?,
+                right: n("right")?,
+                bottom: n("bottom")?,
+                angle: n("angle")?,
+                midpoint: n("midpoint")?,
+                roundness: n("roundness")?,
+                feather: n("feather")?,
+                flipped: boolean(r, "flipped", &sp)?,
+            })
+        }
+        Some("brush") => {
+            let b = object(s, &sp, &["kind", "dabs", "radius", "flow", "feather"])?;
+            let raw = list(b.get("dabs"), &format!("{sp}.dabs"), *dabs_left)?;
+            *dabs_left = dabs_left.saturating_sub(raw.len());
+            let dabs = raw.iter().map(|d| numbers::<2>(Some(d), &format!("{sp}.dabs")).map(|[x, y]| (x, y))).collect::<Result<Vec<_>, _>>()?;
+            MaskSource::Brush(Brush { dabs, radius: num(b, "radius", &sp)?, flow: num(b, "flow", &sp)?, feather: num(b, "feather", &sp)? })
+        }
         _ => return Err(field(&format!("{sp}.kind"))),
     };
     Ok(Mask { id: text(o, "id", path)?, active: boolean(o, "active", path)?, inverted: boolean(o, "inverted", path)?, value: num(o, "value", path)?, blend, source })
 }
 
-fn decode_correction(v: &Value, path: &str) -> Result<Correction, Refusal> {
+fn decode_correction(v: &Value, path: &str, dabs_left: &mut usize) -> Result<Correction, Refusal> {
     let o = object(v, path, &["id", "name", "active", "amount", "stack", "masks"])?;
     let masks = list(o.get("masks"), &format!("{path}.masks"), hsk_studio_develop::local::MAX_MASKS)?
         .iter()
         .enumerate()
-        .map(|(j, m)| decode_mask(m, &format!("{path}.masks[{j}]")))
+        .map(|(j, m)| decode_mask(m, &format!("{path}.masks[{j}]"), dabs_left))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Correction {
         id: text(o, "id", path)?,
@@ -271,10 +302,12 @@ fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
     let detail = sub("detail", &["texture", "dehaze", "sharpen", "noise"])?;
     let sharpen = object(detail.get("sharpen").ok_or_else(|| field("detail.sharpen"))?, "detail.sharpen", &["amount", "radius", "detail", "masking"])?;
     let noise = object(detail.get("noise").ok_or_else(|| field("detail.noise"))?, "detail.noise", &["luminance", "colour"])?;
+    // Brush dabs are bounded across the whole entry (develop's per-brush MAX_DABS).
+    let mut dabs_left = MAX_DABS;
     let local = list(o.get("local"), "local", hsk_studio_develop::local::MAX_CORRECTIONS)?
         .iter()
         .enumerate()
-        .map(|(i, c)| decode_correction(c, &format!("local[{i}]")))
+        .map(|(i, c)| decode_correction(c, &format!("local[{i}]"), &mut dabs_left))
         .collect::<Result<Vec<_>, _>>()?;
     let adjust = Adjustments {
         version,

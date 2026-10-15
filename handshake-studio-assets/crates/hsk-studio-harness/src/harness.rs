@@ -282,10 +282,19 @@ impl PropValue {
     }
 }
 
-/// One undoable step: chronicle's inverse of a committed change (its wire form) and a label.
+/// One undoable step: chronicle's inverse of a committed change (its wire form; `Null` when the
+/// step changed no chronicle property), the session document entry it replaced (lane
+/// SMB-HARNESS-DEVELOP-3: undo restores it together with the chronicle inverse) and a label.
 struct HistoryStep {
     label: String,
     inverse: Value,
+    entry: Option<EntryRestore>,
+}
+
+/// A session document entry as it was before a step (`None` = absent).
+struct EntryRestore {
+    token: String,
+    bytes: Option<Vec<u8>>,
 }
 
 /// Why an operation did not complete.
@@ -624,7 +633,7 @@ impl Run<'_> {
                 if applied.changed
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {field} {layer_id}"), inverse, entry: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -694,7 +703,7 @@ impl Run<'_> {
                     && let Some(inverse) = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok())
                 {
                     let first = writes.first().map_or("", |w| w.layer_id.as_str());
-                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse });
+                    self.undo_stack.push(HistoryStep { label: format!("{op} {first}"), inverse, entry: None });
                     self.redo_stack.clear();
                 }
                 let detail = json!({
@@ -774,6 +783,61 @@ impl Run<'_> {
         session.set_document_entry(token, bytes, cancel).map_err(|e| e.code())
     }
 
+    /// Sets the entry `restore` names to its bytes; returns the entry it replaced (for the opposite step).
+    fn swap_entry(&mut self, restore: &EntryRestore) -> Result<Option<EntryRestore>, &'static str> {
+        let cancel = self.cancel;
+        let session = self.session.as_mut().ok_or("not_open")?;
+        let current = session.document_entry(&restore.token).map(<[u8]>::to_vec);
+        session.set_document_entry(&restore.token, restore.bytes.clone(), cancel).map_err(|e| e.code())?;
+        Ok(Some(EntryRestore { token: restore.token.clone(), bytes: current }))
+    }
+
+    /// One undoable step of a tile edit and a session document entry (lane SMB-HARNESS-DEVELOP-3;
+    /// the develop panel's edit lives in the entry `develop`): `tiles` (when given and different)
+    /// commits through chronicle like [`Run::set_tiles`], the entry is set to `bytes`, and undo/redo
+    /// restore both as one step. Without a tile change the step is entry-only (still one history
+    /// step, op `op`). One record `op`.
+    pub fn set_tiles_and_entry(&mut self, op: &str, layer_id: &str, tiles: Option<Vec<TileRef>>, token: &str, bytes: Vec<u8>) -> bool {
+        let previous = match self.session.as_ref() {
+            Some(s) => s.document_entry(token).map(<[u8]>::to_vec),
+            None => {
+                let before = self.frames.count();
+                return self.push(op, before, Err("not_open"), None, None);
+            }
+        };
+        let depth = self.undo_stack.len();
+        if let Some(tiles) = tiles
+            && !self.set_tiles(op, layer_id, tiles)
+        {
+            return false;
+        }
+        let cancel = self.cancel;
+        let set = match self.session.as_mut() {
+            Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
+            None => Err("not_open"),
+        };
+        let restore = EntryRestore { token: token.to_string(), bytes: previous };
+        if let Err(code) = set {
+            // A committed tile step without its entry would split the step: undo the tiles.
+            if self.undo_stack.len() > depth {
+                let _ = self.undo();
+            }
+            let before = self.frames.count();
+            return self.own_op(op, before, Err(code));
+        }
+        if self.undo_stack.len() > depth {
+            if let Some(step) = self.undo_stack.last_mut() {
+                step.entry = Some(restore);
+            }
+            true
+        } else {
+            let before = self.frames.count();
+            self.undo_stack.push(HistoryStep { label: format!("{op} {token}"), inverse: Value::Null, entry: Some(restore) });
+            self.redo_stack.clear();
+            self.own_op(op, before, Ok(json!({"layer_id": layer_id, "entry": token, "tiles_changed": false})))
+        }
+    }
+
     /// The bytes of a session document entry of the working session.
     pub fn document_entry(&self, token: &str) -> Option<&[u8]> {
         self.session.as_ref()?.document_entry(token)
@@ -820,9 +884,44 @@ impl Run<'_> {
             let code = if undo { "nothing_to_undo" } else { "nothing_to_redo" };
             return if self.session.is_some() { self.own_op(op, before, Err(code)) } else { self.push(op, before, Err(code), None, None) };
         };
+        if step.inverse.is_null() {
+            // An entry-only step: swap the session document entry, nothing to submit.
+            let swapped = step.entry.as_ref().map(|e| self.swap_entry(e));
+            return match swapped {
+                Some(Ok(previous)) => {
+                    let detail = json!({"step": step.label, "entry": step.entry.as_ref().map(|e| e.token.clone()), "changed": true});
+                    let entry = HistoryStep { label: step.label, inverse: Value::Null, entry: previous };
+                    if undo {
+                        self.redo_stack.push(entry);
+                    } else {
+                        self.undo_stack.push(entry);
+                    }
+                    self.own_op(op, before, Ok(detail))
+                }
+                Some(Err(code)) => {
+                    if undo {
+                        self.undo_stack.push(step);
+                    } else {
+                        self.redo_stack.push(step);
+                    }
+                    self.own_op(op, before, Err(code))
+                }
+                None => self.own_op(op, before, Err("empty_history_step")),
+            };
+        }
         let n = self.op_no();
         match self.submit_inverse(&step.inverse, n) {
             Ok(applied) => {
+                // The entry of the step comes back with the chronicle inverse (refused: the step
+                // stays applied in chronicle, so it is reported, never silently split).
+                let previous = match step.entry.as_ref().map(|e| self.swap_entry(e)) {
+                    Some(Ok(p)) => p,
+                    Some(Err(code)) => {
+                        let revision = self.revision();
+                        return self.push(op, before, Err(code), Some(applied.report), revision);
+                    }
+                    None => None,
+                };
                 let next = applied.inverse.as_ref().and_then(|i| serde_json::to_value(i).ok()).unwrap_or(Value::Null);
                 // The values the step restored are what a later verify expects.
                 for write in step.inverse["writes"].as_array().into_iter().flatten() {
@@ -838,7 +937,7 @@ impl Run<'_> {
                     self.expectations.push(Expectation { layer_id: layer, field, expected: write["value"]["value"].clone() });
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "changed": applied.changed});
-                let entry = HistoryStep { label: step.label, inverse: next };
+                let entry = HistoryStep { label: step.label, inverse: next, entry: previous };
                 if undo {
                     self.redo_stack.push(entry);
                 } else {
