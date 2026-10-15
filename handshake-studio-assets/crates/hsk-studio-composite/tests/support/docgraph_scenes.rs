@@ -37,9 +37,9 @@ use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, StudioBlendMode, composite_over};
 use hsk_studio_pigment::coverage_math::{feather_kernel, mask_coverage};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, BackendError, BackendIdentity, DeviceClass, Exactness, ExecuteRequest, MaskInput, NoVector,
-    Operator, OutputTarget, PlanExtensions, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
-    SampleFormat, SinkError, SourceKey, TilePlanes, TileSink,
+    AlphaConvention, BackendError, BackendIdentity, DeviceClass, Exactness, ExecuteRequest, Group, Layer,
+    LayerExtension, MaskInput, NoVector, Operator, OutputTarget, PlanExtensions, PlanNode, PlanNodeId, PlanSources,
+    RenderBackend, RenderPlan, RenderReceipt, SampleFormat, SinkError, SourceKey, TileInput, TilePlanes, TileSink,
 };
 use hsk_studio_pigment::Mask;
 use scenes::Pixels;
@@ -234,11 +234,57 @@ impl PlanSources for FrameSources<'_> {
     }
 }
 
-/// The document-graph frame of the fixture (filled in from the lowering's layout).
+/// The document-graph frame of the fixture, in the static lowering's layout: one tile node per
+/// layer in layer-id order (key = node), then the root group (isolated) with the layers bottom
+/// first, each cut layer's plane keyed after the tiles in group order, the clipped layer on
+/// pigment's clip-to-base route, and the feather in the envelope.
 pub fn document_frame(pixels: &Pixels) -> DocFrame {
-    let _ = pixels;
-    DocFrame { plan: RenderPlan { revision: 7, target: target(), nodes: Vec::new(), root: hsk_studio_pigment::render_plan::PlanNodeId(0) },
-        extensions: PlanExtensions::default(), tiles: BTreeMap::new(), owned_masks: BTreeMap::new() }
+    let mut by_id: Vec<&LayerSpec> = LAYERS.iter().collect();
+    by_id.sort_by_key(|l| layer_id(l.n));
+    let mut nodes = Vec::new();
+    let mut tiles = BTreeMap::new();
+    for (i, l) in by_id.iter().enumerate() {
+        let t = tile_of(pixels, l);
+        let key = SourceKey(i as u32);
+        nodes.push(PlanNode::Tile(TileInput {
+            key,
+            placement: moved_rect(l),
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            colour_sha256: t.colour_sha256,
+            alpha_sha256: t.alpha_sha256,
+        }));
+        tiles.insert(key, t.id.clone());
+    }
+    let root = PlanNodeId(nodes.len() as u32);
+    let mut next = nodes.len() as u32;
+    let mut layers = Vec::new();
+    let mut owned_masks = BTreeMap::new();
+    let mut entries = Vec::new();
+    for (li, l) in LAYERS.iter().enumerate() {
+        let node = by_id.iter().position(|o| o.n == l.n).unwrap() as u32;
+        let mask = if l.clipped {
+            Some(MaskInput::clip_to_base())
+        } else if let Some(c) = layer_plane(l) {
+            let key = SourceKey(next);
+            next += 1;
+            owned_masks.insert(key, c.plane);
+            if c.feather_px > 0.0 {
+                entries.push(LayerExtension::new(root, li as u32).with_mask_feather(c.feather_px));
+            }
+            Some(MaskInput { key, ..c.input })
+        } else {
+            None
+        };
+        layers.push(Layer { input: PlanNodeId(node), mode: StudioBlendMode::Normal, opacity: 1.0, fill_opacity: 1.0, mask });
+    }
+    nodes.push(PlanNode::Group(Group { isolated: true, layers }));
+    DocFrame {
+        plan: RenderPlan { revision: 7, target: target(), nodes, root },
+        extensions: PlanExtensions::from_layers(entries),
+        tiles,
+        owned_masks,
+    }
 }
 pub fn target() -> OutputTarget {
     OutputTarget { extent: extent(), format: SampleFormat::RgbF32Le, alpha: AlphaConvention::Straight, space: scenes::space() }

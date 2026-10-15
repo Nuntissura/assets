@@ -171,14 +171,30 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
         let got = plain(&doc);
         let want = fixture::document_frame(&pixels);
         let mut failures = Vec::new();
-        // (1) Document graph == scene path, every pixel, under the reference executor.
+        // (1) Document graph == scene path under the reference executor: every alpha and every
+        // colour bit-identical, except colour inside the clip run (layer 12 over the masked base
+        // 10) by at most 1 ULP: the scene path draws the masked base into an intermediate
+        // straight-alpha surface first (`SceneContent::Static`), whose colour is recovered by a
+        // division, while the document graph clips to the base tile directly.
         let doc_px = fixture::render_frame(&fixture::Ref, &got, &pixels).unwrap();
         let scene_px = fixture::render_scene_px(&fixture::Ref, &scene, &pixels);
+        let run = fixture::moved_rect(fixture::spec(12));
+        let mut ulp_pixels = 0;
         for (i, (a, s)) in doc_px.iter().zip(&scene_px).enumerate() {
-            if a != s {
-                failures.push(format!("doc != scene at ({}, {}): {a:?} vs {s:?}", i % scenes::W as usize, i / scenes::W as usize));
+            if a == s {
+                continue;
+            }
+            let (x, y) = ((i % scenes::W as usize) as i64, (i / scenes::W as usize) as i64);
+            let in_run = x >= run.x && y >= run.y && x < run.x + i64::from(run.width) && y < run.y + i64::from(run.height);
+            let ulp = a[3] == s[3] && (0..3).all(|c| a[c].to_bits().abs_diff(s[c].to_bits()) <= 1);
+            if in_run && ulp {
+                ulp_pixels += 1;
+            } else {
+                failures.push(format!("doc != scene at ({x}, {y}): {a:?} vs {s:?}"));
             }
         }
+        println!("document graph vs scene path: {} of {} pixels identical, {ulp_pixels} within 1 ULP of colour in the clip run",
+            doc_px.len() - ulp_pixels, doc_px.len());
         // Every cut is visible in the frame (no silent no-op): the cut layers differ from the same
         // frame without the vector records.
         let uncut = build(&serde_json::from_value(json!({"schema_id":"hsk.studio.vector_records@1",
@@ -227,5 +243,62 @@ fn document_graph_frames_with_vector_clips_masks_and_clipped_layers_equal_the_sc
             panic!("{}", failures.join("
 "));
         }
+    });
+}
+
+/// Goal 2 (lane SMB-COMPOSITE-VECTOR-MASK-2 left the `CompositionTemporalSource` wiring of
+/// unlinked masks without a Folio-records test): from Folio records, the scene path strips the
+/// unlinked mask from layer 3's static subtree and carries it as a composition-space alpha matte
+/// (identity matrix) while the layer moves; the document-graph path keeps the same plane in plan
+/// space; density below 1 and a track matte on the same layer are refused typed; a moved layer
+/// whose clip and unlinked mask share one plane is refused on the document graph.
+#[test]
+fn unlinked_masks_in_compositions_from_folio_records() {
+    bounded_case("unlinked_masks_in_compositions_from_folio_records", || {
+        let pixels = Pixels::fixture();
+        let cancel = CancellationToken::default();
+        let rec = composition_records();
+        let b = build(&vector_records());
+        let src = source_of(&b, &rec, &pixels).unwrap();
+        let scene = src.scene_at(0, &cancel).unwrap();
+        let l3 = scene.layers.iter().find(|l| l.layer_id == identity("SLYR", 3)).unwrap();
+        assert_eq!(l3.matrix.m, [1.0, 0.0, 22.0, 0.0, 1.0, 14.0], "the layer moves");
+        let SceneContent::Static(content) = &l3.content else { panic!("static subtree") };
+        assert!(content.owned_masks.is_empty(), "the unlinked mask left the subtree");
+        let matte = l3.matte.as_ref().expect("unlinked mask matte");
+        assert_eq!((matte.mode, matte.inverted), (SceneMatteMode::Alpha, false));
+        let ml = matte.layer.as_ref().expect("matte layer");
+        assert_eq!(ml.matrix, hsk_studio_pigment::transform_math::Affine2::IDENTITY, "the mask stays");
+        let SceneContent::Static(mc) = &ml.content else { panic!("static matte") };
+        // The matte's plane is the document plane of the mask (same values where both exist).
+        let fixture_plane = fixture::layer_plane(fixture::spec(3)).unwrap().plane;
+        let m = mc.owned_masks.values().next().unwrap();
+        for y in m.bounds.y..m.bounds.y + i64::from(m.bounds.height) {
+            for x in m.bounds.x..m.bounds.x + i64::from(m.bounds.width) {
+                assert_eq!(fixture::effective(m, 0.0, false, 1.0, x, y), fixture::effective(&fixture_plane, 0.0, false, 1.0, x, y), "({x}, {y})");
+            }
+        }
+        let linked = |recs: &mut StudioVectorRecords, mask: &str, params: Value| {
+            recs.mask_parameters.retain(|p| p.mask_id != mask);
+            recs.mask_parameters.push(serde_json::from_value(params).unwrap());
+        };
+        // Density below 1 on an unlinked mask: refused when the composition is read.
+        let mut dense = vector_records();
+        linked(&mut dense, "m-alpha", json!({"mask_id":"m-alpha","linked":false,"density":50.0}));
+        let e = source_of(&build(&dense), &rec, &pixels).unwrap_err();
+        assert!(e.to_string().contains(vector_mask::REFUSE_MASK_UNLINKED_DENSITY), "{e}");
+        // An unlinked mask together with a track matte: refused when the frame is evaluated.
+        let mut matted = composition_records();
+        let l3r = matted.compositions[0].layers.iter_mut().find(|l| l.layer_id == identity("SLYR", 3)).unwrap();
+        l3r.track_matte = Some(serde_json::from_value(json!({"source_layer_id":identity("SLYR",11),"mode":"alpha","inverted":false})).unwrap());
+        let e = source_of(&b, &matted, &pixels).unwrap().scene_at(0, &cancel).unwrap_err();
+        assert!(matches!(e, TemporalError::Unsupported { feature: vector_mask::REFUSE_MASK_UNLINKED_MATTE, .. }), "{e:?}");
+        // A moved layer with a clip AND an unlinked mask (one plane): refused on the document graph.
+        let mut split = vector_records();
+        split.attachments.push(serde_json::from_value(json!({"layer_id":identity("SLYR",3),"clip_id":"c-tri"})).unwrap());
+        let bs = build(&split);
+        let srcs = source_of(&bs, &rec, &pixels).unwrap();
+        let e = doc_frame(&bs, &srcs, &pixels).unwrap_err();
+        assert!(matches!(e, TemporalError::Unsupported { feature: temporal::TRANSFORM_UNLINKED_MASK_WITH_CLIP, .. }), "{e:?}");
     });
 }
