@@ -154,7 +154,14 @@ fn plain(doc: &DocumentFrame) -> fixture::DocFrame {
         plan: doc.frame.lowering.plan.clone(),
         extensions: doc.frame.extensions.clone(),
         tiles: doc.frame.lowering.sources.iter().map(|(k, t)| (*k, format!("{}/{}", t.layer_id, t.object_key))).collect(),
-        owned_masks: doc.owned_masks.clone(),
+        // Owned planes and track-matte planes (what `DocumentFrame::sources` serves).
+        owned_masks: doc.owned_masks.clone().into_iter().chain(doc.mattes.iter().map(|(k, m)| (*k, OwnedMask {
+            bounds: hsk_studio_pigment::Rect { x: 0, y: 0, width: m.width, height: m.height },
+            sample_format: "coverage_u16le".into(),
+            bytes: m.bytes.clone(),
+            stride_bytes: u64::from(m.width) * 2,
+            sha256: m.sha256,
+        }))).collect(),
     }
 }
 
