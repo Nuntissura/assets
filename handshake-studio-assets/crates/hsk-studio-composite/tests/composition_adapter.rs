@@ -331,16 +331,10 @@ fn refusals_are_typed_and_nothing_is_dropped() {
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["precomp"] = json!({"composition_id":scenes::composition4_id(),"collapse_transformations":false})).unwrap_err();
         assert_eq!(unsupported(e), COMPOSITION_PRECOMP_PAYLOAD);
-        // A corner pin (lane SMB-AE-KEY-TRACK-3) is carried as pinned content, never dropped.
+        // A corner pin (lane SMB-AE-KEY-TRACK-2) is projective: refused typed, never dropped.
         let pin = json!({"from":[[0.0,0.0],[4.0,0.0],[4.0,4.0],[0.0,4.0]],"static_value":[0.0,0.0,5.0,1.0,5.0,5.0,0.0,4.0]});
-        let pinned = edit(&|r| r.pointer_mut(layer0).unwrap()["corner_pin"] = pin.clone()).unwrap();
-        let scene = pinned.scene_at(f(5) as i64, &CancellationToken::default()).unwrap();
-        let SceneContent::Pinned(p) = &scene.layers.last().unwrap().content else { panic!("pinned") };
-        let SceneContent::Tiles(t) = &p.content else { panic!("tiles") };
-        // Layer space is the content plan shifted by the content origin: from (4, 4) lands on (5, 5).
-        let (ox, oy) = (t[0].placement.x as f64, t[0].placement.y as f64);
-        let (x, y) = p.pin.apply(ox + 4.0, oy + 4.0).unwrap();
-        assert!((x - ox - 5.0).abs() < 1e-9 && (y - oy - 5.0).abs() < 1e-9, "({x}, {y})");
+        let e = edit(&|r| r.pointer_mut(layer0).unwrap()["corner_pin"] = pin.clone()).unwrap_err();
+        assert_eq!(unsupported(e), hsk_studio_composite::track_apply::COMPOSITION_CORNER_PIN);
         // A vector layer goes through the static path (lane SMB-COMPOSITE-COMPOSITION-2), which
         // lowers the layer's own graph operation; this fixture's vector layer has none.
         let e = edit(&|r| r.pointer_mut(layer0).unwrap()["layer_id"] = json!(identity("SLYR", 5))).unwrap_err();

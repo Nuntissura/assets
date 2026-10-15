@@ -9,6 +9,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::temporal::composition::{
     COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH, CompositionInput, CompositionTemporalSource, PRECOMP_TILE_KEY,
 };
+use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_composite::*;
 use hsk_studio_folio::{Budget, StudioCompositionRecords, TileRef};
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over};
@@ -267,19 +268,67 @@ fn precomposition_on_the_document_graph_equals_the_scene_path() {
             let got = [f32_at(&surface.colour, i * 12), f32_at(&surface.colour, i * 12 + 4), f32_at(&surface.colour, i * 12 + 8), f32_at(&surface.alpha, i * 4)];
             assert_eq!(got, *w, "nested pixel {i}");
         }
-        // A collapsed precomposition is refused on this path (the scene path expands it).
-        let mut rec2 = rec.clone();
-        rec2.compositions[0].layers[0].precomp.as_mut().unwrap().collapse_transformations = true;
-        let src2 = comp_source(&snap, &rec2, 3, &pixels);
-        let root = common::addr(1, "mix", "out");
+    });
+}
+
+/// Lane SMB-COMPOSITE-DOCGRAPH-2 goal 5 (`composition_collapse_on_document_graph` was refused for
+/// every collapsed precomposition): the same composition with `collapse_transformations` and the
+/// precomposition layer at 50 % opacity. The document graph splices the nested layer into the
+/// parent composite in place of the precomposition layer (no synthetic surface), placed by its
+/// nested matrix at the source tick followed by the layer's, at 50 %, and renders exactly like the
+/// scene path's expansion; outside the nested window both are empty. A nested layer the graph
+/// already composites cannot be spliced (refused typed).
+#[test]
+fn collapsed_precomposition_on_the_document_graph_equals_the_scene_path() {
+    bounded_case("collapsed_precomposition_on_the_document_graph_equals_the_scene_path", || {
+        let pixels = Pixels::fixture();
+        let layers = || vec![layer(8, "group", json!({"payload_kind":"group"})),
+            layer(9, "raster", json!({"payload_kind":"raster","tiles":[tile(9, "td", 0, 0, 6, 6)]}))];
+        let snap = open(&document(layers(), vec![composite_op(8, "nest")], &[(8, "nest")]));
+        let rec: StudioCompositionRecords = serde_json::from_value(json!({"schema_id":"hsk.studio.composition_records@1",
+            "document_id":identity("SDOC",1),"compositions":[
+                comp(3, 32, 24, json!([{"layer_id":identity("SLYR",8),
+                    "timing":{"in_point":0,"out_point":f(48),"start_time":f(2),"stretch":{"numerator":2,"denominator":1}},
+                    "precomp":{"composition_id":identity("SCOM",4),"collapse_transformations":true},
+                    "streams":[{"property":"position","static_value":[16.0,12.0]},{"property":"opacity","static_value":[50.0]}]}])),
+                comp(4, 12, 10, json!([{"layer_id":identity("SLYR",9),"timing":timing(0, 12),"streams":[
+                    {"property":"position","static_value":[0.0,0.0],"keyframes":[
+                        {"time":0,"value":[3.0,3.0],"in_interp":"linear","out_interp":"linear"},
+                        {"time":f(10),"value":[9.0,7.0],"in_interp":"linear","out_interp":"linear"}]}]}]))]})).unwrap();
+        let src = comp_source(&snap, &rec, 3, &pixels);
+        // Outer frame 22 = inner frame 10: the nested layer at (9, 7) - (3, 3) in the nested
+        // composition, then the precomposition's (16, 12) - (6, 5).
+        let (doc_px, scene_px, doc) = both(&snap, &src, f(22) as i64, &pixels);
+        assert_eq!(doc_px, scene_px, "document graph == scene path");
+        let plan = &doc.frame.lowering.plan;
+        assert!(doc.surfaces.is_empty() && doc.frame.lowering.sources.iter().all(|(_, t)| t.object_key != PRECOMP_TILE_KEY), "no nested surface");
+        let (key, t) = doc.frame.lowering.sources.iter().find(|(_, t)| t.layer_id == identity("SLYR", 9)).expect("the nested layer's own tile");
+        assert_eq!(t.object_key, "td");
+        let tile_rect = plan.nodes.iter().find_map(|n| match n {
+            PlanNode::Tile(t) if t.key == *key => Some(t.placement),
+            _ => None,
+        }).unwrap();
+        assert_eq!(tile_rect, Rect { x: 16, y: 11, width: 6, height: 6 });
+        let PlanNode::Group(root) = &plan.nodes[plan.root.0 as usize] else { panic!("root") };
+        assert_eq!(root.layers.len(), 1);
+        assert_eq!((root.layers[0].mode, root.layers[0].opacity), (StudioBlendMode::Normal, 0.5));
+        assert!(doc_px.iter().any(|p| p[3] > 0.0), "the nested layer draws");
+        // Outer frame 40 = inner frame 19: past the nested composition's 12-frame window.
+        let (late_doc, late_scene, _) = both(&snap, &src, f(40) as i64, &pixels);
+        assert_eq!(late_doc, late_scene);
+        assert!(late_doc.iter().all(|p| p[3] == 0.0), "outside the nested window");
+        // The graph already composites layer 9: it cannot be spliced in a second place.
+        let busy = open(&document(layers(), vec![composite_op(8, "nest"), source(9, "image")], &[(8, "nest"), (9, "source")]));
+        let src = comp_source(&busy, &rec, 3, &pixels);
+        let root_addr = common::addr(1, "mix", "out");
         let req = FrameRequest {
-            snapshot: &snap, expected_revision: 7, blend_space: BlendSpace::Encoded, limits: Limits::default(),
-            budget: Budget::default(), resolver: &Available, root: &root,
+            snapshot: &busy, expected_revision: 7, blend_space: BlendSpace::Encoded, limits: Limits::default(),
+            budget: Budget::default(), resolver: &Available, root: &root_addr,
             target: OutputTarget { extent: Rect { x: 0, y: 0, width: 32, height: 24 }, format: SampleFormat::RgbF32Le,
                 alpha: AlphaConvention::Straight, space: scenes::space() },
             info: &Info(&pixels), timings: &[],
         };
-        let e = src2.lower_document_frame(&req, &RenderInputs::default(), 0, &ctx(&pixels), &CancellationToken::default()).unwrap_err();
+        let e = src.lower_document_frame(&req, &RenderInputs::default(), 0, &ctx(&pixels), &CancellationToken::default()).unwrap_err();
         assert!(matches!(e, TemporalError::Unsupported { feature: COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH, .. }), "{e:?}");
     });
 }

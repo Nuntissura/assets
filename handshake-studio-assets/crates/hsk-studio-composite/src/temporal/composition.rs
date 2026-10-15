@@ -1186,6 +1186,10 @@ impl TemporalSource for CompositionTemporalSource {
 pub const PRECOMP_TILE_KEY: &str = "composite-precomp";
 /// Sample-format token of that synthetic tile (resolved only by composite's own wrappers).
 pub const PRECOMP_TILE_FORMAT: &str = "composite-surface-rgb_f32le";
+/// Refusal key: a collapsed precomposition the document graph cannot splice (lane
+/// SMB-COMPOSITE-DOCGRAPH-2 splices the rest): a precomposition inside it, a nested layer the graph
+/// already composites or that two collapsed layers share, or a nested non-raster layer without a
+/// graph operation.
 pub const COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH: &str = "composition_collapse_on_document_graph";
 pub const COMPOSITION_MATTE_WITH_MASK: &str = "composition_matte_with_mask";
 pub const COMPOSITION_MATTE_TARGET: &str = "composition_matte_target_not_found";
@@ -1316,6 +1320,180 @@ impl TileInfoSource for FrameInfo<'_> {
 /// composite: precomposition and matted layers are allowed, matte sources never render.
 struct DocumentGraphSource<'a> {
     inner: &'a CompositionTemporalSource,
+    /// Collapsed precompositions (lane SMB-COMPOSITE-DOCGRAPH-2): nested layer and precomposition
+    /// layer ids -> (precomposition layer id, nested composition id).
+    collapsed: &'a BTreeMap<String, (String, String)>,
+}
+impl DocumentGraphSource<'_> {
+    /// `(precomposition layer, nested composition, nested layer, source tick)` of a nested layer of
+    /// a collapsed precomposition; `None` for any other layer (the precomposition layer included).
+    #[allow(clippy::type_complexity)]
+    fn nested(
+        &self,
+        layer_id: &str,
+        tick: i64,
+    ) -> Result<Option<(&CompLayer, &Comp, &CompLayer, i64)>, TemporalError> {
+        let Some((p_id, comp_id)) = self.collapsed.get(layer_id) else {
+            return Ok(None);
+        };
+        if p_id == layer_id {
+            return Ok(None);
+        }
+        let dangling = |id: &str| TemporalError::from(CompositeError::DanglingInput(id.to_owned()));
+        let p = self.inner.find(p_id).ok_or_else(|| dangling(p_id))?;
+        let nested = self.inner.comps.get(comp_id).ok_or_else(|| dangling(comp_id))?;
+        let n = nested
+            .layers
+            .iter()
+            .find(|l| l.layer_id == layer_id)
+            .ok_or_else(|| dangling(layer_id))?;
+        let source = map_source(&p.timing, tick).ok_or(CompositeError::Overflow)?;
+        Ok(Some((p, nested, n, source)))
+    }
+    /// The state of a layer of a collapsed precomposition (`None` for any other layer): the
+    /// precomposition layer is hidden (its nested layers stand in for it); a nested layer shows in
+    /// both windows when neither is a matte source, with its opacity stream at the source tick
+    /// times the precomposition layer's opacity, as `scene_of` collapses it.
+    fn collapsed_state(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<LayerFrameState>, TemporalError> {
+        let hidden = LayerFrameState {
+            visible: false,
+            ..LayerFrameState::IDENTITY
+        };
+        if self.collapsed.get(layer_id).is_some_and(|(p, _)| p == layer_id) {
+            return Ok(Some(hidden));
+        }
+        let Some((p, nested, n, source)) = self.nested(layer_id, tick)? else {
+            return Ok(None);
+        };
+        let matte_source = |c: &Comp, id: &str| {
+            c.layers
+                .iter()
+                .any(|o| o.matte.as_ref().is_some_and(|m| m.source_layer_id == id))
+        };
+        let p_shown = p.visible
+            && u64::try_from(tick).is_ok_and(|t| p.timing.contains(t))
+            && !matte_source(self.inner.root()?, &p.layer_id);
+        let n_shown = n.visible
+            && u64::try_from(source).is_ok_and(|t| t < nested.duration && n.timing.contains(t))
+            && !matte_source(nested, layer_id);
+        if !(p_shown && n_shown) {
+            return Ok(Some(hidden));
+        }
+        let outer = p.opacity * CompositionTemporalSource::opacity_scale(p, tick, cancel)?;
+        Ok(Some(LayerFrameState {
+            visible: true,
+            opacity_scale: CompositionTemporalSource::opacity_scale(n, source, cancel)? * outer,
+            ..LayerFrameState::IDENTITY
+        }))
+    }
+    /// The matrix of a nested layer of a collapsed precomposition: its nested matrix at the source
+    /// tick followed by the precomposition layer's (`collapse_into`).
+    fn collapsed_matrix(
+        &self,
+        layer_id: &str,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Affine2>, TemporalError> {
+        let Some((p, nested, n, source)) = self.nested(layer_id, tick)? else {
+            return Ok(None);
+        };
+        let inner = CompositionTemporalSource::matrix(nested, n, source, cancel)?;
+        let outer = CompositionTemporalSource::matrix(self.inner.root()?, p, tick, cancel)?;
+        Ok(Some(inner.then(outer)))
+    }
+}
+
+/// Splices collapsed precomposition layer `p` (nested composition `nested`) into the frame
+/// document's graph (`lower_document_frame`): the edge that reads `p` is replaced by one edge per
+/// nested layer, bottom first, at its ordinal (the later ordinals of the same target shift); a
+/// raster nested layer without a graph operation gets a source operation with port `out`.
+/// [`COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH`]: a nested precomposition, a nested layer some edge
+/// already reads, a nested non-raster layer without an operation; [`COMPOSITION_PRECOMP_GRAPH`]:
+/// no edge reads `p`.
+fn splice_collapsed(
+    doc: &mut hsk_studio_folio::StudioDocument,
+    p: &CompLayer,
+    nested: &Comp,
+) -> Result<(), TemporalError> {
+    use hsk_studio_folio::{Cardinality, Edge, Operation, OperationKind, Port, PortAddress, Semantic, ValueType};
+    let mut sources: Vec<PortAddress> = Vec::new();
+    for n in nested.layers.iter().rev() {
+        let refuse = || unsupported(&n.layer_id, COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH);
+        if matches!(n.content, Content::Precomp { .. })
+            || doc.graph.edges.iter().any(|e| e.source.layer_id == n.layer_id)
+        {
+            return Err(refuse());
+        }
+        let address = match doc.graph.operations.iter().find(|o| o.layer_id == n.layer_id) {
+            Some(op) => PortAddress {
+                layer_id: n.layer_id.clone(),
+                operation_key: op.operation_key.clone(),
+                port_key: op.outputs.first().ok_or_else(refuse)?.port_key.clone(),
+            },
+            None => {
+                let raster = doc
+                    .layers
+                    .iter()
+                    .any(|d| d.layer_id == n.layer_id && matches!(d.payload, Payload::Raster { .. }));
+                if !raster {
+                    return Err(refuse());
+                }
+                doc.graph.operations.push(Operation {
+                    layer_id: n.layer_id.clone(),
+                    operation_key: "source".to_owned(),
+                    operation_kind: OperationKind::Source,
+                    inputs: Vec::new(),
+                    outputs: vec![Port {
+                        port_key: "out".to_owned(),
+                        value_type: ValueType::Image,
+                        cardinality: Cardinality::One,
+                        semantic: Semantic::Source,
+                    }],
+                });
+                PortAddress {
+                    layer_id: n.layer_id.clone(),
+                    operation_key: "source".to_owned(),
+                    port_key: "out".to_owned(),
+                }
+            }
+        };
+        sources.push(address);
+    }
+    let at = doc
+        .graph
+        .edges
+        .iter()
+        .position(|e| e.source.layer_id == p.layer_id)
+        .ok_or_else(|| unsupported(&p.layer_id, COMPOSITION_PRECOMP_GRAPH))?;
+    let edge = doc.graph.edges.remove(at);
+    if doc.graph.edges.iter().any(|e| e.source.layer_id == p.layer_id) {
+        return Err(unsupported(&p.layer_id, COMPOSITION_PRECOMP_GRAPH));
+    }
+    let count = u64::try_from(sources.len()).map_err(|_| CompositeError::Overflow)?;
+    for e in &mut doc.graph.edges {
+        if e.target == edge.target && e.input_ordinal > edge.input_ordinal {
+            e.input_ordinal = e
+                .input_ordinal
+                .checked_add(count)
+                .and_then(|o| o.checked_sub(1))
+                .ok_or(CompositeError::Overflow)?;
+        }
+    }
+    for (i, source) in sources.into_iter().enumerate() {
+        let offset = u64::try_from(i).map_err(|_| CompositeError::Overflow)?;
+        doc.graph.edges.push(Edge {
+            source,
+            target: edge.target.clone(),
+            dependency_kind: edge.dependency_kind,
+            input_ordinal: edge.input_ordinal.checked_add(offset).ok_or(CompositeError::Overflow)?,
+        });
+    }
+    Ok(())
 }
 impl TemporalSource for DocumentGraphSource<'_> {
     fn layer_state(
@@ -1324,6 +1502,9 @@ impl TemporalSource for DocumentGraphSource<'_> {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Option<LayerFrameState>, TemporalError> {
+        if let Some(state) = self.collapsed_state(layer_id, tick, cancel)? {
+            return Ok(Some(state));
+        }
         let Some(l) = self.inner.find(layer_id) else {
             return Ok(None);
         };
@@ -1339,7 +1520,8 @@ impl TemporalSource for DocumentGraphSource<'_> {
         }))
     }
     fn resample_filter(&self, layer_id: &str) -> Option<ResampleFilter> {
-        self.inner.find(layer_id).map(|_| self.inner.filter)
+        (self.inner.find(layer_id).is_some() || self.collapsed.contains_key(layer_id))
+            .then_some(self.inner.filter)
     }
     fn layer_matrix(
         &self,
@@ -1347,6 +1529,9 @@ impl TemporalSource for DocumentGraphSource<'_> {
         tick: i64,
         cancel: &CancellationToken,
     ) -> Result<Option<Affine2>, TemporalError> {
+        if let Some(m) = self.collapsed_matrix(layer_id, tick, cancel)? {
+            return Ok(Some(m));
+        }
         let Some(l) = self.inner.find(layer_id) else {
             return Ok(None);
         };
@@ -1367,8 +1552,16 @@ impl CompositionTemporalSource {
     ///   gives the layer one synthetic raster tile ([`PRECOMP_TILE_KEY`], format
     ///   [`PRECOMP_TILE_FORMAT`], the nested size at `(0, 0)`) and a source operation with the same
     ///   output port, so the static path places it with the layer's matrix, opacity and appearance.
-    ///   Collapsed precompositions are refused here
-    ///   ([`COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH`]; the scene path expands them).
+    /// - A collapsed precomposition (STU-MOT-006 collapse transformations; lane
+    ///   SMB-COMPOSITE-DOCGRAPH-2) is spliced into the frame graph as the scene path expands it: its
+    ///   edge into the parent composite is replaced by edges from the nested layers (bottom first,
+    ///   the later ordinals shifted), a raster nested layer without an operation gets a source
+    ///   operation, the precomposition layer is hidden, and each nested layer is placed by its
+    ///   nested matrix at the source tick followed by the precomposition layer's matrix, shown in
+    ///   both windows, with its opacity times the layer's ([`splice_collapsed`],
+    ///   `DocumentGraphSource`). No nested surface and no clip to the nested rect, as on the scene
+    ///   path; the scene path's refusals (a blend mode other than normal, a matte on the layer)
+    ///   apply to both. [`COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH`] names what cannot be spliced.
     /// - A track matte: the matte layer is rendered alone by `ctx` (as the scene path does) into a
     ///   `coverage_u16le` plane over the composition rect, set as the mask of the plan layer that
     ///   carries the matted layer's tiles (plan space; [`COMPOSITION_MATTE_WITH_MASK`] when that
@@ -1399,12 +1592,27 @@ impl CompositionTemporalSource {
         let mut frame_doc = doc.clone();
         let mut surfaces: BTreeMap<String, Surface> = BTreeMap::new();
         let mut changed = false;
+        // Collapsed precompositions: nested layer (and precomposition layer) id ->
+        // (precomposition layer id, nested composition id).
+        let mut collapsed: BTreeMap<String, (String, String)> = BTreeMap::new();
         for l in &root.layers {
-            let Content::Precomp { collapse, bounds, .. } = &l.content else {
+            let Content::Precomp { collapse, bounds, composition_id } = &l.content else {
                 continue;
             };
             if *collapse {
-                return Err(unsupported(&l.layer_id, COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH));
+                let nested = self
+                    .comps
+                    .get(composition_id)
+                    .ok_or_else(|| CompositeError::DanglingInput(composition_id.clone()))?;
+                splice_collapsed(&mut frame_doc, l, nested)?;
+                let owner = (l.layer_id.clone(), composition_id.clone());
+                for id in std::iter::once(&l.layer_id).chain(nested.layers.iter().map(|n| &n.layer_id)) {
+                    if collapsed.insert(id.clone(), owner.clone()).is_some() {
+                        return Err(unsupported(id, COMPOSITION_COLLAPSE_ON_DOCUMENT_GRAPH));
+                    }
+                }
+                changed = true;
+                continue;
             }
             if let Some(SceneContent::Precomp(nested)) = scene
                 .layers
@@ -1514,7 +1722,10 @@ impl CompositionTemporalSource {
         let mut frame = lower_frame_with_inputs(
             &frame_req,
             inputs,
-            &DocumentGraphSource { inner: self },
+            &DocumentGraphSource {
+                inner: self,
+                collapsed: &collapsed,
+            },
             tick,
             cancel,
         )?;
@@ -1535,7 +1746,16 @@ impl CompositionTemporalSource {
             let Some(matte) = &s.matte else { continue };
             // A scene matte without a track-matte record is an unlinked vector mask, which this
             // path lowered in place (plan space) with the inputs.
-            if root.layers.iter().any(|c| c.layer_id == s.layer_id && c.matte.is_none()) {
+            let record = root.layers.iter().chain(
+                collapsed
+                    .values()
+                    .filter_map(|(_, c)| self.comps.get(c))
+                    .flat_map(|c| c.layers.iter()),
+            );
+            if record
+                .filter(|c| c.layer_id == s.layer_id)
+                .any(|c| c.matte.is_none())
+            {
                 continue;
             }
             let plane = crate::composition::matte_coverage(&scene, &s.layer_id, matte, ctx, cancel)?;
