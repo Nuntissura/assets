@@ -46,9 +46,15 @@ pub(crate) struct Mapped<T> {
     pub notes: Vec<Note>,
 }
 
-/// Adjustment keys this module maps.
-pub(crate) const MAPPED_ADJUSTMENT_KEYS: [&[u8; 4]; 9] =
-    [b"levl", b"curv", b"hue ", b"hue2", b"brit", b"expA", b"nvrt", b"thrs", b"post"];
+/// Adjustment keys this module maps. The second set (lane SMB-PS-ADJUST-STYLES): `blnc`, `selc`,
+/// `mixr`, `phfl` (binary records, layouts confirmed on the psd-tools corpus files
+/// `layers/color-balance.psd` 20 bytes, `selective-color.psd` 84, `channel-mixer.psd` 44,
+/// `photo-filter.psd` 20) and `vibA`, `blwh` (version 16 + descriptor). `grdm` (gradient map) and
+/// `clrL` (colour lookup) are not mapped yet: the layer stays a typed unsupported layer.
+pub(crate) const MAPPED_ADJUSTMENT_KEYS: [&[u8; 4]; 15] = [
+    b"levl", b"curv", b"hue ", b"hue2", b"brit", b"expA", b"nvrt", b"thrs", b"post", b"blnc", b"selc", b"mixr",
+    b"phfl", b"vibA", b"blwh",
+];
 
 const CHANNELS: [StudioAdjustmentChannel; 4] = [
     StudioAdjustmentChannel::Composite,
@@ -100,8 +106,219 @@ pub(crate) fn adjustment(
         b"expA" => exposure(data),
         b"thrs" => threshold(data),
         b"post" => posterize(data),
+        b"blnc" => colour_balance(data),
+        b"selc" => selective_colour(data),
+        b"mixr" => channel_mixer(data, mode),
+        b"phfl" => photo_filter(data),
+        b"vibA" => vibrance(data, limits),
+        b"blwh" => black_and_white(data, limits),
         _ => Ok(Mapped { value: StudioAdjustment::Invert, notes: Vec::new() }),
     })
+}
+
+// ---- second set (lane SMB-PS-ADJUST-STYLES) -------------------------------------------------------
+//
+// Byte layouts: Adobe Photoshop File Formats Specification "Adjustment layer" (`blnc`: three sets of
+// three i16 then the preserve-luminosity byte; `selc`: version, method, ten CMYK i16 records of which the
+// first is unused; `mixr`: version, monochrome, i16 rows of R, G, B, fourth channel, constant; `phfl`:
+// version 2 = colour space + four u16 components, 3 = XYZ; density u32 percent; preserve-luminosity
+// byte), checked against the psd-tools corpus files named on `MAPPED_ADJUSTMENT_KEYS`. Every value is
+// range-checked; a value out of range refuses the record (typed loss, the layer stays unsupported).
+
+fn i16s<const N: usize>(r: &mut Reader<'_>, reason: Reason) -> std::result::Result<[i16; N], Reason> {
+    let mut out = [0i16; N];
+    for v in &mut out {
+        *v = truncated(r.i16("adjustment"), reason)?;
+    }
+    Ok(out)
+}
+fn in_range<const N: usize>(v: [i16; N], lo: i16, hi: i16, reason: Reason) -> std::result::Result<[f64; N], Reason> {
+    if v.iter().all(|x| (lo..=hi).contains(x)) { Ok(v.map(f64::from)) } else { Err(reason) }
+}
+
+fn colour_balance(data: &[u8]) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    const R: Reason = "colour_balance_truncated";
+    let mut r = Reader::new(data);
+    let mut sets = [[0f64; 3]; 3];
+    for set in &mut sets {
+        *set = in_range(i16s::<3>(&mut r, R)?, -100, 100, "colour_balance_range")?;
+    }
+    let preserve_luminosity = truncated(r.u8("blnc"), R)? != 0;
+    let [shadows, midtones, highlights] = sets;
+    Ok(Mapped {
+        value: StudioAdjustment::ColourBalance { shadows, midtones, highlights, preserve_luminosity },
+        notes: Vec::new(),
+    })
+}
+
+fn selective_colour(data: &[u8]) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    const R: Reason = "selective_colour_truncated";
+    let mut r = Reader::new(data);
+    if truncated(r.u16("selc"), R)? != 1 {
+        return Err("selective_colour_version_unsupported");
+    }
+    let method = match truncated(r.u16("selc"), R)? {
+        0 => hsk_studio_folio::StudioSelectiveColourMethod::Relative,
+        1 => hsk_studio_folio::StudioSelectiveColourMethod::Absolute,
+        _ => return Err("selective_colour_method"),
+    };
+    // The first record is unused by the format.
+    i16s::<4>(&mut r, R)?;
+    let mut q = [[0f64; 4]; 9];
+    for slot in &mut q {
+        *slot = in_range(i16s::<4>(&mut r, R)?, -100, 100, "selective_colour_range")?;
+    }
+    let [reds, yellows, greens, cyans, blues, magentas, whites, neutrals, blacks] = q;
+    Ok(Mapped {
+        value: StudioAdjustment::SelectiveColour {
+            method,
+            reds,
+            yellows,
+            greens,
+            cyans,
+            blues,
+            magentas,
+            whites,
+            neutrals,
+            blacks,
+        },
+        notes: Vec::new(),
+    })
+}
+
+fn channel_mixer(data: &[u8], mode: ColorMode) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    const R: Reason = "channel_mixer_truncated";
+    if mode != ColorMode::Rgb {
+        return Err("channel_mixer_color_mode_unmapped");
+    }
+    let mut r = Reader::new(data);
+    if truncated(r.u16("mixr"), R)? != 1 {
+        return Err("channel_mixer_version_unsupported");
+    }
+    let monochrome = truncated(r.u16("mixr"), R)? != 0;
+    let mut notes = Vec::new();
+    let mut outputs = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let [red, green, blue, fourth, constant] = in_range(i16s::<5>(&mut r, R)?, -200, 200, "channel_mixer_range")?;
+        if fourth != 0.0 {
+            // The fourth input channel does not exist in an RGB document.
+            notes.push((LossKind::Transformed, "channel_mixer_fourth_channel_dropped"));
+        }
+        outputs.push(hsk_studio_folio::StudioMixerRow { weights: vec![red, green, blue], constant });
+    }
+    Ok(Mapped { value: StudioAdjustment::ChannelMixer { outputs, monochrome }, notes })
+}
+
+fn photo_filter(data: &[u8]) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    const R: Reason = "photo_filter_truncated";
+    let mut r = Reader::new(data);
+    match truncated(r.u16("phfl"), R)? {
+        2 => {}
+        3 => return Err("photo_filter_xyz_colour_unmapped"),
+        _ => return Err("photo_filter_version_unsupported"),
+    }
+    let space = truncated(r.u16("phfl"), R)?;
+    let mut c = [0u16; 4];
+    for v in &mut c {
+        *v = truncated(r.u16("phfl"), R)?;
+    }
+    if space != 0 {
+        // Only the RGB colour space maps (as the effect colours do); Lab and others need a converter.
+        return Err("photo_filter_colour_model_unmapped");
+    }
+    let density = truncated(r.u32("phfl"), R)?;
+    if density > 100 {
+        return Err("photo_filter_range");
+    }
+    let preserve_luminosity = truncated(r.u8("phfl"), R)? != 0;
+    let unit = |v: u16| f64::from(v) / 65535.0;
+    Ok(Mapped {
+        value: StudioAdjustment::PhotoFilter {
+            filter_colour: hsk_studio_folio::StudioColor {
+                r: unit(c[0]),
+                g: unit(c[1]),
+                b: unit(c[2]),
+                colour_profile_id: hsk_studio_folio::ProfileBinding::Unassigned(()),
+            },
+            density: f64::from(density),
+            preserve_luminosity,
+        },
+        notes: Vec::new(),
+    })
+}
+
+/// A numeric descriptor item in `lo..=hi`; absent = `default` (a Photoshop descriptor omits default items).
+fn item(o: &descriptor::Object, key: &str, lo: f64, hi: f64, default: f64, reason: Reason) -> std::result::Result<f64, Reason> {
+    match o.get(key) {
+        None => Ok(default),
+        Some(v) => v.finite_number().filter(|n| (lo..=hi).contains(n)).ok_or(reason),
+    }
+}
+
+fn vibrance(data: &[u8], limits: &Limits) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    let o = descriptor::parse_versioned(data, &[16], limits).map_err(|_| "vibrance_descriptor_unreadable")?;
+    let vibrance = item(&o, "vibrance", -100.0, 100.0, 0.0, "vibrance_range")?;
+    let saturation = item(&o, "Strt", -100.0, 100.0, 0.0, "vibrance_range")?;
+    Ok(Mapped { value: StudioAdjustment::Vibrance { vibrance, saturation }, notes: Vec::new() })
+}
+
+fn black_and_white(data: &[u8], limits: &Limits) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
+    const RANGE: Reason = "black_and_white_range";
+    let o = descriptor::parse_versioned(data, &[16], limits).map_err(|_| "black_and_white_descriptor_unreadable")?;
+    // Photoshop's defaults for absent weights (40, 60, 40, 60, 20, 80; the corpus file carries them).
+    let w = |key: &str, default: f64| item(&o, key, -200.0, 300.0, default, RANGE);
+    let (red, yellow, green, cyan, blue, magenta) =
+        (w("Rd  ", 40.0)?, w("Yllw", 60.0)?, w("Grn ", 40.0)?, w("Cyn ", 60.0)?, w("Bl  ", 20.0)?, w("Mgnt", 80.0)?);
+    let tint_enabled = o.get("useTint").and_then(descriptor::Value::boolean).unwrap_or(false);
+    let mut notes = Vec::new();
+    // The tint is stored as an RGB colour; Folio keeps hue and saturation (STU-RAS-151): the HSL hue
+    // and saturation of that colour.
+    let (mut tint_hue, mut tint_saturation) = (0.0, 0.0);
+    if let Some(c) = o.get("tintColor").and_then(descriptor::Value::object) {
+        let ch = |k: &str| c.get(k).and_then(descriptor::Value::finite_number).filter(|v| (0.0..=255.0).contains(v));
+        let (Some(r), Some(g), Some(b)) = (ch("Rd  "), ch("Grn "), ch("Bl  ")) else {
+            return Err("black_and_white_tint_colour_unmapped");
+        };
+        let [h, s] = hue_saturation_of([r / 255.0, g / 255.0, b / 255.0]);
+        tint_hue = h;
+        tint_saturation = s;
+        notes.push((LossKind::Transformed, "black_and_white_tint_colour_as_hue_saturation"));
+    }
+    Ok(Mapped {
+        value: StudioAdjustment::BlackAndWhite {
+            red,
+            yellow,
+            green,
+            cyan,
+            blue,
+            magenta,
+            tint_enabled,
+            tint_hue,
+            tint_saturation,
+        },
+        notes,
+    })
+}
+
+/// HSL hue (degrees `0..360`) and saturation (percent) of a colour in `[0, 1]`.
+fn hue_saturation_of(c: [f64; 3]) -> [f64; 2] {
+    let [r, g, b] = c;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    if d <= 0.0 {
+        return [0.0, 0.0];
+    }
+    let l = (max + min) / 2.0;
+    let s = if l <= 0.5 { d / (max + min) } else { d / (2.0 - max - min) };
+    let h = if max == r {
+        (g - b) / d
+    } else if max == g {
+        2.0 + (b - r) / d
+    } else {
+        4.0 + (r - g) / d
+    };
+    [(h * 60.0).rem_euclid(360.0), (s * 100.0).clamp(0.0, 100.0)]
 }
 
 fn levels(data: &[u8], mode: ColorMode, layer: &PsdLayer) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
