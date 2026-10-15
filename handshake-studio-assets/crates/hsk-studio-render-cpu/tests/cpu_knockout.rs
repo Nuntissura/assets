@@ -59,17 +59,15 @@ fn shallow_knockout_renders_and_misplaced_knockout_is_refused() {
     let plain = px(&plan_with(0.5, 1.0, true), &envelope(vec![]), 4);
     near(plain[1], [0.0, 0.5, 0.5, 1.0], 1e-6);
 
-    // Typed refusals before any sink call: deep (no Studio rule), shallow on the root group,
-    // shallow inside a pass-through group, shallow together with effects.
+    // Typed refusal before any sink call: shallow together with effects. (Deep, shallow on the
+    // root group and shallow inside a pass-through group render since lane SMB-PS-ADJUST-STYLES-2:
+    // tests/cpu_knockout_2.rs.)
     let refused = |p: &RenderPlan, e: &PlanExtensions| {
         let (result, grid) = run_ext(&r, p, e, Exactness::Approximate, 1 << 20, &no_sources());
         assert_eq!(grid.calls, 0, "refused before the first sink call");
         result.unwrap_err()
     };
     let unsupported = |key: &'static str| BackendError::Unsupported { operator: key, exactness: Exactness::Unsupported };
-    assert_eq!(refused(&plan_with(1.0, 0.0, true), &ko(3, 1, Knockout::Deep)), unsupported("knockout_deep"));
-    assert_eq!(refused(&plan_with(1.0, 0.0, true), &ko(4, 1, Knockout::Shallow)), unsupported("knockout_shallow"));
-    assert_eq!(refused(&plan_with(1.0, 0.0, false), &ko(3, 1, Knockout::Shallow)), unsupported("knockout_shallow"));
     let with_fx = envelope(vec![one_layer(3, 1).with_knockout(Knockout::Shallow).with_effects(vec![EffectOp::ColourOverlay(ColourOverlayOp::new([1.0; 3], NORMAL, 1.0))])]);
     assert_eq!(refused(&plan_with(1.0, 0.0, true), &with_fx), unsupported("knockout_shallow"));
     let backend: &dyn RenderBackend = &r;

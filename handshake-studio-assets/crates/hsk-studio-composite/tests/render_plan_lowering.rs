@@ -1143,15 +1143,10 @@ fn knockout_and_effect_stack_are_refused() {
             low.extensions.layers,
             vec![LayerExtension::new(PlanNodeId(4), 1).with_knockout(Knockout::Shallow)]
         );
-        // Pigment refuses it at admission (typed, before any sink call), never renders without it.
-        assert_eq!(
-            admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token),
-            Err(BackendError::Unsupported { operator: "knockout_shallow", exactness: Exactness::Unsupported })
-        );
-        // Lane SMB-PS-ADJUST-STYLES: shallow knockout has a pigment rule (class Approximate) for
-        // an isolated non-root group; this layer sits in the ROOT group, where pigment's admission
-        // refuses it (above). The lowering and the evaluation report pigment's class for the
-        // operator; the refusal is admission's.
+        // Lane SMB-PS-ADJUST-STYLES-2: a shallow knockout in the ROOT group knocks out to the
+        // transparent document base, so pigment's admission accepts it (refused before that lane).
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        // The lowering and the evaluation report pigment's class for the operator.
         assert_eq!(low.exactness.lowest, Exactness::Approximate);
         assert_eq!(report.receipt.exactness.lowest, Exactness::Approximate);
 

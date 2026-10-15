@@ -30,6 +30,7 @@ mod effects;
 mod extended;
 mod filter;
 mod key;
+mod knockout;
 mod smart_filter;
 #[cfg(test)]
 mod refusal_keys;
@@ -1377,8 +1378,8 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
-        if layer.fx.knockout {
-            return self.knockout_layer(layer, chunk, dst, spare, fx);
+        if let Some(depth) = layer.fx.knockout {
+            return self.knockout_layer(layer, depth, chunk, dst, spare, fx);
         }
         // A layer with effects is evaluated per tile of an effect frame (see `effects`), a layer
         // with a layer blur per window of a blur frame (see `blur`).
@@ -1403,10 +1404,28 @@ impl Eval<'_, '_> {
         if layer.fx.adjustment.is_some() {
             return self.adjust(layer, region, chunk, dst, fx);
         }
+        // Knockout contexts (lane SMB-PS-ADJUST-STYLES-2): only plans with a knockout push them.
+        let ext = &self.prepared.ext;
+        let knockouts = ext.knockout_groups > 0 || ext.knockout_deep;
         match self.prepared.node(layer.input)? {
             PNode::Group {
-                isolated: false, ..
-            } => self.group(layer.input, chunk, dst, spare, fx),
+                isolated: false,
+                layers,
+            } => {
+                // a pass-through group holding a shallow knockout: its start is the running result
+                let snapshot = knockouts
+                    && layers.iter().any(|l| {
+                        l.fx.knockout == Some(hsk_studio_pigment::render_plan::Knockout::Shallow)
+                    });
+                if snapshot {
+                    fx.ko.push_snapshot(dst, layer.input)?;
+                }
+                let result = self.group(layer.input, chunk, dst, spare, fx);
+                if snapshot {
+                    fx.ko.pop();
+                }
+                result
+            }
             PNode::Group { isolated: true, .. } => {
                 let count = area(chunk)?;
                 let (buffer, deeper) = spare
@@ -1414,7 +1433,18 @@ impl Eval<'_, '_> {
                     .ok_or(BackendError::Unavailable("group_scratch"))?;
                 let buffer = &mut buffer[..count];
                 buffer.fill([0.0; 4]);
-                self.group(layer.input, chunk, buffer, deeper, fx)?;
+                if knockouts {
+                    fx.ko.push_isolated(ext.knockout_deep, count);
+                }
+                let evaluated = self.group(layer.input, chunk, buffer, deeper, fx);
+                if knockouts {
+                    // deep knockouts inside clear this backdrop before the group composites
+                    let cleared = fx.ko.pop_isolated(dst);
+                    evaluated?;
+                    cleared?;
+                } else {
+                    evaluated?;
+                }
                 let result: &[[f32; 4]] = buffer;
                 self.composite(layer, region, chunk, dst, fx, |_, _, at| {
                     Ok((*result.get(at).ok_or_else(overflow)?, 1.0))
@@ -1447,14 +1477,16 @@ impl Eval<'_, '_> {
         }
     }
 
-    /// A shallow-knockout layer (lane SMB-PS-ADJUST-STYLES): every pixel of its bounds is pigment
-    /// `knockout_math::knockout_over` with the group's initial backdrop, which pigment's admission
-    /// guarantees is transparent (an isolated group other than the root), shape = content alpha x
-    /// coverage x mask x LAYER opacity, the content composited at opacity x fill. Per pixel, so
-    /// the result is independent of chunking.
+    /// A knockout layer: every pixel of its bounds is pigment `knockout_math::knockout_over` with
+    /// the initial backdrop of its placement (lane SMB-PS-ADJUST-STYLES shallow in an isolated
+    /// group; lane SMB-PS-ADJUST-STYLES-2 shallow at the root and in a pass-through group, from the
+    /// knockout context, and deep: the transparent document base, the shape recorded for the
+    /// enclosing buffers), shape = content alpha x coverage x mask x LAYER opacity, the content
+    /// composited at opacity x fill. Per pixel, so the result is independent of chunking.
     fn knockout_layer(
         &self,
         layer: &PLayer<'_>,
+        depth: hsk_studio_pigment::render_plan::Knockout,
         chunk: Rect,
         dst: &mut [[f32; 4]],
         spare: &mut [Vec<[f32; 4]>],
@@ -1511,11 +1543,18 @@ impl Eval<'_, '_> {
                 if shape <= 0.0 {
                     continue;
                 }
+                let initial = match depth {
+                    hsk_studio_pigment::render_plan::Knockout::Deep => {
+                        fx.ko.record_deep(at, shape)?;
+                        Rgba::TRANSPARENT
+                    }
+                    _ => fx.ko.shallow_initial(layer.fx.group, at)?,
+                };
                 let b = *dst.get(at).ok_or_else(overflow)?;
                 let out = hsk_studio_pigment::knockout_math::knockout_over(
                     layer.mode,
                     Rgba::new([b[0], b[1], b[2]], b[3]),
-                    Rgba::TRANSPARENT,
+                    initial,
                     Rgba::new([rgba[0], rgba[1], rgba[2]], rgba[3]),
                     layer.opacity,
                     shape,
@@ -1633,6 +1672,8 @@ struct ScratchShape {
     fx_tmp: usize,
     /// Effect frame (layers with effects); `None` on the v1 path.
     frame: Option<FrameShape>,
+    /// Knockout snapshots and deep shape planes (lane SMB-PS-ADJUST-STYLES-2).
+    ko: knockout::KnockoutShape,
 }
 impl ScratchShape {
     /// v1 shape: no feather scratch.
@@ -1644,6 +1685,10 @@ impl ScratchShape {
             fx_plane: 0,
             fx_tmp: 0,
             frame: None,
+            ko: knockout::KnockoutShape {
+                snapshots: 0,
+                shapes: 0,
+            },
         }
     }
 }
@@ -1665,7 +1710,11 @@ impl Scratch {
         Self {
             work: vec![[0.0; 4]; pixels],
             spare: (0..shape.depth).map(|_| vec![[0.0; 4]; pixels]).collect(),
-            fx: Fx::new(shape.fx_plane, shape.fx_tmp, shape.frame),
+            fx: {
+                let mut fx = Fx::new(shape.fx_plane, shape.fx_tmp, shape.frame);
+                fx.ko = knockout::KnockoutScratch::new(shape.ko, pixels);
+                fx
+            },
             colour: Vec::with_capacity(bytes(12)),
             alpha: Vec::with_capacity(bytes(4)),
         }
@@ -2069,10 +2118,23 @@ impl Renderer {
             Some(shape) => prepared.ext.frame_scratch_bytes(shape)?,
             None => 0,
         };
+        // Knockout scratch (lane SMB-PS-ADJUST-STYLES-2): one start snapshot per group holding a
+        // shallow knockout (an upper bound of the pass-through nesting) and, with a deep knockout,
+        // one shape plane per level of isolated-group nesting, per worker.
+        let ko = knockout::KnockoutShape {
+            snapshots: prepared.ext.knockout_groups,
+            shapes: if prepared.ext.knockout_deep {
+                depth.saturating_add(1)
+            } else {
+                0
+            },
+        };
+        let ko_bytes = ko.bytes(max_pixels)?;
         let scratch_bytes = prepared
             .ext
             .feather_scratch_bytes(columns, rows)?
             .checked_add(frame_bytes)
+            .and_then(|b| b.checked_add(ko_bytes))
             .and_then(|per_worker| per_worker.checked_mul(workers as u64))
             .and_then(|fx| fx.checked_add(prepared.ext.resident_bytes))
             .and_then(|fx| fx.checked_add(base))
@@ -2134,6 +2196,7 @@ impl Renderer {
             fx_plane,
             fx_tmp,
             frame,
+            ko,
         };
 
         let chunks = if workers == 1 {
@@ -2376,12 +2439,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                 | EffectKind::BevelEmboss
                 | EffectKind::GradientOverlay,
             )
-            // Shallow knockout (lane SMB-PS-ADJUST-STYLES): pigment `knockout_over` per pixel
-            // (`Eval::knockout_layer`, tests/cpu_knockout.rs); deep stays refused by pigment.
-            | ExtOperator::Knockout(
-                hsk_studio_pigment::render_plan::Knockout::None
-                | hsk_studio_pigment::render_plan::Knockout::Shallow,
-            ) => operator.intrinsic(),
+            // Knockout: pigment `knockout_over` per pixel (`Eval::knockout_layer`); shallow lane
+            // SMB-PS-ADJUST-STYLES (tests/cpu_knockout.rs), deep and the root / pass-through
+            // placements lane SMB-PS-ADJUST-STYLES-2 (`knockout` module, tests/cpu_knockout_2.rs).
+            | ExtOperator::Knockout(_) => operator.intrinsic(),
             // Declared Unsupported on purpose (lane SMB-FX-OPS-ADOPT), so shared admission refuses
             // them under pigment's keys before any sink call: a layer with effects whose content
             // holds a layer with effects (the chunked compositor has one effect frame per chunk

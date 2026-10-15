@@ -38,11 +38,15 @@ use hsk_studio_accord::CancellationToken;
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-/// Knockout depth of a layer (Photoshop advanced blending: none, shallow, deep). `Shallow` is
-/// admitted (lane SMB-PS-ADJUST-STYLES, rule [`crate::knockout_math::knockout_over`]) on an
-/// unclipped, non-pass-through layer of an ISOLATED group other than the plan root, without an
-/// adjustment, effects, blur, filters, content-aware fill, keys, smart filters or Blend-If; `Deep`
-/// and every other `Shallow` placement are refused by [`PlanExtensions::validate`] with
+/// Knockout depth of a layer (Photoshop advanced blending: none, shallow, deep), rule
+/// [`crate::knockout_math`]. Admitted by [`PlanExtensions::validate`] on an unclipped,
+/// non-pass-through layer without an adjustment, effects, blur, filters, content-aware fill, keys,
+/// smart filters or Blend-If: `Shallow` in an isolated group (lane SMB-PS-ADJUST-STYLES), at the
+/// plan root and in a pass-through group (its backdrop is the running result before the group), and
+/// `Deep` (lane SMB-PS-ADJUST-STYLES-2). The two placements that read a backdrop outside the layer's
+/// own group buffer (shallow in a pass-through group, deep) also need a plain ancestry: every group
+/// layer from the layer's group up to the root is the only use of its group, unclipped, not a clip
+/// base and without an envelope operator. Everything else is refused with
 /// [`PlanError::KnockoutUnsupported`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum Knockout {
@@ -78,7 +82,7 @@ impl Knockout {
 ///   no public definition either and is refused the same way ([`ExtOperator::EffectsWithBlendIf`]).
 /// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
 ///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
-/// - `knockout`: only `Knockout::None` is admitted.
+/// - `knockout`: see [`Knockout`] for the admitted placements.
 /// - `effects`: layer effects of waves 1 and 2 ([`crate::effect_math`]: drop shadow, colour
 ///   overlay, solid stroke, inner shadow, outer glow, inner glow), rendered in list order within
 ///   each placement (behind the content, over the content). Not allowed on an adjustment layer, a pass-through layer, a clipped layer or the
@@ -320,8 +324,7 @@ pub enum ExtOperator {
     /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
     MaskDensity,
     MaskFeather,
-    /// Not reported by `validate`, which refuses knockout (`tests/plan_extensions.rs`
-    /// `envelope_validation_rules`); present for capability queries.
+    /// Reported by `validate` for an admitted shallow or deep knockout (see [`Knockout`]).
     Knockout(Knockout),
     /// One layer-effect kind (drop shadow, colour overlay, stroke, inner shadow, outer glow, inner
     /// glow; keys are `EffectKind::key`). The blend modes the
@@ -418,7 +421,7 @@ impl ExtOperator {
             }
             Self::Knockout(Knockout::None) => Exactness::Exact,
             Self::Knockout(Knockout::Shallow) => crate::knockout_math::KNOCKOUT_EXACTNESS,
-            Self::Knockout(Knockout::Deep) => Exactness::Unsupported,
+            Self::Knockout(Knockout::Deep) => crate::knockout_math::KNOCKOUT_EXACTNESS,
             Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
             Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
             Self::Transform(_) => TRANSFORM_EXACTNESS,
@@ -480,6 +483,66 @@ impl PlanExtensions {
     /// [`RenderPlan::reachable_nodes`]): an entry on an unreachable group is not executed, and
     /// every input of a reachable group is reachable too, so the flags a reachable entry reads do
     /// not depend on the entries that are skipped.
+    /// Every group layer from `node` (a group) up to the plan root is the only layer anywhere in
+    /// the plan that uses its group, unclipped, not a clip base, and carries no envelope entry with
+    /// an operator (a knockout reading a backdrop outside its own buffer passes through plain group
+    /// composites only; lane SMB-PS-ADJUST-STYLES-2). The walk is bounded by the node count.
+    fn plain_ancestry<V>(&self, plan: &RenderPlan<V>, mut node: u32) -> bool {
+        for _ in 0..=plan.nodes.len() {
+            if node == plan.root.0 {
+                return true;
+            }
+            let target = node;
+            let users: Vec<(usize, usize, &super::Group)> = plan
+                .nodes
+                .iter()
+                .enumerate()
+                .flat_map(|(gi, n)| match n {
+                    PlanNode::Group(g) => g
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| l.input.0 == target)
+                        .map(|(li, _)| (gi, li, g))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            let [(gi, li, g)] = users.as_slice() else {
+                return false;
+            };
+            let (gi, li, g) = (*gi, *li, *g);
+            let (Ok(gi), Ok(li32)) = (u32::try_from(gi), u32::try_from(li)) else {
+                return false;
+            };
+            if g.clip_role(li) != Some(ClipRole::Unclipped) {
+                return false;
+            }
+            let operator = self.layers.iter().any(|x| {
+                x.group.0 == gi
+                    && x.layer == li32
+                    && (x.knockout != Knockout::None
+                        || x.adjustment.is_some()
+                        || !x.effects.is_empty()
+                        || x.transform.is_some()
+                        || x.blur.is_some()
+                        || !x.filters.is_empty()
+                        || x.content_aware_fill.is_some()
+                        || !x.keys.is_empty()
+                        || x.smart_filters.is_some()
+                        || x.blend_if.iter().any(|b| {
+                            b.source != crate::coverage_math::IDENTITY_RANGE
+                                || b.destination != crate::coverage_math::IDENTITY_RANGE
+                        }))
+            });
+            if operator {
+                return false;
+            }
+            node = gi;
+        }
+        false
+    }
+
     fn nodes_holding_effects<V>(&self, plan: &RenderPlan<V>, reachable: &[bool]) -> Vec<bool> {
         let with_effects: BTreeSet<(u32, u32)> = self
             .layers
@@ -558,10 +621,7 @@ impl PlanExtensions {
                     node,
                     depth: e.knockout,
                 });
-                if e.knockout != Knockout::Shallow
-                    || !g.isolated
-                    || node == plan.root.0
-                    || layer.mode == StudioBlendMode::PassThrough
+                if layer.mode == StudioBlendMode::PassThrough
                     || g.clip_role(e.layer as usize) != Some(ClipRole::Unclipped)
                     || e.adjustment.is_some()
                     || !e.effects.is_empty()
@@ -577,7 +637,13 @@ impl PlanExtensions {
                 {
                     return refused;
                 }
-                add(ExtOperator::Knockout(Knockout::Shallow));
+                // Shallow in a pass-through group and deep read a backdrop outside the layer's own
+                // group buffer: the backend carries it through the plain group path only.
+                let outside_own_group = e.knockout == Knockout::Deep || !g.isolated;
+                if outside_own_group && !self.plain_ancestry(plan, node) {
+                    return refused;
+                }
+                add(ExtOperator::Knockout(e.knockout));
             }
             if let Some(op) = &e.adjustment {
                 match plan.nodes.get(layer.input.0 as usize) {

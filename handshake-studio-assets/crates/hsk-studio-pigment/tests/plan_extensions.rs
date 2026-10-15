@@ -198,8 +198,11 @@ fn envelope_validation_rules() {
         Err(PlanError::AdjustmentParameter { node: 2 })
     );
 
+    // deep is admitted since lane SMB-PS-ADJUST-STYLES-2; together with an adjustment it is not
     let deep = PlanExtensions::from_layers(vec![
-        LayerExtension::new(PlanNodeId(2), 0).with_knockout(Knockout::Deep),
+        LayerExtension::new(PlanNodeId(2), 0)
+            .with_knockout(Knockout::Deep)
+            .with_adjustment(AdjustmentOp::Invert),
     ]);
     assert_eq!(
         deep.validate(&p),
@@ -295,7 +298,9 @@ fn envelope_admission_and_default_route() {
         })
     );
     let deep = PlanExtensions::from_layers(vec![
-        LayerExtension::new(PlanNodeId(2), 0).with_knockout(Knockout::Deep),
+        LayerExtension::new(PlanNodeId(2), 0)
+            .with_knockout(Knockout::Deep)
+            .with_adjustment(AdjustmentOp::Invert),
     ]);
     assert_eq!(
         admit_extended(&p, &deep, &full, &req(Exactness::Approximate), &cancel),

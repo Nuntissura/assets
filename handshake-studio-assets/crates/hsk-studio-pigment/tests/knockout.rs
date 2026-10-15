@@ -48,5 +48,6 @@ fn shallow_knockout_hand_values() {
     // Class: shallow is pigment's Approximate rule, deep stays Unsupported (no Studio definition).
     assert_eq!(KNOCKOUT_EXACTNESS, Exactness::Approximate);
     assert_eq!(ExtOperator::Knockout(Knockout::Shallow).intrinsic(), Exactness::Approximate);
-    assert_eq!(ExtOperator::Knockout(Knockout::Deep).intrinsic(), Exactness::Unsupported);
+    // deep has a rule since lane SMB-PS-ADJUST-STYLES-2 (tests/knockout_placements.rs)
+    assert_eq!(ExtOperator::Knockout(Knockout::Deep).intrinsic(), Exactness::Approximate);
 }

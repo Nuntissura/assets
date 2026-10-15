@@ -93,10 +93,14 @@ pub(super) struct LayerFx {
     /// Smart-filter stack (pigment `smart_filter`, lane SMB-PS-SELECT-LIQUIFY-2): index into
     /// [`ExtPrep::smart`].
     pub(super) smart: Option<usize>,
-    /// Shallow knockout (pigment `knockout_math`, lane SMB-PS-ADJUST-STYLES): pigment's admission
-    /// already restricted it to an unclipped layer of an isolated non-root group with no other
-    /// envelope operation but a mask feather or a transform.
-    pub(super) knockout: bool,
+    /// Knockout (pigment `knockout_math`; shallow lane SMB-PS-ADJUST-STYLES, deep and the root /
+    /// pass-through placements lane SMB-PS-ADJUST-STYLES-2): pigment's admission already
+    /// restricted it to an unclipped, non-pass-through layer with no other envelope operation but
+    /// a mask feather or a transform, and the placements that read outside the layer's own buffer
+    /// to a plain ancestry. `None` = no knockout.
+    pub(super) knockout: Option<hsk_studio_pigment::render_plan::Knockout>,
+    /// The plan node of the group holding the layer (the knockout context key).
+    pub(super) group: usize,
 }
 
 /// The filters of one layer (list order), the growth of the layer's pixels each stage causes
@@ -203,6 +207,10 @@ pub(super) struct ExtPrep {
     pub(super) allow_density: bool,
     /// The plan's output stage (sample range, display transform); default on the v1 path.
     pub(super) output: OutputStage,
+    /// Groups holding a shallow knockout layer (each may need a start snapshot when it is a
+    /// pass-through group) and whether a deep knockout exists (lane SMB-PS-ADJUST-STYLES-2).
+    pub(super) knockout_groups: usize,
+    pub(super) knockout_deep: bool,
 }
 
 /// Typed mapping of a coverage failure; the keys are pigment's (PLR-006): [`SAMPLE_RANGE_OPERATOR`]
@@ -325,8 +333,18 @@ impl ExtPrep {
             {
                 continue;
             }
+            let knockout = (e.knockout != hsk_studio_pigment::render_plan::Knockout::None)
+                .then_some(e.knockout);
+            match e.knockout {
+                hsk_studio_pigment::render_plan::Knockout::Shallow => {
+                    prep.knockout_groups = prep.knockout_groups.saturating_add(1);
+                }
+                hsk_studio_pigment::render_plan::Knockout::Deep => prep.knockout_deep = true,
+                hsk_studio_pigment::render_plan::Knockout::None => {}
+            }
             let mut fx = LayerFx {
-                knockout: e.knockout == hsk_studio_pigment::render_plan::Knockout::Shallow,
+                knockout,
+                group: usize::try_from(e.group.0).map_err(|_| overflow())?,
                 ..LayerFx::default()
             };
             if let Some(op) = &e.adjustment {
@@ -828,6 +846,9 @@ pub(super) struct Fx {
     pub(super) plane: Vec<f32>,
     tmp: Vec<f32>,
     pub(super) frame: Option<Box<Frame>>,
+    /// Knockout snapshots and deep shape planes (lane SMB-PS-ADJUST-STYLES-2; empty unless the
+    /// chunk-level scratch of a plan with such knockouts).
+    pub(super) ko: super::knockout::KnockoutScratch,
 }
 /// Working memory of one effect window (see `effects.rs`): the layer content over the frame, the
 /// group levels beneath it, a frame-sized feather scratch for the layer's mask, and the limits of
@@ -855,6 +876,7 @@ impl Fx {
                     filter_limits: s.filter_limits,
                 })
             }),
+            ko: super::knockout::KnockoutScratch::default(),
         }
     }
 }

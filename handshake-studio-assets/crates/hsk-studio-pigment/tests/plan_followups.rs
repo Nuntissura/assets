@@ -499,8 +499,13 @@ fn rows_are_refused_on_every_entry(rows: Vec<Row>) {
 fn intrinsic_envelope_refusals_stay_on_every_entry() {
     rows_are_refused_on_every_entry(vec![
         Row {
-            what: "knockout deep",
-            entries: |g| vec![at(g, 0).with_knockout(Knockout::Deep)],
+            // deep alone is admitted since lane SMB-PS-ADJUST-STYLES-2; with an adjustment never
+            what: "knockout deep with an adjustment",
+            entries: |g| {
+                vec![at(g, 0)
+                    .with_knockout(Knockout::Deep)
+                    .with_adjustment(AdjustmentOp::Invert)]
+            },
             error: PlanError::KnockoutUnsupported {
                 node: 2,
                 depth: Knockout::Deep,
@@ -1158,6 +1163,10 @@ const READERS: &[ReaderRow] = &[
         "effect_modes_in",
         Reads::Reachable(&["reachable_nodes()"]),
     ),
+    // `PlanExtensions::plain_ancestry` (lane SMB-PS-ADJUST-STYLES-2): a structural walk from a
+    // knockout's group up to the root that counts every reference to a group, reachable or not, so
+    // a group used twice anywhere is refused (conservative: it only ever refuses more).
+    ("render_plan/extensions.rs", "plain_ancestry", Reads::Every),
     (
         "render_plan/extensions.rs",
         "nodes_holding_effects",
