@@ -297,16 +297,26 @@ fn interior_point(path: &AnchorPath) -> Option<PathPoint> {
 /// Arc-length fraction (0..=1) of the point at `(segment, t)` of contour `contour` (16 samples per segment).
 fn arc_fraction(path: &AnchorPath, contour: usize, segment: usize, t: f64) -> Result<f64, String> {
     let c = path.contour(contour).map_err(|e| e.code().to_string())?;
+    let at = |si: usize, tk: f64| ap::point_at(path, contour, si, tk).map_err(|e| e.code().to_string());
+    let dist = |a: PathPoint, b: PathPoint| ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
     let (mut total, mut upto) = (0.0, 0.0);
     for si in 0..c.segment_count() {
-        let mut prev = ap::point_at(path, contour, si, 0.0).map_err(|e| e.code().to_string())?;
+        let mut prev = at(si, 0.0)?;
         for k in 1..=16_u32 {
             let tk = f64::from(k) / 16.0;
-            let q = ap::point_at(path, contour, si, tk).map_err(|e| e.code().to_string())?;
-            let step = ((q.x - prev.x).powi(2) + (q.y - prev.y).powi(2)).sqrt();
+            let q = at(si, tk)?;
+            let step = dist(prev, q);
             total += step;
-            if si < segment || (si == segment && tk <= t) {
+            if si < segment {
                 upto += step;
+            } else if si == segment {
+                let t0 = f64::from(k.saturating_sub(1)) / 16.0;
+                if tk <= t {
+                    upto += step;
+                } else if t0 < t {
+                    // The partial step up to the grabbed point.
+                    upto += dist(prev, at(si, t)?);
+                }
             }
             prev = q;
         }
