@@ -13,7 +13,9 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 # Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
-viewer = ["import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig"]
+viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig"]
+# Layout editing surface (lane SMB-LAYOUT-UI slice 4): page view, text-frame tool, story editor, styles; window-free.
+layout-ui = ["dep:egui", "dep:hsk-studio-layout"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
 desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
 # Program monitor decodes real media (lane SMB-PULSE-PLAYBACK-2): reel providers (VC-3, ProRes, Y4M in process).
@@ -57,6 +59,8 @@ hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0
 hsk-studio-score-device = { path = "../hsk-studio-score-device", version = "=0.1.0", default-features = false, optional = true }
 # Batch effect chain (lane SMB-AUDIO-IMPORT-2; NEW EDGE harness -> score, lead brief 2026-10-15, steward to add).
 hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false, optional = true }
+# Layout editing surface (lane SMB-LAYOUT-UI; NEW EDGE harness -> layout, dep-requests 2026-10-15, lead report).
+hsk-studio-layout = { path = "../hsk-studio-layout", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }

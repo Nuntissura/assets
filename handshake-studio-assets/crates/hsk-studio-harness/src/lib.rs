@@ -13,6 +13,9 @@
 pub mod cli;
 mod harness;
 pub mod import;
+/// Layout editing surface (lane SMB-LAYOUT-UI): page view, text frames, story editor, styles.
+#[cfg(feature = "layout-ui")]
+pub mod layout_ui;
 pub mod manual;
 pub mod panel;
 #[cfg(feature = "viewer")]
