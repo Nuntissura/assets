@@ -17,8 +17,9 @@
 //!    rounding noise). Flags closer than `p` samples are merged into one gap `[first, last]`.
 //! 3. Interpolation (LSAR): the gap samples `x_u` minimise `sum_n e[n]^2` over every residual
 //!    that touches them, i.e. `(A_u^T A_u) x_u = -A_u^T A_k x_k`; `A_u^T A_u` is the Toeplitz
-//!    matrix of the coefficient autocorrelation, solved by Cholesky. A second pass refits the AR
-//!    model on the repaired window and re-solves the same gaps (Godsill and Rayner's iteration).
+//!    matrix of the coefficient autocorrelation, solved by Cholesky. Before interpolating, the AR
+//!    model is refitted by the covariance method over only the residual rows that touch no
+//!    detected sample, so the corruption does not bias the model.
 //!    Gaps longer than `max_gap_ms` are left untouched and counted in `skipped_gaps`.
 //!
 //! Samples outside repaired gaps are passed through bit-exact. Latency `H + C = 1792` samples.
@@ -89,6 +90,8 @@ struct Scratch {
     tmp: Vec<f64>,
     ra: Vec<f64>,
     gaps: Vec<(usize, usize)>,
+    masked: Vec<bool>,
+    phi: Vec<f64>,
     matrix: Vec<f64>,
     rhs: Vec<f64>,
     rows: Vec<f64>,
@@ -155,6 +158,8 @@ impl ClickRepair {
                 tmp: vec![0.0; p + 1],
                 ra: vec![0.0; p + 1],
                 gaps: Vec::with_capacity(CLICK_WINDOW),
+                masked: vec![false; CLICK_WINDOW],
+                phi: vec![0.0; (p + 1) * (p + 1)],
                 matrix: vec![0.0; CLICK_MAX_GAP_SAMPLES * CLICK_MAX_GAP_SAMPLES],
                 rhs: vec![0.0; CLICK_MAX_GAP_SAMPLES],
                 rows: vec![0.0; CLICK_MAX_GAP_SAMPLES + p],
@@ -227,6 +232,11 @@ impl ClickRepair {
         // Counts cover only gaps that touch this window's centre, so a click seen by two
         // overlapping windows is counted once.
         let in_centre = |first: usize, last: usize| last >= CLICK_CONTEXT && first < CLICK_CONTEXT + CLICK_HOP;
+        // Every detected cluster (repaired or not) is excluded from the AR refit.
+        s.masked.fill(false);
+        for &(first, last) in &s.gaps {
+            s.masked[first..=last].fill(true);
+        }
         let mut skipped = 0;
         // Keep only gaps with p known samples each side and LSAR rows inside the window.
         s.gaps.retain(|&(first, last)| {
@@ -237,10 +247,11 @@ impl ClickRepair {
             }
             fits && len <= max_gap
         });
-        for pass in 0..2 {
-            if pass == 1 && !fit_ar(&s.window, &mut s.r, &mut s.a, &mut s.tmp) {
-                break;
-            }
+        if !s.gaps.is_empty() {
+            // Refit by the covariance method over residual rows that touch no detected sample
+            // (Godsill and Rayner: the AR estimate must not see the corruption); keep the
+            // autocorrelation fit if the refit is degenerate.
+            fit_ar_clean(s, p);
             for (k, ra) in s.ra.iter_mut().enumerate() {
                 *ra = (0..=p - k).map(|j| s.a[j] * s.a[j + k]).sum();
             }
@@ -301,40 +312,92 @@ fn lsar(s: &mut Scratch, p: usize, m: usize, g: usize) {
             s.matrix[i * g + j] = s.ra.get(i.abs_diff(j)).copied().unwrap_or(0.0);
         }
     }
-    // Cholesky (lower, in place) then forward/back substitution.
-    for j in 0..g {
-        let mut d = s.matrix[j * g + j];
-        for k in 0..j {
-            d -= s.matrix[j * g + k] * s.matrix[j * g + k];
-        }
-        if d <= 0.0 {
-            return; // numerically singular: leave the gap as it is
-        }
-        let d = d.sqrt();
-        s.matrix[j * g + j] = d;
-        for i in j + 1..g {
-            let mut v = s.matrix[i * g + j];
-            for k in 0..j {
-                v -= s.matrix[i * g + k] * s.matrix[j * g + k];
-            }
-            s.matrix[i * g + j] = v / d;
-        }
-    }
-    for i in 0..g {
-        let mut v = s.rhs[i];
-        for k in 0..i {
-            v -= s.matrix[i * g + k] * s.rhs[k];
-        }
-        s.rhs[i] = v / s.matrix[i * g + i];
-    }
-    for i in (0..g).rev() {
-        let mut v = s.rhs[i];
-        for k in i + 1..g {
-            v -= s.matrix[k * g + i] * s.rhs[k];
-        }
-        s.rhs[i] = v / s.matrix[i * g + i];
+    if !cholesky_solve(&mut s.matrix, &mut s.rhs, g) {
+        return; // numerically singular: leave the gap as it is
     }
     s.window[m..m + g].copy_from_slice(&s.rhs[..g]);
+}
+
+/// Solves `M x = b` for symmetric positive definite `M` (row-major `n x n` in `m`, overwritten by
+/// its Cholesky factor); `b` is replaced by `x`. Returns false when `M` is not numerically
+/// positive definite (then `b` is unspecified).
+fn cholesky_solve(m: &mut [f64], b: &mut [f64], n: usize) -> bool {
+    for j in 0..n {
+        let mut d = m[j * n + j];
+        for k in 0..j {
+            d -= m[j * n + k] * m[j * n + k];
+        }
+        if d <= 0.0 || !d.is_finite() {
+            return false;
+        }
+        let d = d.sqrt();
+        m[j * n + j] = d;
+        for i in j + 1..n {
+            let mut v = m[i * n + j];
+            for k in 0..j {
+                v -= m[i * n + k] * m[j * n + k];
+            }
+            m[i * n + j] = v / d;
+        }
+    }
+    for i in 0..n {
+        let mut v = b[i];
+        for k in 0..i {
+            v -= m[i * n + k] * b[k];
+        }
+        b[i] = v / m[i * n + i];
+    }
+    for i in (0..n).rev() {
+        let mut v = b[i];
+        for k in i + 1..n {
+            v -= m[k * n + i] * b[k];
+        }
+        b[i] = v / m[i * n + i];
+    }
+    true
+}
+
+/// Covariance-method AR(p) fit over the rows `n` whose span `[n - p, n]` holds no masked
+/// sample; writes `s.a` only on success.
+fn fit_ar_clean(s: &mut Scratch, p: usize) {
+    let w = CLICK_WINDOW;
+    let dim = p + 1;
+    s.phi[..dim * dim].fill(0.0);
+    let mut masked_in_span = s.masked[..p].iter().filter(|m| **m).count();
+    let mut rows = 0usize;
+    for n in p..w {
+        if s.masked[n] {
+            masked_in_span += 1;
+        }
+        if masked_in_span == 0 {
+            rows += 1;
+            for i in 0..dim {
+                let xi = s.original[n - i];
+                for j in i..dim {
+                    s.phi[i * dim + j] += xi * s.original[n - j];
+                }
+            }
+        }
+        if s.masked[n - p] {
+            masked_in_span -= 1;
+        }
+    }
+    if rows < 4 * dim {
+        return;
+    }
+    // Normal equations for a_1..a_p: Phi[1.., 1..] a = -Phi[1.., 0] (tiny diagonal loading).
+    for i in 0..p {
+        for j in 0..p {
+            let (r, c) = if i <= j { (i + 1, j + 1) } else { (j + 1, i + 1) };
+            s.matrix[i * p + j] = s.phi[r * dim + c];
+        }
+        s.matrix[i * p + i] *= 1.0 + 1e-9;
+        s.rhs[i] = -s.phi[i + 1];
+    }
+    if cholesky_solve(&mut s.matrix, &mut s.rhs, p) && s.rhs[..p].iter().all(|v| v.is_finite()) {
+        s.a[0] = 1.0;
+        s.a[1..=p].copy_from_slice(&s.rhs[..p]);
+    }
 }
 
 impl Processor for ClickRepair {
