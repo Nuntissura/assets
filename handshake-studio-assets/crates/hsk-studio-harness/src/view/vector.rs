@@ -33,8 +33,6 @@
 //! a path when the click lands within the hit radius of its first anchor; a direct edit of a live
 //! shape expands it (its live record no longer applies to the new path).
 #![deny(clippy::arithmetic_side_effects)]
-// Until the harness -> interop-vector edge lands, feature `vector-interop` is not declared.
-#![allow(unexpected_cfgs)]
 use super::Viewer;
 use super::edit::Tool;
 use crate::{Place, PlacementWrite};
@@ -73,8 +71,8 @@ pub use style::{GradientStop, PaintSpec, RowKind, StrokePanel};
 pub mod arrange;
 pub mod brushes;
 pub mod envelope;
-/// Lane SMB-ILLUSTRATOR-INTEROP. Feature `vector-interop` (harness -> interop-vector edge, requested
-/// 2026-10-15 in builders/dep-requests.jsonl): inert until the steward adds the edge to the manifest.
+/// Lane SMB-ILLUSTRATOR-INTEROP. Feature `vector-interop` (harness -> interop-vector edge, steward
+/// sync ea20bcb; enabled by `viewer`).
 #[cfg(feature = "vector-interop")]
 pub mod interop;
 pub mod pdf_export;

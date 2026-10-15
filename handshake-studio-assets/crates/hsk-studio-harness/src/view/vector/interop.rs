@@ -44,38 +44,67 @@ fn paint(p: &hsk_studio_press::VectorPaint) -> iv::PdfPaint {
     }
 }
 
+fn space(s: &hsk_studio_press::VectorSpace) -> iv::PdfSpace {
+    match s {
+        hsk_studio_press::VectorSpace::Gray => iv::PdfSpace::Gray,
+        hsk_studio_press::VectorSpace::Rgb => iv::PdfSpace::Rgb,
+        hsk_studio_press::VectorSpace::Cmyk => iv::PdfSpace::Cmyk,
+        hsk_studio_press::VectorSpace::Lab { white } => iv::PdfSpace::Lab { white: *white },
+        hsk_studio_press::VectorSpace::Icc(i) => iv::PdfSpace::Icc(*i),
+    }
+}
+
+fn colour(c: &hsk_studio_press::VectorColour) -> iv::PdfColour {
+    match c {
+        hsk_studio_press::VectorColour::Process { space: s, components } => iv::PdfColour::Process { space: space(s), components: components.clone() },
+        hsk_studio_press::VectorColour::Spot { name, tint, alternate } => iv::PdfColour::Spot { name: name.clone(), tint: *tint, alternate: alternate.as_ref().map(|(s, v)| (space(s), v.clone())) },
+    }
+}
+
+fn glyph(g: &hsk_studio_press::VectorGlyph) -> iv::PdfGlyph {
+    iv::PdfGlyph { font: g.font, glyph_id: g.glyph_id, unicode: g.unicode.clone(), matrix: g.matrix }
+}
+
+fn item(i: &hsk_studio_press::VectorItem) -> iv::PdfDrawItem {
+    use hsk_studio_press::{VectorItem, VectorMode};
+    match i {
+        VectorItem::Draw { path, mode: VectorMode::Fill { even_odd }, paint: q, blend, glyph: g, source } => {
+            iv::PdfDrawItem::Fill { path: els(path), even_odd: *even_odd, paint: paint(q), blend: *blend, glyph: g.as_ref().map(glyph), source: source.as_ref().map(colour) }
+        }
+        VectorItem::Draw { path, mode: VectorMode::Stroke(s), paint: q, blend, glyph: g, source } => iv::PdfDrawItem::Stroke {
+            path: els(path),
+            stroke: iv::PdfStroke { width: s.width, cap: s.cap, join: s.join, miter_limit: s.miter_limit, dash: s.dash.clone(), dash_offset: s.dash_offset },
+            paint: paint(q),
+            blend: *blend,
+            glyph: g.as_ref().map(glyph),
+            source: source.as_ref().map(colour),
+        },
+        VectorItem::PushClip { path, even_odd } => iv::PdfDrawItem::PushClip { path: els(path), even_odd: *even_odd },
+        VectorItem::PopClip => iv::PdfDrawItem::PopClip,
+        VectorItem::PushGroup { opacity, blend } => iv::PdfDrawItem::PushGroup { opacity: *opacity, blend: *blend },
+        VectorItem::PopGroup => iv::PdfDrawItem::PopGroup,
+        VectorItem::BeginLayer { layer } => iv::PdfDrawItem::BeginLayer { layer: *layer },
+        VectorItem::EndLayer => iv::PdfDrawItem::EndLayer,
+    }
+}
+
 impl iv::PdfDrawingProvider for PressDrawing {
-    fn pages(&self, pdf: &[u8], cancel: &CancellationToken) -> iv::Result<Vec<iv::PdfDrawingPage>> {
-        let pages = hsk_studio_press::read_vector_pages(pdf, iv::Limits::default().max_bytes, cancel).map_err(|e| match e {
+    fn drawing(&self, pdf: &[u8], cancel: &CancellationToken) -> iv::Result<iv::PdfDrawing> {
+        let doc = hsk_studio_press::read_vector_document(pdf, iv::Limits::default().max_bytes, cancel).map_err(|e| match e {
             hsk_studio_press::PressError::Canceled => iv::VectorError::Canceled,
             _ => iv::VectorError::PdfUnavailable,
         })?;
-        Ok(pages
-            .into_iter()
-            .map(|p| iv::PdfDrawingPage {
-                media_box: p.media_box,
-                crop_box: p.crop_box,
-                items: p
-                    .items
-                    .iter()
-                    .map(|i| match i {
-                        hsk_studio_press::VectorItem::Draw { path, mode: hsk_studio_press::VectorMode::Fill { even_odd }, paint: q, blend, glyph } => iv::PdfDrawItem::Fill { path: els(path), even_odd: *even_odd, paint: paint(q), blend: *blend, glyph: *glyph },
-                        hsk_studio_press::VectorItem::Draw { path, mode: hsk_studio_press::VectorMode::Stroke(s), paint: q, blend, glyph } => iv::PdfDrawItem::Stroke {
-                            path: els(path),
-                            stroke: iv::PdfStroke { width: s.width, cap: s.cap, join: s.join, miter_limit: s.miter_limit, dash: s.dash.clone(), dash_offset: s.dash_offset },
-                            paint: paint(q),
-                            blend: *blend,
-                            glyph: *glyph,
-                        },
-                        hsk_studio_press::VectorItem::PushClip { path, even_odd } => iv::PdfDrawItem::PushClip { path: els(path), even_odd: *even_odd },
-                        hsk_studio_press::VectorItem::PopClip => iv::PdfDrawItem::PopClip,
-                        hsk_studio_press::VectorItem::PushGroup { opacity, blend } => iv::PdfDrawItem::PushGroup { opacity: *opacity, blend: *blend },
-                        hsk_studio_press::VectorItem::PopGroup => iv::PdfDrawItem::PopGroup,
-                    })
-                    .collect(),
-                notes: p.notes.iter().map(|n| n.code()).collect(),
-            })
-            .collect())
+        Ok(iv::PdfDrawing {
+            pages: doc
+                .pages
+                .iter()
+                .map(|p| iv::PdfDrawingPage { media_box: p.media_box, crop_box: p.crop_box, items: p.items.iter().map(item).collect(), notes: p.notes.iter().map(|n| n.code()).collect() })
+                .collect(),
+            fonts: doc.fonts.into_iter().map(|f| iv::PdfFont { postscript_name: f.postscript_name, bytes: f.bytes }).collect(),
+            layers: doc.layers.into_iter().map(|l| iv::PdfLayer { name: l.name, visible: l.visible }).collect(),
+            profiles: doc.profiles.into_iter().map(|p| iv::PdfIcc { components: p.components, bytes: p.bytes, sha256: p.sha256 }).collect(),
+            output_intent: doc.output_intent,
+        })
     }
 }
 
@@ -138,7 +167,8 @@ fn record(p: &iv::VectorPath) -> Result<PathRecord, String> {
 pub fn ai_to_package(bytes: &[u8], cancel: &CancellationToken) -> Result<(Vec<u8>, Vec<String>), String> {
     let digest = hsk_studio_package::sha256_hex_of(bytes);
     let mut mint = DigestMint { stem: digest.clone(), next: 1 };
-    let proposal = iv::import_ai_with(bytes, &iv::ImportPolicy::default(), &PressDrawing, &mut mint, cancel).map_err(|e| format!("ai_import: {e:?}"))?;
+    let ai = iv::import_ai_document(bytes, &iv::ImportPolicy::default(), &PressDrawing, &mut mint, cancel).map_err(|e| format!("ai_import: {e:?}"))?;
+    let proposal = &ai.proposal;
     let losses: Vec<String> = proposal.loss.iter().map(|l| format!("{}: {}", l.path, l.code)).collect();
     let mut doc = proposal.snapshot.document().clone();
     doc.geometry_unit = GeometryUnit::Px;
@@ -190,6 +220,8 @@ pub fn ai_to_package(bytes: &[u8], cancel: &CancellationToken) -> Result<(Vec<u8
     entry.paths = proposal.paths.iter().map(record).collect::<Result<_, _>>()?;
     entry.design = Some(design);
     entry.records = proposal.vector_records.clone();
+    // The ICC profiles the swatches and the CMYK working space name travel with the entry.
+    entry.icc = ai.icc.iter().map(|p| (p.sha256.clone(), p.bytes.clone())).collect();
     entry.validate(snapshot.document(), cancel)?;
     entry.validate_records(snapshot.document(), cancel)?;
     let entry_bytes = entry.to_bytes(&snapshot.document().document_id)?;

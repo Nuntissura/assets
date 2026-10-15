@@ -13,7 +13,9 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster"]
 # Desktop viewer state + egui UI, window-free (headless-testable): import routes, composite, render engines.
-viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig"]
+viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig", "vector-interop"]
+# Lane SMB-ILLUSTRATOR-INTEROP: .ai import and SVG export through interop-vector (Press as its PDF provider).
+vector-interop = ["import-pdf", "dep:hsk-studio-interop-vector"]
 # Layout editing surface (lane SMB-LAYOUT-UI slice 4): page view, text-frame tool, story editor, styles; window-free.
 layout-ui = ["dep:egui", "dep:hsk-studio-layout"]
 # Window host (Operator D11: eframe 0.33.3, wgpu backend, only in this crate): binary studio-harness.
@@ -53,6 +55,7 @@ hsk-studio-pulse = { path = "../hsk-studio-pulse", version = "=0.1.0", default-f
 # Prototype play mode (lane SMB-HARNESS-PROTOTYPE-PLAY; edges harness -> components and harness -> interop-fig lead-approved 2026-10-15, optional under viewer).
 hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-interop-fig = { path = "../hsk-studio-interop-fig", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-interop-vector = { path = "../hsk-studio-interop-vector", version = "=0.1.0", default-features = false, optional = true }
 # Monitor decode hook and audio out (lane SMB-PULSE-PLAYBACK-2; edges harness -> reel, reel-native, score-device lead-approved 2026-10-15, steward 2390395).
 hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, optional = true }
 hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0", default-features = false, optional = true }

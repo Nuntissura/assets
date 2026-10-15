@@ -3,7 +3,6 @@
 //! SVG through interop-vector. The fixture is generated (Press `PdfExport`, page 150 x 75 pt =
 //! 200 x 100 px, an Illustrator private-data marker in the info dictionary); an Illustrator-saved
 //! file is case AI-NS2 of the attended D5 session.
-#![allow(unexpected_cfgs)]
 #![cfg(all(feature = "viewer", feature = "vector-interop"))]
 
 mod common;
