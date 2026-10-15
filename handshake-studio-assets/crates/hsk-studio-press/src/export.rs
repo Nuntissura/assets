@@ -9,12 +9,13 @@
 //! Output: `%PDF-<version>`, one page object per `add_page` (MediaBox, optional TrimBox / BleedBox),
 //! fills and strokes in DeviceGray / DeviceRGB / DeviceCMYK / ICCBased colour, Flate image XObjects
 //! with an optional `/SMask` alpha, Type0 / CIDFontType2 fonts (`/Identity-H`, `/CIDToGIDMap
-//! /Identity`, `/W` from the caller, the WHOLE font as `/FontFile2`, `/ToUnicode` from the caller so
+//! /Identity`, `/W` from the caller, `/FontFile2` subset to the used glyphs with ids preserved (`subset.rs`;
+//! `ExportOptions::subset_fonts`, test `subset_font_keeps_ids_and_outlines`), `/ToUnicode` from the caller so
 //! text stays extractable), an optional output intent (`/DestOutputProfile`) and `/Info /Title`.
 //! Deterministic: no dates, the trailer `/ID` is a hash of the objects (test
 //! `export_is_deterministic`).
 //!
-//! Not in this slice: font subsetting, CFF / OpenType-CFF embedding (refused
+//! Not in this slice: CFF / OpenType-CFF embedding (refused
 //! `font_cff_not_embedded`), Type 3 / colour fonts, transparency groups and blend modes (beyond the
 //! image SMask), spot colours, overprint, marks, tagged structure, links, encryption, presets.
 //! `ExportReceipt::conformance` is `not_proven` (test `two_page_export_reads_back`): an output intent does not make the file
@@ -30,6 +31,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 mod render;
 mod sfnt;
+mod subset;
 pub use render::{RenderedPage, render_page};
 #[cfg(test)]
 mod tests;
@@ -215,10 +217,13 @@ pub struct ExportOptions<'a> {
     pub version: &'a str,
     pub output_intent: Option<OutputIntent<'a>>,
     pub info_title: Option<&'a str>,
+    /// Embed only the glyphs used (glyph ids preserved, `subset.rs`; default true). `false` embeds
+    /// the whole font program.
+    pub subset_fonts: bool,
 }
 impl Default for ExportOptions<'_> {
     fn default() -> Self {
-        Self { version: "1.7", output_intent: None, info_title: None }
+        Self { version: "1.7", output_intent: None, info_title: None, subset_fonts: true }
     }
 }
 
@@ -340,6 +345,17 @@ struct PageBuild {
 struct FontBuild {
     type0: u32,
     num_glyphs: u16,
+    /// Index into `PdfExport::subset_files` when subsetting.
+    file: Option<usize>,
+}
+
+/// A font program subset at `finish`: its bytes, the glyphs used by every font sharing it, its
+/// object number and the (descriptor, CIDFont, Type0, base name) objects whose names get the tag.
+struct SubsetFile {
+    bytes: Vec<u8>,
+    num: u32,
+    used: BTreeSet<u16>,
+    members: Vec<(u32, u32, u32, String)>,
 }
 
 struct IccBuild {
@@ -360,6 +376,9 @@ pub struct PdfExport {
     pages: Vec<PageBuild>,
     fonts: Vec<FontBuild>,
     font_files: BTreeMap<[u8; 32], u32>,
+    subset: bool,
+    subset_files: Vec<SubsetFile>,
+    subset_by_hash: BTreeMap<[u8; 32], usize>,
     profiles: Vec<IccBuild>,
     images: usize,
     raw_total: usize,
@@ -460,6 +479,9 @@ impl PdfExport {
             pages: Vec::new(),
             fonts: Vec::new(),
             font_files: BTreeMap::new(),
+            subset: options.subset_fonts,
+            subset_files: Vec::new(),
+            subset_by_hash: BTreeMap::new(),
             profiles: Vec::new(),
             images: 0,
             raw_total: 0,
@@ -788,33 +810,56 @@ impl PdfExport {
             return Err(ExportError::ToUnicodeInvalid);
         }
         let sha: [u8; 32] = Sha256::digest(bytes).into();
-        let shared = self.font_files.get(&sha).copied();
-        if shared.is_none() {
-            self.precheck_raw(bytes.len())?;
-        }
-        self.reserve(if shared.is_some() { 4 } else { 5 })?;
-        let font_file = match shared {
-            Some(num) => (num, None),
-            None => {
-                let mut d = Dict::default();
-                d.set("Length1", int(i64::try_from(bytes.len()).map_err(|_| ExportError::StreamOverBudget)?));
-                let (s, len) = flate_stream(d, bytes);
-                (0, Some((s, len)))
-            }
-        };
         let cmap = to_unicode_cmap(to_unicode);
         let (tu_stream, tu_len) = flate_stream(Dict::default(), cmap.as_bytes());
-        let written = tu_len.checked_add(font_file.1.as_ref().map_or(0, |f| f.1)).ok_or(ExportError::AggregateOverBudget)?;
-        let raw = cmap.len().checked_add(if shared.is_some() { 0 } else { bytes.len() }).ok_or(ExportError::AggregateOverBudget)?;
-        self.charge(raw, written)?;
-        let file_num = match font_file {
-            (num, None) => num,
-            (_, Some((s, _))) => {
-                let num = self.alloc();
-                self.insert(num, s);
-                self.font_files.insert(sha, num);
-                num
+        let (file_num, subset_index) = if self.subset {
+            let shared = self.subset_by_hash.get(&sha).copied();
+            if shared.is_none() {
+                // Structure the subsetter needs (loca/glyf) is checked now, not at finish.
+                subset::closure(bytes, &BTreeSet::new())?;
+                self.precheck_raw(bytes.len())?;
             }
+            self.reserve(if shared.is_some() { 4 } else { 5 })?;
+            let raw = cmap.len().checked_add(if shared.is_some() { 0 } else { bytes.len() }).ok_or(ExportError::AggregateOverBudget)?;
+            self.charge(raw, tu_len)?;
+            match shared {
+                Some(i) => (self.subset_files.get(i).map_or(0, |f| f.num), Some(i)),
+                None => {
+                    let num = self.alloc();
+                    self.subset_files.push(SubsetFile { bytes: bytes.to_vec(), num, used: BTreeSet::new(), members: Vec::new() });
+                    let i = self.subset_files.len().saturating_sub(1);
+                    self.subset_by_hash.insert(sha, i);
+                    (num, Some(i))
+                }
+            }
+        } else {
+            let shared = self.font_files.get(&sha).copied();
+            if shared.is_none() {
+                self.precheck_raw(bytes.len())?;
+            }
+            self.reserve(if shared.is_some() { 4 } else { 5 })?;
+            let font_file = match shared {
+                Some(num) => (num, None),
+                None => {
+                    let mut d = Dict::default();
+                    d.set("Length1", int(i64::try_from(bytes.len()).map_err(|_| ExportError::StreamOverBudget)?));
+                    let (s, len) = flate_stream(d, bytes);
+                    (0, Some((s, len)))
+                }
+            };
+            let written = tu_len.checked_add(font_file.1.as_ref().map_or(0, |f| f.1)).ok_or(ExportError::AggregateOverBudget)?;
+            let raw = cmap.len().checked_add(if shared.is_some() { 0 } else { bytes.len() }).ok_or(ExportError::AggregateOverBudget)?;
+            self.charge(raw, written)?;
+            let num = match font_file {
+                (num, None) => num,
+                (_, Some((s, _))) => {
+                    let num = self.alloc();
+                    self.insert(num, s);
+                    self.font_files.insert(sha, num);
+                    num
+                }
+            };
+            (num, None)
         };
         let base = facts.ps_name.clone().unwrap_or_else(|| format!("HskFont-{}", &sha256_hex(bytes)[..12]));
         let scale = |v: i16| f64::from(v) * 1000.0 / f64::from(facts.units_per_em);
@@ -855,7 +900,12 @@ impl PdfExport {
         self.insert(cid_num, Object::Dict(cid));
         self.insert(tu_num, tu_stream);
         self.insert(type0, Object::Dict(t0));
-        self.fonts.push(FontBuild { type0, num_glyphs: n });
+        if let Some(f) = subset_index.and_then(|i| self.subset_files.get_mut(i)) {
+            f.used.extend(widths.iter().map(|(g, _)| *g));
+            f.used.extend(to_unicode.iter().map(|(g, _)| *g));
+            f.members.push((fd_num, cid_num, type0, base.clone()));
+        }
+        self.fonts.push(FontBuild { type0, num_glyphs: n, file: subset_index });
         Ok(FontHandle(self.fonts.len().saturating_sub(1)))
     }
 
@@ -871,6 +921,9 @@ impl PdfExport {
         }
         if glyphs.iter().any(|(g, ..)| *g >= f.num_glyphs) {
             return Err(ExportError::FontGlyphOutOfRange);
+        }
+        if let Some(file) = f.file.and_then(|i| self.subset_files.get_mut(i)) {
+            file.used.extend(glyphs.iter().map(|(g, ..)| *g));
         }
         if glyphs.is_empty() {
             return Ok(());
@@ -946,6 +999,7 @@ impl PdfExport {
             self.insert(p.page_obj, Object::Dict(pd));
             kids.push(rf(p.page_obj));
         }
+        self.write_subsets()?;
         let count = i64::try_from(kids.len()).map_err(|_| ExportError::TooManyPages)?;
         let mut root = Dict::default();
         root.set("Type", name("Pages"));
@@ -979,6 +1033,38 @@ impl PdfExport {
         let bytes = write_document(&self.version, &self.objects, &[], &trailer, &self.limits, cancel)?;
         let receipt = self.read_back(&bytes, cancel)?;
         Ok((bytes, receipt))
+    }
+
+    /// Writes every subset font program (`subset.rs`) and prefixes the names of the fonts that use
+    /// it with the subset tag (`ABCDEF+Name`, from a hash of the font and the kept glyph ids).
+    fn write_subsets(&mut self) -> Result<()> {
+        let files = std::mem::take(&mut self.subset_files);
+        for f in &files {
+            let keep = subset::closure(&f.bytes, &f.used)?;
+            let data = subset::subset(&f.bytes, &keep)?;
+            let mut h = Sha256::new();
+            h.update(Sha256::digest(&f.bytes));
+            for g in &keep {
+                h.update(g.to_be_bytes());
+            }
+            let tag = subset::tag(&h.finalize().into());
+            let mut d = Dict::default();
+            d.set("Length1", int(i64::try_from(data.len()).map_err(|_| ExportError::StreamOverBudget)?));
+            let (stream, len) = flate_stream(d, &data);
+            // Raw bytes were charged for the whole font at embedding; the written bytes now.
+            self.charge(0, len)?;
+            self.insert(f.num, stream);
+            for (fd, cid, t0, base) in &f.members {
+                let named = name(&format!("{tag}+{base}"));
+                for (num, key) in [(fd, "FontName"), (cid, "BaseFont"), (t0, "BaseFont")] {
+                    if let Some(Entry { obj: Object::Dict(d), .. }) = self.objects.get_mut(num) {
+                        d.set(key, named.clone());
+                    }
+                }
+            }
+        }
+        self.subset_files = files;
+        Ok(())
     }
 
     /// The receipt from the written bytes, through `PdfDoc::open` (the crate's strict reader).

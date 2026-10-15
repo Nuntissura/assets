@@ -132,6 +132,54 @@ fn hayro_renders_the_export() {
     assert_eq!(stray, 0);
 }
 
+/// Glyph `gid`'s bytes in `glyf`, read with a test-side directory/head/loca walk.
+/// Test oracle over checked-in fixtures: an out-of-range read panics and fails the test.
+#[allow(clippy::arithmetic_side_effects)]
+fn glyph_bytes(font: &[u8], gid: usize) -> Vec<u8> {
+    let u16_at = |b: &[u8], i: usize| usize::from(u16::from_be_bytes([b[i], b[i + 1]]));
+    let u32_at = |b: &[u8], i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+    let table = |tag: &[u8]| {
+        let n = u16_at(font, 4);
+        let r = (0..n).map(|i| 12 + 16 * i).find(|r| &font[*r..*r + 4] == tag).unwrap();
+        &font[u32_at(font, r + 8)..u32_at(font, r + 8) + u32_at(font, r + 12)]
+    };
+    let (head, loca, glyf) = (table(b"head"), table(b"loca"), table(b"glyf"));
+    let (a, b) = if u16_at(head, 50) == 1 {
+        (u32_at(loca, 4 * gid), u32_at(loca, 4 * gid + 4))
+    } else {
+        (2 * u16_at(loca, 2 * gid), 2 * u16_at(loca, 2 * gid + 2))
+    };
+    glyf[a..b].to_vec()
+}
+
+/// Subsetting (default on): the drawn glyphs keep their ids and outline bytes, an unused glyph is
+/// empty, the font is named with a six-letter tag, and hayro still draws it (test above).
+#[test]
+fn subset_font_keeps_ids_and_outlines() {
+    let cancel = CancellationToken::default();
+    let mut ex = PdfExport::new(ExportOptions::default(), &Limits::default()).unwrap();
+    page_one(&mut ex);
+    let (bytes, _) = ex.finish(&cancel).unwrap();
+    let doc = PdfDoc::open(&bytes, &Limits::default(), &cancel).unwrap();
+    let res = doc.dict_of(doc.pages[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
+    let font = res.get("Font").and_then(Object::as_dict).unwrap().get("F0").map(|o| doc.resolve(o)).and_then(Object::as_dict).unwrap();
+    let cid = doc.resolve(&font.get("DescendantFonts").and_then(Object::as_array).unwrap()[0]).as_dict().unwrap();
+    let fd = cid.get("FontDescriptor").map(|o| doc.resolve(o)).and_then(Object::as_dict).unwrap();
+    let fname = String::from_utf8(fd.get("FontName").unwrap().as_name().unwrap().to_vec()).unwrap();
+    assert!(fname.len() > 7 && fname[..6].bytes().all(|b| b.is_ascii_uppercase()) && &fname[6..7] == "+", "{fname}");
+    assert_eq!(font.get("BaseFont").unwrap().as_name().unwrap(), fname.as_bytes());
+    let Some(Object::Stream(ff)) = fd.get("FontFile2").map(|o| doc.resolve(o)) else { panic!() };
+    let mut budget = usize::MAX;
+    let sub = crate::filters::decode_stream(ff, &Limits::default(), &mut budget).unwrap();
+    assert!(sub.len() < INTER.len() / 10, "{}", sub.len());
+    for g in [usize::from(H), usize::from(I), 0] {
+        assert_eq!(glyph_bytes(&sub, g), glyph_bytes(INTER, g), "glyph {g}");
+    }
+    assert!(!glyph_bytes(INTER, 937).is_empty() && glyph_bytes(&sub, 937).is_empty(), "w is not used");
+    // The subset still reads as a TrueType font with the same glyph count.
+    assert_eq!(super::sfnt::read(&sub, 0).map(|f| f.num_glyphs).ok(), super::sfnt::read(INTER, 0).map(|f| f.num_glyphs).ok());
+}
+
 #[test]
 fn dictionaries_read_back_through_the_strict_reader() {
     // V4-08 hostile text: escapes, decoy syntax, whitespace and non-ASCII (UTF-16BE with BOM).
@@ -148,6 +196,7 @@ fn dictionaries_read_back_through_the_strict_reader() {
                 registry: Some("http://www.color.org"),
                 subtype: OutputIntentSubtype::GtsPdfx,
             }),
+            subset_fonts: false,
             ..ExportOptions::default()
         };
         let mut ex = PdfExport::new(options, &Limits::default()).unwrap();

@@ -82,8 +82,8 @@ fn two_page_export_reads_back() {
     assert_eq!(receipt.effective_oc_registry.as_deref(), Some("http://www.color.org"));
     assert_eq!(receipt.effective_pdfx_profile, None);
     assert_eq!(receipt.conformance, "not_proven");
-    // The font file is embedded once: the output is smaller than two copies of Inter.
-    assert!(bytes.len() < 2 * INTER.len(), "{}", bytes.len());
+    // The font file is embedded once, subset to the used glyphs (Inter is 680 KB).
+    assert!(bytes.len() < 40_000, "{}", bytes.len());
 }
 
 #[test]
@@ -144,9 +144,17 @@ fn hostile_sizes_are_typed_refusals() {
     assert_eq!(ex.draw_image(p, rgb(big), at), Err(ExportError::AggregateOverBudget));
     // A font over the raw aggregate is refused before it is compressed or copied.
     assert_eq!(ex.embed_truetype(INTER, 0, &[], &[]), Err(ExportError::StreamOverBudget));
+    // Whole-font embedding charges the written font at embedding; a subset is charged at finish.
     let roomy = Limits { max_decoded_total: INTER.len() + 100, max_bytes: 4096, ..lim };
-    let mut ex = PdfExport::new(ExportOptions::default(), &roomy).unwrap();
+    let whole = ExportOptions { subset_fonts: false, ..ExportOptions::default() };
+    let mut ex = PdfExport::new(whole, &roomy).unwrap();
     assert_eq!(ex.embed_truetype(INTER, 0, &[], &[]), Err(ExportError::AggregateOverBudget));
+    let tight = Limits { max_decoded_total: INTER.len() + 100_000, max_bytes: 2000, ..lim };
+    let mut ex = PdfExport::new(ExportOptions::default(), &tight).unwrap();
+    let p = ex.add_page(page(A4)).unwrap();
+    let f = ex.embed_truetype(INTER, 0, &[(161, 740)], &[(161, "H")]).unwrap();
+    ex.show_glyphs(p, f, 12.0, [10.0, 10.0], Colour::DeviceGray(0.0), &[(161, 0.0, 0.0)]).unwrap();
+    assert_eq!(ex.finish(&cancel).err(), Some(ExportError::AggregateOverBudget));
     // Page count and object numbers.
     let few = Limits { max_pages: 2, ..lim };
     let mut ex = PdfExport::new(ExportOptions::default(), &few).unwrap();
