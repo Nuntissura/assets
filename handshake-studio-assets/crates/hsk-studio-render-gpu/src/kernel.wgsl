@@ -396,10 +396,13 @@ fn hs_light(x: f32, l: f32) -> f32 {
 }
 
 fn hue_saturation_apply(rgb: vec3<f32>) -> vec3<f32> {
-    let hue = ext.adj[0].x;
-    let sat = ext.adj[0].y;
-    let light = ext.adj[0].z;
-    if (ext.adj[0].w != 0.0) {
+    return hue_saturation_with(rgb, ext.adj[0].x, ext.adj[0].y, ext.adj[0].z, ext.adj[0].w != 0.0);
+}
+
+// The Hue/Saturation transfer with explicit parameters (hue as a turn fraction, saturation and
+// lightness as fractions); replace colour reuses the master path (adjust_colour::replace_colour).
+fn hue_saturation_with(rgb: vec3<f32>, hue: f32, sat: f32, light: f32, colorize: bool) -> vec3<f32> {
+    if (colorize) {
         let hsl = hs_hsl(rgb);
         return hs_rgb(vec3<f32>(hue, sat, hs_light(hsl.z, light)));
     }
@@ -414,6 +417,340 @@ fn hue_saturation_apply(rgb: vec3<f32>) -> vec3<f32> {
     }
     hsl.y = clamp(hsl.y, 0.0, 1.0);
     return hs_rgb(hsl);
+}
+
+// ---- legacy brightness / contrast and the second STU-RAS-151 set (lane SMB-PS-ADJUST-STYLES-2):
+// transcriptions of hsk_studio_pigment::adjust_math::legacy_brightness_contrast and of
+// hsk_studio_pigment::adjust_colour (the owner; every formula's basis is stated there). Layouts of
+// `ext.adj` and of the `lut` table per kind are written by ext.rs `compile_adjustment`. The HSL
+// round trips evaluate in binary32 where pigment uses binary64 (declared tolerance, parity test
+// tests/gpu_adjust_styles_2.rs). ----
+
+fn bc_ch(x: f32, b: f32, c: f32) -> f32 {
+    var v: f32;
+    if (c >= 1.0) {
+        let t = x + b;
+        if (t > 0.5) {
+            v = 1.0;
+        } else if (t < 0.5) {
+            v = 0.0;
+        } else {
+            v = 0.5;
+        }
+    } else if (c >= 0.0) {
+        v = (x + b - 0.5) / (1.0 - c) + 0.5;
+    } else {
+        v = (x - 0.5) * (1.0 + c) + 0.5 + b;
+    }
+    return clamp(v, 0.0, 1.0);
+}
+
+// adj[0] = (brightness / 255, contrast / 100); legacy transfer only (modern is refused)
+fn brightness_contrast_apply(rgb: vec3<f32>) -> vec3<f32> {
+    let b = ext.adj[0].x;
+    let c = ext.adj[0].y;
+    return vec3<f32>(bc_ch(rgb.x, b, c), bc_ch(rgb.y, b, c), bc_ch(rgb.z, b, c));
+}
+
+fn scale_chroma(c: vec3<f32>, l: f32, k: f32) -> vec3<f32> {
+    return vec3<f32>(l) + (c - vec3<f32>(l)) * k;
+}
+
+// adj[0] = (vibrance fraction, saturation fraction)
+fn vibrance_apply(c: vec3<f32>) -> vec3<f32> {
+    let l = hsk_lum(c);
+    let s = hsk_sat(c);
+    let v = ext.adj[0].x;
+    let t = ext.adj[0].y;
+    let c1 = scale_chroma(c, l, 1.0 + v * (1.0 - s));
+    return scale_chroma(c1, l, 1.0 + t);
+}
+
+// adj[0..3].xyz = shadows, midtones, highlights; adj[3].x = preserve luminosity
+fn colour_balance_apply(c: vec3<f32>) -> vec3<f32> {
+    let hsl = hs_hsl(c);
+    let l = hsl.z;
+    let a = 0.25;
+    let b = 0.333;
+    let scale = 0.7;
+    let ws = clamp((l - b) / -a + 0.5, 0.0, 1.0) * scale;
+    let wm = clamp((l - b) / a + 0.5, 0.0, 1.0) * clamp((l + b - 1.0) / -a + 0.5, 0.0, 1.0) * scale;
+    let wh = clamp((l + b - 1.0) / a + 0.5, 0.0, 1.0) * scale;
+    let shift = ext.adj[0].xyz * ws + ext.adj[1].xyz * wm + ext.adj[2].xyz * wh;
+    let out = clamp(c + shift / 100.0, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (ext.adj[3].x != 0.0) {
+        var h = hs_hsl(out);
+        h.z = l;
+        return hs_rgb(h);
+    }
+    return out;
+}
+
+// adj[0] = (filter r, g, b, density fraction); adj[1].x = preserve luminosity
+fn photo_filter_apply(c: vec3<f32>) -> vec3<f32> {
+    let d = ext.adj[0].w;
+    let c1 = c + (c * ext.adj[0].xyz - c) * d;
+    if (ext.adj[1].x != 0.0) {
+        return hsk_set_lum(c1, hsk_lum(c));
+    }
+    return c1;
+}
+
+fn pick3(c: vec3<f32>, i: u32) -> f32 {
+    if (i == 0u) {
+        return c.x;
+    }
+    if (i == 1u) {
+        return c.y;
+    }
+    return c.z;
+}
+
+// adj[0] = weights red, yellow, green, cyan; adj[1] = (blue, magenta, tinted, _);
+// adj[2] = (tint hue turn, tint saturation fraction). Weights are fractions.
+fn black_and_white_apply(c: vec3<f32>) -> vec3<f32> {
+    // descending STABLE order (pigment sort_by total_cmp, ties keep red, green, blue order)
+    let pr = u32(c.y > c.x) + u32(c.z > c.x);
+    let pg = u32(c.x >= c.y) + u32(c.z > c.y);
+    // the channel at each rank, without dynamically indexed writes (the DX12 FXC compiler refuses
+    // some of those)
+    let imax = select(select(2u, 1u, pg == 0u), 0u, pr == 0u);
+    let imid = select(select(2u, 1u, pg == 1u), 0u, pr == 1u);
+    let imin = select(select(2u, 1u, pg == 2u), 0u, pr == 2u);
+    var primary: f32;
+    if (imax == 0u) {
+        primary = ext.adj[0].x;
+    } else if (imax == 1u) {
+        primary = ext.adj[0].z;
+    } else {
+        primary = ext.adj[1].x;
+    }
+    let lo = min(imax, imid);
+    let hi = max(imax, imid);
+    var secondary: f32;
+    if (lo == 0u && hi == 1u) {
+        secondary = ext.adj[0].y;
+    } else if (lo == 1u && hi == 2u) {
+        secondary = ext.adj[0].w;
+    } else {
+        secondary = ext.adj[1].y;
+    }
+    let vmax = pick3(c, imax);
+    let vmid = pick3(c, imid);
+    let vmin = pick3(c, imin);
+    let gray = clamp(vmin + (vmax - vmid) * primary + (vmid - vmin) * secondary, 0.0, 1.0);
+    if (ext.adj[1].z != 0.0) {
+        return hs_rgb(vec3<f32>(ext.adj[2].x, ext.adj[2].y, gray));
+    }
+    return vec3<f32>(gray);
+}
+
+// adj[0..3] = rows red, green, blue (from red, from green, from blue, constant; percent);
+// adj[3].x = monochrome
+fn mixer_row(r: vec4<f32>, c: vec3<f32>) -> f32 {
+    return (r.x * c.x + r.y * c.y + r.z * c.z + r.w) / 100.0;
+}
+
+fn channel_mixer_apply(c: vec3<f32>) -> vec3<f32> {
+    if (ext.adj[3].x != 0.0) {
+        return vec3<f32>(mixer_row(ext.adj[0], c));
+    }
+    return vec3<f32>(mixer_row(ext.adj[0], c), mixer_row(ext.adj[1], c), mixer_row(ext.adj[2], c));
+}
+
+// lut[4 j + i] = range j (reds .. blacks), ink i (c, m, y, k) in percent; adj[0].x = absolute
+fn selective_colour_apply(c: vec3<f32>) -> vec3<f32> {
+    let r = c.x;
+    let g = c.y;
+    let b = c.z;
+    let mx = max(max(r, g), b);
+    let mn = min(min(r, g), b);
+    let mid = r + g + b - mx - mn;
+    var amount = array<f32, 9>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let hi = mx - mid;
+    let lo = mid - mn;
+    if (r == mx) {
+        amount[0] = hi;
+    }
+    if (b == mn) {
+        amount[1] = lo;
+    }
+    if (g == mx) {
+        amount[2] = hi;
+    }
+    if (r == mn) {
+        amount[3] = lo;
+    }
+    if (b == mx) {
+        amount[4] = hi;
+    }
+    if (g == mn) {
+        amount[5] = lo;
+    }
+    if (mn > 0.5) {
+        amount[6] = (mn - 0.5) * 2.0;
+    }
+    if (mx > 0.0 && mn < 1.0) {
+        amount[7] = 1.0 - (abs(mx - 0.5) + abs(mn - 0.5));
+    }
+    if (mx < 0.5) {
+        amount[8] = (0.5 - mx) * 2.0;
+    }
+    let absolute = ext.adj[0].x != 0.0;
+    // the three channels in one vector, per channel the same operations in the same range order as
+    // pigment (no dynamically indexed vector write: the DX12 FXC compiler refuses those)
+    let ink = vec3<f32>(1.0) - c;
+    var add = vec3<f32>(0.0);
+    for (var j = 0u; j < 9u; j = j + 1u) {
+        let m = amount[j];
+        if (m <= 0.0) {
+            continue;
+        }
+        let a = vec3<f32>(lut[j * 4u], lut[j * 4u + 1u], lut[j * 4u + 2u]) / 100.0;
+        let k = lut[j * 4u + 3u] / 100.0;
+        var d: vec3<f32>;
+        if (absolute) {
+            d = a + vec3<f32>(k);
+        } else {
+            d = (a + vec3<f32>(k)) * ink;
+        }
+        add = add + d * m;
+    }
+    return c - add;
+}
+
+// lut[4 s ..] = stop s (position, r, g, b); adj[0] = (stop count, reversed)
+fn gradient_map_apply(c: vec3<f32>) -> vec3<f32> {
+    var t = clamp(hsk_lum(c), 0.0, 1.0);
+    if (ext.adj[0].y != 0.0) {
+        t = 1.0 - t;
+    }
+    let n = u32(ext.adj[0].x);
+    let last = (n - 1u) * 4u;
+    if (t <= lut[0]) {
+        return vec3<f32>(lut[1], lut[2], lut[3]);
+    }
+    if (t >= lut[last]) {
+        return vec3<f32>(lut[last + 1u], lut[last + 2u], lut[last + 3u]);
+    }
+    for (var s = 0u; s + 1u < n; s = s + 1u) {
+        let a = s * 4u;
+        let b = a + 4u;
+        if (t >= lut[a] && t < lut[b]) {
+            let span = lut[b] - lut[a];
+            let cb = vec3<f32>(lut[b + 1u], lut[b + 2u], lut[b + 3u]);
+            if (span <= 0.0) {
+                return cb;
+            }
+            let f = (t - lut[a]) / span;
+            let ca = vec3<f32>(lut[a + 1u], lut[a + 2u], lut[a + 3u]);
+            return ca + (cb - ca) * f;
+        }
+    }
+    return vec3<f32>(lut[last + 1u], lut[last + 2u], lut[last + 3u]);
+}
+
+// a + (b - a) t, pigment's lerp order (WGSL `mix` may evaluate another form)
+fn mix_exact(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+    return a + (b - a) * t;
+}
+
+// lut = cube of side^3 RGB triples, red fastest; adj[0].x = side
+fn cube_at(n: u32, r: u32, g: u32, b: u32) -> vec3<f32> {
+    let i = (b * n * n + g * n + r) * 3u;
+    return vec3<f32>(lut[i], lut[i + 1u], lut[i + 2u]);
+}
+
+fn colour_lookup_apply(c: vec3<f32>) -> vec3<f32> {
+    let n = u32(ext.adj[0].x);
+    let last = n - 1u;
+    let lastf = ext.adj[0].x - 1.0;
+    let x = c * lastf;
+    let fl = clamp(floor(x), vec3<f32>(0.0), vec3<f32>(lastf));
+    let lo = min(vec3<u32>(fl), vec3<u32>(last));
+    let hi = min(vec3<u32>(fl) + vec3<u32>(1u), vec3<u32>(last));
+    let f = x - fl;
+    let c00 = mix_exact(cube_at(n, lo.x, lo.y, lo.z), cube_at(n, hi.x, lo.y, lo.z), f.x);
+    let c10 = mix_exact(cube_at(n, lo.x, hi.y, lo.z), cube_at(n, hi.x, hi.y, lo.z), f.x);
+    let c01 = mix_exact(cube_at(n, lo.x, lo.y, hi.z), cube_at(n, hi.x, lo.y, hi.z), f.x);
+    let c11 = mix_exact(cube_at(n, lo.x, hi.y, hi.z), cube_at(n, hi.x, hi.y, hi.z), f.x);
+    let c0 = mix_exact(c00, c10, f.y);
+    let c1 = mix_exact(c01, c11, f.y);
+    return mix_exact(c0, c1, f.z);
+}
+
+fn sh_weight(d: f32, width: f32) -> f32 {
+    let tw = width / 100.0;
+    if (tw > 0.0 && d < tw) {
+        let t = 1.0 - d / tw;
+        return t * t;
+    }
+    return 0.0;
+}
+
+// adj[0] = (shadow amount, shadow tone width, highlight amount, highlight tone width) percent;
+// adj[1] = (colour correction, midtone contrast) percent
+fn shadows_highlights_apply(c: vec3<f32>) -> vec3<f32> {
+    let l = hsk_lum(c);
+    let ws = sh_weight(l, ext.adj[0].y);
+    let wh = sh_weight(1.0 - l, ext.adj[0].w);
+    let l1 = l + ext.adj[0].x / 100.0 * ws * (1.0 - l) - ext.adj[0].z / 100.0 * wh * l;
+    let l2 = clamp(0.5 + (l1 - 0.5) * (1.0 + ext.adj[1].y / 100.0), 0.0, 1.0);
+    let moved = hsk_set_lum(c, l2);
+    return scale_chroma(moved, hsk_lum(moved), 1.0 + ext.adj[1].x / 100.0 * (ws + wh));
+}
+
+// adj[0] = (2^exposure, gamma, highlight compression)
+fn tone_ch(x: f32) -> f32 {
+    let y = x * ext.adj[0].x;
+    var v: f32;
+    if (ext.adj[0].z != 0.0) {
+        v = y / (1.0 + y);
+    } else {
+        v = clamp(y, 0.0, 1.0);
+    }
+    let gamma = ext.adj[0].y;
+    if (gamma != 1.0 && v > 0.0) {
+        return pow(v, 1.0 / gamma);
+    }
+    return v;
+}
+
+fn tone_compression_apply(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(tone_ch(c.x), tone_ch(c.y), tone_ch(c.z));
+}
+
+// adj[0] = (k r, k g, k b, colour intensity fraction); adj[1] = (source mean rgb, luminance
+// percent); adj[2] = (target mean rgb, fade fraction)
+fn match_colour_apply(c: vec3<f32>) -> vec3<f32> {
+    let y0 = (c - ext.adj[2].xyz) * ext.adj[0].xyz + ext.adj[1].xyz;
+    let l = hsk_lum(y0);
+    let y = scale_chroma(y0, l, ext.adj[0].w) * ext.adj[1].w / 100.0;
+    return y + (c - y) * ext.adj[2].w;
+}
+
+// lut[4 s ..] = sample s (r, g, b, _); adj[0] = (sample count, fuzziness);
+// adj[1] = (hue turn, saturation fraction, lightness fraction)
+fn replace_colour_apply(c: vec3<f32>) -> vec3<f32> {
+    let n = u32(ext.adj[0].x);
+    let fuzz = ext.adj[0].y;
+    var w: f32 = 0.0;
+    for (var s = 0u; s < n; s = s + 1u) {
+        let d = c - vec3<f32>(lut[s * 4u], lut[s * 4u + 1u], lut[s * 4u + 2u]);
+        let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+        var m: f32;
+        if (fuzz == 0.0) {
+            m = select(0.0, 1.0, d2 == 0.0);
+        } else {
+            m = clamp(1.0 - 255.0 * sqrt(d2) / fuzz, 0.0, 1.0);
+        }
+        w = max(w, m);
+    }
+    if (w <= 0.0) {
+        return c;
+    }
+    let shifted = hue_saturation_with(c, ext.adj[1].x, ext.adj[1].y, ext.adj[1].z, false);
+    return c + (shifted - c) * w;
 }
 
 //@ADJUST_FUNCTIONS@

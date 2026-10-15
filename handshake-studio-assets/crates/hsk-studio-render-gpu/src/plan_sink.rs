@@ -28,7 +28,7 @@ use crate::device::{DeviceInfo, DeviceOptions, GpuContext};
 use crate::error::{GpuError, Reason};
 use crate::pipeline::{ErrorScopes, PipelineFault};
 use crate::ext::{
-    AdjustGpu, BlendIfGpu, EXT_BYTES, FeatherError, FeatherPlane, LUT_BYTES, MIN_LUT_BYTES,
+    AdjustGpu, BlendIfGpu, EXT_BYTES, FeatherError, FeatherPlane, MIN_LUT_BYTES,
     compile_adjustment, ext_bytes, feather_plane, opcode_of,
 };
 use crate::fx::{
@@ -365,8 +365,9 @@ struct Prepared<'a> {
     feathered: Vec<FeatherPlane>,
     /// Some layer uses Blend-If or an adjustment: the envelope buffers and pipelines are needed.
     has_ext: bool,
-    /// Some adjustment is a curve: the full look-up table binding is needed.
-    has_curves: bool,
+    /// Largest table (curve samples, gradient-map stops, colour-lookup cube, selective-colour
+    /// ranges, replace-colour samples) of any adjustment, in f32 values: the `lut` binding size.
+    lut_floats: usize,
     /// Some reachable layer has effects: the frame, the matte planes and the effect pipeline exist.
     has_fx: bool,
     /// Blur kernels of all effects (charged to the working-byte limit while compiling).
@@ -619,7 +620,7 @@ fn prepare<'a>(
     let mut bounds: Vec<Option<Rect>> = Vec::with_capacity(n);
     let mut need: Vec<usize> = Vec::with_capacity(n);
     let (mut has_tiles, mut has_masks) = (false, false);
-    let (mut has_ext, mut has_curves) = (false, false);
+    let (mut has_ext, mut lut_floats) = (false, 0usize);
     let mut feathered: Vec<FeatherPlane> = Vec::new();
     let mut feather_bytes = 0u64;
     let mut has_fx = false;
@@ -728,6 +729,8 @@ fn prepare<'a>(
                                 )
                                 .map_err(|e| fx_error(e, scratch_limit))?;
                                 fx_window_ops = fx_window_ops.max(compiled.window_ops);
+                                // a gradient overlay uploads its colours into the source region
+                                has_tiles |= compiled.gradient.is_some();
                                 effects.push(compiled);
                             }
                             has_fx = true;
@@ -865,7 +868,7 @@ fn prepare<'a>(
                                 .filter(|_| gpu_adjust_supported(kind))
                                 .ok_or_else(|| unsupported(kind.key()))?;
                             let compiled = compile_adjustment(op, opcode).map_err(unsupported)?;
-                            has_curves |= compiled.lut.is_some();
+                            lut_floats = lut_floats.max(compiled.lut.as_ref().map_or(0, Vec::len));
                             Some(Box::new(compiled))
                         }
                         None => None,
@@ -1094,7 +1097,7 @@ fn prepare<'a>(
         has_masks,
         feathered,
         has_ext,
-        has_curves,
+        lut_floats,
         has_fx,
         fx_kernels,
         fx_window_ops,
@@ -1699,6 +1702,11 @@ impl RenderBackend<NoVector> for GpuBackend {
                     | EffectKind::InnerShadow
                     | EffectKind::OuterGlow
                     | EffectKind::InnerGlow
+                    // lane SMB-PS-ADJUST-STYLES-2 (fx.rs satin / bevel passes, gradient colours
+                    // from pigment; tests/gpu_layer_styles_2.rs)
+                    | EffectKind::Satin
+                    | EffectKind::BevelEmboss
+                    | EffectKind::GradientOverlay
             ),
             _ => false,
         };
@@ -2169,6 +2177,12 @@ impl Exec<'_> {
 
     /// Composite the matte (in the mask buffer, region-sized) as a solid colour onto
     /// `levels[level]` with the effect's mode and `opacity` (effect opacity times layer opacity).
+    ///
+    /// A gradient overlay (lane SMB-PS-ADJUST-STYLES-2) composites a per-pixel source instead: its
+    /// colour and stop opacity at every region pixel come from pigment's
+    /// `GradientOverlayOp::sample_at` over the layer bounds `layer` (the windowed evaluator's
+    /// geometry), uploaded as the source region; the matte in the mask buffer is the alpha.
+    #[allow(clippy::too_many_arguments)]
     fn composite_matte(
         &mut self,
         effect: &FxEffect,
@@ -2176,9 +2190,34 @@ impl Exec<'_> {
         region: Rect,
         chunk: Rect,
         level: usize,
+        layer: Rect,
     ) -> Result<(), GpuError> {
         let ctx = self.ctx;
         let [r, g, b] = effect.colour;
+        let source = match &effect.gradient {
+            Some(o) => {
+                self.upload.clear();
+                for y in 0..i64::from(region.height) {
+                    for x in 0..i64::from(region.width) {
+                        let (c, stop) = o.sample_at(
+                            region.x.saturating_add(x),
+                            region.y.saturating_add(y),
+                            layer,
+                        );
+                        for v in [c[0], c[1], c[2], stop] {
+                            self.upload.extend_from_slice(&v.to_ne_bytes());
+                        }
+                    }
+                }
+                ctx.queue.write_buffer(&self.src, 0, &self.upload);
+                self.stats.bytes_uploaded = self
+                    .stats
+                    .bytes_uploaded
+                    .saturating_add(self.upload.len() as u64);
+                SourceKind::Region
+            }
+            None => SourceKind::Solid([r, g, b, 1.0]),
+        };
         let params = LayerParams {
             chunk_w: chunk.width,
             chunk_h: chunk.height,
@@ -2189,7 +2228,7 @@ impl Exec<'_> {
                 region.height,
             ],
             mode: effect.mode,
-            source: SourceKind::Solid([r, g, b, 1.0]),
+            source,
             has_mask: true,
             opacity,
             replace: false,
@@ -2576,7 +2615,7 @@ fn eval_effect_layer(
             for step in &effect.steps {
                 ex.fx_pass(step, fx_region, chunk, content)?;
             }
-            ex.composite_matte(effect, opacity, fx_region, chunk, level)?;
+            ex.composite_matte(effect, opacity, fx_region, chunk, level, bounds)?;
         }
     }
     Ok(())
@@ -3070,11 +3109,11 @@ fn run(
     let level_count = prepared.need[prepared.root].saturating_add(1);
     let levels_u64 = u64::try_from(level_count).map_err(|_| overflow())?;
     // Envelope buffers: the parameter block and the curve table (a placeholder binding without curves).
-    let lut_bytes = if prepared.has_curves {
-        LUT_BYTES
-    } else {
-        MIN_LUT_BYTES
-    };
+    let lut_bytes = u64::try_from(prepared.lut_floats)
+        .ok()
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(overflow)?
+        .max(MIN_LUT_BYTES);
     let ext_fixed = if prepared.has_ext {
         sum_bytes(&[EXT_BYTES, lut_bytes])?
     } else {

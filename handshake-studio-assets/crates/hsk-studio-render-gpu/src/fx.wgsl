@@ -20,8 +20,8 @@ struct FxP {
     ry: u32,
     rw: u32,         // region size: the planes are rw x rh, stride rw
     rh: u32,
-    op: u32,         // 0 INIT, 1 DILATE, 2 BLUR_H, 3 BLUR_V, 4 SHIFT, 5 FINISH
-    mode: u32,       // INIT: 0 alpha, 1 1-alpha, 2 alpha >= 0.5, 3 alpha < 0.5; FINISH: 0 fin*(1-a), 1 fin*a, 2 (1-fin)*a, 3 min(fin2+fin*a, 1)
+    op: u32,         // 0 INIT, 1 DILATE, 2 BLUR_H, 3 BLUR_V, 4 SHIFT, 5 FINISH, 6 BEVEL, 7 CHISEL
+    mode: u32,       // INIT: 0 alpha, 1 1-alpha, 2 alpha >= 0.5, 3 alpha < 0.5; FINISH: 0 fin*(1-a), 1 fin*a, 2 (1-fin)*a, 3 min(fin2+fin*a, 1), 4 |fin-fin2|*a, 5 (1-|fin-fin2|)*a, 6 max(fin, a); BEVEL: style*2+part
     k: u32,          // DILATE: ceil(radius); BLUR: half width of the kernel
     taps_n: u32,     // BLUR: number of taps (2k+1)
     clamp_out: u32,  // final pass of a chain: clamp the matte to [0, 1]
@@ -93,6 +93,92 @@ fn blur_at(x: i32, y: i32, horizontal: bool) -> f32 {
     return acc;
 }
 
+// ---- lane SMB-PS-ADJUST-STYLES-2: bevel shading and the chisel field (effect_math::style). ----
+
+// style::bevel_matte `part`: N = (-k gx, -k gy, 1), s = N . L / |N| against the flat s0;
+// highlight (s - s0) / (1 - s0), shadow (s0 - s) / s0, both clamped. The constants (k, L, s0) are
+// pigment's binary64 values rounded to binary32, in taps[0] = (k, Lx, Ly, Lz) and taps[1].x = s0.
+fn bevel_part(gx: f32, gy: f32, k: f32, shadow: bool) -> f32 {
+    let l = p.taps[0];
+    let flat = p.taps[1].x;
+    let nx = -k * gx;
+    let ny = -k * gy;
+    let len = sqrt(nx * nx + ny * ny + 1.0);
+    let shade = (nx * l.y + ny * l.z + l.w) / len;
+    if (!shadow) {
+        if (flat >= 1.0) {
+            return 0.0;
+        }
+        return clamp((shade - flat) / (1.0 - flat), 0.0, 1.0);
+    }
+    if (flat <= 0.0) {
+        return clamp(-shade, 0.0, 1.0);
+    }
+    return clamp((flat - shade) / flat, 0.0, 1.0);
+}
+
+// OP 6 BEVEL: `fin` is the height field (beyond the region: p.outside), `fin2` the stroke matte of
+// a stroke emboss; mode = style * 2 + part (style 0 inner, 1 outer, 2 emboss, 3 pillow, 4 stroke;
+// part 0 highlight, 1 shadow). Central differences as pigment.
+fn bevel_at(x: i32, y: i32, li: u32, a: f32) -> f32 {
+    let gx = (sample_at(x + 1, y) - sample_at(x - 1, y)) * 0.5;
+    let gy = (sample_at(x, y + 1) - sample_at(x, y - 1)) * 0.5;
+    let k = p.taps[0].x;
+    let shadow = (p.mode & 1u) != 0u;
+    var v: f32;
+    switch (p.mode >> 1u) {
+        case 0u: {
+            v = bevel_part(gx, gy, k, shadow) * a;
+        }
+        case 1u: {
+            v = bevel_part(gx, gy, k, shadow) * (1.0 - a);
+        }
+        case 2u: {
+            v = bevel_part(gx, gy, k, shadow);
+        }
+        case 3u: {
+            v = bevel_part(gx, gy, k, shadow) * a + bevel_part(gx, gy, -k, shadow) * (1.0 - a);
+        }
+        default: {
+            v = bevel_part(gx, gy, k, shadow) * fin2[li];
+        }
+    }
+    return clamp(v, 0.0, 1.0);
+}
+
+// OP 7 CHISEL (style::chisel_field): region fin >= 0.5 (beyond the region: outside, p.outside 0);
+// d = centre distance to the nearest pixel of the other side within p.k (none: the cap p.r);
+// field = +-min(d - 0.5, size) / size; size 0 is flat.
+fn chisel_at(x: i32, y: i32) -> f32 {
+    if (p.r <= 0.0) {
+        return 0.0;
+    }
+    let kk = i32(p.k);
+    let inside = sample_at(x, y) >= 0.5;
+    var best: f32 = p.r + 0.5;
+    var found = false;
+    for (var oy: i32 = -kk; oy <= kk; oy = oy + 1) {
+        for (var ox: i32 = -kk; ox <= kk; ox = ox + 1) {
+            if ((sample_at(x + ox, y + oy) >= 0.5) != inside) {
+                let d = sqrt(f32(ox * ox + oy * oy));
+                if (!found || d < best) {
+                    best = d;
+                    found = true;
+                }
+            }
+        }
+    }
+    var d = p.r;
+    if (found) {
+        d = min(best - 0.5, p.r);
+    }
+    var sv = d;
+    if (!inside) {
+        sv = -d;
+    }
+    return sv / p.r;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= p.rw || gid.y >= p.rh) {
@@ -132,6 +218,12 @@ fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
         case 4u: {
             v = sample_at(x - p.dx, y - p.dy);
         }
+        case 6u: {
+            v = bevel_at(x, y, li, a);
+        }
+        case 7u: {
+            v = chisel_at(x, y);
+        }
         default: {
             let m = fin[li];
             switch (p.mode) {
@@ -143,6 +235,15 @@ fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 case 2u: {
                     v = (1.0 - m) * a;
+                }
+                case 4u: {
+                    v = clamp(abs(m - fin2[li]), 0.0, 1.0) * a;
+                }
+                case 5u: {
+                    v = (1.0 - clamp(abs(m - fin2[li]), 0.0, 1.0)) * a;
+                }
+                case 6u: {
+                    v = max(a, m);
                 }
                 default: {
                     v = min(fin2[li] + m * a, 1.0);

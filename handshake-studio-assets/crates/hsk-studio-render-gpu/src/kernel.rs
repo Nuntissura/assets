@@ -167,8 +167,9 @@ pub fn gpu_blend_supported(mode: StudioBlendMode) -> bool {
 }
 
 /// WGSL bodies of `fn adj_<key>(rgb: vec3<f32>) -> vec3<f32>`: one-line calls into the helper
-/// functions of `kernel.wgsl`, which transcribe `hsk_studio_pigment::adjust_math`. `Invert` is
-/// inline (`1 - x`). `BrightnessContrast` has no body: it stays a typed refusal.
+/// functions of `kernel.wgsl`, which transcribe `hsk_studio_pigment::adjust_math` and
+/// `hsk_studio_pigment::adjust_colour`. `Invert` is inline (`1 - x`). `BrightnessContrast` has the
+/// legacy transfer only (`compile_adjustment` refuses the modern form, as pigment's `prepare` does).
 const ADJ_FORMULAS: &[(AdjustmentKind, &str)] = &[
     (AdjustmentKind::Levels, "return levels_apply(rgb);"),
     (AdjustmentKind::Curves, "return curves_apply(rgb);"),
@@ -180,6 +181,31 @@ const ADJ_FORMULAS: &[(AdjustmentKind, &str)] = &[
     (AdjustmentKind::Invert, "return vec3<f32>(1.0) - rgb;"),
     (AdjustmentKind::Threshold, "return threshold_apply(rgb);"),
     (AdjustmentKind::Posterize, "return posterize_apply(rgb);"),
+    (
+        AdjustmentKind::BrightnessContrast,
+        "return brightness_contrast_apply(rgb);",
+    ),
+    (AdjustmentKind::Vibrance, "return vibrance_apply(rgb);"),
+    (AdjustmentKind::ColourBalance, "return colour_balance_apply(rgb);"),
+    (AdjustmentKind::PhotoFilter, "return photo_filter_apply(rgb);"),
+    (AdjustmentKind::BlackAndWhite, "return black_and_white_apply(rgb);"),
+    (AdjustmentKind::ChannelMixer, "return channel_mixer_apply(rgb);"),
+    (
+        AdjustmentKind::SelectiveColour,
+        "return selective_colour_apply(rgb);",
+    ),
+    (AdjustmentKind::GradientMap, "return gradient_map_apply(rgb);"),
+    (AdjustmentKind::ColourLookup, "return colour_lookup_apply(rgb);"),
+    (
+        AdjustmentKind::ShadowsHighlights,
+        "return shadows_highlights_apply(rgb);",
+    ),
+    (
+        AdjustmentKind::ToneCompression,
+        "return tone_compression_apply(rgb);",
+    ),
+    (AdjustmentKind::MatchColour, "return match_colour_apply(rgb);"),
+    (AdjustmentKind::ReplaceColour, "return replace_colour_apply(rgb);"),
 ];
 
 fn adjust_formula(kind: AdjustmentKind) -> Option<&'static str> {
@@ -190,7 +216,7 @@ fn adjust_formula(kind: AdjustmentKind) -> Option<&'static str> {
 }
 
 /// Does the shader carry an adjustment body for `kind`? Only these kinds pass
-/// `extension_exactness`; the rest (brightness/contrast) are refused at admission.
+/// `extension_exactness`; a kind without a body is refused at admission.
 pub fn gpu_adjust_supported(kind: AdjustmentKind) -> bool {
     adjust_formula(kind).is_some()
 }

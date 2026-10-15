@@ -2709,31 +2709,15 @@ fn slice3_modes_in_groups_masks_clip_parity() {
 // never with render-cpu. Tolerances are declared per operator before the run and the observed
 // maximum is printed (`EXT_*` lines).
 
-/// Effect kinds without GPU passes (lane SMB-PS-ADJUST-STYLES layer styles): typed refusal.
-const GPU_REFUSED_EFFECTS: [EffectKind; 3] = [
-    EffectKind::Satin,
-    EffectKind::BevelEmboss,
-    EffectKind::GradientOverlay,
-];
+/// Effect kinds without GPU passes (typed refusal). Lane SMB-PS-ADJUST-STYLES-2 gave satin, bevel & emboss and gradient overlay GPU passes
+/// (parity in tests/gpu_layer_styles_2.rs): none is refused any more.
+const GPU_REFUSED_EFFECTS: [EffectKind; 0] = [];
 
-/// Adjustment kinds the shader must refuse, pinned independently of `gpu_adjust_supported`. The
-/// second STU-RAS-151 set (lane SMB-PS-ADJUST-STYLES) has no WGSL body yet: typed refusal on GPU,
-/// rendered by the CPU backend.
-const REFUSED_ADJUSTMENTS: [AdjustmentKind; 13] = [
-    AdjustmentKind::BrightnessContrast,
-    AdjustmentKind::Vibrance,
-    AdjustmentKind::ColourBalance,
-    AdjustmentKind::PhotoFilter,
-    AdjustmentKind::BlackAndWhite,
-    AdjustmentKind::ChannelMixer,
-    AdjustmentKind::SelectiveColour,
-    AdjustmentKind::GradientMap,
-    AdjustmentKind::ColourLookup,
-    AdjustmentKind::ShadowsHighlights,
-    AdjustmentKind::ToneCompression,
-    AdjustmentKind::MatchColour,
-    AdjustmentKind::ReplaceColour,
-];
+/// Adjustment kinds the shader must refuse, pinned independently of `gpu_adjust_supported`. Lane
+/// SMB-PS-ADJUST-STYLES-2 gave every kind a WGSL body (legacy brightness / contrast and the second
+/// STU-RAS-151 set; parity in tests/gpu_adjust_styles_2.rs): none is refused by kind any more
+/// (modern brightness / contrast stays pigment's typed refusal at admission).
+const REFUSED_ADJUSTMENTS: [AdjustmentKind; 0] = [];
 
 fn run_ext(
     backend: &GpuBackend,
@@ -3487,8 +3471,8 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
         assert_eq!(backend.extension_exactness(op), Exactness::Unsupported);
     }
     // effects are implemented (fx_* tests); their class is pigment's (Approximate). The layer
-    // styles of lane SMB-PS-ADJUST-STYLES (satin, bevel & emboss, gradient overlay) have no GPU
-    // passes yet: typed refusal (the CPU backend renders them).
+    // styles of lane SMB-PS-ADJUST-STYLES (satin, bevel & emboss, gradient overlay) have GPU
+    // passes since lane SMB-PS-ADJUST-STYLES-2 (GPU_REFUSED_EFFECTS is empty).
     for kind in EffectKind::ALL {
         let want = if GPU_REFUSED_EFFECTS.contains(&kind) {
             Exactness::Unsupported
@@ -3562,8 +3546,10 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
         ),
         Err(BackendError::Unavailable("no_adapter"))
     );
-    // brightness / contrast: modern is pigment's typed refusal, legacy has no GPU body
-    for use_legacy in [false, true] {
+    // brightness / contrast: modern is pigment's typed refusal (legacy has a GPU body since lane
+    // SMB-PS-ADJUST-STYLES-2 and reaches the device: no_adapter here)
+    {
+        let use_legacy = false;
         let refused = run_ext(
             &backend,
             &adj_plan,
@@ -3586,6 +3572,19 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
             ),
             "legacy={use_legacy}: {refused:?}"
         );
+        let legacy = run_ext(
+            &backend,
+            &adj_plan,
+            &adj_ext(AdjustmentOp::BrightnessContrast(BrightnessContrast {
+                brightness: 10.0,
+                contrast: 10.0,
+                use_legacy: true,
+            })),
+            &approx,
+            &sources,
+            &mut sink,
+        );
+        assert_eq!(legacy, Err(BackendError::Unavailable("no_adapter")));
     }
     // knockout is refused before any upload
     for depth in [Knockout::Shallow, Knockout::Deep] {
@@ -4730,7 +4729,7 @@ fn fx_admission_and_refusals_run_without_adapter() {
     ));
 
     // capability: the six kinds of waves 1 and 2 are supported and report pigment's class, never
-    // a better one; the lane SMB-PS-ADJUST-STYLES styles are refused (GPU_REFUSED_EFFECTS)
+    // a better one (GPU_REFUSED_EFFECTS: none since lane SMB-PS-ADJUST-STYLES-2)
     for kind in EffectKind::ALL {
         let op = ExtOperator::Effect(kind);
         if GPU_REFUSED_EFFECTS.contains(&kind) {

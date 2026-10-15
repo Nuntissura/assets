@@ -13,8 +13,9 @@
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::{
-    EffectError, EffectOp, EffectOrder, GlowSource, StrokePosition, effect_support_px,
-    shadow_offset, shadow_split,
+    BevelEmbossOp, BevelPart, BevelStyle, BevelTechnique, EffectError, EffectOp, EffectOrder,
+    GlowSource, GradientOverlayOp, SatinOp, StrokePosition, effect_support_px, shadow_offset,
+    shadow_split,
 };
 use hsk_studio_pigment::render_plan::{ExtOperator, StudioBlendMode};
 
@@ -33,6 +34,16 @@ const OP_BLUR_H: u32 = 2;
 const OP_BLUR_V: u32 = 3;
 const OP_SHIFT: u32 = 4;
 const OP_FINISH: u32 = 5;
+/// Bevel shading of a height field (lane SMB-PS-ADJUST-STYLES-2; `style::bevel_matte`).
+const OP_BEVEL: u32 = 6;
+/// Chisel field: capped signed distance to the shape edge (`style::chisel_field`).
+const OP_CHISEL: u32 = 7;
+
+/// FINISH modes added by lane SMB-PS-ADJUST-STYLES-2 (fx.wgsl): satin `|fin - fin2| a`, satin
+/// inverted `(1 - |fin - fin2|) a`, the union `max(fin, a)` of a stroke and the shape.
+const FINISH_SATIN: u32 = 4;
+const FINISH_SATIN_INVERTED: u32 = 5;
+const FINISH_UNION: u32 = 6;
 
 /// Buffers a pass reads and writes: three f32 scratch planes and the matte buffer (the mask buffer
 /// of the composite kernels, so the matte composites through the existing kernel).
@@ -57,6 +68,8 @@ pub(crate) struct FxStep {
     outside: f32,
     dx: i32,
     dy: i32,
+    /// BEVEL: the shading constants `(k, light x, light y, light z, flat)` in the parameter tail.
+    extra: [f32; 8],
     pub(crate) fin: Buf,
     pub(crate) fin2: Buf,
     pub(crate) fout: Buf,
@@ -74,6 +87,7 @@ impl FxStep {
             outside: 0.0,
             dx: 0,
             dy: 0,
+            extra: [0.0; 8],
             fin: Buf::T1,
             fin2: Buf::T2,
             fout: Buf::T0,
@@ -156,6 +170,9 @@ pub(crate) struct FxEffect {
     pub(crate) over_content: bool,
     /// Largest `window area` of any pass (1 for point passes): the per-pixel cost bound.
     pub(crate) window_ops: u64,
+    /// Gradient overlay: the colour and stop opacity per pixel come from pigment's gradient
+    /// (`GradientOverlayOp::sample_at`), uploaded as the source region; the matte is the alpha.
+    pub(crate) gradient: Option<GradientOverlayOp>,
 }
 
 /// The effects of one layer and the margin they read around the layer bounds.
@@ -347,6 +364,13 @@ pub(crate) fn compile_effect(
                 }
             }
         },
+        EffectOp::Satin(o) => satin_steps(o, kernels, limit)?,
+        EffectOp::BevelEmboss(o) => bevel_steps(o, kernels, limit)?,
+        EffectOp::GradientOverlay(_) => {
+            let mut steps = vec![FxStep::new(OP_INIT, 0)];
+            assign(&mut steps, Buf::Mask);
+            (steps, 1)
+        }
         // An effect kind this backend has no passes for: pigment's operator key for it, what
         // shared admission reports (`ExtOperator::Effect(kind).key()`).
         _ => return Err(FxError::Unsupported(ExtOperator::Effect(op.kind()).key())),
@@ -358,7 +382,229 @@ pub(crate) fn compile_effect(
         opacity: op.opacity(),
         over_content: op.placement() == EffectOrder::OverContent,
         window_ops,
+        gradient: match op {
+            EffectOp::GradientOverlay(o) => Some(*o),
+            _ => None,
+        },
     })
+}
+
+/// Separable blur passes `from -> via -> to` (none for the identity kernel: the result is then
+/// `from`). Returns the buffer holding the result and the pass cost.
+fn blur_into(
+    steps: &mut Vec<FxStep>,
+    kernels: &mut FxKernels,
+    limit: u64,
+    blur_px: f32,
+    outside: f32,
+    (from, via, to): (Buf, Buf, Buf),
+) -> Result<(Buf, u64), FxError> {
+    let taps_len = feather_kernel(blur_px)
+        .map_err(|_| FxError::Unsupported("effect_size"))?
+        .len();
+    if taps_len <= 1 {
+        return Ok((from, 1));
+    }
+    let index = kernels.intern(blur_px, limit)?;
+    let half = u32::try_from(taps_len.saturating_sub(1) / 2).map_err(|_| FxError::Overflow)?;
+    for (op, fin, fout) in [(OP_BLUR_H, from, via), (OP_BLUR_V, via, to)] {
+        let mut s = FxStep::new(op, 0).explicit(fin, Buf::T2, fout);
+        s.k = half;
+        s.taps = Some(index);
+        s.outside = outside;
+        steps.push(s);
+    }
+    Ok((to, u64::try_from(taps_len).map_err(|_| FxError::Overflow)?))
+}
+
+/// Satin (`style::satin_matte`): the blurred alpha shifted by `+o` and by `-o`, `|plus - minus|`
+/// (inverted when asked) times the alpha.
+fn satin_steps(
+    o: &SatinOp,
+    kernels: &mut FxKernels,
+    limit: u64,
+) -> Result<(Vec<FxStep>, u64), FxError> {
+    let (dx, dy) = shadow_offset(o.angle_deg, o.distance_px).map_err(from_effect)?;
+    let mut steps = vec![FxStep::new(OP_INIT, 0).explicit(Buf::T1, Buf::T2, Buf::T0)];
+    let (blurred, ops) = blur_into(
+        &mut steps,
+        kernels,
+        limit,
+        o.size_px,
+        0.0,
+        (Buf::T0, Buf::T1, Buf::T0),
+    )?;
+    let minus = (
+        dx.checked_neg().ok_or(FxError::Overflow)?,
+        dy.checked_neg().ok_or(FxError::Overflow)?,
+    );
+    for ((sx, sy), out) in [((dx, dy), Buf::T1), (minus, Buf::T2)] {
+        let other = if out == Buf::T2 { Buf::T1 } else { Buf::T2 };
+        let mut s = FxStep::new(OP_SHIFT, 0).explicit(blurred, other, out);
+        s.dx = sx;
+        s.dy = sy;
+        steps.push(s);
+    }
+    let finish = if o.invert {
+        FINISH_SATIN_INVERTED
+    } else {
+        FINISH_SATIN
+    };
+    steps.push(FxStep::new(OP_FINISH, finish).explicit(Buf::T1, Buf::T2, Buf::Mask));
+    Ok((steps, ops))
+}
+
+/// One stroke half (pigment `stroke_half`) written to `out`.
+fn stroke_half_into(steps: &mut Vec<FxStep>, w: f32, outside: bool, out: Buf) -> Result<u64, FxError> {
+    let (init, beyond, finish) = if outside { (2, 0.0, 0) } else { (3, 1.0, 1) };
+    let d = dilate_step(w, beyond).explicit(Buf::T0, Buf::T2, Buf::T1);
+    let ops = window(d.k)?;
+    steps.push(FxStep::new(OP_INIT, init).explicit(Buf::T1, Buf::T2, Buf::T0));
+    steps.push(d);
+    steps.push(FxStep::new(OP_FINISH, finish).explicit(Buf::T1, Buf::T0, out));
+    Ok(ops)
+}
+
+/// The stroke matte of a stroke emboss into `T2` (pigment's stroke rule); `None` when the stroke
+/// is empty (the bevel then draws nothing).
+fn stroke_into_t2(
+    steps: &mut Vec<FxStep>,
+    size_px: f32,
+    position: StrokePosition,
+) -> Result<Option<u64>, FxError> {
+    Ok(match position {
+        StrokePosition::Outside | StrokePosition::Inside if size_px <= 0.0 => None,
+        StrokePosition::Outside => Some(stroke_half_into(steps, size_px, true, Buf::T2)?),
+        StrokePosition::Inside => Some(stroke_half_into(steps, size_px, false, Buf::T2)?),
+        StrokePosition::Centre => {
+            let w = size_px / 2.0;
+            if w <= 0.0 {
+                return Ok(None);
+            }
+            let ops = stroke_half_into(steps, w, true, Buf::T2)?;
+            // the inside half, min(outside + inside, 1) into T0, copied to T2
+            let d = dilate_step(w, 1.0).explicit(Buf::T0, Buf::T2, Buf::T1);
+            steps.push(FxStep::new(OP_INIT, 3).explicit(Buf::T1, Buf::T2, Buf::T0));
+            steps.push(d);
+            steps.push(FxStep::new(OP_FINISH, 3).explicit(Buf::T1, Buf::T2, Buf::T0));
+            steps.push(FxStep::new(OP_SHIFT, 0).explicit(Buf::T0, Buf::T1, Buf::T2));
+            Some(ops)
+        }
+    })
+}
+
+/// Bevel & emboss, one part (`style::bevel_matte`): the shape (the union of shape and stroke for
+/// stroke emboss) -> the height field (smooth blur, chisel distance, chisel soft blur) -> the
+/// shading with the region rule -> the optional soften blur.
+fn bevel_steps(
+    o: &BevelEmbossOp,
+    kernels: &mut FxKernels,
+    limit: u64,
+) -> Result<(Vec<FxStep>, u64), FxError> {
+    let s = &o.shape;
+    let mut steps = Vec::new();
+    let mut ops = 1u64;
+    // 1. the shape into T0
+    if s.style == BevelStyle::StrokeEmboss {
+        let Some(stroke) = s.stroke else {
+            return Ok((Vec::new(), 1));
+        };
+        let Some(stroke_ops) = stroke_into_t2(&mut steps, stroke.size_px, stroke.position)? else {
+            return Ok((Vec::new(), 1));
+        };
+        ops = ops.max(stroke_ops);
+        steps.push(FxStep::new(OP_FINISH, FINISH_UNION).explicit(Buf::T2, Buf::T1, Buf::T0));
+    } else {
+        steps.push(FxStep::new(OP_INIT, 0).explicit(Buf::T1, Buf::T2, Buf::T0));
+    }
+    // 2. the height field and its value beyond the frame
+    let (field, beyond) = match s.technique {
+        BevelTechnique::Smooth => {
+            let (f, cost) = blur_into(
+                &mut steps,
+                kernels,
+                limit,
+                s.size_px,
+                0.0,
+                (Buf::T0, Buf::T1, Buf::T0),
+            )?;
+            ops = ops.max(cost);
+            (f, 0.0)
+        }
+        BevelTechnique::ChiselHard | BevelTechnique::ChiselSoft => {
+            let mut c = FxStep::new(OP_CHISEL, 0).explicit(Buf::T0, Buf::T2, Buf::T1);
+            c.r = s.size_px;
+            c.k = (s.size_px + 0.5).ceil() as u32;
+            ops = ops.max(window(c.k)?);
+            steps.push(c);
+            let mut f = Buf::T1;
+            if s.technique == BevelTechnique::ChiselSoft {
+                let (b, cost) = blur_into(
+                    &mut steps,
+                    kernels,
+                    limit,
+                    s.size_px / 4.0,
+                    -1.0,
+                    (Buf::T1, Buf::T0, Buf::T1),
+                )?;
+                f = b;
+                ops = ops.max(cost);
+            }
+            (f, if s.size_px <= 0.0 { 0.0 } else { -1.0 })
+        }
+    };
+    // 3. the shading constants exactly as pigment derives them (binary64), passed as binary32
+    let scale = s.depth / 100.0 * s.size_px * if s.up { 1.0 } else { -1.0 };
+    let (sa, ca) = f64::from(s.angle_deg).to_radians().sin_cos();
+    let (sl, cl) = f64::from(s.altitude_deg).to_radians().sin_cos();
+    let style: u32 = match s.style {
+        BevelStyle::InnerBevel => 0,
+        BevelStyle::OuterBevel => 2,
+        BevelStyle::Emboss => 4,
+        BevelStyle::PillowEmboss => 6,
+        BevelStyle::StrokeEmboss => 8,
+    };
+    let mode = match o.part {
+        BevelPart::Highlight => style,
+        BevelPart::Shadow => style | 1,
+    };
+    let soften = s.soften_px > 0.0;
+    let out = match (soften, field) {
+        (false, _) => Buf::Mask,
+        (true, Buf::T0) => Buf::T1,
+        (true, _) => Buf::T0,
+    };
+    let mut b = FxStep::new(OP_BEVEL, mode).explicit(field, Buf::T2, out);
+    b.outside = beyond;
+    b.extra = [
+        scale,
+        (cl * ca) as f32,
+        (-cl * sa) as f32,
+        sl as f32,
+        sl as f32,
+        0.0,
+        0.0,
+        0.0,
+    ];
+    steps.push(b);
+    // 4. soften: the part matte blurred (zero beyond the frame), clamped into the mask
+    if soften {
+        let via = if out == Buf::T0 { Buf::T1 } else { Buf::T0 };
+        let (done, cost) = blur_into(
+            &mut steps,
+            kernels,
+            limit,
+            s.soften_px,
+            0.0,
+            (out, via, Buf::Mask),
+        )?;
+        ops = ops.max(cost);
+        if done != Buf::Mask {
+            // an identity kernel: copy the part matte into the mask
+            steps.push(FxStep::new(OP_SHIFT, 0).explicit(done, Buf::T2, Buf::Mask));
+        }
+    }
+    Ok((steps, ops))
 }
 
 /// Margin in pixels an effect reads around the layer bounds (pigment `effect_support_px`).
@@ -376,6 +622,7 @@ pub(crate) fn params_bytes(
 ) -> Result<Vec<u8>, FxError> {
     let taps = match step.taps {
         Some(i) => kernels.taps(i).ok_or(FxError::Unsupported("effect_plan"))?,
+        None if step.op == OP_BEVEL => &step.extra[..],
         None => &[],
     };
     let taps_n = u32::try_from(taps.len()).map_err(|_| FxError::Overflow)?;

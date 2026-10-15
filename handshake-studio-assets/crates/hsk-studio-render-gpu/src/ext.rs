@@ -9,7 +9,12 @@
 //! planes, so all integer arithmetic is checked (V4-01).
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::adjust_colour::{
+    MAX_GRADIENT_MAP_STOPS, MAX_LUT_SIDE, MAX_REPLACE_SAMPLES, SelectiveColourMethod,
+    ToneCompressionMethod, lut_entries,
+};
 use hsk_studio_pigment::adjust_math::{AdjustmentKind, AdjustmentOp, PreparedCurve};
+use hsk_studio_pigment::blend_math::lum;
 use hsk_studio_pigment::coverage_math::{
     BlendChannel, BlendRangeEntry, IDENTITY_RANGE, feather_kernel,
 };
@@ -22,8 +27,6 @@ pub(crate) const LUT_POINTS: usize = 4096;
 const LUT_LAST: f32 = 4095.0;
 /// Channels of the look-up table: composite, red, green, blue.
 const LUT_CHANNELS: usize = 4;
-/// Bytes of a full look-up table binding.
-pub(crate) const LUT_BYTES: u64 = 4 * 4096 * 4;
 /// Bytes of the placeholder binding when no layer uses curves (a binding cannot be empty).
 pub(crate) const MIN_LUT_BYTES: u64 = 16;
 /// Most Blend-If entries one layer can carry (one per channel).
@@ -148,11 +151,156 @@ pub(crate) fn compile_adjustment(
         }
         AdjustmentOp::Threshold { level } => out.params[0] = [*level, 0.0, 0.0, 0.0],
         AdjustmentOp::Posterize { levels } => out.params[0] = [f32::from(*levels), 0.0, 0.0, 0.0],
+        // Legacy transfer only; pigment's `prepare` refuses the modern form for every backend
+        // (kept here as defence in depth under the kind's key).
+        AdjustmentOp::BrightnessContrast(b) => {
+            if !b.use_legacy {
+                return Err(AdjustmentKind::BrightnessContrast.key());
+            }
+            out.params[0] = [b.brightness / 255.0, b.contrast / 100.0, 0.0, 0.0];
+        }
+        // Second STU-RAS-151 set (lane SMB-PS-ADJUST-STYLES-2): layouts as read by kernel.wgsl.
+        AdjustmentOp::Vibrance(v) => {
+            out.params[0] = [v.vibrance / 100.0, v.saturation / 100.0, 0.0, 0.0];
+        }
+        AdjustmentOp::ColourBalance(b) => {
+            for (slot, range) in out.params.iter_mut().zip([b.shadows, b.midtones, b.highlights]) {
+                *slot = [range[0], range[1], range[2], 0.0];
+            }
+            out.params[3] = [flag(b.preserve_luminosity), 0.0, 0.0, 0.0];
+        }
+        AdjustmentOp::PhotoFilter(f) => {
+            out.params[0] = [f.colour[0], f.colour[1], f.colour[2], f.density / 100.0];
+            out.params[1] = [flag(f.preserve_luminosity), 0.0, 0.0, 0.0];
+        }
+        AdjustmentOp::BlackAndWhite(b) => {
+            let w = b.weights.map(|v| v / 100.0);
+            out.params[0] = [w[0], w[1], w[2], w[3]];
+            out.params[1] = [w[4], w[5], flag(b.tint.is_some()), 0.0];
+            if let Some([h, sat]) = b.tint {
+                // pigment: hue (degrees / 360).rem_euclid(1) and saturation / 100 in binary64
+                out.params[2] = [
+                    (f64::from(h) / 360.0).rem_euclid(1.0) as f32,
+                    (f64::from(sat) / 100.0) as f32,
+                    0.0,
+                    0.0,
+                ];
+            }
+        }
+        AdjustmentOp::ChannelMixer(m) => {
+            out.params[0] = m.red;
+            out.params[1] = m.green;
+            out.params[2] = m.blue;
+            out.params[3] = [flag(m.monochrome), 0.0, 0.0, 0.0];
+        }
+        AdjustmentOp::SelectiveColour(sc) => {
+            out.params[0] = [
+                flag(sc.method == SelectiveColourMethod::Absolute),
+                0.0,
+                0.0,
+                0.0,
+            ];
+            out.lut = Some(table(sc.ranges.iter().flatten().copied(), 36)?);
+        }
+        AdjustmentOp::GradientMap(g) => {
+            if !(2..=MAX_GRADIENT_MAP_STOPS).contains(&g.stops.len()) {
+                return Err("gradient_map");
+            }
+            out.params[0] = [g.stops.len() as f32, flag(g.reverse), 0.0, 0.0];
+            let len = g.stops.len().checked_mul(4).ok_or("gradient_map")?;
+            out.lut = Some(table(
+                g.stops.iter().flat_map(|s| {
+                    [s.position, s.colour[0], s.colour[1], s.colour[2]]
+                }),
+                len,
+            )?);
+        }
+        AdjustmentOp::ColourLookup(l) => {
+            // side bounded before the table is read (pigment `validate` did the same at admission)
+            if !(2..=MAX_LUT_SIDE).contains(&l.side) {
+                return Err("colour_lookup");
+            }
+            let entries = lut_entries(l.side)
+                .filter(|n| *n == l.table.len())
+                .ok_or("colour_lookup")?;
+            out.params[0] = [f32::from(l.side), 0.0, 0.0, 0.0];
+            let len = entries.checked_mul(3).ok_or("colour_lookup")?;
+            out.lut = Some(table(l.table.iter().flatten().copied(), len)?);
+        }
+        AdjustmentOp::ShadowsHighlights(sh) => {
+            if sh.shadow_radius > 0.0 || sh.highlight_radius > 0.0 {
+                return Err("shadows_highlights");
+            }
+            out.params[0] = [
+                sh.shadow_amount,
+                sh.shadow_tone_width,
+                sh.highlight_amount,
+                sh.highlight_tone_width,
+            ];
+            out.params[1] = [sh.colour_correction, sh.midtone_contrast, 0.0, 0.0];
+        }
+        AdjustmentOp::ToneCompression(t) => {
+            let compress = match t.method {
+                ToneCompressionMethod::ExposureGamma => 0.0,
+                ToneCompressionMethod::HighlightCompression => 1.0,
+                _ => return Err("tone_compression"),
+            };
+            out.params[0] = [2f32.powf(t.exposure), t.gamma, compress, 0.0];
+        }
+        AdjustmentOp::MatchColour(m) => {
+            // pigment computes these per pixel from the same f32 operands (identical values)
+            let source_mean = if m.neutralize {
+                [lum(m.source_mean); 3]
+            } else {
+                m.source_mean
+            };
+            let k = [0usize, 1, 2].map(|i| {
+                let (tt, ss) = (m.target_std[i], m.source_std[i]);
+                if tt > 0.0 { ss / tt } else { 1.0 }
+            });
+            out.params[0] = [k[0], k[1], k[2], m.colour_intensity / 100.0];
+            out.params[1] = [source_mean[0], source_mean[1], source_mean[2], m.luminance];
+            out.params[2] = [m.target_mean[0], m.target_mean[1], m.target_mean[2], m.fade / 100.0];
+        }
+        AdjustmentOp::ReplaceColour(r) => {
+            if !(1..=MAX_REPLACE_SAMPLES).contains(&r.samples.len()) {
+                return Err("replace_colour");
+            }
+            out.params[0] = [r.samples.len() as f32, r.fuzziness, 0.0, 0.0];
+            out.params[1] = [
+                (f64::from(r.hue) / 360.0).rem_euclid(1.0) as f32,
+                (f64::from(r.saturation) / 100.0) as f32,
+                (f64::from(r.lightness) / 100.0) as f32,
+                0.0,
+            ];
+            let len = r.samples.len().checked_mul(4).ok_or("replace_colour")?;
+            out.lut = Some(table(
+                r.samples.iter().flat_map(|c| [c[0], c[1], c[2], 0.0]),
+                len,
+            )?);
+        }
         // An adjustment this backend has no encoding for: pigment's key for its kind, what
         // shared admission reports for it (`AdjustmentKind::key`).
         other => return Err(other.kind().key()),
     }
     Ok(out)
+}
+
+fn flag(on: bool) -> f32 {
+    if on { 1.0 } else { 0.0 }
+}
+
+/// A table of exactly `len` values for the `lut` binding (sizes are bounded by pigment's limits
+/// before this point; the reservation is fallible).
+fn table(values: impl Iterator<Item = f32>, len: usize) -> Result<Vec<f32>, &'static str> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| "adjustment_table")?;
+    out.extend(values.take(len));
+    if out.len() == len {
+        Ok(out)
+    } else {
+        Err("adjustment_table")
+    }
 }
 
 /// Kinds the shader must know by opcode: the position of `kind` in `AdjustmentKind::ALL`.
