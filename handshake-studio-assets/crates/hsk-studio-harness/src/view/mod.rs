@@ -40,6 +40,10 @@ pub mod audio_import;
 /// receipts (lane SMB-AUDIO-IMPORT-2, feature `audio-batch`).
 #[cfg(feature = "audio-batch")]
 pub mod audio_batch;
+/// The sequence mix graph (routing, buses, clip gains) saved with the session (lane
+/// SMB-AUDITION-SESSION-2, feature `audio-batch`).
+#[cfg(feature = "audio-batch")]
+pub mod audio_session;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).

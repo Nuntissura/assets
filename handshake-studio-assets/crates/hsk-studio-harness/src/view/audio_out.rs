@@ -20,7 +20,7 @@
 
 use super::monitor::{MonitorFail, ProgramMonitor, Transport};
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pulse::{AudioClock, AudioSources, PlaybackScheduler, TimelineMixStream, samples_floor};
+use hsk_studio_pulse::{AudioClock, AudioSources, PlaybackScheduler, TimelineBusStream, TimelineMixStream, samples_floor};
 use hsk_studio_score_device::{CloseReport, OutputStream, PushError};
 use serde_json::{Value, json};
 
@@ -39,9 +39,76 @@ pub struct AudioOutStats {
     pub loop_wraps: u64,
 }
 
+/// What the output plays (lane SMB-AUDITION-SESSION-2): the plain timeline mix, or the timeline
+/// through its submix buses, sends and master (pulse [`TimelineBusStream`] over score's mix graph).
+pub enum PlaybackMix<S: AudioSources> {
+    Timeline(TimelineMixStream<S>),
+    Buses(Box<TimelineBusStream>),
+}
+
+/// Source type of a bus-only output ([`AudioOut::with_buses`]); it holds no audio.
+pub struct NoTimeline;
+impl AudioSources for NoTimeline {
+    fn audio(&self, _: &hsk_studio_folio::ClipSource) -> Option<&[Vec<f32>]> {
+        None
+    }
+}
+
+impl<S: AudioSources> PlaybackMix<S> {
+    fn rate(&self) -> u32 {
+        match self {
+            Self::Timeline(m) => m.sample_rate_hz(),
+            Self::Buses(b) => b.sample_rate_hz(),
+        }
+    }
+    fn max_block_frames(&self) -> usize {
+        match self {
+            Self::Timeline(m) => m.max_block_frames(),
+            Self::Buses(b) => b.max_block_frames(),
+        }
+    }
+    /// Next sample the mix renders.
+    pub fn position(&self) -> u64 {
+        match self {
+            Self::Timeline(m) => m.position(),
+            Self::Buses(b) => b.position(),
+        }
+    }
+    fn seek(&mut self, at: u64, cancel: &CancellationToken) -> Result<(), MonitorFail> {
+        match self {
+            Self::Timeline(m) => {
+                m.seek(at);
+                Ok(())
+            }
+            Self::Buses(b) => b.seek(at, cancel).map_err(|e| fail("audio_mix", e.code())),
+        }
+    }
+    fn render(&mut self, left: &mut [f32], right: &mut [f32], cancel: &CancellationToken) -> Result<(), MonitorFail> {
+        match self {
+            Self::Timeline(m) => m.render(left, right, cancel),
+            Self::Buses(b) => b.render(left, right, cancel),
+        }
+        .map_err(|e| fail("audio_mix", e.code()))
+    }
+    /// The plain timeline mix, when that is what plays.
+    pub fn timeline(&self) -> Option<&TimelineMixStream<S>> {
+        match self {
+            Self::Timeline(m) => Some(m),
+            Self::Buses(_) => None,
+        }
+    }
+    /// The bus stream, when the buses play.
+    pub fn buses(&self) -> Option<&TimelineBusStream> {
+        match self {
+            Self::Timeline(_) => None,
+            Self::Buses(b) => Some(b.as_ref()),
+        }
+    }
+}
+
 /// Timeline mix -> score-device output, and the master clock.
 pub struct AudioOut<S: AudioSources> {
-    mix: TimelineMixStream<S>,
+    mix: PlaybackMix<S>,
     stream: OutputStream,
     block: usize,
     left: Vec<f32>,
@@ -63,9 +130,14 @@ impl<S: AudioSources> AudioOut<S> {
     /// `audio_config` when the stream's rate differs from the mix, it is not stereo, or its
     /// block exceeds the mix's block.
     pub fn new(mix: TimelineMixStream<S>, stream: OutputStream) -> Result<Self, MonitorFail> {
+        Self::with_mix(PlaybackMix::Timeline(mix), stream)
+    }
+
+    /// As [`AudioOut::new`] for either playback mix.
+    pub fn with_mix(mix: PlaybackMix<S>, stream: OutputStream) -> Result<Self, MonitorFail> {
         let config = stream.config().clone();
         let block = usize::try_from(config.block_frames).map_err(|_| fail("audio_config", "block"))?;
-        if config.sample_rate_hz != mix.sample_rate_hz()
+        if config.sample_rate_hz != mix.rate()
             || config.layout.channels() != 2
             || block > mix.max_block_frames()
         {
@@ -76,7 +148,7 @@ impl<S: AudioSources> AudioOut<S> {
                     config.sample_rate_hz,
                     config.layout.channels(),
                     block,
-                    mix.sample_rate_hz(),
+                    mix.rate(),
                     mix.max_block_frames()
                 ),
             ));
@@ -105,7 +177,7 @@ impl<S: AudioSources> AudioOut<S> {
     pub fn audible(&self) -> bool {
         self.audible
     }
-    pub fn mix(&self) -> &TimelineMixStream<S> {
+    pub fn mix(&self) -> &PlaybackMix<S> {
         &self.mix
     }
     pub fn stream(&self) -> &OutputStream {
@@ -127,7 +199,7 @@ impl<S: AudioSources> AudioOut<S> {
     /// Matches the audio to the scheduler: 1x forward playing -> audio from the scheduler's
     /// current position (the clock freezes until it is audible); otherwise silence.
     pub fn follow(&mut self, scheduler: &PlaybackScheduler) -> Result<(), MonitorFail> {
-        let rate = self.mix.sample_rate_hz();
+        let rate = self.mix.rate();
         let active = scheduler.active_range();
         let to_samples = |t| samples_floor(t, rate).map_err(|e| fail("audio_position", e.code()));
         self.range = (to_samples(active.start())?, to_samples(active.end())?);
@@ -142,7 +214,7 @@ impl<S: AudioSources> AudioOut<S> {
         let queued = self.stream.producer_occupied();
         self.audible_from = consumed.saturating_add(queued);
         self.offset = self.audible_from.saturating_sub(now);
-        self.mix.seek(at);
+        self.mix.seek(at, &CancellationToken::default())?;
         self.started_at = at;
         self.audible = true;
         self.stats.restarts = self.stats.restarts.saturating_add(1);
@@ -156,7 +228,7 @@ impl<S: AudioSources> AudioOut<S> {
             let pos = self.mix.position();
             if pos >= self.range.1 {
                 if self.looping && self.range.1 > self.range.0 {
-                    self.mix.seek(self.range.0);
+                    self.mix.seek(self.range.0, cancel)?;
                     self.stats.loop_wraps = self.stats.loop_wraps.saturating_add(1);
                     continue;
                 }
@@ -166,9 +238,7 @@ impl<S: AudioSources> AudioOut<S> {
             let left_in_range = usize::try_from(self.range.1.saturating_sub(pos)).unwrap_or(usize::MAX);
             let n = self.block.saturating_sub(filled).min(left_in_range);
             let end = filled.saturating_add(n);
-            self.mix
-                .render(&mut self.left[filled..end], &mut self.right[filled..end], cancel)
-                .map_err(|e| fail("audio_mix", e.code()))?;
+            self.mix.render(&mut self.left[filled..end], &mut self.right[filled..end], cancel)?;
             filled = end;
             mixed = true;
         }
@@ -264,9 +334,16 @@ impl Occupied for OutputStream {
     }
 }
 
+impl AudioOut<NoTimeline> {
+    /// Plays the timeline through its buses (pulse [`TimelineBusStream`]).
+    pub fn with_buses(buses: TimelineBusStream, stream: OutputStream) -> Result<Self, MonitorFail> {
+        Self::with_mix(PlaybackMix::Buses(Box::new(buses)), stream)
+    }
+}
+
 impl<S: AudioSources> AudioClock for AudioOut<S> {
     fn sample_rate_hz(&self) -> u32 {
-        self.mix.sample_rate_hz()
+        self.mix.rate()
     }
     fn sample_position(&self) -> u64 {
         self.stream

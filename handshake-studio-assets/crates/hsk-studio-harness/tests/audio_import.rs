@@ -348,7 +348,7 @@ fn imported_file_plays_through_the_device() {
     let deadline = Instant::now() + Duration::from_millis(400);
     while Instant::now() < deadline {
         out.pump(&cancel).unwrap();
-        let _ = m.refresh(&out, &NoFrames, out.mix().sources(), &cancel).unwrap();
+        let _ = m.refresh(&out, &NoFrames, out.mix().timeline().unwrap().sources(), &cancel).unwrap();
         std::thread::sleep(Duration::from_millis(2));
     }
     out.command(&mut m, |m, c| m.pause(c)).unwrap().unwrap();

@@ -32,6 +32,7 @@ fn job(input: &Path, output: PathBuf, chain: Vec<EffectSpec>, format: MixFormat)
         options: ImportOptions::default(),
         limits: ImportLimits::default(),
         chain,
+        keyframes: Vec::new(),
         format,
     }
 }
@@ -242,4 +243,63 @@ fn effect_presets_are_stored_records_that_drive_the_batch_chain() {
     let bad_path = dir.join("bad.json");
     std::fs::write(&bad_path, bad).unwrap();
     assert_eq!(load_preset_set(&bad_path).unwrap_err().code, "preset_invalid");
+}
+
+/// Lane SMB-AUDITION-SESSION-2: preset keyframes are applied. A stored gain preset keyframed from
+/// 0 dB at the start to -12 dB at 1 s (linear in dB, then held) runs the batch chain as an
+/// automated score track; the output equals the hand-computed envelope on a constant input. Keys
+/// score cannot automate and offsets off the sample grid are typed refusals.
+#[test]
+fn preset_keyframes_automate_the_batch_chain() {
+    use hsk_studio_folio as folio;
+    use hsk_studio_harness::view::audio_batch::job_parts_from_preset;
+    let dir = support_audio::scratch("keyframes");
+    let second = 254_016_000_000u64;
+    let preset = folio::StudioAudioEffectPreset {
+        preset_id: "duck".into(),
+        name: "Duck".into(),
+        category_path: vec!["Dynamics".into()],
+        effects: vec![folio::StudioAudioEffectInstance {
+            instance_id: "fx-0".into(),
+            filter_kind: "gain".into(),
+            enabled: true,
+            params: vec![folio::StudioAudioPresetParam { key: "db".into(), value: 0.0 }],
+            keyframes: vec![
+                folio::StudioAudioPresetKeyframe { key: "db".into(), offset_ticks: 0, value: 0.0 },
+                folio::StudioAudioPresetKeyframe { key: "db".into(), offset_ticks: second, value: -12.0 },
+            ],
+        }],
+    };
+    let (chain, keyframes) = job_parts_from_preset(&preset).unwrap();
+    assert_eq!(keyframes.len(), 1);
+    let frames = 72_000;
+    let input = dir.join("dc.wav");
+    std::fs::write(&input, wav(1, 48_000, WavFormat::Float32, None, &vec![0.25; frames])).unwrap();
+    let mut j = job(&input, dir.join("duck.flac"), chain.clone(), MixFormat::Flac { bits: 24 });
+    j.keyframes = keyframes.clone();
+    let mut queue = AudioBatchQueue::new(actor());
+    queue.submit(j);
+    let r = queue.run();
+    assert_eq!(r[0].outcome, BatchOutcome::Complete, "{}", r[0].to_json());
+    assert!(r[0].automated && r[0].to_json()["automated"] == true);
+    let out = decode(&dir.join("duck.flac"));
+    assert_eq!((out.frames(), out.channels), (frames, 1));
+    for k in [0usize, 1, 12_000, 24_000, 47_999, 48_000, 60_000, 71_999] {
+        let db = if k < 48_000 { -12.0 * k as f64 / 48_000.0 } else { -12.0 };
+        let want = 0.25 * 10f64.powf(db / 20.0);
+        assert!((f64::from(out.interleaved[k]) - want).abs() <= 1.0 / 8_388_608.0 + 1e-7, "{k}: {} vs {want}", out.interleaved[k]);
+    }
+    // Refusals.
+    let mut dynamics = preset.clone();
+    dynamics.effects[0] = EffectSpec::Dynamics(score::DynamicsParams::compressor(-18.0, 3.0)).to_preset_instance("fx-0");
+    dynamics.effects[0].keyframes = vec![folio::StudioAudioPresetKeyframe { key: "attack_ms".into(), offset_ticks: 0, value: 5.0 }];
+    assert!(job_parts_from_preset(&dynamics).unwrap_err().detail.contains("not automatable"));
+    let mut off_grid = job(&input, dir.join("off.flac"), chain, MixFormat::Flac { bits: 24 });
+    off_grid.keyframes = keyframes;
+    off_grid.keyframes[0].points[1].0 = second + 1;
+    let mut queue = AudioBatchQueue::new(actor());
+    queue.submit(off_grid);
+    let r = queue.run();
+    assert!(matches!(&r[0].outcome, BatchOutcome::Failed { code: "preset_keyframe_offset", .. }), "{}", r[0].to_json());
+    assert!(!dir.join("off.flac").exists());
 }

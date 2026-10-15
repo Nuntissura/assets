@@ -47,7 +47,7 @@ pub enum EffectSpec {
 }
 
 impl EffectSpec {
-    fn build(&self, rate: u32, channels: usize) -> Result<Box<dyn score::Processor + Send>, score::ScoreError> {
+    pub(crate) fn build(&self, rate: u32, channels: usize) -> Result<Box<dyn score::Processor + Send>, score::ScoreError> {
         Ok(match self {
             Self::Gain { db } => Box::new(score::Gain::from_db(*db)?),
             Self::Equalizer {
@@ -58,6 +58,56 @@ impl EffectSpec {
             Self::Limiter(p) => Box::new(score::LookaheadLimiter::new(rate, channels, *p)?),
         })
     }
+
+    /// The same processor as an automatable score stage (every kind here is `Automatable`).
+    fn build_automatable(&self, rate: u32, channels: usize) -> Result<Box<dyn score::Automatable + Send>, score::ScoreError> {
+        Ok(match self {
+            Self::Gain { db } => Box::new(score::Gain::from_db(*db)?),
+            Self::Equalizer {
+                sections,
+                master_gain_db,
+            } => Box::new(score::Equalizer::new(rate, channels, sections, *master_gain_db)?),
+            Self::Dynamics(p) => Box::new(score::Dynamics::new(rate, channels, *p)?),
+            Self::Limiter(p) => Box::new(score::LookaheadLimiter::new(rate, channels, *p)?),
+        })
+    }
+
+    /// Score automation index of a stored parameter key (lane SMB-AUDITION-SESSION-2): gain `db` 0;
+    /// equalizer `master_gain_db` 0 and `section_<i>_frequency_hz|gain_db|q` 1 + 3i .. 3 + 3i;
+    /// dynamics `threshold_db` 0, `ratio` 1, `makeup_db` 2; limiter `ceiling_db` 0, `release_ms` 1.
+    /// Other parameters are not automatable in score.
+    pub fn automation_index(&self, key: &str) -> Option<usize> {
+        match self {
+            Self::Gain { .. } => (key == "db").then_some(0),
+            Self::Equalizer { sections, .. } => {
+                if key == "master_gain_db" {
+                    return Some(0);
+                }
+                let rest = key.strip_prefix("section_")?;
+                let (i, field) = rest.split_once('_')?;
+                let i: usize = i.parse().ok().filter(|i| *i < sections.len())?;
+                let k = match field {
+                    "frequency_hz" => 1,
+                    "gain_db" => 2,
+                    "q" => 3,
+                    _ => return None,
+                };
+                i.checked_mul(3)?.checked_add(k)
+            }
+            Self::Dynamics(_) => ["threshold_db", "ratio", "makeup_db"].iter().position(|k| *k == key),
+            Self::Limiter(_) => ["ceiling_db", "release_ms"].iter().position(|k| *k == key),
+        }
+    }
+}
+
+/// Keyframes of one parameter of one chain effect: `(offset ticks from the file start, value)`,
+/// linear between keyframes and held outside them (score `Interpolation::Linear`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectKeyframes {
+    /// Index into [`AudioBatchJob::chain`].
+    pub effect: usize,
+    pub key: String,
+    pub points: Vec<(u64, f64)>,
 }
 
 /// One batch item.
@@ -73,6 +123,9 @@ pub struct AudioBatchJob {
     pub limits: ImportLimits,
     /// Ordered effects (empty: import and export only).
     pub chain: Vec<EffectSpec>,
+    /// Parameter keyframes of chain effects (lane SMB-AUDITION-SESSION-2); non-empty runs the chain
+    /// as an automated score track instead of a static bounce.
+    pub keyframes: Vec<EffectKeyframes>,
     pub format: MixFormat,
 }
 
@@ -187,6 +240,8 @@ pub struct AudioBatchReceipt {
     pub output_sha256: Option<String>,
     /// The published file was re-decoded by reel: same frames and channels, and the FLAC MD5 matched.
     pub verified: bool,
+    /// The chain ran automated (keyframes applied through a score session).
+    pub automated: bool,
 }
 
 impl AudioBatchReceipt {
@@ -211,6 +266,7 @@ impl AudioBatchReceipt {
             "export": self.export.as_ref().map(MixExport::to_json),
             "output_sha256": self.output_sha256,
             "verified": self.verified,
+            "automated": self.automated,
         })
     }
 }
@@ -282,6 +338,7 @@ impl AudioBatchQueue {
                 export: None,
                 output_sha256: None,
                 verified: false,
+                automated: false,
             };
             let result = run_item(&self.actor, &job, &item.handle, &mut receipt);
             receipt.outcome = match result {
@@ -329,6 +386,96 @@ fn score_fail(e: score::ScoreError) -> MonitorFail {
     }
 }
 
+/// The chain as an automated one-track score session: every effect an `EffectSlot`, every keyframed
+/// parameter an automation lane (ticks to samples exactly, else `preset_keyframe_offset`; keys score
+/// cannot automate are `preset_effect`), latency compensated by the session; the output has the
+/// input's frames and channels.
+fn automated(
+    job: &AudioBatchJob,
+    planar: &[Vec<f32>],
+    rate: u32,
+    done: &AtomicU64,
+    receipt: &mut AudioBatchReceipt,
+    cancel: &CancellationToken,
+) -> Result<Vec<Vec<f32>>, MonitorFail> {
+    let channels = planar.len();
+    let per_sample = hsk_studio_accord::TICKS_PER_SECOND
+        .checked_div(u64::from(rate))
+        .filter(|_| hsk_studio_accord::TICKS_PER_SECOND.is_multiple_of(u64::from(rate)))
+        .ok_or_else(|| fail("preset_keyframe_offset", "rate"))?;
+    let mut slots = Vec::with_capacity(job.chain.len());
+    for (i, spec) in job.chain.iter().enumerate() {
+        let processor = spec.build_automatable(rate, channels).map_err(score_fail)?;
+        receipt.chain.push(processor.identity());
+        let params = processor.automation_parameters();
+        let mut slot = score::EffectSlot::new(processor);
+        for k in job.keyframes.iter().filter(|k| k.effect == i) {
+            let index = spec
+                .automation_index(&k.key)
+                .ok_or_else(|| fail("preset_effect", format!("effect {i}: {} is not automatable", k.key)))?;
+            let range = params.get(index).map(|p| (p.min, p.max)).ok_or_else(|| fail("preset_effect", k.key.clone()))?;
+            let mut points = Vec::with_capacity(k.points.len());
+            for (ticks, v) in &k.points {
+                let sample = ticks
+                    .checked_div(per_sample)
+                    .filter(|_| ticks.is_multiple_of(per_sample))
+                    .ok_or_else(|| fail("preset_keyframe_offset", format!("{ticks} ticks is not a whole sample at {rate} Hz")))?;
+                points.push((sample, *v));
+            }
+            let lane = score::AutomationLane::new(&points, score::Interpolation::Linear, range).map_err(score_fail)?;
+            slot = slot.with_lane(index, lane);
+        }
+        slots.push(slot);
+    }
+    if job.keyframes.iter().any(|k| k.effect >= job.chain.len()) {
+        return Err(fail("preset_effect", "keyframes of a missing effect"));
+    }
+    let mut track = score::TrackSpec::new(planar.to_vec(), 0);
+    track.pan = score::AutomationLane::constant(if channels == 1 { -1.0 } else { 0.0 });
+    track.effects = slots;
+    let mut session = score::Session::new(rate, BLOCK, vec![track]).map_err(score_fail)?;
+    let frames = planar.first().map_or(0, Vec::len);
+    let mut out = vec![vec![0.0f32; frames]; channels];
+    let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    let mut at = 0usize;
+    while at < frames {
+        let n = BLOCK.min(frames.saturating_sub(at));
+        let end = at.saturating_add(n);
+        session.render(at as u64, &mut l[..n], &mut r[..n], cancel).map_err(score_fail)?;
+        out[0][at..end].copy_from_slice(&l[..n]);
+        if channels == 2 {
+            out[1][at..end].copy_from_slice(&r[..n]);
+        }
+        done.fetch_add(n as u64, Ordering::AcqRel);
+        at = end;
+    }
+    Ok(out)
+}
+
+/// The chain and keyframes of a stored preset for a batch job (lane SMB-AUDITION-SESSION-2):
+/// disabled instances skipped (their keyframes with them), keyframes mapped to [`EffectKeyframes`].
+pub fn job_parts_from_preset(preset: &folio::StudioAudioEffectPreset) -> Result<(Vec<EffectSpec>, Vec<EffectKeyframes>), MonitorFail> {
+    let mut chain = Vec::new();
+    let mut keyframes: Vec<EffectKeyframes> = Vec::new();
+    for e in preset.effects.iter().filter(|e| e.enabled) {
+        let mut stat = e.clone();
+        stat.keyframes.clear();
+        let Some(spec) = EffectSpec::from_preset_instance(&stat)? else { continue };
+        let index = chain.len();
+        for k in &e.keyframes {
+            if spec.automation_index(&k.key).is_none() {
+                return Err(fail("preset_effect", format!("{}: {} is not automatable", e.instance_id, k.key)));
+            }
+            match keyframes.iter_mut().find(|x| x.effect == index && x.key == k.key) {
+                Some(x) => x.points.push((k.offset_ticks, k.value)),
+                None => keyframes.push(EffectKeyframes { effect: index, key: k.key.clone(), points: vec![(k.offset_ticks, k.value)] }),
+            }
+        }
+        chain.push(spec);
+    }
+    Ok((chain, keyframes))
+}
+
 fn run_item(
     actor: &ActorContext,
     job: &AudioBatchJob,
@@ -371,6 +518,9 @@ fn run_item(
     let processed: Vec<Vec<f32>> = if job.chain.is_empty() {
         handle.shared.done.fetch_add(frames, Ordering::AcqRel);
         audio.planar.as_ref().clone()
+    } else if !job.keyframes.is_empty() {
+        receipt.automated = true;
+        automated(job, &audio.planar, audio.sample_rate, &handle.shared.done, receipt, cancel)?
     } else {
         let layout = if channels == 2 {
             score::ChannelLayout::stereo()
