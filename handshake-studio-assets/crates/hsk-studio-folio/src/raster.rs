@@ -7,7 +7,10 @@
 //!
 //! Members:
 //! - `StudioAdjustment` (STU-RAS-151, first set: levels, curves, hue_saturation,
-//!   brightness_contrast, exposure, invert, threshold, posterize) on a layer of kind `adjustment`
+//!   brightness_contrast, exposure, invert, threshold, posterize; second set, lane
+//!   SMB-PS-ADJUST-STYLES: vibrance, colour_balance, photo_filter, black_and_white, channel_mixer,
+//!   selective_colour, gradient_map, colour_lookup, shadows_highlights, tone_compression,
+//!   match_colour, replace_colour) on a layer of kind `adjustment`
 //!   whose payload is `PrimitiveReference { schema_id: "hsk.studio.adjustment@1", object_id: <its own
 //!   layer id> }` (Accord defines no identity prefix for that schema, so the adjustment is keyed by
 //!   its hosting layer; STU-RAS-007: one adjustment per adjustment layer). Such a layer may be a
@@ -63,6 +66,14 @@ pub const MAX_CURVE_POINTS: usize = 256;
 pub const MAX_EFFECTS: usize = 1024;
 /// Hue/saturation colour bands (a Folio hard ceiling; the spec says band count is data).
 pub const MAX_HUE_BANDS: usize = 64;
+/// Gradient-map stops (a Folio hard ceiling, equal to pigment's).
+pub const MAX_GRADIENT_MAP_STOPS: usize = 256;
+/// Colour-lookup cube side (a Folio hard ceiling, equal to pigment's: 65^3 entries).
+pub const MAX_LUT_SIDE: u16 = 65;
+/// Replace-colour samples (a Folio hard ceiling, equal to pigment's).
+pub const MAX_REPLACE_SAMPLES: usize = 64;
+/// Channel-mixer rows and weights per row (CMYK has four channels).
+pub const MAX_MIXER_CHANNELS: usize = 4;
 /// `StudioMask.feather` hard maximum in pixels (STU-RAS-115).
 pub const MAX_MASK_FEATHER: f64 = 10_000.0;
 /// Blur effect radius maximum in pixels: the D19 (f) engineering effect-size bound (STU-RAS-180 (f),
@@ -178,6 +189,164 @@ pub enum StudioAdjustment {
     Posterize {
         levels: u16,
     },
+    // Second set (lane SMB-PS-ADJUST-STYLES). Bounds the spec marks `unknown` are checked for
+    // finiteness only; the soft ranges are enforced by pigment at lowering (typed refusal).
+    /// Percent, soft `-100..=100`.
+    Vibrance {
+        vibrance: f64,
+        saturation: f64,
+    },
+    /// Per tonal range `[cyan_red, magenta_green, yellow_blue]`, soft `-100..=100`.
+    ColourBalance {
+        shadows: [f64; 3],
+        midtones: [f64; 3],
+        highlights: [f64; 3],
+        preserve_luminosity: bool,
+    },
+    /// `density` percent, soft `1..=100`.
+    PhotoFilter {
+        filter_colour: StudioColor,
+        density: f64,
+        preserve_luminosity: bool,
+    },
+    /// Six weights percent (soft `-200..=300`), tint hue degrees `0..=360`, tint saturation percent.
+    BlackAndWhite {
+        red: f64,
+        yellow: f64,
+        green: f64,
+        cyan: f64,
+        blue: f64,
+        magenta: f64,
+        tint_enabled: bool,
+        tint_hue: f64,
+        tint_saturation: f64,
+    },
+    /// One row per output channel (the list length is channel-count dependent, STU-RAS-151); each
+    /// row holds one weight per input channel and a constant, percent (soft `-200..=200`).
+    ChannelMixer {
+        outputs: Vec<StudioMixerRow>,
+        monochrome: bool,
+    },
+    /// Nine CMYK quadruples, percent hard `-100..=100` (derived).
+    SelectiveColour {
+        method: StudioSelectiveColourMethod,
+        reds: [f64; 4],
+        yellows: [f64; 4],
+        greens: [f64; 4],
+        cyans: [f64; 4],
+        blues: [f64; 4],
+        magentas: [f64; 4],
+        whites: [f64; 4],
+        neutrals: [f64; 4],
+        blacks: [f64; 4],
+    },
+    /// The gradient's stops by value (STU-VEC-136 stop record: position and opacity percent,
+    /// midpoint percent or null), at least two, positions non-decreasing.
+    GradientMap {
+        stops: Vec<crate::StudioGradientStop>,
+        reverse: bool,
+        dither: bool,
+    },
+    /// `lut` is the artifact reference (STU-RAS-151); `table` is its resolved cube carried by value
+    /// beside the reference (as a contour carries its points, STU-RAS-158), absent when unresolved.
+    ColourLookup {
+        lut: String,
+        lut_kind: StudioLutKind,
+        dither: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        table: Option<StudioLutTable>,
+    },
+    /// The ten-field shape (STU-RAS-151): amounts and tone widths percent `0..=100`, radii
+    /// pixels, colour correction and midtone contrast counts, clips percent.
+    ShadowsHighlights {
+        shadow_amount: f64,
+        shadow_tone_width: f64,
+        shadow_radius: f64,
+        highlight_amount: f64,
+        highlight_tone_width: f64,
+        highlight_radius: f64,
+        colour_correction: f64,
+        midtone_contrast: f64,
+        black_clip: f64,
+        white_clip: f64,
+    },
+    /// HDR toning (`tone_compression`): method, exposure, gamma, compression.
+    ToneCompression {
+        method: StudioToneMethod,
+        exposure: f64,
+        gamma: f64,
+        compression: f64,
+    },
+    /// Percent controls (hard `0..=100`, luminance and intensity `1..=200`) and the resolved
+    /// source selection as statistics.
+    MatchColour {
+        luminance: f64,
+        colour_intensity: f64,
+        fade: f64,
+        neutralize: bool,
+        source: StudioMatchStatistics,
+    },
+    /// Fuzziness percent hard `0..=200` (derived), sampled colours, HSL shift.
+    ReplaceColour {
+        fuzziness: f64,
+        samples: Vec<StudioColor>,
+        shift: StudioHslShift,
+    },
+}
+
+/// One channel-mixer output row: weights per input channel and the constant, percent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioMixerRow {
+    pub weights: Vec<f64>,
+    pub constant: f64,
+}
+
+/// Selective colour method (STU-RAS-151: `relative = 1 | absolute = 2`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioSelectiveColourMethod {
+    Relative,
+    Absolute,
+}
+
+/// Colour lookup kind (STU-RAS-151 `lut_kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioLutKind {
+    #[serde(rename = "3dlut")]
+    Lut3d,
+    Abstract,
+    DeviceLink,
+}
+
+/// A resolved 3D LUT: `side^3` RGB entries `0..=1`, red fastest; side `2..=`[`MAX_LUT_SIDE`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioLutTable {
+    pub side: u16,
+    pub values: Vec<[f64; 3]>,
+}
+
+/// Tone-compression method (the spec names the enum, not its members; members are the four
+/// shipped HDR-toning methods).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioToneMethod {
+    ExposureGamma,
+    HighlightCompression,
+    LocalAdaptation,
+    EqualizeHistogram,
+}
+
+/// Match-colour source selection resolved to per-channel statistics (`0..=1`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioMatchStatistics {
+    pub source_mean: [f64; 3],
+    pub source_std: [f64; 3],
+    pub target_mean: [f64; 3],
+    pub target_std: [f64; 3],
 }
 
 /// `StudioMask.density` / `.feather` and the invert state (STU-RAS-115, STU-RAS-124).
@@ -754,6 +923,233 @@ fn validate_adjustment(a: &StudioAdjustment, target: &str, cx: &mut Ctx) -> Resu
         }
         StudioAdjustment::Posterize { levels } => {
             check((2..=255).contains(levels), target, "posterize/levels")?;
+        }
+        StudioAdjustment::Vibrance {
+            vibrance,
+            saturation,
+        } => check(finite(*vibrance) && finite(*saturation), target, "vibrance")?,
+        StudioAdjustment::ColourBalance {
+            shadows,
+            midtones,
+            highlights,
+            ..
+        } => check(
+            [shadows, midtones, highlights]
+                .into_iter()
+                .flatten()
+                .all(|v| finite(*v)),
+            target,
+            "colour_balance",
+        )?,
+        StudioAdjustment::PhotoFilter {
+            filter_colour,
+            density,
+            ..
+        } => {
+            colour(filter_colour, target, cx)?;
+            check(percent(*density), target, "photo_filter/density")?;
+        }
+        StudioAdjustment::BlackAndWhite {
+            red,
+            yellow,
+            green,
+            cyan,
+            blue,
+            magenta,
+            tint_hue,
+            tint_saturation,
+            ..
+        } => {
+            check(
+                [red, yellow, green, cyan, blue, magenta]
+                    .into_iter()
+                    .all(|v| finite(*v)),
+                target,
+                "black_and_white/weights",
+            )?;
+            check(
+                tint_hue.is_finite() && (0.0..=360.0).contains(tint_hue),
+                target,
+                "black_and_white/tint_hue",
+            )?;
+            check(percent(*tint_saturation), target, "black_and_white/tint_saturation")?;
+        }
+        StudioAdjustment::ChannelMixer { outputs, .. } => {
+            check(
+                (1..=MAX_MIXER_CHANNELS).contains(&outputs.len())
+                    && outputs.iter().all(|r| {
+                        (1..=MAX_MIXER_CHANNELS).contains(&r.weights.len())
+                            && r.weights.iter().all(|v| finite(*v))
+                            && finite(r.constant)
+                    }),
+                target,
+                "channel_mixer/outputs",
+            )?;
+        }
+        StudioAdjustment::SelectiveColour {
+            reds,
+            yellows,
+            greens,
+            cyans,
+            blues,
+            magentas,
+            whites,
+            neutrals,
+            blacks,
+            ..
+        } => check(
+            [
+                reds, yellows, greens, cyans, blues, magentas, whites, neutrals, blacks,
+            ]
+            .into_iter()
+            .flatten()
+            .all(|v| v.is_finite() && (-100.0..=100.0).contains(v)),
+            target,
+            "selective_colour",
+        )?,
+        StudioAdjustment::GradientMap { stops, .. } => {
+            check(
+                (2..=MAX_GRADIENT_MAP_STOPS).contains(&stops.len()),
+                target,
+                "gradient_map/stops",
+            )?;
+            cx.nodes(stops.len(), target)?;
+            for s in stops {
+                check(
+                    percent(s.position)
+                        && percent(s.opacity)
+                        && s.midpoint
+                            .is_none_or(|m| m.is_finite() && (13.0..=87.0).contains(&m)),
+                    target,
+                    "gradient_map/stop",
+                )?;
+                colour(&s.colour, target, cx)?;
+            }
+            check(
+                stops.windows(2).all(|w| match w {
+                    [a, b] => a.position <= b.position,
+                    _ => true,
+                }),
+                target,
+                "gradient_map/order",
+            )?;
+        }
+        StudioAdjustment::ColourLookup { lut, table, .. } => {
+            check(!lut.is_empty() && label(lut), target, "colour_lookup/lut")?;
+            if let Some(t) = table {
+                // Side first: a hostile side is refused before the values are walked.
+                check(
+                    (2..=MAX_LUT_SIDE).contains(&t.side),
+                    target,
+                    "colour_lookup/side",
+                )?;
+                let s = usize::from(t.side);
+                let n = s.checked_mul(s).and_then(|v| v.checked_mul(s));
+                check(n == Some(t.values.len()), target, "colour_lookup/values")?;
+                cx.nodes(t.values.len(), target)?;
+                check(
+                    t.values
+                        .iter()
+                        .flatten()
+                        .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+                    target,
+                    "colour_lookup/values",
+                )?;
+            }
+        }
+        StudioAdjustment::ShadowsHighlights {
+            shadow_amount,
+            shadow_tone_width,
+            shadow_radius,
+            highlight_amount,
+            highlight_tone_width,
+            highlight_radius,
+            colour_correction,
+            midtone_contrast,
+            black_clip,
+            white_clip,
+        } => {
+            check(
+                [shadow_amount, highlight_amount, shadow_tone_width, highlight_tone_width]
+                    .into_iter()
+                    .all(|v| percent(*v)),
+                target,
+                "shadows_highlights/amounts",
+            )?;
+            check(
+                nonneg(*shadow_radius) && nonneg(*highlight_radius),
+                target,
+                "shadows_highlights/radius",
+            )?;
+            check(
+                finite(*colour_correction) && finite(*midtone_contrast),
+                target,
+                "shadows_highlights/counts",
+            )?;
+            check(
+                percent(*black_clip) && percent(*white_clip),
+                target,
+                "shadows_highlights/clips",
+            )?;
+        }
+        StudioAdjustment::ToneCompression {
+            exposure,
+            gamma,
+            compression,
+            ..
+        } => check(
+            finite(*exposure) && gamma.is_finite() && *gamma > 0.0 && finite(*compression),
+            target,
+            "tone_compression",
+        )?,
+        StudioAdjustment::MatchColour {
+            luminance,
+            colour_intensity,
+            fade,
+            source,
+            ..
+        } => {
+            check(
+                [luminance, colour_intensity]
+                    .into_iter()
+                    .all(|v| v.is_finite() && (1.0..=200.0).contains(v))
+                    && percent(*fade),
+                target,
+                "match_colour",
+            )?;
+            check(
+                [
+                    source.source_mean,
+                    source.source_std,
+                    source.target_mean,
+                    source.target_std,
+                ]
+                .iter()
+                .flatten()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+                target,
+                "match_colour/source",
+            )?;
+        }
+        StudioAdjustment::ReplaceColour {
+            fuzziness,
+            samples,
+            shift,
+        } => {
+            check(
+                fuzziness.is_finite() && (0.0..=200.0).contains(fuzziness),
+                target,
+                "replace_colour/fuzziness",
+            )?;
+            check(
+                (1..=MAX_REPLACE_SAMPLES).contains(&samples.len()),
+                target,
+                "replace_colour/samples",
+            )?;
+            for s in samples {
+                colour(s, target, cx)?;
+            }
+            hsl(shift, -100.0, target)?;
         }
     }
     Ok(())

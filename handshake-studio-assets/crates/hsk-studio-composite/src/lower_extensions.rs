@@ -20,7 +20,8 @@ use hsk_studio_folio::{
     StudioAdjustment,
     StudioAdjustmentChannel, StudioAdvancedBlending, StudioBlendChannel, StudioColor,
     StudioContour, StudioCurve, StudioEffect, StudioEffectKind, StudioEffectStack,
-    StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioRasterRecords,
+    StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioLutKind,
+    StudioRasterRecords, StudioSelectiveColourMethod, StudioToneMethod,
 };
 use hsk_studio_pigment::adjust_math::{
     BrightnessContrast, Curves, Exposure, HueSaturation, Levels, LevelsRecord,
@@ -294,8 +295,264 @@ pub(crate) fn convert_adjustment(
             }
         }
         StudioAdjustment::Posterize { levels } => AdjustmentOp::Posterize { levels: *levels },
+        other => convert_second_set(other, space)?,
     };
     Ok(ConvertedAdjustment { op, notes })
+}
+
+/// Refusal code: an adjustment colour bound to an assigned profile (composite converts no colour;
+/// the document working space, explicit null, is accepted).
+pub const REFUSE_ADJUSTMENT_COLOUR_PROFILE: &str = "adjustment_colour_profile";
+/// Refusal code: an adjustment colour other than black or white in a linear-light plan.
+pub const REFUSE_ADJUSTMENT_COLOUR_LINEAR: &str = "adjustment_colour_linear_light";
+/// Refusal code: a channel mixer whose matrix is not 3 x 3 (RGB).
+pub const REFUSE_CHANNEL_MIXER_SHAPE: &str = "channel_mixer_shape";
+/// Refusal code: a gradient-map stop with a midpoint other than 50 % or opacity below 100 %
+/// (pigment interpolates linearly between opaque stops).
+pub const REFUSE_GRADIENT_MAP_STOP: &str = "gradient_map_stop";
+/// Refusal code: gradient-map or colour-lookup dither (pigment has no dither).
+pub const REFUSE_ADJUSTMENT_DITHER: &str = "adjustment_dither";
+/// Refusal code: a colour lookup whose cube is not resolved, or not a 3D LUT.
+pub const REFUSE_COLOUR_LOOKUP: &str = "colour_lookup_unresolved";
+/// Refusal code: a tone-compression `compression` other than 0 (no pigment counterpart).
+pub const REFUSE_TONE_COMPRESSION: &str = "tone_compression_compression";
+
+/// The pigment op of one Folio adjustment, exactly as the render-plan lowering converts it (lowering
+/// notes dropped), or the refusal code. Public so importers and tests can check a record without a
+/// document (lane SMB-PS-ADJUST-STYLES, `tests/adjust_colour_records.rs`).
+pub fn adjustment_op(a: &StudioAdjustment, space: BlendSpace) -> Result<AdjustmentOp, &'static str> {
+    convert_adjustment(a, space).map(|c| c.op)
+}
+
+fn adjustment_rgb(c: &StudioColor, space: BlendSpace) -> Result<[f32; 3], &'static str> {
+    if matches!(c.colour_profile_id, ProfileBinding::Assigned(_)) {
+        return Err(REFUSE_ADJUSTMENT_COLOUR_PROFILE);
+    }
+    let rgb = [c.r as f32, c.g as f32, c.b as f32];
+    if space == BlendSpace::LinearLight && rgb.iter().any(|v| *v != 0.0 && *v != 1.0) {
+        return Err(REFUSE_ADJUSTMENT_COLOUR_LINEAR);
+    }
+    Ok(rgb)
+}
+
+fn f3(v: [f64; 3]) -> [f32; 3] {
+    v.map(|x| x as f32)
+}
+
+/// The second STU-RAS-151 set (lane SMB-PS-ADJUST-STYLES): unit conversions only; parameter ranges
+/// are pigment's (`AdjustmentOp::prepare`).
+fn convert_second_set(
+    a: &StudioAdjustment,
+    space: BlendSpace,
+) -> Result<AdjustmentOp, &'static str> {
+    use hsk_studio_pigment::adjust_math as am;
+    Ok(match a {
+        StudioAdjustment::Vibrance {
+            vibrance,
+            saturation,
+        } => AdjustmentOp::Vibrance(am::Vibrance {
+            vibrance: *vibrance as f32,
+            saturation: *saturation as f32,
+        }),
+        StudioAdjustment::ColourBalance {
+            shadows,
+            midtones,
+            highlights,
+            preserve_luminosity,
+        } => AdjustmentOp::ColourBalance(am::ColourBalance {
+            shadows: f3(*shadows),
+            midtones: f3(*midtones),
+            highlights: f3(*highlights),
+            preserve_luminosity: *preserve_luminosity,
+        }),
+        StudioAdjustment::PhotoFilter {
+            filter_colour,
+            density,
+            preserve_luminosity,
+        } => AdjustmentOp::PhotoFilter(am::PhotoFilter {
+            colour: adjustment_rgb(filter_colour, space)?,
+            density: *density as f32,
+            preserve_luminosity: *preserve_luminosity,
+        }),
+        StudioAdjustment::BlackAndWhite {
+            red,
+            yellow,
+            green,
+            cyan,
+            blue,
+            magenta,
+            tint_enabled,
+            tint_hue,
+            tint_saturation,
+        } => AdjustmentOp::BlackAndWhite(am::BlackAndWhite {
+            weights: [*red, *yellow, *green, *cyan, *blue, *magenta].map(|v| v as f32),
+            tint: tint_enabled.then_some([*tint_hue as f32, *tint_saturation as f32]),
+        }),
+        StudioAdjustment::ChannelMixer {
+            outputs,
+            monochrome,
+        } => {
+            if outputs.len() != 3 {
+                return Err(REFUSE_CHANNEL_MIXER_SHAPE);
+            }
+            let row = |i: usize| -> Result<[f32; 4], &'static str> {
+                let r = outputs.get(i).ok_or(REFUSE_CHANNEL_MIXER_SHAPE)?;
+                let [w0, w1, w2] = r.weights.as_slice() else {
+                    return Err(REFUSE_CHANNEL_MIXER_SHAPE);
+                };
+                Ok([*w0, *w1, *w2, r.constant].map(|v| v as f32))
+            };
+            AdjustmentOp::ChannelMixer(am::ChannelMixer {
+                red: row(0)?,
+                green: row(1)?,
+                blue: row(2)?,
+                monochrome: *monochrome,
+            })
+        }
+        StudioAdjustment::SelectiveColour {
+            method,
+            reds,
+            yellows,
+            greens,
+            cyans,
+            blues,
+            magentas,
+            whites,
+            neutrals,
+            blacks,
+        } => AdjustmentOp::SelectiveColour(am::SelectiveColour {
+            method: match method {
+                StudioSelectiveColourMethod::Relative => am::SelectiveColourMethod::Relative,
+                StudioSelectiveColourMethod::Absolute => am::SelectiveColourMethod::Absolute,
+            },
+            ranges: [
+                reds, yellows, greens, cyans, blues, magentas, whites, neutrals, blacks,
+            ]
+            .map(|q| q.map(|v| v as f32)),
+        }),
+        StudioAdjustment::GradientMap {
+            stops,
+            reverse,
+            dither,
+        } => {
+            if *dither {
+                return Err(REFUSE_ADJUSTMENT_DITHER);
+            }
+            let mut out = Vec::with_capacity(stops.len());
+            for s in stops {
+                if s.midpoint.is_some_and(|m| m != 50.0) || s.opacity != 100.0 {
+                    return Err(REFUSE_GRADIENT_MAP_STOP);
+                }
+                out.push(am::GradientMapStop {
+                    position: (s.position / 100.0) as f32,
+                    colour: adjustment_rgb(&s.colour, space)?,
+                });
+            }
+            AdjustmentOp::GradientMap(am::GradientMap {
+                stops: out,
+                reverse: *reverse,
+            })
+        }
+        StudioAdjustment::ColourLookup {
+            lut_kind,
+            dither,
+            table,
+            ..
+        } => {
+            if *dither {
+                return Err(REFUSE_ADJUSTMENT_DITHER);
+            }
+            let (StudioLutKind::Lut3d, Some(t)) = (lut_kind, table) else {
+                return Err(REFUSE_COLOUR_LOOKUP);
+            };
+            AdjustmentOp::ColourLookup(am::ColourLookup {
+                side: t.side,
+                table: t.values.iter().map(|v| f3(*v)).collect(),
+            })
+        }
+        StudioAdjustment::ShadowsHighlights {
+            shadow_amount,
+            shadow_tone_width,
+            shadow_radius,
+            highlight_amount,
+            highlight_tone_width,
+            highlight_radius,
+            colour_correction,
+            midtone_contrast,
+            black_clip,
+            white_clip,
+        } => AdjustmentOp::ShadowsHighlights(am::ShadowsHighlights {
+            shadow_amount: *shadow_amount as f32,
+            shadow_tone_width: *shadow_tone_width as f32,
+            shadow_radius: *shadow_radius as f32,
+            highlight_amount: *highlight_amount as f32,
+            highlight_tone_width: *highlight_tone_width as f32,
+            highlight_radius: *highlight_radius as f32,
+            colour_correction: *colour_correction as f32,
+            midtone_contrast: *midtone_contrast as f32,
+            black_clip: *black_clip as f32,
+            white_clip: *white_clip as f32,
+        }),
+        StudioAdjustment::ToneCompression {
+            method,
+            exposure,
+            gamma,
+            compression,
+        } => {
+            if *compression != 0.0 {
+                return Err(REFUSE_TONE_COMPRESSION);
+            }
+            AdjustmentOp::ToneCompression(am::ToneCompression {
+                method: match method {
+                    StudioToneMethod::ExposureGamma => am::ToneCompressionMethod::ExposureGamma,
+                    StudioToneMethod::HighlightCompression => {
+                        am::ToneCompressionMethod::HighlightCompression
+                    }
+                    StudioToneMethod::LocalAdaptation => am::ToneCompressionMethod::LocalAdaptation,
+                    StudioToneMethod::EqualizeHistogram => {
+                        am::ToneCompressionMethod::EqualizeHistogram
+                    }
+                },
+                exposure: *exposure as f32,
+                gamma: *gamma as f32,
+            })
+        }
+        StudioAdjustment::MatchColour {
+            luminance,
+            colour_intensity,
+            fade,
+            neutralize,
+            source,
+        } => AdjustmentOp::MatchColour(am::MatchColour {
+            luminance: *luminance as f32,
+            colour_intensity: *colour_intensity as f32,
+            fade: *fade as f32,
+            neutralize: *neutralize,
+            source_mean: f3(source.source_mean),
+            source_std: f3(source.source_std),
+            target_mean: f3(source.target_mean),
+            target_std: f3(source.target_std),
+        }),
+        StudioAdjustment::ReplaceColour {
+            fuzziness,
+            samples,
+            shift,
+        } => {
+            let mut out = Vec::with_capacity(samples.len());
+            for s in samples {
+                out.push(adjustment_rgb(s, space)?);
+            }
+            AdjustmentOp::ReplaceColour(am::ReplaceColour {
+                samples: out,
+                fuzziness: *fuzziness as f32,
+                hue: shift.hue as f32,
+                saturation: shift.saturation as f32,
+                lightness: shift.lightness as f32,
+            })
+        }
+        // The first set is converted by the caller.
+        _ => return Err(REFUSE_ADJUSTMENT_RECORD),
+    })
 }
 
 fn channel(c: StudioBlendChannel) -> BlendChannel {
