@@ -99,6 +99,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 schema_token!(VectorRecordsSchema, "hsk.studio.vector_records@1");
 
+#[path = "vector_tools.rs"]
+mod tools;
+pub use tools::*;
+
 /// Tile layout (STU-COL-195 members; the STU-VEC-138 captured tokens are in
 /// [`StudioTileType::capture_token`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -466,6 +470,19 @@ pub struct StudioVectorRecords {
     /// byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub width_profiles: Vec<crate::StudioWidthProfile>,
+    /// Swatches, swatch bindings, brushes, brush strokes and envelopes (lane
+    /// SMB-ILLUSTRATOR-TOOLS-2, `vector_tools.rs`; each absent when empty, so record sets written
+    /// before them are byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swatches: Vec<StudioSwatch>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swatch_paints: Vec<StudioSwatchPaint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub brushes: Vec<StudioVectorBrush>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub brush_strokes: Vec<StudioBrushStroke>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub envelopes: Vec<StudioEnvelope>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -482,7 +499,32 @@ impl StudioVectorRecords {
             boolean_groups: Vec::new(),
             mask_parameters: Vec::new(),
             width_profiles: Vec::new(),
+            swatches: Vec::new(),
+            swatch_paints: Vec::new(),
+            brushes: Vec::new(),
+            brush_strokes: Vec::new(),
+            envelopes: Vec::new(),
         }
+    }
+    /// The swatch `swatch_id`.
+    pub fn swatch(&self, swatch_id: &str) -> Option<&StudioSwatch> {
+        self.swatches.iter().find(|s| s.swatch_id == swatch_id)
+    }
+    /// The swatch binding of row `row` of style `style_id`.
+    pub fn swatch_paint(&self, style_id: &str, row: u32) -> Option<&StudioSwatchPaint> {
+        self.swatch_paints.iter().find(|p| p.style_id == style_id && p.row == row)
+    }
+    /// The brush `brush_id`.
+    pub fn brush(&self, brush_id: &str) -> Option<&StudioVectorBrush> {
+        self.brushes.iter().find(|b| b.brush_id == brush_id)
+    }
+    /// The brush binding of stroke row `row` of style `style_id`.
+    pub fn brush_stroke(&self, style_id: &str, row: u32) -> Option<&StudioBrushStroke> {
+        self.brush_strokes.iter().find(|b| b.style_id == style_id && b.row == row)
+    }
+    /// The envelope of layer `layer_id`.
+    pub fn envelope(&self, layer_id: &str) -> Option<&StudioEnvelope> {
+        self.envelopes.iter().find(|e| e.layer_id == layer_id)
     }
     /// The width profile of the stroke of path `path_id`.
     pub fn width_profile(&self, path_id: &str) -> Option<&crate::StudioWidthProfile> {
@@ -937,6 +979,8 @@ pub fn validate_vector_records(
         crate::validate_width_profile(p)?;
         unique(&mut profiled, p.path_id.as_str(), "width_profiles/path_id")?;
     }
+
+    tools::validate_tools(r, &layers, design, &mut cx)?;
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;
     let styles: BTreeMap<&str, &StudioPaintStyle> = design
