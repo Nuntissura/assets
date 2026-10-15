@@ -529,13 +529,14 @@ fn dng_converts_to_one_developed_raster_layer_and_opens_in_a_session() {
 #[test]
 #[ignore = "external CC0 camera raw samples (oracle corpus raw-vendor/); run with --run-ignored ignored-only"]
 fn proprietary_raw_refusals_pass_through_develop_unchanged() {
-    // The import refusal is develop's own first refusal on the import path, unchanged. CR3 decodes
-    // since SMB-DEVELOP-RAW-COMPRESSED (ec53c53) but the decoded container carries no colour tags, so
-    // develop's colour solve refuses missing_colour_data; the SuperCCD RAF has no TIFF raw block, so
-    // decode_container refuses decoder_unavailable. A silent import of either is a failure.
+    // The import refusal is develop's own first refusal on the import path, unchanged: the SuperCCD
+    // RAF has no TIFF raw block, so decode_container refuses decoder_unavailable; the LX7 RW2 decodes
+    // and carries its as-shot white balance but no colour matrix (no file matrix, no spectral-table
+    // entry), so develop's colour solve refuses missing_colour_data (SMB-DEVELOP-CAMERA-COLOUR keeps
+    // the typed refusal for models without a matrix). A silent import of either is a failure.
     let cancel = CancellationToken::default();
     let cases = [
-        ("raw-vendor/canon-eos-r6.cr3", "solve_colour", "missing_colour_data"),
+        ("raw-vendor/panasonic-dmc-lx7.rw2", "solve_colour", "missing_colour_data"),
         ("raw-vendor/fujifilm-finepix-s5000.raf", "decode_container", "decoder_unavailable"),
     ];
     for (file, step, code) in cases {
@@ -558,4 +559,33 @@ fn proprietary_raw_refusals_pass_through_develop_unchanged() {
             Ok(_) => panic!("{file}: imported, expected develop's {step} refusal {code}"),
         }
     }
+}
+
+#[cfg(feature = "import-raw")]
+#[test]
+#[ignore = "external CC0 camera raw sample (oracle corpus raw-vendor/); run with --run-ignored ignored-only"]
+fn cr3_imports_through_the_spectral_table_colour_route() {
+    // End to end (SMB-DEVELOP-CAMERA-COLOUR): the R6 CR3 decodes, its as-shot neutral comes from
+    // Canon ColorData, its colour from the rawtoaces-data spectral table, and the import develops
+    // the default window into one linear-light raster layer whose receipt names the colour route.
+    let Some(bytes) = pinned("cr3_imports", "raw-vendor/canon-eos-r6.cr3", "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778") else {
+        return;
+    };
+    let cancel = CancellationToken::default();
+    let doc = match import(&bytes, &TrustAllResolver, &cancel) {
+        Ok(doc) => doc,
+        Err(e) => panic!("CR3 import refused: {e}"),
+    };
+    assert_eq!(doc.format, SourceFormat::CameraRaw);
+    let develop = &doc.receipt["develop"];
+    assert_eq!(develop["colour_route"], "spectral_table", "{develop}");
+    assert_eq!(develop["colour_source"], "SpectralTable { make: \"Canon\", model: \"EOS R6\", alias: false }");
+    assert!(develop["colour_assumption"].is_null());
+    let layers = &doc.snapshot.document().layers;
+    assert_eq!(layers.len(), 1);
+    assert!(matches!(layers[0].payload, folio::Payload::Raster { .. }), "{:?}", layers[0].payload);
+    let window = develop["window"].as_array().unwrap();
+    assert!(window[2].as_u64().unwrap() > 3000 && window[3].as_u64().unwrap() > 2000, "{window:?}");
+    assert!(doc.receipt["tiles"].as_u64().unwrap_or(0) > 0, "{}", doc.receipt["tiles"]);
+    println!("CR3 import window={} tiles={} colour={}", develop["window"], doc.receipt["tiles"], develop["colour_source"]);
 }

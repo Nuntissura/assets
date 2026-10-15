@@ -373,7 +373,7 @@ mod with_package {
         use hsk_studio_develop as develop;
         let prepared = raw_prepare(bytes, format, cancel)?;
         let (image, receipt) = develop::develop_to_image(&prepared.plane, &prepared.recipe, 1, cancel).map_err(|e| prepared.refusal(e))?;
-        let (window, window_report) = (prepared.window, prepared.window_report);
+        let (window, window_report, colour_route) = (prepared.window, prepared.window_report, prepared.colour_route);
         let (proposal, frames) = raw_proposal(&prepared, image, resolver, cancel)?;
         drop(prepared);
         let colour = super::colour::summary(
@@ -387,6 +387,7 @@ mod with_package {
                 "route": receipt.route, "profile_route": receipt.profile_route, "math_token": receipt.math_token,
                 "demosaic": receipt.demosaic_algorithm,
                 "window": [window.x, window.y, window.width, window.height],
+                "colour_route": colour_route.key(), "colour_source": format!("{colour_route:?}"), "colour_assumption": colour_route.assumption(),
                 "clamped_below": window_report.clamped_below, "clamped_above": window_report.clamped_above,
                 "black_rounded": window_report.black_rounded, "black_site_adjusted": window_report.black_site_adjusted,
                 "output": "linear light, sRGB primaries (xyz_d50_to_linear_srgb), as-shot white balance, baseline exposure not applied",
@@ -409,6 +410,9 @@ mod with_package {
         pub recipe: hsk_studio_develop::DevelopRecipe,
         /// The file's DNG colour tags (raw-form white balance re-solves them: `recipe_for_white_point`).
         pub colour: hsk_studio_develop::DngColor,
+        /// Where `colour` came from (DNG tags, a vendor matrix tag or the spectral table; lane
+        /// SMB-DEVELOP-CAMERA-COLOUR).
+        pub colour_route: hsk_studio_develop::ColourRoute,
         /// XYZ D50 -> linear sRGB primaries, the profile matrix of `recipe`.
         pub to_profile: hsk_studio_develop::color::Mat3,
         source: hsk_studio_interop_psd::SourceIdentity,
@@ -451,7 +455,7 @@ mod with_package {
         };
         let to_srgb = develop::color::xyz_d50_to_linear_srgb().map_err(refusal)?;
         let (recipe, _) = raw.recipe(&to_srgb, binding, develop::BaselineExposure::Ignore).map_err(refusal)?;
-        Ok(RawPrepared { format, window, window_report, plane, recipe, colour: raw.color, to_profile: to_srgb, source, mint })
+        Ok(RawPrepared { format, window, window_report, plane, recipe, colour: raw.color, colour_route: raw.colour_route, to_profile: to_srgb, source, mint })
     }
 
     /// One developed image as interop-psd's raster proposal (one 32-bit `Background` layer through
