@@ -553,9 +553,22 @@ pub fn blend_rgb(
 // holds for normal / dissolve (`B = Cs`), multiply (`b s`), darken (`min`), lighten (`max`),
 // difference (`|b - s|`), subtract (`max(b - s, 0)`), darker / lighter colour (choice by channel
 // sum) and linear dodge (add), whose `min(1, a + b)` is exactly that unit clamp and becomes
-// `a + b`. Every other mode is UNDEFINED above 1 and refused (the non-separable hue / saturation /
-// colour / luminosity go through ClipColor, which clips to [0, 1]; divide saturates at 1).
-// Photoshop's 32-bit mode list is UNVERIFIED (D5); this is pigment's formula reading.
+// `a + b`.
+//
+// Lane SMB-PIGMENT-EXTENDED-RANGE-2 adds the modes that have a DOCUMENTED float-domain formula
+// that equals pigment's unit formula on [0, 1]: Foundry Nuke's Merge operations (the scene-linear
+// compositing reference, learn.foundry.com `comp_environment/merging/merge_operations.html`, Nuke
+// 17.1v2) give screen as `A or B <= 1 ? A+B-AB : max(A,B)` and exclusion as `A+B-2AB` (A the
+// source, B the backdrop; both symmetric). The older Nuke reference-guide Screen page states the
+// screen condition as `0<A<1 and 0<B<1`; pigment follows the current operations page (choice
+// UNVERIFIED against Nuke's runtime, D5). Every other mode stays UNDEFINED above 1 and is refused
+// by name ([`extended_mode_key`]): no documented float formula, or the documented one differs from
+// the unit formula (Nuke soft-light; Nuke divide `A/B` is source over backdrop, pigment's is
+// backdrop over source), or only a prose rule (Nuke overlay / hard-light / colour dodge / burn);
+// the non-separable hue / saturation / colour / luminosity go through ClipColor, which clips to
+// [0, 1]. Adobe lists hue, saturation, colour and luminosity among its 32-bit modes but documents
+// no formula (UNVERIFIED, D5). Spec: STU-COL-120 (reduced availability reported per operation),
+// STU-RAS-155 (b) (mode applicability by depth is inspectable).
 
 /// Is `mode` defined on extended-range samples (see the rule above)?
 pub fn extended_defined(mode: StudioBlendMode) -> bool {
@@ -572,7 +585,61 @@ pub fn extended_defined(mode: StudioBlendMode) -> bool {
             | LinearDodgeAdd
             | DarkerColour
             | LighterColour
+            | Screen
+            | Exclusion
     )
+}
+
+/// Refusal key naming `mode` in an extended-range plan (`ExtOperator::ExtendedRangeMode`):
+/// `sample_range_extended_mode_<mode key>`.
+pub const fn extended_mode_key(mode: StudioBlendMode) -> &'static str {
+    match mode {
+        StudioBlendMode::PassThrough => "sample_range_extended_mode_pass_through",
+        StudioBlendMode::Normal => "sample_range_extended_mode_normal",
+        StudioBlendMode::Dissolve => "sample_range_extended_mode_dissolve",
+        StudioBlendMode::Darken => "sample_range_extended_mode_darken",
+        StudioBlendMode::Multiply => "sample_range_extended_mode_multiply",
+        StudioBlendMode::ColourBurn => "sample_range_extended_mode_colour_burn",
+        StudioBlendMode::LinearBurn => "sample_range_extended_mode_linear_burn",
+        StudioBlendMode::Lighten => "sample_range_extended_mode_lighten",
+        StudioBlendMode::Screen => "sample_range_extended_mode_screen",
+        StudioBlendMode::ColourDodge => "sample_range_extended_mode_colour_dodge",
+        StudioBlendMode::LinearDodgeAdd => "sample_range_extended_mode_linear_dodge_add",
+        StudioBlendMode::Overlay => "sample_range_extended_mode_overlay",
+        StudioBlendMode::SoftLight => "sample_range_extended_mode_soft_light",
+        StudioBlendMode::HardLight => "sample_range_extended_mode_hard_light",
+        StudioBlendMode::VividLight => "sample_range_extended_mode_vivid_light",
+        StudioBlendMode::LinearLight => "sample_range_extended_mode_linear_light",
+        StudioBlendMode::PinLight => "sample_range_extended_mode_pin_light",
+        StudioBlendMode::Difference => "sample_range_extended_mode_difference",
+        StudioBlendMode::Exclusion => "sample_range_extended_mode_exclusion",
+        StudioBlendMode::Hue => "sample_range_extended_mode_hue",
+        StudioBlendMode::Saturation => "sample_range_extended_mode_saturation",
+        StudioBlendMode::Colour => "sample_range_extended_mode_colour",
+        StudioBlendMode::Luminosity => "sample_range_extended_mode_luminosity",
+        StudioBlendMode::Behind => "sample_range_extended_mode_behind",
+        StudioBlendMode::Clear => "sample_range_extended_mode_clear",
+        StudioBlendMode::HardMix => "sample_range_extended_mode_hard_mix",
+        StudioBlendMode::LighterColour => "sample_range_extended_mode_lighter_colour",
+        StudioBlendMode::DarkerColour => "sample_range_extended_mode_darker_colour",
+        StudioBlendMode::Subtract => "sample_range_extended_mode_subtract",
+        StudioBlendMode::Divide => "sample_range_extended_mode_divide",
+        StudioBlendMode::Average => "sample_range_extended_mode_average",
+        StudioBlendMode::Negation => "sample_range_extended_mode_negation",
+        StudioBlendMode::Reflect => "sample_range_extended_mode_reflect",
+        StudioBlendMode::Glow => "sample_range_extended_mode_glow",
+        StudioBlendMode::Erase => "sample_range_extended_mode_erase",
+    }
+}
+
+/// Extended screen (Foundry Nuke Merge `screen`): `b + s - b s` when either value is at most 1,
+/// else `max(b, s)`; equals [`screen`] on [0, 1].
+fn screen_extended(b: f32, s: f32) -> f32 {
+    if b <= 1.0 || s <= 1.0 {
+        screen(b, s)
+    } else {
+        b.max(s)
+    }
 }
 fn check_rgb_finite(c: [f32; 3]) -> Result<(), BlendError> {
     if c.iter().all(|v| v.is_finite()) {
@@ -602,6 +669,11 @@ pub fn blend_rgb_extended(
     Ok(match mode {
         Normal | Dissolve => cs,
         LinearDodgeAdd => [cb[0] + cs[0], cb[1] + cs[1], cb[2] + cs[2]],
+        Screen => [
+            screen_extended(cb[0], cs[0]),
+            screen_extended(cb[1], cs[1]),
+            screen_extended(cb[2], cs[2]),
+        ],
         DarkerColour | LighterColour => {
             let (sum_s, sum_b) = (cs.iter().sum::<f32>(), cb.iter().sum::<f32>());
             let take_source = if mode == DarkerColour { sum_s < sum_b } else { sum_s > sum_b };

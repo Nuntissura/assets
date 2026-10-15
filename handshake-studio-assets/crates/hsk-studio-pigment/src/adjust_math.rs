@@ -11,6 +11,7 @@
 //! kind carries an exactness class with the same meaning as `blend_math::Exactness`; Photoshop
 //! does not publish its adjustment maths, so all kinds but `invert` are `Approximate` and listed
 //! on the D5 oracle list.
+use crate::render_plan::SampleRange;
 use crate::blend_math::{BlendError, Exactness, Rgba, StudioBlendMode, blend_rgb};
 use serde::Serialize;
 use std::fmt;
@@ -551,6 +552,39 @@ impl PreparedAdjustment {
         &self.op
     }
 
+    /// [`PreparedAdjustment::apply`] in `range`. Extended (lane SMB-PIGMENT-EXTENDED-RANGE-2) is
+    /// defined for [`adjustment_extended_defined`] only: exposure on linear-light values,
+    /// `v = x 2^stops + offset`, then `v^(1/gamma)` where `v > 0`, without the unit clamps (any
+    /// finite input; a non-finite result is `OutOfDomain`). Every other kind is
+    /// `Unsupported("sample_range_extended")`.
+    pub fn apply_in(&self, range: SampleRange, rgb: [f32; 3]) -> Result<[f32; 3], AdjustError> {
+        if range == SampleRange::Unit {
+            return self.apply(rgb);
+        }
+        if !adjustment_extended_defined(&self.op) {
+            return Err(AdjustError::Unsupported("sample_range_extended"));
+        }
+        if !rgb.iter().all(|v| v.is_finite()) {
+            return Err(AdjustError::OutOfDomain);
+        }
+        let AdjustmentOp::Exposure(e) = &self.op else {
+            return Err(AdjustError::Unsupported("sample_range_extended"));
+        };
+        let gain = 2f32.powf(e.exposure);
+        let out = rgb.map(|x| {
+            let mut v = x * gain + e.offset;
+            if e.gamma != 1.0 && v > 0.0 {
+                v = v.powf(1.0 / e.gamma);
+            }
+            v
+        });
+        if out.iter().all(|v| v.is_finite()) {
+            Ok(out)
+        } else {
+            Err(AdjustError::OutOfDomain)
+        }
+    }
+
     /// The adjusted colour `f(rgb)`; alpha is not an input (adjustments act on colour only).
     pub fn apply(&self, rgb: [f32; 3]) -> Result<[f32; 3], AdjustError> {
         if !rgb.iter().all(|v| unit(*v)) {
@@ -634,6 +668,17 @@ impl PreparedAdjustment {
     }
 }
 
+/// Is `op` defined on extended-range (scene-referred) values? Only exposure on linear-light values
+/// (`linearize_gamma == 1`): Adobe documents the Exposure adjustment as made for HDR / 32-bit
+/// images and computed in a linear (gamma 1.0) space, and its formula has no unit white point.
+/// Levels, curves, hue/saturation, brightness/contrast, invert (`1 - x`), threshold and posterize
+/// are defined on [0, 1] (their ranges, tables, HSL model or `1 - x` refer to the white point) and
+/// are undefined above 1 (STU-COL-120, STU-FX-006a); exposure on encoded values needs the
+/// `x^2.2` power stand-in, undefined for negative values.
+pub fn adjustment_extended_defined(op: &AdjustmentOp) -> bool {
+    matches!(op, AdjustmentOp::Exposure(e) if e.linearize_gamma == 1.0)
+}
+
 /// Exactness of the adjustment-layer compositing rule itself (alpha preserved; see
 /// [`composite_adjustment`]). Studio rule, Photoshop behaviour on a semi-transparent backdrop
 /// UNVERIFIED (D5 1).
@@ -666,6 +711,37 @@ pub fn composite_adjustment(
     adjustment: &PreparedAdjustment,
     coverage: f32,
 ) -> Result<Rgba, AdjustLayerError> {
+    composite_adjustment_in(SampleRange::Unit, mode, backdrop, adjustment, coverage)
+}
+
+/// [`composite_adjustment`] in `range`: extended uses [`PreparedAdjustment::apply_in`] and
+/// `blend_rgb_extended`, and keeps `lerp(Cb, B, k)` unclamped (a non-finite result is
+/// `OutOfDomain`).
+pub fn composite_adjustment_in(
+    range: SampleRange,
+    mode: StudioBlendMode,
+    backdrop: Rgba,
+    adjustment: &PreparedAdjustment,
+    coverage: f32,
+) -> Result<Rgba, AdjustLayerError> {
+    if range == SampleRange::Extended {
+        if !unit(coverage) || !unit(backdrop.a) {
+            return Err(AdjustError::OutOfDomain.into());
+        }
+        let adjusted = adjustment.apply_in(range, backdrop.rgb)?;
+        let blended = crate::blend_math::blend_rgb_extended(mode, backdrop.rgb, adjusted)?;
+        if backdrop.a <= 0.0 {
+            return Ok(Rgba::TRANSPARENT);
+        }
+        let mut rgb = [0.0f32; 3];
+        for (i, out) in rgb.iter_mut().enumerate() {
+            *out = backdrop.rgb[i] + (blended[i] - backdrop.rgb[i]) * coverage;
+        }
+        if !rgb.iter().all(|v| v.is_finite()) {
+            return Err(AdjustError::OutOfDomain.into());
+        }
+        return Ok(Rgba { rgb, a: backdrop.a });
+    }
     if !unit(coverage) || !unit(backdrop.a) {
         return Err(AdjustError::OutOfDomain.into());
     }

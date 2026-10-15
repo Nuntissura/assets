@@ -16,8 +16,9 @@ pub use crate::blend_math::{
 mod extensions;
 mod output;
 pub use output::{
-    DISPLAY_CLIP_OPERATOR, DisplayTransform, EXTENDED_RANGE_COMBINATION_OPERATOR,
-    EXTENDED_RANGE_MODE_OPERATOR, EXTENDED_RANGE_OPERATOR, OutputStage, SampleRange,
+    DISPLAY_CLIP_OPERATOR, DisplayTransform, EXTENDED_RANGE_CLAUSE,
+    EXTENDED_RANGE_COMBINATION_OPERATOR, EXTENDED_RANGE_MODE_OPERATOR, EXTENDED_RANGE_OPERATOR,
+    ExtendedOp, OutputStage, SampleRange,
 };
 pub use extensions::{
     ALPHA_BOUNDARY_EXACTNESS, ContentAwareFillOp, ExtOperator, Knockout, LayerExtension, PlanExtensions,

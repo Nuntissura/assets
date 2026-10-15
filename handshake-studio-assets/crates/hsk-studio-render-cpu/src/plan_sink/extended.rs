@@ -18,7 +18,7 @@ use crate::px::{
 };
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::adjust_math::{
-    AdjustError, AdjustLayerError, PreparedAdjustment, composite_adjustment,
+    AdjustError, AdjustLayerError, PreparedAdjustment, composite_adjustment_in,
 };
 use hsk_studio_pigment::blend_math::Rgba;
 use hsk_studio_pigment::blur_math::{BlurError, BlurLimits, BlurScope, LayerBlur, blur_window_cost};
@@ -875,7 +875,7 @@ impl Eval<'_, '_> {
                         continue;
                     }
                 }
-                let out = composite_adjustment(layer.mode, backdrop, adjustment, k)
+                let out = composite_adjustment_in(self.prepared.ext.output.sample_range, layer.mode, backdrop, adjustment, k)
                     .map_err(layer_error)?;
                 *buf.get_mut(at).ok_or_else(overflow)? =
                     [out.rgb[0], out.rgb[1], out.rgb[2], out.a];

@@ -364,12 +364,13 @@ enum PNode<'a> {
 /// Straight RGBA at plan pixel `(x, y)` of a transformed tile: pigment's
 /// `PreparedTransform::sample_rgba` over the verified planes.
 fn transformed_at(
+    range: hsk_studio_pigment::render_plan::SampleRange,
     planes: &TilePlanes<'_>,
     prep: &PreparedTransform,
     x: i64,
     y: i64,
 ) -> Result<[f32; 4], RenderError> {
-    prep.sample_rgba(x, y, |i, j| {
+    prep.sample_rgba_in(range, x, y, |i, j| {
         tile_pixel(
             planes,
             crate::px::to_usize(u64::from(i))?,
@@ -1128,7 +1129,7 @@ impl Eval<'_, '_> {
             }
             PNode::Transformed { planes, prep } => {
                 self.seal_base(base, region, chunk, run, fx, |x, y, _| {
-                    Ok((transformed_at(planes, prep, x, y)?, 1.0))
+                    Ok((transformed_at(self.prepared.ext.output.sample_range, planes, prep, x, y)?, 1.0))
                 })?;
             }
             PNode::Solid { rgba } => {
@@ -1191,7 +1192,7 @@ impl Eval<'_, '_> {
             }
             PNode::Transformed { planes, prep } => {
                 self.composite_clipped(layer, region, chunk, run, |x, y, _| {
-                    Ok((transformed_at(planes, prep, x, y)?, 1.0))
+                    Ok((transformed_at(self.prepared.ext.output.sample_range, planes, prep, x, y)?, 1.0))
                 })
             }
             PNode::Solid { rgba } => {
@@ -1314,7 +1315,7 @@ impl Eval<'_, '_> {
             }
             PNode::Transformed { planes, prep } => {
                 self.composite(layer, region, chunk, dst, fx, |x, y, _| {
-                    Ok((transformed_at(planes, prep, x, y)?, 1.0))
+                    Ok((transformed_at(self.prepared.ext.output.sample_range, planes, prep, x, y)?, 1.0))
                 })
             }
             PNode::Filled { rect, data } => {
@@ -2182,6 +2183,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Stage-6a view transform (lane SMB-PRISM-VIEW-TRANSFORM): Prism's
             // `ViewTransformId::apply` on the delivered chunk (tests/cpu_view_transform.rs).
             ExtOperator::DisplayView => operator.intrinsic(),
+            // Envelope operations in an extended-range plan (lane SMB-PIGMENT-EXTENDED-RANGE-2):
+            // the defined ones run through pigment's `*_in(SampleRange::Extended, ..)` functions
+            // (tests/cpu_extended_envelope.rs); the undefined ones are intrinsically unsupported.
+            ExtOperator::ExtendedEnvelope(op) if op.defined() => operator.intrinsic(),
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

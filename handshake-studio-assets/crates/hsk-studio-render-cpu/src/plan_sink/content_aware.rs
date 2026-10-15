@@ -34,7 +34,7 @@ use super::{Eval, MaskView, PLayer, PNode, Prepared, RenderError, SourceFault, s
 use crate::px::{area, end, height_of, mul_u, overflow, width_of};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::content_aware::{SamplingArea, fill};
+use hsk_studio_pigment::content_aware::{SamplingArea, fill_in};
 use hsk_studio_pigment::render_plan::{
     BackendError, ContentAwareFillOp, MaskFormat, MaskInput, PlanError, PlanSources,
     SAMPLE_RANGE_OPERATOR, StudioBlendMode,
@@ -233,14 +233,20 @@ pub(super) fn run_fills(
                 };
                 eval.frame_content_raw(&layer, job.bounds, &mut content, &mut spare, &mut fx)?;
             }
-            let target = RgbaPlane::new(job.bounds, content)
+            let range = eval.prepared.ext.output.sample_range;
+            let target = RgbaPlane {
+                bounds: job.bounds,
+                data: content,
+            };
+            target
+                .validate_in(range)
                 .map_err(|e| fill_error(e, job.node, pigment_bytes))?;
             let hole = hole_plane(&job.hole)?;
             let sampling = match job.op.sampling {
                 None => SamplingArea::Auto,
                 Some(rect) => SamplingArea::Rectangular(rect),
             };
-            let filled = fill(&target, &hole, sampling, &job.op.options, &limits)
+            let filled = fill_in(range, &target, &hole, sampling, &job.op.options, &limits)
                 .map_err(|e| fill_error(e, job.node, pigment_bytes))?;
             let plane = filled.result.plane;
             if plane.bounds != job.bounds || plane.data.len() != n {

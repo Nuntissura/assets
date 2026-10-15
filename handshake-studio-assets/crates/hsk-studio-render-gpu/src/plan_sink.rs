@@ -3239,6 +3239,7 @@ fn run(
         Some(DisplayTransform::View(id)) => Some(id),
         _ => None,
     };
+    let extended = prepared.output.is_extended();
     let mut ex = Exec {
         ctx,
         cancel,
@@ -3396,6 +3397,13 @@ fn run(
                     let mut values = [0.0_f32; 4];
                     for (value, word) in values.iter_mut().zip(texel.chunks_exact(4)) {
                         *value = f32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
+                    }
+                    if extended
+                        && (!values.iter().all(|v| v.is_finite()) || values[3] > 1.0)
+                    {
+                        // The kernel's overflow marker (or a non-finite texel): the typed refusal
+                        // render-cpu returns for a non-finite extended composite.
+                        return Err(unsupported(SAMPLE_RANGE_OPERATOR));
                     }
                     if clip {
                         // Stage 6a (output stage `display: Some(Clip)`), on the host.

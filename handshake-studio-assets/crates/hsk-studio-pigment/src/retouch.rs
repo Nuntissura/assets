@@ -184,13 +184,17 @@ impl RgbaPlane {
         })
     }
     pub fn validate(&self) -> Result<(), RetouchError> {
+        self.validate_in(crate::render_plan::SampleRange::Unit)
+    }
+    /// [`RgbaPlane::validate`] in `range` (extended: any finite colour, alpha in `[0, 1]`).
+    pub fn validate_in(&self, range: crate::render_plan::SampleRange) -> Result<(), RetouchError> {
         self.bounds.end()?;
         let n = usize::try_from(self.bounds.area()).map_err(|_| Error::Overflow)?;
         if self.data.len() != n {
             return Err(RetouchError::Shape);
         }
         for p in &self.data {
-            check_sample(*p)?;
+            check_sample_in(*p, range)?;
         }
         Ok(())
     }
@@ -220,6 +224,18 @@ impl RgbaPlane {
             .and_then(|i| self.data.get(i))
             .copied()
             .unwrap_or([0.0; 4])
+    }
+}
+
+/// [`check_sample`] in `range` (extended: finite colour, alpha in `[0, 1]`).
+pub(crate) fn check_sample_in(p: [f32; 4], range: crate::render_plan::SampleRange) -> Result<(), RetouchError> {
+    if range == crate::render_plan::SampleRange::Unit {
+        return check_sample(p);
+    }
+    if p[..3].iter().all(|v| v.is_finite()) && p[3].is_finite() && (0.0..=1.0).contains(&p[3]) {
+        Ok(())
+    } else {
+        Err(RetouchError::OutOfDomain)
     }
 }
 
@@ -425,7 +441,16 @@ pub(crate) fn paint_over(dst: [f32; 4], src: [f32; 4], c: f64) -> [f32; 4] {
 
 /// Copy `target` into a new plane of the same bounds (budget checked).
 pub(crate) fn copy_plane(target: &RgbaPlane, limits: &RetouchLimits) -> Result<RgbaPlane, RetouchError> {
-    target.validate()?;
+    copy_plane_in(target, limits, crate::render_plan::SampleRange::Unit)
+}
+
+/// [`copy_plane`] validating in `range`.
+pub(crate) fn copy_plane_in(
+    target: &RgbaPlane,
+    limits: &RetouchLimits,
+    range: crate::render_plan::SampleRange,
+) -> Result<RgbaPlane, RetouchError> {
+    target.validate_in(range)?;
     limits.admit_area(target.bounds, RGBA_SAMPLE_BYTES)?;
     Ok(target.clone())
 }
@@ -499,6 +524,22 @@ pub struct HealResult {
 pub(crate) fn premul(p: [f32; 4]) -> [f64; 4] {
     let a = f64::from(p[3]);
     [f64::from(p[0]) * a, f64::from(p[1]) * a, f64::from(p[2]) * a, a]
+}
+
+/// [`straight`] in `range`: the extended range keeps the colour `P / A` unclamped.
+pub(crate) fn straight_in(p: [f64; 4], range: crate::render_plan::SampleRange) -> [f32; 4] {
+    if range == crate::render_plan::SampleRange::Unit {
+        return straight(p);
+    }
+    let a = p[3].clamp(0.0, 1.0);
+    if a <= 0.0 || a.is_nan() {
+        return [0.0; 4];
+    }
+    let c = |v: f64| {
+        let q = v / a;
+        if q.is_nan() { 0.0 } else { q as f32 }
+    };
+    [c(p[0]), c(p[1]), c(p[2]), a as f32]
 }
 
 pub(crate) fn straight(p: [f64; 4]) -> [f32; 4] {

@@ -37,7 +37,7 @@ use super::extended::{filter_error, stage_reach};
 use super::{Eval, Fx, PLayer, RenderError, unsupported};
 use crate::px::{area, grow_rect, index_in, intersect, overflow};
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::filter_math::filter_window;
+use hsk_studio_pigment::filter_math::filter_window_in;
 
 /// Refusal key: a filter nested where the chunk-level frame is already in use.
 pub(super) const FILTER_NESTED: &str = "filter_nested";
@@ -144,7 +144,8 @@ impl Eval<'_, '_> {
                     Some(c) => c,
                     None => content,
                 };
-                filter_window(src, src_rect, out, op, *filter_limits).map_err(filter_error)?
+                filter_window_in(self.prepared.ext.output.sample_range, src, src_rect, out, op, *filter_limits)
+                    .map_err(filter_error)?
             };
             current = Some(next);
         }

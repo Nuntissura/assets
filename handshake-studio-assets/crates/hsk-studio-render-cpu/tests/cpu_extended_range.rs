@@ -139,8 +139,8 @@ fn unit_default_is_byte_identical_and_extended_stage_matches_pigment_for_every_c
 }
 
 /// Hostile values in an extended plan: NaN and +-inf tile samples keep `source_nonfinite`, a NaN or
-/// infinite solid is an invalid plan, a mode undefined above 1 (screen) and an envelope layer
-/// entry are refused before the first sink call, and an add that overflows binary32 is the typed
+/// infinite solid is an invalid plan, a mode undefined above 1 (overlay, refused by name) and an
+/// undefined envelope operation (high pass) are refused before the first sink call, and an add that overflows binary32 is the typed
 /// `sample_range_outside_unit` (pigment `OutOfDomain`), never an infinite pixel.
 #[test]
 fn hostile_values_in_an_extended_plan_are_typed() {
@@ -169,22 +169,22 @@ fn hostile_values_in_an_extended_plan_are_typed() {
             2,
         )
     };
-    let (result, grid) = run(&renderer, &two(StudioBlendMode::Screen, 1.0), Some(&extended), &no_sources());
+    let (result, grid) = run(&renderer, &two(StudioBlendMode::Overlay, 1.0), Some(&extended), &no_sources());
     assert_eq!(
         result.unwrap_err(),
         RenderError::Backend(BackendError::Unsupported {
-            operator: EXTENDED_RANGE_MODE_OPERATOR,
+            operator: "sample_range_extended_mode_overlay",
             exactness: Exactness::Unsupported,
         })
     );
     assert_eq!(grid.calls, 0);
-    let entry = PlanExtensions::from_layers(vec![one_layer(2, 1).with_mask_feather(0.0)])
+    let entry = PlanExtensions::from_layers(vec![one_layer(2, 1).with_filters(vec![hsk_studio_pigment::filter_math::LayerFilter::HighPass { radius_px: 1.0 }])])
         .with_output(OutputStage::new(SampleRange::Extended, None));
     let (result, grid) = run(&renderer, &two(StudioBlendMode::Multiply, 1.0), Some(&entry), &no_sources());
     assert_eq!(
         result.unwrap_err(),
         RenderError::Backend(BackendError::Unsupported {
-            operator: EXTENDED_RANGE_COMBINATION_OPERATOR,
+            operator: "sample_range_extended_filter_high_pass",
             exactness: Exactness::Unsupported,
         })
     );

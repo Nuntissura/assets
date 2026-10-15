@@ -89,6 +89,8 @@
 //! contrast / colour balance, `output_to`. Every reading is a Studio reading, class Approximate;
 //! Photoshop's content-aware algorithms and results are UNVERIFIED (oracle list D5).
 #![deny(clippy::arithmetic_side_effects)]
+use crate::render_plan::SampleRange;
+use crate::retouch::straight_in;
 use crate::blend_math::Exactness;
 use crate::filter_math::splitmix;
 use crate::retouch::{
@@ -1464,7 +1466,9 @@ fn validate_sampling(sampling: &SamplingArea<'_>) -> Result<(), RetouchError> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
+    range: SampleRange,
     target: &RgbaPlane,
     hole: &CoveragePlane,
     sampling: SamplingArea<'_>,
@@ -1474,7 +1478,7 @@ fn run(
     limits: &RetouchLimits,
 ) -> Result<ContentAwareResult, RetouchError> {
     options.validate()?;
-    target.validate()?;
+    target.validate_in(range)?;
     validate_sampling(&sampling)?;
     if let Some(e) = exclude {
         coverage_validate(e)?;
@@ -1484,10 +1488,10 @@ fn run(
         receipt: ContentAwareReceipt::empty(options, guide.is_some()),
     };
     let Some(cov) = clip_hole(target, hole, limits)? else {
-        return Ok(unchanged(copy_plane(target, limits)?));
+        return Ok(unchanged(crate::retouch::copy_plane_in(target, limits, range)?));
     };
     let Some(syn) = synthesize(target, &cov, &sampling, exclude, guide, options, limits)? else {
-        return Ok(unchanged(copy_plane(target, limits)?));
+        return Ok(unchanged(crate::retouch::copy_plane_in(target, limits, range)?));
     };
     let b = target.bounds;
     let l = &syn.level0;
@@ -1495,7 +1499,7 @@ fn run(
     let mut receipt = syn.receipt;
     let plane = match options.colour_adaptation {
         ColourAdaptation::None => {
-            let mut out = copy_plane(target, limits)?;
+            let mut out = crate::retouch::copy_plane_in(target, limits, range)?;
             let (ex, ey) = cov.bounds.end()?;
             for y in cov.bounds.y..ey {
                 for x in cov.bounds.x..ex {
@@ -1513,7 +1517,7 @@ fn run(
                     if let Some(oi) = out.index(x, y)
                         && let Some(px) = out.data.get_mut(oi)
                     {
-                        *px = straight(v);
+                        *px = straight_in(v, range);
                     }
                 }
             }
@@ -1571,7 +1575,40 @@ pub fn fill(
     options: &ContentAwareOptions,
     limits: &RetouchLimits,
 ) -> Result<ContentAwareResult, RetouchError> {
-    run(target, hole, sampling, None, None, options, limits)
+    run(SampleRange::Unit, target, hole, sampling, None, None, options, limits)
+}
+
+/// Is a fill with `options` defined on extended-range (scene-referred) samples? Only without
+/// colour adaptation: PatchMatch distances, EM voting and the pyramid are weighted averages and the
+/// `none` blend `d + c (f - d)` is linear, none of them refers to the unit white point; the Image
+/// Melding gain / bias (bias bounded by 0.1 / 0.25 of the unit scale, adjusted samples clamped to
+/// `[0, alpha]`) and the membrane (Poisson) heal of the other adaptations do (STU-COL-120,
+/// STU-FX-006a).
+pub fn fill_extended_defined(options: &ContentAwareOptions) -> bool {
+    options.colour_adaptation == ColourAdaptation::None
+}
+
+/// [`fill`] in `range` (lane SMB-PIGMENT-EXTENDED-RANGE-2). Extended: the target may hold any
+/// finite colour and the filled colour is not clamped; options that are not
+/// [`fill_extended_defined`], and a non-finite result, are `RetouchError::OutOfDomain`.
+pub fn fill_in(
+    range: SampleRange,
+    target: &RgbaPlane,
+    hole: &CoveragePlane,
+    sampling: SamplingArea<'_>,
+    options: &ContentAwareOptions,
+    limits: &RetouchLimits,
+) -> Result<ContentAwareResult, RetouchError> {
+    if range == SampleRange::Extended && !fill_extended_defined(options) {
+        return Err(RetouchError::OutOfDomain);
+    }
+    let out = run(range, target, hole, sampling, None, None, options, limits)?;
+    if range == SampleRange::Extended
+        && !out.result.plane.data.iter().all(|p| p.iter().all(|v| v.is_finite()))
+    {
+        return Err(RetouchError::OutOfDomain);
+    }
+    Ok(out)
 }
 
 /// Inpaint / remove (STU-RAS-143 "inpaint/remove", the on-device baseline of distraction removal
@@ -1670,6 +1707,7 @@ pub fn patch(
             Ok(ContentAwareResult { result: healed.result, receipt })
         }
         Some(window) => run(
+            SampleRange::Unit,
             target,
             &cov,
             sampling,
@@ -1731,7 +1769,7 @@ pub fn content_aware_move(
     let dest = CoveragePlane { bounds: shifted(sel.bounds, ox, oy)?, data: sel.data.clone() };
     let (mut plane, fill_receipt, mut damage) = match mode {
         MoveMode::Move => {
-            let r = run(target, &sel, sampling, Some(&dest), None, options, limits)?;
+            let r = run(SampleRange::Unit, target, &sel, sampling, Some(&dest), None, options, limits)?;
             (r.result.plane, Some(r.receipt), r.result.damage)
         }
         MoveMode::Extend => (copy_plane(target, limits)?, None, None),

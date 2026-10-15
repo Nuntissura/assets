@@ -8,7 +8,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over_extended};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BlendSpace, ColourTag, DISPLAY_CLIP_OPERATOR, DisplayTransform,
-    EXTENDED_RANGE_MODE_OPERATOR, EXTENDED_RANGE_OPERATOR, Exactness, ExecuteRequest, Group, Layer,
+    EXTENDED_RANGE_OPERATOR, Exactness, ExecuteRequest, Group, Layer,
     NoVector, OutputStage, OutputTarget, PlanExtensions, PlanNode, PlanNodeId, PlanSources,
     RenderPlan, SampleFormat, SampleRange, SinkError, SourceKey, StudioBlendMode, TileInput,
     TilePlanes, TileSink,
@@ -170,7 +170,7 @@ fn strict() -> bool {
 }
 
 /// none backend: the extended plan passes admission and preparation (reaches `no_adapter`), a
-/// screen layer is refused `sample_range_extended_mode` and the unit default keeps
+/// overlay layer is refused `sample_range_extended_mode_overlay` and the unit default keeps
 /// `sample_range_outside_unit`, with no sink call. Live adapter, chunk sides 2 and 64: the
 /// extended composite (values above 1 kept) and the clipped one are within TOLERANCE of pigment,
 /// the ledger names `sample_range_extended` and `display_clip`, and an in-range plan renders the
@@ -192,10 +192,10 @@ fn gpu_extended_range_matches_pigment_and_the_unit_default_is_unchanged() {
         none.execute_extended_detailed(&p, &stage(None), &floor, &src, &cancel, &mut grid).unwrap_err(),
         GpuError::Unavailable(Reason::NoAdapter)
     );
-    let screen = plan(&base, &tops, Some(StudioBlendMode::Screen));
+    let screen = plan(&base, &tops, Some(StudioBlendMode::Overlay));
     assert_eq!(
         none.execute_extended_detailed(&screen, &stage(None), &floor, &src, &cancel, &mut grid).unwrap_err(),
-        GpuError::Backend(BackendError::Unsupported { operator: EXTENDED_RANGE_MODE_OPERATOR, exactness: Exactness::Unsupported })
+        GpuError::Backend(BackendError::Unsupported { operator: "sample_range_extended_mode_overlay", exactness: Exactness::Unsupported })
     );
     assert!(matches!(
         none.execute_detailed(&p, &floor, &src, &cancel, &mut grid).unwrap_err(),

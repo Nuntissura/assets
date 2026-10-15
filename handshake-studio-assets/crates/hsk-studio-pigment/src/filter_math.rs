@@ -38,7 +38,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::Rect;
 use crate::blend_math::Exactness;
-use crate::blur_math::{BlurError, BlurLimits, BlurScope, LayerBlur, blur_window, blur_window_cost, unpremultiply};
+use crate::blur_math::{BlurError, BlurLimits, BlurScope, LayerBlur, blur_window_cost, blur_window_in, unpremultiply_in};
+use crate::render_plan::SampleRange;
 use crate::retouch::RgbaPlane;
 use serde::Serialize;
 use std::fmt;
@@ -203,8 +204,9 @@ fn src_at(src: &[[f32; 4]], src_rect: Rect, x: i64, y: i64) -> Result<[f32; 4], 
     src.get(at).copied().ok_or(FilterError::Shape)
 }
 
-fn check(p: [f32; 4]) -> Result<[f32; 4], FilterError> {
-    if p.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+fn check(p: [f32; 4], range: SampleRange) -> Result<[f32; 4], FilterError> {
+    let colour_ok = |v: &f32| v.is_finite() && (range == SampleRange::Extended || (0.0..=1.0).contains(v));
+    if p[..3].iter().all(colour_ok) && p[3].is_finite() && (0.0..=1.0).contains(&p[3]) {
         Ok(p)
     } else {
         Err(FilterError::OutOfDomain)
@@ -306,6 +308,32 @@ pub fn filter_window(
     filter: &LayerFilter,
     limits: FilterLimits,
 ) -> Result<Vec<[f32; 4]>, FilterError> {
+    filter_window_in(SampleRange::Unit, src, src_rect, out, filter, limits)
+}
+
+/// Is `kind` defined on extended-range (scene-referred) samples? Gaussian blur and median are
+/// order-preserving / convex; unsharp mask is `o + amount (o - blur)` (its threshold gates on an
+/// absolute difference), all without a unit white point. High pass adds the unit mid-grey `0.5` and
+/// add noise scales its amplitude to the unit full scale: both refer to the white point and are
+/// undefined above 1 (STU-COL-120, STU-FX-006a).
+pub const fn filter_extended_defined(kind: FilterKind) -> bool {
+    matches!(kind, FilterKind::GaussianBlur | FilterKind::UnsharpMask | FilterKind::Median)
+}
+
+/// [`filter_window`] in `range`. Extended: finite colours, no clamp of the result; a kind that is
+/// not [`filter_extended_defined`] or a non-finite result is [`FilterError::OutOfDomain`].
+pub fn filter_window_in(
+    range: SampleRange,
+    src: &[[f32; 4]],
+    src_rect: Rect,
+    out: Rect,
+    filter: &LayerFilter,
+    limits: FilterLimits,
+) -> Result<Vec<[f32; 4]>, FilterError> {
+    let extended = range == SampleRange::Extended;
+    if extended && !filter_extended_defined(filter.kind()) {
+        return Err(FilterError::OutOfDomain);
+    }
     if src.len() != count(src_rect)? {
         return Err(FilterError::Shape);
     }
@@ -324,7 +352,7 @@ pub fn filter_window(
         Some(r) => {
             let taps = LayerBlur::new(BlurScope::Layer, r).taps()?;
             let wide = BlurLimits { max_bytes: limits.max_bytes, max_work: limits.max_work };
-            Some(blur_window(src, src_rect, out, &taps, wide)?)
+            Some(blur_window_in(range, src, src_rect, out, &taps, wide)?)
         }
         None => None,
     };
@@ -340,7 +368,7 @@ pub fn filter_window(
     let mut k = 0usize;
     for y in out.y..ey {
         for x in out.x..ex {
-            let o = check(src_at(src, src_rect, x, y)?)?;
+            let o = check(src_at(src, src_rect, x, y)?, range)?;
             let px = match *filter {
                 LayerFilter::GaussianBlur { .. } => o,
                 LayerFilter::UnsharpMask { amount_pct, threshold_levels, .. } => {
@@ -353,7 +381,8 @@ pub fn filter_window(
                         for (c, bc) in p.iter_mut().take(3).zip(b) {
                             let diff = f64::from(*c) - f64::from(bc);
                             if diff.abs() * 255.0 >= f64::from(threshold_levels) {
-                                *c = (f64::from(*c) + amt * diff).clamp(0.0, 1.0) as f32;
+                                let v = f64::from(*c) + amt * diff;
+                                *c = if extended { v as f32 } else { v.clamp(0.0, 1.0) as f32 };
                             }
                         }
                         p
@@ -376,12 +405,15 @@ pub fn filter_window(
                         s.clear();
                     }
                     for &(dx, dy) in &disc {
-                        let q = check(src_at(
-                            src,
-                            src_rect,
-                            x.checked_add(dx).ok_or(FilterError::Overflow)?,
-                            y.checked_add(dy).ok_or(FilterError::Overflow)?,
-                        )?)?;
+                        let q = check(
+                            src_at(
+                                src,
+                                src_rect,
+                                x.checked_add(dx).ok_or(FilterError::Overflow)?,
+                                y.checked_add(dy).ok_or(FilterError::Overflow)?,
+                            )?,
+                            range,
+                        )?;
                         let a = q[3];
                         let pm = [q[0] * a, q[1] * a, q[2] * a, a];
                         for (s, v) in scratch.iter_mut().zip(pm) {
@@ -394,7 +426,7 @@ pub fn filter_window(
                         s.sort_unstable_by(f32::total_cmp);
                         *mc = s.get(mid).copied().ok_or(FilterError::Shape)?;
                     }
-                    unpremultiply(m)
+                    unpremultiply_in(range, m)
                 }
                 LayerFilter::AddNoise { amount_pct, distribution, monochromatic, seed } => {
                     if o[3] == 0.0 {
@@ -411,6 +443,9 @@ pub fn filter_window(
                     }
                 }
             };
+            if !px.iter().all(|v| v.is_finite()) {
+                return Err(FilterError::OutOfDomain);
+            }
             result.push(px);
             k = k.checked_add(1).ok_or(FilterError::Overflow)?;
         }

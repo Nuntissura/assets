@@ -28,6 +28,7 @@
 //! computes its bytes and work with checked arithmetic and refuses them against the caller's
 //! [`BlurLimits`] before it allocates.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::render_plan::SampleRange;
 use crate::Rect;
 use crate::blend_math::Exactness;
 use crate::coverage_math::{CoverageError, feather_kernel, feather_support};
@@ -159,9 +160,11 @@ fn count(r: Rect) -> Result<usize, BlurError> {
         .map_err(|_| BlurError::Overflow)
 }
 
-/// Premultiplied straight sample, refused outside `[0, 1]`.
-fn premultiplied(p: [f32; 4]) -> Result<[f64; 4], BlurError> {
-    if !p.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+/// Premultiplied straight sample, refused outside `[0, 1]` (unit range) or, in the extended range
+/// (lane SMB-PIGMENT-EXTENDED-RANGE-2), for a non-finite colour or an alpha outside `[0, 1]`.
+fn premultiplied(p: [f32; 4], range: SampleRange) -> Result<[f64; 4], BlurError> {
+    let colour_ok = |v: &f32| v.is_finite() && (range == SampleRange::Extended || (0.0..=1.0).contains(v));
+    if !(p[..3].iter().all(colour_ok) && p[3].is_finite() && (0.0..=1.0).contains(&p[3])) {
         return Err(BlurError::OutOfDomain);
     }
     let a = f64::from(p[3]);
@@ -171,13 +174,25 @@ fn premultiplied(p: [f32; 4]) -> Result<[f64; 4], BlurError> {
 /// Straight RGBA from a premultiplied binary32 sample: `A <= 0` is transparent, alpha at most 1,
 /// colour `clamp(P / A, 0, 1)` (the rule of `transform_math`'s premultiplied resampling).
 pub fn unpremultiply(p: [f32; 4]) -> [f32; 4] {
+    unpremultiply_in(SampleRange::Unit, p)
+}
+
+/// [`unpremultiply`] in `range`: the extended range keeps the colour `P / A` unclamped (a gaussian
+/// blur is a convex combination; nothing in it refers to the unit white point, STU-COL-120).
+pub fn unpremultiply_in(range: SampleRange, p: [f32; 4]) -> [f32; 4] {
     let a = p[3];
     if a.is_nan() || a <= 0.0 {
         return [0.0; 4];
     }
     let c = |v: f32| {
         let q = v / a;
-        if q.is_nan() { 0.0 } else { q.clamp(0.0, 1.0) }
+        if q.is_nan() {
+            0.0
+        } else if range == SampleRange::Extended {
+            q
+        } else {
+            q.clamp(0.0, 1.0)
+        }
     };
     [c(p[0]), c(p[1]), c(p[2]), a.min(1.0)]
 }
@@ -189,6 +204,19 @@ pub fn unpremultiply(p: [f32; 4]) -> [f32; 4] {
 /// result is [`unpremultiply`]d. The bytes and work ([`blur_window_cost`]) are checked against
 /// `limits` before any allocation.
 pub fn blur_window(
+    src: &[[f32; 4]],
+    src_rect: Rect,
+    out: Rect,
+    taps: &[f32],
+    limits: BlurLimits,
+) -> Result<Vec<[f32; 4]>, BlurError> {
+    blur_window_in(SampleRange::Unit, src, src_rect, out, taps, limits)
+}
+
+/// [`blur_window`] in `range`: the extended range admits any finite colour and keeps the blurred
+/// colour unclamped; a non-finite result is [`BlurError::OutOfDomain`].
+pub fn blur_window_in(
+    range: SampleRange,
     src: &[[f32; 4]],
     src_rect: Rect,
     out: Rect,
@@ -236,7 +264,7 @@ pub fn blur_window(
         for y in out.y..oy1 {
             for x in out.x..ox1 {
                 let p = at_src(x, y)?.unwrap_or([0.0; 4]);
-                premultiplied(p)?;
+                premultiplied(p, range)?;
                 copy.push(p);
             }
         }
@@ -268,7 +296,7 @@ pub fn blur_window(
                         .checked_add(i64::try_from(t).map_err(|_| BlurError::Overflow)?)
                         .ok_or(BlurError::Overflow)?;
                     if let Some(p) = at_src(x, y)? {
-                        let p = premultiplied(p)?;
+                        let p = premultiplied(p, range)?;
                         let w = f64::from(*w);
                         for (s, v) in sum.iter_mut().zip(p) {
                             *s += w * v;
@@ -299,7 +327,11 @@ pub fn blur_window(
                     *s += w * f64::from(*v);
                 }
             }
-            result.push(unpremultiply(sum.map(|v| v as f32)));
+            let px = unpremultiply_in(range, sum.map(|v| v as f32));
+            if !px.iter().all(|v| v.is_finite()) {
+                return Err(BlurError::OutOfDomain);
+            }
+            result.push(px);
         }
     }
     Ok(result)
@@ -309,16 +341,31 @@ pub fn blur_window(
 /// straight RGBA) by `k` in `[0, 1]`, returned straight ([`unpremultiply`]). binary32 arithmetic in
 /// this order (render-gpu transcribes it): `P = Pb + (Pbl - Pb) * k` per premultiplied channel.
 pub fn backdrop_mix(backdrop: [f32; 4], blurred: [f32; 4], k: f32) -> Result<[f32; 4], BlurError> {
-    if !(k.is_finite() && (0.0..=1.0).contains(&k))
-        || !backdrop.iter().chain(&blurred).all(|v| v.is_finite() && (0.0..=1.0).contains(v))
-    {
+    backdrop_mix_in(SampleRange::Unit, backdrop, blurred, k)
+}
+
+/// [`backdrop_mix`] in `range` (extended: finite colours, unclamped result; a non-finite result is
+/// `OutOfDomain`).
+pub fn backdrop_mix_in(
+    range: SampleRange,
+    backdrop: [f32; 4],
+    blurred: [f32; 4],
+    k: f32,
+) -> Result<[f32; 4], BlurError> {
+    if !(k.is_finite() && (0.0..=1.0).contains(&k)) {
         return Err(BlurError::OutOfDomain);
     }
+    premultiplied(backdrop, range)?;
+    premultiplied(blurred, range)?;
     let pre = |p: [f32; 4]| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]];
     let (b, l) = (pre(backdrop), pre(blurred));
     let mut out = [0.0_f32; 4];
     for ((o, bv), lv) in out.iter_mut().zip(b).zip(l) {
         *o = bv + (lv - bv) * k;
     }
-    Ok(unpremultiply(out))
+    let px = unpremultiply_in(range, out);
+    if !px.iter().all(|v| v.is_finite()) {
+        return Err(BlurError::OutOfDomain);
+    }
+    Ok(px)
 }

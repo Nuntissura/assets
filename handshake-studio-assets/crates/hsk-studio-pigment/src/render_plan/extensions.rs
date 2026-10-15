@@ -14,10 +14,10 @@ use super::{
 };
 use super::output::{
     DISPLAY_CLIP_OPERATOR, DisplayTransform, EXTENDED_RANGE_COMBINATION_OPERATOR,
-    EXTENDED_RANGE_MODE_OPERATOR, EXTENDED_RANGE_OPERATOR, OutputStage,
+    EXTENDED_RANGE_OPERATOR, ExtendedOp, OutputStage,
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
-use crate::blend_math::{Exactness, StudioBlendMode, extended_defined};
+use crate::blend_math::{Exactness, StudioBlendMode, extended_defined, extended_mode_key};
 use crate::blur_math::{BLUR_EXACTNESS, BlurScope, LayerBlur};
 use crate::coverage_math::{
     BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
@@ -309,14 +309,18 @@ pub enum ExtOperator {
     /// unit-range formulas past 1 is pigment's reading (Photoshop 32-bit parity UNVERIFIED, D5).
     /// Key `sample_range_extended`; each backend declares it.
     ExtendedRange,
-    /// A reachable layer whose mode is not `blend_math::extended_defined` in an extended-range
-    /// plan; intrinsically Unsupported (STU-COL-120: the reduction is reported per operation).
-    /// Key `sample_range_extended_mode`.
-    ExtendedRangeMode,
-    /// An envelope layer entry on a reachable group in an extended-range plan (adjustment,
-    /// Blend-If, effects, feather, transform, blur, filters, content-aware fill: unit-domain maths);
-    /// intrinsically Unsupported. Key `sample_range_extended_combination`.
+    /// A reachable layer (or a layer effect) whose mode is not `blend_math::extended_defined` in
+    /// an extended-range plan; intrinsically Unsupported (STU-COL-120, STU-RAS-155 (b)). Key
+    /// `sample_range_extended_mode_<mode key>` (`blend_math::extended_mode_key`), naming the mode.
+    ExtendedRangeMode(StudioBlendMode),
+    /// RETIRED by lane SMB-PIGMENT-EXTENDED-RANGE-2 (envelope entries are now reported per
+    /// operation as [`ExtOperator::ExtendedEnvelope`]); never reported by `validate`, kept for
+    /// capability queries. Intrinsically Unsupported. Key `sample_range_extended_combination`.
     ExtendedRangeCombination,
+    /// One envelope operation in an extended-range plan ([`ExtendedOp`]): class Approximate when
+    /// [`ExtendedOp::defined`] (each backend declares it), else intrinsically Unsupported for every
+    /// backend; key [`ExtendedOp::key`], clause [`ExtendedOp::clause`].
+    ExtendedEnvelope(ExtendedOp),
     /// The stage-6a clip ([`DisplayTransform::Clip`]); class Exact. Key `display_clip`.
     DisplayClip,
     /// A stage-6a view transform ([`DisplayTransform::View`], Prism's ACES 1.x RRT + ODT from the
@@ -348,8 +352,9 @@ impl ExtOperator {
             Self::Filter(kind) => kind.key(),
             Self::ContentAwareFill => "content_aware_fill",
             Self::ExtendedRange => EXTENDED_RANGE_OPERATOR,
-            Self::ExtendedRangeMode => EXTENDED_RANGE_MODE_OPERATOR,
+            Self::ExtendedRangeMode(mode) => extended_mode_key(mode),
             Self::ExtendedRangeCombination => EXTENDED_RANGE_COMBINATION_OPERATOR,
+            Self::ExtendedEnvelope(op) => op.key(),
             Self::DisplayClip => DISPLAY_CLIP_OPERATOR,
             Self::DisplayView => super::output::DISPLAY_VIEW_OPERATOR,
         }
@@ -372,7 +377,14 @@ impl ExtOperator {
             Self::Filter(_) => FILTER_EXACTNESS,
             Self::ContentAwareFill => CONTENT_AWARE_EXACTNESS,
             Self::ExtendedRange => Exactness::Approximate,
-            Self::ExtendedRangeMode | Self::ExtendedRangeCombination => Exactness::Unsupported,
+            Self::ExtendedRangeMode(_) | Self::ExtendedRangeCombination => Exactness::Unsupported,
+            Self::ExtendedEnvelope(op) => {
+                if op.defined() {
+                    Exactness::Approximate
+                } else {
+                    Exactness::Unsupported
+                }
+            }
             Self::DisplayClip | Self::DisplayView => Exactness::Exact,
         }
     }
@@ -709,23 +721,66 @@ impl PlanExtensions {
         }
         // Output stage, over the nodes reachable from the root (like the layers a backend runs).
         if self.output.is_extended() {
-            ops.push(ExtOperator::ExtendedRange);
-            let undefined = plan.nodes.iter().enumerate().any(|(i, n)| match n {
-                PlanNode::Group(g) if reachable.get(i).copied().unwrap_or(false) => g
-                    .layers
-                    .iter()
-                    .any(|l| l.mode != StudioBlendMode::PassThrough && !extended_defined(l.mode)),
-                _ => false,
-            });
-            if undefined {
-                ops.push(ExtOperator::ExtendedRangeMode);
+            let mut push = |op: ExtOperator| {
+                if !ops.contains(&op) {
+                    ops.push(op);
+                }
+            };
+            push(ExtOperator::ExtendedRange);
+            for (i, n) in plan.nodes.iter().enumerate() {
+                let PlanNode::Group(g) = n else { continue };
+                if !reachable.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+                for l in &g.layers {
+                    if l.mode != StudioBlendMode::PassThrough && !extended_defined(l.mode) {
+                        push(ExtOperator::ExtendedRangeMode(l.mode));
+                    }
+                }
             }
-            let entry = self
-                .layers
-                .iter()
-                .any(|e| reachable.get(e.group.0 as usize).copied().unwrap_or(false));
-            if entry {
-                ops.push(ExtOperator::ExtendedRangeCombination);
+            for e in &self.layers {
+                if !reachable.get(e.group.0 as usize).copied().unwrap_or(false) {
+                    continue;
+                }
+                let env = ExtOperator::ExtendedEnvelope;
+                if let Some(op) = &e.adjustment {
+                    push(env(match op {
+                        AdjustmentOp::Exposure(x) if x.linearize_gamma != 1.0 => {
+                            ExtendedOp::ExposureEncoded
+                        }
+                        _ => ExtendedOp::Adjustment(op.kind()),
+                    }));
+                }
+                if e.blend_if
+                    .iter()
+                    .any(|x| x.source != IDENTITY_RANGE || x.destination != IDENTITY_RANGE)
+                {
+                    push(env(ExtendedOp::BlendIf));
+                }
+                if !e.effects.is_empty() {
+                    push(env(ExtendedOp::Effects));
+                    for effect in &e.effects {
+                        if !extended_defined(effect.mode()) {
+                            push(ExtOperator::ExtendedRangeMode(effect.mode()));
+                        }
+                    }
+                }
+                for f in &e.filters {
+                    push(env(ExtendedOp::Filter(f.kind())));
+                }
+                if let Some(ca) = &e.content_aware_fill {
+                    push(env(if crate::content_aware::fill_extended_defined(&ca.options) {
+                        ExtendedOp::ContentAwareFill
+                    } else {
+                        ExtendedOp::ContentAwareColourAdaptation
+                    }));
+                }
+                if e.blur.is_some() {
+                    push(env(ExtendedOp::Blur));
+                }
+                if e.transform.is_some() {
+                    push(env(ExtendedOp::Transform));
+                }
             }
         }
         if self.output.display == Some(DisplayTransform::Clip) {

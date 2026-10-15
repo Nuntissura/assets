@@ -262,6 +262,10 @@ pub(crate) fn shader_source() -> String {
             "@ADD_MODE@",
             &StudioBlendMode::LinearDodgeAdd.discriminant().to_string(),
         )
+        .replace(
+            "@SCREEN_MODE@",
+            &StudioBlendMode::Screen.discriminant().to_string(),
+        )
         .replace("//@ADJUST_FUNCTIONS@", &adjust_functions)
         .replace("//@ADJUST_CASES@", &adjust_cases)
 }

@@ -75,3 +75,79 @@ pub const EXTENDED_RANGE_COMBINATION_OPERATOR: &str = "sample_range_extended_com
 pub const DISPLAY_CLIP_OPERATOR: &str = "display_clip";
 /// Operator key of a stage-6a view transform (`ExtOperator::DisplayView`).
 pub const DISPLAY_VIEW_OPERATOR: &str = "display_view_transform";
+/// The clauses every extended-range refusal cites ([`ExtendedOp::clause`]): STU-COL-120 (32-bit is
+/// unbounded; reduced availability MUST be reported per operation) and STU-FX-006a (an effect or
+/// filter undefined outside the unit range declares its supported depths, never degrades
+/// silently). Blend modes also cite STU-RAS-155 (b).
+pub const EXTENDED_RANGE_CLAUSE: &str = "STU-COL-120; STU-FX-006a";
+
+/// One envelope operation of a layer entry in an extended-range plan (lane
+/// SMB-PIGMENT-EXTENDED-RANGE-2), reported as `ExtOperator::ExtendedEnvelope`. DEFINED operations
+/// ([`ExtendedOp::defined`]) have no reference to the unit white point and class Approximate (each
+/// backend declares them); the others are intrinsically Unsupported and refused for every backend
+/// under their own key, citing [`EXTENDED_RANGE_CLAUSE`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExtendedOp {
+    /// An adjustment layer of this kind (exposure on linear-light values is defined).
+    Adjustment(crate::adjust_math::AdjustmentKind),
+    /// Exposure with `linearize_gamma != 1` (encoded values): undefined.
+    ExposureEncoded,
+    /// Non-identity Blend-If: its ranges are levels of the unit scale; undefined.
+    BlendIf,
+    /// Layer effects (mattes are alpha maths; their modes are checked as blend modes): defined.
+    Effects,
+    /// A layer filter of this kind (gaussian blur, unsharp mask, median defined).
+    Filter(crate::filter_math::FilterKind),
+    /// Content-aware fill without colour adaptation: defined.
+    ContentAwareFill,
+    /// Content-aware fill with colour adaptation (unit-scale gain / bias bounds, heal): undefined.
+    ContentAwareColourAdaptation,
+    /// Layer or backdrop blur: defined (convex).
+    Blur,
+    /// Layer transform: defined (unclamped resampling).
+    Transform,
+}
+impl ExtendedOp {
+    pub const fn defined(self) -> bool {
+        use crate::adjust_math::AdjustmentKind;
+        match self {
+            Self::Adjustment(k) => matches!(k, AdjustmentKind::Exposure),
+            Self::Filter(k) => crate::filter_math::filter_extended_defined(k),
+            Self::Effects | Self::ContentAwareFill | Self::Blur | Self::Transform => true,
+            Self::ExposureEncoded | Self::BlendIf | Self::ContentAwareColourAdaptation => false,
+        }
+    }
+    /// The spec clauses a refusal of this operation cites.
+    pub const fn clause(self) -> &'static str {
+        EXTENDED_RANGE_CLAUSE
+    }
+    pub const fn key(self) -> &'static str {
+        use crate::adjust_math::AdjustmentKind as A;
+        use crate::filter_math::FilterKind as F;
+        match self {
+            Self::Adjustment(A::Levels) => "sample_range_extended_levels",
+            Self::Adjustment(A::Curves) => "sample_range_extended_curves",
+            Self::Adjustment(A::HueSaturation) => "sample_range_extended_hue_saturation",
+            Self::Adjustment(A::BrightnessContrast) => "sample_range_extended_brightness_contrast",
+            Self::Adjustment(A::Exposure) => "sample_range_extended_exposure",
+            Self::Adjustment(A::Invert) => "sample_range_extended_invert",
+            Self::Adjustment(A::Threshold) => "sample_range_extended_threshold",
+            Self::Adjustment(A::Posterize) => "sample_range_extended_posterize",
+            Self::ExposureEncoded => "sample_range_extended_exposure_encoded",
+            Self::BlendIf => "sample_range_extended_blend_if",
+            Self::Effects => "sample_range_extended_effects",
+            Self::Filter(F::GaussianBlur) => "sample_range_extended_filter_gaussian_blur",
+            Self::Filter(F::UnsharpMask) => "sample_range_extended_filter_unsharp_mask",
+            Self::Filter(F::HighPass) => "sample_range_extended_filter_high_pass",
+            Self::Filter(F::Median) => "sample_range_extended_filter_median",
+            Self::Filter(F::AddNoise) => "sample_range_extended_filter_add_noise",
+            Self::ContentAwareFill => "sample_range_extended_content_aware_fill",
+            Self::ContentAwareColourAdaptation => {
+                "sample_range_extended_content_aware_colour_adaptation"
+            }
+            Self::Blur => "sample_range_extended_blur",
+            Self::Transform => "sample_range_extended_transform",
+        }
+    }
+}

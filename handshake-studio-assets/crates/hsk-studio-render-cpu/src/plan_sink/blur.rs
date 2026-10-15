@@ -29,7 +29,7 @@ use super::extended::{BlurLayer, Frame, Fx, LayerFx, blur_error};
 use super::{Eval, PLayer, RenderError, unsupported};
 use crate::px::{area, end, grow_rect, index_in, intersect, overflow};
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::blur_math::{BlurScope, backdrop_mix, blur_window};
+use hsk_studio_pigment::blur_math::{BlurScope, backdrop_mix_in, blur_window_in};
 
 /// Refusal key: a blur or effects nested where the chunk-level frame is already in use.
 pub(super) const BLUR_NESTED: &str = "blur_nested";
@@ -111,7 +111,8 @@ impl Eval<'_, '_> {
             .ok_or_else(|| unsupported("blur_scratch"))?;
         content.fill([0.0; 4]);
         self.frame_content(layer, frame_rect, content, spare, frame_fx)?;
-        blur_window(content, frame_rect, window, &blur.taps, *blur_limits).map_err(blur_error)
+        blur_window_in(self.prepared.ext.output.sample_range, content, frame_rect, window, &blur.taps, *blur_limits)
+            .map_err(blur_error)
     }
 
     /// Backdrop blur of layer `position` of group `group` (its first `position` layers are the
@@ -182,7 +183,7 @@ impl Eval<'_, '_> {
             .ok_or_else(|| unsupported("blur_scratch"))?;
         backdrop.fill([0.0; 4]);
         self.group_upto(group, position, frame_rect, backdrop, spare, frame_fx)?;
-        let blurred = blur_window(backdrop, frame_rect, window, &blur.taps, *blur_limits)
+        let blurred = blur_window_in(self.prepared.ext.output.sample_range, backdrop, frame_rect, window, &blur.taps, *blur_limits)
             .map_err(blur_error)?;
         // The layer's shape over the window (content alpha times its mask).
         let shape = content
@@ -202,7 +203,7 @@ impl Eval<'_, '_> {
                 let b = *dst.get(at).ok_or_else(overflow)?;
                 let l = *blurred.get(w).ok_or_else(overflow)?;
                 *dst.get_mut(at).ok_or_else(overflow)? =
-                    backdrop_mix(b, l, k.min(1.0)).map_err(blur_error)?;
+                    backdrop_mix_in(self.prepared.ext.output.sample_range, b, l, k.min(1.0)).map_err(blur_error)?;
             }
         }
         Ok(())

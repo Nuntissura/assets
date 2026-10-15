@@ -107,13 +107,31 @@ fn hsk_set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
 
 //@BLEND_FUNCTIONS@
 
+// Extended-range overflow marker (lane SMB-PIGMENT-EXTENDED-RANGE-2): a texel whose composite is
+// not finite is written as alpha 2 (outside every admitted alpha); later composites keep it and
+// propagate it out of group results, and the host refuses a read-back holding it with pigment's
+// `sample_range_outside_unit`, the error render-cpu returns. The finiteness test reads the
+// exponent bits, so it does not depend on float NaN / inf semantics of the shader compiler.
+const HSK_OVERFLOW: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 2.0);
+
+fn hsk_finite3(v: vec3<f32>) -> bool {
+    let e = bitcast<vec3<u32>>(v) & vec3<u32>(0x7f800000u);
+    return all(e != vec3<u32>(0x7f800000u));
+}
+
 // `Params.flags` bit 2 (extended-range output stage, pigment `composite_over_extended`): linear
-// dodge is the unclamped `cb + cs` and the result is not clamped to [0, 1]. Pigment admits only the
-// modes `blend_math::extended_defined` in such a plan, so no other formula reaches this path.
+// dodge is the unclamped `cb + cs`, screen is Foundry Nuke's float screen (`cb + cs - cb cs` where
+// either value is at most 1, else `max`), and the result is not clamped to [0, 1]. Pigment admits
+// only the modes `blend_math::extended_defined` in such a plan, so no other formula reaches this
+// path.
 fn blend(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
     let extended = (p.flags & 4u) != 0u;
     if (extended && mode == @ADD_MODE@u) {
         return cb + cs;
+    }
+    if (extended && mode == @SCREEN_MODE@u) {
+        let low = (cb <= vec3<f32>(1.0)) | (cs <= vec3<f32>(1.0));
+        return select(max(cb, cs), cb + cs - cb * cs, low);
     }
     var raw: vec3<f32> = cs;
     switch (mode) {

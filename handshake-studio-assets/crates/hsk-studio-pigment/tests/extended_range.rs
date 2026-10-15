@@ -26,6 +26,9 @@ fn reference(mode: StudioBlendMode) -> Option<fn(f64, f64) -> f64> {
         Difference => |b: f64, s: f64| (b - s).abs(),
         Subtract => |b: f64, s: f64| (b - s).max(0.0),
         LinearDodgeAdd => |b, s| b + s,
+        // Foundry Nuke Merge: screen `A or B <= 1 ? A+B-AB : max(A,B)`, exclusion `A+B-2AB`.
+        Screen => |b: f64, s: f64| if b <= 1.0 || s <= 1.0 { b + s - b * s } else { b.max(s) },
+        Exclusion => |b, s| b + s - 2.0 * b * s,
         _ => return None,
     })
 }
@@ -45,10 +48,9 @@ fn spec_over(blended: [f64; 3], b: [f64; 4], s: [f64; 4], opacity: f64) -> [f64;
 
 /// `composite_over_extended` equals the W3C formula without the unit clamp for every extended-defined
 /// mode on samples far above 1 (relative error <= 4 ulp of binary32), with a hand value; the rule
-/// admits exactly ten modes and refuses every other layer mode as `Unsupported(mode)`; pigment
-/// admission refuses an extended plan with such a mode as `sample_range_extended_mode` and an
-/// extended plan with an envelope layer entry as `sample_range_extended_combination`, for every
-/// backend, while a `Solid` above 1 is refused by the unit default and admitted by the extended one.
+/// admits exactly twelve modes and refuses every other layer mode as `Unsupported(mode)`; pigment
+/// admission refuses an extended plan with such a mode under its own key
+/// (`sample_range_extended_mode_overlay`) for every backend, admits a no-op envelope entry, while a `Solid` above 1 is refused by the unit default and admitted by the extended one.
 #[test]
 fn extended_over_matches_the_w3c_formula_and_undefined_modes_are_refused() {
     // Hand value: Normal, source 3.0 at alpha 0.5 over opaque 0.5 -> 0.5 * 3 + 0.5 * 0.5 = 1.75.
@@ -120,7 +122,7 @@ fn extended_over_matches_the_w3c_formula_and_undefined_modes_are_refused() {
             assert!((f64::from(got.a) - want[3]).abs() <= 4.0 * f64::from(f32::EPSILON));
         }
     }
-    assert_eq!(admitted, 10);
+    assert_eq!(admitted, 12);
 
     // Plan-level: a Solid above 1 under a Screen layer.
     let plan_with = |mode: StudioBlendMode| RenderPlan::<NoVector> {
@@ -161,15 +163,12 @@ fn extended_over_matches_the_w3c_formula_and_undefined_modes_are_refused() {
     let ledger = admit_extended(&plan_with(StudioBlendMode::Multiply), &extended, &backend, &request, &cancel).unwrap();
     assert!(ledger.operators.iter().any(|o| o.key == EXTENDED_RANGE_OPERATOR && o.exactness == Exactness::Approximate));
     assert_eq!(
-        admit_extended(&plan_with(StudioBlendMode::Screen), &extended, &backend, &request, &cancel).unwrap_err(),
-        BackendError::Unsupported { operator: EXTENDED_RANGE_MODE_OPERATOR, exactness: Exactness::Unsupported }
+        admit_extended(&plan_with(StudioBlendMode::Overlay), &extended, &backend, &request, &cancel).unwrap_err(),
+        BackendError::Unsupported { operator: "sample_range_extended_mode_overlay", exactness: Exactness::Unsupported }
     );
     let feathered = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 1)])
         .with_output(OutputStage::new(SampleRange::Extended, None));
-    assert_eq!(
-        admit_extended(&plan_with(StudioBlendMode::Multiply), &feathered, &backend, &request, &cancel).unwrap_err(),
-        BackendError::Unsupported { operator: EXTENDED_RANGE_COMBINATION_OPERATOR, exactness: Exactness::Unsupported }
-    );
+    admit_extended(&plan_with(StudioBlendMode::Multiply), &feathered, &backend, &request, &cancel).unwrap();
     // A backend written before the output stage existed declares nothing: refused, never unclamped.
     assert_eq!(
         admit_extended(&plan_with(StudioBlendMode::Multiply), &extended, &Legacy, &request, &cancel).unwrap_err(),

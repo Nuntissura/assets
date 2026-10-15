@@ -38,7 +38,7 @@ use super::{
 use crate::px::{area, end, grow_rect, index_in, intersect, overflow};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::effect_math::window::{
-    AlphaSource, WindowError, WindowGeometry, WindowPlane, render_layer_window,
+    AlphaSource, WindowError, WindowGeometry, WindowPlane, render_layer_window_in,
 };
 use hsk_studio_pigment::effect_math::{EffectOp, LayerParams};
 use hsk_studio_pigment::render_plan::ExtOperator;
@@ -195,7 +195,8 @@ impl Eval<'_, '_> {
             }
         }
         let backdrop =
-            WindowPlane::new(window, backdrop_rgb, backdrop_alpha).map_err(window_error)?;
+            WindowPlane::new_in(self.prepared.ext.output.sample_range, window, backdrop_rgb, backdrop_alpha)
+                .map_err(window_error)?;
         let geometry = WindowGeometry::uncut(
             bounds,
             u32::try_from(margin).map_err(|_| overflow())?,
@@ -207,7 +208,8 @@ impl Eval<'_, '_> {
             frame: frame_rect,
             content,
         };
-        let result = render_layer_window(
+        let result = render_layer_window_in(
+            self.prepared.ext.output.sample_range,
             &source,
             &geometry,
             &content_rgb,
@@ -300,7 +302,7 @@ impl Eval<'_, '_> {
             }
             PNode::Transformed { planes, prep } => {
                 fill_region(content, frame_rect, region, |x, y| {
-                    transformed_at(planes, prep, x, y)
+                    transformed_at(self.prepared.ext.output.sample_range, planes, prep, x, y)
                 })?;
             }
             PNode::Filled { rect, data } => {

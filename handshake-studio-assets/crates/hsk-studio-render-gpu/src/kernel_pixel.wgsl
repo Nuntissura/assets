@@ -15,6 +15,10 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let di = (p.ry + gid.y) * p.chunk_w + (p.rx + gid.x);
+    let extended = (p.flags & 4u) != 0u;
+    if (extended && dst[di].a > 1.0) {
+        return; // an overflow marker stays
+    }
     var s: vec4<f32>;
     if (p.kind == 0u) {
         s = p.solid;
@@ -22,6 +26,10 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
         s = src[gid.y * p.rw + gid.x];
     } else {
         s = src[di];
+    }
+    if (extended && s.a > 1.0) {
+        dst[di] = HSK_OVERFLOW; // a group result that overflowed
+        return;
     }
     var m: f32 = 1.0;
     if (p.has_mask != 0u) {
@@ -72,9 +80,13 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         let cs_prime = (1.0 - a_b) * s.rgb + a_b * blended;
         let co = a_s * cs_prime + (1.0 - a_s) * a_b * b.rgb;
-        if ((p.flags & 4u) != 0u) {
+        if (extended) {
             // Extended-range output stage: no unit clamp (pigment composite_over_extended).
             rgb = co / a_o;
+            if (!hsk_finite3(rgb)) {
+                dst[di] = HSK_OVERFLOW;
+                return;
+            }
         } else {
             rgb = clamp(co / a_o, vec3<f32>(0.0), vec3<f32>(1.0));
         }

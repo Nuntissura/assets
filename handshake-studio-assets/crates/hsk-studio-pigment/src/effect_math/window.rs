@@ -33,7 +33,8 @@ use super::{
     StrokePosition, effect_support_px, shadow_offset, shadow_split, unit,
 };
 use crate::Rect;
-use crate::blend_math::{Applicability, PixelSite, Rgba, composite_over};
+use crate::blend_math::{Applicability, PixelSite, Rgba, composite_over, composite_over_extended};
+use crate::render_plan::SampleRange;
 use crate::coverage_math::feather_kernel;
 use std::fmt;
 use std::ops::Range;
@@ -251,6 +252,15 @@ pub struct WindowMatte {
 
 // ---------------------------------------------------------------------------------------------
 // Checked geometry helpers.
+
+/// A colour channel in `range`: `[0, 1]` (unit) or any finite value (extended).
+fn colour_in(range: SampleRange, v: f32) -> bool {
+    if range == SampleRange::Extended {
+        v.is_finite()
+    } else {
+        unit(v)
+    }
+}
 
 fn add(a: i64, b: i64) -> WResult<i64> {
     a.checked_add(b).ok_or(WindowError::Overflow)
@@ -1096,12 +1106,21 @@ pub struct WindowPlane {
 }
 impl WindowPlane {
     pub fn new(rect: Rect, rgb: Vec<[f32; 3]>, alpha: Vec<f32>) -> WResult<Self> {
+        Self::new_in(SampleRange::Unit, rect, rgb, alpha)
+    }
+    /// [`WindowPlane::new`] in `range` (extended: any finite colour; alpha stays `[0, 1]`).
+    pub fn new_in(
+        range: SampleRange,
+        rect: Rect,
+        rgb: Vec<[f32; 3]>,
+        alpha: Vec<f32>,
+    ) -> WResult<Self> {
         check_window(rect)?;
         let n = count(rect)?;
         if rgb.len() != n || alpha.len() != n {
             return Err(WindowError::WindowShape);
         }
-        if !rgb.iter().all(|p| p.iter().all(|c| unit(*c))) || !alpha.iter().all(|a| unit(*a)) {
+        if !rgb.iter().all(|p| p.iter().all(|c| colour_in(range, *c))) || !alpha.iter().all(|a| unit(*a)) {
             return Err(EffectError::OutOfDomain.into());
         }
         Ok(Self { rect, rgb, alpha })
@@ -1141,6 +1160,7 @@ fn pass(
     colours: &Colours<'_>,
     alphas: &[f32],
     clamp: bool,
+    range: SampleRange,
     meter: &mut Meter,
 ) -> WResult<()> {
     meter.charge_work(area(g.window)?)?;
@@ -1160,8 +1180,12 @@ fn pass(
             seed: 0,
         };
         let src = Rgba::new(colour, if clamp { m.clamp(0.0, 1.0) } else { m });
-        let px = composite_over(mode, Rgba::new(*c, *a), src, opacity, site)
-            .map_err(|e| WindowError::Effect(EffectError::Blend(e)))?;
+        let px = if range == SampleRange::Extended {
+            composite_over_extended(mode, Rgba::new(*c, *a), src, opacity, site)
+        } else {
+            composite_over(mode, Rgba::new(*c, *a), src, opacity, site)
+        }
+        .map_err(|e| WindowError::Effect(EffectError::Blend(e)))?;
         *c = px.rgb;
         *a = px.a;
         lx = add(lx, 1)?;
@@ -1188,13 +1212,41 @@ pub fn render_layer_window<S: AlphaSource + ?Sized>(
     effects: &[EffectOp],
     limits: WindowLimits,
 ) -> WResult<LayerWindow> {
+    render_layer_window_in(
+        SampleRange::Unit,
+        src,
+        geometry,
+        content_rgb,
+        backdrop,
+        layer,
+        effects,
+        limits,
+    )
+}
+
+/// [`render_layer_window`] in `range` (lane SMB-PIGMENT-EXTENDED-RANGE-2). Extended: the content
+/// and backdrop colours may be any finite value, every pass composites with
+/// `composite_over_extended` (the effect mattes are alpha maths and do not depend on the colour
+/// range; the effect colours are authored unit values); the layer mode and every effect mode must
+/// be `blend_math::extended_defined` (a typed `Blend(Unsupported)` otherwise).
+#[allow(clippy::too_many_arguments)]
+pub fn render_layer_window_in<S: AlphaSource + ?Sized>(
+    range: SampleRange,
+    src: &S,
+    geometry: &WindowGeometry,
+    content_rgb: &[[f32; 3]],
+    backdrop: &WindowPlane,
+    layer: LayerParams,
+    effects: &[EffectOp],
+    limits: WindowLimits,
+) -> WResult<LayerWindow> {
     geometry.check()?;
     let window = geometry.window;
     let n = count(window)?;
     if backdrop.rect != window || content_rgb.len() != n {
         return Err(WindowError::WindowShape);
     }
-    if !content_rgb.iter().all(|p| p.iter().all(|c| unit(*c))) {
+    if !content_rgb.iter().all(|p| p.iter().all(|c| colour_in(range, *c))) {
         return Err(EffectError::OutOfDomain.into());
     }
     if !unit(layer.opacity) || !unit(layer.fill_opacity) {
@@ -1232,6 +1284,7 @@ pub fn render_layer_window<S: AlphaSource + ?Sized>(
                 &Colours::Pixels(content_rgb),
                 &content_alpha,
                 false,
+                range,
                 &mut meter,
             )?;
         }
@@ -1249,6 +1302,7 @@ pub fn render_layer_window<S: AlphaSource + ?Sized>(
                 &Colours::Uniform(op.colour()),
                 &matte,
                 true,
+                range,
                 &mut meter,
             )?;
             meter.give(matte);

@@ -439,6 +439,26 @@ impl PreparedTransform {
         y: i64,
         texel: impl Fn(u32, u32) -> Result<[f32; 4], E>,
     ) -> Result<[f32; 4], E> {
+        self.sample_rgba_in(crate::render_plan::SampleRange::Unit, x, y, texel)
+    }
+
+    /// [`PreparedTransform::sample_rgba`] in `range` (lane SMB-PIGMENT-EXTENDED-RANGE-2): the
+    /// extended range keeps the filtered colour `P / A` unclamped (bilinear is convex; the
+    /// Catmull-Rom overshoot is the kernel's own, no unit white point).
+    pub fn sample_rgba_in<E>(
+        &self,
+        range: crate::render_plan::SampleRange,
+        x: i64,
+        y: i64,
+        texel: impl Fn(u32, u32) -> Result<[f32; 4], E>,
+    ) -> Result<[f32; 4], E> {
+        let colour = |v: f64| {
+            if range == crate::render_plan::SampleRange::Extended {
+                v as f32
+            } else {
+                v.clamp(0.0, 1.0) as f32
+            }
+        };
         match self.taps(x, y) {
             Taps::None => Ok([0.0; 4]),
             Taps::Exact(i, j) => texel(i, j),
@@ -468,12 +488,7 @@ impl PreparedTransform {
                 if a <= 0.0 {
                     return Ok([0.0; 4]);
                 }
-                Ok([
-                    (p[0] / a).clamp(0.0, 1.0) as f32,
-                    (p[1] / a).clamp(0.0, 1.0) as f32,
-                    (p[2] / a).clamp(0.0, 1.0) as f32,
-                    a.min(1.0) as f32,
-                ])
+                Ok([colour(p[0] / a), colour(p[1] / a), colour(p[2] / a), a.min(1.0) as f32])
             }
         }
     }
