@@ -529,8 +529,16 @@ fn dng_converts_to_one_developed_raster_layer_and_opens_in_a_session() {
 #[test]
 #[ignore = "external CC0 camera raw samples (oracle corpus raw-vendor/); run with --run-ignored ignored-only"]
 fn proprietary_raw_refusals_pass_through_develop_unchanged() {
+    // The import refusal is develop's own first refusal on the import path, unchanged. CR3 decodes
+    // since SMB-DEVELOP-RAW-COMPRESSED (ec53c53) but the decoded container carries no colour tags, so
+    // develop's colour solve refuses missing_colour_data; the SuperCCD RAF has no TIFF raw block, so
+    // decode_container refuses decoder_unavailable. A silent import of either is a failure.
     let cancel = CancellationToken::default();
-    for file in ["raw-vendor/canon-eos-r6.cr3", "raw-vendor/fujifilm-finepix-s5000.raf"] {
+    let cases = [
+        ("raw-vendor/canon-eos-r6.cr3", "solve_colour", "missing_colour_data"),
+        ("raw-vendor/fujifilm-finepix-s5000.raf", "decode_container", "decoder_unavailable"),
+    ];
+    for (file, step, code) in cases {
         let Some(root) = corpus_root() else {
             println!("NOT_PROVEN: raw_refusals reason=corpus_root_absent");
             return;
@@ -539,11 +547,15 @@ fn proprietary_raw_refusals_pass_through_develop_unchanged() {
             println!("NOT_PROVEN: raw_refusals reason=file_absent {file}");
             continue;
         };
-        let direct = hsk_studio_develop::decode_container(&bytes).err().map(|e| e.code());
+        let direct = match hsk_studio_develop::decode_container(&bytes) {
+            Err(e) => ("decode_container", e.code()),
+            Ok(raw) => ("solve_colour", raw.solve_colour().map(|_| "solved").unwrap_or_else(|e| e.code())),
+        };
+        assert_eq!(direct, (step, code), "{file}: develop's own first refusal");
         match import(&bytes, &TrustAllResolver, &cancel) {
-            Err(ImportError::Importer { format: SourceFormat::CameraRaw, code }) => assert_eq!(Some(code), direct, "{file}"),
+            Err(ImportError::Importer { format: SourceFormat::CameraRaw, code: got }) => assert_eq!(got, code, "{file}"),
             Err(other) => panic!("{file}: unexpected refusal {other}"),
-            Ok(_) => println!("{file}: imported (develop decodes this container)"),
+            Ok(_) => panic!("{file}: imported, expected develop's {step} refusal {code}"),
         }
     }
 }
