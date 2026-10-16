@@ -24,7 +24,7 @@ const MAX_RANGE: u32 = 65_535;
 pub(crate) type Space = (usize, u32, u32);
 
 /// A `/ToUnicode` map.
-pub(crate) struct Cmap {
+pub struct Cmap {
     map: BTreeMap<u32, String>,
     /// Character -> lowest code that maps to exactly that character, built on first use.
     inverse: std::cell::OnceCell<BTreeMap<char, u32>>,
@@ -237,7 +237,7 @@ fn until_endcmap(toks: &[Tok]) -> &[Tok] {
     toks.get(..end).unwrap_or(&[])
 }
 
-pub(crate) fn parse_to_unicode(data: &[u8]) -> Option<Cmap> {
+pub fn parse_to_unicode(data: &[u8]) -> Option<Cmap> {
     let (all, _) = tokenize(data);
     let toks = until_endcmap(&all);
     let mut map: BTreeMap<u32, String> = BTreeMap::new();
@@ -310,7 +310,7 @@ pub(crate) fn parse_to_unicode(data: &[u8]) -> Option<Cmap> {
 
 impl Cmap {
     /// Text of the code with this numeric value.
-    pub(crate) fn lookup(&self, value: u32) -> Option<&str> {
+    pub fn lookup(&self, value: u32) -> Option<&str> {
         self.map.get(&value).map(String::as_str)
     }
 

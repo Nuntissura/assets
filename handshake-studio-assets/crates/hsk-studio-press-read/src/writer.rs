@@ -14,7 +14,7 @@ use crate::syntax::{Dict, Object};
 use hsk_studio_accord::CancellationToken;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn write_object(obj: &Object, out: &mut Vec<u8>) {
+pub fn write_object(obj: &Object, out: &mut Vec<u8>) {
     match obj {
         Object::Null => out.extend_from_slice(b"null"),
         Object::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
@@ -127,7 +127,7 @@ pub(crate) fn trailer_roots(trailer: &Dict) -> Vec<u32> {
         .collect()
 }
 
-pub(crate) fn write_document(
+pub fn write_document(
     version: &str,
     objects: &BTreeMap<u32, Entry>,
     source: &[u8],

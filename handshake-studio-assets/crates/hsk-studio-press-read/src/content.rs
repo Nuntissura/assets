@@ -35,7 +35,7 @@ use crate::syntax::{Dict, Lexer, Object, is_regular, is_ws};
 pub(crate) const MAX_OPERANDS: usize = 256;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Op {
+pub struct Op {
     pub name: Vec<u8>,
     pub operands: Vec<Object>,
     /// Byte span (operands through operator) in the tokenized data.

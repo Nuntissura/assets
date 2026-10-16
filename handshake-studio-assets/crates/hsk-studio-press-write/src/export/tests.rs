@@ -161,7 +161,7 @@ fn subset_font_keeps_ids_and_outlines() {
     page_one(&mut ex);
     let (bytes, _) = ex.finish(&cancel).unwrap();
     let doc = PdfDoc::open(&bytes, &Limits::default(), &cancel).unwrap();
-    let res = doc.dict_of(doc.pages[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
+    let res = doc.dict_of(doc.seam_pages()[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
     let font = res.get("Font").and_then(Object::as_dict).unwrap().get("F0").map(|o| doc.resolve(o)).and_then(Object::as_dict).unwrap();
     let cid = doc.resolve(&font.get("DescendantFonts").and_then(Object::as_array).unwrap()[0]).as_dict().unwrap();
     let fd = cid.get("FontDescriptor").map(|o| doc.resolve(o)).and_then(Object::as_dict).unwrap();
@@ -205,10 +205,10 @@ fn dictionaries_read_back_through_the_strict_reader() {
         ex.add_page(PageSpec { media_box_pt: [0.0, 0.0, 612.0, 792.0], trim_box_pt: Some(trim), bleed_box_pt: Some([0.0, 0.0, 612.0, 792.0]) }).unwrap();
         let (bytes, receipt) = ex.finish(&cancel).unwrap();
         let doc = PdfDoc::open(&bytes, &Limits::default(), &cancel).unwrap();
-        assert_eq!(doc.pages.len(), 2);
-        let page2 = doc.dict_of(doc.pages[1]).unwrap();
+        assert_eq!(doc.seam_pages().len(), 2);
+        let page2 = doc.dict_of(doc.seam_pages()[1]).unwrap();
         assert_eq!(doc.rect_of(page2.get("TrimBox")), Some(trim));
-        assert_eq!(doc.dict_of(doc.pages[0]).unwrap().get("TrimBox"), None);
+        assert_eq!(doc.dict_of(doc.seam_pages()[0]).unwrap().get("TrimBox"), None);
         // Output intent: identifier and the decoded profile bytes equal the input.
         let oi = doc.catalog().unwrap().get("OutputIntents").and_then(Object::as_array).unwrap()[0].as_dict().unwrap().clone();
         assert!(oi.get("S").unwrap().is_name("GTS_PDFX"));
@@ -225,7 +225,7 @@ fn dictionaries_read_back_through_the_strict_reader() {
         let Some(Object::Str(t)) = info.get("Title") else { panic!() };
         assert_eq!(text_string(t), title);
         // /ToUnicode maps the two glyph ids back to "H" and "i".
-        let res = doc.dict_of(doc.pages[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
+        let res = doc.dict_of(doc.seam_pages()[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
         let font = res.get("Font").and_then(Object::as_dict).unwrap().get("F0").map(|o| doc.resolve(o)).and_then(Object::as_dict).unwrap();
         assert!(font.get("Encoding").unwrap().is_name("Identity-H"));
         let Some(Object::Stream(tu)) = font.get("ToUnicode").map(|o| doc.resolve(o)) else { panic!() };
@@ -256,7 +256,7 @@ fn soft_mask_structure_reads_back() {
     ex.end_group(p, GroupStyle { opacity: 0.25, blend: BlendMode::Screen, isolated: true, knockout: false, soft_mask: Some(mask) }).unwrap();
     let (bytes, _) = ex.finish(&cancel).unwrap();
     let doc = PdfDoc::open(&bytes, &Limits::default(), &cancel).unwrap();
-    let res = doc.dict_of(doc.pages[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
+    let res = doc.dict_of(doc.seam_pages()[0]).unwrap().get("Resources").and_then(Object::as_dict).unwrap();
     let gs = res.get("ExtGState").and_then(Object::as_dict).unwrap().entries[0].1.clone();
     let gs = doc.resolve(&gs).as_dict().unwrap();
     assert!(gs.get("BM").unwrap().is_name("Screen"));

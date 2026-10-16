@@ -150,7 +150,7 @@ mod tests {
     }
 
     /// The committed press fixture (normalised: the item name is the file name only).
-    const FIXTURE: &str = include_str!("../../tests/fixtures/verapdf/press-pdfx4-corpus.pdfa-2b.xml");
+    const FIXTURE: &str = include_str!("../../../hsk-studio-press/tests/fixtures/verapdf/press-pdfx4-corpus.pdfa-2b.xml");
 
     /// The normalisation cuts only the item name's directory: a raw veraPDF report (absolute
     /// path, either separator) normalises to the committed fixture, the fixture is a fixed point,

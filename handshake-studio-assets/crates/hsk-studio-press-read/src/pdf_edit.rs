@@ -130,7 +130,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     s
 }
 
-pub(crate) fn text_string(bytes: &[u8]) -> String {
+pub fn text_string(bytes: &[u8]) -> String {
     crate::text_codec::decode_text(bytes).0.into_iter().collect()
 }
 
@@ -187,7 +187,26 @@ impl PdfDoc {
         self.trailer.get("Info").and_then(Object::as_ref)
     }
 
-    pub(crate) fn resolve<'a>(&'a self, mut o: &'a Object) -> &'a Object {
+    /// Read-only seam for `hsk-studio-press-write` (SMB-CRATE-SEAM-SPLITS): the object table.
+    #[doc(hidden)]
+    pub fn seam_objects(&self) -> &BTreeMap<u32, Entry> {
+        &self.objects
+    }
+
+    /// Read-only seam for `hsk-studio-press-write`: the trailer dictionary.
+    #[doc(hidden)]
+    pub fn seam_trailer(&self) -> &Dict {
+        &self.trailer
+    }
+
+    /// Read-only seam for `hsk-studio-press-write`: page object numbers in page order.
+    #[doc(hidden)]
+    pub fn seam_pages(&self) -> &[u32] {
+        &self.pages
+    }
+
+    #[doc(hidden)]
+    pub fn resolve<'a>(&'a self, mut o: &'a Object) -> &'a Object {
         for _ in 0..MAX_REF_HOPS {
             match o {
                 Object::Ref(r) => match self.objects.get(&r.num) {
@@ -200,11 +219,13 @@ impl PdfDoc {
         &NULL
     }
 
-    pub(crate) fn dict_of(&self, num: u32) -> Option<&Dict> {
+    #[doc(hidden)]
+    pub fn dict_of(&self, num: u32) -> Option<&Dict> {
         self.objects.get(&num).and_then(|e| e.obj.as_dict())
     }
 
-    pub(crate) fn catalog(&self) -> Result<&Dict> {
+    #[doc(hidden)]
+    pub fn catalog(&self) -> Result<&Dict> {
         self.trailer
             .get("Root")
             .map(|r| self.resolve(r))
@@ -288,7 +309,8 @@ impl PdfDoc {
     /// Looks up an inheritable page attribute through the `/Parent` chain. A value that resolves to null (the null object, or a
     /// reference to an object the file does not hold) reads as an absent entry and the chain goes on (R27-P2: a page's
     /// `/Resources null` inherits the node's; fail closed, the ISO 32000 null-entry rule is not re-read here, UNVERIFIED).
-    pub(crate) fn inherited<'a>(&'a self, page: u32, key: &str) -> Option<&'a Object> {
+    #[doc(hidden)]
+    pub fn inherited<'a>(&'a self, page: u32, key: &str) -> Option<&'a Object> {
         let mut num = page;
         for _ in 0..self.limits.depth_cap() {
             let d = self.dict_of(num)?;
@@ -300,7 +322,8 @@ impl PdfDoc {
         None
     }
 
-    pub(crate) fn rect_of(&self, o: Option<&Object>) -> Option<[f64; 4]> {
+    #[doc(hidden)]
+    pub fn rect_of(&self, o: Option<&Object>) -> Option<[f64; 4]> {
         let arr = self.resolve(o?).as_array()?;
         if arr.len() != 4 {
             return None;

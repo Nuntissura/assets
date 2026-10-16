@@ -30,6 +30,8 @@ members = [
   "crates/hsk-studio-harness",
   "crates/hsk-studio-kernel-bindings",
   "crates/hsk-studio-press",
+  "crates/hsk-studio-press-read",
+  "crates/hsk-studio-press-write",
   "crates/hsk-studio-web",
   "crates/hsk-studio-score-device",
   "crates/hsk-studio-score-plugin",
@@ -81,6 +83,8 @@ declared-members = [
   "crates/hsk-studio-harness",
   "crates/hsk-studio-kernel-bindings",
   "crates/hsk-studio-press",
+  "crates/hsk-studio-press-read",
+  "crates/hsk-studio-press-write",
   "crates/hsk-studio-web",
   "crates/hsk-studio-score-device",
   "crates/hsk-studio-score-plugin",
@@ -181,7 +185,13 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-s
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-observe"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-press]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-press-read", "hsk-studio-press-write"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-press-read]
+allowed = ["hsk-studio-accord"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-press-write]
+allowed = ["hsk-studio-accord", "hsk-studio-press-read"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-web]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]

@@ -147,7 +147,7 @@ pub(crate) fn write_op(op: &Op, data: &[u8], transport: bool, out: &mut Vec<u8>)
 }
 
 /// Canonical bytes of a whole operation list (no inline image allowed).
-pub(crate) fn write_ops(ops: &[Op], data: &[u8]) -> Result<Vec<u8>> {
+pub fn write_ops(ops: &[Op], data: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len());
     for op in ops {
         write_op(op, data, false, &mut out)?;
@@ -532,7 +532,7 @@ mod tests {
 
     /// String literals of the crate's integration tests (the content of its PDF fixtures), unescaped.
     fn fixture_strings() -> Vec<Vec<u8>> {
-        let b = include_str!("../tests/pdf_delivery.rs").as_bytes();
+        let b = include_str!("../../hsk-studio-press/tests/pdf_delivery.rs").as_bytes();
         let mut out = Vec::new();
         let mut i = 0usize;
         while i < b.len() {

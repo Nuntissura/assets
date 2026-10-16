@@ -168,9 +168,9 @@ pub fn check_pdfx4(bytes: &[u8], limits: &Limits, cancel: &CancellationToken) ->
         _ => false,
     };
     rule("pdfx4.xmp_metadata_pdfxid", xmp_ok);
-    rule("pdfx4.trailer_id", matches!(doc.trailer.get("ID"), Some(Object::Array(a)) if a.len() == 2));
-    let mut boxes_ok = !doc.pages.is_empty();
-    for num in &doc.pages {
+    rule("pdfx4.trailer_id", matches!(doc.seam_trailer().get("ID"), Some(Object::Array(a)) if a.len() == 2));
+    let mut boxes_ok = !doc.seam_pages().is_empty();
+    for num in doc.seam_pages() {
         let Some(d) = doc.dict_of(*num) else {
             boxes_ok = false;
             continue;
@@ -186,7 +186,7 @@ pub fn check_pdfx4(bytes: &[u8], limits: &Limits, cancel: &CancellationToken) ->
     }
     rule("pdfx4.page_trim_inside_bleed_inside_media", boxes_ok);
     let mut fonts_ok = true;
-    for e in doc.objects.values() {
+    for e in doc.seam_objects().values() {
         let Some(d) = e.obj.as_dict() else { continue };
         if !d.get("Type").is_some_and(|t| t.is_name("FontDescriptor")) {
             continue;

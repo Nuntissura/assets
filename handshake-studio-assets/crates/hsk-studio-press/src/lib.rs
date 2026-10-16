@@ -6,76 +6,42 @@
 //! its raster with the regions painted opaque (`flatten.rs`, renderer hayro-interpret into `paint.rs`);
 //! the whole-file needle search is a second check, verified against Studio's own strict PDF reading
 //! (DESCRIPTOR `proof.claim`, `proof.supported_profile`, `proof.limitations`).
+//!
+//! Crate layout (SMB-CRATE-SEAM-SPLITS, slice 1): this crate is the press module's public face and
+//! re-exports, item by item, the two halves it is built from: `hsk-studio-press-read` (PDF syntax,
+//! reading, object editing, redaction, flatten, sanitized save, vector reading) and
+//! `hsk-studio-press-write` (Folio/vector -> PDF export, PDF/X-4 check, font subsetting, export
+//! verdicts, ink manager and separations preview). Both halves belong to STUDIO-MODULE-PRESS; this is not a multi-engine facade.
 #![forbid(unsafe_code)]
 
-mod canon;
-mod cmap;
-mod content;
-mod determination;
-mod encoding;
-mod encoding_data;
-mod error;
-mod export;
-mod filters;
-mod flatten;
-mod flatten_purge;
-mod font;
-mod inks;
-mod norm;
-mod norm_data;
-mod paint;
-mod pdf_edit;
-mod raster;
-mod reader;
-mod render_bounds;
-mod redaction;
-mod sanitized_save;
-mod separations;
-mod show_text;
-mod std14_data;
-mod syntax;
-mod text_codec;
-mod text_fields;
-mod vector_read;
-mod vector_source;
-mod writer;
+pub use hsk_studio_press_read::{
+    Limits, PressError, RedactionClass, SinkError, TextCause, FLATTEN_FILL, FlattenCause, FlattenNote, FlattenedPage, RENDER_STACK_BYTES,
+    RedactionRegion, RedactionReport, UnsupportedPolicy, RASTER_CLASS, MIN_DISTINCTIVE_NEEDLE, NotProven, PayloadHit, PayloadLocation,
+    PayloadProof, RasterStream, RedactOptions, RedactedOutput, RedactionLoss, SanitizePolicy, SanitizeReport, StructureTreePolicy,
+    TextCollision, redact_and_save, redact_and_save_opts, redact_and_save_with, sanitize_full_rewrite, verify_payload_absent,
+    verify_payload_absent_unicode, TextFieldOutcome, TextFieldPolicy, TextFieldReport, TextMode, TextOutcomeKind, TextRedactedOutput,
+    TextRole, redact_text_fields_and_save, AnnotationView, ArtifactSink, EditReceipt, FieldView, Inspection, ObjectModelProposal, PageView,
+    PdfDoc, PdfScalar, SaveReceipt, SignatureView, sha256_hex, ObjRef, GRADIENT_SAMPLES, MAX_VECTOR_ELEMENTS, MAX_VECTOR_FONT_BYTES,
+    MAX_VECTOR_ITEMS, MAX_VECTOR_PAGES, VectorColour, VectorDocument, VectorEl, VectorFont, VectorGlyph, VectorIcc, VectorItem,
+    VectorLayer, VectorMode, VectorNote, VectorPage, VectorPaint, VectorSpace, VectorStroke, read_vector_document, read_vector_pages,
+};
+pub use hsk_studio_press_write::{
+    BlendMode, Colour, DrawState, Gradient, GradientGeometry, GradientSpread, GradientStop, GroupStyle, MaskImage, MAX_GRADIENT_CYCLES,
+    TextClipRun, PDFX4_VERSION, PDFA2B_CONFORMANCE, PDFA2B_PART, CONFORMANCE_PDFA2B_VERAPDF, VERAPDF_PDFA2B_PROFILE, MAX_REPORT_BYTES,
+    PdfX4, PdfXReport, PdfXRule, SoftMask, check_pdfx4, EXPORT_CONFORMANCE, ExportError, ExportOptions, ExportReceipt, FillRule,
+    FontHandle, IccHandle, ImageColour, ImageSpec, LineCap, LineJoin, MAX_EXPORT_COORD, MAX_EXPORT_TEXT, OutputIntent, OutputIntentSubtype,
+    PageHandle, PageSpec, PathCommand, PdfExport, RenderedPage, StrokeStyle, font_advance_widths, normalize_verapdf_report, render_page,
+    MAX_OUTLINE_DEPTH, MAX_OUTLINE_ENTRIES, OutlineEntry, PageLabelRange, PageLabelStyle,
+};
 
-pub use error::{Limits, PressError, RedactionClass, SinkError, TextCause};
-pub use export::{
-    BlendMode, Colour, DrawState, Gradient, GradientGeometry, GradientSpread, GradientStop, GroupStyle, MaskImage, MAX_GRADIENT_CYCLES, TextClipRun, PDFX4_VERSION, PDFA2B_CONFORMANCE, PDFA2B_PART, CONFORMANCE_PDFA2B_VERAPDF, VERAPDF_PDFA2B_PROFILE, MAX_REPORT_BYTES, PdfX4, PdfXReport, PdfXRule, SoftMask, check_pdfx4, EXPORT_CONFORMANCE, ExportError, ExportOptions, ExportReceipt, FillRule, FontHandle, IccHandle, ImageColour, ImageSpec, LineCap,
-    LineJoin, MAX_EXPORT_COORD, MAX_EXPORT_TEXT, OutputIntent, OutputIntentSubtype, PageHandle, PageSpec, PathCommand, PdfExport, RenderedPage, StrokeStyle,
-    font_advance_widths, normalize_verapdf_report, render_page, MAX_OUTLINE_DEPTH, MAX_OUTLINE_ENTRIES, OutlineEntry, PageLabelRange,
-    PageLabelStyle,
-};
-pub use flatten::{FLATTEN_FILL, FlattenCause, FlattenNote, FlattenedPage, RENDER_STACK_BYTES};
-pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
-pub use raster::RASTER_CLASS;
-pub use sanitized_save::{
-    MIN_DISTINCTIVE_NEEDLE, NotProven, PayloadHit, PayloadLocation, PayloadProof, RasterStream, RedactOptions, RedactedOutput, RedactionLoss,
-    SanitizePolicy, SanitizeReport, StructureTreePolicy, TextCollision, redact_and_save, redact_and_save_opts, redact_and_save_with,
-    sanitize_full_rewrite, verify_payload_absent, verify_payload_absent_unicode,
-};
-pub use text_fields::{
-    TextFieldOutcome, TextFieldPolicy, TextFieldReport, TextMode, TextOutcomeKind, TextRedactedOutput, TextRole,
-    redact_text_fields_and_save,
-};
-pub use pdf_edit::{
-    AnnotationView, ArtifactSink, EditReceipt, FieldView, Inspection, ObjectModelProposal, PageView, PdfDoc, PdfScalar,
-    SaveReceipt, SignatureView, sha256_hex,
-};
-pub use syntax::ObjRef;
-pub use inks::{
+pub use hsk_studio_press_write::{
     Ink, InkError, InkManager, InkTarget, InkType, MAX_INKS, MAX_MIXED_GROUP_SWATCHES, MAX_MIXED_INKS, MAX_MIXED_SPOT_INKS, MixedInk,
     MixedInkGroup, MixedInkGroupRow, ProcessInk,
 };
-pub use separations::{
+pub use hsk_studio_press_write::{
     InkLimitFinding, InkLimitReport, InkLimits, InkReading, LimitKind, MAX_SEP_CLIP_DEPTH, MAX_SEP_PLATES, Plate, PlateCoverage, PlateView,
-    ProcessConverter, SepDraw, SepError, SepLimits, SepNote, SepPaint, SeparationPreview, Separator, Severity as InkLimitSeverity,
+    ProcessConverter, SepDraw, SepError, SepLimits, SepNote, SepPaint, SeparationPreview, Separator, InkLimitSeverity,
     separate_vector_page,
-};
-pub use vector_read::{
-    GRADIENT_SAMPLES, MAX_VECTOR_ELEMENTS, MAX_VECTOR_FONT_BYTES, MAX_VECTOR_ITEMS, MAX_VECTOR_PAGES, VectorColour, VectorDocument, VectorEl, VectorFont, VectorGlyph,
-    VectorIcc, VectorItem, VectorLayer, VectorMode, VectorNote, VectorPage, VectorPaint, VectorSpace, VectorStroke, read_vector_document, read_vector_pages,
 };
 
 use hsk_studio_accord::CancellationToken;

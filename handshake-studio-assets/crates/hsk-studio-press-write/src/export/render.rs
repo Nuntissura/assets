@@ -54,7 +54,7 @@ impl RenderedPage {
 fn group_flags(doc: &PdfDoc) -> ((bool, bool), bool) {
     let mut mask_groups = BTreeSet::new();
     let mut seen = BTreeSet::new();
-    for e in doc.objects.values() {
+    for e in doc.seam_objects().values() {
         let mut stack: Vec<&Object> = vec![&e.obj];
         let mut visited = 0usize;
         while let Some(o) = stack.pop() {
@@ -76,7 +76,7 @@ fn group_flags(doc: &PdfDoc) -> ((bool, bool), bool) {
             }
         }
     }
-    for (num, e) in &doc.objects {
+    for (num, e) in doc.seam_objects() {
         let Object::Stream(s) = &e.obj else { continue };
         let Some(g) = s.dict.get("Group").map(|g| doc.resolve(g)).and_then(Object::as_dict) else { continue };
         if !g.get("S").is_some_and(|v| v.is_name("Transparency")) || mask_groups.contains(num) {

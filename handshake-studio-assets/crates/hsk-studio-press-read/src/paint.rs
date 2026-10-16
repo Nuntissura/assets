@@ -334,7 +334,7 @@ struct Seg {
 }
 
 /// The RGB canvas and the device state. `px` is `w * h * 3` bytes, opaque white at start.
-pub(crate) struct Painter<'c> {
+pub struct Painter<'c> {
     pub w: usize,
     pub h: usize,
     pub px: Vec<u8>,
@@ -368,7 +368,7 @@ pub(crate) struct Painter<'c> {
 impl<'c> Painter<'c> {
     /// `w * h` must already be within the caller's pixel budget (checked arithmetic there);
     /// `decode_budget` is the number of image pixels the renderer may decode for this page.
-    pub(crate) fn new(w: usize, h: usize, decode_budget: u64, cancel: &'c CancellationToken) -> Option<Self> {
+    pub fn new(w: usize, h: usize, decode_budget: u64, cancel: &'c CancellationToken) -> Option<Self> {
         let px_len = w.checked_mul(h)?.checked_mul(3)?;
         let canvas = w.checked_mul(h)?;
         Some(Self {

@@ -93,7 +93,7 @@ pub(crate) fn is_decodable(dict: &Dict) -> bool {
 
 /// Decodes the full filter chain. `budget` is the remaining decoded-byte allowance for the
 /// current operation; it is reduced by the output of every stage (and by the cost of a failed one).
-pub(crate) fn decode_stream(stream: &Stream, limits: &Limits, budget: &mut usize) -> Result<Vec<u8>> {
+pub fn decode_stream(stream: &Stream, limits: &Limits, budget: &mut usize) -> Result<Vec<u8>> {
     decode_chain(stream, limits, budget).map(|d| d.data)
 }
 

@@ -17,7 +17,7 @@ use hsk_studio_accord::CancellationToken;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
-pub(crate) struct Entry {
+pub struct Entry {
     pub generation: u16,
     pub obj: Object,
     /// Byte range of the object body in the source (verbatim copy on save); `None` once the
@@ -44,7 +44,7 @@ pub(crate) struct Parsed {
     pub encrypted: bool,
 }
 
-pub(crate) fn check_cancel(cancel: &CancellationToken) -> Result<()> {
+pub fn check_cancel(cancel: &CancellationToken) -> Result<()> {
     cancel.check().map_err(|_| PressError::Canceled)
 }
 
