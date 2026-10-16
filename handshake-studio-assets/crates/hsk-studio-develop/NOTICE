@@ -31,12 +31,17 @@ SOFTWARE.
 
 ----------------------------------------------------------------------------
 
-src/nefc.rs (Nikon Huffman-compressed NEF) and the later compressed vendor
-decoders of lane SMB-DEVELOP-RAW-COMPRESSED (each module header names its
-source files) are adapted from LightCraft
-(https://github.com/storytold/lightcraft, crates/raw, commit
-af4c5e102c9f97529f582003b99c21b89067e906): src/vendor/nefc.rs and the
-Bits/Huffman/diff helpers of src/vendor/pef.rs.
+The following modules are adapted from LightCraft
+(https://github.com/storytold/lightcraft, commit
+af4c5e102c9f97529f582003b99c21b89067e906); each module header names its
+LightCraft source files: src/nefc.rs (Nikon Huffman-compressed NEF; from
+crates/raw src/vendor/nefc.rs and the Bits/Huffman/diff helpers of
+src/vendor/pef.rs), src/rw2.rs (Panasonic RW2), src/raf.rs and src/rafc.rs
+(Fujifilm RAF), src/cr3.rs, src/crx.rs and src/crx_wavelet.rs (Canon CR3),
+src/sr2.rs, and src/levels.rs (black and white level helpers).
+Olympus ORF is not covered by this notice: src/raw_cr/orf.rs is a clean-room
+decoder written from public format documentation (lane SMB-RAW-CLEANROOM,
+2026-10-16); the former LightCraft-derived src/orf.rs was removed.
 LightCraft is licensed MIT OR Apache-2.0 (root Cargo.toml license field,
 NOTICE, LICENSE-MIT, LICENSE-APACHE); the MIT terms are reproduced below.
 LightCraft states that its raw decoders are clean-room (no darktable,
