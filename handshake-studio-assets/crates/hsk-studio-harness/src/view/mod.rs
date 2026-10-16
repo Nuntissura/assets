@@ -52,6 +52,8 @@ pub mod mixer;
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
 pub mod prototype;
+/// Source monitor, marks and insert / overwrite into the program sequence (lane SMB-PR-SOURCE-MONITOR).
+pub mod source_monitor;
 /// Magic wand, quick selection and liquify brush (lane SMB-PS-SELECT-LIQUIFY).
 pub mod select_liquify;
 pub mod selection_store;
@@ -191,6 +193,8 @@ pub struct Viewer {
     /// Program monitor of a document sequence (module [`monitor`]), its decoded-frame port and
     /// wall clock (no audio device in the viewer).
     monitor: Option<MonitorState>,
+    /// Source monitor (module [`source_monitor`]).
+    source_monitor: Option<source_monitor::SourceState>,
     /// Prototype play mode (module [`prototype`]) and the clock of its last frame.
     prototype: Option<(prototype::PrototypePlay, std::time::Instant)>,
     /// Selections before each wand / quick-select step (module [`select_liquify`]).
@@ -201,6 +205,9 @@ pub struct Viewer {
     /// The open audio file (module [`audio_import`]).
     #[cfg(feature = "media")]
     audio: Option<audio_import::ViewerAudio>,
+    /// External audio decoder for audio files (D24-A OS AAC decoder; lane SMB-PR-SOURCE-MONITOR).
+    #[cfg(feature = "media")]
+    audio_decoder: Option<std::sync::Arc<dyn hsk_studio_reel::ExternalAudioDecoder>>,
     /// The mixer of a sequence (module [`mixer`]).
     #[cfg(feature = "audio-batch")]
     mixer: Option<mixer::MixerState>,
@@ -231,7 +238,8 @@ impl Viewer {
         // The application owns one harness and one token for its whole life; a `Run` borrows both.
         let harness: &'static Harness = Box::leak(Box::new(Harness::new(selection).expect("the chronicle provider is available")));
         let cancel: &'static CancellationToken = Box::leak(Box::new(CancellationToken::default()));
-        Self {
+        #[allow(unused_mut)]
+        let mut viewer = Self {
             run: harness.run(crate::harness::default_actor(), cancel),
             path_input: String::new(),
             save_input: String::new(),
@@ -259,13 +267,40 @@ impl Viewer {
             drawn: Vec::new(),
             cancel,
             monitor: None,
+            source_monitor: None,
             prototype: None,
             selection_history: Vec::new(),
             records: None,
             #[cfg(feature = "media")]
             audio: None,
+            #[cfg(feature = "media")]
+            audio_decoder: None,
             #[cfg(feature = "audio-batch")]
             mixer: None,
+        };
+        // D24-A (lane SMB-PR-SOURCE-MONITOR): AAC decodes by default through the OS decoder, reel-native's
+        // isolated Media Foundation AAC worker (`reel-native-mf-worker --aac` beside the executable).
+        #[cfg(feature = "media-native")]
+        viewer.register_os_audio_decoder(hsk_studio_reel_native::MfWorkerOptions::default());
+        viewer
+    }
+
+    /// Registers reel-native's `WorkerMfAacProvider` (D24-A OS AAC decoder) built from `options` as the
+    /// viewer's external audio decoder; a worker that cannot be configured (for example
+    /// `worker_program_missing`) leaves AAC undecodable and is reported in the status log. Returns
+    /// whether the decoder is registered.
+    #[cfg(feature = "media-native")]
+    pub fn register_os_audio_decoder(&mut self, options: hsk_studio_reel_native::MfWorkerOptions) -> bool {
+        match hsk_studio_reel_native::WorkerMfAacProvider::new(options) {
+            Ok(p) => {
+                self.audio_decoder = Some(std::sync::Arc::new(p));
+                true
+            }
+            Err(e) => {
+                self.audio_decoder = None;
+                self.say(format!("AAC: OS decoder worker unavailable ({e:?}); AAC files are codec_unavailable"));
+                false
+            }
         }
     }
 
@@ -879,6 +914,7 @@ impl Viewer {
         self.render_if_dirty();
 
         self.monitor_ui(ctx);
+        self.source_monitor_ui(ctx);
         #[cfg(feature = "media")]
         self.audio_ui(ctx);
         #[cfg(feature = "audio-batch")]

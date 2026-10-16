@@ -278,9 +278,23 @@ pub fn import_audio_with(
     options: &ImportOptions,
     cancel: &CancellationToken,
 ) -> Result<ImportedAudio, MonitorFail> {
+    import_audio_external(src, limits, options, None, cancel)
+}
+
+/// [`import_audio_with`] with an external audio decoder for the codecs it supports (Operator decision
+/// D24-A, lane SMB-PR-SOURCE-MONITOR: AAC through the OS decoder, reel-native's `WorkerMfAacProvider`,
+/// which the viewer registers under feature `media-native`); `None` is [`import_audio_with`] (AAC is then
+/// reel's typed `codec_unavailable` unless feature `studio-aac` is on).
+pub fn import_audio_external(
+    src: &mut (impl Read + Seek),
+    limits: &ImportLimits,
+    options: &ImportOptions,
+    external: Option<&dyn reel::ExternalAudioDecoder>,
+    cancel: &CancellationToken,
+) -> Result<ImportedAudio, MonitorFail> {
     let digest = reel::full_digest(src, 1 << 20, cancel).map_err(|e| reel_fail(&e))?;
     src.rewind().map_err(|e| fail("audio_read", e.to_string()))?;
-    let decoded = reel::decode_audio_file(src, &reel::Limits::default(), limits.max_frames, cancel)
+    let decoded = reel::decode_audio_file_with(src, &reel::Limits::default(), limits.max_frames, cancel, external)
         .map_err(|e| reel_fail(&e))?;
     let frames = u64::try_from(decoded.frames()).map_err(|_| fail("audio_decode", "frame count"))?;
     if frames == 0 || decoded.channels == 0 {
@@ -804,11 +818,25 @@ impl monitor::FrameSource for NoVideo {
 const MONITOR_SIDE: u32 = 16;
 
 impl super::Viewer {
+    /// Registers the external audio decoder audio files open with (D24-A: the OS AAC decoder; lane
+    /// SMB-PR-SOURCE-MONITOR). Under feature `media-native` [`super::Viewer::new`] already registers
+    /// reel-native's `WorkerMfAacProvider` when its worker is beside the executable.
+    pub fn set_audio_decoder(&mut self, decoder: Arc<dyn reel::ExternalAudioDecoder>) {
+        self.audio_decoder = Some(decoder);
+    }
+
+    /// Identity of the registered external audio decoder (`None`: AAC is `codec_unavailable` unless
+    /// feature `studio-aac`).
+    pub fn audio_decoder(&self) -> Option<reel::DecoderIdentity> {
+        self.audio_decoder.as_ref().map(|d| d.identity())
+    }
+
     /// Opens an audio file already read by [`super::Viewer::open`]: the import lands in a one-clip
     /// sequence, the program monitor opens on it (transport at the file rate) and the audio panel shows
     /// it with FLAC / AIFF export. The open document, if any, stays open.
     pub(crate) fn open_audio_bytes(&mut self, path: &Path, bytes: Vec<u8>) -> Result<(), String> {
-        let import = import_audio_with(&mut Cursor::new(bytes), &ImportLimits::default(), &ImportOptions::default(), self.cancel)
+        let external = self.audio_decoder.clone();
+        let import = import_audio_external(&mut Cursor::new(bytes), &ImportLimits::default(), &ImportOptions::default(), external.as_deref(), self.cancel)
             .and_then(AudioImport::new)
             .map_err(|e| format!("audio {}: {} {}", path.display(), e.code, e.detail))?;
         let program = monitor::ProgramMonitor::new(import.sequence.clone(), MONITOR_SIDE, MONITOR_SIDE, monitor::DropPolicy::DropLate)

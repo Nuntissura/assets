@@ -86,6 +86,21 @@ pub trait FrameSource {
     }
 }
 
+/// The rendered frame as an 8-bit straight RGBA egui image (lane SMB-PR-SOURCE-MONITOR: shared by
+/// the source monitor panel).
+pub fn colour_image(image: &RenderedScene) -> egui::ColorImage {
+    let (w, h) = (image.width, image.height);
+    let mut rgba = Vec::with_capacity((w as usize).saturating_mul(h as usize).saturating_mul(4));
+    for y in 0..h {
+        for x in 0..w {
+            let p = image.pixel(x, y).unwrap_or([0.0; 4]);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            rgba.extend(p.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba)
+}
+
 /// Wall-clock master for a viewer without an audio device: samples elapsed since creation.
 #[derive(Clone, Copy, Debug)]
 pub struct WallClock {
@@ -255,6 +270,52 @@ impl ProgramMonitor {
     }
     pub fn scheduler(&self) -> &PlaybackScheduler {
         &self.scheduler
+    }
+    /// The sequence the monitor plays.
+    pub fn sequence(&self) -> &StudioSequence {
+        &self.sequence
+    }
+    /// Clears the in and out points (lane SMB-PR-SOURCE-MONITOR).
+    pub fn clear_in_out(&mut self) {
+        self.scheduler.clear_in_out();
+    }
+    /// Sets the program in point (`is_in`) or out point at the playhead frame, keeping the other
+    /// point (an unset one reads as the first or last frame of the play range); `in_after_out` /
+    /// `out_before_in` when the marks would cross (lane SMB-PR-SOURCE-MONITOR).
+    pub fn mark_at_playhead(&mut self, is_in: bool) -> Result<(), MonitorFail> {
+        let s = &self.scheduler;
+        let here = s.frame_of(s.playhead());
+        let first = s.frame_of(s.range().start());
+        let last = s.frame_of(Ticks::new(s.range().end().value().saturating_sub(1)));
+        let (cur_in, cur_out) = match s.in_out() {
+            Some(r) => (s.frame_of(r.start()), s.frame_of(Ticks::new(r.end().value().saturating_sub(1)))),
+            None => (first, last),
+        };
+        let (i, o) = if is_in { (here, cur_out) } else { (cur_in, here) };
+        if o < i {
+            return Err(fail(if is_in { "in_after_out" } else { "out_before_in" }, format!("{i}..{o}")));
+        }
+        self.set_in_out(i, o)
+    }
+    /// Plays `sequence` from now on (an edit committed elsewhere, lane SMB-PR-SOURCE-MONITOR):
+    /// the scheduler is rebuilt paused with the playhead kept (clamped into the new play range),
+    /// the in/out span kept when it still fits, and the shown frame dropped so the next refresh
+    /// renders the edited frame.
+    pub fn replace_sequence(&mut self, sequence: StudioSequence, clock: &dyn AudioClock) -> Result<(), MonitorFail> {
+        let mut scheduler = PlaybackScheduler::new(&sequence, self.scheduler.policy())
+            .map_err(|e| fail("sequence", e.code()))?;
+        if let Some(r) = self.scheduler.in_out() {
+            let (i, o) = (self.scheduler.frame_of(r.start()), self.scheduler.frame_of(Ticks::new(r.end().value().saturating_sub(1))));
+            let _ = scheduler.set_in_out(i, o);
+        }
+        let range = scheduler.range();
+        let last = Ticks::new(range.end().value().saturating_sub(1));
+        let head = self.scheduler.playhead().max(range.start()).min(last);
+        scheduler.scrub(head, clock).map_err(|e| fail("scrub", e.code()))?;
+        self.sequence = sequence;
+        self.scheduler = scheduler;
+        self.shown = None;
+        Ok(())
     }
     pub fn shown(&self) -> Option<&ProgramFrame> {
         self.shown.as_ref()

@@ -164,6 +164,13 @@ impl ReelFrameDecoder {
             .ok_or_else(|| DecodeRefusal::new("media_unregistered", "no bytes registered for the source"))
     }
 
+    /// `(units, ticks per unit, width, height)` of a registered video source as the container
+    /// declares them (lane SMB-PR-SOURCE-MONITOR: the source monitor's length and frame rate).
+    pub fn layout(&self, source: &ClipSource, cancel: &CancellationToken) -> Result<(u64, u64, u32, u32), DecodeRefusal> {
+        let (_, l) = self.probe(self.item(source)?, cancel)?;
+        Ok((l.units, l.ticks_per_unit, l.width, l.height))
+    }
+
     fn probe(
         &self,
         item: &Item,
