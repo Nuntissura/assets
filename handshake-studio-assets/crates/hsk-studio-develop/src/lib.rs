@@ -37,6 +37,7 @@ pub mod output;
 pub mod dng;
 pub mod pipeline;
 pub mod recipe;
+pub mod records;
 pub mod ljpeg;
 mod nef;
 mod nefc;
@@ -75,6 +76,10 @@ pub use lens_profile::{
 pub use optics::{Defringe, Optics};
 pub use look::{CreativeLook, LookDomain};
 pub use preset::{DevelopPreset, FLAG_FIELDS, MAX_PRESET_BYTES, MAX_PRESET_SETTINGS, META_FIELDS, PresetValue, Snapshot, preset_keys};
+pub use records::{
+    BatchOp, BatchOutcome, DevelopRecord, GroupLoss, HistoryStep, RecordError, RecordLimits, SettingsClipboard, SettingsGroup,
+    batch_apply, copy_groups, set_copy_as_master,
+};
 pub use upright::{DetectedLine, UprightAnalysis, analyse as analyse_upright};
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{recipe_for_white_point, ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
