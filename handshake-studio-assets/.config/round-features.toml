@@ -15,14 +15,18 @@ per-test-timeout-s = 120
 [crates]
 hsk-studio-type = [["harfrust"]]
 hsk-studio-motion-js = [["quickjs"], ["quickjs", "test-faults"]]
-hsk-studio-reel = [["av1"], ["prores"], ["av1-encode"], ["av1", "av1-encode"]]
-hsk-studio-reel-native = [["av1-worker"], ["av1-worker", "test-faults"], ["mf-worker"], ["mf-worker", "test-faults"]]
+# D24-A (SMB-D24A-CODEC-DEFAULTS, lead-approved 2026-10-16): reel studio-aac, harness studio-aac, reel-native os-encode.
+# The requested reel-native set also named hsk-studio-reel/studio-aac; a unit's features must be the crate's own
+# feature names (run-round: other names are feature_absent, exit 74), so the builder's stated fallback is used; the
+# mf_aac cross-check with Studio's decoder needs a reel-native passthrough feature (builder) to run in rounds.
+hsk-studio-reel = [["av1"], ["prores"], ["av1-encode"], ["av1", "av1-encode"], ["studio-aac"]]
+hsk-studio-reel-native = [["av1-worker"], ["av1-worker", "test-faults"], ["mf-worker"], ["mf-worker", "test-faults"], ["mf-worker", "test-faults", "os-encode"]]
 hsk-studio-score-plugin = [["test-faults"], ["clap", "test-faults"]]
 hsk-studio-render-gpu = [["test-faults"], ["shared-device"], ["shared-device", "test-faults"]]
 hsk-studio-score-device = [["cpal-backend"]]
 hsk-studio-kernel-bindings = [["test-faults"], ["ckc-test-double"]]
 hsk-studio-worker = [["test-faults"]]
-hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"]]
+hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"]]
 hsk-studio-composite = [["motion"]]
 
 [ignored]

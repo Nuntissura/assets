@@ -2115,6 +2115,29 @@ dependencies = [
  "hayro-interpret",
  "hsk-studio-accord",
  "hsk-studio-observe",
+ "hsk-studio-press-read",
+ "hsk-studio-press-write",
+ "miniz_oxide 0.9.1",
+]
+
+[[package]]
+name = "hsk-studio-press-read"
+version = "0.1.0"
+dependencies = [
+ "hayro-interpret",
+ "hsk-studio-accord",
+ "kurbo",
+ "miniz_oxide 0.9.1",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "hsk-studio-press-write"
+version = "0.1.0"
+dependencies = [
+ "hayro-interpret",
+ "hsk-studio-accord",
+ "hsk-studio-press-read",
  "kurbo",
  "miniz_oxide 0.9.1",
  "sha2 0.10.9",
