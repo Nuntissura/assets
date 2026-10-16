@@ -237,3 +237,53 @@ fn mixer_edits_are_single_undo_steps_and_drive_the_bus_mix_and_meters() {
     assert_eq!(w.mixer_json()["strips"][0]["volume"].as_f64(), Some(0.5));
     assert_eq!(w.mixer_json()["strips"][1]["muted"], true);
 }
+
+/// Lane SMB-AUDITION-UI-2: bus and master effect editing from the mixer, each edit one undo step:
+/// add (gain on the submix, limiter on the master), change a parameter (-6.0206 dB halves the bus),
+/// reorder, disable, remove; an out-of-range parameter is refused with no step; undo restores the
+/// stack; the panel draws the effect rows.
+#[test]
+fn mixer_edits_bus_and_master_effects_as_single_undo_steps() {
+    use hsk_studio_harness::view::mixer::{effect_templates, fresh_effect_id};
+    let dir = support_audio::scratch("mixer-fx");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&package(&dir)).unwrap();
+    v.open_mixer("seq-main", RATE, 960, sources(), Arc::new(Ext)).unwrap();
+    v.mixer_edit(MixerEdit::Output { track_id: id(2), bus: Some(id(3)) }).unwrap();
+    v.mixer_edit(MixerEdit::Mute { track_id: id(1), muted: true }).unwrap();
+    let tmpl = |name: &str| effect_templates().into_iter().find(|(n, _)| *n == name).unwrap().1;
+    let steps = |v: &Viewer| undo_labels(v).len();
+    let s0 = steps(&v);
+    let gain = tmpl("gain").to_preset_instance(fresh_effect_id(&[]));
+    v.mixer_edit(MixerEdit::AddEffect { bus: Some(id(3)), instance: gain, at: None }).unwrap();
+    v.mixer_edit(MixerEdit::EffectParam { bus: Some(id(3)), instance_id: "fx-0".into(), key: "db".into(), value: -6.020_599_913_279_624 }).unwrap();
+    let lim = tmpl("lookahead_limiter").to_preset_instance("fx-1");
+    v.mixer_edit(MixerEdit::AddEffect { bus: Some(id(3)), instance: lim, at: Some(0) }).unwrap();
+    v.mixer_edit(MixerEdit::MoveEffect { bus: Some(id(3)), instance_id: "fx-1".into(), to: 1 }).unwrap();
+    v.mixer_edit(MixerEdit::AddEffect { bus: None, instance: tmpl("gain").to_preset_instance("fx-0"), at: None }).unwrap();
+    assert_eq!(steps(&v), s0 + 5, "{:?}", undo_labels(&v));
+    let fx = &v.mixer_json()["strips"][2]["effects"];
+    assert_eq!((fx[0]["instance_id"].as_str(), fx[1]["instance_id"].as_str()), (Some("fx-0"), Some("fx-1")));
+    assert_eq!(v.mixer_json()["master"]["effects"][0]["filter_kind"], "gain");
+    // Refused: a limiter ceiling outside score's range; no step.
+    assert!(v.mixer_edit(MixerEdit::EffectParam { bus: Some(id(3)), instance_id: "fx-1".into(), key: "ceiling_db".into(), value: 500.0 }).is_err());
+    assert_eq!(steps(&v), s0 + 5);
+    // The impulse (mono centre 0.5 cos pi/4) through the bus: halved by the gain, delayed by the limiter
+    // latency, aligned (latency compensated) at sample 1000.
+    let [l, _] = v.mixer_render(4800).unwrap();
+    let want = 0.5 * std::f64::consts::FRAC_1_SQRT_2 * 0.5;
+    assert!((f64::from(l[1000]) - want).abs() < 1e-6, "{} vs {want}", l[1000]);
+    // Disable, then remove the gain: back to the full level.
+    v.mixer_edit(MixerEdit::EffectEnabled { bus: Some(id(3)), instance_id: "fx-0".into(), enabled: false }).unwrap();
+    v.mixer_edit(MixerEdit::RemoveEffect { bus: Some(id(3)), instance_id: "fx-0".into() }).unwrap();
+    assert_eq!(steps(&v), s0 + 7);
+    v.mixer_undo(true).unwrap();
+    v.mixer_undo(true).unwrap();
+    assert_eq!(v.mixer_json()["strips"][2]["effects"][0]["enabled"], true, "undo restores the enabled gain");
+    // One egui frame draws the effect rows and the add combos.
+    let ctx = egui::Context::default();
+    let _ = ctx.run(egui::RawInput::default(), |ctx| v.ui(ctx));
+    for name in [format!("mixer.{}.fx.fx-0.db", id(3)), format!("mixer.{}.fx.fx-1.remove", id(3)), format!("mixer.{}.add_effect", id(3)), widget::MASTER_ADD_EFFECT.to_owned(), "mixer.master.fx.fx-0.enabled".into()] {
+        assert!(v.drawn().contains(&name), "{name} not drawn");
+    }
+}

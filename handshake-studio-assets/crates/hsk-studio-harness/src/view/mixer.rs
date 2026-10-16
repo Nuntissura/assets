@@ -5,8 +5,11 @@
 //! - fader (`volume`, linear; the panel shows dB), `pan`, `muted`, `soloed` are Folio track fields:
 //!   the edited sequence goes through the session's timeline step (`Run::submit_sequence`), undone
 //!   and redone by its inverse;
-//! - output, sends (target, level, pre/post, pan) and the master volume live in the routing entry
-//!   (module [`super::audio_session`]): an entry-only history step (`Run::set_tiles_and_entry`).
+//! - output, sends (target, level, pre/post, pan), the master volume and the bus / master effect
+//!   stacks (lane SMB-AUDITION-UI-2: add, remove, reorder, enable, change a parameter) live in the
+//!   routing entry (module [`super::audio_session`]): an entry-only history step
+//!   (`Run::set_tiles_and_entry`). An effect edit is refused before it is stored when the edited
+//!   instance does not build at the mixer rate (`audio_session::bus_effect`).
 //!
 //! Playback / metering: [`super::Viewer::open_mixer`] binds the mixer to a sequence and an audio
 //! source port; after every edit, undo and redo the pulse bus stream is rebuilt from the current
@@ -16,7 +19,8 @@
 //! peak and the master loudness (score's BS.1770 meter: momentary, short-term, integrated).
 #![deny(clippy::arithmetic_side_effects)]
 
-use super::audio_session::{AUDIO_ROUTING_ENTRY, build_bus_stream};
+use super::audio_batch::EffectSpec;
+use super::audio_session::{AUDIO_ROUTING_ENTRY, build_bus_stream, bus_effect};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     self as folio, StudioAudioRouting, StudioAudioRoutingSet, StudioAudioSend, StudioSequence, StudioTrackRoute, TrackKind,
@@ -41,6 +45,26 @@ pub mod widget {
     pub const OUTPUT: &str = "output";
     pub const ADD_SEND: &str = "add_send";
     pub const METER: &str = "meter";
+    pub const ADD_EFFECT: &str = "add_effect";
+    pub const MASTER_ADD_EFFECT: &str = "mixer.master.add_effect";
+}
+
+/// Effects the panel offers to add, with their starting parameters (score's processor identity
+/// tags; see `audio_batch::EffectSpec`).
+pub fn effect_templates() -> Vec<(&'static str, EffectSpec)> {
+    use hsk_studio_score as score;
+    vec![
+        ("gain", EffectSpec::Gain { db: 0.0 }),
+        (
+            "equalizer",
+            EffectSpec::Equalizer {
+                sections: vec![score::BiquadSpec { kind: score::BiquadKind::Peaking, frequency_hz: 1000.0, gain_db: 0.0, q: 1.0 }],
+                master_gain_db: 0.0,
+            },
+        ),
+        ("dynamics", EffectSpec::Dynamics(score::DynamicsParams::compressor(-18.0, 3.0))),
+        ("lookahead_limiter", EffectSpec::Limiter(score::LimiterParams::default())),
+    ]
 }
 
 /// The mixer bound to one sequence.
@@ -72,6 +96,24 @@ pub enum MixerEdit {
     Send { track_id: String, send_id: String, level: f64, pre_fader: bool, pan: f64 },
     RemoveSend { track_id: String, send_id: String },
     MasterVolume { linear: f64 },
+    /// Bus (`Some(submix track id)`) or master (`None`) effect stack edits (lane SMB-AUDITION-UI-2).
+    AddEffect { bus: Option<String>, instance: folio::StudioAudioEffectInstance, at: Option<usize> },
+    RemoveEffect { bus: Option<String>, instance_id: String },
+    MoveEffect { bus: Option<String>, instance_id: String, to: usize },
+    EffectEnabled { bus: Option<String>, instance_id: String, enabled: bool },
+    EffectParam { bus: Option<String>, instance_id: String, key: String, value: f64 },
+}
+
+/// A fresh instance id `fx-<n>` not used in `list`.
+pub fn fresh_effect_id(list: &[folio::StudioAudioEffectInstance]) -> String {
+    let mut n = list.len();
+    loop {
+        let id = format!("fx-{n}");
+        if list.iter().all(|e| e.instance_id != id) {
+            return id;
+        }
+        n = n.saturating_add(1);
+    }
 }
 
 impl super::Viewer {
@@ -291,6 +333,54 @@ impl super::Viewer {
                         routing.master.volume = linear;
                         "mixer_master_volume"
                     }
+                    MixerEdit::AddEffect { bus, instance, at } => {
+                        let rate = self.mixer.as_ref().map_or(48_000, |m| m.rate);
+                        if instance.enabled {
+                            bus_effect(&instance, rate).map_err(|e| format!("mixer: effect refused: {}", e.code()))?;
+                        }
+                        let list = effects_of(routing, bus.as_deref());
+                        if list.iter().any(|e| e.instance_id == instance.instance_id) {
+                            return Err(format!("mixer: effect id {} exists", instance.instance_id));
+                        }
+                        let at = at.unwrap_or(list.len()).min(list.len());
+                        list.insert(at, instance);
+                        "mixer_add_effect"
+                    }
+                    MixerEdit::RemoveEffect { bus, instance_id } => {
+                        let list = effects_of(routing, bus.as_deref());
+                        let i = list.iter().position(|e| e.instance_id == instance_id).ok_or_else(|| format!("mixer: no effect {instance_id}"))?;
+                        list.remove(i);
+                        "mixer_remove_effect"
+                    }
+                    MixerEdit::MoveEffect { bus, instance_id, to } => {
+                        let list = effects_of(routing, bus.as_deref());
+                        let i = list.iter().position(|e| e.instance_id == instance_id).ok_or_else(|| format!("mixer: no effect {instance_id}"))?;
+                        let e = list.remove(i);
+                        let to = to.min(list.len());
+                        list.insert(to, e);
+                        "mixer_move_effect"
+                    }
+                    MixerEdit::EffectEnabled { bus, instance_id, enabled } => {
+                        let rate = self.mixer.as_ref().map_or(48_000, |m| m.rate);
+                        let list = effects_of(routing, bus.as_deref());
+                        let e = list.iter_mut().find(|e| e.instance_id == instance_id).ok_or_else(|| format!("mixer: no effect {instance_id}"))?;
+                        e.enabled = enabled;
+                        if enabled {
+                            bus_effect(e, rate).map_err(|x| format!("mixer: effect refused: {}", x.code()))?;
+                        }
+                        "mixer_effect_enabled"
+                    }
+                    MixerEdit::EffectParam { bus, instance_id, key, value } => {
+                        let rate = self.mixer.as_ref().map_or(48_000, |m| m.rate);
+                        let list = effects_of(routing, bus.as_deref());
+                        let e = list.iter_mut().find(|e| e.instance_id == instance_id).ok_or_else(|| format!("mixer: no effect {instance_id}"))?;
+                        let param = e.params.iter_mut().find(|p| p.key == key).ok_or_else(|| format!("mixer: no parameter {key}"))?;
+                        param.value = value;
+                        if e.enabled {
+                            bus_effect(e, rate).map_err(|x| format!("mixer: effect refused: {}", x.code()))?;
+                        }
+                        "mixer_effect_param"
+                    }
                     _ => return Err("mixer: unreachable".into()),
                 };
                 let snapshot = self.run.snapshot().ok_or("mixer: no document is open")?;
@@ -352,6 +442,34 @@ impl super::Viewer {
             })
             .collect();
         let meters = m.meters.as_ref();
+        let fx_json = |list: &[folio::StudioAudioEffectInstance]| -> Vec<Value> {
+            list.iter()
+                .map(|e| {
+                    json!({
+                        "instance_id": e.instance_id,
+                        "filter_kind": e.filter_kind,
+                        "enabled": e.enabled,
+                        "params": e.params.iter().map(|p| json!({"key": p.key, "value": p.value})).collect::<Vec<_>>(),
+                        "keyframes": e.keyframes.len(),
+                    })
+                })
+                .collect()
+        };
+        let strips: Vec<Value> = strips
+            .into_iter()
+            .map(|mut s| {
+                if s["kind"] == "submix" {
+                    let id = s["track_id"].as_str().unwrap_or_default().to_owned();
+                    let list = routing
+                        .as_ref()
+                        .and_then(|r| r.bus_effects.iter().find(|b| b.track_id == id))
+                        .map(|b| fx_json(&b.effects))
+                        .unwrap_or_default();
+                    s["effects"] = Value::from(list);
+                }
+                s
+            })
+            .collect();
         json!({
             "sequence_id": m.sequence_id,
             "sample_rate": m.rate,
@@ -361,6 +479,7 @@ impl super::Viewer {
             "strips": strips,
             "master": {
                 "volume": routing.as_ref().map(|r| r.master.volume),
+                "effects": routing.as_ref().map(|r| fx_json(&r.master.effects)).unwrap_or_default(),
                 "peak": meters.map(|x| x.master),
                 "momentary_lufs": meters.and_then(|x| x.loudness.momentary_lufs),
                 "short_term_lufs": meters.and_then(|x| x.loudness.short_term_lufs),
@@ -445,6 +564,9 @@ impl super::Viewer {
                         {
                             requests.push(MixerEdit::AddSend { track_id: id.clone(), target: first.clone(), level: 1.0, pre_fader: false });
                         }
+                        if strip["kind"] == "submix" {
+                            effects_ui(ui, Some(&id), &strip["effects"], &mut requests, &mut drawn);
+                        }
                         let p = strip["peak"].as_array().map_or(0.0, |a| a.iter().filter_map(Value::as_f64).fold(0.0, f64::max));
                         ui.push_id(super::widget::id(&name(widget::METER)), |ui| ui.add(egui::ProgressBar::new(p.clamp(0.0, 1.0) as f32).text(format!("{:.1} dBFS", db(p)))));
                         for c in [widget::VOLUME, widget::PAN, widget::MUTE, widget::OUTPUT, widget::METER] {
@@ -474,6 +596,7 @@ impl super::Viewer {
                     });
                     drawn.push(widget::MASTER_VOLUME.into());
                     drawn.push(widget::MASTER_METER.into());
+                    effects_ui(ui, None, &master["effects"], &mut requests, &mut drawn);
                 });
             });
         });
@@ -482,4 +605,84 @@ impl super::Viewer {
             let _ = self.mixer_edit(edit);
         }
     }
+}
+
+/// The effect stack of bus `bus` (`None` = master) in `routing`, created empty when absent.
+fn effects_of<'a>(routing: &'a mut StudioAudioRouting, bus: Option<&str>) -> &'a mut Vec<folio::StudioAudioEffectInstance> {
+    match bus {
+        None => &mut routing.master.effects,
+        Some(id) => {
+            let i = match routing.bus_effects.iter().position(|b| b.track_id == id) {
+                Some(i) => i,
+                None => {
+                    routing.bus_effects.push(folio::StudioBusEffects { track_id: id.to_owned(), effects: Vec::new() });
+                    routing.bus_effects.len().saturating_sub(1)
+                }
+            };
+            &mut routing.bus_effects[i].effects
+        }
+    }
+}
+
+/// One effect stack in the panel: per effect enable, up, down, remove and a drag value per
+/// parameter; an add combo with [`effect_templates`]. Widget ids
+/// `mixer.<bus|master>.fx.<instance_id>.{enabled,up,down,remove,<param key>}` and the add combo.
+fn effects_ui(ui: &mut egui::Ui, bus: Option<&str>, effects: &Value, requests: &mut Vec<MixerEdit>, drawn: &mut Vec<String>) {
+    let owner = bus.unwrap_or("master").to_owned();
+    let list: Vec<&Value> = effects.as_array().into_iter().flatten().collect();
+    let count = list.len();
+    for (i, e) in list.iter().enumerate() {
+        let iid = e["instance_id"].as_str().unwrap_or_default().to_owned();
+        let key = |c: &str| format!("mixer.{owner}.fx.{iid}.{c}");
+        ui.push_id(super::widget::id(&key("row")), |ui| {
+            ui.horizontal(|ui| {
+                let mut enabled = e["enabled"].as_bool().unwrap_or(true);
+                if ui.checkbox(&mut enabled, e["filter_kind"].as_str().unwrap_or_default()).changed() {
+                    requests.push(MixerEdit::EffectEnabled { bus: bus.map(str::to_owned), instance_id: iid.clone(), enabled });
+                }
+                if ui.add_enabled(i > 0, egui::Button::new("up")).clicked() {
+                    requests.push(MixerEdit::MoveEffect { bus: bus.map(str::to_owned), instance_id: iid.clone(), to: i.saturating_sub(1) });
+                }
+                if ui.add_enabled(i.saturating_add(1) < count, egui::Button::new("down")).clicked() {
+                    requests.push(MixerEdit::MoveEffect { bus: bus.map(str::to_owned), instance_id: iid.clone(), to: i.saturating_add(1) });
+                }
+                if ui.button("x").clicked() {
+                    requests.push(MixerEdit::RemoveEffect { bus: bus.map(str::to_owned), instance_id: iid.clone() });
+                }
+            });
+            for p in e["params"].as_array().into_iter().flatten() {
+                let pk = p["key"].as_str().unwrap_or_default().to_owned();
+                let mut v = p["value"].as_f64().unwrap_or(0.0);
+                if ui.push_id(super::widget::id(&key(&pk)), |ui| ui.add(egui::DragValue::new(&mut v).speed(0.1).prefix(format!("{pk} ")))).inner.changed() {
+                    requests.push(MixerEdit::EffectParam { bus: bus.map(str::to_owned), instance_id: iid.clone(), key: pk.clone(), value: v });
+                }
+                drawn.push(key(&pk));
+            }
+        });
+        for c in ["enabled", "up", "down", "remove"] {
+            drawn.push(key(c));
+        }
+    }
+    let add_id = match bus {
+        Some(b) => format!("mixer.{b}.{}", widget::ADD_EFFECT),
+        None => widget::MASTER_ADD_EFFECT.to_owned(),
+    };
+    let existing: Vec<folio::StudioAudioEffectInstance> = list
+        .iter()
+        .map(|e| folio::StudioAudioEffectInstance {
+            instance_id: e["instance_id"].as_str().unwrap_or_default().to_owned(),
+            filter_kind: String::new(),
+            enabled: true,
+            params: Vec::new(),
+            keyframes: Vec::new(),
+        })
+        .collect();
+    egui::ComboBox::from_id_salt(super::widget::id(&add_id)).selected_text("+ effect").show_ui(ui, |ui| {
+        for (name, spec) in effect_templates() {
+            if ui.selectable_label(false, name).clicked() {
+                requests.push(MixerEdit::AddEffect { bus: bus.map(str::to_owned), instance: spec.to_preset_instance(fresh_effect_id(&existing)), at: None });
+            }
+        }
+    });
+    drawn.push(add_id);
 }
