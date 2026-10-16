@@ -30,6 +30,11 @@
 //! applies its own correction (STU-COL-222 maths at its temperature / tint `/ 200` and contrast
 //! `/ 150`, then its saturation) mixed by the key weight. Every stage clamps to `0..=1` (the
 //! adjustment domain of the plan's blend space; values are never profile-converted, STU-COL-161).
+//!
+//! Lane SMB-PR-SOURCE-MONITOR: faded film (STU-COL-221 `faded_film`) runs in stage 3 after the look
+//! ([`ClipGrade::faded_film`]); `sharpen` (STU-COL-220) is the spatial stage after the per-texel grade
+//! ([`ClipGrade::sharpen_filter`], a [`crate::SceneContent::Filtered`] wrap); keyframed grade scalars
+//! are sampled at the clip tick by `evaluate_effect_stack` before the grade is prepared.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::composition::{SceneContent, SceneLayer};
@@ -37,7 +42,10 @@ use crate::temporal::TemporalError;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::adjust_colour::Vibrance;
 use hsk_studio_pigment::adjust_math::{AdjustmentOp, Curves, PreparedAdjustment, PreparedCurve, hsl_to_rgb, rgb_to_hsl};
-use hsk_studio_prism::grade::{KeyRange, SecondaryKey, Vignette, Wheels, WheelBand, apply_wheels, key_weight, vignette_gain};
+use hsk_studio_prism::grade::{
+    GradeProgram, GradeSecondary, GradeSpline, KeyRange, SecondaryKey, Vignette, Wheels, WheelBand, apply_wheels, key_weight,
+    vignette_gain,
+};
 use hsk_studio_prism::CubeLut as Lut;
 use std::sync::Arc;
 
@@ -183,6 +191,14 @@ pub struct ClipGrade {
     secondaries: Vec<Secondary>,
     vignette: Option<Vignette>,
     luma: [f32; 3],
+    /// Faded film black lift `0.1 * faded_film / 100` (lane SMB-PR-SOURCE-MONITOR).
+    faded: f32,
+    /// STU-COL-220 `sharpen` (lane SMB-PR-SOURCE-MONITOR; a spatial stage, see [`ClipGrade::sharpen_filter`]).
+    sharpen: f32,
+    /// Vibrance fraction and the RGB curve splines (composite, red, green, blue) as data for
+    /// [`ClipGrade::program`] (the same splines `rgb_curves` prepares).
+    vibrance_fraction: f32,
+    rgb_parts: [Option<PreparedCurve>; 4],
 }
 
 fn clamp01(c: [f32; 3]) -> [f32; 3] {
@@ -319,7 +335,83 @@ impl ClipGrade {
             secondaries,
             vignette,
             luma,
+            faded: f(0.1 * g.faded_film / 100.0),
+            sharpen: f(b.sharpen),
+            vibrance_fraction: f(b.vibrance / 100.0),
+            rgb_parts: [curve(&c.composite, clip_id)?, curve(&c.red, clip_id)?, curve(&c.green, clip_id)?, curve(&c.blue, clip_id)?],
         })
+    }
+
+    /// This grade as a Prism [`GradeProgram`] for a backend grade kernel (lane
+    /// SMB-PR-SOURCE-MONITOR): the same prepared stages, identity stages absent, so a kernel runs
+    /// exactly the stages [`ClipGrade::apply`] runs.
+    pub fn program(&self) -> GradeProgram {
+        let spline = |c: &Option<PreparedCurve>| {
+            c.as_ref().map(|c| {
+                let (xs, ys, m) = c.spline();
+                GradeSpline { xs: xs.to_vec(), ys: ys.to_vec(), m: m.to_vec() }
+            })
+        };
+        let any_rgb = self.rgb_curves.is_some();
+        let hsl = |pick: fn(&HslCurves) -> &Option<PreparedCurve>| self.hsl_curves.as_ref().and_then(|h| spline(pick(h)));
+        GradeProgram {
+            input_lut: self.input_lut.clone(),
+            exposure_gain: self.exposure_gain,
+            primary: (!self.primary.is_identity()).then_some(self.primary),
+            tone: spline(&self.tone),
+            saturation: self.saturation,
+            vibrance: self.vibrance.as_ref().map(|_| self.vibrance_fraction),
+            look: self.look.clone(),
+            faded_floor: self.faded,
+            rgb_curves: if any_rgb { [spline(&self.rgb_parts[0]), spline(&self.rgb_parts[1]), spline(&self.rgb_parts[2]), spline(&self.rgb_parts[3])] } else { [None, None, None, None] },
+            hsl_curves: [
+                hsl(|h| &h.hue_vs_hue),
+                hsl(|h| &h.hue_vs_saturation),
+                hsl(|h| &h.hue_vs_luminance),
+                hsl(|h| &h.luminance_vs_saturation),
+                hsl(|h| &h.saturation_vs_saturation),
+            ],
+            wheels: (!self.wheels.is_identity()).then_some(self.wheels),
+            secondaries: self
+                .secondaries
+                .iter()
+                .map(|s| GradeSecondary { key: s.key, correction: s.correction, saturation: s.saturation })
+                .collect(),
+            vignette: self.vignette,
+            luma: self.luma,
+        }
+    }
+
+    /// The faded-film lift of one channel (Studio reading, UNVERIFIED against Lumetri, D5): the
+    /// black point rises to `floor` with a quadratic toe, `v + floor * (1 - v)^2`; white stays 1.
+    pub fn faded_film(floor: f32, v: f32) -> f32 {
+        let d = 1.0 - v;
+        v + floor * d * d
+    }
+
+    /// The faded-film floor of this grade (0 = none).
+    pub fn faded_floor(&self) -> f32 {
+        self.faded
+    }
+
+    /// STU-COL-220 `sharpen` of this grade.
+    pub fn sharpen(&self) -> f32 {
+        self.sharpen
+    }
+
+    /// The spatial sharpen stage that follows the per-texel grade (Studio reading, UNVERIFIED
+    /// against Lumetri, D5): `sharpen > 0` is Pigment's unsharp mask at `amount = sharpen` percent,
+    /// radius 1 px, threshold 0; `sharpen < 0` softens with Pigment's Gaussian blur of radius
+    /// `-sharpen / 100` px; 0 is no stage.
+    pub fn sharpen_filter(&self, clip_id: &str) -> Result<Option<hsk_studio_pigment::smart_filter::SmartFilterOp>, TemporalError> {
+        let s = self.sharpen;
+        if s > 0.0 {
+            filters(clip_id, StudioSmartFilterKind::UnsharpMask { amount_pct: s, radius_px: 1.0, threshold_levels: 0 }).map(Some)
+        } else if s < 0.0 {
+            filters(clip_id, StudioSmartFilterKind::GaussianBlur { radius_px: -s / 100.0 }).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     /// The graded colour of straight RGB `c` at pixel centre `(x, y)` of a `width` x `height` clip
@@ -349,6 +441,9 @@ impl ClipGrade {
         if let Some((l, k)) = &self.look {
             let o = lut_apply(l, c);
             c = clamp01([0usize, 1, 2].map(|i| c[i] + (o[i] - c[i]) * k));
+        }
+        if self.faded > 0.0 {
+            c = clamp01(c.map(|v| Self::faded_film(self.faded, v)));
         }
         // Stage 5 curves.
         if let Some(rc) = &self.rgb_curves {
@@ -479,7 +574,13 @@ pub fn apply_effects(mut layer: SceneLayer, rect: Rect, effects: &[ClipEffectFra
     let bad = |field: &'static str| TemporalError::InvalidState { layer_id: id.clone(), field };
     for e in effects {
         match e {
-            ClipEffectFrame::Grade(g) => layer = wrap(layer, rect, ClipStage::Grade(g.clone())),
+            ClipEffectFrame::Grade(g) => {
+                layer = wrap(layer, rect, ClipStage::Grade(g.clone()));
+                if let Some(op) = g.sharpen_filter(&id)? {
+                    let content = std::mem::replace(&mut layer.content, SceneContent::None);
+                    layer.content = SceneContent::Filtered(Box::new(crate::composition::FilteredContent { content, rect, filters: op }));
+                }
+            }
             ClipEffectFrame::Crop { left, top, right, bottom } => {
                 let p = [*left, *top, *right, *bottom];
                 if !p.iter().all(|v| v.is_finite() && (0.0..=100.0).contains(v)) {
@@ -560,7 +661,17 @@ pub fn evaluate_effect_stack(
     for e in stack.effects.iter().filter(|e| e.enabled) {
         cancel.check().map_err(|_| TemporalError::Composite(crate::CompositeError::Canceled))?;
         out.push(match &e.params {
-            P::ColorGrade(g) => ClipEffectFrame::Grade(Arc::new(ClipGrade::prepare(g, luts, luma, id)?)),
+            P::ColorGrade(g) if g.keyframes.is_empty() => ClipEffectFrame::Grade(Arc::new(ClipGrade::prepare(g, luts, luma, id)?)),
+            P::ColorGrade(g) => {
+                // Keyframed grade scalars (lane SMB-PR-SOURCE-MONITOR): each stream sampled at the
+                // clip tick through motion, written (clamped to its hard bound) over the static field.
+                let mut at_tick = (**g).clone();
+                for k in &g.keyframes {
+                    k.param.set(&mut at_tick, one(at(&k.value, 1)?));
+                }
+                at_tick.keyframes.clear();
+                ClipEffectFrame::Grade(Arc::new(ClipGrade::prepare(&at_tick, luts, luma, id)?))
+            }
             P::Transform { anchor, position, scale, rotation } => ClipEffectFrame::Transform {
                 anchor: pair(at(anchor, 2)?),
                 position: pair(at(position, 2)?),

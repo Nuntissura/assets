@@ -339,3 +339,122 @@ pub fn vignette_gain(v: &Vignette, x: f64, y: f64, width: f64, height: f64) -> f
 fn narrow(v: f64) -> f32 {
     v as f32
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lane SMB-PR-SOURCE-MONITOR: a prepared clip grade as data for a per-texel kernel.
+// ---------------------------------------------------------------------------------------------
+
+/// Knots of one grade spline (Pigment's natural cubic curve evaluator, `PreparedCurve`).
+pub const MAX_GRADE_SPLINE_KNOTS: usize = 19;
+/// Secondaries of one program (Folio `MAX_GRADE_SECONDARIES`).
+pub const MAX_GRADE_PROGRAM_SECONDARIES: usize = 8;
+
+/// A natural cubic spline in its evaluator form: knots `xs` (strictly increasing, `0..=1`), values
+/// `ys` and second derivatives `m`; flat outside the knots and clamped to `0..=1` (Pigment's
+/// `PreparedCurve::eval`, which owns the formula; a kernel transcribes it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeSpline {
+    pub xs: Vec<f64>,
+    pub ys: Vec<f64>,
+    pub m: Vec<f64>,
+}
+impl GradeSpline {
+    fn validate(&self) -> Result<(), GradeError> {
+        let n = self.xs.len();
+        check(
+            (2..=MAX_GRADE_SPLINE_KNOTS).contains(&n) && self.ys.len() == n && self.m.len() == n,
+            "program.spline_knots",
+        )?;
+        check(
+            self.xs.iter().chain(&self.ys).chain(&self.m).all(|v| v.is_finite())
+                && self.xs.windows(2).all(|w| w[0] < w[1])
+                && self.xs.iter().chain(&self.ys).all(|v| (0.0..=1.0).contains(v)),
+            "program.spline_values",
+        )
+    }
+}
+
+/// One prepared secondary: key, correction wheels and the saturation factor after them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradeSecondary {
+    pub key: SecondaryKey,
+    pub correction: Wheels,
+    pub saturation: f32,
+}
+
+/// A prepared clip grade as data (composite `ClipGrade::program`): every stage of STU-COL-160 in
+/// composite's order, each `None` / identity value meaning the stage does not run, so a kernel
+/// skips exactly the stages the host skips. Curves are Pigment splines ([`GradeSpline`]), LUTs the
+/// parsed [`crate::CubeLut`]s. The per-texel order: clamp; 1 input LUT; 2 exposure gain (when not
+/// 1), primary wheels, tone spline, saturation about the luma (when not 1), vibrance (Pigment's,
+/// saturation 0); 3 look mixed by its intensity, faded film `v + floor (1 - v)^2` (when the floor is
+/// above 0); 5 RGB curves (channel, then composite, as Pigment) and the cross-channel HSL curves;
+/// 6 wheels; 7 secondaries; 8 vignette at the texel centre; every stage clamps to `0..=1`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradeProgram {
+    pub input_lut: Option<std::sync::Arc<crate::CubeLut>>,
+    pub exposure_gain: f32,
+    pub primary: Option<Wheels>,
+    pub tone: Option<GradeSpline>,
+    pub saturation: f32,
+    /// Pigment vibrance fraction (`vibrance / 100`), `None` when 0.
+    pub vibrance: Option<f32>,
+    pub look: Option<(std::sync::Arc<crate::CubeLut>, f32)>,
+    pub faded_floor: f32,
+    /// Composite, red, green, blue; the stage runs when any is present.
+    pub rgb_curves: [Option<GradeSpline>; 4],
+    /// Hue vs hue, hue vs saturation, hue vs luminance, luminance vs saturation, saturation vs
+    /// saturation; the stage runs when any is present.
+    pub hsl_curves: [Option<GradeSpline>; 5],
+    pub wheels: Option<Wheels>,
+    pub secondaries: Vec<GradeSecondary>,
+    pub vignette: Option<Vignette>,
+    pub luma: [f32; 3],
+}
+
+fn lut_ok(l: &crate::CubeLut) -> bool {
+    let n = l.size_3d;
+    let rows3 = n.checked_mul(n).and_then(|v| v.checked_mul(n));
+    let one = l.lut_1d.as_ref().map_or(0, Vec::len);
+    (n == 0 || (2..=crate::MAX_LUT_3D_SIZE).contains(&n))
+        && rows3 == Some(l.lut_3d.len())
+        && (n > 0 || one > 0)
+        && (one == 0 || (2..=crate::MAX_LUT_1D_SIZE).contains(&one))
+        && l.domain_min.iter().zip(&l.domain_max).all(|(a, b)| a.is_finite() && b.is_finite() && a < b)
+        && l.lut_3d.iter().chain(l.lut_1d.iter().flatten()).all(|r| finite3(*r))
+}
+
+impl GradeProgram {
+    /// Hostile-size and parameter checks a kernel relies on: LUT sizes within Prism's `.cube`
+    /// bounds and consistent with their rows, splines of 2..=19 strictly increasing knots, at most
+    /// [`MAX_GRADE_PROGRAM_SECONDARIES`] secondaries, every scalar finite and every block valid.
+    pub fn validate(&self) -> Result<(), GradeError> {
+        for l in self.input_lut.iter().chain(self.look.as_ref().map(|(l, _)| l)) {
+            check(lut_ok(l), "program.lut")?;
+        }
+        check(
+            self.exposure_gain.is_finite() && self.exposure_gain > 0.0 && self.exposure_gain <= 128.0,
+            "program.exposure_gain",
+        )?;
+        check(self.saturation.is_finite() && (0.0..=3.0).contains(&self.saturation), "program.saturation")?;
+        check(self.vibrance.is_none_or(|v| v.is_finite() && (-1.0..=1.0).contains(&v)), "program.vibrance")?;
+        check(self.look.as_ref().is_none_or(|(_, k)| k.is_finite() && (0.0..=2.0).contains(k)), "program.look_intensity")?;
+        check(self.faded_floor.is_finite() && (0.0..=0.15).contains(&self.faded_floor), "program.faded_floor")?;
+        for s in self.tone.iter().chain(self.rgb_curves.iter().flatten()).chain(self.hsl_curves.iter().flatten()) {
+            s.validate()?;
+        }
+        for w in self.primary.iter().chain(&self.wheels) {
+            w.validate()?;
+        }
+        check(self.secondaries.len() <= MAX_GRADE_PROGRAM_SECONDARIES, "program.secondaries")?;
+        for s in &self.secondaries {
+            s.key.validate()?;
+            s.correction.validate()?;
+            check(s.saturation.is_finite() && (0.0..=3.0).contains(&s.saturation), "program.secondary_saturation")?;
+        }
+        if let Some(v) = &self.vignette {
+            v.validate()?;
+        }
+        check(finite3(self.luma) && self.luma.iter().all(|v| *v >= 0.0), "program.luma")
+    }
+}

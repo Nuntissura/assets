@@ -316,6 +316,12 @@ pub struct PreparedCurve {
     m: Vec<f64>,
 }
 impl PreparedCurve {
+    /// The evaluator form `(xs, ys, m)` (knots, values, second derivatives) that
+    /// [`PreparedCurve::eval`] reads, for kernels that transcribe it (lane SMB-PR-SOURCE-MONITOR,
+    /// additive; the render-gpu clip grade kernel).
+    pub fn spline(&self) -> (&[f64], &[f64], &[f64]) {
+        (&self.xs, &self.ys, &self.m)
+    }
     /// 2..=[`MAX_CURVE_POINTS`] points, values in `[0, 1]`, strictly increasing input.
     pub fn new(points: &[[f32; 2]]) -> Result<Self, AdjustError> {
         param(

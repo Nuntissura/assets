@@ -1108,6 +1108,31 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, BackendError>;
+    /// Runs a prepared clip colour grade (Prism [`hsk_studio_prism::grade::GradeProgram`]) per
+    /// texel over `surface` in place (lane SMB-PR-SOURCE-MONITOR, additive). Default `None`: the
+    /// backend has no grade kernel and the caller grades on the host (composite's
+    /// `SceneContent::Graded`); a backend with a kernel returns `Some` with its typed result, and a
+    /// failure is never a silent host fallback.
+    fn execute_grade(
+        &self,
+        program: &hsk_studio_prism::grade::GradeProgram,
+        surface: &mut GradeSurface<'_>,
+        cancel: &CancellationToken,
+    ) -> Option<Result<(), BackendError>> {
+        let _ = (program, surface, cancel);
+        None
+    }
+}
+
+/// A straight-alpha surface a grade kernel runs over in place (lane SMB-PR-SOURCE-MONITOR):
+/// `colour` is tightly packed `rgb_f32le` (12 bytes per texel), `alpha` `f32le` (4 bytes per
+/// texel), row-major `width` x `height`; texels whose alpha is not above 0 are left unchanged.
+#[derive(Debug)]
+pub struct GradeSurface<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub colour: &'a mut [u8],
+    pub alpha: &'a [u8],
 }
 
 /// Shared admission: cancel, stale revision, structural validation, then per-operator class =

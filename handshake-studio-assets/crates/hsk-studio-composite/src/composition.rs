@@ -1699,6 +1699,24 @@ fn graded_surface(
         return Err(invalid(id, "graded_rect"));
     }
     let mut surface = content_surface(id, &g.content, g.rect, filter, ctx, cancel, depth, charges, exactness)?;
+    // A backend with a grade kernel runs the grade itself (lane SMB-PR-SOURCE-MONITOR: render-gpu);
+    // its failure is typed, never a silent host fallback. Without one the host grades below.
+    if let crate::clip_finishing::ClipStage::Grade(grade) = &g.stage {
+        let program = grade.program();
+        let mut target = hsk_studio_pigment::render_plan::GradeSurface {
+            width: surface.width,
+            height: surface.height,
+            colour: &mut surface.colour,
+            alpha: &surface.alpha,
+        };
+        if let Some(result) = ctx.backend.execute_grade(&program, &mut target, cancel) {
+            result.map_err(|e| TemporalError::Render { composition_id: id.to_owned(), code: e.code() })?;
+            surface.colour_sha256 = hsk_studio_prism::profile_hash(&surface.colour);
+            let (key, class) = g.stage.operator();
+            exactness.record(key, class);
+            return Ok(surface);
+        }
+    }
     let w = usize::try_from(surface.width).map_err(|_| CompositeError::Overflow)?;
     let h = usize::try_from(surface.height).map_err(|_| CompositeError::Overflow)?;
     let (fw, fh) = (f64::from(surface.width), f64::from(surface.height));

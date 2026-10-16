@@ -20,9 +20,16 @@
 //! the STU-COL-221 registry slot index (the registry is not stored yet); curve points are on the
 //! float `0..=1` domain (STU-COL-225 "an explicit domain declaration so a float pipeline can use
 //! 0.0-1.0"); the cross-channel curves map the x axis (hue / 360, saturation or luminance) to
-//! `0..=1` with 0.5 = no change. Not stored: `hdr_specular`, `sharpen`, `faded_film`,
-//! `tint_balance`, the kelvin white-balance pair, the secondary refinement block (denoise, blur)
-//! and secondary sharpen (UNVERIFIED Lumetri behaviour; gaps in the lane notes).
+//! `0..=1` with 0.5 = no change. Not stored: `hdr_specular`, `tint_balance`, the kelvin
+//! white-balance pair, the secondary refinement block (denoise, blur) and secondary sharpen
+//! (UNVERIFIED Lumetri behaviour; gaps in the lane notes).
+//!
+//! Lane SMB-PR-SOURCE-MONITOR: `basic.sharpen` (STU-COL-220 row `sharpen`, hard -100..=100) and
+//! `faded_film` (STU-COL-221 row `faded_film`, hard 0..=150, soft max 100), both omitted when 0 so
+//! older records stay byte-identical; and `keyframes`: grade scalars animated as
+//! [`StudioGradeKeyedParam`] streams in CLIP-LOCAL ticks (the keyframe rules of every other clip
+//! effect entry), each param at most once, every key within the param's hard bound, vignette params
+//! only on a grade with a vignette. The static field is the value where the stream has no keys.
 //!
 //! Further entry kinds (slice 2): `transform`, `opacity`, `crop`, `gaussian_blur` (keyed values in
 //! clip-local ticks, the keyframe rules of a composition transform stream) and `pigment_filter`
@@ -87,6 +94,9 @@ pub struct StudioGradeBasic {
     /// Percent, 100 = unchanged.
     pub saturation: f64,
     pub vibrance: f64,
+    /// STU-COL-220 `sharpen`, hard -100..=100, 0 = none (lane SMB-PR-SOURCE-MONITOR).
+    #[serde(skip_serializing_if = "is_default")]
+    pub sharpen: f64,
 }
 impl Default for StudioGradeBasic {
     fn default() -> Self {
@@ -101,6 +111,7 @@ impl Default for StudioGradeBasic {
             blacks: 0.0,
             saturation: 100.0,
             vibrance: 0.0,
+            sharpen: 0.0,
         }
     }
 }
@@ -248,6 +259,123 @@ pub struct StudioColorGrade {
     /// Stage 8 vignette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vignette: Option<StudioGradeVignette>,
+    /// STU-COL-221 `faded_film`, hard 0..=150 (soft max 100), 0 = none (lane SMB-PR-SOURCE-MONITOR).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub faded_film: f64,
+    /// Keyframed grade scalars (lane SMB-PR-SOURCE-MONITOR; module docs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<StudioGradeKeyedParam>,
+}
+
+/// A grade scalar that can be keyframed (lane SMB-PR-SOURCE-MONITOR); the key names its field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioGradeParam {
+    Temperature,
+    Tint,
+    Exposure,
+    Contrast,
+    Highlights,
+    Shadows,
+    Whites,
+    Blacks,
+    Saturation,
+    Vibrance,
+    Sharpen,
+    LookIntensity,
+    FadedFilm,
+    WheelsContrast,
+    WheelsPivot,
+    InputSaturation,
+    FinalSaturation,
+    VignetteAmount,
+    VignetteMidpoint,
+    VignetteRoundness,
+    VignetteFeather,
+}
+/// Most keyed params of one grade (one per [`StudioGradeParam`]).
+pub const MAX_GRADE_KEYED_PARAMS: usize = 21;
+impl StudioGradeParam {
+    /// The param's hard bound (the record's validation bound).
+    pub fn bounds(self) -> (f64, f64) {
+        use StudioGradeParam as P;
+        match self {
+            P::Temperature | P::Tint | P::Contrast | P::Highlights | P::Shadows | P::Whites | P::Blacks => (-150.0, 150.0),
+            P::Exposure => (-7.0, 7.0),
+            P::Saturation => (0.0, 300.0),
+            P::Vibrance | P::Sharpen => (-100.0, 100.0),
+            P::LookIntensity => (0.0, 200.0),
+            P::FadedFilm => (0.0, 150.0),
+            P::WheelsContrast => (-1.0, 8.0),
+            P::WheelsPivot => (0.0, 1.0),
+            P::InputSaturation | P::FinalSaturation => (0.0, 2.0),
+            P::VignetteAmount => (-5.0, 5.0),
+            P::VignetteMidpoint | P::VignetteFeather => (0.0, 100.0),
+            P::VignetteRoundness => (-100.0, 100.0),
+        }
+    }
+    /// Writes `v`, clamped into [`StudioGradeParam::bounds`] (a sampled bezier may overshoot its
+    /// keys), into its field of `g`; a non-finite `v` or a vignette param on a grade without a
+    /// vignette changes nothing (validation refuses that record).
+    pub fn set(self, g: &mut StudioColorGrade, v: f64) {
+        use StudioGradeParam as P;
+        if !v.is_finite() {
+            return;
+        }
+        let (lo, hi) = self.bounds();
+        let v = v.clamp(lo, hi);
+        let b = &mut g.basic;
+        match self {
+            P::Temperature => b.temperature = v,
+            P::Tint => b.tint = v,
+            P::Exposure => b.exposure = v,
+            P::Contrast => b.contrast = v,
+            P::Highlights => b.highlights = v,
+            P::Shadows => b.shadows = v,
+            P::Whites => b.whites = v,
+            P::Blacks => b.blacks = v,
+            P::Saturation => b.saturation = v,
+            P::Vibrance => b.vibrance = v,
+            P::Sharpen => b.sharpen = v,
+            P::LookIntensity => g.look_intensity = v,
+            P::FadedFilm => g.faded_film = v,
+            P::WheelsContrast => g.wheels.contrast = v,
+            P::WheelsPivot => g.wheels.pivot = v,
+            P::InputSaturation => g.wheels.input_saturation = v,
+            P::FinalSaturation => g.wheels.final_saturation = v,
+            P::VignetteAmount => {
+                if let Some(vg) = &mut g.vignette {
+                    vg.amount = v;
+                }
+            }
+            P::VignetteMidpoint => {
+                if let Some(vg) = &mut g.vignette {
+                    vg.midpoint = v;
+                }
+            }
+            P::VignetteRoundness => {
+                if let Some(vg) = &mut g.vignette {
+                    vg.roundness = v;
+                }
+            }
+            P::VignetteFeather => {
+                if let Some(vg) = &mut g.vignette {
+                    vg.feather = v;
+                }
+            }
+        }
+    }
+    fn is_vignette(self) -> bool {
+        matches!(self, Self::VignetteAmount | Self::VignetteMidpoint | Self::VignetteRoundness | Self::VignetteFeather)
+    }
+}
+
+/// One keyframed grade scalar: a one-dimensional keyed stream in clip-local ticks.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioGradeKeyedParam {
+    pub param: StudioGradeParam,
+    pub value: StudioKeyedValue,
 }
 impl Default for StudioColorGrade {
     fn default() -> Self {
@@ -260,6 +388,8 @@ impl Default for StudioColorGrade {
             wheels: StudioGradeWheels::default(),
             secondaries: Vec::new(),
             vignette: None,
+            faded_film: 0.0,
+            keyframes: Vec::new(),
         }
     }
 }
@@ -891,7 +1021,23 @@ fn color_grade(g: &StudioColorGrade, t: &str, cx: &mut Ctx) -> Result<()> {
     check(within(b.exposure, -7.0, 7.0), t, "basic/exposure")?;
     check(within(b.saturation, 0.0, 300.0), t, "basic/saturation")?;
     check(within(b.vibrance, -100.0, 100.0), t, "basic/vibrance")?;
+    check(within(b.sharpen, -100.0, 100.0), t, "basic/sharpen")?;
+    check(within(g.faded_film, 0.0, 150.0), t, "faded_film")?;
     check(within(g.look_intensity, 0.0, 200.0), t, "look_intensity")?;
+    if g.keyframes.len() > MAX_GRADE_KEYED_PARAMS {
+        return Err(err(Code::BudgetExceeded, format!("{t}/keyframes")));
+    }
+    cx.nodes(g.keyframes.len(), t)?;
+    let mut seen = BTreeSet::new();
+    for k in &g.keyframes {
+        cx.tick()?;
+        if !seen.insert(k.param) {
+            return Err(err(Code::DuplicateIdentity, format!("{t}/keyframes")));
+        }
+        check(!k.param.is_vignette() || g.vignette.is_some(), t, "keyframes/vignette")?;
+        let (lo, hi) = k.param.bounds();
+        keyed(&k.value, 1, lo, hi, t, "keyframes/value", cx)?;
+    }
     let c = &g.curves;
     for (points, name) in [
         (&c.composite, "curves/composite"),

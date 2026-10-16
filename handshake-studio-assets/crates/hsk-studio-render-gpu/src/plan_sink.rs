@@ -1670,6 +1670,32 @@ fn identity_of(state: &State) -> BackendIdentity {
 }
 
 impl RenderBackend<NoVector> for GpuBackend {
+    /// Clip colour grade kernel (lane SMB-PR-SOURCE-MONITOR, module `grade`): always `Some`; no
+    /// device or a lost one is the typed error, never a host fallback; a panic inside the device
+    /// work is the typed `clip_grade_panic`.
+    fn execute_grade(
+        &self,
+        program: &hsk_studio_prism::grade::GradeProgram,
+        surface: &mut hsk_studio_pigment::render_plan::GradeSurface<'_>,
+        cancel: &CancellationToken,
+    ) -> Option<Result<(), BackendError>> {
+        let mut guard = self.lock_refreshed();
+        let (result, detail) = match &guard.state {
+            State::Ready(ctx) => {
+                ctx.clear_fault_detail();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| grade::run(ctx, program, surface, cancel)))
+                    .unwrap_or(Err(GpuError::Gpu("clip_grade_panic")));
+                (r, ctx.fault_detail())
+            }
+            State::Lost { generation, .. } => (Err(GpuError::DeviceLost { generation: *generation }), None),
+            State::Unavailable(reason) => (Err(GpuError::Unavailable(*reason)), None),
+            State::Failed(error) => (Err(*error), None),
+        };
+        if result.is_err() {
+            guard.submit_fault = detail;
+        }
+        Some(result.map_err(BackendError::from))
+    }
     fn identity(&self) -> BackendIdentity {
         identity_of(&self.lock().state)
     }
@@ -3768,6 +3794,8 @@ fn submit_fault(
 }
 
 mod display;
+/// Clip colour grade kernel (lane SMB-PR-SOURCE-MONITOR).
+mod grade;
 mod key;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
 pub(crate) use display::EXTENDED_FLAG;
