@@ -82,6 +82,7 @@ pub mod pdf_export;
 pub mod mesh;
 pub mod path_text;
 pub mod recolor;
+pub mod separations;
 pub mod swatch;
 pub use arrange::{AlignTarget, TransformOp};
 pub use envelope::EnvelopeSpec;

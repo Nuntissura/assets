@@ -13,14 +13,46 @@ use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::vector::mesh::MeshEdit;
 use hsk_studio_harness::view::vector::path_text::PathTextSpec;
+use hsk_studio_harness::view::vector::separations::VectorSeparationOptions;
 use hsk_studio_harness::view::vector::{RowKind, ShapeKind, SwatchColour, SwatchSpec, VectorTool};
+use hsk_studio_press::{InkLimits, LimitKind, SepNote};
 use hsk_studio_prism::{ColorizeMethod, RecolorAdjust, RecolorRow, RecolorTable};
 use hsk_studio_type::{PathFlip, PathTextOptions};
 
 const W: usize = 96;
 const H: usize = 64;
 const RED: [u8; 3] = [255, 0, 0];
+const CMYK_ICC: &[u8] = include_bytes!("../../hsk-studio-prism/tests/oracle/profiles/hsk-synth-cmyk-v2.icc");
 
+/// sRGB v4 -> the synthetic CMYK profile through Prism's wide engine (f32 output as the plates hold).
+fn prism_cmyk(rgb: [f32; 3]) -> [f64; 4] {
+    use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+    use hsk_studio_prism::{Intent, ProfileInput, WideEngine, WideSource, WideTransformRequest, profile_hash};
+    struct Quiet;
+    impl hsk_studio_observe::SinkPort for Quiet {
+        fn try_send(&mut self, _class: hsk_studio_observe::DeliveryClass, _bytes: &[u8]) -> Result<(), hsk_studio_observe::DeliveryError> {
+            Ok(())
+        }
+    }
+    let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "test").unwrap();
+    let (dst, src, res) = (DomainId::parse("SCPF-019abcde-0000-7000-8000-00000000b001").unwrap(), DomainId::parse("SCPF-019abcde-0000-7000-8000-00000000b002").unwrap(), DomainId::parse("SSWT-019abcde-0000-7000-8000-00000000b003").unwrap());
+    let srgb = hsk_studio_harness::view::develop::SRGB_V4_ICC;
+    let request = WideTransformRequest {
+        source: WideSource::Profile(ProfileInput { profile_id: &src, bytes: srgb, expected_sha256: profile_hash(srgb) }),
+        destination: ProfileInput { profile_id: &dst, bytes: CMYK_ICC, expected_sha256: profile_hash(CMYK_ICC) },
+        pixels: &rgb,
+        intent: Intent::RelativeColorimetric,
+        black_point_compensation: false,
+        revision: 0,
+        expected_revision: 0,
+        correlation_id: 1,
+        resource_id: &res,
+        actor: &actor,
+    };
+    let out = WideEngine::new(actor.clone(), 2).unwrap().transform(&request, &CancellationToken::default(), &mut Quiet).unwrap();
+    let p = &out.pixels;
+    [0, 1, 2, 3].map(|i| f64::from(p[i]).clamp(0.0, 1.0) as f32 as f64)
+}
 
 fn paper(scratch: &Scratch) -> Viewer {
     let source = scratch.0.join("paper.psd");
@@ -198,3 +230,74 @@ fn ai_gradient_mesh_from_a_shape_edits_rasterises_and_undoes() {
     assert!(v.edit_gradient_mesh(&a, MeshEdit::SetPoint { row: 0, column: 0, rgb: [0.0; 3], opacity: 101.0 }).is_err());
 }
 
+#[test]
+fn ai_vector_separations_preview_through_press() {
+    let scratch = Scratch::new("ai-separations");
+    let mut v = paper(&scratch);
+    v.set_document_cmyk_profile("Synthetic CMYK", CMYK_ICC).unwrap();
+    let a = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [30.0, 20.0], false).unwrap();
+    let b = v.draw_shape(ShapeKind::Rectangle, [40.0, 10.0], [50.0, 20.0], false).unwrap();
+    let c = v.draw_shape(ShapeKind::Rectangle, [60.0, 10.0], [90.0, 20.0], false).unwrap();
+    let e = v.draw_shape(ShapeKind::Rectangle, [20.0, 45.0], [50.0, 60.0], false).unwrap();
+    let d = v.draw_shape(ShapeKind::Rectangle, [10.0, 40.0], [40.0, 55.0], false).unwrap();
+    let f = v.draw_shape(ShapeKind::Rectangle, [60.0, 40.0], [90.0, 55.0], false).unwrap();
+    let cmyk = v.add_folio_swatch("C20 M40", &SwatchSpec::Global(SwatchColour::Cmyk([0.2, 0.4, 0.0, 0.0]))).unwrap();
+    let spot = v.add_folio_swatch("Ink 1", &SwatchSpec::Spot { ink: "Ink 1".into(), measured_lab: Some([50.0, 0.0, 0.0]), alternate: Some(SwatchColour::Cmyk([0.5, 0.0, 1.0, 0.0])) }).unwrap();
+    let grey = v.add_folio_swatch("Grey", &SwatchSpec::Global(SwatchColour::Gray(0.25))).unwrap();
+    let cyan = v.add_folio_swatch("Cyan", &SwatchSpec::Global(SwatchColour::Cmyk([1.0, 0.0, 0.0, 0.0]))).unwrap();
+    let black = v.add_folio_swatch("Black", &SwatchSpec::Global(SwatchColour::Cmyk([0.0, 0.0, 0.0, 1.0]))).unwrap();
+    v.apply_swatch(&a, &cmyk, RowKind::Fill).unwrap();
+    v.apply_swatch_tinted(&b, &spot, RowKind::Fill, Some(50.0)).unwrap();
+    v.apply_swatch(&c, &grey, RowKind::Fill).unwrap();
+    v.apply_swatch(&e, &cyan, RowKind::Fill).unwrap();
+    v.apply_swatch(&d, &black, RowKind::Fill).unwrap();
+    // f keeps the tool's unbound RGB red.
+    let _ = f;
+
+    let inks = v.vector_ink_manager().unwrap();
+    assert_eq!(inks.inks.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), vec!["Process Cyan", "Process Magenta", "Process Yellow", "Process Black", "Ink 1"]);
+    assert_eq!(inks.ink("Ink 1").unwrap().process_alternate, Some([0.5, 0.0, 1.0, 0.0]));
+
+    let opts = VectorSeparationOptions { overprint_black: true, ..VectorSeparationOptions::default() };
+    let (sep, losses) = v.vector_separations(&opts).unwrap();
+    assert!(losses.iter().all(|l| l.ends_with("raster_layer_not_separated")), "{losses:?}");
+    assert_eq!((sep.width, sep.height), (72, 48));
+    // Document px (x, y) -> page points (0.75 x, 0.75 (64 - y)).
+    let read = |x: f64, y: f64| -> Vec<(String, f64)> { sep.sample_pt(x * 0.75, (64.0 - y) * 0.75).unwrap().into_iter().map(|r| (r.ink, (r.percent * 1e4).round() / 1e4)).collect() };
+    let tone = |x: f64, y: f64, ink: &str| read(x, y).into_iter().find(|r| r.0 == ink).map_or(0.0, |r| r.1);
+    // CMYK swatch: its own components.
+    assert_eq!((tone(20.0, 15.0, "Process Cyan"), tone(20.0, 15.0, "Process Magenta"), tone(20.0, 15.0, "Process Black")), (20.0, 40.0, 0.0));
+    // Spot at a 50 % per-use tint on its own plate, nothing on process.
+    assert_eq!((tone(45.0, 15.0, "Ink 1"), tone(45.0, 15.0, "Process Cyan")), (50.0, 0.0));
+    // GRAY 0.25 -> K 75.
+    assert_eq!(tone(75.0, 15.0, "Process Black"), 75.0);
+    // 100 % K overprints (overprint_black): the cyan below stays where they overlap.
+    assert_eq!((tone(30.0, 50.0, "Process Cyan"), tone(30.0, 50.0, "Process Black")), (100.0, 100.0));
+    assert_eq!((tone(45.0, 57.0, "Process Cyan"), tone(15.0, 42.0, "Process Black")), (100.0, 100.0));
+    // Unbound RGB red goes through Prism (sRGB v4 -> the document CMYK profile, relative
+    // colorimetric): the plates equal an independent Prism conversion of (1, 0, 0).
+    let want = prism_cmyk([1.0, 0.0, 0.0]);
+    for (ink, w) in ["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].iter().zip(want) {
+        assert!((tone(75.0, 47.0, ink) - w * 100.0).abs() < 1e-3, "{ink}: {} vs {}", tone(75.0, 47.0, ink), w * 100.0);
+    }
+    assert!(want.iter().any(|v| *v > 0.5), "{want:?}");
+    // Ink limit: the overprinted overlap holds 200 %.
+    let report = sep.check_ink_limits(&InkLimits { total_ink_limit: Some(150.0), ..InkLimits::default() }).unwrap();
+    assert!(report.findings.iter().any(|f| f.limit == LimitKind::Total && f.max_percent >= 200.0 - 1e-6), "{report:?}");
+    // Knockout (no overprint policy): the black knocks the cyan out in the overlap.
+    let (knock, _) = v.vector_separations(&VectorSeparationOptions::default()).unwrap();
+    let k = knock.sample_pt(30.0 * 0.75, (64.0 - 50.0) * 0.75).unwrap();
+    assert_eq!(k.iter().find(|r| r.ink == "Process Cyan").map_or(0.0, |r| r.percent), 0.0);
+
+    // Without a CMYK profile an RGB object is not separated: counted and noted, never guessed.
+    let scratch2 = Scratch::new("ai-separations-rgb");
+    let mut w = paper(&scratch2);
+    w.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [30.0, 20.0], false).unwrap();
+    let (rgb, losses) = w.vector_separations(&VectorSeparationOptions::default()).unwrap();
+    assert_eq!(rgb.unseparated, 1);
+    assert!(rgb.notes.contains(&SepNote::Unseparated));
+    assert!(losses.iter().any(|l| l.ends_with("unseparated_no_cmyk_profile")));
+    // Hostile resolution.
+    assert!(w.vector_separations(&VectorSeparationOptions { px_per_pt: f64::NAN, ..VectorSeparationOptions::default() }).is_err());
+    assert!(w.vector_separations(&VectorSeparationOptions { px_per_pt: 1.0e6, ..VectorSeparationOptions::default() }).is_err());
+}
