@@ -408,7 +408,7 @@ fn version_1_0_recipes_still_read_and_corpus_pin() {
     assert_eq!(r.adjust.version, ADJUST_VERSION);
     r.adjust.version = ADJUST_MIN_VERSION;
     r.validate().unwrap();
-    r.adjust.version = (1, 2);
+    r.adjust.version = (ADJUST_VERSION.0, ADJUST_VERSION.1 + 1);
     assert_eq!(r.validate().err(), Some(DevelopError::InvalidAdjustment));
     r.adjust.version = (0, 9);
     assert_eq!(r.validate().err(), Some(DevelopError::InvalidAdjustment));
