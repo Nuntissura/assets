@@ -58,6 +58,9 @@ pub(crate) struct Frame<'a> {
 pub(crate) struct FrameVertical {
     pub vjust: VerticalJustification,
     pub threshold_pt: Option<f64>,
+    /// Baseline grid `(origin, step)` in frame coordinates for grid-aligned paragraphs
+    /// (`reflow_grid`); `None` = no alignment.
+    pub grid: Option<(f64, f64)>,
 }
 impl Frame<'_> {
     /// Inset-area x range of column `c` in frame coordinates (equal widths, gutters between).
@@ -311,6 +314,7 @@ pub(crate) fn resolve_flow<'a>(
         verticals.push(FrameVertical {
             vjust: if flow.is_some() { f.vertical_justification } else { VerticalJustification::Top },
             threshold_pt: vthreshold_pt,
+            grid: None,
         });
     }
     for (_, _, f) in &chain {

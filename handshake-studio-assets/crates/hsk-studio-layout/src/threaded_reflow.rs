@@ -36,11 +36,21 @@
 //! justified (left as composed), and a non-top frame that holds span or split lines is
 //! `unsupported_composition`. InDesign parity (block extent, the threshold-overflow rule, wrap
 //! behaviour) is UNVERIFIED (D5).
+//!
+//! Baseline-grid alignment (lane SMB-ID-PREPRESS, STU-LAY-115; `reflow_grid` only): a paragraph
+//! marked `all_lines` in the Folio grid records puts every line's baseline on the next baseline
+//! grid line at or below where it would fall (the following lines continue from the snapped
+//! baseline, so the effective leading rounds up to grid steps); `first_line_only` snaps the first
+//! line of the paragraph and lets the rest follow at their own leading. The grid of a
+//! frame is its custom baseline frame grid, else the document baseline grid (`grids` module); a
+//! frame with neither is not aligned. Span and split paragraphs are not aligned. Balancing does not
+//! re-snap moved lines. InDesign parity UNVERIFIED (D5).
 use crate::breaker::{Composer, HyphenRules, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
 use crate::typeset::{Justification, TypesetOptions, justify_metrics};
 use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow};
+use hsk_studio_folio::{StudioAlignToGrid, StudioLayoutGrids};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
@@ -231,6 +241,8 @@ fn next_slot(
     height: f64,
     ascent: f64,
     mode: Mode,
+    verticals: &[FrameVertical],
+    snap: bool,
     scans: &mut usize,
     scan_cap: usize,
     cancel: &CancellationToken,
@@ -249,7 +261,13 @@ fn next_slot(
             cur = Cursor::frame(cur.pos + 1);
             continue;
         }
-        let baseline = baseline_of(f, &cur, height, ascent);
+        let mut baseline = baseline_of(f, &cur, height, ascent);
+        let mut delta = 0.0;
+        if snap && let Some((o, step)) = verticals.get(cur.pos).and_then(|v| v.grid) {
+            let snapped = o + ((baseline - o) / step - EPS).ceil() * step;
+            delta = snapped - baseline;
+            baseline = snapped;
+        }
         if baseline + descent > f.height_pt - f.inset_bottom_pt + EPS {
             cur = if cur.col + 1 < columns {
                 Cursor {
@@ -267,6 +285,7 @@ fn next_slot(
         let (x0, x1) = free_interval(f, lo, hi, baseline - ascent, baseline + descent);
         let next = Cursor {
             line: cur.line + 1,
+            extra: cur.extra + delta,
             ..cur
         };
         if x1 - x0 > EPS {
@@ -318,6 +337,29 @@ pub fn reflow_flow(
     flow: &StudioLayoutFlowRecords,
     cancel: &CancellationToken,
 ) -> Result<LayoutProposal, LayoutError> {
+    reflow_inner(req, opts, flow, None, cancel)
+}
+
+/// `reflow_flow` with the Folio grid records (`hsk.studio.layout_grids@1`): paragraphs marked in
+/// `paragraph_alignments` align to the frame's baseline grid (module notes). A record set of
+/// another document, or an alignment whose start is no paragraph of the story, is `invalid_input`.
+pub fn reflow_grid(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    grids: &StudioLayoutGrids,
+    cancel: &CancellationToken,
+) -> Result<LayoutProposal, LayoutError> {
+    reflow_inner(req, opts, flow, Some(grids), cancel)
+}
+
+fn reflow_inner(
+    req: &ReflowRequest<'_>,
+    opts: &TypesetOptions<'_>,
+    flow: &StudioLayoutFlowRecords,
+    grids: Option<&StudioLayoutGrids>,
+    cancel: &CancellationToken,
+) -> Result<LayoutProposal, LayoutError> {
     canceled(cancel)?;
     opts.validate()?;
     if req.expected_revision != req.document.revision {
@@ -336,7 +378,32 @@ pub fn reflow_flow(
         req.obstacles,
         Some(flow),
     )?;
-    let (text, thread, verticals) = (input.text, input.frames, input.verticals);
+    let (text, thread, mut verticals) = (input.text, input.frames, input.verticals);
+    let mut aligns = Vec::new();
+    if let Some(g) = grids {
+        if g.document_id != req.document.document_id {
+            return Err(LayoutError::InvalidInput);
+        }
+        let story = req.story.story_id.as_str();
+        let mine: Vec<_> = g.paragraph_alignments.iter().filter(|a| a.story_id == story).collect();
+        if mine.iter().any(|a| !req.paragraphs.iter().any(|p| p.source.start == a.paragraph_start)) {
+            return Err(LayoutError::InvalidInput);
+        }
+        aligns = req
+            .paragraphs
+            .iter()
+            .map(|p| mine.iter().find(|a| a.paragraph_start == p.source.start).map_or(StudioAlignToGrid::None, |a| a.align_to_grid))
+            .collect();
+        if aligns.iter().any(|a| *a != StudioAlignToGrid::None) {
+            for (f, v) in thread.iter().zip(verticals.iter_mut()) {
+                v.grid = match crate::grids::frame_grid(req.document, g, f.id) {
+                    Ok(grid) => Some(grid),
+                    Err(LayoutError::InvalidInput) => None,
+                    Err(e) => return Err(e),
+                };
+            }
+        }
+    }
     if req
         .paragraphs
         .iter()
@@ -372,6 +439,7 @@ pub fn reflow_flow(
     let composed = compose_flow(
         &thread,
         &verticals,
+        &aligns,
         text,
         paragraphs,
         &stylings,
@@ -486,7 +554,7 @@ pub(crate) fn compose(
 ) -> Result<Composition, LayoutError> {
     let flows = vec![ParaFlow::Single; paragraphs.len()];
     let pre = vec![0.0; paragraphs.len()];
-    compose_flow(thread, &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, cancel)
+    compose_flow(thread, &[], &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, cancel)
 }
 
 /// Moves the lines of one band (all single-column lines, no obstacles in the frame) so that the
@@ -589,6 +657,7 @@ fn vertical_justify(f: &Frame<'_>, v: FrameVertical, lines: &mut [Line], meta: &
 fn compose_flow(
     thread: &[Frame<'_>],
     verticals: &[FrameVertical],
+    aligns: &[StudioAlignToGrid],
     text: &str,
     paragraphs: &[ShapedParagraph],
     stylings: &[Option<ParagraphStyling>],
@@ -663,7 +732,7 @@ fn compose_flow(
                     let mut c = cursor;
                     c.extra += pre[pi];
                     if let Some(s) =
-                        next_slot(thread, c, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)?
+                        next_slot(thread, c, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, false, &mut scans, scan_cap, cancel)?
                         && (s.pos != cursor.pos || s.col != cursor.col)
                     {
                         c = Cursor {
@@ -677,8 +746,14 @@ fn compose_flow(
                     cursor = c;
                 }
                 let mut at = cursor;
+                let align = aligns.get(pi).copied().unwrap_or(StudioAlignToGrid::None);
                 while slots.len() < slot_cap {
-                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)? {
+                    let snap = match align {
+                        StudioAlignToGrid::None => false,
+                        StudioAlignToGrid::AllLines => true,
+                        StudioAlignToGrid::FirstLineOnly => slots.is_empty(),
+                    };
+                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, snap, &mut scans, scan_cap, cancel)? {
                         Some(s) => {
                             at = s.next;
                             slots.push(s);
@@ -719,7 +794,7 @@ fn compose_flow(
                 }
                 let mut at = cursor;
                 while slots.len() < slot_cap {
-                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Span, &mut scans, scan_cap, cancel)? {
+                    match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Span, verticals, false, &mut scans, scan_cap, cancel)? {
                         Some(s) => {
                             at = s.next;
                             slots.push(s);
@@ -734,7 +809,7 @@ fn compose_flow(
                 }
                 let mut start = cursor;
                 while let Some(probe) =
-                    next_slot(thread, start, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)?
+                    next_slot(thread, start, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, false, &mut scans, scan_cap, cancel)?
                 {
                     let f = &thread[probe.pos];
                     if !f.obstacles.is_empty() {
@@ -754,7 +829,7 @@ fn compose_flow(
                     let rows_needed = b.len().div_ceil(count).max(1);
                     let (mut rows, mut at) = (vec![probe], probe.next);
                     while rows.len() < rows_needed {
-                        match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, &mut scans, scan_cap, cancel)? {
+                        match next_slot(thread, at, p.line_height_pt, p.ascent_pt, Mode::Column, verticals, false, &mut scans, scan_cap, cancel)? {
                             Some(s) if s.pos == probe.pos => {
                                 at = s.next;
                                 rows.push(s);
