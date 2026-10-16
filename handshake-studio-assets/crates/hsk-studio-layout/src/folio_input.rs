@@ -51,6 +51,14 @@ pub(crate) struct Frame<'a> {
     /// STU-LAY-118 `vertical_balance_columns` (Folio layout-flow records).
     pub balance: bool,
 }
+
+/// STU-LAY-121 vertical justification of one frame (threaded reflow only) with its STU-LAY-118
+/// `vertical_threshold` in pt (Folio layout-flow records; `None` = no limit).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FrameVertical {
+    pub vjust: VerticalJustification,
+    pub threshold_pt: Option<f64>,
+}
 impl Frame<'_> {
     /// Inset-area x range of column `c` in frame coordinates (equal widths, gutters between).
     pub fn column_x(&self, c: usize) -> (f64, f64) {
@@ -73,6 +81,8 @@ pub(crate) struct Input<'a> {
     pub text: &'a str,
     /// In flow order.
     pub frames: Vec<Frame<'a>>,
+    /// One per frame, same order.
+    pub verticals: Vec<FrameVertical>,
 }
 
 pub(crate) fn pt(l: &Length) -> Result<f64, LayoutError> {
@@ -108,8 +118,9 @@ pub(crate) fn story_text<'a>(
     }
 }
 
-/// What this slice composes: one column, top-aligned, fixed-size frames, an explicit fixed first
-/// baseline, left-to-right Area stories. Everything else is a typed refusal.
+/// What this slice composes: one column (several on the threaded reflow), top-aligned (any STU-LAY-121
+/// member on the threaded reflow), fixed-size frames, an explicit fixed first baseline,
+/// left-to-right Area stories. Everything else is a typed refusal.
 fn supported(story: &StudioTextStory, f: &StudioTextFrame, columns: bool) -> Result<(), LayoutError> {
     let rtl = story.story_direction == StoryDirection::RightToLeft
         || story
@@ -118,7 +129,7 @@ fn supported(story: &StudioTextStory, f: &StudioTextFrame, columns: bool) -> Res
             .any(|p| p.paragraph_direction == Some(StoryParagraphDirection::RightToLeft));
     if rtl
         || (f.text_column_count != 1 && !columns)
-        || f.vertical_justification != VerticalJustification::Top
+        || (f.vertical_justification != VerticalJustification::Top && !columns)
         || f.auto_sizing_type != AutoSizing::Off
         || f.first_baseline_offset != FirstBaseline::Fixed
     {
@@ -217,6 +228,7 @@ pub(crate) fn resolve_flow<'a>(
 
     let mut checked = BTreeSet::new();
     let mut frames = Vec::with_capacity(chain.len());
+    let mut verticals = Vec::with_capacity(chain.len());
     for &(layer_index, layer, f) in &chain {
         let loc = document
             .locate_page(&f.page_id)
@@ -267,6 +279,16 @@ pub(crate) fn resolve_flow<'a>(
         let balance = flow
             .and_then(|r| r.frame_options(&layer.layer_id))
             .is_some_and(|o| o.vertical_balance_columns);
+        let vthreshold_pt = match flow.and_then(|r| r.vertical_threshold(&layer.layer_id)) {
+            Some(l) => {
+                let v = pt(l)?;
+                if v < 0.0 {
+                    return Err(LayoutError::InvalidGeometry);
+                }
+                Some(v)
+            }
+            None => None,
+        };
         frames.push(Frame {
             id: layer.layer_id.as_str(),
             layer_index,
@@ -286,11 +308,15 @@ pub(crate) fn resolve_flow<'a>(
             gutter_pt: if column_count > 1 { gutter } else { 0.0 },
             balance,
         });
+        verticals.push(FrameVertical {
+            vjust: if flow.is_some() { f.vertical_justification } else { VerticalJustification::Top },
+            threshold_pt: vthreshold_pt,
+        });
     }
     for (_, _, f) in &chain {
         supported(story, f, flow.is_some())?;
     }
-    Ok(Input { text, frames })
+    Ok(Input { text, frames, verticals })
 }
 
 /// One text-frame layer resolved on its own (no thread), for text that is placed into a frame it

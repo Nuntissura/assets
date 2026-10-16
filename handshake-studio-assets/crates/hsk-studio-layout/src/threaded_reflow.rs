@@ -23,17 +23,30 @@
 //! the breaks). Balancing is skipped for frames with wrap obstacles or bands holding split lines;
 //! split paragraphs in frames with obstacles are `unsupported_composition`. InDesign parity of all
 //! of this is UNVERIFIED (D5).
+//!
+//! Vertical justification (lane SMB-ID-PREPRESS, STU-LAY-121, STU-TYP-190; `reflow_flow` only): after
+//! composition each column of a frame is moved as a block. The block is the line boxes of the
+//! column, from the first line's top (baseline - ascent) to the last line's bottom (baseline +
+//! descent); the free space is the frame's inset height minus the block. `center` places the block
+//! with equal free space above and below, `bottom` puts the last line's bottom on the bottom inset.
+//! `justify` keeps the first line and puts the last line's bottom on the bottom inset: the slack
+//! goes to the P gaps between paragraphs, each at most the frame's `vertical_threshold` (Folio
+//! layout-flow records; none stored = no limit), and what the limit holds back is shared equally
+//! by all line gaps of the column; one line is not moved. Frames with wrap obstacles are not
+//! justified (left as composed), and a non-top frame that holds span or split lines is
+//! `unsupported_composition`. InDesign parity (block extent, the threshold-overflow rule, wrap
+//! behaviour) is UNVERIFIED (D5).
 use crate::breaker::{Composer, HyphenRules, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
 use crate::typeset::{Justification, TypesetOptions, justify_metrics};
-use crate::folio_input::{Frame, FrameObstacles, pt, resolve_flow};
+use crate::folio_input::{Frame, FrameObstacles, FrameVertical, pt, resolve_flow};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     StudioDocument, StudioLayoutFlowRecords, StudioParagraphFlow, StudioSpanColumn, StudioSpanCount,
-    StudioTextStory,
+    StudioTextStory, VerticalJustification,
 };
 use std::ops::Range;
 
@@ -323,7 +336,7 @@ pub fn reflow_flow(
         req.obstacles,
         Some(flow),
     )?;
-    let (text, thread) = (input.text, input.frames);
+    let (text, thread, verticals) = (input.text, input.frames, input.verticals);
     if req
         .paragraphs
         .iter()
@@ -358,6 +371,7 @@ pub fn reflow_flow(
     let paragraphs: &[ShapedParagraph] = anchored.as_deref().unwrap_or(paragraphs);
     let composed = compose_flow(
         &thread,
+        &verticals,
         text,
         paragraphs,
         &stylings,
@@ -472,7 +486,7 @@ pub(crate) fn compose(
 ) -> Result<Composition, LayoutError> {
     let flows = vec![ParaFlow::Single; paragraphs.len()];
     let pre = vec![0.0; paragraphs.len()];
-    compose_flow(thread, text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, cancel)
+    compose_flow(thread, &[], text, paragraphs, stylings, &flows, &pre, composer, req_space, opts, limits, cancel)
 }
 
 /// Moves the lines of one band (all single-column lines, no obstacles in the frame) so that the
@@ -511,10 +525,70 @@ fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Me
     true
 }
 
+/// Vertical justification of one composed frame (see the module notes): each column's lines move
+/// as a block (`center`, `bottom`) or get the slack in their gaps (`justify`).
+fn vertical_justify(f: &Frame<'_>, v: FrameVertical, lines: &mut [Line], meta: &[Meta]) -> Result<(), LayoutError> {
+    if v.vjust == VerticalJustification::Top || lines.is_empty() {
+        return Ok(());
+    }
+    if meta.iter().any(|m| !m.single) {
+        return Err(LayoutError::UnsupportedComposition);
+    }
+    if !f.obstacles.is_empty() {
+        return Ok(());
+    }
+    let (top, bottom) = (f.inset_top_pt, f.height_pt - f.inset_bottom_pt);
+    for col in 0..f.column_count.max(1) {
+        let idx: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].column == col).collect();
+        let (Some(&first), Some(&last)) = (idx.first(), idx.last()) else { continue };
+        let block_top = lines[first].baseline_y_pt - meta[first].ascent;
+        let block_bottom = lines[last].baseline_y_pt + (meta[last].height - meta[last].ascent);
+        let slack = bottom - block_bottom;
+        if slack <= EPS {
+            continue;
+        }
+        match v.vjust {
+            VerticalJustification::Top => {}
+            VerticalJustification::Center | VerticalJustification::Bottom => {
+                let dy = if v.vjust == VerticalJustification::Center {
+                    top + ((bottom - top) - (block_bottom - block_top)) / 2.0 - block_top
+                } else {
+                    slack
+                };
+                for &i in &idx {
+                    lines[i].baseline_y_pt += dy;
+                }
+            }
+            VerticalJustification::Justify => {
+                let gaps = idx.len() - 1;
+                if gaps == 0 {
+                    continue;
+                }
+                let para_gaps = idx.windows(2).filter(|w| lines[w[0]].paragraph != lines[w[1]].paragraph).count();
+                let mut per_para = if para_gaps > 0 { slack / para_gaps as f64 } else { 0.0 };
+                if let Some(limit) = v.threshold_pt {
+                    per_para = per_para.min(limit);
+                }
+                let per_line = (slack - per_para * para_gaps as f64) / gaps as f64;
+                let mut dy = 0.0;
+                for w in idx.windows(2) {
+                    dy += per_line;
+                    if lines[w[0]].paragraph != lines[w[1]].paragraph {
+                        dy += per_para;
+                    }
+                    lines[w[1]].baseline_y_pt += dy;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `compose` with one `ParaFlow` per paragraph (span and split columns, band balancing).
 #[allow(clippy::too_many_arguments)]
 fn compose_flow(
     thread: &[Frame<'_>],
+    verticals: &[FrameVertical],
     text: &str,
     paragraphs: &[ShapedParagraph],
     stylings: &[Option<ParagraphStyling>],
@@ -867,6 +941,9 @@ fn compose_flow(
     {
         let start = band_start[pos];
         balance_band(&thread[pos], band_top[pos], &mut frames[pos][start..], &metas[pos][start..]);
+    }
+    for ((f, v), (lines, meta)) in thread.iter().zip(verticals).zip(frames.iter_mut().zip(&metas)) {
+        vertical_justify(f, *v, lines, meta)?;
     }
     Ok(Composition {
         lines: frames,

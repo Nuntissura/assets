@@ -9,6 +9,11 @@
 //! only; layout honours the flag with top justification (spec conflict recorded, InDesign gating
 //! UNVERIFIED, D5).
 //!
+//! Vertical thresholds (lane SMB-ID-PREPRESS, STU-LAY-118 `vertical_threshold`, STU-TYP-190): per
+//! text-frame layer, the paragraph spacing limit of `vjust.justify` in `pt` (hard_min 0, no
+//! declared maximum); absent = no limit. A separate member list so `StudioFrameFlowOptions`
+//! literals and earlier record sets stay unchanged.
+//!
 //! Paragraph flow overrides (STU-LAY-021, STU-LAY-125 "paragraph overrides"): per story paragraph
 //! (named by its start byte) the span/split enumeration `{single_column, span_columns,
 //! split_columns}`, the `span_count.all` sentinel AND the numeric count as separate fields (the
@@ -76,6 +81,16 @@ pub struct StudioFrameFlowOptions {
     /// paragraph).
     #[serde(default, skip_serializing_if = "is_false")]
     pub vertical_balance_columns: bool,
+}
+
+/// STU-LAY-118 `vertical_threshold` of one text-frame layer: the most space `vjust.justify` may
+/// add between two paragraphs, on top of their own space before/after (`pt`, non-negative).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioFrameVerticalThreshold {
+    /// `SLYR` id of a text-frame layer of the document.
+    pub layer_id: String,
+    pub vertical_threshold: Length,
 }
 
 /// STU-LAY-021 `span_column` enumeration.
@@ -155,6 +170,9 @@ pub struct StudioLayoutFlowRecords {
     /// The object style each layer last had applied (STU-LAY-039).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applied_object_styles: Vec<StudioAppliedObjectStyle>,
+    /// Paragraph spacing limits of justified frames (STU-LAY-118 `vertical_threshold`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vertical_thresholds: Vec<StudioFrameVerticalThreshold>,
 }
 impl StudioLayoutFlowRecords {
     /// An empty set for `document_id`.
@@ -175,7 +193,15 @@ impl StudioLayoutFlowRecords {
             conditional_text_preferences: None,
             object_styles: Vec::new(),
             applied_object_styles: Vec::new(),
+            vertical_thresholds: Vec::new(),
         }
+    }
+    /// The `vertical_threshold` stored for this frame layer.
+    pub fn vertical_threshold(&self, layer_id: &str) -> Option<&Length> {
+        self.vertical_thresholds
+            .iter()
+            .find(|v| v.layer_id == layer_id)
+            .map(|v| &v.vertical_threshold)
     }
     /// The object style with this key.
     pub fn object_style(&self, style_id: &str) -> Option<&StudioObjectStyle> {
@@ -897,6 +923,21 @@ pub fn validate_layout_flow_records(
         if !seen.insert(f.layer_id.as_str()) {
             return Err(err(Code::DuplicateIdentity, &f.layer_id));
         }
+    }
+    if r.vertical_thresholds.len() > MAX_FRAME_FLOW_OPTIONS {
+        return Err(err(Code::BudgetExceeded, "vertical_thresholds"));
+    }
+    let mut seen = BTreeSet::new();
+    for v in &r.vertical_thresholds {
+        canceled(token)?;
+        id(&v.layer_id, "SLYR", "vertical_thresholds/layer_id")?;
+        if !frames.contains(v.layer_id.as_str()) {
+            return Err(err(Code::DanglingReference, &v.layer_id));
+        }
+        if !seen.insert(v.layer_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, &v.layer_id));
+        }
+        pt_nonneg(&v.vertical_threshold, "vertical_thresholds/vertical_threshold")?;
     }
     let mut keys = BTreeSet::new();
     for p in &r.paragraph_flows {
