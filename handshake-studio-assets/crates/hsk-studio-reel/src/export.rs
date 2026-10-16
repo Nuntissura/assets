@@ -635,10 +635,16 @@ fn plan(
         {
             return Err(limit("export-frames"));
         }
-        if format.frame_bytes().is_none() {
+        // The OS encoder runs in a worker: its frame size is checked before the worker starts; the
+        // in-process encoders keep their own refusals first (judged order, tests/export_queue.rs).
+        let os = matches!(choice, VideoCodecChoice::H264(_) | VideoCodecChoice::Hevc(_));
+        if os && format.frame_bytes().is_none() {
             return Err(limit("export-frame-bytes"));
         }
         let enc = make_encoder(choice, format, tpf, external, cancel)?;
+        if format.frame_bytes().is_none() {
+            return Err(limit("export-frame-bytes"));
+        }
         let entry = match &enc {
             Encoder::Os(os) => provisional_entry(os.codec)?,
             Encoder::Vc3(e) => VideoEntry::Vc3 {
