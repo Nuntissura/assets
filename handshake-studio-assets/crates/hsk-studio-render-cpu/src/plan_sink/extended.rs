@@ -211,6 +211,17 @@ pub(super) struct ExtPrep {
     /// pass-through group) and whether a deep knockout exists (lane SMB-PS-ADJUST-STYLES-2).
     pub(super) knockout_groups: usize,
     pub(super) knockout_deep: bool,
+    /// Pattern overlays (lane SMB-PS-ADJUST-STYLES-2): the distinct patterns the effect stacks read
+    /// (charged at `width x height x 16` bytes in `build`), decoded by `prepare` from the plan
+    /// sources into straight RGBA (pigment's `PatternPixels`).
+    pub(super) pattern_refs: Vec<hsk_studio_pigment::effect_math::PatternRef>,
+    pub(super) pattern_pixels: BTreeMap<hsk_studio_pigment::render_plan::SourceKey, Vec<[f32; 4]>>,
+}
+
+impl hsk_studio_pigment::effect_math::PatternPixels for ExtPrep {
+    fn pattern(&self, key: hsk_studio_pigment::render_plan::SourceKey) -> Option<&[[f32; 4]]> {
+        self.pattern_pixels.get(&key).map(Vec::as_slice)
+    }
 }
 
 /// Typed mapping of a coverage failure; the keys are pigment's (PLR-006): [`SAMPLE_RANGE_OPERATOR`]
@@ -377,6 +388,24 @@ impl ExtPrep {
                     .and_then(|n| n.checked_mul(EFFECT_OP_BYTES))
                     .ok_or_else(overflow)?;
                 prep.charge(bytes, limit)?;
+                for op in &e.effects {
+                    if let EffectOp::PatternOverlay(o) = op {
+                        let r = o.pattern;
+                        if prep.pattern_refs.iter().any(|p| p.key == r.key) {
+                            if !prep.pattern_refs.contains(&r) {
+                                // one key, two declarations: the plan contradicts itself
+                                return Err(unsupported("effect_parameter"));
+                            }
+                            continue;
+                        }
+                        let bytes = u64::from(r.width)
+                            .checked_mul(u64::from(r.height))
+                            .and_then(|n| n.checked_mul(16))
+                            .ok_or_else(overflow)?;
+                        prep.charge(bytes, limit)?;
+                        prep.pattern_refs.push(r);
+                    }
+                }
                 fx.effect = Some(prep.effects.len());
                 prep.effects.push(EffectLayer {
                     ops: e.effects.clone(),

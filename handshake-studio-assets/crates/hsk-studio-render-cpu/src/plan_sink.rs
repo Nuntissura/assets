@@ -574,6 +574,35 @@ fn prepare<'a, V: VectorSource>(
     if target.format != SampleFormat::RgbF32Le {
         return Err(unsupported("sample_format"));
     }
+    // Pattern overlays (lane SMB-PS-ADJUST-STYLES-2): every pattern an effect stack reads is a plan
+    // tile source, verified like a tile input (shape, hashes, unit values) and decoded once into
+    // straight RGBA (its bytes were charged by `ExtPrep::build`).
+    for r in ext.pattern_refs.clone() {
+        let input = TileInput {
+            key: r.key,
+            placement: Rect { x: 0, y: 0, width: r.width, height: r.height },
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            colour_sha256: r.colour_sha256,
+            alpha_sha256: r.alpha_sha256,
+        };
+        let planes = sources.tile(r.key).ok_or(BackendError::UnresolvedSource(r.key))?;
+        verify_tile(&input, &planes, target.space, false)?;
+        let (w, h) = (
+            crate::px::to_usize(u64::from(r.width))?,
+            crate::px::to_usize(u64::from(r.height))?,
+        );
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(mul_u(w, h)?)
+            .map_err(|_| BackendError::Unavailable("pattern_allocation"))?;
+        for row in 0..h {
+            for col in 0..w {
+                pixels.push(tile_pixel(&planes, col, row)?);
+            }
+        }
+        ext.pattern_pixels.insert(r.key, pixels);
+    }
     let n = plan.nodes.len();
     let root = plan.root.0 as usize;
     let reach = reachable(plan);
@@ -2437,7 +2466,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                 // every other kind (tests/cpu_layer_styles.rs).
                 | EffectKind::Satin
                 | EffectKind::BevelEmboss
-                | EffectKind::GradientOverlay,
+                | EffectKind::GradientOverlay
+                // Lane SMB-PS-ADJUST-STYLES-2: the pattern pixels are a plan tile source decoded
+                // in `prepare` (tests/cpu_pattern_overlay.rs).
+                | EffectKind::PatternOverlay,
             )
             // Knockout: pigment `knockout_over` per pixel (`Eval::knockout_layer`); shallow lane
             // SMB-PS-ADJUST-STYLES (tests/cpu_knockout.rs), deep and the root / pass-through

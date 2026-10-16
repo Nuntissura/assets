@@ -1170,9 +1170,9 @@ fn knockout_and_effect_stack_are_refused() {
         let none = records(json!([{"layer_id":identity("SLYR",2),"advanced_blending":blending("inherited")}]));
         assert!(flow(&nested, &none).1.unwrap().extensions.is_empty());
 
-        // An enabled effect instance of a kind pigment does not render (here a pattern overlay;
-        // satin rendered since lane SMB-PS-ADJUST-STYLES) is refused; a
-        // disabled stack, or one without enabled instances, is not.
+        // An enabled effect instance pigment cannot render (here a pattern overlay without a
+        // resolved pattern tile; with one it renders since lane SMB-PS-ADJUST-STYLES-2) is
+        // refused; a disabled stack, or one without enabled instances, is not.
         let stack = |enabled: bool, instance_enabled: bool| {
             json!({"effect_stack_id":"SEFX-019abcde-0000-7000-8000-000000000001","enabled":enabled,"scale":100.0,
                 "effects":[{"instance_id":"fx_1","enabled":instance_enabled,"visible_in_editor":true,
@@ -1185,11 +1185,11 @@ fn knockout_and_effect_stack_are_refused() {
         };
         let (report, low) = flow(&tiled(), &with(true, true));
         let reason = unavailable_reason(low);
-        assert!(reason.ends_with("layer_effects_not_rendered"), "{reason}");
+        assert!(reason.ends_with("pattern_overlay_unresolved"), "{reason}");
         assert!(reason.contains(&identity("SLYR", 3)), "{reason}");
         assert!(matches!(
             &report.step(&addr(3, "source", "out")).unwrap().status,
-            StepStatus::Unavailable(r) if r == "layer_effects_not_rendered"
+            StepStatus::Unavailable(r) if r == "pattern_overlay_unresolved"
         ));
         assert!(flow(&tiled(), &with(false, true)).1.is_ok());
         assert!(flow(&tiled(), &with(true, false)).1.is_ok());
@@ -1485,8 +1485,8 @@ fn effect_refusals_are_typed_and_nothing_is_dropped_or_approximated_silently() {
         assert!(ok(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), true, overlay())), enc).extensions.layers.len() == 1);
         // A kind pigment does not render, and stack scale other than 100 percent.
         let glow = json!({"effect_kind":"pattern_overlay","pattern":{"schema_id":"hsk.studio.pattern@1","object_id":"p1"},
-            "scale":100.0,"phase_x":0.0,"phase_y":0.0,"link_with_layer":true}); // satin renders since SMB-PS-ADJUST-STYLES
-        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, glow.clone())), enc, "layer_effects_not_rendered");
+            "scale":100.0,"phase_x":0.0,"phase_y":0.0,"link_with_layer":true}); // no pattern_tile: unresolved
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, glow.clone())), enc, "pattern_overlay_unresolved");
         let mut scaled = on_layer_3(fx_effect("e1", 100.0, black(), false, overlay()));
         scaled.layers[0].effects.as_mut().unwrap().scale = 150.0;
         refused(&doc, &scaled, enc, "effect_stack_scale");

@@ -466,6 +466,9 @@ enum Plan {
     },
     /// Gradient overlay: alpha x stop opacity, with a colour per pixel.
     Gradient(super::GradientOverlayOp),
+    /// Pattern overlay (lane SMB-PS-ADJUST-STYLES-2): alpha x pattern alpha, with the pattern
+    /// colour per pixel.
+    Pattern(super::PatternOverlayOp),
 }
 
 /// Bytes per pixel of the grown window reserved for the style function's own buffers (satin keeps
@@ -482,6 +485,7 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
     Ok(match op {
         EffectOp::ColourOverlay(_) => Plan::Overlay,
         EffectOp::GradientOverlay(o) => Plan::Gradient(*o),
+        EffectOp::PatternOverlay(o) => Plan::Pattern(*o),
         EffectOp::Satin(_) | EffectOp::BevelEmboss(_) => {
             let size = match op {
                 EffectOp::Satin(o) => o.size_px,
@@ -637,7 +641,7 @@ impl Plan {
                 })
             }
             // Matte (4) and the per-pixel colours (12); read, opacity and colour passes.
-            Self::Gradient(_) => Ok(Cost {
+            Self::Gradient(_) | Self::Pattern(_) => Ok(Cost {
                 peak: mulu(aw, 16)?,
                 work: mulu(aw, 3)?,
             }),
@@ -1123,13 +1127,54 @@ fn run_local<S: AlphaSource + ?Sized>(
     Ok(out)
 }
 
+/// Per-pixel pattern colours over the window (12 bytes per pixel, charged).
+fn pattern_colours(
+    g: &WindowGeometry,
+    o: &super::PatternOverlayOp,
+    pixels: &[[f32; 4]],
+    meter: &mut Meter,
+) -> WResult<Vec<[f32; 3]>> {
+    let n = count(g.window)?;
+    meter.reserve(mulu(area(g.window)?, 12)?)?;
+    meter.charge_work(area(g.window)?)?;
+    let mut out: Vec<[f32; 3]> = Vec::new();
+    out.try_reserve_exact(n)
+        .map_err(|_| WindowError::AllocationFailed)?;
+    let (ex, ey) = ends(g.window)?;
+    for y in g.window.y..ey {
+        for x in g.window.x..ex {
+            let p = o.sample_at(x, y, g.layer, pixels).ok_or(WindowError::Geometry)?;
+            out.push([p[0], p[1], p[2]]);
+        }
+    }
+    Ok(out)
+}
+
 fn run_matte<S: AlphaSource + ?Sized>(
     src: &S,
     g: &WindowGeometry,
     plan: &Plan,
+    patterns: &dyn super::PatternPixels,
     meter: &mut Meter,
 ) -> WResult<Vec<f32>> {
     match plan {
+        Plan::Pattern(o) => {
+            let pixels = super::style::pattern_pixels(o, patterns)?;
+            let mut m = alpha_window(src, g, meter)?;
+            meter.charge_work(area(g.window)?)?;
+            let (ex, ey) = ends(g.window)?;
+            let mut i = 0usize;
+            for y in g.window.y..ey {
+                for x in g.window.x..ex {
+                    let p = o.sample_at(x, y, g.layer, pixels).ok_or(WindowError::Geometry)?;
+                    if let Some(v) = m.get_mut(i) {
+                        *v *= p[3];
+                    }
+                    i = i.checked_add(1).ok_or(WindowError::Overflow)?;
+                }
+            }
+            Ok(m)
+        }
         Plan::Overlay => alpha_window(src, g, meter),
         Plan::Local {
             op,
@@ -1181,11 +1226,22 @@ pub fn window_matte<S: AlphaSource + ?Sized>(
     op: &EffectOp,
     limits: WindowLimits,
 ) -> WResult<WindowMatte> {
+    window_matte_with(src, geometry, op, limits, &super::NoPatterns)
+}
+
+/// [`window_matte`] with the pattern pixels a pattern overlay reads (lane SMB-PS-ADJUST-STYLES-2).
+pub fn window_matte_with<S: AlphaSource + ?Sized>(
+    src: &S,
+    geometry: &WindowGeometry,
+    op: &EffectOp,
+    limits: WindowLimits,
+    patterns: &dyn super::PatternPixels,
+) -> WResult<WindowMatte> {
     geometry.check()?;
     let plan = prepare(op)?;
     check_cost(plan.cost(geometry.window)?, limits)?;
     let mut meter = Meter::new(limits);
-    let coverage = run_matte(src, geometry, &plan, &mut meter)?;
+    let coverage = run_matte(src, geometry, &plan, patterns, &mut meter)?;
     Ok(WindowMatte {
         window: geometry.window,
         coverage,
@@ -1386,6 +1442,34 @@ pub fn render_layer_window_in<S: AlphaSource + ?Sized>(
     effects: &[EffectOp],
     limits: WindowLimits,
 ) -> WResult<LayerWindow> {
+    render_layer_window_patterned_in(
+        range,
+        src,
+        geometry,
+        content_rgb,
+        backdrop,
+        layer,
+        effects,
+        limits,
+        &super::NoPatterns,
+    )
+}
+
+/// [`render_layer_window_in`] with the pattern pixels its pattern overlays read (lane
+/// SMB-PS-ADJUST-STYLES-2; the pattern is anchored at `geometry.layer`, the windowed geometry of
+/// the gradient overlay too).
+#[allow(clippy::too_many_arguments)]
+pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
+    range: SampleRange,
+    src: &S,
+    geometry: &WindowGeometry,
+    content_rgb: &[[f32; 3]],
+    backdrop: &WindowPlane,
+    layer: LayerParams,
+    effects: &[EffectOp],
+    limits: WindowLimits,
+    patterns: &dyn super::PatternPixels,
+) -> WResult<LayerWindow> {
     geometry.check()?;
     let window = geometry.window;
     let n = count(window)?;
@@ -1438,9 +1522,13 @@ pub fn render_layer_window_in<S: AlphaSource + ?Sized>(
             if op.placement() != placement {
                 continue;
             }
-            let matte = run_matte(src, geometry, plan, &mut meter)?;
+            let matte = run_matte(src, geometry, plan, patterns, &mut meter)?;
             let per_pixel = match plan {
                 Plan::Gradient(o) => Some(gradient_colours(geometry, o, &mut meter)?),
+                Plan::Pattern(o) => {
+                    let pixels = super::style::pattern_pixels(o, patterns)?;
+                    Some(pattern_colours(geometry, o, pixels, &mut meter)?)
+                }
                 _ => None,
             };
             let colours = match &per_pixel {

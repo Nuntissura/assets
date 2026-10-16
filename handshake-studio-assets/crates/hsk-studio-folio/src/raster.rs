@@ -651,6 +651,11 @@ pub enum StudioEffectKind {
         phase_x: f64,
         phase_y: f64,
         link_with_layer: bool,
+        /// The pattern's pixels resolved beside the reference (as a gradient overlay carries its
+        /// stops): one `rgb_f32le` tile of at most 4096 x 4096 px, so a renderer needs no pattern
+        /// resolver (lane SMB-PS-ADJUST-STYLES-2); absent = unresolved. Not encoded when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pattern_tile: Option<crate::TileRef>,
     },
     DropShadow {
         distance: f64,
@@ -1566,6 +1571,24 @@ fn validate_effects(s: &StudioEffectStack, target: &str, cx: &mut Ctx) -> Result
                     &t,
                     "pattern_overlay",
                 )?;
+                if let StudioEffectKind::PatternOverlay {
+                    pattern_tile: Some(tile),
+                    ..
+                } = &e.params
+                {
+                    let px = |v: f64| v.is_finite() && (1.0..=4096.0).contains(&v) && v.fract() == 0.0;
+                    check(
+                        px(tile.width.value)
+                            && px(tile.height.value)
+                            && tile.width.unit == crate::GeometryUnit::Px
+                            && tile.height.unit == crate::GeometryUnit::Px
+                            && tile.format == "rgb_f32le"
+                            && !tile.artifact_manifest_id.is_empty()
+                            && !tile.content_digest.digest.is_empty(),
+                        &t,
+                        "pattern_overlay/pattern_tile",
+                    )?;
+                }
             }
             StudioEffectKind::DropShadow {
                 distance,

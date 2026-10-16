@@ -36,9 +36,9 @@ use hsk_studio_pigment::effect_math::{
     GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
     BevelEmbossOp, BevelPart, BevelShape, BevelStroke, BevelStyle, BevelTechnique, GradientOverlayOp,
-    GradientStopOp, GradientStyle, SatinOp,
+    GradientStopOp, GradientStyle, PatternOverlayOp, PatternRef, SatinOp,
 };
-use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout, PlanError};
+use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout, PlanError, SourceKey};
 use std::collections::BTreeMap;
 
 pub use hsk_studio_pigment::adjust_math::AdjustmentOp;
@@ -882,8 +882,41 @@ fn convert_effect(
                 .with_offset([(*offset_x / 100.0) as f32, (*offset_y / 100.0) as f32]);
             EffectOp::GradientOverlay(op)
         }
-        // Pattern overlay (no pattern pixels in the plan) and bevel & emboss (two ops, converted
-        // by `convert_bevel`).
+        // Pattern overlay (lane SMB-PS-ADJUST-STYLES-2): the record's resolved pattern tile becomes
+        // a plan tile source; here the op carries the tile size and a placeholder key, which the
+        // render-plan lowering replaces with the registered key and the tile's hashes
+        // (`Emitter::resolve_patterns`). Without a resolved tile it is refused.
+        StudioEffectKind::PatternOverlay {
+            scale,
+            phase_x,
+            phase_y,
+            link_with_layer,
+            pattern_tile,
+            ..
+        } => {
+            let tile = pattern_tile.as_ref().ok_or(REFUSE_PATTERN_UNRESOLVED)?;
+            let side = |v: f64| {
+                if v.is_finite() && (1.0..=f64::from(hsk_studio_pigment::effect_math::MAX_PATTERN_SIDE)).contains(&v) {
+                    Ok(v as u32)
+                } else {
+                    Err(REFUSE_EFFECT_PARAMETER)
+                }
+            };
+            let pattern = PatternRef {
+                key: SourceKey(u32::MAX),
+                width: side(tile.width.value)?,
+                height: side(tile.height.value)?,
+                colour_sha256: [0; 32],
+                alpha_sha256: [0; 32],
+            };
+            EffectOp::PatternOverlay(
+                PatternOverlayOp::new(mode, opacity, pattern)
+                    .with_scale((*scale / 100.0) as f32)
+                    .with_phase([*phase_x as f32, *phase_y as f32])
+                    .with_link(*link_with_layer),
+            )
+        }
+        // Bevel & emboss (two ops, converted by `convert_bevel`).
         _ => return Err(REFUSE_EFFECTS),
     };
     // Pigment's own parameter and limit judgement, mapped to the code the lowering reports.
@@ -923,6 +956,8 @@ pub const REFUSE_EFFECT_GRADIENT_STYLE: &str = "effect_gradient_style_unknown";
 pub const REFUSE_EFFECT_GRADIENT_UNRESOLVED: &str = "effect_gradient_unresolved";
 pub const REFUSE_EFFECT_GRADIENT_MIDPOINT: &str = "effect_gradient_midpoint";
 pub const REFUSE_BEVEL_TEXTURE: &str = "bevel_texture";
+/// A pattern overlay whose record carries no resolved pattern tile (lane SMB-PS-ADJUST-STYLES-2).
+pub const REFUSE_PATTERN_UNRESOLVED: &str = "pattern_overlay_unresolved";
 pub const REFUSE_BEVEL_GLOSS_CONTOUR: &str = "bevel_gloss_contour";
 
 /// The gradient `type` token (Studio names or the PSD descriptor enum ids).
@@ -1064,6 +1099,8 @@ fn convert_blur(e: &StudioEffect, scope: FolioBlurScope, radius: f64) -> Result<
 /// one) and the approximation notes.
 pub(crate) struct ConvertedEffects {
     pub ops: Vec<EffectOp>,
+    /// The resolved pattern tiles of the pattern overlays among `ops`, in op order.
+    pub patterns: Vec<hsk_studio_folio::TileRef>,
     pub blur: Option<LayerBlur>,
     pub notes: Notes,
 }
@@ -1083,6 +1120,7 @@ pub(crate) fn convert_effects(
     };
     let mut out = ConvertedEffects {
         ops: Vec::new(),
+        patterns: Vec::new(),
         blur: None,
         notes: Vec::new(),
     };
@@ -1121,6 +1159,13 @@ pub(crate) fn convert_effects(
             out.ops.extend(convert_bevel(e, cx, stroke)?);
         } else {
             out.ops.push(convert_effect(e, cx, &mut out.notes)?);
+            if let StudioEffectKind::PatternOverlay {
+                pattern_tile: Some(tile),
+                ..
+            } = &e.params
+            {
+                out.patterns.push(tile.clone());
+            }
         }
     }
     if out.blur.is_some() && !out.ops.is_empty() {
@@ -1166,6 +1211,8 @@ pub(crate) struct LayerFeatures {
     pub effects: Result<Vec<EffectOp>, &'static str>,
     /// The layer's blur (a Folio `blur` effect instance), carried in `LayerExtension.blur`.
     pub blur: Option<LayerBlur>,
+    /// The resolved pattern tiles of the layer's pattern overlays, in op order.
+    pub pattern_tiles: Vec<hsk_studio_folio::TileRef>,
     /// Approximations made while converting (effects); adjustments carry their own.
     pub notes: Notes,
     /// Blend Clipped Layers as Group is switched off on this layer (`clbl = 0`). It only matters
@@ -1184,12 +1231,12 @@ impl LayerFeatures {
     ) -> Self {
         let rec = records.layer(layer_id);
         let blending = rec.and_then(|r| r.advanced_blending.as_ref());
-        let (effects, blur, notes) = match rec.and_then(|r| r.effects.as_ref()) {
+        let (effects, blur, notes, pattern_tiles) = match rec.and_then(|r| r.effects.as_ref()) {
             Some(stack) => match convert_effects(stack, cx) {
-                Ok(c) => (Ok(c.ops), c.blur, c.notes),
-                Err(code) => (Err(code), None, Vec::new()),
+                Ok(c) => (Ok(c.ops), c.blur, c.notes, c.patterns),
+                Err(code) => (Err(code), None, Vec::new(), Vec::new()),
             },
-            None => (Ok(Vec::new()), None, Vec::new()),
+            None => (Ok(Vec::new()), None, Vec::new(), Vec::new()),
         };
         Self {
             mask: rec.and_then(|r| r.mask.as_ref()).map(|m| MaskParams {
@@ -1201,6 +1248,7 @@ impl LayerFeatures {
             knockout: resolve_knockout(layers, records, layer_id),
             effects,
             blur,
+            pattern_tiles,
             notes,
             clipped_group_blend_off: blending.is_some_and(|b| !b.blend_clipped_effects),
             channel_blend_default: blending

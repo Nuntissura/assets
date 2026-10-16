@@ -38,7 +38,7 @@ use super::{
 use crate::px::{area, end, grow_rect, index_in, intersect, overflow};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::effect_math::window::{
-    AlphaSource, WindowError, WindowGeometry, WindowPlane, render_layer_window_in,
+    AlphaSource, WindowError, WindowGeometry, WindowPlane, render_layer_window_patterned_in,
 };
 use hsk_studio_pigment::effect_math::{EffectOp, LayerParams};
 use hsk_studio_pigment::render_plan::ExtOperator;
@@ -208,7 +208,7 @@ impl Eval<'_, '_> {
             frame: frame_rect,
             content,
         };
-        let result = render_layer_window_in(
+        let result = render_layer_window_patterned_in(
             self.prepared.ext.output.sample_range,
             &source,
             &geometry,
@@ -221,6 +221,7 @@ impl Eval<'_, '_> {
             },
             ops,
             *limits,
+            &self.prepared.ext,
         )
         .map_err(window_error)?;
         let plane = &result.plane;

@@ -153,6 +153,44 @@ struct Emitter<'a> {
     info: &'a dyn TileInfoSource,
 }
 
+impl Emitter<'_> {
+    /// Pattern overlays (lane SMB-PS-ADJUST-STYLES-2): each pattern op of `ops` (in order) gets
+    /// its record's resolved pattern tile registered as a plan tile source (`SourceTable`, hashes
+    /// from the caller's `TileInfoSource`); the op's placeholder key and hashes are replaced. A
+    /// tile the caller cannot resolve, or one that is not straight `rgb_f32le`, is `Unavailable`.
+    fn resolve_patterns(
+        &mut self,
+        ops: &mut [hsk_studio_pigment::effect_math::EffectOp],
+        tiles: &[TileRef],
+        layer_id: &str,
+    ) -> Result<(), CompositeError> {
+        let mut tiles = tiles.iter();
+        for op in ops.iter_mut() {
+            let hsk_studio_pigment::effect_math::EffectOp::PatternOverlay(o) = op else {
+                continue;
+            };
+            let tile = tiles.next().ok_or_else(|| {
+                CompositeError::Unavailable(format!(
+                    "{layer_id}:{}",
+                    crate::lower_extensions::REFUSE_PATTERN_UNRESOLVED
+                ))
+            })?;
+            let found = self.info.tile_info(tile).ok_or_else(|| {
+                CompositeError::Unavailable(format!("{}/tile/{}:tile_info", tile.layer_id, tile.object_key))
+            })?;
+            if found.format != SampleFormat::RgbF32Le || found.alpha != AlphaConvention::Straight {
+                return Err(CompositeError::Unavailable(format!("{layer_id}:pattern_overlay_format")));
+            }
+            let key = self.key()?;
+            self.sources.push((key, tile.clone()));
+            o.pattern.key = key;
+            o.pattern.colour_sha256 = found.colour_sha256;
+            o.pattern.alpha_sha256 = found.alpha_sha256;
+        }
+        Ok(())
+    }
+}
+
 /// Everything [`lower_inner`] produces.
 pub(crate) struct Lowered {
     pub lowering: RenderLowering,
@@ -1407,6 +1445,7 @@ pub(crate) fn lower_inner(
                         let mut p =
                             EntryParts::new(group_layers.len(), f, coverage_mask, adjustment_op)?;
                         p.smart = out.smart_filters(records, layer)?;
+                        out.resolve_patterns(&mut p.effects, &f.pattern_tiles, &layer.layer_id)?;
                         if !p.is_empty() {
                             parts.push(p);
                         }
@@ -1450,6 +1489,7 @@ pub(crate) fn lower_inner(
         if let Some(f) = &root_features {
             let mut p = EntryParts::new(0, f, root_appearance.mask, None)?;
             p.smart = out.smart_filters(records, root_layer)?;
+            out.resolve_patterns(&mut p.effects, &f.pattern_tiles, &root_layer.layer_id)?;
             if !p.is_empty() {
                 entries.push(p.into_extension(root_node));
             }

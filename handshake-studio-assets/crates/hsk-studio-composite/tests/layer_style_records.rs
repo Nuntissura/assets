@@ -4,7 +4,7 @@
 use hsk_studio_composite::BlendSpace;
 use hsk_studio_composite::lower_extensions::{
     REFUSE_BEVEL_TEXTURE, REFUSE_EFFECT_GRADIENT_UNALIGNED, REFUSE_EFFECT_GRADIENT_UNRESOLVED,
-    REFUSE_EFFECTS, effect_ops,
+    REFUSE_PATTERN_UNRESOLVED, effect_ops,
 };
 use hsk_studio_folio::{ProfileBinding, StudioEffectStack, StudioGlobalLight};
 use hsk_studio_pigment::effect_math::{BevelPart, BevelStyle, EffectOp, GradientStyle};
@@ -75,8 +75,8 @@ fn styles_lower_to_pigment_ops_with_typed_refusals() {
     assert_eq!((used.len(), used[1].position, used[1].opacity, used[1].colour), (2, 0.6, 0.4, [0.0, 0.0, 1.0]));
 
     // Chisel renders since lane SMB-PS-ADJUST-STYLES-2. Refusals: texture, unresolved and
-    // canvas-aligned gradients, pattern overlay (no pattern pixels in the plan). A disabled
-    // instance is not refused.
+    // canvas-aligned gradients, a pattern overlay without a resolved pattern tile (renders with
+    // one since that lane: tests/pattern_overlay_lowering.rs). A disabled instance is not refused.
     let chisel = ops(vec![effect("be", 100.0, false, bevel("chisel_hard", false))]).unwrap();
     assert!(matches!(chisel[0], EffectOp::BevelEmboss(b) if b.shape.technique == hsk_studio_pigment::effect_math::BevelTechnique::ChiselHard));
     assert_eq!(ops(vec![effect("be", 100.0, false, bevel("smooth", true))]), Err(REFUSE_BEVEL_TEXTURE));
@@ -86,7 +86,7 @@ fn styles_lower_to_pigment_ops_with_typed_refusals() {
     assert_eq!(ops(vec![effect("go", 100.0, false, gradient(false, Some(two)))]), Err(REFUSE_EFFECT_GRADIENT_UNALIGNED));
     let pattern = json!({"effect_kind":"pattern_overlay","pattern":{"schema_id":"hsk.studio.pattern@1","object_id":"p"},
         "scale":100.0,"phase_x":0.0,"phase_y":0.0,"link_with_layer":true});
-    assert_eq!(ops(vec![effect("po", 100.0, false, pattern.clone())]), Err(REFUSE_EFFECTS));
+    assert_eq!(ops(vec![effect("po", 100.0, false, pattern.clone())]), Err(REFUSE_PATTERN_UNRESOLVED));
     let mut off = effect("po", 100.0, false, pattern);
     off["enabled"] = json!(false);
     assert_eq!(ops(vec![off]), Ok(vec![]));

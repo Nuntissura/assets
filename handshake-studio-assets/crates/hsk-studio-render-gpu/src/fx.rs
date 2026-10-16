@@ -14,7 +14,7 @@
 use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::{
     BevelEmbossOp, BevelPart, BevelStyle, BevelTechnique, EffectError, EffectOp, EffectOrder,
-    GlowSource, GradientOverlayOp, SatinOp, StrokePosition, effect_support_px, shadow_offset,
+    GlowSource, GradientOverlayOp, PatternOverlayOp, SatinOp, StrokePosition, effect_support_px, shadow_offset,
     shadow_split,
 };
 use hsk_studio_pigment::render_plan::{ExtOperator, StudioBlendMode};
@@ -173,6 +173,10 @@ pub(crate) struct FxEffect {
     /// Gradient overlay: the colour and stop opacity per pixel come from pigment's gradient
     /// (`GradientOverlayOp::sample_at`), uploaded as the source region; the matte is the alpha.
     pub(crate) gradient: Option<GradientOverlayOp>,
+    /// Pattern overlay: the colour and alpha per pixel come from the decoded pattern pixels
+    /// (pigment `PatternOverlayOp::sample_at`), uploaded as the source region; the matte is the
+    /// alpha.
+    pub(crate) pattern: Option<PatternOverlayOp>,
 }
 
 /// The effects of one layer and the margin they read around the layer bounds.
@@ -366,7 +370,7 @@ pub(crate) fn compile_effect(
         },
         EffectOp::Satin(o) => satin_steps(o, kernels, limit)?,
         EffectOp::BevelEmboss(o) => bevel_steps(o, kernels, limit)?,
-        EffectOp::GradientOverlay(_) => {
+        EffectOp::GradientOverlay(_) | EffectOp::PatternOverlay(_) => {
             let mut steps = vec![FxStep::new(OP_INIT, 0)];
             assign(&mut steps, Buf::Mask);
             (steps, 1)
@@ -384,6 +388,10 @@ pub(crate) fn compile_effect(
         window_ops,
         gradient: match op {
             EffectOp::GradientOverlay(o) => Some(*o),
+            _ => None,
+        },
+        pattern: match op {
+            EffectOp::PatternOverlay(o) => Some(*o),
             _ => None,
         },
     })

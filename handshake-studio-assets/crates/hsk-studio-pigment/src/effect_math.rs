@@ -41,7 +41,8 @@ pub mod window;
 pub mod style;
 pub use style::{
     BevelEmbossOp, BevelPart, BevelShape, BevelStroke, BevelStyle, BevelTechnique,
-    GradientOverlayOp, GradientStopOp, GradientStyle, MAX_GRADIENT_STOPS, SatinOp,
+    GradientOverlayOp, GradientStopOp, GradientStyle, MAX_GRADIENT_STOPS, MAX_PATTERN_SIDE, NoPatterns,
+    PatternOverlayOp, PatternPixels, PatternRef, SatinOp,
 };
 
 /// Class of every effect operator in this module (see module doc).
@@ -87,6 +88,8 @@ pub enum EffectFeature {
     BevelSoften,
     /// More gradient stops than [`MAX_GRADIENT_STOPS`].
     GradientStops,
+    /// A pattern overlay whose pattern pixels the caller did not supply (lane SMB-PS-ADJUST-STYLES-2).
+    PatternUnresolved,
 }
 impl EffectFeature {
     pub const fn key(self) -> &'static str {
@@ -99,6 +102,7 @@ impl EffectFeature {
             Self::BevelStrokeEmboss => "bevel_stroke_emboss",
             Self::BevelSoften => "bevel_soften",
             Self::GradientStops => "gradient_stops",
+            Self::PatternUnresolved => "pattern_unresolved",
         }
     }
 }
@@ -176,6 +180,8 @@ pub enum EffectKind {
     Satin,
     BevelEmboss,
     GradientOverlay,
+    // Lane SMB-PS-ADJUST-STYLES-2 (module `style`).
+    PatternOverlay,
 }
 
 /// Static facts of one kind: key, formula-provenance class and reference.
@@ -187,7 +193,7 @@ pub struct EffectFacts {
     pub reference: &'static str,
 }
 impl EffectKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::DropShadow,
         Self::ColourOverlay,
         Self::Stroke,
@@ -197,6 +203,7 @@ impl EffectKind {
         Self::Satin,
         Self::BevelEmboss,
         Self::GradientOverlay,
+        Self::PatternOverlay,
     ];
     pub const fn facts(self) -> EffectFacts {
         let (key, reference) = match self {
@@ -235,6 +242,10 @@ impl EffectKind {
             Self::GradientOverlay => (
                 "gradient_overlay",
                 "gradient over the layer bounds (linear box-projection length, radial and diamond half the larger side, angle one turn, reflected), linear stop interpolation, matte = alpha x stop opacity (effect_math::style); Photoshop geometry and smoothness UNVERIFIED (D5)",
+            ),
+            Self::PatternOverlay => (
+                "pattern_overlay",
+                "pattern pixels (a plan tile source) tiled from the layer origin when linked (else the document origin), shifted by the phase and scaled by the scale fraction, nearest-pixel sampling at pixel centres; colour = pattern colour, matte = alpha x pattern alpha (effect_math::style); Photoshop resampling and phase convention UNVERIFIED (D5)",
             ),
         };
         EffectFacts {
@@ -558,6 +569,7 @@ pub enum EffectOp {
     Satin(SatinOp),
     BevelEmboss(BevelEmbossOp),
     GradientOverlay(GradientOverlayOp),
+    PatternOverlay(PatternOverlayOp),
 }
 
 fn unit(v: f32) -> bool {
@@ -595,6 +607,7 @@ impl EffectOp {
             Self::Satin(_) => EffectKind::Satin,
             Self::BevelEmboss(_) => EffectKind::BevelEmboss,
             Self::GradientOverlay(_) => EffectKind::GradientOverlay,
+            Self::PatternOverlay(_) => EffectKind::PatternOverlay,
         }
     }
     /// Fixed by the kind: the drop shadow and outer glow sit behind the content, overlays, strokes,
@@ -610,7 +623,8 @@ impl EffectOp {
             | Self::InnerGlow(_)
             | Self::Satin(_)
             | Self::BevelEmboss(_)
-            | Self::GradientOverlay(_) => EffectOrder::OverContent,
+            | Self::GradientOverlay(_)
+            | Self::PatternOverlay(_) => EffectOrder::OverContent,
         }
     }
     pub const fn mode(&self) -> StudioBlendMode {
@@ -624,6 +638,7 @@ impl EffectOp {
             Self::Satin(o) => o.mode,
             Self::BevelEmboss(o) => o.mode,
             Self::GradientOverlay(o) => o.mode,
+            Self::PatternOverlay(o) => o.mode,
         }
     }
     pub const fn opacity(&self) -> f32 {
@@ -637,6 +652,7 @@ impl EffectOp {
             Self::Satin(o) => o.opacity,
             Self::BevelEmboss(o) => o.opacity,
             Self::GradientOverlay(o) => o.opacity,
+            Self::PatternOverlay(o) => o.opacity,
         }
     }
     /// The uniform colour of the effect. A gradient overlay has a colour per pixel
@@ -653,6 +669,8 @@ impl EffectOp {
             Self::Satin(o) => o.colour,
             Self::BevelEmboss(o) => o.colour,
             Self::GradientOverlay(o) => o.stops[0].colour,
+            // A pattern has a colour per pixel (its pattern pixels); none is uniform.
+            Self::PatternOverlay(_) => [0.0; 3],
         }
     }
     /// Parameter validation shared by the envelope and the reference.
@@ -709,6 +727,7 @@ impl EffectOp {
             Self::Satin(o) => style::validate_satin(o)?,
             Self::BevelEmboss(o) => style::validate_bevel(o)?,
             Self::GradientOverlay(o) => style::validate_gradient(o)?,
+            Self::PatternOverlay(o) => style::validate_pattern(o)?,
         }
         Ok(())
     }
@@ -790,7 +809,7 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
         EffectOp::InnerShadow(o) => grown_support(o.size_px, o.choke, ceil(o.distance_px)),
         EffectOp::OuterGlow(o) => grown_support(o.size_px, o.spread, 0),
         EffectOp::InnerGlow(o) => grown_support(o.size_px, o.choke, 0),
-        EffectOp::ColourOverlay(_) | EffectOp::GradientOverlay(_) => Ok(0),
+        EffectOp::ColourOverlay(_) | EffectOp::GradientOverlay(_) | EffectOp::PatternOverlay(_) => Ok(0),
         EffectOp::Satin(o) => style::satin_support(o),
         EffectOp::BevelEmboss(o) => style::bevel_support(o),
         EffectOp::Stroke(o) => Ok(match o.position {
@@ -1092,6 +1111,17 @@ fn stroke_half_by(
 /// - Inner glow: the inner-shadow chain with zero offset; source edge multiplies by the alpha,
 ///   source centre multiplies `1 - chain` by the alpha.
 pub fn reference_matte(plane: &EffectPlane, op: &EffectOp) -> Result<Vec<f32>, EffectError> {
+    reference_matte_with(plane, op, &NoPatterns)
+}
+
+/// [`reference_matte`] with the pattern pixels a pattern overlay reads (lane
+/// SMB-PS-ADJUST-STYLES-2): its matte is the alpha times the pattern pixel's alpha (without the
+/// pixels: `Unsupported(PatternUnresolved)`).
+pub fn reference_matte_with(
+    plane: &EffectPlane,
+    op: &EffectOp,
+    patterns: &dyn PatternPixels,
+) -> Result<Vec<f32>, EffectError> {
     op.validate()?;
     let g = Grid::of(plane);
     let alpha = plane.alpha();
@@ -1109,6 +1139,20 @@ pub fn reference_matte(plane: &EffectPlane, op: &EffectOp) -> Result<Vec<f32>, E
                 return Err(EffectError::OverBudget);
             }
             style::bevel_matte(alpha, g, o)
+        }
+        EffectOp::PatternOverlay(o) => {
+            let pixels = style::pattern_pixels(o, patterns)?;
+            let mut out = alpha.to_vec();
+            let bounds = crate::Rect { x: 0, y: 0, width: plane.width, height: plane.height };
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let p = o.sample_at(x, y, bounds, pixels).ok_or(EffectError::PlaneShape)?;
+                    if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
+                        *slot *= p[3];
+                    }
+                }
+            }
+            Ok(out)
         }
         EffectOp::GradientOverlay(o) => {
             let mut out = alpha.to_vec();
@@ -1199,6 +1243,19 @@ pub fn render_layer_reference(
     layer: LayerParams,
     effects: &[EffectOp],
 ) -> Result<EffectPlane, EffectError> {
+    render_layer_reference_with(backdrop, content, layer, effects, &NoPatterns)
+}
+
+/// [`render_layer_reference`] with the pattern pixels its pattern overlays read (lane
+/// SMB-PS-ADJUST-STYLES-2; the colour of a pattern overlay at a pixel is the pattern pixel's
+/// colour, its geometry the reference plane as for the gradient overlay).
+pub fn render_layer_reference_with(
+    backdrop: &EffectPlane,
+    content: &EffectPlane,
+    layer: LayerParams,
+    effects: &[EffectOp],
+    patterns: &dyn PatternPixels,
+) -> Result<EffectPlane, EffectError> {
     if backdrop.width != content.width || backdrop.height != content.height {
         return Err(EffectError::PlaneShape);
     }
@@ -1210,8 +1267,9 @@ pub fn render_layer_reference(
     }
     let mut mattes = Vec::with_capacity(effects.len());
     for op in effects {
-        mattes.push(reference_matte(content, op)?);
+        mattes.push(reference_matte_with(content, op, patterns)?);
     }
+    let plane_rect = crate::Rect { x: 0, y: 0, width: content.width, height: content.height };
     let g = Grid::of(content);
     let mut rgb = backdrop.rgb.clone();
     let mut alpha = backdrop.alpha.clone();
@@ -1230,6 +1288,12 @@ pub fn render_layer_reference(
                 let colour = match op {
                     EffectOp::GradientOverlay(o) => {
                         style::gradient_at(o, x, y, (0, 0, content.width, content.height)).0
+                    }
+                    EffectOp::PatternOverlay(o) => {
+                        let p = o
+                            .sample_at(x, y, plane_rect, style::pattern_pixels(o, patterns)?)
+                            .ok_or(EffectError::PlaneShape)?;
+                        [p[0], p[1], p[2]]
                     }
                     _ => op.colour(),
                 };

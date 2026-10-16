@@ -678,3 +678,132 @@ pub(super) fn gradient_at(
 ) -> ([f32; 3], f32) {
     gradient_sample(o, gradient_t(o, x, y, bounds))
 }
+
+// ---- pattern overlay (lane SMB-PS-ADJUST-STYLES-2; STU-RAS-157 `pattern_overlay`: pattern, scale,
+// phase_x, phase_y, link_with_layer) ----------------------------------------------------------------
+
+/// Largest side of a pattern tile (a Pigment ceiling; STU-RAS-157 declares none).
+pub const MAX_PATTERN_SIDE: u32 = 4096;
+
+/// The pattern a pattern overlay tiles: a plan tile source (`key`) of `width x height` straight
+/// RGBA pixels, with the hashes of its colour and alpha planes (the backend verifies them like a
+/// `TileInput`'s).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct PatternRef {
+    pub key: crate::render_plan::SourceKey,
+    pub width: u32,
+    pub height: u32,
+    pub colour_sha256: [u8; 32],
+    pub alpha_sha256: [u8; 32],
+}
+
+/// Pattern overlay: `scale` is the STU-RAS-157 percent as a fraction (`[0.01, 10]`), `phase` the
+/// pattern offset in pixels, `link_with_layer` anchors the pattern at the layer's top-left
+/// (otherwise at the document origin). Composited over the content, inside the shape.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct PatternOverlayOp {
+    pub mode: StudioBlendMode,
+    pub opacity: f32,
+    pub pattern: PatternRef,
+    pub scale: f32,
+    pub phase: [f32; 2],
+    pub link_with_layer: bool,
+}
+impl PatternOverlayOp {
+    /// Scale 1, no phase, linked with the layer.
+    pub const fn new(mode: StudioBlendMode, opacity: f32, pattern: PatternRef) -> Self {
+        Self {
+            mode,
+            opacity,
+            pattern,
+            scale: 1.0,
+            phase: [0.0; 2],
+            link_with_layer: true,
+        }
+    }
+    pub const fn with_scale(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
+    }
+    pub const fn with_phase(mut self, phase: [f32; 2]) -> Self {
+        self.phase = phase;
+        self
+    }
+    pub const fn with_link(mut self, link_with_layer: bool) -> Self {
+        self.link_with_layer = link_with_layer;
+        self
+    }
+    /// The pattern pixel (straight RGBA) covering the centre of pixel `(x, y)` for the layer
+    /// bounds `layer`: the pattern coordinate is `floor((x + 0.5 - origin - phase) / scale)`
+    /// wrapped into the pattern (nearest pixel; Studio reading, Photoshop's resampling UNVERIFIED
+    /// D5). `None` when `pixels` is not `width x height` long.
+    pub fn sample_at(&self, x: i64, y: i64, layer: crate::Rect, pixels: &[[f32; 4]]) -> Option<[f32; 4]> {
+        let (ox, oy) = if self.link_with_layer {
+            (layer.x as f64, layer.y as f64)
+        } else {
+            (0.0, 0.0)
+        };
+        let s = f64::from(self.scale);
+        let (w, h) = (f64::from(self.pattern.width), f64::from(self.pattern.height));
+        let u = ((x as f64 + 0.5 - ox - f64::from(self.phase[0])) / s).floor().rem_euclid(w);
+        let v = ((y as f64 + 0.5 - oy - f64::from(self.phase[1])) / s).floor().rem_euclid(h);
+        if !(u.is_finite() && v.is_finite()) {
+            return None;
+        }
+        // u, v are integers in [0, side) with side <= MAX_PATTERN_SIDE
+        let (u, v) = (u as usize, v as usize);
+        let width = usize::try_from(self.pattern.width).ok()?;
+        let len = width.checked_mul(usize::try_from(self.pattern.height).ok()?)?;
+        if pixels.len() != len {
+            return None;
+        }
+        pixels.get(v.checked_mul(width)?.checked_add(u)?).copied()
+    }
+}
+
+/// Pattern pixels by plan source key: straight RGBA, row-major, the pattern's `width x height`.
+pub trait PatternPixels {
+    fn pattern(&self, key: crate::render_plan::SourceKey) -> Option<&[[f32; 4]]>;
+}
+
+/// No pattern pixels (a pattern overlay is then `Unsupported(PatternUnresolved)`).
+pub struct NoPatterns;
+impl PatternPixels for NoPatterns {
+    fn pattern(&self, _: crate::render_plan::SourceKey) -> Option<&[[f32; 4]]> {
+        None
+    }
+}
+
+pub(super) fn validate_pattern(o: &PatternOverlayOp) -> Result<(), EffectError> {
+    if !o.scale.is_finite()
+        || !(0.01..=10.0).contains(&o.scale)
+        || !o.phase.iter().all(|v| v.is_finite() && v.abs() <= 1.0e6)
+    {
+        return Err(EffectError::OutOfDomain);
+    }
+    let side = |v: u32| (1..=MAX_PATTERN_SIDE).contains(&v);
+    if !side(o.pattern.width) || !side(o.pattern.height) {
+        return Err(EffectError::SizeOutOfRange);
+    }
+    Ok(())
+}
+
+/// The pixels of `o`'s pattern, checked against its size (typed: unresolved, wrong length).
+pub(super) fn pattern_pixels<'p>(
+    o: &PatternOverlayOp,
+    patterns: &'p dyn PatternPixels,
+) -> Result<&'p [[f32; 4]], EffectError> {
+    let pixels = patterns
+        .pattern(o.pattern.key)
+        .ok_or(EffectError::Unsupported(EffectFeature::PatternUnresolved))?;
+    let len = usize::try_from(o.pattern.width)
+        .ok()
+        .zip(usize::try_from(o.pattern.height).ok())
+        .and_then(|(w, h)| w.checked_mul(h))
+        .ok_or(EffectError::Overflow)?;
+    if pixels.len() != len || !pixels.iter().all(|p| p.iter().all(|c| unit(*c))) {
+        return Err(EffectError::PlaneShape);
+    }
+    Ok(pixels)
+}

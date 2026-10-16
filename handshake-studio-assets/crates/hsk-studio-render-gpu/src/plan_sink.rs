@@ -372,6 +372,8 @@ struct Prepared<'a> {
     has_fx: bool,
     /// Blur kernels of all effects (charged to the working-byte limit while compiling).
     fx_kernels: FxKernels,
+    /// Decoded pattern pixels of the pattern overlays (straight RGBA by plan source key).
+    patterns: std::collections::BTreeMap<SourceKey, Vec<[f32; 4]>>,
     /// Largest per-pixel window cost of any effect pass (the chunk shrinks to bound a pass).
     fx_window_ops: u64,
     /// Margin in pixels every chunk is evaluated with beyond its own rectangle: the largest sum,
@@ -625,6 +627,8 @@ fn prepare<'a>(
     let mut feather_bytes = 0u64;
     let mut has_fx = false;
     let mut fx_kernels = FxKernels::default();
+    let mut patterns: std::collections::BTreeMap<SourceKey, Vec<[f32; 4]>> = std::collections::BTreeMap::new();
+    let mut pattern_bytes = 0u64;
     let mut fx_window_ops = 1u64;
     // Per node: the margin a chunk must be evaluated with so the effects inside it read real data.
     let mut margins: Vec<u32> = Vec::with_capacity(n);
@@ -729,8 +733,54 @@ fn prepare<'a>(
                                 )
                                 .map_err(|e| fx_error(e, scratch_limit))?;
                                 fx_window_ops = fx_window_ops.max(compiled.window_ops);
-                                // a gradient overlay uploads its colours into the source region
-                                has_tiles |= compiled.gradient.is_some();
+                                // a gradient or pattern overlay uploads its colours into the
+                                // source region
+                                has_tiles |= compiled.gradient.is_some() || compiled.pattern.is_some();
+                                // Pattern pixels (lane SMB-PS-ADJUST-STYLES-2): a plan tile source,
+                                // verified like a tile input and decoded once, charged to the
+                                // working-byte limit before it is allocated.
+                                if let Some(o) = &compiled.pattern
+                                    && !patterns.contains_key(&o.pattern.key)
+                                {
+                                    let r = o.pattern;
+                                    let bytes = u64::from(r.width)
+                                        .checked_mul(u64::from(r.height))
+                                        .and_then(|n| n.checked_mul(16))
+                                        .ok_or_else(overflow)?;
+                                    pattern_bytes = pattern_bytes.checked_add(bytes).ok_or_else(overflow)?;
+                                    let used = feather_bytes.checked_add(pattern_bytes).ok_or_else(overflow)?;
+                                    if used > scratch_limit {
+                                        return Err(GpuError::BudgetExceeded {
+                                            requested: used,
+                                            budget: scratch_limit,
+                                        });
+                                    }
+                                    let planes = sources
+                                        .tile(r.key)
+                                        .ok_or(GpuError::Backend(BackendError::UnresolvedSource(r.key)))?;
+                                    let input = TileInput {
+                                        key: r.key,
+                                        placement: Rect { x: 0, y: 0, width: r.width, height: r.height },
+                                        format: SampleFormat::RgbF32Le,
+                                        alpha: AlphaConvention::Straight,
+                                        colour_sha256: r.colour_sha256,
+                                        alpha_sha256: r.alpha_sha256,
+                                    };
+                                    verify_tile(&input, &planes, target.space, false)?;
+                                    let mut pixels = Vec::new();
+                                    pixels
+                                        .try_reserve_exact(
+                                            usize::try_from(u64::from(r.width).saturating_mul(u64::from(r.height)))
+                                                .map_err(|_| overflow())?,
+                                        )
+                                        .map_err(|_| unsupported("pattern_allocation"))?;
+                                    for y in 0..r.height {
+                                        for x in 0..r.width {
+                                            pixels.push(tile_pixel(&planes, x, y));
+                                        }
+                                    }
+                                    patterns.insert(r.key, pixels);
+                                }
                                 effects.push(compiled);
                             }
                             has_fx = true;
@@ -1100,6 +1150,7 @@ fn prepare<'a>(
         lut_floats,
         has_fx,
         fx_kernels,
+        patterns,
         fx_window_ops,
         frame_margin: margins[root],
         has_blur,
@@ -1707,6 +1758,7 @@ impl RenderBackend<NoVector> for GpuBackend {
                     | EffectKind::Satin
                     | EffectKind::BevelEmboss
                     | EffectKind::GradientOverlay
+                    | EffectKind::PatternOverlay
             ),
             _ => false,
         };
@@ -1840,6 +1892,8 @@ struct Exec<'e> {
     blur: Option<BlurBuffers>,
     /// Blur kernels of the plan's effects (the passes index into it).
     kernels: &'e FxKernels,
+    /// Decoded pattern pixels of the pattern overlays.
+    patterns: &'e std::collections::BTreeMap<SourceKey, Vec<[f32; 4]>>,
     /// Blurred mask coverage of the envelope's feathered layers (`MaskView::feather` indexes it).
     feathered: &'e [FeatherPlane],
     upload: Vec<u8>,
@@ -2216,7 +2270,32 @@ impl Exec<'_> {
                     .saturating_add(self.upload.len() as u64);
                 SourceKind::Region
             }
-            None => SourceKind::Solid([r, g, b, 1.0]),
+            None => match &effect.pattern {
+                Some(o) => {
+                    let pixels = self
+                        .patterns
+                        .get(&o.pattern.key)
+                        .ok_or_else(|| unsupported("pattern_unresolved"))?;
+                    self.upload.clear();
+                    for y in 0..i64::from(region.height) {
+                        for x in 0..i64::from(region.width) {
+                            let p = o
+                                .sample_at(region.x.saturating_add(x), region.y.saturating_add(y), layer, pixels)
+                                .ok_or_else(|| unsupported("pattern_unresolved"))?;
+                            for v in p {
+                                self.upload.extend_from_slice(&v.to_ne_bytes());
+                            }
+                        }
+                    }
+                    ctx.queue.write_buffer(&self.src, 0, &self.upload);
+                    self.stats.bytes_uploaded = self
+                        .stats
+                        .bytes_uploaded
+                        .saturating_add(self.upload.len() as u64);
+                    SourceKind::Region
+                }
+                None => SourceKind::Solid([r, g, b, 1.0]),
+            },
         };
         let params = LayerParams {
             chunk_w: chunk.width,
@@ -3465,6 +3544,7 @@ fn run(
         resample: resample_buffers,
         blur: blur_buffers,
         kernels: &prepared.fx_kernels,
+        patterns: &prepared.patterns,
         feathered: &prepared.feathered,
         upload: Vec::new(),
         mask_upload: Vec::new(),
