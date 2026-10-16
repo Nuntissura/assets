@@ -154,8 +154,9 @@ fn photoshop_saved_patterns_decode_and_overlays_import_with_their_tiles() {
         }
     };
     // layer_effects.psd (bytes inspected 2026-10-16): Patt holds "Water", 80 x 80 RGB 8-bit, id
-    // 2ab8ff7f-..., red raw (first 64), green RLE (first 1), blue raw (first 167); one layer's lfx2
-    // has an enabled patternFill naming it (Scl 100 %, Algn on, phase 0, 0).
+    // 2ab8ff7f-..., red raw (first 64), green RLE (first 1), blue raw (first 167); the lfx2 of the
+    // three text layers has a patternFill naming it (Scl 100 %, Algn on, phase 0, 0), the nine
+    // other lfx2 blocks a patternFill slot without Ptrn.
     if let Some(bytes) = read("layer_effects.psd", 735_149) {
         let p = proposal(&bytes);
         let water = blob(&p, "2ab8ff7f-7c39-11d4-97f0-ce0e81abb313");
@@ -171,7 +172,11 @@ fn photoshop_saved_patterns_decode_and_overlays_import_with_their_tiles() {
         let tile = pattern_tile.as_ref().expect("pattern tile");
         assert_eq!((tile.width.value, tile.height.value, tile.format.as_str()), (80.0, 80.0, "rgb_f32le"));
         assert_eq!(tile.content_digest.digest, water.content_sha256_hex);
-        assert!(!all_codes(&p).contains(&"effect_fill_reference_unavailable"), "{:?}", p.loss.entries);
+        // three text layers name the pattern; the nine patternFill slots without Ptrn are typed
+        assert_eq!(found.len(), 3, "{:?}", p.loss.entries);
+        let codes = all_codes(&p);
+        assert!(!codes.contains(&"pattern_overlay_pattern_missing") && !codes.contains(&"pattern_overlay_unminted"));
+        assert_eq!(codes.iter().filter(|c| **c == "pattern_overlay_reference_missing").count(), 9);
         // The imported overlay renders: pigment's reference with the record's parameters over an
         // opaque 5 x 4 layer at (0, 0) shows the pattern pixel at every site (Normal, 100 %, linked,
         // phase 0, scale 1: pattern texel (x mod 80, y mod 80)).
