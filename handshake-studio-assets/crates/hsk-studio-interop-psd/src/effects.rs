@@ -23,8 +23,8 @@
 
 use hsk_studio_folio::{
     BevelDirection, BevelStyle, BevelTechnique, GlowSource, GlowTechnique, MAX_CURVE_POINTS, MAX_EFFECTS, ProfileBinding,
-    StrokeFillType, StrokePosition, StudioColor, StudioContour, StudioContourPoint, StudioEffect, StudioEffectKind,
-    StudioEffectStack,
+    PATTERN_SCHEMA, StrokeFillType, StrokePosition, StudioColor, StudioContour, StudioContourPoint, StudioEffect,
+    StudioEffectFill, StudioEffectKind, StudioEffectStack,
 };
 pub(crate) use hsk_studio_pigment::effect_math::{MAX_EFFECTS_PER_LAYER, MAX_EFFECTS_PER_PLAN};
 
@@ -421,9 +421,51 @@ fn pick<T: Copy>(o: &Object, key: &str, table: &[(&str, T)]) -> Result<T, Reason
 
 const GLOW_TECHNIQUE: [(&str, GlowTechnique); 2] = [("SfBL", GlowTechnique::Softer), ("PrBL", GlowTechnique::Precise)];
 
-fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> Result<StudioEffect, Reason> {
-    if matches!(slot, Slot::GradientOverlay | Slot::PatternOverlay) {
-        // Gradient and pattern content are references to primitives this importer does not mint.
+/// The pattern overlay of a `patternFill` object (lane SMB-PS-ADJUST-STYLES-3): `Ptrn` names the
+/// pattern by its unique id `Idnt` (resolved through the document's `Patt` patterns, `patterns.rs`),
+/// `Scl ` is the scale in percent (STU-RAS-157 `scale`), `phase` the `Pnt ` offset in pixels
+/// (`Hrzn`, `Vrtc`), `Algn` the link with the layer (default on). The `Algn` reading as "Link with
+/// Layer" and the phase sign follow ag-psd's naming and are UNVERIFIED against Photoshop (D5).
+fn pattern_overlay(o: &Object, patterns: &crate::patterns::PatternTable) -> Result<StudioEffectKind, Reason> {
+    let reference = o.get("Ptrn").and_then(Value::object).ok_or("pattern_overlay_reference_missing")?;
+    let id = match reference.get("Idnt") {
+        Some(Value::Text(t)) if !t.is_empty() => t.trim_end_matches('\0'),
+        _ => return Err("pattern_overlay_reference_missing"),
+    };
+    let scale = match o.get("Scl ") {
+        None => 100.0,
+        Some(v) if has_percent_unit(v) => v.finite_number().filter(|n| *n > 0.0).ok_or("effect_value_invalid")?,
+        Some(_) => return Err("effect_unit_unexpected"),
+    };
+    let (phase_x, phase_y) = match o.get("phase") {
+        None => (0.0, 0.0),
+        Some(v) => {
+            let p = v.object().ok_or("effect_value_invalid")?;
+            let n = |k: &str| p.get(k).map_or(Some(0.0), Value::finite_number).ok_or("effect_value_invalid");
+            (n("Hrzn")?, n("Vrtc")?)
+        }
+    };
+    let link_with_layer = flag(o, "Algn", true)?;
+    let resolved = patterns.lookup(id)?;
+    Ok(StudioEffectKind::PatternOverlay {
+        pattern: StudioEffectFill { schema_id: PATTERN_SCHEMA.to_owned(), object_id: resolved.object_id.clone() },
+        scale,
+        phase_x,
+        phase_y,
+        link_with_layer,
+        pattern_tile: Some(resolved.tile.clone()),
+    })
+}
+
+fn map_effect(
+    slot: Slot,
+    o: &Object,
+    ordinal: usize,
+    notes: &mut Vec<Note>,
+    patterns: &crate::patterns::PatternTable,
+) -> Result<StudioEffect, Reason> {
+    if matches!(slot, Slot::GradientOverlay) {
+        // Gradient content is a reference to a primitive this importer does not mint.
         return Err("effect_fill_reference_unavailable");
     }
     let opacity = percent(o, "Opct", 100.0)?;
@@ -541,7 +583,8 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
                 texture: None,
             }
         }
-        Slot::GradientOverlay | Slot::PatternOverlay => return Err("effect_fill_reference_unavailable"),
+        Slot::PatternOverlay => pattern_overlay(o, patterns)?,
+        Slot::GradientOverlay => return Err("effect_fill_reference_unavailable"),
     };
     effect.instance_id = format!("{}-{ordinal}", effect.params.key());
     Ok(effect)
@@ -566,10 +609,11 @@ pub(crate) fn effect_stack(
     visible: bool,
     tally: &EffectTally,
     stack_id: impl FnOnce() -> Option<String>,
+    patterns: &crate::patterns::PatternTable,
     limits: &Limits,
 ) -> Option<Result<(Mapped<StudioEffectStack>, Fit), Reason>> {
     let block = layer.block(b"lfx2").or_else(|| layer.block(b"lmfx"))?;
-    Some(map_stack(&block.data, visible, tally, stack_id, limits))
+    Some(map_stack(&block.data, visible, tally, stack_id, patterns, limits))
 }
 
 fn map_stack(
@@ -577,6 +621,7 @@ fn map_stack(
     visible: bool,
     tally: &EffectTally,
     stack_id: impl FnOnce() -> Option<String>,
+    patterns: &crate::patterns::PatternTable,
     limits: &Limits,
 ) -> Result<(Mapped<StudioEffectStack>, Fit), Reason> {
     let root = descriptor::parse_versioned(data, &[0, 16], limits)?;
@@ -628,7 +673,7 @@ fn map_stack(
         };
         for object in objects {
             let notes_from = notes.len();
-            match map_effect(slot, object, mapped, &mut notes) {
+            match map_effect(slot, object, mapped, &mut notes, patterns) {
                 Ok(effect) => {
                     mapped = mapped.saturating_add(1);
                     if counts(enabled, visible, effect.enabled) {

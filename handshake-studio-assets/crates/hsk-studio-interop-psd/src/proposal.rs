@@ -108,6 +108,13 @@ pub trait IdMint {
     fn placed_document_id(&mut self, _unique_id: &str) -> Option<String> {
         None
     }
+    /// Object id (schema `hsk.studio.pattern@1`) of the pattern primitive the host makes of the
+    /// document pattern with PSD unique id `unique_id` (lane SMB-PS-ADJUST-STYLES-3; called once
+    /// per decoded pattern). `None` (the default) means the host mints none: a pattern overlay then
+    /// stays a typed loss (`pattern_overlay_unminted`).
+    fn pattern_id(&mut self, _unique_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Identity of the source bytes the document was parsed from.
@@ -216,6 +223,23 @@ pub struct MaskTileBlob {
     pub sha256_hex: String,
 }
 
+/// The pixels of one document pattern (lane SMB-PS-ADJUST-STYLES-3): the tile a pattern overlay's
+/// `pattern_tile` names (`layer_id` = the pattern's object id, `object_key` = `pattern`), one
+/// linear-light `rgb_f32le` colour plane and a straight `f32le` alpha plane of the pattern's size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatternTileBlob {
+    pub pattern_object_id: String,
+    pub object_key: String,
+    pub width: u32,
+    pub height: u32,
+    pub colour: Vec<u8>,
+    pub alpha: Vec<u8>,
+    pub colour_sha256_hex: String,
+    pub alpha_sha256_hex: String,
+    /// Digest recorded in the Folio `TileRef`: SHA-256 over `colour || alpha`.
+    pub content_sha256_hex: String,
+}
+
 /// PSD-side properties Folio still has no field for. Opacity, fill opacity, blend mode, clipping,
 /// group isolation and the mask reference are written to the Folio layer itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,6 +340,8 @@ pub struct ImportProposal {
     pub snapshot: Snapshot,
     pub tiles: Vec<TileBlob>,
     pub mask_tiles: Vec<MaskTileBlob>,
+    /// Pattern pixels referenced by the imported pattern overlays (lane SMB-PS-ADJUST-STYLES-3).
+    pub pattern_tiles: Vec<PatternTileBlob>,
     pub extras: Vec<LayerExtras>,
     pub layer_map: Vec<LayerMapEntry>,
     pub loss: LossReport,
@@ -510,6 +536,9 @@ struct Builder<'a, 'm, 'c> {
     /// recorded so far (lane SMB-PS-ADJUST-STYLES-2, `placed.rs`).
     linked: Vec<crate::placed::Linked>,
     placed_sources: Vec<hsk_studio_folio::StudioPlacedSource>,
+    /// The document's patterns as Folio references and their pixels (lane SMB-PS-ADJUST-STYLES-3).
+    patterns: crate::patterns::PatternTable,
+    pattern_tiles: Vec<PatternTileBlob>,
 }
 
 /// Flags of the mask whose coverage is mapped: the real user mask's when one exists.
@@ -613,7 +642,8 @@ impl Builder<'_, '_, '_> {
             // A hidden layer, and a layer inside a hidden group, is in no render plan: its instances are not counted.
             let visible = layer.visible() && self.hidden_groups == 0;
             let mint = &mut *self.mint;
-            match effects::effect_stack(layer, visible, &self.effect_tally, || mint.effect_stack_id(layer_id), limits) {
+            let patterns = &self.patterns;
+            match effects::effect_stack(layer, visible, &self.effect_tally, || mint.effect_stack_id(layer_id), patterns, limits) {
                 Some(Ok((m, fit))) => {
                     self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible), fit);
                     self.notes(&path, m.notes);
@@ -655,6 +685,66 @@ impl Builder<'_, '_, '_> {
             || record.placed_asset.is_some()
         {
             self.records.push(record);
+        }
+        Ok(())
+    }
+
+    /// Decodes the document's `Patt` / `Pat2` / `Pat3` patterns (`patterns.rs`; lane
+    /// SMB-PS-ADJUST-STYLES-3) and makes each a Folio reference: the host's pattern object id and
+    /// the `rgb_f32le` tile of its pixels (`PatternTileBlob`, the decoded bytes bounded by
+    /// `Limits::max_decoded_bytes` in the decoder). A pattern the host mints no id for stays a typed
+    /// loss on the overlays that use it (`pattern_overlay_unminted`). The pattern samples are
+    /// display-encoded sRGB decoded to linear light (the importer's assumption for unprofiled
+    /// pixels; the document profile is not applied to patterns), reported once.
+    fn patterns(&mut self) -> Result<()> {
+        let set = crate::patterns::decode(&self.doc.layer_section.blocks, self.cfg.scale, self.cfg.limits, self.cancel);
+        for (path, kind, code) in set.notes {
+            self.note(path, kind, code);
+        }
+        if !set.patterns.is_empty() {
+            self.note("layer_section/patterns".into(), LossKind::Transformed, "pattern_colour_assumed_srgb");
+        }
+        for p in set.patterns {
+            let Some(object_id) = self.mint.pattern_id(&p.psd_id).filter(|id| !id.is_empty()) else {
+                self.patterns.entries.push((p.psd_id, Err("pattern_overlay_unminted")));
+                continue;
+            };
+            let count = p.pixels.len();
+            let mut colour = vec![0u8; size_mul(count, 12)?];
+            let mut alpha = vec![0u8; size_mul(count, 4)?];
+            for (i, pixel) in p.pixels.iter().enumerate() {
+                let base = size_mul(i, 3)?;
+                for (k, v) in pixel[..3].iter().enumerate() {
+                    write_f32_le(&mut colour, size_add(base, k)?, *v)?;
+                }
+                write_f32_le(&mut alpha, i, pixel[3])?;
+            }
+            let object_key = "pattern".to_owned();
+            let mut both = colour.clone();
+            both.extend_from_slice(&alpha);
+            let content = hash_hex(&profile_hash(&both));
+            let manifest = self.mint.tile_manifest_id(&object_id, &object_key);
+            let tile: hsk_studio_folio::TileRef = serde_json::from_value(json!({
+                "object_key": object_key, "layer_id": object_id, "column": 0, "row": 0,
+                "width": px(f64::from(p.width)), "height": px(f64::from(p.height)),
+                "format": TILE_FORMAT, "colour_profile_id": self.profile_id,
+                "schema_id": "hsk.studio.raster_tile@1",
+                "content_digest": {"algorithm": "sha256", "digest": content},
+                "artifact_manifest_id": manifest,
+            }))
+            .map_err(|_| PsdError::Encode("pattern_tile"))?;
+            self.pattern_tiles.push(PatternTileBlob {
+                pattern_object_id: object_id.clone(),
+                object_key,
+                width: p.width,
+                height: p.height,
+                colour_sha256_hex: hash_hex(&profile_hash(&colour)),
+                alpha_sha256_hex: hash_hex(&profile_hash(&alpha)),
+                content_sha256_hex: content,
+                colour,
+                alpha,
+            });
+            self.patterns.entries.push((p.psd_id, Ok(crate::patterns::PatternRef { object_id, tile })));
         }
         Ok(())
     }
@@ -1961,6 +2051,8 @@ fn build(
         hidden_groups: 0,
         linked: Vec::new(),
         placed_sources: Vec::new(),
+        patterns: crate::patterns::PatternTable::default(),
+        pattern_tiles: Vec::new(),
     };
     {
         let (linked, refused) = crate::placed::linked_files(&doc.layer_section.blocks, cfg.limits);
@@ -1969,6 +2061,7 @@ fn build(
             b.note("layer_section/linked_files".to_owned(), LossKind::Unsupported, reason);
         }
     }
+    b.patterns()?;
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
     let mut entries = b.walk(&tree, &Value::Null)?;
@@ -2170,6 +2263,7 @@ fn build(
         snapshot,
         tiles: b.tiles,
         mask_tiles: b.mask_tiles,
+        pattern_tiles: b.pattern_tiles,
         extras: b.extras,
         layer_map: b.map,
         loss: b.loss,
