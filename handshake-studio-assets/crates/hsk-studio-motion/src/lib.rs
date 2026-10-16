@@ -13,6 +13,7 @@ mod expression;
 mod graph;
 mod keyframe;
 mod path;
+mod preset;
 mod property;
 mod receipt;
 mod store;
@@ -20,6 +21,10 @@ mod text_animator;
 mod time;
 
 pub use audio_amplitude::{AMPLITUDE_CHANNELS, AMPLITUDE_SLIDER, amplitude_property, insert_audio_amplitude};
+pub use preset::{
+    AppliedPreset, MAX_PRESET_ENTRIES, MotionPreset, PRESET_TARGET_INCOMPATIBLE, PresetEffect, PresetEntry, PresetEntryKind,
+    PresetError, apply_preset, capture_preset, validate_preset,
+};
 pub use date::{
     CivilTime, DateProfile, MAX_ABS_UTC_MS, civil_from_ms, parse_iso_exact, to_iso_string,
 };
