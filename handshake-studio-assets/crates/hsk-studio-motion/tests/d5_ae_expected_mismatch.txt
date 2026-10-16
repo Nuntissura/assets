@@ -1,0 +1,4 @@
+# Expected MISMATCH verdicts of tests/d5_ae_oracle.rs (lane SMB-D5-AI-ID-AE-COMPARE).
+# Format: <case_id> <variant> | <reason>   (variant "*" covers every variant of the case)
+# A MISMATCH not listed here fails its test. Empty: after the 2026-10-16 motion fixes (chord handle
+# influence 1/6, continuity keeps the incoming speed) every compared AE case matches.

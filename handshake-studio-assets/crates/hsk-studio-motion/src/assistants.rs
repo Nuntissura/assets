@@ -14,8 +14,13 @@
 //!   chord slope at the first and last key, 0 for a lone key, influence 0.16666666666. Derivation
 //!   is an authoring-time operation (the evaluator never derives); re-run after keys move. Adobe's
 //!   own auto-bezier derivation is UNVERIFIED (D5).
-//! * Continuous bezier: both sides `continuous_bezier`; the outgoing tangent wins and the incoming
-//!   speed is set equal to it (influences kept).
+//! * Continuous bezier: both sides `continuous_bezier`; the INCOMING speed wins and the outgoing
+//!   speed is set equal to it (influences kept). Oracle (D5, After Effects 26.5
+//!   `setTemporalContinuousAtKey`, corpus `adobe-session/aftereffects/AE-01b__mixed_types.json` row
+//!   `chain3 continuous`): ease in (20, 40 %) / out (60, 25 %) reads back as in (20, 40 %) / out
+//!   (20, 25 %) and all 101 samples match to 1e-9 (test `d5_ae_oracle::ae01b_mixed_types_and_chains`).
+//!   One oracle key only: a rule other than "incoming wins" that also yields 20 here (for example the
+//!   smaller speed) is not excluded (UNVERIFIED beyond this case).
 //! * Roving (STU-MOT-035): roving keys get new times so that speed is constant between the fixed
 //!   keys around them: times proportional to the cumulative straight-line distance between
 //!   successive key values (all components; spatial tangents are not modelled yet, STU-MOT-036b
@@ -165,12 +170,12 @@ pub fn make_continuous(property: &mut Property, selection: &[usize]) -> Result<(
         let k = &mut keys[i];
         k.in_interp = Interpolation::ContinuousBezier;
         k.out_interp = Interpolation::ContinuousBezier;
-        k.out_tangent = r.outgoing.clone();
-        k.in_tangent = r
-            .incoming
+        k.in_tangent = r.incoming.clone();
+        k.out_tangent = r
+            .outgoing
             .iter()
-            .zip(&r.outgoing)
-            .map(|(a, b)| TemporalTangent { speed: b.speed, influence: a.influence })
+            .zip(&r.incoming)
+            .map(|(out, inc)| TemporalTangent { speed: inc.speed, influence: out.influence })
             .collect();
     }
     property.set_keyframes(keys)

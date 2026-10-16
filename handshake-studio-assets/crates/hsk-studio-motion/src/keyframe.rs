@@ -1,7 +1,7 @@
 //! Keyframes, independent in/out interpolation and the temporal segment evaluator (STU-MOT-030..034).
 //!
-//! # Segment model (explicit math; STATUS: derived from spec + public AE scripting semantics, the
-//! exact Adobe numeric equivalence is UNVERIFIED and awaits black-box oracle samples)
+//! # Segment model (explicit math; derived from spec + public AE scripting semantics and checked
+//! against the D5 After Effects oracle, see below)
 //!
 //! A segment runs from key `k0` (time `t0`, value `v0`) to key `k1` (`t1`, `v1`), `dt = t1 - t0`
 //! ticks, `dts = dt / TICKS_PER_SECOND` seconds. The departure side is `k0.out_interp`, the arrival
@@ -15,7 +15,14 @@
 //!   `(s1, ii)` the in tangent of `k1`. `x(s) = u` is solved by 64 fixed bisection steps on
 //!   `s in [0, 1]` (x is monotone, checked at construction), then `value = y(s)`.
 //! * A non-Bezier side inside a mixed segment contributes a chord handle: speed equal to the chord
-//!   slope `(v1 - v0) / dts`, influence `1/3` (UNVERIFIED against Adobe, deterministic by rule).
+//!   slope `(v1 - v0) / dts`, influence `1/6`. Oracle (D5, After Effects 26.5 `valueAtTime`,
+//!   corpus `adobe-session/aftereffects/AE-01b__mixed_types.json`, rows LINEAR->BEZIER and
+//!   BEZIER->LINEAR): the chord handle at influence 1/6 reproduces all 101 samples to 1e-9 degrees,
+//!   the former 1/3 missed by up to 2.69 degrees (test `d5_ae_oracle::ae01b_mixed_types_and_chains`).
+//!
+//! The rest of the segment model matches the same oracle: 324 two-key Bezier segments (speeds 0 and
+//! +-100, influences 16.67 to 75 percent, influence sums above 100 percent included) agree to 1e-8
+//! when After Effects' sample time is quantised to 1/1024 frame (`d5_ae_oracle::ae01_bezier_grid`).
 //!
 //! `ContinuousBezier` / `AutoBezier` evaluate from their stored tangents exactly like `Bezier`:
 //! continuity and auto derivation are authoring-time operations (MOT-037/038, later) that produce
@@ -28,7 +35,7 @@ use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
 pub const DEFAULT_INFLUENCE: f64 = 0.16666666666;
 pub const MAX_DIMENSION: usize = 64;
 pub const MAX_KEYFRAMES: usize = 65_536;
-const CHORD_INFLUENCE: f64 = 1.0 / 3.0;
+const CHORD_INFLUENCE: f64 = 1.0 / 6.0;
 const BISECTION_STEPS: u32 = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
