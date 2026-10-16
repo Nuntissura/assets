@@ -6,6 +6,10 @@
 //! window-free: [`LayoutEditor::ui`] draws into any `egui::Context` and every action is a method
 //! taking a [`LayoutEdit`], so tests drive it headlessly (`tests/viewer_layout_ui.rs`).
 //!
+//! Lane SMB-LAYOUT-UI-2 adds the InDesign-parity panels on the same editor (each in its own
+//! submodule, each action an edit of the same undo history, each dispatching the existing Folio and
+//! layout engine commands): pages and parent pages ([`pages`]).
+//!
 //! History: every successful [`LayoutEditor::apply`] is exactly ONE undo step (a snapshot of the
 //! whole layout state: document, stories, layout-flow and type-style records); a refused edit
 //! leaves the state and the history untouched. Undo/redo restore the snapshots. The history is
@@ -21,14 +25,17 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     AutoSizing, Bounds, FirstBaseline, GeometryUnit, LayerSchema, LayoutEdges, Length, NodeKind, NodeRef, Parent,
     Payload, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioDocument, StudioLayer,
-    StudioLayoutFlowRecords, StudioTextFrame, StudioTextStory, StudioTypeStyleRecords, TextStorySchema, TypeStyleScope,
-    VerticalJustification,
+    StudioLayoutFlowRecords, StudioParentPageRecords, StudioTextFrame, StudioTextStory, StudioTypeStyleRecords,
+    TextStorySchema, TypeStyleScope, VerticalJustification,
 };
 use hsk_studio_layout::{
     Composer, LayoutError, LayoutProposal, Limits, ReflowRequest, ShapedParagraph, SourceSpan, SpaceParams, StyleSource,
     TypesetOptions, reflow_flow, replace_story_text, shift_flow_records,
 };
 use serde_json::{Value, json};
+
+pub mod pages;
+pub use pages::{PageEdit, PageRow};
 
 /// Undo steps kept (the oldest is dropped beyond this).
 pub const MAX_HISTORY: usize = 256;
@@ -55,6 +62,17 @@ pub mod widget {
     pub const CHAR_STYLE: &str = "layout.style.character";
     pub const APPLY_CHAR_STYLE: &str = "layout.style.character.apply";
     pub const ERROR: &str = "layout.error";
+    // Lane SMB-LAYOUT-UI-2: pages and parent pages panel.
+    pub const PAGES_PANEL: &str = "layout.pages_panel";
+    pub const PAGE_INSERT: &str = "layout.pages_panel.insert";
+    pub const PAGE_INSERT_SPREAD: &str = "layout.pages_panel.insert_spread";
+    pub const PAGE_DELETE: &str = "layout.pages_panel.delete";
+    pub const PAGE_MOVE_UP: &str = "layout.pages_panel.move_up";
+    pub const PAGE_MOVE_DOWN: &str = "layout.pages_panel.move_down";
+    pub const PARENT_LIST: &str = "layout.pages_panel.parents";
+    pub const PARENT_NEW: &str = "layout.pages_panel.parent_new";
+    pub const PARENT_APPLY: &str = "layout.pages_panel.parent_apply";
+    pub const PARENT_ITEMS: &str = "layout.pages_panel.parent_items";
 }
 
 /// Everything the editor edits.
@@ -64,6 +82,19 @@ pub struct LayoutDoc {
     pub stories: Vec<StudioTextStory>,
     pub flow: StudioLayoutFlowRecords,
     pub styles: StudioTypeStyleRecords,
+}
+
+/// Record sets beside the document that the SMB-LAYOUT-UI-2 panels edit (same undo history).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutRecords {
+    /// Parent pages and per-page parent bindings (Folio `hsk.studio.parent_page_records@1`).
+    pub parents: StudioParentPageRecords,
+}
+impl LayoutRecords {
+    /// Empty record sets for `document_id`.
+    pub fn new(document_id: &str) -> Self {
+        Self { parents: StudioParentPageRecords::new(document_id) }
+    }
 }
 
 /// One editing command = one undo step.
@@ -81,6 +112,8 @@ pub enum LayoutEdit {
     ApplyParagraphStyle { story: String, paragraph: usize, style: Option<String> },
     /// `None` clears the range's character style.
     ApplyCharacterStyle { story: String, start: u64, end: u64, style: Option<String> },
+    /// Pages and parent pages panel (SMB-LAYOUT-UI-2).
+    Page(PageEdit),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,6 +133,21 @@ pub enum LayoutUiError {
     NotThreaded(String),
     InvalidGeometry,
     IdSpaceExhausted,
+    /// A Folio record validator refused the result (`folio_<code>`, target).
+    Folio(&'static str, String),
+    /// The parent adapter refused the records (its code).
+    Parent(&'static str),
+    /// Deleting the last page of the document.
+    LastPage,
+    UnknownParent(String),
+    /// The page applies no parent holding this item.
+    UnknownParentItem(String),
+    /// "cannot unlink an item that was not overridden" (STU-LAY-007).
+    ItemNotOverridden(String),
+    /// The item is already overridden on this page.
+    AlreadyOverridden(String),
+    /// A parent named empty, too long or with control characters.
+    InvalidName,
 }
 impl LayoutUiError {
     pub fn code(&self) -> &'static str {
@@ -116,6 +164,14 @@ impl LayoutUiError {
             Self::NotThreaded(_) => "not_threaded",
             Self::InvalidGeometry => "invalid_geometry",
             Self::IdSpaceExhausted => "id_space_exhausted",
+            Self::Folio(code, _) => code,
+            Self::Parent(code) => code,
+            Self::LastPage => "last_page",
+            Self::UnknownParent(_) => "unknown_parent",
+            Self::UnknownParentItem(_) => "unknown_parent_item",
+            Self::ItemNotOverridden(_) => "item_not_overridden",
+            Self::AlreadyOverridden(_) => "already_overridden",
+            Self::InvalidName => "invalid_name",
         }
     }
 }
@@ -147,10 +203,10 @@ pub struct StoryRow {
     pub overset: bool,
 }
 
-fn len(v: f64) -> Length {
+pub(crate) fn len(v: f64) -> Length {
     Length { value: v, unit: GeometryUnit::Pt }
 }
-fn story_text(s: &StudioTextStory) -> &str {
+pub(crate) fn story_text(s: &StudioTextStory) -> &str {
     match &s.content {
         StoryContent::Inline { text_utf8 } => text_utf8,
         StoryContent::Stored { .. } => "",
@@ -163,8 +219,9 @@ type SpreadGeo = (f64, f64, Vec<(String, f64)>);
 /// Window-free layout editor state.
 pub struct LayoutEditor {
     doc: LayoutDoc,
-    undo: Vec<LayoutDoc>,
-    redo: Vec<LayoutDoc>,
+    rec: LayoutRecords,
+    undo: Vec<(LayoutDoc, LayoutRecords)>,
+    redo: Vec<(LayoutDoc, LayoutRecords)>,
     pub tool: Tool,
     pub selected: Option<String>,
     thread_from: Option<String>,
@@ -176,12 +233,21 @@ pub struct LayoutEditor {
     char_range: (u64, u64),
     char_style: Option<String>,
     pub last_error: Option<String>,
+    /// Pages panel selection (page key).
+    pub selected_page: Option<String>,
+    pub(crate) pages_ui: pages::PagesUi,
 }
 
 impl LayoutEditor {
     pub fn new(doc: LayoutDoc) -> Self {
+        let rec = LayoutRecords::new(&doc.document.document_id);
+        Self::with_records(doc, rec)
+    }
+    /// An editor over a document and its SMB-LAYOUT-UI-2 record sets.
+    pub fn with_records(doc: LayoutDoc, rec: LayoutRecords) -> Self {
         Self {
             doc,
+            rec,
             undo: Vec::new(),
             redo: Vec::new(),
             tool: Tool::Select,
@@ -195,10 +261,15 @@ impl LayoutEditor {
             char_range: (0, 0),
             char_style: None,
             last_error: None,
+            selected_page: None,
+            pages_ui: pages::PagesUi::default(),
         }
     }
     pub fn doc(&self) -> &LayoutDoc {
         &self.doc
+    }
+    pub fn records(&self) -> &LayoutRecords {
+        &self.rec
     }
     /// (undo steps, redo steps).
     pub fn history_len(&self) -> (usize, usize) {
@@ -207,9 +278,13 @@ impl LayoutEditor {
 
     /// Applies one edit as ONE undo step; a refusal changes nothing.
     pub fn apply(&mut self, edit: LayoutEdit) -> Result<(), LayoutUiError> {
-        let next = transform(&self.doc, &edit)?;
+        let (next, next_rec) = match &edit {
+            LayoutEdit::Page(e) => pages::transform(&self.doc, &self.rec, e)?,
+            _ => (transform(&self.doc, &edit)?, self.rec.clone()),
+        };
         let before = std::mem::replace(&mut self.doc, next);
-        self.undo.push(before);
+        let before_rec = std::mem::replace(&mut self.rec, next_rec);
+        self.undo.push((before, before_rec));
         if self.undo.len() > MAX_HISTORY {
             self.undo.remove(0);
         }
@@ -218,14 +293,17 @@ impl LayoutEditor {
         if let LayoutEdit::DrawFrame { .. } = edit {
             self.selected = self.doc.document.layers.last().map(|l| l.layer_id.clone());
         }
+        self.after_edit();
         Ok(())
     }
     pub fn undo(&mut self) -> bool {
         match self.undo.pop() {
-            Some(prev) => {
+            Some((prev, prev_rec)) => {
                 let now = std::mem::replace(&mut self.doc, prev);
-                self.redo.push(now);
+                let now_rec = std::mem::replace(&mut self.rec, prev_rec);
+                self.redo.push((now, now_rec));
                 self.draft_story = None;
+                self.after_edit();
                 true
             }
             None => false,
@@ -233,13 +311,25 @@ impl LayoutEditor {
     }
     pub fn redo(&mut self) -> bool {
         match self.redo.pop() {
-            Some(next) => {
+            Some((next, next_rec)) => {
                 let now = std::mem::replace(&mut self.doc, next);
-                self.undo.push(now);
+                let now_rec = std::mem::replace(&mut self.rec, next_rec);
+                self.undo.push((now, now_rec));
                 self.draft_story = None;
+                self.after_edit();
                 true
             }
             None => false,
+        }
+    }
+
+    /// Drops selections that no longer exist after an edit, undo or redo.
+    fn after_edit(&mut self) {
+        if self.selected.as_ref().is_some_and(|f| !self.doc.document.layers.iter().any(|l| l.layer_id == *f)) {
+            self.selected = None;
+        }
+        if self.selected_page.as_ref().is_some_and(|p| self.doc.document.locate_page(p).is_none()) {
+            self.selected_page = None;
         }
     }
 
@@ -357,11 +447,13 @@ impl LayoutEditor {
             "history": {"undo": self.undo.len(), "redo": self.redo.len()},
             "frames": frames,
             "stories": stories,
+            "pages": self.pages_json(),
+            "parents": self.parents_json(),
             "error": self.last_error,
         })
     }
 
-    fn act(&mut self, edit: LayoutEdit) {
+    pub(crate) fn act(&mut self, edit: LayoutEdit) {
         if let Err(e) = self.apply(edit) {
             self.last_error = Some(e.code().to_owned());
         }
@@ -392,6 +484,7 @@ impl LayoutEditor {
                 }
                 drawn.push(widget::REDO);
             });
+            self.pages_panel(ui, &mut drawn);
             self.page_view(ui);
             drawn.push(widget::PAGE_VIEW);
             if let Some(frame) = self.selected.clone() {
@@ -466,7 +559,21 @@ impl LayoutEditor {
             }
             None
         };
+        let parent_layers = pages::parent_item_layers(&self.rec.parents);
+        for (page_id, items) in self.parent_overlays() {
+            let Some((px, py)) = place(&page_id) else { continue };
+            for r in items {
+                let rr = egui::Rect::from_min_size(
+                    origin + egui::vec2((px + r.x) as f32, (py + r.y) as f32) * SCALE,
+                    egui::vec2(r.w as f32, r.h as f32) * SCALE,
+                );
+                painter.rect_stroke(rr, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(200, 120, 0)), egui::StrokeKind::Inside);
+            }
+        }
         for l in &self.doc.document.layers {
+            if parent_layers.contains(l.layer_id.as_str()) {
+                continue;
+            }
             let Some(f) = &l.text_frame else { continue };
             let Some((px, py)) = place(&f.page_id) else { continue };
             let r = egui::Rect::from_min_size(
@@ -556,7 +663,11 @@ impl LayoutEditor {
 
     /// Topmost text frame at a page point.
     pub fn frame_at(&self, page_id: &str, x: f64, y: f64) -> Option<String> {
+        let parent_layers = pages::parent_item_layers(&self.rec.parents);
         self.doc.document.layers.iter().rev().find_map(|l| {
+            if parent_layers.contains(l.layer_id.as_str()) {
+                return None;
+            }
             let f = l.text_frame.as_ref()?;
             let b = &f.bounds;
             (f.page_id == page_id
@@ -663,7 +774,7 @@ pub fn preview_paragraphs(st: &StudioTextStory, styles: &StudioTypeStyleRecords)
         .collect()
 }
 
-fn mint(doc: &LayoutDoc, prefix: &str) -> Result<String, LayoutUiError> {
+pub(crate) fn mint(doc: &LayoutDoc, prefix: &str) -> Result<String, LayoutUiError> {
     for n in 1u64..=1_000_000 {
         let id = format!("{prefix}-019a5a10-0000-7000-8000-{n:012x}");
         let used = doc.document.layers.iter().any(|l| l.layer_id == id) || doc.stories.iter().any(|s| s.story_id == id);
@@ -674,7 +785,7 @@ fn mint(doc: &LayoutDoc, prefix: &str) -> Result<String, LayoutUiError> {
     Err(LayoutUiError::IdSpaceExhausted)
 }
 
-fn empty_story(id: String) -> StudioTextStory {
+pub(crate) fn empty_story(id: String) -> StudioTextStory {
     StudioTextStory {
         schema_id: TextStorySchema::V1,
         story_id: id,
@@ -888,6 +999,8 @@ fn transform(doc: &LayoutDoc, edit: &LayoutEdit) -> Result<LayoutDoc, LayoutUiEr
             }
             st.character_ranges = out;
         }
+        // Panel edits (SMB-LAYOUT-UI-2) are dispatched by `LayoutEditor::apply` to their submodules.
+        _ => return Err(LayoutUiError::Layout(LayoutError::InvalidInput)),
     }
     Ok(d)
 }
