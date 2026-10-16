@@ -1,29 +1,24 @@
 //! SVG/AI vector import/export with fallible loss-aware proposals; PDF decoding/editing exposed
 //! through Press provider ports, not unconditional all-PDF engine.
 #![forbid(unsafe_code)]
+//!
+//! Crate layout (SMB-CRATE-SEAM-SPLITS slice 3a): this crate is the module's public face and
+//! re-exports, item by item, its two halves: `hsk-studio-interop-vector-core` (model, ids, errors,
+//! .ai import, Press provider port) and `hsk-studio-interop-vector-svg` (SVG/SVGZ import and SVG
+//! export). Both halves belong to STUDIO-MODULE-INTEROP_VECTOR; not a multi-engine facade.
 
-mod ai_adapter;
-mod ai_import;
-mod error;
-mod gzip;
-mod ids;
-mod model;
-mod pdf_port;
-mod svg_adapter;
-mod svg_export;
-
-pub use ai_adapter::{AiKind, identify_ai, import_ai};
-pub use ai_import::{
+pub use hsk_studio_interop_vector_core::{AiKind, identify_ai, import_ai};
+pub use hsk_studio_interop_vector_core::{
     ARTBOARD_GAP_PT, AiFontFace, AiImport, AiTextLayer, MAX_TEXT_LAYERS, MAX_TEXT_RUN_BYTES, PdfColour, PdfDrawItem, PdfDrawing, PdfDrawingPage, PdfDrawingProvider, PdfEl,
     PdfFont, PdfGlyph, PdfIcc, PdfLayer, PdfPaint, PdfSpace, PdfStroke, PdfTextFont, PdfTextRun, import_ai_document, import_ai_with,
 };
-pub use error::{PreservedBlob, Result, VectorError};
-pub use gzip::gzip_svg;
-pub use ids::{IdMint, SequentialIdMint};
-pub use model::*;
-pub use pdf_port::{NoPdfProvider, PdfVectorProvider};
-pub use svg_adapter::import_svg;
-pub use svg_export::{
+pub use hsk_studio_interop_vector_core::{PreservedBlob, Result, VectorError};
+pub use hsk_studio_interop_vector_svg::gzip_svg;
+pub use hsk_studio_interop_vector_core::{IdMint, SequentialIdMint};
+pub use hsk_studio_interop_vector_core::model::*;
+pub use hsk_studio_interop_vector_core::{NoPdfProvider, PdfVectorProvider};
+pub use hsk_studio_interop_vector_svg::import_svg;
+pub use hsk_studio_interop_vector_svg::{
     SvgExport, export_proposal, export_proposal_with_loss, export_svg, export_svg_with_loss,
 };
 

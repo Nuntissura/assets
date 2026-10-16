@@ -22,6 +22,8 @@ members = [
   "crates/hsk-studio-package",
   "crates/hsk-studio-interop-psd",
   "crates/hsk-studio-interop-vector",
+  "crates/hsk-studio-interop-vector-core",
+  "crates/hsk-studio-interop-vector-svg",
   "crates/hsk-studio-interop-fig",
   "crates/hsk-studio-interop-layout",
   "crates/hsk-studio-interop-media",
@@ -75,6 +77,8 @@ declared-members = [
   "crates/hsk-studio-package",
   "crates/hsk-studio-interop-psd",
   "crates/hsk-studio-interop-vector",
+  "crates/hsk-studio-interop-vector-core",
+  "crates/hsk-studio-interop-vector-svg",
   "crates/hsk-studio-interop-fig",
   "crates/hsk-studio-interop-layout",
   "crates/hsk-studio-interop-media",
@@ -159,8 +163,14 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
 [workspace.metadata.studio.dependencies.hsk-studio-interop-psd]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-pigment", "hsk-studio-prism", "hsk-studio-type", "hsk-studio-observe"]
 
+[workspace.metadata.studio.dependencies.hsk-studio-interop-vector-core]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-vector-svg]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-package", "hsk-studio-interop-vector-core"]
+
 [workspace.metadata.studio.dependencies.hsk-studio-interop-vector]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-vector-core", "hsk-studio-interop-vector-svg"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-fig]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-nib", "hsk-studio-press", "hsk-studio-interop-raster"]

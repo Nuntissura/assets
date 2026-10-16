@@ -54,7 +54,8 @@ impl Default for ImportPolicy {
 }
 
 impl ImportPolicy {
-    pub(crate) fn validate(&self) -> Result<()> {
+    #[doc(hidden)]
+    pub fn validate(&self) -> Result<()> {
         if !self.pixels_per_inch.is_finite() || self.pixels_per_inch <= 0.0 {
             return Err(VectorError::InvalidPolicy("pixels_per_inch"));
         }
@@ -255,4 +256,5 @@ impl Default for ExportOptions {
 }
 
 /// Coordinates and handle components beyond this magnitude are refused (exact in binary64).
-pub(crate) const COORDINATE_LIMIT: f64 = 1.0e9;
+#[doc(hidden)]
+pub const COORDINATE_LIMIT: f64 = 1.0e9;
