@@ -14,8 +14,9 @@
 //! Paint: solid, linear and radial (two-circle conical, the canvas/SVG 2 construction) gradients and
 //! tiled raster patterns are evaluated at pixel centres and multiplied by coverage into a
 //! premultiplied RGBA `f32` plane. Gradient stops interpolate straight (non-premultiplied) components
-//! (`classic`, STU-VEC-137); a stop midpoint (STU-VEC-136, 13..=87 percent) skews the ramp piecewise
-//! linearly. Adobe's exact midpoint curve, perceptual interpolation and dither are UNVERIFIED (D5):
+//! (`classic`, STU-VEC-137); a stop midpoint (STU-VEC-136, 13..=87 percent) bends the ramp with
+//! Illustrator's power curve (`midpoint_curve`, D5 oracle AI-03; deterministic `det_ln`/`det_exp`
+//! from `+ - * /` and bit operations). Perceptual interpolation and dither are UNVERIFIED (D5):
 //! `perceptual` and `dither = true` are refused, not approximated.
 //!
 //! Hostile sizes (V4-01/02): the pixel count, the cell buffer and the edge work are all bounded
@@ -636,12 +637,7 @@ impl Ramp<'_> {
             if t >= s0.offset && t < s1.offset {
                 let span = s1.offset - s0.offset;
                 let u = if span > 0.0 { (t - s0.offset) / span } else { 1.0 };
-                let m = s0.midpoint.unwrap_or(0.5);
-                let k = if u <= m {
-                    0.5 * u / m
-                } else {
-                    0.5 + 0.5 * (u - m) / (1.0 - m)
-                } as f32;
+                let k = midpoint_curve(u, s0.midpoint.unwrap_or(0.5)) as f32;
                 let mut out = [0.0f32; 4];
                 for (o, (a, b)) in out.iter_mut().zip(s0.colour.iter().zip(&s1.colour)) {
                     *o = a + (b - a) * k;
@@ -651,6 +647,85 @@ impl Ramp<'_> {
         }
         premultiply(last.colour)
     }
+}
+
+/// Blend fraction at span position `u` (`0..=1`) for a stop midpoint `m` (lane
+/// SMB-AI-AE-ORACLE-FOLLOWUPS slice 1, oracle AI-03 mid25/mid50/mid75, Illustrator 30.8.2): a power
+/// curve through `(m, 0.5)`, `u^p` with `p = ln 0.5 / ln m` for `m >= 0.5` and its mirror
+/// `1 - (1 - u)^p`, `p = ln 0.5 / ln (1 - m)`, for `m < 0.5` (all 256 oracle pixels within 1 level;
+/// the former piecewise-linear skew was 40 levels off). `m = 0.5` is the identity. Midpoints other
+/// than 25/50/75 percent and Photoshop's midpoint curve are UNVERIFIED.
+fn midpoint_curve(u: f64, m: f64) -> f64 {
+    if m == 0.5 {
+        return u;
+    }
+    let (base, mirrored, anchor) = if m > 0.5 { (u, false, m) } else { (1.0 - u, true, 1.0 - m) };
+    let p = det_ln(0.5) / det_ln(anchor);
+    let v = if base <= 0.0 {
+        0.0
+    } else if base >= 1.0 {
+        1.0
+    } else {
+        det_exp(p * det_ln(base))
+    };
+    if mirrored { 1.0 - v } else { v }
+}
+
+/// Natural logarithm of a finite `x > 0` from IEEE-exact operations only (STU-VEC-179: no platform
+/// `ln`): `x = 2^e * f`, `f` in `[sqrt(0.5), sqrt(2))`, `ln f = 2 atanh((f - 1) / (f + 1))` by its
+/// odd series (|s| <= 0.1716, 14 terms: truncation below 1e-22). NaN outside the domain.
+fn det_ln(x: f64) -> f64 {
+    const LN2: f64 = std::f64::consts::LN_2;
+    if !(x > 0.0 && x.is_finite()) {
+        return f64::NAN;
+    }
+    // Normalise subnormals first (exact scaling by 2^54).
+    let (x, extra) = if x < f64::MIN_POSITIVE { (x * 18_014_398_509_481_984.0, -54i64) } else { (x, 0) };
+    let bits = x.to_bits();
+    let biased = i64::try_from(bits.wrapping_shr(52) & 0x7ff).unwrap_or(0);
+    let mut e = biased.saturating_sub(1023).saturating_add(extra);
+    let mut f = f64::from_bits((bits & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000);
+    if f >= std::f64::consts::SQRT_2 {
+        f *= 0.5;
+        e = e.saturating_add(1);
+    }
+    let s = (f - 1.0) / (f + 1.0);
+    let s2 = s * s;
+    let (mut term, mut sum, mut k) = (s, 0.0, 1.0);
+    for _ in 0..14 {
+        sum += term / k;
+        term *= s2;
+        k += 2.0;
+    }
+    e as f64 * LN2 + 2.0 * sum
+}
+
+/// `e^y` for finite `y <= 0` from IEEE-exact operations only: `y = k ln 2 + r`, `|r| <= ln 2 / 2`,
+/// Taylor series of `e^r` to degree 22 (truncation below 1e-24), times `2^k` built from bits.
+fn det_exp(y: f64) -> f64 {
+    const LN2: f64 = std::f64::consts::LN_2;
+    if y.is_nan() {
+        return f64::NAN;
+    }
+    if y < -745.0 {
+        return 0.0;
+    }
+    let kf = (y / LN2).round();
+    let r = y - kf * LN2;
+    let (mut term, mut sum, mut n) = (1.0, 1.0, 1.0);
+    for _ in 0..22 {
+        term *= r / n;
+        sum += term;
+        n += 1.0;
+    }
+    // 2^k in two halves so results down to the subnormal range stay representable.
+    let k = kf as i64;
+    let half = k.div_euclid(2);
+    let pow2 = |k: i64| -> f64 {
+        let biased = k.saturating_add(1023).clamp(1, 2046);
+        f64::from_bits(u64::try_from(biased).unwrap_or(1).wrapping_shl(52))
+    };
+    sum * pow2(half) * pow2(k.saturating_sub(half))
 }
 
 fn premultiply(c: Rgba) -> Rgba {
