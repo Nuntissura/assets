@@ -11,7 +11,7 @@
 //! layout engine commands): pages and parent pages ([`pages`]), thread ports and the story
 //! editor's line list with depth and overset rows ([`threads`]), paragraph and character styles
 //! with GREP rules ([`styles`]), tables ([`tables`]) and find/change in text and GREP modes
-//! ([`find`]).
+//! ([`find`]), and live preflight ([`preflight`]).
 //!
 //! History: every successful [`LayoutEditor::apply`] is exactly ONE undo step (a snapshot of the
 //! whole layout state: document, stories, layout-flow and type-style records); a refused edit
@@ -47,6 +47,7 @@ pub mod tables;
 pub use tables::TableEdit;
 pub mod find;
 pub use find::{FindQuery, FindScope, StoryHit};
+pub mod preflight;
 
 /// Undo steps kept (the oldest is dropped beyond this).
 pub const MAX_HISTORY: usize = 256;
@@ -108,6 +109,11 @@ pub mod widget {
     pub const CHANGE: &str = "layout.find.change";
     pub const CHANGE_ALL: &str = "layout.find.change_all";
     pub const FIND_HITS: &str = "layout.find.hits";
+    // Slice 5: preflight.
+    pub const PREFLIGHT_PANEL: &str = "layout.preflight";
+    pub const PREFLIGHT_STATUS: &str = "layout.preflight.status";
+    pub const PREFLIGHT_FINDINGS: &str = "layout.preflight.findings";
+    pub const PREFLIGHT_PROFILE: &str = "layout.preflight.profile";
 }
 
 /// Everything the editor edits.
@@ -201,6 +207,8 @@ pub enum LayoutUiError {
     UnknownTable(String),
     /// A table grid or composition refusal (its code).
     Table(&'static str),
+    /// The preflight engine refused the run (its code).
+    Preflight(&'static str),
 }
 impl LayoutUiError {
     pub fn code(&self) -> &'static str {
@@ -225,7 +233,7 @@ impl LayoutUiError {
             Self::ItemNotOverridden(_) => "item_not_overridden",
             Self::AlreadyOverridden(_) => "already_overridden",
             Self::InvalidName => "invalid_name",
-            Self::Style(code) | Self::Grep(code) | Self::Table(code) => code,
+            Self::Style(code) | Self::Grep(code) | Self::Table(code) | Self::Preflight(code) => code,
             Self::NoTextForFind => "no_text_for_find",
             Self::UnknownTable(_) => "unknown_table",
         }
@@ -297,6 +305,7 @@ pub struct LayoutEditor {
     pub(crate) styles_ui: styles::StylesUi,
     pub(crate) tables_ui: tables::TablesUi,
     pub(crate) find_ui: find::FindUi,
+    pub(crate) preflight_ui: preflight::PreflightUi,
 }
 
 impl LayoutEditor {
@@ -328,6 +337,7 @@ impl LayoutEditor {
             styles_ui: styles::StylesUi::default(),
             tables_ui: tables::TablesUi { rows: 2, columns: 2, ..tables::TablesUi::default() },
             find_ui: find::FindUi::default(),
+            preflight_ui: preflight::PreflightUi::default(),
         }
     }
     pub fn doc(&self) -> &LayoutDoc {
@@ -530,6 +540,7 @@ impl LayoutEditor {
             "styles": self.styles_json(),
             "tables": self.tables_json(),
             "find": self.find_json(),
+            "preflight": self.preflight_json(),
             "error": self.last_error,
         })
     }
@@ -586,6 +597,7 @@ impl LayoutEditor {
             self.styles_panel(ui, &mut drawn);
             self.tables_panel(ui, &mut drawn);
             self.find_panel(ui, &mut drawn);
+            self.preflight_panel(ui, &mut drawn);
             if let Some(e) = &self.last_error {
                 ui.push_id(widget::ERROR, |ui| ui.colored_label(egui::Color32::RED, e.as_str()));
                 drawn.push(widget::ERROR);
