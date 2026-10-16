@@ -10,6 +10,8 @@ mod coverage;
 pub mod plan_sink;
 mod px;
 pub mod report;
+/// Lane SMB-AI-TYPE-PATH-RECOLOR: gradient mesh rasterisation.
+pub mod mesh;
 pub mod vector;
 
 pub use plan_sink::{

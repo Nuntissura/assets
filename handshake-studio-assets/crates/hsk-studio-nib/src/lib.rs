@@ -18,6 +18,7 @@ pub mod edit;
 pub mod flatten;
 pub mod freeform;
 pub mod intersect;
+pub mod mesh;
 pub mod network;
 pub mod pathfinder;
 pub mod raster;

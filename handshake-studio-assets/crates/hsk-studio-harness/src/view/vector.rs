@@ -79,6 +79,7 @@ pub mod interop;
 pub mod masking;
 pub mod pdf_export;
 /// Lane SMB-AI-TYPE-PATH-RECOLOR.
+pub mod mesh;
 pub mod path_text;
 pub mod recolor;
 pub mod swatch;
@@ -680,6 +681,7 @@ impl VectorEntry {
                 }
         });
         // Lane SMB-AI-TYPE-PATH-RECOLOR: meshes and path texts of layers the document holds.
+        r.gradient_meshes.retain(|m| vector(&m.layer_id));
         r.path_texts.retain(|p| doc.layers.iter().any(|l| l.layer_id == p.path_layer_id && matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&p.path_id))));
         let design = self.design.clone().unwrap_or_else(|| folio::StudioDesignRecords::new(doc.document_id.clone()));
         folio::validate_vector_records(&r, doc, Some(&design), folio::Budget::default(), cancel).map_err(|d| format!("vector_entry_vector_records: {:?} {}", d.code, d.target))

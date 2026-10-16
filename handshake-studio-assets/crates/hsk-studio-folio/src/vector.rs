@@ -105,6 +105,9 @@ pub use tools::*;
 #[path = "vector_path_text.rs"]
 mod path_text;
 pub use path_text::*;
+#[path = "vector_mesh.rs"]
+mod mesh;
+pub use mesh::*;
 
 /// Tile layout (STU-COL-195 members; the STU-VEC-138 captured tokens are in
 /// [`StudioTileType::capture_token`]).
@@ -493,6 +496,9 @@ pub struct StudioVectorRecords {
     /// empty, so record sets written before them are byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub path_texts: Vec<StudioPathText>,
+    /// Gradient meshes (lane SMB-AI-TYPE-PATH-RECOLOR, `vector_mesh.rs`; absent when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gradient_meshes: Vec<StudioGradientMesh>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -516,6 +522,7 @@ impl StudioVectorRecords {
             envelopes: Vec::new(),
             icc_profiles: Vec::new(),
             path_texts: Vec::new(),
+            gradient_meshes: Vec::new(),
         }
     }
     /// The swatch `swatch_id`.
@@ -1002,6 +1009,7 @@ pub fn validate_vector_records(
 
     tools::validate_tools(r, &layers, design, &mut cx)?;
     path_text::validate_path_texts(r, &layers, &mut cx)?;
+    mesh::validate_meshes(r, &layers, &mut cx)?;
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;
     let styles: BTreeMap<&str, &StudioPaintStyle> = design

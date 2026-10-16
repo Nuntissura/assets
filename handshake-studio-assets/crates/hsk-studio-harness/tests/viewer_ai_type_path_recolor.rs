@@ -11,6 +11,7 @@ use common::{Scratch, solid_psd};
 use hsk_studio_folio::{StudioAppearanceRow, StudioPaint};
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::render::Prefer;
+use hsk_studio_harness::view::vector::mesh::MeshEdit;
 use hsk_studio_harness::view::vector::path_text::PathTextSpec;
 use hsk_studio_harness::view::vector::{RowKind, ShapeKind, SwatchColour, SwatchSpec, VectorTool};
 use hsk_studio_prism::{ColorizeMethod, RecolorAdjust, RecolorRow, RecolorTable};
@@ -150,5 +151,50 @@ fn ai_recolor_artwork_is_one_undo_step_and_global_swatches_propagate() {
     assert!(v.recolor_artwork(&["SLYR-019abcde-0000-7000-8000-000000000999".into()], &table, &RecolorAdjust::default()).is_err());
     assert!(v.recolor_artwork(&[], &RecolorTable::default(), &RecolorAdjust::default()).unwrap_err().contains("nothing changed"));
     assert!(v.recolor_artwork(&[], &table, &RecolorAdjust { hue_shift_deg: f64::NAN, ..RecolorAdjust::default() }).is_err());
+}
+
+#[test]
+fn ai_gradient_mesh_from_a_shape_edits_rasterises_and_undoes() {
+    let scratch = Scratch::new("ai-mesh");
+    let mut v = paper(&scratch);
+    let a = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 30.0], false).unwrap();
+    let id = v.create_gradient_mesh(&a, 2, 2).unwrap();
+    let m = v.gradient_mesh(&a).unwrap();
+    assert_eq!((m.mesh_id.as_str(), m.rows, m.columns, m.points.len(), m.source_path_id.is_some()), (id.as_str(), 2, 2, 9, true));
+    // The mesh conforms to the rectangle: its corners are the rectangle's, the centre point the
+    // rectangle centre (30, 20); every point the layer's red fill, opaque.
+    let mut corners: Vec<(i64, i64)> = [0usize, 2, 6, 8].iter().map(|i| (m.points[*i].x.round() as i64, m.points[*i].y.round() as i64)).collect();
+    corners.sort_unstable();
+    assert_eq!(corners, vec![(10, 10), (10, 30), (50, 10), (50, 30)]);
+    assert!((m.points[4].x - 30.0).abs() < 1e-9 && (m.points[4].y - 20.0).abs() < 1e-9);
+    assert!(m.points.iter().all(|p| [p.colour.r, p.colour.g, p.colour.b] == [1.0, 0.0, 0.0] && p.opacity == 100.0));
+
+    // Centre point blue: pixel (30.5, 20.5) lies 0.5 px from it inside a 20 x 10 px patch, so the
+    // centre's bilinear weight is (1 - 0.5/20)(1 - 0.5/10) = 0.92625.
+    v.edit_gradient_mesh(&a, MeshEdit::SetPoint { row: 1, column: 1, rgb: [0.0, 0.0, 1.0], opacity: 100.0 }).unwrap();
+    let (raster, origin) = v.gradient_mesh_raster(&a, 1.0).unwrap();
+    assert_eq!((origin, raster.width, raster.height), ([10.0, 10.0], 40, 20));
+    let p = raster.pixel(20, 10).unwrap();
+    let expect = [0.073_75, 0.0, 0.926_25, 1.0];
+    assert!(p.iter().zip(expect).all(|(x, y)| (x - y).abs() < 1e-5), "{p:?}");
+    // Mesh lines: insert a column, then remove it again; each edit is one undo step.
+    v.edit_gradient_mesh(&a, MeshEdit::InsertColumn { column: 0, at: 0.5 }).unwrap();
+    assert_eq!((v.gradient_mesh(&a).unwrap().columns, v.gradient_mesh(&a).unwrap().points.len()), (3, 12));
+    v.edit_gradient_mesh(&a, MeshEdit::RemoveColumn(1)).unwrap();
+    assert_eq!(v.gradient_mesh(&a).unwrap().columns, 2);
+    v.undo().unwrap();
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(v.gradient_mesh(&a).unwrap().points[4].colour.b, 0.0, "colour edit undone");
+    v.undo().unwrap();
+    assert!(v.gradient_mesh(&a).is_err(), "creation undone");
+    // Hostile: grids over the cap, a second mesh, a bad point.
+    assert!(v.create_gradient_mesh(&a, 0, 2).is_err());
+    assert!(v.create_gradient_mesh(&a, 257, 1).is_err());
+    assert!(v.create_gradient_mesh(&a, 200, 200).is_err());
+    v.create_gradient_mesh(&a, 1, 1).unwrap();
+    assert!(v.create_gradient_mesh(&a, 1, 1).is_err());
+    assert!(v.edit_gradient_mesh(&a, MeshEdit::SetPoint { row: 5, column: 0, rgb: [0.0; 3], opacity: 100.0 }).is_err());
+    assert!(v.edit_gradient_mesh(&a, MeshEdit::SetPoint { row: 0, column: 0, rgb: [0.0; 3], opacity: 101.0 }).is_err());
 }
 
