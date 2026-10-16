@@ -128,7 +128,20 @@ pub enum SceneContent {
     /// operator: pigment's stack bit for bit on render-cpu), and the filtered surface is placed
     /// like a raster layer with the layer matrix (STU-CMP-010: effects before the transform).
     Filtered(Box<FilteredContent>),
+    /// Temporal samples averaged (lane SMB-AE-3D-3; motion blur of a 3D run, STU-MOT-004 shutter
+    /// rows, [`AccumulatedContent`]): every sample scene is rendered by the same backend over its
+    /// rect and the frames are averaged in premultiplied colour, then placed like a tile.
+    Accumulated(Box<AccumulatedContent>),
 }
+
+/// The sample scenes of [`SceneContent::Accumulated`]: one size, at least one, at most
+/// [`MAX_ACCUMULATED_SAMPLES`]; the content rect is `(0, 0, width, height)` of the samples.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccumulatedContent {
+    pub samples: Vec<SceneComposition>,
+}
+/// Most samples one [`AccumulatedContent`] averages (STU-MOT-004 `samples_per_frame` hard max 64).
+pub const MAX_ACCUMULATED_SAMPLES: usize = 64;
 
 /// The inner content, its rect and the stack of [`SceneContent::Filtered`].
 #[derive(Clone, Debug, PartialEq)]
@@ -823,7 +836,7 @@ fn lower_inner(
             SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
             other => (other, None),
         };
-        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_)) {
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_)) {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
@@ -866,7 +879,8 @@ fn lower_inner(
             | SceneContent::Static(_)
             | SceneContent::Adjustment(_)
             | SceneContent::Lit(_)
-            | SceneContent::Filtered(_) => true,
+            | SceneContent::Filtered(_)
+            | SceneContent::Accumulated(_) => true,
             SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
@@ -986,6 +1000,21 @@ fn lower_inner(
                 };
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, lit.rect, tile));
+            }
+            SceneContent::Accumulated(acc) => {
+                let surface = accumulated_surface(id, acc, ctx, cancel, depth, charges, &mut exactness)?;
+                let rect = Rect { x: 0, y: 0, width: surface.width, height: surface.height };
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/accumulated"),
+                    placement: rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, rect, tile));
             }
             SceneContent::Filtered(f) => {
                 let surface = filtered_surface(id, f, scene.filter, ctx, cancel, depth, charges, &mut exactness)?;
@@ -1511,6 +1540,74 @@ fn filtered_surface(
         owned_tiles,
     };
     render_static(&format!("{id}/filtered"), &content, ctx, cancel, charges, exactness)
+}
+
+/// [`SceneContent::Accumulated`]: every sample rendered by the context's backend (each surface
+/// charged before allocation), summed in premultiplied `f64` and divided by the sample count, back
+/// to straight colour (colour 0 where the average alpha is 0). Refused `InvalidState`
+/// (`accumulated_samples`): no sample, more than [`MAX_ACCUMULATED_SAMPLES`], samples of
+/// different sizes.
+#[allow(clippy::too_many_arguments)]
+fn accumulated_surface(
+    id: &str,
+    acc: &AccumulatedContent,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    let Some(first) = acc.samples.first() else {
+        return Err(invalid(id, "accumulated_samples"));
+    };
+    let (w, h) = (first.width, first.height);
+    if acc.samples.len() > MAX_ACCUMULATED_SAMPLES || acc.samples.iter().any(|s| s.width != w || s.height != h) {
+        return Err(invalid(id, "accumulated_samples"));
+    }
+    if depth >= ctx.limits.max_depth {
+        return Err(CompositeError::BudgetExceeded.into());
+    }
+    let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+    charges.surface(ctx, w, h)?;
+    let n = usize::try_from(u64::from(w).checked_mul(u64::from(h)).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+    let mut sum = vec![[0.0f64; 4]; n];
+    for sample in &acc.samples {
+        cancel.check().map_err(|_| canceled())?;
+        let r = render_inner(sample, ctx, cancel, depth, charges)?;
+        for op in &r.exactness.operators {
+            exactness.record(op.key, op.exactness);
+        }
+        for (i, px) in sum.iter_mut().enumerate() {
+            let a = f64::from(f32_at(&r.alpha, i));
+            px[3] += a;
+            for (k, v) in px.iter_mut().take(3).enumerate() {
+                let at = i.checked_mul(3).and_then(|b| b.checked_add(k)).ok_or(CompositeError::Overflow)?;
+                *v += a * f64::from(f32_at(&r.colour, at));
+            }
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let count = acc.samples.len() as f64;
+    let mut colour = Vec::with_capacity(n.checked_mul(12).ok_or(CompositeError::Overflow)?);
+    let mut alpha = Vec::with_capacity(n.checked_mul(4).ok_or(CompositeError::Overflow)?);
+    for px in &sum {
+        let a = px[3] / count;
+        for v in &px[..3] {
+            #[allow(clippy::cast_possible_truncation)]
+            let c = if a > 0.0 { (v / count / a) as f32 } else { 0.0 };
+            colour.extend_from_slice(&c.to_le_bytes());
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        alpha.extend_from_slice(&(a as f32).to_le_bytes());
+    }
+    Ok(Surface {
+        width: w,
+        height: h,
+        colour_sha256: hsk_studio_prism::profile_hash(&colour),
+        alpha_sha256: hsk_studio_prism::profile_hash(&alpha),
+        colour,
+        alpha,
+    })
 }
 
 /// `content` rendered over its plan rect `rect` into a surface (integer placement, no resample).

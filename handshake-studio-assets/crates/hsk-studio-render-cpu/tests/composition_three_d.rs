@@ -236,6 +236,22 @@ fn equirectangular_plane_to_sphere_and_sphere_rotate_match_the_oracles() {
 }
 
 #[test]
+fn motion_blurred_three_d_run_matches_the_averaged_oracle() {
+    // Lane SMB-AE-3D-3 (STU-MOT-004 shutter samples for 3D layers): "tf" at four shutter samples;
+    // the run is the premultiplied mean of the four expanded runs.
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::motion_blur_scene(&pixels);
+    let (want, moved) = three_d::motion_blur_oracle(&pixels);
+    assert!(moved > 20, "the motion changes the frame: {moved}");
+    let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
+    let delta = scenes::max_delta(&base, &want);
+    println!("three_d motion blur: {moved} moving pixels, cpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&base.digest()));
+    assert!(delta <= 1e-6, "{delta}");
+    let other = render(&Renderer::with_threads(5, 3).unwrap(), &scene, &pixels);
+    assert_eq!(other.digest(), base.digest());
+}
+
+#[test]
 fn anti_aliased_aux_channels_and_cryptomatte_match_the_backend_free_reference() {
     // Lane SMB-AE-3D-3 (STU-CMP-050): the 4 x 4 ranking filter of the run's planes, with the plane
     // alphas rendered by this backend, equals the same filter on the alphas read straight from the

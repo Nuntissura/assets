@@ -340,6 +340,73 @@ pub fn pinned_clipped_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, usize) {
     (out, partial)
 }
 
+/// Lane SMB-AE-3D-3 (motion blur): the X offsets of "tf" at the four shutter samples.
+pub const BLUR_SHIFTS: [f64; 4] = [-1.5, -0.5, 0.5, 1.5];
+fn shifted_specs(dx: f64) -> [Spec; 3] {
+    let [tg, tf, te] = specs();
+    let position = [tf.position[0] + dx, tf.position[1], tf.position[2]];
+    [tg, Spec { position, ..tf }, te]
+}
+/// Lane SMB-AE-3D-3: the run with "tf" moving along X across the shutter, as the adapter emits a
+/// motion-blurred run: one layer averaging the run expanded at each sample.
+pub fn motion_blur_scene(pixels: &Pixels) -> SceneComposition {
+    let cam = camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera");
+    let samples = BLUR_SHIFTS
+        .iter()
+        .enumerate()
+        .map(|(k, dx)| SceneComposition {
+            composition_id: format!("three-d-blur/{k}"),
+            width: W,
+            height: H,
+            background: None,
+            filter: ResampleFilter::Bilinear,
+            layers: expand_run(&planes_of(pixels, &shifted_specs(*dx)), &cam, W, H, space(), 7).expect("run expands"),
+        })
+        .collect();
+    SceneComposition {
+        composition_id: "three-d-blur".to_owned(),
+        width: W,
+        height: H,
+        background: Some(BACKGROUND),
+        filter: ResampleFilter::Bilinear,
+        layers: vec![SceneLayer {
+            layer_id: "SLYR-3d-tg/motion_blur".to_owned(),
+            content: SceneContent::Accumulated(Box::new(hsk_studio_composite::composition::AccumulatedContent { samples })),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2::IDENTITY,
+            matte: None,
+            clipped: false,
+        }],
+    }
+}
+/// The oracle of [`motion_blur_scene`]: the mean of the ray-cast oracle frames of the four shifted
+/// runs (each over the opaque background, so the mean of the straight colours is the mean of the
+/// premultiplied ones); also the count of pixels the motion changes.
+pub fn motion_blur_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, usize) {
+    let frames: Vec<Vec<[f32; 4]>> = BLUR_SHIFTS.iter().map(|dx| oracle_of(pixels, &shifted_specs(*dx), false, false).0).collect();
+    let n = frames[0].len();
+    let mut moved = 0;
+    let out = (0..n)
+        .map(|i| {
+            if frames.iter().any(|f| (0..4).any(|c| (f[i][c] - frames[0][i][c]).abs() > 1e-4)) {
+                moved += 1;
+            }
+            let mut m = [0.0f64; 4];
+            for f in &frames {
+                for c in 0..3 {
+                    m[c] += f64::from(f[i][c]) * f64::from(f[i][3]);
+                }
+                m[3] += f64::from(f[i][3]);
+            }
+            let a = m[3] / frames.len() as f64;
+            [(m[0] / frames.len() as f64 / a) as f32, (m[1] / frames.len() as f64 / a) as f32, (m[2] / frames.len() as f64 / a) as f32, a as f32]
+        })
+        .collect();
+    (out, moved)
+}
+
 /// The lens of [`dof_scene`]: focus near "tf" / "te", "tg" behind it out of focus.
 pub const LENS: DepthOfField = DepthOfField { focus_distance: 61.0, aperture: 30.0, blur_level: 1.0 };
 /// The unlit run under a camera with [`LENS`].

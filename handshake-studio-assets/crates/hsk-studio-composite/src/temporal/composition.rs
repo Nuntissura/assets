@@ -344,7 +344,30 @@ pub struct CompositionTemporalSource {
     comps: BTreeMap<String, Comp>,
     filter: ResampleFilter,
     tiles: BTreeMap<String, TileRef>,
+    /// Motion blur of 3D layers per composition id (lane SMB-AE-3D-3,
+    /// [`CompositionTemporalSource::with_motion_blur`]).
+    blur: BTreeMap<String, Blur>,
 }
+
+/// The shutter of one composition and its blurred layers (Folio
+/// `StudioCompositionMotionSettings`, master switch on, shutter angle above 0).
+#[derive(Clone, Debug)]
+struct Blur {
+    shutter_angle: f64,
+    shutter_phase: f64,
+    samples: u32,
+    layers: BTreeSet<String>,
+}
+
+/// A motion-blur setting the adapter refuses: shutter angle outside `0..=720`, phase outside
+/// `-360..=360`, samples outside `2..=64` or non-finite values (lane SMB-AE-3D-3).
+pub const COMPOSITION_MOTION_BLUR_PARAMETERS: &str = "composition_motion_blur_parameters";
+/// A blurred layer the planar renderer does not blur: a 2D layer, a light or a collapsed 3D
+/// precomposition (only 3D planes and the camera are sampled across the shutter).
+pub const COMPOSITION_MOTION_BLUR_LAYER: &str = "composition_motion_blur_layer";
+/// A motion-blurred 3D run with a plane whose blend mode is not normal (the run is averaged as one
+/// unit and composited normally).
+pub const COMPOSITION_MOTION_BLUR_BLEND: &str = "composition_motion_blur_blend_mode";
 
 /// A layer that needs the static path: a vector, text or live boolean group layer, an enabled mask,
 /// a vector clip or vector mask record (lanes SMB-COMPOSITE-CLIP-RECORDS, -VECTOR-MASK),
@@ -708,7 +731,68 @@ impl CompositionTemporalSource {
             comps,
             filter: DEFAULT_COMPOSITION_FILTER,
             tiles,
+            blur: BTreeMap::new(),
         })
+    }
+
+    /// Motion blur of 3D layers (lane SMB-AE-3D-3; STU-MOT-004 `shutter_angle`, `shutter_phase`,
+    /// `samples_per_frame` "Motion-blur samples for 3D layers", STU-MOT-005 per-layer opt-in under
+    /// the composition's master switch; Folio `StudioCompositionMotionSettings`). For a composition
+    /// with the master switch on and a shutter angle above 0, a frame at tick `t` samples the
+    /// shutter at `t + tpf (phase + angle (k + 0.5) / n) / 360`, `k = 0..n` (centred stratified
+    /// samples, rounded to the nearest tick; Studio reading, After Effects UNVERIFIED, D5): every
+    /// listed 3D plane (and the active camera when its layer is listed) is evaluated at each sample
+    /// tick, unlisted planes, lights and materials at `t`; each sample's run is expanded and the
+    /// run renders as the average of its samples (`crate::composition::SceneContent::Accumulated`).
+    /// Refused: unknown composition or layer (`DanglingInput`), [`COMPOSITION_MOTION_BLUR_PARAMETERS`],
+    /// [`COMPOSITION_MOTION_BLUR_LAYER`]; at evaluation, [`COMPOSITION_MOTION_BLUR_BLEND`].
+    pub fn with_motion_blur(mut self, settings: &[hsk_studio_folio::StudioCompositionMotionSettings]) -> Result<Self, TemporalError> {
+        for s in settings {
+            let comp = self.comps.get(&s.composition_id).ok_or_else(|| CompositeError::DanglingInput(s.composition_id.clone()))?;
+            let ok = s.shutter_angle.is_finite()
+                && s.shutter_phase.is_finite()
+                && (0.0..=720.0).contains(&s.shutter_angle)
+                && (-360.0..=360.0).contains(&s.shutter_phase)
+                && (2..=64).contains(&s.samples_per_frame);
+            if !ok {
+                return Err(unsupported(&s.composition_id, COMPOSITION_MOTION_BLUR_PARAMETERS));
+            }
+            for id in &s.motion_blur_layers {
+                let l = comp.layers.iter().find(|l| &l.layer_id == id).ok_or_else(|| CompositeError::DanglingInput(id.clone()))?;
+                let planar = l.three_d.as_deref().is_some_and(|d| d.light.is_none()) && !matches!(l.content, Content::Precomp { collapse: true, .. });
+                if !planar {
+                    return Err(unsupported(id, COMPOSITION_MOTION_BLUR_LAYER));
+                }
+            }
+            if s.motion_blur && s.shutter_angle > 0.0 {
+                self.blur.insert(
+                    s.composition_id.clone(),
+                    Blur { shutter_angle: s.shutter_angle, shutter_phase: s.shutter_phase, samples: s.samples_per_frame, layers: s.motion_blur_layers.iter().cloned().collect() },
+                );
+            } else {
+                self.blur.remove(&s.composition_id);
+            }
+        }
+        Ok(self)
+    }
+
+    /// The shutter sample ticks of composition `comp` at `tick` (see [`Self::with_motion_blur`]);
+    /// `None` without motion blur.
+    fn blur_ticks(&self, comp: &Comp, tick: i64) -> Result<Option<(&Blur, Vec<i64>)>, TemporalError> {
+        let Some(b) = self.blur.get(&comp.composition_id) else { return Ok(None) };
+        #[allow(clippy::cast_precision_loss)]
+        let tpf = comp.ticks_per_frame as f64;
+        let n = f64::from(b.samples);
+        let mut ticks = Vec::with_capacity(usize::try_from(b.samples).map_err(|_| CompositeError::Overflow)?);
+        for k in 0..b.samples {
+            let off = (tpf * (b.shutter_phase + b.shutter_angle * (f64::from(k) + 0.5) / n) / 360.0).round();
+            if !(off.is_finite() && off.abs() < 9.0e18) {
+                return Err(CompositeError::Overflow.into());
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            ticks.push(tick.checked_add(off as i64).ok_or(CompositeError::Overflow)?);
+        }
+        Ok(Some((b, ticks)))
     }
 
     fn read(
@@ -1157,6 +1241,11 @@ impl CompositionTemporalSource {
         // clip-to-base route, whose base would be the last depth piece).
         let mut base: Option<ClipBase<'_>> = None;
         let mut three_d_since_base = false;
+        // Motion blur (lane SMB-AE-3D-3): per blurred plane of the pending run, its index in the run
+        // and its plane at every shutter sample (`None` where the layer does not exist).
+        let blur = self.blur_ticks(comp, tick)?;
+        let mut blurred: Vec<(usize, Vec<Option<crate::three_d::Plane3d>>)> = Vec::new();
+        let filter = self.filter;
         for l in comp.layers.iter().rev() {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
             if !l.visible || matte_sources.contains(l.layer_id.as_str()) {
@@ -1186,10 +1275,27 @@ impl CompositionTemporalSource {
                     base = Some(ClipBase::Layer { source: l, layer: Box::new(layer.clone()) });
                 }
                 three_d_since_base = true;
+                if let Some((_, ticks)) = blur.as_ref().filter(|(b, _)| b.layers.contains(&l.layer_id)) {
+                    let mut samples = Vec::with_capacity(ticks.len());
+                    for t in ticks {
+                        samples.push(match self.layer_at(comp, l, *t, depth, 0, cancel)? {
+                            None => None,
+                            Some(mut sl) => {
+                                // A clipped layer keeps the frame's clip matte at every sample.
+                                if l.clipped {
+                                    sl.matte.clone_from(&layer.matte);
+                                    sl.clipped = false;
+                                }
+                                Some(Self::plane(comp, l, sl, *t, cancel)?)
+                            }
+                        });
+                    }
+                    blurred.push((run.len(), samples));
+                }
                 run.push((Self::plane(comp, l, layer, tick, cancel)?,Self::material_at(l, d, tick, cancel)?, d.space, d.revision));
                 continue;
             }
-            Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers)?;
+            Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers, blur.as_ref(), &mut blurred, filter)?;
             let Some(mut layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
                 continue;
             };
@@ -1230,7 +1336,7 @@ impl CompositionTemporalSource {
                 (_, content) => layers.push(SceneLayer { content, ..layer }),
             }
         }
-        Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers)?;
+        Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers, blur.as_ref(), &mut blurred, filter)?;
         Ok(SceneComposition {
             composition_id: comp.composition_id.clone(),
             width: comp.width,
@@ -1518,7 +1624,10 @@ impl CompositionTemporalSource {
         Ok(())
     }
 
-    /// Expands a pending 3D run into `layers` (`crate::three_d::expand_run`).
+    /// Expands a pending 3D run into `layers` (`crate::three_d::expand_run`); with motion blur
+    /// (lane SMB-AE-3D-3, [`Self::with_motion_blur`]) the run is one layer averaging the run
+    /// expanded at every shutter sample.
+    #[allow(clippy::too_many_arguments)]
     fn flush_run(
         comp: &Comp,
         run: &mut Vec<RunPlane>,
@@ -1526,6 +1635,9 @@ impl CompositionTemporalSource {
         tick: i64,
         cancel: &CancellationToken,
         layers: &mut Vec<SceneLayer>,
+        blur: Option<&(&Blur, Vec<i64>)>,
+        blurred: &mut Vec<(usize, Vec<Option<crate::three_d::Plane3d>>)>,
+        filter: ResampleFilter,
     ) -> Result<(), TemporalError> {
         let Some((space, revision)) = run.first().map(|r| (r.2, r.3)) else {
             return Ok(());
@@ -1539,7 +1651,50 @@ impl CompositionTemporalSource {
             return Ok(());
         };
         let (planes, materials): (Vec<crate::three_d::Plane3d>, Vec<crate::three_d::Material>) = run.drain(..).map(|r| (r.0, r.1)).unzip();
-        layers.extend(crate::three_d::expand_run_lit(&planes, &materials, lights, cam, comp.width, comp.height, space, revision)?);
+        let camera_blurred = blur.is_some_and(|(b, _)| comp.layers.iter().any(|l| l.three_d.as_deref().is_some_and(|d| d.camera.is_some()) && b.layers.contains(&l.layer_id)));
+        let (Some((_, ticks)), true) = (blur, camera_blurred || !blurred.is_empty()) else {
+            blurred.clear();
+            layers.extend(crate::three_d::expand_run_lit(&planes, &materials, lights, cam, comp.width, comp.height, space, revision)?);
+            return Ok(());
+        };
+        if let Some(p) = planes.iter().find(|p| p.mode != StudioBlendMode::Normal) {
+            return Err(unsupported(&p.layer_id, COMPOSITION_MOTION_BLUR_BLEND));
+        }
+        let mut samples = Vec::with_capacity(ticks.len());
+        for (k, t) in ticks.iter().enumerate() {
+            cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
+            let cam_k = if camera_blurred { Self::camera_at(comp, *t, cancel)? } else { *cam };
+            let (mut ps, mut ms) = (Vec::with_capacity(planes.len()), Vec::with_capacity(planes.len()));
+            for (i, (p, m)) in planes.iter().zip(&materials).enumerate() {
+                let sampled = match blurred.iter().find(|(j, _)| *j == i) {
+                    Some((_, s)) => s.get(k).cloned().flatten(),
+                    None => Some(p.clone()),
+                };
+                if let Some(sp) = sampled {
+                    ps.push(sp);
+                    ms.push(*m);
+                }
+            }
+            samples.push(SceneComposition {
+                composition_id: format!("{}/motion_blur/{k}", comp.composition_id),
+                width: comp.width,
+                height: comp.height,
+                background: None,
+                filter,
+                layers: crate::three_d::expand_run_lit(&ps, &ms, lights, &cam_k, comp.width, comp.height, space, revision)?,
+            });
+        }
+        blurred.clear();
+        layers.push(SceneLayer {
+            layer_id: format!("{}/motion_blur", planes.first().map_or("", |p| p.layer_id.as_str())),
+            content: SceneContent::Accumulated(Box::new(crate::composition::AccumulatedContent { samples })),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            matrix: Affine2::IDENTITY,
+            matte: None,
+            clipped: false,
+        });
         Ok(())
     }
 

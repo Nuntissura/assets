@@ -200,6 +200,28 @@ fn gpu_equirectangular_plane_to_sphere_matches_the_oracle() {
 }
 
 #[test]
+fn gpu_motion_blurred_three_d_run_matches_the_averaged_oracle() {
+    // Lane SMB-AE-3D-3: render-cpu's motion-blurred run against the same oracle.
+    if !gate("gpu_motion_blurred_three_d_run_matches_the_averaged_oracle") {
+        return;
+    }
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::motion_blur_scene(&pixels);
+    let (want, _) = three_d::motion_blur_oracle(&pixels);
+    let ctx = SceneContext {
+        backend: backend(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let got = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
+    let delta = scenes::max_delta(&got, &want);
+    println!("three_d motion blur: gpu max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "{delta}");
+}
+
+#[test]
 fn gpu_anti_aliased_aux_channels_and_cryptomatte_match_the_backend_free_reference() {
     // Lane SMB-AE-3D-3: render-cpu's twin (bit for bit there) with the plane alphas from the GPU:
     // object ids and Cryptomatte ids exact, coverages within the render-gpu tolerance.

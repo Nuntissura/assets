@@ -622,6 +622,81 @@ fn three_d_corner_pin_clipping_and_collapse_from_records() {
     refused(source(&with_nested(root, lit), &pixels).unwrap().scene_at(0, &cancel).unwrap_err(), three_d::COMPOSITION_3D_COLLAPSE_NESTED);
 }
 
+#[test]
+fn three_d_motion_blur_from_records() {
+    // Lane SMB-AE-3D-3 (STU-MOT-004 shutter rows, STU-MOT-005 per-layer switch): "tf" moves 8 px
+    // per frame in X; a 180 degree shutter with 4 samples at frame 0 samples ticks tpf x 0.0625,
+    // 0.1875, 0.3125, 0.4375 (X = 16.5, 17.5, 18.5, 19.5); "te" is not blurred.
+    use hsk_studio_composite::temporal::composition::{COMPOSITION_MOTION_BLUR_BLEND, COMPOSITION_MOTION_BLUR_LAYER, COMPOSITION_MOTION_BLUR_PARAMETERS};
+    use hsk_studio_folio::StudioCompositionMotionSettings;
+    let pixels = Pixels::fixture();
+    let cancel = CancellationToken::default();
+    let tpf = 10_584_000_000u64;
+    let mut l = layers();
+    l.remove(3);
+    l.remove(1);
+    l[1]["streams"] = json!([{"property":"position","static_value":[16.0,12.0],"keyframes":[
+        {"time":0,"value":[16.0,12.0],"in_interp":"linear","out_interp":"linear"},
+        {"time":tpf,"value":[24.0,12.0],"in_interp":"linear","out_interp":"linear"}]}]);
+    let settings = |layers: Vec<String>| StudioCompositionMotionSettings {
+        composition_id: composition_id(),
+        motion_blur: true,
+        shutter_angle: 180.0,
+        shutter_phase: 0.0,
+        samples_per_frame: 4,
+        adaptive_sample_limit: 128,
+        motion_blur_layers: layers,
+    };
+    let plain = source(&records(l.clone()), &pixels).unwrap();
+    let src = source(&records(l.clone()), &pixels).unwrap().with_motion_blur(&[settings(vec![identity("SLYR", 11)])]).expect("settings");
+    let scene = src.scene_at(0, &cancel).unwrap();
+    assert_eq!(scene.layers.len(), 1, "the blurred run is one averaged layer");
+    let SceneContent::Accumulated(acc) = &scene.layers[0].content else { panic!("accumulated: {:?}", scene.layers[0].content) };
+    assert_eq!(acc.samples.len(), 4);
+    let cam = three_d::camera([10.0, 4.0, -60.0], [0.0; 3], 0.0, 0.0, 0.0, Some([16.0, 12.0, 0.0]), 50.0, 32, 24).unwrap();
+    let tile = |n: u8, key: &str| pixels.get(&tile_id(n, key)).unwrap().scene_tile(0, 0);
+    let plane = |n: u8, key: &str, w: f64, h: f64, position: [f64; 3], scale: f64, rx: f64, ry: f64| Plane3d {
+        layer_id: identity("SLYR", n),
+        bounds: tile(n, key).placement,
+        origin: [0.0, 0.0],
+        content: SceneContent::Tiles(vec![tile(n, key)]),
+        transform: Transform3d { anchor: [w / 2.0, h / 2.0, 0.0], position, scale: [scale, scale], rotation: three_d::layer_rotation([0.0; 3], rx, ry, 0.0), parent: three_d::Affine3::IDENTITY },
+        mode: StudioBlendMode::Normal,
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        layer_mask: None,
+        track_matte: None,
+    };
+    let te = plane(10, "te", 10.0, 8.0, [15.0, 13.0, 1.0], 1.4, -40.0, 0.0);
+    for (k, x) in [16.5, 17.5, 18.5, 19.5].into_iter().enumerate() {
+        let tf = plane(11, "tf", 20.0, 14.0, [x, 12.0, 0.0], 1.0, 0.0, 35.0);
+        let want = three_d::expand_run(&[te.clone(), tf], &cam, 32, 24, scenes::space(), 7).unwrap();
+        assert_eq!(acc.samples[k].layers, want, "sample {k}");
+        assert_eq!(acc.samples[k].background, None);
+    }
+    // The master switch off (or a 0 degree shutter) leaves the frame unblurred.
+    let off = source(&records(l.clone()), &pixels).unwrap().with_motion_blur(&[StudioCompositionMotionSettings { motion_blur: false, ..settings(vec![identity("SLYR", 11)]) }]).unwrap();
+    assert_eq!(off.scene_at(0, &cancel).unwrap(), plain.scene_at(0, &cancel).unwrap());
+    // Typed refusals.
+    let with = |s: StudioCompositionMotionSettings| source(&records(l.clone()), &pixels).unwrap().with_motion_blur(&[s]).map(|_| ());
+    for bad in [
+        StudioCompositionMotionSettings { samples_per_frame: 1, ..settings(vec![]) },
+        StudioCompositionMotionSettings { samples_per_frame: 65, ..settings(vec![]) },
+        StudioCompositionMotionSettings { shutter_angle: f64::NAN, ..settings(vec![]) },
+        StudioCompositionMotionSettings { shutter_phase: 400.0, ..settings(vec![]) },
+    ] {
+        refused(with(bad).unwrap_err(), COMPOSITION_MOTION_BLUR_PARAMETERS);
+    }
+    assert!(matches!(with(settings(vec![identity("SLYR", 99)])), Err(TemporalError::Composite(hsk_studio_composite::CompositeError::DanglingInput(_)))));
+    let mut with_2d = layers();
+    with_2d.remove(1);
+    refused(source(&records(with_2d), &pixels).unwrap().with_motion_blur(&[settings(vec![identity("SLYR", 3)])]).map(|_| ()).unwrap_err(), COMPOSITION_MOTION_BLUR_LAYER);
+    let mut doc = document();
+    doc["layers"][5]["appearance"] = json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":5,"clipped":false,"isolation":"isolated"});
+    let multiply = source_with(&doc, &records(l.clone()), &pixels).unwrap().with_motion_blur(&[settings(vec![identity("SLYR", 11)])]).unwrap();
+    refused(multiply.scene_at(0, &cancel).unwrap_err(), COMPOSITION_MOTION_BLUR_BLEND);
+}
+
 /// A flat plane for the coverage tests: layer space = content plan, `w x w` texels at world
 /// `position` (z = 0 maps 1:1 under the default camera).
 fn flat_plane(n: u8, w: u32, position: [f64; 3], scale: f64, opacity: f64) -> Plane3d {
