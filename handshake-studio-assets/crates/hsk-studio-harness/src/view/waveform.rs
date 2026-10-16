@@ -27,12 +27,21 @@
 //! undo step and replays like every other edit (see `super::spectral_display` for the selection on
 //! the spectral display).
 //!
+//! **Effects on a selection** (slice 4): [`WaveformEdit::Effect`] runs one of score's effects (a
+//! Folio effect instance read by the batch module's `EffectSpec`: gain, equalizer, dynamics,
+//! lookahead limiter; keyframes refused) over the selection of one or two channels through a score
+//! `Chain` bounced by `Engine::bounce` (latency compensated, so the processed selection is aligned
+//! sample for sample) and writes it back over the selection: one operation, one undo step, replayed
+//! like the others. The effect starts from its reset state at the selection start (no pre-roll).
+//!
 //! Panel (egui, window-free): `waveform.panel` with the canvas `waveform.canvas` (drag selects,
 //! one lane per channel, min/max per column) and the buttons of [`widget`]. Audition interaction
 //! parity is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
+use super::audio_batch::EffectSpec;
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio as folio;
 use hsk_studio_score::{
     self as score, ALL_CHANNELS, FadeCurve, FadeDirection, PasteMode, ScoreError, SnapDirection, SpectralMaskOp, SpectralRegion,
     SpectralWindow, WaveBuffer, WaveClip, WaveEditReport, WaveSelection,
@@ -97,6 +106,8 @@ pub enum WaveformEdit {
     Reverse(WaveSelection),
     /// A spectral selection edit of the masked channels (slice 3).
     Spectral(SpectralEdit),
+    /// A score effect over the selection (slice 4).
+    Effect { selection: WaveSelection, effect: folio::StudioAudioEffectInstance },
 }
 
 /// A spectral selection edit: `region` of the channels in `channels`, analysed with `window` at
@@ -124,6 +135,7 @@ pub enum WaveformOp {
     Invert(WaveSelection),
     Reverse(WaveSelection),
     Spectral(SpectralEdit),
+    Effect { selection: WaveSelection, effect: folio::StudioAudioEffectInstance },
 }
 
 /// The copied range of the audio after the first `after_ops` operations.
@@ -225,6 +237,7 @@ impl WaveformOp {
             Self::Invert(_) => "invert",
             Self::Reverse(_) => "reverse",
             Self::Spectral(_) => "spectral",
+            Self::Effect { .. } => "effect",
         }
     }
     pub fn to_json(&self) -> Value {
@@ -250,6 +263,7 @@ impl WaveformOp {
                     SpectralMaskOp::Attenuate { gain_db } => json!({"attenuate_db": gain_db}),
                 },
             }),
+            Self::Effect { selection, effect } => json!({"selection": sel_json(selection), "effect": serde_json::to_value(effect).unwrap_or(Value::Null)}),
         };
         v["op"] = Value::from(self.name());
         v
@@ -344,6 +358,11 @@ impl WaveformOp {
                 };
                 Self::Spectral(SpectralEdit { channels: u32::try_from(u("channels")?).map_err(|_| bad("channels"))?, region, op, fft_size, window })
             }
+            "effect" => {
+                let effect: folio::StudioAudioEffectInstance = serde_json::from_value(v.get("effect").cloned().ok_or_else(|| bad("effect"))?).map_err(|_| bad("effect"))?;
+                effect_spec(&effect).map_err(|e| bad(&e))?;
+                Self::Effect { selection: sel()?, effect }
+            }
             _ => return Err(bad("unknown op")),
         })
     }
@@ -386,6 +405,54 @@ fn window_of(name: &str) -> Option<SpectralWindow> {
         .find(|w| w.name() == name)
 }
 
+/// The score effect of a stored instance (keyframes and unknown kinds refused).
+fn effect_spec(effect: &folio::StudioAudioEffectInstance) -> Result<EffectSpec, String> {
+    if !effect.keyframes.is_empty() {
+        return Err("waveform_effect_keyframes_unsupported".into());
+    }
+    if effect.params.len() > 256 {
+        return Err("waveform_effect_too_many_params".into());
+    }
+    EffectSpec::from_preset_instance(effect)
+        .map_err(|e| format!("waveform_effect_invalid: {} {}", e.code, e.detail))?
+        .ok_or_else(|| format!("waveform_effect_disabled: {}", effect.instance_id))
+}
+
+/// Block size of an effect bounce.
+const EFFECT_BLOCK: usize = 4096;
+
+/// Runs `spec` over `clip` (1 or 2 channels) at `rate` through a score chain bounce.
+fn bounce_effect(clip: &[Vec<f32>], rate: u32, spec: &EffectSpec, cancel: &CancellationToken) -> Result<Vec<Vec<f32>>, String> {
+    let channels = clip.len();
+    let layout = match channels {
+        1 => score::ChannelLayout::mono(score::STEREO_LABELS[0]),
+        2 => score::ChannelLayout::stereo(),
+        _ => return Err("waveform_effect_channels: effects run on one or two channels".into()),
+    };
+    let processor = spec.build(rate, channels).map_err(code)?;
+    let stage = score::ChainStage { processor, output: layout.clone() };
+    let mut chain = score::Chain::new(layout.clone(), EFFECT_BLOCK, vec![stage]).map_err(code)?;
+    let resource = hsk_studio_accord::DomainId::parse(super::audio_import::IMPORT_CLIP_ID).map_err(|_| "waveform_effect: resource id".to_owned())?;
+    let engine = score::Engine::new(resource.clone(), 1);
+    let ctx = score::RequestContext { resource, actor: Some(crate::harness::default_actor()), expected_revision: 1 };
+    let inputs: Vec<&[f32]> = clip.iter().map(Vec::as_slice).collect();
+    let request = score::BounceRequest { sample_rate_hz: rate, layout: &layout, start_sample: 0, channels: &inputs, block_frames: EFFECT_BLOCK };
+    let mut block = score::OutputBlock::with_capacity(layout.clone(), EFFECT_BLOCK).map_err(code)?;
+    let frames = clip.first().map_or(0, Vec::len);
+    let mut out: Vec<Vec<f32>> = (0..channels).map(|_| Vec::with_capacity(frames)).collect();
+    let mut sink = |chunk: score::BounceChunk<'_>| {
+        for (dst, src) in out.iter_mut().zip(chunk.channels) {
+            dst.extend_from_slice(src);
+        }
+        Ok(())
+    };
+    engine.bounce(&ctx, &request, &mut chain, &mut block, &mut sink, cancel).map_err(code)?;
+    if out.iter().any(|c| c.len() != frames) {
+        return Err("waveform_effect_length".into());
+    }
+    Ok(out)
+}
+
 fn code(e: ScoreError) -> String {
     format!("waveform_{}", e.code())
 }
@@ -406,6 +473,12 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
         WaveformOp::Normalize { selection, target_dbfs, linked } => buffer.normalize(*selection, *target_dbfs, *linked, cancel),
         WaveformOp::Invert(s) => buffer.invert(*s, cancel),
         WaveformOp::Reverse(s) => buffer.reverse(*s, cancel),
+        WaveformOp::Effect { selection, effect } => {
+            let spec = effect_spec(effect)?;
+            let clip = buffer.copy(*selection).map_err(code)?;
+            let processed = bounce_effect(&clip.channels, buffer.sample_rate_hz(), &spec, cancel)?;
+            return buffer.paste(selection.start, &WaveClip { channels: processed }, PasteMode::Overwrite, selection.channels, cancel).map_err(code);
+        }
         WaveformOp::Spectral(e) => {
             let rate = buffer.sample_rate_hz();
             buffer.process_channels(e.channels, cancel, |input, out| {
@@ -629,6 +702,7 @@ impl super::Viewer {
             WaveformEdit::Invert(s) => (WaveformOp::Invert(s), None, None),
             WaveformEdit::Reverse(s) => (WaveformOp::Reverse(s), None, None),
             WaveformEdit::Spectral(e) => (WaveformOp::Spectral(e), None, None),
+            WaveformEdit::Effect { selection, effect } => (WaveformOp::Effect { selection, effect }, None, None),
         };
         if n >= MAX_WAVEFORM_OPS {
             return Err("waveform_too_many_ops".into());
