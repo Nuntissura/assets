@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod assistants;
+mod audio_amplitude;
 mod date;
 mod depgraph;
 mod error;
@@ -18,6 +19,7 @@ mod store;
 mod text_animator;
 mod time;
 
+pub use audio_amplitude::{AMPLITUDE_CHANNELS, AMPLITUDE_SLIDER, amplitude_property, insert_audio_amplitude};
 pub use date::{
     CivilTime, DateProfile, MAX_ABS_UTC_MS, civil_from_ms, parse_iso_exact, to_iso_string,
 };
