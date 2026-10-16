@@ -8,7 +8,8 @@
 //!
 //! Lane SMB-LAYOUT-UI-2 adds the InDesign-parity panels on the same editor (each in its own
 //! submodule, each action an edit of the same undo history, each dispatching the existing Folio and
-//! layout engine commands): pages and parent pages ([`pages`]).
+//! layout engine commands): pages and parent pages ([`pages`]), thread ports and the story
+//! editor's line list with depth and overset rows ([`threads`]).
 //!
 //! History: every successful [`LayoutEditor::apply`] is exactly ONE undo step (a snapshot of the
 //! whole layout state: document, stories, layout-flow and type-style records); a refused edit
@@ -36,6 +37,8 @@ use serde_json::{Value, json};
 
 pub mod pages;
 pub use pages::{PageEdit, PageRow};
+pub mod threads;
+pub use threads::{Port, StoryLine, ThreadInfo};
 
 /// Undo steps kept (the oldest is dropped beyond this).
 pub const MAX_HISTORY: usize = 256;
@@ -73,6 +76,11 @@ pub mod widget {
     pub const PARENT_NEW: &str = "layout.pages_panel.parent_new";
     pub const PARENT_APPLY: &str = "layout.pages_panel.parent_apply";
     pub const PARENT_ITEMS: &str = "layout.pages_panel.parent_items";
+    // Slice 2: threads and story editor lines.
+    pub const SHOW_THREADS: &str = "layout.threads.show";
+    pub const THREAD_INFO: &str = "layout.frame.thread_info";
+    pub const STORY_LINES: &str = "layout.story.lines";
+    pub const STORY_OVERSET: &str = "layout.story.overset";
 }
 
 /// Everything the editor edits.
@@ -236,6 +244,8 @@ pub struct LayoutEditor {
     /// Pages panel selection (page key).
     pub selected_page: Option<String>,
     pub(crate) pages_ui: pages::PagesUi,
+    /// Threads-view overlay (flow order lines between frames).
+    pub show_threads: bool,
 }
 
 impl LayoutEditor {
@@ -263,6 +273,7 @@ impl LayoutEditor {
             last_error: None,
             selected_page: None,
             pages_ui: pages::PagesUi::default(),
+            show_threads: true,
         }
     }
     pub fn doc(&self) -> &LayoutDoc {
@@ -421,6 +432,7 @@ impl LayoutEditor {
                     "bounds": [f.bounds.x.value, f.bounds.y.value, f.bounds.width.value, f.bounds.height.value],
                     "columns": f.text_column_count, "gutter": f.text_column_gutter.value,
                     "previous": f.previous_text_frame, "next": f.next_text_frame,
+                    "thread": self.threads_json(&l.layer_id),
                 }))
             })
             .collect();
@@ -499,6 +511,7 @@ impl LayoutEditor {
                     }
                 });
                 drawn.extend([widget::COLUMNS, widget::GUTTER, widget::APPLY_COLUMNS, widget::UNTHREAD]);
+                self.thread_panel(ui, &frame, &mut drawn);
                 self.story_editor(ui, &frame, &mut drawn);
             }
             if let Some(e) = &self.last_error {
@@ -583,6 +596,7 @@ impl LayoutEditor {
             let selected = self.selected.as_deref() == Some(l.layer_id.as_str());
             let colour = if selected { egui::Color32::from_rgb(0, 120, 215) } else { egui::Color32::from_rgb(120, 120, 200) };
             painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, colour), egui::StrokeKind::Inside);
+            self.draw_ports(&painter, r, &l.layer_id);
         }
         for st in &self.doc.stories {
             let Ok(p) = self.compose(&st.story_id) else { continue };
@@ -591,7 +605,9 @@ impl LayoutEditor {
             for fp in &p.frames {
                 let spread_top = spread_tops.get(fp.spread).copied().unwrap_or(0.0);
                 let fo = origin + egui::vec2(fp.origin_x_pt as f32, (spread_top + fp.origin_y_pt) as f32) * SCALE;
-                if let Some(prev) = previous {
+                if self.show_threads
+                    && let Some(prev) = previous
+                {
                     painter.line_segment([prev, fo], egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 160, 0)));
                 }
                 for line in &fp.lines {
