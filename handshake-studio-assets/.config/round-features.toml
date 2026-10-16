@@ -16,17 +16,17 @@ per-test-timeout-s = 120
 hsk-studio-type = [["harfrust"]]
 hsk-studio-motion-js = [["quickjs"], ["quickjs", "test-faults"]]
 # D24-A (SMB-D24A-CODEC-DEFAULTS, lead-approved 2026-10-16): reel studio-aac, harness studio-aac, reel-native os-encode.
-# The requested reel-native set also named hsk-studio-reel/studio-aac; a unit's features must be the crate's own
-# feature names (run-round: other names are feature_absent, exit 74), so the builder's stated fallback is used; the
-# mf_aac cross-check with Studio's decoder needs a reel-native passthrough feature (builder) to run in rounds.
+# A unit's features must be the crate's own feature names (run-round: other names are feature_absent, exit 74).
+# For R36 (SMB-PR-SOURCE-MONITOR, lead 2026-10-16): reel-native passthrough studio-aac (= hsk-studio-reel/studio-aac)
+# runs tests/mf_aac.rs against Studio's decoder; harness os-encode runs the OS H.264 preset (worker: [prebuild]).
 hsk-studio-reel = [["av1"], ["prores"], ["av1-encode"], ["av1", "av1-encode"], ["studio-aac"]]
-hsk-studio-reel-native = [["av1-worker"], ["av1-worker", "test-faults"], ["mf-worker"], ["mf-worker", "test-faults"], ["mf-worker", "test-faults", "os-encode"]]
+hsk-studio-reel-native = [["av1-worker"], ["av1-worker", "test-faults"], ["mf-worker"], ["mf-worker", "test-faults"], ["mf-worker", "test-faults", "os-encode"], ["mf-worker", "test-faults", "os-encode", "studio-aac"]]
 hsk-studio-score-plugin = [["test-faults"], ["clap", "test-faults"]]
 hsk-studio-render-gpu = [["test-faults"], ["shared-device"], ["shared-device", "test-faults"]]
 hsk-studio-score-device = [["cpal-backend"]]
 hsk-studio-kernel-bindings = [["test-faults"], ["ckc-test-double"]]
 hsk-studio-worker = [["test-faults"]]
-hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"]]
+hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"], ["os-encode"]]
 hsk-studio-composite = [["motion"]]
 
 [ignored]
@@ -42,3 +42,6 @@ hsk-studio-harness = [["import-psd", "import-raw"]]
 # F-R32-2 (R32): viewer_media.rs h264_frames_decode_through_the_media_foundation_worker spawns
 # <target>/debug/reel-native-mf-worker; build it from the candidate right before the unit.
 "hsk-studio-harness+media-native" = [["hsk-studio-reel-native", "reel-native-mf-worker", "mf-worker"]]
+# SMB-PR-SOURCE-MONITOR (R36): timeline_captions.rs h264_preset_encodes_through_the_os_encoder_with_captions spawns the
+# same worker beside the test target; its --encode modes need os-encode.
+"hsk-studio-harness+os-encode" = [["hsk-studio-reel-native", "reel-native-mf-worker", "mf-worker", "os-encode"]]
