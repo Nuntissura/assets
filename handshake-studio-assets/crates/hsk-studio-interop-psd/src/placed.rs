@@ -56,6 +56,28 @@ pub(crate) struct Linked {
     pub unique_id: String,
     pub file_name: String,
     pub data: LinkedData,
+    /// Pixel size read from an embedded PNG or PSD/PSB header (lane SMB-PS-ADJUST-STYLES-3: the
+    /// source size of a legacy `PlLd` layer whose warp carries no bounds); `None` otherwise.
+    pub dims: Option<(u32, u32)>,
+}
+
+/// Width and height from the header of an embedded file: PNG (signature, then the `IHDR` chunk's
+/// big-endian width and height) or PSD/PSB (`8BPS`, version 1 or 2, height at byte 14, width at 18).
+/// Zero or a side over 300000 (the PSB maximum) is no size. Other formats (JPEG, PDF, AI) are not
+/// read: their size stays unknown.
+pub(crate) fn header_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    let be = |at: usize| -> Option<u32> {
+        let b = bytes.get(at..at.checked_add(4)?)?;
+        Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let (w, h) = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.get(12..16) == Some(b"IHDR") {
+        (be(16)?, be(20)?)
+    } else if bytes.starts_with(b"8BPS") && matches!(bytes.get(4..6), Some([0, 1] | [0, 2])) {
+        (be(18)?, be(14)?)
+    } else {
+        return None;
+    };
+    ((1..=300_000).contains(&w) && (1..=300_000).contains(&h)).then_some((w, h))
 }
 
 fn trunc<T>(r: crate::error::Result<T>) -> std::result::Result<T, Reason> {
@@ -123,16 +145,16 @@ fn linked(item: &[u8], limits: &Limits) -> std::result::Result<Linked, Reason> {
     } else {
         r.rest()
     };
-    let data = match &kind {
+    let (data, dims) = match &kind {
         b"liFD" => {
             let bytes = rest.get(..data_len).ok_or("linked_file_truncated")?;
-            LinkedData::Embedded(hsk_studio_prism::profile_hash(bytes))
+            (LinkedData::Embedded(hsk_studio_prism::profile_hash(bytes)), header_dims(bytes))
         }
-        b"liFE" => LinkedData::External,
-        b"liFA" => LinkedData::Alias,
+        b"liFE" => (LinkedData::External, None),
+        b"liFA" => (LinkedData::Alias, None),
         _ => return Err("linked_file_kind_unknown"),
     };
-    Ok(Linked { unique_id, file_name, data })
+    Ok(Linked { unique_id, file_name, data, dims })
 }
 
 /// A placed instance of one layer: the source's unique id and size, and the affine instance
@@ -140,9 +162,12 @@ fn linked(item: &[u8], limits: &Limits) -> std::result::Result<Linked, Reason> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Placed {
     pub unique_id: String,
+    /// `0` (with `height`) when a legacy `PlLd` carries no size: the caller resolves it.
     pub width: f64,
     pub height: f64,
     pub transform: [f64; 6],
+    /// The quad `Trnf` the transform maps the source onto.
+    pub quad: [f64; 8],
 }
 
 fn eight(v: Option<&descriptor::Value>) -> Option<[f64; 8]> {
@@ -215,8 +240,84 @@ pub(crate) fn placed(layer: &PsdLayer, limits: &Limits) -> Option<std::result::R
     if let Some(b) = layer.block(b"SoLd").or_else(|| layer.block(b"SoLE")) {
         return Some(placed_data(&b.data, limits));
     }
-    // A legacy `PlLd` alone carries no source size: the layer keeps its cached pixels.
-    layer.block(b"PlLd").map(|_| Err("placed_layer_legacy_unmapped"))
+    layer.block(b"PlLd").map(|b| legacy_data(&b.data, limits))
+}
+
+/// The instance transform mapping the source rect `(0, 0, width, height)` onto the quad `Trnf`
+/// (top-left, top-right, bottom-right, bottom-left): a parallelogram, else
+/// `placed_transform_non_affine`; a degenerate one is `placed_transform_singular`.
+pub(crate) fn affine(quad: [f64; 8], width: f64, height: f64) -> std::result::Result<[f64; 6], Reason> {
+    let [x0, y0, x1, y1, x2, y2, x3, y3] = quad;
+    let span = (x1 - x0).abs() + (y1 - y0).abs() + (x3 - x0).abs() + (y3 - y0).abs() + 1.0;
+    // A parallelogram: the bottom-right corner is top-right + bottom-left - top-left.
+    if ((x1 + x3 - x0) - x2).abs() > AFFINE_TOLERANCE * span || ((y1 + y3 - y0) - y2).abs() > AFFINE_TOLERANCE * span {
+        return Err("placed_transform_non_affine");
+    }
+    let transform = [(x1 - x0) / width, (y1 - y0) / width, (x3 - x0) / height, (y3 - y0) / height, x0, y0];
+    let det = transform[0] * transform[3] - transform[1] * transform[2];
+    if !transform.iter().all(|v| v.is_finite()) || det.is_nan() || det.abs() <= f64::EPSILON {
+        return Err("placed_transform_singular");
+    }
+    Ok(transform)
+}
+
+/// A legacy placed layer (`PlLd`, Adobe "Placed Layer", replaced by `SoLd` in CS3; lane
+/// SMB-PS-ADJUST-STYLES-3): `plcL`, version 3, the Pascal unique id (the linked-file item's), page,
+/// total pages, anti-alias policy and layer type (`i32` each), the quad `Trnf` as eight doubles,
+/// warp version `u32` 0 and the version-16 warp descriptor. Layout confirmed on the `PlLd` blocks
+/// Photoshop writes beside `SoLd` in the psd-tools corpus (`layers/smartobject-layer.psd`,
+/// `placedLayer.psd`). The block has no source size: it is the warp `bounds` (`Rght - Left`,
+/// `Btom - Top`, equal to `Sz  ` on both corpus files) when present, otherwise `0 x 0` and the
+/// caller takes it from the embedded file header ([`header_dims`]) or reports
+/// `placed_layer_legacy_size_unknown`. The warp rule is the one of `SoLd`.
+fn legacy_data(data: &[u8], limits: &Limits) -> std::result::Result<Mapped<Placed>, Reason> {
+    fn t<T>(r: crate::error::Result<T>) -> std::result::Result<T, Reason> {
+        r.map_err(|_| "placed_layer_legacy_truncated")
+    }
+    let mut r = Reader::new(data);
+    if t(r.array4("PlLd"))? != *b"plcL" {
+        return Err("placed_layer_legacy_kind");
+    }
+    if t(r.u32("PlLd"))? != 3 {
+        return Err("placed_layer_legacy_version_unsupported");
+    }
+    let id_len = usize::from(t(r.u8("PlLd"))?);
+    let id = t(r.bytes(id_len, "PlLd"))?;
+    if id.is_empty() {
+        return Err("placed_layer_identity_missing");
+    }
+    let unique_id = String::from_utf8_lossy(id).into_owned();
+    t(r.bytes(16, "PlLd"))?; // page, total pages, anti-alias policy, layer type
+    let mut quad = [0.0f64; 8];
+    for slot in &mut quad {
+        *slot = f64::from_bits(t(r.u64("PlLd"))?);
+        if !slot.is_finite() {
+            return Err("placed_layer_transform_missing");
+        }
+    }
+    if t(r.u32("PlLd"))? != 0 {
+        return Err("placed_layer_legacy_version_unsupported");
+    }
+    let w = descriptor::parse_versioned(r.rest(), &[16], limits).map_err(|_| "placed_layer_descriptor_unreadable")?;
+    match w.get("warpStyle").and_then(descriptor::Value::enum_value) {
+        None | Some("warpNone") => {}
+        Some("warpCustom") if identity_mesh(&w) => {}
+        Some(_) => return Err("placed_warp_unmapped"),
+    }
+    let num = |o: &descriptor::Object, k: &str| o.get(k).and_then(descriptor::Value::finite_number);
+    let size = w.get("bounds").and_then(descriptor::Value::object).and_then(|b| {
+        let (top, left, bottom, right) = (num(b, "Top ")?, num(b, "Left")?, num(b, "Btom")?, num(b, "Rght")?);
+        let (width, height) = (right - left, bottom - top);
+        (width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite()).then_some((width, height))
+    });
+    let (width, height, transform, code) = match size {
+        Some((width, height)) => (width, height, affine(quad, width, height)?, "placed_layer_legacy_size_from_warp_bounds"),
+        None => (0.0, 0.0, [0.0; 6], "placed_layer_legacy_size_from_embedded_header"),
+    };
+    Ok(Mapped {
+        value: Placed { unique_id, width, height, transform, quad },
+        notes: vec![(LossKind::Preserved, "placed_asset_mapped_to_record"), (LossKind::Transformed, code)],
+    })
 }
 
 fn placed_data(data: &[u8], limits: &Limits) -> std::result::Result<Mapped<Placed>, Reason> {
@@ -252,19 +353,9 @@ fn placed_data(data: &[u8], limits: &Limits) -> std::result::Result<Mapped<Place
             Some(_) => return Err("placed_warp_unmapped"),
         }
     }
-    let [x0, y0, x1, y1, x2, y2, x3, y3] = quad;
-    let span = (x1 - x0).abs() + (y1 - y0).abs() + (x3 - x0).abs() + (y3 - y0).abs() + 1.0;
-    // A parallelogram: the bottom-right corner is top-right + bottom-left - top-left.
-    if ((x1 + x3 - x0) - x2).abs() > AFFINE_TOLERANCE * span || ((y1 + y3 - y0) - y2).abs() > AFFINE_TOLERANCE * span {
-        return Err("placed_transform_non_affine");
-    }
-    let transform = [(x1 - x0) / width, (y1 - y0) / width, (x3 - x0) / height, (y3 - y0) / height, x0, y0];
-    let det = transform[0] * transform[3] - transform[1] * transform[2];
-    if !transform.iter().all(|v| v.is_finite()) || det.is_nan() || det.abs() <= f64::EPSILON {
-        return Err("placed_transform_singular");
-    }
+    let transform = affine(quad, width, height)?;
     Ok(Mapped {
-        value: Placed { unique_id, width, height, transform },
+        value: Placed { unique_id, width, height, transform, quad },
         notes: vec![(LossKind::Preserved, "placed_asset_mapped_to_record")],
     })
 }

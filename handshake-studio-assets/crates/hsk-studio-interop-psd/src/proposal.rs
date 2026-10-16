@@ -770,7 +770,30 @@ impl Builder<'_, '_, '_> {
                 return None;
             }
         };
-        let p = placed.value;
+        let mut p = placed.value;
+        if p.width <= 0.0 || p.height <= 0.0 {
+            // A legacy `PlLd` whose warp has no bounds (lane SMB-PS-ADJUST-STYLES-3): the source
+            // size is the embedded file's header size when it is a PNG or PSD/PSB; otherwise the
+            // loss names why it is unknown.
+            let linked = self.linked.iter().find(|l| l.unique_id == p.unique_id);
+            let Some((w, h)) = linked.and_then(|l| l.dims) else {
+                let code = match linked.map(|l| &l.data) {
+                    None => "placed_source_missing",
+                    Some(LinkedData::External) => "placed_layer_legacy_size_unknown_external",
+                    Some(LinkedData::Alias) => "placed_link_alias_unmapped",
+                    Some(LinkedData::Embedded(_)) => "placed_layer_legacy_size_unknown_format",
+                };
+                self.note(path, LossKind::Unsupported, code);
+                return None;
+            };
+            match crate::placed::affine(p.quad, f64::from(w), f64::from(h)) {
+                Ok(transform) => (p.width, p.height, p.transform) = (f64::from(w), f64::from(h), transform),
+                Err(reason) => {
+                    self.note(path, LossKind::Unsupported, reason);
+                    return None;
+                }
+            }
+        }
         let id = source_id(&p.unique_id);
         if let Some(existing) = self.placed_sources.iter().find(|s| s.source_id == id) {
             if existing.width != p.width || existing.height != p.height {
