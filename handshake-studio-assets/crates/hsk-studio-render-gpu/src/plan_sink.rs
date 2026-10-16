@@ -187,6 +187,10 @@ struct PLayer<'a> {
     filter: Option<Box<FilterGpu>>,
     /// Smart-filter stack of the envelope (lane SMB-PS-SMART-FILTER-WIRING).
     smart: Option<Box<SmartGpu>>,
+    /// Knockout of the envelope (lane SMB-PS-ADJUST-STYLES-3, `knockout` module).
+    knockout: Knockout,
+    /// The plan node of the group holding the layer (the knockout snapshot key).
+    group: usize,
 }
 
 /// A smart-filter stack compiled for the filter passes: per enabled entry its filter chain and
@@ -386,6 +390,8 @@ struct Prepared<'a> {
     blur_taps: u64,
     /// The plan's output stage (sample range, stage-6a display transform).
     output: OutputStage,
+    /// Knockout layers, their snapshot groups and deep chains (lane SMB-PS-ADJUST-STYLES-3).
+    ko: knockout::KoPlan,
 }
 
 impl<'a> Prepared<'a> {
@@ -637,6 +643,7 @@ fn prepare<'a>(
     let mut transform_window_texels = 0u64;
     let mut has_blur = false;
     let mut blur_taps = 0u64;
+    let mut ko_layers: Vec<(usize, Knockout)> = Vec::new();
     for (i, node) in plan.nodes.iter().enumerate() {
         if !reach[i] {
             nodes.push(PNode::Unused);
@@ -712,10 +719,11 @@ fn prepare<'a>(
                         (Some(e), Ok(group), Ok(layer)) => e.extension(PlanNodeId(group), layer),
                         _ => None,
                     };
-                    if let Some(x) = layer_ext
-                        && x.knockout != Knockout::None
-                    {
-                        return Err(unsupported(x.knockout.key()));
+                    // Knockout (lane SMB-PS-ADJUST-STYLES-3): pigment admitted the layer and its
+                    // placement; the `knockout` module evaluates it.
+                    let knockout = layer_ext.map_or(Knockout::None, |x| x.knockout);
+                    if knockout != Knockout::None {
+                        ko_layers.push((i, knockout));
                     }
                     // Layer effects (pigment effect_math): compiled into matte passes and a
                     // margin. The compile charges the blur kernels to the working-byte limit.
@@ -1062,6 +1070,8 @@ fn prepare<'a>(
                         blur,
                         filter,
                         smart,
+                        knockout,
+                        group: i,
                     });
                 }
                 // Destination levels below this group's own: a plain layer needs its isolated child's
@@ -1134,6 +1144,23 @@ fn prepare<'a>(
         need.push(node_need);
         margins.push(node_margin);
     }
+    // Knockout contexts (lane SMB-PS-ADJUST-STYLES-3): the isolation and the group-layer parent of
+    // every reachable group node.
+    let ko = if ko_layers.is_empty() {
+        knockout::KoPlan::default()
+    } else {
+        let mut isolated = std::collections::BTreeMap::new();
+        let mut parent = std::collections::BTreeMap::new();
+        for (gi, node) in plan.nodes.iter().enumerate() {
+            if let (true, PlanNode::Group(g)) = (reach[gi], node) {
+                isolated.insert(gi, g.isolated);
+                for l in &g.layers {
+                    parent.insert(l.input.0 as usize, gi);
+                }
+            }
+        }
+        knockout::KoPlan::new(&ko_layers, &isolated, &parent, root)
+    };
     Ok(Prepared {
         nodes,
         bounds,
@@ -1156,6 +1183,7 @@ fn prepare<'a>(
         has_blur,
         blur_taps,
         output,
+        ko,
     })
 }
 
@@ -1731,7 +1759,8 @@ impl RenderBackend<NoVector> for GpuBackend {
     /// the reported class never exceeds pigment's (CX-CAP-001; test
     /// ext_refusals_and_capabilities_run_without_adapter). The adjustment kinds are those with a
     /// shader body (`gpu_adjust_supported`), the effect kinds are the six of pigment's waves 1 and
-    /// 2; knockout is not implemented, and Blend-If on a clip base or a clipped layer
+    /// 2; knockout runs every placement pigment admits (lane SMB-PS-ADJUST-STYLES-3), and Blend-If
+    /// on a clip base or a clipped layer
     /// (`BlendIfClipBase`, `BlendIfClippedLayer`) is Unsupported because no definition exists (test
     /// ext_refusals_and_capabilities_run_without_adapter).
     ///
@@ -1765,7 +1794,10 @@ impl RenderBackend<NoVector> for GpuBackend {
             // Smart-filter stacks (lane SMB-PS-SMART-FILTER-WIRING): filter-only stacks without
             // masks run as filter + mix passes within the filter tolerance (tests/gpu_smart_filter.rs);
             // liquify entries and masks are typed refusals at prepare.
-            | ExtOperator::SmartFilter => true,
+            | ExtOperator::SmartFilter
+            // Knockout (lane SMB-PS-ADJUST-STYLES-3): every placement pigment admits, as the
+            // knockout passes (`knockout` module, tests/gpu_knockout.rs).
+            | ExtOperator::Knockout(_) => true,
             ExtOperator::AlphaPremultiplied => false,
             // Key pipelines (lane SMB-AE-KEY-TRACK-3): `key.wgsl` on keyed tile layers
             // (tests/gpu_keying.rs); inner/outer key, key cleaner and wire removal are not run.
@@ -1927,6 +1959,8 @@ struct Exec<'e> {
     stats: &'e mut GpuStats,
     /// Extended-range output stage: every composite dispatch carries `EXTENDED_FLAG`.
     extended: bool,
+    /// Knockout buffers and contexts (only when the plan has a knockout layer).
+    ko: Option<knockout::KoBuffers>,
 }
 
 /// `a - b` as the unsigned offset of a region inside its chunk; a negative or oversized offset is
@@ -2001,32 +2035,7 @@ impl Exec<'_> {
         source: Src<'_, '_>,
     ) -> Result<(), GpuError> {
         let ctx = self.ctx;
-        let kind = match source {
-            Src::Solid(rgba) => SourceKind::Solid(rgba),
-            Src::Chunk => SourceKind::Chunk,
-            Src::Transformed(planes, prep) => {
-                self.resample(planes, prep, region)?;
-                SourceKind::Region
-            }
-            Src::Tile(planes, placement) => {
-                self.upload.clear();
-                for y in 0..i64::from(region.height) {
-                    for x in 0..i64::from(region.width) {
-                        let px = offset(region.x.saturating_add(x), placement.x)?;
-                        let py = offset(region.y.saturating_add(y), placement.y)?;
-                        for v in tile_pixel(planes, px, py) {
-                            self.upload.extend_from_slice(&v.to_ne_bytes());
-                        }
-                    }
-                }
-                ctx.queue.write_buffer(&self.src, 0, &self.upload);
-                self.stats.bytes_uploaded = self
-                    .stats
-                    .bytes_uploaded
-                    .saturating_add(self.upload.len() as u64);
-                SourceKind::Region
-            }
-        };
+        let kind = self.stage(source, region)?;
         if let Some(mask) = mask {
             self.upload_mask(mask, region);
         }
@@ -2077,6 +2086,38 @@ impl Exec<'_> {
         ctx.queue.submit(Some(encoder.finish()));
         self.stats.dispatches = self.stats.dispatches.saturating_add(1);
         Ok(())
+    }
+
+    /// Stage a composite source over `region`: a tile region uploaded into `src`, a transformed
+    /// tile resampled into `src`, a solid colour, or the finished group buffer of the next level.
+    fn stage(&mut self, source: Src<'_, '_>, region: Rect) -> Result<SourceKind, GpuError> {
+        let ctx = self.ctx;
+        Ok(match source {
+            Src::Solid(rgba) => SourceKind::Solid(rgba),
+            Src::Chunk => SourceKind::Chunk,
+            Src::Transformed(planes, prep) => {
+                self.resample(planes, prep, region)?;
+                SourceKind::Region
+            }
+            Src::Tile(planes, placement) => {
+                self.upload.clear();
+                for y in 0..i64::from(region.height) {
+                    for x in 0..i64::from(region.width) {
+                        let px = offset(region.x.saturating_add(x), placement.x)?;
+                        let py = offset(region.y.saturating_add(y), placement.y)?;
+                        for v in tile_pixel(planes, px, py) {
+                            self.upload.extend_from_slice(&v.to_ne_bytes());
+                        }
+                    }
+                }
+                ctx.queue.write_buffer(&self.src, 0, &self.upload);
+                self.stats.bytes_uploaded = self
+                    .stats
+                    .bytes_uploaded
+                    .saturating_add(self.upload.len() as u64);
+                SourceKind::Region
+            }
+        })
     }
 
     /// Resample `region` of a transformed tile into `src` (region-sized, row-major): the sample
@@ -2511,7 +2552,17 @@ fn source_pass(
                 level.saturating_add(1),
                 texel_bytes(chunk.width, chunk.height),
             );
-            eval_group(ex, prep, layer.input, chunk, level.saturating_add(1))?;
+            // A deep knockout inside clears this backdrop by its shape before the group
+            // composites (lane SMB-PS-ADJUST-STYLES-3).
+            if prep.ko.deep_groups.contains(&layer.input) {
+                ex.ko_push_isolated(level.saturating_add(1), chunk)?;
+                let evaluated = eval_group(ex, prep, layer.input, chunk, level.saturating_add(1));
+                let cleared = ex.ko_pop_isolated(level, chunk);
+                evaluated?;
+                cleared?;
+            } else {
+                eval_group(ex, prep, layer.input, chunk, level.saturating_add(1))?;
+            }
             ex.composite(
                 layer.mode,
                 layer.opacity,
@@ -2586,7 +2637,14 @@ fn eval_layer(
     if let Some(smart) = &layer.smart {
         return eval_smart_layer(ex, prep, layer, smart, chunk, level);
     }
-    if layer.opacity <= 0.0 {
+    // Knockout (lane SMB-PS-ADJUST-STYLES-3): before the opacity test, a layer at fill 0 still
+    // knocks out.
+    if layer.knockout != Knockout::None {
+        return knockout::eval_knockout_layer(ex, prep, layer, chunk, level);
+    }
+    // A group enclosing a deep knockout clears the backdrop even when it is invisible itself (as
+    // render-cpu evaluates every layer).
+    if layer.opacity <= 0.0 && !prep.ko.deep_groups.contains(&layer.input) {
         return Ok(());
     }
     let Some(region) = prep
@@ -2605,7 +2663,14 @@ fn eval_layer(
             ..
         }
     ) {
-        return eval_group(ex, prep, layer.input, chunk, level);
+        // A shallow knockout inside reads the running result before the group (its snapshot).
+        if !prep.ko.snapshot_groups.contains(&layer.input) {
+            return eval_group(ex, prep, layer.input, chunk, level);
+        }
+        ex.ko_push_snapshot(level, layer.input, chunk)?;
+        let evaluated = eval_group(ex, prep, layer.input, chunk, level);
+        ex.ko_pop();
+        return evaluated;
     }
     source_pass(ex, prep, layer, Pass::Normal, region, chunk, level)
 }
@@ -3240,7 +3305,11 @@ fn run(
         0
     };
     let blur_on = prepared.has_blur;
+    // Knockout buffers (lane SMB-PS-ADJUST-STYLES-3): S, the shape, the snapshots and the deep
+    // planes per frame texel, plus the `Ko` block and the placeholder.
+    let (ko_per_texel, ko_fixed) = knockout::ko_bytes(&prepared.ko, level_count)?;
     let per_texel = sum_bytes(&[
+        ko_per_texel,
         mul_bytes(
             TEXEL_BYTES,
             sum_bytes(&[
@@ -3255,6 +3324,7 @@ fn run(
         if transform_on { SITE_BYTES } else { 0 },
     ])?;
     let fixed = sum_bytes(&[
+        ko_fixed,
         PARAMS_BYTES,
         if prepared.has_tiles { 0 } else { TEXEL_BYTES },
         if masked { 0 } else { MASK_TEXEL_BYTES },
@@ -3381,7 +3451,31 @@ fn run(
     } else {
         0
     };
+    let ko_snaps = prepared.ko.snapshot_groups.len();
+    let ko_planes = if prepared.ko.deep_groups.is_empty() {
+        0
+    } else {
+        level_count.saturating_sub(1)
+    };
+    let ko_total = if prepared.ko.any {
+        let snaps = mul_bytes(frame_bytes, u64::try_from(ko_snaps).map_err(|_| overflow())?)?;
+        let planes = mul_bytes(plane_bytes, u64::try_from(ko_planes).map_err(|_| overflow())?)?;
+        residency.reserve(ResidentKey::Scratch("ko_params"), crate::kernel::KO_PARAMS_BYTES)?;
+        residency.reserve(ResidentKey::Scratch("ko_none"), 16)?;
+        residency.reserve(ResidentKey::Scratch("ko_s"), frame_bytes)?;
+        residency.reserve(ResidentKey::Scratch("ko_k"), plane_bytes)?;
+        if snaps > 0 {
+            residency.reserve(ResidentKey::Scratch("ko_snapshots"), snaps)?;
+        }
+        if planes > 0 {
+            residency.reserve(ResidentKey::Scratch("ko_planes"), planes)?;
+        }
+        sum_bytes(&[crate::kernel::KO_PARAMS_BYTES, 16, frame_bytes, plane_bytes, snaps, planes])?
+    } else {
+        0
+    };
     let total = sum_bytes(&[
+        ko_total,
         mul_bytes(frame_bytes, levels_u64)?,
         chunk_bytes,
         src_bytes,
@@ -3406,6 +3500,7 @@ fn run(
         fx_buffers,
         resample_buffers,
         blur_buffers,
+        ko_buffers,
     ) = scoped(device, total, limit, || {
             let buffer = |label, size, usage| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -3537,6 +3632,32 @@ fn run(
                     bind,
                 }
             });
+            let ko_buffers = prepared.ko.any.then(|| {
+                let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+                knockout::KoBuffers {
+                    params: buffer(
+                        "hsk-studio-render-gpu knockout params",
+                        crate::kernel::KO_PARAMS_BYTES,
+                        wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    ),
+                    s: buffer("hsk-studio-render-gpu knockout s", frame_bytes, storage),
+                    k: buffer("hsk-studio-render-gpu knockout shape", plane_bytes, wgpu::BufferUsages::STORAGE),
+                    none: buffer("hsk-studio-render-gpu knockout none", 16, wgpu::BufferUsages::STORAGE),
+                    snapshots: (0..ko_snaps)
+                        .map(|_| {
+                            buffer(
+                                "hsk-studio-render-gpu knockout snapshot",
+                                frame_bytes,
+                                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                            )
+                        })
+                        .collect(),
+                    planes: (0..ko_planes)
+                        .map(|_| buffer("hsk-studio-render-gpu knockout plane", plane_bytes, storage))
+                        .collect(),
+                    stack: Vec::new(),
+                }
+            });
             (
                 levels,
                 staging,
@@ -3549,6 +3670,7 @@ fn run(
                 fx_buffers,
                 resample_buffers,
                 blur_buffers,
+                ko_buffers,
             )
         })?;
 
@@ -3576,6 +3698,7 @@ fn run(
         mask_upload: Vec::new(),
         stats,
         extended: prepared.output.is_extended(),
+        ko: ko_buffers,
     };
     // A leaf root is one Normal, opacity-1 layer over transparent black.
     let root_layer = PLayer {
@@ -3591,6 +3714,8 @@ fn run(
         blur: None,
         filter: None,
         smart: None,
+        knockout: Knockout::None,
+        group: prepared.root,
     };
     let mut colour: Vec<u8> = Vec::new();
     let mut alpha: Vec<u8> = Vec::new();
@@ -3797,6 +3922,7 @@ mod display;
 /// Clip colour grade kernel (lane SMB-PR-SOURCE-MONITOR).
 mod grade;
 mod key;
+mod knockout;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
 pub(crate) use display::EXTENDED_FLAG;
 use display::sample_ok;

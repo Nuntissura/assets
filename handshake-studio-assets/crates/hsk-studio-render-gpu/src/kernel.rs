@@ -280,7 +280,7 @@ pub(crate) fn shader_source() -> String {
             ));
         }
     }
-    include_str!("kernel.wgsl")
+    let mut wgsl = include_str!("kernel.wgsl")
         .replace("//@PIXEL_ENTRIES@", &entries)
         .replace("//@BLEND_FUNCTIONS@", &functions)
         .replace("//@BLEND_CASES@", &cases)
@@ -293,7 +293,37 @@ pub(crate) fn shader_source() -> String {
             &StudioBlendMode::Screen.discriminant().to_string(),
         )
         .replace("//@ADJUST_FUNCTIONS@", &adjust_functions)
-        .replace("//@ADJUST_CASES@", &adjust_cases)
+        .replace("//@ADJUST_CASES@", &adjust_cases);
+    // Knockout passes (lane SMB-PS-ADJUST-STYLES-3): appended so they share `blend` and the
+    // overflow helpers; their bindings 6-9 are in no other entry point's layout.
+    wgsl.push_str(include_str!("kernel_knockout.wgsl"));
+    wgsl
+}
+
+/// Size of the knockout uniform block `Ko` in `kernel_knockout.wgsl`.
+pub(crate) const KO_PARAMS_BYTES: u64 = 16;
+/// `Ko.flags` bits.
+pub(crate) const KO_RECORD: u32 = 1;
+pub(crate) const KO_OUTER: u32 = 2;
+pub(crate) const KO_EXTENDED: u32 = 4;
+
+/// The `Ko` block: the layer opacity (the knockout shape's factor) and the flags.
+pub(crate) fn ko_params_bytes(layer_opacity: f32, flags: u32) -> [u8; KO_PARAMS_BYTES as usize] {
+    let mut out = [0u8; KO_PARAMS_BYTES as usize];
+    out[..4].copy_from_slice(&layer_opacity.to_ne_bytes());
+    out[4..8].copy_from_slice(&flags.to_ne_bytes());
+    out
+}
+
+/// Which knockout entry point a dispatch runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KoPass {
+    /// `knockout_s` (bind group from [`Kernel::bind_ko_s`]).
+    S,
+    /// `knockout_mix` (bind group from [`Kernel::bind_ko_mix`]).
+    Mix,
+    /// `knockout_clear` (bind group from [`Kernel::bind_ko_mix`]).
+    Clear,
 }
 
 /// Where a layer's source texels come from.
@@ -385,6 +415,14 @@ pub(crate) struct Kernel {
     layout_blur: wgpu::BindGroupLayout,
     /// Layer filter passes (`filter.wgsl`, lane SMB-RENDER-FILTERS), over the blur bind layout.
     pipeline_filter: wgpu::ComputePipeline,
+    /// Knockout passes (`kernel_knockout.wgsl` in the composite module, lane
+    /// SMB-PS-ADJUST-STYLES-3): `knockout_s` over its layout, `knockout_mix` and `knockout_clear`
+    /// over the mix layout.
+    pipeline_ko_s: wgpu::ComputePipeline,
+    layout_ko_s: wgpu::BindGroupLayout,
+    pipeline_ko_mix: wgpu::ComputePipeline,
+    pipeline_ko_clear: wgpu::ComputePipeline,
+    layout_ko_mix: wgpu::BindGroupLayout,
 }
 
 /// Bytes of the uniform block `FilterP` in `filter.wgsl`: 12 words. It is written into the blur
@@ -587,6 +625,54 @@ impl Kernel {
             &composite_module,
             "adjust",
         )?;
+        // Knockout passes (lane SMB-PS-ADJUST-STYLES-3), entry points of the composite module.
+        // knockout_s: 0 params, 1 source, 3 mask, 6 Ko, 7 S (prefilled with the initial
+        // backdrop), 8 the shape plane; knockout_mix / knockout_clear: 0 params, 2 destination, 6
+        // Ko, 7 S, 8 the shape plane, 9 the accumulated deep shape. Four storage buffers each.
+        let layout_ko_s = bind_layout(
+            "hsk-studio-render-gpu knockout layout",
+            &[
+                entry(0, uniform),
+                entry(1, read),
+                entry(3, read),
+                entry(6, uniform),
+                entry(7, write),
+                entry(8, write),
+            ],
+        )?;
+        let layout_ko_s_main =
+            pipeline_layout("hsk-studio-render-gpu knockout pipeline layout", &layout_ko_s)?;
+        let pipeline_ko_s = make(
+            "hsk-studio-render-gpu knockout s",
+            &layout_ko_s_main,
+            &composite_module,
+            "knockout_s",
+        )?;
+        let layout_ko_mix = bind_layout(
+            "hsk-studio-render-gpu knockout mix layout",
+            &[
+                entry(0, uniform),
+                entry(2, write),
+                entry(6, uniform),
+                entry(7, write),
+                entry(8, write),
+                entry(9, write),
+            ],
+        )?;
+        let layout_ko_mix_main =
+            pipeline_layout("hsk-studio-render-gpu knockout mix pipeline layout", &layout_ko_mix)?;
+        let pipeline_ko_mix = make(
+            "hsk-studio-render-gpu knockout mix",
+            &layout_ko_mix_main,
+            &composite_module,
+            "knockout_mix",
+        )?;
+        let pipeline_ko_clear = make(
+            "hsk-studio-render-gpu knockout clear",
+            &layout_ko_mix_main,
+            &composite_module,
+            "knockout_clear",
+        )?;
         // Layer-effect passes: a separate module so the layouts above stay as they were. Bindings:
         // 0 uniform parameter block (with the blur taps), 1-2 read-only planes, 3 the output plane,
         // 4 the content frame; four storage buffers is the device's downlevel limit.
@@ -654,6 +740,11 @@ impl Kernel {
             pipeline_blur,
             layout_blur,
             pipeline_filter,
+            pipeline_ko_s,
+            layout_ko_s,
+            pipeline_ko_mix,
+            pipeline_ko_clear,
+            layout_ko_mix,
         })
     }
 
@@ -687,6 +778,74 @@ impl Kernel {
                 at(5, lut),
             ],
         })
+    }
+
+    /// Bind group of `knockout_s`: params, the source, the mask, `Ko`, S and the shape plane.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_ko_s(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        src: &wgpu::Buffer,
+        mask: &wgpu::Buffer,
+        ko: &wgpu::Buffer,
+        s: &wgpu::Buffer,
+        k: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        fn at(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu knockout bind"),
+            layout: &self.layout_ko_s,
+            entries: &[at(0, params), at(1, src), at(3, mask), at(6, ko), at(7, s), at(8, k)],
+        })
+    }
+
+    /// Bind group of `knockout_mix` / `knockout_clear`: params, the destination, `Ko`, S, the
+    /// shape plane and the accumulated deep shape (four distinct storage buffers).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_ko_mix(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        ko: &wgpu::Buffer,
+        s: &wgpu::Buffer,
+        k: &wgpu::Buffer,
+        acc: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        fn at(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu knockout mix bind"),
+            layout: &self.layout_ko_mix,
+            entries: &[at(0, params), at(2, dst), at(6, ko), at(7, s), at(8, k), at(9, acc)],
+        })
+    }
+
+    /// One knockout pass over `width` x `height` texels.
+    pub(crate) fn dispatch_ko(
+        &self,
+        pass: KoPass,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        let pipeline = match pass {
+            KoPass::S => &self.pipeline_ko_s,
+            KoPass::Mix => &self.pipeline_ko_mix,
+            KoPass::Clear => &self.pipeline_ko_clear,
+        };
+        Self::dispatch_with(pipeline, encoder, bind, width, height);
     }
 
     /// Bind group of one effect pass: parameter block, two read-only planes, the output plane and

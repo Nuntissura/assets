@@ -3455,10 +3455,11 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
             op.key()
         );
     }
+    // knockout runs on this backend since lane SMB-PS-ADJUST-STYLES-3 (tests/gpu_knockout.rs)
     for depth in [Knockout::Shallow, Knockout::Deep] {
         assert_eq!(
             backend.extension_exactness(ExtOperator::Knockout(depth)),
-            Exactness::Unsupported
+            Exactness::Approximate
         );
     }
     // Blend-If on a clip base or a clipped layer has no definition: Unsupported in pigment and here
@@ -3586,16 +3587,15 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
         );
         assert_eq!(legacy, Err(BackendError::Unavailable("no_adapter")));
     }
-    // knockout is refused before any upload
+    // knockout at the root is admitted since lane SMB-PS-ADJUST-STYLES-3: without an adapter the
+    // run ends at no_adapter, after admission (tests/gpu_knockout.rs renders it)
     for depth in [Knockout::Shallow, Knockout::Deep] {
         let knockout = PlanExtensions::from_layers(vec![
             LayerExtension::new(adj_plan.root, 1).with_knockout(depth),
         ]);
-        assert!(
-            matches!(
-                run_ext(&backend, &adj_plan, &knockout, &approx, &sources, &mut sink),
-                Err(BackendError::Unsupported { operator, .. }) if operator == depth.key()
-            ),
+        assert_eq!(
+            run_ext(&backend, &adj_plan, &knockout, &approx, &sources, &mut sink),
+            Err(BackendError::Unavailable("no_adapter")),
             "{depth:?}"
         );
     }
