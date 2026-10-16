@@ -23,7 +23,7 @@
 //! reason is listed by [`CatalogField::ckc_field`] returning `None` or in [`PROPOSED_CKC_ADDITIONS`].
 
 /// Port contract version; a host refuses a different major.
-pub const CKC_PORT_VERSION: u32 = 2;
+pub const CKC_PORT_VERSION: u32 = 3;
 
 /// Studio names the CKC contract does not define yet, proposed as CKC additions (lane notes of
 /// SMB-CKC-PORTS-ALIGN carry the rationale per entry).
@@ -36,6 +36,9 @@ pub const PROPOSED_CKC_ADDITIONS: &[&str] = &[
     "fields file_format, folder, any_text, has_adjustments",
     "command ids asset.update_library_metadata, asset.update_library_metadata_batch, catalog.keyword.define_synonyms, catalog.collection.*, asset.write_xmp_sidecar",
     "asset-granularity revision on PhotoAsset library metadata (STU-ASSET-023 requires it; the CKC contract names none)",
+    "whole keyword-set replacement (MetadataChange::SetKeywords; MT-019 names bulk add/remove only)",
+    "collection listing with smart rules (catalog.collection.list) so Studio can preview smart-rule membership",
+    "XMP sidecar byte read/write with a sidecar revision (asset.read_xmp_sidecar / asset.write_xmp_sidecar_bytes); Studio serializes, CKC owns the I/O",
 ];
 
 /// Bounds every request is validated against before it is sent and again by the host.
@@ -55,6 +58,18 @@ pub struct CkcLimits {
     pub max_sort_keys: usize,
     pub max_page: u32,
     pub max_xmp_keywords: usize,
+    /// Keywords one `SetKeywords` change may carry (SMB-LR-LIBRARY-WRITE).
+    pub max_keywords_per_asset: usize,
+    /// Collections a rule context may hold (smart-rule preview, SMB-LR-LIBRARY-WRITE).
+    pub max_collections: usize,
+    /// Nested smart-collection references followed by one evaluation.
+    pub max_reference_depth: usize,
+    /// Criterion evaluations one record evaluation may spend (bounds rule fan-out through references).
+    pub max_eval_steps: usize,
+    /// Assets one library edit may address after selection resolution.
+    pub max_selection: usize,
+    /// XMP sidecar bytes one write request may carry.
+    pub max_sidecar_bytes: usize,
 }
 
 impl Default for CkcLimits {
@@ -74,6 +89,12 @@ impl Default for CkcLimits {
             max_sort_keys: 8,
             max_page: 1000,
             max_xmp_keywords: 4096,
+            max_keywords_per_asset: 4096,
+            max_collections: 10_000,
+            max_reference_depth: 32,
+            max_eval_steps: 1_000_000,
+            max_selection: 100_000,
+            max_sidecar_bytes: 4 * 1024 * 1024,
         }
     }
 }
@@ -107,7 +128,7 @@ impl CkcError {
 }
 
 /// Idempotency key (STU-SDB-004): ASCII `[A-Za-z0-9._:-]`, at most `max_key_bytes`.
-fn check_key(s: &str, l: &CkcLimits) -> Result<(), CkcError> {
+pub(crate) fn check_key(s: &str, l: &CkcLimits) -> Result<(), CkcError> {
     if s.is_empty() || s.len() > l.max_key_bytes {
         return Err(CkcError::Limit("ckc_key_length"));
     }
@@ -295,6 +316,8 @@ pub enum MetadataChange {
     SetColorLabel(Option<ColorLabel>),
     AddKeyword(KeywordPath),
     RemoveKeyword(KeywordPath),
+    /// Replaces the whole keyword set (order kept; duplicates refused). PROPOSED CKC addition.
+    SetKeywords(Vec<KeywordPath>),
 }
 
 /// Library metadata update of one asset (command id `asset.update_library_metadata`, PROPOSED):
@@ -314,6 +337,26 @@ fn check_changes(changes: &[MetadataChange], l: &CkcLimits) -> Result<(), CkcErr
     }
     if changes.len() > l.max_changes {
         return Err(CkcError::Limit("ckc_changes"));
+    }
+    for change in changes {
+        if let MetadataChange::SetKeywords(set) = change {
+            check_keyword_set(set, l)?;
+        }
+    }
+    Ok(())
+}
+
+/// A whole keyword set: at most `max_keywords_per_asset` entries (checked before any hashing), no
+/// repeated path.
+pub(crate) fn check_keyword_set(set: &[KeywordPath], l: &CkcLimits) -> Result<(), CkcError> {
+    if set.len() > l.max_keywords_per_asset {
+        return Err(CkcError::Limit("ckc_keyword_set"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for k in set {
+        if !seen.insert(k) {
+            return Err(CkcError::Invalid("ckc_keyword_repeated"));
+        }
     }
     Ok(())
 }
@@ -746,6 +789,57 @@ impl XmpSidecarWrite {
     }
 }
 
+/// Kind of a listed collection; a smart collection carries its rule.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ListedKind {
+    Manual,
+    Set,
+    Smart(CatalogRule),
+}
+
+/// One collection as CKC lists it (`catalog.collection.list`, PROPOSED): what Studio needs to
+/// preview smart-rule membership and resolve collection criteria. Membership of manual
+/// collections comes from `AssetMetadata.collections`; Studio stores none of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollectionSummary {
+    pub collection_id: CollectionId,
+    pub name: String,
+    pub parent: Option<CollectionId>,
+    pub kind: ListedKind,
+    pub revision: u64,
+}
+
+/// Sidecar bytes CKC holds for an asset with their own revision (a sidecar edit is a
+/// compare-and-set on it, STU-SDB-004).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidecarBytes {
+    pub bytes: Vec<u8>,
+    pub revision: u64,
+}
+
+/// Write of Studio-serialized XMP sidecar bytes (command id `asset.write_xmp_sidecar_bytes`,
+/// PROPOSED). Studio owns the XMP serialization (file interop, 14.12 "bounded explicit XMP
+/// interchange read/write through CKC"); CKC owns the I/O, placement and EventLedger record.
+/// `expected_sidecar_revision` is `None` when Studio read no sidecar (the write must create one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XmpSidecarBytesWrite {
+    pub idempotency_key: String,
+    pub asset_id: AssetId,
+    pub expected_sidecar_revision: Option<u64>,
+    pub bytes: Vec<u8>,
+    pub placement: SidecarPlacement,
+}
+
+impl XmpSidecarBytesWrite {
+    pub fn validate(&self, l: &CkcLimits) -> Result<(), CkcError> {
+        check_key(&self.idempotency_key, l)?;
+        if self.bytes.is_empty() || self.bytes.len() > l.max_sidecar_bytes {
+            return Err(CkcError::Limit("ckc_sidecar_bytes"));
+        }
+        Ok(())
+    }
+}
+
 /// Receipt of an accepted command: command id, target, new revision, the EventLedger event that
 /// recorded it (STU-ARC-004 `event_ledger_event_id`, STU-ASSET-013) and who acted (STU-ASSET-022).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -768,6 +862,9 @@ pub const COMMAND_IDS: &[(&str, &str)] = &[
     ("keyword", "catalog.keyword.define_synonyms"),
     ("collection", "catalog.collection.*"),
     ("request_xmp_sidecar", "asset.write_xmp_sidecar"),
+    ("list_collections", "catalog.collection.list"),
+    ("read_xmp_sidecar", "asset.read_xmp_sidecar"),
+    ("write_xmp_sidecar_bytes", "asset.write_xmp_sidecar_bytes"),
 ];
 
 /// The injected CKC provider port. Implementations (the Handshake host adapter over CKC; in tests
@@ -782,4 +879,20 @@ pub trait CkcCatalogPort {
     fn keyword(&self, actor: &CkcActor, command: &KeywordCommand) -> Result<CkcReceipt, CkcError>;
     fn collection(&self, actor: &CkcActor, command: &CollectionCommand) -> Result<CkcReceipt, CkcError>;
     fn request_xmp_sidecar(&self, actor: &CkcActor, request: &XmpSidecarWrite) -> Result<CkcReceipt, CkcError>;
+    /// Collections with their kinds and smart rules (port v3; a host without it is `Unavailable`).
+    fn list_collections(&self, actor: &CkcActor) -> Result<Vec<CollectionSummary>, CkcError> {
+        let _ = actor;
+        Err(CkcError::Unavailable)
+    }
+    /// Current sidecar bytes of an asset, `None` when it has none (port v3).
+    fn read_xmp_sidecar(&self, actor: &CkcActor, asset_id: &AssetId) -> Result<Option<SidecarBytes>, CkcError> {
+        let _ = (actor, asset_id);
+        Err(CkcError::Unavailable)
+    }
+    /// Writes Studio-serialized sidecar bytes under the sidecar-revision precondition (port v3);
+    /// a moved sidecar is `StaleRevision { current }` (`current` 0 = the sidecar read is gone).
+    fn write_xmp_sidecar_bytes(&self, actor: &CkcActor, request: &XmpSidecarBytesWrite) -> Result<CkcReceipt, CkcError> {
+        let _ = (actor, request);
+        Err(CkcError::Unavailable)
+    }
 }

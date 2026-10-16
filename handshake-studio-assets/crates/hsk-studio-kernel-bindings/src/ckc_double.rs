@@ -9,8 +9,9 @@
 //! semantics (case-insensitive text matching) are the double's own and are NOT CKC behaviour.
 use crate::ckc::{
     AssetId, AssetMetadata, CatalogField, CatalogOp, CatalogRule, CatalogValue, CkcActor, CkcCatalogPort, CkcError,
-    CkcLimits, CkcReceipt, CollectionCommand, CollectionId, CollectionKind, Criterion, Flag, KeywordCommand, KeywordPath,
-    MetadataBatch, MetadataChange, MetadataMutation, Rating, SearchPage, SearchRequest, XmpSidecarWrite,
+    CkcLimits, CkcReceipt, CollectionCommand, CollectionId, CollectionKind, CollectionSummary, Criterion, Flag, KeywordCommand,
+    KeywordPath, ListedKind, MetadataBatch, MetadataChange, MetadataMutation, Rating, SearchPage, SearchRequest, SidecarBytes,
+    XmpSidecarBytesWrite, XmpSidecarWrite,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -44,6 +45,7 @@ struct State {
     synonyms: BTreeMap<KeywordPath, Vec<String>>,
     receipts: HashMap<String, CkcReceipt>,
     sidecars: Vec<XmpSidecarWrite>,
+    sidecar_bytes: BTreeMap<AssetId, SidecarBytes>,
     denied: BTreeSet<String>,
     denials: u64,
     events: u64,
@@ -71,6 +73,7 @@ fn apply_changes(meta: &AssetMetadata, changes: &[MetadataChange]) -> Result<Ass
                 }
             }
             MetadataChange::RemoveKeyword(k) => next.keywords.retain(|x| x != k),
+            MetadataChange::SetKeywords(set) => next.keywords.clone_from(set),
         }
     }
     next.revision = bump(next.revision)?;
@@ -112,6 +115,11 @@ impl CkcTestDouble {
     }
     pub fn synonyms(&self, keyword: &KeywordPath) -> Vec<String> {
         self.lock().ok().and_then(|s| s.synonyms.get(keyword).cloned()).unwrap_or_default()
+    }
+    /// Seeds sidecar bytes for an asset (as if a file existed beside the original).
+    pub fn seed_sidecar(&self, asset_id: AssetId, bytes: Vec<u8>) -> Result<(), CkcError> {
+        self.lock()?.sidecar_bytes.insert(asset_id, SidecarBytes { bytes, revision: 1 });
+        Ok(())
     }
     pub fn sidecar_requests(&self) -> Vec<XmpSidecarWrite> {
         self.lock().map(|s| s.sidecars.clone()).unwrap_or_default()
@@ -464,6 +472,58 @@ impl CkcCatalogPort for CkcTestDouble {
         }
         s.sidecars.push(request.clone());
         Ok(Self::record(&mut s, &request.idempotency_key, "asset.write_xmp_sidecar", request.asset_id.as_str(), current, actor))
+    }
+
+    fn list_collections(&self, actor: &CkcActor) -> Result<Vec<CollectionSummary>, CkcError> {
+        let mut s = self.lock()?;
+        Self::authorize(&mut s, actor)?;
+        Ok(s.collections
+            .iter()
+            .map(|(id, c)| match c {
+                DoubleCollection::Plain { name, parent, kind, revision, .. } => CollectionSummary {
+                    collection_id: id.clone(),
+                    name: name.clone(),
+                    parent: parent.clone(),
+                    kind: if *kind == CollectionKind::Set { ListedKind::Set } else { ListedKind::Manual },
+                    revision: *revision,
+                },
+                DoubleCollection::Smart { name, parent, rule, revision } => CollectionSummary {
+                    collection_id: id.clone(),
+                    name: name.clone(),
+                    parent: parent.clone(),
+                    kind: ListedKind::Smart(rule.clone()),
+                    revision: *revision,
+                },
+            })
+            .collect())
+    }
+
+    fn read_xmp_sidecar(&self, actor: &CkcActor, asset_id: &AssetId) -> Result<Option<SidecarBytes>, CkcError> {
+        let mut s = self.lock()?;
+        Self::authorize(&mut s, actor)?;
+        if !s.assets.contains_key(asset_id) {
+            return Err(CkcError::NotFound);
+        }
+        Ok(s.sidecar_bytes.get(asset_id).cloned())
+    }
+
+    fn write_xmp_sidecar_bytes(&self, actor: &CkcActor, request: &XmpSidecarBytesWrite) -> Result<CkcReceipt, CkcError> {
+        request.validate(&self.limits)?;
+        let mut s = self.lock()?;
+        Self::authorize(&mut s, actor)?;
+        if let Some(r) = Self::replay(&s, &request.idempotency_key) {
+            return Ok(r);
+        }
+        if !s.assets.contains_key(&request.asset_id) {
+            return Err(CkcError::NotFound);
+        }
+        let current = s.sidecar_bytes.get(&request.asset_id).map(|b| b.revision);
+        if current != request.expected_sidecar_revision {
+            return Err(CkcError::StaleRevision { current: current.unwrap_or(0) });
+        }
+        let revision = bump(current.unwrap_or(0))?;
+        s.sidecar_bytes.insert(request.asset_id.clone(), SidecarBytes { bytes: request.bytes.clone(), revision });
+        Ok(Self::record(&mut s, &request.idempotency_key, "asset.write_xmp_sidecar_bytes", request.asset_id.as_str(), revision, actor))
     }
 }
 
