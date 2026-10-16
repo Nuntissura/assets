@@ -253,9 +253,10 @@ fn hue_saturation_master_and_refusals() {
         colorize: true,
     });
     assert!(close3(colorize.apply(pink).unwrap(), [0.25, 0.75, 0.25]));
-    // Legacy brightness/contrast: contrast -100 with brightness +100 -> 0.5 + 100/255 = 0.8921569
-    // (relayed Photoshop example 227 of 255); contrast +100 is a step at 0.5; contrast +50 on 0.6:
-    // 0.1 / 0.5 + 0.5 = 0.7; brightness +20 on 0.5: 0.5 + 20/255 = 0.5784314.
+    // Legacy brightness/contrast, pivot p = 127/255 (D5 oracle PS-C05): contrast -100 with
+    // brightness +100 -> p + 100/255 = 227/255 = 0.8901961 (the relayed Photoshop example, now
+    // measured); contrast +100 is a step at p; contrast +50 on 0.6: (0.6 - p) / 0.5 + p = 0.7019608;
+    // brightness +20 on 0.5: 0.5 + 20/255 = 0.5784314.
     let bc = |brightness, contrast, use_legacy| {
         AdjustmentOp::BrightnessContrast(BrightnessContrast {
             brightness,
@@ -265,7 +266,7 @@ fn hue_saturation_master_and_refusals() {
     };
     assert!(close3(
         bc(100.0, -100.0, true).apply([0.1, 0.5, 0.9]).unwrap(),
-        [0.892_156_9; 3]
+        [0.890_196_1; 3]
     ));
     assert!(close3(
         bc(0.0, 100.0, true).apply([0.4, 0.6, 0.6]).unwrap(),
@@ -273,7 +274,7 @@ fn hue_saturation_master_and_refusals() {
     ));
     assert!(close3(
         bc(0.0, 50.0, true).apply([0.6; 3]).unwrap(),
-        [0.7; 3]
+        [0.701_960_8; 3]
     ));
     assert!(close3(
         bc(20.0, 0.0, true).apply([0.5; 3]).unwrap(),

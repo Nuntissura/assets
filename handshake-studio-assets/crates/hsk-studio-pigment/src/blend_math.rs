@@ -381,15 +381,17 @@ fn linear_dodge_add(a: f32, b: f32) -> f32 {
 fn linear_light(a: f32, b: f32) -> f32 {
     (a + 2.0 * b - 1.0).clamp(0.0, 1.0)
 }
+/// End points from the D5 Photoshop oracle (PS-B01, 8- and 16-bit grids): a source of 0 gives 0
+/// and a source of 1 gives 1 whatever the backdrop (lane SMB-D5-PS-COMPARE).
 fn vivid_light(a: f32, b: f32) -> f32 {
     if b < 0.5 {
         if b == 0.0 {
-            if a >= 1.0 { 1.0 } else { 0.0 }
+            0.0
         } else {
             (1.0 - (1.0 - a) / (2.0 * b)).clamp(0.0, 1.0)
         }
     } else if b >= 1.0 {
-        if a <= 0.0 { 0.0 } else { 1.0 }
+        1.0
     } else {
         (a / (2.0 * (1.0 - b))).clamp(0.0, 1.0)
     }
@@ -401,9 +403,22 @@ fn pin_light(a: f32, b: f32) -> f32 {
         a.max(2.0 * b - 1.0)
     }
 }
+/// Hard mix = vivid light thresholded at 0.5: 1 when `a + b > 1`, 0 when `a + b < 1`. On the
+/// diagonal `a + b = 1` the D5 Photoshop oracle (PS-B01, 8- and 16-bit) gives 1 for a source below
+/// 0.5 (burn half) and 0 above it (dodge half); `HARD_MIX_TIE` is the band treated as the diagonal
+/// (binary32 sums of `k / 255` pairs land within a few ulps of 1). Lane SMB-D5-PS-COMPARE.
 fn hard_mix(a: f32, b: f32) -> f32 {
-    if a + b >= 1.0 { 1.0 } else { 0.0 }
+    let t = a + b - 1.0;
+    if t.abs() <= HARD_MIX_TIE {
+        if b <= 0.5 { 1.0 } else { 0.0 }
+    } else if t > 0.0 {
+        1.0
+    } else {
+        0.0
+    }
 }
+/// Half-width of the hard-mix diagonal band (about 8 ulps at 1.0; far below one 16-bit step).
+const HARD_MIX_TIE: f32 = 1.0e-6;
 fn subtract(a: f32, b: f32) -> f32 {
     (a - b).max(0.0)
 }
@@ -448,18 +463,31 @@ pub fn separable_fn(mode: StudioBlendMode) -> Option<fn(f32, f32) -> f32> {
 pub fn lum(c: [f32; 3]) -> f32 {
     0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
 }
+/// W3C ClipColor. The two scalings divide by `l - n` and `x - l`, which vanish (or turn negative by
+/// one ulp, because the binary32 weights 0.3 + 0.59 + 0.11 do not sum to exactly 1) when the
+/// colour is gray; the W3C maths then has the gray itself as its limit, so a non-positive
+/// denominator yields `[l; 3]` instead of 0/0 = NaN (D5 oracle PS-B01 colour and luminosity on gray
+/// inputs: NaN on 42 of 65536 pixels before; lane SMB-D5-PS-COMPARE).
 fn clip_color(mut c: [f32; 3]) -> [f32; 3] {
     let l = lum(c);
     let n = c.iter().copied().fold(f32::INFINITY, f32::min);
     let x = c.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     if n < 0.0 {
-        for v in &mut c {
-            *v = l + (*v - l) * l / (l - n);
+        if l - n > 0.0 {
+            for v in &mut c {
+                *v = l + (*v - l) * l / (l - n);
+            }
+        } else {
+            c = [l; 3];
         }
     }
     if x > 1.0 {
-        for v in &mut c {
-            *v = l + (*v - l) * (1.0 - l) / (x - l);
+        if x - l > 0.0 {
+            for v in &mut c {
+                *v = l + (*v - l) * (1.0 - l) / (x - l);
+            }
+        } else {
+            c = [l; 3];
         }
     }
     c

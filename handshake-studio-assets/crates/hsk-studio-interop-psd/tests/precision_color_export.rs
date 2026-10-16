@@ -576,14 +576,15 @@ fn sixteen_bit_cmyk_and_lab_use_the_scale_and_the_pcs_native_path() {
         assert_eq!(channel_plane(&doc, 3), planes[3], "16-bit K plane bytes are untouched");
         assert_projection_survives_export(&doc, &p, &bytes, "pixel_export_after_icc_conversion_unsupported");
 
-        // Lab 16-bit (full scale): L = raw/65535*100, a/b = raw/65535*255 - 128; raw 32896 is the neutral axis
-        let lab_raw = |l: f64, a: f64, b: f64| [(l / 100.0 * 65535.0).round() as u16, ((a + 128.0) * 257.0) as u16, ((b + 128.0) * 257.0) as u16];
+        // Lab 16-bit (full scale): L = raw/65535*100, a/b = raw/256 - 128; raw 32768 is the neutral axis (the
+        // D5 oracle's Photoshop-authored Lab PSD PS-L02 stores a = b = 0 as 32768)
+        let lab_raw = |l: f64, a: f64, b: f64| [(l / 100.0 * 65535.0).round() as u16, ((a + 128.0) * 256.0) as u16, ((b + 128.0) * 256.0) as u16];
         let px16 = [lab_raw(100.0, 0.0, 0.0), lab_raw(0.0, 0.0, 0.0), lab_raw(60.0, 20.0, -25.0)];
         let lab_planes: Vec<Vec<u8>> = (0..3).map(|c| be16s(&px16.map(|p| p[c]))).collect();
         let bytes16 = flat_doc(9, 3, 16, (3, 1), Vec::new(), lab_planes.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), lab_planes.concat());
         let (doc16, p16) = prism_import(&bytes16, SixteenBitScale::Full65535, None, None);
         for (i, raw) in px16.iter().enumerate() {
-            let (l, a, b) = (f64::from(raw[0]) / 65535.0 * 100.0, f64::from(raw[1]) / 65535.0 * 255.0 - 128.0, f64::from(raw[2]) / 65535.0 * 255.0 - 128.0);
+            let (l, a, b) = (f64::from(raw[0]) / 65535.0 * 100.0, f64::from(raw[1]) / 256.0 - 128.0, f64::from(raw[2]) / 256.0 - 128.0);
             assert_tile_matches(&p16.tiles[0], i, icc::lab_to_linear_srgb(l, a, b), 3e-3, "lab16");
         }
         let d = p16.provenance.display.as_ref().unwrap();

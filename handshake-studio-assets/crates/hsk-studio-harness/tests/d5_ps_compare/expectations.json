@@ -1,0 +1,356 @@
+{
+ "schema": "hsk.studio.d5-ps-expectations@1",
+ "note": "Every MISMATCH / NOT_SUPPORTED outcome of tests/d5_ps_compare.rs must match an entry (case + variant glob, first match wins) with the same verdict, or the test fails. Classes: studio_bug, formula, formula_edge, formula_fill, rounding_8bit, geometry, unsupported_feature, spec_refusal. Evidence: research/d5-photoshop-compare-20261016.json (governance kernel).",
+ "entries": [
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_COLORBURN",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_LINEARBURN",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_COLORDODGE",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_LINEARDODGE",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_VIVIDLIGHT",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_LINEARLIGHT",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_HARDMIX",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_o100_f50_DIFFERENCE",
+   "verdict": "MISMATCH",
+   "class": "formula_fill",
+   "reason": "fill opacity on the 'special eight' modes: Photoshop applies fill inside the blend by scaling the source toward the mode's neutral colour (dodges and difference s*f, burns 1-(1-s)*f, vivid/linear light 0.5+(s-0.5)*f; fitted on this grid within 1.4 codes) and hard mix becomes clamp((b + f*s - f)/(1 - f)) (within 1 code at f=0.5); Studio folds fill into opacity as a product (render-cpu PLayer.opacity), which matches only the other modes. Follow-up FP-SPECIAL8-FILL."
+  },
+  {
+   "case": "PS-B01",
+   "variant": "d8_*_VIVIDLIGHT",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "8-bit vivid light: up to 2 codes on the burn half (source < 0.5) from Photoshop's 8-bit integer arithmetic; the 16-bit grid matches (after FIX-VIVID-ENDPOINTS, which removed the 255-code end-point errors at source 0 and 1)"
+  },
+  {
+   "case": "PS-C02",
+   "variant": "*_g2",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "Levels gamma above 1: Photoshop limits the slope near black (gamma 2: output 4 at input 1 where x^(1/2) gives 16, converging to the power curve near input 64; gamma 1.5 and 1.4 likewise up to 5 codes); gamma 0.5 and 1, the input/output points and the channel-then-composite order (FIX none needed, matches) agree. The toe function is not identified from two gammas; follow-up FP-LEVELS-GAMMA-TOE needs a gamma sweep in the oracle"
+  },
+  {
+   "case": "PS-C02",
+   "variant": "*g1.5*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "Levels gamma 1.5 (with input/output points): the same Photoshop gamma toe near black as gamma 2, up to 6 codes; see the *_g2 entry and FP-LEVELS-GAMMA-TOE"
+  },
+  {
+   "case": "PS-C02",
+   "variant": "dom_adjustLevels*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "ArtLayer.adjustLevels gamma 1.5: byte-identical to the adjustment-layer variant, same gamma toe (FP-LEVELS-GAMMA-TOE)"
+  },
+  {
+   "case": "PS-C02",
+   "variant": "*comp_and_red",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "composite gamma 1.5 after the red record: same gamma toe (FP-LEVELS-GAMMA-TOE); the channel-then-composite order itself matches"
+  },
+  {
+   "case": "PS-C04",
+   "variant": "sat+50",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "hue/saturation +50: up to 2 codes on 444 of 14739 samples (saturation stretch near full saturation); the psd-tools master formula matches every other variant within 1 code"
+  },
+  {
+   "case": "PS-C05",
+   "variant": "modern_*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "modern (non-legacy) brightness/contrast is refused by pigment adjust_math (no published transfer); the oracle now has 4 ramp outputs for it, follow-up FP-BC-MODERN"
+  },
+  {
+   "case": "PS-C06",
+   "variant": "8bit_ev+1_only",
+   "verdict": "MISMATCH",
+   "class": "rounding_8bit",
+   "reason": "8-bit exposure +1 EV: up to 2 codes on the darkest inputs (192 samples); the x^2.2 linearisation stand-in matches the other 8-bit variants exactly and the 32-bit variants match within 1.2e-7"
+  },
+  {
+   "case": "PS-C09",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "Blend-If ramps: Photoshop's split ranges are inclusive integer ramps, weight (v - lo0 + 1)/(lo1 - lo0 + 1) and (hi1 + 1 - v)/(hi1 - hi0 + 1) on the 8-bit value, with the gray value rounded to an integer (red and underlying-gray variants reproduced within 1 code, the hard 100/100/200/200 variant exactly); pigment's continuous ramp (v - lo0)/(lo1 - lo0) differs by up to 6 codes and the unrounded gray misses the hard cut on 40 samples. Follow-up FP-BLENDIF-INTEGER-RAMP (pigment coverage_math + render-gpu WGSL)"
+  },
+  {
+   "case": "PS-C18",
+   "variant": "blendif_*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If on a clip base is refused by pigment admission (blend_if_clip_base, no public definition); the oracle now defines it: with Blend Clipped Layers as Group off the result equals the run without Blend-If (byte-identical outputs), follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C19",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Underlying Blend-If on a clip base: refused (blend_if_clip_base); oracle outputs for Blend Clipped Layers as Group on and off are identical, follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C20",
+   "variant": "clipped_this_gray",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If on a clipped layer: refused (blend_if_clipped_layer); oracle output available, follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C20",
+   "variant": "clipped_no_blendif",
+   "verdict": "MISMATCH",
+   "class": "geometry",
+   "reason": "the clip base is a 96-gon circle filled through an anti-aliased Photoshop selection; the suite rasterises it with 16x16 supersampling, so 576 samples on the circle rim differ (up to 27 codes); the interior (clip rule, base alpha) matches"
+  },
+  {
+   "case": "PS-C21",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Underlying Blend-If on a clipped layer: refused (blend_if_clipped_layer); oracle outputs with and without a bright layer below the base are identical, follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C22",
+   "variant": "clipped_invert_this_gray",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If on a clipped adjustment layer: refused (blend_if_clipped_layer), follow-up FP-BLENDIF-CLIP-ROLES"
+  },
+  {
+   "case": "PS-C23",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "Underlying Blend-If on the only layer of a Normal (isolated) group: Photoshop leaves the layer fully visible (nothing underlies it inside the group), Studio weighs the transparent group backdrop as black and hides it (and the solid clipped to the group with it). Follow-up FP-BLENDIF-TRANSPARENT-UNDERLYING"
+  },
+  {
+   "case": "PS-C28",
+   "variant": "nomask",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "the Levels gamma 1.4 adjustment inside the pass-through group carries the Photoshop gamma toe (see PS-C02, FP-LEVELS-GAMMA-TOE): up to 5 codes in the dark end; the pass-through compositing itself (multiply pixel layer, adjustment on the parent backdrop) agrees elsewhere"
+  },
+  {
+   "case": "PS-C29",
+   "variant": "fill100",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "same Levels gamma 1.4 toe as PS-C28 nomask (identical scene)"
+  },
+  {
+   "case": "PS-C28",
+   "variant": "mask*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "a mask on a pass-through group is refused for every backend (mask_on_pass_through); oracle outputs for mask / density 50 / opacity 50 exist, follow-up FP-PASS-THROUGH-MASK-OPACITY"
+  },
+  {
+   "case": "PS-C28",
+   "variant": "opacity50_nomask",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "pass-through group opacity below 1 is refused (group_pass_through_opacity); oracle output exists, follow-up FP-PASS-THROUGH-MASK-OPACITY"
+  },
+  {
+   "case": "PS-C29",
+   "variant": "fill50",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "pass-through group fill below 1 is refused (group_pass_through_fill_opacity); oracle output exists, follow-up FP-PASS-THROUGH-MASK-OPACITY"
+  },
+  {
+   "case": "PS-L01",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "colour_engine",
+   "reason": "Lab -> U.S. Web Coated (SWOP) v2 with BPC through Prism (moxcms) vs Photoshop ACE, using the profile Photoshop embedded in its output: ink differs by up to 6.5 (relative colorimetric) / 4.8 (perceptual) 8-bit codes, mean 0.5, on 1110/1147 of 2048 samples; the CLUT interpolation and the BPC implementation differ from ACE. Follow-up FP-CMS-ACE-PARITY"
+  },
+  {
+   "case": "PS-C12",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "drop shadow: Photoshop's Softer blur is a separable tent (triangle) kernel of half-width = size, finite support (alpha 0 beyond size px), and the offset is rounded per axis half away from zero (angle 120 d5 -> (3, 4)); with that model the oracle alpha is reproduced within 0.5 code for size 2/10 and 4 codes for size 40. Studio uses a Gaussian with sigma = size/2 (support 1.5 size), so every variant differs (up to 16 codes in the penumbra at integer offsets, more where the offset rounding differs). Follow-up FP-EFFECT-KERNEL"
+  },
+  {
+   "case": "PS-C13",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "solid stroke: inside strokes on the square match at every size (and outside 50, cut by the canvas); straight edges match exactly for outside and centre too; the differences sit on the corner arcs only (all over-tolerance pixels within size px of a square corner), where Photoshop's arc coverage is lower (e.g. 88 vs 140 at the outside-5 corner); circles and the soft shape differ along the anti-aliased rim. Follow-up FP-STROKE-CORNER-AA"
+  },
+  {
+   "case": "PS-C14",
+   "variant": "blendInterior_on",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Blend Interior Effects as Group: no envelope field, follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C14",
+   "variant": "mask_hides_effects_on",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Layer Mask Hides Effects: no envelope field, follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C14",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "effect stack (drop shadow 6/8 + red overlay + 3 px blue stroke): differences come from the drop-shadow kernel (FP-EFFECT-KERNEL) and the stroke corner arcs (FP-STROKE-CORNER-AA); fill 100/50/0 are identical in Photoshop and in Studio (overlay covers the content, effects ignore fill), which agrees"
+  },
+  {
+   "case": "PS-C15",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "inner shadow: same tent-kernel and offset-rounding divergence as the drop shadow (FP-EFFECT-KERNEL). Evidence that the rest of the chain is right: choke 100 (hard, no blur) on the square matches at every axis-aligned angle and at distance 0, and size 40 choke 100 matches at every angle; the angle 120/-60 choke-100 variants of size 2 and 10 differ only through the offset rounding"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_precise",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Precise glow technique is refused (glow_technique_precise); Photoshop's precise output equals softer at spread 100, follow-up FP-GLOW-PRECISE-RANGE"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_range50",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "glow range below 100 % is refused (glow_range), follow-up FP-GLOW-PRECISE-RANGE"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_range25",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "glow range below 100 % is refused (glow_range), follow-up FP-GLOW-PRECISE-RANGE"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*_jitter50",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "glow jitter is refused (glow_jitter); Photoshop's output with jitter 50 on a solid-colour glow is byte-identical to jitter 0, so Studio could admit jitter for a colour fill (follow-up FP-GLOW-PRECISE-RANGE)"
+  },
+  {
+   "case": "PS-C16",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "outer glow Softer: Photoshop's matte is the shape blurred by a separable tent kernel of half-width = size (spread 0: reproduced within 0.5 code at sizes 10 and 40), Studio's Gaussian sigma = size/2 differs by up to 54 codes; spread follows the same kernel after dilation. Follow-up FP-EFFECT-KERNEL"
+  },
+  {
+   "case": "PS-C17",
+   "variant": "*_precise",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "Precise inner glow is refused (glow_technique_precise); the oracle cannot judge it (see below)"
+  },
+  {
+   "case": "PS-C17",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "studio_bug",
+   "reason": "interior effects raise the layer alpha on anti-aliased edges: Studio composites the inner glow source-over onto the running result with alpha = matte x content alpha, so a 22-alpha rim pixel becomes 33 and is tinted; Photoshop keeps the shape alpha and colour (light glow in Screen over white stays white). Square variants match because the square has no partial alpha. Note the case design: a light glow in Screen over white content is invisible, so PS-C17 carries no inner-glow maths evidence. Follow-up FP-INTERIOR-EFFECT-ALPHA (and re-script PS-C17 with a dark Normal glow)"
+  },
+  {
+   "case": "PS-C24",
+   "variant": "ds_none",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "drop shadow 6/120/8 over the gray-column backdrop: tent kernel and offset rounding (FP-EFFECT-KERNEL)"
+  },
+  {
+   "case": "PS-C24",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "effects together with Blend-If are refused (effects_with_blend_if) or need Transparency Shapes Layer off (no field); oracle outputs exist (the this-gray, fill-0 and transparency-shapes-off variants are byte-identical), follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C25",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "effects together with Underlying Blend-If are refused (effects_with_blend_if); follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C26",
+   "variant": "interior_none_blendinterior_off",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "interior pair (inner shadow 6/120/4 above a 50 % red overlay): inner-shadow kernel and offset rounding (FP-EFFECT-KERNEL)"
+  },
+  {
+   "case": "PS-C26",
+   "variant": "*",
+   "verdict": "NOT_SUPPORTED",
+   "class": "spec_refusal",
+   "reason": "Blend-If with effects (effects_with_blend_if) or Blend Interior Effects as Group (no field); follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C27",
+   "variant": "both",
+   "verdict": "NOT_SUPPORTED",
+   "class": "unsupported_feature",
+   "reason": "a group with a drop shadow holding a layer with a drop shadow is refused by render-cpu (effects_nested declared Unsupported); follow-up FP-STYLE-SWITCHES"
+  },
+  {
+   "case": "PS-C27",
+   "variant": "*",
+   "verdict": "MISMATCH",
+   "class": "formula",
+   "reason": "drop shadow on the child or on the group: tent kernel and offset rounding (FP-EFFECT-KERNEL)"
+  }
+ ]
+}

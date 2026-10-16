@@ -1319,9 +1319,11 @@ impl Builder<'_, '_, '_> {
     /// Display-converts one batch of document samples (`raw`: unit samples in channel order) to
     /// linear working RGB. The input mapping is explicit and recorded as loss entries:
     /// CMYK ink = `1 - stored` (PSD stores CMYK inverted, 255 = no ink; UNVERIFIED against a
-    /// Photoshop fixture), Lab `L = unit * 100`, `a`/`b = unit * 255 - 128` (8-bit ICC legacy
-    /// encoding; 16-bit keeps the same mapping per scale, `* 256` for the 32768 scale so the
-    /// neutral axis sits at raw 16384; UNVERIFIED), gray as stored. The converter output is
+    /// Photoshop fixture), Lab `L = unit * 100`, `a`/`b = unit * 255 - 128` at 8 bits; at 16 bits
+    /// full range `a`/`b = raw / 256 - 128` (Photoshop writes the neutral axis at raw 32768: the D5
+    /// oracle's Photoshop-authored 16-bit Lab PSD PS-L02 stores a = b = 0 as 32768 and L 100 as 65535;
+    /// the previous `unit * 255 - 128` read it as -0.498, a visible tint), `* 256` for the 32768 scale
+    /// so the neutral axis sits at raw 16384 (UNVERIFIED), gray as stored. The converter output is
     /// clamped to `0..=1` here and every clamp is counted for alpha-visible pixels.
     fn convert_wide_pixels(&mut self, route: WideRoute, raw: &[[f32; 4]], alphas: &[f32]) -> Result<Vec<[f32; 3]>> {
         let doc = self.doc;
@@ -1335,7 +1337,11 @@ impl Builder<'_, '_, '_> {
                 v.clamp(lo, hi)
             }
         };
-        let ab_scale = if header.depth == 16 && self.cfg.scale == SixteenBitScale::Photoshop32768 { 256.0 } else { 255.0 };
+        let ab_scale = match (header.depth, self.cfg.scale) {
+            (16, SixteenBitScale::Photoshop32768) => 256.0,
+            (16, SixteenBitScale::Full65535) => 65535.0 / 256.0,
+            _ => 255.0,
+        };
         let mut input: Vec<f32> = Vec::with_capacity(size_mul(raw.len(), route.kind.channels())?);
         for p in raw {
             match route.kind {

@@ -72,7 +72,7 @@ const FORMULAS: &[(StudioBlendMode, &str)] = &[
     (StudioBlendMode::LinearDodgeAdd, "return min(b + s, 1.0);"),
     (
         StudioBlendMode::VividLight,
-        "if (s < 0.5) { if (s == 0.0) { if (b >= 1.0) { return 1.0; } return 0.0; } return clamp(1.0 - (1.0 - b) / (2.0 * s), 0.0, 1.0); } if (s >= 1.0) { if (b <= 0.0) { return 0.0; } return 1.0; } return clamp(b / (2.0 * (1.0 - s)), 0.0, 1.0);",
+        "if (s < 0.5) { if (s == 0.0) { return 0.0; } return clamp(1.0 - (1.0 - b) / (2.0 * s), 0.0, 1.0); } if (s >= 1.0) { return 1.0; } return clamp(b / (2.0 * (1.0 - s)), 0.0, 1.0);",
     ),
     (
         StudioBlendMode::LinearLight,
@@ -84,7 +84,7 @@ const FORMULAS: &[(StudioBlendMode, &str)] = &[
     ),
     (
         StudioBlendMode::HardMix,
-        "if (b + s >= 1.0) { return 1.0; } return 0.0;",
+        "let t = b + s - 1.0; if (abs(t) <= 1.0e-6) { if (s <= 0.5) { return 1.0; } return 0.0; } if (t > 0.0) { return 1.0; } return 0.0;",
     ),
     (StudioBlendMode::Subtract, "return max(b - s, 0.0);"),
     (

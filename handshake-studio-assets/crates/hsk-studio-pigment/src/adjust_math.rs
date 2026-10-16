@@ -669,28 +669,28 @@ fn lightness_shift(x: f64, l: f64) -> f64 {
     v.clamp(0.0, 1.0)
 }
 
-/// Legacy Brightness/Contrast per channel, pivot 0.5: brightness `b` (fraction) is a shift;
-/// contrast `c` (fraction): `c >= 0` -> `(x + b - 0.5) / (1 - c) + 0.5` (brightness before the
-/// stretch; `c == 1` is a hard step at the pivot), `c < 0` -> `(x - 0.5)(1 + c) + 0.5 + b`
-/// (brightness after). Basis: a Photoshop-team statement relayed on the W3C public-fx list
-/// (2012-01..03, msg 0060: brightness adds n, contrast linear, +100 -> 0/255, -100 -> 127, -100
-/// with brightness +100 -> 227) and the photocraft PR 2615 measurement (pivot 128/255 there; the
-/// relayed 127 and the measured 128 disagree, 0.5 is used). UNVERIFIED (D5 5).
+/// Half an 8-bit code: Threshold compares the luminance rounded to 8 bits (D5 oracle PS-C07).
+const THRESHOLD_HALF_CODE: f32 = 0.5 / 255.0;
+
+/// Pivot of the legacy contrast: 127/255, measured on the D5 Photoshop oracle (PS-C05: contrast +100
+/// steps at input 127, contrast -100 gives 127, brightness +100 with contrast -100 gives 227), as the
+/// relayed Photoshop-team statement says (W3C public-fx 2012, msg 0060); 0.5 was used before.
+const LEGACY_CONTRAST_PIVOT: f32 = 127.0 / 255.0;
+
+/// Legacy Brightness/Contrast per channel, pivot `p` = [`LEGACY_CONTRAST_PIVOT`]: brightness `b`
+/// (fraction) is a shift; contrast `c` (fraction): `c >= 0` -> `(x + b - p) / (1 - c) + p`
+/// (brightness before the stretch; `c == 1` is a hard step, white from the pivot up), `c < 0` ->
+/// `(x - p)(1 + c) + p + b` (brightness after). The 7 legacy D5 oracle variants (PS-C05) match within
+/// one 8-bit code (lane SMB-D5-PS-COMPARE).
 fn legacy_brightness_contrast(rgb: [f32; 3], b: f32, c: f32) -> [f32; 3] {
+    let p = LEGACY_CONTRAST_PIVOT;
     rgb.map(|x| {
         let v = if c >= 1.0 {
-            let t = x + b;
-            if t > 0.5 {
-                1.0
-            } else if t < 0.5 {
-                0.0
-            } else {
-                0.5
-            }
+            if x + b >= p { 1.0 } else { 0.0 }
         } else if c >= 0.0 {
-            (x + b - 0.5) / (1.0 - c) + 0.5
+            (x + b - p) / (1.0 - c) + p
         } else {
-            (x - 0.5) * (1.0 + c) + 0.5 + b
+            (x - p) * (1.0 + c) + p + b
         };
         v.clamp(0.0, 1.0)
     })
@@ -799,7 +799,10 @@ impl PreparedAdjustment {
             }
             AdjustmentOp::Invert => rgb.map(|x| 1.0 - x),
             AdjustmentOp::Threshold { level } => {
-                let v = if crate::blend_math::lum(rgb) >= *level {
+                // D5 oracle PS-C07: white where round(255 lum) >= level, i.e. lum >= level - half
+                // a code (the 17^3 lattice at level 128 and the ramp at 127/128/129 reproduce with 0
+                // mismatches); comparing lum >= level lost the exact-equality case in binary32.
+                let v = if crate::blend_math::lum(rgb) >= *level - THRESHOLD_HALF_CODE {
                     1.0
                 } else {
                     0.0

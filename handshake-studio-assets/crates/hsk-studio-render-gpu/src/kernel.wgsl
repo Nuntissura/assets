@@ -53,11 +53,20 @@ fn hsk_clip_color(c_in: vec3<f32>) -> vec3<f32> {
     let l = hsk_lum(c_in);
     let n = min(c_in.x, min(c_in.y, c_in.z));
     let x = max(c_in.x, max(c_in.y, c_in.z));
+    // A non-positive denominator (gray input) takes the gray itself, as pigment clip_color does.
     if (n < 0.0) {
-        c = vec3<f32>(l) + (c - vec3<f32>(l)) * l / (l - n);
+        if (l - n > 0.0) {
+            c = vec3<f32>(l) + (c - vec3<f32>(l)) * l / (l - n);
+        } else {
+            c = vec3<f32>(l);
+        }
     }
     if (x > 1.0) {
-        c = vec3<f32>(l) + (c - vec3<f32>(l)) * (1.0 - l) / (x - l);
+        if (x - l > 0.0) {
+            c = vec3<f32>(l) + (c - vec3<f32>(l)) * (1.0 - l) / (x - l);
+        } else {
+            c = vec3<f32>(l);
+        }
     }
     return c;
 }
@@ -304,7 +313,8 @@ fn exposure_apply(rgb: vec3<f32>) -> vec3<f32> {
 }
 
 fn threshold_apply(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(select(0.0, 1.0, hsk_lum(rgb) >= ext.adj[0].x));
+    // pigment THRESHOLD_HALF_CODE: the luminance is compared as rounded to 8 bits.
+    return vec3<f32>(select(0.0, 1.0, hsk_lum(rgb) >= ext.adj[0].x - 0.5 / 255.0));
 }
 
 fn posterize_apply(rgb: vec3<f32>) -> vec3<f32> {
@@ -427,20 +437,15 @@ fn hue_saturation_with(rgb: vec3<f32>, hue: f32, sat: f32, light: f32, colorize:
 // tests/gpu_adjust_styles_2.rs). ----
 
 fn bc_ch(x: f32, b: f32, c: f32) -> f32 {
+    // pigment LEGACY_CONTRAST_PIVOT = 127/255 (D5 oracle PS-C05)
+    let p = 127.0 / 255.0;
     var v: f32;
     if (c >= 1.0) {
-        let t = x + b;
-        if (t > 0.5) {
-            v = 1.0;
-        } else if (t < 0.5) {
-            v = 0.0;
-        } else {
-            v = 0.5;
-        }
+        v = select(0.0, 1.0, x + b >= p);
     } else if (c >= 0.0) {
-        v = (x + b - 0.5) / (1.0 - c) + 0.5;
+        v = (x + b - p) / (1.0 - c) + p;
     } else {
-        v = (x - 0.5) * (1.0 + c) + 0.5 + b;
+        v = (x - p) * (1.0 + c) + p + b;
     }
     return clamp(v, 0.0, 1.0);
 }
