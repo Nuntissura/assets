@@ -18,8 +18,13 @@
 #   gap          a round releasing between units writes R/gap (dbl_yield): the first queued builder may take ONE
 #                hold and consumes the gap; the round's next ticket then goes first again. A gap with no builder
 #                waiting, or not consumed within 15 s, is withdrawn by the round.
-#   release      the holder renames R/held to R/released.<token> and deletes it; the rename is retried for 10 s
-#                until R/held is gone or carries another token; a failure is logged (stderr + R/events.log).
+#   release      the holder renames R/held to R/released.<token> and deletes it. On Windows any open handle on
+#                R/held/owner (a waiter reading it) makes the directory rename fail, so the rename is retried every
+#                0.1-0.3 s (jitter) for STUDIO_DISK_BUILD_LOCK_RELEASE_S (default 60) s until R/held is gone or
+#                carries another token; a failure is logged RELEASE_FAILED (stderr + R/events.log) and the token is
+#                kept in DBL_UNRELEASED (not exported): the same process's next dbl_acquire renames its own leftover
+#                first (RELEASE_RECOVERED) instead of waiting on itself; a process that exits leaves a dead holder
+#                for the stale-break rule.
 #   stale break  only when the holder and its recorded child are provably dead: mv -T R/held R/stale.<dead
 #                token>; the target name makes the break a compare-and-swap on that token (a second breaker of
 #                the same owner finds the name taken). A moved lock with another token is put back; if that
@@ -38,16 +43,18 @@
 #   cost         bash builtins on the hot path (process start is slow under MSYS): an uncontended acquire+release
 #                forks mkdir, mv, rm (ticket), mv, rm; a poll forks sleep.
 # Functions: dbl_acquire ROOT CLASS OWNER COMMAND IMPL (sets DBL_TOKEN, DBL_NESTED, DBL_WAITED_S, DBL_BROKE),
-#   dbl_note_child PID, dbl_release, dbl_yield (release + open a gap; rounds), dbl_get KEY FILE (sets DBL_V),
+#   dbl_note_child PID, dbl_release, dbl_recover (own unreleased leftover), dbl_yield (release + open a gap; rounds), dbl_get KEY FILE (sets DBL_V),
 #   dbl_field KEY FILE (prints), dbl_ident PID (sets DBL_START), dbl_alive FILE [PREFIX], dbl_holder_gone FILE.
 DBL_SCHEMA=hsk.studio.disk-build-lock@2
-dbl_get() {
+dbl_get() {   # one mapfile read, so the handle is open only for that read (an open reader blocks the release rename)
   DBL_V=""
   local l
+  local -a dbl_lines=()
   [ -r "$2" ] || return 0
-  while IFS= read -r l || [ -n "$l" ]; do
+  { mapfile -t dbl_lines <"$2"; } 2>/dev/null || :
+  for l in "${dbl_lines[@]}"; do
     case "$l" in "$1="*) DBL_V=${l#"$1="}; return 0 ;; esac
-  done 2>/dev/null <"$2" || :
+  done
   return 0
 }
 dbl_field() { dbl_get "$1" "$2"; printf '%s\n' "$DBL_V"; }
@@ -117,6 +124,8 @@ dbl_acquire() {
     "$DBL_SCHEMA" "$token" "$class" "$pid" "$DBL_START" "$DBL_WINPID" "$owner" "${cmd:0:300}" "$impl" "$maxhold" "$DBL_UTC"
   printf '%s\n' "$text" >"$ticket" || return 75
   while :; do
+    # Own leftover from a failed release in this process: rename it away instead of waiting on ourselves.
+    [ -z "${DBL_UNRELEASED:-}" ] || dbl_recover
     # Fence: never mix protocol versions.
     if ! dbl_fence "$held/owner"; then
       rm -f "$ticket"; dbl_event "protocol mismatch: held has $DBL_V (this is $DBL_SCHEMA); refusing $owner"; return 75
@@ -212,21 +221,39 @@ dbl_note_child() {   # PID: record the wrapped child so a killed holder with a l
   printf 'child_msys_pid=%s\nchild_msys_start=%s\nchild_win_pid=%s\n' "$1" "$DBL_START" "$DBL_WINPID" >>"$DBL_ROOT/held/owner"
 }
 dbl_release() {
-  [ -n "${DBL_TOKEN:-}" ] && [ "${DBL_NESTED:-0}" -eq 0 ] || return 0
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if [ -z "${DBL_TOKEN:-}" ]; then [ -z "${DBL_UNRELEASED:-}" ] || dbl_recover; return 0; fi
+  [ "${DBL_NESTED:-0}" -eq 0 ] || return 0
+  local t0 window=${STUDIO_DISK_BUILD_LOCK_RELEASE_S:-60}
+  dbl_now; t0=$DBL_NOW
+  while :; do
     dbl_get token "$DBL_ROOT/held/owner"
     [ "$DBL_V" = "$DBL_TOKEN" ] || break
     if mv -T "$DBL_ROOT/held" "$DBL_ROOT/released.$DBL_TOKEN" 2>/dev/null; then
       rm -rf "$DBL_ROOT/released.$DBL_TOKEN" || :
       break
     fi
-    sleep 0.5
+    dbl_now
+    [ $((DBL_NOW - t0)) -lt "$window" ] || break
+    sleep "0.$((1 + RANDOM % 3))"
   done
   dbl_get token "$DBL_ROOT/held/owner"
-  if [ "$DBL_V" = "$DBL_TOKEN" ]; then dbl_event "RELEASE_FAILED $DBL_TOKEN: R/held could not be renamed for 10 s"; fi
+  if [ "$DBL_V" = "$DBL_TOKEN" ]; then
+    DBL_UNRELEASED=$DBL_TOKEN DBL_UNRELEASED_ROOT=$DBL_ROOT
+    dbl_event "RELEASE_FAILED $DBL_TOKEN: R/held could not be renamed for ${window} s (open readers); this process renames it on its next acquire or release"
+  fi
   DBL_TOKEN=""
   unset STUDIO_DISK_BUILD_LOCK_TOKEN
+  return 0
+}
+dbl_recover() {   # rename this process's own unreleased lock (DBL_UNRELEASED) away; one attempt
+  dbl_get token "$DBL_UNRELEASED_ROOT/held/owner"
+  if [ "$DBL_V" != "$DBL_UNRELEASED" ]; then DBL_UNRELEASED=""; return 0; fi
+  if mv -T "$DBL_UNRELEASED_ROOT/held" "$DBL_UNRELEASED_ROOT/released.$DBL_UNRELEASED" 2>/dev/null; then
+    rm -rf "$DBL_UNRELEASED_ROOT/released.$DBL_UNRELEASED" || :
+    local DBL_ROOT=$DBL_UNRELEASED_ROOT
+    dbl_event "RELEASE_RECOVERED $DBL_UNRELEASED: own leftover renamed by its holder process"
+    DBL_UNRELEASED=""
+  fi
   return 0
 }
 dbl_yield() {   # round between units: open a gap for one queued builder, then release (gap first: no lost gap)
@@ -238,5 +265,5 @@ dbl_yield() {   # round between units: open a gap for one queued builder, then r
 }
 # Exported so child bash scripts of a holder (and of the cargo wrapper) can re-enter without re-sourcing.
 export -f dbl_get dbl_field dbl_now dbl_utc dbl_ident dbl_winpid dbl_alive dbl_holder_gone dbl_event dbl_fence \
-  dbl_acquire dbl_note_child dbl_release dbl_yield
+  dbl_acquire dbl_note_child dbl_release dbl_recover dbl_yield
 export DBL_SCHEMA
