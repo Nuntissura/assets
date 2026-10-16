@@ -8,7 +8,9 @@ use hsk_studio_folio::*;
 use hsk_studio_layout::*;
 use support_layout::*;
 
-const GREY: StudioRgba = StudioRgba { r: 0.5, g: 0.5, b: 0.5, a: 1.0 };
+fn grey() -> StudioRgba {
+    StudioRgba { r: 0.5, g: 0.5, b: 0.5, a: 1.0, colour_profile_id: ProfileBinding::Unassigned(()) }
+}
 
 fn doc_grid(relative: StudioBaselineRelative) -> StudioDocumentGrid {
     StudioDocumentGrid {
@@ -23,8 +25,8 @@ fn doc_grid(relative: StudioBaselineRelative) -> StudioDocumentGrid {
         document_grid_shown: true,
         document_grid_snap_to: true,
         grids_in_back: true,
-        grid_colour: GREY,
-        baseline_colour: GREY,
+        grid_colour: grey(),
+        baseline_colour: grey(),
         baseline_grid_relative_option: relative,
     }
 }
@@ -46,7 +48,7 @@ fn guide(key: &str, page: Option<&str>, orientation: StudioGuideOrientation, at:
         page_id: page.map(str::to_owned),
         orientation,
         location: len(at),
-        guide_colour: GREY,
+        guide_colour: grey(),
         guide_type: StudioGuideType::Ruler,
         guide_view_threshold: 5.0,
         fit_to_page: false,
@@ -82,7 +84,7 @@ fn grid_records_validate_and_baseline_lines() {
         guides_locked: false,
         guides_snap_to: true,
         guides_in_back: false,
-        ruler_guides_colour: GREY,
+        ruler_guides_colour: grey(),
         ruler_guides_view_threshold: 100.0,
         guide_snap_to_zone: 37,
     });
@@ -115,7 +117,7 @@ fn frame_and_document_grid_lines() {
         starting_offset_for_baseline_frame_grid: len(5.0),
         baseline_frame_grid_relative_option: StudioFrameBaselineRelative::TopOfFrame,
         baseline_frame_grid_increment: len(12.0),
-        baseline_frame_grid_colour: GREY,
+        baseline_frame_grid_colour: grey(),
     });
     validate_layout_grids(&g, &doc, &CancellationToken::default()).unwrap();
     assert_eq!(frame_baseline_lines(&doc, &g, &id("SLYR", 1)).unwrap(), vec![5.0, 17.0, 29.0, 41.0, 53.0, 65.0, 77.0, 89.0]);
@@ -140,7 +142,7 @@ fn snapping_to_guides_and_document_grid() {
         guides_locked: true,
         guides_snap_to: true,
         guides_in_back: false,
-        ruler_guides_colour: GREY,
+        ruler_guides_colour: grey(),
         ruler_guides_view_threshold: 100.0,
         guide_snap_to_zone: 4,
     });
@@ -168,7 +170,7 @@ fn snapping_to_guides_and_document_grid() {
     // Snapping off: no targets.
     g.document_grid.as_mut().unwrap().document_grid_snap_to = false;
     g.guide_preferences.as_mut().unwrap().guides_snap_to = false;
-    assert_eq!(snap("page-1", 30.0, 41.0, 4.0), (None, None));
+    assert_eq!(snap_point(&doc, &g, "page-1", 30.0, 41.0, 4.0).unwrap(), (None, None));
     assert_eq!(snap_point(&doc, &g, "page-1", f64::NAN, 0.0, 1.0).unwrap_err(), LayoutError::InvalidGeometry);
 }
 

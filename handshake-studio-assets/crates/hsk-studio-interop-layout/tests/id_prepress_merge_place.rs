@@ -39,7 +39,7 @@ fn data_sources_parse_with_typed_errors() {
     let tsv = parse_delimited(b"a\tb\n1\n", '\t').unwrap();
     assert_eq!(tsv.records, vec![vec!["1".to_string(), String::new()]]);
     // Malformed CSV and other refusals.
-    let code = |r: Result<DataSource, MergeError>| r.unwrap_err().code();
+    let code = |r: std::result::Result<DataSource, MergeError>| r.unwrap_err().code();
     assert_eq!(code(parse_delimited(&[0xff, 0xfe, 0x00], ',')), "data_file_not_text");
     assert_eq!(code(parse_delimited(b"a,b\0\n1,2", ',')), "data_file_not_text");
     assert_eq!(code(parse_delimited(b"a,b\r\n", ',')), "data_source_empty");
@@ -63,7 +63,7 @@ fn merge_records_into_story_placeholders_and_arrange() {
     // "Dear <<Name>>,\n" 0..15, "<<City>>\n" 15..24, "End" 24..27.
     let text = "Dear <<Name>>,\n<<City>>\nEnd";
     let st = story(text, &[(0, 15), (15, 24), (24, 27)]);
-    assert_eq!(find_placeholders(text), vec![Placeholder { start: 5, end: 13, field: "Name".into() }, Placeholder { start: 15, end: 23, field: "City".into() }]);
+    assert_eq!(find_placeholders(text), vec![Placeholder { start: 5, end: 13, field: "Name".to_string() }, Placeholder { start: 15, end: 23, field: "City".to_string() }]);
     let m0 = merge_story(&st, text, &src, 0, true).unwrap();
     assert_eq!(m0.text, "Dear Doe, Jane,\nGhent\nEnd");
     assert_eq!(m0.story.content, StoryContent::Inline { text_utf8: m0.text.clone() });
@@ -76,7 +76,7 @@ fn merge_records_into_story_placeholders_and_arrange() {
     let g = "<<Photo>> by <<Link>>";
     let gm = merge_story(&story(g, &[(0, g.len() as u64)]), g, &src, 0, false).unwrap();
     assert_eq!(gm.text, " by ");
-    assert_eq!(gm.graphic_fields, vec![("Photo".into(), FieldKind::Image, "jane.jpg".into()), ("Link".into(), FieldKind::QrCode, "https://x/1".into())]);
+    assert_eq!(gm.graphic_fields, vec![("Photo".to_string(), FieldKind::Image, "jane.jpg".to_string()), ("Link".to_string(), FieldKind::QrCode, "https://x/1".to_string())]);
     // Captured errors.
     assert_eq!(merge_story(&story("Hello", &[(0, 5)]), "Hello", &src, 0, false).unwrap_err().code(), "missing_placeholders");
     assert_eq!(merge_story(&story("<<Nope>>", &[(0, 8)]), "<<Nope>>", &src, 0, false).unwrap_err().code(), "placeholder_field_missing");

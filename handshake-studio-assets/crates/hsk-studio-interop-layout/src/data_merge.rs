@@ -143,7 +143,7 @@ pub fn parse_delimited(bytes: &[u8], delimiter: char) -> Result<DataSource, Merg
     let (mut row, mut cell) = (Vec::new(), String::new());
     let (mut quoted, mut was_quoted) = (false, false);
     let mut chars = text.chars().peekable();
-    let mut end_row = |row: &mut Vec<String>, cell: &mut String, rows: &mut Vec<Vec<String>>| -> Result<(), MergeError> {
+    let end_row = |row: &mut Vec<String>, cell: &mut String, rows: &mut Vec<Vec<String>>| -> Result<(), MergeError> {
         row.push(std::mem::take(cell));
         if row.len() > MAX_MERGE_FIELDS {
             return Err(MergeError::BudgetExceeded("fields"));

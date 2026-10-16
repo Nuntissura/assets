@@ -253,7 +253,7 @@ pub fn draw_placed_pdf(
     let scale = det.abs().sqrt();
     let src = placed.document.pages.get(placed.page_index).ok_or(PlaceError::NoSuchPage(placed.page_index))?;
     let mut losses = Vec::new();
-    let mut add = |l: PlaceLoss, losses: &mut Vec<PlaceLoss>| {
+    let add = |l: PlaceLoss, losses: &mut Vec<PlaceLoss>| {
         if !losses.contains(&l) {
             losses.push(l);
         }
