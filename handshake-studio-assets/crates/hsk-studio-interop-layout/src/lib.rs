@@ -3,6 +3,7 @@
 
 mod container;
 mod descriptor;
+mod epub;
 mod error;
 mod folio_export;
 mod idml_decode;
@@ -17,6 +18,10 @@ mod reflow;
 
 pub use container::IDML_MIMETYPE;
 pub use descriptor::DESCRIPTOR;
+pub use epub::{
+    EPUB_MIMETYPE, EpubAccessibility, EpubError, EpubInspection, EpubLoss, EpubOptions, EpubOutput, EpubStory, EpubStyles, MAX_EPUB_CHAPTERS,
+    MAX_EPUB_TEXT_BYTES, export_epub, inspect_epub,
+};
 pub use error::{IdmlError, PreservedBlob, Result};
 pub use folio_export::{ExportNames, FolioExport, FolioExportInput, StoryInput, export_folio};
 pub use idml_decode::{decode_idml, import_idml, open_idml};
