@@ -10,6 +10,7 @@ mod anchors;
 mod book;
 mod breaker;
 mod endnotes;
+mod find;
 mod fitting;
 mod folio_input;
 mod footnotes;
@@ -45,6 +46,7 @@ pub use xref::{
     parse_xref_format, resolve_cross_references, write_cross_reference,
 };
 pub use endnotes::{EndnoteGroup, GeneratedEndnotes, NoteBody, NoteHost, NoteReference, PlacedSidenote, SidenoteProposal, generate_endnotes, place_sidenotes};
+pub use find::{FindHit, FindMode, MAX_FIND_PATTERN_BYTES, compile_find, find_in_story};
 pub use fitting::{Crop, FitError, Fitted, PlacedGraphic, fit_content, place_graphic};
 pub use folio_input::FrameObstacles;
 pub use geometry::Rect;

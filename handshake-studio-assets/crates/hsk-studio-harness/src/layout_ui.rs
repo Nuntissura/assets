@@ -9,7 +9,8 @@
 //! Lane SMB-LAYOUT-UI-2 adds the InDesign-parity panels on the same editor (each in its own
 //! submodule, each action an edit of the same undo history, each dispatching the existing Folio and
 //! layout engine commands): pages and parent pages ([`pages`]), thread ports and the story
-//! editor's line list with depth and overset rows ([`threads`]).
+//! editor's line list with depth and overset rows ([`threads`]), paragraph and character styles
+//! with GREP rules ([`styles`]).
 //!
 //! History: every successful [`LayoutEditor::apply`] is exactly ONE undo step (a snapshot of the
 //! whole layout state: document, stories, layout-flow and type-style records); a refused edit
@@ -39,6 +40,8 @@ pub mod pages;
 pub use pages::{PageEdit, PageRow};
 pub mod threads;
 pub use threads::{Port, StoryLine, ThreadInfo};
+pub mod styles;
+pub use styles::{StyleEdit, StylePatch, StyleRow};
 
 /// Undo steps kept (the oldest is dropped beyond this).
 pub const MAX_HISTORY: usize = 256;
@@ -81,6 +84,13 @@ pub mod widget {
     pub const THREAD_INFO: &str = "layout.frame.thread_info";
     pub const STORY_LINES: &str = "layout.story.lines";
     pub const STORY_OVERSET: &str = "layout.story.overset";
+    // Slice 3: styles panels.
+    pub const STYLES_PANEL: &str = "layout.styles";
+    pub const PARA_STYLES: &str = "layout.styles.paragraph";
+    pub const CHAR_STYLES: &str = "layout.styles.character";
+    pub const STYLE_EDIT: &str = "layout.styles.edit";
+    pub const GREP_RULES: &str = "layout.styles.grep";
+    pub const CLEAR_OVERRIDES: &str = "layout.styles.clear_overrides";
 }
 
 /// Everything the editor edits.
@@ -122,6 +132,8 @@ pub enum LayoutEdit {
     ApplyCharacterStyle { story: String, start: u64, end: u64, style: Option<String> },
     /// Pages and parent pages panel (SMB-LAYOUT-UI-2).
     Page(PageEdit),
+    /// Paragraph and character styles panels (SMB-LAYOUT-UI-2).
+    Style(StyleEdit),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,6 +168,10 @@ pub enum LayoutUiError {
     AlreadyOverridden(String),
     /// A parent named empty, too long or with control characters.
     InvalidName,
+    /// A STU-LAY-143 style constraint (its own code).
+    Style(&'static str),
+    /// The bounded pattern engine refused a pattern (its code).
+    Grep(&'static str),
 }
 impl LayoutUiError {
     pub fn code(&self) -> &'static str {
@@ -180,6 +196,7 @@ impl LayoutUiError {
             Self::ItemNotOverridden(_) => "item_not_overridden",
             Self::AlreadyOverridden(_) => "already_overridden",
             Self::InvalidName => "invalid_name",
+            Self::Style(code) | Self::Grep(code) => code,
         }
     }
 }
@@ -246,6 +263,7 @@ pub struct LayoutEditor {
     pub(crate) pages_ui: pages::PagesUi,
     /// Threads-view overlay (flow order lines between frames).
     pub show_threads: bool,
+    pub(crate) styles_ui: styles::StylesUi,
 }
 
 impl LayoutEditor {
@@ -274,6 +292,7 @@ impl LayoutEditor {
             selected_page: None,
             pages_ui: pages::PagesUi::default(),
             show_threads: true,
+            styles_ui: styles::StylesUi::default(),
         }
     }
     pub fn doc(&self) -> &LayoutDoc {
@@ -291,6 +310,7 @@ impl LayoutEditor {
     pub fn apply(&mut self, edit: LayoutEdit) -> Result<(), LayoutUiError> {
         let (next, next_rec) = match &edit {
             LayoutEdit::Page(e) => pages::transform(&self.doc, &self.rec, e)?,
+            LayoutEdit::Style(e) => (styles::transform(&self.doc, e)?, self.rec.clone()),
             _ => (transform(&self.doc, &edit)?, self.rec.clone()),
         };
         let before = std::mem::replace(&mut self.doc, next);
@@ -461,6 +481,7 @@ impl LayoutEditor {
             "stories": stories,
             "pages": self.pages_json(),
             "parents": self.parents_json(),
+            "styles": self.styles_json(),
             "error": self.last_error,
         })
     }
@@ -514,6 +535,7 @@ impl LayoutEditor {
                 self.thread_panel(ui, &frame, &mut drawn);
                 self.story_editor(ui, &frame, &mut drawn);
             }
+            self.styles_panel(ui, &mut drawn);
             if let Some(e) = &self.last_error {
                 ui.push_id(widget::ERROR, |ui| ui.colored_label(egui::Color32::RED, e.as_str()));
                 drawn.push(widget::ERROR);
