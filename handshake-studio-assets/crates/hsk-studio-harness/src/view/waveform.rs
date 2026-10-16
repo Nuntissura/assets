@@ -21,6 +21,12 @@
 //! range-checked, unknown operations refused, a paste reference must name an earlier prefix, and a
 //! list recorded over another source (identity mismatch) is refused rather than replayed.
 //!
+//! **Spectral edits** (slice 3): [`WaveformEdit::Spectral`] applies score's `spectral_mask_edit`
+//! (marquee or lasso time-frequency region; identity, attenuate, remove or heal; inverse STFT with
+//! weighted overlap-add) to the masked channels as one more operation of the list, so it is one
+//! undo step and replays like every other edit (see `super::spectral_display` for the selection on
+//! the spectral display).
+//!
 //! Panel (egui, window-free): `waveform.panel` with the canvas `waveform.canvas` (drag selects,
 //! one lane per channel, min/max per column) and the buttons of [`widget`]. Audition interaction
 //! parity is UNVERIFIED (D5).
@@ -28,8 +34,8 @@
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_score::{
-    self as score, ALL_CHANNELS, FadeCurve, FadeDirection, PasteMode, ScoreError, SnapDirection, WaveBuffer, WaveClip,
-    WaveEditReport, WaveSelection,
+    self as score, ALL_CHANNELS, FadeCurve, FadeDirection, PasteMode, ScoreError, SnapDirection, SpectralMaskOp, SpectralRegion,
+    SpectralWindow, WaveBuffer, WaveClip, WaveEditReport, WaveSelection,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -89,6 +95,19 @@ pub enum WaveformEdit {
     Normalize { selection: WaveSelection, target_dbfs: f64, linked: bool },
     Invert(WaveSelection),
     Reverse(WaveSelection),
+    /// A spectral selection edit of the masked channels (slice 3).
+    Spectral(SpectralEdit),
+}
+
+/// A spectral selection edit: `region` of the channels in `channels`, analysed with `window` at
+/// `fft_size` (hop `fft_size / 4`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpectralEdit {
+    pub channels: u32,
+    pub region: SpectralRegion,
+    pub op: SpectralMaskOp,
+    pub fft_size: usize,
+    pub window: SpectralWindow,
 }
 
 /// A stored operation of the edit list.
@@ -104,6 +123,7 @@ pub enum WaveformOp {
     Normalize { selection: WaveSelection, target_dbfs: f64, linked: bool },
     Invert(WaveSelection),
     Reverse(WaveSelection),
+    Spectral(SpectralEdit),
 }
 
 /// The copied range of the audio after the first `after_ops` operations.
@@ -204,6 +224,7 @@ impl WaveformOp {
             Self::Normalize { .. } => "normalize",
             Self::Invert(_) => "invert",
             Self::Reverse(_) => "reverse",
+            Self::Spectral(_) => "spectral",
         }
     }
     pub fn to_json(&self) -> Value {
@@ -216,6 +237,19 @@ impl WaveformOp {
             Self::GainEnvelope { selection, points } => json!({"selection": sel_json(selection), "points": points.iter().map(|(o, d)| json!([o, d])).collect::<Vec<_>>()}),
             Self::Amplify { selection, db } => json!({"selection": sel_json(selection), "db": db}),
             Self::Normalize { selection, target_dbfs, linked } => json!({"selection": sel_json(selection), "target_dbfs": target_dbfs, "linked": linked}),
+            Self::Spectral(e) => json!({
+                "channels": e.channels, "fft_size": e.fft_size, "window": e.window.name(),
+                "region": match &e.region {
+                    SpectralRegion::Marquee { start_sample, end_sample, low_hz, high_hz } => json!({"marquee": {"start": start_sample, "end": end_sample, "low_hz": low_hz, "high_hz": high_hz}}),
+                    SpectralRegion::Lasso(points) => json!({"lasso": points.iter().map(|(t, f)| json!([t, f])).collect::<Vec<_>>()}),
+                },
+                "edit": match e.op {
+                    SpectralMaskOp::Identity => json!("identity"),
+                    SpectralMaskOp::Remove => json!("remove"),
+                    SpectralMaskOp::Heal => json!("heal"),
+                    SpectralMaskOp::Attenuate { gain_db } => json!({"attenuate_db": gain_db}),
+                },
+            }),
         };
         v["op"] = Value::from(self.name());
         v
@@ -281,6 +315,35 @@ impl WaveformOp {
                 target_dbfs: f("target_dbfs")?,
                 linked: v.get("linked").and_then(Value::as_bool).ok_or_else(|| bad("linked"))?,
             },
+            "spectral" => {
+                let window = v.get("window").and_then(Value::as_str).and_then(window_of).ok_or_else(|| bad("window"))?;
+                let fft_size = v.get("fft_size").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("fft_size"))?;
+                let r = v.get("region").ok_or_else(|| bad("region"))?;
+                let region = if let Some(m) = r.get("marquee") {
+                    let n = |k: &str| m.get(k).and_then(Value::as_u64).ok_or_else(|| bad(k));
+                    let hz = |k: &str| m.get(k).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(|| bad(k));
+                    SpectralRegion::Marquee { start_sample: n("start")?, end_sample: n("end")?, low_hz: hz("low_hz")?, high_hz: hz("high_hz")? }
+                } else {
+                    let list = r.get("lasso").and_then(Value::as_array).ok_or_else(|| bad("region"))?;
+                    if list.len() > score::MAX_LASSO_POINTS {
+                        return Err(bad("lasso"));
+                    }
+                    let mut points = Vec::with_capacity(list.len());
+                    for p in list {
+                        let c = |i: usize| p.get(i).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(|| bad("lasso point"));
+                        points.push((c(0)?, c(1)?));
+                    }
+                    SpectralRegion::Lasso(points)
+                };
+                let op = match v.get("edit") {
+                    Some(Value::String(e)) if e == "identity" => SpectralMaskOp::Identity,
+                    Some(Value::String(e)) if e == "remove" => SpectralMaskOp::Remove,
+                    Some(Value::String(e)) if e == "heal" => SpectralMaskOp::Heal,
+                    Some(e) => SpectralMaskOp::Attenuate { gain_db: e.get("attenuate_db").and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(|| bad("edit"))? },
+                    None => return Err(bad("edit")),
+                };
+                Self::Spectral(SpectralEdit { channels: u32::try_from(u("channels")?).map_err(|_| bad("channels"))?, region, op, fft_size, window })
+            }
             _ => return Err(bad("unknown op")),
         })
     }
@@ -317,6 +380,12 @@ impl WaveformDocument {
     }
 }
 
+fn window_of(name: &str) -> Option<SpectralWindow> {
+    [SpectralWindow::Hann, SpectralWindow::Hamming, SpectralWindow::Blackman, SpectralWindow::BlackmanHarris, SpectralWindow::Rectangular]
+        .into_iter()
+        .find(|w| w.name() == name)
+}
+
 fn code(e: ScoreError) -> String {
     format!("waveform_{}", e.code())
 }
@@ -337,6 +406,12 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
         WaveformOp::Normalize { selection, target_dbfs, linked } => buffer.normalize(*selection, *target_dbfs, *linked, cancel),
         WaveformOp::Invert(s) => buffer.invert(*s, cancel),
         WaveformOp::Reverse(s) => buffer.reverse(*s, cancel),
+        WaveformOp::Spectral(e) => {
+            let rate = buffer.sample_rate_hz();
+            buffer.process_channels(e.channels, cancel, |input, out| {
+                score::spectral_mask_edit(input, out, rate, e.fft_size, e.window, &e.region, e.op, cancel).map(|_| ())
+            })
+        }
     }
     .map_err(code)
 }
@@ -553,6 +628,7 @@ impl super::Viewer {
             WaveformEdit::Normalize { selection, target_dbfs, linked } => (WaveformOp::Normalize { selection, target_dbfs, linked }, None, None),
             WaveformEdit::Invert(s) => (WaveformOp::Invert(s), None, None),
             WaveformEdit::Reverse(s) => (WaveformOp::Reverse(s), None, None),
+            WaveformEdit::Spectral(e) => (WaveformOp::Spectral(e), None, None),
         };
         if n >= MAX_WAVEFORM_OPS {
             return Err("waveform_too_many_ops".into());

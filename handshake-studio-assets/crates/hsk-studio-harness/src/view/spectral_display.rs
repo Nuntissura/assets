@@ -10,9 +10,19 @@
 //! (black) to 0 dB (white) through a fixed ramp; the panel `spectral.panel` shows it as a texture
 //! with window, scale and FFT-size controls. Audition's colour map and default settings are
 //! UNVERIFIED (D5).
+//!
+//! **Spectral selection** (slice 3): a marquee (drag) or, with lasso mode on, a freehand lasso (the
+//! drag path, one vertex per pointer event) drawn on the image is mapped to samples and Hz through
+//! the display axis (`x / width * frames`, `frequency_at_row`); the buttons apply the waveform
+//! editor's spectral edit (remove, attenuate -20 dB, heal) to that region of every channel, one undo
+//! step each. [`super::Viewer::set_spectral_region`] and [`super::Viewer::apply_spectral`] are the API.
 #![deny(clippy::arithmetic_side_effects)]
 
-use hsk_studio_score::{self as score, FrequencyScale, SpectralCacheStats, SpectralTileCache, SpectralViewParams, SpectralWindow};
+use super::waveform::{SpectralEdit, WaveformEdit};
+use hsk_studio_score::{
+    self as score, ALL_CHANNELS, FrequencyScale, SpectralCacheStats, SpectralMaskOp, SpectralRegion, SpectralTileCache, SpectralViewParams,
+    SpectralWindow,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -23,6 +33,10 @@ pub mod widget {
     pub const WINDOW: &str = "spectral.window";
     pub const SCALE: &str = "spectral.scale";
     pub const FFT: &str = "spectral.fft";
+    pub const LASSO: &str = "spectral.lasso";
+    pub const REMOVE: &str = "spectral.remove";
+    pub const ATTENUATE: &str = "spectral.attenuate";
+    pub const HEAL: &str = "spectral.heal";
 }
 
 /// Widest rendered image (columns).
@@ -41,6 +55,9 @@ pub struct SpectralDisplayState {
     texture: Option<(egui::TextureHandle, [u8; 32])>,
     budget: usize,
     error: Option<String>,
+    region: Option<SpectralRegion>,
+    lasso_mode: bool,
+    drag: Vec<(f64, f64)>,
 }
 
 fn window_of(name: &str) -> Option<SpectralWindow> {
@@ -67,7 +84,7 @@ impl super::Viewer {
     pub fn open_spectral_display(&mut self, params: SpectralViewParams) -> Result<(), String> {
         self.waveform_document()?;
         self.waveform_buffer()?;
-        self.spectral = Some(SpectralDisplayState { params, caches: Vec::new(), key: None, texture: None, budget: score::DEFAULT_SPECTRAL_CACHE_BYTES, error: None });
+        self.spectral = Some(SpectralDisplayState { params, caches: Vec::new(), key: None, texture: None, budget: score::DEFAULT_SPECTRAL_CACHE_BYTES, error: None, region: None, lasso_mode: false, drag: Vec::new() });
         self.spectral_sync()
     }
 
@@ -166,6 +183,21 @@ impl super::Viewer {
         Ok((w, h, rgba))
     }
 
+    /// Sets (or clears) the spectral selection.
+    pub fn set_spectral_region(&mut self, region: Option<SpectralRegion>) -> Result<(), String> {
+        self.spectral.as_mut().ok_or("spectral: not open")?.region = region;
+        Ok(())
+    }
+
+    /// Applies `op` to the spectral selection of every channel with the display's window and FFT size
+    /// (one undo step through the waveform editor; the selection is kept).
+    pub fn apply_spectral(&mut self, op: SpectralMaskOp) -> Result<Value, String> {
+        let s = self.spectral.as_ref().ok_or("spectral: not open")?;
+        let region = s.region.clone().ok_or("spectral: no selection")?;
+        let edit = SpectralEdit { channels: ALL_CHANNELS, region, op, fft_size: s.params.fft_size, window: s.params.window };
+        self.waveform_edit(WaveformEdit::Spectral(edit))
+    }
+
     /// Structured projection (`Null` when closed).
     pub fn spectral_json(&self) -> Value {
         let Some(s) = &self.spectral else { return Value::Null };
@@ -178,6 +210,11 @@ impl super::Viewer {
             "tiles": s.caches.first().map(SpectralTileCache::tile_count),
             "cache": stats.iter().map(|c| json!({"hits": c.hits, "misses": c.misses, "evictions": c.evictions, "bytes": c.bytes, "tiles": c.tiles})).collect::<Vec<_>>(),
             "error": s.error,
+            "region": s.region.as_ref().map(|r| match r {
+                SpectralRegion::Marquee { start_sample, end_sample, low_hz, high_hz } => json!({"marquee": [start_sample, end_sample, low_hz, high_hz]}),
+                SpectralRegion::Lasso(p) => json!({"lasso_points": p.len()}),
+            }),
+            "lasso_mode": s.lasso_mode,
         })
     }
 
@@ -197,6 +234,11 @@ impl super::Viewer {
                 s.texture = Some((handle, key));
             }
         }
+        let (rate, frames) = match self.waveform_buffer() {
+            Ok(b) => (b.sample_rate_hz(), b.frames()),
+            Err(_) => return,
+        };
+        let mut apply: Option<SpectralMaskOp> = None;
         let Some(s) = self.spectral.as_mut() else { return };
         let mut params = s.params;
         egui::TopBottomPanel::bottom(super::widget::id(widget::PANEL)).resizable(true).min_height(140.0).show(ctx, |ui| {
@@ -221,14 +263,62 @@ impl super::Viewer {
                     }
                 });
             });
+            ui.horizontal(|ui| {
+                ui.push_id(super::widget::id(widget::LASSO), |ui| ui.checkbox(&mut s.lasso_mode, "Lasso"));
+                let has = s.region.is_some();
+                if ui.push_id(super::widget::id(widget::REMOVE), |ui| ui.add_enabled(has, egui::Button::new("Remove"))).inner.clicked() {
+                    apply = Some(SpectralMaskOp::Remove);
+                }
+                if ui.push_id(super::widget::id(widget::ATTENUATE), |ui| ui.add_enabled(has, egui::Button::new("Attenuate -20 dB"))).inner.clicked() {
+                    apply = Some(SpectralMaskOp::Attenuate { gain_db: -20.0 });
+                }
+                if ui.push_id(super::widget::id(widget::HEAL), |ui| ui.add_enabled(has, egui::Button::new("Heal"))).inner.clicked() {
+                    apply = Some(SpectralMaskOp::Heal);
+                }
+            });
             if let Some((t, _)) = &s.texture {
                 let size = egui::vec2(ui.available_width().max(64.0), ui.available_height().max(64.0));
-                ui.push_id(super::widget::id(widget::IMAGE), |ui| ui.image((t.id(), size)));
+                let response = ui.push_id(super::widget::id(widget::IMAGE), |ui| ui.add(egui::Image::new((t.id(), size)).sense(egui::Sense::drag()))).inner;
+                let rect = response.rect;
+                let nyquist = f64::from(rate) / 2.0;
+                let to_point = |p: egui::Pos2| -> (f64, f64) {
+                    let x = f64::from(((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
+                    let y = f64::from(((rect.bottom() - p.y) / rect.height()).clamp(0.0, 1.0));
+                    let hz = score::frequency_at_row(params.scale, y * params.rows as f64, params.rows, nyquist).clamp(0.0, nyquist);
+                    ((x * frames as f64).round(), hz)
+                };
+                if response.drag_started() {
+                    s.drag.clear();
+                }
+                if response.dragged()
+                    && let Some(p) = response.interact_pointer_pos()
+                    && s.drag.len() < score::MAX_LASSO_POINTS
+                {
+                    s.drag.push(to_point(p));
+                }
+                if response.drag_stopped() && s.drag.len() >= 2 {
+                    let pts = std::mem::take(&mut s.drag);
+                    s.region = if s.lasso_mode && pts.len() >= 3 {
+                        Some(SpectralRegion::Lasso(pts))
+                    } else {
+                        let (a, b) = (pts[0], pts[pts.len().saturating_sub(1)]);
+                        let (t0, t1) = (a.0.min(b.0), a.0.max(b.0));
+                        (t1 > t0).then(|| SpectralRegion::Marquee { start_sample: t0 as u64, end_sample: t1 as u64, low_hz: a.1.min(b.1), high_hz: a.1.max(b.1) })
+                    };
+                }
             } else if let Some(e) = &s.error {
                 ui.label(e);
             }
         });
-        self.drawn.extend([widget::PANEL, widget::WINDOW, widget::SCALE, widget::FFT, widget::IMAGE].map(String::from));
+        self.drawn.extend(
+            [widget::PANEL, widget::WINDOW, widget::SCALE, widget::FFT, widget::IMAGE, widget::LASSO, widget::REMOVE, widget::ATTENUATE, widget::HEAL]
+                .map(String::from),
+        );
+        if let Some(op) = apply
+            && let Err(e) = self.apply_spectral(op)
+        {
+            self.say(e);
+        }
         if self.spectral.as_ref().is_some_and(|s| s.params != params) {
             let _ = self.set_spectral_params(params);
         }

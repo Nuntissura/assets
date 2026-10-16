@@ -35,6 +35,7 @@ mod session;
 mod sidechain;
 mod spec_rows;
 mod spectral_edit;
+mod spectral_mask;
 mod spectral_view;
 mod spectrogram;
 mod spectrum;
@@ -129,6 +130,7 @@ pub use spectral_edit::{
 pub use spectrogram::{
     MAX_TILE_CELLS, ReassignedTile, SPECTROGRAM_FFT, SpectralWindow, Spectrogram, SpectrogramParams,
 };
+pub use spectral_mask::{MAX_LASSO_POINTS, MAX_SPECTRAL_MASK_CELLS, SpectralMaskOp, SpectralMaskReport, SpectralRegion, spectral_mask_edit};
 pub use spectral_view::{
     DEFAULT_SPECTRAL_CACHE_BYTES, FrequencyScale, SPECTRAL_FLOOR_DB, SPECTRAL_ROWS, SPECTRAL_TILE_FRAMES, SpectralCacheStats,
     SpectralTileCache, SpectralViewParams, frame_to_rows, frequency_at_row, row_at_frequency,
