@@ -352,3 +352,85 @@ where
         limits: ExportLimits::default(),
     })
 }
+
+// ---------------------------------------------------------------------------------------------
+// Lane SMB-PR-SOURCE-MONITOR slice 4: caption streams and export presets for timeline exports.
+// ---------------------------------------------------------------------------------------------
+
+/// ISO 639-2/T (terminology) code of a BCP 47 tag's primary language subtag: a three-letter subtag as
+/// written (lower-cased), the two-letter ISO 639-1 codes of this table mapped, anything else `und`
+/// (Studio table; a caption track's language is BCP 47 in Folio, `mdhd` carries ISO 639-2/T).
+pub fn iso639_2(tag: &str) -> String {
+    let primary = tag.split('-').next().unwrap_or("").to_ascii_lowercase();
+    if primary.len() == 3 && primary.bytes().all(|b| b.is_ascii_lowercase()) {
+        return primary;
+    }
+    const TABLE: &[(&str, &str)] = &[
+        ("ar", "ara"), ("cs", "ces"), ("da", "dan"), ("de", "deu"), ("el", "ell"), ("en", "eng"), ("es", "spa"),
+        ("fi", "fin"), ("fr", "fra"), ("he", "heb"), ("hi", "hin"), ("hu", "hun"), ("id", "ind"), ("it", "ita"),
+        ("ja", "jpn"), ("ko", "kor"), ("nb", "nob"), ("nl", "nld"), ("no", "nor"), ("pl", "pol"), ("pt", "por"),
+        ("ro", "ron"), ("ru", "rus"), ("sv", "swe"), ("th", "tha"), ("tr", "tur"), ("uk", "ukr"), ("vi", "vie"),
+        ("zh", "zho"),
+    ];
+    TABLE.iter().find(|(two, _)| *two == primary).map_or_else(|| "und".to_owned(), |(_, three)| (*three).to_owned())
+}
+
+/// The caption stream of a Folio caption track (STU-VID-037) for an export of `in_tick .. out_tick`:
+/// segments clipped to the span and shifted to span-relative ticks (a segment outside the span is left
+/// out), the language mapped by [`iso639_2`]; reel checks the cues before the first frame.
+pub fn export_captions(
+    track: &hsk_studio_folio::StudioCaptionTrack,
+    in_tick: u64,
+    out_tick: u64,
+    embed: bool,
+    sidecar: bool,
+) -> hsk_studio_reel::captions::ExportCaptions {
+    let cues = track
+        .segments
+        .iter()
+        .filter_map(|s| {
+            let start = s.start.max(in_tick);
+            let end = s.end.min(out_tick);
+            (end > start).then(|| hsk_studio_reel::captions::CaptionCue {
+                start_ticks: start.saturating_sub(in_tick),
+                end_ticks: end.saturating_sub(in_tick),
+                text: s.text.clone(),
+            })
+        })
+        .collect();
+    hsk_studio_reel::captions::ExportCaptions {
+        language: iso639_2(&track.language),
+        cues,
+        embed,
+        sidecar,
+        limits: hsk_studio_reel::captions::CaptionLimits::default(),
+    }
+}
+
+/// An export queue and whether it carries the OS encoder (D24-A): with feature `os-encode` reel-native's
+/// `WorkerMfEncoder` (the `reel-native-mf-worker` beside the executable, or `worker` when given) is
+/// registered; without the feature, or when the worker cannot be configured, the queue has none and
+/// H.264 / HEVC presets are refused by [`preset_recipe`].
+pub fn export_queue(worker: Option<std::path::PathBuf>) -> (hsk_studio_reel::ExportQueue, bool) {
+    #[cfg(feature = "os-encode")]
+    {
+        let mut options = hsk_studio_reel_native::MfWorkerOptions::default();
+        if let Some(w) = worker {
+            options = options.with_worker_program(w);
+        }
+        if let Ok(encoder) = hsk_studio_reel_native::WorkerMfEncoder::new(options) {
+            return (hsk_studio_reel::ExportQueue::new().with_video_encoder(std::sync::Arc::new(encoder)), true);
+        }
+    }
+    #[cfg(not(feature = "os-encode"))]
+    let _ = worker;
+    (hsk_studio_reel::ExportQueue::new(), false)
+}
+
+/// The recipe of Studio preset `preset_id` (reel's preset table) for a queue that does (`os_encoder`)
+/// or does not carry the OS encoder: `unknown_preset`, or reel's typed `codec_unavailable` refusal
+/// for an H.264 / HEVC preset without the OS encoder (D24-A) and an AV1 preset without `av1-encode`.
+pub fn preset_recipe(preset_id: &str, os_encoder: bool) -> Result<ExportRecipe, MonitorFail> {
+    let preset = hsk_studio_reel::presets::export_preset(preset_id).ok_or_else(|| fail("unknown_preset", preset_id))?;
+    preset.recipe(os_encoder).map_err(|e| fail("codec_unavailable", e.to_string()))
+}

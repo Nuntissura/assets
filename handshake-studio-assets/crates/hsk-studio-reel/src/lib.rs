@@ -32,6 +32,8 @@
 #![cfg_attr(feature = "av1", deny(unsafe_code))]
 
 pub mod audio;
+/// Caption streams in export: `tx3g` timed text and WebVTT sidecars (lane SMB-PR-SOURCE-MONITOR).
+pub mod captions;
 #[cfg(feature = "av1")]
 pub mod av1;
 mod av1_config;
@@ -54,6 +56,8 @@ mod mkv_pcm;
 mod model;
 pub mod mux;
 pub mod os_encode;
+/// Studio export presets with stable ids (lane SMB-PR-SOURCE-MONITOR, PR-24).
+pub mod presets;
 mod mxf;
 #[cfg(feature = "prores")]
 mod prores;
@@ -125,7 +129,7 @@ pub use os_encode::{
 };
 pub use mux::{
     Container, MUXER_ID, MUXER_VERSION, MuxLimits, MuxReceipt, MuxSpec, Muxer, NclxColor, PcmSpec,
-    VideoEntry, VideoTrackSpec, video_timescale,
+    TextTrackSpec, VideoEntry, VideoTrackSpec, video_timescale,
 };
 pub use registry::{ProxySource, Registry, detect_type};
 pub use report::{outcome_for, report};

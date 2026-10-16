@@ -14,6 +14,10 @@ mf-worker = ["mf", "dep:windows"]
 # SMB-D24A-CODEC-DEFAULTS); default off. Host: WorkerMfEncoder; worker: --encode=h264|hevc modes.
 os-encode = ["mf"]
 test-faults = []
+# Studio's own AAC-LC decoder in reel, as this crate's own feature so a validator round can run the
+# tests/mf_aac.rs cross-check (rounds take a crate's own feature names; lead request, lane
+# SMB-PR-SOURCE-MONITOR). Default off.
+studio-aac = ["hsk-studio-reel/studio-aac"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false, optional = true }

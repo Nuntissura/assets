@@ -18,6 +18,12 @@
 //! Exactness: the published file is re-indexed by reel's own demuxer before the rename; its sample
 //! counts must equal what was written, else the item fails and nothing is published. On failure or
 //! cancel the temp file is removed and the output path is untouched.
+//!
+//! Captions (lane SMB-PR-SOURCE-MONITOR; STU-VID-037 facet `captions`): [`ExportQueue::submit_with_captions`]
+//! adds caption cues to an item ([`crate::captions`]): checked against the item's span in the plan,
+//! before the first frame; embedded as a `tx3g` timed-text track (re-indexed like the other tracks) and/or
+//! written as a WebVTT sidecar beside the output (`<output>.vtt`, through its own temp file, published
+//! only when the media is), named in [`ExportReceipt::captions`].
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::{ReelError, check_cancel};
@@ -284,6 +290,8 @@ pub struct ExportReceipt {
     /// The published file was re-indexed by reel's demuxer and its sample counts matched.
     pub verified: bool,
     pub mux: Option<MuxReceipt>,
+    /// The caption stream written with the item (lane SMB-PR-SOURCE-MONITOR); `None` without captions.
+    pub captions: Option<crate::captions::CaptionReceipt>,
 }
 
 impl ExportReceipt {
@@ -334,6 +342,7 @@ impl ExportReceipt {
 struct Item {
     handle: ExportHandle,
     job: Option<ExportJob>,
+    captions: Option<crate::captions::ExportCaptions>,
 }
 
 /// One queue for any number of items; `run` executes them in submission order on the caller's thread
@@ -373,7 +382,17 @@ impl ExportQueue {
         self.items.push(Item {
             handle: handle.clone(),
             job: Some(job),
+            captions: None,
         });
+        handle
+    }
+
+    /// [`ExportQueue::submit`] with a caption stream (module docs).
+    pub fn submit_with_captions(&mut self, job: ExportJob, captions: crate::captions::ExportCaptions) -> ExportHandle {
+        let handle = self.submit(job);
+        if let Some(item) = self.items.last_mut() {
+            item.captions = Some(captions);
+        }
         handle
     }
 
@@ -388,7 +407,7 @@ impl ExportQueue {
         let external = self.video_encoder.clone();
         for item in &mut self.items {
             let Some(job) = item.job.take() else { continue };
-            let receipt = run_item(item.handle.id, job, &item.handle, external.as_deref());
+            let receipt = run_item(item.handle.id, job, item.captions.take(), &item.handle, external.as_deref());
             let state = match receipt.outcome {
                 ExportOutcome::Complete => ExportState::Complete,
                 ExportOutcome::Canceled => ExportState::Canceled,
@@ -744,6 +763,7 @@ fn temp_path(output: &Path, id: u64) -> PathBuf {
 fn run_item(
     id: u64,
     mut job: ExportJob,
+    captions: Option<crate::captions::ExportCaptions>,
     handle: &ExportHandle,
     external: Option<&dyn ExternalVideoEncoder>,
 ) -> ExportReceipt {
@@ -766,6 +786,7 @@ fn run_item(
         output_sha256: None,
         verified: false,
         mux: None,
+        captions: None,
     };
     if handle.cancel.check().is_err() {
         return receipt;
@@ -788,7 +809,16 @@ fn run_item(
             receipt.encoder_id = Some(eid);
             receipt.encoder_version = Some(ever);
         }
-        execute(&mut job, plan, &temp, &mut run)
+        let span_ticks = job.span.end_ticks.checked_sub(job.span.start_ticks).ok_or(unsupported("export-span"))?;
+        let text = match &captions {
+            Some(c) => Some(CaptionPlan::new(c, span_ticks, &job.output)?),
+            None => None,
+        };
+        let out = execute(&mut job, plan, &temp, &mut run, text.as_ref());
+        if let (Ok(_), Some(t)) = (&out, &text) {
+            receipt.captions = Some(t.receipt.clone());
+        }
+        out
     });
     receipt.frames_encoded = run.frames_encoded;
     receipt.audio_frames = run.audio_written;
@@ -814,6 +844,44 @@ fn run_item(
         }
     }
     receipt
+}
+
+/// The caption stream of an item, prepared in the plan (before the first frame).
+struct CaptionPlan {
+    samples: Option<Vec<crate::captions::TextSample>>,
+    language: [u8; 3],
+    sidecar: Option<(String, PathBuf, PathBuf)>,
+    receipt: crate::captions::CaptionReceipt,
+}
+
+impl CaptionPlan {
+    fn new(c: &crate::captions::ExportCaptions, span_ticks: u64, output: &Path) -> Result<Self, ReelError> {
+        let (samples, exact) = crate::captions::text_samples(c, span_ticks)?;
+        let lang = c.language.as_bytes();
+        let language = [lang[0], lang[1], lang[2]];
+        let sidecar = if c.sidecar {
+            let vtt = crate::captions::webvtt(c, span_ticks)?;
+            let path = output.with_extension("vtt");
+            let mut name = path.file_name().ok_or(unsupported("export-output-path"))?.to_os_string();
+            name.push(".partial");
+            let temp = path.with_file_name(name);
+            Some((vtt, temp, path))
+        } else {
+            None
+        };
+        if !c.embed && !c.sidecar {
+            return Err(unsupported("caption-no-output"));
+        }
+        let sha = sidecar.as_ref().map(|(vtt, _, _)| crate::identity::hex(&Sha256::digest(vtt.as_bytes())));
+        let receipt = crate::captions::CaptionReceipt {
+            language: c.language.clone(),
+            cues: u64::try_from(c.cues.len()).unwrap_or(u64::MAX),
+            track_samples: if c.embed { u64::try_from(samples.len()).unwrap_or(u64::MAX) } else { 0 },
+            sidecar_sha256: sha,
+            exact,
+        };
+        Ok(Self { samples: c.embed.then_some(samples), language, sidecar, receipt })
+    }
 }
 
 /// Lazily created muxer: the AV1 record needs the first temporal unit.
@@ -996,6 +1064,7 @@ fn execute(
     mut plan: Plan,
     temp: &Path,
     run: &mut Run<'_>,
+    captions: Option<&CaptionPlan>,
 ) -> Result<(MuxReceipt, u64, String, bool), ReelError> {
     let cancel = run.handle.cancel.clone();
     let total = if plan.frames > 0 {
@@ -1057,6 +1126,9 @@ fn execute(
                 .store(run.audio_written, Ordering::Release);
         }
     }
+    if let Some(samples) = captions.and_then(|c| c.samples.as_ref().map(|s| (c.language, s))) {
+        sink.muxer(None)?.write_text_track(crate::mux::TextTrackSpec { language: samples.0 }, samples.1)?;
+    }
     check_cancel(&cancel)?;
     let muxer = sink.muxer.take().ok_or(unsupported("export-internal"))?;
     let (writer, mux) = muxer.finish()?;
@@ -1066,10 +1138,27 @@ fn execute(
     file.sync_all()?;
     drop(file);
     let (bytes, sha, verified) = verify(temp, &mux, &cancel)?;
+    // The WebVTT sidecar: written to its own temp, refused when it exists and overwrite is off.
+    if let Some((vtt, side_temp, side)) = captions.and_then(|c| c.sidecar.as_ref()) {
+        if side.exists() && !job.overwrite {
+            return Err(unsupported("export-sidecar-exists"));
+        }
+        let written = std::fs::write(side_temp, vtt.as_bytes());
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(side_temp);
+            return Err(ReelError::Io(e.kind()));
+        }
+    }
     if job.overwrite && job.output.exists() {
         std::fs::remove_file(&job.output)?;
     }
     std::fs::rename(temp, &job.output)?;
+    if let Some((_, side_temp, side)) = captions.and_then(|c| c.sidecar.as_ref()) {
+        if job.overwrite && side.exists() {
+            std::fs::remove_file(side)?;
+        }
+        std::fs::rename(side_temp, side)?;
+    }
     Ok((mux, bytes, sha, verified))
 }
 
@@ -1116,6 +1205,12 @@ fn verify(
                 .or_else(|| u64::try_from(t.samples().len()).ok());
             if frames != Some(mux.audio_frames) {
                 return Err(unsupported("export-verify-audio-frames"));
+            }
+        }
+        if mux.text_samples > 0 {
+            let t = tracks.next().ok_or(unsupported("export-verify-text-track"))?;
+            if &t.handler != b"sbtl" || u64::try_from(t.samples().len()).ok() != Some(mux.text_samples) {
+                return Err(unsupported("export-verify-text-samples"));
             }
         }
     }

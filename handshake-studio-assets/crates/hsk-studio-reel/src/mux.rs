@@ -23,6 +23,11 @@
 //! decode delay, so presentation starts at zero.
 //!
 //! Every size, count and offset is bounded by [`MuxLimits`] and checked before it is buffered (V4-01/02).
+//!
+//! Timed text (lane SMB-PR-SOURCE-MONITOR, captions in export): [`Muxer::write_text_track`] adds one 3GPP
+//! timed-text track (TS 26.245: `tx3g` sample entry with its default style and font table, handler
+//! `sbtl`, null media header `nmhd`, media timescale 1000, language in `mdhd`) after the video and audio
+//! tracks; its samples are written as one chunk. FFmpeg calls this stream `mov_text`.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::error::ReelError;
@@ -149,6 +154,12 @@ impl PcmSpec {
     }
 }
 
+/// A timed-text track (lane SMB-PR-SOURCE-MONITOR): ISO 639-2/T language, three lower-case letters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextTrackSpec {
+    pub language: [u8; 3],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MuxSpec {
     pub container: Container,
@@ -205,6 +216,8 @@ pub struct MuxReceipt {
     pub file_bytes: u64,
     pub co64: bool,
     pub large_mdat: bool,
+    /// Samples of the timed-text track (0 without one; lane SMB-PR-SOURCE-MONITOR).
+    pub text_samples: u64,
 }
 
 /// Brands and the combination check: one place decides what each container carries.
@@ -317,11 +330,19 @@ struct AudioTable {
     chunks: Vec<Chunk>,
 }
 
+#[derive(Debug, Default)]
+struct TextTable {
+    sizes: Vec<u32>,
+    durations: Vec<u32>,
+    chunks: Vec<Chunk>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Last {
     None,
     Video,
     Audio,
+    Text,
 }
 
 /// Streaming writer: samples go straight to `out`; only the sample tables are kept.
@@ -337,6 +358,7 @@ pub struct Muxer<W: Write + Seek> {
     audio: AudioTable,
     last: Last,
     video_ts: (u32, u32),
+    text: Option<(TextTrackSpec, TextTable)>,
 }
 
 fn io_err(error: std::io::Error) -> ReelError {
@@ -374,7 +396,62 @@ impl<W: Write + Seek> Muxer<W> {
             audio: AudioTable::default(),
             last: Last::None,
             video_ts,
+            text: None,
         })
+    }
+
+    /// Adds the timed-text track with all its samples (`duration` in milliseconds, `data` a TS 26.245
+    /// TextSample: 16-bit big-endian length + UTF-8). Once per file (`mux-text-track-twice`); refused
+    /// before any byte is written: a language that is not three lower-case ASCII letters
+    /// (`mux-text-language`), no samples (`mux-text-track-empty`), more samples than
+    /// `max_video_samples` (`mux-text-samples`), a sample over `max_sample_bytes` (`mux-sample-bytes`),
+    /// a malformed sample (shorter than its length field says, or not UTF-8: `mux-text-sample`), a zero
+    /// duration (`mux-text-duration`).
+    pub fn write_text_track(&mut self, spec: TextTrackSpec, samples: &[crate::captions::TextSample]) -> Result<(), ReelError> {
+        if self.text.is_some() {
+            return Err(unsupported("mux-text-track-twice"));
+        }
+        if !spec.language.iter().all(u8::is_ascii_lowercase) {
+            return Err(unsupported("mux-text-language"));
+        }
+        if samples.is_empty() {
+            return Err(unsupported("mux-text-track-empty"));
+        }
+        if samples.len() > self.limits.max_video_samples {
+            return Err(limit("mux-text-samples"));
+        }
+        let mut table = TextTable::default();
+        for s in samples {
+            if s.data.len() > self.limits.max_sample_bytes {
+                return Err(limit("mux-sample-bytes"));
+            }
+            let declared = match s.data.as_slice() {
+                [a, b, rest @ ..] => (usize::from(u16::from_be_bytes([*a, *b])), rest),
+                _ => return Err(unsupported("mux-text-sample")),
+            };
+            let text = declared.1.get(..declared.0).ok_or(unsupported("mux-text-sample"))?;
+            if std::str::from_utf8(text).is_err() {
+                return Err(unsupported("mux-text-sample"));
+            }
+            if s.duration == 0 {
+                return Err(unsupported("mux-text-duration"));
+            }
+            table.sizes.push(u32::try_from(s.data.len()).map_err(|_| limit("mux-sample-bytes"))?);
+            table.durations.push(s.duration);
+        }
+        let mut first = None;
+        for s in samples {
+            let at = self.append(&s.data)?;
+            first.get_or_insert(at);
+        }
+        let count = u32::try_from(samples.len()).map_err(|_| limit("mux-text-samples"))?;
+        table.chunks.push(Chunk {
+            offset: first.ok_or(unsupported("mux-text-track-empty"))?,
+            samples: count,
+        });
+        self.text = Some((spec, table));
+        self.last = Last::Text;
+        Ok(())
     }
 
     pub fn spec(&self) -> &MuxSpec {
@@ -529,6 +606,7 @@ impl<W: Write + Seek> Muxer<W> {
             file_bytes,
             co64,
             large_mdat: large,
+            text_samples: self.text.as_ref().map_or(0, |(_, t)| u64::try_from(t.sizes.len()).unwrap_or(u64::MAX)),
         };
         Ok((self.out, receipt))
     }
@@ -562,6 +640,13 @@ impl<W: Write + Seek> Muxer<W> {
             let movie_duration = rescale_up(self.audio.frames, a.rate, movie_ts)?;
             durations.push(movie_duration);
             traks.push(self.audio_trak(a, track_id, movie_duration, co64)?);
+        }
+        if let Some((t, table)) = &self.text {
+            track_id = track_id.checked_add(1).ok_or(limit("mux-tracks"))?;
+            let media: u64 = table.durations.iter().try_fold(0u64, |acc, d| acc.checked_add(u64::from(*d))).ok_or(limit("mux-duration"))?;
+            let movie_duration = rescale_up(media, crate::captions::CAPTION_TIMESCALE, movie_ts)?;
+            durations.push(movie_duration);
+            traks.push(text_trak(self.spec.container, t, table, track_id, media, movie_duration, co64)?);
         }
         let movie_duration = durations.iter().copied().max().unwrap_or(0);
         body.extend(mvhd(movie_ts, movie_duration, track_id.checked_add(1).ok_or(limit("mux-tracks"))?)?);
@@ -641,6 +726,67 @@ impl<W: Write + Seek> Muxer<W> {
         trak.extend(boxed(b"mdia", &mdia_body)?);
         boxed(b"trak", &trak)
     }
+}
+
+/// The timed-text `trak` (TS 26.245 §5.16: `tx3g` with display flags 0, centred bottom justification,
+/// a transparent background, an empty default text box, the default style record (font 1, size 18, white)
+/// and a font table naming font 1 `Serif`; Studio defaults, the same as FFmpeg's `mov_text` muxer writes).
+fn text_trak(
+    container: Container,
+    t: &TextTrackSpec,
+    table: &TextTable,
+    track_id: u32,
+    media_duration: u64,
+    movie_duration: u64,
+    co64: bool,
+) -> Result<Vec<u8>, ReelError> {
+    let mut trak = tkhd(track_id, movie_duration, false, 0, 0)?;
+    let mut entry = vec![0u8; 6];
+    entry.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    entry.extend_from_slice(&0u32.to_be_bytes()); // displayFlags
+    entry.push(1); // horizontal justification: centre
+    entry.push(0xFF); // vertical justification: bottom (-1)
+    entry.extend_from_slice(&[0, 0, 0, 0]); // background RGBA
+    entry.extend_from_slice(&[0u8; 8]); // default text box (top, left, bottom, right)
+    entry.extend_from_slice(&0u16.to_be_bytes()); // style: startChar
+    entry.extend_from_slice(&0u16.to_be_bytes()); // endChar
+    entry.extend_from_slice(&1u16.to_be_bytes()); // font-ID
+    entry.push(0); // face style flags
+    entry.push(18); // font size
+    entry.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // text RGBA
+    let mut ftab = 1u16.to_be_bytes().to_vec();
+    ftab.extend_from_slice(&1u16.to_be_bytes());
+    ftab.push(5);
+    ftab.extend_from_slice(b"Serif");
+    entry.extend(boxed(b"ftab", &ftab)?);
+    let mut stbl = boxed(b"stsd", &stsd_payload(&boxed(b"tx3g", &entry)?))?;
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for d in &table.durations {
+        match runs.last_mut() {
+            Some((n, v)) if *v == *d && *n < u32::MAX => *n = n.saturating_add(1),
+            _ => runs.push((1, *d)),
+        }
+    }
+    let mut stts = u32::try_from(runs.len()).map_err(|_| limit("mux-stts"))?.to_be_bytes().to_vec();
+    for (n, d) in runs {
+        stts.extend_from_slice(&n.to_be_bytes());
+        stts.extend_from_slice(&d.to_be_bytes());
+    }
+    stbl.extend(fullbox(b"stts", 0, 0, &stts)?);
+    stbl.extend(stsz_table(&table.sizes)?);
+    stbl.extend(stsc(&table.chunks)?);
+    stbl.extend(chunk_offsets(&table.chunks, co64)?);
+    let minf_body = [fullbox(b"nmhd", 0, 0, &[])?, dinf()?, boxed(b"stbl", &stbl)?].concat();
+    let mut mdhd_box = mdhd(crate::captions::CAPTION_TIMESCALE, media_duration)?;
+    // Patch the packed ISO 639-2/T language (three 5-bit letters - 0x60) over `und`.
+    let packed = t.language.iter().fold(0u16, |acc, c| acc.wrapping_shl(5) | u16::from(c.saturating_sub(0x60) & 0x1F));
+    let at = mdhd_box.len().checked_sub(4).ok_or(limit("mux-mdhd"))?;
+    if let Some(slot) = mdhd_box.get_mut(at..at.saturating_add(2)) {
+        slot.copy_from_slice(&packed.to_be_bytes());
+    }
+    let mdia_body = [mdhd_box, hdlr(container, b"sbtl", "SubtitleHandler")?, boxed(b"minf", &minf_body)?].concat();
+    trak.extend(boxed(b"mdia", &mdia_body)?);
+    boxed(b"trak", &trak)
 }
 
 /// Frames of decode delay: `max(decode_index - pts_index)`; the presentation indices must be exactly
