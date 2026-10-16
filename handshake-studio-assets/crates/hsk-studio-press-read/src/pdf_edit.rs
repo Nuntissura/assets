@@ -85,6 +85,13 @@ pub struct PageView {
     pub index: u32,
     pub object: ObjRef,
     pub media_box: Option<[f64; 4]>,
+    /// `/CropBox` (inherited) as declared; `None` = absent (defaults to the media box).
+    pub crop_box: Option<[f64; 4]>,
+    /// `/BleedBox`, `/TrimBox`, `/ArtBox` as declared on the page (not inherited); `None` =
+    /// absent (each defaults to the crop box). Lane SMB-ID-PREPRESS (PDF place crops).
+    pub bleed_box: Option<[f64; 4]>,
+    pub trim_box: Option<[f64; 4]>,
+    pub art_box: Option<[f64; 4]>,
     pub rotate: i64,
     pub content_streams: u32,
     pub annotations: Vec<AnnotationView>,
@@ -515,6 +522,10 @@ impl PdfDoc {
                 index: i as u32,
                 object: ObjRef { num: *num, generation: self.objects[num].generation },
                 media_box: self.rect_of(self.inherited(*num, "MediaBox")),
+                crop_box: self.rect_of(self.inherited(*num, "CropBox")),
+                bleed_box: self.rect_of(dict.get("BleedBox")),
+                trim_box: self.rect_of(dict.get("TrimBox")),
+                art_box: self.rect_of(dict.get("ArtBox")),
                 rotate: self.inherited(*num, "Rotate").and_then(Object::as_int).unwrap_or(0),
                 content_streams,
                 annotations,

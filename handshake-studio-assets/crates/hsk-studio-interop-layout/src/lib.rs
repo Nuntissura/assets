@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod container;
+mod data_merge;
 mod descriptor;
 mod epub;
 mod error;
@@ -13,11 +14,18 @@ mod ids;
 mod indd_adapter;
 mod model;
 mod pdf_export;
+mod pdf_place;
 mod proposal;
 mod reflow;
 
 pub use container::IDML_MIMETYPE;
 pub use descriptor::DESCRIPTOR;
+pub use data_merge::{
+    ArrangeBy, DataSource, FieldKind, MAX_MERGE_FIELDS, MAX_MERGE_RECORDS, MAX_MERGE_SOURCE_BYTES, MergeError, MergeField, MergedRecord,
+    Placeholder, RecordCell, RecordSelection, arrange_records, check_placeholders, find_placeholders, merge_story, parse_delimited,
+    parse_json_records, select_records,
+};
+pub use pdf_place::{PdfCrop, PlaceError, PlaceLoss, PlacedPdf, draw_placed_pdf, place_pdf_page};
 pub use epub::{
     EPUB_MIMETYPE, EpubAccessibility, EpubError, EpubInspection, EpubLoss, EpubOptions, EpubOutput, EpubStory, EpubStyles, MAX_EPUB_CHAPTERS,
     MAX_EPUB_TEXT_BYTES, export_epub, inspect_epub,
