@@ -373,15 +373,37 @@ impl EncodeSegment {
         })
     }
 
+    /// The frame a coded sample presents: its exact input time; else the owed time nearest to it within one
+    /// frame duration (an encoder that rounds or offsets times); else, for an encoder that does not keep
+    /// input times, the oldest owed frame (output in input order). The host's mux and decode-back check
+    /// the result (presentation times must be a permutation; decoded frames are compared with the source).
+    fn owed_tag(&mut self, time: i64) -> Result<u64, ReelError> {
+        if let Some(tag) = self.owed.remove(&time) {
+            return Ok(tag);
+        }
+        let near = self
+            .owed
+            .keys()
+            .copied()
+            .filter(|t| t.abs_diff(time) < self.duration.unsigned_abs())
+            .min_by_key(|t| t.abs_diff(time));
+        let key = near
+            .or_else(|| self.owed.keys().copied().min())
+            .ok_or(ReelError::Corrupt {
+                what: "mf-encode-time-unknown",
+            })?;
+        self.owed.remove(&key).ok_or(ReelError::Corrupt {
+            what: "mf-encode-time-unknown",
+        })
+    }
+
     fn release(&mut self, out: &mut impl Write, id: u64, count: &mut u32) -> Result<bool, ReelError> {
         let pulled = self
             .encoder
             .pull(MAX_PULL)
             .map_err(|_| ReelError::Corrupt { what: "mf-encode" })?;
         for sample in pulled {
-            let tag = self.owed.remove(&sample.time).ok_or(ReelError::Corrupt {
-                what: "mf-encode-time-unknown",
-            })?;
+            let tag = self.owed_tag(sample.time)?;
             if sample.bytes.is_empty() {
                 return Err(ReelError::Corrupt {
                     what: "mf-encoder-output",

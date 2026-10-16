@@ -172,10 +172,13 @@ fn h264_export_through_the_os_encoder_decodes_back() {
             },
             expected_revision: 1,
         };
+        let index = build_index(&mut Cursor::new(bytes.clone()), bytes.len() as u64, &Limits::default(), &CancellationToken::default()).unwrap();
+        let table: Vec<(i64, i64, bool, u32)> = index.tracks[0].samples().iter().map(|s| (s.dts, s.pts, s.sync, s.size)).collect();
+        println!("h264 sample table (dts, pts, sync, size): {table:?}");
         let mut sink = Collect::default();
-        let back = registry
-            .decode_segment(&mut Cursor::new(bytes), None, &req, &Limits::default(), &CancellationToken::default(), &mut sink)
-            .unwrap();
+        let back = registry.decode_segment(&mut Cursor::new(bytes), None, &req, &Limits::default(), &CancellationToken::default(), &mut sink);
+        println!("decode-back pts: {:?}", sink.0.iter().map(|f| f.0).collect::<Vec<_>>());
+        let back = back.unwrap();
         assert!(back.complete && back.decoder_id == "mf-h264", "{back:?}");
         assert_eq!(sink.0.len() as u64, FRAMES);
         let (mut min, mut sum) = (f64::INFINITY, 0.0);
