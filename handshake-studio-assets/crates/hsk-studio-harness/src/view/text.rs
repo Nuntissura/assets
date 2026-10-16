@@ -600,6 +600,29 @@ impl super::Viewer {
 /// with `font`, exactly as [`prepare`] lays a point-text layer out (lane SMB-ILLUSTRATOR-INTEROP-2:
 /// an imported PDF text run stays text only when this layout reproduces its glyphs).
 pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken) -> Result<Vec<(u32, f64)>, String> {
+    shape_probe(font, text, size_pt, cancel, |inputs, resolution| {
+        let mut out = Vec::new();
+        for input in inputs {
+            for r in input.runs {
+                let mut x = r.origin_px[0] / resolution.px_per_pt;
+                for g in r.run.glyphs() {
+                    out.push((g.glyph_id, x + g.x_offset_pt));
+                    x += g.x_advance_pt;
+                }
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// Glyph id, advance and offsets (pt) of every glyph of `text` shaped in one line at `size_pt`
+/// with `font`, as [`shaped_line`] shapes it (lane SMB-AI-TYPE-PATH-RECOLOR: type on a path).
+pub(crate) fn shaped_glyphs(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken) -> Result<Vec<ty::Glyph>, String> {
+    shape_probe(font, text, size_pt, cancel, |inputs, _| Ok(inputs.iter().flat_map(|i| i.runs.iter()).flat_map(|r| r.run.glyphs().iter().copied()).collect()))
+}
+
+/// Shapes `text` as a one-line probe point-text layer and hands the shaped layer to `finish`.
+fn shape_probe<R>(font: &FontFile, text: &str, size_pt: f64, cancel: &CancellationToken, finish: impl FnOnce(&[TextLayerInput<'_>], &TextResolution) -> Result<R, String>) -> Result<R, String> {
     const DOC: &str = "SDOC-019a0000-0000-7000-8000-000000000001";
     const LAYER: &str = "SLYR-019a0000-0000-7000-8000-000000000002";
     const STORY: &str = "STXT-019a0000-0000-7000-8000-000000000003";
@@ -628,17 +651,5 @@ pub(crate) fn shaped_line(font: &FontFile, text: &str, size_pt: f64, cancel: &Ca
     ]))
     .map_err(|e| format!("text_probe_styles: {e}"))?;
     let entry = TextEntry { schema: ENTRY_SCHEMA.into(), layers: vec![TextLayerRecord { layer_id: LAYER.into(), story_id: STORY.into(), origin_px: [0.0, 0.0], paragraph_style: PARA.into(), character_style: CHAR.into() }], stories: vec![story], styles };
-    shape_layers(&doc, &entry, std::slice::from_ref(font), cancel, |inputs, resolution| {
-        let mut out = Vec::new();
-        for input in inputs {
-            for r in input.runs {
-                let mut x = r.origin_px[0] / resolution.px_per_pt;
-                for g in r.run.glyphs() {
-                    out.push((g.glyph_id, x + g.x_offset_pt));
-                    x += g.x_advance_pt;
-                }
-            }
-        }
-        Ok(out)
-    })
+    shape_layers(&doc, &entry, std::slice::from_ref(font), cancel, finish)
 }

@@ -102,6 +102,9 @@ schema_token!(VectorRecordsSchema, "hsk.studio.vector_records@1");
 #[path = "vector_tools.rs"]
 mod tools;
 pub use tools::*;
+#[path = "vector_path_text.rs"]
+mod path_text;
+pub use path_text::*;
 
 /// Tile layout (STU-COL-195 members; the STU-VEC-138 captured tokens are in
 /// [`StudioTileType::capture_token`]).
@@ -486,6 +489,10 @@ pub struct StudioVectorRecords {
     /// ICC profiles swatches convert through (lane SMB-ILLUSTRATOR-INTEROP).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub icc_profiles: Vec<StudioIccProfile>,
+    /// Text-on-path bindings (lane SMB-AI-TYPE-PATH-RECOLOR, `vector_path_text.rs`; absent when
+    /// empty, so record sets written before them are byte-identical).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_texts: Vec<StudioPathText>,
 }
 impl StudioVectorRecords {
     /// An empty set for `document_id`.
@@ -508,6 +515,7 @@ impl StudioVectorRecords {
             brush_strokes: Vec::new(),
             envelopes: Vec::new(),
             icc_profiles: Vec::new(),
+            path_texts: Vec::new(),
         }
     }
     /// The swatch `swatch_id`.
@@ -993,6 +1001,7 @@ pub fn validate_vector_records(
     }
 
     tools::validate_tools(r, &layers, design, &mut cx)?;
+    path_text::validate_path_texts(r, &layers, &mut cx)?;
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;
     let styles: BTreeMap<&str, &StudioPaintStyle> = design
