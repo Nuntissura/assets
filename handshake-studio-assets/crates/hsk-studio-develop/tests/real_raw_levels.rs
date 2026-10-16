@@ -220,7 +220,7 @@ const CASES: [Case; 9] = [
         image: (8, 8, 1896, 1268),
         white: 4095,
         white_proven: false,
-        unapplied: &["rw2_white_level_unread", "rw2_borders_unread", "rw2_defect_pixels_unfilled"],
+        unapplied: &["rw2_white_level_unread", "rw2_borders_unread", "rw2_missing_pixels_interpolated"],
     },
 ];
 

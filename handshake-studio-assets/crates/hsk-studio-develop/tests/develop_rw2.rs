@@ -79,18 +79,23 @@ fn rw2_format4_known_answers_and_format5_rotated_chunks() {
     assert_eq!(raw.unique_camera_model.as_deref(), Some("LX"));
     assert_eq!((0..14).map(|x| raw.sample(x, 0)).collect::<Vec<_>>(), want);
     assert!(raw.unapplied.contains(&"rw2_black_level_unread"));
-    // Format 5: 128 x 100 samples = 1280 blocks of ten 12-bit values from bit 0 up; the first
-    // 0x4000 bytes are stored rotated (logical 0x1FF8.. first), the rest is a short final chunk.
+    // Format 5: 128 x 100 samples, ten 12-bit values from bit 0 up per 16-byte block, every row
+    // starting a new block (13 blocks per row, 2 surplus samples; lane SMB-RAW-CLEANROOM-2: the
+    // converter oracle reads blocks row aligned, LX7 width-1900 probe); the first 0x4000 bytes are
+    // stored rotated (logical 0x1FF8.. first), the rest is a short final chunk. Values avoid 0,
+    // which the packed formats treat as a missing pixel.
     let (w, h) = (128usize, 100usize);
-    let value = |i: usize| ((i * 7 + i / 128 * 13) % 4096) as u16;
+    let value = |i: usize| (1 + (i * 7 + i / 128 * 13) % 4095) as u16;
     let mut logical = Vec::new();
-    for block in 0..(w * h).div_ceil(10) {
-        let mut word = 0u128;
-        for k in 0..10 {
-            let i = block * 10 + k;
-            word |= u128::from(if i < w * h { value(i) } else { 0 }) << (12 * k);
+    for y in 0..h {
+        for block in 0..w.div_ceil(10) {
+            let mut word = 0u128;
+            for k in 0..10 {
+                let x = block * 10 + k;
+                word |= u128::from(if x < w { value(y * w + x) } else { 0 }) << (12 * k);
+            }
+            logical.extend(word.to_le_bytes());
         }
-        logical.extend(word.to_le_bytes());
     }
     let mut stored = logical[0x4000 - 0x1ff8..0x4000].to_vec();
     stored.extend_from_slice(&logical[..0x4000 - 0x1ff8]);

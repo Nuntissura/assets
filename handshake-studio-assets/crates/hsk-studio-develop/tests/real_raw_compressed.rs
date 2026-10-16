@@ -424,8 +424,10 @@ fn orf_two_field_c5060wz_decodes_and_matches_the_embedded_preview() {
 
 /// DMC-LX7 (raw.pixls.us id 7010): `IIU` magic, sensor 1904 x 1276 (tags 0x0002/0x0003), 12 bit,
 /// compression 34316 (byte inspection 2026-10-15; the previous lanes' RW2 blocker); CFA code 2
-/// (GRBG). Preview r measured: 0.978 (1920 x 1280 preview), floor 0.95; digest pinned from the
-/// same run.
+/// (GRBG). Preview r measured: 0.978 (1920 x 1280 preview), floor 0.95. Digest re-pinned by lane
+/// SMB-RAW-CLEANROOM-2 for the clean-room decoder, whose plane equals the Adobe DNG Converter's
+/// stored plane bit for bit (src/raw_cr/rw2.rs oracle test; the two mapped-out pixels are now
+/// filled as the converter fills them).
 #[test]
 #[ignore = "needs the raw-vendor oracle corpus (CC0 downloads, never committed); NOT_PROVEN when absent"]
 fn rw2_lx7_decodes_and_matches_the_embedded_preview() {
@@ -437,7 +439,7 @@ fn rw2_lx7_decodes_and_matches_the_embedded_preview() {
         white: 4095,
         cfa: CfaPattern::Bayer(Bayer::Grbg),
         model: "DMC-LX7",
-        digest: "148fcc6e0589faf945c490b6abb210e8c8d9688035bdd8e69b1a732999b4f3f4",
+        digest: "cb576ea0a40b8770b8381f989fe260d243c591d0b1318f2c94452c00ba9468aa",
         r_floor: 0.95,
     }]);
 }

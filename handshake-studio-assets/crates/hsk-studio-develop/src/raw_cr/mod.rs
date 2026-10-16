@@ -14,7 +14,11 @@ use crate::DevelopError;
 use crate::pipeline::{Bayer, CfaPattern};
 use crate::tiffep::{self, Entry, Ifd, Tiff};
 
+#[cfg(test)]
+mod oracle;
+pub(crate) mod nef;
 pub(crate) mod orf;
+pub(crate) mod rw2;
 
 /// Exif IFD pointer (TIFF/Exif 2.3, tag 34665).
 pub(crate) const EXIF_IFD: u16 = 0x8769;

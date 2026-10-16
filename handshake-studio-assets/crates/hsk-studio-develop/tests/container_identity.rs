@@ -28,7 +28,8 @@ const PINNED: &[(&str, &str, &str)] = &[
     ("raw-vendor", "nikon-d70s-12bit-lossy-type1.nef", "3040x2014|12|cfa=291da6d41094b5da303e2cb7d704e464daa0edf03245fb14a9d8e592c92b4e11|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "nikon-z6-12bit-compressed.nef", "4548x3030|12|cfa=af18a3a222d77b3e2f19ff416cba8d5c62488a2d1d6bf149db1f84b5c93ebe22|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "olympus-c5060wz-12bit.orf", "2608x1949|12|cfa=1e6a220bfa5fbdced0bc9acf6c62cecc3cf287ad3df527e3fe980f154534ab37|dev=recipe_err=ApproximateColourNotAllowed"),
-    ("raw-vendor", "panasonic-dmc-lx7.rw2", "1904x1276|12|cfa=148fcc6e0589faf945c490b6abb210e8c8d9688035bdd8e69b1a732999b4f3f4|dev=recipe_err=MissingColourData"),
+    // LX7 re-pinned by SMB-RAW-CLEANROOM-2 (clean-room RW2 = Adobe DNG Converter plane bit for bit).
+    ("raw-vendor", "panasonic-dmc-lx7.rw2", "1904x1276|12|cfa=cb576ea0a40b8770b8381f989fe260d243c591d0b1318f2c94452c00ba9468aa|dev=recipe_err=MissingColourData"),
     ("raw-vendor", "sony-ilce-7s-14bit-compressed.arw", "2816x1872|14|cfa=3fd53781275f0e7c114ed54873071d49cc6f7677090445dc0e92fbd9feebe8a2|dev=recipe_err=MissingColourData"),
 ];
 
