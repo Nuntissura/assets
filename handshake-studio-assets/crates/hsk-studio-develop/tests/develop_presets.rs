@@ -63,8 +63,7 @@ fn cube_identity_affine_and_tetrahedral_hand_values() {
 fn creative_look_runs_per_pixel_with_amount() {
     let invert = cube(9, "", |r, g, b| [1.0 - r, 1.0 - g, 1.0 - b]);
     let look = CreativeLook::from_cube("negative", invert.as_bytes(), LookDomain::SrgbEncoded).unwrap();
-    let mut a = Adjustments::default();
-    a.look = Some(look.clone());
+    let mut a = Adjustments { look: Some(look.clone()), ..Adjustments::default() };
     let enc = |c: f64| if c <= 0.003_130_8 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
     let v = 0.18;
     let out = apply_pixel(&a, [v; 3]).unwrap();
