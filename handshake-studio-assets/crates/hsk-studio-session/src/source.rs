@@ -144,8 +144,10 @@ pub const DOCUMENT_ENTRY_PREFIX: &str = "studio/";
 /// `composition` and `motion` (lane SMB-AE-MOTION-RECORDS-2, lead-directed 2026-10-15) carry the
 /// Folio composition and motion records (`crate::motion`). `audio_routing` (lane
 /// SMB-AUDITION-SESSION-2, lead lane brief 2026-10-15 "save and reopen the mix graph with the
-/// session") carries the Folio `StudioAudioRoutingSet` of the document's sequences.
-pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing"];
+/// session") carries the Folio `StudioAudioRoutingSet` of the document's sequences. `waveform_edit`
+/// (lane SMB-AU-WAVEFORM-EDITOR, Operator-approved Audition parity scope 2026-10-16) carries the
+/// harness waveform editor's edit list over its source audio (no samples).
+pub const DOCUMENT_ENTRY_TOKENS: &[&str] = &["selection", "text", "develop", "vector", "composition", "motion", "audio_routing", "waveform_edit"];
 
 /// The token of a well-formed document entry name whose digest is its body's.
 pub(crate) fn document_entry(name: &str, sha256_hex: &str) -> Option<&'static str> {

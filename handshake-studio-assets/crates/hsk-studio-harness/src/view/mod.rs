@@ -48,6 +48,10 @@ pub mod audio_session;
 /// `audio-batch`).
 #[cfg(feature = "audio-batch")]
 pub mod mixer;
+/// Waveform (sample) editor with the edit list in the session (lane SMB-AU-WAVEFORM-EDITOR, feature
+/// `audio-batch`).
+#[cfg(feature = "audio-batch")]
+pub mod waveform;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).
@@ -211,6 +215,9 @@ pub struct Viewer {
     /// The mixer of a sequence (module [`mixer`]).
     #[cfg(feature = "audio-batch")]
     mixer: Option<mixer::MixerState>,
+    /// The waveform editor (module [`waveform`]).
+    #[cfg(feature = "audio-batch")]
+    waveform: Option<waveform::WaveformState>,
 }
 
 struct MonitorState {
@@ -277,6 +284,8 @@ impl Viewer {
             audio_decoder: None,
             #[cfg(feature = "audio-batch")]
             mixer: None,
+            #[cfg(feature = "audio-batch")]
+            waveform: None,
         };
         // D24-A (lane SMB-PR-SOURCE-MONITOR): AAC decodes by default through the OS decoder, reel-native's
         // isolated Media Foundation AAC worker (`reel-native-mf-worker --aac` beside the executable).
@@ -751,6 +760,7 @@ impl Viewer {
         #[cfg(feature = "audio-batch")]
         {
             state["mixer"] = self.mixer_json();
+            state["waveform"] = self.waveform_json();
         }
         state
     }
@@ -919,6 +929,8 @@ impl Viewer {
         self.audio_ui(ctx);
         #[cfg(feature = "audio-batch")]
         self.mixer_ui(ctx);
+        #[cfg(feature = "audio-batch")]
+        self.waveform_ui(ctx);
         if let Some((play, last)) = &mut self.prototype {
             let now = std::time::Instant::now();
             let ms = u64::try_from(now.duration_since(*last).as_millis()).unwrap_or(u64::MAX);
