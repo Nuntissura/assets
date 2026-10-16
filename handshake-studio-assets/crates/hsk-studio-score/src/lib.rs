@@ -37,6 +37,7 @@ mod spec_rows;
 mod spectral_edit;
 mod spectrogram;
 mod spectrum;
+mod state;
 mod src_bounce;
 mod stage;
 mod stream_resample;
@@ -48,8 +49,9 @@ pub use block::{InputBlock, OutputBlock};
 pub use bounce::{BounceChunk, BounceReceipt, BounceRequest};
 pub use bus::{
     BusSpec, Destination, GRAPH_SEEK_WARMUP_SECONDS, GraphLatency, GraphMeters, MAX_BUSES, MAX_SENDS_PER_SOURCE, MasterSpec,
-    MixGraph, SEND_LEVEL_DB, SeekMode, SendSpec, SendTap, StripInput, StripSource, StripSpec,
+    MixGraph, SEND_LEVEL_DB, SeekMode, SendSpec, SendTap, StripInput, StripSource, StripSpec, CheckpointPolicy, CheckpointStats,
 };
+pub use state::{StateReader, StateWriter};
 pub use chain::{Chain, ChainStage, MAX_CHAIN_STAGES};
 pub use delay::{
     DELAY_DAMPING_MIN_HZ, DELAY_FEEDBACK, DELAY_MIX, DELAY_TIME_MS, DelayParams, FeedbackDelay,

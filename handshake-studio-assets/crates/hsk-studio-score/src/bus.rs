@@ -175,6 +175,51 @@ pub enum SeekMode {
     Preroll { seconds: u64 },
 }
 
+/// Checkpoints of exact seeks (lane SMB-AUDITION-UI-2): during forward rendering the graph saves
+/// the state of every bus and master stage (`Processor::save_state`) and of every alignment delay
+/// at least every `interval_frames` of timeline, keeping the total under `budget_bytes`: when a new
+/// checkpoint would exceed it, every second checkpoint is dropped and the interval doubles. An
+/// exact seek resumes from the nearest checkpoint at or before the target (restore, strips seek to
+/// the checkpoint, render on) instead of re-rendering from sample 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointPolicy {
+    pub interval_frames: u64,
+    pub budget_bytes: usize,
+}
+
+impl CheckpointPolicy {
+    /// One checkpoint per second of timeline, 64 MiB (authored defaults).
+    pub fn for_rate(sample_rate_hz: u32) -> Self {
+        Self { interval_frames: u64::from(sample_rate_hz), budget_bytes: 64 << 20 }
+    }
+}
+
+/// What the checkpoints hold right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointStats {
+    /// Every bus and master stage supports checkpoints (else exact seeks backward re-render from 0).
+    pub enabled: bool,
+    pub count: usize,
+    pub bytes: usize,
+    /// Current interval (the policy interval doubled once per thinning).
+    pub interval_frames: u64,
+    /// The most frames an exact seek renders after resuming: `interval_frames + max_block_frames`
+    /// once a checkpoint at or before the target exists (before the first checkpoint, the distance
+    /// from sample 0).
+    pub seek_bound_frames: u64,
+    /// Frames the last exact seek rendered (restore or reset to target).
+    pub last_seek_frames: u64,
+}
+
+struct Checkpoint {
+    position: u64,
+    internal: u64,
+    buses: Vec<Vec<Vec<u8>>>,
+    master: Vec<Vec<u8>>,
+    delays: Vec<(Vec<[f32; 2]>, usize)>,
+    bytes: usize,
+}
+
 /// Meter readings of the graph since the last [`MixGraph::reset_meters`] (seek and reset clear
 /// them): per strip and bus the post-fader sample peak per channel, the master output sample peak,
 /// and the master output loudness (score's BS.1770 meter, stereo weights 1, 1).
@@ -327,6 +372,13 @@ pub struct MixGraph {
     scratch: [Vec<f32>; 2],
     discard: [Vec<f32>; 2],
     seek_mode: SeekMode,
+    policy: CheckpointPolicy,
+    interval: u64,
+    checkpoints: Vec<Checkpoint>,
+    checkpoint_bytes: usize,
+    checkpointable: bool,
+    next_checkpoint: u64,
+    last_seek_frames: u64,
     metering: bool,
     strip_peaks: Vec<[f32; 2]>,
     bus_peaks: Vec<[f32; 2]>,
@@ -400,6 +452,26 @@ impl Stack {
             s.slot.processor.reset();
             s.last.fill(f64::NAN);
         }
+    }
+
+    fn checkpointable(&self) -> bool {
+        self.stages.iter().all(|s| s.slot.processor.save_state().is_some())
+    }
+
+    fn save(&self) -> Option<Vec<Vec<u8>>> {
+        self.stages.iter().map(|s| s.slot.processor.save_state()).collect()
+    }
+
+    /// Restores every stage; lanes are re-applied on the next run (`last` = NaN).
+    fn restore(&mut self, states: &[Vec<u8>]) -> Result<(), ScoreError> {
+        if states.len() != self.stages.len() {
+            return Err(ScoreError::LengthMismatch);
+        }
+        for (s, state) in self.stages.iter_mut().zip(states) {
+            s.slot.processor.restore_state(state)?;
+            s.last.fill(f64::NAN);
+        }
+        Ok(())
     }
 
     /// `out[..][..n]` = the stack over `input[..][..n]`, whose first frame is timeline `start`.
@@ -660,7 +732,7 @@ impl MixGraph {
                 }
             })
             .collect();
-        Ok(Self {
+        let mut graph = Self {
             rate: sample_rate_hz,
             block: max_block_frames,
             strips: built_strips,
@@ -683,12 +755,116 @@ impl MixGraph {
             scratch: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
             discard: [vec![0.0; max_block_frames], vec![0.0; max_block_frames]],
             seek_mode: SeekMode::Exact,
+            policy: CheckpointPolicy::for_rate(sample_rate_hz),
+            interval: u64::from(sample_rate_hz).max(1),
+            checkpoints: Vec::new(),
+            checkpoint_bytes: 0,
+            checkpointable: false,
+            next_checkpoint: 0,
+            last_seek_frames: 0,
             metering: false,
             strip_peaks: vec![[0.0; 2]; strip_count],
             bus_peaks: vec![[0.0; 2]; nb],
             master_peak: [0.0; 2],
             meter: LoudnessMeter::new(sample_rate_hz, &[1.0, 1.0])?,
-        })
+        };
+        graph.init_checkpoints();
+        Ok(graph)
+    }
+
+    fn init_checkpoints(&mut self) {
+        self.checkpointable = self.buses.iter().all(|b| b.stack.checkpointable()) && self.master_stack.checkpointable();
+        self.next_checkpoint = self.interval;
+    }
+
+    /// Replaces the checkpoint policy (drops the checkpoints taken so far).
+    pub fn set_checkpoint_policy(&mut self, policy: CheckpointPolicy) {
+        self.policy = policy;
+        self.interval = policy.interval_frames.max(1);
+        self.checkpoints.clear();
+        self.checkpoint_bytes = 0;
+        self.next_checkpoint = self.position.saturating_add(self.interval);
+    }
+
+    pub fn checkpoint_stats(&self) -> CheckpointStats {
+        CheckpointStats {
+            enabled: self.checkpointable,
+            count: self.checkpoints.len(),
+            bytes: self.checkpoint_bytes,
+            interval_frames: self.interval,
+            seek_bound_frames: self.interval.saturating_add(self.block as u64),
+            last_seek_frames: self.last_seek_frames,
+        }
+    }
+
+    /// Saves the current state as a checkpoint at `self.position` (module docs of
+    /// [`CheckpointPolicy`]); called before a render block once the position reaches the next
+    /// checkpoint.
+    fn take_checkpoint(&mut self) {
+        let buses: Option<Vec<Vec<Vec<u8>>>> = self.buses.iter().map(|b| b.stack.save()).collect();
+        let (Some(buses), Some(master)) = (buses, self.master_stack.save()) else {
+            self.checkpointable = false;
+            return;
+        };
+        let delays: Vec<(Vec<[f32; 2]>, usize)> = self.edges.iter().map(|e| (e.delay.buf.clone(), e.delay.at)).collect();
+        let bytes = buses.iter().flatten().chain(master.iter()).map(Vec::len).sum::<usize>()
+            + delays.iter().map(|(b, _)| b.len() * 8).sum::<usize>();
+        if bytes > self.policy.budget_bytes {
+            // One checkpoint does not fit the budget: checkpoints are off for this graph.
+            self.checkpointable = false;
+            self.checkpoints.clear();
+            self.checkpoint_bytes = 0;
+            return;
+        }
+        while self.checkpoint_bytes + bytes > self.policy.budget_bytes && self.checkpoints.len() > 1 {
+            let mut keep = 0usize;
+            let mut i = 0usize;
+            self.checkpoints.retain(|_| {
+                let k = i.is_multiple_of(2);
+                i += 1;
+                k
+            });
+            for c in &self.checkpoints {
+                keep += c.bytes;
+            }
+            self.checkpoint_bytes = keep;
+            self.interval = self.interval.saturating_mul(2);
+        }
+        if self.checkpoint_bytes + bytes > self.policy.budget_bytes {
+            self.checkpoints.clear();
+            self.checkpoint_bytes = 0;
+        }
+        let at = self.checkpoints.partition_point(|c| c.position < self.position);
+        if self.checkpoints.get(at).is_some_and(|c| c.position == self.position) {
+            return;
+        }
+        self.checkpoints.insert(at, Checkpoint { position: self.position, internal: self.internal, buses, master, delays, bytes });
+        self.checkpoint_bytes += bytes;
+    }
+
+    /// Resumes from checkpoint `index`.
+    fn restore_checkpoint(&mut self, index: usize, cancel: &CancellationToken) -> Result<(), ScoreError> {
+        self.reset_buses();
+        let cp = &self.checkpoints[index];
+        for (bus, states) in self.buses.iter_mut().zip(&cp.buses) {
+            bus.stack.restore(states)?;
+        }
+        self.master_stack.restore(&cp.master)?;
+        for (e, (buf, at)) in self.edges.iter_mut().zip(&cp.delays) {
+            if e.delay.buf.len() != buf.len() {
+                return Err(ScoreError::LengthMismatch);
+            }
+            e.delay.buf.copy_from_slice(buf);
+            e.delay.at = *at;
+        }
+        let (internal, position) = (cp.internal, cp.position);
+        for s in &mut self.strips {
+            s.source.seek(internal, cancel)?;
+        }
+        self.internal = internal;
+        self.position = position;
+        self.next_checkpoint = position.saturating_add(self.interval);
+        Ok(())
     }
 
     /// The seek behaviour ([`SeekMode::Exact`] by default).
@@ -748,6 +924,7 @@ impl MixGraph {
     fn reset_buses(&mut self) {
         self.internal = 0;
         self.position = 0;
+        self.next_checkpoint = self.interval;
         for b in &mut self.buses {
             b.stack.reset();
         }
@@ -770,10 +947,17 @@ impl MixGraph {
             SeekMode::Preroll { seconds } => seconds,
             SeekMode::Exact => {
                 let result = (|| {
-                    if sample < self.position {
-                        self.reset();
+                    // The nearest checkpoint at or before the target, when it is closer than the
+                    // current position (or the target is behind it).
+                    let cp = self.checkpoints.partition_point(|c| c.position <= sample).checked_sub(1);
+                    let ahead = sample >= self.position;
+                    match cp {
+                        Some(i) if !ahead || self.checkpoints[i].position > self.position => self.restore_checkpoint(i, cancel)?,
+                        None if !ahead => self.reset(),
+                        _ => {}
                     }
                     let (mut l, mut r) = (vec![0.0f32; self.block], vec![0.0f32; self.block]);
+                    self.last_seek_frames = sample.saturating_sub(self.position);
                     while self.position < sample {
                         let n = (sample - self.position).min(self.block as u64) as usize;
                         let at = self.position;
@@ -829,6 +1013,10 @@ impl MixGraph {
         }
         if frames > self.block {
             return Err(ScoreError::CapacityExceeded);
+        }
+        if self.checkpointable && self.position >= self.next_checkpoint && self.position > 0 {
+            self.take_checkpoint();
+            self.next_checkpoint = self.position.saturating_add(self.interval);
         }
         let result = (|| {
             // Pre-roll: the graph latency, outputs discarded.

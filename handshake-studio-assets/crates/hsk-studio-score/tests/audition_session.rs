@@ -422,3 +422,95 @@ fn bus_keyframes_exact_seek_through_long_tails_and_meters() {
         assert!(g.meters().loudness.integrated_lufs.is_some_and(f64::is_finite), "{:?}", g.meters().loudness);
     });
 }
+
+/// Lane SMB-AUDITION-UI-2: exact backward seeks resume from processor-state checkpoints instead of
+/// re-rendering from sample 0. A 4 s reverb bus plus an automated EQ / compressor / limiter bus and
+/// a latent master: after playing 6 s, seeks back to 2.5 s, 0.3 s and 4.75 s land bit for bit on the
+/// continuous render and render at most `interval + block` frames; a tight budget thins the
+/// checkpoints (interval doubles, bytes stay under budget) and stays exact; a stage without
+/// checkpoint support turns them off and the seek falls back to the exact re-render from 0.
+#[test]
+fn checkpointed_backward_seeks_are_exact_and_bounded() {
+    bounded_case("graph-checkpoints", || {
+        let rate = 48_000;
+        let len = 7 * rate as usize;
+        let token = CancellationToken::default();
+        let build = |extra: Option<EffectSlot>| {
+            let mut src = vec![noise(31, 2 * rate as usize), noise(32, 2 * rate as usize)];
+            src.iter_mut().for_each(|c| c.resize(len, 0.0));
+            let t1 = TrackSpec::new(src, 0);
+            let t2 = TrackSpec::new(vec![noise(33, len)], 0);
+            let mut verb = BusSpec::new("verb");
+            verb.effects = vec![EffectSlot::new(Box::new(Reverb::new(rate, 2, ReverbParams { rt60_s: 4.0, ..ReverbParams::default() }).unwrap()))];
+            if let Some(x) = extra {
+                verb.effects.push(x);
+            }
+            let mut dyn_bus = BusSpec::new("dyn");
+            let eq = Equalizer::new(rate, 2, &[BiquadSpec { kind: BiquadKind::Peaking, frequency_hz: 1000.0, gain_db: 6.0, q: 1.0 }], 0.0).unwrap();
+            let sweep = AutomationLane::new(&[(0, 200.0), (6 * rate as u64, 4000.0)], Interpolation::Linear, (EQ_FREQUENCY_MIN_HZ, 24_000.0)).unwrap();
+            dyn_bus.effects = vec![
+                EffectSlot::new(Box::new(eq)).with_lane(1, sweep),
+                EffectSlot::new(Box::new(Dynamics::new(rate, 2, DynamicsParams::compressor(-24.0, 4.0)).unwrap())),
+                EffectSlot::new(Box::new(LookaheadLimiter::new(rate, 2, LimiterParams::default()).unwrap())),
+            ];
+            let master = MasterSpec { effects: vec![delay_effect(rate)], volume_db: AutomationLane::constant(-3.0) };
+            let strips = vec![
+                StripSpec::track(t1, Destination::Bus(0), vec![]),
+                StripSpec::track(t2, Destination::Bus(1), vec![SendSpec { bus: 0, tap: SendTap::PostFader, level_db: AutomationLane::constant(-6.0), pan: 0.3 }]),
+            ];
+            MixGraph::new(rate, 1000, strips, vec![verb, dyn_bus], master).unwrap()
+        };
+        let [full_l, full_r] = render(&mut build(None), len, 1000);
+        let check = |g: &mut MixGraph, at: usize, what: &str| {
+            g.seek(at as u64, &token).unwrap();
+            let (mut l, mut r) = (vec![0.0; 1000], vec![0.0; 1000]);
+            g.render(at as u64, &mut l, &mut r, &token).unwrap();
+            assert_eq!(bits(&l), bits(&full_l[at..at + 1000]), "{what}: L at {at}");
+            assert_eq!(bits(&r), bits(&full_r[at..at + 1000]), "{what}: R at {at}");
+        };
+        let mut g = build(None);
+        let _ = render(&mut g, 6 * rate as usize, 1000);
+        let stats = g.checkpoint_stats();
+        assert!(stats.enabled && stats.count >= 5, "{stats:?}");
+        assert_eq!(stats.seek_bound_frames, 48_000 + 1000);
+        for at in [125_000usize, 14_400, 228_000] {
+            check(&mut g, at, "checkpointed");
+            let s = g.checkpoint_stats();
+            assert!(s.last_seek_frames <= s.seek_bound_frames, "seek {at} rendered {} > bound {}", s.last_seek_frames, s.seek_bound_frames);
+        }
+        // A tight budget: thinning doubles the interval, bytes stay under the budget, still exact.
+        let mut g = build(None);
+        let one = {
+            let mut probe = build(None);
+            let _ = render(&mut probe, 2 * rate as usize, 1000);
+            probe.checkpoint_stats().bytes
+        };
+        g.set_checkpoint_policy(CheckpointPolicy { interval_frames: u64::from(rate), budget_bytes: one * 2 + one / 2 });
+        let _ = render(&mut g, 6 * rate as usize, 1000);
+        let s = g.checkpoint_stats();
+        assert!(s.bytes <= one * 2 + one / 2 && s.interval_frames >= 2 * u64::from(rate) && s.count >= 1, "{s:?}");
+        check(&mut g, 200_000, "thinned");
+        assert!(g.checkpoint_stats().last_seek_frames <= g.checkpoint_stats().seek_bound_frames);
+        // A stage without checkpoint support: checkpoints off, the seek re-renders from 0, exact.
+        let hard = HardLimiter::new(rate, 2, HardLimiterParams::default()).unwrap();
+        let mut g = build(Some(EffectSlot::new(Box::new(hard))));
+        let [hl, _] = {
+            let mut h = build(Some(EffectSlot::new(Box::new(HardLimiter::new(rate, 2, HardLimiterParams::default()).unwrap()))));
+            render(&mut h, 3 * rate as usize, 1000)
+        };
+        let _ = render(&mut g, 3 * rate as usize, 1000);
+        assert!(!g.checkpoint_stats().enabled);
+        g.seek(100_000, &token).unwrap();
+        assert_eq!(g.checkpoint_stats().last_seek_frames, 100_000);
+        let (mut l, mut r) = (vec![0.0; 1000], vec![0.0; 1000]);
+        g.render(100_000, &mut l, &mut r, &token).unwrap();
+        assert_eq!(bits(&l), bits(&hl[100_000..101_000]));
+        // Processor states round-trip and refuse foreign bytes.
+        let mut verb = Reverb::new(rate, 2, ReverbParams::default()).unwrap();
+        let state = verb.save_state().unwrap();
+        assert!(!state.is_empty());
+        verb.restore_state(&state).unwrap();
+        assert_eq!(verb.restore_state(&state[..state.len() - 1]), Err(ScoreError::LengthMismatch));
+        assert_eq!(HardLimiter::new(rate, 2, HardLimiterParams::default()).unwrap().save_state(), None);
+    });
+}

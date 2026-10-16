@@ -59,6 +59,13 @@ impl TruePeakFilter {
     pub(crate) fn reset(&mut self) {
         self.history = [0.0; BRANCH_TAPS];
     }
+    /// Checkpoint access (lane SMB-AUDITION-UI-2).
+    pub(crate) fn history(&self) -> &[f64; BRANCH_TAPS] {
+        &self.history
+    }
+    pub(crate) fn set_history(&mut self, history: [f64; BRANCH_TAPS]) {
+        self.history = history;
+    }
     pub(crate) fn push(&mut self, x: f64) -> f64 {
         self.history.copy_within(0..BRANCH_TAPS - 1, 1);
         self.history[0] = x;

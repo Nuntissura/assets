@@ -213,6 +213,21 @@ impl Equalizer {
 }
 
 impl Processor for Equalizer {
+    /// Checkpoint: the biquad memories.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let flat: Vec<f64> = self.state.iter().flatten().copied().collect();
+        Some(crate::state::StateWriter::new().f64s(&flat).finish())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ScoreError> {
+        let mut flat = vec![0.0; self.state.len() * 2];
+        let mut r = crate::state::StateReader::new(state);
+        r.f64s(&mut flat)?;
+        r.finish()?;
+        for (dst, src) in self.state.iter_mut().zip(flat.chunks_exact(2)) {
+            *dst = [src[0], src[1]];
+        }
+        Ok(())
+    }
     fn identity(&self) -> String {
         self.identity.clone()
     }

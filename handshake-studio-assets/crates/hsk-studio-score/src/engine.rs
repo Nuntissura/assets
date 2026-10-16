@@ -41,6 +41,18 @@ pub trait Processor {
         cancel: &CancellationToken,
     ) -> Result<(), ScoreError>;
     fn reset(&mut self) {}
+    /// Checkpoint support (lane SMB-AUDITION-UI-2, module `state`): the processor's mutable signal
+    /// state as exact bytes, or `None` when it cannot be checkpointed (the default). Parameters
+    /// set by automation are not included; the owner re-applies its lanes after a restore.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        None
+    }
+    /// Restores bytes from [`Processor::save_state`] of the same processor configuration;
+    /// `LengthMismatch` (nothing changed) for bytes that do not fit, `OutOfRange` when the
+    /// processor has no checkpoint support.
+    fn restore_state(&mut self, _state: &[u8]) -> Result<(), ScoreError> {
+        Err(ScoreError::OutOfRange)
+    }
     /// The block this processor last processed has been published; its pre-block rollback state
     /// (if any) is no longer needed. Default: nothing to commit.
     fn commit(&mut self) {}

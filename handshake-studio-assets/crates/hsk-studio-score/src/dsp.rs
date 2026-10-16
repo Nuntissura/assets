@@ -56,6 +56,12 @@ impl Processor for Unity {
     fn identity(&self) -> String {
         String::from("unity")
     }
+    fn save_state(&self) -> Option<Vec<u8>> {
+        Some(Vec::new())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ScoreError> {
+        if state.is_empty() { Ok(()) } else { Err(ScoreError::LengthMismatch) }
+    }
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -98,6 +104,13 @@ impl Gain {
 }
 
 impl Processor for Gain {
+    /// Stateless: the checkpoint is empty (the gain itself is configuration or automation).
+    fn save_state(&self) -> Option<Vec<u8>> {
+        Some(Vec::new())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ScoreError> {
+        if state.is_empty() { Ok(()) } else { Err(ScoreError::LengthMismatch) }
+    }
     fn identity(&self) -> String {
         format!("gain:linear={:08x}", self.linear.to_bits())
     }

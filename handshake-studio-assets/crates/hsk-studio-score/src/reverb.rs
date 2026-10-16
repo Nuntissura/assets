@@ -229,6 +229,70 @@ impl Reverb {
 }
 
 impl Processor for Reverb {
+    /// Checkpoint: every comb and allpass buffer with its position and damping store, and the
+    /// pre-delay line.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = crate::state::StateWriter::new();
+        for bank in &self.banks {
+            for c in &bank.combs {
+                w.f64s(&c.buf).usize(c.pos).f64(c.store);
+            }
+            for a in &bank.allpasses {
+                w.f64s(&a.buf).usize(a.pos);
+            }
+        }
+        w.f64s(&self.pre).usize(self.pre_pos);
+        Some(w.finish())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ScoreError> {
+        let mut r = crate::state::StateReader::new(state);
+        let mut combs = Vec::new();
+        let mut allpasses = Vec::new();
+        for bank in &self.banks {
+            for c in &bank.combs {
+                let mut buf = c.buf.clone();
+                r.f64s(&mut buf)?;
+                let (pos, store) = (r.usize()?, r.f64()?);
+                if pos >= buf.len() {
+                    return Err(ScoreError::LengthMismatch);
+                }
+                combs.push((buf, pos, store));
+            }
+            for a in &bank.allpasses {
+                let mut buf = a.buf.clone();
+                r.f64s(&mut buf)?;
+                let pos = r.usize()?;
+                if pos >= buf.len() {
+                    return Err(ScoreError::LengthMismatch);
+                }
+                allpasses.push((buf, pos));
+            }
+        }
+        let mut pre = self.pre.clone();
+        r.f64s(&mut pre)?;
+        let pre_pos = r.usize()?;
+        r.finish()?;
+        if pre_pos >= pre.len().max(1) {
+            return Err(ScoreError::LengthMismatch);
+        }
+        let mut combs = combs.into_iter();
+        let mut allpasses = allpasses.into_iter();
+        for bank in &mut self.banks {
+            for c in &mut bank.combs {
+                if let Some((buf, pos, store)) = combs.next() {
+                    (c.buf, c.pos, c.store) = (buf, pos, store);
+                }
+            }
+            for a in &mut bank.allpasses {
+                if let Some((buf, pos)) = allpasses.next() {
+                    (a.buf, a.pos) = (buf, pos);
+                }
+            }
+        }
+        self.pre = pre;
+        self.pre_pos = pre_pos;
+        Ok(())
+    }
     fn identity(&self) -> String {
         self.identity.clone()
     }

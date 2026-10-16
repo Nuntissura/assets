@@ -303,6 +303,20 @@ impl Dynamics {
 }
 
 impl Processor for Dynamics {
+    /// Checkpoint: detector mean squares, gain state and hold counters.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        Some(crate::state::StateWriter::new().f64s(&self.mean_square).f64s(&self.gain_db).u32s(&self.hold).finish())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ScoreError> {
+        let (mut ms, mut g, mut h) = (self.mean_square.clone(), self.gain_db.clone(), self.hold.clone());
+        let mut r = crate::state::StateReader::new(state);
+        r.f64s(&mut ms)?;
+        r.f64s(&mut g)?;
+        r.u32s(&mut h)?;
+        r.finish()?;
+        (self.mean_square, self.gain_db, self.hold) = (ms, g, h);
+        Ok(())
+    }
     fn identity(&self) -> String {
         self.identity.clone()
     }
@@ -524,6 +538,62 @@ impl LookaheadLimiter {
 }
 
 impl Processor for LookaheadLimiter {
+    /// Checkpoint: true-peak histories, delay line, sliding-minimum window, boxcar, release state
+    /// and counters.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        let mut w = crate::state::StateWriter::new();
+        for f in &self.filters {
+            w.f64s(f.history());
+        }
+        w.f32s(&self.delay_line).usize(self.delay_pos);
+        w.usize(self.window.len());
+        for (i, v) in &self.window {
+            w.u64(*i).f64(*v);
+        }
+        w.f64s(&self.boxcar).usize(self.box_pos).f64(self.box_sum).u64(self.index).f64(self.release_prev).u64(self.clamp_events);
+        Some(w.finish())
+    }
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ScoreError> {
+        let mut r = crate::state::StateReader::new(state);
+        let mut histories = Vec::with_capacity(self.filters.len());
+        for f in &self.filters {
+            let mut h = *f.history();
+            r.f64s(&mut h)?;
+            histories.push(h);
+        }
+        let mut delay_line = self.delay_line.clone();
+        r.f32s(&mut delay_line)?;
+        let delay_pos = r.usize()?;
+        let n = r.usize()?;
+        if n > self.window_len.saturating_add(1) || delay_pos >= delay_line.len().max(1) {
+            return Err(ScoreError::LengthMismatch);
+        }
+        let mut window = VecDeque::with_capacity(n);
+        for _ in 0..n {
+            window.push_back((r.u64()?, r.f64()?));
+        }
+        let mut boxcar = self.boxcar.clone();
+        r.f64s(&mut boxcar)?;
+        let box_pos = r.usize()?;
+        let (box_sum, index, release_prev, clamp_events) = (r.f64()?, r.u64()?, r.f64()?, r.u64()?);
+        r.finish()?;
+        if box_pos >= boxcar.len().max(1) {
+            return Err(ScoreError::LengthMismatch);
+        }
+        for (f, h) in self.filters.iter_mut().zip(histories) {
+            f.set_history(h);
+        }
+        self.delay_line = delay_line;
+        self.delay_pos = delay_pos;
+        self.window = window;
+        self.boxcar = boxcar;
+        self.box_pos = box_pos;
+        self.box_sum = box_sum;
+        self.index = index;
+        self.release_prev = release_prev;
+        self.clamp_events = clamp_events;
+        Ok(())
+    }
     fn identity(&self) -> String {
         self.identity.clone()
     }
