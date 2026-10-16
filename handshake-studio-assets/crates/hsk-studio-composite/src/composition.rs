@@ -1725,6 +1725,19 @@ pub fn three_d_aux_channels(
     ctx: &SceneContext<'_>,
     cancel: &CancellationToken,
 ) -> Result<crate::three_d::AuxChannels, TemporalError> {
+    let alphas = three_d_plane_alphas(planes, filter, ctx, cancel)?;
+    crate::three_d::aux_channels(planes, &alphas, ids, cam, width, height)
+}
+
+/// Every plane's content alpha over its rectangle, rendered by the context's backend with the
+/// layer mask applied (lanes SMB-AE-3D-2 / -3: the input of the auxiliary channels and of
+/// Cryptomatte). Surfaces are charged before allocation.
+pub fn three_d_plane_alphas(
+    planes: &[crate::three_d::Plane3d],
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+) -> Result<Vec<Vec<f32>>, TemporalError> {
     let mut charges = Charges::default();
     let mut ledger = ExactnessLedger::default();
     let mut alphas = Vec::with_capacity(planes.len());
@@ -1735,7 +1748,26 @@ pub fn three_d_aux_channels(
         let n = usize::try_from(u64::from(s.width).checked_mul(u64::from(s.height)).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
         alphas.push((0..n).map(|i| f32_at(&s.alpha, i)).collect::<Vec<f32>>());
     }
-    crate::three_d::aux_channels(planes, &alphas, ids, cam, width, height)
+    Ok(alphas)
+}
+
+/// Anti-aliased STU-CMP-050 auxiliary channels (lane SMB-AE-3D-3;
+/// [`crate::three_d::coverage`] module docs): [`three_d_plane_alphas`], then
+/// [`crate::three_d::coverage::aux_channels_aa`] with `samples x samples` samples per pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn three_d_aux_channels_aa(
+    planes: &[crate::three_d::Plane3d],
+    ids: &[u32],
+    cam: &crate::three_d::Camera,
+    width: u32,
+    height: u32,
+    samples: u32,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+) -> Result<crate::three_d::coverage::AuxChannelsAa, TemporalError> {
+    let alphas = three_d_plane_alphas(planes, filter, ctx, cancel)?;
+    crate::three_d::coverage::aux_channels_aa(planes, &alphas, ids, cam, width, height, samples)
 }
 
 /// The lit plane's surface: its content rendered over `lit.rect`, every texel shaded by

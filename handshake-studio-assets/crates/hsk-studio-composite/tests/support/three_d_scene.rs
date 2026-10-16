@@ -732,6 +732,17 @@ fn oracle_full(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool, masks: &[O
 pub fn aux_inputs(pixels: &Pixels) -> (Vec<Plane3d>, hsk_studio_composite::three_d::Camera) {
     (planes(pixels), camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera"))
 }
+/// Lane SMB-AE-3D-3: every plane's content alpha of [`aux_inputs`] read straight from the fixture
+/// tiles (no backend), row-major over the plane's rectangle.
+pub fn tile_alphas(pixels: &Pixels) -> Vec<Vec<f32>> {
+    specs()
+        .iter()
+        .map(|s| {
+            let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+            (0..t.height).flat_map(|v| (0..t.width).map(move |u| (u, v))).map(|(u, v)| t.at(u, v)[3]).collect()
+        })
+        .collect()
+}
 /// Per pixel (row-major): the nearest plane whose nearest texel under the camera ray has
 /// `alpha x opacity > 0` (exact content rectangle): its camera depth, its camera-space unit normal
 /// facing the camera, and its object id (3, 2, 1 for tg, tf, te); `(inf, 0, 0)` where none.

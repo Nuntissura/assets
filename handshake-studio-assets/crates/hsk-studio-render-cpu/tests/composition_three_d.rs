@@ -234,3 +234,30 @@ fn equirectangular_plane_to_sphere_and_sphere_rotate_match_the_oracles() {
     println!("three_d sphere rotate: max |delta| vs oracle {rdelta:e}, quarter-turn shift {seam:e}");
     assert!(rdelta <= 1e-6 && seam <= 1e-5, "{rdelta} {seam}");
 }
+
+#[test]
+fn anti_aliased_aux_channels_match_the_backend_free_reference() {
+    // Lane SMB-AE-3D-3 (STU-CMP-050): the 4 x 4 ranking filter of the run's planes, with the plane
+    // alphas rendered by this backend, equals the same filter on the alphas read straight from the
+    // fixture tiles, bit for bit (render-gpu's twin test holds the GPU to the same reference).
+    let pixels = scenes::Pixels::fixture();
+    let renderer = Renderer::new(64).unwrap();
+    let ctx = SceneContext {
+        backend: &renderer,
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let cancel = CancellationToken::default();
+    let (planes, cam) = three_d::aux_inputs(&pixels);
+    let reference = three_d::tile_alphas(&pixels);
+    let (w, h) = (three_d::W, three_d::H);
+    let got = hsk_studio_composite::composition::three_d_aux_channels_aa(&planes, &[3, 2, 1], &cam, w, h, 4, ResampleFilter::Bilinear, &ctx, &cancel).expect("aa channels");
+    let want = hsk_studio_composite::three_d::coverage::aux_channels_aa(&planes, &reference, &[3, 2, 1], &cam, w, h, 4).unwrap();
+    assert_eq!(got, want);
+    let partial = got.channels.coverage.iter().filter(|c| **c > 0.0 && **c < 1.0).count();
+    let mixed = got.id_coverage.iter().zip(&got.channels.coverage).filter(|(i, c)| **i < **c).count();
+    println!("three_d aa aux: {partial} partially covered pixels, {mixed} pixels with more than one object");
+    assert!(partial > 20 && mixed > 5, "{partial} {mixed}");
+}

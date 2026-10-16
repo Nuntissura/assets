@@ -198,3 +198,32 @@ fn gpu_equirectangular_plane_to_sphere_matches_the_oracle() {
     println!("three_d equirect: gpu max |delta| vs oracle {delta:e}");
     assert!(delta <= GPU_TOLERANCE, "{delta}");
 }
+
+#[test]
+fn gpu_anti_aliased_aux_channels_match_the_backend_free_reference() {
+    // Lane SMB-AE-3D-3: render-cpu's twin (bit for bit there) with the plane alphas from the GPU:
+    // object ids and Cryptomatte ids exact, coverages within the render-gpu tolerance.
+    if !gate("gpu_anti_aliased_aux_channels_match_the_backend_free_reference") {
+        return;
+    }
+    let pixels = scenes::Pixels::fixture();
+    let ctx = SceneContext {
+        backend: backend(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let cancel = CancellationToken::default();
+    let filter = hsk_studio_pigment::transform_math::ResampleFilter::Bilinear;
+    let (planes, cam) = three_d::aux_inputs(&pixels);
+    let reference = three_d::tile_alphas(&pixels);
+    let (w, h) = (three_d::W, three_d::H);
+    let got = hsk_studio_composite::composition::three_d_aux_channels_aa(&planes, &[3, 2, 1], &cam, w, h, 4, filter, &ctx, &cancel).expect("aa channels");
+    let want = hsk_studio_composite::three_d::coverage::aux_channels_aa(&planes, &reference, &[3, 2, 1], &cam, w, h, 4).unwrap();
+    assert_eq!(got.channels.object_id, want.channels.object_id);
+    let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| if x == y { 0.0 } else { (x - y).abs() }).fold(0.0f32, f32::max);
+    let worst = diff(&got.channels.coverage, &want.channels.coverage).max(diff(&got.id_coverage, &want.id_coverage));
+    println!("three_d aa aux: gpu coverage max |delta| {worst:e}");
+    assert!(worst <= GPU_TOLERANCE, "{worst}");
+}

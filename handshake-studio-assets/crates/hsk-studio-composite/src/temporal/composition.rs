@@ -1688,6 +1688,15 @@ impl CompositionTemporalSource {
         crate::composition::three_d_aux_channels(&planes, &ids, &cam, comp.width, comp.height, self.filter, ctx, cancel)
     }
 
+    /// Anti-aliased STU-CMP-050 auxiliary channels of the root composition at `tick` (lane
+    /// SMB-AE-3D-3; `crate::three_d::coverage` module docs), `samples x samples` per pixel, over
+    /// the planes of [`Self::three_d_planes_at`].
+    pub fn three_d_aux_channels_aa(&self, tick: i64, samples: u32, ctx: &SceneContext<'_>, cancel: &CancellationToken) -> Result<crate::three_d::coverage::AuxChannelsAa, TemporalError> {
+        let comp = self.root()?;
+        let (planes, ids, cam) = self.three_d_planes_at(tick, cancel)?;
+        crate::composition::three_d_aux_channels_aa(&planes, &ids, &cam, comp.width, comp.height, samples, self.filter, ctx, cancel)
+    }
+
     /// The immersive frame of the root composition at `tick` (lane SMB-AE-3D-2; STU-CMP-055 /
     /// 055a; `crate::three_d::immersive` module docs), rendered by
     /// `crate::composition::render_equirect` at the composition size. Refused typed

@@ -621,3 +621,132 @@ fn three_d_corner_pin_clipping_and_collapse_from_records() {
     lit.push(json!({"layer_id":identity("SLYR",8),"timing":timing(),"three_d":{},"light":{"light_type":"point","colour":{"static_value":[1.0,1.0,1.0]},"intensity":s(100.0)}}));
     refused(source(&with_nested(root, lit), &pixels).unwrap().scene_at(0, &cancel).unwrap_err(), three_d::COMPOSITION_3D_COLLAPSE_NESTED);
 }
+
+/// A flat plane for the coverage tests: layer space = content plan, `w x w` texels at world
+/// `position` (z = 0 maps 1:1 under the default camera).
+fn flat_plane(n: u8, w: u32, position: [f64; 3], scale: f64, opacity: f64) -> Plane3d {
+    Plane3d {
+        layer_id: identity("SLYR", n),
+        bounds: hsk_studio_pigment::Rect { x: 0, y: 0, width: w, height: w },
+        origin: [0.0, 0.0],
+        content: SceneContent::None,
+        transform: Transform3d { anchor: [0.0; 3], position, scale: [scale, scale], rotation: three_d::layer_rotation([0.0; 3], 0.0, 0.0, 0.0), parent: three_d::Affine3::IDENTITY },
+        mode: StudioBlendMode::Normal,
+        opacity,
+        fill_opacity: 1.0,
+        layer_mask: None,
+        track_matte: None,
+    }
+}
+
+#[test]
+fn anti_aliased_aux_channels_match_hand_values() {
+    // Lane SMB-AE-3D-3 (STU-CMP-050; `three_d::coverage` module docs): a 4 x 4 box filter. Plane A
+    // (id 7) at z = 0 covers screen x 10..18, y 4..12 at depth zoom; plane B (id 9) at z = -zoom/2
+    // is magnified 2x and covers screen x 14.5..22.5, y 0..8 at depth zoom/2.
+    use three_d::coverage::{aux_channels_aa, id_matte_aa, pixel_coverage};
+    let cam = three_d::default_camera(32, 24);
+    let zoom = cam.zoom;
+    let a = flat_plane(1, 8, [10.0, 4.0, 0.0], 1.0, 1.0);
+    let b = flat_plane(2, 4, [15.25, 6.0, -zoom / 2.0], 1.0, 1.0);
+    let ones = |p: &Plane3d| vec![1.0f32; (p.bounds.width * p.bounds.height) as usize];
+    let alphas = vec![ones(&a), ones(&b)];
+    let at = |x: usize, y: usize| y * 32 + x;
+    let aux = aux_channels_aa(&[a.clone(), b.clone()], &alphas, &[7, 9], &cam, 32, 24, 4).expect("channels");
+    let c = &aux.channels;
+    let close = |v: f32, want: f64| (f64::from(v) - want).abs() <= 1e-5 * want.abs().max(1.0);
+    // (14, 5): B covers the right half in front of A: 0.5 / 0.5, the tie goes to the nearer B.
+    let p = at(14, 5);
+    assert_eq!((c.object_id[p], aux.id_coverage[p], c.coverage[p]), (9.0, 0.5, 1.0));
+    assert!(close(c.depth[p], zoom / 2.0), "{}", c.depth[p]);
+    assert_eq!([c.normal[0][p], c.normal[1][p], c.normal[2][p]], [0.0, 0.0, -1.0], "camera-space normal facing the camera");
+    // (12, 5): A alone; (22, 5): B's right edge half covered; (9, 5): nothing.
+    let p = at(12, 5);
+    assert_eq!((c.object_id[p], aux.id_coverage[p], c.coverage[p]), (7.0, 1.0, 1.0));
+    assert!(close(c.depth[p], zoom));
+    let p = at(22, 5);
+    assert_eq!((c.object_id[p], aux.id_coverage[p], c.coverage[p]), (9.0, 0.5, 0.5));
+    let p = at(9, 5);
+    assert_eq!((c.object_id[p], aux.id_coverage[p], c.coverage[p], c.depth[p]), (0.0, 0.0, 0.0, f32::INFINITY));
+    assert_eq!(id_matte_aa(&aux, &[9])[at(22, 5)], 0.5, "the ID matte is anti-aliased");
+    // Non-refractive transparency: B at opacity 0.5 lets A through.
+    let half = Plane3d { opacity: 0.5, ..b.clone() };
+    let t = aux_channels_aa(&[a.clone(), half.clone()], &alphas, &[7, 9], &cam, 32, 24, 4).unwrap();
+    let p = at(14, 5);
+    assert_eq!((t.channels.object_id[p], t.id_coverage[p], t.channels.coverage[p]), (7.0, 0.75, 1.0), "A 0.75, B 0.25");
+    let ranked = pixel_coverage(&[a.clone(), half], &alphas, &cam, 32, 24, 4).unwrap();
+    let e = ranked.pixel(at(16, 5));
+    assert_eq!(e.iter().map(|x| (x.plane, x.coverage)).collect::<Vec<_>>(), vec![(1, 0.5), (0, 0.5)], "ties rank the nearer plane first");
+    // One sample per pixel on opaque content: ids and depths equal the per-centre channels.
+    let one = aux_channels_aa(&[a.clone(), b.clone()], &alphas, &[7, 9], &cam, 32, 24, 1).unwrap();
+    let centre = three_d::aux_channels(&[a.clone(), b.clone()], &alphas, &[7, 9], &cam, 32, 24).unwrap();
+    assert_eq!(one.channels.object_id, centre.object_id);
+    assert_eq!(one.channels.depth, centre.depth);
+    // Hostile input is refused before per-pixel work.
+    let nan = Plane3d { transform: Transform3d { position: [f64::NAN, 0.0, 0.0], ..a.transform }, ..a.clone() };
+    assert!(matches!(aux_channels_aa(&[nan, b.clone()], &alphas, &[7, 9], &cam, 32, 24, 4), Err(TemporalError::InvalidState { field: "three_d_transform", .. })), "NaN transform (NaN depths)");
+    let mut bad = alphas.clone();
+    bad[0][3] = f32::NAN;
+    assert!(matches!(aux_channels_aa(&[a.clone(), b.clone()], &bad, &[7, 9], &cam, 32, 24, 4), Err(TemporalError::InvalidState { field: "aux_channels", .. })), "NaN alpha");
+    for s in [0, three_d::coverage::MAX_AUX_SAMPLES + 1] {
+        refused(aux_channels_aa(&[a.clone(), b.clone()], &alphas, &[7, 9], &cam, 32, 24, s).unwrap_err(), three_d::AUX_MATTE_PARAMETER);
+    }
+    assert!(matches!(aux_channels_aa(&[a.clone(), b.clone()], &alphas, &[7, 9], &cam, 8192, 8192, 16), Err(TemporalError::Composite(hsk_studio_composite::CompositeError::BudgetExceeded))));
+    // The EXR carries every channel, idCoverage included.
+    let back = read_exr_names(&aux.to_exr().unwrap());
+    assert_eq!(back, { let mut v = three_d::coverage::AUX_AA_CHANNEL_NAMES.map(String::from).to_vec(); v.sort(); v });
+}
+
+/// Channel names of an uncompressed scanline OpenEXR file (independent minimal parse).
+fn read_exr_names(b: &[u8]) -> Vec<String> {
+    read_exr(b).0.into_iter().map(|c| c.0).collect()
+}
+
+/// An independent minimal reader of the writer's subset (single-part scanline, uncompressed FLOAT
+/// channels): every channel's plane and every `string` attribute.
+#[allow(clippy::type_complexity)]
+fn read_exr(b: &[u8]) -> (Vec<(String, Vec<f32>)>, Vec<(String, String)>) {
+    let i32_at = |o: usize| i32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!((i32_at(0), i32_at(4)), (20000630, 2), "magic, version 2 single-part scanline");
+    let cstr = |o: usize| -> (String, usize) {
+        let e = o + b[o..].iter().position(|c| *c == 0).unwrap();
+        (String::from_utf8(b[o..e].to_vec()).unwrap(), e + 1)
+    };
+    let (mut o, mut names, mut strings, mut window) = (8usize, Vec::new(), Vec::new(), [0i32; 4]);
+    while b[o] != 0 {
+        let (name, n) = cstr(o);
+        let (kind, n) = cstr(n);
+        let size = i32_at(n) as usize;
+        let v = n + 4;
+        match (name.as_str(), kind.as_str()) {
+            ("channels", "chlist") => {
+                let mut c = v;
+                while b[c] != 0 {
+                    let (ch, k) = cstr(c);
+                    assert_eq!(i32_at(k), 2, "FLOAT");
+                    names.push(ch);
+                    c = k + 16;
+                }
+            }
+            ("dataWindow", "box2i") => window = [i32_at(v), i32_at(v + 4), i32_at(v + 8), i32_at(v + 12)],
+            (_, "string") => strings.push((name.clone(), String::from_utf8(b[v..v + size].to_vec()).unwrap())),
+            _ => {}
+        }
+        o = v + size;
+    }
+    o += 1;
+    let (w, h) = ((window[2] - window[0] + 1) as usize, (window[3] - window[1] + 1) as usize);
+    let mut planes: Vec<(String, Vec<f32>)> = names.iter().map(|n| (n.clone(), Vec::new())).collect();
+    for y in 0..h {
+        let at = u64::from_le_bytes(b[o + 8 * y..o + 8 * y + 8].try_into().unwrap()) as usize;
+        assert_eq!(i32_at(at), y as i32);
+        let mut p = at + 8;
+        for plane in &mut planes {
+            for _ in 0..w {
+                plane.1.push(f32::from_le_bytes(b[p..p + 4].try_into().unwrap()));
+                p += 4;
+            }
+        }
+    }
+    (planes, strings)
+}

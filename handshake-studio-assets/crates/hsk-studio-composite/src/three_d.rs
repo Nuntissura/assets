@@ -83,6 +83,7 @@
 //!   light, track matte, matte source, clipped, adjustment or unlinked-mask layer.
 #![deny(clippy::arithmetic_side_effects)]
 
+pub mod coverage;
 pub mod exr;
 pub mod immersive;
 
