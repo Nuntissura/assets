@@ -80,6 +80,7 @@ pub mod masking;
 pub mod pdf_export;
 /// Lane SMB-AI-TYPE-PATH-RECOLOR.
 pub mod path_text;
+pub mod recolor;
 pub mod swatch;
 pub use arrange::{AlignTarget, TransformOp};
 pub use envelope::EnvelopeSpec;

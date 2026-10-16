@@ -169,7 +169,7 @@ pub(super) fn stand_in(entry: &VectorEntry, doc: &folio::StudioDocument, swatch_
 }
 
 /// Rewrites the stand-in paint of every row bound to `swatch_id` or to a tint of it.
-fn propagate(entry: &mut VectorEntry, doc: &folio::StudioDocument, swatch_id: &str) -> Result<(), String> {
+pub(super) fn propagate(entry: &mut VectorEntry, doc: &folio::StudioDocument, swatch_id: &str) -> Result<(), String> {
     let tints: Vec<String> = entry.records.swatches.iter().filter(|s| s.base_swatch_ref.as_deref() == Some(swatch_id)).map(|s| s.swatch_id.clone()).collect();
     let bound: Vec<folio::StudioSwatchPaint> = entry.records.swatch_paints.iter().filter(|p| p.swatch_id == swatch_id || tints.contains(&p.swatch_id)).cloned().collect();
     for p in bound {
