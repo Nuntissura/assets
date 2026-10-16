@@ -330,6 +330,10 @@ struct EncodeSegment {
     /// Frame duration in 100 ns units and the input time of every frame still owed (time -> tag).
     duration: i64,
     owed: HashMap<i64, u64>,
+    /// Output time minus input time, learned from the first coded unit (the first unit is the key unit of
+    /// the earliest frame): the Microsoft H.264 encoder MFT stamps its output one frame later than the input
+    /// when it emits B-frames (measured 2026-10-16: every unit one frame duration later); HEVC is exact.
+    offset: Option<i64>,
 }
 
 #[cfg(feature = "os-encode")]
@@ -370,14 +374,27 @@ impl EncodeSegment {
             height: setup.height,
             duration,
             owed: HashMap::new(),
+            offset: None,
         })
     }
 
-    /// The frame a coded sample presents: its exact input time; else the owed time nearest to it within one
-    /// frame duration (an encoder that rounds or offsets times); else, for an encoder that does not keep
-    /// input times, the oldest owed frame (output in input order). The host's mux and decode-back check
+    /// The frame a coded sample presents: its input time after the learned output offset; else the owed time
+    /// nearest to it within one frame duration (an encoder that rounds times); else the oldest owed frame. The host's mux and decode-back check
     /// the result (presentation times must be a permutation; decoded frames are compared with the source).
     fn owed_tag(&mut self, time: i64) -> Result<u64, ReelError> {
+        let unknown = || ReelError::Corrupt {
+            what: "mf-encode-time-unknown",
+        };
+        let offset = match self.offset {
+            Some(offset) => offset,
+            None => {
+                let earliest = self.owed.keys().copied().min().ok_or_else(unknown)?;
+                let offset = time.checked_sub(earliest).ok_or_else(unknown)?;
+                self.offset = Some(offset);
+                offset
+            }
+        };
+        let time = time.checked_sub(offset).ok_or_else(unknown)?;
         if let Some(tag) = self.owed.remove(&time) {
             return Ok(tag);
         }
