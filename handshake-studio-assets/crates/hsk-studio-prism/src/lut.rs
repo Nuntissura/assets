@@ -304,4 +304,32 @@ impl CubeLut {
         };
         std::array::from_fn(|c| c000[c] + w[0] * (p1[c] - c000[c]) + w[1] * (p2[c] - p1[c]) + w[2] * (c111[c] - p2[c]))
     }
+
+    /// The text cube form of this table (STU-COL-159 "Studio MUST export the text cube format";
+    /// lane SMB-PREMIERE-COLOR-TITLES, additive): `TITLE` when set, the size keyword(s), both
+    /// domain lines, then the 1D rows before the 3D rows (the order [`parse_cube`] reads), every
+    /// number in Rust's shortest round-trip text, so `parse_cube(write_cube())` returns the same
+    /// table. A title holding a `"` or a control character is written without those characters.
+    pub fn write_cube(&self) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        if let Some(t) = &self.title {
+            let clean: String = t.chars().filter(|c| *c != '"' && !c.is_control()).collect();
+            let _ = writeln!(s, "TITLE \"{clean}\"");
+        }
+        if let Some(rows) = &self.lut_1d {
+            let _ = writeln!(s, "LUT_1D_SIZE {}", rows.len());
+        }
+        if self.size_3d > 0 {
+            let _ = writeln!(s, "LUT_3D_SIZE {}", self.size_3d);
+        }
+        let [a, b, c] = self.domain_min;
+        let _ = writeln!(s, "DOMAIN_MIN {a:?} {b:?} {c:?}");
+        let [a, b, c] = self.domain_max;
+        let _ = writeln!(s, "DOMAIN_MAX {a:?} {b:?} {c:?}");
+        for [r, g, b] in self.lut_1d.iter().flatten().chain(&self.lut_3d) {
+            let _ = writeln!(s, "{r:?} {g:?} {b:?}");
+        }
+        s
+    }
 }

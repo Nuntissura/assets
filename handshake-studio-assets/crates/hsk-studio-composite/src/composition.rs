@@ -132,6 +132,10 @@ pub enum SceneContent {
     /// rows, [`AccumulatedContent`]): every sample scene is rendered by the same backend over its
     /// rect and the frames are averaged in premultiplied colour, then placed like a tile.
     Accumulated(Box<AccumulatedContent>),
+    /// Content under a clip colour grade (lane SMB-PREMIERE-COLOR-TITLES; STU-COL-160 stage order,
+    /// [`crate::clip_finishing`]): the inner content is rendered over its rect, graded per texel by
+    /// [`crate::clip_finishing::ClipGrade::apply`] (Prism and Pigment maths), then placed like a tile.
+    Graded(Box<crate::clip_finishing::GradedContent>),
 }
 
 /// The sample scenes of [`SceneContent::Accumulated`]: one size, at least one, at most
@@ -836,7 +840,7 @@ fn lower_inner(
             SceneContent::Pinned(p) => (&p.content, Some(p.pin)),
             other => (other, None),
         };
-        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_)) {
+        if pin.is_some() && !matches!(content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_) | SceneContent::Lit(_) | SceneContent::Filtered(_) | SceneContent::Accumulated(_) | SceneContent::Graded(_)) {
             return Err(TemporalError::Unsupported {
                 layer_id: id.to_owned(),
                 feature: crate::track_apply::COMPOSITION_CORNER_PIN_CONTENT,
@@ -880,7 +884,8 @@ fn lower_inner(
             | SceneContent::Adjustment(_)
             | SceneContent::Lit(_)
             | SceneContent::Filtered(_)
-            | SceneContent::Accumulated(_) => true,
+            | SceneContent::Accumulated(_)
+            | SceneContent::Graded(_) => true,
             SceneContent::None | SceneContent::Pinned(_) => false,
         };
         let matte_empty = layer
@@ -1029,6 +1034,20 @@ fn lower_inner(
                 };
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, f.rect, tile));
+            }
+            SceneContent::Graded(g) => {
+                let surface = graded_surface(id, g, scene.filter, ctx, cancel, depth, charges, &mut exactness)?;
+                let key = out.key()?;
+                let tile = SceneTile {
+                    tile_id: format!("{id}/graded"),
+                    placement: g.rect,
+                    format: SampleFormat::RgbF32Le,
+                    alpha: AlphaConvention::Straight,
+                    colour_sha256: surface.colour_sha256,
+                    alpha_sha256: surface.alpha_sha256,
+                };
+                out.sources.surfaces.insert(key, surface);
+                inputs.push((key, g.rect, tile));
             }
             SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
         }
@@ -1659,6 +1678,59 @@ fn f32_at(bytes: &[u8], index: usize) -> f32 {
         .and_then(|o| bytes.get(o..o.checked_add(4)?))
         .and_then(|b| <[u8; 4]>::try_from(b).ok())
         .map_or(0.0, f32::from_le_bytes)
+}
+
+/// [`SceneContent::Graded`]: the inner content rendered over `g.rect` (charged), then every texel
+/// with alpha above 0 staged by [`crate::clip_finishing::ClipStage::texel`] at its position in
+/// the clip frame (a grade keeps alpha, a crop scales it). Records the stage's operator (grade
+/// Approximate: the Lumetri mappings are Studio readings, D5; crop Exact).
+#[allow(clippy::too_many_arguments)]
+fn graded_surface(
+    id: &str,
+    g: &crate::clip_finishing::GradedContent,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    if g.rect.width == 0 || g.rect.height == 0 {
+        return Err(invalid(id, "graded_rect"));
+    }
+    let mut surface = content_surface(id, &g.content, g.rect, filter, ctx, cancel, depth, charges, exactness)?;
+    let w = usize::try_from(surface.width).map_err(|_| CompositeError::Overflow)?;
+    let h = usize::try_from(surface.height).map_err(|_| CompositeError::Overflow)?;
+    let (fw, fh) = (f64::from(surface.width), f64::from(surface.height));
+    for row in 0..h {
+        cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
+        for col in 0..w {
+            let at = row.checked_mul(w).and_then(|r| r.checked_add(col)).ok_or(CompositeError::Overflow)?;
+            let alpha = f32_at(&surface.alpha, at);
+            if alpha <= 0.0 {
+                continue;
+            }
+            let base = at.checked_mul(3).ok_or(CompositeError::Overflow)?;
+            let rgb = [f32_at(&surface.colour, base), f32_at(&surface.colour, base.saturating_add(1)), f32_at(&surface.colour, base.saturating_add(2))];
+            #[allow(clippy::cast_precision_loss)]
+            let (staged, a) = g.stage.texel(rgb, alpha, col as f64, row as f64, fw, fh);
+            for (k, v) in staged.iter().enumerate() {
+                let o = base.saturating_add(k).saturating_mul(4);
+                if let Some(dst) = surface.colour.get_mut(o..o.saturating_add(4)) {
+                    dst.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            let o = at.saturating_mul(4);
+            if let Some(dst) = surface.alpha.get_mut(o..o.saturating_add(4)) {
+                dst.copy_from_slice(&a.to_le_bytes());
+            }
+        }
+    }
+    surface.colour_sha256 = hsk_studio_prism::profile_hash(&surface.colour);
+    surface.alpha_sha256 = hsk_studio_prism::profile_hash(&surface.alpha);
+    let (key, class) = g.stage.operator();
+    exactness.record(key, class);
+    Ok(surface)
 }
 
 /// Multiplies a layer-space mask (one coverage per texel, `0..=1`) into a surface's alpha (lane

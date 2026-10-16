@@ -3,6 +3,7 @@
 //! dependency in the static render closure.
 #![forbid(unsafe_code)]
 pub mod camera_solve;
+pub mod clip_finishing;
 pub mod composition;
 pub mod evaluate_static;
 pub mod lower_extensions;

@@ -589,7 +589,9 @@ impl AdjustmentOp {
     }
 }
 
-pub(crate) fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
+/// RGB (`0..=1`) to HSL with hue, saturation and lightness as fractions `0..=1` (public for the
+/// clip colour grade of composite, lane SMB-PREMIERE-COLOR-TITLES; one conversion owner).
+pub fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
     let [r, g, b] = c.map(f64::from);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -615,7 +617,8 @@ pub(crate) fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
     }
     [h, s, l]
 }
-pub(crate) fn hsl_to_rgb(hsl: [f64; 3]) -> [f32; 3] {
+/// The inverse of [`rgb_to_hsl`].
+pub fn hsl_to_rgb(hsl: [f64; 3]) -> [f32; 3] {
     let [h, s, l] = hsl;
     if s == 0.0 {
         let v = l as f32;

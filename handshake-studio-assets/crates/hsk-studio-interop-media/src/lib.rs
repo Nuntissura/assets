@@ -3,6 +3,8 @@
 //! catalog; lrcat has its own adapter.
 #![forbid(unsafe_code)]
 
+/// SubRip / WebVTT caption interchange (lane SMB-PREMIERE-COLOR-TITLES).
+pub mod captions;
 mod edl;
 mod error;
 mod folio_map;

@@ -79,6 +79,8 @@ mod composition;
 pub use composition::*;
 mod motion_records;
 pub use motion_records::*;
+mod clip_finishing;
+pub use clip_finishing::*;
 mod parentpages;
 pub use parentpages::*;
 mod longdoc;
