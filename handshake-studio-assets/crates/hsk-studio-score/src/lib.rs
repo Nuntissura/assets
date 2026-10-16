@@ -35,6 +35,7 @@ mod session;
 mod sidechain;
 mod spec_rows;
 mod spectral_edit;
+mod spectral_view;
 mod spectrogram;
 mod spectrum;
 mod state;
@@ -126,7 +127,11 @@ pub use spectral_edit::{
     SpectralSelection, spectral_edit,
 };
 pub use spectrogram::{
-    MAX_TILE_CELLS, ReassignedTile, SPECTROGRAM_FFT, Spectrogram, SpectrogramParams,
+    MAX_TILE_CELLS, ReassignedTile, SPECTROGRAM_FFT, SpectralWindow, Spectrogram, SpectrogramParams,
+};
+pub use spectral_view::{
+    DEFAULT_SPECTRAL_CACHE_BYTES, FrequencyScale, SPECTRAL_FLOOR_DB, SPECTRAL_ROWS, SPECTRAL_TILE_FRAMES, SpectralCacheStats,
+    SpectralTileCache, SpectralViewParams, frame_to_rows, frequency_at_row, row_at_frequency,
 };
 pub use spectrum::{MAX_FFT_SIZE, MIN_FFT_SIZE, SpectrumAnalyzer};
 pub use src_bounce::{ResampledBounce, ResampledBounceReceipt, StageFacts, StageKind};

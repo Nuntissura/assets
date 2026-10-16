@@ -22,6 +22,15 @@
 //! `f^ = (b / N - Im(X_Dh conj(X_h)) / (2 pi |X_h|^2)) rate` (Hz). Cells with `|X_h|^2` below 1e-24
 //! keep their grid coordinates. Deterministic (fixed operation order). Audition display parity
 //! UNVERIFIED (D5).
+//!
+//! **Window choice** (lane SMB-AU-WAVEFORM-EDITOR): [`Spectrogram::with_window`] takes a
+//! [`SpectralWindow`], a periodic cosine-sum window `w(i) = a0 - a1 cos(2 pi i/N) + a2 cos(4 pi i/N)
+//! - a3 cos(6 pi i/N)` (Hann 0.5/0.5; Hamming 0.54/0.46; Blackman 0.42/0.5/0.08; 4-term
+//! Blackman-Harris 0.35875/0.48829/0.14128/0.01168, F. J. Harris, Proc. IEEE 66(1), 1978) or
+//! rectangular (`a0 = 1`). The calibration `2 |X_b| / sum(w)` holds for every window (a bin-centred
+//! sine of amplitude `A` reads `A`); `D h` is the analytic derivative of the same cosine sum
+//! (reassignment of the rectangular window, which has none, keeps the grid frequency). `new` is
+//! `with_window(.., Hann)`, computed by the original expressions (bit-identical).
 use crate::denoise::Fft;
 use crate::error::ScoreError;
 use crate::layout::ticks_per_sample;
@@ -31,6 +40,64 @@ use std::f64::consts::PI;
 pub const SPECTROGRAM_FFT: (usize, usize) = (256, 16_384);
 /// Largest tile in cells (frames x bins): 2^24 f32 = 64 MiB per output array.
 pub const MAX_TILE_CELLS: usize = 1 << 24;
+
+/// Analysis window of a [`Spectrogram`] (module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SpectralWindow {
+    #[default]
+    Hann,
+    Hamming,
+    Blackman,
+    BlackmanHarris,
+    Rectangular,
+}
+
+impl SpectralWindow {
+    /// Cosine-sum coefficients `a0..a3`.
+    pub const fn coefficients(self) -> [f64; 4] {
+        match self {
+            Self::Hann => [0.5, 0.5, 0.0, 0.0],
+            Self::Hamming => [0.54, 0.46, 0.0, 0.0],
+            Self::Blackman => [0.42, 0.5, 0.08, 0.0],
+            Self::BlackmanHarris => [0.358_75, 0.488_29, 0.141_28, 0.011_68],
+            Self::Rectangular => [1.0, 0.0, 0.0, 0.0],
+        }
+    }
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Hann => "hann",
+            Self::Hamming => "hamming",
+            Self::Blackman => "blackman",
+            Self::BlackmanHarris => "blackman_harris",
+            Self::Rectangular => "rectangular",
+        }
+    }
+    /// Periodic window of `n` samples.
+    pub fn samples(self, n: usize) -> Vec<f64> {
+        let a = self.coefficients();
+        (0..n)
+            .map(|i| {
+                let t = 2.0 * PI * i as f64 / n as f64;
+                if self == Self::Hann { 0.5 - 0.5 * t.cos() } else { a[0] - a[1] * t.cos() + a[2] * (2.0 * t).cos() - a[3] * (3.0 * t).cos() }
+            })
+            .collect()
+    }
+    /// Derivative of the continuous window with respect to the sample index.
+    fn derivative(self, n: usize) -> Vec<f64> {
+        let a = self.coefficients();
+        let step = 2.0 * PI / n as f64;
+        (0..n)
+            .map(|i| {
+                let t = 2.0 * PI * i as f64 / n as f64;
+                if self == Self::Hann {
+                    PI / n as f64 * t.sin()
+                } else {
+                    step * (a[1] * t.sin() - 2.0 * a[2] * (2.0 * t).sin() + 3.0 * a[3] * (3.0 * t).sin())
+                }
+            })
+            .collect()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpectrogramParams {
@@ -51,6 +118,7 @@ pub struct ReassignedTile<'a> {
 pub struct Spectrogram {
     sample_rate_hz: u32,
     params: SpectrogramParams,
+    window_kind: SpectralWindow,
     fft: Fft,
     window: Vec<f64>,
     window_t: Vec<f64>,
@@ -68,19 +136,25 @@ impl Spectrogram {
     /// Refusals: rate not admitted -> `InvalidRate`; FFT size not a power of two in
     /// [`SPECTROGRAM_FFT`] or hop outside `1..=fft_size` -> `OutOfRange`.
     pub fn new(sample_rate_hz: u32, params: SpectrogramParams) -> Result<Self, ScoreError> {
+        Self::with_window(sample_rate_hz, params, SpectralWindow::Hann)
+    }
+
+    /// As [`new`](Self::new) with the analysis window `window` (module docs).
+    pub fn with_window(sample_rate_hz: u32, params: SpectrogramParams, window_kind: SpectralWindow) -> Result<Self, ScoreError> {
         ticks_per_sample(sample_rate_hz)?;
         let n = params.fft_size;
         if !n.is_power_of_two() || !(SPECTROGRAM_FFT.0..=SPECTROGRAM_FFT.1).contains(&n) || !(1..=n).contains(&params.hop) {
             return Err(ScoreError::OutOfRange);
         }
-        let window: Vec<f64> = (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos()).collect();
+        let window = window_kind.samples(n);
         let half = (n / 2) as f64;
         let window_t = window.iter().enumerate().map(|(i, w)| (i as f64 - half) * w).collect();
-        let window_d = (0..n).map(|i| PI / n as f64 * (2.0 * PI * i as f64 / n as f64).sin()).collect();
+        let window_d = window_kind.derivative(n);
         let scale = 2.0 / window.iter().sum::<f64>();
         Ok(Self {
             sample_rate_hz,
             params,
+            window_kind,
             fft: Fft::new(n),
             window,
             window_t,
@@ -96,6 +170,12 @@ impl Spectrogram {
     }
     pub fn params(&self) -> SpectrogramParams {
         self.params
+    }
+    pub fn window(&self) -> SpectralWindow {
+        self.window_kind
+    }
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.sample_rate_hz
     }
     pub fn bins(&self) -> usize {
         self.params.fft_size / 2 + 1
