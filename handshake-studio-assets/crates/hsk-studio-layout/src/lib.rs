@@ -23,6 +23,7 @@ mod objstyle;
 mod paragraph;
 mod parent_adapter;
 mod parents;
+mod preflight;
 mod running;
 mod story_tables;
 mod styles;
@@ -74,6 +75,10 @@ pub use styles::{
 };
 pub use threaded_reflow::{
     FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow, reflow_flow, reflow_typeset,
+};
+pub use preflight::{
+    MAX_PREFLIGHT_FINDINGS, PREFLIGHT_RULES, PreflightError, PreflightFinding, PreflightInput, PreflightProfile, PreflightReport,
+    PreflightRuleInstance, Severity, run_preflight,
 };
 pub use running::{RunningError, RunningInstance, VariableContext, compose_overlay, resolve_running_texts};
 pub use story_tables::{AnchoredTable, StoryWithTables, reflow_with_tables};
