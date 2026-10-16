@@ -119,6 +119,25 @@ fn masked_and_matted_three_d_run_matches_the_oracle() {
 }
 
 #[test]
+fn pinned_and_clipped_three_d_run_matches_the_oracle() {
+    // Lane SMB-AE-3D-3: "tg" corner-pinned (the pinned content is the plane's texture: one resample
+    // through the pin then the plane homography) and "te" clipped to "tf" (tf's alpha drawn alone
+    // through the camera as te's screen-space matte, 16-bit coverage).
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::pinned_clipped_scene(&pixels);
+    let (want, partial) = three_d::pinned_clipped_oracle(&pixels);
+    assert!(partial > 0, "the clip matte has soft edges");
+    let base = render(&Renderer::new(64).unwrap(), &scene, &pixels);
+    let delta = scenes::max_delta(&base, &want);
+    let plain = render(&Renderer::new(64).unwrap(), &three_d::three_d_scene(&pixels), &pixels);
+    println!("three_d pinned + clipped: {partial} partial clip pixels, cpu digest {} max |delta| vs oracle {delta:e}", scenes::hex(&base.digest()));
+    assert!(delta <= 1e-6, "{delta}");
+    assert_ne!(plain.digest(), base.digest(), "the pin and the clip change the frame");
+    let other = render(&Renderer::with_threads(7, 4).unwrap(), &scene, &pixels);
+    assert_eq!(other.digest(), base.digest());
+}
+
+#[test]
 fn three_d_aux_channels_match_the_ray_cast_oracle() {
     // Lane SMB-AE-3D-2 (STU-CMP-050): Z depth, camera-space normals, object id and coverage of the
     // run, alpha-tested on the rendered content (nearest texel), against the oracle's own ray cast.

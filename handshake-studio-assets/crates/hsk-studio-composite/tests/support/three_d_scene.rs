@@ -270,7 +270,74 @@ pub fn masked_oracle(pixels: &Pixels) -> Vec<[f32; 4]> {
             matte.push(((f64::from(a) * 65535.0).round() / 65535.0) as f32);
         }
     }
-    oracle_full(pixels, &specs(), false, false, &[None, Some(tf_mask()), None], &[None, None, Some(matte)]).0
+    oracle_full(pixels, &specs(), false, false, &[None, Some(tf_mask()), None], &[None, None, Some(matte)], &[]).0
+}
+
+/// Lane SMB-AE-3D-3: the corner pin of "tg" (its 8 x 8 content corners moved; content plan).
+pub fn tg_pin() -> Projective2 {
+    Projective2::from_quads([[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]], [[1.0, -1.0], [9.5, 1.0], [8.0, 9.0], [-1.5, 7.0]]).unwrap()
+}
+/// Lane SMB-AE-3D-3: [`three_d_scene`] with "tg" corner-pinned (its plane textures the pinned
+/// content over `three_d::pinned_bounds`) and "te" clipped to "tf": te's clip matte is tf drawn
+/// alone (opacity 1) through the camera, as the composition adapter builds it.
+pub fn pinned_clipped_scene(pixels: &Pixels) -> SceneComposition {
+    let cam = camera(CAMERA_POSITION, [0.0; 3], 0.0, 0.0, 0.0, Some(CAMERA_POI), ZOOM, W, H).expect("camera");
+    let mut planes = planes(pixels);
+    let (pin, bounds) = hsk_studio_composite::three_d::pinned_bounds(&tg_pin(), planes[0].bounds).expect("pin");
+    planes[0].content = SceneContent::Pinned(Box::new(hsk_studio_composite::composition::PinnedContent { content: planes[0].content.clone(), pin }));
+    planes[0].bounds = bounds;
+    let base = Plane3d { opacity: 1.0, ..planes[1].clone() };
+    planes[2].track_matte = Some(SceneMatte {
+        layer: expand_run(&[base], &cam, W, H, space(), 7).expect("base").into_iter().next().map(Box::new),
+        mode: SceneMatteMode::Alpha,
+        inverted: false,
+    });
+    SceneComposition {
+        composition_id: "three-d-pinned-clipped".to_owned(),
+        width: W,
+        height: H,
+        background: Some(BACKGROUND),
+        filter: ResampleFilter::Bilinear,
+        layers: expand_run(&planes, &cam, W, H, space(), 7).expect("run expands"),
+    }
+}
+/// The oracle of [`pinned_clipped_scene`]: tg sampled through its pin then its own projection,
+/// footprint = the oracle's integer cover of the pinned corners; te's opacity times tf's own
+/// bilinear alpha at the pixel (in front of the camera, inside tf's grown rectangle), quantised to
+/// 16 bits as the matte plane carries it. Also returns the count of pixels the clip matte covers
+/// partly (0 < coverage < 1).
+pub fn pinned_clipped_oracle(pixels: &Pixels) -> (Vec<[f32; 4]>, usize) {
+    let specs = specs();
+    let (r, d, f) = basis();
+    let s = &specs[1];
+    let t = pixels.get(&tile_id(s.layer, s.tile)).unwrap();
+    let p = t.scene_tile(s.at.0, s.at.1).placement;
+    let (x0, y0) = (p.x as f64, p.y as f64);
+    let (x1, y1) = (x0 + f64::from(p.width), y0 + f64::from(p.height));
+    let src = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let dst = src.map(|c| project(world(s, c[0] - s.at.0 as f64, c[1] - s.at.1 as f64)));
+    let prep = PreparedTransform::new(&LayerTransform::projective(Projective2::from_quads(src, dst).unwrap(), ResampleFilter::Bilinear), p).unwrap();
+    let mut matte = Vec::new();
+    let mut partial = 0;
+    for y in 0..i64::from(H) {
+        for x in 0..i64::from(W) {
+            let (sx, sy) = (x as f64 + 0.5, y as f64 + 0.5);
+            let dir = add(add(scale(r, (sx - f64::from(W) / 2.0) / ZOOM), scale(d, (sy - f64::from(H) / 2.0) / ZOOM)), f);
+            let a = match hit_any(s, CAMERA_POSITION, dir) {
+                Some((tt, lx, ly)) if tt > 1e-3 && lx + x0 >= x0 - 1.0 && ly + y0 >= y0 - 1.0 && lx + x0 < x1 + 1.0 && ly + y0 < y1 + 1.0 => {
+                    prep.sample_rgba(x, y, |u, v| Ok::<_, ()>(t.at(u, v))).unwrap()[3]
+                }
+                _ => 0.0,
+            };
+            let q = ((f64::from(a) * 65535.0).round() / 65535.0) as f32;
+            if q > 0.0 && q < 1.0 {
+                partial += 1;
+            }
+            matte.push(q);
+        }
+    }
+    let out = oracle_full(pixels, &specs, false, false, &[], &[None, None, Some(matte)], &[Some(tg_pin()), None, None]).0;
+    (out, partial)
 }
 
 /// The lens of [`dof_scene`]: focus near "tf" / "te", "tg" behind it out of focus.
@@ -553,11 +620,13 @@ fn oracle(pixels: &Pixels, lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], 
     oracle_of(pixels, &specs(), lit, dof)
 }
 fn oracle_of(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool) -> (Vec<[f32; 4]>, [usize; 2], f64) {
-    oracle_full(pixels, specs, lit, dof, &[], &[])
+    oracle_full(pixels, specs, lit, dof, &[], &[], &[])
 }
 /// `masks[i]`: plane `i`'s layer-space texel coverage (multiplied into its texel alpha before the
 /// sample); `mattes[i]`: plane `i`'s screen coverage (multiplied into its opacity per pixel).
-fn oracle_full(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool, masks: &[Option<Vec<f32>>], mattes: &[Option<Vec<f32>>]) -> (Vec<[f32; 4]>, [usize; 2], f64) {
+/// `pins[i]` (lane SMB-AE-3D-3): plane `i`'s corner pin (content plan -> content plan); its texture
+/// is the pinned content and its footprint the oracle's own integer cover of the pinned corners.
+fn oracle_full(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool, masks: &[Option<Vec<f32>>], mattes: &[Option<Vec<f32>>], pins: &[Option<Projective2>]) -> (Vec<[f32; 4]>, [usize; 2], f64) {
     let (r, d, f) = basis();
     let mut shaded = texels(pixels, specs, lit);
     for (i, m) in masks.iter().enumerate() {
@@ -588,9 +657,20 @@ fn oracle_full(pixels: &Pixels, specs: &[Spec], lit: bool, dof: bool, masks: &[O
         let (x1, y1) = (x0 + f64::from(p.width), y0 + f64::from(p.height));
         let src = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
         let dst = src.map(|c| project(world(s, c[0] - s.at.0 as f64, c[1] - s.at.1 as f64)));
-        let map = Projective2::from_quads(src, dst).expect("projected quad");
+        let mut map = Projective2::from_quads(src, dst).expect("projected quad");
+        let mut foot = p;
+        if let Some(Some(pin)) = pins.get(draws.len()) {
+            map = pin.then(&map);
+            let c = src.map(|c| {
+                let (x, y, w) = pin.apply_h(c[0], c[1]);
+                [x / w, y / w]
+            });
+            let lo = [c.iter().map(|v| v[0]).fold(f64::INFINITY, f64::min).floor(), c.iter().map(|v| v[1]).fold(f64::INFINITY, f64::min).floor()];
+            let hi = [c.iter().map(|v| v[0]).fold(f64::NEG_INFINITY, f64::max).ceil(), c.iter().map(|v| v[1]).fold(f64::NEG_INFINITY, f64::max).ceil()];
+            foot = hsk_studio_pigment::Rect { x: lo[0] as i64, y: lo[1] as i64, width: (hi[0] - lo[0]) as u32, height: (hi[1] - lo[1]) as u32 };
+        }
         let prep = PreparedTransform::new(&LayerTransform::projective(map, ResampleFilter::Bilinear), p).unwrap();
-        draws.push((t, prep, p));
+        draws.push((t, prep, foot));
     }
     let mut out = Vec::new();
     let mut crossing = [0usize; 2];

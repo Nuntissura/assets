@@ -59,6 +59,28 @@
 //! as first-class compositing inputs"): [`aux_channels`] writes the run's Z depth, camera-space
 //! normals, object id and coverage planes ([`AuxChannels`], names [`AUX_CHANNEL_NAMES`]), which
 //! export as one OpenEXR file ([`exr`]) and feed [`depth_matte`], [`id_matte`] and [`depth_fog`].
+//!
+//! Corner pins, clipping and collapsed 3D precompositions (lane SMB-AE-3D-3; Studio readings,
+//! After Effects behaviour UNVERIFIED, D5):
+//! - Corner pin (STU-CMP-010 step 3: effects before step 5, the transform): the pinned content is
+//!   the plane's texture. [`pinned_bounds`] gives the pinned content rectangle; the plane's
+//!   footprint, depth ranks, shading, shadows, defocus and auxiliary channels all read that pinned
+//!   texture, and an unlit plane resamples once through the pin then the plane homography. A pin
+//!   with a mask path on the same 3D layer is refused as on 2D layers
+//!   (`composition_mask_path_with_corner_pin`).
+//! - Clipping (Folio `clipped`, the clip-to-base reading of pigment's `MaskFormat::BaseAlpha`): a
+//!   clipped 3D layer, or a 2D layer clipped to a 3D base, takes the base's rendered alpha (the
+//!   base projected alone through the active camera when 3D, its masks, corner pin and track
+//!   matte applied, its opacity and fill not) as a screen-space track matte, so it stays a plane
+//!   of its run with its own depth, mode and opacity. Clipping and a track matte on one layer stay
+//!   refused (`composition_clipped_matte`), as on the 2D path.
+//! - Collapsed 3D precomposition (STU-CMP-016: "inner 3D layers can interact with outer 3D
+//!   space"): every visible content layer of the nested composition joins the OUTER run as a plane,
+//!   its parent chain followed by the precomposition layer's own 3D transform and parent chain, its
+//!   opacity times the precomposition layer's; nested 2D layers lie in the precomposition's plane
+//!   (Z 0 of its space, [`Material::TWO_D`]); the outer camera and lights apply, nested cameras are
+//!   ignored; nesting recurses (bounded). Refused [`COMPOSITION_3D_COLLAPSE_NESTED`]: a nested
+//!   light, track matte, matte source, clipped, adjustment or unlinked-mask layer.
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod exr;
@@ -87,9 +109,20 @@ pub const COMPOSITION_3D_CONTENT: &str = "composition_3d_content";
 pub const COMPOSITION_3D_PARENT: &str = "composition_3d_parent";
 /// A parent chain whose linear part is singular (a zero scale) under a 3D layer, camera or light.
 pub const COMPOSITION_3D_PARENT_DEGENERATE: &str = "composition_3d_parent_degenerate";
-/// A corner pin, clipping or an unlinked vector mask on a 3D layer (lane SMB-AE-3D-2 renders mask
-/// paths and track mattes on 3D layers; these stay refused).
+/// An unlinked vector mask on a 3D layer, or a collapsed 3D precomposition that is itself clipped
+/// (lane SMB-AE-3D-2 renders mask paths and track mattes on 3D layers; lane SMB-AE-3D-3 renders
+/// corner pins, clipping and collapsed 3D precompositions; these stay refused).
 pub const COMPOSITION_3D_LAYER_OPTION: &str = "composition_3d_layer_option";
+/// A corner pin on a 3D layer whose pinned content rectangle crosses the pin's line at infinity
+/// (corner denominators of different signs or near zero), has a non-finite corner, or extends
+/// beyond [`MAX_PIN_EXTENT`] (lane SMB-AE-3D-3, [`pinned_bounds`]).
+pub const COMPOSITION_3D_CORNER_PIN: &str = "composition_3d_corner_pin_degenerate";
+/// Largest absolute pinned coordinate and largest pinned rectangle side (pixels).
+pub const MAX_PIN_EXTENT: f64 = 16384.0;
+/// A layer inside a collapsed 3D precomposition the planar model cannot join to the outer run: a
+/// light, a track matte or matte source use, clipping, an adjustment layer or an unlinked vector
+/// mask (lane SMB-AE-3D-3; [`crate::three_d`] module docs, "Collapsed 3D precompositions").
+pub const COMPOSITION_3D_COLLAPSE_NESTED: &str = "composition_3d_collapse_nested_layer";
 /// More planes in one run than [`MAX_RUN_PLANES`].
 pub const COMPOSITION_3D_RUN_LIMIT: &str = "composition_3d_run_limit";
 /// Most planes one 3D run may hold (the run emits up to planes x ranks layers).
@@ -464,6 +497,44 @@ pub struct Plane3d {
     pub track_matte: Option<crate::composition::SceneMatte>,
 }
 
+/// The content rectangle of a corner-pinned 3D layer (lane SMB-AE-3D-3): `pin` (content plan ->
+/// content plan, the corner pin evaluated at the tick) normalised so its denominator is positive
+/// over `bounds`, and the integer rectangle covering the pinned image of `bounds` (floor / ceil of
+/// the four mapped corners; the image of a rectangle under a projective map whose denominator keeps
+/// one sign is the convex quad of its corners). The corner pin is an effect of the layer (STU-CMP-010
+/// step 3, before the transform of step 5), so the pinned content is the plane's texture and the
+/// plane's homography follows it. Refused [`COMPOSITION_3D_CORNER_PIN`]: corner denominators of
+/// different signs or below `1e-12` in magnitude, a non-finite corner, a coordinate or side beyond
+/// [`MAX_PIN_EXTENT`].
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+pub fn pinned_bounds(pin: &Projective2, bounds: Rect) -> Result<(Projective2, Rect), &'static str> {
+    let (x0, y0) = (bounds.x as f64, bounds.y as f64);
+    let (x1, y1) = (x0 + f64::from(bounds.width), y0 + f64::from(bounds.height));
+    let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| pin.apply_h(x, y));
+    let positive = corners.iter().all(|c| c.2 > 1e-12);
+    let negative = corners.iter().all(|c| c.2 < -1e-12);
+    if !(positive || negative) || !corners.iter().all(|c| c.0.is_finite() && c.1.is_finite() && c.2.is_finite()) {
+        return Err(COMPOSITION_3D_CORNER_PIN);
+    }
+    let pin = if positive { *pin } else { Projective2 { m: pin.m.map(|v| -v) } };
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for (px, py, w) in corners {
+        let (x, y) = (px / w, py / w);
+        if !(x.is_finite() && y.is_finite() && x.abs() <= MAX_PIN_EXTENT && y.abs() <= MAX_PIN_EXTENT) {
+            return Err(COMPOSITION_3D_CORNER_PIN);
+        }
+        lo = [lo[0].min(x), lo[1].min(y)];
+        hi = [hi[0].max(x), hi[1].max(y)];
+    }
+    let (lx, ly, hx, hy) = (lo[0].floor(), lo[1].floor(), hi[0].ceil().max(lo[0].floor() + 1.0), hi[1].ceil().max(lo[1].floor() + 1.0));
+    let (w, h) = (hx - lx, hy - ly);
+    if !(w >= 1.0 && h >= 1.0 && w <= MAX_PIN_EXTENT && h <= MAX_PIN_EXTENT) {
+        return Err(COMPOSITION_3D_CORNER_PIN);
+    }
+    // All four values are integral and bounded by MAX_PIN_EXTENT (checked above).
+    Ok((pin, Rect { x: lx as i64, y: ly as i64, width: w as u32, height: h as u32 }))
+}
+
 /// Expands one 3D run into 2D scene layers (module docs: depth ranks per pixel, one matted layer
 /// per (rank, plane)) for a `width x height` composition seen by `cam`.
 pub fn expand_run(
@@ -510,7 +581,12 @@ pub fn expand_run_lit(
     }
     let mut preps = Vec::with_capacity(planes.len());
     for p in planes {
-        if !matches!(p.content, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_)) {
+        let plain = |c: &SceneContent| matches!(c, SceneContent::Tiles(_) | SceneContent::Static(_) | SceneContent::Precomp(_));
+        let placeable = match &p.content {
+            SceneContent::Pinned(q) => plain(&q.content),
+            other => plain(other),
+        };
+        if !placeable {
             return Err(unsupported(&p.layer_id, COMPOSITION_3D_CONTENT));
         }
         let h = plane_homography(&p.transform, cam);
@@ -575,9 +651,15 @@ pub fn expand_run_lit(
             if let (Some(track), Some(rank_layer)) = (&p.track_matte, matte.layer.as_mut()) {
                 rank_layer.matte = Some(track.clone());
             }
+            // A corner-pinned plane that is neither lit, defocused nor masked: the corner pin then
+            // the plane's homography, one projective resample (lane SMB-AE-3D-3).
+            let content = match lit_content(planes, i, &material, lights, cam) {
+                SceneContent::Pinned(q) => PinnedContent { content: q.content, pin: q.pin.then(&pr.pin) },
+                other => PinnedContent { content: other, pin: pr.pin },
+            };
             out.push(SceneLayer {
                 layer_id: p.layer_id.clone(),
-                content: SceneContent::Pinned(Box::new(PinnedContent { content: lit_content(planes, i, &material, lights, cam), pin: pr.pin })),
+                content: SceneContent::Pinned(Box::new(content)),
                 mode: p.mode,
                 opacity: p.opacity,
                 fill_opacity: p.fill_opacity,
@@ -626,6 +708,10 @@ impl Material {
         metal: 1.0,
         light_transmission: 0.0,
     };
+    /// A 2D layer joined to a 3D run by a collapsed 3D precomposition (lane SMB-AE-3D-3): it
+    /// neither accepts lights nor casts or accepts shadows (a 2D layer has no material options;
+    /// Studio reading, UNVERIFIED).
+    pub const TWO_D: Self = Self { accepts_lights: false, ..Self::DEFAULT };
 }
 
 /// STU-CMP-045 light type.

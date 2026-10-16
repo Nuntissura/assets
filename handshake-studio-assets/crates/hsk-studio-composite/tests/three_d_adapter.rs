@@ -82,7 +82,10 @@ impl TileInfoSource for Info<'_> {
     }
 }
 fn source(rec: &Value, pixels: &Pixels) -> Result<CompositionTemporalSource, TemporalError> {
-    let snap = open(&document());
+    source_with(&document(), rec, pixels)
+}
+fn source_with(doc: &Value, rec: &Value, pixels: &Pixels) -> Result<CompositionTemporalSource, TemporalError> {
+    let snap = open(doc);
     let records: StudioCompositionRecords = serde_json::from_value(rec.clone()).expect("records shape");
     let id = composition_id();
     let input = CompositionInput {
@@ -152,10 +155,18 @@ fn three_d_runs_camera_breaks_and_refusals() {
     // Lane SMB-AE-3D-2: 2D and 3D layers parent each other; a camera or light parent is refused.
     at_open(&|l| l[2]["parent"] = json!(identity("SLYR", 6)), three_d::COMPOSITION_3D_PARENT);
     at_open(&|l| l[3]["parent"] = json!(identity("SLYR", 8)), three_d::COMPOSITION_3D_PARENT);
-    at_open(
-        &|l| l[2]["corner_pin"] = json!({"from":[[0.0,0.0],[20.0,0.0],[20.0,14.0],[0.0,14.0]],"static_value":[0.0,0.0,20.0,0.0,20.0,14.0,0.0,14.0]}),
-        three_d::COMPOSITION_3D_LAYER_OPTION,
+    // Lane SMB-AE-3D-3: a corner pin renders on a 3D layer (see the corner-pin test below). A pin
+    // whose convex quads send part of the content across the pin's line at infinity (a 4 px square
+    // inside "tf" widened to 20 px at its bottom edge: the denominator reaches 0 at content row 10)
+    // is refused typed at the tick; Folio already refuses a folded (bow-tie) quad at open.
+    at_tick(
+        &|l| l[2]["corner_pin"] = json!({"from":[[8.0,5.0],[12.0,5.0],[12.0,9.0],[8.0,9.0]],"static_value":[8.0,5.0,12.0,5.0,20.0,9.0,0.0,9.0]}),
+        three_d::COMPOSITION_3D_CORNER_PIN,
     );
+    assert!(matches!(
+        source(&edit(&|l| l[2]["corner_pin"] = json!({"from":[[0.0,0.0],[20.0,0.0],[20.0,14.0],[0.0,14.0]],"static_value":[0.0,0.0,20.0,14.0,20.0,0.0,0.0,14.0]})), &pixels),
+        Err(TemporalError::Document(_))
+    ));
     at_tick(
         &|l| {
             l[0]["streams"] = json!([{"property":"position","static_value":[16.0,-100.0]}]);
@@ -488,4 +499,125 @@ fn immersive_scene_and_capability_refusals_from_records() {
     assert!(three_d::immersive::sphere_rotate(&[0.0; 3], &[1.0], 1, 1, f64::NAN, 0.0, 0.0).is_err());
     assert!(three_d::immersive::sphere_rotate(&[0.0; 3], &[1.0], 1, 2, 0.0, 0.0, 0.0).is_err(), "shape mismatch");
     assert!(three_d::immersive::sphere_rotate(&[], &[], 0, 0, 0.0, 0.0, 0.0).is_err());
+}
+
+#[test]
+fn three_d_corner_pin_clipping_and_collapse_from_records() {
+    // Lane SMB-AE-3D-3 (Studio readings, After Effects UNVERIFIED, D5). Pixel proofs against the
+    // ray-cast oracle: render-cpu / render-gpu `composition_three_d` (pinned and clipped run).
+    use hsk_studio_pigment::transform_math::{Affine2, Projective2};
+    let pixels = Pixels::fixture();
+    let cancel = CancellationToken::default();
+    let cam = three_d::camera([10.0, 4.0, -60.0], [0.0; 3], 0.0, 0.0, 0.0, Some([16.0, 12.0, 0.0]), 50.0, 32, 24).unwrap();
+    // (1) Corner pin on "tf" (STU-CMP-010 step 3 before step 5): the run equals the hand-built run
+    // whose tf plane textures the pinned content over the pinned rectangle.
+    let from = [[0.0, 0.0], [20.0, 0.0], [20.0, 14.0], [0.0, 14.0]];
+    let to = [[1.0, -2.0], [19.0, 1.0], [22.0, 15.0], [-1.0, 12.0]];
+    let mut l = layers();
+    l[2]["corner_pin"] = json!({"from":from,"static_value":[1.0,-2.0,19.0,1.0,22.0,15.0,-1.0,12.0]});
+    l.remove(3);
+    let scene = source(&records(l), &pixels).unwrap().scene_at(0, &cancel).unwrap();
+    let tile = |n: u8, key: &str| pixels.get(&tile_id(n, key)).unwrap().scene_tile(0, 0);
+    let plane = |n: u8, key: &str, w: f64, h: f64, position: [f64; 3], scale: f64, rx: f64, ry: f64| Plane3d {
+        layer_id: identity("SLYR", n),
+        bounds: tile(n, key).placement,
+        origin: [0.0, 0.0],
+        content: SceneContent::Tiles(vec![tile(n, key)]),
+        transform: Transform3d { anchor: [w / 2.0, h / 2.0, 0.0], position, scale: [scale, scale], rotation: three_d::layer_rotation([0.0; 3], rx, ry, 0.0), parent: three_d::Affine3::IDENTITY },
+        mode: StudioBlendMode::Normal,
+        opacity: 1.0,
+        fill_opacity: 1.0,
+        layer_mask: None,
+        track_matte: None,
+    };
+    let te = plane(10, "te", 10.0, 8.0, [15.0, 13.0, 1.0], 1.4, -40.0, 0.0);
+    let mut tf = plane(11, "tf", 20.0, 14.0, [16.0, 12.0, 0.0], 1.0, 0.0, 35.0);
+    let id = Projective2::from_affine(&Affine2::translate(0.0, 0.0));
+    let cp = id.then(&Projective2::from_quads(from, to).unwrap()).then(&id);
+    let (cp, pinned) = three_d::pinned_bounds(&cp, tf.bounds).unwrap();
+    assert_eq!((pinned.x, pinned.y, pinned.width, pinned.height), (-1, -2, 23, 17), "the pinned rectangle covers the pinned quad");
+    tf.content = SceneContent::Pinned(Box::new(hsk_studio_composite::composition::PinnedContent { content: tf.content.clone(), pin: cp }));
+    tf.bounds = pinned;
+    let want = three_d::expand_run(&[te.clone(), tf.clone()], &cam, 32, 24, scenes::space(), 7).unwrap();
+    assert_eq!(scene.layers, want, "pinned run");
+    for p in scene.layers.iter().filter(|p| p.layer_id == identity("SLYR", 11)) {
+        let SceneContent::Pinned(q) = &p.content else { panic!("pinned") };
+        assert!(matches!(q.content, SceneContent::Tiles(_)), "one resample: the corner pin then the plane homography");
+    }
+    // Hostile pins: collinear corners (refused by Folio at open) and a pin beyond the extent bound
+    // (refused typed at the tick).
+    let pinned_with = |v: Value| {
+        let mut l = layers();
+        l[2]["corner_pin"] = json!({"from":from,"static_value":v});
+        source(&records(l), &pixels).and_then(|s| s.scene_at(0, &cancel).map(|_| ()))
+    };
+    assert!(matches!(pinned_with(json!([0.0, 0.0, 10.0, 0.0, 20.0, 0.0, 0.0, 14.0])), Err(TemporalError::Document(_))), "collinear");
+    refused(pinned_with(json!([0.0, 0.0, 1.0e7, 0.0, 1.0e7, 14.0, 0.0, 14.0])).unwrap_err(), three_d::COMPOSITION_3D_CORNER_PIN);
+    // (2) Clipping: "tb" (2D) and "tf" (3D) clipped to their base "te" (3D, the bottom layer).
+    let mut doc = document();
+    for k in [3, 5] {
+        doc["layers"][k]["appearance"] = json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":2,"clipped":true,"isolation":"isolated"});
+    }
+    let clipped = source_with(&doc, &records(layers()), &pixels).unwrap().scene_at(0, &cancel).unwrap();
+    let base_alone = three_d::expand_run(std::slice::from_ref(&te), &cam, 32, 24, scenes::space(), 7).unwrap().into_iter().next().unwrap();
+    let tb = clipped.layers.iter().find(|x| x.layer_id == identity("SLYR", 3)).expect("tb");
+    assert!(!tb.clipped, "the 2D layer clipped to a 3D base takes the base alpha as a matte");
+    let m = tb.matte.as_ref().expect("clip matte");
+    assert!(m.mode == hsk_studio_composite::SceneMatteMode::Alpha && !m.inverted);
+    assert_eq!(m.layer.as_deref(), Some(&base_alone), "the base projected alone through the camera");
+    let tf_pieces: Vec<_> = clipped.layers.iter().filter(|x| x.layer_id == identity("SLYR", 11)).collect();
+    assert!(!tf_pieces.is_empty());
+    for p in tf_pieces {
+        let rank = p.matte.as_ref().and_then(|m| m.layer.as_ref()).expect("rank matte");
+        assert_eq!(rank.matte.as_ref().and_then(|c| c.layer.as_deref()), Some(&base_alone), "clip matte under the rank matte");
+    }
+    // The bottom layer has no base; a clipped layer with a track matte is refused as on 2D layers.
+    let mut lone = document();
+    lone["layers"][4]["appearance"] = json!({"opacity":100.0,"fill_opacity":100.0,"blend_mode":2,"clipped":true,"isolation":"isolated"});
+    refused(source_with(&lone, &records(layers()), &pixels).unwrap().scene_at(0, &cancel).unwrap_err(), hsk_studio_composite::composition::CLIP_WITHOUT_BASE);
+    let mut matted = layers();
+    matted[2]["track_matte"] = json!({"source_layer_id":identity("SLYR",3),"mode":"alpha","inverted":false});
+    refused(source_with(&doc, &records(matted), &pixels).unwrap().scene_at(0, &cancel).unwrap_err(), hsk_studio_composite::composition::CLIPPED_MATTE);
+    // (3) Collapsed 3D precomposition (STU-CMP-016): layer 9 nests "te" (3D) and "tb" (2D); both
+    // join the outer run with tf, each plane's chain followed by the precomposition layer's.
+    let mut root = layers();
+    root.truncate(3);
+    root.remove(1);
+    root.push(json!({"layer_id":identity("SLYR",9),"timing":timing(),"streams":[{"property":"position","static_value":[14.0,11.0]}],
+        "three_d":{"position_z":s(3.0),"rotation_y":s(-25.0)},
+        "precomp":{"composition_id":identity("SCOM",2),"collapse_transformations":true}}));
+    let nested_layers = vec![
+        json!({"layer_id":identity("SLYR",3),"timing":timing(),"streams":[{"property":"position","static_value":[20.0,9.0]}]}),
+        json!({"layer_id":identity("SLYR",10),"timing":timing(),"streams":[{"property":"position","static_value":[15.0,13.0]},{"property":"scale","static_value":[140.0,140.0]}],
+            "three_d":{"position_z":s(1.0),"rotation_x":s(-40.0)}}),
+    ];
+    let with_nested = |root: Vec<Value>, nested: Vec<Value>| {
+        let mut r = records(root);
+        let mut c = r["compositions"][0].clone();
+        c["composition_id"] = json!(identity("SCOM", 2));
+        c["name"] = json!("nested");
+        c["background"] = Value::Null;
+        c["layers"] = json!(nested);
+        r["compositions"].as_array_mut().unwrap().push(c);
+        r
+    };
+    let src = source(&with_nested(root.clone(), nested_layers.clone()), &pixels).expect("source");
+    let scene = src.scene_at(0, &cancel).unwrap();
+    assert!(scene.layers.iter().all(|x| x.layer_id != identity("SLYR", 9)), "the collapsed layer has no surface of its own");
+    assert!(scene.layers.iter().any(|x| x.layer_id == identity("SLYR", 3)), "the nested 2D layer is a plane of the run");
+    let (planes, ids, _) = src.three_d_planes_at(0, &cancel).unwrap();
+    assert_eq!(planes.iter().map(|p| p.layer_id.clone()).collect::<Vec<_>>(), vec![identity("SLYR", 10), identity("SLYR", 3), identity("SLYR", 11)]);
+    assert_eq!(ids, vec![3, 3, 2], "nested planes carry the precomposition layer's object id");
+    // te's world point = the precomposition layer's map (anchor = nested centre 16, 12) after te's own.
+    let outer = three_d::Affine3::layer([16.0, 12.0, 0.0], [14.0, 11.0, 3.0], [1.0, 1.0], &three_d::layer_rotation([0.0; 3], 0.0, -25.0, 0.0));
+    for (x, y) in [(0.0, 0.0), (10.0, 8.0), (3.5, 6.0)] {
+        let got = planes[0].transform.world(x, y);
+        let want = outer.apply(te.transform.world(x, y));
+        assert!((0..3).all(|k| (got[k] - want[k]).abs() < 1e-9), "{got:?} vs {want:?}");
+    }
+    assert!(src.three_d_run_breaks().unwrap().is_empty(), "nothing breaks the run");
+    // A light inside a collapsed 3D precomposition is refused typed.
+    let mut lit = nested_layers;
+    lit.push(json!({"layer_id":identity("SLYR",8),"timing":timing(),"three_d":{},"light":{"light_type":"point","colour":{"static_value":[1.0,1.0,1.0]},"intensity":s(100.0)}}));
+    refused(source(&with_nested(root, lit), &pixels).unwrap().scene_at(0, &cancel).unwrap_err(), three_d::COMPOSITION_3D_COLLAPSE_NESTED);
 }

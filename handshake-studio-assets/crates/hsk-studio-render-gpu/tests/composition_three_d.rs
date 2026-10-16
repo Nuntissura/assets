@@ -150,6 +150,29 @@ fn gpu_masked_and_matted_three_d_run_matches_the_oracle() {
 }
 
 #[test]
+fn gpu_pinned_and_clipped_three_d_run_matches_the_oracle() {
+    // Lane SMB-AE-3D-3: render-cpu's corner-pinned and clipped run against the same oracle (CPU
+    // within 1e-6 of it, so CPU / GPU parity within 3e-6).
+    if !gate("gpu_pinned_and_clipped_three_d_run_matches_the_oracle") {
+        return;
+    }
+    let pixels = scenes::Pixels::fixture();
+    let scene = three_d::pinned_clipped_scene(&pixels);
+    let (want, _) = three_d::pinned_clipped_oracle(&pixels);
+    let ctx = SceneContext {
+        backend: backend(),
+        pixels: &pixels,
+        request: ExecuteRequest { expected_revision: 7, min_exactness: Exactness::Approximate, deadline: None, max_working_bytes: 1 << 28 },
+        space: scenes::space(),
+        limits: SceneLimits::default(),
+    };
+    let got = render_scene(&scene, &ctx, &CancellationToken::default()).expect("frame renders");
+    let delta = scenes::max_delta(&got, &want);
+    println!("three_d pinned + clipped: gpu max |delta| vs oracle {delta:e}");
+    assert!(delta <= GPU_TOLERANCE, "{delta}");
+}
+
+#[test]
 fn gpu_equirectangular_plane_to_sphere_matches_the_oracle() {
     // Lane SMB-AE-3D-2: the plane contents come from the GPU backend; the spherical ray cast and
     // the composite run in composite, so the frame stays within the render-gpu tolerance.

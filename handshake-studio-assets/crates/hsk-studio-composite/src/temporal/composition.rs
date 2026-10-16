@@ -31,8 +31,10 @@
 //!   source tick ([`CompositionTemporalSource::source_tick`]: `start_time`, `stretch`, reverse);
 //!   outside `[0, duration)` of the nested composition it shows nothing; the nested composition's
 //!   background is not drawn (transparent, the After Effects nesting behaviour as Studio reads it,
-//!   UNVERIFIED); nesting is bounded by [`MAX_PRECOMP_DEPTH`]. `collapse_transformations` is
-//!   refused (`composition_precomp_collapse_transformations`).
+//!   UNVERIFIED); nesting is bounded by [`MAX_PRECOMP_DEPTH`]. `collapse_transformations` joins
+//!   the nested layers to this composition (2D: their matrices follow the layer's; 3D, lane
+//!   SMB-AE-3D-3: they join the outer 3D run, `crate::three_d` module docs).
+//! - 3D layers, cameras and lights (lanes SMB-AE-3D, -2, -3): `crate::three_d` module docs.
 //!
 //! [`CompositionTemporalSource::scene_at`] returns the folio-free [`SceneComposition`] that
 //! `composition::lower_scene` / `render_scene` lower and render. The type also implements
@@ -196,6 +198,18 @@ struct CompLayer {
 
 /// A layer's own 3D transform: anchor, position, X/Y scale, rotation (lane SMB-AE-3D-2).
 type Own3d = ([f64; 3], [f64; 3], [f64; 2], crate::three_d::Mat3);
+/// One plane of a pending 3D run: the plane, its material, and the colour tag and revision of the
+/// run's rank mattes.
+type RunPlane = (crate::three_d::Plane3d, crate::three_d::Material, ColourTag, u64);
+
+/// The clip base of the next clipped layer while a scene is assembled (lane SMB-AE-3D-3).
+enum ClipBase<'a> {
+    /// An unclipped content layer and its evaluated scene layer.
+    Layer { source: &'a CompLayer, layer: Box<SceneLayer> },
+    Adjustment,
+    /// A collapsed 3D precomposition (its layers joined the run; no single base alpha).
+    Collapsed,
+}
 
 /// The 3D streams of a layer (STU-CMP-035, STU-MOT-013) and, for a camera layer, its zoom and
 /// point of interest (STU-CMP-040/040a). A light layer (STU-CMP-045) renders nothing itself.
@@ -851,11 +865,13 @@ impl CompositionTemporalSource {
                     None => None,
                     Some(d) => {
                         // Planar-renderer refusals (lane SMB-AE-3D slice 1; masks and track mattes
-                        // render since lane SMB-AE-3D-2).
-                        if l.corner_pin.is_some() || a.clipped || matches!(content, Content::Static { unlinked: Some(_), .. }) {
+                        // render since lane SMB-AE-3D-2; corner pins, clipping and collapsed 3D
+                        // precompositions since lane SMB-AE-3D-3).
+                        let collapsed = matches!(content, Content::Precomp { collapse: true, .. });
+                        if matches!(content, Content::Static { unlinked: Some(_), .. }) || (collapsed && a.clipped) {
                             return Err(unsupported(id, crate::three_d::COMPOSITION_3D_LAYER_OPTION));
                         }
-                        if matches!(content, Content::Adjustment(_) | Content::Precomp { collapse: true, .. }) {
+                        if matches!(content, Content::Adjustment(_)) {
                             return Err(unsupported(id, crate::three_d::COMPOSITION_3D_CONTENT));
                         }
                         let opt = |v: &Option<hsk_studio_folio::StudioKeyedValue>| v.as_ref().map(|v| keyed_property(id, v)).transpose();
@@ -1134,8 +1150,13 @@ impl CompositionTemporalSource {
             .collect();
         let mut layers = Vec::new();
         // Contiguous 3D layers form one run (STU-CMP-035a), expanded when a 2D layer breaks it.
-        let mut run: Vec<(crate::three_d::Plane3d, crate::three_d::Material, ColourTag, u64)> = Vec::new();
+        let mut run: Vec<RunPlane> = Vec::new();
         let mut camera: Option<(crate::three_d::Camera, Vec<crate::three_d::Light>)> = None;
+        // The clip base so far (lane SMB-AE-3D-3; `crate::three_d` module docs) and whether a 3D
+        // plane entered the stack after it (then a later clipped 2D layer cannot use pigment's
+        // clip-to-base route, whose base would be the last depth piece).
+        let mut base: Option<ClipBase<'_>> = None;
+        let mut three_d_since_base = false;
         for l in comp.layers.iter().rev() {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
             if !l.visible || matte_sources.contains(l.layer_id.as_str()) {
@@ -1145,16 +1166,50 @@ impl CompositionTemporalSource {
                 if d.camera.is_some() || d.light.is_some() || matches!(l.content, Content::None) {
                     continue;
                 }
-                let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
+                if matches!(l.content, Content::Precomp { collapse: true, .. }) {
+                    let before = run.len();
+                    self.collapse_3d(comp, l, d, tick, depth, &crate::three_d::Affine3::IDENTITY, 1.0, cancel, &mut run)?;
+                    if run.len() != before || u64::try_from(tick).is_ok_and(|t| l.timing.contains(t)) {
+                        base = Some(ClipBase::Collapsed);
+                        three_d_since_base = true;
+                    }
+                    continue;
+                }
+                let Some(mut layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
                     continue;
                 };
+                if l.clipped {
+                    let Some(m) = self.clip_matte(comp, base.as_ref(), l, &layer, tick, cancel)? else { continue };
+                    layer.matte = Some(m);
+                    layer.clipped = false;
+                } else {
+                    base = Some(ClipBase::Layer { source: l, layer: Box::new(layer.clone()) });
+                }
+                three_d_since_base = true;
                 run.push((Self::plane(comp, l, layer, tick, cancel)?,Self::material_at(l, d, tick, cancel)?, d.space, d.revision));
                 continue;
             }
             Self::flush_run(comp, &mut run, &mut camera, tick, cancel, &mut layers)?;
-            let Some(layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
+            let Some(mut layer) = self.layer_at(comp, l, tick, depth, 0, cancel)? else {
                 continue;
             };
+            if l.clipped {
+                // A 2D layer clipped to a 3D base (or to a base below 3D depth pieces): the base's
+                // alpha as a screen-space matte; a 2D base with only 2D layers above it keeps
+                // pigment's clip-to-base route.
+                let three_d_base = matches!(&base, Some(ClipBase::Layer { source, .. }) if source.three_d.is_some()) || matches!(base, Some(ClipBase::Collapsed));
+                if three_d_base || (three_d_since_base && base.is_some()) {
+                    let Some(m) = self.clip_matte(comp, base.as_ref(), l, &layer, tick, cancel)? else { continue };
+                    layer.matte = Some(m);
+                    layer.clipped = false;
+                }
+            } else if !matches!(l.content, Content::None) {
+                base = Some(match l.content {
+                    Content::Adjustment(_) => ClipBase::Adjustment,
+                    _ => ClipBase::Layer { source: l, layer: Box::new(layer.clone()) },
+                });
+                three_d_since_base = false;
+            }
             let collapsed = matches!(l.content, Content::Precomp { collapse: true, .. });
             match (collapsed, layer.content) {
                 (true, SceneContent::Precomp(nested)) => {
@@ -1242,7 +1297,19 @@ impl CompositionTemporalSource {
     ) -> Result<crate::three_d::Plane3d, TemporalError> {
         let (anchor, position, scale, rotation) = Self::own_3d(l, tick, cancel)?;
         let transform = crate::three_d::Transform3d { anchor, position, scale, rotation, parent: Self::parent_3d(comp, l, tick, cancel)? };
-        let bounds = l.content.bounds().ok_or_else(|| unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_CONTENT))?;
+        let mut bounds = l.content.bounds().ok_or_else(|| unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_CONTENT))?;
+        // A corner pin (lane SMB-AE-3D-3): the plane's texture is the pinned content over the pinned
+        // rectangle (`crate::three_d::pinned_bounds`); a mask path with a corner pin is refused as on
+        // a 2D layer.
+        let mut layer = layer;
+        if let SceneContent::Pinned(p) = &mut layer.content {
+            if l.masks.is_some() {
+                return Err(unsupported(&l.layer_id, crate::mask_paths::COMPOSITION_MASK_PATH_WITH_CORNER_PIN));
+            }
+            let (pin, pinned) = crate::three_d::pinned_bounds(&p.pin, bounds).map_err(|code| unsupported(&l.layer_id, code))?;
+            p.pin = pin;
+            bounds = pinned;
+        }
         // Masks in layer space over the content rectangle (lane SMB-AE-3D-2; STU-CMP-010 step 2).
         let layer_mask = match &l.masks {
             None => None,
@@ -1320,10 +1387,141 @@ impl CompositionTemporalSource {
         Ok(crate::three_d::default_camera(comp.width, comp.height))
     }
 
+    /// The screen-space clip matte of clipped layer `l` (lane SMB-AE-3D-3; `crate::three_d` module
+    /// docs): the base's rendered alpha, the base drawn alone (normal mode, opacity and fill 1; a 3D
+    /// base projected through the active camera). `None` = the base is skipped (opacity 0 or an
+    /// absent non-inverted matte), so the clipped layer drops with it, as on pigment's
+    /// clip-to-base route. Refused as there: a clipped layer that also carries a matte
+    /// (`composition_clipped_matte`), no base (`composition_clip_without_base`), an adjustment
+    /// base (`composition_clip_base_adjustment`); a collapsed 3D precomposition as the base is
+    /// refused `composition_3d_layer_option` (its layers have no single alpha).
+    fn clip_matte(
+        &self,
+        comp: &Comp,
+        base: Option<&ClipBase<'_>>,
+        l: &CompLayer,
+        layer: &SceneLayer,
+        tick: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SceneMatte>, TemporalError> {
+        if layer.matte.is_some() {
+            return Err(unsupported(&l.layer_id, crate::composition::CLIPPED_MATTE));
+        }
+        let (source, base_layer) = match base {
+            None => return Err(unsupported(&l.layer_id, crate::composition::CLIP_WITHOUT_BASE)),
+            Some(ClipBase::Adjustment) => return Err(unsupported(&l.layer_id, crate::composition::CLIP_BASE_ADJUSTMENT)),
+            Some(ClipBase::Collapsed) => return Err(unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_LAYER_OPTION)),
+            Some(ClipBase::Layer { source, layer }) => (*source, layer),
+        };
+        if base_layer.opacity == 0.0 || base_layer.matte.as_ref().is_some_and(|m| m.layer.is_none() && !m.inverted) {
+            return Ok(None);
+        }
+        let alone = SceneLayer { mode: StudioBlendMode::Normal, opacity: 1.0, fill_opacity: 1.0, clipped: false, ..(**base_layer).clone() };
+        let drawn = match source.three_d.as_deref() {
+            Some(d) => {
+                let plane = Self::plane(comp, source, alone, tick, cancel)?;
+                let cam = Self::camera_at(comp, tick, cancel)?;
+                crate::three_d::expand_run(&[plane], &cam, comp.width, comp.height, d.space, d.revision)?.into_iter().next()
+            }
+            None => Some(alone),
+        };
+        Ok(Some(SceneMatte { layer: drawn.map(Box::new), mode: SceneMatteMode::Alpha, inverted: false }))
+    }
+
+    /// The planes a collapsed 3D precomposition layer `l` adds to the run at `tick` (lane
+    /// SMB-AE-3D-3; `crate::three_d` module docs): every visible content layer of the nested
+    /// composition at the layer's source tick, its parent chain followed by `l`'s own 3D transform,
+    /// `l`'s parent chain and `outer`, its opacity times `l`'s and `opacity`. Nested collapsed 3D
+    /// precompositions recurse (bounded by [`MAX_PRECOMP_DEPTH`]).
+    #[allow(clippy::too_many_arguments)]
+    fn collapse_3d(
+        &self,
+        comp: &Comp,
+        l: &CompLayer,
+        d: &Layer3d,
+        tick: i64,
+        depth: usize,
+        outer: &crate::three_d::Affine3,
+        opacity: f64,
+        cancel: &CancellationToken,
+        out: &mut Vec<RunPlane>,
+    ) -> Result<(), TemporalError> {
+        if !u64::try_from(tick).is_ok_and(|t| l.timing.contains(t)) {
+            return Ok(());
+        }
+        if l.mode != StudioBlendMode::Normal {
+            return Err(unsupported(&l.layer_id, COMPOSITION_COLLAPSE_BLEND));
+        }
+        if l.matte.is_some() {
+            return Err(unsupported(&l.layer_id, COMPOSITION_COLLAPSE_MATTE));
+        }
+        if depth >= MAX_PRECOMP_DEPTH {
+            return Err(CompositeError::BudgetExceeded.into());
+        }
+        let Content::Precomp { composition_id, .. } = &l.content else {
+            return Err(unsupported(&l.layer_id, crate::three_d::COMPOSITION_3D_CONTENT));
+        };
+        let nested = self.comps.get(composition_id).ok_or_else(|| CompositeError::DanglingInput(composition_id.clone()))?;
+        let opacity = opacity * l.opacity * Self::opacity_scale(l, tick, cancel)?;
+        let (anchor, position, scale, rotation) = Self::own_3d(l, tick, cancel)?;
+        let chain = crate::three_d::Affine3::layer(anchor, position, scale, &rotation).then(&Self::parent_3d(comp, l, tick, cancel)?).then(outer);
+        let source = map_source(&l.timing, tick).ok_or(CompositeError::Overflow)?;
+        if !u64::try_from(source).is_ok_and(|t| t < nested.duration) {
+            return Ok(());
+        }
+        let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;
+        let sources = Self::matte_sources(nested);
+        let refuse = |n: &CompLayer| unsupported(&n.layer_id, crate::three_d::COMPOSITION_3D_COLLAPSE_NESTED);
+        for n in nested.layers.iter().rev() {
+            cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
+            if !n.visible {
+                continue;
+            }
+            // A light has no content of its own: refused before the content-less skip.
+            if n.three_d.as_deref().is_some_and(|nd| nd.light.is_some()) {
+                return Err(refuse(n));
+            }
+            if matches!(n.content, Content::None) {
+                continue;
+            }
+            if sources.contains(n.layer_id.as_str())
+                || n.matte.is_some()
+                || n.clipped
+                || matches!(n.content, Content::Adjustment(_) | Content::Static { unlinked: Some(_), .. })
+            {
+                return Err(refuse(n));
+            }
+            let nd = n.three_d.as_deref();
+            if nd.is_some_and(|nd| nd.camera.is_some()) {
+                continue;
+            }
+            if let Some(nd) = nd.filter(|_| matches!(n.content, Content::Precomp { collapse: true, .. })) {
+                self.collapse_3d(nested, n, nd, source, depth, &chain, opacity, cancel, out)?;
+                continue;
+            }
+            let Some(mut layer) = self.layer_at(nested, n, source, depth, 0, cancel)? else { continue };
+            // A 2D nested layer's mask paths become a nested-space matte in `layer_at`; here they
+            // are the plane's layer-space mask (`Self::plane`) instead.
+            layer.matte = None;
+            let mut plane = Self::plane(nested, n, layer, source, cancel)?;
+            plane.transform.parent = plane.transform.parent.then(&chain);
+            if plane.transform.parent.inverse().is_none() {
+                return Err(unsupported(&n.layer_id, crate::three_d::COMPOSITION_3D_PARENT_DEGENERATE));
+            }
+            plane.opacity *= opacity;
+            let material = match nd {
+                Some(nd) => Self::material_at(n, nd, source, cancel)?,
+                None => crate::three_d::Material::TWO_D,
+            };
+            out.push((plane, material, d.space, d.revision));
+        }
+        Ok(())
+    }
+
     /// Expands a pending 3D run into `layers` (`crate::three_d::expand_run`).
     fn flush_run(
         comp: &Comp,
-        run: &mut Vec<(crate::three_d::Plane3d, crate::three_d::Material, ColourTag, u64)>,
+        run: &mut Vec<RunPlane>,
         camera: &mut Option<(crate::three_d::Camera, Vec<crate::three_d::Light>)>,
         tick: i64,
         cancel: &CancellationToken,
@@ -1448,6 +1646,15 @@ impl CompositionTemporalSource {
     /// in its window that is not a matte source), their object ids (the layer's 1-based stack
     /// index, STU-MOT-009: 1 = topmost) and the active camera (lane SMB-AE-3D-2; STU-CMP-050).
     pub fn three_d_planes_at(&self, tick: i64, cancel: &CancellationToken) -> Result<(Vec<crate::three_d::Plane3d>, Vec<u32>, crate::three_d::Camera), TemporalError> {
+        let (run, ids, cam) = self.three_d_run_at(tick, cancel)?;
+        Ok((run.into_iter().map(|r| r.0).collect(), ids, cam))
+    }
+
+    /// [`Self::three_d_planes_at`] with every plane's material, colour tag and revision. The layers
+    /// of a collapsed 3D precomposition (lane SMB-AE-3D-3) are planes here too, with the object id
+    /// of the precomposition layer; a clipped 3D layer is its own plane (its clip matte, like a
+    /// track matte, does not enter the auxiliary channels).
+    fn three_d_run_at(&self, tick: i64, cancel: &CancellationToken) -> Result<(Vec<RunPlane>, Vec<u32>, crate::three_d::Camera), TemporalError> {
         let comp = self.root()?;
         let sources = Self::matte_sources(comp);
         let (mut planes, mut ids) = (Vec::new(), Vec::new());
@@ -1457,9 +1664,17 @@ impl CompositionTemporalSource {
             if !l.visible || sources.contains(l.layer_id.as_str()) || d.camera.is_some() || d.light.is_some() || matches!(l.content, Content::None) {
                 continue;
             }
-            let Some(layer) = self.layer_at(comp, l, tick, 0, 0, cancel)? else { continue };
-            planes.push(Self::plane(comp, l, layer, tick, cancel)?);
-            ids.push(u32::try_from(k.checked_add(1).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?);
+            let id = u32::try_from(k.checked_add(1).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+            if matches!(l.content, Content::Precomp { collapse: true, .. }) {
+                let before = planes.len();
+                self.collapse_3d(comp, l, d, tick, 0, &crate::three_d::Affine3::IDENTITY, 1.0, cancel, &mut planes)?;
+                ids.resize(ids.len().saturating_add(planes.len().saturating_sub(before)), id);
+                continue;
+            }
+            let Some(mut layer) = self.layer_at(comp, l, tick, 0, 0, cancel)? else { continue };
+            layer.clipped = false;
+            planes.push((Self::plane(comp, l, layer, tick, cancel)?, Self::material_at(l, d, tick, cancel)?, d.space, d.revision));
+            ids.push(id);
         }
         Ok((planes, ids, Self::camera_at(comp, tick, cancel)?))
     }
@@ -1500,16 +1715,16 @@ impl CompositionTemporalSource {
                 return Err(unsupported(&l.layer_id, IMMERSIVE_LAYER));
             }
         }
-        let (planes, _, camera) = self.three_d_planes_at(tick, cancel)?;
+        let (run, _, camera) = self.three_d_run_at(tick, cancel)?;
         if camera.dof.is_some() {
             return Err(unsupported("camera", IMMERSIVE_LAYER));
         }
-        let mut materials = Vec::with_capacity(planes.len());
-        for p in &planes {
-            let l = comp.layers.iter().find(|l| l.layer_id == p.layer_id).ok_or_else(|| CompositeError::DanglingInput(p.layer_id.clone()))?;
-            let d = l.three_d.as_deref().ok_or_else(|| unsupported(&l.layer_id, IMMERSIVE_LAYER))?;
-            materials.push(Self::material_at(l, d, tick, cancel)?);
+        if comp.layers.iter().any(|l| l.clipped && l.visible && l.three_d.is_some()) {
+            // A clip matte is screen-space (no place on the sphere), like a track matte.
+            let l = comp.layers.iter().find(|l| l.clipped && l.visible && l.three_d.is_some()).map_or("", |l| l.layer_id.as_str());
+            return Err(unsupported(l, IMMERSIVE_LAYER));
         }
+        let (planes, materials): (Vec<crate::three_d::Plane3d>, Vec<crate::three_d::Material>) = run.into_iter().map(|r| (r.0, r.1)).unzip();
         Ok(crate::three_d::immersive::ImmersiveScene {
             width: comp.width,
             height: comp.height,
