@@ -578,7 +578,7 @@ pub fn apply_effects(mut layer: SceneLayer, rect: Rect, effects: &[ClipEffectFra
                 layer = wrap(layer, rect, ClipStage::Grade(g.clone()));
                 if let Some(op) = g.sharpen_filter(&id)? {
                     let content = std::mem::replace(&mut layer.content, SceneContent::None);
-                    layer.content = SceneContent::Filtered(Box::new(crate::composition::FilteredContent { content, rect, filters: op }));
+                    layer.content = SceneContent::Filtered(Box::new(crate::composition::FilteredContent { content, rect, filters: op, masks: Vec::new() }));
                 }
             }
             ClipEffectFrame::Crop { left, top, right, bottom } => {
