@@ -28,6 +28,16 @@ pub const EXR_CHANNEL_SET: &str = "exr_channel_set";
 pub const EXR_CHANNEL_NAME: &str = "exr_channel_name";
 pub const EXR_CHANNEL_LENGTH: &str = "exr_channel_length";
 pub const EXR_BUDGET: &str = "exr_budget";
+/// A header string attribute the writer refuses (lane SMB-AE-3D-3): an empty name, a name longer
+/// than 31 bytes or not printable ASCII, a name the writer itself writes, a repeated name, more
+/// than [`MAX_EXR_ATTRIBUTES`] attributes or a value longer than [`MAX_EXR_ATTRIBUTE_BYTES`].
+pub const EXR_ATTRIBUTE: &str = "exr_attribute";
+/// Most extra string attributes per file.
+pub const MAX_EXR_ATTRIBUTES: usize = 256;
+/// Longest string attribute value (bytes).
+pub const MAX_EXR_ATTRIBUTE_BYTES: usize = 1 << 24;
+/// The attributes [`encode_exr_f32`] always writes.
+const REQUIRED_ATTRIBUTES: [&str; 8] = ["channels", "compression", "dataWindow", "displayWindow", "lineOrder", "pixelAspectRatio", "screenWindowCenter", "screenWindowWidth"];
 
 fn attr(out: &mut Vec<u8>, name: &str, kind: &str, value: &[u8]) -> Result<(), &'static str> {
     out.extend_from_slice(name.as_bytes());
@@ -41,6 +51,25 @@ fn attr(out: &mut Vec<u8>, name: &str, kind: &str, value: &[u8]) -> Result<(), &
 
 /// Encodes `channels` (name, row-major plane of `width x height` values) as an OpenEXR file.
 pub fn encode_exr_f32(width: u32, height: u32, channels: &[(&str, &[f32])]) -> Result<Vec<u8>, &'static str> {
+    encode_exr_f32_with_attributes(width, height, channels, &[])
+}
+
+/// [`encode_exr_f32`] with extra header attributes of type `string` (lane SMB-AE-3D-3: the
+/// Cryptomatte metadata keys), written after the required attributes in the given order; refused
+/// [`EXR_ATTRIBUTE`] per its contract.
+pub fn encode_exr_f32_with_attributes(width: u32, height: u32, channels: &[(&str, &[f32])], strings: &[(&str, &str)]) -> Result<Vec<u8>, &'static str> {
+    if strings.len() > MAX_EXR_ATTRIBUTES {
+        return Err(EXR_ATTRIBUTE);
+    }
+    let mut extra: u64 = 0;
+    for (i, (name, value)) in strings.iter().enumerate() {
+        let ok = !name.is_empty() && name.len() <= 31 && name.bytes().all(|b| (0x21..=0x7e).contains(&b));
+        let repeated = strings.get(..i).is_some_and(|before| before.iter().any(|(n, _)| n == name));
+        if !ok || repeated || REQUIRED_ATTRIBUTES.contains(name) || value.len() > MAX_EXR_ATTRIBUTE_BYTES {
+            return Err(EXR_ATTRIBUTE);
+        }
+        extra = extra.checked_add(u64::try_from(value.len().checked_add(48).ok_or(EXR_BUDGET)?).map_err(|_| EXR_BUDGET)?).ok_or(EXR_BUDGET)?;
+    }
     if width == 0 || height == 0 || width > MAX_EXR_SIDE || height > MAX_EXR_SIDE {
         return Err(EXR_DIMENSIONS);
     }
@@ -64,7 +93,7 @@ pub fn encode_exr_f32(width: u32, height: u32, channels: &[(&str, &[f32])]) -> R
     let row_bytes = u64::from(width).checked_mul(4).and_then(|b| b.checked_mul(n)).ok_or(EXR_BUDGET)?;
     // Header (bounded: at most 64 names of 31 bytes plus fixed attributes) + offsets + blocks.
     let blocks = row_bytes.checked_add(8).and_then(|b| b.checked_mul(u64::from(height))).ok_or(EXR_BUDGET)?;
-    let total = blocks.checked_add(u64::from(height).checked_mul(8).ok_or(EXR_BUDGET)?).and_then(|b| b.checked_add(4096)).ok_or(EXR_BUDGET)?;
+    let total = blocks.checked_add(u64::from(height).checked_mul(8).ok_or(EXR_BUDGET)?).and_then(|b| b.checked_add(4096)).and_then(|b| b.checked_add(extra)).ok_or(EXR_BUDGET)?;
     if total > MAX_EXR_BYTES {
         return Err(EXR_BUDGET);
     }
@@ -97,6 +126,9 @@ pub fn encode_exr_f32(width: u32, height: u32, channels: &[(&str, &[f32])]) -> R
     centre.extend_from_slice(&0.0f32.to_le_bytes());
     attr(&mut out, "screenWindowCenter", "v2f", &centre)?;
     attr(&mut out, "screenWindowWidth", "float", &1.0f32.to_le_bytes())?;
+    for (name, value) in strings {
+        attr(&mut out, name, "string", value.as_bytes())?;
+    }
     out.push(0);
     let table_at = u64::try_from(out.len()).map_err(|_| EXR_BUDGET)?;
     let first = table_at.checked_add(u64::from(height).checked_mul(8).ok_or(EXR_BUDGET)?).ok_or(EXR_BUDGET)?;

@@ -200,10 +200,10 @@ fn gpu_equirectangular_plane_to_sphere_matches_the_oracle() {
 }
 
 #[test]
-fn gpu_anti_aliased_aux_channels_match_the_backend_free_reference() {
+fn gpu_anti_aliased_aux_channels_and_cryptomatte_match_the_backend_free_reference() {
     // Lane SMB-AE-3D-3: render-cpu's twin (bit for bit there) with the plane alphas from the GPU:
     // object ids and Cryptomatte ids exact, coverages within the render-gpu tolerance.
-    if !gate("gpu_anti_aliased_aux_channels_match_the_backend_free_reference") {
+    if !gate("gpu_anti_aliased_aux_channels_and_cryptomatte_match_the_backend_free_reference") {
         return;
     }
     let pixels = scenes::Pixels::fixture();
@@ -224,6 +224,16 @@ fn gpu_anti_aliased_aux_channels_match_the_backend_free_reference() {
     assert_eq!(got.channels.object_id, want.channels.object_id);
     let diff = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| if x == y { 0.0 } else { (x - y).abs() }).fold(0.0f32, f32::max);
     let worst = diff(&got.channels.coverage, &want.channels.coverage).max(diff(&got.id_coverage, &want.id_coverage));
-    println!("three_d aa aux: gpu coverage max |delta| {worst:e}");
-    assert!(worst <= GPU_TOLERANCE, "{worst}");
+    let names: Vec<String> = planes.iter().map(|p| p.layer_id.clone()).collect();
+    let types: [(&str, &[String]); 1] = [("CryptoObject", &names)];
+    let crypto = hsk_studio_composite::composition::three_d_cryptomatte(&planes, &types, &cam, w, h, 4, 6, filter, &ctx, &cancel).expect("cryptomatte");
+    let cov = hsk_studio_composite::three_d::coverage::pixel_coverage(&planes, &reference, &cam, w, h, 4).unwrap();
+    let reference_crypto = hsk_studio_composite::three_d::cryptomatte::build(&cov, &names, "CryptoObject", 6).unwrap();
+    let mut crypto_worst = 0.0f32;
+    for (g, r) in crypto[0].ranks.iter().zip(&reference_crypto.ranks) {
+        assert!(g.0.iter().zip(&r.0).all(|(a, b)| a.to_bits() == b.to_bits()), "rank ids exact");
+        crypto_worst = crypto_worst.max(diff(&g.1, &r.1));
+    }
+    println!("three_d aa aux: gpu coverage max |delta| {worst:e}, cryptomatte coverage max |delta| {crypto_worst:e}");
+    assert!(worst <= GPU_TOLERANCE && crypto_worst <= GPU_TOLERANCE, "{worst} {crypto_worst}");
 }

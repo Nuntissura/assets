@@ -236,7 +236,7 @@ fn equirectangular_plane_to_sphere_and_sphere_rotate_match_the_oracles() {
 }
 
 #[test]
-fn anti_aliased_aux_channels_match_the_backend_free_reference() {
+fn anti_aliased_aux_channels_and_cryptomatte_match_the_backend_free_reference() {
     // Lane SMB-AE-3D-3 (STU-CMP-050): the 4 x 4 ranking filter of the run's planes, with the plane
     // alphas rendered by this backend, equals the same filter on the alphas read straight from the
     // fixture tiles, bit for bit (render-gpu's twin test holds the GPU to the same reference).
@@ -260,4 +260,16 @@ fn anti_aliased_aux_channels_match_the_backend_free_reference() {
     let mixed = got.id_coverage.iter().zip(&got.channels.coverage).filter(|(i, c)| **i < **c).count();
     println!("three_d aa aux: {partial} partially covered pixels, {mixed} pixels with more than one object");
     assert!(partial > 20 && mixed > 5, "{partial} {mixed}");
+    // Cryptomatte from the same filter (object and material types, 6 ranks).
+    let names: Vec<String> = planes.iter().map(|p| p.layer_id.clone()).collect();
+    let materials = vec!["material(default)".to_owned(); planes.len()];
+    let types: [(&str, &[String]); 2] = [("CryptoObject", &names), ("CryptoMaterial", &materials)];
+    let crypto = hsk_studio_composite::composition::three_d_cryptomatte(&planes, &types, &cam, w, h, 4, 6, ResampleFilter::Bilinear, &ctx, &cancel).expect("cryptomatte");
+    let cov = hsk_studio_composite::three_d::coverage::pixel_coverage(&planes, &reference, &cam, w, h, 4).unwrap();
+    assert_eq!(crypto[0], hsk_studio_composite::three_d::cryptomatte::build(&cov, &names, "CryptoObject", 6).unwrap());
+    // Every object's Cryptomatte matte sums with the others to the pixel's coverage.
+    let all: Vec<&str> = names.iter().map(String::as_str).collect();
+    let sum = crypto[0].matte(&all);
+    let worst = sum.iter().zip(&got.channels.coverage).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst <= 1e-6, "{worst}");
 }

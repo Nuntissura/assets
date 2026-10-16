@@ -1770,6 +1770,37 @@ pub fn three_d_aux_channels_aa(
     crate::three_d::coverage::aux_channels_aa(planes, &alphas, ids, cam, width, height, samples)
 }
 
+/// Cryptomatte types of 3D planes (lane SMB-AE-3D-3; [`crate::three_d::cryptomatte`] module docs):
+/// [`three_d_plane_alphas`], one ranking filter of `samples x samples` per pixel
+/// ([`crate::three_d::coverage::pixel_coverage`]), then one type per `(typename, names)` with
+/// `names[i]` naming plane `i` and `levels` ranks. A refused parameter is
+/// `Unsupported { layer_id: typename, feature }`.
+#[allow(clippy::too_many_arguments)]
+pub fn three_d_cryptomatte(
+    planes: &[crate::three_d::Plane3d],
+    types: &[(&str, &[String])],
+    cam: &crate::three_d::Camera,
+    width: u32,
+    height: u32,
+    samples: u32,
+    levels: usize,
+    filter: ResampleFilter,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+) -> Result<Vec<crate::three_d::cryptomatte::Cryptomatte>, TemporalError> {
+    if types.iter().any(|(_, names)| names.len() != planes.len()) {
+        return Err(TemporalError::Unsupported { layer_id: types.first().map_or("", |t| t.0).to_owned(), feature: crate::three_d::cryptomatte::CRYPTO_PARAMETER });
+    }
+    let alphas = three_d_plane_alphas(planes, filter, ctx, cancel)?;
+    let coverage = crate::three_d::coverage::pixel_coverage(planes, &alphas, cam, width, height, samples)?;
+    types
+        .iter()
+        .map(|(typename, names)| {
+            crate::three_d::cryptomatte::build(&coverage, names, typename, levels).map_err(|feature| TemporalError::Unsupported { layer_id: (*typename).to_owned(), feature })
+        })
+        .collect()
+}
+
 /// The lit plane's surface: its content rendered over `lit.rect`, every texel shaded by
 /// [`crate::three_d::shade`] with the casters' rendered alpha (nearest texel).
 #[allow(clippy::too_many_arguments)]

@@ -750,3 +750,79 @@ fn read_exr(b: &[u8]) -> (Vec<(String, Vec<f32>)>, Vec<(String, String)>) {
     }
     (planes, strings)
 }
+
+#[test]
+fn cryptomatte_hashes_exr_and_mattes_match_the_specification() {
+    // Lane SMB-AE-3D-3 (STU-CMP-050 Cryptomatte; Cryptomatte specification v1.2.0 worked examples).
+    use three_d::coverage::pixel_coverage;
+    use three_d::cryptomatte::{self as cm, build, hash_to_float, matte_from_ranks, murmur3_32, name_id, type_key};
+    // Hash and conversion hand values (specification "Example code and conversions", "Manifest").
+    assert_eq!(murmur3_32(b"torus", 0), 4_053_562_365);
+    assert_eq!(murmur3_32(&[0xd1, 0x80, 0xd0, 0xb0, 0xd0, 0xb2, 0xd0, 0xbd, 0xd0, 0xb8, 0xd0, 0xbd, 0xd0, 0xb0], 0), 2_518_896_926, "UTF-8 bytes are hashed");
+    assert_eq!(name_id("torus").to_bits(), 0xf19c_73fd);
+    assert!((f64::from(name_id("torus")) / -1.549_436_248_32e30 - 1.0).abs() < 1e-9);
+    for (name, hex) in [("bunny", 0x1385_1a76u32), ("default", 0x42c9_679f), ("bunny_porcelain_mat", 0xb24b_26d4)] {
+        assert_eq!(name_id(name).to_bits(), hex, "{name}");
+    }
+    assert_eq!(type_key("CryptoObject"), "3ae39a5");
+    // Exponents 0 and 255 toggle bit 23: never a zero, subnormal, infinity or NaN.
+    assert_eq!(hash_to_float(0x0000_0001).to_bits(), 0x0080_0001);
+    assert_eq!(hash_to_float(0x7f80_0000).to_bits(), 0x7f00_0000);
+    assert!(hash_to_float(0xffff_ffff).is_finite() && hash_to_float(0).is_normal());
+    // Two planes (the hand case of `anti_aliased_aux_channels_match_hand_values`) named objA / objB.
+    let cam = three_d::default_camera(32, 24);
+    let a = flat_plane(1, 8, [10.0, 4.0, 0.0], 1.0, 1.0);
+    let b = flat_plane(2, 4, [15.25, 6.0, -cam.zoom / 2.0], 1.0, 1.0);
+    let alphas = [vec![1.0f32; 64], vec![1.0f32; 16]];
+    let cov = pixel_coverage(&[a, b], &alphas, &cam, 32, 24, 4).unwrap();
+    let names = ["objA".to_owned(), "objB".to_owned()];
+    let obj = build(&cov, &names, "CryptoObject", 4).unwrap();
+    let mat = build(&cov, &["material(x)".to_owned(), "material(x)".to_owned()], "CryptoMaterial", 4).unwrap();
+    let at = |x: usize, y: usize| y * 32 + x;
+    let (ia, ib) = (name_id("objA"), name_id("objB"));
+    let (lo, hi) = if ia.to_bits() < ib.to_bits() { (ia, ib) } else { (ib, ia) };
+    let p = at(14, 5);
+    assert_eq!([obj.ranks[0].0[p].to_bits(), obj.ranks[1].0[p].to_bits()], [lo.to_bits(), hi.to_bits()], "a 0.5 / 0.5 tie ranks the smaller ID bits first");
+    assert_eq!((obj.ranks[0].1[p], obj.ranks[1].1[p], obj.ranks[2].1[p], obj.ranks[2].0[p]), (0.5, 0.5, 0.0, 0.0), "unused ranks are ID 0, coverage 0");
+    assert_eq!((mat.ranks[0].0[p], mat.ranks[0].1[p]), (name_id("material(x)"), 1.0), "one shared name merges");
+    assert_eq!(obj.matte(&["objB"])[at(22, 5)], 0.5, "anti-aliased edge");
+    assert_eq!(obj.matte(&["objA", "objB"])[p], 1.0, "overlapping objects sum");
+    assert_eq!(obj.matte(&["torus"])[p], 0.0);
+    // One EXR file with both types: the channel names, the metadata keys and a manifest that parses.
+    let file = cm::to_exr(&[obj.clone(), mat.clone()]).unwrap();
+    let (planes, strings) = read_exr(&file);
+    let mut want: Vec<String> = ["CryptoMaterial", "CryptoObject"].iter().flat_map(|t| ["00", "01"].iter().flat_map(move |k| ["A", "B", "G", "R"].iter().map(move |c| format!("{t}{k}.{c}")))).collect();
+    want.sort();
+    assert_eq!(planes.iter().map(|p| p.0.clone()).collect::<Vec<_>>(), want);
+    let key = type_key("CryptoObject");
+    let get = |k: &str| strings.iter().find(|s| s.0 == format!("cryptomatte/{key}/{k}")).map(|s| s.1.clone()).unwrap_or_else(|| panic!("{k}"));
+    assert_eq!((get("name").as_str(), get("hash").as_str(), get("conversion").as_str()), ("CryptoObject", "MurmurHash3_32", "uint32_to_float32"));
+    let manifest: serde_json::Map<String, Value> = serde_json::from_str(&get("manifest")).unwrap();
+    assert_eq!(manifest.get("objA"), Some(&json!(format!("{:08x}", ia.to_bits()))));
+    // Matte extraction from the planes read back equals the in-memory matte, bit for bit.
+    let plane = |n: &str| &planes.iter().find(|p| p.0 == n).unwrap().1[..];
+    let ranks = [(plane("CryptoObject00.R"), plane("CryptoObject00.G")), (plane("CryptoObject00.B"), plane("CryptoObject00.A")), (plane("CryptoObject01.R"), plane("CryptoObject01.G")), (plane("CryptoObject01.B"), plane("CryptoObject01.A"))];
+    assert_eq!(matte_from_ranks(&ranks, &["objB"]).unwrap(), obj.matte(&["objB"]));
+    // Hostile input: names that need JSON escaping round-trip; bad levels, type names, huge name
+    // sets and oversized names are refused before allocation.
+    let odd = ["a\"b\\c\n\u{1}".to_owned(), "\u{43a}\u{43e}\u{442}".to_owned()];
+    let m: serde_json::Map<String, Value> = serde_json::from_str(&build(&cov, &odd, "CryptoAsset", 2).unwrap().manifest_json()).unwrap();
+    assert!(odd.iter().all(|n| m.contains_key(n)));
+    for levels in [0, 3, 18] {
+        assert_eq!(build(&cov, &names, "CryptoObject", levels).unwrap_err(), cm::CRYPTO_PARAMETER);
+    }
+    for t in ["", "Crypto.Object", "CryptoObjectWithAVeryLongName"] {
+        assert_eq!(build(&cov, &names, t, 4).unwrap_err(), cm::CRYPTO_PARAMETER, "{t:?}");
+    }
+    let many: Vec<String> = (0..=cm::MAX_CRYPTO_NAMES).map(|k| format!("n{k}")).collect();
+    assert_eq!(build(&cov, &many, "CryptoObject", 4).unwrap_err(), cm::CRYPTO_PARAMETER, "more than 65536 ids");
+    assert_eq!(build(&cov, &[names[0].clone(), "x".repeat(cm::MAX_NAME_BYTES + 1)], "CryptoObject", 4).unwrap_err(), cm::CRYPTO_PARAMETER);
+    assert_eq!(build(&cov, &names[..1], "CryptoObject", 4).unwrap_err(), cm::CRYPTO_PARAMETER, "a plane without a name");
+    assert!(matte_from_ranks(&[(&[0.0][..], &[f32::NAN][..])], &["objA"]).is_err());
+    // The adapter names the planes: layer ids, and one material name per evaluated material.
+    let pixels = Pixels::fixture();
+    let src = source(&records(layers()), &pixels).unwrap();
+    let (planes, objects, materials, _) = src.three_d_cryptomatte_names(0, &CancellationToken::default()).unwrap();
+    assert_eq!(objects, planes.iter().map(|p| p.layer_id.clone()).collect::<Vec<_>>());
+    assert_eq!(materials, vec![three_d::Material::DEFAULT.name(); 2]);
+}

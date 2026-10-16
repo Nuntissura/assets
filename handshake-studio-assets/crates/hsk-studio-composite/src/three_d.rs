@@ -84,6 +84,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 pub mod coverage;
+pub mod cryptomatte;
 pub mod exr;
 pub mod immersive;
 
@@ -713,6 +714,25 @@ impl Material {
     /// neither accepts lights nor casts or accepts shadows (a 2D layer has no material options;
     /// Studio reading, UNVERIFIED).
     pub const TWO_D: Self = Self { accepts_lights: false, ..Self::DEFAULT };
+    /// The Cryptomatte material name of these options (lane SMB-AE-3D-3): Studio layers carry no
+    /// material NAME, so planes whose evaluated material options are equal share one material
+    /// (Studio reading, UNVERIFIED): `material(lights=1,shadows_in=0,shadows_out=0,ambient=..,
+    /// diffuse=..,specular=..,shininess=..,metal=..,transmission=..)` with the fractions printed in
+    /// Rust's shortest round-trip form.
+    pub fn name(&self) -> String {
+        format!(
+            "material(lights={},shadows_in={},shadows_out={},ambient={},diffuse={},specular={},shininess={},metal={},transmission={})",
+            u8::from(self.accepts_lights),
+            u8::from(self.accepts_shadows),
+            u8::from(self.casts_shadows),
+            self.ambient,
+            self.diffuse,
+            self.specular_intensity,
+            self.specular_shininess,
+            self.metal,
+            self.light_transmission
+        )
+    }
 }
 
 /// STU-CMP-045 light type.
@@ -1312,14 +1332,14 @@ pub fn depth_fog(rgb: &mut [f32], z: &[f32], colour: [f32; 3], start: f64, end: 
 }
 /// A depth-matte, ID-matte or depth-fog parameter the contract refuses.
 pub const AUX_MATTE_PARAMETER: &str = "composition_3d_aux_parameter";
-/// The STU-CMP-050 capabilities this renderer does not build, refused by name: Cryptomatte (no
-/// hashed-id channels), depth of field from a depth channel (the camera lens is the planar
-/// renderer's defocus) and channel extraction from imported multi-channel files (an import-path
-/// requirement, STU-CMP-050a).
+/// The STU-CMP-050 capabilities this renderer does not build, refused by name: depth of field from
+/// a depth channel (the camera lens is the planar renderer's defocus) and channel extraction from
+/// imported multi-channel files (an import-path requirement, STU-CMP-050a). Cryptomatte is built
+/// since lane SMB-AE-3D-3 ([`cryptomatte`]).
 pub const AUX_UNSUPPORTED: &str = "composition_3d_aux_capability_unsupported";
 pub fn aux_capability(name: &str) -> Result<(), TemporalError> {
     match name {
-        "auxiliary_channel_extract" | "channel_identifier" | "depth_matte" | "id_matte" | "depth_fog" => Ok(()),
+        "auxiliary_channel_extract" | "channel_identifier" | "depth_matte" | "id_matte" | "depth_fog" | "cryptomatte" => Ok(()),
         _ => Err(TemporalError::Unsupported { layer_id: name.to_owned(), feature: AUX_UNSUPPORTED }),
     }
 }

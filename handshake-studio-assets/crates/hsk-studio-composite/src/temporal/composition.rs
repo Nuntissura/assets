@@ -1697,6 +1697,29 @@ impl CompositionTemporalSource {
         crate::composition::three_d_aux_channels_aa(&planes, &ids, &cam, comp.width, comp.height, samples, self.filter, ctx, cancel)
     }
 
+    /// The Cryptomatte names of the root composition's 3D planes at `tick` (lane SMB-AE-3D-3): the
+    /// planes of [`Self::three_d_planes_at`], per plane its object name (the layer id; a layer of a
+    /// collapsed 3D precomposition keeps its own id) and its material name
+    /// (`crate::three_d::Material::name` of its evaluated material options), and the camera.
+    #[allow(clippy::type_complexity)]
+    pub fn three_d_cryptomatte_names(&self, tick: i64, cancel: &CancellationToken) -> Result<(Vec<crate::three_d::Plane3d>, Vec<String>, Vec<String>, crate::three_d::Camera), TemporalError> {
+        let (run, _, cam) = self.three_d_run_at(tick, cancel)?;
+        let objects = run.iter().map(|r| r.0.layer_id.clone()).collect();
+        let materials = run.iter().map(|r| r.1.name()).collect();
+        Ok((run.into_iter().map(|r| r.0).collect(), objects, materials, cam))
+    }
+
+    /// STU-CMP-050 Cryptomatte of the root composition at `tick` (lane SMB-AE-3D-3): the types
+    /// `CryptoObject` (layer ids) and `CryptoMaterial` (material names) of
+    /// [`Self::three_d_cryptomatte_names`], `samples x samples` per pixel, `levels` ranks
+    /// (`crate::three_d::cryptomatte` module docs).
+    pub fn three_d_cryptomatte(&self, tick: i64, samples: u32, levels: usize, ctx: &SceneContext<'_>, cancel: &CancellationToken) -> Result<Vec<crate::three_d::cryptomatte::Cryptomatte>, TemporalError> {
+        let comp = self.root()?;
+        let (planes, objects, materials, cam) = self.three_d_cryptomatte_names(tick, cancel)?;
+        let types: [(&str, &[String]); 2] = [("CryptoObject", &objects), ("CryptoMaterial", &materials)];
+        crate::composition::three_d_cryptomatte(&planes, &types, &cam, comp.width, comp.height, samples, levels, self.filter, ctx, cancel)
+    }
+
     /// The immersive frame of the root composition at `tick` (lane SMB-AE-3D-2; STU-CMP-055 /
     /// 055a; `crate::three_d::immersive` module docs), rendered by
     /// `crate::composition::render_equirect` at the composition size. Refused typed
