@@ -308,3 +308,37 @@ fn filter_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 }
+
+// ---- masked smart-filter mix (lane SMB-PS-ADJUST-STYLES-3) ----------------------------------------
+// Op 5 MIX with a per-texel weight instead of `amount`: `weight[i]` is the host's
+// `opacity * entry mask * stack mask` of pigment smart_filter (`t`, computed in binary64 and
+// rounded once). Binding 4 is only in this entry point's layout (`filter_pass` never reads it).
+@group(0) @binding(4) var<storage, read> weight: array<f32>;
+
+@compute @workgroup_size(8, 8, 1)
+fn filter_mix_masked(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= p.fw || gid.y >= p.fh) {
+        return;
+    }
+    let x = i32(gid.x);
+    let y = i32(gid.y);
+    let i = gid.y * p.fw + gid.x;
+    let a = src[i];
+    let b = aux[i];
+    let t = weight[i];
+    if (x < p.origin_x || y < p.origin_y || x >= i32(p.seed_lo) || y >= i32(p.seed_hi)) {
+        dst[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    } else if (t <= 0.0) {
+        dst[i] = a;
+    } else if (t >= 1.0) {
+        dst[i] = b;
+    } else {
+        let al = a.w + (b.w - a.w) * t;
+        if (!(al > 0.0)) {
+            dst[i] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        } else {
+            let pc = a.xyz * a.w + (b.xyz * b.w - a.xyz * a.w) * t;
+            dst[i] = vec4<f32>(clamp(pc / al, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(al, 0.0, 1.0));
+        }
+    }
+}

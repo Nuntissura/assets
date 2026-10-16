@@ -154,6 +154,24 @@ pub struct FilteredContent {
     /// The content's plan rect the stack runs over (the surface rect).
     pub rect: Rect,
     pub filters: hsk_studio_pigment::smart_filter::SmartFilterOp,
+    /// Document-space coverage masks of the stack (lane SMB-PS-ADJUST-STYLES-3): each names a
+    /// mask of [`ScenePixels::mask`] and the map from the stack's surface into the document;
+    /// [`FilteredMask::key`] is the plan source key the stack's entry or stack mask carries.
+    pub masks: Vec<FilteredMask>,
+}
+
+/// One mask of a [`FilteredContent`] stack (lane SMB-PS-ADJUST-STYLES-3; STU-RAS-037 per-filter
+/// masking, STU-FX-004 "a `StudioLiveFilter` entry MAY host its own `StudioMask`"). The stack runs
+/// in the surface's space (a placed instance's source), the mask is stored in document space, so the
+/// mask is resampled into the surface before the stack runs: every surface pixel centre maps
+/// through `to_document` and reads the nearest document mask pixel (zero outside the mask). That
+/// sampling is a Studio reading; Photoshop evaluates smart filters on the transformed object
+/// (UNVERIFIED, D5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FilteredMask {
+    pub key: SourceKey,
+    pub mask_id: String,
+    pub to_document: Affine2,
 }
 
 /// The inner content and the pin of [`SceneContent::Pinned`].
@@ -1547,18 +1565,119 @@ fn filtered_surface(
         .map_err(|e| TemporalError::from(CompositeError::Plan(e)))?;
     let mut owned_tiles = BTreeMap::new();
     owned_tiles.insert(key, inner);
+    // The stack's document-space masks, resampled into the surface (lane SMB-PS-ADJUST-STYLES-3);
+    // every mask the stack names must be one of them (key 0 is the surface tile).
+    let mut filters = f.filters.clone();
+    let mut owned_masks = BTreeMap::new();
+    for m in &f.masks {
+        if m.key == key || owned_masks.contains_key(&m.key) {
+            return Err(invalid(id, "filtered_mask_key"));
+        }
+        let plane = filter_mask(id, m, f.rect, ctx, charges)?;
+        let input = MaskInput {
+            key: m.key,
+            placement: f.rect,
+            format: MaskFormat::CoverageU16Le,
+            sha256: plane.sha256,
+            inverted: false,
+            density: 1.0,
+        };
+        for slot in filters.entries.iter_mut().filter_map(|e| e.mask.as_mut()).chain(filters.stack_mask.as_mut()) {
+            if slot.key == m.key {
+                *slot = input;
+            }
+        }
+        owned_masks.insert(m.key, plane);
+    }
+    if filters
+        .entries
+        .iter()
+        .filter_map(|e| e.mask.as_ref())
+        .chain(filters.stack_mask.as_ref())
+        .any(|m| !owned_masks.contains_key(&m.key))
+    {
+        return Err(CompositeError::Unavailable(format!("{id}:filtered_mask_unresolved")).into());
+    }
     let content = StaticContent {
         plan,
         extensions: PlanExtensions::from_layers(vec![
-            LayerExtension::new(PlanNodeId(1), 0).with_smart_filters(f.filters.clone()),
+            LayerExtension::new(PlanNodeId(1), 0).with_smart_filters(filters),
         ]),
         rect: f.rect,
         tiles: BTreeMap::new(),
         masks: BTreeMap::new(),
-        owned_masks: BTreeMap::new(),
+        owned_masks,
         owned_tiles,
     };
     render_static(&format!("{id}/filtered"), &content, ctx, cancel, charges, exactness)
+}
+
+/// A [`FilteredMask`] resampled into the surface `rect`: a `coverage_u16le` plane over `rect`
+/// whose pixel `(u, v)` is the document mask's nearest pixel to `to_document((u + 0.5, v + 0.5))`
+/// (`u8` coverage scaled by 257, zero outside the mask or for a non-finite point). The document
+/// plane comes from [`ScenePixels::mask`] and is checked (format, stride, hash) before it is read;
+/// the surface plane is charged before it is allocated.
+fn filter_mask(
+    id: &str,
+    m: &FilteredMask,
+    rect: Rect,
+    ctx: &SceneContext<'_>,
+    charges: &mut Charges,
+) -> Result<OwnedMask, TemporalError> {
+    let doc = ctx
+        .pixels
+        .mask(&m.mask_id)
+        .ok_or_else(|| CompositeError::Unavailable(format!("{id}:filtered_mask_unresolved")))?;
+    let size: usize = match doc.sample_format {
+        "coverage_u8" => 1,
+        "coverage_u16le" => 2,
+        _ => return Err(invalid(id, "filtered_mask_format")),
+    };
+    doc.validate(doc.bounds).map_err(|_| invalid(id, "filtered_mask_plane"))?;
+    let stride = usize::try_from(doc.stride_bytes).map_err(|_| CompositeError::Overflow)?;
+    let bytes = u64::from(rect.width)
+        .checked_mul(u64::from(rect.height))
+        .and_then(|n| n.checked_mul(2))
+        .ok_or(CompositeError::Overflow)?;
+    charges.charge(ctx, bytes)?;
+    let mut out = Vec::with_capacity(usize::try_from(bytes).map_err(|_| CompositeError::Overflow)?);
+    let (bx, by) = (doc.bounds.x as f64, doc.bounds.y as f64);
+    let (bw, bh) = (f64::from(doc.bounds.width), f64::from(doc.bounds.height));
+    for v in 0..rect.height {
+        for u in 0..rect.width {
+            let sx = rect.x as f64 + f64::from(u) + 0.5;
+            let sy = rect.y as f64 + f64::from(v) + 0.5;
+            let (dx, dy) = m.to_document.apply(sx, sy);
+            let (cx, cy) = ((dx - bx).floor(), (dy - by).floor());
+            let inside = cx.is_finite() && cy.is_finite() && cx >= 0.0 && cy >= 0.0 && cx < bw && cy < bh;
+            let c = if inside {
+                // in range: both are below the plane's u32 sides
+                let (col, row) = (cx as usize, cy as usize);
+                let at = row
+                    .checked_mul(stride)
+                    .and_then(|r| col.checked_mul(size).and_then(|c| r.checked_add(c)))
+                    .ok_or(CompositeError::Overflow)?;
+                match size {
+                    1 => doc.bytes.get(at).map_or(0, |b| u16::from(*b).saturating_mul(257)),
+                    _ => doc
+                        .bytes
+                        .get(at..at.checked_add(2).ok_or(CompositeError::Overflow)?)
+                        .map_or(0, |b| u16::from_le_bytes([b[0], b[1]])),
+                }
+            } else {
+                0
+            };
+            out.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let stride_bytes = u64::from(rect.width).checked_mul(2).ok_or(CompositeError::Overflow)?;
+    Ok(OwnedMask {
+        bounds: rect,
+        sample_format: "coverage_u16le".into(),
+        sha256: hsk_studio_prism::profile_hash(&out),
+        bytes: out,
+        stride_bytes,
+    })
 }
 
 /// [`SceneContent::Accumulated`]: every sample rendered by the context's backend (each surface

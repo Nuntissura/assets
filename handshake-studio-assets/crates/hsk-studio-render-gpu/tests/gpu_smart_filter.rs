@@ -5,7 +5,8 @@
 //! bit for bit) within the filter tolerance 2e-5 (binary32; the noise differs from the reference
 //! by at most 2^-24 of its amplitude). GPU-execution proofs follow `tests/gpu-proof.toml` (V4-03):
 //! without an adapter they FAIL with `NOT_PROVEN: no adapter` while `require_gpu = true`. Liquify
-//! entries and masks are typed refusals at prepare, before any pass or sink call.
+//! entries are typed refusals at prepare, before any pass or sink call; masks run since lane
+//! SMB-PS-ADJUST-STYLES-3 (tests/gpu_smart_filter_masks.rs).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::filter_math::{LayerFilter, NoiseDistribution};
@@ -253,10 +254,16 @@ fn gpu_smart_filter_refusals_are_typed_before_any_sink_call() {
     let mask = MaskInput { key: SourceKey(9), placement: TILE, format: MaskFormat::CoverageU8, sha256: [0; 32], inverted: false, density: 1.0 };
     let mut masked = op();
     masked.entries[0].mask = Some(mask);
-    refuse(masked, "smart_filter_mask");
+    // masks run since lane SMB-PS-ADJUST-STYLES-3: an unresolved mask source is the typed refusal
+    let unresolved = |o: SmartFilterOp| {
+        let (r, image) = execute(&p, &ext(o), &tile);
+        assert_eq!(r, Err(BackendError::UnresolvedSource(SourceKey(9))));
+        assert_eq!(image.calls, 0);
+    };
+    unresolved(masked);
     let mut stack_masked = op();
     stack_masked.stack_mask = Some(mask);
-    refuse(stack_masked, "smart_filter_mask");
+    unresolved(stack_masked);
     let mut median = op();
     median.entries[3] = entry(LayerFilter::Median { radius_px: 9 }, true, 1.0);
     refuse(median, "filter_median_radius");

@@ -423,6 +423,10 @@ pub(crate) struct Kernel {
     pipeline_ko_mix: wgpu::ComputePipeline,
     pipeline_ko_clear: wgpu::ComputePipeline,
     layout_ko_mix: wgpu::BindGroupLayout,
+    /// Masked smart-filter mix (`filter.wgsl` entry `filter_mix_masked`, lane
+    /// SMB-PS-ADJUST-STYLES-3): the blur layout plus the weight plane (binding 4).
+    pipeline_filter_w: wgpu::ComputePipeline,
+    layout_filter_w: wgpu::BindGroupLayout,
 }
 
 /// Bytes of the uniform block `FilterP` in `filter.wgsl`: 12 words. It is written into the blur
@@ -727,7 +731,23 @@ impl Kernel {
             &filter_module,
             "filter_pass",
         )?;
+        // Masked smart-filter mix (lane SMB-PS-ADJUST-STYLES-3): the blur layout plus binding 4,
+        // the per-texel weight (four storage buffers).
+        let layout_filter_w = bind_layout(
+            "hsk-studio-render-gpu masked mix layout",
+            &[entry(0, uniform), entry(1, read), entry(2, write), entry(3, read), entry(4, read)],
+        )?;
+        let layout_filter_w_main =
+            pipeline_layout("hsk-studio-render-gpu masked mix pipeline layout", &layout_filter_w)?;
+        let pipeline_filter_w = make(
+            "hsk-studio-render-gpu masked mix",
+            &layout_filter_w_main,
+            &filter_module,
+            "filter_mix_masked",
+        )?;
         Ok(Self {
+            pipeline_filter_w,
+            layout_filter_w,
             pipeline,
             layout,
             pipeline_ext,
@@ -956,6 +976,38 @@ impl Kernel {
         height: u32,
     ) {
         Self::dispatch_with(&self.pipeline_filter, encoder, bind, width, height);
+    }
+
+    /// Bind group of the masked mix: the blur bindings plus the weight plane.
+    pub(crate) fn bind_filter_w(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        buffers: [&wgpu::Buffer; 4],
+    ) -> wgpu::BindGroup {
+        let [src, dst, aux, weight] = buffers;
+        fn at(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu masked mix bind"),
+            layout: &self.layout_filter_w,
+            entries: &[at(0, params), at(1, src), at(2, dst), at(3, aux), at(4, weight)],
+        })
+    }
+
+    /// One masked mix pass over `width` x `height` texels.
+    pub(crate) fn dispatch_filter_w(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_filter_w, encoder, bind, width, height);
     }
 
     /// One resample pass over `width` x `height` texels (bind group from [`Kernel::bind_resample`]).

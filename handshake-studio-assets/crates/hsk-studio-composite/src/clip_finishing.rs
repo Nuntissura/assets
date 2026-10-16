@@ -593,7 +593,7 @@ pub fn apply_effects(mut layer: SceneLayer, rect: Rect, effects: &[ClipEffectFra
                     return Err(bad("clip_filters"));
                 }
                 let content = std::mem::replace(&mut layer.content, SceneContent::None);
-                layer.content = SceneContent::Filtered(Box::new(crate::composition::FilteredContent { content, rect, filters: op.clone() }));
+                layer.content = SceneContent::Filtered(Box::new(crate::composition::FilteredContent { content, rect, filters: op.clone(), masks: Vec::new() }));
             }
             ClipEffectFrame::Transform { .. } | ClipEffectFrame::Opacity(_) => {}
         }

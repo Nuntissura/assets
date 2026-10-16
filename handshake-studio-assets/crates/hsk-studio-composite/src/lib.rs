@@ -65,7 +65,7 @@ pub use lower_render_plan::{
     mask_source_lowerings, vector_layer_render_plan,
 };
 pub use composition::{
-    FilteredContent, MattePlane, RenderedScene, SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits,
+    FilteredContent, FilteredMask, MattePlane, RenderedScene, SceneComposition, SceneContent, SceneContext, SceneLayer, SceneLimits,
     OwnedMask, PinnedContent, SceneMatte, SceneMatteMode, StaticContent, Surface,
     SceneLowering, ScenePixels, SceneSources, SceneTile, lower_scene, render_scene, unlinked_mask_matte, unlinked_mask_matte_in,
 };

@@ -77,6 +77,7 @@ fn filtered_placed_instance_matches_pigment_stack_then_placement() {
         content: SceneContent::Precomp(Box::new(src.clone())),
         rect: Rect { x: 0, y: 0, width: 6, height: 4 },
         filters: op(),
+        masks: Vec::new(),
     }));
     let doc = scene("doc", 12, 4, None, vec![layer("SLYR-1", filtered, Affine2::translate(3.0, 0.0))]);
     let got = render(&doc);
@@ -109,7 +110,7 @@ fn filtered_placed_instance_matches_pigment_stack_then_placement() {
     let unfiltered = render(&scene("doc", 12, 4, None, vec![layer("SLYR-1", SceneContent::Precomp(Box::new(src)), Affine2::translate(3.0, 0.0))]));
     assert!(unfiltered.iter().zip(&got).filter(|(a, b)| a != b).count() >= 8);
     // an empty rect is a typed refusal, not a silent pass-through
-    let empty = SceneContent::Filtered(Box::new(FilteredContent { content: SceneContent::Precomp(Box::new(source())), rect: Rect { x: 0, y: 0, width: 0, height: 4 }, filters: op() }));
+    let empty = SceneContent::Filtered(Box::new(FilteredContent { content: SceneContent::Precomp(Box::new(source())), rect: Rect { x: 0, y: 0, width: 0, height: 4 }, filters: op(), masks: Vec::new() }));
     let renderer = Renderer::new(64).unwrap();
     let ctx = SceneContext {
         backend: &renderer,

@@ -193,30 +193,53 @@ struct PLayer<'a> {
     group: usize,
 }
 
-/// A smart-filter stack compiled for the filter passes: per enabled entry its filter chain and
-/// opacity, the summed frame reach, and the plane it renders (content bounds inside the extent).
+/// A smart-filter stack compiled for the filter passes: per enabled entry its filter chain,
+/// opacity and mask (index into `masks`), the stack mask, the summed frame reach, and the plane it
+/// renders (content bounds inside the extent).
 struct SmartGpu {
-    entries: Vec<(FilterGpu, f32)>,
+    entries: Vec<(FilterGpu, f32, Option<usize>)>,
+    /// Decoded masks of the stack (lane SMB-PS-ADJUST-STYLES-3, `smart_mask`).
+    masks: Vec<smart_mask::CovPlane>,
+    stack_mask: Option<usize>,
     reach: u32,
     plane: Option<Rect>,
 }
 
-/// Compiles a smart-filter stack; liquify entries and masks have no GPU pass yet (typed refusals
-/// before any device work).
+/// Compiles a smart-filter stack; liquify entries have no GPU pass yet (typed refusal before any
+/// device work). Masks (lane SMB-PS-ADJUST-STYLES-3) are checked and decoded like render-cpu does
+/// for every entry (also the disabled ones, as render-cpu resolves them), charged to `room`; only
+/// the enabled entries keep theirs.
 fn compile_smart(
     op: &hsk_studio_pigment::smart_filter::SmartFilterOp,
     plane: Option<Rect>,
     node: u32,
+    sources: &dyn PlanSources,
+    room: &mut u64,
 ) -> Result<(SmartGpu, u64), GpuError> {
     use hsk_studio_pigment::smart_filter::StackFilter;
     if !op.check() {
         return Err(GpuError::Backend(BackendError::InvalidPlan(PlanError::SmartFilterParameter { node })));
     }
-    if op.stack_mask.is_some() || op.entries.iter().any(|e| e.mask.is_some()) {
-        return Err(unsupported("smart_filter_mask"));
+    let mut masks = Vec::new();
+    let mut entry_masks = Vec::with_capacity(op.entries.len());
+    for e in &op.entries {
+        entry_masks.push(match &e.mask {
+            Some(m) => {
+                masks.push(smart_mask::resolve(sources, m, node, room)?);
+                Some(masks.len().saturating_sub(1))
+            }
+            None => None,
+        });
     }
+    let stack_mask = match &op.stack_mask {
+        Some(m) => {
+            masks.push(smart_mask::resolve(sources, m, node, room)?);
+            Some(masks.len().saturating_sub(1))
+        }
+        None => None,
+    };
     let (mut entries, mut reach, mut ops) = (Vec::new(), 0u32, 1u64);
-    for e in op.entries.iter().filter(|e| e.enabled && e.opacity > 0.0) {
+    for (e, mask) in op.entries.iter().zip(entry_masks).filter(|(e, _)| e.enabled && e.opacity > 0.0) {
         let f = match &e.filter {
             StackFilter::Filter(f) => f,
             StackFilter::Liquify { .. } => return Err(unsupported("smart_filter_liquify")),
@@ -224,9 +247,9 @@ fn compile_smart(
         let (compiled, pass_ops) = compile_filters(std::slice::from_ref(f), node)?;
         reach = reach.checked_add(compiled.reach).ok_or_else(overflow)?;
         ops = ops.max(pass_ops);
-        entries.push((compiled, e.opacity));
+        entries.push((compiled, e.opacity, mask));
     }
-    Ok((SmartGpu { entries, reach, plane }, ops))
+    Ok((SmartGpu { entries, masks, stack_mask, reach, plane }, ops))
 }
 
 /// Largest median radius the shader sorts in registers (a disc of at most 149 samples per channel).
@@ -1017,7 +1040,13 @@ fn prepare<'a>(
                                 )));
                             }
                             let plane = content_bounds.map(|b| intersect(b, target.extent)).transpose()?.flatten();
-                            let (compiled, pass_ops) = compile_smart(op, plane, node_id)?;
+                            // Mask planes (lane SMB-PS-ADJUST-STYLES-3) are charged with the
+                            // feather scratch against the working-byte limit.
+                            let mut room = scratch_limit.saturating_sub(feather_bytes);
+                            let before = room;
+                            let (compiled, pass_ops) = compile_smart(op, plane, node_id, sources, &mut room)?;
+                            feather_bytes = feather_bytes.checked_add(before.saturating_sub(room)).ok_or_else(overflow)?;
+                            has_masks |= !compiled.masks.is_empty();
                             has_blur = true;
                             blur_taps = blur_taps.max(pass_ops);
                             Some(Box::new(compiled))
@@ -1793,7 +1822,8 @@ impl RenderBackend<NoVector> for GpuBackend {
             | ExtOperator::Filter(_)
             // Smart-filter stacks (lane SMB-PS-SMART-FILTER-WIRING): filter-only stacks without
             // masks run as filter + mix passes within the filter tolerance (tests/gpu_smart_filter.rs);
-            // liquify entries and masks are typed refusals at prepare.
+            // liquify entries are a typed refusal at prepare; masks run as the masked mix (lane
+            // SMB-PS-ADJUST-STYLES-3, tests/gpu_smart_filter_masks.rs).
             | ExtOperator::SmartFilter
             // Knockout (lane SMB-PS-ADJUST-STYLES-3): every placement pigment admits, as the
             // knockout passes (`knockout` module, tests/gpu_knockout.rs).
@@ -3039,14 +3069,22 @@ fn eval_smart_layer(
         u32::try_from(rel(cx1, chunk.x)?).map_err(|_| overflow())?,
         u32::try_from(rel(cy1, chunk.y)?).map_err(|_| overflow())?,
     );
-    for (chain, opacity) in &smart.entries {
+    let stack_mask = smart.stack_mask.and_then(|i| smart.masks.get(i));
+    for (chain, opacity, mask) in &smart.entries {
         ex.check()?;
         ex.filter_pass(FilterOp::Copy, chunk, FilterBuf::Level(running), FilterBuf::Level(copy), FilterBuf::A)?;
         for stage in &chain.stages {
             ex.filter_stage(stage, chunk, copy)?;
         }
-        // The mix also keeps nothing beyond the plane (render-cpu stores the plane only).
-        ex.filter_pass(FilterOp::Mix { t: *opacity, rect }, chunk, FilterBuf::Level(running), FilterBuf::A, FilterBuf::Level(copy))?;
+        // The mix also keeps nothing beyond the plane (render-cpu stores the plane only). With a
+        // mask (lane SMB-PS-ADJUST-STYLES-3) the weight is per texel (`smart_mask`).
+        let entry_mask = mask.and_then(|i| smart.masks.get(i));
+        if entry_mask.is_some() || stack_mask.is_some() {
+            ex.upload_weights(chunk, *opacity, entry_mask, stack_mask)?;
+            ex.filter_mix_masked(chunk, rect, FilterBuf::Level(running), FilterBuf::A, FilterBuf::Level(copy))?;
+        } else {
+            ex.filter_pass(FilterOp::Mix { t: *opacity, rect }, chunk, FilterBuf::Level(running), FilterBuf::A, FilterBuf::Level(copy))?;
+        }
         ex.filter_pass(FilterOp::Copy, chunk, FilterBuf::A, FilterBuf::Level(running), FilterBuf::B)?;
     }
     ex.composite(
@@ -3923,6 +3961,7 @@ mod display;
 mod grade;
 mod key;
 mod knockout;
+mod smart_mask;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
 pub(crate) use display::EXTENDED_FLAG;
 use display::sample_ok;
