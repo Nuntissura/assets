@@ -10,7 +10,8 @@
 //! submodule, each action an edit of the same undo history, each dispatching the existing Folio and
 //! layout engine commands): pages and parent pages ([`pages`]), thread ports and the story
 //! editor's line list with depth and overset rows ([`threads`]), paragraph and character styles
-//! with GREP rules ([`styles`]).
+//! with GREP rules ([`styles`]), tables ([`tables`]) and find/change in text and GREP modes
+//! ([`find`]).
 //!
 //! History: every successful [`LayoutEditor::apply`] is exactly ONE undo step (a snapshot of the
 //! whole layout state: document, stories, layout-flow and type-style records); a refused edit
@@ -27,7 +28,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     AutoSizing, Bounds, FirstBaseline, GeometryUnit, LayerSchema, LayoutEdges, Length, NodeKind, NodeRef, Parent,
     Payload, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioDocument, StudioLayer,
-    StudioLayoutFlowRecords, StudioParentPageRecords, StudioTextFrame, StudioTextStory, StudioTypeStyleRecords,
+    StudioLayoutFlowRecords, StudioLongDocRecords, StudioParentPageRecords, StudioTextFrame, StudioTextStory, StudioTypeStyleRecords,
     TextStorySchema, TypeStyleScope, VerticalJustification,
 };
 use hsk_studio_layout::{
@@ -42,6 +43,10 @@ pub mod threads;
 pub use threads::{Port, StoryLine, ThreadInfo};
 pub mod styles;
 pub use styles::{StyleEdit, StylePatch, StyleRow};
+pub mod tables;
+pub use tables::TableEdit;
+pub mod find;
+pub use find::{FindQuery, FindScope, StoryHit};
 
 /// Undo steps kept (the oldest is dropped beyond this).
 pub const MAX_HISTORY: usize = 256;
@@ -91,6 +96,18 @@ pub mod widget {
     pub const STYLE_EDIT: &str = "layout.styles.edit";
     pub const GREP_RULES: &str = "layout.styles.grep";
     pub const CLEAR_OVERRIDES: &str = "layout.styles.clear_overrides";
+    // Slice 4: tables and find/change.
+    pub const TABLES_PANEL: &str = "layout.tables";
+    pub const TABLE_INSERT: &str = "layout.tables.insert";
+    pub const TABLE_CELL: &str = "layout.tables.cell";
+    pub const FIND_PANEL: &str = "layout.find";
+    pub const FIND_TEXT: &str = "layout.find.text";
+    pub const CHANGE_TEXT: &str = "layout.find.change_text";
+    pub const FIND_MODE: &str = "layout.find.mode";
+    pub const FIND_NEXT: &str = "layout.find.next";
+    pub const CHANGE: &str = "layout.find.change";
+    pub const CHANGE_ALL: &str = "layout.find.change_all";
+    pub const FIND_HITS: &str = "layout.find.hits";
 }
 
 /// Everything the editor edits.
@@ -107,11 +124,14 @@ pub struct LayoutDoc {
 pub struct LayoutRecords {
     /// Parent pages and per-page parent bindings (Folio `hsk.studio.parent_page_records@1`).
     pub parents: StudioParentPageRecords,
+    /// Tables (and the other long-document records) beside the document (Folio
+    /// `hsk.studio.longdoc_records@1`).
+    pub longdoc: StudioLongDocRecords,
 }
 impl LayoutRecords {
     /// Empty record sets for `document_id`.
     pub fn new(document_id: &str) -> Self {
-        Self { parents: StudioParentPageRecords::new(document_id) }
+        Self { parents: StudioParentPageRecords::new(document_id), longdoc: StudioLongDocRecords::new(document_id) }
     }
 }
 
@@ -134,6 +154,10 @@ pub enum LayoutEdit {
     Page(PageEdit),
     /// Paragraph and character styles panels (SMB-LAYOUT-UI-2).
     Style(StyleEdit),
+    /// Tables panel (SMB-LAYOUT-UI-2).
+    Table(TableEdit),
+    /// Find/change: `only` = the hit starting at (story, byte), else every hit (one undo step).
+    Change { query: FindQuery, replacement: String, only: Option<(String, u64)> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +196,11 @@ pub enum LayoutUiError {
     Style(&'static str),
     /// The bounded pattern engine refused a pattern (its code).
     Grep(&'static str),
+    /// STU-LAY-129 "object contains no text for find/change" (never "no matches").
+    NoTextForFind,
+    UnknownTable(String),
+    /// A table grid or composition refusal (its code).
+    Table(&'static str),
 }
 impl LayoutUiError {
     pub fn code(&self) -> &'static str {
@@ -196,7 +225,9 @@ impl LayoutUiError {
             Self::ItemNotOverridden(_) => "item_not_overridden",
             Self::AlreadyOverridden(_) => "already_overridden",
             Self::InvalidName => "invalid_name",
-            Self::Style(code) | Self::Grep(code) => code,
+            Self::Style(code) | Self::Grep(code) | Self::Table(code) => code,
+            Self::NoTextForFind => "no_text_for_find",
+            Self::UnknownTable(_) => "unknown_table",
         }
     }
 }
@@ -264,6 +295,8 @@ pub struct LayoutEditor {
     /// Threads-view overlay (flow order lines between frames).
     pub show_threads: bool,
     pub(crate) styles_ui: styles::StylesUi,
+    pub(crate) tables_ui: tables::TablesUi,
+    pub(crate) find_ui: find::FindUi,
 }
 
 impl LayoutEditor {
@@ -293,6 +326,8 @@ impl LayoutEditor {
             pages_ui: pages::PagesUi::default(),
             show_threads: true,
             styles_ui: styles::StylesUi::default(),
+            tables_ui: tables::TablesUi { rows: 2, columns: 2, ..tables::TablesUi::default() },
+            find_ui: find::FindUi::default(),
         }
     }
     pub fn doc(&self) -> &LayoutDoc {
@@ -311,7 +346,15 @@ impl LayoutEditor {
         let (next, next_rec) = match &edit {
             LayoutEdit::Page(e) => pages::transform(&self.doc, &self.rec, e)?,
             LayoutEdit::Style(e) => (styles::transform(&self.doc, e)?, self.rec.clone()),
-            _ => (transform(&self.doc, &edit)?, self.rec.clone()),
+            LayoutEdit::Table(e) => tables::transform(&self.doc, &self.rec, e)?,
+            LayoutEdit::Change { query, replacement, only } => find::transform_change(&self.doc, &self.rec, query, replacement, only.as_ref())?,
+            _ => {
+                let mut rec = self.rec.clone();
+                if let LayoutEdit::ReplaceText { story, start, end, text } = &edit {
+                    tables::shift_anchors(&mut rec, story, *start, *end, text.len() as u64);
+                }
+                (transform(&self.doc, &edit)?, rec)
+            }
         };
         let before = std::mem::replace(&mut self.doc, next);
         let before_rec = std::mem::replace(&mut self.rec, next_rec);
@@ -373,6 +416,9 @@ impl LayoutEditor {
 
     /// Composes one story with the preview shaping (module docs).
     pub fn compose(&self, story_id: &str) -> Result<LayoutProposal, LayoutUiError> {
+        if self.rec.longdoc.tables.iter().any(|t| t.story_id == story_id) {
+            return Ok(self.compose_tables(story_id)?.text);
+        }
         let st = self
             .doc
             .stories
@@ -482,6 +528,8 @@ impl LayoutEditor {
             "pages": self.pages_json(),
             "parents": self.parents_json(),
             "styles": self.styles_json(),
+            "tables": self.tables_json(),
+            "find": self.find_json(),
             "error": self.last_error,
         })
     }
@@ -536,6 +584,8 @@ impl LayoutEditor {
                 self.story_editor(ui, &frame, &mut drawn);
             }
             self.styles_panel(ui, &mut drawn);
+            self.tables_panel(ui, &mut drawn);
+            self.find_panel(ui, &mut drawn);
             if let Some(e) = &self.last_error {
                 ui.push_id(widget::ERROR, |ui| ui.colored_label(egui::Color32::RED, e.as_str()));
                 drawn.push(widget::ERROR);
@@ -646,6 +696,11 @@ impl LayoutEditor {
                 }
                 previous = fp.lines.last().map(|l| fo + egui::vec2((l.x_start_pt + l.width_pt) as f32, l.baseline_y_pt as f32) * SCALE);
             }
+        }
+        for (spread, x, y, w, h) in self.table_cell_rects() {
+            let top = spread_tops.get(spread).copied().unwrap_or(0.0);
+            let rr = egui::Rect::from_min_size(origin + egui::vec2(x as f32, (top + y) as f32) * SCALE, egui::vec2(w as f32, h as f32) * SCALE);
+            painter.rect_stroke(rr, 0.0, egui::Stroke::new(1.0_f32, tables::TABLE_CELL_COLOUR), egui::StrokeKind::Inside);
         }
         // Interaction: page coordinates of the pointer.
         let to_page = |pos: egui::Pos2| -> Option<(usize, String, f64, f64)> {
