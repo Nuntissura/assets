@@ -1,7 +1,7 @@
 schema: assets.index.v1
-updated_at: '2026-10-14'
+updated_at: '2026-10-18'
 coverage: partial
-coverage_note: Only Cabinet and Peak are indexed. Other asset folders are not yet catalogued.
+coverage_note: Cabinet, Peak and the listed standalone Handshake modules are indexed. Other asset folders are not yet catalogued.
 assets:
   - id: CABINET-ASSET-001
     name: Cabinet
@@ -41,3 +41,13 @@ assets:
         api: Cabinet/Peak/cabinet-peak-egui/src/lib.rs
         depends_on:
           - cabinet-peak
+  - id: HANDSHAKE-TEXT-MECHANICS-ASSET-001
+    name: handshake_text_mechanics
+    path: handshake_text_mechanics
+    manual: handshake_text_mechanics/README.md
+    packages:
+      - name: handshake_text_mechanics
+        manifest: handshake_text_mechanics/Cargo.toml
+        role: logic
+        api: handshake_text_mechanics/src/lib.rs
+        depends_on: []
