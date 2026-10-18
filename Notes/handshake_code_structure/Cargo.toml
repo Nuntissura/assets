@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "handshake_code_structure"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+handshake_text_mechanics = { path = "../../handshake_text_mechanics" }
+tree-sitter = "0.25"
+
+[dev-dependencies]
+tree-sitter-rust = "0.24"
+tree-sitter-javascript = "0.25"
