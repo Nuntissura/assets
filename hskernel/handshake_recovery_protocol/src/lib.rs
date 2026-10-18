@@ -1,6 +1,13 @@
+mod claims;
 mod cloud;
 mod dashboard;
+mod identity;
 mod protocol;
+
+pub use claims::{ClaimScope, ClaimStatus};
+pub use identity::{
+    AgentCapability, AgentLaneIdentity, AgentLaneKind, AttributionMode, LocalCloudAttribution,
+};
 
 pub use cloud::{
     validate_cloud_assistance_receipt, CloudAssistanceOutputKind, CloudAssistanceReceiptV1,
@@ -31,3 +38,9 @@ mod dashboard_tests;
 
 #[cfg(test)]
 mod cloud_tests;
+
+#[cfg(test)]
+mod identity_tests;
+
+#[cfg(test)]
+mod claim_tests;
