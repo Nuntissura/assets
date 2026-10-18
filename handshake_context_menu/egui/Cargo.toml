@@ -1,0 +1,12 @@
+[package]
+name = "handshake_context_menu_egui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+handshake_context_menu = { path = ".." }
+egui = { version = "0.33.3", features = ["accesskit"] }
+
+[dev-dependencies]
+egui_kittest = "0.33.3"

@@ -1,0 +1,8 @@
+[workspace]
+members = ["egui"]
+
+[package]
+name = "handshake_context_menu"
+version = "0.1.0"
+edition = "2021"
+publish = false
