@@ -25,7 +25,7 @@ pub use dashboard::{
 };
 
 pub use protocol::{
-    validate_handoff_compression_template, HandoffCompressionSourceRefV1,
+    validate_handoff_compression_template, HandoffCompressionRequest, HandoffCompressionSourceRefV1,
     HandoffCompressionTemplateV1, RecoveryResumePointer,
     PARALLEL_SWARM_HANDOFF_COMPRESSION_SCHEMA_ID,
 };

@@ -214,3 +214,58 @@ fn resume_pointer_wire_variants_preserve_existing_tag_and_fields() {
         assert_eq!(serde_json::from_value::<RecoveryResumePointer>(wire).unwrap(), pointer);
     }
 }
+
+#[test]
+fn handoff_compression_request_preserves_public_fields_without_validation() {
+    let lane = crate::AgentLaneIdentity {
+        lane_id: " lane ".into(),
+        actor_id: " actor ".into(),
+        lane_kind: crate::AgentLaneKind::Local,
+        attribution: crate::LocalCloudAttribution::local("runtime", "model"),
+    };
+    for max_chars in [i64::MIN, -1, 0, 1, i64::MAX] {
+        let request = crate::HandoffCompressionRequest {
+            requested_by_lane: lane.clone(),
+            checkpoint_id: " checkpoint \t".into(),
+            max_chars,
+        };
+        assert_eq!(request.requested_by_lane, lane);
+        assert_eq!(request.checkpoint_id, " checkpoint \t");
+        assert_eq!(request.max_chars, max_chars);
+    }
+}
+
+#[test]
+fn handoff_compression_request_clone_owns_nested_metadata_and_supports_debug() {
+    let mut attribution = crate::LocalCloudAttribution::local("runtime", "model");
+    attribution.provider_metadata = json!({"nested": {"items": ["original"]}});
+    let request = crate::HandoffCompressionRequest {
+        requested_by_lane: crate::AgentLaneIdentity {
+            lane_id: "lane".into(),
+            actor_id: "actor".into(),
+            lane_kind: crate::AgentLaneKind::Local,
+            attribution,
+        },
+        checkpoint_id: "checkpoint".into(),
+        max_chars: -1,
+    };
+    let mut cloned = request.clone();
+    assert_eq!(cloned.requested_by_lane, request.requested_by_lane);
+    assert_eq!(cloned.checkpoint_id, request.checkpoint_id);
+    assert_eq!(cloned.max_chars, request.max_chars);
+    cloned.requested_by_lane.lane_id.push_str("-clone");
+    cloned.requested_by_lane.attribution.provider_metadata["nested"]["items"][0] = json!("changed");
+    cloned.checkpoint_id.push_str("-clone");
+    cloned.max_chars = 1;
+
+    assert_eq!(request.requested_by_lane.lane_id, "lane");
+    assert_eq!(request.requested_by_lane.attribution.provider_metadata,
+        json!({"nested": {"items": ["original"]}}));
+    assert_eq!(request.checkpoint_id, "checkpoint");
+    assert_eq!(request.max_chars, -1);
+    let debug = format!("{request:?}");
+    assert!(debug.starts_with("HandoffCompressionRequest {"));
+    assert!(debug.contains("requested_by_lane: AgentLaneIdentity {"));
+    assert!(debug.contains("checkpoint_id: \"checkpoint\""));
+    assert!(debug.contains("max_chars: -1"));
+}

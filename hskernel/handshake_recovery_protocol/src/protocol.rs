@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use handshake_canonical_json::sha256_hex;
 use serde::{Deserialize, Serialize};
 
+use crate::AgentLaneIdentity;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "pointer", rename_all = "snake_case")]
 pub enum RecoveryResumePointer {
@@ -22,6 +24,13 @@ pub enum RecoveryResumePointer {
 
 pub const PARALLEL_SWARM_HANDOFF_COMPRESSION_SCHEMA_ID: &str =
     "hsk.parallel_swarm.handoff_compression@1";
+
+#[derive(Debug, Clone)]
+pub struct HandoffCompressionRequest {
+    pub requested_by_lane: AgentLaneIdentity,
+    pub checkpoint_id: String,
+    pub max_chars: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffCompressionSourceRefV1 {
