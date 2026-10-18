@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "handshake_embed_views"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+egui = "0.33"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+handshake_asset_resolver = { path = "../handshake_asset_resolver" }
