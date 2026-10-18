@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "handshake_find_replace"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+handshake_text_mechanics = { path = "../../handshake_text_mechanics" }
+regex = "1"

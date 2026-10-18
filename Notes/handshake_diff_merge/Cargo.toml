@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "handshake_diff_merge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+handshake_text_mechanics = { path = "../../handshake_text_mechanics" }
+similar = "2"
+serde_json = "1"
