@@ -72,3 +72,50 @@ fn unknown_claim_status_mapper_runs_once_and_preserves_nonclone_error() {
         assert_eq!(&*error.token as *const u8, address);
     }
 }
+
+#[test]
+fn work_claim_request_public_fields_clone_and_debug_preserve_data() {
+    use crate::{AgentLaneIdentity, AgentLaneKind, LocalCloudAttribution, WorkClaimRequest};
+
+    for mt_id in [Some(" MT/ ".to_owned()), None] {
+        let scope = ClaimScope::RichDocument {
+            workspace_id: " scope workspace/ ".into(),
+            document_id: " /document ".into(),
+        };
+        let lane = AgentLaneIdentity {
+            lane_id: " lane/ ".into(),
+            actor_id: " actor/ ".into(),
+            lane_kind: AgentLaneKind::Local,
+            attribution: LocalCloudAttribution::local(" runtime/ ", " model/ "),
+        };
+        let request = WorkClaimRequest {
+            workspace_id: " workspace/ ".into(),
+            wp_id: " WP/ ".into(),
+            mt_id: mt_id.clone(),
+            scope: scope.clone(),
+            lane: lane.clone(),
+            session_id: " session/ ".into(),
+            ttl_seconds: -17,
+            reason: " reason/ ".into(),
+        };
+        let cloned = request.clone();
+        for value in [&request, &cloned] {
+            assert_eq!(value.workspace_id, " workspace/ ");
+            assert_eq!(value.wp_id, " WP/ ");
+            assert_eq!(value.mt_id, mt_id);
+            assert_eq!(value.scope, scope);
+            assert_eq!(value.lane, lane);
+            assert_eq!(value.session_id, " session/ ");
+            assert_eq!(value.ttl_seconds, -17);
+            assert_eq!(value.reason, " reason/ ");
+            assert_eq!(
+                format!("{value:?}"),
+                format!(
+                    "WorkClaimRequest {{ workspace_id: {:?}, wp_id: {:?}, mt_id: {:?}, scope: {:?}, lane: {:?}, session_id: {:?}, ttl_seconds: {:?}, reason: {:?} }}",
+                    value.workspace_id, value.wp_id, value.mt_id, value.scope,
+                    value.lane, value.session_id, value.ttl_seconds, value.reason,
+                ),
+            );
+        }
+    }
+}

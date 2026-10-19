@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::AgentLaneIdentity;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClaimScope {
@@ -82,4 +84,16 @@ impl ClaimStatus {
             other => Err(unknown(format!("unknown claim status: {other}"))),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkClaimRequest {
+    pub workspace_id: String,
+    pub wp_id: String,
+    pub mt_id: Option<String>,
+    pub scope: ClaimScope,
+    pub lane: AgentLaneIdentity,
+    pub session_id: String,
+    pub ttl_seconds: i64,
+    pub reason: String,
 }

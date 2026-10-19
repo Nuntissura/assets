@@ -4,7 +4,7 @@ mod dashboard;
 mod identity;
 mod protocol;
 
-pub use claims::{ClaimScope, ClaimStatus};
+pub use claims::{ClaimScope, ClaimStatus, WorkClaimRequest};
 pub use identity::{
     AgentCapability, AgentLaneIdentity, AgentLaneKind, AttributionMode, LocalCloudAttribution,
 };
