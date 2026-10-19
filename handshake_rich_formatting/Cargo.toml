@@ -1,0 +1,10 @@
+[package]
+name = "handshake_rich_formatting"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+handshake_rich_document_model = { git = "https://github.com/Nuntissura/assets.git", rev = "a118e58a2afaad6009567e046422828c99277aa0" }
+serde_json = "1"
+thiserror = "2"
