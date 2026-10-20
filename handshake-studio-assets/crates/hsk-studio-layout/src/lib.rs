@@ -6,6 +6,7 @@
 //! never mis-laid.
 #![forbid(unsafe_code)]
 
+mod adobe_composer;
 mod anchors;
 mod book;
 mod breaker;
@@ -42,7 +43,7 @@ pub use anchors::{
 pub use book::{
     BookChapter, BookError, CombinedBook, MAX_BOOK_PAGES, book_export_subset, book_page_key, chapter_page_ranges, combine_book,
 };
-pub use breaker::{Composer, KnuthPlassParams};
+pub use breaker::{AdobeParams, Composer, KnuthPlassParams};
 pub use textflow::{ConditionalView, MAX_STORY_BYTES, conditional_view, replace_story_text, shift_flow_records};
 pub use xref::{
     MAX_XREF_TOKENS, XrefBlock, XrefContext, XrefError, XrefResolution, XrefRun, XrefStatus, XrefStory,
@@ -68,7 +69,7 @@ pub use grep::{
 };
 pub use objstyle::{AppliedObjectStyle, apply_object_style, resolve_object_style};
 pub use hyphenate::{
-    EN_US_LICENCE, HyphenationError, HyphenationParams, Hyphenator, MAX_WORD_BYTES, hyphenated,
+    EN_US_LICENCE, HyphenationError, HyphenationParams, Hyphenator, INDESIGN_EN_US_EXCEPTIONS, MAX_WORD_BYTES, hyphenated,
 };
 pub use paragraph::{
     Break, BreakKind, LayoutGlyph, ShapedParagraph, SpaceParams, break_opportunities,

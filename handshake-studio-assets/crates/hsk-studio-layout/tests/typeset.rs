@@ -732,3 +732,88 @@ fn parent_pages_hostile_sets_are_refused() {
     let many = set_of((0..1025).map(|n| ppage(&n.to_string(), None, vec![])).collect(), vec![]);
     assert_eq!(many.validate(), Err(LayoutError::BudgetExceeded));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Adobe-parity composers (lane SMB-ID-COMPOSER-PARITY). The InDesign oracle itself is compared in
+// hsk-studio-interop-layout/tests/d5_id_oracle.rs; these pin the rules on the 6 pt toy font.
+
+fn adobe_opts(alignment: Alignment, hyphenation: Option<HyphenationParams>) -> TypesetOptions<'static> {
+    TypesetOptions { justify: Some(JustifyParams::default()), hyphenation, alignment, ..Default::default() }
+}
+
+#[test]
+fn adobe_single_line_compresses_within_minimum_and_honours_the_hyphenation_zone() {
+    bounded_case("adobe_single_line", || {
+        // 82 pt: "aaaa bbbb cccc" is 84 pt with 12 pt of spaces; 0.8333 >= minimum 0.8, so the
+        // Single-line Composer takes the tight break where first-fit stops after "bbbb".
+        let mut case = Case::new("aaaa bbbb cccc dddd", one_frame(82.0, 48.0), Composer::AdobeSingleLine(AdobeParams::default()));
+        let p = case.run_t(&adobe_opts(Alignment::Justified, None)).unwrap();
+        let l = &p.frames[0].lines;
+        assert_eq!(l[0].glyph_range, 0..15, "tight break taken");
+        let j = l[0].justification.unwrap();
+        assert!((j.word_scale - (1.0 - 2.0 / 12.0)).abs() < 1e-12 && j.residual_pt == 0.0, "{j:?}");
+        case.composer = Composer::FirstFit;
+        assert_eq!(case.run_t(&adobe_opts(Alignment::Justified, None)).unwrap().frames[0].lines[0].glyph_range, 0..10);
+        // Ragged + hyphenation: breaking before "typographic" leaves 48 pt. Zone 36 < 48: the word
+        // is hyphenated; zone 50 >= 48: it is not.
+        let zone = |z: f64| {
+            let case = Case::new("aa typographic", one_frame(60.0, 48.0), Composer::AdobeSingleLine(AdobeParams { hyphenation_zone_pt: z }));
+            case.run_t(&adobe_opts(Alignment::Left, Some(hy(6.0)))).unwrap().frames[0].lines[0].clone()
+        };
+        assert!(zone(36.0).hyphenated, "zone 36 hyphenates");
+        let whole = zone(50.0);
+        assert!(!whole.hyphenated && whole.source.end == 3, "{whole:?}");
+        // Hostile: a word wider than the measure is set overfull, never looped on.
+        let wide = Case::new("aaaaaaaaaaaaaaaaaaaa b", one_frame(60.0, 48.0), Composer::AdobeSingleLine(AdobeParams::default()));
+        let p = wide.run_t(&adobe_opts(Alignment::Justified, None)).unwrap();
+        assert!(p.frames[0].lines[0].overfull);
+    });
+}
+
+#[test]
+fn adobe_paragraph_fills_every_justified_line_and_is_deterministic() {
+    bounded_case("adobe_paragraph", || {
+        let text = "aa bbb c dddd ee f ggg hh iiii j kk lll m nn ooo pppp q rr";
+        let case = Case::new(text, one_frame(70.0, 400.0), Composer::AdobeParagraph(AdobeParams::default()));
+        let o = adobe_opts(Alignment::Justified, None);
+        let p = case.run_t(&o).unwrap();
+        let lines = &p.frames[0].lines;
+        assert!(lines.len() >= 3);
+        for l in &lines[..lines.len() - 1] {
+            let j = l.justification.expect("justified");
+            let spaces = 6.0 * (case.text()[l.source.start as usize..l.source.end as usize].trim_end().matches(' ').count() as f64);
+            // InDesign fills the measure past the word-spacing limits (no residual).
+            assert_eq!(j.residual_pt, 0.0, "{l:?}");
+            assert!((l.width_pt + spaces * (j.word_scale - 1.0) - l.available_pt).abs() < 1e-9, "{l:?}");
+        }
+        assert_eq!(case.run_t(&o).unwrap(), p, "deterministic");
+        // Ragged paragraph composition never sets a line past the measure.
+        let r = case.run_t(&adobe_opts(Alignment::Left, None)).unwrap();
+        assert!(r.frames[0].lines.iter().all(|l| l.width_pt <= l.available_pt + 1e-9 && l.justification.is_none()));
+        // Hostile: an unbreakable run wider than the frame is one overfull line.
+        let wide = Case::new("aaaaaaaaaaaaaaaaaaaa b", one_frame(60.0, 48.0), Composer::AdobeParagraph(AdobeParams::default()));
+        assert!(wide.run_t(&o).unwrap().frames[0].lines[0].overfull);
+    });
+}
+
+#[test]
+fn justify_all_sets_the_last_line_and_splits_past_the_limits_by_range() {
+    bounded_case("justify_all", || {
+        // "aa bb" (30 pt, one 6 pt space, 4 glyph gaps) in 60 pt, justify all lines. Ranges: words
+        // 0.33 * 6 = 1.98 pt, letters 0.05 * 6 * 4 = 1.2 pt; the 30 pt are shared 1.98 : 1.2.
+        let case = Case::new("aa bb", one_frame(60.0, 24.0), Composer::AdobeSingleLine(AdobeParams::default()));
+        let mut o = adobe_opts(Alignment::JustifiedAll, None);
+        o.justify = Some(JustifyParams {
+            letter_spacing: Spacing { min: -0.05, desired: 0.0, max: 0.05 },
+            reference_space_pt: 6.0,
+            ..JustifyParams::default()
+        });
+        let l = case.run_t(&o).unwrap().frames[0].lines[0].clone();
+        let j = l.justification.expect("last line justified");
+        let k = 30.0 / 3.18;
+        assert!((j.word_scale - (1.0 + k * 0.33)).abs() < 1e-9 && (j.letter_gap_pt - k * 0.3).abs() < 1e-9, "{j:?}");
+        assert!((6.0 * (j.word_scale - 1.0) + 4.0 * j.letter_gap_pt - 30.0).abs() < 1e-9);
+        // Justified (not all): the single last line stays as set.
+        assert!(case.run_t(&adobe_opts(Alignment::Justified, None)).unwrap().frames[0].lines[0].justification.is_none());
+    });
+}

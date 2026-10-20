@@ -25,6 +25,9 @@ pub enum Alignment {
     Right,
     /// Every line but the last fills the slot (last line left-aligned).
     Justified,
+    /// Every line including the last fills the slot (spec justify.fully_justified; InDesign "Justify
+    /// all lines", IDML `FullyJustified`).
+    JustifiedAll,
 }
 impl From<StudioTextAlign> for Alignment {
     fn from(a: StudioTextAlign) -> Self {

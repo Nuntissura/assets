@@ -32,10 +32,31 @@ impl Default for KnuthPlassParams {
 
 /// Which line breaker composes a paragraph. `FirstFit` is the greedy single-line composer (each
 /// line takes as much as fits); `KnuthPlass` minimises total demerits over the whole paragraph.
+/// `AdobeSingleLine` and `AdobeParagraph` are the InDesign-parity Single-line and Paragraph
+/// Composers (lane SMB-ID-COMPOSER-PARITY, module `adobe_composer`): their break rules and constants
+/// are fitted to the InDesign 21.6 oracle (D5 ID-01..ID-04, Arial 12/14.4) and reproduce it where
+/// `d5_id_oracle.rs` reports MATCH; behaviour outside that oracle is UNVERIFIED.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Composer {
     FirstFit,
     KnuthPlass(KnuthPlassParams),
+    AdobeSingleLine(AdobeParams),
+    AdobeParagraph(AdobeParams),
+}
+
+/// Settings the Adobe-parity composers read besides the justification limits
+/// (`TypesetOptions::justify`) and hyphenation (`TypesetOptions::hyphenation`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AdobeParams {
+    /// InDesign Hyphenation Zone (points): on ragged (non-justified) lines of the Single-line
+    /// Composer a word is hyphenated only when breaking before it would leave more white space than
+    /// this. IDML `HyphenationZone`, InDesign default 36 pt (the oracle IDML carries 36).
+    pub hyphenation_zone_pt: f64,
+}
+impl Default for AdobeParams {
+    fn default() -> Self {
+        Self { hyphenation_zone_pt: 36.0 }
+    }
 }
 
 /// Hyphenation rules the breakers enforce on flagged penalties.
@@ -63,6 +84,8 @@ pub(crate) struct Sums {
     w: Vec<f64>,
     y: Vec<f64>,
     z: Vec<f64>,
+    /// Natural width of the (non-trailing) glue: the word spaces of a line.
+    g: Vec<f64>,
     inf: Vec<u32>,
 }
 impl Sums {
@@ -71,6 +94,7 @@ impl Sums {
             w: vec![0.0],
             y: vec![0.0],
             z: vec![0.0],
+            g: vec![0.0],
             inf: vec![0],
         };
         for it in items {
@@ -87,13 +111,15 @@ impl Sums {
             s.w.push(s.w[s.w.len() - 1] + w);
             s.y.push(s.y[s.y.len() - 1] + y);
             s.z.push(s.z[s.z.len() - 1] + z);
+            let g = if it.kind == Kind::Glue && !it.trailing { it.w } else { 0.0 };
+            s.g.push(s.g[s.g.len() - 1] + g);
             s.inf.push(s.inf[s.inf.len() - 1] + u32::from(it.inf_stretch && !it.trailing));
         }
         s
     }
     /// Natural width, stretch, shrink and infinite-stretch flag of the line `items[s..i)` that ends
     /// with a break at item `i` (a penalty contributes its own width; a glue break is discarded).
-    fn measure(&self, items: &[Item], s: usize, i: usize) -> (f64, f64, f64, bool) {
+    pub(crate) fn measure(&self, items: &[Item], s: usize, i: usize) -> (f64, f64, f64, bool) {
         let pen = if items[i].kind == Kind::Penalty {
             items[i].w
         } else {
@@ -106,12 +132,16 @@ impl Sums {
             self.inf[i] > self.inf[s],
         )
     }
+    /// Natural width of the word spaces of the line `items[s..i)`.
+    pub(crate) fn spaces(&self, s: usize, i: usize) -> f64 {
+        self.g[i] - self.g[s]
+    }
 }
 
-fn forced(it: &Item) -> bool {
+pub(crate) fn forced(it: &Item) -> bool {
     it.kind == Kind::Penalty && it.p == FORCED
 }
-fn legal(items: &[Item], i: usize) -> bool {
+pub(crate) fn legal(items: &[Item], i: usize) -> bool {
     let it = &items[i];
     match it.kind {
         Kind::Box => false,
@@ -130,7 +160,7 @@ pub(crate) fn line_start(items: &[Item], b: usize) -> usize {
         .unwrap_or(items.len())
 }
 
-fn check(cancel: &CancellationToken, work: &mut u32) -> Result<(), LayoutError> {
+pub(crate) fn check(cancel: &CancellationToken, work: &mut u32) -> Result<(), LayoutError> {
     *work += 1;
     if (*work).is_multiple_of(256) {
         cancel.check().map_err(|_| LayoutError::Canceled)?;

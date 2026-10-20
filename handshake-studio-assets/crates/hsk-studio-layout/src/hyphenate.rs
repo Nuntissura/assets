@@ -13,6 +13,12 @@ use std::sync::OnceLock;
 pub const EN_US_LICENCE: &str = "hyph-en-us (hyph-utf8): Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken. Copying and distribution of this file, with or without modification, are permitted in any medium without royalty provided the copyright notice and this notice are preserved. Source https://github.com/hyphenation/tex-hyphen";
 const EN_US_DATA: &str = include_str!("../data/hyph-en-us.txt");
 
+/// Exceptions observed in the InDesign 21.6 oracle (D5 ID-01..ID-04 line ends, all hyphenation
+/// points of each word; points the oracle never showed follow the Liang patterns): InDesign breaks
+/// `ev-ery` (Liang: none), `differenc-es` (Liang: `dif-fer-ences`) and never `Extra-ordinarily`
+/// (it breaks `Ex-`, `Extraor-`, `Extraordi-`).
+pub const INDESIGN_EN_US_EXCEPTIONS: &[&str] = &["ev-ery", "dif-fer-enc-es", "ex-traor-di-nar-i-ly"];
+
 /// Words longer than this many bytes are never hyphenated (hostile-input bound).
 pub const MAX_WORD_BYTES: usize = 64;
 const MAX_PATTERN_LINES: usize = 200_000;
@@ -117,6 +123,21 @@ impl Hyphenator {
         static SET: OnceLock<Hyphenator> = OnceLock::new();
         SET.get_or_init(|| {
             Hyphenator::from_pattern_text(EN_US_DATA).expect("embedded en-US pattern data is valid")
+        })
+    }
+
+    /// The embedded en-US set plus [`INDESIGN_EN_US_EXCEPTIONS`]: the hyphenation points InDesign
+    /// 21.6 (`$ID/English: USA`) used in the D5 oracle where they differ from the Liang patterns
+    /// (lane SMB-ID-COMPOSER-PARITY). InDesign's dictionary itself is not available to Studio, so any
+    /// other word where the two disagree stays a typed gap (`d5_id_expected_mismatch.txt`).
+    pub fn en_us_indesign() -> &'static Hyphenator {
+        static SET: OnceLock<Hyphenator> = OnceLock::new();
+        SET.get_or_init(|| {
+            let mut set = Hyphenator::from_pattern_text(EN_US_DATA).expect("embedded en-US pattern data is valid");
+            for word in INDESIGN_EN_US_EXCEPTIONS {
+                set.add_exception(word).expect("embedded InDesign exception list is valid");
+            }
+            set
         })
     }
 

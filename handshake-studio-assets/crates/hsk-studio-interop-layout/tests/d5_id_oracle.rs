@@ -28,7 +28,7 @@ use common::text_shaping::{FontFile, Seg, shape};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{FirstBaseline, GeometryUnit, Length, StoryContent, StudioDocument, StudioTextStory};
 use hsk_studio_interop_layout::layout::{
-    Alignment, Composer, HyphenationParams, JustifyParams, KnuthPlassParams, LayoutProposal, Limits as ReflowLimits,
+    AdobeParams, Alignment, Composer, HyphenationParams, Hyphenator, JustifyParams, LayoutProposal, Limits as ReflowLimits,
     ReflowRequest, ShapedParagraph, SpaceParams, Spacing, TypesetOptions, reflow_typeset,
 };
 use hsk_studio_interop_layout::{Limits, SequentialIdMint, import_idml};
@@ -317,6 +317,8 @@ struct Setup {
     paragraph_composer: bool,
     hyphenate: bool,
     justify: bool,
+    /// FULLY_JUSTIFIED (ID-02, ID-03): the last line is justified too.
+    full: bool,
     width: f64,
     ws: [f64; 3],
     ls: [f64; 3],
@@ -349,13 +351,16 @@ fn compose_in(p: &Probe, s: &Setup, mut doc: StudioDocument, set_width: bool) ->
     // InDesign: hyphenateWordsLongerThan 5 (= at least 5 letters, module docs), after first 2,
     // before last 2, ladder limit 3.
     let hyph = HyphenationParams { min_word_len: 5, min_before: 2, min_after: 2, consecutive_limit: 3, hyphen_advance_pt: p.hyphen_pt, ..HyphenationParams::default() };
+    // InDesign's en-US hyphenation where the oracle shows it (lane SMB-ID-COMPOSER-PARITY).
     let opts = TypesetOptions {
         justify: Some(jp),
         hyphenation: s.hyphenate.then_some(hyph),
-        alignment: if s.justify { Alignment::Justified } else { Alignment::Left },
+        hyphenator: Some(Hyphenator::en_us_indesign()),
+        alignment: if s.full { Alignment::JustifiedAll } else if s.justify { Alignment::Justified } else { Alignment::Left },
         ..TypesetOptions::default()
     };
-    let composer = if s.paragraph_composer { Composer::KnuthPlass(KnuthPlassParams::default()) } else { Composer::FirstFit };
+    // The InDesign-parity composers (IDML HyphenationZone 36 = the default).
+    let composer = if s.paragraph_composer { Composer::AdobeParagraph(AdobeParams::default()) } else { Composer::AdobeSingleLine(AdobeParams::default()) };
     let paragraphs = [p.paragraph.clone()];
     let req = ReflowRequest {
         document: &doc,
@@ -384,11 +389,14 @@ fn studio_lines(p: &Probe, placed: &LayoutProposal) -> Vec<StudioLine> {
             let (scale, gap) = line.justification.map_or((1.0, 0.0), |j| (j.word_scale, j.letter_gap_pt));
             let mut x = 0.0;
             let mut xs = Vec::new();
-            for g in &p.paragraph.glyphs[line.glyph_range.clone()] {
-                let start = g.cluster.start as usize;
-                xs.push((start, x));
-                let is_space = TEXT.as_bytes().get(start) == Some(&b' ');
-                x += if is_space { g.advance_pt * scale } else { g.advance_pt } + gap;
+            let glyphs = &p.paragraph.glyphs[line.glyph_range.clone()];
+            let space = |g: &hsk_studio_interop_layout::layout::LayoutGlyph| TEXT.as_bytes().get(g.cluster.start as usize) == Some(&b' ');
+            // `Justification::letter_gap_pt` follows every glyph but the line's last content glyph.
+            let last_content = glyphs.iter().rposition(|g| !space(g));
+            for (k, g) in glyphs.iter().enumerate() {
+                xs.push((g.cluster.start as usize, x));
+                let gap_after = if last_content.is_some_and(|l| k < l) { gap } else { 0.0 };
+                x += if space(g) { g.advance_pt * scale } else { g.advance_pt } + gap_after;
             }
             out.push((line.source.start as usize, line.source.end as usize, xs));
         }
@@ -483,7 +491,7 @@ fn id01_composer_width_sweep() {
                             continue;
                         }
                     };
-                    let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: just, width: f64::from(w), ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
+                    let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: just, full: false, width: f64::from(w), ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
                     let (v, d) = compare(&p, &json, &s);
                     ledger.record("ID-01", &variant, v, d);
                 }
@@ -494,8 +502,7 @@ fn id01_composer_width_sweep() {
 }
 
 /// ID-02: word/letter spacing limits and glyph scaling at width 240, both composers, hyphenation on,
-/// fully justified (InDesign justifies the last line too; Studio's justified alignment leaves the
-/// last line ragged, which moves only last-line x, never a break).
+/// fully justified (InDesign justifies the last line too: `Alignment::JustifiedAll`).
 #[test]
 fn id02_spacing_limits() {
     const T: &str = "d5_id_oracle::id02_spacing_limits";
@@ -523,7 +530,7 @@ fn id02_spacing_limits() {
                     continue;
                 }
             };
-            let s = Setup { paragraph_composer: para, hyphenate: true, justify: true, width: 240.0, ws, ls };
+            let s = Setup { paragraph_composer: para, hyphenate: true, justify: true, full: true, width: 240.0, ws, ls };
             let (v, d) = compare(&p, &json, &s);
             ledger.record("ID-02", &variant, v, d);
         }
@@ -542,7 +549,7 @@ fn id03_idml_configurations() {
     for (variant, para, hyph) in [("para_hyph_w240", true, true), ("single_hyph_w240", false, true), ("para_nohyph_w240", true, false)] {
         match load_json(&root, &format!("ID-03__{variant}.json")) {
             Ok(json) => {
-                let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: true, width: 240.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
+                let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: true, full: true, width: 240.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
                 let (v, d) = compare(&p, &json, &s);
                 ledger.record("ID-03", variant, v, d);
             }
@@ -597,7 +604,7 @@ fn id04_threaded_frames() {
         f.next_text_frame = None;
     }
     doc.layers.insert(index + 1, second);
-    let s = Setup { paragraph_composer: true, hyphenate: true, justify: true, width: 200.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
+    let s = Setup { paragraph_composer: true, hyphenate: true, justify: true, full: false, width: 200.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
     let (verdict, detail) = match compose_in(&p, &s, doc, false) {
         Err(e) => (Verdict::Mismatch, e),
         Ok(placed) => {

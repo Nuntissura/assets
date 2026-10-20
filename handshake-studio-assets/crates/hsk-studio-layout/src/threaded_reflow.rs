@@ -45,7 +45,8 @@
 //! frame is its custom baseline frame grid, else the document baseline grid (`grids` module); a
 //! frame with neither is not aligned. Span and split paragraphs are not aligned. Balancing does not
 //! re-snap moved lines. InDesign parity UNVERIFIED (D5).
-use crate::breaker::{Composer, HyphenRules, Sums, first_fit, knuth_plass, line_start};
+use crate::adobe_composer::{AdobeContext, compress_line, justify_line, paragraph as adobe_paragraph, single_line};
+use crate::breaker::{Composer, HyphenRules, LineBreak, Sums, first_fit, knuth_plass, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
 use crate::typeset::{Justification, TypesetOptions, justify_metrics};
@@ -301,6 +302,30 @@ fn next_slot(
         cur = next;
     }
     Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn break_lines(
+    composer: Composer,
+    items: &[crate::paragraph::Item],
+    sums: &Sums,
+    width: &dyn Fn(usize) -> f64,
+    rules: &HyphenRules,
+    jp: &crate::typeset::JustifyParams,
+    justified: bool,
+    justify_last: bool,
+    cancel: &CancellationToken,
+) -> Result<Vec<LineBreak>, LayoutError> {
+    match composer {
+        Composer::FirstFit => first_fit(items, sums, width, rules, cancel),
+        Composer::KnuthPlass(params) => knuth_plass(items, sums, width, &params, rules, cancel),
+        Composer::AdobeSingleLine(params) => {
+            single_line(items, sums, width, rules, &AdobeContext { params, justify: jp, justified, justify_last }, cancel)
+        }
+        Composer::AdobeParagraph(params) => {
+            adobe_paragraph(items, sums, width, rules, &AdobeContext { params, justify: jp, justified, justify_last }, cancel)
+        }
+    }
 }
 
 fn canceled(cancel: &CancellationToken) -> Result<(), LayoutError> {
@@ -716,6 +741,9 @@ fn compose_flow(
         canceled(cancel)?;
         let items = build_items(p, text, space, hyph)?;
         let sums = Sums::new(&items);
+        let para_alignment = stylings.get(pi).and_then(Option::as_ref).map_or(opts.alignment, |s| s.alignment);
+        let justified = matches!(para_alignment, Alignment::Justified | Alignment::JustifiedAll);
+        let adobe = matches!(composer, Composer::AdobeSingleLine(_) | Composer::AdobeParagraph(_));
         let remaining = limits.max_lines.saturating_sub(placed);
         let slot_cap = items.len().min(remaining.saturating_add(1));
         let scan_cap = scan_cap_base.saturating_add(items.len());
@@ -822,10 +850,7 @@ fn compose_flow(
                         return Err(LayoutError::InvalidGeometry);
                     }
                     let width = |_: usize| sub_w;
-                    let b = match composer {
-                        Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
-                        Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
-                    };
+                    let b = break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?;
                     let rows_needed = b.len().div_ceil(count).max(1);
                     let (mut rows, mut at) = (vec![probe], probe.next);
                     while rows.len() < rows_needed {
@@ -871,10 +896,7 @@ fn compose_flow(
             None => {
                 let last_width = slots[slots.len() - 1].width_pt;
                 let width = |line: usize| slots.get(line).map_or(last_width, |s| s.width_pt);
-                match composer {
-                    Composer::FirstFit => first_fit(&items, &sums, &width, &rules, cancel)?,
-                    Composer::KnuthPlass(params) => knuth_plass(&items, &sums, &width, &params, &rules, cancel)?,
-                }
+                break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?
             }
         };
         let n = p.glyphs.len();
@@ -930,25 +952,36 @@ fn compose_flow(
             let mut x_start_pt = slot.x_start_pt;
             let mut justification = None;
             if !b.overfull {
+                let spaces: f64 = items[item_starts[k]..b.item]
+                    .iter()
+                    .filter(|it| {
+                        it.kind == crate::paragraph::Kind::Glue
+                            && !it.trailing
+                            && !it.inf_stretch
+                            && it.end <= content_end
+                    })
+                    .map(|it| it.w)
+                    .sum();
                 match alignment {
                     Alignment::Left => {}
                     Alignment::Center => x_start_pt += (slot.width_pt - width_pt).max(0.0) / 2.0,
                     Alignment::Right => x_start_pt += (slot.width_pt - width_pt).max(0.0),
-                    Alignment::Justified if !is_last => {
-                        let spaces: f64 = items[item_starts[k]..b.item]
-                            .iter()
-                            .filter(|it| {
-                                it.kind == crate::paragraph::Kind::Glue
-                                    && !it.trailing
-                                    && !it.inf_stretch
-                                    && it.end <= content_end
-                            })
-                            .map(|it| it.w)
-                            .sum();
-                        let gaps = content_end.saturating_sub(range.start).saturating_sub(1);
-                        justification = Some(justify_metrics(width_pt, slot.width_pt, spaces, gaps, &jp));
+                    Alignment::Justified | Alignment::JustifiedAll if !is_last || alignment == Alignment::JustifiedAll => {
+                        // Adobe composers: a hyphen is one more glyph gap of the line (oracle ID-02
+                        // letter spacing: the hyphen takes its letter gap like the letters).
+                        let gaps = content_end.saturating_sub(range.start).saturating_sub(1) + usize::from(adobe && hyphenated);
+                        justification = Some(if adobe {
+                            justify_line(width_pt, slot.width_pt, spaces, gaps, &jp)
+                        } else {
+                            justify_metrics(width_pt, slot.width_pt, spaces, gaps, &jp)
+                        });
                     }
-                    Alignment::Justified => {}
+                    Alignment::Justified | Alignment::JustifiedAll => {}
+                }
+                // Adobe composers may set a line tighter than its slot (a compressed last line or a
+                // ragged line chosen tight): its spaces close to the measure.
+                if adobe && justification.is_none() {
+                    justification = compress_line(width_pt, slot.width_pt, spaces);
                 }
             }
             lines_here.push((
