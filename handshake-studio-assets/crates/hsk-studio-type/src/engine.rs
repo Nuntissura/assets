@@ -435,7 +435,7 @@ fn shape<'a>(
     let v2 = crate::validate::semantics(request.composition_version)
         == Some(crate::validate::Semantics::V2);
     let mut ligatures = ChargedVec::new();
-    if v2 && level % 2 == 0 && effective_script == *b"Latn" {
+    if v2 && level.is_multiple_of(2) && effective_script == *b"Latn" {
         presentation_ligatures(
             &font.face,
             style,
