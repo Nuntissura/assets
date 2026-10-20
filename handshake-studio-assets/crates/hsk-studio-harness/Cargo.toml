@@ -33,6 +33,9 @@ os-encode = ["media-native", "hsk-studio-reel-native/os-encode"]
 audio-device = ["viewer", "dep:hsk-studio-score-device"]
 # Audition batch processing (lane SMB-AUDIO-IMPORT-2): import, score effect chain, export.
 audio-batch = ["media", "dep:hsk-studio-score"]
+# Hosted plugins on a waveform selection (lane SMB-AU-WAVEFORM-EDITOR slice 4b; edge harness -> score-plugin
+# lead-approved 2026-10-16, opt-in, default build unchanged): score-plugin's process-isolated host.
+audio-plugin = ["audio-batch", "dep:hsk-studio-score-plugin"]
 # Studio's own AAC-LC decoder in reel (opt-in since Operator decision D24-A; the default AAC path is the OS decoder).
 studio-aac = ["media", "hsk-studio-reel/studio-aac"]
 
@@ -70,6 +73,8 @@ hsk-studio-reel-native = { path = "../hsk-studio-reel-native", version = "=0.1.0
 hsk-studio-score-device = { path = "../hsk-studio-score-device", version = "=0.1.0", default-features = false, optional = true }
 # Batch effect chain (lane SMB-AUDIO-IMPORT-2; NEW EDGE harness -> score, lead brief 2026-10-15, steward to add).
 hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false, optional = true }
+# Plugin on a waveform selection (lane SMB-AU-WAVEFORM-EDITOR slice 4b; NEW EDGE harness -> score-plugin, lead-approved 2026-10-16, dep-requests 2026-10-16T08:06:21Z).
+hsk-studio-score-plugin = { path = "../hsk-studio-score-plugin", version = "=0.1.0", default-features = false, optional = true }
 # Layout editing surface (lane SMB-LAYOUT-UI; NEW EDGE harness -> layout, dep-requests 2026-10-15, lead report).
 hsk-studio-layout = { path = "../hsk-studio-layout", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

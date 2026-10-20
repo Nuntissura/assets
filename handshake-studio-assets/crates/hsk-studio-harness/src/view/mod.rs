@@ -55,6 +55,10 @@ pub mod waveform;
 /// Spectral frequency display of the waveform editor (lane SMB-AU-WAVEFORM-EDITOR slice 2).
 #[cfg(feature = "audio-batch")]
 pub mod spectral_display;
+/// Hosted plugins on a waveform selection through score-plugin's isolated host (lane
+/// SMB-AU-WAVEFORM-EDITOR slice 4b, feature `audio-plugin`).
+#[cfg(feature = "audio-plugin")]
+pub mod waveform_plugin;
 /// Program monitor over a document sequence (lane SMB-PULSE-PLAYBACK).
 pub mod monitor;
 /// Prototype play mode over an imported Figma file (lane SMB-HARNESS-PROTOTYPE-PLAY).

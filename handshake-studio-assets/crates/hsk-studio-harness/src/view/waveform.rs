@@ -34,6 +34,14 @@
 //! sample for sample) and writes it back over the selection: one operation, one undo step, replayed
 //! like the others. The effect starts from its reset state at the selection start (no pre-roll).
 //!
+//! **Hosted plugins on a selection** (slice 4b, parity row AU-19): [`WaveformEdit::Plugin`] names an
+//! approved plugin by its content SHA-256 plus parameter values; the plugin must first be registered
+//! with the editor ([`super::Viewer::register_waveform_plugin`], feature `audio-plugin`: score-plugin's
+//! process-isolated host, CLAP through its worker backend, VST3 / other formats refused). It is run over
+//! the selection like an effect (one operation, one undo step). Replay needs the same plugin
+//! registered: otherwise `waveform_plugin_unregistered`; builds without the feature refuse every
+//! plugin operation with `waveform_plugin_hosting_unavailable` (the list still parses and is kept).
+//!
 //! Panel (egui, window-free): `waveform.panel` with the canvas `waveform.canvas` (drag selects,
 //! one lane per channel, min/max per column) and the buttons of [`widget`]. Audition interaction
 //! parity is UNVERIFIED (D5).
@@ -108,7 +116,43 @@ pub enum WaveformEdit {
     Spectral(SpectralEdit),
     /// A score effect over the selection (slice 4).
     Effect { selection: WaveSelection, effect: folio::StudioAudioEffectInstance },
+    /// A registered hosted plugin over the selection (slice 4b).
+    Plugin(PluginEdit),
 }
+
+/// A hosted plugin run over `selection` (1 or 2 channels): the plugin approved with SHA-256
+/// `content_sha256` (lower-case hex), its parameters `(id, value)` set before the first block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginEdit {
+    pub selection: WaveSelection,
+    pub content_sha256: String,
+    pub parameters: Vec<(u32, f64)>,
+}
+
+/// Most plugin parameters of one operation.
+pub const MAX_PLUGIN_PARAMETERS: usize = 256;
+
+/// Runs hosted plugins for the edit list (the editor's registry).
+pub trait PluginHost {
+    fn run(&self, buffer: &mut WaveBuffer, edit: &PluginEdit, cancel: &CancellationToken) -> Result<WaveEditReport, String>;
+}
+
+/// The registry of a build without hosting: every plugin operation is refused.
+#[cfg(not(feature = "audio-plugin"))]
+#[derive(Default)]
+pub struct PluginRegistry {
+    _hosting_unavailable: (),
+}
+
+#[cfg(not(feature = "audio-plugin"))]
+impl PluginHost for PluginRegistry {
+    fn run(&self, _: &mut WaveBuffer, _: &PluginEdit, _: &CancellationToken) -> Result<WaveEditReport, String> {
+        Err("waveform_plugin_hosting_unavailable: built without feature audio-plugin".into())
+    }
+}
+
+#[cfg(feature = "audio-plugin")]
+pub use super::waveform_plugin::PluginRegistry;
 
 /// A spectral selection edit: `region` of the channels in `channels`, analysed with `window` at
 /// `fft_size` (hop `fft_size / 4`).
@@ -136,6 +180,7 @@ pub enum WaveformOp {
     Reverse(WaveSelection),
     Spectral(SpectralEdit),
     Effect { selection: WaveSelection, effect: folio::StudioAudioEffectInstance },
+    Plugin(PluginEdit),
 }
 
 /// The copied range of the audio after the first `after_ops` operations.
@@ -238,6 +283,7 @@ impl WaveformOp {
             Self::Reverse(_) => "reverse",
             Self::Spectral(_) => "spectral",
             Self::Effect { .. } => "effect",
+            Self::Plugin(_) => "plugin",
         }
     }
     pub fn to_json(&self) -> Value {
@@ -264,6 +310,7 @@ impl WaveformOp {
                 },
             }),
             Self::Effect { selection, effect } => json!({"selection": sel_json(selection), "effect": serde_json::to_value(effect).unwrap_or(Value::Null)}),
+            Self::Plugin(p) => json!({"selection": sel_json(&p.selection), "content_sha256": p.content_sha256, "parameters": p.parameters.iter().map(|(i, v)| json!([i, v])).collect::<Vec<_>>()}),
         };
         v["op"] = Value::from(self.name());
         v
@@ -363,6 +410,25 @@ impl WaveformOp {
                 effect_spec(&effect).map_err(|e| bad(&e))?;
                 Self::Effect { selection: sel()?, effect }
             }
+            "plugin" => {
+                let content_sha256 = v
+                    .get("content_sha256")
+                    .and_then(Value::as_str)
+                    .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+                    .ok_or_else(|| bad("content_sha256"))?
+                    .to_owned();
+                let list = v.get("parameters").and_then(Value::as_array).ok_or_else(|| bad("parameters"))?;
+                if list.len() > MAX_PLUGIN_PARAMETERS {
+                    return Err(bad("parameters"));
+                }
+                let mut parameters = Vec::with_capacity(list.len());
+                for p in list {
+                    let id = p.get(0).and_then(Value::as_u64).and_then(|i| u32::try_from(i).ok()).ok_or_else(|| bad("parameter id"))?;
+                    let value = p.get(1).and_then(Value::as_f64).filter(|x| x.is_finite()).ok_or_else(|| bad("parameter value"))?;
+                    parameters.push((id, value));
+                }
+                Self::Plugin(PluginEdit { selection: sel()?, content_sha256, parameters })
+            }
             _ => return Err(bad("unknown op")),
         })
     }
@@ -458,8 +524,9 @@ fn code(e: ScoreError) -> String {
 }
 
 /// Applies one operation (`clip`: the referenced audio of a paste).
-pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip>, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
+pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip>, plugins: &dyn PluginHost, cancel: &CancellationToken) -> Result<WaveEditReport, String> {
     match op {
+        WaveformOp::Plugin(p) => return plugins.run(buffer, p, cancel),
         WaveformOp::Delete { start, end } => buffer.delete(*start, *end, cancel),
         WaveformOp::Paste { at, mode, channels, .. } => {
             let clip = clip.ok_or("waveform_clip_missing")?;
@@ -490,7 +557,7 @@ pub fn apply_op(buffer: &mut WaveBuffer, op: &WaveformOp, clip: Option<&WaveClip
 }
 
 /// The source with `ops` replayed (pasted clips re-derived from their prefixes).
-pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], cancel: &CancellationToken) -> Result<WaveBuffer, String> {
+pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], plugins: &dyn PluginHost, cancel: &CancellationToken) -> Result<WaveBuffer, String> {
     let mut wanted: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
         if let WaveformOp::Paste { clip, .. } = op {
@@ -506,7 +573,7 @@ pub fn replay(source: &WaveBuffer, ops: &[WaveformOp], cancel: &CancellationToke
             }
         }
         let Some(op) = ops.get(i) else { break };
-        apply_op(&mut buffer, op, clips.get(&i), cancel).map_err(|e| format!("op {i} ({}): {e}", op.name()))?;
+        apply_op(&mut buffer, op, clips.get(&i), plugins, cancel).map_err(|e| format!("op {i} ({}): {e}", op.name()))?;
     }
     Ok(buffer)
 }
@@ -540,6 +607,8 @@ pub struct WaveformState {
     fade_curve: FadeCurve,
     drag_from: Option<u64>,
     error: Option<String>,
+    /// Hosted plugins the edit list may name (slice 4b).
+    pub(crate) plugins: PluginRegistry,
 }
 
 impl super::Viewer {
@@ -569,6 +638,7 @@ impl super::Viewer {
             fade_curve: FadeCurve::Linear,
             drag_from: None,
             error: None,
+            plugins: PluginRegistry::default(),
         });
         self.waveform_sync()?;
         self.say("waveform editor open".into());
@@ -604,9 +674,9 @@ impl super::Viewer {
         let result = match w.cache.take() {
             Some((done, mut buffer)) if incremental => ops[done.len()..]
                 .iter()
-                .try_for_each(|op| apply_op(&mut buffer, op, None, cancel).map(|_| ()))
+                .try_for_each(|op| apply_op(&mut buffer, op, None, &w.plugins, cancel).map(|_| ()))
                 .map(|()| buffer),
-            _ => replay(&w.source, &ops, cancel),
+            _ => replay(&w.source, &ops, &w.plugins, cancel),
         };
         match result {
             Ok(buffer) => {
@@ -628,7 +698,7 @@ impl super::Viewer {
         let ops = self.waveform_ops()?;
         match &w.cache {
             Some((o, b)) if *o == ops => Ok(b.clone()),
-            _ => replay(&w.source, &ops, self.cancel),
+            _ => replay(&w.source, &ops, &w.plugins, self.cancel),
         }
     }
 
@@ -703,12 +773,13 @@ impl super::Viewer {
             WaveformEdit::Reverse(s) => (WaveformOp::Reverse(s), None, None),
             WaveformEdit::Spectral(e) => (WaveformOp::Spectral(e), None, None),
             WaveformEdit::Effect { selection, effect } => (WaveformOp::Effect { selection, effect }, None, None),
+            WaveformEdit::Plugin(p) => (WaveformOp::Plugin(p), None, None),
         };
         if n >= MAX_WAVEFORM_OPS {
             return Err("waveform_too_many_ops".into());
         }
         let mut next = current.clone();
-        let report = apply_op(&mut next, &op, clip.as_ref(), cancel)?;
+        let report = apply_op(&mut next, &op, clip.as_ref(), &w.plugins, cancel)?;
         let mut list = ops.clone();
         list.push(op.clone());
         let doc = WaveformDocument { source: w.identity.clone(), ops: list.clone() };
