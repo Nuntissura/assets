@@ -13656,6 +13656,9 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-022-FINDING-CLAIM-CONTEXT-003" => Some(
             "xtask::runtime_classifier_tests::original_wp020_context_corrections_keep_current_claims_closed",
         ),
+        "WP-FF-022-FINDING-JOB-ACK-004" => Some(
+            "ffmpeg::platform::windows::tests::job_empty_wait_requires_actual_zero_and_natural_release",
+        ),
         "WP-FF-005-FINDING-WIRE-001" => {
             Some("testkit::tests::canonical_public_contract_fixtures_decode_and_validate")
         }
