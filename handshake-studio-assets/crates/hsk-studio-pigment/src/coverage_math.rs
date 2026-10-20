@@ -144,33 +144,24 @@ pub fn check_range(r: SplitRange) -> Result<(), CoverageError> {
     Ok(())
 }
 
-/// Weight of value `v` under a split range: `ramp_up(v; bs, be) * ramp_down(v; ws, we)` where
-/// `ramp_up` is 0 below `bs`, 1 from `be` on, linear in between (a collapsed pair is a hard cut at
-/// `bs`, with `v == bs` blended), and `ramp_down` mirrors it at the white end.
-///
-/// Reading of the Adobe Photoshop help "Blend If": pixels outside the range are not blended; a
-/// split slider defines a partially blended transition. The linear ramp is a Studio rule; class
-/// Approximate (D5 case 9).
+/// Weight of value `v` under a split range: `ramp_up(v; bs, be) * ramp_down(v; ws, we)` with
+/// Photoshop's inclusive integer ramps on the 0..255 slider scale (lane SMB-PS-ORACLE-PARITY-1,
+/// measured on the D5 oracle PS-C09): in levels (`x * 255`), `up = clamp((v - bs + 1) / (be - bs +
+/// 1))` and `down = clamp((we + 1 - v) / (we - ws + 1))`. A split 50/100 reaches 1/51 at level 50
+/// and 1 at level 100; a collapsed pair (`bs == be`) is a hard cut between levels `bs - 1` and
+/// `bs` (`v == bs` blended). The this-red, underlying-gray and underlying-red variants reproduce
+/// within 1 code (the previous continuous ramp `(v - bs) / (be - bs)` differed by up to 6), the hard
+/// 100/100/200/200 variant exactly. Values between two levels (16-bit documents) follow the same
+/// line, UNVERIFIED.
 pub fn range_weight(v: f32, r: SplitRange) -> Result<f32, CoverageError> {
     if !unit(v) {
         return Err(CoverageError::OutOfDomain);
     }
     check_range(r)?;
-    let [bs, be, ws, we] = r;
-    let up = if v < bs {
-        0.0
-    } else if v >= be {
-        1.0
-    } else {
-        (v - bs) / (be - bs)
-    };
-    let down = if v <= ws {
-        1.0
-    } else if v > we {
-        0.0
-    } else {
-        (we - v) / (we - ws)
-    };
+    let [bs, be, ws, we] = r.map(|x| x * 255.0);
+    let v = v * 255.0;
+    let up = ((v - bs + 1.0) / (be - bs + 1.0)).clamp(0.0, 1.0);
+    let down = ((we + 1.0 - v) / (we - ws + 1.0)).clamp(0.0, 1.0);
     Ok(up * down)
 }
 
@@ -193,14 +184,44 @@ impl BlendRangeEntry {
     }
 }
 
-/// Blend-If weight for one pixel: the product over entries of the source-range weight of the
-/// layer colour and the destination-range weight of the backdrop colour. It multiplies the
-/// layer's source alpha before source-over. An empty set is weight 1.
+/// Blend-If weight for one pixel over an opaque backdrop: [`blend_if_weight_over`] with backdrop
+/// alpha 1.
 pub fn blend_if_weight(
     entries: &[BlendRangeEntry],
     source_rgb: [f32; 3],
     backdrop_rgb: [f32; 3],
 ) -> Result<f32, CoverageError> {
+    blend_if_weight_over(entries, source_rgb, backdrop_rgb, 1.0)
+}
+
+/// The channel value a Blend-If range reads: [`BlendChannel::value`], with the gray rounded to a
+/// whole level (`round(255 lum) / 255`; D5 PS-C09: the hard 100/100/200/200 gray variant is exact
+/// only with the rounded gray, lane SMB-PS-ORACLE-PARITY-1).
+pub fn blend_if_value(channel: BlendChannel, rgb: [f32; 3]) -> f32 {
+    let v = channel.value(rgb);
+    if channel == BlendChannel::Gray {
+        ((v * 255.0).round() / 255.0).clamp(0.0, 1.0)
+    } else {
+        v
+    }
+}
+
+/// Blend-If weight for one pixel: the product over entries of the source-range weight of the
+/// layer colour and the destination-range weight of the backdrop colour. It multiplies the
+/// layer's source alpha before source-over. An empty set is weight 1. `backdrop_alpha` (lane
+/// SMB-PS-ORACLE-PARITY-1, D5 PS-C23): an Underlying range hides a layer only where something lies
+/// below it, so each destination weight `w` counts as `1 - ab (1 - w)` (a layer alone in an isolated
+/// group stays visible, as in Photoshop; the opaque backdrop keeps `w`); the rule between the two
+/// end points is UNVERIFIED.
+pub fn blend_if_weight_over(
+    entries: &[BlendRangeEntry],
+    source_rgb: [f32; 3],
+    backdrop_rgb: [f32; 3],
+    backdrop_alpha: f32,
+) -> Result<f32, CoverageError> {
+    if !unit(backdrop_alpha) {
+        return Err(CoverageError::OutOfDomain);
+    }
     if !source_rgb
         .iter()
         .chain(backdrop_rgb.iter())
@@ -210,8 +231,13 @@ pub fn blend_if_weight(
     }
     let mut w = 1.0f32;
     for e in entries {
-        w *= range_weight(e.channel.value(source_rgb), e.source)?;
-        w *= range_weight(e.channel.value(backdrop_rgb), e.destination)?;
+        w *= range_weight(blend_if_value(e.channel, source_rgb), e.source)?;
+        let under = range_weight(blend_if_value(e.channel, backdrop_rgb), e.destination)?;
+        w *= if backdrop_alpha >= 1.0 {
+            under
+        } else {
+            1.0 - backdrop_alpha * (1.0 - under)
+        };
     }
     Ok(w)
 }

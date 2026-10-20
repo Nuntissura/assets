@@ -29,13 +29,16 @@
 //! The receipt reports the measured peak, which equals the prediction in the tests.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
-    EffectError, EffectOp, EffectOrder, GlowSource, LayerParams, MAX_EFFECTS_PER_LAYER,
-    StrokePosition, effect_support_px, shadow_offset, shadow_split, unit,
+    DropShadowOp, EffectError, EffectOp, EffectOrder, GlowSource, LayerParams,
+    MAX_EFFECTS_PER_LAYER, StrokePosition, effect_blur_kernel, effect_support_px,
+    knockout_coverage, shadow_offset, shadow_split, unit,
 };
 use crate::Rect;
-use crate::blend_math::{Applicability, PixelSite, Rgba, composite_over, composite_over_extended};
+use crate::blend_math::{
+    Applicability, PixelSite, Rgba, composite_over, composite_over_extended, composite_over_fill,
+    fill_inside_blend,
+};
 use crate::render_plan::SampleRange;
-use crate::coverage_math::feather_kernel;
 use std::fmt;
 use std::ops::Range;
 
@@ -403,6 +406,9 @@ enum Post {
     MulAlpha,
     /// `(1 - m) * alpha`: inner glow from the centre.
     OneMinusMulAlpha,
+    /// `1 - m` (no alpha): the interior coverage of an inner glow from the centre (lane
+    /// SMB-PS-ORACLE-PARITY-1).
+    OneMinus,
 }
 
 struct ChainPlan {
@@ -422,7 +428,7 @@ impl ChainPlan {
         offset: (i32, i32),
         post: Post,
     ) -> WResult<Self> {
-        let kernel = feather_kernel(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
+        let kernel = effect_blur_kernel(blur_px)?;
         let kb = u32::try_from(kernel.len() / 2).map_err(|_| WindowError::Overflow)?;
         let kd = if grown_px > 0.0 {
             grown_px.ceil() as u32
@@ -454,6 +460,8 @@ struct HalfPlan {
 
 enum Plan {
     Overlay,
+    /// The interior coverage of a colour overlay: 1 everywhere (lane SMB-PS-ORACLE-PARITY-1).
+    Ones,
     Chain(ChainPlan),
     Stroke { halves: Vec<HalfPlan>, centre: bool },
     /// Satin and bevel (module `style`): the style function on the window grown by `support`,
@@ -463,12 +471,15 @@ enum Plan {
         op: EffectOp,
         support: u32,
         per_px: u64,
+        /// Satin's interior coverage: the style function without the final multiply by alpha.
+        interior: bool,
     },
-    /// Gradient overlay: alpha x stop opacity, with a colour per pixel.
-    Gradient(super::GradientOverlayOp),
+    /// Gradient overlay: alpha x stop opacity, with a colour per pixel (`true`: the interior
+    /// coverage, the stop opacity alone).
+    Gradient(super::GradientOverlayOp, bool),
     /// Pattern overlay (lane SMB-PS-ADJUST-STYLES-2): alpha x pattern alpha, with the pattern
-    /// colour per pixel.
-    Pattern(super::PatternOverlayOp),
+    /// colour per pixel (`true`: the interior coverage, the pattern alpha alone).
+    Pattern(super::PatternOverlayOp, bool),
 }
 
 /// Bytes per pixel of the grown window reserved for the style function's own buffers (satin keeps
@@ -480,19 +491,55 @@ fn half(w: f32, outside: bool) -> HalfPlan {
     HalfPlan { w, kd, outside }
 }
 
+/// The plan of an interior effect's interior coverage ([`super::reference_interior_matte`]): the
+/// effect's plan without the final multiply by the shape alpha.
+fn prepare_interior(op: &EffectOp) -> WResult<Plan> {
+    Ok(match prepare(op)? {
+        Plan::Overlay => Plan::Ones,
+        Plan::Gradient(o, _) => Plan::Gradient(o, true),
+        Plan::Pattern(o, _) => Plan::Pattern(o, true),
+        Plan::Local {
+            op, support, per_px, ..
+        } => Plan::Local {
+            op,
+            support,
+            per_px,
+            interior: true,
+        },
+        Plan::Chain(mut c) => {
+            c.post = match c.post {
+                Post::MulAlpha => Post::None,
+                Post::OneMinusMulAlpha => Post::OneMinus,
+                other => other,
+            };
+            Plan::Chain(c)
+        }
+        other => other,
+    })
+}
+
+/// The plan an effect of a layer composition runs: the interior coverage for an interior effect.
+fn prepare_composed(op: &EffectOp) -> WResult<Plan> {
+    if op.is_interior() {
+        prepare_interior(op)
+    } else {
+        prepare(op)
+    }
+}
+
 fn prepare(op: &EffectOp) -> WResult<Plan> {
     op.validate()?;
     Ok(match op {
         EffectOp::ColourOverlay(_) => Plan::Overlay,
-        EffectOp::GradientOverlay(o) => Plan::Gradient(*o),
-        EffectOp::PatternOverlay(o) => Plan::Pattern(*o),
+        EffectOp::GradientOverlay(o) => Plan::Gradient(*o, false),
+        EffectOp::PatternOverlay(o) => Plan::Pattern(*o, false),
         EffectOp::Satin(_) | EffectOp::BevelEmboss(_) => {
             let size = match op {
                 EffectOp::Satin(o) => o.size_px,
                 EffectOp::BevelEmboss(o) => o.shape.size_px,
                 _ => 0.0,
             };
-            let kernel = feather_kernel(size).map_err(|_| EffectError::SizeOutOfRange)?;
+            let kernel = effect_blur_kernel(size)?;
             Plan::Local {
                 op: *op,
                 support: effect_support_px(op)?,
@@ -503,6 +550,7 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
                         4,
                     )?,
                 },
+                interior: false,
             }
         }
         EffectOp::DropShadow(o) => Plan::Chain(ChainPlan::new(
@@ -593,7 +641,9 @@ impl ChainPlan {
             peak = peak.max(addu(mulu(addu(ah, aw)?, 4)?, mulu(ww, 8)?)?);
             work = addu(work, mulu(addu(ah, aw)?, klen)?)?;
         }
-        if self.post != Post::None {
+        if self.post == Post::OneMinus {
+            work = addu(work, aw)?;
+        } else if self.post != Post::None {
             peak = peak.max(mulu(aw, 8)?);
             work = addu(work, mulu(aw, 2)?)?;
         }
@@ -625,7 +675,7 @@ impl Plan {
         let (ww, wh) = (u64::from(window.width), u64::from(window.height));
         let aw = mulu(ww, wh)?;
         match self {
-            Self::Overlay => Ok(Cost {
+            Self::Overlay | Self::Ones => Ok(Cost {
                 peak: mulu(aw, 4)?,
                 work: aw,
             }),
@@ -641,7 +691,7 @@ impl Plan {
                 })
             }
             // Matte (4) and the per-pixel colours (12); read, opacity and colour passes.
-            Self::Gradient(_) | Self::Pattern(_) => Ok(Cost {
+            Self::Gradient(..) | Self::Pattern(..) => Ok(Cost {
                 peak: mulu(aw, 16)?,
                 work: mulu(aw, 3)?,
             }),
@@ -727,10 +777,25 @@ fn compose_cost(effects: &[EffectOp], window: Rect) -> WResult<Cost> {
     let passes = u64::try_from(effects.len()).map_err(|_| WindowError::Overflow)?;
     let mut work = mulu(aw, addu(passes, 2)?)?;
     let mut matte_peak = 0u64;
+    let mut interior_peak = 0u64;
     for op in effects {
-        let c = prepare(op)?.cost(window)?;
-        matte_peak = matte_peak.max(c.peak);
+        let c = prepare_composed(op)?.cost(window)?;
+        if op.is_interior() {
+            interior_peak = interior_peak.max(c.peak);
+        } else {
+            matte_peak = matte_peak.max(c.peak);
+        }
         work = addu(work, c.work)?;
+    }
+    if effects.iter().any(EffectOp::is_interior) {
+        // The interior unit (lane SMB-PS-ORACLE-PARITY-1): the copy of the result below (rgb 12 +
+        // alpha 4 per pixel) lives through the content pass, with a window of ones (4), and
+        // through every interior pass; copy, ones and mix are one visit per pixel each.
+        let below = mulu(aw, 16)?;
+        matte_peak = matte_peak
+            .max(addu(below, mulu(aw, 4)?)?)
+            .max(addu(below, interior_peak)?);
+        work = addu(work, mulu(aw, 3)?)?;
     }
     Ok(Cost {
         peak: addu(base, matte_peak)?,
@@ -788,6 +853,13 @@ fn read_alpha_into<S: AlphaSource + ?Sized>(
         }
     }
     Ok(())
+}
+
+/// A window of ones, charged like [`alpha_window`] (the interior coverage of an overlay).
+fn ones_window(g: &WindowGeometry, meter: &mut Meter) -> WResult<Vec<f32>> {
+    let buf = meter.take(count(g.window)?, 1.0)?;
+    meter.charge_work(area(g.window)?)?;
+    Ok(buf)
 }
 
 /// The alpha over the window (0 beyond the layer and the domain).
@@ -994,7 +1066,12 @@ fn run_chain<S: AlphaSource + ?Sized>(
     } else {
         s1
     };
-    if c.post != Post::None {
+    if c.post == Post::OneMinus {
+        meter.charge_work(area(g.window)?)?;
+        for m in s2.iter_mut() {
+            *m = 1.0 - *m;
+        }
+    } else if c.post != Post::None {
         // `alpha_window` charges the read; this charges the per-sample multiply.
         meter.charge_work(area(g.window)?)?;
         let a = alpha_window(src, g, meter)?;
@@ -1003,7 +1080,7 @@ fn run_chain<S: AlphaSource + ?Sized>(
                 Post::Knockout => *m * (1.0 - *a),
                 Post::MulAlpha => *m * *a,
                 Post::OneMinusMulAlpha => (1.0 - *m) * *a,
-                Post::None => *m,
+                Post::None | Post::OneMinus => *m,
             };
         }
         meter.give(a);
@@ -1084,12 +1161,14 @@ fn gradient_colours(
 /// sub-plane every stage reads its neutral 0), then the window is cut out. Every window sample
 /// depends only on alpha within the support, so the result equals the reference on the domain
 /// bit for bit (same function, same arithmetic order).
+#[allow(clippy::too_many_arguments)]
 fn run_local<S: AlphaSource + ?Sized>(
     src: &S,
     g: &WindowGeometry,
     op: &EffectOp,
     support: u32,
     per_px: u64,
+    interior: bool,
     meter: &mut Meter,
 ) -> WResult<Vec<f32>> {
     let grown = grow(g.window, support)?;
@@ -1106,7 +1185,7 @@ fn run_local<S: AlphaSource + ?Sized>(
         h: i64::from(sub.height),
     };
     let m = match op {
-        EffectOp::Satin(o) => super::style::satin_matte(&alpha, grid, o)?,
+        EffectOp::Satin(o) => super::style::satin_matte_by(&alpha, grid, o, !interior)?,
         EffectOp::BevelEmboss(o) => super::style::bevel_matte(&alpha, grid, o)?,
         _ => return Err(WindowError::Geometry),
     };
@@ -1158,9 +1237,9 @@ fn run_matte<S: AlphaSource + ?Sized>(
     meter: &mut Meter,
 ) -> WResult<Vec<f32>> {
     match plan {
-        Plan::Pattern(o) => {
+        Plan::Pattern(o, interior) => {
             let pixels = super::style::pattern_pixels(o, patterns)?;
-            let mut m = alpha_window(src, g, meter)?;
+            let mut m = if *interior { ones_window(g, meter)? } else { alpha_window(src, g, meter)? };
             meter.charge_work(area(g.window)?)?;
             let (ex, ey) = ends(g.window)?;
             let mut i = 0usize;
@@ -1176,13 +1255,15 @@ fn run_matte<S: AlphaSource + ?Sized>(
             Ok(m)
         }
         Plan::Overlay => alpha_window(src, g, meter),
+        Plan::Ones => ones_window(g, meter),
         Plan::Local {
             op,
             support,
             per_px,
-        } => run_local(src, g, op, *support, *per_px, meter),
-        Plan::Gradient(o) => {
-            let mut m = alpha_window(src, g, meter)?;
+            interior,
+        } => run_local(src, g, op, *support, *per_px, *interior, meter),
+        Plan::Gradient(o, interior) => {
+            let mut m = if *interior { ones_window(g, meter)? } else { alpha_window(src, g, meter)? };
             meter.charge_work(area(g.window)?)?;
             let bounds = layer_bounds(g);
             let (ex, ey) = ends(g.window)?;
@@ -1350,6 +1431,13 @@ enum Colours<'a> {
     Pixels(&'a [[f32; 3]]),
 }
 
+/// The content pass's fill split (lane SMB-PS-ORACLE-PARITY-1): `Some((opacity, fill))` when the
+/// layer's mode is one of Photoshop's special eight and its fill is below 1 (pigment
+/// `composite_over_fill`, as the reference composes the content), `None` for the product fold.
+pub(super) fn content_fill(layer: LayerParams) -> Option<(f32, f32)> {
+    (layer.fill_opacity < 1.0 && fill_inside_blend(layer.mode)).then_some((layer.opacity, layer.fill_opacity))
+}
+
 /// One source-over pass of the whole window (the reference composes pixel by pixel; pixels are
 /// independent, so a pass per effect gives the same bits with one matte alive at a time).
 #[allow(clippy::too_many_arguments)]
@@ -1363,6 +1451,7 @@ fn pass(
     alphas: &[f32],
     clamp: bool,
     range: SampleRange,
+    fill: Option<(f32, f32)>,
     meter: &mut Meter,
 ) -> WResult<()> {
     meter.charge_work(area(g.window)?)?;
@@ -1384,6 +1473,8 @@ fn pass(
         let src = Rgba::new(colour, if clamp { m.clamp(0.0, 1.0) } else { m });
         let px = if range == SampleRange::Extended {
             composite_over_extended(mode, Rgba::new(*c, *a), src, opacity, site)
+        } else if let Some((unfilled, f)) = fill {
+            composite_over_fill(mode, Rgba::new(*c, *a), src, unfilled, f, site)
         } else {
             composite_over(mode, Rgba::new(*c, *a), src, opacity, site)
         }
@@ -1487,7 +1578,7 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
     }
     let cost = compose_cost(effects, window)?;
     check_cost(cost, limits)?;
-    let plans = effects.iter().map(prepare).collect::<WResult<Vec<_>>>()?;
+    let plans = effects.iter().map(prepare_composed).collect::<WResult<Vec<_>>>()?;
 
     let mut meter = Meter::new(limits);
     let content_alpha = alpha_window(src, geometry, &mut meter)?;
@@ -1503,29 +1594,59 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
         .map_err(|_| WindowError::AllocationFailed)?;
     alpha.extend_from_slice(&backdrop.alpha);
 
-    for placement in [EffectOrder::BehindContent, EffectOrder::OverContent] {
-        if placement == EffectOrder::OverContent {
-            pass(
-                &mut rgb,
-                &mut alpha,
-                geometry,
-                layer.mode,
-                layer.opacity * layer.fill_opacity,
-                &Colours::Pixels(content_rgb),
-                &content_alpha,
-                false,
-                range,
-                &mut meter,
-            )?;
+    let interior = effects.iter().any(EffectOp::is_interior);
+    // Behind-content effects, the content (with the interior unit when the stack has interior
+    // effects), then the other over-content effects; each group in list order.
+    for stage in 0..3u8 {
+        if stage == 1 {
+            if interior {
+                interior_unit(
+                    (&mut rgb, &mut alpha),
+                    InteriorInputs { src, geometry, content_rgb, content_alpha: &content_alpha, patterns },
+                    layer,
+                    effects,
+                    &plans,
+                    range,
+                    &mut meter,
+                )?;
+            } else {
+                pass(
+                    &mut rgb,
+                    &mut alpha,
+                    geometry,
+                    layer.mode,
+                    layer.opacity * layer.fill_opacity,
+                    &Colours::Pixels(content_rgb),
+                    &content_alpha,
+                    false,
+                    range,
+                    content_fill(layer),
+                    &mut meter,
+                )?;
+            }
+            continue;
         }
         for (op, plan) in effects.iter().zip(&plans) {
-            if op.placement() != placement {
+            let wanted = if stage == 0 {
+                op.placement() == EffectOrder::BehindContent
+            } else {
+                op.placement() == EffectOrder::OverContent && !op.is_interior()
+            };
+            if !wanted {
                 continue;
             }
-            let matte = run_matte(src, geometry, plan, patterns, &mut meter)?;
+            let mut matte = run_matte(src, geometry, plan, patterns, &mut meter)?;
+            if let EffectOp::DropShadow(DropShadowOp { layer_knocks_out: true, .. }) = op {
+                // the reference's composition rule (`knockout_coverage`); the multiply is part
+                // of this pass's charged work
+                let of = layer.opacity * layer.fill_opacity;
+                for (m, a) in matte.iter_mut().zip(&content_alpha) {
+                    *m = knockout_coverage(m.clamp(0.0, 1.0), *a, of);
+                }
+            }
             let per_pixel = match plan {
-                Plan::Gradient(o) => Some(gradient_colours(geometry, o, &mut meter)?),
-                Plan::Pattern(o) => {
+                Plan::Gradient(o, _) => Some(gradient_colours(geometry, o, &mut meter)?),
+                Plan::Pattern(o, _) => {
                     let pixels = super::style::pattern_pixels(o, patterns)?;
                     Some(pattern_colours(geometry, o, pixels, &mut meter)?)
                 }
@@ -1545,6 +1666,7 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
                 &matte,
                 true,
                 range,
+                None,
                 &mut meter,
             )?;
             if per_pixel.is_some() {
@@ -1565,4 +1687,103 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
             work: meter.work,
         },
     })
+}
+
+/// What the interior unit reads.
+struct InteriorInputs<'a, S: AlphaSource + ?Sized> {
+    src: &'a S,
+    geometry: &'a WindowGeometry,
+    content_rgb: &'a [[f32; 3]],
+    content_alpha: &'a [f32],
+    patterns: &'a dyn super::PatternPixels,
+}
+
+/// The interior unit of [`render_layer_window`] (lane SMB-PS-ORACLE-PARITY-1, the reference's
+/// `interior_mix` rule): the result below is kept, the content composites over it as if it
+/// covered every pixel, the interior effects composite over that with their interior coverage in
+/// list order, and every pixel is mixed back by the shape alpha ([`super::interior_mix`]).
+#[allow(clippy::too_many_arguments)]
+fn interior_unit<S: AlphaSource + ?Sized>(
+    (rgb, alpha): (&mut Vec<[f32; 3]>, &mut Vec<f32>),
+    inp: InteriorInputs<'_, S>,
+    layer: LayerParams,
+    effects: &[EffectOp],
+    plans: &[Plan],
+    range: SampleRange,
+    meter: &mut Meter,
+) -> WResult<()> {
+    let g = inp.geometry;
+    let aw = area(g.window)?;
+    let n = count(g.window)?;
+    meter.reserve(mulu(aw, 16)?)?;
+    meter.charge_work(aw)?;
+    let below_rgb = rgb.clone();
+    let below_alpha = alpha.clone();
+    let ones = meter.take(n, 1.0)?;
+    meter.charge_work(aw)?;
+    pass(
+        rgb,
+        alpha,
+        g,
+        layer.mode,
+        layer.opacity * layer.fill_opacity,
+        &Colours::Pixels(inp.content_rgb),
+        &ones,
+        false,
+        range,
+        content_fill(layer),
+        meter,
+    )?;
+    meter.give(ones);
+    for (op, plan) in effects.iter().zip(plans) {
+        if !op.is_interior() {
+            continue;
+        }
+        let matte = run_matte(inp.src, g, plan, inp.patterns, meter)?;
+        let per_pixel = match plan {
+            Plan::Gradient(o, _) => Some(gradient_colours(g, o, meter)?),
+            Plan::Pattern(o, _) => {
+                let pixels = super::style::pattern_pixels(o, inp.patterns)?;
+                Some(pattern_colours(g, o, pixels, meter)?)
+            }
+            _ => None,
+        };
+        let colours = match &per_pixel {
+            Some(c) => Colours::Pixels(c),
+            None => Colours::Uniform(op.colour()),
+        };
+        pass(
+            rgb,
+            alpha,
+            g,
+            op.mode(),
+            op.opacity() * layer.opacity,
+            &colours,
+            &matte,
+            true,
+            range,
+            None,
+            meter,
+        )?;
+        if per_pixel.is_some() {
+            meter.release(mulu(aw, 12)?);
+        }
+        meter.give(matte);
+    }
+    meter.charge_work(aw)?;
+    let unit = range != SampleRange::Extended;
+    for (i, (c, a)) in rgb.iter_mut().zip(alpha.iter_mut()).enumerate() {
+        let shape = *inp.content_alpha.get(i).ok_or(WindowError::Geometry)?;
+        let below = Rgba::new(
+            *below_rgb.get(i).ok_or(WindowError::Geometry)?,
+            *below_alpha.get(i).ok_or(WindowError::Geometry)?,
+        );
+        let mixed = super::interior_mix(below, Rgba::new(*c, *a), shape, unit);
+        *c = mixed.rgb;
+        *a = mixed.a;
+    }
+    drop(below_rgb);
+    drop(below_alpha);
+    meter.release(mulu(aw, 16)?);
+    Ok(())
 }

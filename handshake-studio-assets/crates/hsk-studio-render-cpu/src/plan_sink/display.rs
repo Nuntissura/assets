@@ -14,7 +14,8 @@
 use super::{RenderError, f32_at};
 use crate::px::{add_u, overflow};
 use hsk_studio_pigment::blend_math::{
-    BlendError, PixelSite, Rgba, composite_over, composite_over_extended,
+    BlendError, PixelSite, Rgba, composite_over, composite_over_extended, composite_over_fill,
+    fill_inside_blend,
 };
 pub use hsk_studio_pigment::render_plan::{DISPLAY_CLIP_OPERATOR, DisplayTransform};
 use hsk_studio_pigment::render_plan::{
@@ -56,6 +57,29 @@ pub(crate) fn over(
         composite_over_extended(mode, backdrop, source, opacity, site)
     } else {
         composite_over(mode, backdrop, source, opacity, site)
+    }
+}
+
+/// [`over`] with the layer's fill kept apart (lane SMB-PS-ORACLE-PARITY-1): a unit-range layer in
+/// one of Photoshop's special-eight modes with fill below 1 goes through pigment
+/// `composite_over_fill` (fill inside the blend, D5 PS-B01); every other case is [`over`] at
+/// `folded` (the layer's `opacity * fill * coverage`, bits unchanged). `unfilled` is the same product
+/// without the fill.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn over_fill(
+    extended: bool,
+    mode: StudioBlendMode,
+    backdrop: Rgba,
+    source: Rgba,
+    folded: f32,
+    unfilled: f32,
+    fill: f32,
+    site: PixelSite,
+) -> Result<Rgba, BlendError> {
+    if !extended && fill < 1.0 && fill_inside_blend(mode) {
+        composite_over_fill(mode, backdrop, source, unfilled, fill, site)
+    } else {
+        over(extended, mode, backdrop, source, folded, site)
     }
 }
 

@@ -41,7 +41,7 @@ use crate::px::{
 };
 use crate::vector::VectorSource;
 pub use display::{DISPLAY_CLIP_EXACTNESS, DISPLAY_CLIP_OPERATOR, DisplayTransform};
-use display::{over, sample_ok};
+use display::{over_fill, sample_ok};
 pub use extended::MAX_EFFECT_WINDOW_WORK;
 use extended::{ExtPrep, FrameShape, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
@@ -1379,12 +1379,14 @@ impl Eval<'_, '_> {
                 if opacity <= 0.0 || source_alpha <= 0.0 {
                     continue;
                 }
-                let out = over(
+                let out = over_fill(
                     self.prepared.ext.output.is_extended(),
                     layer.mode,
                     Rgba::new([b[0], b[1], b[2]], base_alpha),
                     Rgba::new([rgba[0], rgba[1], rgba[2]], source_alpha),
                     opacity,
+                    layer.layer_opacity * coverage,
+                    layer.fill_opacity,
                     PixelSite {
                         x,
                         y,
@@ -1632,17 +1634,19 @@ impl Eval<'_, '_> {
                 let mut source_alpha = rgba[3];
                 if !blend_if.is_empty() {
                     source_alpha *=
-                        blend_weight(blend_if, [rgba[0], rgba[1], rgba[2]], [b[0], b[1], b[2]])?;
+                        blend_weight(blend_if, [rgba[0], rgba[1], rgba[2]], [b[0], b[1], b[2]], b[3])?;
                     if source_alpha <= 0.0 {
                         continue;
                     }
                 }
-                let out = over(
+                let out = over_fill(
                     self.prepared.ext.output.is_extended(),
                     layer.mode,
                     Rgba::new([b[0], b[1], b[2]], b[3]),
                     Rgba::new([rgba[0], rgba[1], rgba[2]], source_alpha),
                     opacity,
+                    layer.layer_opacity * coverage * mask,
+                    layer.fill_opacity,
                     PixelSite {
                         x,
                         y,

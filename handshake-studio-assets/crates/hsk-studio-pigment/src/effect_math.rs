@@ -29,7 +29,6 @@
 use crate::blend_math::{
     Applicability, BlendError, Exactness, PixelSite, Rgba, StudioBlendMode, composite_over,
 };
-use crate::coverage_math::{feather_kernel, feather_support};
 use serde::Serialize;
 use std::fmt;
 
@@ -209,7 +208,7 @@ impl EffectKind {
         let (key, reference) = match self {
             Self::DropShadow => (
                 "drop_shadow",
-                "matte = layer shape alpha; spread_px = spread*size grown as a hard disc dilation, blur = size - spread_px by a Gaussian (sigma = coverage_math::feather_sigma), then offset (-cos a, sin a)*distance rounded to whole pixels, then optional knockout alpha*(1-layer alpha). Structure from Krita libs/image/layerstyles/kis_ls_drop_shadow_filter.cpp (spread_size = (spread*size+50)/100, blur_size = size - spread_size, spread then blur then offset then knockout; behaviour reference only, GPL, no code copied); Adobe community evidence that spread has no visible effect at size 0. Photoshop sign convention, radius-to-sigma (Krita uses 0.3r+0.3), sub-pixel offset UNVERIFIED (D5 12)",
+                "matte = layer shape alpha; spread_px = spread*size grown as a hard disc dilation, blur = size - spread_px by the tent kernel effect_blur_kernel (D5 oracle PS-C12, lane SMB-PS-ORACLE-PARITY-1), then offset (-cos a, sin a)*distance rounded half away from zero per axis (shadow_offset), then optional knockout composited as disjoint coverage (knockout_coverage). Structure from Krita libs/image/layerstyles/kis_ls_drop_shadow_filter.cpp (spread_size = (spread*size+50)/100, blur_size = size - spread_size, spread then blur then offset then knockout; behaviour reference only, GPL, no code copied); Adobe community evidence that spread has no visible effect at size 0. Kernel, offset sign and rounding and the fill-1/fill-0 knockout measured on the D5 oracle (PS-C12); the spread dilation shape at corners differs from Photoshop's (spread 50/100 corner pixels, UNVERIFIED rule)",
             ),
             Self::ColourOverlay => (
                 "colour_overlay",
@@ -221,23 +220,23 @@ impl EffectKind {
             ),
             Self::InnerShadow => (
                 "inner_shadow",
-                "matte = 1 - layer alpha (beyond the plane counts as transparent, so 1), choke_px = choke*size grown as a hard disc, blur = size - choke_px by a Gaussian, offset like the drop shadow, then clipped to the layer alpha (multiplied by it), composited over the content. Structure from Krita kis_ls_drop_shadow_filter.cpp (same pipeline for inner shadow, outer and inner glow; the choke uses the spread slot; behaviour reference only, GPL, no code copied); Adobe: choke trims the matte before the blur, Tuts+: choke 100 % gives a hard-edged inner stroke. Direction convention, choke model, clip by alpha vs threshold UNVERIFIED (D5 15)",
+                "matte = 1 - layer alpha (beyond the plane counts as transparent, so 1), choke_px = choke*size grown as a hard disc, blur = size - choke_px by the tent kernel effect_blur_kernel (D5 PS-C15), offset like the drop shadow, then clipped to the layer alpha (multiplied by it), composited over the content. Structure from Krita kis_ls_drop_shadow_filter.cpp (same pipeline for inner shadow, outer and inner glow; the choke uses the spread slot; behaviour reference only, GPL, no code copied); Adobe: choke trims the matte before the blur, Tuts+: choke 100 % gives a hard-edged inner stroke. Kernel and offset measured on the D5 oracle (PS-C15); the choke dilation shape at corners and the composition on anti-aliased edges differ from Photoshop (UNVERIFIED)",
             ),
             Self::OuterGlow => (
                 "outer_glow",
-                "colour glow behind the content: the drop-shadow matte chain with zero offset and no knockout (spread_px = spread*size grown, blur = the rest); technique Softer only. Krita pipeline as for the drop shadow; Precise is a distance transform in Photoshop (ImageMagick forum report on a Photoshop layer-styles port) and is refused, as are gradient fill, range other than 100 % and jitter. Softer is not a plain blur in Photoshop (same report), so Approximate; UNVERIFIED (D5 16)",
+                "colour glow behind the content: the drop-shadow matte chain with zero offset and no knockout (spread_px = spread*size grown, blur = the rest); technique Softer only. Krita pipeline as for the drop shadow; Precise is a distance transform in Photoshop (ImageMagick forum report on a Photoshop layer-styles port) and is refused, as are gradient fill, range other than 100 % and jitter. Softer at spread 0 is the tent-kernel blur of the shape (effect_blur_kernel, measured on D5 PS-C16 at sizes 2/10/40); spread corners and the fill-0 case differ (UNVERIFIED); Approximate",
             ),
             Self::InnerGlow => (
                 "inner_glow",
-                "colour glow over the content, clipped to the layer alpha: source edge = the inner-shadow chain with zero offset (inverted matte, choke grown, blurred); source centre = 1 - that edge matte (Krita inverts the selection again after the blur for a centre source); technique Softer only; gradient, range other than 100 % and jitter refused. Tuts+: edge radiates inward from the outline, centre radiates from the middle; choke 100 % is a hard-edged inner stroke. UNVERIFIED (D5 17)",
+                "colour glow over the content, clipped to the layer alpha: source edge = the inner-shadow chain with zero offset (inverted matte, choke grown, blurred); source centre = 1 - that edge matte (Krita inverts the selection again after the blur for a centre source); technique Softer only; gradient, range other than 100 % and jitter refused. Tuts+: edge radiates inward from the outline, centre radiates from the middle; choke 100 % is a hard-edged inner stroke. Blur kernel as the inner shadow (effect_blur_kernel); the D5 PS-C17 outputs cannot judge the glow itself (light glow in Screen over white), UNVERIFIED (D5 17)",
             ),
             Self::Satin => (
                 "satin",
-                "|B(x - o) - B(x + o)| of the Gaussian-blurred shape alpha B (size) at the whole-pixel shadow offset o (angle, distance), inverted when invert, times the alpha (effect_math::style); two offset blurred copies as in Krita's satin (behaviour reference, GPL, no code copied); Photoshop combination UNVERIFIED (D5)",
+                "|B(x - o) - B(x + o)| of the shape alpha B blurred by the effect tent kernel (size; the kernel of the oracle-measured shadows and glows, for satin UNVERIFIED) at the whole-pixel shadow offset o (angle, distance), inverted when invert, times the alpha (effect_math::style); two offset blurred copies as in Krita's satin (behaviour reference, GPL, no code copied); Photoshop combination UNVERIFIED (D5)",
             ),
             Self::BevelEmboss => (
                 "bevel_emboss",
-                "smooth technique: height depth/100 * size * Gaussian(alpha, size); chisel hard: signed edge distance capped at size (slope depth/100), chisel soft: that field blurred by size/4; central-difference normal, Lambert shading against the flat sin(altitude), highlight (s - s0)/(1 - s0) and shadow (s0 - s)/s0 as two ops; inner/outer/emboss/pillow regions, stroke emboss on the layer's stroke matte (field of shape union stroke); soften blurs the part matte (effect_math::style); Photoshop maths UNVERIFIED (D5)",
+                "smooth technique: height depth/100 * size * Gaussian(alpha, size); chisel hard: signed edge distance capped at size (slope depth/100), chisel soft: that field blurred by size/4; central-difference normal, Lambert shading against the flat sin(altitude), highlight (s - s0)/(1 - s0) and shadow (s0 - s)/s0 as two ops; inner/outer/emboss/pillow regions, stroke emboss on the layer's stroke matte (field of shape union stroke); soften blurs the part matte with the effect tent kernel (effect_math::style; for soften UNVERIFIED); Photoshop maths UNVERIFIED (D5)",
             ),
             Self::GradientOverlay => (
                 "gradient_overlay",
@@ -627,6 +626,24 @@ impl EffectOp {
             | Self::PatternOverlay(_) => EffectOrder::OverContent,
         }
     }
+    /// Interior effects (lane SMB-PS-ORACLE-PARITY-1): inner shadow, inner glow, colour, gradient
+    /// and pattern overlay and satin, the kinds Photoshop's "Blend Interior Effects as Group" names
+    /// (Adobe help, layer style blending options). They are composed INSIDE the layer: with the
+    /// content as if it covered the pixel fully, then mixed with what lay below by the shape alpha
+    /// ([`interior_mix`]), so an anti-aliased edge keeps the shape alpha. Measured on the D5 oracle
+    /// for the inner shadow (PS-C15 circle rims) and the inner glow (PS-C17 circle and feathered
+    /// rims); the overlays and satin follow the same rule, UNVERIFIED.
+    pub const fn is_interior(&self) -> bool {
+        matches!(
+            self,
+            Self::InnerShadow(_)
+                | Self::InnerGlow(_)
+                | Self::ColourOverlay(_)
+                | Self::GradientOverlay(_)
+                | Self::PatternOverlay(_)
+                | Self::Satin(_)
+        )
+    }
     pub const fn mode(&self) -> StudioBlendMode {
         match self {
             Self::DropShadow(o) => o.mode,
@@ -761,6 +778,48 @@ fn glow_ok(
     Ok(())
 }
 
+/// The blur radius [`effect_blur_kernel`] uses for `size_px`: 0 for 0, otherwise `max(size, 2)`.
+/// Non-finite or negative is `OutOfDomain`, above [`MAX_EFFECT_SIZE_PX`] `SizeOutOfRange`.
+fn effect_blur_radius(size_px: f32) -> Result<f64, EffectError> {
+    bounded(size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
+    Ok(if size_px > 0.0 {
+        f64::from(size_px).max(2.0)
+    } else {
+        0.0
+    })
+}
+
+/// Half-width in pixels of [`effect_blur_kernel`] (the largest integer below the radius; 0 for the
+/// identity kernel): the margin a backend reads around a blurred effect matte.
+pub fn effect_blur_support(size_px: f32) -> Result<u32, EffectError> {
+    let r = effect_blur_radius(size_px)?;
+    // r <= max(MAX_EFFECT_SIZE_PX, 2), so the value fits u32.
+    Ok(if r > 0.0 { (r.ceil() - 1.0) as u32 } else { 0 })
+}
+
+/// Photoshop's layer-effect blur (lane SMB-PS-ORACLE-PARITY-1, measured on the Photoshop 27.11 D5
+/// oracle): a separable tent (triangle) kernel of half-width `R`, taps `R - |i|` for `|i| < R`
+/// normalised to sum 1 (two box passes of width `R` for an integer `R`), finite support (a shadow
+/// is exactly 0 from `size` pixels beyond the edge on). `R = size`, except that a size between 0
+/// and 2 uses `R = 2`: the spread-50 size-2 drop shadow (blur part 1 px) is the `[1, 2, 1] / 4`
+/// kernel (PS-C12 square_s2_sp50_*). The size-0 kernel is the identity `[1.0]`. Evidence: with
+/// this kernel the spread-0 / choke-0 variants of PS-C12 (drop shadow), PS-C15 (inner shadow, the
+/// square) and PS-C16 (outer glow) at sizes 2, 10 and 40 reproduce Photoshop's 8-bit output within
+/// 1 code in the scratch model of the lane (the previous Gaussian of sigma size/2 differed by up to
+/// 55 codes); the D5 suite (harness `tests/d5_ps_compare.rs`) is the proof. Fractional
+/// radii between 1 and 2 and the satin and bevel soften blurs (not in the oracle) are UNVERIFIED.
+pub fn effect_blur_kernel(size_px: f32) -> Result<Vec<f32>, EffectError> {
+    let r = effect_blur_radius(size_px)?;
+    if r <= 0.0 {
+        return Ok(vec![1.0]);
+    }
+    let n = i64::from(effect_blur_support(size_px)?);
+    let lo = n.checked_neg().ok_or(EffectError::Overflow)?;
+    let taps: Vec<f64> = (lo..=n).map(|i| r - i.unsigned_abs() as f64).collect();
+    let sum: f64 = taps.iter().sum();
+    Ok(taps.iter().map(|t| (t / sum) as f32).collect())
+}
+
 /// `(spread_px, blur_px)` of a drop shadow, outer glow, inner shadow or inner glow (pass the choke
 /// as `spread` for the inner ones): `spread_px = spread * size` is grown as a hard disc,
 /// `blur_px = size - spread_px` is blurred (Krita `kis_ls_drop_shadow_filter.cpp` split, without its
@@ -772,8 +831,11 @@ pub fn shadow_split(size_px: f32, spread: f32) -> (f32, f32) {
 }
 
 /// Whole-pixel shadow offset `(dx, dy) = round(distance * (-cos angle, sin angle))`, y down,
-/// rounding half away from zero. Angle 180 and distance 2 give `(2, 0)`. Photoshop's sign
-/// convention and its handling of fractional offsets are UNVERIFIED (D5 case 12).
+/// rounding half away from zero after snapping each product to a 1e-6 grid, so that an exact half
+/// stays a half: binary64 `5 cos 120 deg` is `-2.4999999999999996`, which plain rounding turns
+/// into 2, while Photoshop moves the angle-120 distance-5 shadow by `(3, 4)` (lane
+/// SMB-PS-ORACLE-PARITY-1, D5 PS-C12 / PS-C15 `*_a120_d5` and `*_a-60_d5`; the fractional
+/// `d2.5_a30` variants move by `(-2, 1)`). Angle 180 and distance 2 give `(2, 0)`.
 pub fn shadow_offset(angle_deg: f32, distance_px: f32) -> Result<(i32, i32), EffectError> {
     angle_ok(angle_deg)?;
     bounded(
@@ -783,10 +845,25 @@ pub fn shadow_offset(angle_deg: f32, distance_px: f32) -> Result<(i32, i32), Eff
     )?;
     let rad = f64::from(angle_deg).to_radians();
     let d = f64::from(distance_px);
-    let dx = (-(d * rad.cos())).round();
-    let dy = (d * rad.sin()).round();
+    let snap = |v: f64| ((v * 1e6).round() / 1e6).round();
+    let dx = snap(-(d * rad.cos()));
+    let dy = snap(d * rad.sin());
     // Both are bounded by MAX_EFFECT_DISTANCE_PX, far inside i32.
     Ok((dx as i32, dy as i32))
+}
+
+/// Knockout of a drop shadow by its layer (lane SMB-PS-ORACLE-PARITY-1, D5 PS-C12 `soft_fill*`
+/// and the circle variants): Photoshop composites the knocked-out shadow and the layer content as
+/// disjoint coverage, `alpha = o (a f + m (1 - a))` for shape alpha `a`, fill `f`, layer opacity
+/// `o` and shadow matte `m` (fill 1 leaves anti-aliased rims as without knockout, fill 0 shows
+/// `m (1 - a)`). Studio composites the shadow and then the content source-over, so the shadow
+/// coverage that reproduces it is `m (1 - a) / (1 - o f a)` (0 where `o f a = 1`, where the
+/// content covers the pixel fully). `knocked` is the matte after [`reference_matte`]'s knockout
+/// (`m (1 - a)`), `of` the product `opacity * fill`. Measured for opacity 1 (fill 100/50/0 within
+/// 1 code); the opacity factor follows the layer-and-effects-fade-together reading, UNVERIFIED.
+pub fn knockout_coverage(knocked: f32, alpha: f32, of: f32) -> f32 {
+    let k = 1.0 - of * alpha;
+    if k > 0.0 { (knocked / k).clamp(0.0, 1.0) } else { 0.0 }
 }
 
 /// Pixels of margin around the layer bounds that the effect reads and writes: the matte at a pixel
@@ -800,7 +877,7 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
     match op {
         EffectOp::DropShadow(o) => {
             let (spread_px, blur_px) = shadow_split(o.size_px, o.spread);
-            let blur = feather_support(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
+            let blur = effect_blur_support(blur_px)?;
             ceil(o.distance_px)
                 .checked_add(ceil(spread_px))
                 .and_then(|v| v.checked_add(blur))
@@ -822,7 +899,7 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
 /// `offset + ceil(grown) + blur half-width` of a grown-then-blurred matte.
 fn grown_support(size_px: f32, grow: f32, offset: u32) -> Result<u32, EffectError> {
     let (grown_px, blur_px) = shadow_split(size_px, grow);
-    let blur = feather_support(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    let blur = effect_blur_support(blur_px)?;
     offset
         .checked_add(grown_px.ceil() as u32)
         .and_then(|v| v.checked_add(blur))
@@ -1053,7 +1130,7 @@ fn matte_chain(
     } else {
         matte.to_vec()
     };
-    let kernel = feather_kernel(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    let kernel = effect_blur_kernel(blur_px)?;
     let blurred = blur_ext(&grown, g, &kernel, outside)?;
     shift_ext(&blurred, g, dx, dy, outside)
 }
@@ -1102,7 +1179,8 @@ fn stroke_half_by(
 /// effect; backends are tested against it.
 ///
 /// - Drop shadow: grow by `spread_px`, blur by `blur_px` ([`shadow_split`]), move by
-///   [`shadow_offset`], then with `layer_knocks_out` multiply by `1 - alpha`.
+///   [`shadow_offset`], then with `layer_knocks_out` multiply by `1 - alpha` (the layer composition
+///   then rescales it by [`knockout_coverage`]).
 /// - Colour overlay: the alpha.
 /// - Stroke: see [`EffectKind::facts`]; size 0 is an empty matte.
 /// - Outer glow: the drop-shadow chain with zero offset and no knockout.
@@ -1216,6 +1294,91 @@ pub fn reference_matte_with(
     }
 }
 
+/// The interior coverage of an interior effect ([`EffectOp::is_interior`]): its matte BEFORE the
+/// multiply by the shape alpha (colour overlay 1, gradient overlay the stop opacity, pattern overlay
+/// the pattern alpha, inner shadow and inner glow from the edge the blurred inverted matte, inner
+/// glow from the centre one minus it, satin the offset difference). Any other kind is
+/// `PlaneShape` (it has no interior form).
+pub fn reference_interior_matte(
+    plane: &EffectPlane,
+    op: &EffectOp,
+    patterns: &dyn PatternPixels,
+) -> Result<Vec<f32>, EffectError> {
+    op.validate()?;
+    let g = Grid::of(plane);
+    let alpha = plane.alpha();
+    match op {
+        EffectOp::ColourOverlay(_) => Ok(vec![1.0; g.len()?]),
+        EffectOp::Satin(o) => style::satin_matte_by(alpha, g, o, false),
+        EffectOp::PatternOverlay(o) => {
+            let pixels = style::pattern_pixels(o, patterns)?;
+            let mut out = vec![1.0f32; g.len()?];
+            let bounds = crate::Rect { x: 0, y: 0, width: plane.width, height: plane.height };
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let p = o.sample_at(x, y, bounds, pixels).ok_or(EffectError::PlaneShape)?;
+                    if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
+                        *slot = p[3];
+                    }
+                }
+            }
+            Ok(out)
+        }
+        EffectOp::GradientOverlay(o) => {
+            let mut out = vec![1.0f32; g.len()?];
+            let bounds = (0, 0, plane.width, plane.height);
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let (_, opacity) = style::gradient_at(o, x, y, bounds);
+                    if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
+                        *slot = opacity;
+                    }
+                }
+            }
+            Ok(out)
+        }
+        EffectOp::InnerShadow(o) => {
+            let offset = shadow_offset(o.angle_deg, o.distance_px)?;
+            let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
+            matte_chain(&inverted, g, shadow_split(o.size_px, o.choke), offset, 1.0)
+        }
+        EffectOp::InnerGlow(o) => {
+            let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
+            let edge = matte_chain(&inverted, g, shadow_split(o.size_px, o.choke), (0, 0), 1.0)?;
+            Ok(match o.source {
+                GlowSource::Edge => edge,
+                GlowSource::Centre => edge.iter().map(|m| 1.0 - m).collect(),
+            })
+        }
+        _ => Err(EffectError::PlaneShape),
+    }
+}
+
+/// The layer interior mixed into what lay below it (lane SMB-PS-ORACLE-PARITY-1): `below` is the
+/// running result before the content, `inside` the content composited as if it covered the pixel
+/// fully with the interior effects over it, `a` the shape alpha. Premultiplied mix
+/// `(1 - a) below + a inside`, straight colour out (clamped to `[0, 1]` when `unit`); `a >= 1`
+/// returns `inside` and `a <= 0` returns `below` unchanged, so a binary shape composes exactly as
+/// the sequential passes did.
+pub fn interior_mix(below: Rgba, inside: Rgba, a: f32, unit: bool) -> Rgba {
+    if a >= 1.0 {
+        return inside;
+    }
+    if a <= 0.0 {
+        return below;
+    }
+    let ao = (1.0 - a) * below.a + a * inside.a;
+    if ao <= 0.0 {
+        return Rgba::TRANSPARENT;
+    }
+    let mut rgb = [0.0f32; 3];
+    for (i, out) in rgb.iter_mut().enumerate() {
+        let v = ((1.0 - a) * below.a * below.rgb[i] + a * inside.a * inside.rgb[i]) / ao;
+        *out = if unit { v.clamp(0.0, 1.0) } else { v };
+    }
+    Rgba::new(rgb, ao.min(1.0))
+}
+
 /// Layer parameters of a reference composition.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerParams {
@@ -1265,9 +1428,14 @@ pub fn render_layer_reference_with(
     if layer.mode.facts().applicability != Applicability::Layer {
         return Err(EffectError::ModeNotApplicable(layer.mode));
     }
+    let interior = effects.iter().any(EffectOp::is_interior);
     let mut mattes = Vec::with_capacity(effects.len());
     for op in effects {
-        mattes.push(reference_matte_with(content, op, patterns)?);
+        mattes.push(if op.is_interior() {
+            reference_interior_matte(content, op, patterns)?
+        } else {
+            reference_matte_with(content, op, patterns)?
+        });
     }
     let plane_rect = crate::Rect { x: 0, y: 0, width: content.width, height: content.height };
     let g = Grid::of(content);
@@ -1297,7 +1465,12 @@ pub fn render_layer_reference_with(
                     }
                     _ => op.colour(),
                 };
-                let src = Rgba::new(colour, m.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0));
+                let mut cov = m.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                if let EffectOp::DropShadow(DropShadowOp { layer_knocks_out: true, .. }) = op {
+                    let a = content.alpha.get(i).copied().unwrap_or(0.0);
+                    cov = knockout_coverage(cov, a, layer.opacity * layer.fill_opacity);
+                }
+                let src = Rgba::new(colour, cov);
                 Ok(composite_over(
                     op.mode(),
                     px,
@@ -1311,19 +1484,37 @@ pub fn render_layer_reference_with(
                     px = apply(px, k)?;
                 }
             }
-            let src = Rgba::new(
-                *content.rgb.get(i).ok_or(EffectError::PlaneShape)?,
-                *content.alpha.get(i).ok_or(EffectError::PlaneShape)?,
-            );
-            px = composite_over(
-                layer.mode,
-                px,
-                src,
-                layer.opacity * layer.fill_opacity,
-                site,
-            )?;
+            let shape = *content.alpha.get(i).ok_or(EffectError::PlaneShape)?;
+            let content_over = |px: Rgba, a: f32| -> Result<Rgba, EffectError> {
+                let src = Rgba::new(*content.rgb.get(i).ok_or(EffectError::PlaneShape)?, a);
+                Ok(match window::content_fill(layer) {
+                    Some((opacity, fill)) => {
+                        crate::blend_math::composite_over_fill(layer.mode, px, src, opacity, fill, site)?
+                    }
+                    None => composite_over(
+                        layer.mode,
+                        px,
+                        src,
+                        layer.opacity * layer.fill_opacity,
+                        site,
+                    )?,
+                })
+            };
+            if interior {
+                // the interior unit: content at full coverage, the interior effects in list order,
+                // mixed into the result below by the shape alpha
+                let mut inside = content_over(px, 1.0)?;
+                for (k, op) in effects.iter().enumerate() {
+                    if op.is_interior() {
+                        inside = apply(inside, k)?;
+                    }
+                }
+                px = interior_mix(px, inside, shape, true);
+            } else {
+                px = content_over(px, shape)?;
+            }
             for (k, op) in effects.iter().enumerate() {
-                if op.placement() == EffectOrder::OverContent {
+                if op.placement() == EffectOrder::OverContent && !op.is_interior() {
                     px = apply(px, k)?;
                 }
             }

@@ -854,6 +854,88 @@ pub fn composite_over(
     Ok(Rgba { rgb, a: a_o })
 }
 
+/// Photoshop's "special eight" modes, whose fill opacity acts inside the blend instead of as an
+/// alpha factor (lane SMB-PS-ORACLE-PARITY-1, D5 PS-B01 `d8_o100_f50_*`): colour burn, linear
+/// burn, colour dodge, linear dodge (add), vivid light, linear light, hard mix and difference.
+pub const fn fill_inside_blend(mode: StudioBlendMode) -> bool {
+    use StudioBlendMode::*;
+    matches!(
+        mode,
+        ColourBurn | LinearBurn | ColourDodge | LinearDodgeAdd | VividLight | LinearLight | HardMix | Difference
+    )
+}
+
+/// The source of a special-eight mode scaled toward the mode's neutral colour by `fill`: dodges,
+/// linear dodge and difference `s f`, burns `1 - (1 - s) f`, vivid and linear light
+/// `0.5 + (s - 0.5) f`.
+fn fill_scaled_source(mode: StudioBlendMode, s: f32, fill: f32) -> f32 {
+    use StudioBlendMode::*;
+    match mode {
+        ColourBurn | LinearBurn => 1.0 - (1.0 - s) * fill,
+        VividLight | LinearLight => 0.5 + (s - 0.5) * fill,
+        _ => s * fill,
+    }
+}
+
+/// [`composite_over`] with the layer's fill opacity kept apart from its opacity (lane
+/// SMB-PS-ORACLE-PARITY-1). For a mode that is not [`fill_inside_blend`], or for `fill >= 1`, this
+/// is exactly `composite_over(mode, backdrop, source, opacity * fill, site)` (the product fold,
+/// unchanged bits). For a special-eight mode with `fill < 1` Photoshop applies fill inside the
+/// blend: with `A = source alpha * opacity`, `ab` the backdrop alpha and `B' = B(Cb, s')` the mode
+/// on the fill-scaled source ([`fill_scaled_source`]; hard mix is `clamp((b + f s - f) / (1 - f))`),
+/// `co = A f (1 - ab) Cs + A ab B' + (1 - A) ab Cb`, `ao = ab + A f (1 - ab)`, `Cr = co / ao`.
+/// Evidence: the 8-bit fill-50 grids of PS-B01 over an opaque backdrop reproduce within 1 code for
+/// seven modes (linear light within 2 codes: Photoshop floors the scaled source to 8 bits there).
+/// Fill other than 0.5, a translucent backdrop and a translucent source are UNVERIFIED (the oracle
+/// has only the opaque grid); the alpha rule is the reading that keeps fill an alpha factor where
+/// nothing lies below.
+pub fn composite_over_fill(
+    mode: StudioBlendMode,
+    backdrop: Rgba,
+    source: Rgba,
+    opacity: f32,
+    fill: f32,
+    site: PixelSite,
+) -> Result<Rgba, BlendError> {
+    if !in_unit(fill) {
+        return Err(BlendError::OutOfDomain);
+    }
+    if !fill_inside_blend(mode) || fill >= 1.0 {
+        return composite_over(mode, backdrop, source, opacity * fill, site);
+    }
+    backdrop.check()?;
+    source.check()?;
+    if !in_unit(opacity) {
+        return Err(BlendError::OutOfDomain);
+    }
+    let blended = if mode == StudioBlendMode::HardMix {
+        let k = 1.0 - fill;
+        let f = |b: f32, s: f32| ((b + fill * s - fill) / k).clamp(0.0, 1.0);
+        [
+            f(backdrop.rgb[0], source.rgb[0]),
+            f(backdrop.rgb[1], source.rgb[1]),
+            f(backdrop.rgb[2], source.rgb[2]),
+        ]
+    } else {
+        let s = source.rgb.map(|v| fill_scaled_source(mode, v, fill));
+        blend_rgb(mode, backdrop.rgb, s)?
+    };
+    let a = source.a * opacity;
+    let a_b = backdrop.a;
+    let a_o = a_b + a * fill * (1.0 - a_b);
+    if a_o <= 0.0 {
+        return Ok(Rgba::TRANSPARENT);
+    }
+    let mut rgb = [0.0f32; 3];
+    for (i, out) in rgb.iter_mut().enumerate() {
+        let co = a * fill * (1.0 - a_b) * source.rgb[i]
+            + a * a_b * blended[i]
+            + (1.0 - a) * a_b * backdrop.rgb[i];
+        *out = (co / a_o).clamp(0.0, 1.0);
+    }
+    Ok(Rgba { rgb, a: a_o.min(1.0) })
+}
+
 /// One distinct operator used by an evaluation and its effective class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OperatorExactness {

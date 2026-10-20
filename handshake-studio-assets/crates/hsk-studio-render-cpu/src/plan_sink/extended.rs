@@ -26,7 +26,7 @@ use hsk_studio_pigment::filter_math::{
     FilterError, FilterLimits, LayerFilter, MAX_FILTERS_PER_LAYER, filter_window_cost,
 };
 use hsk_studio_pigment::coverage_math::{
-    BlendRangeEntry, CoverageError, IDENTITY_RANGE, blend_if_weight, feather_kernel,
+    BlendRangeEntry, CoverageError, IDENTITY_RANGE, blend_if_weight_over, feather_kernel,
     feather_support,
 };
 use hsk_studio_pigment::effect_math::window::{
@@ -290,13 +290,15 @@ pub(super) fn window_error(error: WindowError) -> RenderError {
     }
 }
 
-/// Blend-If weight of one pixel (`coverage_math::blend_if_weight`, typed errors).
+/// Blend-If weight of one pixel (`coverage_math::blend_if_weight_over`: the backdrop alpha
+/// weakens an Underlying range where little lies below, lane SMB-PS-ORACLE-PARITY-1; typed errors).
 pub(super) fn blend_weight(
     entries: &[BlendRangeEntry],
     source: [f32; 3],
     backdrop: [f32; 3],
+    backdrop_alpha: f32,
 ) -> Result<f32, RenderError> {
-    blend_if_weight(entries, source, backdrop).map_err(coverage_error)
+    blend_if_weight_over(entries, source, backdrop, backdrop_alpha).map_err(coverage_error)
 }
 
 impl ExtPrep {
@@ -995,7 +997,7 @@ impl Eval<'_, '_> {
                 let backdrop = Rgba::new([b[0], b[1], b[2]], b[3]);
                 if !blend_if.is_empty() {
                     let content = adjustment.apply(backdrop.rgb).map_err(adjust_error)?;
-                    k *= blend_weight(blend_if, content, backdrop.rgb)?;
+                    k *= blend_weight(blend_if, content, backdrop.rgb, backdrop.a)?;
                     if k <= 0.0 {
                         continue;
                     }

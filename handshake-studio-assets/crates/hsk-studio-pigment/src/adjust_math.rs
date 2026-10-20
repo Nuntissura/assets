@@ -272,17 +272,50 @@ impl LevelsRecord {
             "levels.gamma",
         )
     }
-    /// GIMP `gimp_operation_levels_map`: `v = clamp((x - ib) / (iw - ib))`, `v = v^(1/gamma)`,
-    /// `out = ob + v (ow - ob)`, clamped.
+    /// GIMP `gimp_operation_levels_map`: `v = clamp((x - ib) / (iw - ib))`, `v = gamma curve(v)`
+    /// ([`levels_gamma`]: the power `v^(1/gamma)` with Photoshop's toe near black for gamma above
+    /// 1), `out = ob + v (ow - ob)`, clamped.
     pub fn map_value(&self, x: f32) -> f32 {
         let mut v =
             ((x - self.input_black) / (self.input_white - self.input_black)).clamp(0.0, 1.0);
         if self.gamma != 1.0 && v > 0.0 {
-            v = v.powf(1.0 / self.gamma);
+            v = levels_gamma(v, self.gamma);
         }
         (self.output_black + v * (self.output_white - self.output_black)).clamp(0.0, 1.0)
     }
 }
+
+/// Photoshop's Levels gamma curve on the normalised input `v` in `[0, 1]` (lane
+/// SMB-PS-ORACLE-PARITY-1, measured on the Photoshop 27.11 D5 oracle PS-C02 / PS-C28). Gamma at
+/// most 1 (and above 2) is the power `v^(1/gamma)`. For `1 < gamma <= 2` Photoshop limits the slope
+/// near black: below `x0 = s0 / 32` with `s0 = 2^gamma` the curve is the cubic Hermite from `(0, 0)`
+/// with slope `s0` to `(x0, x0^(1/gamma))` with the power's slope there (C1 join). Gamma 2: `x0 =
+/// 1/8`, `s0 = 4` reproduces the 16-bit ramp within 0.92 steps of the 15-bit scale (the pure power
+/// differed by 2116 steps, 17 8-bit codes); gamma 1.5 within 2 8-bit codes (one sample) where the
+/// pure power differed by 5. The rule for gamma above 2 (the toe would cover a larger share of the
+/// range) and the exact shape between 1 and 1.4 are UNVERIFIED: the oracle has gammas 0.5, 0.8,
+/// 1, 1.4, 1.5 and 2 only.
+pub fn levels_gamma(v: f32, gamma: f32) -> f32 {
+    if gamma == 1.0 || v <= 0.0 {
+        return v;
+    }
+    let e = 1.0 / gamma;
+    if gamma > 1.0 && gamma <= 2.0 {
+        let s0 = gamma.exp2();
+        let x0 = s0 / 32.0;
+        if v < x0 {
+            let y1 = x0.powf(e);
+            let m1 = e * y1; // slope at x0 times x0: e * x0^(e - 1) * x0
+            let m0 = s0 * x0;
+            let t = v / x0;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            return (t3 - 2.0 * t2 + t) * m0 + (3.0 * t2 - 2.0 * t3) * y1 + (t3 - t2) * m1;
+        }
+    }
+    v.powf(e)
+}
+
 
 /// Levels: a composite record plus one record per channel. Per channel the channel record is
 /// applied first, then the composite record (GIMP order; Photoshop order UNVERIFIED, D5 2).

@@ -7,7 +7,8 @@
 //! ([`super::window`]), which runs them on the window grown by the effect support and clipped to
 //! the domain, so the two agree bit for bit (`tests/layer_styles.rs`).
 //!
-//! - Satin: `B = Gaussian(alpha, size)`, `m = |B(x - o) - B(x + o)|` with `o` the whole-pixel
+//! - Satin: `B = tent(alpha, size)` (the effect blur [`super::effect_blur_kernel`], measured on the
+//!   D5 oracle for shadows and glows; for satin UNVERIFIED), `m = |B(x - o) - B(x + o)|` with `o` the whole-pixel
 //!   shadow offset of `(angle, distance)` ([`super::shadow_offset`]), `1 - m` when inverted, times
 //!   the alpha (drawn inside the shape). Krita's satin also combines two offset blurred copies of
 //!   the shape (behaviour reference, GPL, no code copied); the exact Photoshop combination is
@@ -28,8 +29,9 @@
 //!   the cap), field `s / size` (the slope is `depth / 100`, constant across the bevel: the faceted
 //!   chisel look; beyond the plane the field reads -1); size 0 is flat. Chisel soft: the chisel-hard
 //!   field blurred by a Gaussian of `size / 4`. Both use the smooth shading and region rules.
-//! - Soften: the part matte (after the region rule) blurred by a Gaussian of `soften_px` (Adobe:
-//!   soften blurs the results of shading; the Gaussian is Studio's reading).
+//! - Soften: the part matte (after the region rule) blurred by the effect tent kernel of
+//!   `soften_px` ([`super::effect_blur_kernel`]; Adobe: soften blurs the results of shading; the
+//!   kernel is the one measured for shadows and glows, for soften UNVERIFIED).
 //! - Stroke emboss: the emboss of the layer's stroke ([`BevelStroke`], resolved by the builder from
 //!   the stroke effect on the same layer): the field is taken from the union `max(alpha, stroke)`
 //!   and the region is the stroke matte (pigment's stroke rule); without a stroke the matte is empty
@@ -40,7 +42,10 @@
 //!   linear, radial, angle, reflected, diamond; the geometry readings (box-projection length for
 //!   linear, half the larger side for radial and diamond) are Studio's, UNVERIFIED.
 #![deny(clippy::arithmetic_side_effects)]
-use super::{EffectError, EffectFeature, Grid, MAX_EFFECT_SIZE_PX, blur_ext, shift_ext};
+use super::{
+    EffectError, EffectFeature, Grid, MAX_EFFECT_SIZE_PX, blur_ext, effect_blur_kernel,
+    effect_blur_support, shift_ext,
+};
 use crate::blend_math::StudioBlendMode;
 use crate::coverage_math::{feather_kernel, feather_support};
 use serde::Serialize;
@@ -342,7 +347,7 @@ pub(super) fn validate_gradient(o: &GradientOverlayOp) -> Result<(), EffectError
 
 /// Support (pixels read around the layer) of the three kinds.
 pub(super) fn satin_support(o: &SatinOp) -> Result<u32, EffectError> {
-    let blur = feather_support(o.size_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    let blur = effect_blur_support(o.size_px)?;
     let (dx, dy) = super::shadow_offset(o.angle_deg, o.distance_px)?;
     dx.unsigned_abs()
         .max(dy.unsigned_abs())
@@ -380,7 +385,7 @@ fn field_support(s: &BevelShape) -> Result<u32, EffectError> {
 /// Stroke window + field + 1 (central difference) + soften blur.
 pub(super) fn bevel_support(o: &BevelEmbossOp) -> Result<u32, EffectError> {
     let s = &o.shape;
-    let soften = feather_support(s.soften_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    let soften = effect_blur_support(s.soften_px)?;
     stroke_support(s)
         .checked_add(field_support(s)?)
         .and_then(|v| v.checked_add(1))
@@ -416,7 +421,14 @@ pub(super) fn bevel_work_per_px(o: &BevelEmbossOp) -> Result<u64, EffectError> {
         0 => 0,
         k => twice(square(k)?)?.checked_add(1).ok_or(EffectError::Overflow)?,
     };
-    let soften = if s.soften_px > 0.0 { twice(taps(s.soften_px)?)? } else { 0 };
+    let soften = if s.soften_px > 0.0 {
+        twice(
+            u64::try_from(effect_blur_kernel(s.soften_px)?.len())
+                .map_err(|_| EffectError::Overflow)?,
+        )?
+    } else {
+        0
+    };
     [field, stroke, soften, 4]
         .iter()
         .try_fold(0u64, |acc, v| acc.checked_add(*v))
@@ -425,7 +437,18 @@ pub(super) fn bevel_work_per_px(o: &BevelEmbossOp) -> Result<u64, EffectError> {
 
 /// Satin matte over a plane `g` with shape alpha `alpha` (beyond the plane: transparent).
 pub(super) fn satin_matte(alpha: &[f32], g: Grid, o: &SatinOp) -> Result<Vec<f32>, EffectError> {
-    let kernel = feather_kernel(o.size_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    satin_matte_by(alpha, g, o, true)
+}
+
+/// [`satin_matte`] with the final multiply by the alpha optional (`times_alpha = false`: the
+/// interior coverage of lane SMB-PS-ORACLE-PARITY-1, see [`super::reference_interior_matte`]).
+pub(super) fn satin_matte_by(
+    alpha: &[f32],
+    g: Grid,
+    o: &SatinOp,
+    times_alpha: bool,
+) -> Result<Vec<f32>, EffectError> {
+    let kernel = effect_blur_kernel(o.size_px)?;
     let blurred = blur_ext(alpha, g, &kernel, 0.0)?;
     let (dx, dy) = super::shadow_offset(o.angle_deg, o.distance_px)?;
     let plus = shift_ext(&blurred, g, dx, dy, 0.0)?;
@@ -442,7 +465,8 @@ pub(super) fn satin_matte(alpha: &[f32], g: Grid, o: &SatinOp) -> Result<Vec<f32
         .zip(alpha)
         .map(|((p, m), a)| {
             let d = (p - m).abs().clamp(0.0, 1.0);
-            (if o.invert { 1.0 - d } else { d }) * a
+            let v = if o.invert { 1.0 - d } else { d };
+            if times_alpha { v * a } else { v }
         })
         .collect())
 }
@@ -583,7 +607,7 @@ pub(super) fn bevel_matte(alpha: &[f32], g: Grid, o: &BevelEmbossOp) -> Result<V
         }
     }
     if s.soften_px > 0.0 {
-        let kernel = feather_kernel(s.soften_px).map_err(|_| EffectError::SizeOutOfRange)?;
+        let kernel = effect_blur_kernel(s.soften_px)?;
         let soft = blur_ext(&out, g, &kernel, 0.0)?;
         return Ok(soft.iter().map(|v| v.clamp(0.0, 1.0)).collect());
     }
