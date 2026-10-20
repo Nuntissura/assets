@@ -47,7 +47,7 @@ use extended::{ExtPrep, FrameShape, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba};
+use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, pass_through_mix};
 use hsk_studio_pigment::blur_math::BlurScope;
 use hsk_studio_pigment::coverage_math::mask_coverage;
 use hsk_studio_pigment::effect_math::EffectKind;
@@ -698,10 +698,9 @@ fn prepare<'a, V: VectorSource>(
                     };
                     // Structural validation already guaranteed pass_through <-> non-isolated group.
                     // Every refusal key below is pigment's operator key (`Operator::key`), so the
-                    // defence in depth reports exactly what shared admission reports.
-                    if pass_through && l.opacity < 1.0 {
-                        return Err(unsupported(Operator::PassThroughOpacity.key()));
-                    }
+                    // defence in depth reports exactly what shared admission reports. A
+                    // pass-through layer with opacity below 1 or a mask is evaluated (lane
+                    // SMB-PS-ORACLE-PARITY-2, pigment `pass_through_mix`, `Eval::layer`).
                     // A non-isolated group composites straight onto the running backdrop, so there
                     // is no group result to scale: fill is as undefined as opacity here. Pigment's
                     // `admit` refuses it first for every backend (`PASS_THROUGH_FILL_OPERATOR`,
@@ -1072,6 +1071,11 @@ fn prepare<'a, V: VectorSource>(
                     };
                     let child_need = match child_isolated {
                         Some(true) => need[input].saturating_add(1),
+                        // a pass-through layer with opacity keeps the backdrop before the group
+                        // in one scratch level (pigment `pass_through_mix`)
+                        Some(false) if l.opacity < 1.0 => {
+                            need[input].saturating_add(1)
+                        }
                         _ => need[input],
                     };
                     if clipped {
@@ -1451,7 +1455,11 @@ impl Eval<'_, '_> {
                 if snapshot {
                     fx.ko.push_snapshot(dst, layer.input)?;
                 }
-                let result = self.group(layer.input, chunk, dst, spare, fx);
+                let result = if layer.layer_opacity < 1.0 {
+                    self.pass_through_weighed(layer, region, chunk, dst, spare, fx)
+                } else {
+                    self.group(layer.input, chunk, dst, spare, fx)
+                };
                 if snapshot {
                     fx.ko.pop();
                 }
@@ -1506,6 +1514,46 @@ impl Eval<'_, '_> {
             }
             PNode::Unused => Err(unsupported("plan_shape")),
         }
+    }
+
+    /// A pass-through layer with opacity below 1 (lane SMB-PS-ORACLE-PARITY-2): the running result
+    /// is kept in one scratch level, the group's children composite onto `dst`, and every pixel of
+    /// `region` becomes pigment `blend_math::pass_through_mix(before, after, opacity)` (D5 PS-C28
+    /// `opacity50_nomask`). A mask on a pass-through layer is refused before this point
+    /// (`PASS_THROUGH_MASK_OPERATOR`). Per pixel, so the result is independent of chunking.
+    fn pass_through_weighed(
+        &self,
+        layer: &PLayer<'_>,
+        region: Rect,
+        chunk: Rect,
+        dst: &mut [[f32; 4]],
+        spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
+    ) -> Result<(), RenderError> {
+        let count = area(chunk)?;
+        let (before, deeper) = spare
+            .split_first_mut()
+            .ok_or(BackendError::Unavailable("group_scratch"))?;
+        let before = before.get_mut(..count).ok_or_else(overflow)?;
+        before.copy_from_slice(dst.get(..count).ok_or_else(overflow)?);
+        self.group(layer.input, chunk, dst, deeper, fx)?;
+        let weight = layer.layer_opacity;
+        let (x1, y1) = end(region)?;
+        for y in region.y..y1 {
+            for x in region.x..x1 {
+                let at = index_in(chunk, x, y)?;
+                let b = *before.get(at).ok_or_else(overflow)?;
+                let a = *dst.get(at).ok_or_else(overflow)?;
+                let out = pass_through_mix(
+                    Rgba::new([b[0], b[1], b[2]], b[3]),
+                    Rgba::new([a[0], a[1], a[2]], a[3]),
+                    weight,
+                );
+                *dst.get_mut(at).ok_or_else(overflow)? =
+                    [out.rgb[0], out.rgb[1], out.rgb[2], out.a.min(1.0)];
+            }
+        }
+        Ok(())
     }
 
     /// A knockout layer: every pixel of its bounds is pigment `knockout_math::knockout_over` with
@@ -2432,9 +2480,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                     Exactness::Unsupported
                 }
             }
-            Operator::PassThroughOpacity | Operator::NonIsolatedBlendedGroup => {
-                Exactness::Unsupported
-            }
+            // Lane SMB-PS-ORACLE-PARITY-2: pigment `pass_through_mix` (`Eval::pass_through_weighed`).
+            Operator::PassThroughOpacity => operator.intrinsic(),
+            Operator::NonIsolatedBlendedGroup => Exactness::Unsupported,
         }
     }
     fn supports_clip_to_base(&self) -> bool {

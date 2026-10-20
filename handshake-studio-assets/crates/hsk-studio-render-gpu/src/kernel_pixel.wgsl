@@ -49,6 +49,10 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     if ((p.flags & 16u) != 0u) {
         // pigment effect_math::interior_mix: the result below (dst) and the interior unit (s),
         // premultiplied mix by the shape alpha (m); a >= 1 keeps the unit, a <= 0 the result below.
+        // The weight is m times p.opacity (lane SMB-PS-ORACLE-PARITY-2: 1 for the interior unit, the
+        // layer opacity for the unit fade of a layer with effects, opacity x mask coverage for a
+        // pass-through layer, pigment blend_math::pass_through_mix).
+        m = m * p.opacity;
         let below = dst[di];
         if (m >= 1.0) {
             dst[di] = s;

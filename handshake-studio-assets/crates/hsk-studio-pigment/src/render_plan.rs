@@ -309,7 +309,9 @@ pub enum Operator {
     Blend(StudioBlendMode),
     IsolatedGroup,
     PassThroughGroup,
-    /// Pass-through group referenced with opacity < 1 (ill-defined for non-isolated groups).
+    /// Pass-through group referenced with opacity < 1: the premultiplied lerp from the backdrop
+    /// before the group to the result after it by the opacity ([`crate::blend_math::pass_through_mix`],
+    /// D5 PS-C28 `opacity50_nomask`, lane SMB-PS-ORACLE-PARITY-2); backend-declared.
     PassThroughOpacity,
     /// Non-isolated group composited with a mode other than PassThrough.
     NonIsolatedBlendedGroup,
@@ -836,7 +838,11 @@ impl<V> RenderPlan<V> {
     /// W3C Compositing 1 makes a masked group isolated, which a pass-through group by definition is
     /// not. The combination is therefore intrinsically Unsupported and [`admit`] /
     /// [`admit_extended`] refuse it for every backend as [`PASS_THROUGH_MASK_OPERATOR`] (decision:
-    /// work-folder `diagnostics/adjustments-advanced-blending.md` topic `admission-parity`). Only
+    /// work-folder `diagnostics/adjustments-advanced-blending.md` topic `admission-parity`). The
+    /// D5 oracle (PS-C28 `mask`, `mask_opacity50`, `mask_density50`) now shows Photoshop's reading,
+    /// [`crate::blend_math::pass_through_mix`] by `opacity x mask coverage` (lane
+    /// SMB-PS-ORACLE-PARITY-2, scratch-verified within one code); admitting it changes the composite
+    /// lowering's refusal too, so it waits for that decision. Only
     /// reachable groups count, exactly like the backends, which never look at an unreachable node
     /// (test `tests/admit_parity.rs` `unreachable_nodes_are_not_counted_like_the_backends`). A
     /// clipped pass-through layer is a structural error ([`PlanError::ClipPassThrough`]) and not

@@ -1006,6 +1006,33 @@ pub struct StackReceipt {
     pub exactness: ExactnessLedger,
 }
 
+/// Class of [`pass_through_mix`]: measured on the Photoshop D5 oracle within one 8-bit code, a
+/// Studio reading of an unpublished rule.
+pub const PASS_THROUGH_MIX_EXACTNESS: Exactness = Exactness::Approximate;
+
+/// A pass-through group with opacity or a mask (lane SMB-PS-ORACLE-PARITY-2): the premultiplied
+/// lerp from `before` (the running backdrop before the group) to `after` (the backdrop after its
+/// children composited onto it) by `weight = opacity x mask coverage`, straight colour out.
+/// Measured on the Photoshop 27.11 D5 oracle PS-C28 (`opacity50_nomask` and `mask_opacity50` within
+/// one 8-bit code; `mask` and `mask_density50` too once the 8-bit storage of the multiply result is
+/// modelled); the backends run it for the opacity, a mask on a pass-through layer stays refused
+/// (`PASS_THROUGH_MASK_OPERATOR`). `weight >= 1` returns `after`, `weight <= 0` returns `before`.
+pub fn pass_through_mix(before: Rgba, after: Rgba, weight: f32) -> Rgba {
+    if weight >= 1.0 {
+        return after;
+    }
+    if weight <= 0.0 {
+        return before;
+    }
+    let b = before.premultiplied();
+    let a = after.premultiplied();
+    let mut mixed = [0.0f32; 4];
+    for (i, out) in mixed.iter_mut().enumerate() {
+        *out = b[i] * (1.0 - weight) + a[i] * weight;
+    }
+    Rgba::from_premultiplied(mixed)
+}
+
 fn fold_nodes(
     nodes: &[StackNode],
     mut backdrop: Rgba,
@@ -1042,14 +1069,8 @@ fn fold_nodes(
                         ledger.record("group_pass_through", Exactness::Exact);
                         after
                     } else {
-                        ledger.record("group_pass_through_opacity", Exactness::Approximate);
-                        let before = backdrop.premultiplied();
-                        let after_p = after.premultiplied();
-                        let mut mixed = [0.0f32; 4];
-                        for (i, out) in mixed.iter_mut().enumerate() {
-                            *out = before[i] * (1.0 - opacity) + after_p[i] * opacity;
-                        }
-                        Rgba::from_premultiplied(mixed)
+                        ledger.record("group_pass_through_opacity", PASS_THROUGH_MIX_EXACTNESS);
+                        pass_through_mix(backdrop, after, *opacity)
                     }
                 } else {
                     let inner = fold_nodes(children, Rgba::TRANSPARENT, ctx, ledger, depth + 1)?;

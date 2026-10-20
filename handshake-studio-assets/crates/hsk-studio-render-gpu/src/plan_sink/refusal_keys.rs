@@ -142,11 +142,6 @@ fn defence_in_depth_refusal_keys_are_pigments() {
     // (rule, plan, the refusal pigment names for it).
     let cases: Vec<(&str, RenderPlan<NoVector>, BackendError)> = vec![
         (
-            "pass-through layer below full opacity",
-            pass_through_plan(StudioBlendMode::PassThrough, 0.5, 1.0),
-            refusal(Operator::PassThroughOpacity.key()),
-        ),
-        (
             // The backend used to report this one under the opacity key.
             "pass-through layer below full fill",
             pass_through_plan(StudioBlendMode::PassThrough, 1.0, 0.5),

@@ -21,7 +21,7 @@ struct FxP {
     rw: u32,         // region size: the planes are rw x rh, stride rw
     rh: u32,
     op: u32,         // 0 INIT, 1 DILATE, 2 BLUR_H, 3 BLUR_V, 4 SHIFT, 5 FINISH, 6 BEVEL, 7 CHISEL, 8 GROW
-    mode: u32,       // INIT: 0 alpha, 1 1-alpha, 2 alpha >= 0.5, 3 alpha < 0.5, 4 one, 5 the constant r; FINISH: 0 fin*(1-a)/(1-knock*a) (knockout), 1 fin*a, 2 (1-fin)*a, 3 min(fin2+fin*a, 1), 4 |fin-fin2|*a, 5 (1-|fin-fin2|)*a, 6 max(fin, a), 7 1-fin, 8 |fin-fin2|, 9 1-|fin-fin2|, 10 clamp(fin+fin2-1); BEVEL: style*2+part
+    mode: u32,       // INIT: 0 alpha, 1 1-alpha, 2 alpha >= 0.5, 3 alpha < 0.5, 4 one; FINISH: 0 fin*(1-a)/(1-knock*a) (knockout), 1 fin*a, 2 (1-fin)*a, 3 min(fin2+fin*a, 1), 4 |fin-fin2|*a, 5 (1-|fin-fin2|)*a, 6 max(fin, a), 7 1-fin, 8 |fin-fin2|, 9 1-|fin-fin2|, 10 clamp(fin+fin2-1); BEVEL: style*2+part
     k: u32,          // DILATE: ceil(radius); GROW: pigment grow_reach_px; BLUR: half width of the kernel
     taps_n: u32,     // BLUR: number of taps (2k+1)
     clamp_out: u32,  // final pass of a chain: clamp the matte to [0, 1]
@@ -233,10 +233,6 @@ fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 case 4u: {
                     v = 1.0;
-                }
-                case 5u: {
-                    // the unit-fade weight (lane SMB-PS-ORACLE-PARITY-2)
-                    v = p.r;
                 }
                 default: {
                     v = 1.0 - select(0.0, 1.0, a >= 0.5);

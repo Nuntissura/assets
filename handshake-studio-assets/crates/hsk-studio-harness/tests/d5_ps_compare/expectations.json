@@ -157,13 +157,6 @@
    "reason": "a mask on a pass-through group is refused for every backend (mask_on_pass_through); oracle outputs for mask / density 50 / opacity 50 exist, follow-up FP-PASS-THROUGH-MASK-OPACITY"
   },
   {
-   "case": "PS-C28",
-   "variant": "opacity50_nomask",
-   "verdict": "NOT_SUPPORTED",
-   "class": "spec_refusal",
-   "reason": "pass-through group opacity below 1 is refused (group_pass_through_opacity); oracle output exists, follow-up FP-PASS-THROUGH-MASK-OPACITY"
-  },
-  {
    "case": "PS-C29",
    "variant": "fill50",
    "verdict": "NOT_SUPPORTED",

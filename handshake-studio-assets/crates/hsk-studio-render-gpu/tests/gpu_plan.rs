@@ -781,19 +781,6 @@ fn admission_refusals_run_without_adapter() {
             ..
         })
     ));
-    assert!(matches!(
-        run(
-            &backend,
-            &group_plan(false, StudioBlendMode::PassThrough, 0.5),
-            &approx,
-            &sources,
-            &mut sink
-        ),
-        Err(BackendError::Unsupported {
-            operator: "group_pass_through_opacity",
-            ..
-        })
-    ));
     // an isolated group and a pass-through group are accepted by admission: the only remaining
     // refusal for these valid plans is the missing device
     for plan in [
@@ -811,6 +798,18 @@ fn admission_refusals_run_without_adapter() {
             Err(BackendError::Unavailable("no_adapter"))
         );
     }
+    // pass-through opacity (lane SMB-PS-ORACLE-PARITY-2, pigment `pass_through_mix`, class
+    // Approximate): admitted at an Approximate floor (then Unavailable here)
+    assert_eq!(
+        run(
+            &backend,
+            &group_plan(false, StudioBlendMode::PassThrough, 0.5),
+            &approx,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unavailable("no_adapter"))
+    );
     // clip-to-base is implemented: a valid clipped plan is admitted (then Unavailable here)...
     let clip_plan = |clipped_first: bool| {
         let mut layers = vec![
@@ -948,9 +947,10 @@ fn admission_refusals_run_without_adapter() {
         backend.exactness(Operator::NonIsolatedBlendedGroup),
         Exactness::Unsupported
     );
+    // lane SMB-PS-ORACLE-PARITY-2: the pass-through mix (pigment `pass_through_mix`)
     assert_eq!(
         backend.exactness(Operator::PassThroughOpacity),
-        Exactness::Unsupported
+        Exactness::Approximate
     );
 }
 

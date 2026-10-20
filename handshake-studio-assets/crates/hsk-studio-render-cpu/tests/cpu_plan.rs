@@ -1119,9 +1119,15 @@ fn unsupported_op_stale_result() {
         let mut sink = Collect::new(extent);
         run(&renderer, &pass(1.0), Exactness::Exact, &none, &mut sink).unwrap();
         assert_eq!(sink.pixel(1, 1), [1.0, 0.0, 0.0, 1.0]);
+        // Pass-through opacity (lane SMB-PS-ORACLE-PARITY-2, D5 PS-C28 opacity50_nomask): the
+        // premultiplied lerp from the backdrop before the group (transparent) to the result after
+        // it (opaque red) by 0.5, pigment `pass_through_mix`, class Approximate.
+        let mut sink = Collect::new(extent);
+        run(&renderer, &pass(0.5), Exactness::Approximate, &none, &mut sink).unwrap();
+        assert_eq!(sink.pixel(1, 1), [1.0, 0.0, 0.0, 0.5]);
         assert_eq!(
-            check(&pass(0.5), Exactness::Approximate, &none),
-            unsupported("group_pass_through_opacity", Exactness::Unsupported)
+            check(&pass(0.5), Exactness::Exact, &none),
+            unsupported("group_pass_through_opacity", Exactness::Approximate)
         );
         let blended_non_isolated: RenderPlan = plan(
             extent,

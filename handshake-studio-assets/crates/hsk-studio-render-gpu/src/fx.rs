@@ -59,8 +59,6 @@ const FINISH_SATIN_INTERIOR: u32 = 8;
 const FINISH_SATIN_INTERIOR_INVERTED: u32 = 9;
 /// INIT mode of a plane of ones (the interior coverage of the overlays).
 const INIT_ONES: u32 = 4;
-/// INIT mode of a constant plane `r` (lane SMB-PS-ORACLE-PARITY-2: the unit-fade weight).
-const INIT_CONSTANT: u32 = 5;
 
 /// Buffers a pass reads and writes: three f32 scratch planes and the matte buffer (the mask buffer
 /// of the composite kernels, so the matte composites through the existing kernel).
@@ -684,14 +682,6 @@ fn bevel_steps(
 /// weight of the interior unit (lane SMB-PS-ORACLE-PARITY-1).
 pub(crate) fn shape_alpha_step() -> FxStep {
     FxStep::new(OP_INIT, 0).explicit(Buf::T1, Buf::T2, Buf::Mask)
-}
-
-/// The pass writing the constant `v` into the mask buffer: the weight of the unit fade of a layer
-/// with effects by its opacity (lane SMB-PS-ORACLE-PARITY-2, pigment `render_layer_reference`).
-pub(crate) fn constant_step(v: f32) -> FxStep {
-    let mut s = FxStep::new(OP_INIT, INIT_CONSTANT).explicit(Buf::T1, Buf::T2, Buf::Mask);
-    s.r = v;
-    s
 }
 
 /// Margin in pixels an effect reads around the layer bounds (pigment `effect_support_px`).

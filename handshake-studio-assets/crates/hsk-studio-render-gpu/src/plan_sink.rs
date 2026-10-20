@@ -33,7 +33,7 @@ use crate::ext::{
 };
 use crate::fx::{
     Buf, FX_PASS_MAX_OPS, FXP_BYTES, FxEffect, FxError, FxKernels, FxLayer, FxStep, compile_effect,
-    constant_step, margin_of, params_bytes, shape_alpha_step,
+    margin_of, params_bytes, shape_alpha_step,
 };
 use crate::kernel::{
     BLUR_MAX_TAPS, BLURP_BYTES, BlurOp, FilterOp, LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES,
@@ -167,6 +167,15 @@ impl MaskView<'_> {
 /// A layer's opacity for one composite: the folded product (`opacity * fill`, every mode but the
 /// special eight), and the opacity without the fill plus the fill (pigment `composite_over_fill`).
 #[derive(Clone, Copy, Debug)]
+/// The weight of [`Exec::composite_mix`].
+#[derive(Clone, Copy)]
+enum MixWeight {
+    /// The shape alpha already in the mask buffer (the interior unit).
+    MaskBuffer,
+    /// A uniform weight (the unit fade of a layer with effects, a pass-through layer's opacity).
+    Uniform(f32),
+}
+
 struct Opac {
     folded: f32,
     unfilled: f32,
@@ -744,9 +753,6 @@ fn prepare<'a>(
                     // admission applies them (opacity, then fill), so the defence in depth reports
                     // exactly what `admit` reports (PLR-006, test
                     // `defence_in_depth_refusal_keys_are_pigments`).
-                    if pass_through && l.opacity < 1.0 {
-                        return Err(unsupported(Operator::PassThroughOpacity.key()));
-                    }
                     if pass_through && l.fill_opacity < 1.0 {
                         return Err(unsupported(PASS_THROUGH_FILL_OPERATOR));
                     }
@@ -1139,6 +1145,12 @@ fn prepare<'a>(
                     let input = layers[k].input;
                     let below = match plan.nodes.get(input) {
                         Some(PlanNode::Group(c)) if c.isolated => {
+                            need.get(input).copied().unwrap_or(0).saturating_add(1)
+                        }
+                        // a pass-through layer with opacity runs one level down and is mixed back
+                        // (pigment `pass_through_mix`, lane SMB-PS-ORACLE-PARITY-2)
+                        Some(PlanNode::Group(_)) if layers[k].layer_opacity < 1.0 =>
+                        {
                             need.get(input).copied().unwrap_or(0).saturating_add(1)
                         }
                         Some(PlanNode::Group(_)) => need.get(input).copied().unwrap_or(0),
@@ -1810,6 +1822,8 @@ impl RenderBackend<NoVector> for GpuBackend {
             // bit-exact (fused multiply-add, division rounding).
             Operator::Blend(mode) if gpu_blend_supported(mode) => Exactness::Fitted,
             Operator::FillOpacity => Exactness::Approximate,
+            // Lane SMB-PS-ORACLE-PARITY-2: the pass-through mix (pigment `pass_through_mix`).
+            Operator::PassThroughOpacity => Exactness::Approximate,
             // Pigment's documented clipping rule (unverified against Photoshop) as written; the
             // operator's intrinsic class is Approximate, which is what the receipt carries.
             Operator::Mask(MaskFormat::BaseAlpha) => Exactness::Approximate,
@@ -2064,9 +2078,21 @@ impl Exec<'_> {
     }
 
     /// pigment `interior_mix` over `region`: `levels[level]` (below) and `levels[level + 1]` (the
-    /// interior unit) by the shape alpha already in the mask buffer (region layout).
-    fn composite_mix(&mut self, region: Rect, chunk: Rect, level: usize) -> Result<(), GpuError> {
+    /// unit) by `weight`: the shape alpha already in the mask buffer (the interior unit) or a
+    /// uniform opacity (the unit fade of a layer with effects; a pass-through layer, pigment
+    /// `blend_math::pass_through_mix`).
+    fn composite_mix(
+        &mut self,
+        region: Rect,
+        chunk: Rect,
+        level: usize,
+        weight: MixWeight,
+    ) -> Result<(), GpuError> {
         let ctx = self.ctx;
+        let (has_mask, opacity) = match weight {
+            MixWeight::MaskBuffer => (true, 1.0),
+            MixWeight::Uniform(o) => (false, o),
+        };
         let params = LayerParams {
             chunk_w: chunk.width,
             chunk_h: chunk.height,
@@ -2078,8 +2104,8 @@ impl Exec<'_> {
             ],
             mode: StudioBlendMode::Normal,
             source: SourceKind::Chunk,
-            has_mask: true,
-            opacity: 1.0,
+            has_mask,
+            opacity,
             unfilled: 1.0,
             fill: 1.0,
             replace: false,
@@ -2798,14 +2824,31 @@ fn eval_layer(
             ..
         }
     ) {
+        // A pass-through layer with opacity (lane SMB-PS-ORACLE-PARITY-2, pigment
+        // `pass_through_mix`): the children composite onto a copy one level down, which is mixed
+        // back by the opacity (a mask on a pass-through layer is refused in `prepare`).
+        let weighed = layer.layer_opacity < 1.0;
+        let target = if weighed {
+            let unit = level.saturating_add(1);
+            ex.copy_level(level, unit, texel_bytes(chunk.width, chunk.height));
+            unit
+        } else {
+            level
+        };
         // A shallow knockout inside reads the running result before the group (its snapshot).
-        if !prep.ko.snapshot_groups.contains(&layer.input) {
-            return eval_group(ex, prep, layer.input, chunk, level);
+        let evaluated = if !prep.ko.snapshot_groups.contains(&layer.input) {
+            eval_group(ex, prep, layer.input, chunk, target)
+        } else {
+            ex.ko_push_snapshot(target, layer.input, chunk)?;
+            let evaluated = eval_group(ex, prep, layer.input, chunk, target);
+            ex.ko_pop();
+            evaluated
+        };
+        evaluated?;
+        if weighed {
+            ex.composite_mix(region, chunk, level, MixWeight::Uniform(layer.layer_opacity))?;
         }
-        ex.ko_push_snapshot(level, layer.input, chunk)?;
-        let evaluated = eval_group(ex, prep, layer.input, chunk, level);
-        ex.ko_pop();
-        return evaluated;
+        return Ok(());
     }
     source_pass(ex, prep, layer, Pass::Normal, region, chunk, level)
 }
@@ -2844,8 +2887,7 @@ fn eval_effect_layer(
     ex.copy_level(level, unit, texel_bytes(chunk.width, chunk.height));
     let whole = Opac { folded: layer.fill, unfilled: 1.0, fill: layer.fill };
     eval_effect_unit(ex, prep, layer, fx, chunk, unit, whole, 1.0)?;
-    ex.fx_pass(&constant_step(layer.layer_opacity), fx_region, chunk, unit)?;
-    ex.composite_mix(fx_region, chunk, level)
+    ex.composite_mix(fx_region, chunk, level, MixWeight::Uniform(layer.layer_opacity))
 }
 
 /// The stack of [`eval_effect_layer`] composed onto `level` with the content opacities `opac` and
@@ -2964,7 +3006,7 @@ fn eval_effect_unit(
             }
             // the shape alpha into the mask, then the mix
             ex.fx_pass(&shape_alpha_step(), content_region, chunk, copy)?;
-            ex.composite_mix(content_region, chunk, level)?;
+            ex.composite_mix(content_region, chunk, level, MixWeight::MaskBuffer)?;
         } else if !behind {
             // the content itself, mask already inside its alpha
             ex.composite(
