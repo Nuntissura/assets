@@ -1,0 +1,23 @@
+[package]
+name = "hsk-studio-interop-fig-native"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-components = { path = "../hsk-studio-components", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-package = { path = "../hsk-studio-package", version = "=0.1.0", default-features = false }
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
+hsk-studio-press = { path = "../hsk-studio-press", version = "=0.1.0", default-features = false }
+hsk-studio-interop-raster = { path = "../hsk-studio-interop-raster", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
+hsk-studio-interop-fig-base = { path = "../hsk-studio-interop-fig-base", version = "=0.1.0", default-features = false }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"

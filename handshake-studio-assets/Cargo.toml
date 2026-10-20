@@ -25,6 +25,8 @@ members = [
   "crates/hsk-studio-interop-vector-core",
   "crates/hsk-studio-interop-vector-svg",
   "crates/hsk-studio-interop-fig",
+  "crates/hsk-studio-interop-fig-base",
+  "crates/hsk-studio-interop-fig-native",
   "crates/hsk-studio-interop-layout",
   "crates/hsk-studio-interop-media",
   "crates/hsk-studio-controls",
@@ -83,6 +85,8 @@ declared-members = [
   "crates/hsk-studio-interop-vector-core",
   "crates/hsk-studio-interop-vector-svg",
   "crates/hsk-studio-interop-fig",
+  "crates/hsk-studio-interop-fig-base",
+  "crates/hsk-studio-interop-fig-native",
   "crates/hsk-studio-interop-layout",
   "crates/hsk-studio-interop-media",
   "crates/hsk-studio-controls",
@@ -178,8 +182,14 @@ allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studi
 [workspace.metadata.studio.dependencies.hsk-studio-interop-vector]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-vector-core", "hsk-studio-interop-vector-svg"]
 
+[workspace.metadata.studio.dependencies.hsk-studio-interop-fig-base]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-package"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-fig-native]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-package", "hsk-studio-nib", "hsk-studio-press", "hsk-studio-interop-raster", "hsk-studio-interop-fig-base"]
+
 [workspace.metadata.studio.dependencies.hsk-studio-interop-fig]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-nib", "hsk-studio-press", "hsk-studio-interop-raster"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-nib", "hsk-studio-press", "hsk-studio-interop-raster", "hsk-studio-interop-fig-base", "hsk-studio-interop-fig-native"]
 dev-allowed = ["hsk-studio-composite", "hsk-studio-render-cpu", "hsk-studio-pigment", "hsk-studio-prism"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-interop-layout]

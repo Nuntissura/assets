@@ -21,6 +21,8 @@ miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-
 ruzstd = { version = "=0.9.0", default-features = false, features = ["std"] }
 sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+hsk-studio-interop-fig-base = { path = "../hsk-studio-interop-fig-base", version = "=0.1.0", default-features = false }
+hsk-studio-interop-fig-native = { path = "../hsk-studio-interop-fig-native", version = "=0.1.0", default-features = false }
 
 [lib]
 path = "src/lib.rs"

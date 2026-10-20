@@ -180,7 +180,8 @@ impl Builder<'_> {
 }
 
 /// The layer graph plus its typed loss counts (`(path, code)` -> count).
-pub(crate) struct GraphBuild {
+#[doc(hidden)]
+pub struct GraphBuild {
     pub graph: StudioLayerGraph,
     pub loss: BTreeMap<(&'static str, &'static str), u32>,
 }
@@ -188,7 +189,8 @@ pub(crate) struct GraphBuild {
 /// Builds the graph from the mapped layers. `order` is the mapper's node order (parents before
 /// children, siblings bottom-most first); `booleans` are the layers carrying a boolean record;
 /// `expanded` the instance binding layers drawn by their expansion group.
-pub(crate) fn build(
+#[doc(hidden)]
+pub fn build(
     layers: &[StudioLayer],
     artboards: &[StudioArtboard],
     order: &[NodeRef],
