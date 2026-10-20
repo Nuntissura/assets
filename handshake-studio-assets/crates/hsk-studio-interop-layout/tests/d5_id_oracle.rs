@@ -9,12 +9,17 @@
 //! Compared: line starts (story character index of every line; TEXT is ASCII, so byte index =
 //! character index) and, on lines whose start and end agree, every character's x
 //! (`Character.horizontalOffset`, points) against Studio's x from the shaped advances plus the
-//! line's justification (word scale on spaces, letter gap). Breaks MATCH only when every line start
-//! agrees; x MATCH within 0.001 pt, except on the line holding the "ff" of "differences": InDesign
-//! places those glyphs as if the pair were one 1094-unit span split in half (ligature-style caret
-//! positions: f-f advance 547 units, then e at 1094), while Studio applies Arial's GPOS kerning
-//! (f-f -37 units, f-e 0), so the second f sits 15 units (0.088 pt) and every later glyph of that
-//! line 7 units (0.041 pt) off; that line is held to 0.1 pt and the delta is reported.
+//! line's justification (word scale on spaces, glyph scale on the other glyphs, letter gap). Breaks
+//! MATCH only when every line start agrees; x MATCH within 0.001 pt on every character.
+//!
+//! "ff" of "differences" (lane SMB-TYPE-FF-LIGATURE): InDesign sets Arial's cmap ligature uniFB00
+//! (1094 units) and reports its components at ligature carets: the second f at half the ligature
+//! (547 units, times the glyph scale) plus the glyph's letter gap, the next glyph at 1094 plus the
+//! gap. Type composition v2 forms the same ligature; Studio's carets here follow that rule. Split by
+//! a hyphen ("dif-" / "ferences", ID-01 para_hyph_left_w210 and leftjust_w150) each side is set
+//! with its nominal f (569 units): the layout line's `end_part` / `start_part`. Before the
+//! ligature fix the ff line was held to 0.1 pt (Studio kerned f-f to 1101 units); that exception
+//! is removed.
 //!
 //! InDesign settings mapped: `hyphenateWordsLongerThan 5` behaves as "words of at least 5 letters"
 //! (the oracle hyphenates the 5-letter "ev-ery", ID-01 para_hyph_leftjust_w240 line 0), so
@@ -41,8 +46,6 @@ const FONT_DIR: &str = "host-fonts";
 const FONT_PIN: &str = "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a";
 const EXPECTED: &str = include_str!("d5_id_expected_mismatch.txt");
 const X_TOL: f64 = 0.001;
-/// Tolerance on the line holding the diagnosed "ff" pair (module docs).
-const X_TOL_FF: f64 = 0.1;
 const SIZE: f64 = 12.0;
 const LEADING: f64 = 14.4;
 
@@ -322,6 +325,8 @@ struct Setup {
     width: f64,
     ws: [f64; 3],
     ls: [f64; 3],
+    /// Glyph scaling, percent min / desired / max.
+    gs: [f64; 3],
 }
 
 fn compose(p: &Probe, s: &Setup) -> Result<LayoutProposal, String> {
@@ -347,6 +352,7 @@ fn compose_in(p: &Probe, s: &Setup, mut doc: StudioDocument, set_width: bool) ->
         word_spacing: Spacing { min: s.ws[0] / 100.0, desired: s.ws[1] / 100.0, max: s.ws[2] / 100.0 },
         letter_spacing: Spacing { min: s.ls[0] / 100.0, desired: s.ls[1] / 100.0, max: s.ls[2] / 100.0 },
         reference_space_pt: p.space_pt,
+        glyph_scaling: Spacing { min: s.gs[0] / 100.0, desired: s.gs[1] / 100.0, max: s.gs[2] / 100.0 },
     };
     // InDesign: hyphenateWordsLongerThan 5 (= at least 5 letters, module docs), after first 2,
     // before last 2, ladder limit 3.
@@ -381,22 +387,41 @@ type StudioLine = (usize, usize, Vec<(usize, f64)>);
 /// One ID-02 set: name, word spacing, letter spacing, glyph scaling (percent min/desired/max).
 type SpacingSet = (&'static str, [f64; 3], [f64; 3], [f64; 3]);
 
-/// Studio per-character x on each line.
+/// Studio per-character x on each line: glyph advances with the line's justification (spaces times
+/// `word_scale`, other glyphs times `glyph_scale`, `letter_gap_pt` after every glyph but the line's
+/// last content glyph); a ligature's later components at its carets (module docs); a ligature split
+/// by a hyphen set as the line's `start_part` / `end_part`.
 fn studio_lines(p: &Probe, placed: &LayoutProposal) -> Vec<StudioLine> {
     let mut out = Vec::new();
     for frame in &placed.frames {
         for line in &frame.lines {
-            let (scale, gap) = line.justification.map_or((1.0, 0.0), |j| (j.word_scale, j.letter_gap_pt));
+            let (scale, glyph_scale, gap) = line.justification.map_or((1.0, 1.0, 0.0), |j| (j.word_scale, j.glyph_scale, j.letter_gap_pt));
             let mut x = 0.0;
             let mut xs = Vec::new();
             let glyphs = &p.paragraph.glyphs[line.glyph_range.clone()];
             let space = |g: &hsk_studio_interop_layout::layout::LayoutGlyph| TEXT.as_bytes().get(g.cluster.start as usize) == Some(&b' ');
+            // A ligature split at the line end sets its left part after the range's glyphs.
+            let tail = line.end_part.filter(|e| e.glyph == line.glyph_range.end);
             // `Justification::letter_gap_pt` follows every glyph but the line's last content glyph.
-            let last_content = glyphs.iter().rposition(|g| !space(g));
+            let last_content = if tail.is_some() { Some(glyphs.len()) } else { glyphs.iter().rposition(|g| !space(g)) };
             for (k, g) in glyphs.iter().enumerate() {
-                xs.push((g.cluster.start as usize, x));
                 let gap_after = if last_content.is_some_and(|l| k < l) { gap } else { 0.0 };
-                x += if space(g) { g.advance_pt * scale } else { g.advance_pt } + gap_after;
+                let head = line.start_part.filter(|_| k == 0);
+                let (start, end, advance) = match head {
+                    Some(h) => (h.source.start, h.source.end, h.advance_pt),
+                    None => (g.cluster.start, g.cluster.end, g.advance_pt),
+                };
+                let w = if space(g) { advance * scale } else { advance * glyph_scale };
+                xs.push((start as usize, x));
+                // Ligature carets: component c of n at c / n of the scaled advance plus the gap.
+                let n = (end - start) as usize;
+                for c in 1..n {
+                    xs.push((start as usize + c, x + w * c as f64 / n as f64 + gap_after));
+                }
+                x += w + gap_after;
+            }
+            if let Some(t) = tail {
+                xs.push((t.source.start as usize, x));
             }
             out.push((line.source.start as usize, line.source.end as usize, xs));
         }
@@ -423,7 +448,11 @@ fn compare(p: &Probe, oracle_json: &Value, s: &Setup) -> (Verdict, String) {
         .map(|c| (c[0].as_u64().expect("index") as usize, c[1].as_f64().expect("x")))
         .collect();
     let ff = TEXT.find("ff").expect("probe text holds ff");
+    // Every character is held to X_TOL; the ff line's own maximum is still reported.
     let (mut x_max, mut x_ff, mut x_n) = (0.0f64, 0.0f64, 0usize);
+    // Worst character (diagnostics): (|dx|, char, Studio x, InDesign x, line, the line's justification).
+    let justs: Vec<_> = placed.frames.iter().flat_map(|f| f.lines.iter().map(|l| l.justification)).collect();
+    let mut worst = None::<(f64, usize, f64, f64, usize)>;
     for (i, (start, end, xs)) in studio.iter().enumerate() {
         let ff_line = (*start..*end).contains(&(ff + 1));
         let same_start = o_starts.get(i) == Some(start);
@@ -434,6 +463,9 @@ fn compare(p: &Probe, oracle_json: &Value, s: &Setup) -> (Verdict, String) {
         for (c, x) in xs {
             if let Some(ox) = chars.get(c) {
                 let d = (x - ox).abs();
+                if worst.is_none_or(|w| d > w.0) {
+                    worst = Some((d, *c, *x, *ox, i));
+                }
                 if ff_line && *c > ff {
                     x_ff = x_ff.max(d);
                 } else {
@@ -445,12 +477,13 @@ fn compare(p: &Probe, oracle_json: &Value, s: &Setup) -> (Verdict, String) {
     }
     let overset = placed.overset.is_some();
     let detail = format!(
-        "lines ai={} studio={} first_break_diff={:?} x_max_abs_pt={x_max:.4} ff_line_x_max_abs_pt={x_ff:.4} over {x_n} chars overset={overset} oracle_starts={o_starts:?} studio_starts={s_starts:?}",
+        "lines ai={} studio={} first_break_diff={:?} x_max_abs_pt={x_max:.4} ff_line_x_max_abs_pt={x_ff:.4} over {x_n} chars overset={overset} oracle_starts={o_starts:?} studio_starts={s_starts:?} worst_char={:?}",
         o_starts.len(),
         s_starts.len(),
-        first_diff.map(|i| (i, o_starts.get(i), s_starts.get(i)))
+        first_diff.map(|i| (i, o_starts.get(i), s_starts.get(i))),
+        worst.filter(|w| w.0 > X_TOL).map(|w| (w.1, w.2, w.3, w.4, justs.get(w.4).copied().flatten()))
     );
-    let ok = first_diff.is_none() && x_max <= X_TOL && x_ff <= X_TOL_FF && !overset;
+    let ok = first_diff.is_none() && x_max <= X_TOL && x_ff <= X_TOL && !overset;
     (if ok { Verdict::Match } else { Verdict::Mismatch }, detail)
 }
 
@@ -491,7 +524,7 @@ fn id01_composer_width_sweep() {
                             continue;
                         }
                     };
-                    let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: just, full: false, width: f64::from(w), ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
+                    let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: just, full: false, width: f64::from(w), ws: [80.0, 100.0, 133.0], ls: [0.0; 3], gs: [100.0; 3] };
                     let (v, d) = compare(&p, &json, &s);
                     ledger.record("ID-01", &variant, v, d);
                 }
@@ -519,10 +552,6 @@ fn id02_spacing_limits() {
     for (cn, para) in [("para", true), ("single", false)] {
         for (name, ws, ls, gs) in sets {
             let variant = format!("{cn}_{name}");
-            if gs != [100.0; 3] {
-                ledger.record("ID-02", &variant, Verdict::NotSupported, "glyph scaling not implemented in layout (typeset.rs JustifyParams has no glyph scaling)".into());
-                continue;
-            }
             let json = match load_json(&root, &format!("ID-02__{variant}.json")) {
                 Ok(j) => j,
                 Err(e) => {
@@ -530,7 +559,7 @@ fn id02_spacing_limits() {
                     continue;
                 }
             };
-            let s = Setup { paragraph_composer: para, hyphenate: true, justify: true, full: true, width: 240.0, ws, ls };
+            let s = Setup { paragraph_composer: para, hyphenate: true, justify: true, full: true, width: 240.0, ws, ls, gs };
             let (v, d) = compare(&p, &json, &s);
             ledger.record("ID-02", &variant, v, d);
         }
@@ -549,7 +578,7 @@ fn id03_idml_configurations() {
     for (variant, para, hyph) in [("para_hyph_w240", true, true), ("single_hyph_w240", false, true), ("para_nohyph_w240", true, false)] {
         match load_json(&root, &format!("ID-03__{variant}.json")) {
             Ok(json) => {
-                let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: true, full: true, width: 240.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
+                let s = Setup { paragraph_composer: para, hyphenate: hyph, justify: true, full: true, width: 240.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3], gs: [100.0; 3] };
                 let (v, d) = compare(&p, &json, &s);
                 ledger.record("ID-03", variant, v, d);
             }
@@ -604,7 +633,7 @@ fn id04_threaded_frames() {
         f.next_text_frame = None;
     }
     doc.layers.insert(index + 1, second);
-    let s = Setup { paragraph_composer: true, hyphenate: true, justify: true, full: false, width: 200.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3] };
+    let s = Setup { paragraph_composer: true, hyphenate: true, justify: true, full: false, width: 200.0, ws: [80.0, 100.0, 133.0], ls: [0.0; 3], gs: [100.0; 3] };
     let (verdict, detail) = match compose_in(&p, &s, doc, false) {
         Err(e) => (Verdict::Mismatch, e),
         Ok(placed) => {
@@ -619,5 +648,34 @@ fn id04_threaded_frames() {
         }
     };
     ledger.record("ID-04", "two_linked_small_frames", verdict, detail);
+    ledger.finish();
+}
+
+/// Type composition v2 on the exact Arial InDesign used (lane SMB-TYPE-FF-LIGATURE): "ff" of
+/// "differences" is one glyph, Arial's uniFB00 (1094 units, the cmap presentation form; Arial's GSUB
+/// has no Latin ligature), with its two f components (569 units each) for hyphenation splits; no
+/// line-end advance is recorded for it (no kerning toward "e"). NOT_PROVEN without the corpus font.
+#[test]
+fn arial_ff_is_the_presentation_form_ligature() {
+    const T: &str = "d5_id_oracle::arial_ff_is_the_presentation_form_ligature";
+    let mut ledger = Ledger::new(T);
+    let Some((_, p)) = setup_or_not_proven(T, &mut ledger) else { return ledger.finish() };
+    let ff = TEXT.find("ff").expect("ff") as u64;
+    let unit = SIZE / 2048.0;
+    let glyphs = &p.paragraph.glyphs;
+    let k = glyphs.iter().position(|g| g.cluster.start == ff).expect("glyph at ff");
+    assert_eq!((glyphs[k].cluster.start, glyphs[k].cluster.end), (ff, ff + 2), "one glyph covers ff");
+    assert!((glyphs[k].advance_pt - 1094.0 * unit).abs() < 1e-12, "{:?}", glyphs[k]);
+    let parts: Vec<_> = p.paragraph.ligature_parts.iter().filter(|c| c.glyph == k).collect();
+    assert_eq!(parts.len(), 2);
+    for (i, c) in parts.iter().enumerate() {
+        assert_eq!((c.source.start, c.source.end), (ff + i as u64, ff + i as u64 + 1));
+        assert!((c.advance_pt - 569.0 * unit).abs() < 1e-12, "{c:?}");
+    }
+    assert!(p.paragraph.ligature_parts.iter().all(|c| c.glyph == k), "no other ligature in the probe text");
+    assert!(p.paragraph.line_end_advances.iter().all(|a| a.glyph != k));
+    // No other glyph of the paragraph covers more than one character.
+    assert!(glyphs.iter().enumerate().all(|(i, g)| i == k || g.cluster.end - g.cluster.start == 1));
+    ledger.record("ID", "arial_ff_ligature", Verdict::Match, format!("uniFB00 {} pt, components 2 x {} pt", glyphs[k].advance_pt, 569.0 * unit));
     ledger.finish();
 }
