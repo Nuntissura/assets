@@ -8,7 +8,7 @@
     "base_wp_id": "WP-FF-022-prerequisite-classifier-remediation",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v1",
     "version": "1",
-    "updated_at_utc": "2026-10-20T13:02:40Z"
+    "updated_at_utc": "2026-10-20T13:49:00Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
@@ -43,7 +43,7 @@
     "status": "IN_PROGRESS",
     "risk": "MEDIUM",
     "blockers": [],
-    "next_action": "Commit the validated candidate checkpoint, run canonical architecture-check and verify-pr at that committed source identity, then record accepted closure, merge canonical main, independently prove containment and synchronize only the named WP020 blocker.",
+    "next_action": "Commit the exact rustfmt constant-wrap correction and this actual validation checkpoint, rerun canonical verify-pr at committed candidate source identity, then record accepted closure, merge main and independently prove containment before limited WP020 status synchronization.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -116,7 +116,10 @@
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004",
       "requirement": "Canonical architecture-check and verify-pr plus every activated deep trigger pass for the final code; independent adversarial implementation review verifies the changed public classification boundary and records findings and residual uncertainty.",
       "status": "PENDING",
-      "evidence": [],
+      "evidence": [
+        "Independent scoped implementation review PASS and canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2; report build/reports/architecture-check-1792503465087351800-504232.json.",
+        "Canonical verify-pr failed formatting only at the same clean source identity: build/reports/verify-pr-1792504072319859900-524376.json. Mechanical rustfmt wrap and a fresh committed-candidate PR retry are required; AC004 remains pending."
+      ],
       "proof_class": "integration"
     },
     {
@@ -237,10 +240,74 @@
         "proof_class": "integration",
         "observed": "Baseline exit1 original IMPACT-MISMATCH, restored candidate exit0 PASS policy/scenario_contract",
         "command": "Postcandidate baseline behavior reversion and candidate restoration, literal runtime-truth-check CLI"
+      },
+      {
+        "command": "Canonical architecture-check first attempt",
+        "artifact": "build/reports/architecture-check-1792501759970294000-474356.json",
+        "content_fingerprint": "6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "result": "FAIL_INFRASTRUCTURE",
+        "observed": "Inner cargo metadata exceeded its existing120-second child deadline; subsequent exact direct metadata diagnostic exited0 in27seconds without source change.",
+        "source_dirty": false
+      },
+      {
+        "command": "Canonical architecture-check with inherited verbose CARGO_LOG/RUST_LOG",
+        "result": "FAIL_DIAGNOSTIC_TRUNCATION",
+        "observed": "Canonical compiler guard could not find expected disallowed Command text in bounded captured prefix because inherited verbose Cargo logging filled the diagnostic capture. No source change; focused normal-log guard exited101 and included both disallowed Command and method diagnostics.",
+        "reported_by": "primary agent",
+        "artifact": "build/reports/architecture-check-1792502818099229900-330608.json",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "source_dirty": false
+      },
+      {
+        "source_dirty": false,
+        "observed": "Canonical architecture gate PASS exit0 at clean candidate source; exact report opened.",
+        "executed_proof_classes": [
+          "counterfactual",
+          "graph",
+          "negative_fixture",
+          "semantic",
+          "structural",
+          "wire_boundary"
+        ],
+        "artifact": "build/reports/architecture-check-1792503465087351800-504232.json",
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "content_fingerprint": "6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff",
+        "result": "PASS"
+      },
+      {
+        "command": "verify-pr invocation missing --evidence-from-taskboard",
+        "result": "USAGE_REJECTED",
+        "observed": "Rejected before canonical gate execution; corrected to exact authority command.",
+        "reported_by": "primary agent"
+      },
+      {
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "artifact": "build/reports/verify-pr-1792504072319859900-524376.json",
+        "content_fingerprint": "6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff",
+        "observed": "Canonical PR gate FAIL exit1 at formatting: ORIGINAL_WP020_PACKET include_bytes constant requires rustfmt two-line wrap in runtime_classifier_tests.rs; no final PR acceptance.",
+        "result": "FAIL",
+        "source_commit": "dd00e4a731accfc886d516286a28ee27a726cef2",
+        "source_dirty": false
+      },
+      {
+        "reported_by": "primary agent",
+        "command": "Focused compiler guard with normal Cargo logging",
+        "observed": "Exit101 with expected disallowed Command and method compiler diagnostics; distinguishes prior bounded-prefix truncation from guard failure.",
+        "source_change": false,
+        "result": "EXPECTED_REJECTION"
+      },
+      {
+        "reported_by": "primary agent",
+        "command": "Focused rustfmt verification after include_bytes constant wrap",
+        "observed": "PASS in2.65seconds; whitespace-only constant wrap, main.rs SHA256 prefix472675 unchanged and frozen original packet Git blob prefix82c8 unchanged.",
+        "proof_class": "structural",
+        "result": "PASS"
       }
     ],
     "not_proven": [
-      "Canonical architecture-check and verify-pr at final committed source identity remain unproven.",
+      "Canonical verify-pr acceptance after the observed rustfmt constant-wrap correction remains unproven.",
       "Closure commit merge and independent canonical-main containment remain unproven.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ]
@@ -302,7 +369,9 @@
         "Final focused warnings-denied Clippy passed in 8.67 seconds after test-table-only mechanical cleanup.",
         "Frozen original WP020 testdata independently matches baseline10d1688 blob82c8a8e; pure fixture test passes after include_bytes integration.",
         "Independent limited manual review directly inspected locked Cargo commands, corrected NONE/PREREQUISITE operating paragraph, recovery and FF-GATE-RUNTIME-001 guidance as PASS.",
-        "Postcandidate behavior counterfactual: primary observed original baseline exit1 IMPACT-MISMATCH then restored candidate exit0 PASS policy/scenario_contract on identical activation0013ea7a and content fingerprint590c3510; both reports independently opened."
+        "Postcandidate behavior counterfactual: primary observed original baseline exit1 IMPACT-MISMATCH then restored candidate exit0 PASS policy/scenario_contract on identical activation0013ea7a and content fingerprint590c3510; both reports independently opened.",
+        "Canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2 fingerprint6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff; report architecture-check-1792503465087351800-504232.json.",
+        "Canonical verify-pr FAIL at that same source: sole emitted rustfmt include_bytes constant wrapping diff; report verify-pr-1792504072319859900-524376.json. Final corrected-candidate PR remains required."
       ],
       "applicable_rule_ids": [
         "FF-BUILD-036",

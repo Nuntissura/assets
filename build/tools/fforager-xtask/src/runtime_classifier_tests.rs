@@ -3,7 +3,8 @@ use super::*;
 
 const WP: &str = "WP-FF-020-equivalent-work-benchmark-design-v1";
 const ARTIFACT: &str = "build/benches/classifier-proof.json";
-const ORIGINAL_WP020_PACKET: &[u8] = include_bytes!("testdata/wp020-build-only-prerequisite-v1.json");
+const ORIGINAL_WP020_PACKET: &[u8] =
+    include_bytes!("testdata/wp020-build-only-prerequisite-v1.json");
 
 struct Fixture {
     root: PathBuf,
