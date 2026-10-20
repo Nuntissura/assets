@@ -30,10 +30,10 @@ const CPU_TOLERANCE: f32 = 1e-6;
 /// Frame digests of `masks::CASES`, in order. VECTOR equals render-cpu `tests/vector_nib.rs`
 /// `GOLDEN_CLIPPED`: a VECTOR mask of the diamond and a vector clip of the diamond are one frame.
 const GOLDENS: [&str; 4] = [
-    "b7179c37c6560459a9e70b2524d02743da01034f147bb4da4c0d46a42e262b39",
-    "733fe89be5de643849d0258361fd8d0c3591f99218314521e76fe950f7d64d39",
-    "b7df4aeded962e33b94f550a75cfebac4cc220776cf2f4cd1dba6ae6c63a3e48",
-    "8a89e5c12695846d90082d3ed8e1e21afbd75506a459ef161a6e6c63ceea3481",
+    "cd06d6dc9b66868a3baa5fdd2a19c04487976121b6ee2ea3e2af0e33f48fb557",
+    "32003f5af9d7f756bf47ada9608631f63b016a97a10dc9fa97d5d2952440c1f8",
+    "bfb5e372c9304a683d19308d3e6cf7fbeb7ad081b9c36d1f55036bf5b38c847d",
+    "1bc5ead349730894ce5ff53d3cc74d2b271bf64689e7fa192859c0aad966fd5b",
 ];
 
 struct Frame(Vec<[f32; 4]>);

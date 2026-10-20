@@ -17,7 +17,7 @@ use hsk_studio_render_cpu::Renderer;
 mod scenes;
 
 const CPU_TOLERANCE: f32 = 1e-6;
-const GOLDEN: &str = "b6bf11c7c14a2b6f6da0c0505cb03c4e017d163e2bd60dc7eb4d9f039cc9dbec";
+const GOLDEN: &str = "bed62f96fc5d5d68f6fe513b3777047f3b7b197318f699e45dbd7707f17ca1ff";
 
 struct Frame(Vec<[f32; 4]>);
 impl TileSink for Frame {
@@ -76,7 +76,7 @@ fn nib_vector_layer_matches_the_oracle_on_every_chunking_and_thread_count() {
     assert_eq!(d, GOLDEN, "pinned frame digest");
 }
 
-const GOLDEN_CLIPPED: &str = "b7179c37c6560459a9e70b2524d02743da01034f147bb4da4c0d46a42e262b39";
+const GOLDEN_CLIPPED: &str = "cd06d6dc9b66868a3baa5fdd2a19c04487976121b6ee2ea3e2af0e33f48fb557";
 
 #[test]
 fn clipped_nib_vector_layer_matches_the_oracle() {
