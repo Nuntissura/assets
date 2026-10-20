@@ -8,7 +8,7 @@
     "created_at_utc": "2026-10-20T15:16:03Z",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v2",
     "version": "2",
-    "updated_at_utc": "2026-10-20T19:13:28Z"
+    "updated_at_utc": "2026-10-20T20:18:34Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
@@ -49,14 +49,14 @@
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "BLOCKED",
     "risk": "MEDIUM",
     "blockers": [
-      "Fresh clean committed-candidate canonical checks remain required before closure.",
-      "Historical Git deadline and Windows scheduling failure causes remain unresolved; source-bound prior failures retained.",
-      "Closure merge/main containment remain unproven."
+      "FF-GATE-PR-001 dependency-policy failure: eight RustSec findings across five crates at clean79392ff. Required gate acceptance is false despite preceding tests/docs acceptance.",
+      "Dependency remediation requires separate Operator authorization: current immutable allowed_paths excludes build/Cargo.toml and build/Cargo.lock. No scope expansion, dependency edit or gate weakening is authorized by this checkpoint.",
+      "Closure merge/main containment remain unproven; WP020 classifier-blocker status must remain unchanged until accepted contained closure."
     ],
-    "next_action": "Verify updated packet with actual scanner, commit/push final reviewed fixture-base candidate, run applicable canonical checks at clean committed identity, and record acceptance before any closure/merge.",
+    "next_action": "Obtain Operator authorization for separately scoped dependency remediation while preserving the existing sequence; do not change current frozen scope, dependencies, WP020 state or merge. After authorized remediation and required proof, return to this closure and rerun affected canonical gates.",
     "supersedes": [
       "WP-FF-022-prerequisite-classifier-remediation-v1"
     ],
@@ -135,9 +135,11 @@
       "evidence": [
         "Preserved original requirement and actual proof history at .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/acceptance_matrix; final changed candidate remains subject to canonical gates.",
         "AADF original candidate FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 reports accepted at clean source; FF-GATE-PR-001 failed twice with exact reports retained.",
-        "Current fixture shared-base candidate owning module11/11/defaultparallel and independent HIGH isolation review accepted. Fresh canonical gates must judge changed candidate; no final PR acceptance claimed."
+        "Current fixture shared-base candidate owning module11/11/defaultparallel and independent HIGH isolation review accepted. Fresh canonical gates must judge changed candidate; no final PR acceptance claimed.",
+        "Clean79392ff source-bound FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 accepted; architecture7checks55fixtures.",
+        "FF-GATE-PR-001 report1792527411034803900-383824 rejected dependency-policy: eight RustSec findings across five crates. Preceding xtask147/0/2, FFmpeg65/0/3, testkit17/0 and docs/doctests accepted; no failed classifier/Windows case in this attempt."
       ],
-      "status": "PENDING",
+      "status": "BLOCKED",
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004"
     },
     {
@@ -174,35 +176,33 @@
   ],
   "recovery": {
     "last_checkpoint": {
+      "head_sha": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
       "branch": "codex/wp020-prerequisite-classifier",
-      "head_sha": "aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
-        "build/tools/fforager-xtask/src/runtime_classifier_tests.rs"
-      ],
+      "next_action": "Obtain Operator authorization for separately scoped dependency remediation while preserving the existing sequence; do not change current frozen scope, dependencies, WP020 state or merge. After authorized remediation and required proof, return to this closure and rerun affected canonical gates.",
       "blockers": [
-        "Fresh clean committed-candidate canonical checks remain required before closure.",
-        "Historical Git deadline and Windows scheduling failure causes remain unresolved; source-bound prior failures retained.",
-        "Closure merge/main containment remain unproven."
+        "FF-GATE-PR-001 dependency-policy failure: eight RustSec findings across five crates at clean79392ff. Required gate acceptance is false despite preceding tests/docs acceptance.",
+        "Dependency remediation requires separate Operator authorization: current immutable allowed_paths excludes build/Cargo.toml and build/Cargo.lock. No scope expansion, dependency edit or gate weakening is authorized by this checkpoint.",
+        "Closure merge/main containment remain unproven; WP020 classifier-blocker status must remain unchanged until accepted contained closure."
       ],
-      "checks_run": [
-        "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD: aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
-        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: origin ahead0/behind0; before checkpoint only classifier-test module dirty.",
-        "Opened exact latest PR failure source, owning-module stdout11/11 and shared-base review identity JSON.",
-        "Get-FileHash current testmodule SHA256:1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB; currentmainBCE5unchanged.",
-        "Opened final isolation/Clippy and refreshed mutant/restored raw outputs; no canonical final acceptance asserted."
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json"
       ],
       "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "recorded_at_utc": "2026-10-20T19:13:28Z",
-      "next_action": "Verify updated packet with actual scanner, commit/push final reviewed fixture-base candidate, run applicable canonical checks at clean committed identity, and record acceptance before any closure/merge."
+      "recorded_at_utc": "2026-10-20T20:18:34Z",
+      "checks_run": [
+        "git branch --show-current: codex/wp020-prerequisite-classifier",
+        "git rev-parse HEAD: 79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git status --porcelain=v2 --branch: origin ahead0/behind0; clean before blocked checkpoint.",
+        "Opened exact source-bound FF-GATE-PR-001 failure and FF-GATE-ARCH-001 acceptance reports."
+      ]
     }
   },
   "validation": {
     "not_proven": [
-      "Fresh clean committed-candidate canonical checks and closure/main containment remain unproven.",
-      "Historical Windows scheduling and Git-add deadline causes remain unresolved.",
+      "FF-GATE-PR-001 acceptance blocked by dependency-policy findings; separate dependency-remediation authorization required.",
+      "Closure merge/main containment remain unproven.",
+      "Historical Windows scheduling and Git-child timeout causes remain unresolved; no causal repair claim is made.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ],
     "checks": [
@@ -484,6 +484,42 @@
           ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-restored.txt",
           ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-review-identity.json"
         ]
+      },
+      {
+        "artifact": "build/reports/runtime-truth-check-1792524211462817600-344336.json",
+        "source_dirty": false,
+        "source_commit": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "limitation": "Existing policy/contract zero-progress ceiling only.",
+        "content_fingerprint": "857df0b75a3a46ff1d86ea8229f6db7523e03f08e6b743652b1b02c11523f388",
+        "proof_class": "scenario_contract",
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS"
+      },
+      {
+        "result": "PASS",
+        "artifact": "build/reports/architecture-check-1792525301227834700-509636.json",
+        "source_commit": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "content_fingerprint": "857df0b75a3a46ff1d86ea8229f6db7523e03f08e6b743652b1b02c11523f388",
+        "observed": "7checks55fixtures accepted.",
+        "source_dirty": false,
+        "gate_id": "FF-GATE-ARCH-001"
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "completed_before_failure": {
+          "xtask": "147passed0failed2ignored587.84seconds",
+          "testkit": "17passed0failed21.90seconds",
+          "doctests": "PASS",
+          "ffmpeg": "65passed0failed3ignored8.32seconds",
+          "docs": "PASS"
+        },
+        "artifact": "build/reports/verify-pr-1792527411034803900-383824.json",
+        "source_commit": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "source_dirty": false,
+        "result": "FAIL",
+        "content_fingerprint": "857df0b75a3a46ff1d86ea8229f6db7523e03f08e6b743652b1b02c11523f388",
+        "observed": "Dependency-policy rejected eight RustSec findings across five crates after preceding tests/docs accepted.",
+        "limitation": "No classifier or Windows test failed in this gate attempt; prior Windows/Git failure causes remain unresolved and preserved."
       }
     ]
   },
@@ -536,7 +572,8 @@
         "Original candidate AADF canonical gate reports retain exact clean source identity: FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 accepted; FF-GATE-PR-001 two failed attempts retained.",
         "Current shared-base owning module11/11 defaultparallel and independent memoized-error/object-isolation mutant/restoration proof accepted; source identities retained in validation.",
         "Final permission-operation candidate1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB focusedisolation1/1, formatting and warningsdeniedClippy9.11seconds accepted; no lint suppression.",
-        "Final permissionbranch hardlink mutant compiled and rejected sharedobject corruption; strictrestoration1/1/13.74seconds after27.64secondcompile. PreviousACE owningmodule11/11 evidence retains exact source identity."
+        "Final permissionbranch hardlink mutant compiled and rejected sharedobject corruption; strictrestoration1/1/13.74seconds after27.64secondcompile. PreviousACE owningmodule11/11 evidence retains exact source identity.",
+        "Clean79392ff source-bound FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 accepted; latest FF-GATE-PR-001 rejected dependency-policy after all preceding tests/docs accepted. Exact reports and counts recorded in validation.checks."
       ],
       "applicable_rule_ids": [
         "FF-BUILD-036",
