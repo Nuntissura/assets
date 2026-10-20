@@ -541,6 +541,7 @@ impl Para<'_> {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn best(
         &self,
         s: usize,
