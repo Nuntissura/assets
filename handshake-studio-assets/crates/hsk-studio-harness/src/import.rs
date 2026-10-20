@@ -40,6 +40,10 @@ pub enum SourceFormat {
     Jpeg,
     /// WebP (`RIFF....WEBP`): recognised; interop-raster refuses `webp_decoder_unavailable`.
     Webp,
+    /// An Affinity KA container (`00 FF 4B 41`: `.af`, `.afphoto`, `.afdesign`, `.afpub` and the
+    /// resource files). Lead decision 2026-10-16 (AF-02): [`import`] refuses it with
+    /// `affinity_native_use_export`, naming Affinity's own PSD/PDF/SVG export ([`affinity_refusal`]).
+    Affinity,
 }
 
 impl SourceFormat {
@@ -53,6 +57,7 @@ impl SourceFormat {
             Self::Png => "png",
             Self::Jpeg => "jpeg",
             Self::Webp => "webp",
+            Self::Affinity => "affinity",
         }
     }
 
@@ -64,8 +69,75 @@ impl SourceFormat {
             Self::CameraRaw => "import-raw",
             Self::Pdf => "import-pdf",
             Self::Png | Self::Jpeg | Self::Webp => "import-raster",
+            Self::Affinity => "import-affinity",
         }
     }
+}
+
+/// What the KA header of an Affinity file says (harness-local probe; lane SMB-AFFINITY-INTEROP-1). Layout
+/// facts: `research/app-inspect-affinity.md` (hexdumps of installed files) and the MIT reader
+/// VMDevCpp/afread (`Archive.cpp` `HeaderStruct`): magic, u16 format version, u16 flags, 4CC class
+/// stored byte-reversed (`nsrP` = document `Prsn`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AffinityHeader {
+    pub version: u16,
+    pub flags: u16,
+    /// The class 4CC in reading order (`Prsn` for every document seen).
+    pub class: [u8; 4],
+}
+
+impl AffinityHeader {
+    /// `None` when the 12-byte header is incomplete or the magic is absent.
+    pub fn probe(bytes: &[u8]) -> Option<Self> {
+        let head = bytes.get(..12)?;
+        if head[..4] != AFFINITY_MAGIC {
+            return None;
+        }
+        let version = u16::from_le_bytes([head[4], head[5]]);
+        let flags = u16::from_le_bytes([head[6], head[7]]);
+        Some(Self { version, flags, class: [head[11], head[10], head[9], head[8]] })
+    }
+
+    /// Product generation by format version: 9 is observed in 2015 Designer 1 files (AFDesignLoad MIT
+    /// test designs), 11 in V2 files and 12 in V3 `.af` files (installed Canva fixtures); 7, 8 and 10 are
+    /// read as V1 because afread accepts versions 7-11 [UNVERIFIED for 7, 8, 10].
+    pub fn generation(&self) -> &'static str {
+        match self.version {
+            7..=10 => "v1",
+            11 => "v2",
+            12 => "v3",
+            _ => "unknown",
+        }
+    }
+
+    pub fn is_document(&self) -> bool {
+        &self.class == b"Prsn"
+    }
+
+    pub fn class_text(&self) -> String {
+        self.class.iter().map(|&b| if b.is_ascii_graphic() { char::from(b) } else { '?' }).collect()
+    }
+}
+
+/// `00 FF 4B 41` ("\0\xFFKA").
+pub const AFFINITY_MAGIC: [u8; 4] = [0x00, 0xFF, 0x4B, 0x41];
+
+/// The interchange routes Affinity itself offers for a document (Designer 2 file-format table; the V3
+/// export set is UNVERIFIED until the Operator-attended session).
+pub const AFFINITY_EXPORT_ROUTES: &[&str] = &["psd", "pdf", "svg"];
+
+/// The typed refusal for an Affinity file: `affinity_native_use_export` for a document (the code names
+/// the supported route: export PSD, PDF or SVG from Affinity and open that file),
+/// `affinity_resource_not_document` for a KA resource (studio preset, property collection, ...),
+/// `affinity_header_truncated` when the 12-byte header is incomplete.
+pub fn affinity_refusal(bytes: &[u8]) -> ImportError {
+    let header = AffinityHeader::probe(bytes);
+    let code = match header {
+        None => "affinity_header_truncated",
+        Some(h) if h.is_document() => "affinity_native_use_export",
+        Some(_) => "affinity_resource_not_document",
+    };
+    ImportError::UseInterchange { format: SourceFormat::Affinity, code, header }
 }
 
 /// Recognises a source by its magic bytes; `None` when nothing matches.
@@ -82,6 +154,9 @@ pub fn sniff(bytes: &[u8]) -> Option<SourceFormat> {
     }
     if at(0, b"%PDF-") {
         return Some(SourceFormat::Pdf);
+    }
+    if at(0, &AFFINITY_MAGIC) {
+        return Some(SourceFormat::Affinity);
     }
     // Raster interchange magics (PNG signature, JPEG SOI + marker, RIFF/WEBP) never collide with TIFF.
     if at(0, &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
@@ -119,6 +194,9 @@ pub enum ImportError {
     /// Writing the native container failed (package code).
     Package(&'static str),
     Canceled,
+    /// A native file Studio opens only through its application's own interchange export (Affinity
+    /// `.af*`, [`affinity_refusal`]); [`ImportError::detail`] names the routes.
+    UseInterchange { format: SourceFormat, code: &'static str, header: Option<AffinityHeader> },
 }
 
 impl ImportError {
@@ -129,6 +207,7 @@ impl ImportError {
             Self::Importer { code, .. } => code,
             Self::Package(code) => code,
             Self::Canceled => "canceled",
+            Self::UseInterchange { code, .. } => code,
         }
     }
 
@@ -139,6 +218,18 @@ impl ImportError {
                 serde_json::json!({"format":format.name(),"feature":feature,"reason":reason})
             }
             Self::Importer { format, code } => serde_json::json!({"format":format.name(),"importer_code":code}),
+            Self::UseInterchange { format, code, header } => serde_json::json!({
+                "format": format.name(),
+                "native_code": code,
+                "export_routes": AFFINITY_EXPORT_ROUTES,
+                "route": "export the document from Affinity as PSD (layers kept; Studio's PSD importer), PDF or SVG and open that file",
+                "route_basis": "Affinity Designer 2 file-format table lists PSD, PDF, SVG, EPS export; the V3 export menu is UNVERIFIED (Operator-attended session SMB-AFFINITY-ORACLE-OPERATOR)",
+                "generation": header.map(|h| h.generation()),
+                "container_version": header.map(|h| h.version),
+                "container_flags": header.map(|h| h.flags),
+                "class": header.map(|h| h.class_text()),
+                "layers_decoded": false,
+            }),
             _ => serde_json::json!({}),
         }
     }
@@ -242,6 +333,8 @@ mod with_package {
             SourceFormat::CameraRaw => raw_route(bytes, format, resolver, cancel, settings),
             SourceFormat::Pdf => pdf_route(bytes, resolver, cancel),
             SourceFormat::Png | SourceFormat::Jpeg | SourceFormat::Webp => raster_route(bytes, format, resolver, cancel),
+            // Lead decision 2026-10-16: interchange first; the default import never decodes a native file.
+            SourceFormat::Affinity => Err(affinity_refusal(bytes)),
         }?;
         bind_blending_space(&mut imported, resolver, cancel)?;
         Ok(imported)

@@ -349,6 +349,11 @@ fn execute_import(_: &Harness, _: &Parsed, input: &Path) -> CliOutput {
     };
     let (error, detail) = match crate::import::sniff(&bytes) {
         None => ("format_unrecognised", json!({})),
+        // An Affinity file is refused the same way with or without importers (names the export route).
+        Some(crate::import::SourceFormat::Affinity) => {
+            let refusal = crate::import::affinity_refusal(&bytes);
+            (refusal.code(), refusal.detail())
+        }
         Some(f) => ("format_unavailable", json!({"format":f.name(),"feature":f.feature(),"reason":"feature_not_enabled"})),
     };
     out(1, &json!({"schema":crate::SCHEMA,"command":"import","ok":false,"verdict":"fail","error":error,"detail":{"import":detail}}))
