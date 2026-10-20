@@ -40,7 +40,6 @@ pub mod recipe;
 pub mod records;
 pub mod ljpeg;
 mod nef;
-mod nefc;
 mod par;
 mod raf;
 mod rafc;
