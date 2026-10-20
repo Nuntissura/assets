@@ -2012,8 +2012,30 @@ version = "0.1.0"
 dependencies = [
  "hsk-studio-accord",
  "hsk-studio-folio",
+ "hsk-studio-interop-vector-core",
+ "hsk-studio-interop-vector-svg",
  "hsk-studio-nib",
  "hsk-studio-observe",
+]
+
+[[package]]
+name = "hsk-studio-interop-vector-core"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-nib",
+ "hsk-studio-observe",
+]
+
+[[package]]
+name = "hsk-studio-interop-vector-svg"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-interop-vector-core",
+ "hsk-studio-nib",
  "hsk-studio-package",
  "miniz_oxide 0.9.1",
  "roxmltree",

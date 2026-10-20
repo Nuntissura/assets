@@ -495,7 +495,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-render-gpu", &["wgpu"]),
     ("hsk-studio-package", &["crc32fast", "miniz_oxide", "ruzstd", "serde", "serde_json", "sha2"]),
     ("hsk-studio-interop-psd", &["miniz_oxide", "serde_json"]),
-    ("hsk-studio-interop-vector", &["miniz_oxide", "roxmltree", "svgtypes"]),
+    ("hsk-studio-interop-vector-svg", &["miniz_oxide", "roxmltree", "svgtypes"]),
     ("hsk-studio-interop-fig", &["miniz_oxide", "ruzstd", "serde_json", "sha2"]),
     ("hsk-studio-interop-layout", &["miniz_oxide", "roxmltree", "serde_json", "sha2"]),
     ("hsk-studio-controls", &["egui", "serde", "serde_json"]),
