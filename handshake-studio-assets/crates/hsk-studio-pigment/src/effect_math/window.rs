@@ -1619,6 +1619,10 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
                     *backdrop.rgb.get(i).ok_or(WindowError::Geometry)?,
                     *backdrop.alpha.get(i).ok_or(WindowError::Geometry)?,
                 );
+                // a pixel the stack left unchanged stays bit for bit (the reference's rule)
+                if *c == below.rgb && *a == below.a {
+                    continue;
+                }
                 let mixed = super::interior_mix(below, Rgba::new(*c, *a), fade, unit);
                 *c = mixed.rgb;
                 *a = mixed.a;

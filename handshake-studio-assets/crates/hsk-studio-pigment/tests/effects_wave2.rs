@@ -70,18 +70,19 @@ fn inner_shadow_is_the_inverted_matte_clipped_to_the_alpha() {
         vec![0.0, 1.0, 0.0, 0.0, 0.0]
     );
 
-    // Choke 1, size 2, distance 0: grown by 2 hard, blur 0 -> the 2-pixel ring of the plane is 1
-    // (ramp(2, d) = 1 for d <= 1.5), the centre pixel (distance 2.5 to the outside) is 0.
+    // Choke 1, size 2, distance 0: grown by 2 (Photoshop's grow, lane SMB-PS-ORACLE-PARITY-2), blur
+    // 0 -> the 2-pixel ring of the plane is 1, the centre pixel (chamfer distance 3 w1 = 2.99886 to
+    // the outside) keeps the one-pixel fringe 3 - 3 w1 = 0.00114.
     let ring = EffectOp::InnerShadow(
         InnerShadowOp::new(BLACK, NORMAL, 1.0)
             .with_choke(1.0)
             .with_size(2.0),
     );
     let m = reference_matte(&full, &ring).unwrap();
-    assert_eq!(m.iter().sum::<f32>(), 24.0);
+    assert!(close(m.iter().sum::<f32>(), 24.001_139));
     assert_eq!(at(&m, 5, 1, 2), 1.0);
     assert_eq!(at(&m, 5, 2, 1), 1.0);
-    assert_eq!(at(&m, 5, 2, 2), 0.0);
+    assert!(close(at(&m, 5, 2, 2), 0.001_138_4));
     // Choke 0 with the same size is a pure blur (tent [1, 2, 1] / 4): only the edge pixel sees the
     // outside, so the fall-off from the edge is 0.25 at x = 0 and 0 from x = 1 on.
     let soft = EffectOp::InnerShadow(InnerShadowOp::new(BLACK, NORMAL, 1.0).with_size(2.0));
@@ -116,13 +117,19 @@ fn glow_edge_centre_and_outer_equal_the_shadow_chain() {
         assert!(close(at(&c, 7, x, 3), 1.0 - want), "centre x={x}");
     }
 
-    // Outer glow: column x = 4 of a 9 x 9 plane, size 2: centre tap 0.5, neighbours 0.25.
+    // Outer glow: column x = 4 of a 9 x 9 plane, size 2: neighbours 0.25; the glow is knocked out
+    // by the layer like a knocking drop shadow (lane SMB-PS-ORACLE-PARITY-2, D5 PS-C16
+    // soft_fill0_s10_sp0_softer), so the column itself is 0.
     let column = plane(9, 9, |x, _| if x == 4 { 1.0 } else { 0.0 });
     let outer = EffectOp::OuterGlow(OuterGlowOp::new(WHITE, NORMAL, 1.0).with_size(2.0));
-    let shadow = EffectOp::DropShadow(DropShadowOp::new(WHITE, NORMAL, 1.0).with_size(2.0));
+    let shadow = EffectOp::DropShadow(
+        DropShadowOp::new(WHITE, NORMAL, 1.0)
+            .with_size(2.0)
+            .with_layer_knocks_out(true),
+    );
     let g = reference_matte(&column, &outer).unwrap();
     assert_eq!(g, reference_matte(&column, &shadow).unwrap());
-    assert!(close(at(&g, 9, 4, 4), 0.5));
+    assert_eq!(at(&g, 9, 4, 4), 0.0);
     assert!(close(at(&g, 9, 3, 4), 0.25));
     // Spread 1, size 1 on a 3 x 1 strip with only the middle pixel: hard growth by 1 -> all three.
     let dot = plane(3, 1, |x, _| if x == 1 { 1.0 } else { 0.0 });
@@ -131,10 +138,11 @@ fn glow_edge_centre_and_outer_equal_the_shadow_chain() {
             .with_size(1.0)
             .with_spread(1.0),
     );
-    assert_eq!(reference_matte(&dot, &hard).unwrap(), vec![1.0, 1.0, 1.0]);
+    assert_eq!(reference_matte(&dot, &hard).unwrap(), vec![1.0, 0.0, 1.0]);
 
-    // Placement and composition: the outer glow sits BEHIND the content (visible through fill 0 and
-    // outside the shape), the inner glow OVER it but clipped to the alpha (nothing outside).
+    // Placement and composition: the outer glow sits BEHIND the content, outside the shape only
+    // (knocked out: a fill-0 layer shows no glow under its shape, D5 PS-C16
+    // soft_fill0_s10_sp0_softer), the inner glow OVER it but clipped to the alpha (nothing outside).
     assert_eq!(hard.kind(), EffectKind::OuterGlow);
     assert_eq!(hard.placement(), EffectOrder::BehindContent);
     assert_eq!(edge.placement(), EffectOrder::OverContent);
@@ -149,10 +157,11 @@ fn glow_edge_centre_and_outer_equal_the_shadow_chain() {
     };
     let backdrop = EffectPlane::transparent(3, 1).unwrap();
     let out = render_layer_reference(&backdrop, &dot, fill0, &[hard]).unwrap();
-    for x in 0..3 {
+    for x in [0, 2] {
         let p = out.pixel(x, 0).unwrap();
         assert_eq!((p.rgb, p.a), (WHITE, 0.5), "outer glow x={x}");
     }
+    assert_eq!(out.pixel(1, 0).unwrap().a, 0.0, "outer glow knocked out under the shape");
     // Inner glow, choke 1 size 1: inverted [1, 0, 1] grown by 1 -> [1, 1, 1], times alpha [0, 1, 0].
     let inner = EffectOp::InnerGlow(
         InnerGlowOp::new(WHITE, NORMAL, 0.5)
@@ -374,16 +383,16 @@ fn glow_refusals_envelope_admission_and_budget() {
         Err(EffectError::OverBudget)
     );
 
-    // Margins (tent half-width R: nonzero taps within ceil(R) - 1): inner shadow 3 (offset) + 2
-    // (choke .5 * 4) + 1 (blur 2) = 6; outer glow size 4, spread 0: 3; inner glow size 4, choke .5:
-    // 2 + 1 = 3.
+    // Margins (tent half-width R: nonzero taps within ceil(R) - 1; grow reach floor((r + 1) / w1),
+    // lane SMB-PS-ORACLE-PARITY-2): inner shadow 3 (offset) + 3 (choke .5 * 4 = 2) + 1 (blur 2) = 7;
+    // outer glow size 4, spread 0: 3; inner glow size 4, choke .5: 3 + 1 = 4.
     let shadow = EffectOp::InnerShadow(
         InnerShadowOp::new(BLACK, NORMAL, 1.0)
             .with_offset(10.0, 3.0)
             .with_size(4.0)
             .with_choke(0.5),
     );
-    assert_eq!(effect_support_px(&shadow), Ok(6));
+    assert_eq!(effect_support_px(&shadow), Ok(7));
     assert_eq!(
         effect_support_px(&EffectOp::OuterGlow(
             OuterGlowOp::new(WHITE, NORMAL, 1.0).with_size(4.0)
@@ -396,7 +405,7 @@ fn glow_refusals_envelope_admission_and_budget() {
                 .with_size(4.0)
                 .with_choke(0.5)
         )),
-        Ok(3)
+        Ok(4)
     );
     assert_eq!(
         EffectKind::ALL.map(EffectKind::key),

@@ -307,10 +307,12 @@ fn colour_overlay_hand_values_clip_and_full_strength() {
 #[test]
 fn stroke_rings_hand_values_and_reference_parity() {
     // A 3 x 3 opaque red square at (2, 2) of a 7 x 7 plane, black Normal opaque stroke of size 1.
-    // Pigment's distance ramp `clamp(r + 0.5 - d)`: an orthogonal neighbour of the square has
-    // d = 0.5 -> 1.0, a diagonal neighbour d = hypot(0.5, 0.5) -> 1.5 - 0.70710678 = 0.79289322,
-    // two pixels away -> 0. Outside: that ring over transparent; inside: all eight border pixels
-    // are 1.0 and the centre 0; the square is untouched outside the ring.
+    // Pigment's grow `clamp(r + 1 - d)` with the 5 x 5 chamfer d (lane SMB-PS-ORACLE-PARITY-2, D5
+    // PS-C13): an orthogonal neighbour of the square has d = w1 -> 1.0, a diagonal neighbour
+    // d = w2 -> 2 - 1.41366 = 0.58634, two pixels away along an axis the fringe 2 - 2 w1 = 0.00076,
+    // a knight step away 0. Outside: that ring behind the content over transparent; inside: all
+    // eight border pixels are 1.0 and the centre keeps the fringe (red times 1 - 0.00076); the
+    // square is untouched outside the ring.
     let extent = rect(0, 0, 7, 7);
     let square = || solid(rect(2, 2, 3, 3), [1.0, 0.0, 0.0, 1.0]);
     let content = block(7, 7, (2, 2), (3, 3), RED);
@@ -328,9 +330,9 @@ fn stroke_rings_hand_values_and_reference_parity() {
     let outside = run(&stroke(1.0, StrokePosition::Outside));
     near(outside.at(1, 3), [0.0, 0.0, 0.0, 1.0], 1e-6);
     near(outside.at(3, 5), [0.0, 0.0, 0.0, 1.0], 1e-6);
-    near(outside.at(1, 1), [0.0, 0.0, 0.0, 0.792_893_2], 1e-6);
-    near(outside.at(5, 5), [0.0, 0.0, 0.0, 0.792_893_2], 1e-6);
-    near(outside.at(0, 3), [0.0, 0.0, 0.0, 0.0], 0.0);
+    near(outside.at(1, 1), [0.0, 0.0, 0.0, 0.586_343], 1e-6);
+    near(outside.at(5, 5), [0.0, 0.0, 0.0, 0.586_343], 1e-6);
+    near(outside.at(0, 3), [0.0, 0.0, 0.0, 0.000_759], 1e-6);
     near(outside.at(1, 0), [0.0, 0.0, 0.0, 0.0], 0.0);
     near(outside.at(3, 3), [1.0, 0.0, 0.0, 1.0], 1e-6);
     near(outside.at(2, 2), [1.0, 0.0, 0.0, 1.0], 1e-6);
@@ -347,7 +349,7 @@ fn stroke_rings_hand_values_and_reference_parity() {
     ] {
         near(inside.at(x, y), [0.0, 0.0, 0.0, 1.0], 1e-6);
     }
-    near(inside.at(3, 3), [1.0, 0.0, 0.0, 1.0], 1e-6);
+    near(inside.at(3, 3), [0.999_241, 0.0, 0.0, 1.0], 1e-6);
     near(inside.at(1, 3), [0.0, 0.0, 0.0, 0.0], 0.0);
     let mut compared = 0_usize;
     for (grid, size, position) in [

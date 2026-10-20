@@ -447,9 +447,10 @@ fn huge_layers_and_far_coordinates_are_bounded_and_translation_invariant() {
             .with_offset(135.0, 8.0),
     );
     let support = effect_support_px(&op).unwrap();
-    // offset ceil(8) + spread 6 + tent support of the 6 px blur (5): 19 (cross-lane re-pin by
-    // SMB-PS-ORACLE-PARITY-1, effect tent kernel; the Gaussian support was 9 -> 23)
-    assert_eq!(support, 19);
+    // offset ceil(8) + grow reach of the 6 px spread (floor(7 / w1) = 7, lane
+    // SMB-PS-ORACLE-PARITY-2: Photoshop's grow reaches one pixel beyond the spread) + tent support
+    // of the 6 px blur (5): 20 (SMB-PS-ORACLE-PARITY-1 had 19 with the disc; Gaussian 23)
+    assert_eq!(support, 20);
     let limits = WindowLimits::new(2 << 20, 200_000_000);
     let run = |layer: Rect, win_rel: Rect| {
         let win = Rect {

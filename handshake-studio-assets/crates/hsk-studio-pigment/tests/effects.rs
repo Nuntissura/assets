@@ -129,19 +129,20 @@ fn drop_shadow_offset_blur_taps_and_spread() {
         );
     }
 
-    // Spread 1, size 2: spread_px 2, blur 0 -> hard disc dilation r = 2 of the pixel (3, 3).
-    // coverage = clamp(2.5 - hypot(max(|ox| - .5, 0), max(|oy| - .5, 0)), 0, 1):
-    // (2,0): d 1.5 -> 1; (1,1): d .7071 -> 1; (2,1): d 1.5811 -> 0.91886; (2,2): d 2.1213 ->
-    // 0.37868; (3,0): d 2.5 -> 0.
+    // Spread 1, size 2: spread_px 2, blur 0 -> Photoshop's grow by 2 of the pixel (3, 3) (lane
+    // SMB-PS-ORACLE-PARITY-2, D5 PS-C12 spread 100): coverage = clamp(2 + 1 - d, 0, 1) with the
+    // 5 x 5 chamfer d (GROW_WEIGHTS w1 .99962, w2 1.41366, w5 2.23584): (2,0): d 1.99924 -> 1;
+    // (1,1): d 1.41366 -> 1; (2,1): d w5 -> 0.76416; (2,2): d 2 w2 -> 0.17269; (3,0): d 3 w1 ->
+    // 0.00114 (the one-pixel fringe beyond the spread).
     let dot = plane(7, 7, |x, y| (RED, if (x, y) == (3, 3) { 1.0 } else { 0.0 }));
     let hard = EffectOp::DropShadow(shadow(1.0).with_size(2.0).with_spread(1.0));
     let m = reference_matte(&dot, &hard).unwrap();
     assert_eq!(at(&m, 7, 3, 3), 1.0);
     assert_eq!(at(&m, 7, 5, 3), 1.0);
     assert_eq!(at(&m, 7, 4, 4), 1.0);
-    assert!(close(at(&m, 7, 5, 4), 0.918_861_2));
-    assert!(close(at(&m, 7, 5, 5), 0.378_679_66));
-    assert_eq!(at(&m, 7, 6, 3), 0.0);
+    assert!(close(at(&m, 7, 5, 4), 0.764_164));
+    assert!(close(at(&m, 7, 5, 5), 0.172_686_1));
+    assert!(close(at(&m, 7, 6, 3), 0.001_138_4));
     // Spread has no effect at size 0 (Adobe community evidence, brief): the matte is the alpha.
     let flat = EffectOp::DropShadow(shadow(1.0).with_spread(1.0));
     assert_eq!(reference_matte(&dot, &flat).unwrap(), dot.alpha().to_vec());
@@ -173,10 +174,12 @@ fn colour_overlay_clips_to_alpha_and_ignores_fill() {
     assert_eq!((p.rgb, p.a), (RED, 0.5));
 }
 
-/// Acceptance 4. Outside 1 px around a 3 x 3 square at (2..=4, 2..=4) of a 7 x 7 plane: the 12
-/// edge-adjacent pixels are 1, the 4 corner pixels (distance .7071 to the square) are
-/// 1.5 - .7071 = 0.79289 (round corners), everything at distance >= 2 is 0. Inside gives the
-/// inner ring of 8; centre size 1 straddles the edge with 0.5 on both rings.
+/// Acceptance 4 (re-pinned by lane SMB-PS-ORACLE-PARITY-2 to Photoshop's grow, D5 PS-C13). Outside
+/// 1 px around a 3 x 3 square at (2..=4, 2..=4) of a 7 x 7 plane: the 12 edge-adjacent pixels are
+/// 1, the 4 corner pixels (chamfer distance w2 = 1.41366) are 2 - w2 = 0.58634, the pixels two
+/// steps out along an axis keep the fringe 2 - 2 w1 = 0.00076, everything else is 0. Inside gives
+/// the inner ring of 8 (and the fringe at the centre); centre size 1 straddles the edge with
+/// 1.5 - w1 = 0.50038 on both rings and 0.08634 on the outer corners.
 #[test]
 fn stroke_outside_inside_and_centre_bands() {
     let sq = plane(7, 7, |x, y| {
@@ -206,30 +209,37 @@ fn stroke_outside_inside_and_centre_bands() {
         assert_eq!(at(&out, 7, x, y), 1.0, "edge ({x},{y})");
     }
     for (x, y) in [(1, 1), (5, 1), (1, 5), (5, 5)] {
-        assert!(close(at(&out, 7, x, y), 0.792_893_2), "corner ({x},{y})");
+        assert!(close(at(&out, 7, x, y), 0.586_343), "corner ({x},{y})");
     }
-    for (x, y) in [(0, 3), (3, 0), (6, 3), (0, 0), (0, 1), (3, 3), (2, 2)] {
+    for (x, y) in [(0, 3), (3, 0), (6, 3)] {
+        assert!(close(at(&out, 7, x, y), 0.000_759), "fringe ({x},{y})");
+    }
+    for (x, y) in [(0, 0), (0, 1), (3, 3), (2, 2)] {
         assert_eq!(at(&out, 7, x, y), 0.0, "far/inside ({x},{y})");
     }
     let sum: f32 = out.iter().sum();
-    assert!(close(sum, 12.0 + 4.0 * 0.792_893_2));
+    assert!(close(sum, 12.0 + 4.0 * 0.586_343 + 12.0 * 0.000_759));
 
     let inn = reference_matte(&sq, &stroke(1.0, StrokePosition::Inside)).unwrap();
     for y in 0..7 {
         for x in 0..7 {
             let ring = (2..=4).contains(&x) && (2..=4).contains(&y) && (x, y) != (3, 3);
-            assert_eq!(
-                at(&inn, 7, x, y),
-                if ring { 1.0 } else { 0.0 },
-                "inside ({x},{y})"
-            );
+            let want = if ring {
+                1.0
+            } else if (x, y) == (3, 3) {
+                0.000_759
+            } else {
+                0.0
+            };
+            assert!(close(at(&inn, 7, x, y), want), "inside ({x},{y})");
         }
     }
 
-    // Centre, width 1: halves of 0.5 px -> ramp 0.5 on the outer ring and on the inner ring.
+    // Centre, width 1: halves of 0.5 px -> 1.5 - w1 on the outer ring and on the inner ring.
     let mid = reference_matte(&sq, &stroke(1.0, StrokePosition::Centre)).unwrap();
-    assert!(close(at(&mid, 7, 1, 3), 0.5));
-    assert!(close(at(&mid, 7, 2, 3), 0.5));
+    assert!(close(at(&mid, 7, 1, 3), 0.500_379_6));
+    assert!(close(at(&mid, 7, 2, 3), 0.500_379_6));
+    assert!(close(at(&mid, 7, 1, 1), 0.086_343));
     assert_eq!(at(&mid, 7, 3, 3), 0.0);
     assert_eq!(at(&mid, 7, 0, 3), 0.0);
     // Size 0 is an empty matte.
@@ -625,18 +635,18 @@ fn effect_limits_validation_and_budget() {
         Err(EffectError::OutOfDomain)
     );
 
-    // Margin a backend must read: shadow 3 (offset) + 2 (spread_px = .5 * 4) + 1 (blur 2 -> tent
-    // half-width 2, nonzero taps within 1) = 6; stroke outside 5 -> 5; centre 5 -> ceil(2.5) = 3;
-    // overlay 0.
+    // Margin a backend must read: shadow 3 (offset) + 3 (grow reach of spread_px = .5 * 4 = 2:
+    // floor(3 / w1), lane SMB-PS-ORACLE-PARITY-2) + 1 (blur 2 -> tent half-width 2, nonzero taps
+    // within 1) = 7; stroke outside 5 -> reach 6; centre 5 -> reach of 2.5 = 3; overlay 0.
     let margin = EffectOp::DropShadow(
         shadow(1.0)
             .with_offset(10.0, 3.0)
             .with_size(4.0)
             .with_spread(0.5),
     );
-    assert_eq!(effect_support_px(&margin), Ok(6));
+    assert_eq!(effect_support_px(&margin), Ok(7));
     let stroke = |position| EffectOp::Stroke(StrokeOp::new(RED, NORMAL, 1.0, 5.0, position));
-    assert_eq!(effect_support_px(&stroke(StrokePosition::Outside)), Ok(5));
+    assert_eq!(effect_support_px(&stroke(StrokePosition::Outside)), Ok(6));
     assert_eq!(effect_support_px(&stroke(StrokePosition::Centre)), Ok(3));
     assert_eq!(
         effect_support_px(&EffectOp::ColourOverlay(ColourOverlayOp::new(

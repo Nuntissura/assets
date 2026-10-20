@@ -850,7 +850,7 @@ pub fn effect_blur_kernel(size_px: f32) -> Result<Vec<f32>, EffectError> {
 /// the anti-aliased pixels of PS-C12 `square_s{2,10,40}_sp100`, every sample within one 8-bit code):
 /// the exact `1, sqrt 2, sqrt 5` leave up to 4 codes at 40 px (the grown edge of Photoshop reaches
 /// about 0.04 % farther, visible as the 1-code fringe one pixel beyond a 10 px spread).
-pub const GROW_WEIGHTS: [f32; 3] = [0.999_620_5, 1.413_656_9, 2.235_836];
+pub const GROW_WEIGHTS: [f32; 3] = [0.999_620_5, 1.413_657, 2.235_836];
 
 /// Photoshop's grow distance of the offset `(ox, oy)` (lane SMB-PS-ORACLE-PARITY-2): the 5 x 5
 /// chamfer norm with [`GROW_WEIGHTS`], `w1 (x - 2y) + w5 y` for `x >= 2y`, otherwise
@@ -1654,7 +1654,8 @@ pub fn render_layer_reference_with(
                     px = apply(px, k)?;
                 }
             }
-            if fade < 1.0 {
+            // a pixel the stack left unchanged stays bit for bit (a lerp of equal values rounds)
+            if fade < 1.0 && (px.rgb != below.rgb || px.a != below.a) {
                 px = interior_mix(below, px, fade, true);
             }
             if let (Some(c), Some(a)) = (rgb.get_mut(i), alpha.get_mut(i)) {

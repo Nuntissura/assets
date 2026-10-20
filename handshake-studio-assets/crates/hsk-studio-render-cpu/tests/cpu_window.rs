@@ -154,10 +154,11 @@ fn parity_with_reference_across_chunkings_and_threads() {
             StrokePosition::Inside,
         )),
     ];
-    // Margin 6 = shadow offset 3 + spread 1 + blur support 2 (the effect tent kernel; cross-lane
-    // re-pin by SMB-PS-ORACLE-PARITY-1, the Gaussian support was 5 -> 9); the layer bounds
-    // (14, 14, 17, 13) grown by it are the region the effect layer rewrites: x 8..37, y 8..33.
-    assert_eq!(stack_support_px(&ops).unwrap(), 6);
+    // Margin 7 = shadow offset 3 + grow reach 2 of the 1 px spread (floor(2 / w1), lane
+    // SMB-PS-ORACLE-PARITY-2) + blur support 2 (the effect tent kernel; SMB-PS-ORACLE-PARITY-1);
+    // the layer bounds (14, 14, 17, 13) grown by it are the region the effect layer rewrites:
+    // x 7..38, y 7..34.
+    assert_eq!(stack_support_px(&ops).unwrap(), 7);
     let content = plane_of(48, 44, |x, y| {
         let (lx, ly) = (i64::from(x).wrapping_sub(14), i64::from(y).wrapping_sub(14));
         match (u32::try_from(lx), u32::try_from(ly)) {
