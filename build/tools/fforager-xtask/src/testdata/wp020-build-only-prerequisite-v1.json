@@ -1,0 +1,214 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-020-equivalent-work-benchmark-design-v1",
+    "base_wp_id": "WP-FF-020-equivalent-work-benchmark-design",
+    "version": "1",
+    "title": "Define the Phase 0D equivalent-work benchmark design",
+    "created_at_utc": "2026-08-09T15:39:12Z",
+    "updated_at_utc": "2026-08-09T15:39:12Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Create a dedicated Phase 0D benchmark-design work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
+    "recorded_at_utc": "2026-08-09T15:39:12Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#61-behavioral-parity-over-structural-parity",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#62-measure-before-and-after",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#27-benchmark-plan-and-performance-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0d--equivalent-work-benchmark-design",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#317-broad-feature-implementation-readiness-gates",
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#appendix-c--benchmark-matrix",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/consensus_blockers/2",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/phase_readiness/0",
+      ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/implementation_readiness_gates/9"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+    "work_branch": "codex/wp-ff-020-benchmark-design",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "STUB",
+    "risk": "HIGH",
+    "blockers": [
+      "The packet is a STUB and does not authorize implementation.",
+      "Current benchmark-harness, statistics, host-isolation, and measurement-tool research must be refreshed and bound to exact versions before promotion.",
+      "Exact benchmark manifest, raw-sample, normalized-observation, equality-admission, report, and rejection schemas are not yet frozen.",
+      "Pinned Windows and Unix replay host profiles and measured baseline-variance evidence are not yet recorded.",
+      "FF-GATE-RUNTIME-001 currently rejects a design-authorized build-only PREREQUISITE when no shipped product path changes; a separately authorized fail-closed classifier remediation must distinguish declared Phase 0 prerequisite artifacts from NONE governance work before this packet can be promoted."
+    ],
+    "next_action": "After WP-FF-010 or in a separately Operator-selected Phase 0D lane, first complete a separately authorized fail-closed PREREQUISITE/NONE classifier remediation, then refresh current source-level benchmark research, pin replay hosts and tool identities, freeze equality before timing, promote this STUB, and implement the Ferric-owned manifest/report validators and negative fixtures.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Create the non-product Phase 0D benchmark contract and executable admission gates that prove equivalent work before any Ferric-versus-reference timing sample can influence a performance claim.",
+    "product_impact": "PREREQUISITE",
+    "in_scope": [
+      "Define strict versioned benchmark-manifest, raw-sample, normalized-observation, environment-profile, equality-admission, rejection, and aggregate-report schemas.",
+      "Pin exact Ferric commit/build/profile/features/allocator, optional comparison artifact identity, FFmpeg/ffprobe identity, transport/archive/challenge identities, fixture/corpus hashes, and process topology.",
+      "Define equality predicates for source graph, request sequence, bytes/fragments, selected streams, output and ffprobe facts, metadata/sidecars, archive action, validation, failure class, cache/network state, and process topology before timing.",
+      "Define Windows and Unix host profiles covering machine, OS, filesystem, storage, antivirus/security state, power/governor, CPU affinity, memory pressure, and cold/warm cache policy without hardcoded machine-local paths.",
+      "Define randomized paired order, warmup, repetitions, raw-sample retention, outlier/noise policy, distributions, 95-percent confidence bounds, no-regression admission, and improvement thresholds.",
+      "Implement deterministic negative fixtures that reject cheaper work, mismatched provenance, asymmetric cache state, changed topology, missing raw samples, single-mean reports, and structurally self-validating claims.",
+      "Keep canonical proof Ferric-owned and executable with Python, yt-dlp, companion assets, cloud services, and optional comparison tools absent.",
+      "Expose the exact no-context command, inputs, outputs, limits, failure diagnostics, and recovery path through the non-shipped xtask help and machine-readable gate output."
+    ],
+    "non_goals": [
+      "Claiming Ferric is faster, non-regressing, parity-complete, product-ready, or release-ready.",
+      "Executing or completing the Phase 1 or Phase 2 production runtime slices.",
+      "Selecting a new benchmark dependency, hosted service, Python tool, shell-composed runner, or native runtime without separate authority.",
+      "Using live internet measurements as canonical evidence.",
+      "Allowing an optional external comparison executable to become a build, test, verification, package, release, or runtime prerequisite.",
+      "Replacing raw samples and equality observations with one aggregate mean or a self-authored PASS field."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
+      ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      "build/tooling-policy.toml",
+      "build/rule-to-proof.toml",
+      "build/benches/",
+      "build/fixtures/benchmarks/",
+      "build/tools/fforager-xtask/",
+      "build/reports/",
+      ".fforager-artifacts/"
+    ],
+    "dependencies": [
+      "WP-FF-003-executable-gate-bootstrap-v2 VALIDATED closure 27887cea0026a9db218b623ce8e69fc0cf191fb0 contained in main",
+      "WP-FF-004-compatibility-inventory-corpus-v2 VALIDATED closure 9a39cc597da1fc646c628e64910dbfcf2a0f947e contained in main",
+      "WP-FF-005-versioned-core-contracts-v1 VALIDATED closure acf5465518e94984848e7d1f725575a99daebd55 contained in main",
+      "WP-FF-012-runtime-truth-gates-v1 VALIDATED closure 75dbeb495694955f6a0ff786f7bcb47b73d5bbeb contained in main",
+      "Ferric-owned committed corpora and normalized observation contracts remain canonical",
+      "Windows and Unix replay or dedicated benchmark hosts are available without committing machine-local paths"
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-001",
+      "requirement": "Strict versioned schemas bind every run and sample to exact source, build, toolchain, features, optional comparison artifact, FFmpeg/ffprobe, dependency decisions, fixture/corpus, host, filesystem, cache, process-topology, and metric identities; unknown fields, missing identities, duplicate sample IDs, and mismatched manifests are rejected.",
+      "proof_class": "semantic",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-002",
+      "requirement": "A public admission boundary compares concrete normalized observations and rejects deliberately cheaper or different work before statistics, including lower-quality selection, omitted metadata/sidecar/archive/validation work, changed cache state, different request sequence, shifted subprocess work, and changed process topology.",
+      "proof_class": "integration",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-003",
+      "requirement": "Windows and Unix profile manifests define replayable host and environment conditions, bounded preparation and cleanup, cold/warm policy, noise thresholds, measurement availability, and explicit unsupported metrics without hardcoded paths or silent substitution.",
+      "proof_class": "integration",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-004",
+      "requirement": "The statistical contract retains raw samples and enforces randomized paired order, declared warmup, minimum repetitions, outlier/noise policy, distributions, and 95-percent confidence bounds; a single mean, missing samples, unstable noise, and a confidence interval crossing its declared gate cannot PASS.",
+      "proof_class": "semantic",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-005",
+      "requirement": "Machine-readable reports preserve the weakest executed proof class, separate total-system, Ferric, FFmpeg, and other authorized worker costs, disclose unavailable metrics and residual uncertainty, and cannot promote structural or declaration-only evidence to behavioral or performance PASS.",
+      "proof_class": "semantic",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-006",
+      "requirement": "Canonical architecture, PR, and triggered benchmark/deep gates execute the equality and statistics validators plus isolated counterfactual fixtures; independent adversarial review finds no unresolved false-equivalence, provenance, topology, noise, or self-validation path.",
+      "proof_class": "integration",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-08-09T15:39:12Z",
+      "branch": "codex/wp-ff-020-021-planning",
+      "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+      "head_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
+        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
+        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json",
+        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
+        ".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json",
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/id-registry.yaml"
+      ],
+      "checks_run": [
+        "Authority, template, technical-design, readiness-matrix, taskboard, and current packet inspection completed before packet authoring."
+      ],
+      "blockers": [
+        "Packet remains a non-authorizing STUB until its promotion requirements are satisfied."
+      ],
+      "next_action": "Refresh current benchmark implementation research, freeze exact schemas and host profiles, then promote before implementation."
+    }
+  },
+  "validation": {
+    "checks": [],
+    "not_proven": [
+      "Any benchmark implementation or executable benchmark gate",
+      "Any equivalent-work runtime sample",
+      "Any Ferric performance or no-regression claim",
+      "Any product, capability, runtime, packaging, release, or phase progress"
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
+    "non_product_prerequisite": {
+      "schema_id": "ff.non-product-prerequisite@1",
+      "classification": "phase0_supporting_evidence",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0d--equivalent-work-benchmark-design",
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false,
+      "required_future_consumer": "WP-FF-021-first-runnable-production-slice-v1 and WP-FF-011-equivalent-work-vertical-slice-v1",
+      "required_future_proof": "the backwards-compatible FF-GATE-RUNTIME-001 staged-artifact contract delivered by WP-FF-021 plus the WP-FF-011 equivalent-work runtime benchmark gate"
+    },
+    "stub_implementation_brief": {
+      "implementation_authorized": false,
+      "promotion_requirements": [
+        "A separately authorized classifier remediation makes FF-GATE-RUNTIME-001 recognize design-authorized build-only Phase 0 prerequisite artifacts while preserving fail-closed rejection of NONE or RUNTIME mismatches.",
+        "Current official and source-level benchmark research is recorded with exact versions and rejected alternatives.",
+        "Exact manifest, observation, sample, report, and rejection schemas are frozen.",
+        "Windows and Unix replay/measurement profiles and tool identities are pinned.",
+        "Baseline variance determines explicit noise and confidence thresholds before any performance threshold is accepted.",
+        "Every acceptance row has an executable command, bounded timeout, concrete input, expected result, and failure oracle.",
+        "The exact non-product prerequisite declaration remains unchanged from the first committed non-STUB checkpoint through closure, and no product path changes under this packet."
+      ],
+      "detail_location": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json"
+    }
+  }
+}

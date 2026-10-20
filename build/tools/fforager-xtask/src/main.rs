@@ -1,5 +1,7 @@
 mod compatibility;
 mod ffmpeg_report;
+#[cfg(test)]
+mod runtime_classifier_tests;
 mod secret_scan;
 
 use cargo_metadata::{DependencyKind, Metadata, PackageId};
@@ -11245,11 +11247,20 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    if product_paths.is_empty() {
+    if product_paths.is_empty() && impact != "PREREQUISITE" {
         if impact != "NONE" {
             return Err(format!(
                 "FF-RUNTIME-E-IMPACT-MISMATCH: packet declares {impact} but no shipped product path changed"
             ));
+        }
+        if packet
+            .pointer("/extensions/non_product_prerequisite")
+            .is_some()
+        {
+            return Err(
+                "FF-RUNTIME-E-IMPACT-MISMATCH: NONE packet contains a non-product prerequisite declaration"
+                    .to_owned(),
+            );
         }
         if packet.pointer("/extensions/runtime_proof").is_some()
             || packet
@@ -11312,8 +11323,39 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
             .map_err(|error| format!("FF-RUNTIME-E-PREREQUISITE-SCHEMA: {error}"))?;
         validate_non_product_prerequisite(&declaration)?;
         validate_prerequisite_zero_claim_surface(&packet)?;
+        let build_only = product_paths.is_empty()
+            || activated_packet
+                .pointer("/scope/allowed_paths")
+                .and_then(Value::as_array)
+                .is_some_and(|paths| {
+                    !paths.is_empty()
+                        && !paths.iter().any(|path| {
+                            path.as_str()
+                                .is_some_and(|path| path.starts_with("product/"))
+                        })
+                });
+        if build_only {
+            validate_build_only_prerequisite(
+                root,
+                base,
+                &packet,
+                &activated_packet,
+                &declaration,
+                &changed,
+                &product_paths,
+            )?;
+        }
+        let prerequisite_paths = if build_only {
+            changed.iter().cloned().collect::<Vec<_>>()
+        } else {
+            product_paths
+        };
         return Ok(RuntimeTruthResult {
-            checks: prerequisite_runtime_checks(&id, &product_paths),
+            checks: prerequisite_runtime_checks(
+                &id,
+                &prerequisite_paths,
+                build_only,
+            ),
             proof_classes: vec!["policy".to_owned(), "scenario_contract".to_owned()],
             limitations: vec![
                 "This PASS is supporting policy/contract proof only: it proves no product progress, capability progress, phase progress, runtime completion, packaging progress, or release progress.".to_owned(),
@@ -11348,14 +11390,19 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
     execute_runtime_proof(root, &proof, &id, &product_paths)
 }
 
-fn prerequisite_runtime_checks(id: &str, product_paths: &[String]) -> Vec<Check> {
+fn prerequisite_runtime_checks(id: &str, paths: &[String], build_only: bool) -> Vec<Check> {
+    let classification = if build_only {
+        "build-only artifacts"
+    } else {
+        "product paths"
+    };
     vec![
         pass_with_class(
             "runtime-impact",
             "policy",
             "active packet impact and changed-path classification",
             &format!(
-                "packet {id} changes product paths only as a predeclared Phase 0 non-product prerequisite: {product_paths:?}"
+                "packet {id} changes {classification} only as a predeclared Phase 0 non-product prerequisite: {paths:?}"
             ),
         ),
         pass_with_class(
@@ -11371,6 +11418,105 @@ fn prerequisite_runtime_checks(id: &str, product_paths: &[String]) -> Vec<Check>
             "zero product completion; zero capability completion; zero phase completion; zero runtime completion; zero packaging or release progress",
         ),
     ]
+}
+
+fn validate_build_only_prerequisite(
+    root: &Path,
+    base: &str,
+    packet: &Value,
+    activated_packet: &Value,
+    declaration: &NonProductPrerequisite,
+    changed: &BTreeSet<String>,
+    product_paths: &[String],
+) -> Result<(), String> {
+    let activated_paths = activated_packet.pointer("/scope/allowed_paths");
+    if packet.pointer("/scope/allowed_paths") != activated_paths {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: allowed paths differ from the activation checkpoint".to_owned());
+    }
+    let allowed = activated_paths.and_then(Value::as_array).ok_or(
+        "FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: activation requires explicit allowed paths",
+    )?;
+    let paths = allowed.iter().map(|path| {
+        let path = path.as_str().ok_or("FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: allowed paths must be strings")?;
+        let normalized = path.strip_suffix('/').unwrap_or(path);
+        if !safe_relative(normalized) || path.contains('*') || path.contains('\\') {
+            return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: allowed paths must be safe exact paths or directories");
+        }
+        Ok(path)
+    }).collect::<Result<Vec<_>, _>>()?;
+    if !product_paths.is_empty() {
+        return Err(format!(
+            "FF-RUNTIME-E-BUILD-PREREQUISITE-PATH: build-only activation changes product-affecting paths: {product_paths:?}"
+        ));
+    }
+    for path in changed {
+        if !safe_relative(path)
+            || !paths.iter().any(|allowed| {
+                if allowed.ends_with('/') {
+                    path.starts_with(allowed)
+                } else {
+                    path == allowed
+                }
+            })
+        {
+            return Err(format!(
+                "FF-RUNTIME-E-BUILD-PREREQUISITE-PATH: undeclared changed path {path}"
+            ));
+        }
+    }
+    if !changed.iter().any(|path| {
+        path.starts_with("build/")
+            && !path.starts_with("build/reports/")
+            && root.join(path).is_file()
+    }) {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-ARTIFACT: no changed declared build artifact; governance and reports alone are not a prerequisite".to_owned());
+    }
+    let authority = &declaration.design_authority;
+    if !activated_packet
+        .pointer("/authority/spec_anchors")
+        .and_then(Value::as_array)
+        .is_some_and(|anchors| {
+            anchors
+                .iter()
+                .any(|anchor| anchor.as_str() == Some(authority))
+        })
+    {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design authority is not an activation spec anchor".to_owned());
+    }
+    let (path, anchor) = authority.split_once('#').ok_or(
+        "FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design authority must name a prerequisite section",
+    )?;
+    if path != ".GOV/spec/ferric_forager_technical_design_v0.3.0.md" {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design authority must name the canonical technical design".to_owned());
+    }
+    let design = command_output(root, "git", &["show", &format!("{base}:{path}")])
+        .map_err(|error| format!("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: {error}"))?;
+    let authorized = design
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .filter(|heading| heading.starts_with("Prerequisite 0"))
+        .any(|heading| {
+            let slug = heading
+                .chars()
+                .filter(|character| {
+                    character.is_ascii_alphanumeric()
+                        || character.is_whitespace()
+                        || *character == '-'
+                })
+                .map(|character| {
+                    if character.is_whitespace() {
+                        '-'
+                    } else {
+                        character.to_ascii_lowercase()
+                    }
+                })
+                .collect::<String>();
+            slug == anchor
+        });
+    if !authorized {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design anchor is not a pre-existing Phase 0 prerequisite section".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_prerequisite_zero_claim_surface(packet: &Value) -> Result<(), String> {
@@ -11398,10 +11544,14 @@ fn validate_prerequisite_zero_claim_surface(packet: &Value) -> Result<(), String
 }
 
 fn reject_progress_claims(value: &Value) -> Result<(), String> {
-    reject_progress_claims_at(value, false)
+    reject_progress_claims_at(value, false, "")
 }
 
-fn reject_progress_claims_at(value: &Value, progress_subject_in_scope: bool) -> Result<(), String> {
+fn reject_progress_claims_at(
+    value: &Value,
+    progress_subject_in_scope: bool,
+    path: &str,
+) -> Result<(), String> {
     match value {
         Value::Object(object) => {
             for (key, child) in object {
@@ -11414,12 +11564,25 @@ fn reject_progress_claims_at(value: &Value, progress_subject_in_scope: bool) -> 
                         "FF-RUNTIME-E-PREREQUISITE-PROGRESS-CLAIM: {key}={child}"
                     ));
                 }
-                reject_progress_claims_at(child, child_progress_subject)?;
+                let component = key.replace('~', "~0").replace('/', "~1");
+                reject_progress_claims_at(
+                    child,
+                    child_progress_subject,
+                    &format!("{path}/{component}"),
+                )?;
             }
         }
         Value::Array(values) => {
             for child in values {
-                reject_progress_claims_at(child, progress_subject_in_scope)?;
+                // Canonical non-goal strings declare exclusions, not outcomes.
+                // Structured values still undergo all typed claim checks.
+                if path != "/scope/non_goals" || !child.is_string() {
+                    reject_progress_claims_at(
+                        child,
+                        progress_subject_in_scope,
+                        &format!("{path}/[]"),
+                    )?;
+                }
             }
         }
         Value::String(text) if asserts_forbidden_prerequisite_completion(text) => {
@@ -11534,7 +11697,7 @@ fn clause_asserts_forbidden_prerequisite_completion(clause: &str) -> bool {
             for (status, _) in tokens
                 .iter()
                 .enumerate()
-                .filter(|(_, token)| is_completion_status(token))
+                .filter(|(index, _)| completion_predicate_at(&tokens, *index))
             {
                 if !claim_subject_is_negated(&tokens, start, end, status) {
                     return true;
@@ -11595,7 +11758,7 @@ fn single_subject_asserts_completion(tokens: &[String]) -> bool {
         for (status, _) in tokens
             .iter()
             .enumerate()
-            .filter(|(_, token)| is_completion_status(token))
+            .filter(|(index, _)| completion_predicate_at(tokens, *index))
         {
             if subject.abs_diff(status) <= 5
                 && !claim_subject_is_negated(tokens, subject, subject + 1, status)
@@ -11610,18 +11773,61 @@ fn single_subject_asserts_completion(tokens: &[String]) -> bool {
 fn pronoun_asserts_completion(tokens: &[String]) -> bool {
     tokens.first().is_some_and(|token| {
         matches!(token.as_str(), "it" | "this" | "that")
-            && tokens.iter().enumerate().any(|(status, token)| {
-                is_completion_status(token) && !claim_subject_is_negated(tokens, 0, 1, status)
+            && tokens.iter().enumerate().any(|(status, _)| {
+                completion_predicate_at(tokens, status)
+                    && !claim_subject_is_negated(tokens, 0, 1, status)
             })
     })
 }
 
 fn claim_tokens(text: &str) -> Vec<String> {
-    text.to_ascii_lowercase()
-        .split(|character: char| !character.is_ascii_alphanumeric())
+    let normalized = text.to_ascii_lowercase();
+    let gate = RUNTIME_GATE.to_ascii_lowercase();
+    let identifier_character =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '-' | '_');
+    // Stable identifiers are references; surrounding outcome prose remains.
+    normalized
+        .split(|character| !identifier_character(character))
+        .filter(|word| *word != gate && !work_packet_reference(word))
+        .flat_map(|word| word.split(|character: char| !character.is_ascii_alphanumeric()))
         .filter(|token| !token.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn work_packet_reference(word: &str) -> bool {
+    let Some(rest) = word.strip_prefix("wp-ff-") else {
+        return false;
+    };
+    let Some((number, rest)) = rest.split_once('-') else {
+        return false;
+    };
+    let Some((name, version)) = rest.rsplit_once("-v") else {
+        return false;
+    };
+    !number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && name.split('-').all(|segment| {
+            !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
+fn completion_predicate_at(tokens: &[String], index: usize) -> bool {
+    is_completion_status(&tokens[index])
+        && !(tokens[index] == "complete"
+            && index > 0
+            && tokens[index - 1] == "first"
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.as_str(), "a" | "an" | "the"))
+            && !tokens[..index - 1].iter().any(|prior| {
+                matches!(
+                    prior.as_str(),
+                    "is" | "are" | "was" | "were" | "be" | "been" | "being"
+                )
+            }))
 }
 
 fn token_sequence_positions(tokens: &[String], sequence: &[&str]) -> Vec<usize> {
@@ -11649,6 +11855,9 @@ fn claim_subject_is_negated(
         negations.contains(&tokens[index].as_str())
             && !(tokens[index] == "not" && tokens.get(index + 1).is_some_and(|next| next == "only"))
     };
+    if status > 0 && is_effective_negation(status - 1) {
+        return true;
+    }
     if subject_start > 0 && is_effective_negation(subject_start - 1) {
         return true;
     }
@@ -13438,6 +13647,15 @@ fn validate_finding_dispositions(value: &Value) -> Result<(), String> {
 #[allow(clippy::too_many_lines)]
 fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> {
     match finding_id {
+        "WP-FF-022-FINDING-CLASSIFIER-001" => Some(
+            "xtask::runtime_classifier_tests::build_only_prerequisite_public_handler_accepts_original_wp020_input",
+        ),
+        "WP-FF-022-FINDING-GATE-REFERENCE-002" => {
+            Some("xtask::runtime_classifier_tests::gate_identifier_is_not_a_current_runtime_claim")
+        }
+        "WP-FF-022-FINDING-CLAIM-CONTEXT-003" => Some(
+            "xtask::runtime_classifier_tests::original_wp020_context_corrections_keep_current_claims_closed",
+        ),
         "WP-FF-005-FINDING-WIRE-001" => {
             Some("testkit::tests::canonical_public_contract_fixtures_decode_and_validate")
         }
@@ -16014,6 +16232,7 @@ mod tests {
         let checks = prerequisite_runtime_checks(
             "WP-FF-013-proof-integrity-remediation-v2",
             &["product/crates/fforager-core/src/lifecycle.rs".to_owned()],
+            false,
         );
         assert_eq!(
             executed_proof_classes(&checks, &[]),
