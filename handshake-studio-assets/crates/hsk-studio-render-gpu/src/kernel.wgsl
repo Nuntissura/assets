@@ -189,7 +189,7 @@ fn range_weight(v: f32, r: vec4<f32>) -> f32 {
     return up * down;
 }
 
-// coverage_math::BlendChannel::value: gray is blend_math::lum.
+// coverage_math::blend_if_value: red, green, blue as they are; gray from BLEND_IF_GRAY_WEIGHTS.
 fn blend_if_value(ch: u32, c: vec3<f32>) -> f32 {
     switch (ch) {
         case 1u: {
@@ -202,8 +202,10 @@ fn blend_if_value(ch: u32, c: vec3<f32>) -> f32 {
             return c.z;
         }
         default: {
-            // coverage_math::blend_if_value: the gray rounded to a whole level
-            return clamp(floor(hsk_lum(c) * 255.0 + 0.5) / 255.0, 0.0, 1.0); // Rust f32::round (half away) for v >= 0
+            // coverage_math::blend_if_value: the 15-bit gray weights BLEND_IF_GRAY_WEIGHTS, rounded
+            // to a whole level (Rust f32::round, half away, for v >= 0)
+            let level = (9830.0 * c.x + 19334.0 * c.y + 3604.0 * c.z) * (255.0 / 32768.0);
+            return clamp(floor(level + 0.5) / 255.0, 0.0, 1.0);
         }
     }
 }

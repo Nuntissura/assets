@@ -33,7 +33,7 @@ use crate::ext::{
 };
 use crate::fx::{
     Buf, FX_PASS_MAX_OPS, FXP_BYTES, FxEffect, FxError, FxKernels, FxLayer, FxStep, compile_effect,
-    margin_of, params_bytes, shape_alpha_step,
+    constant_step, margin_of, params_bytes, shape_alpha_step,
 };
 use crate::kernel::{
     BLUR_MAX_TAPS, BLURP_BYTES, BlurOp, FilterOp, LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES,
@@ -783,7 +783,9 @@ fn prepare<'a>(
                                     op,
                                     &mut fx_kernels,
                                     scratch_limit.saturating_sub(feather_bytes),
-                                    l.opacity * l.fill_opacity,
+                                    // the unit fade composes the stack at opacity 1 (pigment
+                                    // `render_layer_reference`), so a knockout reads the fill
+                                    l.fill_opacity,
                                 )
                                 .map_err(|e| fx_error(e, scratch_limit))?;
                                 fx_window_ops = fx_window_ops.max(compiled.window_ops);
@@ -1147,10 +1149,17 @@ fn prepare<'a>(
                         below.saturating_add(2)
                     } else if layers[k].fx.as_ref().is_some_and(|f| f.interior) {
                         // The interior unit (lane SMB-PS-ORACLE-PARITY-1) holds the unit one level
-                        // below and the content copy two levels below.
-                        below.max(1).saturating_add(1)
-                    } else if layers[k].fx.is_some()
-                        || layers[k].blur.is_some()
+                        // below and the content copy two levels below; a layer opacity below 1
+                        // adds the faded unit's level (lane SMB-PS-ORACLE-PARITY-2).
+                        below
+                            .max(1)
+                            .saturating_add(1)
+                            .saturating_add(usize::from(layers[k].layer_opacity < 1.0))
+                    } else if layers[k].fx.is_some() {
+                        below
+                            .saturating_add(1)
+                            .saturating_add(usize::from(layers[k].layer_opacity < 1.0))
+                    } else if layers[k].blur.is_some()
                         || layers[k].filter.is_some()
                     {
                         below.saturating_add(1)
@@ -2807,6 +2816,10 @@ fn eval_layer(
 /// rendered into the level below, each effect's matte is built from its alpha by the matte passes
 /// into the mask buffer and composited as a solid colour with the effect's mode and
 /// `effect opacity * layer opacity` (effects fade with the layer opacity, not with the fill).
+/// A layer opacity below 1 fades the layer and its effects as one unit (lane
+/// SMB-PS-ORACLE-PARITY-2, pigment `render_layer_reference`): the running result is copied one
+/// level down, the stack runs there at opacity 1 (fill kept), and the unit is mixed back into this
+/// level by the constant opacity (`interior_mix`).
 fn eval_effect_layer(
     ex: &mut Exec<'_>,
     prep: &Prepared<'_>,
@@ -2818,6 +2831,36 @@ fn eval_effect_layer(
     if layer.layer_opacity <= 0.0 {
         return Ok(());
     }
+    if layer.layer_opacity >= 1.0 {
+        return eval_effect_unit(ex, prep, layer, fx, chunk, level, layer.opac(), layer.layer_opacity);
+    }
+    let Some(bounds) = prep.bound(layer.input) else {
+        return Ok(());
+    };
+    let Some(fx_region) = intersect(grow_rect(bounds, fx.margin)?, chunk)? else {
+        return Ok(());
+    };
+    let unit = level.saturating_add(1);
+    ex.copy_level(level, unit, texel_bytes(chunk.width, chunk.height));
+    let whole = Opac { folded: layer.fill, unfilled: 1.0, fill: layer.fill };
+    eval_effect_unit(ex, prep, layer, fx, chunk, unit, whole, 1.0)?;
+    ex.fx_pass(&constant_step(layer.layer_opacity), fx_region, chunk, unit)?;
+    ex.composite_mix(fx_region, chunk, level)
+}
+
+/// The stack of [`eval_effect_layer`] composed onto `level` with the content opacities `opac` and
+/// the effects faded by `effect_scale` (the layer opacity, or 1 inside a unit fade).
+#[allow(clippy::too_many_arguments)]
+fn eval_effect_unit(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    fx: &FxLayer,
+    chunk: Rect,
+    level: usize,
+    opac: Opac,
+    effect_scale: f32,
+) -> Result<(), GpuError> {
     // Content outside the frame is farther than the margin from every pixel that is kept.
     let Some(bounds) = prep.bound(layer.input) else {
         return Ok(());
@@ -2899,7 +2942,7 @@ fn eval_effect_layer(
             ex.copy_level(level, content, bytes);
             ex.composite(
                 layer.mode,
-                layer.opac(),
+                opac,
                 None,
                 None,
                 Pass::Opaque,
@@ -2910,7 +2953,7 @@ fn eval_effect_layer(
             )?;
             for effect in fx.effects.iter().filter(|e| e.interior) {
                 ex.check()?;
-                let opacity = effect.opacity * layer.layer_opacity;
+                let opacity = effect.opacity * effect_scale;
                 if effect.steps.is_empty() || opacity <= 0.0 {
                     continue;
                 }
@@ -2926,7 +2969,7 @@ fn eval_effect_layer(
             // the content itself, mask already inside its alpha
             ex.composite(
                 layer.mode,
-                layer.opac(),
+                opac,
                 None,
                 None,
                 Pass::Normal,
@@ -2949,7 +2992,7 @@ fn eval_effect_layer(
             .filter(|e| e.over_content != behind && !(fx.interior && e.interior))
         {
             ex.check()?;
-            let opacity = effect.opacity * layer.layer_opacity;
+            let opacity = effect.opacity * effect_scale;
             if effect.steps.is_empty() || opacity <= 0.0 {
                 continue;
             }

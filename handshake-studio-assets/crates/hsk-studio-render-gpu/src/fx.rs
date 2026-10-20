@@ -16,8 +16,8 @@
 use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::{
     BevelEmbossOp, BevelPart, BevelStyle, BevelTechnique, EffectError, EffectOp, EffectOrder,
-    GlowSource, GradientOverlayOp, PatternOverlayOp, SatinOp, StrokePosition, effect_blur_kernel,
-    effect_support_px, shadow_offset, shadow_split,
+    GROW_WEIGHTS, GlowSource, GradientOverlayOp, PatternOverlayOp, SatinOp, StrokePosition,
+    effect_blur_kernel, effect_support_px, grow_reach_px, shadow_offset, shadow_split,
 };
 use hsk_studio_pigment::render_plan::{ExtOperator, StudioBlendMode};
 
@@ -40,6 +40,11 @@ const OP_FINISH: u32 = 5;
 const OP_BEVEL: u32 = 6;
 /// Chisel field: capped signed distance to the shape edge (`style::chisel_field`).
 const OP_CHISEL: u32 = 7;
+/// Photoshop's grow (lane SMB-PS-ORACLE-PARITY-2; pigment `grow`: spread, choke, stroke), the
+/// chamfer weights `GROW_WEIGHTS` in the parameter tail.
+const OP_GROW: u32 = 8;
+/// FINISH mode of the centre stroke ring `clamp(fin + fin2 - 1)` (pigment `stroke_matte`).
+const FINISH_RING: u32 = 10;
 
 /// FINISH modes added by lane SMB-PS-ADJUST-STYLES-2 (fx.wgsl): satin `|fin - fin2| a`, satin
 /// inverted `(1 - |fin - fin2|) a`, the union `max(fin, a)` of a stroke and the shape.
@@ -54,6 +59,8 @@ const FINISH_SATIN_INTERIOR: u32 = 8;
 const FINISH_SATIN_INTERIOR_INVERTED: u32 = 9;
 /// INIT mode of a plane of ones (the interior coverage of the overlays).
 const INIT_ONES: u32 = 4;
+/// INIT mode of a constant plane `r` (lane SMB-PS-ORACLE-PARITY-2: the unit-fade weight).
+const INIT_CONSTANT: u32 = 5;
 
 /// Buffers a pass reads and writes: three f32 scratch planes and the matte buffer (the mask buffer
 /// of the composite kernels, so the matte composites through the existing kernel).
@@ -251,6 +258,18 @@ fn window(k: u32) -> Result<u64, FxError> {
     side.checked_mul(side).ok_or(FxError::Overflow)
 }
 
+/// One grow pass (pigment `grow`) by `radius`, samples beyond the region reading `outside`.
+fn grow_step(radius: f32, outside: f32) -> FxStep {
+    let mut s = FxStep::new(OP_GROW, 0);
+    s.r = radius;
+    s.k = grow_reach_px(radius);
+    s.outside = outside;
+    let [w1, w2, w5] = GROW_WEIGHTS;
+    s.extra = [w1, w2, w5, 0.0, 0.0, 0.0, 0.0, 0.0];
+    s
+}
+
+/// The disc dilation of the stroke emboss's stroke matte (pigment `style`, `dilate_unbudgeted`).
 fn dilate_step(radius: f32, outside: f32) -> FxStep {
     let mut s = FxStep::new(OP_DILATE, 0);
     s.r = radius;
@@ -259,7 +278,7 @@ fn dilate_step(radius: f32, outside: f32) -> FxStep {
     s
 }
 
-/// grow (hard disc) -> blur -> shift, from the source plane `init_mode` (pigment `matte_chain`),
+/// grow -> blur -> shift, from the source plane `init_mode` (pigment `matte_chain`),
 /// then the optional combine step `finish`. Returns the passes and their per-pixel cost bound.
 fn matte_chain(
     kernels: &mut FxKernels,
@@ -273,7 +292,7 @@ fn matte_chain(
     let mut steps = vec![FxStep::new(OP_INIT, init_mode)];
     let mut ops = 1u64;
     if grown_px > 0.0 {
-        let s = dilate_step(grown_px, outside);
+        let s = grow_step(grown_px, outside);
         ops = ops.max(window(s.k)?);
         steps.push(s);
     }
@@ -301,24 +320,6 @@ fn matte_chain(
     if let Some(mode) = finish {
         steps.push(FxStep::new(OP_FINISH, mode));
     }
-    assign(&mut steps, Buf::Mask);
-    Ok((steps, ops))
-}
-
-/// One half of a stroke (`stroke_half`): `outside` = region dilated by `w` minus the alpha,
-/// otherwise the alpha minus the region eroded by `w`. Width zero is an empty matte (no passes).
-fn stroke_half(w: f32, outside: bool) -> Result<(Vec<FxStep>, u64), FxError> {
-    if w <= 0.0 {
-        return Ok((Vec::new(), 1));
-    }
-    let (init, beyond, finish) = if outside { (2, 0.0, 0) } else { (3, 1.0, 1) };
-    let d = dilate_step(w, beyond);
-    let ops = window(d.k)?;
-    let mut steps = vec![
-        FxStep::new(OP_INIT, init),
-        d,
-        FxStep::new(OP_FINISH, finish),
-    ];
     assign(&mut steps, Buf::Mask);
     Ok((steps, ops))
 }
@@ -354,15 +355,22 @@ pub(crate) fn compile_effect(
             }
             (steps, ops)
         }
-        EffectOp::OuterGlow(o) => matte_chain(
-            kernels,
-            limit,
-            0,
-            0.0,
-            shadow_split(o.size_px, o.spread),
-            (0, 0),
-            None,
-        )?,
+        EffectOp::OuterGlow(o) => {
+            // knocked out by the layer like a knocking drop shadow (pigment `knocks_out`)
+            let (mut steps, ops) = matte_chain(
+                kernels,
+                limit,
+                0,
+                0.0,
+                shadow_split(o.size_px, o.spread),
+                (0, 0),
+                Some(0),
+            )?;
+            for s in steps.iter_mut().filter(|s| s.op == OP_FINISH && s.mode == 0) {
+                s.knock = layer_of;
+            }
+            (steps, ops)
+        }
         EffectOp::InnerShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px).map_err(from_effect)?;
             // the interior coverage: the chain without the multiply by the alpha
@@ -388,29 +396,43 @@ pub(crate) fn compile_effect(
                 GlowSource::Centre => Some(FINISH_ONE_MINUS),
             },
         )?,
-        EffectOp::Stroke(o) => match o.position {
-            StrokePosition::Outside => stroke_half(o.size_px, true)?,
-            StrokePosition::Inside => stroke_half(o.size_px, false)?,
-            StrokePosition::Centre => {
-                let half = o.size_px / 2.0;
-                if half <= 0.0 {
-                    (Vec::new(), 1)
-                } else {
-                    // outside half into T2, inside half, then min(outside + inside, 1)
-                    let (d_out, d_in) = (dilate_step(half, 0.0), dilate_step(half, 1.0));
-                    let ops = window(d_out.k)?;
-                    let steps = vec![
-                        FxStep::new(OP_INIT, 2).explicit(Buf::T1, Buf::T2, Buf::T0),
-                        d_out.explicit(Buf::T0, Buf::T2, Buf::T1),
-                        FxStep::new(OP_FINISH, 0).explicit(Buf::T1, Buf::T0, Buf::T2),
-                        FxStep::new(OP_INIT, 3).explicit(Buf::T1, Buf::T2, Buf::T0),
-                        d_in.explicit(Buf::T0, Buf::T2, Buf::T1),
-                        FxStep::new(OP_FINISH, 3).explicit(Buf::T1, Buf::T2, Buf::Mask),
-                    ];
-                    (steps, ops)
+        EffectOp::Stroke(o) => {
+            // pigment `stroke_matte`: outside = grow(a) knocked out (FINISH 0 with the layer's
+            // opacity * fill), inside = grow(1 - a) (interior coverage), centre = the ring
+            let w = match o.position {
+                StrokePosition::Centre => o.size_px / 2.0,
+                _ => o.size_px,
+            };
+            if w <= 0.0 {
+                (Vec::new(), 1)
+            } else {
+                match o.position {
+                    StrokePosition::Outside => {
+                        let (mut steps, ops) =
+                            matte_chain(kernels, limit, 0, 0.0, (w, 0.0), (0, 0), Some(0))?;
+                        for s in steps.iter_mut().filter(|s| s.op == OP_FINISH && s.mode == 0) {
+                            s.knock = layer_of;
+                        }
+                        (steps, ops)
+                    }
+                    StrokePosition::Inside => {
+                        matte_chain(kernels, limit, 1, 1.0, (w, 0.0), (0, 0), None)?
+                    }
+                    StrokePosition::Centre => {
+                        let (g_out, g_in) = (grow_step(w, 0.0), grow_step(w, 1.0));
+                        let ops = window(g_out.k)?;
+                        let steps = vec![
+                            FxStep::new(OP_INIT, 0).explicit(Buf::T1, Buf::T2, Buf::T0),
+                            g_out.explicit(Buf::T0, Buf::T1, Buf::T2),
+                            FxStep::new(OP_INIT, 1).explicit(Buf::T1, Buf::T2, Buf::T0),
+                            g_in.explicit(Buf::T0, Buf::T2, Buf::T1),
+                            FxStep::new(OP_FINISH, FINISH_RING).explicit(Buf::T1, Buf::T2, Buf::Mask),
+                        ];
+                        (steps, ops)
+                    }
                 }
             }
-        },
+        }
         EffectOp::Satin(o) => satin_steps(o, kernels, limit)?,
         EffectOp::BevelEmboss(o) => bevel_steps(o, kernels, limit)?,
         EffectOp::GradientOverlay(_) | EffectOp::PatternOverlay(_) => {
@@ -664,6 +686,14 @@ pub(crate) fn shape_alpha_step() -> FxStep {
     FxStep::new(OP_INIT, 0).explicit(Buf::T1, Buf::T2, Buf::Mask)
 }
 
+/// The pass writing the constant `v` into the mask buffer: the weight of the unit fade of a layer
+/// with effects by its opacity (lane SMB-PS-ORACLE-PARITY-2, pigment `render_layer_reference`).
+pub(crate) fn constant_step(v: f32) -> FxStep {
+    let mut s = FxStep::new(OP_INIT, INIT_CONSTANT).explicit(Buf::T1, Buf::T2, Buf::Mask);
+    s.r = v;
+    s
+}
+
 /// Margin in pixels an effect reads around the layer bounds (pigment `effect_support_px`).
 pub(crate) fn margin_of(op: &EffectOp) -> Result<u32, FxError> {
     effect_support_px(op).map_err(from_effect)
@@ -679,7 +709,7 @@ pub(crate) fn params_bytes(
 ) -> Result<Vec<u8>, FxError> {
     let taps = match step.taps {
         Some(i) => kernels.taps(i).ok_or(FxError::Unsupported("effect_plan"))?,
-        None if step.op == OP_BEVEL => &step.extra[..],
+        None if step.op == OP_BEVEL || step.op == OP_GROW => &step.extra[..],
         None => &[],
     };
     let taps_n = u32::try_from(taps.len()).map_err(|_| FxError::Overflow)?;

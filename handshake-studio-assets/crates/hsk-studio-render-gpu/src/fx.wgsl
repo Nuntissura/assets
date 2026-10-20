@@ -20,9 +20,9 @@ struct FxP {
     ry: u32,
     rw: u32,         // region size: the planes are rw x rh, stride rw
     rh: u32,
-    op: u32,         // 0 INIT, 1 DILATE, 2 BLUR_H, 3 BLUR_V, 4 SHIFT, 5 FINISH, 6 BEVEL, 7 CHISEL
-    mode: u32,       // INIT: 0 alpha, 1 1-alpha, 2 alpha >= 0.5, 3 alpha < 0.5, 4 one; FINISH: 0 fin*(1-a)/(1-knock*a) (knockout), 1 fin*a, 2 (1-fin)*a, 3 min(fin2+fin*a, 1), 4 |fin-fin2|*a, 5 (1-|fin-fin2|)*a, 6 max(fin, a), 7 1-fin, 8 |fin-fin2|, 9 1-|fin-fin2|; BEVEL: style*2+part
-    k: u32,          // DILATE: ceil(radius); BLUR: half width of the kernel
+    op: u32,         // 0 INIT, 1 DILATE, 2 BLUR_H, 3 BLUR_V, 4 SHIFT, 5 FINISH, 6 BEVEL, 7 CHISEL, 8 GROW
+    mode: u32,       // INIT: 0 alpha, 1 1-alpha, 2 alpha >= 0.5, 3 alpha < 0.5, 4 one, 5 the constant r; FINISH: 0 fin*(1-a)/(1-knock*a) (knockout), 1 fin*a, 2 (1-fin)*a, 3 min(fin2+fin*a, 1), 4 |fin-fin2|*a, 5 (1-|fin-fin2|)*a, 6 max(fin, a), 7 1-fin, 8 |fin-fin2|, 9 1-|fin-fin2|, 10 clamp(fin+fin2-1); BEVEL: style*2+part
+    k: u32,          // DILATE: ceil(radius); GROW: pigment grow_reach_px; BLUR: half width of the kernel
     taps_n: u32,     // BLUR: number of taps (2k+1)
     clamp_out: u32,  // final pass of a chain: clamp the matte to [0, 1]
     dx: i32,         // SHIFT offset
@@ -70,6 +70,36 @@ fn dilate_at(x: i32, y: i32) -> f32 {
                 cov = clamp(p.r + 0.5 - sqrt(ddx * ddx + ddy * ddy), 0.0, 1.0);
             }
             best = max(best, v * cov);
+        }
+    }
+    return best;
+}
+
+// effect_math::grow (lane SMB-PS-ORACLE-PARITY-2): out(x) = max over y of
+// grow_coverage(src(y), r, grow_distance(x - y)), grow_coverage = clamp(r + v - d, 0, 1) for v > 0;
+// grow_distance = the 5 x 5 chamfer norm with the weights (w1, w2, w5) = p.taps[0].xyz
+// (pigment GROW_WEIGHTS), w1 (x - 2y) + w5 y for x >= 2y, else w2 (2y - x) + w5 (x - y).
+fn grow_at(x: i32, y: i32) -> f32 {
+    let kk = i32(p.k);
+    let w = p.taps[0];
+    var best: f32 = 0.0;
+    for (var oy: i32 = -kk; oy <= kk; oy = oy + 1) {
+        for (var ox: i32 = -kk; ox <= kk; ox = ox + 1) {
+            let v = sample_at(x + ox, y + oy);
+            if (v <= 0.0) {
+                continue;
+            }
+            let hi = max(abs(ox), abs(oy));
+            let lo = min(abs(ox), abs(oy));
+            let hx = f32(hi);
+            let hy = f32(lo);
+            var d: f32;
+            if (hi >= 2 * lo) {
+                d = w.x * (hx - 2.0 * hy) + w.z * hy;
+            } else {
+                d = w.y * (2.0 * hy - hx) + w.z * (hx - hy);
+            }
+            best = max(best, clamp(p.r + v - d, 0.0, 1.0));
         }
     }
     return best;
@@ -204,6 +234,10 @@ fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
                 case 4u: {
                     v = 1.0;
                 }
+                case 5u: {
+                    // the unit-fade weight (lane SMB-PS-ORACLE-PARITY-2)
+                    v = p.r;
+                }
                 default: {
                     v = 1.0 - select(0.0, 1.0, a >= 0.5);
                 }
@@ -226,6 +260,9 @@ fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         case 7u: {
             v = chisel_at(x, y);
+        }
+        case 8u: {
+            v = grow_at(x, y);
         }
         default: {
             let m = fin[li];
@@ -258,6 +295,10 @@ fn fx(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 case 9u: {
                     v = 1.0 - clamp(abs(m - fin2[li]), 0.0, 1.0);
+                }
+                case 10u: {
+                    // centre stroke ring (pigment stroke_matte)
+                    v = clamp(m + fin2[li] - 1.0, 0.0, 1.0);
                 }
                 default: {
                     v = min(fin2[li] + m * a, 1.0);
