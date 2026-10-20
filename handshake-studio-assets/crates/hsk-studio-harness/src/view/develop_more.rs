@@ -87,7 +87,7 @@ pub const SECTIONS: [(&str, &str, &str); 5] = [
 pub fn family_controls(a: &Adjustments) -> Vec<DevelopControl> {
     let mut out: Vec<DevelopControl> = FIXED
         .iter()
-        .map(|(id, label, section, range, p)| DevelopControl { id: format!("develop.{id}"), label: (*label).to_string(), section: *section, panel_range: *range, precision: *p })
+        .map(|(id, label, section, range, p)| DevelopControl { id: format!("develop.{id}"), label: (*label).to_string(), section, panel_range: *range, precision: *p })
         .collect();
     if a.look.is_some() {
         out.push(DevelopControl { id: "develop.look.amount".into(), label: "Look amount".into(), section: "look", panel_range: (0.0, 2.0), precision: 2 });

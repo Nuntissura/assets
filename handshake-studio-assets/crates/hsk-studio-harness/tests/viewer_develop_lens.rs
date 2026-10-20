@@ -84,6 +84,7 @@ fn lens_transform_effects_calibration_look_and_preset_develop_undo_and_reopen() 
     moves!("look", v.develop_op(DevelopOp::Family(FamilyOp::Look { name: "negative".into(), cube: invert_cube().into_bytes(), domain: LookDomain::SrgbEncoded })));
     moves!("look amount", v.set_develop("develop.look.amount", 0.4));
     moves!("preset", v.develop_op(DevelopOp::Family(FamilyOp::Preset { preset: b"hsk-develop-preset 1\nmeta name Punch\nset contrast 35\nset effects.grain.size 60\n".to_vec(), amount: 1.0 })));
+    assert!(!last.is_empty());
     ok(v.develop_op(DevelopOp::Family(FamilyOp::Upright(UprightMode::Level))));
     steps += 1;
     assert_eq!(undo_len(&v), steps, "upright mode is one undo step");

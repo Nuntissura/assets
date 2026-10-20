@@ -72,7 +72,11 @@ fn develop_edit_saves_and_reopens_through_the_develop_entry() {
     step!("colour-range correction", v.set_develop("develop.local.1.saturation", -0.6));
     assert_ne!(last, imported);
     let state = v.develop_json();
-    assert_eq!(state["enables"], json!({"enable_colour_adjustments": true, "enable_detail": true, "enable_mask_group_based_corrections": true}));
+    assert_eq!(
+        state["enables"],
+        json!({"enable_colour_adjustments": true, "enable_detail": true, "enable_mask_group_based_corrections": true,
+            "enable_lens_corrections": false, "enable_transform": false, "enable_effects": false, "enable_calibration": false})
+    );
     assert_eq!(state["local"][0]["masks"][0], "luminance_range");
     assert_eq!(state["local"][1]["masks"][0], "colour_range");
 
