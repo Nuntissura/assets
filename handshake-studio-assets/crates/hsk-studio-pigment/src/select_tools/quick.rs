@@ -79,13 +79,13 @@ const SCALE: f64 = 1024.0;
 const BINS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Hard {
+pub(super) enum Hard {
     Free,
     Fg,
     Bg,
 }
 
-fn bin(p: [f64; 4]) -> usize {
+pub(super) fn bin(p: [f64; 4]) -> usize {
     let q = |v: f64| ((v.clamp(0.0, 1.0) * 16.0) as usize).min(15);
     (q(p[0]) << 8) | (q(p[1]) << 4) | q(p[2])
 }
@@ -95,7 +95,7 @@ fn bin(p: [f64; 4]) -> usize {
 const SMOOTHING: f64 = 0.01;
 
 /// Histogram of the pixels where `member` holds.
-fn counts(bins: &[u16], member: impl Fn(usize) -> bool) -> Vec<u64> {
+pub(super) fn counts(bins: &[u16], member: impl Fn(usize) -> bool) -> Vec<u64> {
     let mut c = vec![0u64; BINS];
     for (i, b) in bins.iter().enumerate() {
         if member(i)
@@ -137,7 +137,7 @@ fn add_band(
     Ok(())
 }
 
-fn check_options(opts: &GraphCutOptions) -> Result<(), ToolError> {
+pub(super) fn check_options(opts: &GraphCutOptions) -> Result<(), ToolError> {
     if !opts.gamma.is_finite() || opts.roi_margin_px.is_some_and(|m| !m.is_finite()) {
         return Err(Error::Nonfinite.into());
     }
@@ -176,7 +176,7 @@ fn grow_clip(r: Rect, m: i64, canvas: Rect) -> Result<Option<Rect>, Error> {
 
 /// Minimum-cut segmentation of `img`: hard labels, initial model masks, re-estimated models.
 /// Returns the foreground flag per pixel.
-fn segment(
+pub(super) fn segment(
     img: &RgbaImage,
     hard: &[Hard],
     fg0: Vec<u64>,

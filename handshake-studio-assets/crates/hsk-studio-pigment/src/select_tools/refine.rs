@@ -269,6 +269,11 @@ fn edt_1d(f: &[f64], out: &mut [f64], v: &mut [usize], z: &mut [f64]) {
     }
 }
 
+/// [`edt`] over a `w x h` row-major grid (lane SMB-AE-ROTO-TIMEREMAP roto band).
+pub(super) fn edt_grid(target: &[bool], w: usize, h: usize) -> Vec<f64> {
+    edt(target, Dims { w, h })
+}
+
 /// Squared Euclidean distance from every pixel to the nearest pixel where `target` holds.
 fn edt(target: &[bool], d: Dims) -> Vec<f64> {
     const FAR: f64 = 1.0e20;
