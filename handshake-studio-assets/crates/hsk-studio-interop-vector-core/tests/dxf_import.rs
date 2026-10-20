@@ -75,8 +75,11 @@ fn dxf_entities_become_layered_paths_in_points() {
     assert!(p.paths.len() >= 5, "five drawn entities, got {}", p.paths.len());
     assert!(p.has_loss_code("dxf_arc_to_cubic"));
     // The SOLID is a filled quad; the line is a red stroke of 0.25 mm.
-    let fills = p.paths.iter().filter(|path| path.winding != hsk_studio_nib::Winding::None).count();
-    assert_eq!(fills, 1, "only the SOLID is filled");
+    // (The shared drawing builder gives stroke-only paths NonZero winding; the paint rows decide.)
+    let filled = |path: &hsk_studio_interop_vector_core::VectorPath| {
+        layer_style(&p.design, &path.layer_id).is_some_and(|s| s.rows.iter().any(|r| matches!(r, StudioAppearanceRow::Fill { .. })))
+    };
+    assert_eq!(p.paths.iter().filter(|path| filled(path)).count(), 1, "only the SOLID is filled");
     let style = layer_style(&p.design, &p.paths[0].layer_id).expect("line style");
     let StudioAppearanceRow::Stroke { paint: StudioPaint::Solid { colour }, stroke, .. } = &style.rows[0] else { panic!("stroke row {:?}", style.rows) };
     assert!((colour.r - 1.0).abs() < 1e-6 && colour.g.abs() < 1e-6 && colour.b.abs() < 1e-6, "ACI 1 is red");
