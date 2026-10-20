@@ -514,6 +514,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-worker", &["windows-sys"]),
     ("hsk-studio-interop-tiff", &["sha2", "tiff"]),
     ("hsk-studio-interop-raster", &["png", "sha2", "zune-jpeg"]),
+    ("hsk-studio-interop-affinity", &["crc32fast", "miniz_oxide", "ruzstd", "sha2"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.

@@ -1883,6 +1883,7 @@ dependencies = [
  "hsk-studio-controls",
  "hsk-studio-develop",
  "hsk-studio-folio",
+ "hsk-studio-interop-affinity",
  "hsk-studio-interop-fig",
  "hsk-studio-interop-psd",
  "hsk-studio-interop-raster",
@@ -1905,6 +1906,17 @@ dependencies = [
  "hsk-studio-session",
  "hsk-studio-type",
  "serde_json",
+]
+
+[[package]]
+name = "hsk-studio-interop-affinity"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "hsk-studio-accord",
+ "miniz_oxide 0.9.1",
+ "ruzstd",
+ "sha2 0.10.9",
 ]
 
 [[package]]
