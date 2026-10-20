@@ -6,7 +6,7 @@
     "version": "1",
     "created_at_utc": "2026-10-20T21:19:21Z",
     "base_wp_id": "WP-FF-023-dependency-security-remediation",
-    "updated_at_utc": "2026-10-20T21:19:21Z",
+    "updated_at_utc": "2026-10-20T22:37:44Z",
     "title": "Remediate five approved dependency versions and exact FF-DEC-002 policy",
     "wp_id": "WP-FF-023-dependency-security-remediation-v1"
   },
@@ -47,9 +47,10 @@
     "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "Fresh exact PREREQUISITE activation must be committed before dependency or policy implementation."
+      "Final clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required.",
+      "Closure/main containment and return to the existing WP022 dependency gate remain unproven."
     ],
-    "next_action": "Commit this activation, then implement only the five approved dependency updates and matching exact policy/proof/license/manual identities; perform targeted dependency and ordinary-transport proof, independent review and canonical gates before closure.",
+    "next_action": "Validate current packet metadata, commit/push the reviewed stable candidate, then execute canonical runtime-truth-check, architecture-check and verify-pr on clean committed identity; record actual acceptance before closure merge/main containment.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -96,36 +97,52 @@
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-001",
       "proof_class": "governance",
       "requirement": "This acceptance row is the exact Operator approval ID for matching FF-DEC-002 changes: only h2 0.4.16, rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10 and webpki-root-certs 1.0.10 plus derived exact ordinary graph/source digests are authorized. Existing reqwest, ring, provider/native boundaries and unrelated decisions remain unchanged.",
-      "evidence": [],
-      "status": "PENDING"
+      "evidence": [
+        "Exact approved five-version/checksum scope and coherent WP023 owner/AC001 identities verified; reqwest/ring/provider/native boundaries unchanged.",
+        "Actual approved-consumer positive, independent coherent old-pair rejection and corrected tracked full-boundary guard reversion/restoration now prove current approval linkage; earlier malformed-fixture evidence invalidated in history."
+      ],
+      "status": "PASS"
     },
     {
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-002",
       "proof_class": "integration",
       "requirement": "Resolved Cargo metadata and lockfile identify exactly the five approved target versions and explain every lock delta; dependency-policy rejects none of the eight recorded advisories, with no new ignore, threshold weakening or unrelated dependency change.",
-      "evidence": [],
-      "status": "PENDING"
+      "evidence": [
+        "Narrow dependency-policy exit0/advisories,bans,licenses,sources accepted; exact raw output retained.",
+        "Independent activation-lock reconciliation proves only five approved version/checksum pairs; normalized ordinary graph/features/edges unchanged,111reachable224metadata nodes. Full lock and actual five archives independently checked."
+      ],
+      "status": "PASS"
     },
     {
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-003",
       "proof_class": "integration",
       "requirement": "Exact FF-DEC-002/architecture/license/source identities and derived closure hashes agree with actual resolved packages and archives; existing negative policy/source mutations reject altered versions, consumers, features, native packages or license exceptions.",
-      "evidence": [],
-      "status": "PENDING"
+      "evidence": [
+        "Official five archives not yanked; official/archive/lock checksums agree and243archivefiles match actual sources; graph/source digests recorded.",
+        "Resolved feature/source/native-consumer boundaries reject mutations; independent real reader and old-lock controls reject invalid inputs.",
+        "Actual license-negative exit4 follows removal of only root exact license exception; lock unchanged. Corrected full-boundary approval guard counterfactual rejects admitted obsolete authorization."
+      ],
+      "status": "PASS"
     },
     {
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-004",
       "proof_class": "integration",
       "requirement": "The existing ordinary-transport public proof executes construction/provider binding, proxy/redirect/retry/cookie/compression controls and browser-capability refusal using updated approved dependencies; existing behavioral controls and counterfactuals remain effective.",
-      "evidence": [],
-      "status": "PENDING"
+      "evidence": [
+        "Ordinary component public proof exit0 with eight actual controls, approved versions and unchanged provider/native identity; output remains component-only prerequisite evidence.",
+        "Forged control/dependency identity public negative1/1 accepted; resolved-profile/source mutation1/1 accepted with actual policy rejection. Exact artifacts in validation.checks."
+      ],
+      "status": "PASS"
     },
     {
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-005",
       "proof_class": "integration",
       "requirement": "The model manual current authorization paragraph contains the two approved version identities; independent adversarial review finds no unresolved dependency-boundary or proof bypass and records actual semantics and residual uncertainty.",
-      "evidence": [],
-      "status": "PENDING"
+      "evidence": [
+        "Fresh independent HIGH-risk implementation review accepted bounded dependency/source/native/license/approval scope with no unresolved finding; APPROVAL001 remediated by actual full architecture and independent-reader counterfactuals.",
+        "Complete manual reconciliation verified only owning topic metadata/two current version identities changed; existing commands and recovery preserved. Current rustls/root versions match approved policy."
+      ],
+      "status": "PASS"
     },
     {
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-006",
@@ -144,33 +161,40 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "head_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
-      "blockers": [
-        "Fresh exact PREREQUISITE activation must be committed before dependency or policy implementation."
-      ],
+      "branch": "codex/wp020-prerequisite-classifier",
+      "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
       "checks_run": [
         "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD: ace9fcd3c250bdc261c44c43d070383e45246c1a",
-        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: # branch.oid ace9fcd3c250bdc261c44c43d070383e45246c1a; # branch.head codex/wp020-prerequisite-classifier; # branch.upstream origin/codex/wp020-prerequisite-classifier; # branch.ab +0 -0",
-        "Primary cleanup+VerifyOnly exit0/items0 before selecting WP023; authority/templates/registry and exact version-bearing operational files inspected."
+        "git rev-parse HEAD:408e75a7d56fb53464ca582a7aef798585b9d72d",
+        "git merge-base main HEAD:10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git status --porcelain=v2 --branch: upstream ahead1/behind0; eight operational files and active packet modified.",
+        "Get-FileHash main.rs:E1768E42ED9AB8F438B6F5AD0E7DFD9747E05B5921522C7FFAAFDDD4E9747853; exact restored primary source independently verified.",
+        "Opened primary mutation-result JSON and semantic failure/restored success raw output; independent HIGH review accepted bounded implementation."
       ],
-      "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
-      "next_action": "Commit this activation, then implement only the five approved dependency updates and matching exact policy/proof/license/manual identities; perform targeted dependency and ordinary-transport proof, independent review and canonical gates before closure.",
+      "recorded_at_utc": "2026-10-20T22:37:44Z",
+      "blockers": [
+        "Final clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required.",
+        "Closure/main containment and return to the existing WP022 dependency gate remain unproven."
+      ],
       "dirty_paths": [
+        ".GOV/rules/build-rules.yaml",
         ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
-        ".GOV/taskboard/taskboard.yaml",
-        ".GOV/id-registry.yaml"
+        "build/Cargo.lock",
+        "build/Cargo.toml",
+        "build/architecture-policy.toml",
+        "build/crates/fforager-transport/src/ordinary.rs",
+        "build/deny.toml",
+        "build/tools/fforager-xtask/src/main.rs",
+        "product/MODEL_MANUAL.md"
       ],
-      "recorded_at_utc": "2026-10-20T21:19:21Z",
-      "branch": "codex/wp020-prerequisite-classifier"
+      "next_action": "Validate current packet metadata, commit/push the reviewed stable candidate, then execute canonical runtime-truth-check, architecture-check and verify-pr on clean committed identity; record actual acceptance before closure merge/main containment.",
+      "head_sha": "408e75a7d56fb53464ca582a7aef798585b9d72d"
     }
   },
   "validation": {
     "not_proven": [
-      "Any approved dependency update or resulting graph/source digest.",
-      "Targeted dependency/ordinary-transport proof, independent review and final canonical gates.",
-      "Closure merge/main containment.",
+      "Final clean canonical gate acceptance and closure/main containment remain unproven.",
+      "WP022 dependency unblock remains unproven until its required accepted closure and gate evidence.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ],
     "checks": [
@@ -222,6 +246,252 @@
         "failed_boundary": "dependency-policy advisories",
         "artifact": "build/reports/verify-pr-1792527411034803900-383824.json",
         "other_deny_checks": "bans/licenses/sources accepted in prior attempt"
+      },
+      {
+        "command": "Narrow dependency-policy",
+        "observed": "Exit0; advisories/bans/licenses/sources accepted. Existing unmatched libloading license-exception warning remains non-fatal.",
+        "proof_class": "integration",
+        "result": "PASS",
+        "artifacts": [
+          ".fforager-artifacts/wp023/dependency-policy.stdout",
+          ".fforager-artifacts/wp023/dependency-policy.stderr"
+        ]
+      },
+      {
+        "observations": {
+          "activation": "408e75a7d56fb53464ca582a7aef798585b9d72d",
+          "metadata_nodes": 224,
+          "ordinary_package_differences_after_five_ID_normalization": 0,
+          "ordinary_reachable": 111,
+          "ordinary_feature_edge_differences": 0,
+          "lock_delta": "Only five approved version/checksum pairs; baseline captured lock equals activation lock; Windows edges restored unchanged."
+        },
+        "proof_class": "structural",
+        "artifacts": [
+          ".fforager-artifacts/wp023/independent-lock-graph-v2.json",
+          ".fforager-artifacts/wp023/independent-archive-lock-v2.json",
+          ".fforager-artifacts/wp023/lock-scope-proof.txt"
+        ],
+        "result": "PASS",
+        "limitation": "Filtered ordinary graph excludes target-specific root-certs; complete lock and actual five archives independently checked.",
+        "command": "Independent exact lock/metadata/ordinary graph reconciliation"
+      },
+      {
+        "artifacts": [
+          ".fforager-artifacts/wp023/official-archive-checksums.json",
+          ".fforager-artifacts/wp023/independent-archive-source-bytes.json",
+          ".fforager-artifacts/wp023/independent-archive-lock-v2.json"
+        ],
+        "observations": {
+          "archive_source_files": 243,
+          "source_byte_differences": 0,
+          "yanked": 0,
+          "approved_archives": 5,
+          "official_checksum_pairs": 5,
+          "extra_source_files": "Cargo-generated .cargo-ok only"
+        },
+        "proof_class": "structural",
+        "approved_packages": [
+          {
+            "version": "0.4.16",
+            "archive_sha256": "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27",
+            "name": "h2",
+            "yanked": false,
+            "official_source": "https://crates.io/api/v1/crates/h2/0.4.16",
+            "official_checksum": "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
+          },
+          {
+            "version": "0.23.46",
+            "archive_sha256": "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf",
+            "name": "rustls",
+            "yanked": false,
+            "official_source": "https://crates.io/api/v1/crates/rustls/0.23.46",
+            "official_checksum": "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+          },
+          {
+            "version": "0.103.16",
+            "archive_sha256": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281",
+            "name": "rustls-webpki",
+            "yanked": false,
+            "official_source": "https://crates.io/api/v1/crates/rustls-webpki/0.103.16",
+            "official_checksum": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+          },
+          {
+            "version": "1.0.10",
+            "archive_sha256": "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9",
+            "name": "webpki-roots",
+            "yanked": false,
+            "official_source": "https://crates.io/api/v1/crates/webpki-roots/1.0.10",
+            "official_checksum": "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
+          },
+          {
+            "version": "1.0.10",
+            "archive_sha256": "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb",
+            "name": "webpki-root-certs",
+            "yanked": false,
+            "official_source": "https://crates.io/api/v1/crates/webpki-root-certs/1.0.10",
+            "official_checksum": "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
+          }
+        ],
+        "result": "PASS",
+        "limitation": "Provenance evidence only; dependency behavior not executed by checksum/source comparison.",
+        "command": "Official archive and independently extracted source-byte reconciliation"
+      },
+      {
+        "resolved_closure_sha256": "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251",
+        "proof_class": "structural",
+        "artifacts": [
+          ".fforager-artifacts/wp023/ordinary-baseline-digests.json",
+          ".fforager-artifacts/wp023/ordinary-candidate-digests.json"
+        ],
+        "result": "PASS",
+        "command": "Actual ordinary graph/source digest recomputation",
+        "registry_source_closure_sha256": "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
+      },
+      {
+        "content_fingerprint": "506bacaf4953038f93331e36e4093230cba44c11601d4f155f879fd05b246491",
+        "source_dirty": true,
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "artifact": "build/reports/runtime-truth-check-1792532322102440800-449636.json",
+        "limitation": "Iteration preflight before later coherent owner/approval-ID corrections; not final candidate proof.",
+        "source_commit": "408e75a7d56fb53464ca582a7aef798585b9d72d",
+        "proof_class": "scenario_contract"
+      },
+      {
+        "observed": "Current FF-DEC-002 and matching architecture rows use WP023 owner and exact AC001 approval; main canonical finding map and tracked regression exist. Tests and independent review not yet supplied.",
+        "proof_id": "xtask::tests::native_exception_rejects_stale_security_patch_approval",
+        "result": "PENDING_BEHAVIORAL_PROOF",
+        "finding_id": "WP-FF-023-FINDING-APPROVAL-001",
+        "command": "Current owner/approval invariant and planned public regression",
+        "current_main_sha256": "45AF9D9F71C59C5E67D832BA1CDBEB0BE790CD4591A6FF382E6C4F5823B852C8"
+      },
+      {
+        "command": "Ordinary public component proof",
+        "artifacts": [
+          ".fforager-artifacts/wp023/ordinary-proof.stdout",
+          ".fforager-artifacts/wp023/ordinary-proof.stderr"
+        ],
+        "result": "PASS",
+        "observed": "Exit0; eight actual controls accepted using approved rustls0.23.46/root1.0.10 with unchanged reqwest0.13.4/ring0.17.14 and provider/features; component proof only.",
+        "proof_class": "integration"
+      },
+      {
+        "proof_class": "counterfactual",
+        "result": "PASS",
+        "observed": "1passed0failed165.69seconds",
+        "command": "Ordinary resolved profile/source mutation test",
+        "artifact": ".fforager-artifacts/wp023/ordinary-profile-negative-correct-target.stdout",
+        "proof_id": "xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification"
+      },
+      {
+        "command": "Native approval/reachability filter and corrected exact positive",
+        "artifacts": [
+          ".fforager-artifacts/wp023/native-approval-pair.stdout",
+          ".fforager-artifacts/wp023/native-approval-pair.stderr",
+          ".fforager-artifacts/wp023/native-approved-product-correct-env.stdout"
+        ],
+        "result": "PASS_AFTER_INFRASTRUCTURE_CORRECTION",
+        "observations": {
+          "corrected_positive": "1passed0failed655.39seconds after removing inherited target environment leak; validator unchanged",
+          "initial_positive": "Infrastructure failure: inherited CARGO_TARGET_DIR leaked into nested smoke",
+          "coherent_stale_approval_negative": "INVALID_FOR_COHERENCE: tracked test mutated owner only via replacen1; separate independent reader probe remains valid.",
+          "actual_resolve_reachability_negative": "PASS"
+        },
+        "proof_class": "integration"
+      },
+      {
+        "proof_class": "counterfactual",
+        "result": "PASS",
+        "observed": "1passed0failed2.74seconds",
+        "command": "Forged control/dependency identity public negative",
+        "artifact": ".fforager-artifacts/wp023/ordinary-forgery-negative.stdout",
+        "proof_id": "fforager_transport::ordinary::tests::forged_control_or_dependency_identity_is_rejected"
+      },
+      {
+        "command": "Final current format and diff integrity",
+        "reported_by": "primary agent",
+        "result": "PASS",
+        "observed": "Final formatting and git diff --check accepted; prior wrong --lib test target and initial fmt wrapping failure retained as failed attempts.",
+        "proof_class": "structural"
+      },
+      {
+        "command": "Current source identity",
+        "result": "OBSERVED",
+        "main_sha256": "B0B346D5DC2F2ECD51192D1FFF3AA359EB659DD1B3305D8916D6A8F44036CD8E",
+        "observed": "Own Get-FileHash matched primary current candidate; this identity follows the earlier preflight iteration report."
+      },
+      {
+        "result": "PASS",
+        "proof_class": "integration",
+        "observed": "Independent1/1 accepted three current approval decisions and current metadata; coherent old owner/approval rejected FF-ARCH-E-EXCEPTION-SCHEMA; old lock with current exact declarations rejected Cargo101 under --locked. Compile36.31seconds/run9.81seconds.",
+        "command": "Independent actual policy-reader and stale-lock boundary",
+        "artifact": ".fforager-artifacts/wp023/review-policy-boundary.txt"
+      },
+      {
+        "result": "EXPECTED_REJECTION",
+        "artifacts": [
+          ".fforager-artifacts/wp023/license-negative-result.json",
+          ".fforager-artifacts/wp023/license-negative.stderr"
+        ],
+        "command": "Public exact license-exception-removal negative",
+        "lock_sha256": "46671F462EF8A02527907941C9F82AF0FD255953B1076817D3FB507FE1761460",
+        "proof_class": "counterfactual",
+        "observed": "Removing only approved webpki-roots1.0.10 exact CDLA exception from artifact-copy deny config produced actual license rejection exit4 at package Cargo.toml26. Primary standard deny baseline accepted; actual lock before/after unchanged."
+      },
+      {
+        "affected_proof_id": "xtask::tests::native_exception_rejects_stale_security_patch_approval",
+        "finding_status": "PENDING",
+        "command": "Tracked stale-approval regression and independent old-guard mutation audit",
+        "preserved_valid_evidence": "Separate independent reader probe used replaceALL for the actual coherent old pair and remains valid; approved positive655.39seconds and ordinary/graph/license outcomes unchanged.",
+        "finding_id": "WP-FF-023-FINDING-APPROVAL-001",
+        "observed": "Tracked helper replacen1 changed only owner rather than both owner/approval, so its earlier green rejected a malformed pair and does not prove coherent stale authorization. Reviewer old-both-hardcoded-guard mutant compiled and survived tracked test with green0.23seconds; this is not accepted counterfactual proof.",
+        "result": "INVALID_FOR_COHERENCE"
+      },
+      {
+        "artifacts": [
+          ".fforager-artifacts/wp023/review-primary-old-guard-counterfactual-v3.txt",
+          ".fforager-artifacts/wp023/review-primary-mutation-result-v3.json",
+          ".fforager-artifacts/wp023/review-primary-restored-v3.txt"
+        ],
+        "proof_class": "counterfactual",
+        "command": "Corrected tracked authorization regression primary guard reversion/restoration",
+        "proof_id": "xtask::tests::native_exception_rejects_stale_security_patch_approval",
+        "restored_main_sha256": "E1768E42ED9AB8F438B6F5AD0E7DFD9747E05B5921522C7FFAAFDDD4E9747853",
+        "observed": "Only two strict expected owner/approval guards reverted; coherent obsolete authorization admitted at full architecture boundary and unchanged tracked test failed101 on unwrap_err receiving ArchitectureResult after571.28seconds/7checks55fixtures. Exact E1768 source restored with complete tracked diff unchanged; unchanged tracked test1/1 accepted0.19seconds after17.80secondcompile.",
+        "finding_id": "WP-FF-023-FINDING-APPROVAL-001",
+        "result": "PASS"
+      },
+      {
+        "result": "PASS",
+        "proof_class": "integration",
+        "observed": "Current coherent authorization rejected obsolete pair, reverted strict reader admitted it and independent assertion failed, restored reader accepted the same test. Complete lock delta only five approved version/checksum pairs; complete manual delta only topic metadata and two current versions.",
+        "command": "Independent actual exception reader triple and final reconciliation",
+        "artifacts": [
+          ".fforager-artifacts/wp023/review-direct-reader-current-v3.txt",
+          ".fforager-artifacts/wp023/review-direct-reader-mutant-v3.txt",
+          ".fforager-artifacts/wp023/review-direct-reader-restored-v3.txt",
+          ".fforager-artifacts/wp023/review-independent-reconciliation-v3.json"
+        ]
+      },
+      {
+        "result": "PASS",
+        "reviewer": "fresh independent adversarial review subagent",
+        "observed": "No unresolved scoped findings; exact approval linkage finding behaviorally remediated. Canonical final gates and main containment remain required.",
+        "risk": "HIGH",
+        "command": "Final independent implementation review"
+      },
+      {
+        "result": "HISTORY_NOT_ACCEPTANCE",
+        "observed": "Initial tracked malformed-pair green and surviving old-guard mutant invalid for coherence; corrected regression compileE0716 invalid for behavior; isolated ancestor Cargo-configuration failures not semantic proof. Corrected owned rules_text lifetime and valid primary-root guard triple supply actual proof.",
+        "command": "Failed proof attempts and execution recovery"
+      },
+      {
+        "result": "RECOVERED_EXECUTION_BLOCK",
+        "observed": "Cached retired handler blocked old review command before writes/tests. Primary removed exactly two retired Codex handler entries natively with dated backup; no other global file changed and no Python/controller call after retirement. Fresh reviewer ran normal Cargo proof.",
+        "command": "Retired preparation-handler native recovery",
+        "reported_by": "primary agent",
+        "backup_name": "hooks.json.gameplan-retired-20261020T221835Z.backup"
       }
     ]
   },
@@ -292,34 +562,58 @@
       "pre_simplification_verdict": "FAIL: FF-GATE-PR-001 dependency-policy emitted eight RustSec findings across the five approved packages at the recorded source identity; exact IDs and report retained in validation.",
       "adversarial_review": {
         "RESIDUAL_UNCERTAINTY": [
-          "No implementation or post-change proof exists at activation; canonical final acceptance and containment remain required."
+          "Focused checks establish bounded prerequisite policy and component behavior only. Fresh clean committed-candidate canonical gates and main containment remain required; no shipped-entrypoint result or product-progress claim is made."
         ],
         "INDEPENDENT_CHECKS_RUN": [
-          "PENDING: actual independent post-change checks."
+          "Independent complete lockfile reconciliation accepted only five approved version/checksum pairs; normalized ordinary package/feature/edge set unchanged.",
+          "Five actual archive checksums matched official metadata and lock;243sourcefiles matched archive bytes with Cargo marker extras only.",
+          "Actual exception reader and current metadata accepted current authorization; coherent obsolete pair and original lock against current exact declarations rejected.",
+          "Unchanged tracked regression executed full architecture boundary under strict-guard reversion; semantic101 followed by exact source restoration and1/1 acceptance.",
+          "Complete manual reconciliation accepted only topic metadata/two version identities; instructions and recovery unchanged."
         ],
         "MANUAL_REVIEW": {
-          "evidence": [],
-          "verdict": "PENDING",
-          "reviewer": "PENDING: independent implementation reviewer",
-          "method": "PENDING: exact current dependency paragraph and unchanged command/recovery instructions.",
-          "artifact": "product/MODEL_MANUAL.md"
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "fresh independent adversarial implementation review subagent",
+          "evidence": [
+            "Only owning topic metadata and two approved version identities changed; locked Cargo ordinary proof command remains unchanged.",
+            "Existing failure diagnostics and recovery instructions remain byte-equivalent outside the exact approved paragraph metadata.",
+            "Existing FF-GATE-RUNTIME-001 staged-consumer requirement and prerequisite ceiling remain unchanged; no shipped completion claim was introduced."
+          ],
+          "verdict": "PASS",
+          "method": "Complete manual comparison against activation plus direct current exact-version paragraph, command and recovery inspection."
         },
         "BOUNDARY_PROBES": [
-          "PENDING: actual resolved graph/source and ordinary public boundary."
+          "Canonical architecture_check consumed actual coherent YAML/TOML owner/approval values with package versions, closure digests and regression unchanged.",
+          "Cargo metadata accepted current exact lock and rejected original lock under current declarations with locked-mode exit101.",
+          "Official archives to extracted package bytes reconciled243files; source proof is structural only, separate from actual ordinary wire controls.",
+          "Ordinary public construction executed eight controls with current rustls/root identities and unchanged reqwest/ring; typed browser refusal precedes client construction."
         ],
         "NEGATIVE_PATH_CHECKS": [
-          "PENDING: retained dependency/license/native gate rejection."
+          "Corrected complete-pair fixture asserts actual current and obsolete owner/approval preconditions; malformed initial fixture evidence remains invalid.",
+          "Current strict authorization reader rejected coherent obsolete approval; weakened reader counterfactual exposed the missing constraint at full architecture boundary.",
+          "Resolved transitive-feature/profile/source mutation, actual native reachability and forged component identity controls rejected invalid inputs.",
+          "Actual missing exact root license exception rejected via public cargo-deny; no ignore or broad license allowance substituted for remediation."
         ],
         "DIFF_ATTACK_SURFACES": [
-          "Dependency contract and serialization: exact manifest/lock version identities and source checksums.",
-          "State/provenance: source-bound RustSec result, FF-DEC-002 approval and derived package-source closure.",
-          "Resource/integration: ordinary provider construction and existing public wire controls.",
-          "Gate trust: exact license/native/profile constraints and negative mutation oracles."
+          "Dependency contract and serialization: exact manifest/lock versions, checksums and canonical owner/approval pair must agree with the current decision.",
+          "State/provenance boundary: actual archive bytes, extracted sources and full resolved feature/edge closure bind derived digests to approved inputs.",
+          "Resource/integration boundary: ordinary provider construction, native package consumers and public transport controls remain unchanged.",
+          "Gate trust boundary: exact license exceptions and strict native authorization reader must reject coherent obsolete decisions, not just malformed pairs."
         ],
         "COUNTERFACTUAL_CHECKS": [
-          "PENDING: existing changed-boundary negative mutations must execute."
+          "Reverting only the two expected native owner/approval guards admitted coherent obsolete authorization while patched packages/digests and tracked test stayed intact; architecture returned7checks55fixtures and unchanged regression failed101.",
+          "Restoring exact candidate E1768 bytes and complete tracked diff produced unchanged tracked test1/1 acceptance; mutation sensitivity is behavioral rather than compiler rejection.",
+          "Independent actual-reader guard reversion admitted coherent obsolete pair and failed its unchanged rejection assertion; restored reader accepted same test.",
+          "Removing only exact root license exception from artifact-copy config produced actual cargo-deny rejectionexit4 with unchanged lock hash."
         ],
-        "INDEPENDENT_FINDINGS": []
+        "INDEPENDENT_FINDINGS": [
+          {
+            "proof_id": "xtask::tests::native_exception_rejects_stale_security_patch_approval",
+            "status": "REMEDIATED",
+            "finding_id": "WP-FF-023-FINDING-APPROVAL-001",
+            "finding": "Patched exact package policy must carry coherent current Operator owner/approval. Corrected complete-pair fixture and unchanged full architecture regression reject strict-guard reversion; exact restoration accepts, superseding invalid malformed-fixture evidence."
+          }
+        ]
       },
       "acceptance_or_authority_ids": [
         "WP-FF-023-dependency-security-remediation-v1-AC-001",
@@ -367,12 +661,12 @@
         "FF-BUILD-099"
       ],
       "complete_post_change_verification": [
-        "PENDING: exact approved resolution/lock delta.",
-        "PENDING: actual dependency-policy zero advisory findings.",
-        "PENDING: graph/source/license boundary and negative mutation checks.",
-        "PENDING: ordinary-transport public proof.",
-        "PENDING: independent adversarial review and canonical gates.",
-        "PENDING: main containment."
+        "Narrow dependency-policy exit0 with advisories/bans/licenses/sources accepted and no new ignore.",
+        "Independent complete-lock comparison limits change to five approved version/checksum pairs; normalized ordinary graph/features/edges unchanged.",
+        "All five official/archive/lock hashes agree, not yanked,243archive/source files match and derived graph/source digests independently reconciled.",
+        "Ordinary public component accepted eight actual controls; forged identity and profile/native/source/license negatives executed.",
+        "Corrected tracked full architecture old-guard counterfactual semantic101 then exact restored candidate1/1; independent actual-reader triple also accepted.",
+        "Fresh HIGH implementation/manual review accepted; complete manual commands/recovery unchanged. Final canonical and containment obligations remain separate."
       ],
       "scope_and_risk_matrix": {
         "risk_cases": [
@@ -431,7 +725,7 @@
         ],
         "current_ceiling": "Bounded Phase0 dependency prerequisite only; zero product/capability/runtime/packaging/release/phase progress."
       },
-      "post_simplification_verdict": "PENDING: implementation and actual post-change proof have not run."
+      "post_simplification_verdict": "PASS: exact five approved package updates, actual advisory/license/source/graph checks, ordinary public controls and independent coherent-approval guard counterfactuals satisfy the bounded focused contract. No ignore or security-boundary weakening was introduced. Final clean canonical checks and main containment remain unproven."
     },
     "non_product_prerequisite": {
       "classification": "phase0_supporting_evidence",

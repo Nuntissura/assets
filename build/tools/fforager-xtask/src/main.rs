@@ -6590,13 +6590,13 @@ fn validate_ordinary_profile_isolation(
             "reqwest@0.13.4",
             BTreeSet::from(["__rustls", "__tls", "http2", "rustls-no-provider", "stream"]),
         ),
-        ("rustls@0.23.42", BTreeSet::from(["ring", "std", "tls12"])),
+        ("rustls@0.23.46", BTreeSet::from(["ring", "std", "tls12"])),
         (
             "ring@0.17.14",
             BTreeSet::from(["alloc", "default", "dev_urandom_fallback"]),
         ),
         ("rustls-platform-verifier@0.7.0", BTreeSet::new()),
-        ("webpki-roots@1.0.9", BTreeSet::new()),
+        ("webpki-roots@1.0.10", BTreeSet::new()),
     ]);
     for (identity, expected) in expected_features {
         let package_id = resolved_packages.get(identity).ok_or_else(|| {
@@ -9138,8 +9138,8 @@ fn read_native_dependency_exceptions(
                         == BTreeSet::from(["non_shipped_phase0_prerequisite".to_owned()])
             }
             "FF-DEC-002" => {
-                owner == "WP-FF-017-ordinary-transport-decision"
-                    && approval_id == "WP-FF-017-ordinary-transport-decision-v1-AC-001"
+                owner == "WP-FF-023-dependency-security-remediation"
+                    && approval_id == "WP-FF-023-dependency-security-remediation-v1-AC-001"
                     && status == "ACTIVE_SHIPPED_PRODUCT_NARROW_ONLY"
                     && allowed_prerequisite_consumers
                         == BTreeSet::from(["fforager-transport".to_owned()])
@@ -9150,7 +9150,7 @@ fn read_native_dependency_exceptions(
                         == BTreeSet::from([
                             "reqwest@0.13.4".to_owned(),
                             "ring@0.17.14".to_owned(),
-                            "rustls@0.23.42".to_owned(),
+                            "rustls@0.23.46".to_owned(),
                         ])
                     && allowed_native_link_packages == BTreeSet::from(["ring@0.17.14".to_owned()])
                     && allowed_native_runtime_packages
@@ -9182,9 +9182,9 @@ fn read_native_dependency_exceptions(
                             ),
                         ])
                     && ordinary_transport_resolved_closure_sha256
-                        == "fa4ad0c30538fbc8efcae40cf1faa3f051bb80dcd8c814177b82e72495ec06fb"
+                        == "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
                     && ordinary_transport_registry_source_closure_sha256
-                        == "77cd4f81824d693e36750605c68eadedb57dbda5db35ec85bc4aae8b78719bc3"
+                        == "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
                     && allowed_runtime_classes
                         == BTreeSet::from([
                             "non_shipped_phase0_prerequisite".to_owned(),
@@ -13836,6 +13836,9 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-017-FINDING-PACKAGE-SOURCE-004" => {
             Some("xtask::tests::package_source_and_archive_content_mutations_fail_closed")
         }
+        "WP-FF-023-FINDING-APPROVAL-001" => {
+            Some("xtask::tests::native_exception_rejects_stale_security_patch_approval")
+        }
         "WP-FF-017-FINDING-GRAPH-CLOSURE-005" | "WP-FF-017-FINDING-SOURCE-CLOSURE-006" => {
             Some("xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification")
         }
@@ -17253,6 +17256,88 @@ mod tests {
     }
 
     #[test]
+    fn native_exception_rejects_stale_security_patch_approval() {
+        let root = architecture_sandbox("native-exception-stale-security-patch-approval");
+        let locked_packages = fs::read(root.join("build/Cargo.lock")).unwrap();
+        for relative in [
+            ".GOV/rules/build-rules.yaml",
+            "build/architecture-policy.toml",
+        ] {
+            let path = root.join(relative);
+            let text = fs::read_to_string(&path).unwrap().replace(
+                "WP-FF-023-dependency-security-remediation",
+                "WP-FF-017-ordinary-transport-decision",
+            );
+            fs::write(path, text).unwrap();
+        }
+        let rules_text = fs::read_to_string(root.join(".GOV/rules/build-rules.yaml")).unwrap();
+        let rules = parse_single_yaml(&rules_text, "coherent stale approval fixture").unwrap();
+        let exception = rules
+            .as_mapping_get("exception_authority")
+            .and_then(|authority| authority.as_mapping_get("canonical_allowlist"))
+            .and_then(Yaml::as_sequence)
+            .unwrap()
+            .iter()
+            .find(|row| yaml_string(row, "id").unwrap() == "FF-DEC-002")
+            .unwrap();
+        let owner = "WP-FF-017-ordinary-transport-decision";
+        let approval = "WP-FF-017-ordinary-transport-decision-v1-AC-001";
+        assert_eq!(yaml_string(exception, "owner").unwrap(), owner);
+        assert_eq!(yaml_string(exception, "approval_id").unwrap(), approval);
+        assert!(decision_approval_matches_owner(approval, owner));
+        assert_eq!(
+            yaml_string_set(exception, "allowed_versions").unwrap(),
+            BTreeSet::from([
+                "reqwest@0.13.4".to_owned(),
+                "ring@0.17.14".to_owned(),
+                "rustls@0.23.46".to_owned(),
+            ])
+        );
+        assert_eq!(
+            yaml_string(exception, "ordinary_transport_resolved_closure_sha256").unwrap(),
+            "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+        );
+        assert_eq!(
+            yaml_string(
+                exception,
+                "ordinary_transport_registry_source_closure_sha256"
+            )
+            .unwrap(),
+            "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
+        );
+        let policy: ArchitecturePolicy =
+            read_toml(&root.join("build/architecture-policy.toml")).unwrap();
+        for (name, version) in [
+            ("reqwest", "0.13.4"),
+            ("rustls", "0.23.46"),
+            ("webpki-roots", "1.0.10"),
+        ] {
+            let decision = policy
+                .dependency_decisions
+                .iter()
+                .find(|decision| decision.name == name)
+                .unwrap();
+            assert_eq!(decision.version, version);
+            assert_eq!(decision.owner, owner);
+            assert_eq!(decision.approval_id, approval);
+            assert!(decision_approval_matches_owner(
+                &decision.approval_id,
+                &decision.owner
+            ));
+        }
+        assert_eq!(
+            fs::read(root.join("build/Cargo.lock")).unwrap(),
+            locked_packages
+        );
+        let error = architecture_check(&root).unwrap_err();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            error.contains("FF-ARCH-E-EXCEPTION-SCHEMA"),
+            "stale patch approval must fail the canonical exception boundary: {error}"
+        );
+    }
+
+    #[test]
     fn native_exception_accepts_only_the_exact_approved_product_consumer() {
         let root = architecture_sandbox("native-exception-approved-product-resolve-graph");
         mutate_approved_shipped_product_native_reachability(&root);
@@ -18094,7 +18179,7 @@ product_root = "product"
         replace_file_text(
             &root.join("build/architecture-policy.toml"),
             "[[dependency_decisions]]\nname = \"toml\"",
-            "[[dependency_decisions]]\nname = \"reqwest\"\nversion = \"0.13.4\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved product-native consumer.\"\nnative = true\nowner = \"WP-FF-017-ordinary-transport-decision\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise the positive product-authorized reachability branch.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-017-ordinary-transport-decision-v1-AC-001\"\nfeatures = [\"http2\", \"rustls-no-provider\", \"stream\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"rustls\"\nversion = \"0.23.42\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved ring provider edge.\"\nnative = true\nowner = \"WP-FF-017-ordinary-transport-decision\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise exact rustls product-native attribution.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-017-ordinary-transport-decision-v1-AC-001\"\nfeatures = [\"ring\", \"std\", \"tls12\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"toml\"",
+            "[[dependency_decisions]]\nname = \"reqwest\"\nversion = \"0.13.4\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved product-native consumer.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise the positive product-authorized reachability branch.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"http2\", \"rustls-no-provider\", \"stream\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"rustls\"\nversion = \"0.23.46\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved ring provider edge.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise exact rustls product-native attribution.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"ring\", \"std\", \"tls12\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"toml\"",
         );
     }
 

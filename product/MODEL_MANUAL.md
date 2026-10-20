@@ -533,11 +533,11 @@ Failure and recovery:
 
 </topic>
 
-<topic id="ordinary-transport-dependency-decision" status="active" version="1" wp="WP-FF-017-ordinary-transport-decision-v1" ingestable="true" updated_at="2026-07-29">
+<topic id="ordinary-transport-dependency-decision" status="active" version="2" wp="WP-FF-017-ordinary-transport-decision-v1" ingestable="true" updated_at="2026-10-20">
 
 ## Verify the ordinary transport dependency decision
 
-`FF-DEC-002` authorizes future shipped `fforager-net` use of exact `reqwest 0.13.4`, `rustls 0.23.42`, native `ring 0.17.14`, and `webpki-roots 1.0.9`. Reqwest default features are off; the only requested reqwest features are `http2`, `rustls-no-provider`, and `stream`; the explicit rustls features are `ring`, `std`, and `tls12`. The resolved ordinary profile is pinned, including reqwest's internal `__rustls` and `__tls` features. AWS-LC, native-tls, OpenSSL, ambient system proxy configuration, automatic redirects, cookie storage, automatic decompression, and dependency retry authority are not part of this decision.
+`FF-DEC-002` authorizes future shipped `fforager-net` use of exact `reqwest 0.13.4`, `rustls 0.23.46`, native `ring 0.17.14`, and `webpki-roots 1.0.10`. Reqwest default features are off; the only requested reqwest features are `http2`, `rustls-no-provider`, and `stream`; the explicit rustls features are `ring`, `std`, and `tls12`. The resolved ordinary profile is pinned, including reqwest's internal `__rustls` and `__tls` features. AWS-LC, native-tls, OpenSSL, ambient system proxy configuration, automatic redirects, cookie storage, automatic decompression, and dependency retry authority are not part of this decision.
 
 Run the exact non-shipped construction and typed refusal proof from the repository root:
 
