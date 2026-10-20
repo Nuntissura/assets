@@ -1,7 +1,7 @@
 schema: assets.index.v1
-updated_at: '2026-10-18'
+updated_at: '2026-10-20'
 coverage: partial
-coverage_note: Cabinet, Peak and the listed standalone Handshake modules are indexed. Other asset folders are not yet catalogued.
+coverage_note: Cabinet, Peak, the listed Notes package and standalone Handshake modules are indexed. Other asset folders are not yet catalogued.
 assets:
   - id: CABINET-ASSET-001
     name: Cabinet
@@ -50,4 +50,15 @@ assets:
         manifest: handshake_text_mechanics/Cargo.toml
         role: logic
         api: handshake_text_mechanics/src/lib.rs
+        depends_on: []
+
+  - id: NOTES-ASSET-001
+    name: Notes
+    path: Notes
+    manual: Notes/handshake_rich_document_model/README.md
+    packages:
+      - name: handshake_rich_document_model
+        manifest: Notes/handshake_rich_document_model/Cargo.toml
+        role: logic
+        api: Notes/handshake_rich_document_model/src/lib.rs
         depends_on: []
