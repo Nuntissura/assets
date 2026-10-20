@@ -258,6 +258,9 @@ mod pdf;
 #[cfg(feature = "import-raster")]
 mod raster;
 
+#[cfg(feature = "import-affinity")]
+mod affinity;
+
 #[cfg(any(feature = "import-psd", feature = "import-raw", feature = "import-tiff", feature = "import-raster"))]
 mod colour;
 
@@ -363,6 +366,25 @@ mod with_package {
             }
         }
         Ok(())
+    }
+
+    /// Opt-in preview of an Affinity document (feature `import-affinity`, module `affinity`; lane
+    /// SMB-AFFINITY-INTEROP-1): the container's embedded thumbnail as ONE flattened raster layer, marked
+    /// lossy (`affinity_layers_not_decoded`), with the original `.af*` bytes carried. [`import`] keeps
+    /// refusing Affinity files with `affinity_native_use_export`; a host calls this only on an explicit
+    /// user choice. Non-Affinity bytes are `format_unrecognised`.
+    #[cfg(feature = "import-affinity")]
+    pub fn import_affinity_preview(bytes: &[u8], resolver: &dyn Resolver, cancel: &CancellationToken) -> Result<ImportedDocument, ImportError> {
+        cancel.check().map_err(|_| ImportError::Canceled)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SOURCE_BYTES {
+            return Err(ImportError::Package("entry_too_large"));
+        }
+        if sniff(bytes) != Some(SourceFormat::Affinity) {
+            return Err(ImportError::FormatUnrecognised);
+        }
+        let mut imported = super::affinity::import_preview(bytes, resolver, cancel)?;
+        bind_blending_space(&mut imported, resolver, cancel)?;
+        Ok(imported)
     }
 
     /// Import, then native container bytes (convert to native).

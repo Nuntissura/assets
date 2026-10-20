@@ -100,3 +100,160 @@ impl folio::Resolver for TrustAllResolver {
     }
 }
 
+// ---- slice 3: opt-in thumbnail preview (feature import-affinity) ------------------------------------
+
+/// A V3 KA document (`#FT4`, one stored `doc.dat`, optional `Thmb` block) from the documented layout.
+#[cfg(feature = "import-affinity")]
+fn ka_document(thumbnail: Option<&[u8]>) -> Vec<u8> {
+    let doc = b"\x00\xFFKS synthetic object stream (not decoded)".to_vec();
+    let mut b = ka_header(12, 4, b"Prsn");
+    b[0x40..0x44].copy_from_slice(b"Prot");
+    let stream_at = b.len() as u64;
+    b.extend_from_slice(b"#Fil");
+    b.extend_from_slice(&doc);
+    let dir_at = b.len() as u64;
+    b.extend_from_slice(b"#FT4");
+    b.extend_from_slice(&0u64.to_le_bytes());
+    b.extend_from_slice(&1_760_000_000u64.to_le_bytes());
+    b.extend_from_slice(&[0u8; 24]);
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&[0u8; 8]);
+    b.extend_from_slice(&0u16.to_le_bytes());
+    b.push(0);
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.push(0);
+    b.extend_from_slice(&stream_at.to_le_bytes());
+    b.extend_from_slice(&(doc.len() as u64).to_le_bytes());
+    b.extend_from_slice(&(doc.len() as u64).to_le_bytes());
+    // CRC-32 of `doc`, computed once with Python zlib.crc32 (no CRC copy in tests, V4-05).
+    b.extend_from_slice(&0x02E4_7161u32.to_le_bytes());
+    b.push(0); // stored
+    b.extend_from_slice(&[0u8; 8]);
+    b.extend_from_slice(&7u16.to_le_bytes());
+    b.extend_from_slice(b"doc.dat");
+    let thumb_at = b.len() as u64;
+    b[0x10..0x18].copy_from_slice(&dir_at.to_le_bytes());
+    b[0x18..0x20].copy_from_slice(&thumb_at.to_le_bytes());
+    if let Some(img) = thumbnail {
+        b.extend_from_slice(&[0xFF; 4]);
+        b.extend_from_slice(b"Thmb");
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&((img.len() + 13) as u32).to_le_bytes());
+        b.extend_from_slice(&29u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&(img.len() as u32).to_le_bytes());
+        b.push(1);
+        b.extend_from_slice(img);
+    }
+    b
+}
+
+#[cfg(feature = "import-affinity")]
+fn loss_codes(receipt: &Value) -> Vec<String> {
+    receipt["loss"].as_array().unwrap().iter().map(|e| e["code"].as_str().unwrap().to_string()).collect()
+}
+
+#[cfg(feature = "import-affinity")]
+#[test]
+fn affinity_preview_imports_the_thumbnail_as_one_lossy_layer_with_the_original() {
+    use hsk_studio_harness::import::import_affinity_preview;
+    use hsk_studio_interop_raster as raster;
+    use hsk_studio_package::{ImportRole, Limits, read_package};
+    let cancel = CancellationToken::default();
+    let samples = raster::Samples::U8((0..6 * 4 * 4).map(|i| (i * 37 % 256) as u8).collect());
+    let req = raster::PngEncodeRequest {
+        width: 6,
+        height: 4,
+        colour: raster::Colour::Rgba,
+        samples: &samples,
+        icc: None,
+        compression: raster::PngCompression::Balanced,
+    };
+    let png = raster::encode_png(&req).unwrap();
+    let bytes = ka_document(Some(&png));
+    // The default import still refuses; the preview is an explicit choice.
+    assert_eq!(import(&bytes, &TrustAllResolver, &cancel).err().unwrap().code(), "affinity_native_use_export");
+    let imported = import_affinity_preview(&bytes, &TrustAllResolver, &cancel).expect("preview imported");
+    let receipt = &imported.receipt;
+    assert_eq!((receipt["source_format"].as_str(), receipt["layers"].as_u64()), (Some("affinity_preview"), Some(1)), "{receipt}");
+    let a = &receipt["affinity"];
+    assert_eq!((a["lossy"].as_bool(), a["preview_only"].as_bool(), a["layers_decoded"].as_bool()), (Some(true), Some(true), Some(false)), "{a}");
+    assert_eq!((a["generation"].as_str(), a["thumbnail"]["width"].as_u64(), a["thumbnail"]["height"].as_u64()), (Some("v3"), Some(6), Some(4)));
+    assert_eq!(a["streams"][0]["name"], "doc.dat");
+    assert_eq!(a["carried"][0]["kind"], "object_stream");
+    assert_eq!(a["export_routes"], serde_json::json!(["psd", "pdf", "svg"]));
+    let codes = loss_codes(receipt);
+    assert!(codes.iter().any(|c| c == "affinity_layers_not_decoded"), "{codes:?}");
+    assert!(codes.iter().any(|c| c == "affinity_preview_resolution"), "{codes:?}");
+    // The package carries the original .af bytes and reopens with one layer.
+    let package = imported.to_package(&cancel).unwrap();
+    let opened = read_package(&package, &Limits::default(), folio::Budget::default(), &TrustAllResolver, &cancel).unwrap();
+    assert_eq!(opened.import_bytes(ImportRole::Original), Some(&bytes[..]));
+    assert_eq!(opened.snapshot().map(|s| s.document().layers.len()), Some(1));
+    // Typed refusals: no Thmb block, a resource container, a corrupt preview, non-Affinity bytes.
+    let code = |b: &[u8]| import_affinity_preview(b, &TrustAllResolver, &cancel).err().map(|e| e.code());
+    assert_eq!(code(&ka_document(None)), Some("affinity_thumbnail_absent"));
+    let mut preset = ka_document(Some(&png));
+    preset[8..12].copy_from_slice(b"ssrp");
+    assert_eq!(code(&preset), Some("affinity_resource_not_document"));
+    let mut bad = ka_document(Some(&png));
+    let n = bad.len();
+    bad.truncate(n - 6); // the PNG loses its IEND tail: the chunk walk refuses it
+    let block_len_at = n - png.len() - 29 + 12;
+    let len = u32::from_le_bytes(bad[block_len_at..block_len_at + 4].try_into().unwrap()) - 6;
+    bad[block_len_at..block_len_at + 4].copy_from_slice(&len.to_le_bytes());
+    assert_eq!(code(&bad), Some("affinity_thumbnail_image_invalid"));
+    assert_eq!(code(&png), Some("format_unrecognised"));
+}
+
+/// The one corpus-root convention (`.config/oracle-corpus.toml`): walk up from the workspace root.
+#[cfg(feature = "import-affinity")]
+fn corpus_root() -> Option<PathBuf> {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config = std::fs::read_to_string(workspace.join(".config/oracle-corpus.toml")).ok()?;
+    let value = |key: &str| {
+        config.lines().find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+        })
+    };
+    let search = value("search")?;
+    let max: usize = value("max-ancestors")?.parse().ok()?;
+    let mut dir = workspace.canonicalize().ok()?;
+    for _ in 0..=max {
+        let candidate = dir.join(&search);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+#[cfg(feature = "import-affinity")]
+#[test]
+#[ignore = "needs oracle-corpus/affinity/afdesignload-mit (AFDesignLoad MIT V1 test designs)"]
+fn afdesignload_v1_designs_open_as_flattened_previews() {
+    use hsk_studio_harness::import::import_affinity_preview;
+    let Some(root) = corpus_root() else {
+        println!("NOT_PROVEN: afdesignload_previews corpus reason=oracle-corpus root not found via .config/oracle-corpus.toml");
+        return;
+    };
+    let dir = root.join("affinity/afdesignload-mit");
+    let names = ["color", "layer_mode", "layer_test", "margins", "raster_test", "revision_test", "shape_test", "slice_test", "test_path"];
+    let cancel = CancellationToken::default();
+    let mut opened = 0;
+    for name in names {
+        let Ok(bytes) = std::fs::read(dir.join(format!("{name}.afdesign"))) else {
+            println!("NOT_PROVEN: afdesignload_previews {name} reason=missing (sha256 pins in provenance.json, checked by interop-affinity tests/container.rs)");
+            continue;
+        };
+        assert_eq!(import(&bytes, &TrustAllResolver, &cancel).err().unwrap().code(), "affinity_native_use_export", "{name}");
+        let imported = import_affinity_preview(&bytes, &TrustAllResolver, &cancel).unwrap_or_else(|e| panic!("{name}: {e} {}", e.detail()));
+        let a = &imported.receipt["affinity"];
+        assert_eq!((a["generation"].as_str(), a["thumbnail"]["width"].as_u64(), a["thumbnail"]["height"].as_u64()), (Some("v1"), Some(512), Some(512)), "{name}");
+        assert!(loss_codes(&imported.receipt).iter().any(|c| c == "affinity_layers_not_decoded"), "{name}");
+        opened += 1;
+    }
+    println!("afdesignload_previews opened={opened}");
+}
