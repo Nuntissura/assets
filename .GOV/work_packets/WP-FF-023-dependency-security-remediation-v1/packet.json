@@ -1,0 +1,449 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "version": "1",
+    "created_at_utc": "2026-10-20T21:19:21Z",
+    "base_wp_id": "WP-FF-023-dependency-security-remediation",
+    "updated_at_utc": "2026-10-20T21:19:21Z",
+    "title": "Remediate five approved dependency versions and exact FF-DEC-002 policy",
+    "wp_id": "WP-FF-023-dependency-security-remediation-v1"
+  },
+  "authorization": {
+    "recorded_at_utc": "2026-10-20T21:19:21Z",
+    "reference": "Operator explicitly approved separate-packet remediation to h2 0.4.16, rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10 and webpki-root-certs 1.0.10 with matching FF-DEC-002 policy/proof. Preserve the existing sequence and keep Python limited to the global gameplan controller.",
+    "source": "operator_message"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0c--dependency-and-risk-spikes"
+    ],
+    "decision_ids": [
+      "FF-DEC-002"
+    ]
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
+    "work_branch": "codex/wp020-prerequisite-classifier",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "IN_PROGRESS",
+    "risk": "HIGH",
+    "blockers": [
+      "Fresh exact PREREQUISITE activation must be committed before dependency or policy implementation."
+    ],
+    "next_action": "Commit this activation, then implement only the five approved dependency updates and matching exact policy/proof/license/manual identities; perform targeted dependency and ordinary-transport proof, independent review and canonical gates before closure.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "dependencies": [
+      "WP022-v2 remains BLOCKED by source-bound dependency-policy findings; its frozen contract is not modified.",
+      "The prior FF-DEC-002 ordinary transport research, approved ring/native inventory and public-boundary proofs remain the baseline.",
+      "Cleanup and VerifyOnly completed before packet selection; primary observed exit0/items0."
+    ],
+    "non_goals": [
+      "Change unrelated dependencies, runtime/native authorization, product features, packet022 contracts, benchmark requirements or task sequence.",
+      "Add RustSec ignores, weaken deny thresholds, license policy, source policy or existing proof assertions.",
+      "Use Python in Ferric implementation/canonical verification; approval remains solely global gameplan controller.",
+      "Claim product, capability, runtime, packaging, release or phase progress from this prerequisite remediation."
+    ],
+    "in_scope": [
+      "Update only the approved five dependency versions and their necessary exact resolved lockfile closure.",
+      "Update FF-DEC-002 exact approved version identities and only derived ordinary profile/source closure digests; preserve reqwest0.13.4,ring0.17.14, provider/features/native consumers and all unrelated exceptions.",
+      "Update exact license exception identities for approved rustls-webpki and Mozilla root packages while preserving the license allowlist and deny policy.",
+      "Update exact graph/source/proof expectations and ordinary-transport proof code for the approved versions without suppressing advisories or weakening validation.",
+      "Synchronize only the two current version identities in MODEL_MANUAL ordinary-transport authorization paragraph and necessary owning-topic/file metadata.",
+      "Preserve blocked WP022 immutable scope, declaration, requirements and existing sequence; this separately authorized dependency closure precedes returning to its outstanding gate."
+    ],
+    "summary": "Remediate the eight recorded RustSec advisories across five explicitly approved dependencies, preserving the ordinary-transport provider and native-source boundary.",
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      "build/Cargo.toml",
+      "build/Cargo.lock",
+      "build/architecture-policy.toml",
+      "build/deny.toml",
+      ".GOV/rules/build-rules.yaml",
+      "build/tools/fforager-xtask/src/main.rs",
+      "build/crates/fforager-transport/src/ordinary.rs",
+      "product/MODEL_MANUAL.md",
+      "build/reports/",
+      ".fforager-artifacts/"
+    ],
+    "product_impact": "PREREQUISITE"
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-001",
+      "proof_class": "governance",
+      "requirement": "This acceptance row is the exact Operator approval ID for matching FF-DEC-002 changes: only h2 0.4.16, rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10 and webpki-root-certs 1.0.10 plus derived exact ordinary graph/source digests are authorized. Existing reqwest, ring, provider/native boundaries and unrelated decisions remain unchanged.",
+      "evidence": [],
+      "status": "PENDING"
+    },
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-002",
+      "proof_class": "integration",
+      "requirement": "Resolved Cargo metadata and lockfile identify exactly the five approved target versions and explain every lock delta; dependency-policy rejects none of the eight recorded advisories, with no new ignore, threshold weakening or unrelated dependency change.",
+      "evidence": [],
+      "status": "PENDING"
+    },
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-003",
+      "proof_class": "integration",
+      "requirement": "Exact FF-DEC-002/architecture/license/source identities and derived closure hashes agree with actual resolved packages and archives; existing negative policy/source mutations reject altered versions, consumers, features, native packages or license exceptions.",
+      "evidence": [],
+      "status": "PENDING"
+    },
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-004",
+      "proof_class": "integration",
+      "requirement": "The existing ordinary-transport public proof executes construction/provider binding, proxy/redirect/retry/cookie/compression controls and browser-capability refusal using updated approved dependencies; existing behavioral controls and counterfactuals remain effective.",
+      "evidence": [],
+      "status": "PENDING"
+    },
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-005",
+      "proof_class": "integration",
+      "requirement": "The model manual current authorization paragraph contains the two approved version identities; independent adversarial review finds no unresolved dependency-boundary or proof bypass and records actual semantics and residual uncertainty.",
+      "evidence": [],
+      "status": "PENDING"
+    },
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-006",
+      "proof_class": "integration",
+      "requirement": "Canonical runtime-truth-check, architecture-check and verify-pr plus any actually activated deep triggers accept the same committed candidate; exact source-bound results are recorded.",
+      "evidence": [],
+      "status": "PENDING"
+    },
+    {
+      "id": "WP-FF-023-dependency-security-remediation-v1-AC-007",
+      "proof_class": "governance",
+      "requirement": "Accepted closure is merged into canonical main and git merge-base --is-ancestor proves containment; only the bounded prerequisite is closed and the existing WP022 sequence is preserved.",
+      "evidence": [],
+      "status": "PENDING"
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "head_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
+      "blockers": [
+        "Fresh exact PREREQUISITE activation must be committed before dependency or policy implementation."
+      ],
+      "checks_run": [
+        "git branch --show-current: codex/wp020-prerequisite-classifier",
+        "git rev-parse HEAD: ace9fcd3c250bdc261c44c43d070383e45246c1a",
+        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git status --porcelain=v2 --branch: # branch.oid ace9fcd3c250bdc261c44c43d070383e45246c1a; # branch.head codex/wp020-prerequisite-classifier; # branch.upstream origin/codex/wp020-prerequisite-classifier; # branch.ab +0 -0",
+        "Primary cleanup+VerifyOnly exit0/items0 before selecting WP023; authority/templates/registry and exact version-bearing operational files inspected."
+      ],
+      "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
+      "next_action": "Commit this activation, then implement only the five approved dependency updates and matching exact policy/proof/license/manual identities; perform targeted dependency and ordinary-transport proof, independent review and canonical gates before closure.",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/id-registry.yaml"
+      ],
+      "recorded_at_utc": "2026-10-20T21:19:21Z",
+      "branch": "codex/wp020-prerequisite-classifier"
+    }
+  },
+  "validation": {
+    "not_proven": [
+      "Any approved dependency update or resulting graph/source digest.",
+      "Targeted dependency/ordinary-transport proof, independent review and final canonical gates.",
+      "Closure merge/main containment.",
+      "Any product, capability, runtime, packaging, release or phase progress."
+    ],
+    "checks": [
+      {
+        "source_commit": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "content_fingerprint": "857df0b75a3a46ff1d86ea8229f6db7523e03f08e6b743652b1b02c11523f388",
+        "advisories": [
+          {
+            "ids": [
+              "RUSTSEC-2026-0258"
+            ],
+            "crate": "h2",
+            "target": "0.4.16"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0285",
+              "RUSTSEC-2026-0346",
+              "RUSTSEC-2026-0348",
+              "RUSTSEC-2026-0349"
+            ],
+            "crate": "rustls",
+            "target": "0.23.46"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0382"
+            ],
+            "crate": "rustls-webpki",
+            "target": "0.103.16"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0381"
+            ],
+            "crate": "webpki-roots",
+            "target": "1.0.10"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0383"
+            ],
+            "crate": "webpki-root-certs",
+            "target": "1.0.10"
+          }
+        ],
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "failed_boundary": "dependency-policy advisories",
+        "artifact": "build/reports/verify-pr-1792527411034803900-383824.json",
+        "other_deny_checks": "bans/licenses/sources accepted in prior attempt"
+      }
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/refinement.json",
+    "change_evidence": {
+      "recorded_failure": {
+        "source_commit": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "content_fingerprint": "857df0b75a3a46ff1d86ea8229f6db7523e03f08e6b743652b1b02c11523f388",
+        "advisories": [
+          {
+            "ids": [
+              "RUSTSEC-2026-0258"
+            ],
+            "crate": "h2",
+            "target": "0.4.16"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0285",
+              "RUSTSEC-2026-0346",
+              "RUSTSEC-2026-0348",
+              "RUSTSEC-2026-0349"
+            ],
+            "crate": "rustls",
+            "target": "0.23.46"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0382"
+            ],
+            "crate": "rustls-webpki",
+            "target": "0.103.16"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0381"
+            ],
+            "crate": "webpki-roots",
+            "target": "1.0.10"
+          },
+          {
+            "ids": [
+              "RUSTSEC-2026-0383"
+            ],
+            "crate": "webpki-root-certs",
+            "target": "1.0.10"
+          }
+        ],
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "failed_boundary": "dependency-policy advisories",
+        "artifact": "build/reports/verify-pr-1792527411034803900-383824.json",
+        "other_deny_checks": "bans/licenses/sources accepted in prior attempt"
+      },
+      "simplification_changes": [
+        "Reuse existing exact FF-DEC-002 provider/native proof and dependency-policy gate rather than adding a new transport or ignoring advisories.",
+        "Restrict changes to eight operational files plus minimum packet/index/registry state.",
+        "Reuse current researched transport boundary and named advisory remediation evidence; no new-feature research ceremony."
+      ],
+      "artifact_specific_justification": {
+        "packet-state": "Separate authorized prerequisite scope and proof must be committed before dependency implementation.",
+        "manifest-lock": "Exact approved version resolution and pinned closure are required by the recorded advisories.",
+        "license-policy": "Existing version-specific exceptions must track the approved patched packages without broadening allowed licenses.",
+        "architecture-decision-proof": "Exact FF-DEC-002 package/profile/source expectations must match actual approved package sources.",
+        "model-manual": "Current operational paragraph cites old rustls/root identities; synchronize those two exact identities only."
+      },
+      "pre_simplification_verdict": "FAIL: FF-GATE-PR-001 dependency-policy emitted eight RustSec findings across the five approved packages at the recorded source identity; exact IDs and report retained in validation.",
+      "adversarial_review": {
+        "RESIDUAL_UNCERTAINTY": [
+          "No implementation or post-change proof exists at activation; canonical final acceptance and containment remain required."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "PENDING: actual independent post-change checks."
+        ],
+        "MANUAL_REVIEW": {
+          "evidence": [],
+          "verdict": "PENDING",
+          "reviewer": "PENDING: independent implementation reviewer",
+          "method": "PENDING: exact current dependency paragraph and unchanged command/recovery instructions.",
+          "artifact": "product/MODEL_MANUAL.md"
+        },
+        "BOUNDARY_PROBES": [
+          "PENDING: actual resolved graph/source and ordinary public boundary."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "PENDING: retained dependency/license/native gate rejection."
+        ],
+        "DIFF_ATTACK_SURFACES": [
+          "Dependency contract and serialization: exact manifest/lock version identities and source checksums.",
+          "State/provenance: source-bound RustSec result, FF-DEC-002 approval and derived package-source closure.",
+          "Resource/integration: ordinary provider construction and existing public wire controls.",
+          "Gate trust: exact license/native/profile constraints and negative mutation oracles."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "PENDING: existing changed-boundary negative mutations must execute."
+        ],
+        "INDEPENDENT_FINDINGS": []
+      },
+      "acceptance_or_authority_ids": [
+        "WP-FF-023-dependency-security-remediation-v1-AC-001",
+        "WP-FF-023-dependency-security-remediation-v1-AC-002",
+        "WP-FF-023-dependency-security-remediation-v1-AC-003",
+        "WP-FF-023-dependency-security-remediation-v1-AC-004",
+        "WP-FF-023-dependency-security-remediation-v1-AC-005",
+        "WP-FF-023-dependency-security-remediation-v1-AC-006",
+        "WP-FF-023-dependency-security-remediation-v1-AC-007"
+      ],
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "complete_post_change_verification": [
+        "PENDING: exact approved resolution/lock delta.",
+        "PENDING: actual dependency-policy zero advisory findings.",
+        "PENDING: graph/source/license boundary and negative mutation checks.",
+        "PENDING: ordinary-transport public proof.",
+        "PENDING: independent adversarial review and canonical gates.",
+        "PENDING: main containment."
+      ],
+      "scope_and_risk_matrix": {
+        "risk_cases": [
+          "Broad resolver drift changes unrelated packages; inspect exact lock delta and metadata.",
+          "Version policy changes conceal stale graph/source digest; recompute from actual package sources and retain mutations.",
+          "New crate feature/native closure changes provider semantics; compare exact graph/features/consumers before ordinary boundary proof.",
+          "License exception update broadens admission; retain exact package-version identity and negative policy controls."
+        ],
+        "required_outcomes": [
+          "Exact five approved target versions and matching FF-DEC-002/license/profile/source proof.",
+          "All eight named advisories addressed without policy weakening.",
+          "Retain provider/native/source boundaries and actual ordinary proof semantics.",
+          "Canonical final proof and main containment before prerequisite closure."
+        ]
+      },
+      "research_reuse": {
+        "policy": "GLOBAL-REMEDIATE-004 excludes new-feature research/refinement ceremony for this recorded remediation.",
+        "current_basis": "Existing ordinary-transport design/provider/license/source-boundary research plus currently verified advisory findings and exact Operator-approved patched versions.",
+        "basis": ".GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/refinement.json"
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "result": "Existing canonical gate has eight advisory findings; no-change cannot resolve the approved blocker.",
+          "candidate": "no mechanism beyond the accepted outcome"
+        },
+        {
+          "result": "Reuse FF-DEC-002, ordinary provider/public proof, exact source closure and dependency-policy validators.",
+          "candidate": "reuse current Ferric code"
+        },
+        {
+          "result": "No new runtime mechanism; existing Rust/Cargo dependency and proof paths remain.",
+          "candidate": "Rust core/std"
+        },
+        {
+          "result": "No platform capability change is required; existing host prerequisites remain available.",
+          "candidate": "approved platform capability"
+        },
+        {
+          "result": "Operator approved exact patched versions of the existing five packages, preserving current dependency roles.",
+          "candidate": "already-approved dependency"
+        },
+        {
+          "result": "Change exact pins and derived policy/proof identities only, retain all behavior/security controls and verify actual package resolution.",
+          "candidate": "smallest complete clear implementation"
+        }
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "replacement_trigger": "Future approved ordinary-transport shipped consumer executes staged-artifact reproof.",
+        "ceiling_id": "WP-FF-023-dependency-security-remediation-v1-CEILING-001",
+        "trigger_detection_method": "Source-bound canonical staged-artifact evidence and taskboard activation.",
+        "likely_upgrade_path": "Retain future WP011 exact FF-GATE-RUNTIME-001 proof and existing packet sequence.",
+        "linked_evidence": [
+          ".GOV/work_packets/WP-FF-017-ordinary-transport-decision-v1/refinement.json",
+          ".GOV/rules/build-rules.yaml#exception_authority",
+          ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json#/validation"
+        ],
+        "current_ceiling": "Bounded Phase0 dependency prerequisite only; zero product/capability/runtime/packaging/release/phase progress."
+      },
+      "post_simplification_verdict": "PENDING: implementation and actual post-change proof have not run."
+    },
+    "non_product_prerequisite": {
+      "classification": "phase0_supporting_evidence",
+      "required_future_consumer": "WP-FF-011-equivalent-work-vertical-slice-v1 ordinary transport",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0c--dependency-and-risk-spikes",
+      "schema_id": "ff.non-product-prerequisite@1",
+      "packaging_or_release_progress": false,
+      "required_future_proof": "FF-GATE-RUNTIME-001 through exact staged WP011 production artifacts and real ordinary HTTP/TLS boundaries",
+      "capability_progress": false,
+      "product_progress": false,
+      "runtime_completion": false,
+      "phase_progress": false
+    }
+  }
+}
