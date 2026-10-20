@@ -38,7 +38,7 @@
 use crate::LayoutError;
 use crate::breaker::{AdobeParams, HyphenRules, LineBreak, Sums, check, forced, legal, line_start};
 use crate::paragraph::Item;
-use crate::typeset::{JustifyParams, Justification, justify_metrics};
+use crate::typeset::{Justification, JustifyParams, justify_metrics};
 use hsk_studio_accord::CancellationToken;
 
 const EPS: f64 = 1e-9;
@@ -68,7 +68,12 @@ impl Cand {
     }
     /// The line meets `width` inside the justification limits (and has a word space).
     fn within(&self, width: f64) -> bool {
-        self.spaces > EPS && if self.w > width { self.w - width <= self.shrink + EPS } else { width - self.w <= self.stretch + EPS }
+        self.spaces > EPS
+            && if self.w > width {
+                self.w - width <= self.shrink + EPS
+            } else {
+                width - self.w <= self.stretch + EPS
+            }
     }
 }
 
@@ -76,7 +81,11 @@ impl Cand {
 /// but the last, plus the hyphen of a hyphenated end.
 fn glyph_gaps(items: &[Item], s: usize, i: usize) -> usize {
     let first = items.get(s).map_or(0, |it| it.first);
-    let end = items[s..i].iter().rev().find(|it| it.kind == crate::paragraph::Kind::Box).map_or(first, |it| it.end);
+    let end = items[s..i]
+        .iter()
+        .rev()
+        .find(|it| it.kind == crate::paragraph::Kind::Box)
+        .map_or(first, |it| it.end);
     end.saturating_sub(first).saturating_sub(1) + usize::from(items[i].flagged)
 }
 
@@ -116,11 +125,20 @@ pub(crate) fn single_line(
                     let (w, ..) = sums.measure(items, start, i);
                     let end = forced(&items[i]);
                     let spaces = sums.spaces(start, i);
-                    let letters = glyph_gaps(items, start, i) as f64 * ctx.justify.reference_space_pt;
+                    let letters =
+                        glyph_gaps(items, start, i) as f64 * ctx.justify.reference_space_pt;
                     let (ls, ws) = (ctx.justify.letter_spacing, ctx.justify.word_spacing);
                     let shrink = spaces * (ws.desired - ws.min) + letters * (ls.desired - ls.min);
                     let stretch = spaces * (ws.max - ws.desired) + letters * (ls.max - ls.desired);
-                    cands.push(Cand { item: i, w, spaces, shrink, stretch, flagged, end });
+                    cands.push(Cand {
+                        item: i,
+                        w,
+                        spaces,
+                        shrink,
+                        stretch,
+                        flagged,
+                        end,
+                    });
                     if end || (!flagged && w > w_line + EPS) {
                         break;
                     }
@@ -139,8 +157,16 @@ pub(crate) fn single_line(
             ragged_pick(&cands, w_line, ctx.params.hyphenation_zone_pt)
         };
         let overfull = pick.w > w_line + EPS && pick.scale(w_line).is_none_or(|s| s <= 0.0);
-        run = if pick.flagged { run.saturating_add(1) } else { 0 };
-        breaks.push(LineBreak { item: pick.item, overfull, ratio: pick.scale(w_line) });
+        run = if pick.flagged {
+            run.saturating_add(1)
+        } else {
+            0
+        };
+        breaks.push(LineBreak {
+            item: pick.item,
+            overfull,
+            ratio: pick.scale(w_line),
+        });
         if pick.end && pick.item + 1 >= n {
             break;
         }
@@ -150,7 +176,10 @@ pub(crate) fn single_line(
 }
 
 fn ragged_pick(cands: &[Cand], w_line: f64, zone: f64) -> Cand {
-    let lw = cands.iter().rev().find(|c| !c.flagged && c.w <= w_line + EPS);
+    let lw = cands
+        .iter()
+        .rev()
+        .find(|c| !c.flagged && c.w <= w_line + EPS);
     let hyphenate = lw.is_none_or(|c| w_line - c.w > zone);
     let usable = cands.iter().filter(|c| hyphenate || !c.flagged);
     let mut fit = None;
@@ -167,14 +196,25 @@ fn ragged_pick(cands: &[Cand], w_line: f64, zone: f64) -> Cand {
 }
 
 fn justified_pick(cands: &[Cand], w_line: f64) -> Cand {
-    let lw = cands.iter().rev().find(|c| !c.flagged && c.w <= w_line + EPS).copied();
-    let tw = cands.iter().find(|c| !c.flagged && c.w > w_line + EPS).copied();
+    let lw = cands
+        .iter()
+        .rev()
+        .find(|c| !c.flagged && c.w <= w_line + EPS)
+        .copied();
+    let tw = cands
+        .iter()
+        .find(|c| !c.flagged && c.w > w_line + EPS)
+        .copied();
     let t_ok = tw.is_some_and(|c| c.within(w_line));
     let l_ok = lw.is_some_and(|c| c.within(w_line));
     if let (Some(t), Some(l), true, true) = (tw, lw, t_ok, l_ok) {
         // Deviation from desired, each normalised by its range; ties to the tighter line.
         let dt = (t.w - w_line) / t.shrink.max(EPS);
-        let dl = if l.stretch > EPS { (w_line - l.w) / l.stretch } else { 0.0 };
+        let dl = if l.stretch > EPS {
+            (w_line - l.w) / l.stretch
+        } else {
+            0.0
+        };
         return if dt <= dl { t } else { l };
     }
     if let (Some(t), true) = (tw, t_ok) {
@@ -186,7 +226,11 @@ fn justified_pick(cands: &[Cand], w_line: f64) -> Cand {
     // (c) hyphenation breaks between the whole-word candidates, inside the limits.
     let lo = lw.map_or(0, |c| c.item);
     let hi = tw.map_or(usize::MAX, |c| c.item);
-    let inside: Vec<Cand> = cands.iter().filter(|c| c.flagged && c.item > lo && c.item < hi && c.within(w_line)).copied().collect();
+    let inside: Vec<Cand> = cands
+        .iter()
+        .filter(|c| c.flagged && c.item > lo && c.item < hi && c.within(w_line))
+        .copied()
+        .collect();
     if let Some(t) = inside.iter().find(|c| c.w > w_line + EPS) {
         return *t;
     }
@@ -203,13 +247,25 @@ fn justified_pick(cands: &[Cand], w_line: f64) -> Cand {
         (Some(l), Some(t)) => {
             let ts = t.scale(w_line);
             if t.end {
-                if ts.is_some_and(|s| s >= LAST_LINE_MIN_SCALE) { t } else { l }
+                if ts.is_some_and(|s| s >= LAST_LINE_MIN_SCALE) {
+                    t
+                } else {
+                    l
+                }
             } else {
                 // SINGLE_TIGHT_C / (desired - min) with word spacing alone; the shrink range of the
                 // line in general.
-                let k = if t.shrink > EPS { SINGLE_TIGHT_C * t.spaces / t.shrink } else { f64::INFINITY };
+                let k = if t.shrink > EPS {
+                    SINGLE_TIGHT_C * t.spaces / t.shrink
+                } else {
+                    f64::INFINITY
+                };
                 let (under, over) = (w_line - l.w, t.w - w_line);
-                if ts.is_some_and(|s| s > 0.0) && under > k * over { t } else { l }
+                if ts.is_some_and(|s| s > 0.0) && under > k * over {
+                    t
+                } else {
+                    l
+                }
             }
         }
     }
@@ -220,7 +276,13 @@ fn justified_pick(cands: &[Cand], w_line: f64) -> Cand {
 /// proportion to their limit ranges (oracle ID-02 `ls-3_0_3` last line: word scale 1.7577 and letter
 /// gap 0.2297 pt are both 2.297 times their ranges); with no range at all it goes into the word
 /// spaces, and on a line without spaces into the letter gaps.
-pub(crate) fn justify_line(natural_pt: f64, avail_pt: f64, spaces_pt: f64, gaps: usize, jp: &JustifyParams) -> Justification {
+pub(crate) fn justify_line(
+    natural_pt: f64,
+    avail_pt: f64,
+    spaces_pt: f64,
+    gaps: usize,
+    jp: &JustifyParams,
+) -> Justification {
     let mut j = justify_metrics(natural_pt, avail_pt, spaces_pt, gaps, jp);
     let rest = j.residual_pt;
     if rest == 0.0 {
@@ -258,7 +320,11 @@ pub(crate) fn justify_line(natural_pt: f64, avail_pt: f64, spaces_pt: f64, gaps:
 
 /// A line wider than its slot outside justification (an Adobe last line set tight): spaces
 /// compressed so the line meets the measure.
-pub(crate) fn compress_line(natural_pt: f64, avail_pt: f64, spaces_pt: f64) -> Option<Justification> {
+pub(crate) fn compress_line(
+    natural_pt: f64,
+    avail_pt: f64,
+    spaces_pt: f64,
+) -> Option<Justification> {
     (natural_pt > avail_pt + EPS && spaces_pt > EPS).then(|| Justification {
         word_scale: 1.0 + (avail_pt - natural_pt) / spaces_pt,
         letter_gap_pt: 0.0,
@@ -398,18 +464,34 @@ impl Para<'_> {
                 return None;
             }
             let range = spaces * (self.desired - self.min);
-            m.at * (o * 0.2 / (self.desired - self.min)).powf(m.pt) + m.bt * (o - range).max(0.0).powf(m.qt)
+            m.at * (o * 0.2 / (self.desired - self.min)).powf(m.pt)
+                + m.bt * (o - range).max(0.0).powf(m.qt)
         };
         let cost = cost.min(m.cap);
-        Some(if m.square { (cost + 1.0) * (cost + 1.0) } else { cost })
+        Some(if m.square {
+            (cost + 1.0) * (cost + 1.0)
+        } else {
+            cost
+        })
     }
 
     /// Feasible lines from line start `s` (line number `line`); a hyphenation break past the ladder
     /// limit is skipped.
-    fn lines_from(&self, line: usize, s: usize, run: usize, work: &mut u32, cancel: &CancellationToken) -> Result<Vec<ParaLine>, LayoutError> {
+    fn lines_from(
+        &self,
+        line: usize,
+        s: usize,
+        run: usize,
+        work: &mut u32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<ParaLine>, LayoutError> {
         let mut out: Vec<ParaLine> = Vec::new();
         let wl = (self.width)(line);
-        let floor = if self.justified { self.model.tight_floor.min(self.model.last_min) } else { 1.0 };
+        let floor = if self.justified {
+            self.model.tight_floor.min(self.model.last_min)
+        } else {
+            1.0
+        };
         for i in s + 1..self.items.len() {
             check(cancel, work)?;
             if !legal(self.items, i) {
@@ -426,16 +508,30 @@ impl Para<'_> {
                 if let Some(mut cost) = self.line_cost(line, s, i, last) {
                     if flagged {
                         let nr = run + 1;
-                        cost += if self.justified { self.model.hyphen } else { self.model.ragged_hyphen };
+                        cost += if self.justified {
+                            self.model.hyphen
+                        } else {
+                            self.model.ragged_hyphen
+                        };
                         if nr >= 2 && self.justified {
                             let exp = i32::try_from(nr.min(MAX_RUN) - 2).unwrap_or(0);
                             cost += self.model.ladder * self.model.ladder_growth.powi(exp);
                         }
                     }
-                    out.push(ParaLine { item: i, cost, flagged, end });
+                    out.push(ParaLine {
+                        item: i,
+                        cost,
+                        flagged,
+                        end,
+                    });
                 } else if out.is_empty() && (end || hopeless) {
                     // Nothing fits at all: one emergency (overfull) line.
-                    out.push(ParaLine { item: i, cost: EMERGENCY, flagged, end });
+                    out.push(ParaLine {
+                        item: i,
+                        cost: EMERGENCY,
+                        flagged,
+                        end,
+                    });
                 }
             }
             if end || hopeless {
@@ -445,7 +541,16 @@ impl Para<'_> {
         Ok(out)
     }
 
-    fn best(&self, s: usize, line: usize, run: usize, d: usize, memo: &mut Memo, work: &mut u32, cancel: &CancellationToken) -> Result<(f64, Option<ParaLine>), LayoutError> {
+    fn best(
+        &self,
+        s: usize,
+        line: usize,
+        run: usize,
+        d: usize,
+        memo: &mut Memo,
+        work: &mut u32,
+        cancel: &CancellationToken,
+    ) -> Result<(f64, Option<ParaLine>), LayoutError> {
         if d == 0 || s >= self.items.len() {
             return Ok((0.0, None));
         }
@@ -459,7 +564,16 @@ impl Para<'_> {
                 0.0
             } else {
                 let nr = if c.flagged { (run + 1).min(MAX_RUN) } else { 0 };
-                self.best(line_start(self.items, c.item), line + 1, nr, d.saturating_sub(1), memo, work, cancel)?.0
+                self.best(
+                    line_start(self.items, c.item),
+                    line + 1,
+                    nr,
+                    d.saturating_sub(1),
+                    memo,
+                    work,
+                    cancel,
+                )?
+                .0
             };
             let total = c.cost + rest;
             if total < out.0 - 1e-12 {
@@ -496,8 +610,16 @@ pub(crate) fn paragraph(
     };
     let n = items.len();
     // The window is bounded by the line budget of the caller (items) so `d` never overflows.
-    let window = if ctx.justified { model.depth } else { model.ragged_depth };
-    let depth = if window == 0 { n.saturating_add(1) } else { window };
+    let window = if ctx.justified {
+        model.depth
+    } else {
+        model.ragged_depth
+    };
+    let depth = if window == 0 {
+        n.saturating_add(1)
+    } else {
+        window
+    };
     let mut memo = Memo::new();
     let mut work = 0u32;
     let mut breaks = Vec::new();
@@ -509,7 +631,11 @@ pub(crate) fn paragraph(
         let (w, ..) = sums.measure(items, s, b.item);
         let spaces = sums.spaces(s, b.item);
         let scale = (spaces > EPS).then(|| 1.0 + (wl - w) / spaces);
-        breaks.push(LineBreak { item: b.item, overfull: w > wl + EPS && scale.is_none_or(|x| x <= 0.0), ratio: scale });
+        breaks.push(LineBreak {
+            item: b.item,
+            overfull: w > wl + EPS && scale.is_none_or(|x| x <= 0.0),
+            ratio: scale,
+        });
         if b.end && b.item + 1 >= n {
             break;
         }
