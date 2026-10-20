@@ -50,8 +50,10 @@
 //! the document-graph path (`composition_precomp_on_document_graph`,
 //! `composition_track_matte_on_document_graph`). Not modelled (Folio stores none of them, so
 //! nothing is dropped): 3D layers and cameras/lights, motion blur, expressions, frame blending,
-//! time remapping, `preserve_source_visibility` of a matte (the spec default, not rendered, is
-//! applied).
+//! `preserve_source_visibility` of a matte (the spec default, not rendered, is applied). Time
+//! remapping (STU-MOT-045) is not stored by Folio either; a caller attaches a motion `TimeRemap` per
+//! layer with [`CompositionTemporalSource::with_time_remap`] (lane SMB-AE-ROTO-TIMEREMAP), which
+//! then replaces `start_time` / `stretch` for that layer's source time.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::motion::sample;
@@ -347,6 +349,9 @@ pub struct CompositionTemporalSource {
     /// Motion blur of 3D layers per composition id (lane SMB-AE-3D-3,
     /// [`CompositionTemporalSource::with_motion_blur`]).
     blur: BTreeMap<String, Blur>,
+    /// Time remap per layer id (lane SMB-AE-ROTO-TIMEREMAP,
+    /// [`CompositionTemporalSource::with_time_remap`]).
+    remaps: BTreeMap<String, hsk_studio_motion::TimeRemap>,
 }
 
 /// The shutter of one composition and its blurred layers (Folio
@@ -732,6 +737,7 @@ impl CompositionTemporalSource {
             filter: DEFAULT_COMPOSITION_FILTER,
             tiles,
             blur: BTreeMap::new(),
+            remaps: BTreeMap::new(),
         })
     }
 
@@ -1211,6 +1217,31 @@ impl CompositionTemporalSource {
         let l = self
             .find(layer_id)
             .ok_or_else(|| CompositeError::DanglingInput(layer_id.to_owned()))?;
+        self.layer_source(l, tick, &CancellationToken::default())
+    }
+
+    /// Attaches a time remap to layer `layer_id` of any reached composition (STU-MOT-045: the
+    /// `time_remap` property's value at a composition tick is the source time; out-of-range values
+    /// clamp to the first or last frame). With a remap the layer's source tick is the remap's
+    /// clamped source tick instead of the `start_time` / `stretch` mapping; a precomposition layer
+    /// samples its nested composition there. Unknown layer: `DanglingInput`.
+    pub fn with_time_remap(mut self, layer_id: &str, remap: hsk_studio_motion::TimeRemap) -> Result<Self, TemporalError> {
+        if !self.comps.values().any(|c| c.layers.iter().any(|l| l.layer_id == layer_id)) {
+            return Err(CompositeError::DanglingInput(layer_id.to_owned()).into());
+        }
+        self.remaps.insert(layer_id.to_owned(), remap);
+        Ok(self)
+    }
+
+    /// Source tick of `l` at `tick`: the remap when one is attached, else `start_time` / `stretch`.
+    fn layer_source(&self, l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<i64, TemporalError> {
+        if let Some(r) = self.remaps.get(&l.layer_id) {
+            let s = r.sample(hsk_studio_motion::EvalTick::new(tick), cancel).map_err(|e| TemporalError::Source {
+                layer_id: l.layer_id.clone(),
+                code: e.code().to_owned(),
+            })?;
+            return i64::try_from(s.source_tick).map_err(|_| CompositeError::Overflow.into());
+        }
         map_source(&l.timing, tick).ok_or_else(|| CompositeError::Overflow.into())
     }
 
@@ -1571,7 +1602,7 @@ impl CompositionTemporalSource {
         let opacity = opacity * l.opacity * Self::opacity_scale(l, tick, cancel)?;
         let (anchor, position, scale, rotation) = Self::own_3d(l, tick, cancel)?;
         let chain = crate::three_d::Affine3::layer(anchor, position, scale, &rotation).then(&Self::parent_3d(comp, l, tick, cancel)?).then(outer);
-        let source = map_source(&l.timing, tick).ok_or(CompositeError::Overflow)?;
+        let source = self.layer_source(l, tick, cancel)?;
         if !u64::try_from(source).is_ok_and(|t| t < nested.duration) {
             return Ok(());
         }
@@ -2046,7 +2077,7 @@ impl CompositionTemporalSource {
                 if depth >= MAX_PRECOMP_DEPTH {
                     return Err(CompositeError::BudgetExceeded.into());
                 }
-                let source = map_source(&l.timing, tick).ok_or(CompositeError::Overflow)?;
+                let source = self.layer_source(l, tick, cancel)?;
                 let inside = u64::try_from(source).is_ok_and(|t| t < nested.duration);
                 let mut scene = if inside {
                     let depth = depth.checked_add(1).ok_or(CompositeError::Overflow)?;

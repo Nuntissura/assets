@@ -12,6 +12,7 @@ pub mod content_aware;
 pub mod coverage_math;
 pub mod effect_math;
 pub mod filter_math;
+pub mod frame_blend;
 pub mod keying;
 pub mod knockout_math;
 pub mod liquify;

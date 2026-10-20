@@ -658,3 +658,37 @@ fn track_mattes_use_another_layers_rendered_alpha_or_luma() {
         }
     });
 }
+
+/// Lane SMB-AE-ROTO-TIMEREMAP slice 1: a motion `TimeRemap` attached to a layer replaces the
+/// `start_time` / `stretch` source-time rule (STU-MOT-045); enable = identity, flat = freeze,
+/// out-of-range = clamp to the last frame, unknown layer typed.
+#[test]
+fn time_remap_replaces_the_stretch_source_time() {
+    use hsk_studio_motion::{SourceTiming, TimeRemap};
+    bounded_case("time_remap_replaces_the_stretch_source_time", || {
+        let pixels = Pixels::fixture();
+        let id7 = identity("SLYR", 7);
+        let source = SourceTiming::new(f(48), f(1)).unwrap();
+        let plain = source_of(&document(), &records(), &pixels, &scenes::composition2_id()).unwrap();
+        let enabled = source_of(&document(), &records(), &pixels, &scenes::composition2_id())
+            .unwrap()
+            .with_time_remap(&id7, TimeRemap::enable(hsk_studio_accord::Ticks::new(0), source).unwrap())
+            .unwrap();
+        for frame in [0u64, 1, 5, 47] {
+            let t = f(frame) as i64;
+            assert_eq!(enabled.source_tick(&id7, t).unwrap(), plain.source_tick(&id7, t).unwrap(), "frame {frame}");
+        }
+        let freeze = TimeRemap::with_keys(source, &[(0, 0.25), (f(40), 0.25)]).unwrap();
+        let frozen = source_of(&document(), &records(), &pixels, &scenes::composition2_id()).unwrap().with_time_remap(&id7, freeze).unwrap();
+        for frame in [0u64, 9, 40, 60] {
+            assert_eq!(frozen.source_tick(&id7, f(frame) as i64).unwrap(), f(6) as i64);
+        }
+        let wild = TimeRemap::with_keys(source, &[(0, 1.0e12)]).unwrap();
+        let clamped = source_of(&document(), &records(), &pixels, &scenes::composition2_id()).unwrap().with_time_remap(&id7, wild).unwrap();
+        assert_eq!(clamped.source_tick(&id7, 0).unwrap(), f(47) as i64);
+        let missing = source_of(&document(), &records(), &pixels, &scenes::composition2_id())
+            .unwrap()
+            .with_time_remap("missing", TimeRemap::enable(hsk_studio_accord::Ticks::new(0), source).unwrap());
+        assert!(matches!(missing, Err(TemporalError::Composite(CompositeError::DanglingInput(_)))));
+    });
+}

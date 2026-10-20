@@ -20,6 +20,7 @@ mod spatial;
 mod store;
 mod text_animator;
 mod time;
+mod time_remap;
 
 pub use audio_amplitude::{AMPLITUDE_CHANNELS, AMPLITUDE_SLIDER, amplitude_property, insert_audio_amplitude};
 pub use preset::{
@@ -63,3 +64,7 @@ pub use text_animator::{
     units_of, value_noise,
 };
 pub use time::EvalTick;
+pub use time_remap::{
+    FrameBlending, FrameSample, RemapClamp, RemapSample, SourceTiming, TIME_REMAP_KEY, TimeRemap, frame_sample,
+    ticks_to_seconds,
+};
