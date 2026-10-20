@@ -3,7 +3,6 @@
 //! Every comparison is on `f32::to_bits`, not on a tolerance.
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::StudioBlendMode;
-use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::window::{
     AlphaPlaneRef, AlphaSource, WindowBudget, WindowError, WindowGeometry, WindowLimits,
     WindowPlane, layer_window_cost, render_layer_window, stack_support_px, window_cost,
@@ -448,7 +447,9 @@ fn huge_layers_and_far_coordinates_are_bounded_and_translation_invariant() {
             .with_offset(135.0, 8.0),
     );
     let support = effect_support_px(&op).unwrap();
-    assert_eq!(support, 23);
+    // offset ceil(8) + spread 6 + tent support of the 6 px blur (5): 19 (cross-lane re-pin by
+    // SMB-PS-ORACLE-PARITY-1, effect tent kernel; the Gaussian support was 9 -> 23)
+    assert_eq!(support, 19);
     let limits = WindowLimits::new(2 << 20, 200_000_000);
     let run = |layer: Rect, win_rel: Rect| {
         let win = Rect {
@@ -814,16 +815,18 @@ fn hostile_sizes_samples_and_stacks_are_typed_refusals() {
     );
 }
 
-/// The margin the 64 x 64 reference could not serve: a 1000 px blur (kernel half-width 1500) for a
+/// The margin the 64 x 64 reference could not serve: a 1000 px blur (the effect tent kernel,
+/// nonzero taps within 999 px; cross-lane re-pin by SMB-PS-ORACLE-PARITY-1, the kernel rule measured
+/// on the D5 oracle at sizes 2/10/40, size 1000 by the same rule, UNVERIFIED) for a
 /// one-pixel window, in a bounded 64 MiB, against hand-derived taps (the matte of a single opaque
 /// pixel is the product of two kernel taps, each rounded to f32 after its pass).
 #[test]
 fn a_one_thousand_pixel_blur_is_evaluated_for_a_one_pixel_window_in_bounded_memory() {
     let op = EffectOp::DropShadow(DropShadowOp::new(BLACK, NORMAL, 1.0).with_size(1000.0));
-    let kernel = feather_kernel(1000.0).unwrap();
+    let kernel = hsk_studio_pigment::effect_math::effect_blur_kernel(1000.0).unwrap();
     let kb = (kernel.len() / 2) as i64;
-    assert_eq!(kb, 1500);
-    assert_eq!(effect_support_px(&op).unwrap(), 1500);
+    assert_eq!(kb, 999);
+    assert_eq!(effect_support_px(&op).unwrap(), 999);
     let layer = Rect {
         x: 0,
         y: 0,
@@ -833,14 +836,14 @@ fn a_one_thousand_pixel_blur_is_evaluated_for_a_one_pixel_window_in_bounded_memo
     let alpha = [1.0f32];
     let src = AlphaPlaneRef::new(layer, &alpha).unwrap();
     let limits = WindowLimits::new(64 << 20, 200_000_000);
-    for (px, py) in [(0i64, 0i64), (700, -300), (-1500, 1500), (1500, -1500)] {
+    for (px, py) in [(0i64, 0i64), (700, -300), (-999, 999), (999, -999)] {
         let win = Rect {
             x: px,
             y: py,
             width: 1,
             height: 1,
         };
-        let g = WindowGeometry::uncut(layer, 1500, win).unwrap();
+        let g = WindowGeometry::uncut(layer, 999, win).unwrap();
         let m = window_matte(&src, &g, &op, limits).unwrap();
         let tap = |d: i64| kernel[(kb - d) as usize];
         let want = (f64::from(tap(py)) * f64::from(tap(px))) as f32;

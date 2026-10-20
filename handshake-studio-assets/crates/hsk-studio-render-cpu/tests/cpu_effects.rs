@@ -180,16 +180,12 @@ fn drop_shadow_hand_values_and_reference_parity() {
     }
 
     // Blur: a one-pixel-wide full-height bar (x = 7 of 15 x 15), fill 0, shadow opacity 1, size 2:
-    // sigma 1, support 3, taps w0..w3 = 0.39905028, 0.24203623, 0.05400558, 0.00443305. Away from
-    // the bar ends the vertical pass sums to 1, so row 7 is [w3, w2, w1, w0, w1, w2, w3] for
-    // x = 4 .. 10 (the brief's centre tap 0.39905). Chunks of 8 make tiles of 8 with a margin of
-    // 3, so the rows and columns cross tile borders; the whole plane equals the reference.
-    let (w0, w1, w2, w3) = (
-        0.399_050_28_f32,
-        0.242_036_23_f32,
-        0.054_005_58_f32,
-        0.004_433_05_f32,
-    );
+    // Photoshop's tent kernel (cross-lane re-pin by SMB-PS-ORACLE-PARITY-1: the size-2 shadow of
+    // the D5 oracle PS-C12 square_s2_sp0_* is exact with it), support 1, taps w0 = 0.5, w1 = 0.25,
+    // w2 = w3 = 0. Away from the bar ends the vertical pass sums to 1, so row 7 is
+    // [w3, w2, w1, w0, w1, w2, w3] for x = 4 .. 10. Chunks of 8 make tiles of 8 with a margin of
+    // 1, so the rows and columns cross tile borders; the whole plane equals the reference.
+    let (w0, w1, w2, w3) = (0.5_f32, 0.25_f32, 0.0_f32, 0.0_f32);
     let extent = rect(0, 0, 15, 15);
     let bar = effect_plan(
         extent,

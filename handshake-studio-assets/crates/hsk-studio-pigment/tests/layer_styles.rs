@@ -287,9 +287,10 @@ fn styles_refuse_typed_and_report_their_kind() {
     assert_eq!(EffectKind::Satin.key(), "satin");
     assert_eq!(EffectKind::BevelEmboss.facts().exactness, hsk_studio_pigment::blend_math::Exactness::Approximate);
     // Satin support: offset round(9 x cos 60) = 5 / round(9 x sin 60) = 8 -> 8, + blur support of
-    // size 3 (sigma 1.5, ceil 4.5) = 5 -> 13. Bevel: blur support of size 5 (sigma 2.5, ceil 7.5
+    // size 3 (effect tent kernel since lane SMB-PS-ORACLE-PARITY-1, cross-lane re-pin: nonzero taps
+    // within ceil(3) - 1 = 2) -> 10. Bevel: blur support of size 5 (sigma 2.5, ceil 7.5
     // = 8) + 1 for the central difference = 9. Gradient: 0.
-    assert_eq!(effect_support_px(&EffectOp::Satin(SatinOp::new(WHITE, NORMAL, 1.0, 60.0, 9.0, 3.0, false))), Ok(13));
+    assert_eq!(effect_support_px(&EffectOp::Satin(SatinOp::new(WHITE, NORMAL, 1.0, 60.0, 9.0, 3.0, false))), Ok(10));
     assert_eq!(effect_support_px(&EffectOp::BevelEmboss(BevelEmbossOp::new(BevelPart::Shadow, WHITE, NORMAL, 1.0, BevelShape::DEFAULT))), Ok(9));
     assert_eq!(effect_support_px(&EffectOp::GradientOverlay(two)), Ok(0));
 }

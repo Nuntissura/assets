@@ -7,7 +7,6 @@
 //! parity of the effects stays NOT_PROVEN (D5 cases 12-14).
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::window::{
     AlphaPlaneRef, WindowGeometry, WindowLimits, WindowPlane, layer_window_cost,
     render_layer_window, stack_support_px,
@@ -155,9 +154,10 @@ fn parity_with_reference_across_chunkings_and_threads() {
             StrokePosition::Inside,
         )),
     ];
-    // Margin 9 = shadow offset 3 + spread 1 + blur support 5; the layer bounds (14, 14, 17, 13)
-    // grown by it are the region the effect layer rewrites: x 5..40, y 5..36.
-    assert_eq!(stack_support_px(&ops).unwrap(), 9);
+    // Margin 6 = shadow offset 3 + spread 1 + blur support 2 (the effect tent kernel; cross-lane
+    // re-pin by SMB-PS-ORACLE-PARITY-1, the Gaussian support was 5 -> 9); the layer bounds
+    // (14, 14, 17, 13) grown by it are the region the effect layer rewrites: x 8..37, y 8..33.
+    assert_eq!(stack_support_px(&ops).unwrap(), 6);
     let content = plane_of(48, 44, |x, y| {
         let (lx, ly) = (i64::from(x).wrapping_sub(14), i64::from(y).wrapping_sub(14));
         match (u32::try_from(lx), u32::try_from(ly)) {
@@ -228,14 +228,14 @@ fn parity_with_reference_across_chunkings_and_threads() {
 /// Centre tap of the blur kernel of `size` px (separable: the shadow of one opaque pixel is
 /// `w0 * w0` at the pixel).
 fn centre_tap(size: f32) -> f32 {
-    let taps = feather_kernel(size).unwrap();
+    let taps = hsk_studio_pigment::effect_math::effect_blur_kernel(size).unwrap();
     taps[taps.len() / 2]
 }
 
 #[test]
 fn large_margin_renders_and_matches_the_uncut_windowed_oracle() {
-    // Hand value: one opaque pixel, fill 0, black shadow opacity 1, blur size 200 (sigma 100,
-    // support 300 px: the former 24 px margin limit refused it). The shadow at the pixel is
+    // Hand value: one opaque pixel, fill 0, black shadow opacity 1, blur size 200 (the effect tent
+    // kernel, support 199 px: the former 24 px margin limit refused it). The shadow at the pixel is
     // the product of two centre taps w0 * w0.
     let one = rect(0, 0, 1, 1);
     let blur = |size: f32| {
@@ -286,7 +286,8 @@ fn large_margin_renders_and_matches_the_uncut_windowed_oracle() {
         )),
     ];
     let support = stack_support_px(&ops).unwrap();
-    assert_eq!(support, 305, "5 offset + 300 blur support");
+    // effect tent kernel (cross-lane re-pin by SMB-PS-ORACLE-PARITY-1): size 200 reads 199 px
+    assert_eq!(support, 204, "5 offset + 199 blur support");
     let mut alpha = Vec::new();
     let mut content_rgb = Vec::new();
     for y in 0..30_u32 {
@@ -371,7 +372,8 @@ fn large_margin_renders_and_matches_the_uncut_windowed_oracle() {
 #[test]
 fn window_cost_is_charged_and_limit_minus_one_is_refused_before_any_sink_call() {
     // 12 x 10 plan, chunk 8 (largest chunk 8 x 8), one worker, a 4 x 4 red layer at (4, 3) with a
-    // size 30 shadow (margin feather_support = 45, refused before the window API existed).
+    // size 30 shadow (margin 29 with the effect tent kernel since SMB-PS-ORACLE-PARITY-1; 45 with
+    // the former Gaussian, refused before the window API existed).
     // Charge, hand-derived: v1 scratch 8 * 8 * 32 = 2048; one effect record 64; the content frame
     // (layer 4 x 4 clipped from the window grown by 45) is 16 pixels * 16 bytes = 256; the window
     // arrays (8 * 8 pixels * 28 bytes = 1792) plus pigment's predicted peak for an 8 x 8 window.
@@ -379,7 +381,7 @@ fn window_cost_is_charged_and_limit_minus_one_is_refused_before_any_sink_call() 
     let ops = [EffectOp::DropShadow(
         DropShadowOp::new(BLACK, NORMAL, 0.5).with_size(30.0),
     )];
-    assert_eq!(stack_support_px(&ops).unwrap(), 45);
+    assert_eq!(stack_support_px(&ops).unwrap(), 29);
     let peak = layer_window_cost(&ops, rect(0, 0, 8, 8))
         .unwrap()
         .peak_bytes;
@@ -586,7 +588,9 @@ fn group_content_and_feathered_mask_frames_match_the_windowed_oracle() {
     .unwrap();
     let want = render_layer_window(
         &AlphaPlaneRef::new(layer_rect, &alpha).unwrap(),
-        &WindowGeometry::uncut(layer_rect, support, extent)
+        // a domain of at least the support that also covers the extent (the uncut result does not
+        // depend on the extra domain; the tent kernel's smaller support no longer covers it)
+        &WindowGeometry::uncut(layer_rect, support.max(12), extent)
             .unwrap()
             .with_site_origin((0, 0)),
         &content_rgb,

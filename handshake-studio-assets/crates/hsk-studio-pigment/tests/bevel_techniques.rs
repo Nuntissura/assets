@@ -5,7 +5,6 @@
 //! windowed evaluator is checked bit for bit against the reference. Photoshop parity UNVERIFIED (D5).
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::StudioBlendMode;
-use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::window::{
     AlphaPlaneRef, WindowBudget, WindowError, WindowGeometry, WindowLimits, window_cost, window_matte,
 };
@@ -76,9 +75,11 @@ fn soften_is_the_blurred_part_matte_and_stroke_emboss_follows_the_stroke() {
     let base = chisel(BevelStyle::Emboss, BevelTechnique::Smooth);
     let plain = reference_matte(&p, &op(BevelPart::Highlight, base)).unwrap();
     let softened = reference_matte(&p, &op(BevelPart::Highlight, BevelShape { soften_px: 3.0, ..base })).unwrap();
-    // independent re-computation: separable Gaussian (feather_kernel(3)), binary64 accumulation,
-    // zero beyond the plane, horizontal then vertical, then clamped
-    let taps = feather_kernel(3.0).unwrap();
+    // independent re-computation: separable effect tent kernel (effect_blur_kernel(3); the soften
+    // blur follows the oracle-measured shadow/glow kernel since lane SMB-PS-ORACLE-PARITY-1, a
+    // cross-lane re-pin, for soften UNVERIFIED), binary64 accumulation, zero beyond the plane,
+    // horizontal then vertical, then clamped
+    let taps = hsk_studio_pigment::effect_math::effect_blur_kernel(3.0).unwrap();
     let half = (taps.len() / 2) as i64;
     let pass = |src: &[f32], horizontal: bool| -> Vec<f32> {
         let mut out = vec![0.0f32; 1600];

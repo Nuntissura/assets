@@ -86,14 +86,18 @@ fn drop_shadow_equals_matte_and_hides_under_content() {
     assert_eq!(p.a, 0.0);
 }
 
-/// Acceptance 2. Offset (distance 2, angle 180) moves the matte by (+2, 0); size 2 (sigma 1, taps
-/// reach 3) blurs with the hand-convolved Gaussian taps; spread 1 grows a hard matte by `size`.
+/// Acceptance 2. Offset (distance 2, angle 180) moves the matte by (+2, 0); size 2 blurs with
+/// Photoshop's tent taps [1, 2, 1] / 4 (cross-lane re-pin by SMB-PS-ORACLE-PARITY-1: the size-2
+/// drop shadow of the D5 oracle PS-C12 square_s2_sp0_* reproduces exactly with that kernel; the
+/// former Gaussian sigma 1 taps differed by 29 codes); spread 1 grows a hard matte by `size`.
 #[test]
 fn drop_shadow_offset_blur_taps_and_spread() {
     // dx = round(-2 cos 180) = 2, dy = round(2 sin 180) = 0. Angle 120, distance 4:
     // dx = round(4 * 0.5) = 2, dy = round(4 * 0.8660) = round(3.46) = 3.
     assert_eq!(shadow_offset(180.0, 2.0), Ok((2, 0)));
     assert_eq!(shadow_offset(120.0, 4.0), Ok((2, 3)));
+    // Photoshop rounds the half of 5 cos 120 away from zero (D5 PS-C12 *_a120_d5: (3, 4)).
+    assert_eq!(shadow_offset(120.0, 5.0), Ok((3, 4)));
     let one = plane(5, 1, |x, _| (RED, if x == 1 { 1.0 } else { 0.0 }));
     let moved = EffectOp::DropShadow(shadow(1.0).with_offset(180.0, 2.0));
     assert_eq!(
@@ -101,20 +105,20 @@ fn drop_shadow_offset_blur_taps_and_spread() {
         vec![0.0, 0.0, 0.0, 1.0, 0.0]
     );
 
-    // Opaque column x = 4 of a 9 x 9 plane; size 2 -> sigma 1, taps exp(-i^2/2) / 2.50595 for
-    // i = 0..3: 0.39905, 0.242035, 0.054006, 0.004433 (sum 1 + 2 (0.60653 + 0.13534 + 0.01111)).
-    // Row 4 sees all seven vertical samples inside the plane, so the vertical pass keeps 1.
+    // Opaque column x = 4 of a 9 x 9 plane; size 2 -> tent taps 0.25, 0.5, 0.25 (half-width 2:
+    // weights 2 - |i| for |i| < 2). Row 4 sees all three vertical samples inside the plane, so the
+    // vertical pass keeps 1.
     let column = plane(9, 9, |x, _| (RED, if x == 4 { 1.0 } else { 0.0 }));
     let blur = EffectOp::DropShadow(shadow(1.0).with_size(2.0));
     let m = reference_matte(&column, &blur).unwrap();
     for (x, want) in [
-        (4, 0.39905),
-        (3, 0.242035),
-        (5, 0.242035),
-        (2, 0.054006),
-        (6, 0.054006),
-        (1, 0.004433),
-        (7, 0.004433),
+        (4, 0.5),
+        (3, 0.25),
+        (5, 0.25),
+        (2, 0.0),
+        (6, 0.0),
+        (1, 0.0),
+        (7, 0.0),
         (0, 0.0),
         (8, 0.0),
     ] {
@@ -621,15 +625,16 @@ fn effect_limits_validation_and_budget() {
         Err(EffectError::OutOfDomain)
     );
 
-    // Margin a backend must read: shadow 3 (offset) + 2 (spread_px = .5 * 4) + 3 (blur 2 ->
-    // sigma 1 -> ceil(3 sigma)) = 8; stroke outside 5 -> 5; centre 5 -> ceil(2.5) = 3; overlay 0.
+    // Margin a backend must read: shadow 3 (offset) + 2 (spread_px = .5 * 4) + 1 (blur 2 -> tent
+    // half-width 2, nonzero taps within 1) = 6; stroke outside 5 -> 5; centre 5 -> ceil(2.5) = 3;
+    // overlay 0.
     let margin = EffectOp::DropShadow(
         shadow(1.0)
             .with_offset(10.0, 3.0)
             .with_size(4.0)
             .with_spread(0.5),
     );
-    assert_eq!(effect_support_px(&margin), Ok(8));
+    assert_eq!(effect_support_px(&margin), Ok(6));
     let stroke = |position| EffectOp::Stroke(StrokeOp::new(RED, NORMAL, 1.0, 5.0, position));
     assert_eq!(effect_support_px(&stroke(StrokePosition::Outside)), Ok(5));
     assert_eq!(effect_support_px(&stroke(StrokePosition::Centre)), Ok(3));

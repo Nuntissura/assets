@@ -42,13 +42,18 @@ fn mask_density_invert_feather_and_blend_if() {
         Err(CoverageError::FeatherOutOfRange)
     );
 
-    // Range [0.2, 0.4, 0.6, 1.0]: 0.1 -> 0; 0.3 -> (0.3-0.2)/0.2 = 0.5; 0.5 -> 1;
-    // 0.8 -> (1.0-0.8)/0.4 = 0.5. Collapsed black pair 0.5: 0.49 -> 0, 0.5 -> 1.
-    let r = [0.2, 0.4, 0.6, 1.0];
-    assert!(close(range_weight(0.1, r).unwrap(), 0.0));
-    assert!(close(range_weight(0.3, r).unwrap(), 0.5));
-    assert!(close(range_weight(0.5, r).unwrap(), 1.0));
-    assert!(close(range_weight(0.8, r).unwrap(), 0.5));
+    // Cross-lane re-pin by SMB-PS-ORACLE-PARITY-1 to the D5 oracle case PS-C09 (Photoshop 27.11
+    // split sliders 50/100 200/240, measured weights within 1 code): inclusive integer ramps in
+    // levels, up = (v - 50 + 1) / 51, down = (240 + 1 - v) / 41. Level 49 -> 0; 50 -> 1/51; 75 ->
+    // 26/51; 100 -> 1; 220 -> 21/41; 241 -> 0.
+    let lv = |v: f32| v / 255.0;
+    let r = [lv(50.0), lv(100.0), lv(200.0), lv(240.0)];
+    assert!(close(range_weight(lv(49.0), r).unwrap(), 0.0));
+    assert!(close(range_weight(lv(50.0), r).unwrap(), 1.0 / 51.0));
+    assert!(close(range_weight(lv(75.0), r).unwrap(), 26.0 / 51.0));
+    assert!(close(range_weight(lv(100.0), r).unwrap(), 1.0));
+    assert!(close(range_weight(lv(220.0), r).unwrap(), 21.0 / 41.0));
+    assert!(close(range_weight(lv(241.0), r).unwrap(), 0.0));
     assert!(close(
         range_weight(0.49, [0.5, 0.5, 1.0, 1.0]).unwrap(),
         0.0
@@ -60,8 +65,9 @@ fn mask_density_invert_feather_and_blend_if() {
         Err(CoverageError::RangeOrder)
     );
 
-    // Gray source range on lum([0.3; 3]) = 0.3 -> 0.5; red destination [0, 0, 0.5, 0.5]:
-    // backdrop red 0.4 -> 1 (product 0.5), backdrop red 0.6 -> 0 (product 0).
+    // Gray source range on lum of level 75 gray -> 26/51; red destination [0, 0, 0.5, 0.5]
+    // (collapsed white pair at level 127.5: down = 128.5 - v): backdrop red 0.4 -> 1 (product
+    // 26/51), backdrop red 0.6 -> 0 (product 0).
     let entries = [
         BlendRangeEntry {
             channel: BlendChannel::Gray,
@@ -75,11 +81,11 @@ fn mask_density_invert_feather_and_blend_if() {
         },
     ];
     assert!(close(
-        blend_if_weight(&entries, [0.3; 3], [0.4, 0.9, 0.1]).unwrap(),
-        0.5
+        blend_if_weight(&entries, [lv(75.0); 3], [0.4, 0.9, 0.1]).unwrap(),
+        26.0 / 51.0
     ));
     assert!(close(
-        blend_if_weight(&entries, [0.3; 3], [0.6, 0.9, 0.1]).unwrap(),
+        blend_if_weight(&entries, [lv(75.0); 3], [0.6, 0.9, 0.1]).unwrap(),
         0.0
     ));
     assert!(close(
