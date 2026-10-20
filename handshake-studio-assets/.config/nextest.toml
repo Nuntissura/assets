@@ -16,7 +16,9 @@ filter = 'package(hsk-studio-render-gpu)'
 test-group = 'render-gpu'
 
 [test-groups]
-render-gpu = { max-threads = 8 }
+# 4 since 2026-10-20 (lead go, SMB-STEWARD-GPU-CONTENTION): at 8, one slot alone ran several tests at 112-120 s and
+# gpu_blend_parity timed out at 120.1 s (79 tests, steward measurement with the GPU test lock); R32: 4 = all pass.
+render-gpu = { max-threads = 4 }
 
 [profile.default.junit]
 # Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into each unit's results dir.
