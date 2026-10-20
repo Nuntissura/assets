@@ -5,10 +5,13 @@
 //! Justification model (InDesign-style three-value ranges; equality with InDesign output is
 //! UNVERIFIED): word spacing is a multiple of each space's natural width (min / desired / max,
 //! defaults 0.8 / 1.0 / 1.33), letter spacing an offset per glyph gap in multiples of
-//! `reference_space_pt` (defaults 0 / 0 / 0). Glyph scaling is not implemented. A justified line is
-//! first set to the desired values, then spaces move toward min or max as far as needed, then letter
-//! spacing; what remains after both limits is `residual_pt` (the line is left loose or tight, never
-//! scaled past the limits). The Knuth-Plass stretch/shrink ratios use `space_params()`
+//! `reference_space_pt` (defaults 0 / 0 / 0), glyph scaling a factor on every advance, spaces
+//! included (defaults 1 / 1 / 1). A justified line is first set to the desired values, then spaces
+//! move toward min or max as far as needed, then letter spacing and glyph scaling share the rest in
+//! proportion to their ranges (InDesign D5 oracle ID-02 glyph-scaling sets: word spacing additive,
+//! every advance times the glyph scale, letters and glyphs by range after the words; lane
+//! SMB-TYPE-FF-LIGATURE); what remains after the limits is `residual_pt` (the line is left loose or
+//! tight, never scaled past the limits). The Knuth-Plass stretch/shrink ratios use `space_params()`
 //! (stretch = max - 1, shrink = 1 - min of word spacing); letter spacing is not part of the breaking.
 use crate::hyphenate::{HyphenationParams, Hyphenator};
 use crate::styles::{Alignment, StyleSource};
@@ -28,6 +31,9 @@ pub struct JustifyParams {
     pub letter_spacing: Spacing,
     /// Width a letter-spacing value of 1.0 stands for (the shaped space advance of the line's font).
     pub reference_space_pt: f64,
+    /// Glyph scaling as a factor of every advance (spec glyph_scaling_minimum/desired/maximum,
+    /// 50..200 %); 1 / 1 / 1 = off.
+    pub glyph_scaling: Spacing,
 }
 impl Default for JustifyParams {
     fn default() -> Self {
@@ -43,6 +49,11 @@ impl Default for JustifyParams {
                 max: 0.0,
             },
             reference_space_pt: 0.0,
+            glyph_scaling: Spacing {
+                min: 1.0,
+                desired: 1.0,
+                max: 1.0,
+            },
         }
     }
 }
@@ -62,6 +73,8 @@ impl JustifyParams {
         };
         if ok(&self.word_spacing, 0.0)
             && ok(&self.letter_spacing, -10.0)
+            && ok(&self.glyph_scaling, 0.5)
+            && self.glyph_scaling.max <= 2.0
             && self.reference_space_pt.is_finite()
             && self.reference_space_pt >= 0.0
         {
@@ -72,10 +85,13 @@ impl JustifyParams {
     }
 }
 
-/// What justification did to one line. `word_scale` multiplies every inner space's natural width.
+/// What justification did to one line. `word_scale` multiplies every inner space's natural width
+/// (glyph scaling included: a space is set at `natural * word_scale`); `glyph_scale` multiplies every
+/// other glyph's advance (and a line-end hyphen).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Justification {
     pub word_scale: f64,
+    pub glyph_scale: f64,
     /// Added after every glyph but the last of the line.
     pub letter_gap_pt: f64,
     /// Slot width minus the justified line width: > 0 still loose, < 0 still tight, 0 exact.
@@ -94,7 +110,12 @@ pub fn justify_metrics(
     let (w, l) = (&jp.word_spacing, &jp.letter_spacing);
     let r = jp.reference_space_pt;
     let g = gaps as f64;
-    let mut remaining = avail_pt - natural_pt - spaces_pt * (w.desired - 1.0) - g * l.desired * r;
+    let gs = &jp.glyph_scaling;
+    let mut remaining = avail_pt
+        - natural_pt
+        - spaces_pt * (w.desired - 1.0)
+        - g * l.desired * r
+        - natural_pt * (gs.desired - 1.0);
     let mut scale = w.desired;
     if spaces_pt > 0.0 {
         let (room, limit) = if remaining > 0.0 {
@@ -111,7 +132,34 @@ pub fn justify_metrics(
         remaining -= remaining.signum() * use_;
     }
     let mut letter = l.desired * r;
-    if gaps > 0 && r > 0.0 {
+    let mut glyph = gs.desired;
+    let glyph_room = if remaining > 0.0 {
+        natural_pt * (gs.max - gs.desired)
+    } else {
+        natural_pt * (gs.desired - gs.min)
+    };
+    if glyph_room > 0.0 {
+        // Letter spacing and glyph scaling share what the words leave, in proportion to their
+        // ranges (oracle ID-02 ls-5_0_5_gs90_100_110: both at 0.194 of their ranges on line 1).
+        let (letter_room, letter_limit) = match (gaps > 0 && r > 0.0, remaining > 0.0) {
+            (false, _) => (0.0, letter),
+            (true, true) => (g * (l.max - l.desired) * r, l.max * r),
+            (true, false) => (g * (l.desired - l.min) * r, l.min * r),
+        };
+        let total = letter_room + glyph_room;
+        let use_ = remaining.abs().min(total);
+        let k = use_ / total;
+        if use_ >= total {
+            letter = letter_limit;
+            glyph = if remaining > 0.0 { gs.max } else { gs.min };
+        } else {
+            if letter_room > 0.0 {
+                letter += remaining.signum() * k * letter_room / g;
+            }
+            glyph += remaining.signum() * k * glyph_room / natural_pt;
+        }
+        remaining -= remaining.signum() * use_;
+    } else if gaps > 0 && r > 0.0 {
         let (room, limit) = if remaining > 0.0 {
             (g * (l.max - l.desired) * r, l.max * r)
         } else {
@@ -126,7 +174,8 @@ pub fn justify_metrics(
         remaining -= remaining.signum() * use_;
     }
     Justification {
-        word_scale: scale,
+        word_scale: scale + (glyph - 1.0),
+        glyph_scale: glyph,
         letter_gap_pt: letter,
         residual_pt: if remaining.abs() < 1e-9 { 0.0 } else { remaining },
     }

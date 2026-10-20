@@ -895,3 +895,38 @@ fn hyphen_inside_a_ligature_sets_its_components_and_drops_kerning_at_the_line_en
         assert!(l.iter().all(|l| !l.hyphenated && l.end_part.is_none() && l.start_part.is_none()), "{l:?}");
     });
 }
+
+#[test]
+fn glyph_scaling_shares_the_rest_with_letters_by_range_and_is_validated() {
+    // Natural 100 pt (10 pt of spaces, 20 gaps), slot 104, word spacing fixed. Letter range
+    // 20 * 0.05 * 4 = 4 pt, glyph range 100 * 0.1 = 10 pt: the 4 pt are shared 4 : 10 (k = 2/7).
+    let jp = JustifyParams {
+        word_spacing: Spacing { min: 1.0, desired: 1.0, max: 1.0 },
+        letter_spacing: Spacing { min: -0.05, desired: 0.0, max: 0.05 },
+        reference_space_pt: 4.0,
+        glyph_scaling: Spacing { min: 0.9, desired: 1.0, max: 1.1 },
+    };
+    let j = justify_metrics(100.0, 104.0, 10.0, 20, &jp);
+    let k = 4.0 / 14.0;
+    assert!((j.glyph_scale - (1.0 + 0.1 * k)).abs() < 1e-12 && (j.letter_gap_pt - 0.2 * k).abs() < 1e-12, "{j:?}");
+    // Spaces scale with the glyphs (word spacing additive): word_scale = 1 + (glyph - 1).
+    assert!((j.word_scale - j.glyph_scale).abs() < 1e-12 && j.residual_pt == 0.0);
+    assert!((100.0 * j.glyph_scale + 20.0 * j.letter_gap_pt - 104.0).abs() < 1e-9);
+    // Shrink past both limits: glyphs and letters at their minimum, the rest is residual.
+    let j = justify_metrics(100.0, 80.0, 10.0, 20, &jp);
+    assert!(j.glyph_scale == 0.9 && (j.letter_gap_pt + 0.2).abs() < 1e-12, "{j:?}");
+    assert!((j.residual_pt + 6.0).abs() < 1e-9, "{j:?}");
+    // Off (default 1 / 1 / 1): the v1 arithmetic, bit for bit.
+    let base = JustifyParams::default();
+    let j = justify_metrics(54.0, 52.0, 6.0, 8, &base);
+    assert_eq!((j.word_scale, j.glyph_scale, j.letter_gap_pt), (0.8, 1.0, 0.0));
+    // Hostile ranges are refused (spec 50 .. 200 %, min <= desired <= max).
+    let case = Case::new("aa bb", one_frame(60.0, 24.0), Composer::FirstFit);
+    for (min, desired, max) in [(0.4, 1.0, 1.1), (0.9, 1.0, 2.5), (1.1, 1.0, 1.2), (f64::NAN, 1.0, 1.0)] {
+        let o = TypesetOptions {
+            justify: Some(JustifyParams { glyph_scaling: Spacing { min, desired, max }, ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(case.run_t(&o).unwrap_err(), LayoutError::InvalidInput, "{min} {desired} {max}");
+    }
+}

@@ -33,8 +33,10 @@
 //! Justification (`justify_line`): InDesign always fills a justified line to the measure: inside the
 //! limits word spacing first, then letter spacing; past them the remainder is shared in proportion to
 //! the ranges (ID-01: spaces at 42 % .. 2440 % of natural); a single-word line is letter-spaced; a
-//! last line wider than the measure is compressed into it. Glyph scaling is not implemented (oracle
-//! measurement recorded in the lane notes).
+//! last line wider than the measure is compressed into it. Glyph scaling (lane SMB-TYPE-FF-LIGATURE,
+//! oracle ID-02 gs sets): every advance times the glyph scale, after the words letters and glyphs
+//! share by range, past the limits the words take the rest; the single-line candidates count the
+//! glyph range as capacity.
 use crate::LayoutError;
 use crate::breaker::{AdobeParams, HyphenRules, LineBreak, Sums, check, forced, legal, line_start};
 use crate::paragraph::Item;
@@ -130,8 +132,14 @@ pub(crate) fn single_line(
                     let letters =
                         glyph_gaps(items, start, i) as f64 * ctx.justify.reference_space_pt;
                     let (ls, ws) = (ctx.justify.letter_spacing, ctx.justify.word_spacing);
-                    let shrink = spaces * (ws.desired - ws.min) + letters * (ls.desired - ls.min);
-                    let stretch = spaces * (ws.max - ws.desired) + letters * (ls.max - ls.desired);
+                    // Glyph scaling acts on every advance of the line, spaces included.
+                    let gs = ctx.justify.glyph_scaling;
+                    let shrink = spaces * (ws.desired - ws.min)
+                        + letters * (ls.desired - ls.min)
+                        + w * (gs.desired - gs.min);
+                    let stretch = spaces * (ws.max - ws.desired)
+                        + letters * (ls.max - ls.desired)
+                        + w * (gs.max - gs.desired);
                     cands.push(Cand {
                         item: i,
                         w,
@@ -291,6 +299,15 @@ pub(crate) fn justify_line(
         return j;
     }
     let (w, l, r) = (&jp.word_spacing, &jp.letter_spacing, jp.reference_space_pt);
+    let gs = &jp.glyph_scaling;
+    // With glyph scaling, past the limits the word spaces take the rest and glyphs and letters stay
+    // at their limits (oracle ID-02 gs sets, last lines: glyph scale at its maximum, letters at
+    // theirs, words 1.64 .. 2.63; UNVERIFIED outside those two sets).
+    if gs.max > gs.min && spaces_pt > EPS {
+        j.word_scale += rest / spaces_pt;
+        j.residual_pt = 0.0;
+        return j;
+    }
     let g = gaps as f64;
     let (word_range, letter_range) = if rest > 0.0 {
         ((w.max - w.desired) * spaces_pt, (l.max - l.desired) * r * g)
@@ -329,6 +346,7 @@ pub(crate) fn compress_line(
 ) -> Option<Justification> {
     (natural_pt > avail_pt + EPS && spaces_pt > EPS).then(|| Justification {
         word_scale: 1.0 + (avail_pt - natural_pt) / spaces_pt,
+        glyph_scale: 1.0,
         letter_gap_pt: 0.0,
         residual_pt: 0.0,
     })
