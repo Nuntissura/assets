@@ -89,7 +89,8 @@ impl std::fmt::Display for HarnessError {
 
 impl std::error::Error for HarnessError {}
 
-pub(crate) struct TrustAll;
+#[doc(hidden)]
+pub struct TrustAll;
 impl Resolver for TrustAll {
     fn primitive(&self, _: &str, _: &str) -> Resolution {
         Resolution::Available

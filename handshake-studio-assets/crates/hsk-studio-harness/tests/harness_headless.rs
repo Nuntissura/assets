@@ -300,16 +300,16 @@ fn an_empty_run_is_nothing_checked_not_a_pass() {
 fn quiet_sources_use_no_process_network_or_environment_api() {
     let sources = [
         ("cli.rs", include_str!("../src/cli.rs")),
-        ("harness.rs", include_str!("../src/harness.rs")),
+        ("harness.rs", include_str!("../../hsk-studio-harness-core/src/harness.rs")),
         ("lib.rs", include_str!("../src/lib.rs")),
-        ("manual.rs", include_str!("../src/manual.rs")),
-        ("panel.rs", include_str!("../src/panel.rs")),
-        ("import.rs", include_str!("../src/import.rs")),
-        ("import/tiff.rs", include_str!("../src/import/tiff.rs")),
-        ("import/colour.rs", include_str!("../src/import/colour.rs")),
-        ("import/pdf.rs", include_str!("../src/import/pdf.rs")),
-        ("view/mod.rs", include_str!("../src/view/mod.rs")),
-        ("view/render.rs", include_str!("../src/view/render.rs")),
+        ("manual.rs", include_str!("../../hsk-studio-harness-core/src/manual.rs")),
+        ("panel.rs", include_str!("../../hsk-studio-harness-core/src/panel.rs")),
+        ("import.rs", include_str!("../../hsk-studio-harness-core/src/import.rs")),
+        ("import/tiff.rs", include_str!("../../hsk-studio-harness-core/src/import/tiff.rs")),
+        ("import/colour.rs", include_str!("../../hsk-studio-harness-core/src/import/colour.rs")),
+        ("import/pdf.rs", include_str!("../../hsk-studio-harness-core/src/import/pdf.rs")),
+        ("view/mod.rs", include_str!("../../hsk-studio-harness-view/src/view/mod.rs")),
+        ("view/render.rs", include_str!("../../hsk-studio-harness-view/src/view/render.rs")),
     ];
     for (name, text) in sources {
         for token in ["std::process", "Command::new", "std::net", "TcpStream", "UdpSocket", "std::env", "env::var"] {

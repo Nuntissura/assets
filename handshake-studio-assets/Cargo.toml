@@ -30,6 +30,8 @@ members = [
   "crates/hsk-studio-controls",
   "crates/hsk-studio-session",
   "crates/hsk-studio-harness",
+  "crates/hsk-studio-harness-core",
+  "crates/hsk-studio-harness-view",
   "crates/hsk-studio-kernel-bindings",
   "crates/hsk-studio-press",
   "crates/hsk-studio-press-read",
@@ -86,6 +88,8 @@ declared-members = [
   "crates/hsk-studio-controls",
   "crates/hsk-studio-session",
   "crates/hsk-studio-harness",
+  "crates/hsk-studio-harness-core",
+  "crates/hsk-studio-harness-view",
   "crates/hsk-studio-kernel-bindings",
   "crates/hsk-studio-press",
   "crates/hsk-studio-press-read",
@@ -190,8 +194,14 @@ allowed = ["hsk-studio-accord", "hsk-studio-observe"]
 [workspace.metadata.studio.dependencies.hsk-studio-session]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-chronicle", "hsk-studio-package", "hsk-studio-observe"]
 
+[workspace.metadata.studio.dependencies.hsk-studio-harness-core]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe", "hsk-studio-develop", "hsk-studio-interop-affinity", "hsk-studio-interop-psd", "hsk-studio-interop-raster", "hsk-studio-interop-tiff", "hsk-studio-package", "hsk-studio-press", "hsk-studio-prism"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-harness-view]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-psd", "hsk-studio-develop", "hsk-studio-interop-tiff", "hsk-studio-press", "hsk-studio-prism", "hsk-studio-interop-raster", "hsk-studio-composite", "hsk-studio-pigment", "hsk-studio-render-cpu", "hsk-studio-render-gpu", "hsk-studio-type", "hsk-studio-pulse", "hsk-studio-components", "hsk-studio-interop-fig", "hsk-studio-nib", "hsk-studio-reel", "hsk-studio-reel-native", "hsk-studio-score-device", "hsk-studio-score", "hsk-studio-layout", "hsk-studio-interop-vector", "hsk-studio-interop-affinity", "hsk-studio-harness-core"]
+
 [workspace.metadata.studio.dependencies.hsk-studio-harness]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-psd", "hsk-studio-develop", "hsk-studio-interop-tiff", "hsk-studio-press", "hsk-studio-prism", "hsk-studio-interop-raster", "hsk-studio-composite", "hsk-studio-pigment", "hsk-studio-render-cpu", "hsk-studio-render-gpu", "hsk-studio-type", "hsk-studio-pulse", "hsk-studio-components", "hsk-studio-interop-fig", "hsk-studio-nib", "hsk-studio-reel", "hsk-studio-reel-native", "hsk-studio-score-device", "hsk-studio-score", "hsk-studio-layout", "hsk-studio-interop-vector", "hsk-studio-interop-affinity"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe", "hsk-studio-package", "hsk-studio-interop-psd", "hsk-studio-develop", "hsk-studio-interop-tiff", "hsk-studio-press", "hsk-studio-prism", "hsk-studio-interop-raster", "hsk-studio-composite", "hsk-studio-pigment", "hsk-studio-render-cpu", "hsk-studio-render-gpu", "hsk-studio-type", "hsk-studio-pulse", "hsk-studio-components", "hsk-studio-interop-fig", "hsk-studio-nib", "hsk-studio-reel", "hsk-studio-reel-native", "hsk-studio-score-device", "hsk-studio-score", "hsk-studio-layout", "hsk-studio-interop-vector", "hsk-studio-interop-affinity", "hsk-studio-harness-core", "hsk-studio-harness-view"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-kernel-bindings]
 allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-observe"]

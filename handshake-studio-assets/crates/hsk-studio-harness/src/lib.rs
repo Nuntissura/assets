@@ -8,20 +8,26 @@
 //! adds the eframe window host, binary `studio-harness` (Operator decision D11: eframe 0.33.3 with
 //! its wgpu backend, only in this crate). Launching the window is a manual Operator step
 //! (`RUN-UI.md`).
+//!
+//! Crate layout (SMB-CRATE-SEAM-SPLITS slice 3b): this crate keeps the CLI, the `studio-harness`
+//! binary and the descriptor and re-exports, item by item, its two halves: `hsk-studio-harness-core`
+//! (headless run, import routes, panel, manual) and `hsk-studio-harness-view` (viewer and layout UI).
+//! Every feature keeps its name here and is forwarded to the halves. Both halves belong to
+//! STUDIO-MODULE-HARNESS; not a multi-engine facade.
 #![forbid(unsafe_code)]
 
 pub mod cli;
-mod harness;
-pub mod import;
+// Core's run module under the name `cli` has always used (`crate::harness`).
+#[allow(unused_imports)]
+use hsk_studio_harness_core::harness;
+pub use hsk_studio_harness_core::{import, manual, panel};
 /// Layout editing surface (lane SMB-LAYOUT-UI): page view, text frames, story editor, styles.
 #[cfg(feature = "layout-ui")]
-pub mod layout_ui;
-pub mod manual;
-pub mod panel;
+pub use hsk_studio_harness_view::layout_ui;
 #[cfg(feature = "viewer")]
-pub mod view;
+pub use hsk_studio_harness_view::view;
 
-pub use harness::{
+pub use hsk_studio_harness_core::{
     AVAILABLE_PROVIDERS, Harness, HarnessError, NOT_PROVEN, Place, PlacementWrite, References, Run, SCHEMA, Selection, default_actor,
 };
 
