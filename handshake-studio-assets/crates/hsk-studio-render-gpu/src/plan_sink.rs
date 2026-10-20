@@ -164,9 +164,6 @@ impl MaskView<'_> {
     }
 }
 
-/// A layer's opacity for one composite: the folded product (`opacity * fill`, every mode but the
-/// special eight), and the opacity without the fill plus the fill (pigment `composite_over_fill`).
-#[derive(Clone, Copy, Debug)]
 /// The weight of [`Exec::composite_mix`].
 #[derive(Clone, Copy)]
 enum MixWeight {
@@ -176,6 +173,9 @@ enum MixWeight {
     Uniform(f32),
 }
 
+/// A layer's opacity for one composite: the folded product (`opacity * fill`, every mode but the
+/// special eight), and the opacity without the fill plus the fill (pigment `composite_over_fill`).
+#[derive(Clone, Copy, Debug)]
 struct Opac {
     folded: f32,
     unfilled: f32,
