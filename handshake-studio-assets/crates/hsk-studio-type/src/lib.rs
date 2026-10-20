@@ -25,7 +25,7 @@ pub use outline::*;
 pub use path_text::*;
 pub use raster::*;
 pub use result::*;
-pub use validate::COMPOSITION_VERSION;
+pub use validate::{COMPOSITION_VERSION, COMPOSITION_VERSION_V1};
 
 /// Fixed failure codes contain no source text, font names or private parser strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

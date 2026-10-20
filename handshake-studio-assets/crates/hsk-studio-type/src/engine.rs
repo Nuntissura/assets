@@ -399,25 +399,56 @@ fn shape<'a>(
             j -= 1;
         }
     }
-    let mut buffer = rb::UnicodeBuffer::new();
-    buffer.set_direction(provider_direction);
-    buffer.set_script(script);
-    buffer.set_language(language);
-    buffer.set_cluster_level(rb::BufferClusterLevel::MonotoneGraphemes);
-    buffer.set_flags(
-        rb::BufferFlags::BEGINNING_OF_TEXT
-            | rb::BufferFlags::END_OF_TEXT
-            | rb::BufferFlags::REMOVE_DEFAULT_IGNORABLES,
-    );
-    for (offset, ch) in text.char_indices() {
-        ctx.step()?;
-        buffer.add(
-            ch,
-            u32::try_from(span.start + offset).map_err(|_| Error::Overflow)?,
+    let fill = |ligatures: &[PresentationLigature]| -> ProviderResult<rb::UnicodeBuffer<'a>> {
+        let mut buffer = rb::UnicodeBuffer::new();
+        buffer.set_direction(provider_direction);
+        buffer.set_script(script);
+        buffer.set_language(language);
+        buffer.set_cluster_level(rb::BufferClusterLevel::MonotoneGraphemes);
+        buffer.set_flags(
+            rb::BufferFlags::BEGINNING_OF_TEXT
+                | rb::BufferFlags::END_OF_TEXT
+                | rb::BufferFlags::REMOVE_DEFAULT_IGNORABLES,
+        );
+        let mut next = ligatures.iter().peekable();
+        let mut skip_to = 0;
+        for (offset, ch) in text.char_indices() {
+            ctx.step()?;
+            if offset < skip_to {
+                continue;
+            }
+            let cluster = u32::try_from(span.start + offset).map_err(|_| Error::Overflow)?;
+            match next.peek() {
+                // The presentation form stands for the whole sequence; its cluster is the first
+                // character's, so its source group covers every component byte.
+                Some(l) if l.start == offset => {
+                    buffer.add(l.codepoint, cluster, ctx)?;
+                    skip_to = offset + l.len;
+                    next.next();
+                }
+                _ => buffer.add(ch, cluster, ctx)?,
+            }
+        }
+        Ok(buffer)
+    };
+    let mut shaped = rb::shape_with_plan(&font.face, &plan, fill(&[])?, ctx)?;
+    let v2 = crate::validate::semantics(request.composition_version)
+        == Some(crate::validate::Semantics::V2);
+    let mut ligatures = ChargedVec::new();
+    if v2 && level % 2 == 0 && effective_script == *b"Latn" {
+        presentation_ligatures(
+            &font.face,
+            style,
+            text,
+            span.start,
+            &shaped,
+            &mut ligatures,
             ctx,
         )?;
+        if !ligatures.is_empty() {
+            shaped = rb::shape_with_plan(&font.face, &plan, fill(ligatures.as_slice())?, ctx)?;
+        }
     }
-    let shaped = rb::shape_with_plan(&font.face, &plan, buffer, ctx)?;
     counts.glyphs = counts
         .glyphs
         .checked_add(shaped.len() as u64)
@@ -541,6 +572,22 @@ fn shape<'a>(
     if expected != span.end as u64 {
         return Err(Error::InvalidMapping);
     }
+    let mut line_end_advances = ChargedVec::new();
+    let mut ligature_components = ChargedVec::new();
+    if v2 {
+        line_end_data(
+            &font.face,
+            text,
+            span.start,
+            style.font_size_pt,
+            scale,
+            &glyphs,
+            ligatures.as_slice(),
+            &mut line_end_advances,
+            &mut ligature_components,
+            ctx,
+        )?;
+    }
     Ok(Run {
         source: SourceRange {
             start: span.start as u64,
@@ -564,7 +611,199 @@ fn shape<'a>(
         axes,
         features: receipts,
         glyphs,
+        line_end_advances,
+        ligature_components,
     })
+}
+
+/// A standard Latin ligature formed from the font's presentation form (composition v2).
+#[derive(Clone, Copy, Debug)]
+struct PresentationLigature {
+    /// Byte offset of the sequence inside the shaped span's text.
+    start: usize,
+    /// Byte length of the sequence (ASCII letters).
+    len: usize,
+    codepoint: char,
+}
+/// The Unicode Latin standard ligatures (Alphabetic Presentation Forms U+FB00..U+FB04), longest
+/// first. U+FB05/U+FB06 (long s t, s t) are discretionary in common fonts and are not formed.
+const STANDARD_LIGATURES: [(&[u8], char); 5] = [
+    (b"ffi", '\u{FB03}'),
+    (b"ffl", '\u{FB04}'),
+    (b"ff", '\u{FB00}'),
+    (b"fi", '\u{FB01}'),
+    (b"fl", '\u{FB02}'),
+];
+
+/// Standard-ligature fallback (composition v2). InDesign sets Arial's "ff" as one 1094-unit glyph
+/// (cmap U+FB00 `uniFB00`) although Arial's GSUB has no Latin ligature lookup (D5 oracle ID-01..
+/// ID-03; research smb-id-composer-parity-20261020 "ff"); HarfBuzz forms ligatures from GSUB only,
+/// so Studio kerned the f-f pair (1101 units). The rule mirrors HarfBuzz's Arabic fallback, which
+/// synthesizes ligatures from cmap presentation forms when GSUB has none. A sequence is ligated
+/// only when `liga` is on for each of its bytes (default on; a later feature entry overrides an
+/// earlier one, as in HarfBuzz), the font maps the presentation form, and the first shaping pass
+/// left each character of the sequence as its own cluster holding exactly its nominal glyph (so a
+/// GSUB ligature, a mark or any other substitution such as small caps keeps priority). The ligature
+/// then replaces the pair kerning inside the sequence. Only "ff" is oracle-backed; "fi", "fl",
+/// "ffi" and "ffl" follow the same rule and are UNVERIFIED against InDesign (no D5 oracle text
+/// contains them).
+fn presentation_ligatures<'a>(
+    face: &rb::Face<'a>,
+    style: &Style<'a>,
+    text: &str,
+    base: usize,
+    shaped: &rb::GlyphBuffer<'a>,
+    out: &mut ChargedVec<'a, PresentationLigature>,
+    ctx: &Context<'a>,
+) -> ProviderResult<()> {
+    let bytes = text.as_bytes();
+    let liga_on = |at: usize| -> ProviderResult<bool> {
+        let mut on = true;
+        for f in style.features {
+            ctx.step()?;
+            if f.tag == *b"liga" && f.range.start <= at as u64 && (at as u64) < f.range.end {
+                on = f.value != 0;
+            }
+        }
+        Ok(on)
+    };
+    let group_at = |at: usize| -> ProviderResult<bool> {
+        let cluster = u32::try_from(at).map_err(|_| Error::Overflow)?;
+        let mut group = false;
+        for g in shaped.source_groups() {
+            ctx.step()?;
+            group |= g.cluster == cluster;
+        }
+        Ok(group)
+    };
+    // `at` starts a group holding exactly one glyph, `ch`'s nominal glyph.
+    let alone = |at: usize, ch: u8| -> ProviderResult<bool> {
+        let Some(nominal) = face.get_nominal_glyph(u32::from(ch), ctx)? else {
+            return Ok(false);
+        };
+        let cluster = u32::try_from(at).map_err(|_| Error::Overflow)?;
+        let (mut found, mut same) = (0usize, true);
+        for info in shaped.glyph_infos() {
+            ctx.step()?;
+            if info.cluster == cluster {
+                found += 1;
+                same &= info.glyph_id == u32::from(nominal.0);
+            }
+        }
+        Ok(found == 1 && same && group_at(at)?)
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        ctx.step()?;
+        let mut matched = None;
+        if bytes[i] == b'f' {
+            for (sequence, codepoint) in STANDARD_LIGATURES {
+                ctx.step()?;
+                let end = i + sequence.len();
+                if !bytes[i..].starts_with(sequence)
+                    || face.get_nominal_glyph(codepoint as u32, ctx)?.is_none()
+                    || (end < bytes.len() && !group_at(base + end)?)
+                {
+                    continue;
+                }
+                let mut ok = true;
+                for (k, ch) in sequence.iter().enumerate() {
+                    ok = ok && liga_on(base + i + k)? && alone(base + i + k, *ch)?;
+                }
+                if ok {
+                    matched = Some((sequence.len(), codepoint));
+                    break;
+                }
+            }
+        }
+        match matched {
+            Some((len, codepoint)) => {
+                out.push(
+                    PresentationLigature {
+                        start: i,
+                        len,
+                        codepoint,
+                    },
+                    ctx,
+                )?;
+                i += len;
+            }
+            None => i += 1,
+        }
+    }
+    Ok(())
+}
+
+/// Composition v2 line-end data of one shaped run: the `hmtx` advance wherever it differs from the
+/// shaped advance (pair kerning toward the next glyph; zero-advance glyphs skipped) and the
+/// components of every presentation-form ligature.
+#[allow(clippy::too_many_arguments)]
+fn line_end_data<'a>(
+    face: &rb::Face<'a>,
+    text: &str,
+    base: usize,
+    size: f64,
+    scale: u32,
+    glyphs: &[Glyph],
+    ligatures: &[PresentationLigature],
+    advances: &mut ChargedVec<'a, LineEndAdvance>,
+    components: &mut ChargedVec<'a, LigatureComponent>,
+    ctx: &Context<'a>,
+) -> ProviderResult<()> {
+    let hmtx = |id: ttf::GlyphId| -> ProviderResult<f64> {
+        points(face.glyph_h_advance(id, ctx)?, size, scale)
+    };
+    for (index, glyph) in glyphs.iter().enumerate() {
+        ctx.step()?;
+        let glyph_index = u32::try_from(index).map_err(|_| Error::Overflow)?;
+        let mut ligature = None;
+        for l in ligatures {
+            ctx.step()?;
+            if glyph.cluster.start == (base + l.start) as u64 {
+                ligature = Some(*l);
+                break;
+            }
+        }
+        if let Some(l) = ligature {
+            if glyph.cluster.end != (base + l.start + l.len) as u64 {
+                return Err(Error::InvalidMapping);
+            }
+            for k in 0..l.len {
+                ctx.step()?;
+                let id = face
+                    .get_nominal_glyph(u32::from(text.as_bytes()[l.start + k]), ctx)?
+                    .ok_or(Error::MissingGlyph)?;
+                let at = (base + l.start + k) as u64;
+                components.push(
+                    LigatureComponent {
+                        glyph: glyph_index,
+                        source: SourceRange {
+                            start: at,
+                            end: at + 1,
+                        },
+                        glyph_id: u32::from(id.0),
+                        advance_pt: hmtx(id)?,
+                    },
+                    ctx,
+                )?;
+            }
+        }
+        if glyph.x_advance_pt == 0.0 {
+            continue;
+        }
+        let id = ttf::GlyphId(u16::try_from(glyph.glyph_id).map_err(|_| Error::CorruptFont)?);
+        let nominal = hmtx(id)?;
+        if nominal != glyph.x_advance_pt {
+            advances.push(
+                LineEndAdvance {
+                    glyph: glyph_index,
+                    advance_pt: nominal,
+                },
+                ctx,
+            )?;
+        }
+    }
+    Ok(())
 }
 /// First candidate whose face covers the whole span; loads and caches fonts under the limits.
 pub(crate) fn select_font<'a>(

@@ -492,3 +492,74 @@ pub fn mixed_script_bidi_font_runs() {
         });
     });
 }
+
+/// Composition v2 (lane SMB-TYPE-FF-LIGATURE): on the committed fonts (Inter has no presentation
+/// forms; NotoSansSC maps U+FB00..U+FB04 and also ligates ff/fi/ffi in GSUB) v2 shapes exactly the
+/// v1 glyphs wherever the fallback must not act: `liga` off, a font without presentation forms, a
+/// GSUB ligature already formed. v2 line-end advances are hmtx values that differ from the shaped
+/// advance; v1 carries no line-end data and its serialized bytes are unchanged by the v2 fields.
+#[test]
+pub fn composition_v2_presentation_ligatures_keep_gsub_priority() {
+    bounded_case("composition_v2_presentation_ligatures_keep_gsub_priority", || {
+        let fonts = Fonts::load();
+        let recipe = json(&research().join("type-exact-oracle-recipe.json"));
+        let mut cases: Vec<Value> = recipe["cases"].as_array().unwrap().clone();
+        for i in 0..2 {
+            // latin_liga_0 / latin_liga_1 set in NotoSansSC (presentation forms + GSUB ligatures).
+            let mut sc = recipe["cases"][i].clone();
+            sc["font_index"] = serde_json::json!(2);
+            sc["case"] = serde_json::json!(format!("{}_notosanssc", sc["case"].as_str().unwrap()));
+            cases.push(sc);
+        }
+        let mut gsub_ligatures = 0;
+        for case in &cases {
+            let name = case["case"].as_str().unwrap().to_owned();
+            let liga_off = case["features"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|f| f["tag"] == "liga" && f["value"] == 0));
+            with_case(&fonts, case, None, |request, ports, _, _, _| {
+                assert_eq!(request.composition_version, COMPOSITION_VERSION_V1);
+                let v1 = prepared(request, ports);
+                let mut r2 = request;
+                r2.composition_version = COMPOSITION_VERSION;
+                let v2 = prepared(r2, ports);
+                verify_coverage(&v2);
+                assert_ne!(v1.serialized(), v2.serialized(), "{name}: token is serialized");
+                let runs1: Vec<&Run<'_>> = v1.paragraphs().iter().flat_map(|p| p.runs()).collect();
+                let runs2: Vec<&Run<'_>> = v2.paragraphs().iter().flat_map(|p| p.runs()).collect();
+                assert_eq!(runs1.len(), runs2.len(), "{name}");
+                for (a, b) in runs1.iter().zip(&runs2) {
+                    assert!(a.line_end_advances().is_empty() && a.ligature_components().is_empty());
+                    for g in a.glyphs().iter().filter(|g| g.cluster.end - g.cluster.start > 1) {
+                        // A GSUB ligature (or any multi-byte cluster) is shaped identically in v2.
+                        assert!(b.glyphs().contains(g), "{name}: v1 cluster {g:?} kept");
+                        if a.script() == *b"Latn" {
+                            gsub_ligatures += 1;
+                        }
+                    }
+                    if liga_off || b.ligature_components().is_empty() {
+                        assert_eq!(a.glyphs(), b.glyphs(), "{name}: v2 = v1 glyphs");
+                    }
+                    for c in b.ligature_components() {
+                        let g = b.glyphs()[c.glyph as usize];
+                        assert!(g.cluster.start <= c.source.start && c.source.end <= g.cluster.end);
+                        assert!(c.advance_pt > 0.0 && c.glyph_id != 0);
+                        let text = &request.text_utf8[c.source.start as usize..c.source.end as usize];
+                        assert!(matches!(text, "f" | "i" | "l"), "{name}: component {text:?}");
+                    }
+                    let mut last = None;
+                    for e in b.line_end_advances() {
+                        assert!(last < Some(e.glyph), "{name}: ascending");
+                        last = Some(e.glyph);
+                        let g = b.glyphs()[e.glyph as usize];
+                        assert!(e.advance_pt.is_finite() && e.advance_pt > 0.0);
+                        assert_ne!(e.advance_pt, g.x_advance_pt, "{name}: recorded only when different");
+                    }
+                }
+                assert_eq!(v1.disposition(), v2.disposition());
+            });
+        }
+        // NotoSansSC liga=1 forms its own GSUB ligatures (ff/ffi/fi): the fallback never re-ligates.
+        assert!(gsub_ligatures > 0, "NotoSansSC GSUB ligatures exercised");
+    });
+}

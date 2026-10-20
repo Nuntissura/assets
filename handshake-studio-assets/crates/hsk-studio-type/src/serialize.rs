@@ -178,6 +178,25 @@ fn write(
                 w.number(glyph.x_offset_pt)?;
                 w.number(glyph.y_offset_pt)?;
             }
+            // Composition v2 line-end data; composition v1 bytes are unchanged.
+            if crate::validate::semantics(request.composition_version)
+                == Some(crate::validate::Semantics::V2)
+            {
+                w.u64(run.line_end_advances.len() as u64)?;
+                for a in run.line_end_advances.iter() {
+                    w.ctx.step()?;
+                    w.u32(a.glyph)?;
+                    w.number(a.advance_pt)?;
+                }
+                w.u64(run.ligature_components.len() as u64)?;
+                for c in run.ligature_components.iter() {
+                    w.ctx.step()?;
+                    w.u32(c.glyph)?;
+                    w.range(c.source)?;
+                    w.u32(c.glyph_id)?;
+                    w.number(c.advance_pt)?;
+                }
+            }
         }
     }
     w.u64(coverage.len() as u64)?;

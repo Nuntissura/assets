@@ -19,6 +19,30 @@ pub struct FeatureReceipt {
     pub feature: Feature,
     pub state: FeatureState,
 }
+/// Composition v2: the advance a glyph takes when a line ends right after it at a hyphenation
+/// break, recorded only where it differs from the shaped advance. It is the glyph's `hmtx`
+/// advance: pair kerning toward the following glyph (applied to this glyph's advance by GPOS)
+/// does not cross the line end. Zero-advance marks are never recorded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineEndAdvance {
+    /// Index into `Run::glyphs`.
+    pub glyph: u32,
+    pub advance_pt: f64,
+}
+/// Composition v2: one component character of a presentation-form ligature the standard-ligature
+/// fallback formed (`Run::glyphs[glyph]`, whose cluster is the union of its components). A line
+/// break inside the ligature sets each side with its components' nominal glyphs and `hmtx`
+/// advances (no kerning inside a side).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LigatureComponent {
+    /// Index into `Run::glyphs`.
+    pub glyph: u32,
+    /// The component's source characters (inside the ligature's cluster).
+    pub source: SourceRange,
+    /// The component's nominal (cmap) glyph.
+    pub glyph_id: u32,
+    pub advance_pt: f64,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct AxisReceipt {
     pub axis: Axis,
@@ -40,6 +64,8 @@ pub struct Run<'a> {
     pub(crate) axes: ChargedVec<'a, AxisReceipt>,
     pub(crate) features: ChargedVec<'a, FeatureReceipt>,
     pub(crate) glyphs: ChargedVec<'a, Glyph>,
+    pub(crate) line_end_advances: ChargedVec<'a, LineEndAdvance>,
+    pub(crate) ligature_components: ChargedVec<'a, LigatureComponent>,
 }
 impl<'a> Run<'a> {
     pub fn source(&self) -> SourceRange {
@@ -86,6 +112,15 @@ impl<'a> Run<'a> {
     }
     pub fn glyphs(&self) -> &[Glyph] {
         self.glyphs.as_slice()
+    }
+    /// Composition v2 line-end advances, ascending by glyph (empty under composition v1).
+    pub fn line_end_advances(&self) -> &[LineEndAdvance] {
+        self.line_end_advances.as_slice()
+    }
+    /// Composition v2 presentation-form ligature components, ascending by glyph then source
+    /// (empty under composition v1 and for runs without such a ligature).
+    pub fn ligature_components(&self) -> &[LigatureComponent] {
+        self.ligature_components.as_slice()
     }
 }
 pub struct ParagraphResult<'a> {

@@ -50,6 +50,13 @@ pub(crate) fn shape_run<'a>(
     counts: &mut Counts,
     ctx: &Context<'a>,
 ) -> ProviderResult<Run<'a>> {
+    // The spike provider implements composition v1 only (no presentation-form ligatures or
+    // line-end advance data): a v2 request is refused, never silently composed as v1.
+    if crate::validate::semantics(request.composition_version)
+        != Some(crate::validate::Semantics::V1)
+    {
+        return Err(Error::UnknownComposition);
+    }
     let text = &request.text_utf8[span.clone()];
     let (candidate, index) =
         crate::engine::select_font(request, style, text, ports, cache, counts, ctx)?;
@@ -376,6 +383,8 @@ pub(crate) fn shape_run<'a>(
         axes,
         features: receipts,
         glyphs,
+        line_end_advances: ChargedVec::new(),
+        ligature_components: ChargedVec::new(),
     })
 }
 

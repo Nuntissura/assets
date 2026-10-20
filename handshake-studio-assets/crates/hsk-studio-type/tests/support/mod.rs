@@ -927,7 +927,9 @@ pub fn with_case<const N: usize>(
             },
             preimage: b"original-preimage",
         },
-        composition_version: COMPOSITION_VERSION,
+        // The independent reference is bound to composition v1 (reference_file); v2 cases set
+        // COMPOSITION_VERSION on the request explicitly.
+        composition_version: COMPOSITION_VERSION_V1,
         normalization: Normalization::Preserve,
         story_direction: if rtl {
             StoryDirection::RightToLeft
@@ -1332,7 +1334,7 @@ pub fn reference_file() -> Value {
     assert_eq!(hash(&bytes).as_slice(), unhex(EXPECTED));
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["schema"], "handshake.studio.type_reference@1");
-    assert_eq!(v["composition_binding"], COMPOSITION_VERSION);
+    assert_eq!(v["composition_binding"], COMPOSITION_VERSION_V1);
     v
 }
 pub fn find_reference<'a>(reference: &'a Value, name: &str) -> &'a Value {

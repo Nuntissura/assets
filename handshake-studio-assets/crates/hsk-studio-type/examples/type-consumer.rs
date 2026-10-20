@@ -81,7 +81,7 @@ fn main() {
         }
         println!(
             "{}",
-            serde_json::json!({"scope":"source_only","case":name,"composition":COMPOSITION_VERSION,"serialized_sha256":digest,"disposition":disposition,"error":error,"diagnostic_delivery":diagnostic_delivery,"live_current_after_retirement":ledger.snapshot().unwrap().current_requested_bytes,"counts":{"input_bytes":c.input_bytes,"scalars":c.scalars,"fonts":c.fonts,"runs":c.runs,"glyphs":c.glyphs,"fallback_attempts":c.fallback_attempts,"work":c.work_units,"current":c.current_requested_bytes,"operation_peak":c.operation_peak_requested_bytes,"retained_generations":c.retained_generations},"runs":runs,"observe_frames_hex":frames,"independent_reference_compared":reference.is_some(),"host_adoption":"pending"})
+            serde_json::json!({"scope":"source_only","case":name,"composition":COMPOSITION_VERSION_V1,"serialized_sha256":digest,"disposition":disposition,"error":error,"diagnostic_delivery":diagnostic_delivery,"live_current_after_retirement":ledger.snapshot().unwrap().current_requested_bytes,"counts":{"input_bytes":c.input_bytes,"scalars":c.scalars,"fonts":c.fonts,"runs":c.runs,"glyphs":c.glyphs,"fallback_attempts":c.fallback_attempts,"work":c.work_units,"current":c.current_requested_bytes,"operation_peak":c.operation_peak_requested_bytes,"retained_generations":c.retained_generations},"runs":runs,"observe_frames_hex":frames,"independent_reference_compared":reference.is_some(),"host_adoption":"pending"})
         );
     });
 }

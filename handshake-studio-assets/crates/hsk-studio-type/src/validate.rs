@@ -1,7 +1,29 @@
 use crate::provider::{Context, ProviderResult, storage::ChargedVec};
 use crate::*;
 use sha2::{Digest, Sha256};
-pub const COMPOSITION_VERSION: &str = "hsk-type-shaped-runs@1/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1";
+/// Current composition token (STU-TYP-130): composition v1 plus the standard-ligature fallback over
+/// the font's Unicode presentation forms (U+FB00..U+FB04) where its GSUB forms none, and the
+/// line-end advance data (`Run::line_end_advances`, `Run::ligature_components`) layout uses at
+/// hyphenation breaks. New requests use this token.
+pub const COMPOSITION_VERSION: &str = "hsk-type-shaped-runs@2/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1/presentation-ligatures-v1/line-end-advances-v1";
+/// The previous token: a document authored under it recomposes under it (STU-TYP-130) with the
+/// unchanged v1 semantics (no presentation-form ligatures, no line-end advance data).
+pub const COMPOSITION_VERSION_V1: &str = "hsk-type-shaped-runs@1/rustybuzz-0.20.1/ttf-parser-0.25.1/bidi-0.3.18-u16/ccc-0.4.0-u16/mirroring-0.4.0-u16/script-0.5.8-u17/properties-0.1.4-u17/preserve/source-groups-v1";
+/// Composition semantics selected by the request's token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Semantics {
+    V1,
+    V2,
+}
+pub(crate) fn semantics(token: &str) -> Option<Semantics> {
+    if token == COMPOSITION_VERSION {
+        Some(Semantics::V2)
+    } else if token == COMPOSITION_VERSION_V1 {
+        Some(Semantics::V1)
+    } else {
+        None
+    }
+}
 pub(crate) fn hash(bytes: &[u8], ctx: &Context<'_>) -> ProviderResult<[u8; 32]> {
     let mut digest = Sha256::new();
     for chunk in bytes.chunks(256) {
@@ -80,7 +102,7 @@ pub(crate) fn validate<'a>(
         return Err(Error::InvalidInput);
     }
     key(request.correlation_id, ctx)?;
-    if request.composition_version != COMPOSITION_VERSION {
+    if semantics(request.composition_version).is_none() {
         return Err(Error::UnknownComposition);
     }
     if request.normalization != Normalization::Preserve {
