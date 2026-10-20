@@ -309,12 +309,27 @@ fn export_cases() -> Vec<Case> {
             preview_start: 2 * TPF_25,
             past_end: Some(9 * TPF_25),
         },
+        // MPEG-1 Layer II, 48 kHz stereo, 11 frames of 1152 = 12672 samples, no gapless trim
+        // (in `Registry::standard()` since D24-A). The past-the-end range is samples 12667..12677.
+        Case {
+            name: "mpeg-audio samples",
+            provider: audio::MP3_PROVIDER_ID,
+            bytes: include_bytes!("fixtures/audio/mp2-48k-2ch.mp2").to_vec(),
+            track: None,
+            output: OutputMode::Decoded,
+            count: 10,
+            aligned: 100 * TPS_48K,
+            unaligned: 100 * TPS_48K + 1,
+            nearest: 100 * TPS_48K,
+            preview_start: 100 * TPS_48K,
+            past_end: Some(12_667 * TPS_48K),
+        },
     ]
 }
 
 /// STU-ARC-021 for export: `Purpose::Export` is exact or it fails, before the first payload byte reaches
 /// the sink. One case per delivery site (isobmff packets, isobmff and Matroska PCM, Matroska packets, WAV,
-/// Y4M, MXF); the test enumerates the registry's providers and fails when one has no case, so a provider
+/// Y4M, MXF, MPEG audio); the test enumerates the registry's providers and fails when one has no case, so a provider
 /// added later cannot skip the rule. `Purpose::Preview` keeps its `Approximate` receipt, and the
 /// `nearest` of the refusal is a start the export is delivered at, exactly (the start of the unit a
 /// preview delivers, except for an edit-trimmed first sample, see

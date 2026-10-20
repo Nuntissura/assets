@@ -683,9 +683,21 @@ fn folio_inputs_select_the_story_thread_and_unsupported_properties_are_refused()
                 }),
                 LayoutError::InvalidGeometry
             );
+            // Vertical justification composes now (SMB-ID-PREPRESS slice 1). Hand-checked: one 12 pt
+            // line box (baseline 10 - ascent 10 to baseline 10 + descent 2) fills the 12 pt frame 0,
+            // so Center leaves it at baseline 10; in frame 1 grown to 24 pt the box has 12 pt free,
+            // Center puts 6 pt above it: baseline 16.
+            let mut centered = Case::new(text, specs.clone(), Composer::FirstFit);
+            centered.frame_mut(0).vertical_justification = VerticalJustification::Center;
+            centered.frame_mut(1).vertical_justification = VerticalJustification::Center;
+            centered.frame_mut(1).bounds.height = len(24.0);
+            let centered = centered.ok();
+            assert_eq!(centered.overset, None);
+            assert_eq!(shape(&centered.frames[0].lines[0]), (0..10, span(0, 10), 54.0, 6.0));
+            assert_eq!(shape(&centered.frames[1].lines[0]), (10..19, span(10, 19), 54.0, 0.0));
             assert_eq!(
-                unsupported(&|c| c.frame_mut(0).vertical_justification = VerticalJustification::Center),
-                refused
+                (centered.frames[0].lines[0].baseline_y_pt, centered.frames[1].lines[0].baseline_y_pt),
+                (10.0, 16.0)
             );
             assert_eq!(unsupported(&|c| c.frame_mut(0).auto_sizing_type = AutoSizing::HeightOnly), refused);
             assert_eq!(unsupported(&|c| c.frame_mut(0).first_baseline_offset = FirstBaseline::Ascent), refused);
