@@ -16,6 +16,7 @@ mod dxf_aci;
 mod dxf_import;
 mod eps;
 mod eps_export;
+mod eps_worker;
 #[doc(hidden)]
 pub mod error;
 #[doc(hidden)]
@@ -37,6 +38,11 @@ pub use eps::{
     import_eps_with, read_eps,
 };
 pub use eps_export::{EpsExport, export_eps, export_eps_proposal};
+pub use eps_worker::{EPS_WORKER_PANIC_EXIT, EPS_WORKER_PROGRAM, EPS_WORKER_PROTOCOL};
+#[cfg(feature = "eps")]
+pub use eps_worker::{EpsWorkerOptions, WorkerEpsConverter};
+#[cfg(feature = "eps-worker")]
+pub use eps_worker::eps_worker_main;
 pub use error::{PreservedBlob, Result, VectorError};
 pub use ids::{IdMint, SequentialIdMint};
 pub use model::*;
