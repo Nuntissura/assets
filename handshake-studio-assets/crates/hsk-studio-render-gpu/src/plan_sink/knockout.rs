@@ -236,8 +236,12 @@ impl Exec<'_> {
             source: SourceKind::Chunk,
             has_mask: false,
             opacity: 1.0,
+            unfilled: 1.0,
+            fill: 1.0,
             replace: false,
             clip: false,
+            opaque_source: false,
+            mix: false,
             density: 1.0,
             extended: false,
         };
@@ -334,8 +338,13 @@ pub(super) fn eval_knockout_layer(
         source: kind,
         has_mask: layer.mask.is_some(),
         opacity: layer.opacity,
+        // knockout_over folds fill as a product (pigment knockout_math)
+        unfilled: layer.opacity,
+        fill: 1.0,
         replace: false,
         clip: false,
+        opaque_source: false,
+        mix: false,
         density: layer.mask.as_ref().map_or(1.0, |m| m.density),
         extended: false,
     };
