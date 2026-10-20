@@ -28,7 +28,10 @@
 //! Paragraph composer: minimum total cost over a window of `PARA_MODEL.depth` lines, committing one
 //! line at a time; line costs in points (loose white space, tight overflow normalised by the
 //! word-spacing shrink range), the patent's `(cost + 1)^2`, hyphen and ladder terms, and a last-line
-//! length term; ragged paragraphs minimise the cubed white space over the whole paragraph.
+//! length term; ragged paragraphs minimise the cubed white space over the whole paragraph. Letter
+//! spacing and glyph scaling ranges add to a line's stretch and shrink range (normalisation and
+//! the past-range term); with both ranges zero the fitted word-only costs are unchanged bit for bit
+//! (lane SMB-TYPE-FF-LIGATURE: ID-02 para ls-3, gs95 and ls-5 gs90 reproduced; UNVERIFIED beyond).
 //!
 //! Justification (`justify_line`): InDesign always fills a justified line to the measure: inside the
 //! limits word spacing first, then letter spacing; past them the remainder is shared in proportion to
@@ -40,7 +43,7 @@
 use crate::LayoutError;
 use crate::breaker::{AdobeParams, HyphenRules, LineBreak, Sums, check, forced, legal, line_start};
 use crate::paragraph::Item;
-use crate::typeset::{Justification, JustifyParams, justify_metrics};
+use crate::typeset::{Justification, JustifyParams, Spacing, justify_metrics};
 use hsk_studio_accord::CancellationToken;
 
 const EPS: f64 = 1e-9;
@@ -166,7 +169,9 @@ pub(crate) fn single_line(
         } else {
             ragged_pick(&cands, w_line, ctx.params.hyphenation_zone_pt)
         };
-        let overfull = pick.w > w_line + EPS && pick.scale(w_line).is_none_or(|s| s <= 0.0);
+        // Overfull: past the shrink limits (words, letters, glyphs) and the spaces cannot close it.
+        let overfull = pick.w > w_line + pick.shrink + EPS
+            && pick.scale(w_line).is_none_or(|s| s <= 0.0);
         run = if pick.flagged {
             run.saturating_add(1)
         } else {
@@ -453,9 +458,24 @@ struct Para<'a> {
     justified: bool,
     justify_last: bool,
     limit: usize,
+    /// Letter spacing, glyph scaling and the letter reference width (their ranges add to the line's
+    /// stretch and shrink range; zero ranges leave the fitted word-spacing model unchanged).
+    letter: Spacing,
+    glyph: Spacing,
+    reference_pt: f64,
 }
 
 impl Para<'_> {
+    /// Stretch and shrink (points) letter spacing and glyph scaling add to the line `items[s..i)`
+    /// of natural width `w` (lane SMB-TYPE-FF-LIGATURE; UNVERIFIED against InDesign beyond D5 ID-02).
+    fn extra_ranges(&self, s: usize, i: usize, w: f64) -> (f64, f64) {
+        let letters = glyph_gaps(self.items, s, i) as f64 * self.reference_pt;
+        let (l, g) = (self.letter, self.glyph);
+        (
+            letters * (l.max - l.desired) + w * (g.max - g.desired),
+            letters * (l.desired - l.min) + w * (g.desired - g.min),
+        )
+    }
     fn line_cost(&self, line: usize, s: usize, i: usize, last: bool) -> Option<f64> {
         let m = self.model;
         let wl = (self.width)(line);
@@ -473,19 +493,27 @@ impl Para<'_> {
             let long = (w - m.long * wl).max(0.0);
             return Some(m.last_short * short * short + m.last_long * long * long);
         }
+        let (extra_stretch, extra_shrink) = self.extra_ranges(s, i, w);
         let cost = if w <= wl + EPS {
             let g = wl - w;
-            let range = spaces * (self.max - self.desired).max(0.0);
+            let range = spaces * (self.max - self.desired).max(0.0) + extra_stretch;
             m.al * g.powf(m.pl) + m.bl * (g - range).max(0.0).powf(m.ql)
         } else {
             let o = w - wl;
             let floor = if last { m.last_min } else { m.tight_floor };
-            if !tight_ok(floor) || self.desired - self.min <= EPS {
+            let word_range = spaces * (self.desired - self.min);
+            if !tight_ok(floor) || (self.desired - self.min <= EPS && extra_shrink <= EPS) {
                 return None;
             }
-            let range = spaces * (self.desired - self.min);
-            m.at * (o * 0.2 / (self.desired - self.min)).powf(m.pt)
-                + m.bt * (o - range).max(0.0).powf(m.qt)
+            // Overflow normalised by the shrink range: the fitted word-only form when letters and
+            // glyphs add none (bit-identical to the D5 fit), else per point of the total range.
+            let normalised = if extra_shrink <= EPS {
+                o * 0.2 / (self.desired - self.min)
+            } else {
+                o * 0.2 * spaces / (word_range + extra_shrink)
+            };
+            m.at * normalised.powf(m.pt)
+                + m.bt * (o - word_range - extra_shrink).max(0.0).powf(m.qt)
         };
         let cost = cost.min(m.cap);
         Some(if m.square {
@@ -628,6 +656,9 @@ pub(crate) fn paragraph(
         justified: ctx.justified,
         justify_last: ctx.justify_last,
         limit: usize::from(rules.limit).min(MAX_RUN),
+        letter: ctx.justify.letter_spacing,
+        glyph: ctx.justify.glyph_scaling,
+        reference_pt: ctx.justify.reference_space_pt,
     };
     let n = items.len();
     // The window is bounded by the line budget of the caller (items) so `d` never overflows.
@@ -652,9 +683,11 @@ pub(crate) fn paragraph(
         let (w, ..) = sums.measure(items, s, b.item);
         let spaces = sums.spaces(s, b.item);
         let scale = (spaces > EPS).then(|| 1.0 + (wl - w) / spaces);
+        // Overfull: past the shrink limits (words, letters, glyphs) and the spaces cannot close it.
+        let shrink = spaces * (p.desired - p.min).max(0.0) + p.extra_ranges(s, b.item, w).1;
         breaks.push(LineBreak {
             item: b.item,
-            overfull: w > wl + EPS && scale.is_none_or(|x| x <= 0.0),
+            overfull: w > wl + shrink + EPS && scale.is_none_or(|x| x <= 0.0),
             ratio: scale,
         });
         if b.end && b.item + 1 >= n {

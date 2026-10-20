@@ -930,3 +930,25 @@ fn glyph_scaling_shares_the_rest_with_letters_by_range_and_is_validated() {
         assert_eq!(case.run_t(&o).unwrap_err(), LayoutError::InvalidInput, "{min} {desired} {max}");
     }
 }
+
+#[test]
+fn glyph_scaling_shrink_keeps_an_adobe_line_inside_the_limits() {
+    bounded_case("glyph_scaling_adobe", || {
+        // "aaaaaaaaa bbbbbbbbb" = 114 pt in 110 pt: the word space gives 1.2 pt (0.8 x 6), glyph
+        // scaling 95 % gives 5.7 pt, so the Single-line Composer takes the tight break (rule (a))
+        // and the line is justified, not overfull: words at their minimum, glyphs 1 - 2.8 / 114.
+        let case = Case::new("aaaaaaaaa bbbbbbbbb c", one_frame(110.0, 48.0), Composer::AdobeSingleLine(AdobeParams::default()));
+        let mut o = adobe_opts(Alignment::Justified, None);
+        o.justify = Some(JustifyParams { glyph_scaling: Spacing { min: 0.95, desired: 1.0, max: 1.05 }, ..JustifyParams::default() });
+        let l = case.run_t(&o).unwrap().frames[0].lines.clone();
+        assert_eq!((l[0].glyph_range.clone(), l[0].overfull), (0..20, false), "{l:?}");
+        let j = l[0].justification.expect("justified");
+        let g = 1.0 - 2.8 / 114.0;
+        assert!((j.glyph_scale - g).abs() < 1e-12 && (j.word_scale - (0.8 + g - 1.0)).abs() < 1e-12 && j.residual_pt == 0.0, "{j:?}");
+        assert!((108.0 * j.glyph_scale + 6.0 * j.word_scale - 110.0).abs() < 1e-9);
+        // Without glyph scaling the tight break is past the limits (rule (d) still takes it): the
+        // words alone close the line and the glyph scale stays 1.
+        let plain = case.run_t(&adobe_opts(Alignment::Justified, None)).unwrap().frames[0].lines.clone();
+        assert!(plain.iter().all(|l| l.justification.is_none_or(|j| j.glyph_scale == 1.0)));
+    });
+}
