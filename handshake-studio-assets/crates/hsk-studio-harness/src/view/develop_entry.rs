@@ -104,7 +104,15 @@ pub fn encode(layer_id: &str, tiles_signature: Option<&str>, edit: &DevelopEdit)
             "local": local,
         }
     });
-    serde_json::to_vec(&value).map_err(|e| Refusal { code: "develop_entry_encode", detail: e.to_string() })
+    let mut value = value;
+    if let Some(edit_object) = value.get_mut("edit").and_then(Value::as_object_mut) {
+        edit_object.extend(super::develop_more::encode_families(a));
+    }
+    let bytes = serde_json::to_vec(&value).map_err(|e| Refusal { code: "develop_entry_encode", detail: e.to_string() })?;
+    if bytes.len() > MAX_ENTRY_BYTES {
+        return Err(Refusal { code: "develop_entry_too_large", detail: format!("{} bytes, at most {MAX_ENTRY_BYTES}", bytes.len()) });
+    }
+    Ok(bytes)
 }
 
 // ---- decoding ----------------------------------------------------------------------------------------
@@ -267,7 +275,11 @@ const EDIT_KEYS: [&str; 15] = [
 ];
 
 fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
-    let o = object(v, "edit", &EDIT_KEYS)?;
+    // The lane SMB-DEVELOP-LENS-PRESETS family objects are optional (older entries lack them).
+    let o = v.as_object().ok_or_else(|| field("edit"))?;
+    if EDIT_KEYS.iter().any(|k| !o.contains_key(*k)) || o.keys().any(|k| !EDIT_KEYS.contains(&k.as_str()) && !super::develop_more::FAMILY_KEYS.contains(&k.as_str())) {
+        return Err(field("edit"));
+    }
     let sub = |key: &str, keys: &[&str]| -> Result<&Map<String, Value>, Refusal> { object(o.get(key).ok_or_else(|| field(key))?, key, keys) };
     let version = {
         let a = o.get("version").and_then(Value::as_array).filter(|a| a.len() == 2).ok_or_else(|| field("version"))?;
@@ -324,7 +336,7 @@ fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
         .enumerate()
         .map(|(i, c)| decode_correction(c, &format!("local[{i}]"), &mut dabs_left))
         .collect::<Result<Vec<_>, _>>()?;
-    let adjust = Adjustments {
+    let mut adjust = Adjustments {
         version,
         white_balance: hsk_studio_develop::WhiteBalanceShift { temperature: num(wb, "temperature", "white_balance")?, tint: num(wb, "tint", "white_balance")? },
         tone: hsk_studio_develop::BasicTone {
@@ -382,6 +394,7 @@ fn decode_edit(v: &Value) -> Result<DevelopEdit, Refusal> {
         calibration: hsk_studio_develop::Calibration::default(),
         look: None,
     };
+    super::develop_more::decode_families(o, &mut adjust)?;
     Ok(DevelopEdit { exposure_stops: num(o, "exposure_stops", "edit")?, adjust })
 }
 

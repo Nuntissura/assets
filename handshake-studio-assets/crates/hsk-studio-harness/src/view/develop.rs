@@ -31,8 +31,10 @@
 //!   it back, then writes atomically. It exports the developed raw only, not the composite of other
 //!   layers (the composite export is `Viewer::export`).
 //!
-//! Not in the panel (the recipe types carry them and the entry stores them): HSL mixer, parametric
-//! curve, grayscale mix, gradient and brush masks (the entry refuses gradient/brush masks).
+//! Lane SMB-DEVELOP-LENS-PRESETS adds lens corrections, transform / Upright, effects, calibration,
+//! creative looks, develop presets and model-mask buttons ([`super::develop_more`]): sliders in the
+//! sections `lens`, `transform`, `effects`, `calibration`, `look`, structure steps through
+//! [`DevelopOp::Family`], one undo step per change like every other develop change.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
@@ -181,6 +183,7 @@ pub fn controls(edit: &DevelopEdit) -> Vec<DevelopControl> {
             }
         }
     }
+    out.extend(super::develop_more::family_controls(&edit.adjust));
     out
 }
 
@@ -308,6 +311,9 @@ fn slot<'a>(e: &'a mut DevelopEdit, id: &str) -> Option<&'a mut f64> {
             _ => return None,
         });
     }
+    if super::develop_more::is_family_key(rest) {
+        return super::develop_more::family_slot(a, rest);
+    }
     let d = &mut a.detail;
     Some(match rest {
         "temperature" => &mut a.white_balance.temperature,
@@ -361,6 +367,9 @@ pub enum DevelopOp {
     AddBrushDabs { correction: usize, mask: usize, dabs: Vec<(f64, f64)> },
     /// Grayscale mix `convert` (develop `GrayscaleMix::convert`).
     Grayscale(bool),
+    /// Lens profile, Upright, grain seed, vignette style, look and preset steps (lane
+    /// SMB-DEVELOP-LENS-PRESETS, [`super::develop_more::FamilyOp`]).
+    Family(super::develop_more::FamilyOp),
 }
 
 impl DevelopOp {
@@ -379,6 +388,7 @@ impl DevelopOp {
             Self::MaskFlags { correction, mask, .. } => format!("mask flags {correction}.{mask}"),
             Self::AddBrushDabs { correction, mask, dabs } => format!("{} dabs on {correction}.{mask}", dabs.len()),
             Self::Grayscale(on) => format!("grayscale {on}"),
+            Self::Family(op) => op.label(),
         }
     }
 
@@ -471,6 +481,7 @@ impl DevelopOp {
                 }
             }
             Self::Grayscale(on) => a.grayscale.convert = *on,
+            Self::Family(op) => op.apply(a, &mut e.exposure_stops)?,
         }
         if a.local.len() > hsk_studio_develop::local::MAX_CORRECTIONS {
             return Err(Refusal::new("develop_limit", format!("at most {} corrections", hsk_studio_develop::local::MAX_CORRECTIONS)));
@@ -624,6 +635,11 @@ impl DevelopDoc {
         e.enable_mask_group_based_corrections = b.enable_mask_group_based_corrections || !a.local.is_empty();
         e.enable_tone_curve = b.enable_tone_curve || a.parametric != ParametricCurve::default();
         e.enable_grayscale_mix = b.enable_grayscale_mix || a.grayscale != GrayscaleMix::default();
+        let (lens, transform, effects, calibration) = super::develop_more::family_enables(a);
+        e.enable_lens_corrections = b.enable_lens_corrections || lens;
+        e.enable_transform = b.enable_transform || transform;
+        e.enable_effects = b.enable_effects || effects;
+        e.enable_calibration = b.enable_calibration || calibration;
         recipe.validate().map_err(|e| Refusal::develop(e, "recipe"))?;
         Ok(recipe)
     }
@@ -778,7 +794,8 @@ impl Viewer {
             "point_colours": a.point_colours.iter().map(|p| json!(p.source)).collect::<Vec<_>>(),
             "local": a.local.iter().map(|c| json!({"id": c.id, "masks": c.masks.iter().map(|m| source_kind(&m.source)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "grayscale": a.grayscale.convert,
-            "enables": recipe.as_ref().map(|r| json!({"enable_colour_adjustments": r.enables.enable_colour_adjustments, "enable_detail": r.enables.enable_detail, "enable_mask_group_based_corrections": r.enables.enable_mask_group_based_corrections})),
+            "families": super::develop_more::family_json(a),
+            "enables": recipe.as_ref().map(|r| json!({"enable_colour_adjustments": r.enables.enable_colour_adjustments, "enable_detail": r.enables.enable_detail, "enable_mask_group_based_corrections": r.enables.enable_mask_group_based_corrections, "enable_lens_corrections": r.enables.enable_lens_corrections, "enable_transform": r.enables.enable_transform, "enable_effects": r.enables.enable_effects, "enable_calibration": r.enables.enable_calibration})),
             "controls": controls(&edit).iter().map(|c| json!({"id": c.id, "label": c.label, "section": c.section, "panel_range": [c.panel_range.0, c.panel_range.1]})).collect::<Vec<_>>(),
             "threads": d.threads.get(),
             "export": {"profile": "sRGB-v4.icc", "profile_sha256": hex(&sha256(SRGB_V4_ICC)), "formats": ["png8", "png16", "jpeg"]},
@@ -1037,6 +1054,36 @@ impl Viewer {
             button(super::widget::DEVELOP_GRAYSCALE, if gray { "Colour" } else { "Grayscale" }, "Grayscale mix convert (develop GrayscaleMix)", DevelopOp::Grayscale(!gray), &mut ops, &mut drawn);
             self.drawn.extend(drawn);
         });
+        ui.horizontal_wrapped(|ui| {
+            use super::develop_more::FamilyOp;
+            use hsk_studio_develop::{ModelMaskKind, ModelMask, UprightMode, VignetteStyle};
+            let a = &edit.adjust;
+            let mut family: Vec<(String, String, &str, DevelopOp)> = Vec::new();
+            for m in UprightMode::ALL {
+                let mark = if a.geometry.upright_mode == m { "*" } else { "" };
+                family.push((format!("develop.upright.{}", m.key()), format!("Upright {}{mark}", m.key()), "Automatic perspective mode (develop upright analysis)", DevelopOp::Family(FamilyOp::Upright(m))));
+            }
+            family.push(("develop.lens.profile_enable".into(), format!("Lens profile {}", if a.optics.lens_profile_enable { "on" } else { "off" }), "Profile correction toggle", DevelopOp::Family(FamilyOp::LensToggles { profile_enable: !a.optics.lens_profile_enable, auto_ca: a.optics.auto_lateral_chromatic_aberration })));
+            family.push(("develop.lens.auto_ca".into(), format!("Lateral CA {}", if a.optics.auto_lateral_chromatic_aberration { "on" } else { "off" }), "Lateral chromatic aberration removal toggle", DevelopOp::Family(FamilyOp::LensToggles { profile_enable: a.optics.lens_profile_enable, auto_ca: !a.optics.auto_lateral_chromatic_aberration })));
+            if a.optics.profile.is_some() {
+                family.push(("develop.lens.clear".into(), "Clear lens profile".into(), "Remove the bound lens profile", DevelopOp::Family(FamilyOp::ClearLensProfile)));
+            }
+            family.push(("develop.grain.reseed".into(), "New grain seed".into(), "Next grain seed (STU-RAW-106 replayable)", DevelopOp::Family(FamilyOp::GrainSeed(a.effects.grain.seed.wrapping_add(1)))));
+            let other = if a.effects.vignette.style == VignetteStyle::HighlightPriority { VignetteStyle::ColourPriority } else { VignetteStyle::HighlightPriority };
+            family.push(("develop.vignette.style".into(), format!("Vignette {}", a.effects.vignette.style.key()), "Post-crop vignette style", DevelopOp::Family(FamilyOp::VignetteStyle(other))));
+            if a.look.is_some() {
+                family.push(("develop.look.clear".into(), "Clear look".into(), "Remove the creative look", DevelopOp::Family(FamilyOp::ClearLook)));
+            }
+            for kind in [ModelMaskKind::Subject, ModelMaskKind::Sky, ModelMaskKind::Person] {
+                family.push((format!("develop.local.add_model.{}", kind.key()), format!("Select {}", kind.key()), "Model-assisted mask: refused model_unavailable (no model provider in this build)", DevelopOp::AddCorrection(MaskSource::Model(ModelMask { kind, subcategory: None, model_version: None }))));
+            }
+            for (name, label, hover, op) in family {
+                if ui.push_id(w(&name), |ui| ui.button(label)).inner.on_hover_text(hover).clicked() {
+                    ops.push(op);
+                }
+                self.drawn.push(name);
+            }
+        });
         for i in 0..edit.adjust.point_colours.len() {
             let name = format!("develop.point.{i}.remove");
             if ui.push_id(w(&name), |ui| ui.small_button(format!("Remove point colour {i}"))).inner.clicked() {
@@ -1098,6 +1145,9 @@ pub fn develop_panel(edit: &DevelopEdit) -> Result<(Registry, ValueStore), Contr
         ("detail", "Detail", "Texture, dehaze, sharpening and noise reduction."),
         ("local", "Local corrections", "Corrections masked by luminance or colour ranges."),
     ] {
+        registry.register_section(SectionSpec::new(id, label, help))?;
+    }
+    for (id, label, help) in super::develop_more::SECTIONS {
         registry.register_section(SectionSpec::new(id, label, help))?;
     }
     let mut probe = edit.clone();

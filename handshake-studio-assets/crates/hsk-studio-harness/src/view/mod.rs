@@ -20,6 +20,7 @@
 pub mod display;
 pub mod develop;
 pub mod develop_entry;
+pub mod develop_more;
 pub mod edit;
 pub mod export;
 pub mod brush_mix;
