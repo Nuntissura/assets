@@ -164,15 +164,29 @@ pub struct StrokeOptions {
     pub geometry: BooleanOptions,
     /// Largest number of pieces (segment rectangles, joins, caps, dash runs).
     pub max_pieces: usize,
+    /// Butt-capped ends (path ends and dash ends) are extended along the path by this fraction of
+    /// the stroke width (`0..=0.5`; default 0 = the exact PostScript/SVG butt cap). Illustrator
+    /// parity uses [`ILLUSTRATOR_BUTT_CAP_EXTENSION`].
+    pub butt_cap_extension: f64,
 }
 impl Default for StrokeOptions {
     fn default() -> Self {
         Self {
             geometry: BooleanOptions::default(),
             max_pieces: 1 << 18,
+            butt_cap_extension: 0.0,
         }
     }
 }
+
+/// Illustrator's butt-cap end extension as a fraction of the stroke width (lane
+/// SMB-AI-AE-ORACLE-FOLLOWUPS slice 2, D5 oracle AI-01, Illustrator 30.8.2): the 14 pt zig-zag's butt
+/// ends sit 0.14 px past the endpoint (fitted range 0.13..0.15 px at both ends through the oracle
+/// sampler, while its projecting and round caps match at exactly half the width), and the 8 pt
+/// AI-02 butt dash ends bound the extension below 0.085 px there (0.08 px under this fraction), so a
+/// constant 0.14 px is refuted. Proportionality between those two widths is the fitted rule; other
+/// widths, zero-length butt dashes and curved ends are UNVERIFIED.
+pub const ILLUSTRATOR_BUTT_CAP_EXTENSION: f64 = 0.01;
 
 /// Outline of `path` stroked with `style`: filled geometry of the painted stroke area.
 pub fn outline_stroke(
@@ -181,6 +195,10 @@ pub fn outline_stroke(
     options: &StrokeOptions,
 ) -> Result<GeometryResult, Error> {
     check_style(style)?;
+    let ext = options.butt_cap_extension;
+    if !ext.is_finite() || !(0.0..=0.5).contains(&ext) {
+        return Err(Error::UnsupportedOptions);
+    }
     let lines = flatten(path, &options.geometry.flatten)?;
     let width = match style.align {
         StrokeAlign::Center => style.width,
@@ -193,6 +211,7 @@ pub fn outline_stroke(
     };
     let mut builder = Builder {
         half: width * 0.5,
+        butt_extension: style.width * ext,
         tolerance: options.geometry.flatten.tolerance,
         style,
         pieces: Vec::new(),
@@ -300,6 +319,8 @@ impl Run {
 
 struct Builder<'a> {
     half: f64,
+    /// Length each butt-capped end is extended by (0 = exact butt cap).
+    butt_extension: f64,
     tolerance: f64,
     style: &'a StrokeStyle,
     pieces: Vec<Polyline>,
@@ -457,6 +478,15 @@ impl Builder<'_> {
         let h = self.half;
         let n = (-d.1, d.0);
         match self.style.cap {
+            LineCap::Butt if self.butt_extension > 0.0 => {
+                let e = self.butt_extension;
+                self.piece(vec![
+                    at(p, n.0 * h, n.1 * h),
+                    at(p, -n.0 * h, -n.1 * h),
+                    at(p, d.0 * e - n.0 * h, d.1 * e - n.1 * h),
+                    at(p, d.0 * e + n.0 * h, d.1 * e + n.1 * h),
+                ])
+            }
             LineCap::Butt => Ok(()),
             LineCap::Square => self.piece(vec![
                 at(p, n.0 * h, n.1 * h),

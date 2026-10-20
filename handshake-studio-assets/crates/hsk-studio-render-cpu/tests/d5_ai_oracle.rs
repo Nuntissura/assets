@@ -33,7 +33,9 @@ use hsk_studio_nib::raster::{
     CoveragePlane, Gradient, GradientGeometry, GradientStop, IDENTITY, Interpolation, Paint, PixelFrame,
     RasterOptions, Spread, paint_coverage, rasterize,
 };
-use hsk_studio_nib::stroke::{DashPattern, LineCap, LineJoin, StrokeOptions, StrokeStyle, outline_stroke};
+use hsk_studio_nib::stroke::{
+    DashPattern, ILLUSTRATOR_BUTT_CAP_EXTENSION, LineCap, LineJoin, StrokeOptions, StrokeStyle, outline_stroke,
+};
 use hsk_studio_nib::{FillRule, OwnedPath, PathElement, PathPoint};
 use hsk_studio_pigment::blend_math::{
     BlendContext, BlendSpace, PixelSite, Rgba, StackNode, StudioBlendMode, composite_over, evaluate_stack,
@@ -257,8 +259,12 @@ fn poly(points: &[[f64; 2]], height: f64, closed: bool, rule: FillRule) -> Owned
     path
 }
 
+/// Studio's stroke outline in its Illustrator-parity mode: butt-capped ends extended by
+/// `ILLUSTRATOR_BUTT_CAP_EXTENSION` x width (lane SMB-AI-AE-ORACLE-FOLLOWUPS slice 2; round and
+/// projecting caps are unaffected).
 fn stroked(path: &OwnedPath, style: &StrokeStyle) -> OwnedPath {
-    outline_stroke(path, style, &StrokeOptions::default()).expect("nib stroke outline").path
+    let options = StrokeOptions { butt_cap_extension: ILLUSTRATOR_BUTT_CAP_EXTENSION, ..StrokeOptions::default() };
+    outline_stroke(path, style, &options).expect("nib stroke outline").path
 }
 
 fn union_of(parts: &[OwnedPath]) -> OwnedPath {
