@@ -622,7 +622,7 @@ fn same(a: &J, b: &J) -> bool {
 /// by the per-algorithm groups above.
 #[test]
 fn css_parsing_tests_component_value_list() {
-    let data = include_str!("../../tests/data/css-parsing-tests/component_value_list.json");
+    let data = include_str!("../../../hsk-studio-web/tests/data/css-parsing-tests/component_value_list.json");
     let J::Arr(items) = (JsonParser {
         s: data.as_bytes(),
         i: 0,

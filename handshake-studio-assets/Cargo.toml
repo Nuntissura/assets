@@ -39,6 +39,8 @@ members = [
   "crates/hsk-studio-press-read",
   "crates/hsk-studio-press-write",
   "crates/hsk-studio-web",
+  "crates/hsk-studio-web-core",
+  "crates/hsk-studio-web-assets",
   "crates/hsk-studio-score-device",
   "crates/hsk-studio-score-plugin",
   "crates/hsk-studio-reel-native",
@@ -99,6 +101,8 @@ declared-members = [
   "crates/hsk-studio-press-read",
   "crates/hsk-studio-press-write",
   "crates/hsk-studio-web",
+  "crates/hsk-studio-web-core",
+  "crates/hsk-studio-web-assets",
   "crates/hsk-studio-score-device",
   "crates/hsk-studio-score-plugin",
   "crates/hsk-studio-reel-native",
@@ -225,8 +229,14 @@ allowed = ["hsk-studio-accord"]
 [workspace.metadata.studio.dependencies.hsk-studio-press-write]
 allowed = ["hsk-studio-accord", "hsk-studio-press-read"]
 
+[workspace.metadata.studio.dependencies.hsk-studio-web-core]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-web-assets]
+allowed = ["hsk-studio-accord", "hsk-studio-web-core"]
+
 [workspace.metadata.studio.dependencies.hsk-studio-web]
-allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe", "hsk-studio-web-core", "hsk-studio-web-assets"]
 
 [workspace.metadata.studio.dependencies.hsk-studio-score-device]
 allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe"]

@@ -11,6 +11,8 @@ default = []
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+hsk-studio-web-core = { path = "../hsk-studio-web-core", version = "=0.1.0", default-features = false }
+hsk-studio-web-assets = { path = "../hsk-studio-web-assets", version = "=0.1.0", default-features = false }
 
 [dev-dependencies]
 html5ever = { version = "=0.40.1", default-features = false, features = [] }

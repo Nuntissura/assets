@@ -341,7 +341,8 @@ pub struct ViewRow {
 }
 
 /// A style sheet's text as a browser's CSS parser reads it (`WebDoc::sheet`) and how its offsets map back to the source.
-pub(crate) struct Sheet {
+#[doc(hidden)]
+pub struct Sheet {
     pub text: String,
     /// Exact map for an HTML `style` body or a lone text / CDATA piece; `None`: only `whole` locates the text.
     map: Option<CharData>,
@@ -349,7 +350,8 @@ pub(crate) struct Sheet {
 }
 impl Sheet {
     /// Source bytes of `r` (a range of `text`): exact through the preprocessing map, else the element's whole content.
-    pub(crate) fn span(&self, r: &Range<usize>) -> Range<usize> {
+    #[doc(hidden)]
+    pub fn span(&self, r: &Range<usize>) -> Range<usize> {
         self.map
             .as_ref()
             .map_or_else(|| self.whole.clone(), |m| m.span(r))
@@ -1434,7 +1436,8 @@ impl WebDoc {
     /// every other node. See the `WebDoc` docs: newlines normalised, U+0000 dropped in HTML content and U+FFFD in foreign
     /// content and RCDATA, references decoded, the first LF token after a `pre`, `listing` or `textarea` start tag
     /// dropped (the first token: an `</>` before it emits none).
-    pub(crate) fn text_value(&self, id: NodeId) -> Option<String> {
+    #[doc(hidden)]
+    pub fn text_value(&self, id: NodeId) -> Option<String> {
         let node = self.nodes.get(id)?;
         let parent = node.parent.and_then(|p| self.nodes.get(p))?;
         let context = match node.kind {
@@ -1482,7 +1485,8 @@ impl WebDoc {
 
     /// The body of a RAWTEXT or script-data element (`script style xmp iframe noembed noframes`) as the tokenizer emits
     /// it: newlines preprocessed, U+0000 as U+FFFD (13.2.5.3, .4), no references; with the map back to its source bytes.
-    pub(crate) fn raw_text_data(&self, id: NodeId) -> Option<CharData> {
+    #[doc(hidden)]
+    pub fn raw_text_data(&self, id: NodeId) -> Option<CharData> {
         let node = self.nodes.get(id)?;
         let parent = node.parent.and_then(|p| self.nodes.get(p))?;
         (node.kind == NodeKind::Raw && parent.content == ContentModel::RawText).then(|| {
@@ -1519,7 +1523,8 @@ impl WebDoc {
     /// the source: an HTML `style` is RAWTEXT, its body as the tokenizer emits it (`raw_text_data`); a foreign `style` is
     /// its child text content, the character data of its text nodes and CDATA sections concatenated in order
     /// (`text_value`; comments and child elements add nothing). `None` for other nodes.
-    pub(crate) fn sheet(&self, id: NodeId) -> Option<Sheet> {
+    #[doc(hidden)]
+    pub fn sheet(&self, id: NodeId) -> Option<Sheet> {
         let node = self.nodes.get(id)?;
         if node.kind != NodeKind::Element || self.local_name(id).as_deref() != Some("style") {
             return None;

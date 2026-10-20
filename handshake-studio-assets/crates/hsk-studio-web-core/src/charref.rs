@@ -27,7 +27,8 @@ use std::ops::Range;
 
 /// Where the text sits: attribute values have the extra legacy-reference rule; the U+0000 rule differs per place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Context {
+#[doc(hidden)]
+pub enum Context {
     /// Text in HTML content (text nodes whose parent follows the HTML rules): U+0000 is dropped.
     Text,
     /// RCDATA bodies (`title`, `textarea`) and text in foreign content: U+0000 becomes U+FFFD.
@@ -70,7 +71,8 @@ fn push_literal(out: &mut String, s: &str, context: Context) {
 /// beyond that it is dropped and `span` answers the whole slice (bounded memory for hostile input). `text` is at most
 /// `3 * src.len()` bytes (each U+0000 becomes the three bytes of U+FFFD).
 #[derive(Clone, Debug)]
-pub(crate) struct CharData {
+#[doc(hidden)]
+pub struct CharData {
     pub text: String,
     /// Source offset of the slice.
     origin: usize,
@@ -145,7 +147,8 @@ impl CharData {
     }
 }
 
-pub(crate) struct Decoded {
+#[doc(hidden)]
+pub struct Decoded {
     pub text: String,
     /// Input ranges of `&name;` forms whose name is not in the table (literal text for a browser too).
     pub unresolved: Vec<Range<usize>>,
@@ -230,7 +233,8 @@ fn push_code_point(out: &mut String, cp: u32) {
 
 /// The value a tokenizer builds from source text `input` read in `context`: preprocessed literal characters (newlines,
 /// U+0000) and decoded character references.
-pub(crate) fn decode(input: &str, context: Context) -> Decoded {
+#[doc(hidden)]
+pub fn decode(input: &str, context: Context) -> Decoded {
     let b = input.as_bytes();
     let mut text = String::with_capacity(input.len());
     let mut unresolved = Vec::new();
