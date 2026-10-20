@@ -8,12 +8,19 @@
     "base_wp_id": "WP-FF-022-prerequisite-classifier-remediation",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v1",
     "version": "1",
-    "updated_at_utc": "2026-10-20T14:28:21Z"
+    "updated_at_utc": "2026-10-20T15:16:03Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
     "source": "operator_message",
-    "recorded_at_utc": "2026-10-20T12:13:51Z"
+    "recorded_at_utc": "2026-10-20T12:13:51Z",
+    "resume_authorizations": [
+      {
+        "reference": "Restore the host prerequisites and diagnose the Windows job-empty assertion using subagents. Keep Python limited to gameplan, rerun the canonical gates, and merge only after they pass.",
+        "recorded_at_utc": "2026-10-20T14:52:32Z",
+        "source": "operator_message"
+      }
+    ]
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -40,17 +47,16 @@
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "BLOCKED",
+    "status": "SUPERSEDED",
     "risk": "MEDIUM",
     "blockers": [
-      "Canonical FF-GATE-PR-001 FAIL at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b: FFmpeg governed-input symlink test supervisor.rs4203 failed OS1314; primary verified current token lacks SeCreateSymbolicLinkPrivilege and Developer Mode enable value is absent. Operator-authorized host prerequisite restoration is required; no repository setup workflow was found.",
-      "WP009 testkit platform probes fail WP009-E-PLATFORM-PROBE-SPAWN:wmic.exe:program not found; primary verified WMIC absent from PATH and standard locations despite WBEM PATH entry. Existing model manual requires WMIC; operator-authorized host prerequisite restoration is required without invented install commands.",
-      "Independent unchanged Windows process test windows.rs1747 failed immediate active-zero assertion. Cause UNVERIFIED; it is not classified as an established flake or dismissed. Narrow evidence-based diagnosis is still required before a justified retry.",
-      "Primary stopped only its own cargo-test wrapper478852 process tree after observed failures; remaining no-fail-fast tests and later gate dependencies are incomplete/NOT_RUN. Canonical PR acceptance is not proven."
+      "Whole unchanged FFmpeg default-parallel package still fails windows.rs1747 after verified host repair:63passed,1failed,3ignored; the immediate job-empty failure remains reproducible at the required scheduling surface.",
+      "Cause of the immediate job-empty assertion remains UNVERIFIED; isolated first-query instrumented full-parallel diagnosis is pending. No tracked correction or product-path authorization is justified yet.",
+      "Fresh committed-candidate canonical architecture/verify-pr acceptance and main closure containment remain unproven."
     ],
-    "next_action": "Operator restores the verified host prerequisites through an authorized host setup; re-verify those prerequisites, diagnose the unresolved Windows immediate active-zero assertion, then rerun canonical verify-pr from a committed candidate and complete acceptance before closure merge. Do not merge, edit WP020 status or weaken gates while blocked.",
+    "next_action": "Historical v1 retained without erasing requirements or failures; continue the same authorized closure through WP-FF-022-prerequisite-classifier-remediation-v2.",
     "supersedes": [],
-    "superseded_by": null
+    "superseded_by": "WP-FF-022-prerequisite-classifier-remediation-v2"
   },
   "scope": {
     "allowed_paths": [
@@ -70,7 +76,10 @@
       "Add executable public-command regression and behavior-changing counterfactual proof for the recorded failure.",
       "Record canonical validation, independent review, closure commit and main containment.",
       "Correct only the runtime-truth-check operating paragraph in product/MODEL_MANUAL.md to document NONE versus activation-frozen design-authorized build-only PREREQUISITE; this documentation is excluded from runtime product-path classification.",
-      "After independently proven WP-022 closure containment only, synchronize the named classifier blocker in WP-020 packet lifecycle: remove only that resolved blocker, advance only classifier-first next_action to remaining promotion preparation, and append exact WP-022 closure/proof evidence; preserve STUB, all other blockers, acceptance, declaration, promotion requirements and scope."
+      "After independently proven WP-022 closure containment only, synchronize the named classifier blocker in WP-020 packet lifecycle: remove only that resolved blocker, advance only classifier-first next_action to remaining promotion preparation, and append exact WP-022 closure/proof evidence; preserve STUB, all other blockers, acceptance, declaration, promotion requirements and scope.",
+      "Restore only the verified Windows host prerequisites blocking this same canonical PR closure: existing symlink capability and the documented WMIC executable requirement, with host agent work/scripts confined to ignored artifact output and no machine-local paths committed.",
+      "Diagnose and reproduce only the recorded Windows job-empty assertion at product/crates/fforager-ffmpeg/src/platform/windows.rs::spawn_proves_preexecution_job_and_caches_nonzero_direct_wait; product-source edits require a classifier-compatible authorized scope before implementation.",
+      "Independently re-prove restored host prerequisites and any justified narrow assertion correction, rerun required canonical gates, and merge only after every required gate passes."
     ],
     "product_impact": "NONE",
     "summary": "Remediate the recorded WP-020 FF-GATE-RUNTIME-001 classification failure in non-shipped Rust gate tooling only.",
@@ -82,7 +91,9 @@
       "Activate, implement or rewrite benchmark requirements or planned scope of WP-020 or any other packet; the sole WP-020 exception is status-only synchronization of the named classifier blocker after WP-022 closure containment is proven.",
       "Change product code, product capability, dependency authorization, design scope, runtime-proof schemas or authority precedence; the sole product-tree exception is the affected runtime-truth-check operating paragraph in product/MODEL_MANUAL.md.",
       "Claim any product, capability, runtime, packaging, release or phase progress.",
-      "Use Python in Ferric implementation or canonical verification; the sole approved use is the separate global gameplan controller."
+      "Use Python in Ferric implementation or canonical verification; the sole approved use is the separate global gameplan controller.",
+      "Change unrelated host settings, add Ferric runtime/native/Python dependencies or weaken existing canonical gates to work around prerequisites.",
+      "Classify a product-tree test-only source edit as NONE without satisfying existing product_affecting_path; current classifier has no package-local test exemption."
     ]
   },
   "acceptance_matrix": [
@@ -126,7 +137,10 @@
         "Canonical verify-pr failed formatting only at the same clean source identity: build/reports/verify-pr-1792504072319859900-524376.json. Mechanical rustfmt wrap and a fresh committed-candidate PR retry are required; AC004 remains pending.",
         "Canonical FF-GATE-PR-001 final FAIL exit1 at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b, fingerprint1d160562b412bc954599e540cd0fec7a44d4eab1b35799571a35c13dae3d42f9; report build/reports/verify-pr-1792506415445954900-428344.json opened directly.",
         "Compile default/no-default/all-features and Clippy completed before test failures. Original public-input and NONE classifier tests passed before primary stopped its own failing wrapper; remaining canonical module/workspace tests and later dependencies are NOT_RUN/incomplete, not passing evidence.",
-        "Verified host blockers: symlink OS1314 and missing wmic.exe; separate Windows immediate active-zero assertion cause remains UNVERIFIED. Focused earlier7/7 classifier result remains supporting evidence only."
+        "Verified host blockers: symlink OS1314 and missing wmic.exe; separate Windows immediate active-zero assertion cause remains UNVERIFIED. Focused earlier7/7 classifier result remains supporting evidence only.",
+        "Authorized host prerequisites independently restored and verified by real normal-token/root queries plus exact existing symlink and WP009 public-corpus tests. Canonical final acceptance remains unproven.",
+        "Unchanged Windows job-empty exact serial test passes post-restoration; historical cause remains UNVERIFIED and no race-fix/product correction is claimed. Whole default-parallel FFmpeg package result and committed-candidate canonical reruns remain pending.",
+        "Whole unchanged FFmpeg default-parallel rerun FAIL63passed1failed3ignored at windows.rs1747 after host prerequisites repaired; serial1/1 PASS cannot replace this required scheduling-surface failure. Canonical acceptance remains blocked."
       ],
       "proof_class": "integration"
     },
@@ -140,29 +154,29 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "head_sha": "fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
-      "branch": "codex/wp020-prerequisite-classifier",
       "blockers": [
-        "Canonical FF-GATE-PR-001 FAIL at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b: FFmpeg governed-input symlink test supervisor.rs4203 failed OS1314; primary verified current token lacks SeCreateSymbolicLinkPrivilege and Developer Mode enable value is absent. Operator-authorized host prerequisite restoration is required; no repository setup workflow was found.",
-        "WP009 testkit platform probes fail WP009-E-PLATFORM-PROBE-SPAWN:wmic.exe:program not found; primary verified WMIC absent from PATH and standard locations despite WBEM PATH entry. Existing model manual requires WMIC; operator-authorized host prerequisite restoration is required without invented install commands.",
-        "Independent unchanged Windows process test windows.rs1747 failed immediate active-zero assertion. Cause UNVERIFIED; it is not classified as an established flake or dismissed. Narrow evidence-based diagnosis is still required before a justified retry.",
-        "Primary stopped only its own cargo-test wrapper478852 process tree after observed failures; remaining no-fail-fast tests and later gate dependencies are incomplete/NOT_RUN. Canonical PR acceptance is not proven."
+        "Whole unchanged FFmpeg default-parallel package still fails windows.rs1747 after verified host repair:63passed,1failed,3ignored; the immediate job-empty failure remains reproducible at the required scheduling surface.",
+        "Cause of the immediate job-empty assertion remains UNVERIFIED; isolated first-query instrumented full-parallel diagnosis is pending. No tracked correction or product-path authorization is justified yet.",
+        "Fresh committed-candidate canonical architecture/verify-pr acceptance and main closure containment remain unproven."
       ],
-      "next_action": "Operator restores the verified host prerequisites through an authorized host setup; re-verify those prerequisites, diagnose the unresolved Windows immediate active-zero assertion, then rerun canonical verify-pr from a committed candidate and complete acceptance before closure merge. Do not merge, edit WP020 status or weaken gates while blocked.",
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "6575128f3b69623c94f549af38e63fbea6440161",
       "dirty_paths": [
         ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json"
       ],
-      "recorded_at_utc": "2026-10-20T14:28:21Z",
       "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
       "checks_run": [
         "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD: fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+        "git rev-parse HEAD: 6575128f3b69623c94f549af38e63fbea6440161",
         "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: clean before blocked checkpoint; origin branch ahead0/behind0",
-        "git ls-remote origin refs/heads/codex/wp020-prerequisite-classifier: fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
-        "Directly opened canonical PR FAIL report source; exact clean candidate identity verified.",
-        "Primary verified symlink privilege/Developer Mode absence and WMIC absence; immediate active-zero assertion cause unproven."
-      ]
+        "git status --porcelain=v2 --branch: clean before resume amendment; upstream ahead0/behind0",
+        "git config --get core.hooksPath: build/git-hooks",
+        "Inspected active packet/template and actual product_runtime_path: no product-test path exemption.",
+        "Opened actual independent normal/root host proof JSON and focused symlink/WP009 result files.",
+        "No tracked product test edit was justified; original file retained, NONE classification preserved."
+      ],
+      "next_action": "Continue isolated first-query instrumented full-parallel diagnosis for the exact reproduced job-empty failure. Preserve v1 NONE and no tracked product edit; use the verified successor prerequisite route only if actual trace proves a bounded test correction necessary. Do not commit/archive/activate a revision or merge while diagnosis is pending.",
+      "recorded_at_utc": "2026-10-20T15:07:10Z"
     }
   },
   "validation": {
@@ -331,11 +345,57 @@
           "NONE classifier test"
         ],
         "result": "FAIL"
+      },
+      {
+        "observed": "Official Microsoft signed temporaryWMIC package restored18newfiles and aliases, overwrote0existingpayloadfiles; Developer Mode DWORD1. No Ferric dependency or tracked product change.",
+        "command": "Authorized host prerequisite restoration by host subagent",
+        "artifacts": [
+          ".fforager-artifacts/host-prerequisites/host-change-summary.json",
+          ".fforager-artifacts/host-prerequisites/independent-normal-token-proof.json",
+          ".fforager-artifacts/host-prerequisites/independent-root-host-proof.json"
+        ],
+        "result": "RESTORED_WITH_INDEPENDENT_PROOF",
+        "proof_class": "integration"
+      },
+      {
+        "observed": "Both actual WMIC FileSystem queries exited0 with NTFS; actual unelevated SymbolicLink had reparse-point state and target bytes matched. Exact emitted proof JSON opened by paperwork agent.",
+        "command": "Independent normal-token and root host capability probes",
+        "result": "PASS",
+        "proof_class": "integration"
+      },
+      {
+        "observed": "1 passed,0failed; existing binary, source6575128 unchanged",
+        "command": "Exact existing FFmpeg governed-input symlink test",
+        "proof_class": "integration",
+        "result": "PASS",
+        "artifact": ".fforager-artifacts/host-prerequisites/focused-symlink-result.json"
+      },
+      {
+        "observed": "1 test passed,48cases0fail; Windows11Home26200NTFS and WSLUbuntu24.04.4kernel6.6.87.2v9fs match frozen platform expectations",
+        "command": "Exact existing WP009 public resource/durability corpus",
+        "proof_class": "integration",
+        "result": "PASS",
+        "artifact": ".fforager-artifacts/host-prerequisites/focused-wp009-result.json"
+      },
+      {
+        "observed": "Exact original serial prehost FAIL; scratch diagnostic1 activecount0; scratch diagnostic2 first original querytrue/count0; unchanged original serial posthost PASS1/1. No observed nonzero-to-zero transition and no proven causal host link; no tracked source correction justified.",
+        "command": "Recorded Windows job-empty assertion diagnosis",
+        "reported_by": "primary agent",
+        "result": "CAUSE_UNVERIFIED_UNCHANGED_TEST_GREEN",
+        "proof_class": "integration"
+      },
+      {
+        "limitation": "Exact serial PASS does not prove default-parallel scheduling acceptance; no causal fix is established.",
+        "reported_by": "primary agent",
+        "proof_class": "integration",
+        "command": "Whole unchanged existing FFmpeg test binary at default parallelism after host repair",
+        "result": "FAIL",
+        "observed": "63passed,1failed,3ignored; same immediate job-empty assertion at windows.rs1747 failed. Binary SHA2563303108E627217AE27C99DF609E30A2D9F1420D72BD07310B2F594117CC1142F unchanged; primary opened raw stdout/stderr."
       }
     ],
     "not_proven": [
-      "Canonical verify-pr acceptance is BLOCKED by verified host prerequisites and an unresolved independent Windows assertion; remaining tests/later dependencies incomplete.",
-      "Closure commit merge and independent canonical-main containment remain unproven.",
+      "Default-parallel FFmpeg scheduling acceptance remains false at the exact job-empty assertion; causal trace and any justified bounded correction remain unproven.",
+      "Fresh canonical architecture-check/verify-pr acceptance and main containment remain unproven.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ]
   },
@@ -357,7 +417,9 @@
       "inspected_boundary": "build/tools/fforager-xtask/src/main.rs::runtime_truth_check",
       "recorded_failure": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json#/lifecycle/blockers",
       "research_policy": "Recorded remediation under GLOBAL-REMEDIATE-001 through GLOBAL-REMEDIATE-004: reuse the existing linked WP-020 recorded blocker context; no new-feature research or new refinement ceremony. Actual changed gate/claim trust boundaries, failure scenarios and controls are recorded in existing change_evidence.",
-      "refinement_reuse": "Reuses the existing WP-020 refinement solely as the recorded classifier-blocker context: scope_edges.assumptions and planning_contract.verification_needs preserve the Phase 0 prerequisite/NONE distinction and zero-progress ceiling. This reference satisfies the existing active_evidence_inputs collector requirement without creating a new refinement or activating or authorizing WP-020."
+      "refinement_reuse": "Reuses the existing WP-020 refinement solely as the recorded classifier-blocker context: scope_edges.assumptions and planning_contract.verification_needs preserve the Phase 0 prerequisite/NONE distinction and zero-progress ceiling. This reference satisfies the existing active_evidence_inputs collector requirement without creating a new refinement or activating or authorizing WP-020.",
+      "resume_context": "Continuing the same blocked WP022 closure under explicit Operator authorization; no new task selection/artifact cleanup or new-feature research/refinement ceremony. Existing blockers remain recorded until independently re-proven.",
+      "test_path_classification": "Actual product_runtime_path has no product-test exemption. No tracked product test correction was justified by the observed diagnosis, so product_impact remains NONE; no v2, product path authorization, schema change or gate weakening was performed."
     },
     "proof_requirements": {
       "negative_matrix": "Observe nonzero rejection for undeclared/altered declaration, governance-only relabeling, RUNTIME/no shipped changes, forbidden shipped paths and positive progress claims.",
@@ -383,7 +445,9 @@
           "A declaration or scope changes after activation; compare against committed activation and reject.",
           "A new product path or runtime proof is hidden in a build-only packet; reject.",
           "Removing lexical completion checks conceals a real positive claim; retain adjacent-prose and identifier-extension negative probes.",
-          "Medium-risk gate/lexical regression can falsely accept a current completion claim; independent context RED and narrowed GREEN, exact gate-ID boundaries, adjacent prose and public-command negatives must all remain evidence-bound."
+          "Medium-risk gate/lexical regression can falsely accept a current completion claim; independent context RED and narrowed GREEN, exact gate-ID boundaries, adjacent prose and public-command negatives must all remain evidence-bound.",
+          "A product-tree test-only correction is misclassified as NONE; preserve actual classifier rules and resolve its authorized route before editing.",
+          "Host setup changes more than the verified prerequisite; host lane is bounded to symlink capability/WMIC and must independently verify resulting capability without weakening gates."
         ]
       },
       "complete_post_change_verification": [
@@ -399,7 +463,9 @@
         "Postcandidate behavior counterfactual: primary observed original baseline exit1 IMPACT-MISMATCH then restored candidate exit0 PASS policy/scenario_contract on identical activation0013ea7a and content fingerprint590c3510; both reports independently opened.",
         "Canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2 fingerprint6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff; report architecture-check-1792503465087351800-504232.json.",
         "Canonical verify-pr FAIL at that same source: sole emitted rustfmt include_bytes constant wrapping diff; report verify-pr-1792504072319859900-524376.json. Final corrected-candidate PR remains required.",
-        "Canonical PR at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b FAIL; report verify-pr-1792506415445954900-428344.json. Compile profiles/Clippy completed; tests encountered symlink1314, missingWMIC and unresolved Windows assertion; later dependencies NOT_RUN. Primary stopped only owned wrapper after failures; no full test PASS claimed."
+        "Canonical PR at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b FAIL; report verify-pr-1792506415445954900-428344.json. Compile profiles/Clippy completed; tests encountered symlink1314, missingWMIC and unresolved Windows assertion; later dependencies NOT_RUN. Primary stopped only owned wrapper after failures; no full test PASS claimed.",
+        "Authorized host restoration independently verified WMIC queryNTFS exit0 and unelevated symlink reparse/targetbytes;18newpayloadfiles,0overwritten, DeveloperMode1.",
+        "Existing exact symlink test1/1 and WP009 public corpus1/1 with48cases0fail passed using unchanged binaries; original exact Windows jobempty serial test passes but cause remainsUNVERIFIED."
       ],
       "applicable_rule_ids": [
         "FF-BUILD-036",
@@ -495,7 +561,8 @@
           "Arbitrary serialized JSON keys versus contextual scanner: root scope/non_goals and nested non_goals~1 aliases reject current runtime-completion text."
         ],
         "RESIDUAL_UNCERTAINTY": [
-          "Claim scanning is a bounded lexical policy heuristic rather than proof for every English paraphrase. Review covers unchanged original input and concrete bypasses, proves no product behavior/performance/runtime/release readiness, and does not replace canonical gates or main containment."
+          "Claim scanning is a bounded lexical policy heuristic rather than proof for every English paraphrase. Review covers unchanged original input and concrete bypasses, proves no product behavior/performance/runtime/release readiness, and does not replace canonical gates or main containment.",
+          "Historical Windows immediate job-empty assertion failure remains causally unexplained despite unchanged exact serial rerun passing. Scratch probes did not observe nonzero-to-zero transition; default parallel package and canonical gates are required before closure."
         ],
         "COUNTERFACTUAL_CHECKS": [
           "Primary replayed original baseline AFTER independent candidate probes on identical activation0013ea7aaa8cd70a9fba9a141fd6baa39b90a295 and content fingerprint590c3510cc0d8919c5547a0b61b1505357e760ba22368f4f23a518ec08de3ed9: exit1 IMPACT-MISMATCH; candidate restoration then exited0 PASS policy/scenario_contract, declaration/input unchanged.",

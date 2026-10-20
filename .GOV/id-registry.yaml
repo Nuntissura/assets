@@ -234,7 +234,9 @@ registered_files:
   - id: FF-EDGE-SESSION-BOOTSTRAP-INJECTS-TOPOLOGY-001
     path: .GOV/topology.yaml#/edges
   - id: WP-FF-022-prerequisite-classifier-remediation-v1
-    path: .GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json
+    path: .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json
+  - id: WP-FF-022-prerequisite-classifier-remediation-v2
+    path: .GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json
 registered_rule_ranges:
   - namespace: FF-BOOT
     first: FF-BOOT-001
