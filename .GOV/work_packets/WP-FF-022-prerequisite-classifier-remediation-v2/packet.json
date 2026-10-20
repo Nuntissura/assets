@@ -8,7 +8,7 @@
     "created_at_utc": "2026-10-20T15:16:03Z",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v2",
     "version": "2",
-    "updated_at_utc": "2026-10-20T16:21:03Z"
+    "updated_at_utc": "2026-10-20T19:13:28Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
@@ -52,10 +52,11 @@
     "status": "IN_PROGRESS",
     "risk": "MEDIUM",
     "blockers": [
-      "Clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required before closure.",
-      "Main merge and independent closure containment remain unproven; historical Windows timing cause remains unverified."
+      "Fresh clean committed-candidate canonical checks remain required before closure.",
+      "Historical Git deadline and Windows scheduling failure causes remain unresolved; source-bound prior failures retained.",
+      "Closure merge/main containment remain unproven."
     ],
-    "next_action": "Commit and push this reviewed candidate checkpoint, run canonical runtime-truth-check, architecture-check and verify-pr at clean committed identity, then record actual acceptance before closure merge/main containment and limited WP020 blocker status synchronization.",
+    "next_action": "Verify updated packet with actual scanner, commit/push final reviewed fixture-base candidate, run applicable canonical checks at clean committed identity, and record acceptance before any closure/merge.",
     "supersedes": [
       "WP-FF-022-prerequisite-classifier-remediation-v1"
     ],
@@ -132,7 +133,9 @@
       "proof_class": "integration",
       "requirement": "Canonical architecture-check and verify-pr plus every activated deep trigger pass for the final code; independent adversarial implementation review verifies the changed public classification boundary and records findings and residual uncertainty.",
       "evidence": [
-        "Preserved original requirement and actual proof history at .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/acceptance_matrix; final changed candidate remains subject to canonical gates."
+        "Preserved original requirement and actual proof history at .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/acceptance_matrix; final changed candidate remains subject to canonical gates.",
+        "AADF original candidate FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 reports accepted at clean source; FF-GATE-PR-001 failed twice with exact reports retained.",
+        "Current fixture shared-base candidate owning module11/11/defaultparallel and independent HIGH isolation review accepted. Fresh canonical gates must judge changed candidate; no final PR acceptance claimed."
       ],
       "status": "PENDING",
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004"
@@ -171,32 +174,35 @@
   ],
   "recovery": {
     "last_checkpoint": {
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
       "dirty_paths": [
-        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json"
+        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
+        "build/tools/fforager-xtask/src/runtime_classifier_tests.rs"
+      ],
+      "blockers": [
+        "Fresh clean committed-candidate canonical checks remain required before closure.",
+        "Historical Git deadline and Windows scheduling failure causes remain unresolved; source-bound prior failures retained.",
+        "Closure merge/main containment remain unproven."
       ],
       "checks_run": [
         "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD: b1ff9c450748de36b5cb14c6fdae3b2b2232308d",
+        "git rev-parse HEAD: aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
         "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: # branch.oid b1ff9c450748de36b5cb14c6fdae3b2b2232308d; # branch.head codex/wp020-prerequisite-classifier; # branch.upstream origin/codex/wp020-prerequisite-classifier; # branch.ab +0 -0; clean before checkpoint edit.",
-        "FF-GATE-RUNTIME-001 iteration report1792512787454694800-310696 and source-bound clean failure report1792513911355608900-302316 retained in validation.checks."
+        "git status --porcelain=v2 --branch: origin ahead0/behind0; before checkpoint only classifier-test module dirty.",
+        "Opened exact latest PR failure source, owning-module stdout11/11 and shared-base review identity JSON.",
+        "Get-FileHash current testmodule SHA256:1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB; currentmainBCE5unchanged.",
+        "Opened final isolation/Clippy and refreshed mutant/restored raw outputs; no canonical final acceptance asserted."
       ],
-      "recorded_at_utc": "2026-10-20T16:33:34Z",
-      "branch": "codex/wp020-prerequisite-classifier",
-      "next_action": "Commit and push this reviewed candidate checkpoint, run canonical runtime-truth-check, architecture-check and verify-pr at clean committed identity, then record actual acceptance before closure merge/main containment and limited WP020 blocker status synchronization.",
       "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "head_sha": "b1ff9c450748de36b5cb14c6fdae3b2b2232308d",
-      "blockers": [
-        "Clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required before closure.",
-        "Main merge and independent closure containment remain unproven; historical Windows timing cause remains unverified."
-      ]
+      "recorded_at_utc": "2026-10-20T19:13:28Z",
+      "next_action": "Verify updated packet with actual scanner, commit/push final reviewed fixture-base candidate, run applicable canonical checks at clean committed identity, and record acceptance before any closure/merge."
     }
   },
   "validation": {
     "not_proven": [
-      "Final clean committed-candidate runtime-truth-check, architecture-check and verify-pr remain unproven.",
-      "Closure commit merge/main containment remain unproven.",
-      "Historical Windows immediate-accounting timing cause remains unverified.",
+      "Fresh clean committed-candidate canonical checks and closure/main containment remain unproven.",
+      "Historical Windows scheduling and Git-add deadline causes remain unresolved.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ],
     "checks": [
@@ -346,6 +352,138 @@
         "source_commit": "b1ff9c450748de36b5cb14c6fdae3b2b2232308d",
         "artifact": "build/reports/runtime-truth-check-1792513911355608900-302316.json",
         "reported_by": "primary agent"
+      },
+      {
+        "content_fingerprint": "0323e4c87b28cf6506e427dcb5560dca95028a6c5b86786da2d2355da88d8af3",
+        "artifact": "build/reports/runtime-truth-check-1792514820028711600-367716.json",
+        "result": "PASS",
+        "source_commit": "aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "limitation": "Policy/contract ceiling only; this original candidate report is not relabeled as later code.",
+        "source_dirty": false,
+        "proof_class": "scenario_contract"
+      },
+      {
+        "content_fingerprint": "0323e4c87b28cf6506e427dcb5560dca95028a6c5b86786da2d2355da88d8af3",
+        "source_dirty": false,
+        "source_commit": "aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
+        "result": "PASS",
+        "artifact": "build/reports/architecture-check-1792516682437161600-8736.json",
+        "gate_id": "FF-GATE-ARCH-001"
+      },
+      {
+        "content_fingerprint": "0323e4c87b28cf6506e427dcb5560dca95028a6c5b86786da2d2355da88d8af3",
+        "observed": "FFmpeg61passed4failed3ignored; original exit7, symlink and testkit17/17 passed. Primary stopped only its own remaining Cargo wrapper after known failures; later checks NOT_RUN.",
+        "artifact": "build/reports/verify-pr-1792517606587613100-340532.json",
+        "result": "FAIL",
+        "source_commit": "aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
+        "gate_id": "FF-GATE-PR-001",
+        "limitation": "Historical Windows failures cause remains unresolved; narrower fourcase reruns do not replace full package.",
+        "source_dirty": false
+      },
+      {
+        "command": "Same binary scheduling probes after first canonical PR failure",
+        "result": "MIXED",
+        "observations": {
+          "four_serial": "4passed0failed14.12seconds",
+          "full_package_later": "65passed0failed3ignored2.04seconds",
+          "full_package_first": "57passed8failed3ignored28seconds",
+          "four_parallel": "4passed0failed7.15seconds"
+        },
+        "limitation": "Historical cause unresolved; no cause or permanence claim inferred."
+      },
+      {
+        "content_fingerprint": "0323e4c87b28cf6506e427dcb5560dca95028a6c5b86786da2d2355da88d8af3",
+        "source_dirty": false,
+        "source_commit": "aadf33cf6b9b872dde0dd0ac75ec0c7c6600bb85",
+        "result": "FAIL",
+        "artifact": "build/reports/verify-pr-1792521025056691600-511808.json",
+        "gate_id": "FF-GATE-PR-001",
+        "observed": "Workspace144passed2failed2ignored; two isolated fixture Git-add children reached unchanged60second deadlines. FFmpeg65passed and testkit17passed. Historical Git stall cause remains unresolved."
+      },
+      {
+        "command": "Original unchanged two-test Git wrapper diagnostic",
+        "result": "PASS",
+        "observations": {
+          "seconds": 400.29,
+          "tests": 2,
+          "max_child_seconds": 5.27,
+          "initializations": 20,
+          "git_commands": 762,
+          "adds": 40
+        },
+        "limitation": "Observed narrower success does not prove historical timeout cause."
+      },
+      {
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-two-green.stdout",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-final-isolation.stdout",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-module.stdout"
+        ],
+        "command": "Shared immutable fixture base candidate focused and owning-module proof",
+        "result": "PASS",
+        "proof_class": "integration",
+        "candidate_module_sha256": "ACECF8BB313B45A519FB79AAB576F3CF8F5395438058ED99969002182DF49C93",
+        "observations": {
+          "git_trace": "1279starts1279exits/all0;1init27adds27commits/26fixtures;maxchild3.032seconds",
+          "final_isolation": "1passed35.98seconds",
+          "two_tests": "2passed368.78seconds;1init21adds21commits",
+          "whole_module": "11passed0failed/defaultparallel354.87seconds"
+        }
+      },
+      {
+        "invalid_attempt": "Earlier shared-base-initial-error.txt harness required an absent directory to exist; invalid as complete proof.",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-initial-error-v2.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-hardlink-mutant.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-restored.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-review-identity.json"
+        ],
+        "command": "Independent shared-base initialization failure, object-copy mutant and restoration",
+        "result": "PASS",
+        "proof_class": "counterfactual",
+        "observations": {
+          "memoized_initial_error": "1builderattempt2callerfailures0activation;native0/1test",
+          "hardlink_mutant": "compiled then native101 on same in-place shared Git object corruption",
+          "strict_restoration": "native0/1test13.35seconds after30.69second recompile"
+        }
+      },
+      {
+        "reported_by": "primary agent",
+        "observed": "Windows permission modification via set_readonly(false) triggered platform-specific lint in the isolation test. No suppression added; replaced only test permission operation with bounded Windows attrib handling.",
+        "result": "FAIL",
+        "command": "First shared-base candidate warnings-denied Clippy"
+      },
+      {
+        "limitation": "Earlier owningmodule11/11 remains bound to ACECF8 source and unchanged fixture constructors/public tests; final permission branch proven separately.",
+        "module_sha256": "1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB",
+        "command": "Final permission-operation isolation and formatting/Clippy",
+        "observations": {
+          "format": "PASS",
+          "clippy": "alltargets/allfeatures warningsdeniedPASS9.11seconds",
+          "focused_isolation": "1passed0failed13.84seconds;compile18.81seconds"
+        },
+        "result": "PASS",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-isolation.stdout",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-clippy.txt"
+        ]
+      },
+      {
+        "module_sha256": "1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB",
+        "reuse": "Entire initializer prefix byte-identical; prior independent memoized-initial-error proof reused unchanged.",
+        "proof_class": "counterfactual",
+        "command": "Refreshed final permission branch hardlink mutant and strict restoration",
+        "observations": {
+          "hardlink_mutant": "Compiled25.38seconds;native101 at same shared-object in-place corruption assertion",
+          "strict_restoration": "Recompiled27.64seconds;1passed0failed13.74seconds"
+        },
+        "result": "PASS",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-hardlink-attrib-mutant.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-restored.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-review-identity.json"
+        ]
       }
     ]
   },
@@ -394,7 +532,11 @@
         "Immutable requirement and six exact technical-reference cases reproduced public RED then public GREEN with unchanged packet requirements/declaration.",
         "Independent focused MEDIUM review005/006 PASS, complete frozen packet v3 boundary1/1 and canonical typed controls rejected.",
         "Same frozen packet inputSHAf5c8c7beaca0629e75f5b3898d6c6549ec96a7cee6f0cc7dfce249099c3d1078 inventory zeroflags/actualacceptance and actual dirty FF-GATE-RUNTIME-001 policy/scenario_contract PASS observed.",
-        "Current fmt and xtask warnings-denied Clippy PASS11.41seconds; clean committed final gates remain required."
+        "Current fmt and xtask warnings-denied Clippy PASS11.41seconds; clean committed final gates remain required.",
+        "Original candidate AADF canonical gate reports retain exact clean source identity: FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 accepted; FF-GATE-PR-001 two failed attempts retained.",
+        "Current shared-base owning module11/11 defaultparallel and independent memoized-error/object-isolation mutant/restoration proof accepted; source identities retained in validation.",
+        "Final permission-operation candidate1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB focusedisolation1/1, formatting and warningsdeniedClippy9.11seconds accepted; no lint suppression.",
+        "Final permissionbranch hardlink mutant compiled and rejected sharedobject corruption; strictrestoration1/1/13.74seconds after27.64secondcompile. PreviousACE owningmodule11/11 evidence retains exact source identity."
       ],
       "applicable_rule_ids": [
         "FF-BUILD-036",
@@ -440,7 +582,8 @@
           "Claim-context gate integration: registered gate/WP identifiers, adjacent negation and original imperative/non-goals remain bounded references or exclusions; genuine current claims and escaped JSON-key aliases reject.",
           "Windows test-contract/state boundary: direct exit caching and Job accounting are independent; empty acknowledgment requires a real bounded query and strict deadline admission.",
           "Resource/termination boundary: real held Job remains occupied through negative assertion; natural accountingzero and cached direct wait precede AlreadyEmpty.",
-          "Immutable rejected-input specifications and technical token roles must remain distinguishable from current completion assertions, including prior-clause subject propagation; no requirement, declaration or typed-key policy change."
+          "Immutable rejected-input specifications and technical token roles must remain distinguishable from current completion assertions, including prior-clause subject propagation; no requirement, declaration or typed-key policy change.",
+          "Fixture concurrency/isolation boundary: memoized completed base and initialization error must be immutable; every consumer receives an ordinary independent full Git copy and independent activation."
         ],
         "MANUAL_REVIEW": {
           "reviewer": "independent implementation review subagent",
@@ -500,7 +643,10 @@
           "Normalized scratch source differs only in three cfg(test) artifact-root offsets and matches primary WindowsSHA8F933AEF3148C98C566B2D096C5D0FA3D8EFB0BEEF65ED860480EFF8D2389FC8; exact finding mapping inspected.",
           "Exact frozen acceptance requirement public boundary reproduced RED then passed1/1 across original reference and three genuine assertion controls; independent fullpacket acceptance-row boundary passed.",
           "Technical-role public handler passed1/1 with six exact frozen reference cases, six genuine assertion controls and canonical typed negative; same full frozen packet inventory yielded zero flagged strings/typedvalues and actual scanner acceptance.",
-          "Reviewer independent v3 boundary observed nativeexit0/1test, frozen inputSHAf5c8c7beaca0629e75f5b3898d6c6549ec96a7cee6f0cc7dfce249099c3d1078, four assertion controls and two canonical typed controls; artifact technical-role-independent-boundary-v3.txt."
+          "Reviewer independent v3 boundary observed nativeexit0/1test, frozen inputSHAf5c8c7beaca0629e75f5b3898d6c6549ec96a7cee6f0cc7dfce249099c3d1078, four assertion controls and two canonical typed controls; artifact technical-role-independent-boundary-v3.txt.",
+          "Owning classifier module passed11/11 at default parallelism; trace1279Git starts/exitsallzero across26fixtures with one base initialization.",
+          "Independent injected initial error was memoized: one builder attempt, two caller failures and zero activation; same Git-object hardlink mutation compiled then rejected; restored ordinary-copy isolation passed.",
+          "Final permissionhandling source1E443E49 matched primary; refreshed hardlink mutant compiled then rejected same sharedobject corruption; strictrestoration1/1/13.74seconds. Entire initializer prefix unchanged, memoized-error proof reused."
         ],
         "NEGATIVE_PATH_CHECKS": [
           "Preserved actual original gate-reference/current-claim rejection evidence and exact14 literal input outcomes in archived v1; no gate weakening.",
@@ -509,7 +655,9 @@
           "Unconditional-success mutant compiled, reached realheld assertion and failed the exact occupied-Job check; compiler failure did not masquerade as semantic rejection.",
           "Realoccupied DurationZERO returnedfalse with actualpositivecount; canonical25millisecond occupiednegative also rejected false-success mutant.",
           "Independent v3 fullpacket probe rejected four appended assertion controls and two canonical typed controls; exact keys retained in classifier_context_review.canonical_typed_keys.",
-          "Earlier reviewer v1 failed harness compilation and v2 relied on an unsupported typed-key alias; neither is accepted as complete behavioral proof. Registered typed-key list unchanged."
+          "Earlier reviewer v1 failed harness compilation and v2 relied on an unsupported typed-key alias; neither is accepted as complete behavioral proof. Registered typed-key list unchanged.",
+          "Memoized initialization failure propagates to both callers without fixture activation; absent uncreated output root is correctly accepted as no activation.",
+          "Hardlink mutant compiled and failed on byte-level shared-object isolation, not compiler rejection; restored final candidate passed exact test."
         ],
         "BOUNDARY_PROBES": [
           "Original activation declaration, scope, Git artifact and escaped-key probes remain preserved in archived v1.",
@@ -519,12 +667,15 @@
           "Release-file writer to real PowerShell exit/accounting: no release before negative; actual naturalzero precedes directwait/cache and AlreadyEmpty.",
           "Finite deadline admits subsequent actual query only before expiry; remaining-duration sleepmin5milliseconds and mandatory initial query reviewed; production wait/termination functions unchanged.",
           "Exact frozen complete active packet to lexical and typed scanner: all six initial diagnostic strings resolved, zero flaggedstrings/typedvalues and actual typed scanner acceptance observed; diagnostic inventory alone is not gate acceptance.",
-          "Actual dirty iteration FF-GATE-RUNTIME-001 accepted unchanged activation declaration and emitted policy/scenario_contract classes only; clean committed gates remain required."
+          "Actual dirty iteration FF-GATE-RUNTIME-001 accepted unchanged activation declaration and emitted policy/scenario_contract classes only; clean committed gates remain required.",
+          "Base Git object bytes and readonly permissions to consumer mutation: reviewer first changed copied-object permissions, then performed same in-place overwrite and proved base bytes unchanged.",
+          "Readonly shared-base queries produced no capture artifacts inside base; wrapper output remained under separate scratch while ordinary-copy activation and mutation proceeded."
         ],
         "RESIDUAL_UNCERTAINTY": [
           "Historical immediate Job-accounting timing cause remains unverified. Supported bounded acknowledgment correction preserves actual accounting and proof limits; final canonical gates and main containment remain separate obligations.",
           "Original bounded lexical classifier limitations remain preserved in archived v1; prerequisite evidence makes no product-progress claim.",
-          "Lexical recognition and finite registered typed-key vocabulary are bounded; an unregistered typed-key alias was a pre-existing unsupported expectation, outside these two false-rejection corrections. No exhaustive language claim is made."
+          "Lexical recognition and finite registered typed-key vocabulary are bounded; an unregistered typed-key alias was a pre-existing unsupported expectation, outside these two false-rejection corrections. No exhaustive language claim is made.",
+          "Historical Git child stalls and Windows scheduling failures remain unresolved. Shared-base reuse removes repeated preparation but cannot guarantee future timeout absence; final changed-candidate canonical proof remains required."
         ],
         "COUNTERFACTUAL_CHECKS": [
           "Original same-input classifier baseline reversion and candidate restoration remain preserved in archived v1.",
@@ -533,7 +684,8 @@
           "An unconditionaltrue cfg(test) helper without actual occupancy observation fails unchanged realheld assertion after successful compile with exit101; restored candidate exits0.",
           "Independent timeoutZERO occupied and alreadyempty real-Job probes prove the initial query is mandatory and cannot be replaced by false success.",
           "Same exact frozen rejected-input requirement and technical-role packet cases produced pre-fix public RED/inventory error and post-fix public GREEN/actual scanner acceptance with declaration and requirements unchanged.",
-          "Independent current-assertion and canonical typed controls rejected after narrow role correction; no packet-wide exemption or declaration omission was introduced."
+          "Independent current-assertion and canonical typed controls rejected after narrow role correction; no packet-wide exemption or declaration omission was introduced.",
+          "Replacing independent object copies with hardlinks permits shared-object mutation; independent same in-place corruption test reached semantic boundary and rejected native101, then strict ordinary-copy restoration passed."
         ]
       },
       "acceptance_or_authority_ids": [
@@ -561,7 +713,7 @@
         "Generate isolated regression repositories under the shared artifact root rather than introducing tracked synthetic fixtures or external scratch.",
         "Tokenize only the exact bounded canonical FF-GATE-RUNTIME-001 reference, retaining surrounding prose and all future-consumer fields."
       ],
-      "post_simplification_verdict": "PASS: focused classifier requirements and technical references, real Job accounting proof, independent behavioral negatives and current literal prerequisite gate support the bounded prerequisite contract. Exact activation scope, declaration and requirements remain unchanged. Dirty iteration acceptance is supporting evidence only; final committed canonical architecture/PR gates and main containment remain unproven.",
+      "post_simplification_verdict": "PASS: focused original classifier and Job-accounting proof plus current shared-base owning-module and independent isolation counterfactual support the bounded prerequisite contract. Base reuse changes repeated test preparation only; assertions, independent copies and child deadlines remain. Final changed-candidate canonical checks and main containment remain unproven.",
       "ceilings_exceptions_and_evidence": {
         "replacement_trigger": "The first separately authorized shipped consumer executes and re-proves prerequisite behavior through FF-GATE-RUNTIME-001.",
         "likely_upgrade_path": "Keep WP-020 benchmark research/promotion and WP-021/WP-011 shipped runtime proof in their existing sequence and contracts.",
@@ -660,6 +812,29 @@
           "release_progress",
           "runtime_status"
         ]
+      },
+      "shared_fixture_base_review": {
+        "scope": "Completed immutable base memoized once; ordinary independent full Git copies preserve fixture mutation isolation, activation contract, assertions and child deadlines.",
+        "module_sha256": "1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB",
+        "verdict": "PASS",
+        "main_sha256": "BCE5DF4D67A2E80580D0240CF3330151134A6C4E4F433CF49CD88AEC83DCA2E5",
+        "residual": "Historical Git-add60second and Windows scheduling causes remain unresolved; fewer base initializations does not prove future stalls impossible.",
+        "reviewer": "independent adversarial implementation review subagent",
+        "identity_artifact": ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-review-identity.json",
+        "risk": "HIGH",
+        "final_module_sha256": "1E443E4977B5D07F9251A5EABB30F5E2952F9E8C31D083C2B96E9335E16948CB",
+        "previous_module_sha256": "ACECF8BB313B45A519FB79AAB576F3CF8F5395438058ED99969002182DF49C93",
+        "final_identity_artifact": ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-review-identity.json",
+        "final_permission_proof": "Exact final source independently hashed; focused ordinarycopy isolation and refreshed hardlinkmutant/strictrestore execute actual sharedobject mutation. Constructor prefix byte-identical, prior memoized-error proof reused.",
+        "previous_identity_artifact": ".fforager-artifacts/runtime-classifier-proof/shared-base-review-identity.json",
+        "final_artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-restored.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-hardlink-attrib-mutant.txt",
+          ".fforager-artifacts/runtime-classifier-proof/shared-base-attrib-review-identity.json"
+        ],
+        "final_verdict": "PASS",
+        "final_risk": "HIGH",
+        "permission_proof_supersession": "Earlier ACE isolation evidence is historical for the permission function only; final1E focused isolation and refreshed mutant/restoration supersede it. ACE11test owningmodule evidence remains valid for unchanged sharedbase/publictests, and initial-error proof reused from byte-identical initializer."
       }
     },
     "refinement": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json"

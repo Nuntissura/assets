@@ -38,64 +38,100 @@ struct Fixture {
     packet: Value,
 }
 
+struct FixtureBase {
+    root: PathBuf,
+    sha: String,
+}
+
+fn fixture_root(source: &Path, label: &str) -> Result<PathBuf, String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    Ok(source
+        .join(".fforager-artifacts/test-runs")
+        .join(format!("classifier-{label}-{}-{nonce}", std::process::id())))
+}
+
+fn fixture_base() -> &'static FixtureBase {
+    static BASE: std::sync::OnceLock<Result<FixtureBase, String>> = std::sync::OnceLock::new();
+    BASE.get_or_init(build_fixture_base)
+        .as_ref()
+        .unwrap_or_else(|error| panic!("classifier shared base failed: {error}"))
+}
+
+fn build_fixture_base() -> Result<FixtureBase, String> {
+    let source = repo_root()?;
+    let root = fixture_root(&source, "shared-base")?;
+    fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    for path in [
+        ".gitignore",
+        "rust-toolchain.toml",
+        "build/Cargo.toml",
+        "build/Cargo.lock",
+        "build/architecture-policy.toml",
+        "build/tooling-policy.toml",
+        "build/rule-to-proof.toml",
+        "build/deny.toml",
+        "build/tools/fforager-xtask/Cargo.toml",
+        "product/MODEL_MANUAL.md",
+        ".GOV/codex.yaml",
+        ".GOV/id-registry.yaml",
+        ".GOV/rules/build-rules.yaml",
+        ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
+        ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
+        ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+        ".GOV/topology.yaml",
+    ] {
+        let destination = root.join(path);
+        fs::create_dir_all(destination.parent().unwrap()).map_err(|error| error.to_string())?;
+        fs::copy(source.join(path), destination).map_err(|error| error.to_string())?;
+    }
+    for path in [
+        "build/fixtures/architecture",
+        "build/fixtures/contracts",
+        "build/fixtures/resource-durability-models",
+        "build/fixtures/transport-v1",
+        "build/crates/fforager-transport",
+        "build/crates/fforager-testkit",
+        "build/tools/fforager-xtask/src",
+        "product/crates",
+    ] {
+        fs::create_dir_all(root.join(path)).map_err(|error| error.to_string())?;
+    }
+    command_output(&root, "git", &["init", "--quiet"])?;
+    command_output(
+        &root,
+        "git",
+        &["config", "user.name", "Ferric-classifier-proof"],
+    )?;
+    command_output(
+        &root,
+        "git",
+        &["config", "user.email", "classifier-proof@example.invalid"],
+    )?;
+    command_output(&root, "git", &["add", "."])?;
+    command_output(
+        &root,
+        "git",
+        &["commit", "--quiet", "-m", "Classifier base"],
+    )?;
+    let sha = command_output(&root, "git", &["rev-parse", "HEAD"])?;
+    Ok(FixtureBase {
+        root,
+        sha: sha.trim().to_owned(),
+    })
+}
+
 impl Fixture {
     fn new(label: &str, mutate: impl FnOnce(&mut Value)) -> Self {
         let source = repo_root().unwrap();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = source
-            .join(".fforager-artifacts/test-runs")
-            .join(format!("classifier-{label}-{}-{nonce}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        for path in [
-            ".gitignore",
-            "rust-toolchain.toml",
-            "build/Cargo.toml",
-            "build/Cargo.lock",
-            "build/architecture-policy.toml",
-            "build/tooling-policy.toml",
-            "build/rule-to-proof.toml",
-            "build/deny.toml",
-            "build/tools/fforager-xtask/Cargo.toml",
-            "product/MODEL_MANUAL.md",
-            ".GOV/codex.yaml",
-            ".GOV/id-registry.yaml",
-            ".GOV/rules/build-rules.yaml",
-            ".GOV/spec/ferric_forager_technical_design_v0.3.0.md",
-            ".GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json",
-            ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
-            ".GOV/topology.yaml",
-        ] {
-            let destination = root.join(path);
-            fs::create_dir_all(destination.parent().unwrap()).unwrap();
-            fs::copy(source.join(path), destination).unwrap();
-        }
-        for path in [
-            "build/fixtures/architecture",
-            "build/fixtures/contracts",
-            "build/fixtures/resource-durability-models",
-            "build/fixtures/transport-v1",
-            "build/crates/fforager-transport",
-            "build/crates/fforager-testkit",
-            "build/tools/fforager-xtask/src",
-            "product/crates",
-        ] {
-            fs::create_dir_all(root.join(path)).unwrap();
-        }
-        git(&root, &["init", "--quiet"]);
-        git(&root, &["config", "user.name", "Ferric-classifier-proof"]);
-        git(
-            &root,
-            &["config", "user.email", "classifier-proof@example.invalid"],
-        );
-        git(&root, &["add", "."]);
-        git(&root, &["commit", "--quiet", "-m", "Classifier base"]);
-        let base = git(&root, &["rev-parse", "HEAD"]);
+        let base = fixture_base();
+        let root = fixture_root(&source, label).unwrap();
+        copy_fixture_tree(&base.root, &root).unwrap();
         let mut packet: Value = serde_json::from_slice(ORIGINAL_WP020_PACKET).unwrap();
         packet["lifecycle"]["status"] = Value::String("IN_PROGRESS".to_owned());
-        packet["source_control"]["base_sha"] = Value::String(base.trim().to_owned());
+        packet["source_control"]["base_sha"] = Value::String(base.sha.clone());
         mutate(&mut packet);
         let fixture = Self { root, packet };
         fixture.write_packet();
@@ -183,6 +219,89 @@ impl Drop for Fixture {
 
 fn git(root: &Path, args: &[&str]) -> String {
     command_output(root, "git", args).unwrap()
+}
+
+#[test]
+fn classifier_fixture_copies_keep_git_state_independent() {
+    let first = Fixture::new("copy-isolation-first", |_| {});
+    let second = Fixture::new("copy-isolation-second", |packet| {
+        packet["acceptance_matrix"][0]["requirement"] =
+            serde_json::json!("Independent fixture copy control");
+    });
+    let base = fixture_base();
+    assert_eq!(first.packet["source_control"]["base_sha"], base.sha);
+    assert_eq!(second.packet["source_control"]["base_sha"], base.sha);
+    assert_eq!(
+        first.packet["extensions"]["non_product_prerequisite"],
+        second.packet["extensions"]["non_product_prerequisite"]
+    );
+    let second_head = git(&second.root, &["rev-parse", "HEAD"]);
+    assert_ne!(git(&first.root, &["rev-parse", "HEAD"]), second_head);
+    let branch = fs::read_to_string(base.root.join(".git/HEAD")).unwrap();
+    let branch = branch.trim().strip_prefix("ref: ").unwrap();
+    let object = format!(".git/objects/{}/{}", &base.sha[..2], &base.sha[2..]);
+    let paths = [".git/index".to_owned(), format!(".git/{branch}"), object];
+    let expected: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            (
+                fs::read(base.root.join(path)).unwrap(),
+                fs::read(second.root.join(path)).unwrap(),
+            )
+        })
+        .collect();
+    for (path, (base_bytes, second_bytes)) in paths.iter().zip(expected) {
+        let target = first.root.join(path);
+        assert!(target.is_file(), "{path}");
+        #[cfg(windows)]
+        if fs::metadata(&target).unwrap().permissions().readonly() {
+            let attrib =
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/attrib.exe");
+            command_output(
+                &first.root,
+                attrib.to_str().unwrap(),
+                &["-R", target.to_str().unwrap()],
+            )
+            .unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&target).unwrap().permissions();
+            permissions.set_mode(permissions.mode() | 0o200);
+            fs::set_permissions(&target, permissions).unwrap();
+        }
+        // In-place writes expose accidental hardlinks that atomic replacement hides.
+        fs::write(target, b"corrupted first copy").unwrap();
+        assert_eq!(
+            fs::read(base.root.join(path)).unwrap(),
+            base_bytes,
+            "{path}"
+        );
+        assert_eq!(
+            fs::read(second.root.join(path)).unwrap(),
+            second_bytes,
+            "{path}"
+        );
+    }
+    let base_path = base.root.to_str().unwrap();
+    assert_eq!(
+        git(&second.root, &["-C", base_path, "rev-parse", "HEAD"]).trim(),
+        base.sha
+    );
+    assert_eq!(git(&second.root, &["rev-parse", "HEAD"]), second_head);
+    assert_eq!(
+        git(
+            &second.root,
+            &["-C", base_path, "cat-file", "-t", &base.sha]
+        )
+        .trim(),
+        "commit"
+    );
+    assert_eq!(
+        git(&second.root, &["cat-file", "-t", &base.sha]).trim(),
+        "commit"
+    );
 }
 
 #[test]
