@@ -66,9 +66,10 @@ fn dxf_entities_become_layered_paths_in_points() {
     assert_eq!(p.provenance.source_unit, "mm");
     let names = layer_names(&p);
     assert!(names.iter().any(|n| n == "Outline") && names.iter().any(|n| n == "Detail"), "{names:?}");
-    // Drawing bounds: x 0..100 mm, y 0..(100 + bulge semicircle radius 10) mm; top = 110 mm.
+    // Drawing bounds: x 0..100 mm, y 0..100 mm (the bulge 1 semicircle from (0,100) to (20,100) is
+    // counter-clockwise, so it bulges below the chord); top = 100 mm.
     let mm = 72.0 / 25.4;
-    let top = 110.0 * mm;
+    let top = 100.0 * mm;
     assert!(near(pt(&p, 0, 0), [0.0, top]), "line start {:?}", pt(&p, 0, 0));
     assert!(near(pt(&p, 0, 1), [100.0 * mm, top]), "line end {:?}", pt(&p, 0, 1));
     assert!(p.paths.len() >= 5, "five drawn entities, got {}", p.paths.len());

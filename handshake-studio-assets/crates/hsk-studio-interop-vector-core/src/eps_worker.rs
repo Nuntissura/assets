@@ -83,8 +83,14 @@ mod host {
     use crate::error::{Result, VectorError};
     use hsk_studio_accord::CancellationToken;
     use hsk_studio_worker::{
-        Classified, EXIT_PATIENCE, Failure, JOB_CAPS_AVAILABLE, OsLimits, ReadFailure, SpawnError, StartRequest, Supervisor, SupervisorConfig, resolve_program,
+        Classified, EXIT_PATIENCE, Failure, JOB_CAPS_AVAILABLE, OsLimits, ReadFailure, SpawnError, StartRequest, Supervisor, SupervisorConfig, Waited, after, resolve_program,
     };
+    use std::time::Instant;
+
+    /// How often a running conversion is checked for a memory-cap event. An allocation the Job
+    /// Object refuses aborts the worker through a fast-fail that the crash reporter may hold for
+    /// seconds; the kernel's memory notice arrives at once, so the host reclaims the worker on it.
+    const MEMORY_POLL: Duration = Duration::from_millis(100);
     use std::path::PathBuf;
     use std::process::ChildStdout;
     use std::time::Duration;
@@ -172,6 +178,7 @@ mod host {
     fn classified(c: Classified<&'static str>, memory: bool) -> VectorError {
         match c {
             Classified::Canceled => VectorError::Canceled,
+            Classified::Deadline | Classified::Crashed { .. } if memory => VectorError::EpsConversionFailed("memory_cap"),
             Classified::Deadline => VectorError::EpsConversionFailed("deadline"),
             Classified::Crashed { .. } if memory => VectorError::EpsConversionFailed("memory_cap"),
             Classified::Crashed { .. } => VectorError::EpsConversionFailed("crashed"),
@@ -215,15 +222,32 @@ mod host {
             payload.push(TAG_CONVERT);
             payload.extend_from_slice(&self.options.max_output_bytes.to_le_bytes());
             payload.extend_from_slice(postscript);
-            let reply = session.exchange(payload, self.options.max_output_bytes, self.options.deadline, cancel);
-            let reply = match reply {
-                Ok(frame) => frame,
-                Err(failure) => {
-                    let failure: Failure<&'static str> = failure;
-                    let (c, _) = session.fail(failure);
-                    let memory = session.drain_os_events().memory;
-                    return Err(classified(c, memory));
-                }
+            if !session.send_request(payload, self.options.max_output_bytes) {
+                let (c, _) = session.fail(Failure::Read(ReadFailure::Closed));
+                return Err(classified(c, false));
+            }
+            let until = after(self.options.deadline);
+            let reply = loop {
+                let slice = after(MEMORY_POLL).min(until);
+                let failure: Failure<&'static str> = match session.wait(cancel, slice) {
+                    Waited::Frame(frame) => break frame,
+                    Waited::Canceled => Failure::Canceled,
+                    Waited::CpuCap => Failure::Deadline,
+                    Waited::Failed(f) => Failure::Read(f),
+                    Waited::TimedOut => {
+                        if session.drain_os_events().memory {
+                            session.fail(Failure::Deadline);
+                            return Err(VectorError::EpsConversionFailed("memory_cap"));
+                        }
+                        if Instant::now() < until {
+                            continue;
+                        }
+                        Failure::Deadline
+                    }
+                };
+                let (c, _) = session.fail(failure);
+                let memory = session.drain_os_events().memory;
+                return Err(classified(c, memory));
             };
             // One conversion per process: close stdin and reap (the worker exits at end of input).
             session.terminate(EXIT_PATIENCE);

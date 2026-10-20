@@ -75,7 +75,7 @@ fn postscript_loops_and_bombs_are_contained() {
     let bomb = "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n%%EndComments\n[ 0 1 100000 { pop 16000000 string } for ]\n";
     let b = convert(&c, bomb).err();
     if hsk_studio_worker_caps() {
-        assert!(matches!(b, Some(VectorError::EpsConversionFailed("memory_cap" | "crashed" | "postscript_error"))), "memory bomb under the 256 MiB cap: {b:?}");
+        assert_eq!(b, Some(VectorError::EpsConversionFailed("memory_cap")), "memory bomb under the 256 MiB cap");
     } else {
         println!("NOT_PROVEN: no Job Object caps in this build; memory bomb ended as {b:?} (deadline only)");
     }
@@ -108,12 +108,17 @@ fn file_operators_are_denied_in_the_worker() {
         "(%stdin) (r) file read pop pop".to_owned(),
         "(%stdout) (w) file (junk) writestring".to_owned(),
     ];
+    // Plain PostScript (no EPSF line): the interpreter reports the program's errors (for EPSF it
+    // tolerates them and keeps the page), so each denied operator surfaces as postscript_error.
+    let program = |op: &str| format!("%!PS-Adobe-3.0\n{op}\n0 0 10 10 rectfill showpage\n");
+    assert!(convert(&c, &program("")).expect("control program").starts_with(b"%PDF-"));
+    assert_eq!(convert(&c, &program("1 0 div")).err(), Some(VectorError::EpsConversionFailed("postscript_error")), "errors surface");
     for op in &attempts {
-        let ps = format!("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n%%EndComments\n{op}\n0 0 10 10 rectfill showpage\n");
-        assert_eq!(convert(&c, &ps).err(), Some(VectorError::EpsConversionFailed("postscript_error")), "{op}");
+        assert_eq!(convert(&c, &program(op)).err(), Some(VectorError::EpsConversionFailed("postscript_error")), "{op}");
     }
-    // `status` reports the disk file as absent; the page still renders.
-    let status = format!("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n%%EndComments\n({}) status {{ 1 0 0 setrgbcolor }} if 0 0 10 10 rectfill showpage\n", ps_path(&secret));
+    // `status` reports the disk file as absent: the program would fail (undefined `nosuchop`) if
+    // it saw the file.
+    let status = program(&format!("({}) status {{ nosuchop }} if", ps_path(&secret)));
     assert!(convert(&c, &status).expect("status program").starts_with(b"%PDF-"));
     assert_eq!(std::fs::read(&secret).expect("secret intact"), b"secret");
     assert!(!target.exists(), "nothing was written");
