@@ -1,7 +1,7 @@
 schema: assets.index.v1
 updated_at: '2026-10-20'
 coverage: partial
-coverage_note: Cabinet, Peak, the listed Notes package and standalone Handshake modules are indexed. Other asset folders are not yet catalogued.
+coverage_note: Cabinet, Peak, the listed Notes packages and standalone Handshake modules are indexed. Other asset folders are not yet catalogued.
 assets:
   - id: CABINET-ASSET-001
     name: Cabinet
@@ -62,3 +62,9 @@ assets:
         role: logic
         api: Notes/handshake_rich_document_model/src/lib.rs
         depends_on: []
+      - name: handshake_rich_formatting
+        manifest: handshake_rich_formatting/Cargo.toml
+        role: logic
+        api: handshake_rich_formatting/src/lib.rs
+        depends_on:
+          - handshake_rich_document_model
