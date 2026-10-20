@@ -21,11 +21,13 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::pipeline::{PipelineFault, Stage, guarded};
 use hsk_studio_pigment::adjust_math::AdjustmentKind;
-use hsk_studio_pigment::blend_math::{Applicability, Exactness, Family, MODES, StudioBlendMode};
+use hsk_studio_pigment::blend_math::{
+    Applicability, Exactness, Family, MODES, StudioBlendMode, fill_inside_blend,
+};
 
 pub(crate) const WORKGROUP_SIDE: u32 = 8;
 /// Size of the uniform block in `kernel.wgsl` (`Params`).
-pub(crate) const PARAMS_BYTES: u64 = 64;
+pub(crate) const PARAMS_BYTES: u64 = 80;
 /// Bytes per destination/source texel: RGBA f32.
 pub(crate) const TEXEL_BYTES: u64 = 16;
 /// Bytes per mask texel: coverage f32.
@@ -246,7 +248,7 @@ pub(crate) fn shader_source() -> String {
             .replace("//@BLEND_IF@", ""),
         pixel.replace("@ENTRY@", "composite_ext").replace(
             "//@BLEND_IF@",
-            "opacity = opacity * blend_if_weight(s.rgb, b.rgb);"
+            "let bw = blend_if_weight(s.rgb, b.rgb, b.a); opacity = opacity * bw; unfilled = unfilled * bw;"
         )
     );
     let mut functions = String::new();
@@ -280,6 +282,33 @@ pub(crate) fn shader_source() -> String {
             ));
         }
     }
+    // Photoshop's special-eight modes (pigment `fill_inside_blend`, `composite_over_fill`).
+    let special: Vec<String> = MODES
+        .iter()
+        .filter(|f| fill_inside_blend(f.mode))
+        .map(|f| format!("mode == {}u", f.mode.discriminant()))
+        .collect();
+    let d = |m: StudioBlendMode| m.discriminant();
+    functions.push_str(&format!(
+        "fn fill_inside(mode: u32) -> bool {{
+    return {};
+}}
+         fn fill_source(mode: u32, s: f32, f: f32) -> f32 {{
+             if (mode == {}u || mode == {}u) {{ return 1.0 - (1.0 - s) * f; }}
+             if (mode == {}u || mode == {}u) {{ return 0.5 + (s - 0.5) * f; }}
+             return s * f;
+}}
+         fn is_hard_mix(mode: u32) -> bool {{
+    return mode == {}u;
+}}
+",
+        if special.is_empty() { "false".to_string() } else { special.join(" || ") },
+        d(StudioBlendMode::ColourBurn),
+        d(StudioBlendMode::LinearBurn),
+        d(StudioBlendMode::VividLight),
+        d(StudioBlendMode::LinearLight),
+        d(StudioBlendMode::HardMix),
+    ));
     let mut wgsl = include_str!("kernel.wgsl")
         .replace("//@PIXEL_ENTRIES@", &entries)
         .replace("//@BLEND_FUNCTIONS@", &functions)
@@ -346,11 +375,21 @@ pub(crate) struct LayerParams {
     pub source: SourceKind,
     pub has_mask: bool,
     pub opacity: f32,
+    /// The opacity without the fill and the fill (lane SMB-PS-ORACLE-PARITY-1): a unit-range
+    /// special-eight mode with `fill < 1` composites with pigment `composite_over_fill`.
+    pub unfilled: f32,
+    pub fill: f32,
     /// Clip-run base initialisation: replace the (cleared) destination with the source texel
     /// scaled by the mask, ignoring opacity and mode.
     pub replace: bool,
     /// Clipped layer inside a run: source alpha times the destination's alpha, alpha held.
     pub clip: bool,
+    /// `flags` bit 3: the source counts as fully covering (alpha 1), the content of an interior
+    /// unit (lane SMB-PS-ORACLE-PARITY-1).
+    pub opaque_source: bool,
+    /// `flags` bit 4: pigment `interior_mix` of the destination (below) and the source (the
+    /// interior unit) by the mask (the shape alpha).
+    pub mix: bool,
     /// Mask density (`1.0` = plain mask: the shader leaves the coverage bit-for-bit).
     pub density: f32,
     /// Extended-range output stage: `flags` bit 2, no unit clamp in the kernel.
@@ -365,13 +404,16 @@ impl LayerParams {
         };
         let flags = u32::from(self.replace)
             | if self.clip { 2 } else { 0 }
+            | if self.opaque_source { 8 } else { 0 }
+            | if self.mix { 16 } else { 0 }
             | if self.extended {
                 crate::plan_sink::EXTENDED_FLAG
             } else {
                 0
             };
-        // The 16 words of `Params` in declaration order (the solid colour starts at byte 48).
-        let words: [[u8; 4]; 16] = [
+        // The 20 words of `Params` in declaration order (the solid colour starts at byte 48, the
+        // fill split at byte 64).
+        let words: [[u8; 4]; 20] = [
             self.chunk_w.to_ne_bytes(),
             self.chunk_h.to_ne_bytes(),
             self.region[0].to_ne_bytes(),
@@ -388,6 +430,10 @@ impl LayerParams {
             solid[1].to_ne_bytes(),
             solid[2].to_ne_bytes(),
             solid[3].to_ne_bytes(),
+            self.fill.to_ne_bytes(),
+            self.unfilled.to_ne_bytes(),
+            [0; 4],
+            [0; 4],
         ];
         let mut out = [0u8; PARAMS_BYTES as usize];
         for (slot, word) in out.chunks_exact_mut(4).zip(words) {

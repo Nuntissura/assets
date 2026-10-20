@@ -16,11 +16,15 @@ struct Params {
     rh: u32,
     mode: u32,     // pigment StudioBlendMode discriminant
     kind: u32,     // 0 solid fill, 1 region buffer (rw*rh texels), 2 chunk-sized buffer (group result)
-    opacity: f32,  // layer opacity * fill opacity
+    opacity: f32,  // layer opacity * fill opacity (the product fold)
     has_mask: u32, // 1: mask[] holds rw*rh f32 coverages (inversion already applied)
     flags: u32,    // bit 0: REPLACE (clip-run base init), bit 1: CLIP (clipped layer inside a run)
     density: f32,  // mask density; the density step runs only when it is not exactly 1.0
     solid: vec4<f32>,
+    fill: f32,     // fill opacity alone: a special-eight mode with fill < 1 applies it in the blend
+    unfilled: f32, // layer opacity without the fill (pigment composite_over_fill)
+    pad_f0: u32,
+    pad_f1: u32,
 }
 
 // Plan-extension envelope parameters of one dispatch (ext.rs `ext_bytes`, 288 bytes).
@@ -174,25 +178,14 @@ fn blend(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
 
 // ---- envelope operators (read bindings 4 and 5; never reachable from `composite`) ----
 
-// coverage_math::range_weight: ramp_up(v; black_start, black_end) * ramp_down(v; white_start,
-// white_end). A collapsed pair is a hard cut (the divisions are unreachable then).
+// coverage_math::range_weight: Photoshop's inclusive integer ramps on the 0..255 scale (lane
+// SMB-PS-ORACLE-PARITY-1): up = clamp((v - bs + 1) / (be - bs + 1)), down = clamp((we + 1 - v) /
+// (we - ws + 1)), all in levels.
 fn range_weight(v: f32, r: vec4<f32>) -> f32 {
-    var up: f32;
-    if (v < r.x) {
-        up = 0.0;
-    } else if (v >= r.y) {
-        up = 1.0;
-    } else {
-        up = (v - r.x) / (r.y - r.x);
-    }
-    var down: f32;
-    if (v <= r.z) {
-        down = 1.0;
-    } else if (v > r.w) {
-        down = 0.0;
-    } else {
-        down = (r.w - v) / (r.w - r.z);
-    }
+    let l = v * 255.0;
+    let q = r * 255.0;
+    let up = clamp((l - q.x + 1.0) / (q.y - q.x + 1.0), 0.0, 1.0);
+    let down = clamp((q.w + 1.0 - l) / (q.w - q.z + 1.0), 0.0, 1.0);
     return up * down;
 }
 
@@ -209,19 +202,26 @@ fn blend_if_value(ch: u32, c: vec3<f32>) -> f32 {
             return c.z;
         }
         default: {
-            return hsk_lum(c);
+            // coverage_math::blend_if_value: the gray rounded to a whole level
+            return clamp(floor(hsk_lum(c) * 255.0 + 0.5) / 255.0, 0.0, 1.0); // Rust f32::round (half away) for v >= 0
         }
     }
 }
 
 // coverage_math::blend_if_weight: product over the entries, in plan order, of the weight of the
 // layer colour under its range and of the backdrop colour under its range.
-fn blend_if_weight(source_rgb: vec3<f32>, backdrop_rgb: vec3<f32>) -> f32 {
+// coverage_math::blend_if_weight_over: an Underlying weight counts as 1 - ab (1 - w).
+fn blend_if_weight(source_rgb: vec3<f32>, backdrop_rgb: vec3<f32>, backdrop_a: f32) -> f32 {
     var w: f32 = 1.0;
     for (var i = 0u; i < ext.head.x; i = i + 1u) {
         let ch = ext.bi_ch[i];
         w = w * range_weight(blend_if_value(ch, source_rgb), ext.bi_src[i]);
-        w = w * range_weight(blend_if_value(ch, backdrop_rgb), ext.bi_dst[i]);
+        let under = range_weight(blend_if_value(ch, backdrop_rgb), ext.bi_dst[i]);
+        if (backdrop_a >= 1.0) {
+            w = w * under;
+        } else {
+            w = w * (1.0 - backdrop_a * (1.0 - under));
+        }
     }
     return w;
 }
@@ -229,10 +229,30 @@ fn blend_if_weight(source_rgb: vec3<f32>, backdrop_rgb: vec3<f32>) -> f32 {
 // ---- adjustment maths: transcriptions of hsk_studio_pigment::adjust_math (the owner); parity is
 // tested against it. Parameters are read from `ext.adj` (layout per kind in ext.rs). ----
 
+// adjust_math::levels_gamma (lane SMB-PS-ORACLE-PARITY-1): the power with Photoshop's toe near
+// black for 1 < gamma <= 2 (cubic Hermite from slope 2^gamma at 0 to the power at 2^gamma / 32).
+fn levels_gamma(v: f32, g: f32) -> f32 {
+    let e = 1.0 / g;
+    if (g > 1.0 && g <= 2.0) {
+        let s0 = exp2(g);
+        let x0 = s0 / 32.0;
+        if (v < x0) {
+            let y1 = pow(x0, e);
+            let m1 = e * y1;
+            let m0 = s0 * x0;
+            let t = v / x0;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            return (t3 - 2.0 * t2 + t) * m0 + (3.0 * t2 - 2.0 * t3) * y1 + (t3 - t2) * m1;
+        }
+    }
+    return pow(v, e);
+}
+
 fn levels_map(x: f32, ib: f32, iw: f32, g: f32, ob: f32, ow: f32) -> f32 {
     var v = clamp((x - ib) / (iw - ib), 0.0, 1.0);
     if (g != 1.0 && v > 0.0) {
-        v = pow(v, 1.0 / g);
+        v = levels_gamma(v, g);
     }
     return clamp(ob + v * (ow - ob), 0.0, 1.0);
 }
@@ -801,7 +821,7 @@ fn adjust(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     let adjusted = adjust_apply(b.rgb);
-    let k = p.opacity * m * blend_if_weight(adjusted, b.rgb);
+    let k = p.opacity * m * blend_if_weight(adjusted, b.rgb, b.a);
     let blended = blend(p.mode, b.rgb, adjusted);
     if (extended) {
         // pigment composite_adjustment_in: the lerp unclamped; a non-finite result is the marker.

@@ -17,7 +17,7 @@ use hsk_studio_pigment::blend_math::{
     composite_over, evaluate_stack,
 };
 use hsk_studio_pigment::coverage_math::{
-    BlendChannel, BlendRangeEntry, IDENTITY_RANGE, blend_if_weight, feather_kernel, mask_coverage,
+    BlendChannel, BlendRangeEntry, IDENTITY_RANGE, blend_if_weight_over, feather_kernel, mask_coverage,
 };
 use hsk_studio_pigment::effect_math::{
     ColourOverlayOp, DropShadowOp, EffectKind, EffectOp, EffectPlane, GlowFill, GlowSource,
@@ -1620,8 +1620,9 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     assert_eq!((stats.chunk_width, stats.chunk_height), (16, 16));
     assert_eq!(stats.bytes_read_back, 37 * 29 * 16);
     assert!(stats.bytes_uploaded > 0 && stats.dispatches >= 5);
-    // dst + staging + upload chunk buffers, 64-byte params, minimal 4-byte mask binding
-    assert_eq!(receipt.peak_working_bytes, 3 * 16 * 16 * 16 + 64 + 4);
+    // dst + staging + upload chunk buffers, 80-byte params (the fill split of lane
+    // SMB-PS-ORACLE-PARITY-1), minimal 4-byte mask binding
+    assert_eq!(receipt.peak_working_bytes, 3 * 16 * 16 * 16 + 80 + 4);
     assert_eq!(backend.resident_bytes(), 0);
 
     // (c) sink rejection mid-read-back and an impossible budget both release residency and
@@ -1737,10 +1738,12 @@ impl Reference<'_> {
         };
         mask_coverage(raw, m.inverted, m.density).expect("mask coverage")
     }
-    /// Blend-If weight of a layer at (source colour, backdrop colour); 1 without entries.
-    fn weight(lx: Option<&LayerExtension>, source: [f32; 3], backdrop: [f32; 3]) -> f32 {
+    /// Blend-If weight of a layer at (source colour, backdrop colour and alpha); 1 without entries
+    /// (pigment `blend_if_weight_over`: an Underlying range weakens over a translucent backdrop,
+    /// lane SMB-PS-ORACLE-PARITY-1).
+    fn weight(lx: Option<&LayerExtension>, source: [f32; 3], backdrop: [f32; 3], backdrop_a: f32) -> f32 {
         lx.map_or(1.0, |e| {
-            blend_if_weight(&e.blend_if, source, backdrop).expect("blend-if weight")
+            blend_if_weight_over(&e.blend_if, source, backdrop, backdrop_a).expect("blend-if weight")
         })
     }
     fn leaf(&self, idx: usize, x: i64, y: i64) -> Option<[f32; 4]> {
@@ -1810,7 +1813,7 @@ impl Reference<'_> {
         } else {
             cb
         };
-        let w = Self::weight(Some(lx), adjusted, cb);
+        let w = Self::weight(Some(lx), adjusted, cb, backdrop[3]);
         let k = l.opacity * l.fill_opacity * mask * w;
         let out = composite_adjustment(l.mode, Rgba::new(cb, backdrop[3]), &prepared, k)
             .expect("reference adjustment");
@@ -1833,7 +1836,7 @@ impl Reference<'_> {
             return;
         };
         let m = l.mask.as_ref().map_or(1.0, |m| self.mask_with(m, lx, x, y));
-        let w = Self::weight(lx, [s[0], s[1], s[2]], [dst[0], dst[1], dst[2]]);
+        let w = Self::weight(lx, [s[0], s[1], s[2]], [dst[0], dst[1], dst[2]], dst[3]);
         over(dst, l.mode, s, l.opacity * l.fill_opacity * m * w);
     }
     /// `run = [base, clipped...]`: G = base content with the base's mask; each clipped layer is
@@ -1866,7 +1869,7 @@ impl Reference<'_> {
             let Some(s) = self.source(c, x, y) else {
                 continue;
             };
-            let w = Self::weight(cx, [s[0], s[1], s[2]], [g[0], g[1], g[2]]);
+            let w = Self::weight(cx, [s[0], s[1], s[2]], [g[0], g[1], g[2]], g[3]);
             let opacity = c.opacity * c.fill_opacity * w;
             let clipped_alpha = s[3] * a_base;
             if opacity <= 0.0 || clipped_alpha <= 0.0 {
@@ -1882,7 +1885,7 @@ impl Reference<'_> {
             .expect("reference clip blend");
             g = [out.rgb[0], out.rgb[1], out.rgb[2], a_base];
         }
-        let w = Self::weight(base_ext, [g[0], g[1], g[2]], [dst[0], dst[1], dst[2]]);
+        let w = Self::weight(base_ext, [g[0], g[1], g[2]], [dst[0], dst[1], dst[2]], dst[3]);
         over(dst, base.mode, g, base.opacity * base.fill_opacity * w);
     }
 }
@@ -2167,7 +2170,7 @@ fn gpu_modes_masks_groups_clip_parity() {
     // 3 destination levels + staging + upload + mask + params, 16 x 16 chunk buffers
     assert_eq!(
         receipt.peak_working_bytes,
-        4 * 16 * 16 * 16 + 16 * 16 * 16 + 16 * 16 * 4 + 64
+        4 * 16 * 16 * 16 + 16 * 16 * 16 + 16 * 16 * 4 + 80
     );
     assert_eq!(backend.resident_bytes(), 0);
 
@@ -3839,7 +3842,7 @@ fn ext_blend_if_agrees_with_pigment_evaluate_stack() {
                     } else {
                         cb.rgb
                     };
-                    let w = blend_if_weight(entries, adjusted, cb.rgb).expect("weight");
+                    let w = blend_if_weight_over(entries, adjusted, cb.rgb, cb.a).expect("weight");
                     if cb.a > 0.0 && w > 0.0 && w < 1.0 {
                         partial_weights += 1;
                     }
@@ -3917,7 +3920,7 @@ fn ext_blend_if_agrees_with_pigment_evaluate_stack() {
             for x in 0..extent.width {
                 let cb = stack_backdrop(&sources.tiles[0].1, x, y, &ctx);
                 let s = sources.tiles[1].1.pixel(x, y);
-                let w = blend_if_weight(entries, [s[0], s[1], s[2]], cb.rgb).expect("weight");
+                let w = blend_if_weight_over(entries, [s[0], s[1], s[2]], cb.rgb, cb.a).expect("weight");
                 let want = evaluate_stack(
                     &[
                         StackNode::Leaf {

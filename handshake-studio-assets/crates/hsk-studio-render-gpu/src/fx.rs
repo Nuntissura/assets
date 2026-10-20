@@ -1,7 +1,9 @@
 //! Host side of the layer-effect passes (pigment `effect_math`, wave 1 and wave 2). The maths is
 //! pigment's single owner (CX-CAP-001): the split of a size into a hard and a soft part
-//! (`shadow_split`), the whole-pixel offset (`shadow_offset`), the Gaussian taps (`feather_kernel`)
-//! and the margin an effect reads (`effect_support_px`) are called here, never redefined. The
+//! (`shadow_split`), the whole-pixel offset (`shadow_offset`), the effect tent taps
+//! (`effect_blur_kernel`, shadows, glows, satin, bevel soften), the Gaussian taps of the bevel height
+//! field (`feather_kernel`), the knockout rescale (`knockout_coverage`, FINISH mode 0) and the
+//! margin an effect reads (`effect_support_px`) are called here, never redefined. The
 //! per-pixel loops of the matte chain are the WGSL transcriptions in `fx.wgsl`, checked by parity
 //! tests against `render_layer_reference`.
 //!
@@ -14,8 +16,8 @@
 use hsk_studio_pigment::coverage_math::feather_kernel;
 use hsk_studio_pigment::effect_math::{
     BevelEmbossOp, BevelPart, BevelStyle, BevelTechnique, EffectError, EffectOp, EffectOrder,
-    GlowSource, GradientOverlayOp, PatternOverlayOp, SatinOp, StrokePosition, effect_support_px, shadow_offset,
-    shadow_split,
+    GlowSource, GradientOverlayOp, PatternOverlayOp, SatinOp, StrokePosition, effect_blur_kernel,
+    effect_support_px, shadow_offset, shadow_split,
 };
 use hsk_studio_pigment::render_plan::{ExtOperator, StudioBlendMode};
 
@@ -41,9 +43,17 @@ const OP_CHISEL: u32 = 7;
 
 /// FINISH modes added by lane SMB-PS-ADJUST-STYLES-2 (fx.wgsl): satin `|fin - fin2| a`, satin
 /// inverted `(1 - |fin - fin2|) a`, the union `max(fin, a)` of a stroke and the shape.
-const FINISH_SATIN: u32 = 4;
-const FINISH_SATIN_INVERTED: u32 = 5;
+// FINISH 4 and 5 (`|fin - fin2| a`, `(1 - |fin - fin2|) a`) stay in fx.wgsl; satin compiles to
+// its interior forms 8 and 9 since lane SMB-PS-ORACLE-PARITY-1.
 const FINISH_UNION: u32 = 6;
+/// Interior coverages (lane SMB-PS-ORACLE-PARITY-1, pigment `reference_interior_matte`): `1 - fin`
+/// (inner glow from the centre), satin `|fin - fin2|` and inverted satin `1 - |fin - fin2|`, none
+/// multiplied by the shape alpha.
+const FINISH_ONE_MINUS: u32 = 7;
+const FINISH_SATIN_INTERIOR: u32 = 8;
+const FINISH_SATIN_INTERIOR_INVERTED: u32 = 9;
+/// INIT mode of a plane of ones (the interior coverage of the overlays).
+const INIT_ONES: u32 = 4;
 
 /// Buffers a pass reads and writes: three f32 scratch planes and the matte buffer (the mask buffer
 /// of the composite kernels, so the matte composites through the existing kernel).
@@ -66,6 +76,9 @@ pub(crate) struct FxStep {
     taps: Option<usize>,
     r: f32,
     outside: f32,
+    /// FINISH mode 0 (drop-shadow knockout): the layer's `opacity * fill` of pigment
+    /// `knockout_coverage`.
+    knock: f32,
     dx: i32,
     dy: i32,
     /// BEVEL: the shading constants `(k, light x, light y, light z, flat)` in the parameter tail.
@@ -85,6 +98,7 @@ impl FxStep {
             taps: None,
             r: 0.0,
             outside: 0.0,
+            knock: 0.0,
             dx: 0,
             dy: 0,
             extra: [0.0; 8],
@@ -124,22 +138,40 @@ fn from_effect(e: EffectError) -> FxError {
     }
 }
 
-/// Blur kernels shared by all effects of a plan, keyed by the blur radius. `bytes` is the running
-/// aggregate charged against the working-byte limit before a kernel is stored.
+/// Which pigment kernel a blur pass uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlurKind {
+    /// `effect_math::effect_blur_kernel` (drop and inner shadow, glows, satin, bevel soften).
+    Tent,
+    /// `coverage_math::feather_kernel` (bevel height field, chisel soft).
+    Gauss,
+}
+
+/// The taps of a blur of `blur_px` of `kind` (pigment's kernels).
+fn kernel_taps(kind: BlurKind, blur_px: f32) -> Result<Vec<f32>, FxError> {
+    match kind {
+        BlurKind::Tent => effect_blur_kernel(blur_px).map_err(|_| FxError::Unsupported("effect_size")),
+        BlurKind::Gauss => feather_kernel(blur_px).map_err(|_| FxError::Unsupported("effect_size")),
+    }
+}
+
+/// Blur kernels shared by all effects of a plan, keyed by the kernel kind and the blur radius.
+/// `bytes` is the running aggregate charged against the working-byte limit before a kernel is
+/// stored.
 #[derive(Debug, Default)]
 pub(crate) struct FxKernels {
-    entries: Vec<(u32, Vec<f32>)>,
+    entries: Vec<((BlurKind, u32), Vec<f32>)>,
     bytes: u64,
 }
 
 impl FxKernels {
-    /// Index of the kernel of `blur_px`, computing it with pigment's `feather_kernel` on first use.
-    fn intern(&mut self, blur_px: f32, limit: u64) -> Result<usize, FxError> {
-        let key = blur_px.to_bits();
+    /// Index of the kernel of `blur_px` of `kind`, computing it with pigment on first use.
+    fn intern(&mut self, kind: BlurKind, blur_px: f32, limit: u64) -> Result<usize, FxError> {
+        let key = (kind, blur_px.to_bits());
         if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
             return Ok(i);
         }
-        let taps = feather_kernel(blur_px).map_err(|_| FxError::Unsupported("effect_size"))?;
+        let taps = kernel_taps(kind, blur_px)?;
         if taps.len() > MAX_TAPS {
             return Err(FxError::Unsupported("effect_size"));
         }
@@ -168,6 +200,9 @@ pub(crate) struct FxEffect {
     pub(crate) mode: StudioBlendMode,
     pub(crate) opacity: f32,
     pub(crate) over_content: bool,
+    /// An interior effect: its passes end in the interior coverage (not multiplied by the alpha)
+    /// and it composites inside the interior unit.
+    pub(crate) interior: bool,
     /// Largest `window area` of any pass (1 for point passes): the per-pixel cost bound.
     pub(crate) window_ops: u64,
     /// Gradient overlay: the colour and stop opacity per pixel come from pigment's gradient
@@ -184,6 +219,9 @@ pub(crate) struct FxEffect {
 pub(crate) struct FxLayer {
     pub(crate) effects: Vec<FxEffect>,
     pub(crate) margin: u32,
+    /// The stack holds an interior effect (pigment `EffectOp::is_interior`): the content and the
+    /// interior effects compose as one unit mixed back by the shape alpha (`interior_mix`).
+    pub(crate) interior: bool,
 }
 
 /// Choose each pass's buffers: passes alternate between `T0` and `T1`, the last one writes `last`.
@@ -240,11 +278,9 @@ fn matte_chain(
         steps.push(s);
     }
     // The identity kernel [1.0] leaves every sample unchanged (1.0 * v), so no pass is spent on it.
-    let taps_len = feather_kernel(blur_px)
-        .map_err(|_| FxError::Unsupported("effect_size"))?
-        .len();
+    let taps_len = kernel_taps(BlurKind::Tent, blur_px)?.len();
     if taps_len > 1 {
-        let index = kernels.intern(blur_px, limit)?;
+        let index = kernels.intern(BlurKind::Tent, blur_px, limit)?;
         let half = u32::try_from(taps_len.saturating_sub(1) / 2).map_err(|_| FxError::Overflow)?;
         for op in [OP_BLUR_H, OP_BLUR_V] {
             let mut s = FxStep::new(op, 0);
@@ -288,21 +324,23 @@ fn stroke_half(w: f32, outside: bool) -> Result<(Vec<FxStep>, u64), FxError> {
 }
 
 /// Compile one effect of the envelope into passes (the matte chain of pigment's
-/// `reference_matte`, one pass per private helper).
+/// `reference_matte`, one pass per private helper). `layer_of` is the layer's `opacity * fill`,
+/// which a knocked-out drop shadow's FINISH step reads (pigment `knockout_coverage`).
 pub(crate) fn compile_effect(
     op: &EffectOp,
     kernels: &mut FxKernels,
     limit: u64,
+    layer_of: f32,
 ) -> Result<FxEffect, FxError> {
     let (steps, window_ops) = match op {
         EffectOp::ColourOverlay(_) => {
-            let mut steps = vec![FxStep::new(OP_INIT, 0)];
+            let mut steps = vec![FxStep::new(OP_INIT, INIT_ONES)];
             assign(&mut steps, Buf::Mask);
             (steps, 1)
         }
         EffectOp::DropShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px).map_err(from_effect)?;
-            matte_chain(
+            let (mut steps, ops) = matte_chain(
                 kernels,
                 limit,
                 0,
@@ -310,7 +348,11 @@ pub(crate) fn compile_effect(
                 shadow_split(o.size_px, o.spread),
                 offset,
                 o.layer_knocks_out.then_some(0),
-            )?
+            )?;
+            for s in steps.iter_mut().filter(|s| s.op == OP_FINISH && s.mode == 0) {
+                s.knock = layer_of;
+            }
+            (steps, ops)
         }
         EffectOp::OuterGlow(o) => matte_chain(
             kernels,
@@ -323,6 +365,7 @@ pub(crate) fn compile_effect(
         )?,
         EffectOp::InnerShadow(o) => {
             let offset = shadow_offset(o.angle_deg, o.distance_px).map_err(from_effect)?;
+            // the interior coverage: the chain without the multiply by the alpha
             matte_chain(
                 kernels,
                 limit,
@@ -330,7 +373,7 @@ pub(crate) fn compile_effect(
                 1.0,
                 shadow_split(o.size_px, o.choke),
                 offset,
-                Some(1),
+                None,
             )?
         }
         EffectOp::InnerGlow(o) => matte_chain(
@@ -340,10 +383,10 @@ pub(crate) fn compile_effect(
             1.0,
             shadow_split(o.size_px, o.choke),
             (0, 0),
-            Some(match o.source {
-                GlowSource::Edge => 1,
-                GlowSource::Centre => 2,
-            }),
+            match o.source {
+                GlowSource::Edge => None,
+                GlowSource::Centre => Some(FINISH_ONE_MINUS),
+            },
         )?,
         EffectOp::Stroke(o) => match o.position {
             StrokePosition::Outside => stroke_half(o.size_px, true)?,
@@ -371,7 +414,7 @@ pub(crate) fn compile_effect(
         EffectOp::Satin(o) => satin_steps(o, kernels, limit)?,
         EffectOp::BevelEmboss(o) => bevel_steps(o, kernels, limit)?,
         EffectOp::GradientOverlay(_) | EffectOp::PatternOverlay(_) => {
-            let mut steps = vec![FxStep::new(OP_INIT, 0)];
+            let mut steps = vec![FxStep::new(OP_INIT, INIT_ONES)];
             assign(&mut steps, Buf::Mask);
             (steps, 1)
         }
@@ -385,6 +428,7 @@ pub(crate) fn compile_effect(
         mode: op.mode(),
         opacity: op.opacity(),
         over_content: op.placement() == EffectOrder::OverContent,
+        interior: op.is_interior(),
         window_ops,
         gradient: match op {
             EffectOp::GradientOverlay(o) => Some(*o),
@@ -403,17 +447,15 @@ fn blur_into(
     steps: &mut Vec<FxStep>,
     kernels: &mut FxKernels,
     limit: u64,
-    blur_px: f32,
+    (kind, blur_px): (BlurKind, f32),
     outside: f32,
     (from, via, to): (Buf, Buf, Buf),
 ) -> Result<(Buf, u64), FxError> {
-    let taps_len = feather_kernel(blur_px)
-        .map_err(|_| FxError::Unsupported("effect_size"))?
-        .len();
+    let taps_len = kernel_taps(kind, blur_px)?.len();
     if taps_len <= 1 {
         return Ok((from, 1));
     }
-    let index = kernels.intern(blur_px, limit)?;
+    let index = kernels.intern(kind, blur_px, limit)?;
     let half = u32::try_from(taps_len.saturating_sub(1) / 2).map_err(|_| FxError::Overflow)?;
     for (op, fin, fout) in [(OP_BLUR_H, from, via), (OP_BLUR_V, via, to)] {
         let mut s = FxStep::new(op, 0).explicit(fin, Buf::T2, fout);
@@ -438,7 +480,7 @@ fn satin_steps(
         &mut steps,
         kernels,
         limit,
-        o.size_px,
+        (BlurKind::Tent, o.size_px),
         0.0,
         (Buf::T0, Buf::T1, Buf::T0),
     )?;
@@ -453,10 +495,11 @@ fn satin_steps(
         s.dy = sy;
         steps.push(s);
     }
+    // the interior coverage (satin is an interior effect): no multiply by the alpha
     let finish = if o.invert {
-        FINISH_SATIN_INVERTED
+        FINISH_SATIN_INTERIOR_INVERTED
     } else {
-        FINISH_SATIN
+        FINISH_SATIN_INTERIOR
     };
     steps.push(FxStep::new(OP_FINISH, finish).explicit(Buf::T1, Buf::T2, Buf::Mask));
     Ok((steps, ops))
@@ -532,7 +575,7 @@ fn bevel_steps(
                 &mut steps,
                 kernels,
                 limit,
-                s.size_px,
+                (BlurKind::Gauss, s.size_px),
                 0.0,
                 (Buf::T0, Buf::T1, Buf::T0),
             )?;
@@ -551,7 +594,7 @@ fn bevel_steps(
                     &mut steps,
                     kernels,
                     limit,
-                    s.size_px / 4.0,
+                    (BlurKind::Gauss, s.size_px / 4.0),
                     -1.0,
                     (Buf::T1, Buf::T0, Buf::T1),
                 )?;
@@ -602,7 +645,7 @@ fn bevel_steps(
             &mut steps,
             kernels,
             limit,
-            s.soften_px,
+            (BlurKind::Tent, s.soften_px),
             0.0,
             (out, via, Buf::Mask),
         )?;
@@ -613,6 +656,12 @@ fn bevel_steps(
         }
     }
     Ok((steps, ops))
+}
+
+/// The pass writing the shape alpha (the content frame's alpha) into the mask buffer: the mix
+/// weight of the interior unit (lane SMB-PS-ORACLE-PARITY-1).
+pub(crate) fn shape_alpha_step() -> FxStep {
+    FxStep::new(OP_INIT, 0).explicit(Buf::T1, Buf::T2, Buf::Mask)
 }
 
 /// Margin in pixels an effect reads around the layer bounds (pigment `effect_support_px`).
@@ -649,7 +698,7 @@ pub(crate) fn params_bytes(
         step.dy.to_ne_bytes(),
         step.r.to_ne_bytes(),
         step.outside.to_ne_bytes(),
-        [0; 4],
+        step.knock.to_ne_bytes(),
         [0; 4],
     ];
     let total = usize::try_from(FXP_BYTES).map_err(|_| FxError::Overflow)?;

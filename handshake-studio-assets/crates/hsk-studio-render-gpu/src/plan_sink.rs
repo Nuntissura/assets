@@ -33,7 +33,7 @@ use crate::ext::{
 };
 use crate::fx::{
     Buf, FX_PASS_MAX_OPS, FXP_BYTES, FxEffect, FxError, FxKernels, FxLayer, FxStep, compile_effect,
-    margin_of, params_bytes,
+    margin_of, params_bytes, shape_alpha_step,
 };
 use crate::kernel::{
     BLUR_MAX_TAPS, BLURP_BYTES, BlurOp, FilterOp, LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES,
@@ -164,6 +164,25 @@ impl MaskView<'_> {
     }
 }
 
+/// A layer's opacity for one composite: the folded product (`opacity * fill`, every mode but the
+/// special eight), and the opacity without the fill plus the fill (pigment `composite_over_fill`).
+#[derive(Clone, Copy, Debug)]
+struct Opac {
+    folded: f32,
+    unfilled: f32,
+    fill: f32,
+}
+impl Opac {
+    const fn plain(v: f32) -> Self {
+        Self { folded: v, unfilled: v, fill: 1.0 }
+    }
+}
+impl PLayer<'_> {
+    const fn opac(&self) -> Opac {
+        Opac { folded: self.opacity, unfilled: self.layer_opacity, fill: self.fill }
+    }
+}
+
 struct PLayer<'a> {
     input: usize,
     /// Clipped to the nearest earlier unclipped layer of the group (pigment `BaseAlpha` route).
@@ -173,6 +192,9 @@ struct PLayer<'a> {
     opacity: f32,
     /// The layer opacity alone: the effects of a layer fade with it and not with the fill.
     layer_opacity: f32,
+    /// The fill opacity alone (lane SMB-PS-ORACLE-PARITY-1: Photoshop's special-eight modes apply
+    /// it inside the blend, pigment `composite_over_fill`).
+    fill: f32,
     mask: Option<MaskView<'a>>,
     /// Blend-If entries of the plan-extension envelope (`None` = the v1 composite).
     blend_if: Option<BlendIfGpu>,
@@ -761,6 +783,7 @@ fn prepare<'a>(
                                     op,
                                     &mut fx_kernels,
                                     scratch_limit.saturating_sub(feather_bytes),
+                                    l.opacity * l.fill_opacity,
                                 )
                                 .map_err(|e| fx_error(e, scratch_limit))?;
                                 fx_window_ops = fx_window_ops.max(compiled.window_ops);
@@ -815,7 +838,8 @@ fn prepare<'a>(
                                 effects.push(compiled);
                             }
                             has_fx = true;
-                            Some(Box::new(FxLayer { effects, margin }))
+                            let interior = effects.iter().any(|e| e.interior);
+                            Some(Box::new(FxLayer { effects, margin, interior }))
                         }
                         _ => None,
                     };
@@ -1092,6 +1116,7 @@ fn prepare<'a>(
                         mode: l.mode,
                         opacity: l.opacity * l.fill_opacity,
                         layer_opacity: l.opacity,
+                        fill: l.fill_opacity,
                         mask,
                         blend_if,
                         adjust,
@@ -1120,6 +1145,10 @@ fn prepare<'a>(
                     if layers[k].smart.is_some() {
                         // The running result and one filtered copy.
                         below.saturating_add(2)
+                    } else if layers[k].fx.as_ref().is_some_and(|f| f.interior) {
+                        // The interior unit (lane SMB-PS-ORACLE-PARITY-1) holds the unit one level
+                        // below and the content copy two levels below.
+                        below.max(1).saturating_add(1)
                     } else if layers[k].fx.is_some()
                         || layers[k].blur.is_some()
                         || layers[k].filter.is_some()
@@ -2013,6 +2042,57 @@ impl Exec<'_> {
     }
 
     /// Make the first `bytes` of a level fully transparent.
+    /// Copy `levels[from]` into `levels[to]` (the first `bytes`).
+    fn copy_level(&self, from: usize, to: usize, bytes: u64) {
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu copy level"),
+            });
+        encoder.copy_buffer_to_buffer(&self.levels[from], 0, &self.levels[to], 0, bytes);
+        self.ctx.queue.submit(Some(encoder.finish()));
+    }
+
+    /// pigment `interior_mix` over `region`: `levels[level]` (below) and `levels[level + 1]` (the
+    /// interior unit) by the shape alpha already in the mask buffer (region layout).
+    fn composite_mix(&mut self, region: Rect, chunk: Rect, level: usize) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let params = LayerParams {
+            chunk_w: chunk.width,
+            chunk_h: chunk.height,
+            region: [
+                offset(region.x, chunk.x)?,
+                offset(region.y, chunk.y)?,
+                region.width,
+                region.height,
+            ],
+            mode: StudioBlendMode::Normal,
+            source: SourceKind::Chunk,
+            has_mask: true,
+            opacity: 1.0,
+            unfilled: 1.0,
+            fill: 1.0,
+            replace: false,
+            clip: false,
+            opaque_source: false,
+            mix: true,
+            density: 1.0,
+            extended: self.extended,
+        };
+        ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu interior mix"),
+            });
+        ctx.kernel
+            .dispatch(&mut encoder, &self.binds_chunk[level], region.width, region.height);
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+
     fn clear(&self, level: usize, bytes: u64) {
         let mut encoder = self
             .ctx
@@ -2055,7 +2135,7 @@ impl Exec<'_> {
     fn composite(
         &mut self,
         mode: StudioBlendMode,
-        opacity: f32,
+        opacity: Opac,
         mask: Option<&MaskView<'_>>,
         blend_if: Option<&BlendIfGpu>,
         pass: Pass,
@@ -2081,9 +2161,13 @@ impl Exec<'_> {
             mode,
             source: kind,
             has_mask: mask.is_some(),
-            opacity,
+            opacity: opacity.folded,
+            unfilled: opacity.unfilled,
+            fill: opacity.fill,
             replace: pass == Pass::Replace,
             clip: pass == Pass::Clip,
+            opaque_source: pass == Pass::Opaque,
+            mix: pass == Pass::Mix,
             density: mask.map_or(1.0, |m| m.density),
             extended: self.extended,
         };
@@ -2407,8 +2491,12 @@ impl Exec<'_> {
             source,
             has_mask: true,
             opacity,
+            unfilled: opacity,
+            fill: 1.0,
             replace: false,
             clip: false,
+            opaque_source: false,
+            mix: false,
             density: 1.0,
             // Effect colour over the running frame (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE).
             extended: self.extended,
@@ -2465,8 +2553,12 @@ impl Exec<'_> {
             source: SourceKind::Solid([0.0; 4]),
             has_mask: mask.is_some(),
             opacity: layer.opacity,
+            unfilled: layer.layer_opacity,
+            fill: 1.0,
             replace: false,
             clip: false,
+            opaque_source: false,
+            mix: false,
             density: mask.map_or(1.0, |m| m.density),
             // Adjustment layer (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE: linear exposure only).
             extended: self.extended,
@@ -2512,6 +2604,10 @@ enum Pass {
     Replace,
     /// A clipped layer inside a run: source alpha times the run's alpha, alpha held.
     Clip,
+    /// The content of an interior unit: the source counts as fully covering (alpha 1).
+    Opaque,
+    /// pigment `interior_mix`: the destination (below) and the source (the unit) by the mask.
+    Mix,
 }
 
 /// Layers of group `idx`, bottom-first, composited into `levels[level]`. A layer followed by
@@ -2595,7 +2691,7 @@ fn source_pass(
             }
             ex.composite(
                 layer.mode,
-                layer.opacity,
+                layer.opac(),
                 mask,
                 blend_if,
                 pass,
@@ -2607,7 +2703,7 @@ fn source_pass(
         }
         PNode::Tile { planes, rect } => ex.composite(
             layer.mode,
-            layer.opacity,
+            layer.opac(),
             mask,
             blend_if,
             pass,
@@ -2618,7 +2714,7 @@ fn source_pass(
         ),
         PNode::Transformed { planes, prep } => ex.composite(
             layer.mode,
-            layer.opacity,
+            layer.opac(),
             mask,
             blend_if,
             pass,
@@ -2630,7 +2726,7 @@ fn source_pass(
         PNode::Solid { rgba } if rgba[3] <= 0.0 => Ok(()),
         PNode::Solid { rgba } => ex.composite(
             layer.mode,
-            layer.opacity,
+            layer.opac(),
             mask,
             blend_if,
             pass,
@@ -2742,7 +2838,7 @@ fn eval_effect_layer(
             eval_group(ex, prep, layer.input, chunk, below)?;
             ex.composite(
                 StudioBlendMode::Normal,
-                1.0,
+                Opac::plain(1.0),
                 mask,
                 None,
                 Pass::Normal,
@@ -2754,7 +2850,7 @@ fn eval_effect_layer(
         }
         PNode::Tile { planes, rect } => ex.composite(
             StudioBlendMode::Normal,
-            1.0,
+            Opac::plain(1.0),
             mask,
             None,
             Pass::Normal,
@@ -2765,7 +2861,7 @@ fn eval_effect_layer(
         )?,
         PNode::Transformed { planes, prep } => ex.composite(
             StudioBlendMode::Normal,
-            1.0,
+            Opac::plain(1.0),
             mask,
             None,
             Pass::Normal,
@@ -2777,7 +2873,7 @@ fn eval_effect_layer(
         PNode::Solid { rgba } if rgba[3] <= 0.0 => {}
         PNode::Solid { rgba } => ex.composite(
             StudioBlendMode::Normal,
-            1.0,
+            Opac::plain(1.0),
             mask,
             None,
             Pass::Normal,
@@ -2792,11 +2888,45 @@ fn eval_effect_layer(
         | PNode::Unused => return Err(unsupported("plan_shape")),
     }
     for behind in [true, false] {
-        if !behind {
+        if !behind && fx.interior {
+            // The interior unit (lane SMB-PS-ORACLE-PARITY-1, pigment `interior_mix`): the content
+            // is copied two levels down (C), the result below one level down (U); the content
+            // composites onto U as if it covered every pixel, the interior effects (mattes from C)
+            // composite onto U, then U is mixed into this level by C's alpha.
+            let bytes = texel_bytes(chunk.width, chunk.height);
+            let copy = content.saturating_add(1);
+            ex.copy_level(content, copy, bytes);
+            ex.copy_level(level, content, bytes);
+            ex.composite(
+                layer.mode,
+                layer.opac(),
+                None,
+                None,
+                Pass::Opaque,
+                content_region,
+                chunk,
+                content,
+                Src::Chunk,
+            )?;
+            for effect in fx.effects.iter().filter(|e| e.interior) {
+                ex.check()?;
+                let opacity = effect.opacity * layer.layer_opacity;
+                if effect.steps.is_empty() || opacity <= 0.0 {
+                    continue;
+                }
+                for step in &effect.steps {
+                    ex.fx_pass(step, fx_region, chunk, copy)?;
+                }
+                ex.composite_matte(effect, opacity, fx_region, chunk, content, bounds)?;
+            }
+            // the shape alpha into the mask, then the mix
+            ex.fx_pass(&shape_alpha_step(), content_region, chunk, copy)?;
+            ex.composite_mix(content_region, chunk, level)?;
+        } else if !behind {
             // the content itself, mask already inside its alpha
             ex.composite(
                 layer.mode,
-                layer.opacity,
+                layer.opac(),
                 None,
                 None,
                 Pass::Normal,
@@ -2806,14 +2936,25 @@ fn eval_effect_layer(
                 Src::Chunk,
             )?;
         }
-        for effect in fx.effects.iter().filter(|e| e.over_content != behind) {
+        // after the interior unit the content level holds the unit, the shape alpha lives in the
+        // copy one level further down
+        let shape_level = if fx.interior && !behind {
+            content.saturating_add(1)
+        } else {
+            content
+        };
+        for effect in fx
+            .effects
+            .iter()
+            .filter(|e| e.over_content != behind && !(fx.interior && e.interior))
+        {
             ex.check()?;
             let opacity = effect.opacity * layer.layer_opacity;
             if effect.steps.is_empty() || opacity <= 0.0 {
                 continue;
             }
             for step in &effect.steps {
-                ex.fx_pass(step, fx_region, chunk, content)?;
+                ex.fx_pass(step, fx_region, chunk, shape_level)?;
             }
             ex.composite_matte(effect, opacity, fx_region, chunk, level, bounds)?;
         }
@@ -2869,7 +3010,7 @@ fn eval_clip_run(
     // apply), so this composite has no weight.
     ex.composite(
         base.mode,
-        base.opacity,
+        base.opac(),
         None,
         None,
         Pass::Normal,
@@ -2908,7 +3049,7 @@ fn render_content(
     let normal = |ex: &mut Exec<'_>, src: Src<'_, '_>| {
         ex.composite(
             StudioBlendMode::Normal,
-            1.0,
+            Opac::plain(1.0),
             mask,
             None,
             Pass::Normal,
@@ -2966,7 +3107,7 @@ fn eval_blur_layer(
     ex.blur_pass(BlurOp::Vertical, blur, 0.0, chunk, BlurIo::AToLevel(content))?;
     ex.composite(
         layer.mode,
-        layer.opacity,
+        layer.opac(),
         None,
         None,
         Pass::Normal,
@@ -3017,7 +3158,7 @@ fn eval_filter_layer(
     }
     ex.composite(
         layer.mode,
-        layer.opacity,
+        layer.opac(),
         layer.mask.as_ref(),
         layer.blend_if.as_ref(),
         Pass::Normal,
@@ -3089,7 +3230,7 @@ fn eval_smart_layer(
     }
     ex.composite(
         layer.mode,
-        layer.opacity,
+        layer.opac(),
         layer.mask.as_ref(),
         layer.blend_if.as_ref(),
         Pass::Normal,
@@ -3745,6 +3886,7 @@ fn run(
         mode: StudioBlendMode::Normal,
         opacity: 1.0,
         layer_opacity: 1.0,
+        fill: 1.0,
         mask: None,
         blend_if: None,
         adjust: None,
