@@ -42,3 +42,7 @@ corpus_config = ".config/oracle-corpus.toml"
 # redact_paths test inputs (gpu_submit_fault.rs:262, :267, :283): example machine paths the redactor must reduce to
 # file names; never opened as host paths; lead decision 2026-10-15 (C41), C16 precedent
 "crates/hsk-studio-render-gpu/tests/gpu_submit_fault.rs" = 3
+# hostile linked-file path vectors (SMB-PACKAGE-COMPLETENESS-2 608dbce, linked_files.rs:56: "../outside.psd",
+# "/etc/passwd", "C:/x.psd" ...): inputs the package must refuse, never opened as host paths; steward C50, C16/C41
+# precedent, lead-reviewable
+"crates/hsk-studio-package/tests/linked_files.rs" = 1
