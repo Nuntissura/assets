@@ -172,20 +172,20 @@
   "recovery": {
     "last_checkpoint": {
       "dirty_paths": [
-        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
-        "build/tools/fforager-xtask/src/main.rs",
-        "build/tools/fforager-xtask/src/runtime_classifier_tests.rs"
+        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json"
       ],
       "checks_run": [
-        "Own git identity: HEAD63647e37b95dabb0e153fc70a1f6294c20297aa4 on codex/wp020-prerequisite-classifier, origin ahead0/behind0; before checkpoint only two xtask files dirty.",
-        "Opened actual runtime dirty PASS report, same-input inventory output, independent v3 rawGREEN and Clippy finish11.41seconds.",
-        "Formal independent MEDIUM005/006 focused implementation review PASS; canonical committed gates still pending."
+        "git branch --show-current: codex/wp020-prerequisite-classifier",
+        "git rev-parse HEAD: b1ff9c450748de36b5cb14c6fdae3b2b2232308d",
+        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git status --porcelain=v2 --branch: # branch.oid b1ff9c450748de36b5cb14c6fdae3b2b2232308d; # branch.head codex/wp020-prerequisite-classifier; # branch.upstream origin/codex/wp020-prerequisite-classifier; # branch.ab +0 -0; clean before checkpoint edit.",
+        "FF-GATE-RUNTIME-001 iteration report1792512787454694800-310696 and source-bound clean failure report1792513911355608900-302316 retained in validation.checks."
       ],
-      "recorded_at_utc": "2026-10-20T16:21:03Z",
+      "recorded_at_utc": "2026-10-20T16:33:34Z",
       "branch": "codex/wp020-prerequisite-classifier",
       "next_action": "Commit and push this reviewed candidate checkpoint, run canonical runtime-truth-check, architecture-check and verify-pr at clean committed identity, then record actual acceptance before closure merge/main containment and limited WP020 blocker status synchronization.",
       "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "head_sha": "63647e37b95dabb0e153fc70a1f6294c20297aa4",
+      "head_sha": "b1ff9c450748de36b5cb14c6fdae3b2b2232308d",
       "blockers": [
         "Clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required before closure.",
         "Main merge and independent closure containment remain unproven; historical Windows timing cause remains unverified."
@@ -336,6 +336,16 @@
         "artifact": "build/reports/runtime-truth-check-1792513586522433500-518800.json",
         "limitation": "No code, acceptance requirement, scope or prerequisite declaration changed.",
         "result": "FAIL_METADATA_PROSE"
+      },
+      {
+        "limitation": "No immutable requirement, scope, declaration or code changed.",
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "FAIL_METADATA_PROSE",
+        "source_dirty": false,
+        "observed": "New recovery observation used an unqualified gate-status phrase. Replaced it with exact canonical gate ID and report identity; evidence unchanged.",
+        "source_commit": "b1ff9c450748de36b5cb14c6fdae3b2b2232308d",
+        "artifact": "build/reports/runtime-truth-check-1792513911355608900-302316.json",
+        "reported_by": "primary agent"
       }
     ]
   },
