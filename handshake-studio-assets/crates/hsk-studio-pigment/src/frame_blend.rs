@@ -90,13 +90,15 @@ impl std::error::Error for BlendError {}
 /// Horn-Schunck pyramid parameters (module docs).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlowParams {
-    /// Pyramid levels `1..=MAX_FLOW_LEVELS` (fewer are used when a level would be under 8 px).
+    /// Pyramid levels `1..=MAX_FLOW_LEVELS` (fewer are used when a level would be under 4 px).
     pub levels: u32,
     /// Warps per level `1..=MAX_FLOW_WARPS`.
     pub warps: u32,
     /// Jacobi iterations per warp `1..=MAX_FLOW_ITERATIONS`.
     pub iterations: u32,
-    /// Smoothness weight `alpha > 0` on intensities in `[0, 1]`.
+    /// Smoothness weight `alpha > 0` on intensities in `[0, 1]`. Default 0.2: measured on the
+    /// translating-blob test, 0.05 diverged under warping (flow (-1.7, -3.3) for a (4, 0) shift)
+    /// while 0.2 and 0.5 recover it within 0.01 px (Studio tuning, lane notes).
     pub alpha: f64,
 }
 impl FlowParams {
@@ -104,7 +106,7 @@ impl FlowParams {
         levels: 4,
         warps: 3,
         iterations: 80,
-        alpha: 0.05,
+        alpha: 0.2,
     };
     fn validate(&self) -> Result<(), BlendError> {
         if !(1..=MAX_FLOW_LEVELS).contains(&self.levels)
@@ -278,10 +280,10 @@ fn down(g: &Gray) -> Gray {
     Gray { w, h, px }
 }
 
-/// Levels actually used: at most `levels`, coarsest side at least 8 px.
+/// Levels actually used: at most `levels`, coarsest side at least 4 px.
 fn level_count(w: usize, h: usize, levels: u32) -> u32 {
     let (mut w, mut h, mut n) = (w, h, 1u32);
-    while n < levels && half(w) >= 8 && half(h) >= 8 {
+    while n < levels && half(w) >= 4 && half(h) >= 4 {
         w = half(w);
         h = half(h);
         n = n.saturating_add(1);
