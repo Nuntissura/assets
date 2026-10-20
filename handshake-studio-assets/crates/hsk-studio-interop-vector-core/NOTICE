@@ -1,0 +1,41 @@
+hsk-studio-interop-vector-core third-party notices
+
+src/dxf_aci.rs (the AutoCAD Color Index to RGB table) is adapted from ezdxf
+(https://github.com/mozman/ezdxf), file src/ezdxf/colors.py, list DXF_DEFAULT_COLORS, fetched
+2026-10-20 (lane SMB-DXF-EPS-IMPORT). ezdxf is licensed under the MIT License,
+Copyright (c) 2020 Manfred Moitzi; the MIT terms are reproduced below.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The EPS worker binary interop-vector-eps-worker (feature eps-worker) links the stet PostScript
+interpreter 0.8.4 (https://github.com/AndyCappDev/stet, Apache-2.0 OR MIT), used through its public
+API, not copied. stet embeds resources under their own terms, which travel with any distributed
+worker binary:
+
+- the 35 URW++ base 35 Type 1 font programs (stet resources/Font/*.t1), SIL Open Font License,
+  Version 1.1: full text in stet-0.8.4 LICENSE-URW-FONTS;
+- a CMYK ICC profile (stet resources/default_cmyk.icc), stated by stet as CC0-licensed
+  (src/embedded_resources.rs);
+- Adobe CMap-derived CID/Unicode tables (stet-fonts 0.8.4 src/cid_*.bin), BSD-3-Clause-style terms,
+  Copyright 1990-2023 Adobe: full text in stet-fonts-0.8.4 LICENSE-ADOBE-CMAP;
+- the Adobe Glyph List and ITC Zapf Dingbats Glyph List (stet-fonts 0.8.4 src/glyphlist.txt,
+  src/zapfdingbats.txt), Adobe's terms: full text in stet-fonts-0.8.4 LICENSE-ADOBE-AGL.
+
+DXF parsing uses dxf 0.6.2 (https://github.com/ixmilia/dxf-rs, MIT) through its public API; its
+licence text ships with the crate.
