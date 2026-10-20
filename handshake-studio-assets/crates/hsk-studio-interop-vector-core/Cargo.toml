@@ -23,3 +23,7 @@ path = "src/lib.rs"
 name = "dxf_import"
 path = "tests/dxf_import.rs"
 required-features = ["dxf"]
+
+[[test]]
+name = "eps_import"
+path = "tests/eps_import.rs"

@@ -16,6 +16,10 @@ pub use hsk_studio_interop_vector_core::{PreservedBlob, Result, VectorError};
 pub use hsk_studio_interop_vector_core::{CadKind, DWG_ROUTE, identify_cad, import_dwg};
 #[cfg(feature = "dxf")]
 pub use hsk_studio_interop_vector_core::import_dxf;
+pub use hsk_studio_interop_vector_core::{
+    DOS_EPS_HEADER_LEN, DOS_EPS_MAGIC, EPS_ROUTE, EpsExport, EpsInfo, EpsPdfConverter, EpsPreview, EpsPreviewImport, MAX_PREVIEW_PIXELS, MAX_PREVIEW_SIDE,
+    export_eps, export_eps_proposal, import_eps, import_eps_preview, import_eps_with, read_eps,
+};
 pub use hsk_studio_interop_vector_svg::gzip_svg;
 pub use hsk_studio_interop_vector_core::{IdMint, SequentialIdMint};
 pub use hsk_studio_interop_vector_core::model::*;

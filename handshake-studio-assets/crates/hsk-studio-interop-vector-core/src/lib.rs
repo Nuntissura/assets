@@ -14,6 +14,8 @@ mod cad;
 mod dxf_aci;
 #[cfg(feature = "dxf")]
 mod dxf_import;
+mod eps;
+mod eps_export;
 #[doc(hidden)]
 pub mod error;
 #[doc(hidden)]
@@ -30,6 +32,11 @@ pub use ai_import::{
 pub use cad::{CadKind, DWG_ROUTE, identify_cad, import_dwg};
 #[cfg(feature = "dxf")]
 pub use dxf_import::import_dxf;
+pub use eps::{
+    DOS_EPS_HEADER_LEN, DOS_EPS_MAGIC, EPS_ROUTE, EpsInfo, EpsPdfConverter, EpsPreview, EpsPreviewImport, MAX_PREVIEW_PIXELS, MAX_PREVIEW_SIDE, import_eps, import_eps_preview,
+    import_eps_with, read_eps,
+};
+pub use eps_export::{EpsExport, export_eps, export_eps_proposal};
 pub use error::{PreservedBlob, Result, VectorError};
 pub use ids::{IdMint, SequentialIdMint};
 pub use model::*;
