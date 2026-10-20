@@ -977,6 +977,33 @@ pub fn import_ai_document(bytes: &[u8], policy: &ImportPolicy, provider: &dyn Pd
     if drawing.pages.is_empty() {
         return Err(VectorError::Unsupported("ai_without_pages"));
     }
+    let mut losses = vec![(LossKind::Unsupported, "ai_native_editability_not_imported")];
+    if has_private_data {
+        losses.push((LossKind::Unsupported, "ai_private_data_not_imported"));
+    }
+    let source = DrawingSource { format: "ai_pdf_compatible", unit: "pt", root: "/ai", source_len: bytes.len(), decoded_len: bytes.len(), losses };
+    document_from_drawing(&drawing, &source, policy, provider, mint, cancel)
+}
+
+/// Where a [`PdfDrawing`] came from: the provenance labels of the proposal and the losses the
+/// source reading already took (reported at `root` before any page loss).
+pub(crate) struct DrawingSource {
+    pub format: &'static str,
+    pub unit: &'static str,
+    pub root: &'static str,
+    pub source_len: usize,
+    pub decoded_len: usize,
+    pub losses: Vec<(LossKind, &'static str)>,
+}
+
+/// Turns a drawing (pages, fonts, layers, profiles) into a validated Folio proposal: the shared
+/// half of the `.ai`, DXF and EPS imports (module docs). `drawing` must have at least one page.
+pub(crate) fn document_from_drawing(drawing: &PdfDrawing, source: &DrawingSource, policy: &ImportPolicy, provider: &dyn PdfDrawingProvider, mint: &mut dyn IdMint, cancel: &CancellationToken) -> Result<AiImport> {
+    cancel.check().map_err(|_| VectorError::Canceled)?;
+    policy.validate()?;
+    if drawing.pages.is_empty() {
+        return Err(VectorError::Unsupported("drawing_without_pages"));
+    }
     let document_id = {
         let id = mint.mint("SDOC");
         match DomainId::parse(&id) {
@@ -1008,19 +1035,18 @@ pub fn import_ai_document(bytes: &[u8], policy: &ImportPolicy, provider: &dyn Pd
         segments: 0,
         pending_clip: None,
     };
-    b.note("/ai", LossKind::Unsupported, "ai_native_editability_not_imported");
-    if has_private_data {
-        b.note("/ai", LossKind::Unsupported, "ai_private_data_not_imported");
+    for &(kind, code) in &source.losses {
+        b.note(source.root, kind, code);
     }
     // The output intent is the document's working space of its model even when no colour names it.
     if let Some(i) = drawing.output_intent {
-        b.profile_id(&drawing, i)?;
+        b.profile_id(drawing, i)?;
     }
     let mut artboards = Vec::with_capacity(drawing.pages.len());
     let mut dx = 0.0;
     let mut extent = [0.0_f64, 0.0_f64];
     for (i, page) in drawing.pages.iter().enumerate() {
-        let a = b.page(&drawing, page, i, dx, provider, cancel)?;
+        let a = b.page(drawing, page, i, dx, provider, cancel)?;
         extent = [dx + a.bounds.width.value, extent[1].max(a.bounds.height.value)];
         dx += a.bounds.width.value + ARTBOARD_GAP_PT;
         artboards.push(a);
@@ -1099,12 +1125,12 @@ pub fn import_ai_document(bytes: &[u8], policy: &ImportPolicy, provider: &dyn Pd
             gradient_provenance: Vec::new(),
             loss,
             provenance: Provenance {
-                source_format: "ai_pdf_compatible",
-                source_unit: "pt",
+                source_format: source.format,
+                source_unit: source.unit,
                 pixels_per_inch: policy.pixels_per_inch,
                 px_to_pt: 72.0 / policy.pixels_per_inch,
-                source_len: bytes.len(),
-                decoded_len: bytes.len(),
+                source_len: source.source_len,
+                decoded_len: source.decoded_len,
                 view_box: None,
                 viewport_px: [extent[0] * policy.pixels_per_inch / 72.0, extent[1] * policy.pixels_per_inch / 72.0],
             },

@@ -13,6 +13,9 @@ pub use hsk_studio_interop_vector_core::{
     PdfFont, PdfGlyph, PdfIcc, PdfLayer, PdfPaint, PdfSpace, PdfStroke, PdfTextFont, PdfTextRun, import_ai_document, import_ai_with,
 };
 pub use hsk_studio_interop_vector_core::{PreservedBlob, Result, VectorError};
+pub use hsk_studio_interop_vector_core::{CadKind, DWG_ROUTE, identify_cad, import_dwg};
+#[cfg(feature = "dxf")]
+pub use hsk_studio_interop_vector_core::import_dxf;
 pub use hsk_studio_interop_vector_svg::gzip_svg;
 pub use hsk_studio_interop_vector_core::{IdMint, SequentialIdMint};
 pub use hsk_studio_interop_vector_core::model::*;

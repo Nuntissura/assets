@@ -6,12 +6,20 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+# DXF import through the `dxf` crate (ixmilia/dxf-rs, MIT; lane SMB-DXF-EPS-IMPORT). Default off.
+dxf = ["dep:dxf"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+dxf = { version = "=0.6.2", default-features = false, optional = true }
 
 [lib]
 path = "src/lib.rs"
+
+[[test]]
+name = "dxf_import"
+path = "tests/dxf_import.rs"
+required-features = ["dxf"]

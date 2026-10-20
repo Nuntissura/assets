@@ -6,6 +6,8 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+# DXF import (hsk-studio-interop-vector-core feature `dxf`, lane SMB-DXF-EPS-IMPORT). Default off.
+dxf = ["hsk-studio-interop-vector-core/dxf"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

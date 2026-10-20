@@ -43,6 +43,31 @@ pub enum VectorError {
     Folio(FolioCode),
     /// The input uses a format feature this adapter does not implement at all.
     Unsupported(&'static str),
+    /// A DWG drawing: no permissively licensed DWG reader exists, so Studio does not decode DWG.
+    /// `route` names the supported path (export DXF from the CAD application, then import it);
+    /// `version` is the six-byte DWG version string (for example `AC1032`) when it is printable.
+    /// The original bytes are preserved in `preserved`.
+    DwgUnavailable {
+        version: Option<String>,
+        route: &'static str,
+        preserved: PreservedBlob,
+    },
+    /// The DXF text or binary stream is damaged (`what` names the check).
+    MalformedDxf(&'static str),
+    /// The EPS file is damaged: DOS binary header, DSC comments or preview (`what` names the check).
+    MalformedEps(&'static str),
+    /// EPS vector content needs the isolated PostScript worker, which this call did not use or
+    /// this build does not have; `route` names how to obtain the vector content. The original bytes
+    /// are preserved. A raster preview, when the file has one, is available from `import_eps_preview`.
+    EpsVectorNotDecoded {
+        route: &'static str,
+        preserved: PreservedBlob,
+    },
+    /// No EPS-to-PDF converter is available (the worker program is missing or could not start).
+    EpsConverterUnavailable,
+    /// The isolated EPS-to-PDF conversion failed (`what`: deadline, memory_cap, crashed,
+    /// postscript_error, no_pages, output_over_cap, protocol, canceled_by_worker).
+    EpsConversionFailed(&'static str),
 }
 
 impl VectorError {
@@ -61,6 +86,12 @@ impl VectorError {
             Self::PdfUnavailable => "pdf_unavailable",
             Self::Folio(_) => "folio_refused",
             Self::Unsupported(_) => "unsupported",
+            Self::DwgUnavailable { .. } => "dwg_unavailable",
+            Self::MalformedDxf(_) => "malformed_dxf",
+            Self::MalformedEps(_) => "malformed_eps",
+            Self::EpsVectorNotDecoded { .. } => "eps_vector_not_decoded",
+            Self::EpsConverterUnavailable => "eps_converter_unavailable",
+            Self::EpsConversionFailed(_) => "eps_conversion_failed",
         }
     }
 
@@ -68,9 +99,11 @@ impl VectorError {
     pub const fn failure_code(&self) -> Option<FailureCode> {
         match self {
             Self::Canceled => None,
-            Self::NativeEditabilityBlocked { .. } | Self::PdfUnavailable => {
-                Some(FailureCode::Unavailable)
-            }
+            Self::NativeEditabilityBlocked { .. }
+            | Self::PdfUnavailable
+            | Self::DwgUnavailable { .. }
+            | Self::EpsVectorNotDecoded { .. }
+            | Self::EpsConverterUnavailable => Some(FailureCode::Unavailable),
             Self::Unsupported(_) => Some(FailureCode::Unsupported),
             _ => Some(FailureCode::Validation),
         }
