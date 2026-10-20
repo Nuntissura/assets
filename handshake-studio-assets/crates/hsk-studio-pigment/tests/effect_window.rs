@@ -461,12 +461,14 @@ fn huge_layers_and_far_coordinates_are_bounded_and_translation_invariant() {
         let g = WindowGeometry::uncut(layer, support, win).unwrap();
         window_matte(&dots(layer.x, layer.y), &g, &op, limits).unwrap()
     };
-    // Near edge: window straddling the layer's top-left corner.
+    // Near edge: window straddling the layer's top-left corner, tall enough to reach the shadow
+    // of the first dot with the effect tent kernel (SMB-PS-ORACLE-PARITY-1: the Gaussian reached
+    // farther, so a 16-row window was enough before).
     let rel = Rect {
         x: -8,
         y: -5,
         width: 24,
-        height: 16,
+        height: 28,
     };
     let small = Rect {
         x: 0,

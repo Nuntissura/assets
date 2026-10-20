@@ -286,11 +286,13 @@ fn mask_density_and_invert_hand_values() {
 #[test]
 fn blend_if_ramps_hand_values() {
     // Source gray ramp over opaque black, Normal, opacity 1: out = weight * value. Source Gray
-    // range [0.2, 0.4, 0.6, 1.0]: 0 below 0.2, linear up to 0.4, 1 up to 0.6, linear down to 0
-    // at 1.0. Weights for 0.1 .. 1.0: 0, 0, 0.5, 1, 1, 0.5, 0 (0.3 -> (0.3 - 0.2) / 0.2 = 0.5,
-    // 0.8 -> (1.0 - 0.8) / 0.4 = 0.5).
-    let values = [0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.8, 1.0];
-    let weights = [0.0_f32, 0.0, 0.5, 1.0, 1.0, 0.5, 0.0];
+    // range [0.2, 0.4, 0.6, 1.0] = levels [51, 102, 153, 255]. Cross-lane re-pin by
+    // SMB-PS-ORACLE-PARITY-1 to Photoshop's inclusive integer ramps (rule measured on the D5 oracle
+    // PS-C09; these ranges are not an oracle case): up = (v - 51 + 1) / 52, down = (255 + 1 - v) /
+    // 103, gray rounded to a level. Gray levels 26, 51, 77, 102, 128, 204, 255 weigh 0, 1/52,
+    // 27/52, 1, 1, 52/103, 1/103.
+    let values = [26.0_f32, 51.0, 77.0, 102.0, 128.0, 204.0, 255.0].map(|l| l / 255.0);
+    let weights = [0.0_f32, 1.0 / 52.0, 27.0 / 52.0, 1.0, 1.0, 52.0 / 103.0, 1.0 / 103.0];
     let wide = rect(0, 0, 7, 1);
     let ramp = TileData::new(7, 1, |x, _| {
         let v = values[usize::try_from(x).unwrap()];
@@ -343,15 +345,17 @@ fn blend_if_ramps_hand_values() {
             .any(|o| { o.key == "blend_if" && o.exactness == Exactness::Approximate })
     );
 
-    // Source weight 0.5 (gray 0.3) times underlying weight 0.5 (backdrop red 0.25 under Red
-    // destination [0, 0.5, 1, 1]: (0.25 - 0) / (0.5 - 0)) is 0.25 of the source alpha:
-    // out = 0.25 * 0.3 + 0.75 * backdrop = (0.2625, 0.075, 0.075).
+    // Source weight 27/52 (gray level 77) times the underlying weight of backdrop red 0.25 (63.75
+    // levels) under Red destination [0, 0.5, 1, 1] = levels [0, 127.5]: (63.75 + 1) / (127.5 + 1)
+    // (integer ramps, re-pinned as above): out = w * 77/255 + (1 - w) * backdrop.
+    let g77 = 77.0_f32 / 255.0;
+    let w = 27.0_f32 / 52.0 * (64.75 / 128.5);
     let one = rect(0, 0, 1, 1);
     let both = plan(
         one,
         vec![
             solid(one, [0.25, 0.0, 0.0, 1.0]),
-            solid(one, [0.3, 0.3, 0.3, 1.0]),
+            solid(one, [g77, g77, g77, 1.0]),
             group(vec![
                 layer(0, StudioBlendMode::Normal, 1.0),
                 layer(1, StudioBlendMode::Normal, 1.0),
@@ -369,13 +373,15 @@ fn blend_if_ramps_hand_values() {
     ])]);
     near(
         pixel(&both, &ext, &no_sources()),
-        [0.2625, 0.075, 0.075, 1.0],
+        [w * g77 + (1.0 - w) * 0.25, w * g77, w * g77, 1.0],
         1e-6,
     );
 
     // The Blend-If source of an adjustment layer is its own content f(backdrop): invert over gray
-    // 0.2 gives content gray 0.8; White pair [0.5, 0.9] weighs it (0.9 - 0.8) / 0.4 = 0.25, so
-    // out = 0.2 + (0.8 - 0.2) * 0.25 = 0.35 (reading the backdrop 0.2 instead would give 0.8).
+    // 0.2 gives content gray 0.8 (level 204); White pair [0.5, 0.9] = levels [127.5, 229.5] weighs
+    // it (229.5 + 1 - 204) / (229.5 - 127.5 + 1) = 26.5 / 103 (integer ramps, re-pinned as above),
+    // so out = 0.2 + 0.6 * 26.5 / 103 (reading the backdrop 0.2 instead would give 0.8).
+    let wa = 0.2_f32 + 0.6 * (26.5 / 103.0);
     let adjusted = adjustment_plan([0.2, 0.2, 0.2, 1.0], StudioBlendMode::Normal, 1.0);
     let ext = envelope(vec![
         one_layer(2, 1)
@@ -388,8 +394,8 @@ fn blend_if_ramps_hand_values() {
     ]);
     near(
         pixel(&adjusted, &ext, &no_sources()),
-        [0.35, 0.35, 0.35, 1.0],
-        1e-6,
+        [wa, wa, wa, 1.0],
+        1e-5,
     );
 }
 
@@ -435,8 +441,8 @@ fn blend_if_on_clip_roles_is_refused_before_any_sink_call() {
             Some(ClipRole::Unclipped)
         ]
     );
-    // Gray metric of the top layer: 0.3 * 0.9 + 0.59 * 0.1 + 0.11 * 0.1 = 0.34. With the black pair
-    // [0.24, 0.44] its weight is (0.34 - 0.24) / (0.44 - 0.24) = 0.5.
+    // Gray metric of the top layer: 0.3 * 0.9 + 0.59 * 0.1 + 0.11 * 0.1 = 0.34 (level 86.7, rounded
+    // to 87); its weight under the black pair [0.24, 0.44] is derived below.
     let split = || {
         vec![BlendRangeEntry {
             channel: BlendChannel::Gray,
@@ -511,13 +517,20 @@ fn blend_if_on_clip_roles_is_refused_before_any_sink_call() {
     near(plain_grid.at(0, 0), [0.9, 0.1, 0.1, 1.0], 1e-6);
 
     // Counterfactual: the same ranges on the unclipped top layer (layer 3) still weigh its source
-    // alpha. Left pixel: backdrop black (the run result), 0.5 * (0.9, 0.1, 0.1); right pixel: backdrop
-    // 0.2, 0.5 * (0.9, 0.1, 0.1) + 0.5 * 0.2.
+    // alpha. Gray 0.34 rounds to level 87; the black pair [0.24, 0.44] = levels [61.2, 112.2] weighs
+    // it (87 - 61.2 + 1) / (112.2 - 61.2 + 1) (integer ramps, cross-lane re-pin by
+    // SMB-PS-ORACLE-PARITY-1, rule of the D5 oracle PS-C09). Left pixel: backdrop black (the run
+    // result), w (0.9, 0.1, 0.1); right pixel: backdrop 0.2, w (0.9, 0.1, 0.1) + (1 - w) 0.2.
+    let w = (87.0_f32 - 61.2 + 1.0) / (112.2 - 61.2 + 1.0);
     let unclipped = envelope(vec![one_layer(4, 3).with_blend_if(split())]);
     let (result, grid) = run(&unclipped);
     let receipt = result.unwrap();
-    near(grid.at(0, 0), [0.45, 0.05, 0.05, 1.0], 1e-5);
-    near(grid.at(1, 0), [0.55, 0.15, 0.15, 1.0], 1e-5);
+    near(grid.at(0, 0), [w * 0.9, w * 0.1, w * 0.1, 1.0], 1e-5);
+    near(
+        grid.at(1, 0),
+        [w * 0.9 + (1.0 - w) * 0.2, w * 0.1 + (1.0 - w) * 0.2, w * 0.1 + (1.0 - w) * 0.2, 1.0],
+        1e-5,
+    );
     assert!(
         receipt
             .exactness

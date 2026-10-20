@@ -153,7 +153,8 @@ fn wave2_parity_with_reference_across_chunkings_and_workers() {
     ];
     // The reference plane (48 x 44) holds the layer (14, 14, 17, 13) grown by the margin.
     let margin = stack_support_px(&ops).unwrap();
-    assert!((8..=14).contains(&margin), "margin {margin}");
+    // the effect tent kernel reads less than the former Gaussian (SMB-PS-ORACLE-PARITY-1)
+    assert!((4..=14).contains(&margin), "margin {margin}");
     let backdrop = [0.2_f32, 0.4, 0.6, 1.0];
     let want = render_layer_reference(
         &EffectPlane::new(48, 44, vec![[0.2, 0.4, 0.6]; 2112], vec![1.0; 2112]).unwrap(),
@@ -268,7 +269,8 @@ fn wave2_large_margin_matches_the_uncut_windowed_oracle() {
         ),
     ];
     let support = stack_support_px(&ops).unwrap();
-    assert_eq!(support, 304, "4 offset + 300 blur support");
+    // effect tent kernel (cross-lane re-pin by SMB-PS-ORACLE-PARITY-1): size 200 reads 199 px
+    assert_eq!(support, 203, "4 offset + 199 blur support");
     let mut alpha = Vec::new();
     let mut content_rgb = Vec::new();
     for y in 0..30_u32 {
