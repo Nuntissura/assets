@@ -23,8 +23,10 @@
 //!   smaller speed) is not excluded (UNVERIFIED beyond this case).
 //! * Roving (STU-MOT-035): roving keys get new times so that speed is constant between the fixed
 //!   keys around them: times proportional to the cumulative straight-line distance between
-//!   successive key values (all components; spatial tangents are not modelled yet, STU-MOT-036b
-//!   gap), rounded half up to whole ticks; a zero-length run spaces the roving keys evenly. The first
+//!   successive key values (all components), or the arc length along the spatial Bezier when the
+//!   property has spatial tangents (`crate::spatial`, D5 oracle AE-02 `three_keys_roving_middle`:
+//!   rove time 1.376821 s vs After Effects 1.376790 s, which AE stores quantised to 1/1024 frame),
+//!   rounded half up to whole ticks; a zero-length run spaces the roving keys evenly. The first
 //!   and last keys may never rove (`roving_endpoint`); a retiming that would put two keys on one tick
 //!   is `roving_collapse`.
 //! * Sequence layers (After Effects keyframe assistant; NO spec clause yet, Studio extension, AE
@@ -203,7 +205,16 @@ pub fn rove(property: &mut Property, roving: &[bool]) -> Result<Vec<Ticks>, Moti
             let mut cumulative = Vec::with_capacity(b - a);
             let mut total = 0.0;
             for j in a + 1..=b {
-                total += distance(&keys[j - 1].value, &keys[j].value);
+                total += match property.spatial_tangents() {
+                    Some(t) => crate::spatial::SpatialCurve::new(
+                        &keys[j - 1].value,
+                        &t[j - 1].out_tangent,
+                        &t[j].in_tangent,
+                        &keys[j].value,
+                    )
+                    .length(),
+                    None => distance(&keys[j - 1].value, &keys[j].value),
+                };
                 cumulative.push(total);
             }
             if !total.is_finite() {

@@ -16,6 +16,7 @@ mod path;
 mod preset;
 mod property;
 mod receipt;
+mod spatial;
 mod store;
 mod text_animator;
 mod time;
@@ -53,6 +54,7 @@ pub use property::{
     EvalContext, Evaluation, MAX_EXPRESSION_BYTES, Property, PropertyState,
 };
 pub use receipt::{DESCRIPTOR, EvalReceipt, PROFILE_KEYFRAMES, report};
+pub use spatial::{SpatialTangents, spatial_auto_bezier};
 pub use store::{PropertyStore, StoreContext, TickEvaluation};
 pub use text_animator::{
     Animator, AnimatorParam, AnimatorProperties, AnimatorTrack, BasedOn, CharTransform,

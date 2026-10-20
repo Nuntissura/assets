@@ -193,3 +193,56 @@ fn hostile_inputs_are_refused_before_allocation() {
     let parts = vec![p.clone(); MAX_DIMENSION + 1];
     assert_eq!(join_dimensions("x", &parts).err(), Some(MotionError::DimensionLimit));
 }
+
+/// Lane SMB-AI-AE-ORACLE-FOLLOWUPS slice 3: spatial tangents (hand values). (1) Zero tangents on
+/// (0,0) -> (30,40) over 2 s, linear: the 50 px path is travelled uniformly, t = 0.5 s -> 12.5 px ->
+/// (7.5, 10). (2) Symmetric bump P0 = (0,0), out0 = (0,8), in1 = (0,8), P3 = (20,0): the curve is
+/// mirror-symmetric about x = 10, so half the arc length (t = 1 s of 2 s, linear) is the apex
+/// B(1/2) = (P0 + 3 P1 + 3 P2 + P3) / 8 = (10, 6). (3) Spatial auto-bezier on (0,0), (10,0), (10,10):
+/// interior out = ((10,10) - (0,0)) / 6, in = -out, ends zero. (4) Roving a straight 3-key path with
+/// zero tangents: 50 + 50 px, the middle key lands half way (2 s of 0..4 s). Hostile inputs are
+/// typed refusals that leave the property unchanged.
+#[test]
+fn spatial_tangents_arc_length_auto_bezier_and_refusals() {
+    let pos = |keys: Vec<Keyframe>| Property::new("position", vec![0.0, 0.0], keys).unwrap();
+    let base = pos(vec![key(0, &[0.0, 0.0]), key(2 * S, &[30.0, 40.0])]);
+    let straight = base.clone().with_spatial_tangents(vec![SpatialTangents::zero(2); 2]).unwrap();
+    let v = at(&straight, S / 2);
+    close(v[0], 7.5, 1e-9);
+    close(v[1], 10.0, 1e-9);
+    let bump = pos(vec![key(0, &[0.0, 0.0]), key(2 * S, &[20.0, 0.0])])
+        .with_spatial_tangents(vec![
+            SpatialTangents { in_tangent: vec![0.0, 0.0], out_tangent: vec![0.0, 8.0] },
+            SpatialTangents { in_tangent: vec![0.0, 8.0], out_tangent: vec![0.0, 0.0] },
+        ])
+        .unwrap();
+    let v = at(&bump, S);
+    close(v[0], 10.0, 1e-9);
+    close(v[1], 6.0, 1e-9);
+    assert_eq!(at(&bump, 3 * S), vec![20.0, 0.0]);
+    let mut auto = pos(vec![key(0, &[0.0, 0.0]), key(S, &[10.0, 0.0]), key(2 * S, &[10.0, 10.0])]);
+    spatial_auto_bezier(&mut auto, &[0, 1, 2]).unwrap();
+    let t = auto.spatial_tangents().unwrap();
+    assert_eq!((&t[0], &t[2]), (&SpatialTangents::zero(2), &SpatialTangents::zero(2)));
+    assert_eq!(t[1].out_tangent, vec![10.0 / 6.0, 10.0 / 6.0]);
+    assert_eq!(t[1].in_tangent, vec![-10.0 / 6.0, -10.0 / 6.0]);
+    let mut roving = pos(vec![key(0, &[0.0, 0.0]), key(S, &[30.0, 40.0]), key(4 * S, &[60.0, 80.0])])
+        .with_spatial_tangents(vec![SpatialTangents::zero(2); 3])
+        .unwrap();
+    assert_eq!(rove(&mut roving, &[false, true, false]).unwrap()[1], Ticks::new((2 * S) as u64));
+    assert_eq!(base.clone().with_spatial_tangents(vec![SpatialTangents::zero(2)]).err(), Some(MotionError::ComponentMismatch));
+    assert_eq!(
+        base.clone().with_spatial_tangents(vec![SpatialTangents::zero(2), SpatialTangents::zero(3)]).err(),
+        Some(MotionError::ComponentMismatch)
+    );
+    let mut nan = vec![SpatialTangents::zero(2); 2];
+    nan[1].in_tangent[1] = f64::NAN;
+    assert_eq!(base.clone().with_spatial_tangents(nan).err(), Some(MotionError::NonFinite));
+    let scalar = Property::new("x", vec![0.0], vec![key(0, &[0.0])]).unwrap();
+    assert_eq!(scalar.with_spatial_tangents(vec![SpatialTangents::zero(1)]).err(), Some(MotionError::ComponentMismatch));
+    let mut kept = straight.clone();
+    let revision = kept.revision();
+    assert_eq!(kept.set_spatial_tangents(Some(Vec::new())).err(), Some(MotionError::ComponentMismatch));
+    assert_eq!(spatial_auto_bezier(&mut kept, &[5]).err(), Some(MotionError::SelectionOutOfRange));
+    assert_eq!((kept.revision(), kept.spatial_tangents().map(<[_]>::len)), (revision, Some(2)));
+}

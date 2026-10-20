@@ -11,6 +11,7 @@ use crate::{
     },
     path::validate_key as validate_segment_key,
     receipt::{EvalReceipt, PROFILE_KEYFRAMES},
+    spatial::{SpatialTangents, sample_spatial_segment},
     time::EvalTick,
 };
 use hsk_studio_accord::CancellationToken;
@@ -63,6 +64,8 @@ pub struct Property {
     expression_enabled: bool,
     disabled: Option<ExprError>,
     revision: u64,
+    /// Per-key spatial tangents (STU-MOT-036b, `crate::spatial`); `None` = per-component values.
+    spatial: Option<Vec<SpatialTangents>>,
 }
 
 impl Property {
@@ -86,6 +89,7 @@ impl Property {
             expression_enabled: false,
             disabled: None,
             revision: 0,
+            spatial: None,
         };
         property.revalidate()?;
         Ok(property)
@@ -104,6 +108,33 @@ impl Property {
         self.interpolable = interpolable;
         self.revalidate()?;
         Ok(self)
+    }
+
+    /// Installs per-key spatial tangents (one entry per key, each vector of the property's dimension;
+    /// two or more components). Segments then move along the spatial Bezier by arc length
+    /// (`crate::spatial`).
+    pub fn with_spatial_tangents(mut self, tangents: Vec<SpatialTangents>) -> Result<Self, MotionError> {
+        self.spatial = Some(tangents);
+        self.revalidate()?;
+        Ok(self)
+    }
+
+    /// Spatial tangents, one per key, when the property is spatial.
+    pub fn spatial_tangents(&self) -> Option<&[SpatialTangents]> {
+        self.spatial.as_deref()
+    }
+
+    /// Replaces (or removes) the spatial tangents; validated like `with_spatial_tangents`, the
+    /// property is unchanged on refusal, the revision advances on success.
+    pub fn set_spatial_tangents(&mut self, tangents: Option<Vec<SpatialTangents>>) -> Result<(), MotionError> {
+        let previous = std::mem::replace(&mut self.spatial, tangents);
+        if let Err(error) = self.revalidate() {
+            self.spatial = previous;
+            self.revalidate()?;
+            return Err(error);
+        }
+        self.revision += 1;
+        Ok(())
     }
 
     /// Installs expression text enabled; revision advances. Clears any earlier disable-by-error.
@@ -197,6 +228,19 @@ impl Property {
             return Err(MotionError::InvalidBounds);
         }
         self.check_bounds(&self.static_value)?;
+        if let Some(spatial) = &self.spatial {
+            if dimension < 2 || spatial.len() != self.keys.len() {
+                return Err(MotionError::ComponentMismatch);
+            }
+            for t in spatial {
+                if t.in_tangent.len() != dimension || t.out_tangent.len() != dimension {
+                    return Err(MotionError::ComponentMismatch);
+                }
+                if t.in_tangent.iter().chain(&t.out_tangent).any(|v| !v.is_finite()) {
+                    return Err(MotionError::NonFinite);
+                }
+            }
+        }
         let mut ticks = Vec::with_capacity(self.keys.len());
         for key in &self.keys {
             validate_key(key, dimension)?;
@@ -305,6 +349,16 @@ impl Property {
             first.value.clone()
         } else if after == self.keys.len() {
             last.value.clone()
+        } else if let Some(spatial) = self.spatial.as_ref().filter(|_| self.interpolable) {
+            sample_spatial_segment(
+                &self.keys[after - 1],
+                &self.keys[after],
+                &spatial[after - 1].out_tangent,
+                &spatial[after].in_tangent,
+                self.key_ticks[after - 1],
+                self.key_ticks[after],
+                tick,
+            )?
         } else {
             sample_segment(
                 &self.keys[after - 1],

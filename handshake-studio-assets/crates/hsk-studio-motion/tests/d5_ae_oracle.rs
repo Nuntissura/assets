@@ -31,6 +31,9 @@ const TOL_DEG: f64 = 1e-6;
 const TOL_PX: f64 = 0.01;
 /// AE sample-time quantum: 1/1024 frame at 24 fps.
 const AE_TIME_QUANTA_PER_SECOND: i64 = 24 * 1024;
+/// Rove-time tolerance: After Effects stores key times on the same 1/1024-frame grid (the oracle's
+/// roved key reads back as 1.37679036458333 s = 33836/24576 s), so one grid step.
+const TOL_ROVE_S: f64 = 1.0 / AE_TIME_QUANTA_PER_SECOND as f64;
 const S: i64 = TICKS_PER_SECOND as i64;
 
 /// Tick of `t = num / den` seconds after AE's 1/24576 s quantisation (nearest; no ties occur for the
@@ -191,8 +194,9 @@ fn ae01b_mixed_types_and_chains() {
     ledger.finish();
 }
 
-/// AE-02: 2-D Position. Studio has no spatial tangents (STU-MOT-036b gap): a straight path with a
-/// single path-speed ease is evaluated per component; curved spatial paths are NOT_SUPPORTED.
+/// AE-02: 2-D Position. A straight path with a single path-speed ease is evaluated per component;
+/// curved paths use Studio's spatial tangents (`Property::with_spatial_tangents`, arc-length
+/// timing; lane SMB-AI-AE-ORACLE-FOLLOWUPS slice 3) and roving along that path.
 #[test]
 fn ae02_spatial_position() {
     const T: &str = "d5_ae_oracle::ae02_spatial_position";
@@ -226,7 +230,28 @@ fn ae02_spatial_position() {
         None => ledger.record("AE-02", "two_keys_default_spatial", Verdict::NotProven, "variant absent from corpus".into()),
     }
     match find("two_keys_spatial_tangents_set") {
-        Some(_) => ledger.record("AE-02", "two_keys_spatial_tangents_set", Verdict::NotSupported, "Studio Motion has no spatial tangents (STU-MOT-036b)".into()),
+        Some(row) => {
+            // Tangents as After Effects read them back (x, y of the padded 3-D tangent); temporal
+            // ease (0, 16.67 %) on both keys as set before in the script.
+            let tan = |key: &str| -> Vec<f64> { row.get(key).and_then(J::nums).expect("spatial tangent")[..2].to_vec() };
+            let ease = tangent(0.0, 16.666666667);
+            let spatial = vec![
+                SpatialTangents { in_tangent: vec![0.0, 0.0], out_tangent: tan("out_spatial_tangent_k1") },
+                SpatialTangents { in_tangent: tan("in_spatial_tangent_k2"), out_tangent: vec![0.0, 0.0] },
+            ];
+            let p = Property::new("position", vec![40.0, 200.0], vec![bez_key(0, &[40.0, 200.0], ease), bez_key(2, &[280.0, 40.0], ease)])
+                .and_then(|p| p.with_spatial_tangents(spatial))
+                .expect("spatial position");
+            let oracle = points(row);
+            let err = (0..=100i64)
+                .map(|k| {
+                    let v = p.sample(EvalTick::new(ae_tick(2 * k, 100)), &cancel).expect("sample");
+                    let o = oracle[k as usize];
+                    ((v[0] - o[0]).powi(2) + (v[1] - o[1]).powi(2)).sqrt()
+                })
+                .fold(0.0, f64::max);
+            ledger.record("AE-02", "two_keys_spatial_tangents_set", verdict(err, TOL_PX), format!("max_dist_px={err:.3e} tol={TOL_PX}"));
+        }
         None => ledger.record("AE-02", "two_keys_spatial_tangents_set", Verdict::NotProven,
             "variant absent from corpus (session script passed 2-element tangents to 3-D Position; script fixed, AE rerun pending)".into()),
     }
@@ -234,6 +259,9 @@ fn ae02_spatial_position() {
         Some(row) => {
             let lin = |s: i64, v: [f64; 2]| Keyframe::new(Ticks::new((s * S) as u64), v.to_vec());
             let mut p = Property::new("position", vec![40.0, 200.0], vec![lin(0, [40.0, 200.0]), lin(1, [100.0, 60.0]), lin(3, [280.0, 40.0])]).expect("position");
+            // New Position keys are spatial auto-bezier in After Effects; the script also sets key 2
+            // auto-bezier + continuous, then roving.
+            spatial_auto_bezier(&mut p, &[0, 1, 2]).expect("spatial auto bezier");
             let times = rove(&mut p, &[false, true, false]).expect("rove");
             let studio_t = times[1].value() as f64 / S as f64;
             let ae_t = row.field_num("time_k2_after_roving").expect("time_k2_after_roving");
@@ -245,19 +273,21 @@ fn ae02_spatial_position() {
                     ((v[0] - o[0]).powi(2) + (v[1] - o[1]).powi(2)).sqrt()
                 })
                 .fold(0.0, f64::max);
-            // AE roves along its spatial auto-bezier/continuous path (curved arc length); Studio
-            // roves by straight-line distance because it has no spatial interpolation.
-            ledger.record("AE-02", "three_keys_roving_middle", Verdict::NotSupported,
-                format!("spatial auto-bezier path absent (STU-MOT-036b); rove time studio={studio_t:.6}s ae={ae_t:.6}s delta={:.4}s; max_dist_px={dist:.3}", studio_t - ae_t));
+            // Studio roves along its spatial auto-bezier path by arc length, as After Effects does.
+            let rove_err = (studio_t - ae_t).abs();
+            let v = if rove_err <= TOL_ROVE_S { verdict(dist, TOL_PX) } else { Verdict::Mismatch };
+            ledger.record("AE-02", "three_keys_roving_middle", v,
+                format!("rove time studio={studio_t:.7}s ae={ae_t:.7}s delta={:.3e}s tol={TOL_ROVE_S:.3e}; max_dist_px={dist:.4e} tol={TOL_PX}", studio_t - ae_t));
         }
         None => ledger.record("AE-02", "three_keys_roving_middle", Verdict::NotProven, "variant absent from corpus".into()),
     }
     ledger.finish();
 }
 
-/// AE-03: expressions. `valueAtTime(t, true)` (pre-expression) is the keyframed value; the
-/// post-expression values need After Effects' expression globals (`value`, `time`, `linear()`),
-/// which the Studio expression profile does not bind: the property reports `unsupported`.
+/// AE-03: expressions. `valueAtTime(t, true)` (pre-expression) is the keyframed value. Pure Motion
+/// has no JavaScript engine (the property reports `unsupported`); the post-expression values with
+/// After Effects' globals (`value`, `time`, `linear()`) are compared through the QuickJS provider in
+/// `hsk-studio-motion-js` `tests/d5_ae_expressions.rs` (lane SMB-AI-AE-ORACLE-FOLLOWUPS slice 4).
 #[test]
 fn ae03_expressions() {
     const T: &str = "d5_ae_oracle::ae03_expressions";
@@ -282,7 +312,7 @@ fn ae03_expressions() {
         assert_eq!(out.receipt.disabled_by_error, Some(ExprErrorCode::Unsupported), "typed unsupported outcome");
         let post = row.get("pre_expression_false").and_then(J::nums).expect("post");
         ledger.record("AE-03", &format!("post_expression[{expr}]"), Verdict::NotSupported,
-            format!("no AE expression globals (value/time/linear) in the Studio profile; receipt disabled_by_error=unsupported; AE at t=1s gives {:.6}", post[50]));
+            format!("no engine in pure Motion (receipt disabled_by_error=unsupported); evaluated in hsk-studio-motion-js d5_ae_expressions; AE at t=1s gives {:.6}", post[50]));
     }
     ledger.finish();
 }
