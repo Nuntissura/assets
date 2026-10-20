@@ -8,7 +8,7 @@
     "base_wp_id": "WP-FF-022-prerequisite-classifier-remediation",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v1",
     "version": "1",
-    "updated_at_utc": "2026-10-20T13:49:00Z"
+    "updated_at_utc": "2026-10-20T14:28:21Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
@@ -31,19 +31,24 @@
     "worktree_id": null,
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "verified_at_utc": "2026-10-20T14:28:21Z",
+      "head_sha": "fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+      "branch": "codex/wp020-prerequisite-classifier"
     },
     "closure_commit": null,
     "main_containment_status": "NOT_STARTED",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "BLOCKED",
     "risk": "MEDIUM",
-    "blockers": [],
-    "next_action": "Commit the exact rustfmt constant-wrap correction and this actual validation checkpoint, rerun canonical verify-pr at committed candidate source identity, then record accepted closure, merge main and independently prove containment before limited WP020 status synchronization.",
+    "blockers": [
+      "Canonical FF-GATE-PR-001 FAIL at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b: FFmpeg governed-input symlink test supervisor.rs4203 failed OS1314; primary verified current token lacks SeCreateSymbolicLinkPrivilege and Developer Mode enable value is absent. Operator-authorized host prerequisite restoration is required; no repository setup workflow was found.",
+      "WP009 testkit platform probes fail WP009-E-PLATFORM-PROBE-SPAWN:wmic.exe:program not found; primary verified WMIC absent from PATH and standard locations despite WBEM PATH entry. Existing model manual requires WMIC; operator-authorized host prerequisite restoration is required without invented install commands.",
+      "Independent unchanged Windows process test windows.rs1747 failed immediate active-zero assertion. Cause UNVERIFIED; it is not classified as an established flake or dismissed. Narrow evidence-based diagnosis is still required before a justified retry.",
+      "Primary stopped only its own cargo-test wrapper478852 process tree after observed failures; remaining no-fail-fast tests and later gate dependencies are incomplete/NOT_RUN. Canonical PR acceptance is not proven."
+    ],
+    "next_action": "Operator restores the verified host prerequisites through an authorized host setup; re-verify those prerequisites, diagnose the unresolved Windows immediate active-zero assertion, then rerun canonical verify-pr from a committed candidate and complete acceptance before closure merge. Do not merge, edit WP020 status or weaken gates while blocked.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -115,10 +120,13 @@
     {
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004",
       "requirement": "Canonical architecture-check and verify-pr plus every activated deep trigger pass for the final code; independent adversarial implementation review verifies the changed public classification boundary and records findings and residual uncertainty.",
-      "status": "PENDING",
+      "status": "BLOCKED",
       "evidence": [
         "Independent scoped implementation review PASS and canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2; report build/reports/architecture-check-1792503465087351800-504232.json.",
-        "Canonical verify-pr failed formatting only at the same clean source identity: build/reports/verify-pr-1792504072319859900-524376.json. Mechanical rustfmt wrap and a fresh committed-candidate PR retry are required; AC004 remains pending."
+        "Canonical verify-pr failed formatting only at the same clean source identity: build/reports/verify-pr-1792504072319859900-524376.json. Mechanical rustfmt wrap and a fresh committed-candidate PR retry are required; AC004 remains pending.",
+        "Canonical FF-GATE-PR-001 final FAIL exit1 at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b, fingerprint1d160562b412bc954599e540cd0fec7a44d4eab1b35799571a35c13dae3d42f9; report build/reports/verify-pr-1792506415445954900-428344.json opened directly.",
+        "Compile default/no-default/all-features and Clippy completed before test failures. Original public-input and NONE classifier tests passed before primary stopped its own failing wrapper; remaining canonical module/workspace tests and later dependencies are NOT_RUN/incomplete, not passing evidence.",
+        "Verified host blockers: symlink OS1314 and missing wmic.exe; separate Windows immediate active-zero assertion cause remains UNVERIFIED. Focused earlier7/7 classifier result remains supporting evidence only."
       ],
       "proof_class": "integration"
     },
@@ -132,28 +140,29 @@
   ],
   "recovery": {
     "last_checkpoint": {
+      "head_sha": "fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+      "branch": "codex/wp020-prerequisite-classifier",
+      "blockers": [
+        "Canonical FF-GATE-PR-001 FAIL at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b: FFmpeg governed-input symlink test supervisor.rs4203 failed OS1314; primary verified current token lacks SeCreateSymbolicLinkPrivilege and Developer Mode enable value is absent. Operator-authorized host prerequisite restoration is required; no repository setup workflow was found.",
+        "WP009 testkit platform probes fail WP009-E-PLATFORM-PROBE-SPAWN:wmic.exe:program not found; primary verified WMIC absent from PATH and standard locations despite WBEM PATH entry. Existing model manual requires WMIC; operator-authorized host prerequisite restoration is required without invented install commands.",
+        "Independent unchanged Windows process test windows.rs1747 failed immediate active-zero assertion. Cause UNVERIFIED; it is not classified as an established flake or dismissed. Narrow evidence-based diagnosis is still required before a justified retry.",
+        "Primary stopped only its own cargo-test wrapper478852 process tree after observed failures; remaining no-fail-fast tests and later gate dependencies are incomplete/NOT_RUN. Canonical PR acceptance is not proven."
+      ],
+      "next_action": "Operator restores the verified host prerequisites through an authorized host setup; re-verify those prerequisites, diagnose the unresolved Windows immediate active-zero assertion, then rerun canonical verify-pr from a committed candidate and complete acceptance before closure merge. Do not merge, edit WP020 status or weaken gates while blocked.",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json"
+      ],
+      "recorded_at_utc": "2026-10-20T14:28:21Z",
       "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "blockers": [],
       "checks_run": [
         "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD: 8c7befacda38c5ae248f289d1389bf1f9f4720e6",
+        "git rev-parse HEAD: fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
         "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: three tracked modified paths and two untracked entries recorded in dirty_paths.",
-        "Focused classifier7/7; original filter3/3; focused warnings-denied Clippy PASS.",
-        "Independent literal review14/14 expected oracles; scoped implementation review and manual PASS.",
-        "Same-input literal baseline RED/candidate GREEN and postcandidate behavior-reversion/restoration proof complete."
-      ],
-      "head_sha": "8c7befacda38c5ae248f289d1389bf1f9f4720e6",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json",
-        "build/tools/fforager-xtask/src/main.rs",
-        "product/MODEL_MANUAL.md",
-        "build/tools/fforager-xtask/src/runtime_classifier_tests.rs",
-        "build/tools/fforager-xtask/src/testdata/"
-      ],
-      "recorded_at_utc": "2026-10-20T13:02:40Z",
-      "branch": "codex/wp020-prerequisite-classifier",
-      "next_action": "Commit the validated candidate checkpoint, run canonical architecture-check and verify-pr at that committed source identity, then record accepted closure, merge canonical main, independently prove containment and synchronize only the named WP020 blocker."
+        "git status --porcelain=v2 --branch: clean before blocked checkpoint; origin branch ahead0/behind0",
+        "git ls-remote origin refs/heads/codex/wp020-prerequisite-classifier: fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+        "Directly opened canonical PR FAIL report source; exact clean candidate identity verified.",
+        "Primary verified symlink privilege/Developer Mode absence and WMIC absence; immediate active-zero assertion cause unproven."
+      ]
     }
   },
   "validation": {
@@ -304,10 +313,28 @@
         "observed": "PASS in2.65seconds; whitespace-only constant wrap, main.rs SHA256 prefix472675 unchanged and frozen original packet Git blob prefix82c8 unchanged.",
         "proof_class": "structural",
         "result": "PASS"
+      },
+      {
+        "content_fingerprint": "1d160562b412bc954599e540cd0fec7a44d4eab1b35799571a35c13dae3d42f9",
+        "observed": "Test check failed exit1; later dependencies NOT_RUN. Host symlink1314/missingWMIC and unresolved immediate jobempty assertion observed. Primary stopped only owned wrapper478852 tree after failures; remaining nofailfast test execution incomplete.",
+        "artifact": "build/reports/verify-pr-1792506415445954900-428344.json",
+        "not_proven": "All remaining canonical tests, later dependencies, final PR acceptance and closure.",
+        "source_commit": "fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b",
+        "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+        "source_dirty": false,
+        "completed_before_failure": [
+          "default compile",
+          "no-default-features compile",
+          "all-features compile",
+          "Clippy",
+          "original WP020 public classifier test",
+          "NONE classifier test"
+        ],
+        "result": "FAIL"
       }
     ],
     "not_proven": [
-      "Canonical verify-pr acceptance after the observed rustfmt constant-wrap correction remains unproven.",
+      "Canonical verify-pr acceptance is BLOCKED by verified host prerequisites and an unresolved independent Windows assertion; remaining tests/later dependencies incomplete.",
       "Closure commit merge and independent canonical-main containment remain unproven.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ]
@@ -371,7 +398,8 @@
         "Independent limited manual review directly inspected locked Cargo commands, corrected NONE/PREREQUISITE operating paragraph, recovery and FF-GATE-RUNTIME-001 guidance as PASS.",
         "Postcandidate behavior counterfactual: primary observed original baseline exit1 IMPACT-MISMATCH then restored candidate exit0 PASS policy/scenario_contract on identical activation0013ea7a and content fingerprint590c3510; both reports independently opened.",
         "Canonical architecture-check PASS at clean dd00e4a731accfc886d516286a28ee27a726cef2 fingerprint6be3826aa25a059e85b1c2572c60a3997615d0f097631b67843092c5538194ff; report architecture-check-1792503465087351800-504232.json.",
-        "Canonical verify-pr FAIL at that same source: sole emitted rustfmt include_bytes constant wrapping diff; report verify-pr-1792504072319859900-524376.json. Final corrected-candidate PR remains required."
+        "Canonical verify-pr FAIL at that same source: sole emitted rustfmt include_bytes constant wrapping diff; report verify-pr-1792504072319859900-524376.json. Final corrected-candidate PR remains required.",
+        "Canonical PR at clean fdf62bcbde53e0920cf4654d76709b4b7e8f0d2b FAIL; report verify-pr-1792506415445954900-428344.json. Compile profiles/Clippy completed; tests encountered symlink1314, missingWMIC and unresolved Windows assertion; later dependencies NOT_RUN. Primary stopped only owned wrapper after failures; no full test PASS claimed."
       ],
       "applicable_rule_ids": [
         "FF-BUILD-036",
