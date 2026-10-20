@@ -13,6 +13,7 @@ pub mod quick;
 pub mod refine;
 pub mod refine_brush;
 pub mod roto;
+pub mod roto_refine;
 pub mod wand;
 
 use crate::brush::BrushError;
