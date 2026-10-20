@@ -290,3 +290,122 @@ fn set_head(ctx: &mut EditContext<'_>, new_head: DocPosition, extend: bool) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{dispatch, CommandContext, FormattingCommand};
+
+    struct Host;
+
+    impl ActionHost for Host {
+        fn merge_backward(&mut self, ctx: &mut EditContext<'_>) -> bool {
+            let before = ctx.undo.len();
+            let mut command = CommandContext::new(
+                ctx.doc, ctx.undo, ctx.selection, ctx.actor_id,
+            );
+            dispatch(&mut command, &FormattingCommand::MergeBackward).unwrap();
+            ctx.undo.len() != before
+        }
+
+        fn prev_grapheme_boundary_chars(&self, text: &str, offset: usize) -> usize {
+            assert_eq!(text, "Ae\u{301}B");
+            assert_eq!(offset, 3);
+            1
+        }
+
+        fn next_grapheme_boundary_chars(&self, text: &str, offset: usize) -> usize {
+            assert_eq!(text, "Ae\u{301}B");
+            assert_eq!(offset, 1);
+            3
+        }
+    }
+
+    fn text(doc: &BlockNode) -> String {
+        doc.children[0].as_block().unwrap().children[0]
+            .as_text().unwrap().text.to_string()
+    }
+
+    #[test]
+    fn insert_unicode_chunk_records_one_edit_and_supports_undo_redo() {
+        let mut doc = BlockNode::doc(vec![BlockNode::paragraph("ab")]);
+        let original = doc.clone();
+        let mut selection = Selection::caret(DocPosition::new(vec![0, 0], 1));
+        let mut undo = UndoManager::new();
+        let mut ctx = EditContext {
+            doc: &mut doc, selection: &mut selection, undo: &mut undo, actor_id: "keyboard",
+        };
+
+        assert!(apply_action(&mut ctx, EditAction::Insert("界🙂".into()), &mut Host));
+        assert_eq!(text(ctx.doc), "a界🙂b");
+        assert_eq!(*ctx.selection, Selection::caret(DocPosition::new(vec![0, 0], 3)));
+        assert_eq!(ctx.undo.len(), 1);
+        assert_eq!(ctx.undo.last_receipt().unwrap().actor_id, "keyboard");
+        let edited = ctx.doc.clone();
+        assert!(apply_action(&mut ctx, EditAction::Undo, &mut Host));
+        assert_eq!(*ctx.doc, original);
+        assert!(!ctx.undo.can_undo());
+        assert!(apply_action(&mut ctx, EditAction::Redo, &mut Host));
+        assert_eq!(*ctx.doc, edited);
+        assert!(!ctx.undo.can_redo());
+    }
+
+    #[test]
+    fn movement_and_deletion_use_host_cluster_boundaries_in_char_units() {
+        let mut doc = BlockNode::doc(vec![BlockNode::paragraph("Ae\u{301}B")]);
+        let original = doc.clone();
+        let mut selection = Selection::caret(DocPosition::new(vec![0, 0], 1));
+        let mut undo = UndoManager::new();
+        let mut ctx = EditContext {
+            doc: &mut doc, selection: &mut selection, undo: &mut undo, actor_id: "keyboard",
+        };
+
+        assert!(apply_action(&mut ctx, EditAction::MoveRight { extend: true }, &mut Host));
+        assert_eq!(*ctx.selection, Selection::text(
+            DocPosition::new(vec![0, 0], 1), DocPosition::new(vec![0, 0], 3),
+        ));
+        assert!(ctx.undo.is_empty());
+        assert!(apply_action(&mut ctx, EditAction::MoveLeft { extend: false }, &mut Host));
+        assert_eq!(*ctx.selection, Selection::caret(DocPosition::new(vec![0, 0], 1)));
+
+        assert!(apply_action(&mut ctx, EditAction::DeleteForward, &mut Host));
+        assert_eq!(text(ctx.doc), "AB");
+        assert_eq!(*ctx.selection, Selection::caret(DocPosition::new(vec![0, 0], 1)));
+        assert!(apply_action(&mut ctx, EditAction::Undo, &mut Host));
+        assert_eq!(*ctx.doc, original);
+        *ctx.selection = Selection::caret(DocPosition::new(vec![0, 0], 3));
+        assert!(apply_action(&mut ctx, EditAction::DeleteBackward, &mut Host));
+        assert_eq!(text(ctx.doc), "AB");
+        assert_eq!(*ctx.selection, Selection::caret(DocPosition::new(vec![0, 0], 1)));
+        assert!(apply_action(&mut ctx, EditAction::Undo, &mut Host));
+        assert_eq!(*ctx.doc, original);
+        assert!(!ctx.undo.can_undo());
+    }
+
+    #[test]
+    fn boundary_backspace_uses_real_merge_command_unless_merge_is_rebound() {
+        let mut doc = BlockNode::doc(vec![
+            BlockNode::paragraph("left"), BlockNode::paragraph("right"),
+        ]);
+        let original = doc.clone();
+        let caret = Selection::caret(DocPosition::new(vec![1, 0], 0));
+        let mut selection = caret.clone();
+        let mut undo = UndoManager::new();
+        let mut ctx = EditContext {
+            doc: &mut doc, selection: &mut selection, undo: &mut undo, actor_id: "keyboard",
+        };
+
+        assert!(!apply_action(&mut ctx, EditAction::DeleteBackwardWithoutMerge, &mut Host));
+        assert_eq!(*ctx.doc, original);
+        assert_eq!(*ctx.selection, caret);
+        assert!(ctx.undo.is_empty());
+        assert!(apply_action(&mut ctx, EditAction::DeleteBackward, &mut Host));
+        assert_eq!(ctx.doc.children.len(), 1);
+        assert_eq!(text(ctx.doc), "leftright");
+        assert_eq!(*ctx.selection, Selection::caret(DocPosition::new(vec![0, 0], 4)));
+        assert_eq!(ctx.undo.len(), 1);
+        assert!(apply_action(&mut ctx, EditAction::Undo, &mut Host));
+        assert_eq!(*ctx.doc, original);
+        assert!(!ctx.undo.can_undo());
+    }
+}
+
