@@ -90,24 +90,27 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (opacity <= 0.0 || s_a <= 0.0) {
         return;
     }
-    if (!extended && p.fill < 1.0 && fill_inside(p.mode)) {
-        // pigment blend_math::composite_over_fill (lane SMB-PS-ORACLE-PARITY-1): Photoshop's
-        // special-eight modes apply fill inside the blend on a fill-scaled source.
-        let f = p.fill;
-        let a = s_a * unfilled;
-        var bl: vec3<f32>;
+    // pigment blend_math::composite_over_fill (lane SMB-PS-ORACLE-PARITY-1): Photoshop's special-eight
+    // modes apply fill inside the blend on a fill-scaled source. One `blend` call serves both paths
+    // (the mode switch is inlined once per entry point).
+    let special = !extended && p.fill < 1.0 && fill_inside(p.mode);
+    let f = p.fill;
+    var cs_blend = s.rgb;
+    if (special) {
+        cs_blend = vec3<f32>(fill_source(p.mode, s.r, f), fill_source(p.mode, s.g, f), fill_source(p.mode, s.b, f));
+    }
+    var blended = blend(p.mode, b.rgb, cs_blend);
+    if (special) {
         if (is_hard_mix(p.mode)) {
-            bl = clamp((b.rgb + f * s.rgb - vec3<f32>(f)) / (1.0 - f), vec3<f32>(0.0), vec3<f32>(1.0));
-        } else {
-            let sf = vec3<f32>(fill_source(p.mode, s.r, f), fill_source(p.mode, s.g, f), fill_source(p.mode, s.b, f));
-            bl = blend(p.mode, b.rgb, sf);
+            blended = clamp((b.rgb + f * s.rgb - vec3<f32>(f)) / (1.0 - f), vec3<f32>(0.0), vec3<f32>(1.0));
         }
+        let a = s_a * unfilled;
         let fa_o = a_b + a * f * (1.0 - a_b);
         if (fa_o <= 0.0) {
             dst[di] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
             return;
         }
-        let fco = a * f * (1.0 - a_b) * s.rgb + a * a_b * bl + (1.0 - a) * a_b * b.rgb;
+        let fco = a * f * (1.0 - a_b) * s.rgb + a * a_b * blended + (1.0 - a) * a_b * b.rgb;
         var fout_a = min(fa_o, 1.0);
         if (clip) {
             fout_a = a_b;
@@ -116,7 +119,6 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let a_s = s_a * opacity;
-    let blended = blend(p.mode, b.rgb, s.rgb);
     let a_o = a_s + a_b * (1.0 - a_s);
     if (a_o <= 0.0) {
         dst[di] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
