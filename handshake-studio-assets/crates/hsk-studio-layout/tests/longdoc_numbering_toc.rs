@@ -163,6 +163,8 @@ fn toc_from_paragraph_styles_with_page_labels_and_loops() {
         hyphenated: false,
         justification: None,
         column: 0,
+        start_part: None,
+        end_part: None,
     };
     let frame = |spread: usize, page: usize, lines: Vec<Line>| FramePlacement {
         frame_id: "f".into(),

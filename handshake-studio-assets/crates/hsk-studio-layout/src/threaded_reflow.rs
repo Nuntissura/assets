@@ -122,6 +122,25 @@ pub struct Line {
     pub justification: Option<Justification>,
     /// Column of the frame the line sits in (0 for single-column frames and span paragraphs).
     pub column: usize,
+    /// The line starts inside its first glyph (`glyph_range.start`): the right part of a ligature
+    /// the previous line's hyphenation break split, set from `source.start` with `advance_pt`
+    /// instead of the glyph's advance (Type composition v2 ligature components).
+    pub start_part: Option<LinePart>,
+    /// A hyphenation break changes the material before the hyphen (Type composition v2 data): the
+    /// last content glyph set with its `hmtx` advance (kerning toward the next glyph dropped), or,
+    /// when `glyph == glyph_range.end`, the left part of a ligature split by the break, set after
+    /// the line's glyphs. `width_pt` includes it.
+    pub end_part: Option<LinePart>,
+}
+
+/// Glyph material a line sets differently at its start or end (see `Line::start_part`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinePart {
+    /// Paragraph-local glyph index.
+    pub glyph: usize,
+    /// The source characters set.
+    pub source: SourceSpan,
+    pub advance_pt: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -714,7 +733,6 @@ fn compose_flow(
         limit: h.consecutive_limit,
         double_demerits: h.double_hyphen_demerits,
     });
-    let hyphen_w = opts.hyphenation.as_ref().map_or(0.0, |h| h.hyphen_advance_pt);
     if paragraphs.iter().any(|p| p.font_missing) {
         return Err(LayoutError::MissingFont);
     }
@@ -923,7 +941,14 @@ fn compose_flow(
                     .get(g)
                     .map_or(p.source.end, |glyph| glyph.cluster.start)
             };
-            let source = if range.is_empty() {
+            // Type composition v2 line-end data at the line's edges: the material a hyphenation break
+            // sets before it, and the right part of a ligature the previous break split.
+            let end_part = items[b.item].end_part.filter(|_| items[b.item].flagged);
+            let head = items
+                .get(item_starts[k])
+                .filter(|it| it.kind == crate::paragraph::Kind::Box && it.first == range.start && !range.is_empty())
+                .and_then(|it| it.head);
+            let mut source = if range.is_empty() {
                 SourceSpan {
                     start: boundary(range.start),
                     end: boundary(range.start),
@@ -934,6 +959,29 @@ fn compose_flow(
                     end: p.glyphs[range.end - 1].cluster.end,
                 }
             };
+            if let Some(h) = head {
+                source.start = h.start;
+            }
+            if let Some(e) = end_part.filter(|e| e.extra) {
+                source.end = e.end;
+            }
+            let start_part = head.map(|h| LinePart {
+                glyph: range.start,
+                source: SourceSpan {
+                    start: h.start,
+                    end: p.glyphs[range.start].cluster.end,
+                },
+                advance_pt: h.advance_pt,
+            });
+            let end_part = end_part.map(|e| LinePart {
+                glyph: e.glyph,
+                source: SourceSpan {
+                    start: p.glyphs[e.glyph].cluster.start,
+                    end: e.end,
+                },
+                advance_pt: e.advance_pt,
+            });
+            let extra_glyph = items[b.item].end_part.is_some_and(|e| e.extra && items[b.item].flagged);
             if k >= slots.len() {
                 overset = Some(SourceSpan {
                     start: source.start,
@@ -943,7 +991,10 @@ fn compose_flow(
             }
             let slot = &slots[k];
             let hyphenated = items[b.item].flagged;
-            let width_pt = advance(range.start..content_end) + if hyphenated { hyphen_w } else { 0.0 };
+            // A flagged penalty's width is the hyphen plus Type's line-end change (`build_items`).
+            let width_pt = advance(range.start..content_end)
+                + if hyphenated { items[b.item].w } else { 0.0 }
+                + head.map_or(0.0, |h| h.delta);
             let alignment = stylings
                 .get(pi)
                 .and_then(Option::as_ref)
@@ -969,7 +1020,10 @@ fn compose_flow(
                     Alignment::Justified | Alignment::JustifiedAll if !is_last || alignment == Alignment::JustifiedAll => {
                         // Adobe composers: a hyphen is one more glyph gap of the line (oracle ID-02
                         // letter spacing: the hyphen takes its letter gap like the letters).
-                        let gaps = content_end.saturating_sub(range.start).saturating_sub(1) + usize::from(adobe && hyphenated);
+                        // The left part of a ligature split by the hyphen is one more glyph.
+                        let gaps = content_end.saturating_sub(range.start).saturating_sub(1)
+                            + usize::from(adobe && hyphenated)
+                            + usize::from(extra_glyph);
                         justification = Some(if adobe {
                             justify_line(width_pt, slot.width_pt, spaces, gaps, &jp)
                         } else {
@@ -1000,6 +1054,8 @@ fn compose_flow(
                     hyphenated,
                     justification,
                     column: slot.col,
+                    start_part,
+                    end_part,
                 },
             ));
         }

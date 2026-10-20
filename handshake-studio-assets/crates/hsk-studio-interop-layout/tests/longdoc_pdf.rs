@@ -651,6 +651,8 @@ fn footnotes_and_index_export() {
                 hyphenated: false,
                 justification: None,
                 column: 0,
+                start_part: None,
+                end_part: None,
             }],
             ..body_frame.clone()
         }],

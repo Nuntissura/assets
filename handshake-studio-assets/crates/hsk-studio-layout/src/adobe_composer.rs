@@ -78,7 +78,7 @@ impl Cand {
 }
 
 /// Glyph gaps of the line `items[s..i)` that letter spacing acts on: every glyph of the content
-/// but the last, plus the hyphen of a hyphenated end.
+/// but the last, plus the hyphen of a hyphenated end and the left part of a ligature split there.
 fn glyph_gaps(items: &[Item], s: usize, i: usize) -> usize {
     let first = items.get(s).map_or(0, |it| it.first);
     let end = items[s..i]
@@ -86,7 +86,9 @@ fn glyph_gaps(items: &[Item], s: usize, i: usize) -> usize {
         .rev()
         .find(|it| it.kind == crate::paragraph::Kind::Box)
         .map_or(first, |it| it.end);
-    end.saturating_sub(first).saturating_sub(1) + usize::from(items[i].flagged)
+    end.saturating_sub(first).saturating_sub(1)
+        + usize::from(items[i].flagged)
+        + usize::from(items[i].end_part.is_some_and(|e| e.extra))
 }
 
 /// The context both Adobe composers need.

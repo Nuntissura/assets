@@ -118,15 +118,21 @@ impl Sums {
         s
     }
     /// Natural width, stretch, shrink and infinite-stretch flag of the line `items[s..i)` that ends
-    /// with a break at item `i` (a penalty contributes its own width; a glue break is discarded).
+    /// with a break at item `i` (a penalty contributes its own width; a glue break is discarded; a
+    /// line starting at the right part of a split ligature adds that part's width change).
     pub(crate) fn measure(&self, items: &[Item], s: usize, i: usize) -> (f64, f64, f64, bool) {
         let pen = if items[i].kind == Kind::Penalty {
             items[i].w
         } else {
             0.0
         };
+        let head = items
+            .get(s)
+            .filter(|it| s < i && it.kind == Kind::Box)
+            .and_then(|it| it.head)
+            .map_or(0.0, |h| h.delta);
         (
-            self.w[i] - self.w[s] + pen,
+            self.w[i] - self.w[s] + pen + head,
             self.y[i] - self.y[s],
             self.z[i] - self.z[s],
             self.inf[i] > self.inf[s],

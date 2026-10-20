@@ -817,3 +817,81 @@ fn justify_all_sets_the_last_line_and_splits_past_the_limits_by_range() {
         assert!(case.run_t(&adobe_opts(Alignment::Justified, None)).unwrap().frames[0].lines[0].justification.is_none());
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Type composition v2 line-end data (lane SMB-TYPE-FF-LIGATURE): a hyphenation break inside a
+// presentation-form ligature sets each side with its components; a kerned glyph before a hyphen
+// takes its hmtx advance. Toy font as above (6 pt glyphs, 6 pt hyphen).
+
+/// "xx affix": glyphs x x ' ' a [ff] i x when `ligature`, else x x ' ' a f f i x with the first f
+/// kerned to 5 pt (hmtx 6 pt recorded as its line-end advance).
+fn affix(ligature: bool) -> ShapedParagraph {
+    let text = "xx affix";
+    let g = |s: u64, e: u64, w: f64| LayoutGlyph { cluster: span(s, e), advance_pt: w };
+    let mut glyphs = vec![g(0, 1, 6.0), g(1, 2, 6.0), g(2, 3, 6.0), g(3, 4, 6.0)];
+    if ligature {
+        glyphs.push(g(4, 6, 10.0));
+    } else {
+        glyphs.extend([g(4, 5, 5.0), g(5, 6, 6.0)]);
+    }
+    glyphs.extend([g(6, 7, 6.0), g(7, 8, 6.0)]);
+    let mut p = ShapedParagraph::latin_ltr(span(0, text.len() as u64), glyphs, 12.0, 10.0);
+    if ligature {
+        p.ligature_parts = vec![
+            LigaturePart { glyph: 4, source: span(4, 5), advance_pt: 6.0 },
+            LigaturePart { glyph: 4, source: span(5, 6), advance_pt: 6.0 },
+        ];
+    } else {
+        p.line_end_advances = vec![LineEndAdvance { glyph: 4, advance_pt: 6.0 }];
+    }
+    p
+}
+
+#[test]
+fn hyphen_inside_a_ligature_sets_its_components_and_drops_kerning_at_the_line_end() {
+    bounded_case("ligature_split", || {
+        let h = Hyphenator::from_pattern_text("[exceptions]\naf-fix\n").unwrap();
+        let opts = |h: &'static Hyphenator| TypesetOptions { hyphenation: Some(hy(6.0)), hyphenator: Some(h), ..Default::default() };
+        let h: &'static Hyphenator = Box::leak(Box::new(h));
+        // Both take the longest fitting line (the Single-line Composer with a zero hyphenation zone).
+        for composer in [Composer::FirstFit, Composer::AdobeSingleLine(AdobeParams { hyphenation_zone_pt: 0.0 })] {
+            // Ligature: "xx affix" is 46 pt > 40 pt; "xx af-" = 18 + 6 + 6 (left f) + 6 = 36 pt, the
+            // next line "fix" = 6 (right f) + 6 + 6 = 18 pt; the ligature glyph starts line 2.
+            let mut case = Case::new("xx affix", one_frame(40.0, 48.0), composer);
+            case.paragraphs = vec![affix(true)];
+            let l = case.run_t(&opts(h)).unwrap().frames[0].lines.clone();
+            assert_eq!(l.len(), 2, "{composer:?} {l:?}");
+            assert!(l[0].hyphenated, "{composer:?}");
+            assert_eq!((l[0].glyph_range.clone(), l[0].source, l[0].width_pt), (0..4, span(0, 5), 36.0), "{composer:?}");
+            assert_eq!(l[0].end_part, Some(LinePart { glyph: 4, source: span(4, 5), advance_pt: 6.0 }));
+            assert_eq!(l[0].start_part, None);
+            assert_eq!((l[1].glyph_range.clone(), l[1].source, l[1].width_pt), (4..7, span(5, 8), 18.0), "{composer:?}");
+            assert_eq!(l[1].start_part, Some(LinePart { glyph: 4, source: span(5, 6), advance_pt: 6.0 }));
+            // Unbroken (wide slot): the ligature keeps its own 10 pt advance.
+            let mut wide = Case::new("xx affix", one_frame(60.0, 48.0), composer);
+            wide.paragraphs = vec![affix(true)];
+            let w = wide.run_t(&opts(h)).unwrap().frames[0].lines.clone();
+            assert_eq!((w.len(), w[0].width_pt, w[0].end_part, w[0].start_part), (1, 46.0, None, None), "{composer:?}");
+            // Kerned f before the hyphen: "xx af-" = 24 + 6 (hmtx, not the kerned 5) + 6 = 36 pt;
+            // unbroken the kern stays (47 pt).
+            let mut kern = Case::new("xx affix", one_frame(40.0, 48.0), composer);
+            kern.paragraphs = vec![affix(false)];
+            let k = kern.run_t(&opts(h)).unwrap().frames[0].lines.clone();
+            assert_eq!((k[0].glyph_range.clone(), k[0].width_pt), (0..5, 36.0), "{composer:?}");
+            assert_eq!(k[0].end_part, Some(LinePart { glyph: 4, source: span(4, 5), advance_pt: 6.0 }));
+            assert_eq!((k[1].source, k[1].width_pt, k[1].start_part), (span(5, 8), 18.0, None));
+            let mut kern_wide = Case::new("xx affix", one_frame(60.0, 48.0), composer);
+            kern_wide.paragraphs = vec![affix(false)];
+            let kw = kern_wide.run_t(&opts(h)).unwrap().frames[0].lines.clone();
+            assert_eq!((kw.len(), kw[0].width_pt, kw[0].end_part), (1, 47.0, None), "{composer:?}");
+        }
+        // Hostile: component data that does not partition the ligature at the hyphen (one part
+        // spanning both bytes) offers no break inside it: the word is never cut there.
+        let mut bad = affix(true);
+        bad.ligature_parts = vec![LigaturePart { glyph: 4, source: span(4, 6), advance_pt: 12.0 }];
+        let mut case = Case::new("xx affix", one_frame(40.0, 48.0), Composer::FirstFit);
+        case.paragraphs = vec![bad];
+        let l = case.run_t(&opts(h)).unwrap().frames[0].lines.clone();
+        assert!(l.iter().all(|l| !l.hyphenated && l.end_part.is_none() && l.start_part.is_none()), "{l:?}");
+    });
+}

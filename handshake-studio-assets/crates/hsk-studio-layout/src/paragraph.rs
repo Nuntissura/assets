@@ -14,8 +14,28 @@ pub struct LayoutGlyph {
     pub advance_pt: f64,
 }
 
+/// The advance glyph `glyph` takes when a line ends right after it at a hyphenation break, where it
+/// differs from the shaped advance (Type composition v2 `LineEndAdvance`: the glyph's `hmtx`
+/// advance, so pair kerning toward the next glyph does not cross the line end).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineEndAdvance {
+    pub glyph: usize,
+    pub advance_pt: f64,
+}
+/// One component of the ligature glyph `glyph` (Type composition v2 `LigatureComponent`): its
+/// source characters and nominal advance. A hyphenation break inside the ligature sets each side
+/// with the summed advances of its components.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LigaturePart {
+    pub glyph: usize,
+    pub source: SourceSpan,
+    pub advance_pt: f64,
+}
+
 /// One paragraph of shaped text. `source` and every `cluster` are byte offsets into the story text.
 /// `line_height_pt` and `ascent_pt` come from the caller's resolved style (descent is the rest).
+/// `line_end_advances` and `ligature_parts` (paragraph-local glyph indices, ascending) carry Type's
+/// composition v2 line-end data; both are empty for other sources.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapedParagraph {
     pub source: SourceSpan,
@@ -25,6 +45,8 @@ pub struct ShapedParagraph {
     pub font_missing: bool,
     pub right_to_left: bool,
     pub latin_only: bool,
+    pub line_end_advances: Vec<LineEndAdvance>,
+    pub ligature_parts: Vec<LigaturePart>,
 }
 impl ShapedParagraph {
     /// Latin left-to-right paragraph with every font present.
@@ -42,6 +64,8 @@ impl ShapedParagraph {
             font_missing: false,
             right_to_left: false,
             latin_only: true,
+            line_end_advances: Vec::new(),
+            ligature_parts: Vec::new(),
         }
     }
     /// Flattens a Type-shaped paragraph. A `Prepared` result never carries a missing font (Type
@@ -49,10 +73,24 @@ impl ShapedParagraph {
     /// than Latn/Zyyy mark the paragraph unsupported so `reflow` refuses it instead of mis-laying it.
     pub fn from_type(p: &ty::ParagraphResult<'_>, line_height_pt: f64, ascent_pt: f64) -> Self {
         let mut glyphs = Vec::new();
+        let (mut line_end_advances, mut ligature_parts) = (Vec::new(), Vec::new());
         let (mut rtl, mut latin) = (p.direction() == ty::Direction::RightToLeft, true);
         for run in p.runs() {
             rtl |= run.direction() == ty::Direction::RightToLeft || run.bidi_level() % 2 == 1;
             latin &= matches!(&run.script(), b"Latn" | b"Zyyy");
+            let base = glyphs.len();
+            line_end_advances.extend(run.line_end_advances().iter().map(|a| LineEndAdvance {
+                glyph: base + a.glyph as usize,
+                advance_pt: a.advance_pt,
+            }));
+            ligature_parts.extend(run.ligature_components().iter().map(|c| LigaturePart {
+                glyph: base + c.glyph as usize,
+                source: SourceSpan {
+                    start: c.source.start,
+                    end: c.source.end,
+                },
+                advance_pt: c.advance_pt,
+            }));
             glyphs.extend(run.glyphs().iter().map(|g| LayoutGlyph {
                 cluster: SourceSpan {
                     start: g.cluster.start,
@@ -72,6 +110,8 @@ impl ShapedParagraph {
             font_missing: false,
             right_to_left: rtl,
             latin_only: latin,
+            line_end_advances,
+            ligature_parts,
         }
     }
     /// Toy/test fixture, NOT shaping: one glyph per `char` of `text[source]` with a fixed advance.
@@ -161,6 +201,32 @@ pub(crate) struct Item {
     pub trailing: bool,
     /// Flagged penalty = a hyphenation break (the line gets a hyphen of width `w`).
     pub flagged: bool,
+    /// Flagged penalty: how the line ending here sets the glyph material before the break when
+    /// Type's line-end data changes it (`w` = hyphen + that change).
+    pub end_part: Option<EndPart>,
+    /// Box: its first glyph is the right part of a ligature split by the break just before it; when
+    /// the box starts a line, the line is `head.delta` wider than the box's natural width.
+    pub head: Option<HeadPart>,
+}
+/// Glyph material set at the end of a line by a hyphenation break (Type composition v2 data).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EndPart {
+    /// Paragraph-local glyph set at the line end.
+    pub glyph: usize,
+    /// Source end of the material: the glyph's cluster end, or a byte inside a ligature.
+    pub end: u64,
+    pub advance_pt: f64,
+    /// The material is the left part of a ligature that lies past the line's glyph range (the line
+    /// sets one more glyph than its range holds).
+    pub extra: bool,
+}
+/// The right part of a ligature split by a hyphenation break: set from source byte `start` with
+/// `advance_pt` (`delta` = that minus the ligature's shaped advance).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeadPart {
+    pub start: u64,
+    pub advance_pt: f64,
+    pub delta: f64,
 }
 impl Item {
     fn penalty(p: f64, at: usize) -> Self {
@@ -176,6 +242,8 @@ impl Item {
             breakable: true,
             trailing: false,
             flagged: false,
+            end_part: None,
+            head: None,
         }
     }
     fn fill(at: usize) -> Self {
@@ -191,12 +259,31 @@ impl Item {
             breakable: false,
             trailing: false,
             flagged: false,
+            end_part: None,
+            head: None,
         }
     }
 }
 
 fn is_hanging_space(c: char) -> bool {
     c.is_whitespace() && !matches!(c, '\u{00A0}' | '\u{2007}' | '\u{202F}')
+}
+
+/// Summed component advances of ligature glyph `k` before and after source byte `at`, when Type
+/// recorded its components and `at` falls between two of them.
+fn ligature_split(p: &ShapedParagraph, k: usize, at: u64) -> Option<(f64, f64)> {
+    let (mut before, mut after, mut n) = (0.0, 0.0, 0usize);
+    for part in p.ligature_parts.iter().filter(|c| c.glyph == k) {
+        n += 1;
+        if part.source.end <= at {
+            before += part.advance_pt;
+        } else if part.source.start >= at {
+            after += part.advance_pt;
+        } else {
+            return None;
+        }
+    }
+    (n >= 2 && before > 0.0 && after > 0.0).then_some((before, after))
 }
 
 /// Builds the item list: boxes (unbreakable glyph runs), glue (whitespace runs), zero-width
@@ -288,10 +375,14 @@ pub(crate) fn build_items(
                 breakable: after == Some(BreakKind::Allowed),
                 trailing: false,
                 flagged: false,
+                end_part: None,
+                head: None,
             });
         } else {
-            // Glyph indices (inside the run) where a hyphen may follow the previous glyph.
-            let mut cuts: Vec<usize> = Vec::new();
+            // Hyphenation cuts: glyph index `k` where the next line would start, and `Some(byte)` when
+            // the cut lies inside glyph `k` (a ligature with Type component data), else `None` (the
+            // hyphen follows glyph `k - 1`).
+            let mut cuts: Vec<(usize, Option<u64>)> = Vec::new();
             if let Some((h, hp)) = hyph
                 && j - i >= 2
             {
@@ -303,17 +394,26 @@ pub(crate) fn build_items(
                             if let Some(k) = (i + 1..j).find(|k| {
                                 g[*k].cluster.start as usize == abs
                                     && g[*k - 1].cluster.end as usize == abs
-                            }) && !cuts.contains(&k)
+                            }) {
+                                cuts.push((k, None));
+                            } else if let Some(k) = (i + 1..j).find(|k| {
+                                (g[*k].cluster.start as usize) < abs
+                                    && abs < g[*k].cluster.end as usize
+                            }) && ligature_split(p, k, abs as u64).is_some()
                             {
-                                cuts.push(k);
+                                cuts.push((k, Some(abs as u64)));
                             }
                         }
                     }
-                    cuts.sort_unstable();
+                    // One cut per glyph index; a cut at the glyph boundary wins over one inside it.
+                    cuts.sort_unstable_by_key(|c| (c.0, c.1.is_some()));
+                    cuts.dedup_by_key(|c| c.0);
                 }
             }
+            let hyphen_w = hyph.map_or(0.0, |x| x.1.hyphen_advance_pt);
             let mut from = i;
-            for &cut in cuts.iter().chain(std::iter::once(&j)) {
+            let mut head = None;
+            for &(cut, inside) in cuts.iter().chain(std::iter::once(&(j, None))) {
                 items.push(Item {
                     kind: Kind::Box,
                     w: adv(from, cut),
@@ -326,11 +426,44 @@ pub(crate) fn build_items(
                     breakable: false,
                     trailing: false,
                     flagged: false,
+                    end_part: None,
+                    head: head.take(),
                 });
                 if cut != j {
                     let mut pen = Item::penalty(hyph.map_or(0.0, |x| x.1.hyphen_penalty), cut);
-                    pen.w = hyph.map_or(0.0, |x| x.1.hyphen_advance_pt);
+                    pen.w = hyphen_w;
                     pen.flagged = true;
+                    match inside {
+                        // Pair kerning toward the next glyph does not cross the line end.
+                        None => {
+                            let k = cut - 1;
+                            if let Some(a) = p.line_end_advances.iter().find(|a| a.glyph == k) {
+                                pen.w += a.advance_pt - g[k].advance_pt;
+                                pen.end_part = Some(EndPart {
+                                    glyph: k,
+                                    end: g[k].cluster.end,
+                                    advance_pt: a.advance_pt,
+                                    extra: false,
+                                });
+                            }
+                        }
+                        // A ligature split by the hyphen: each side set with its components.
+                        Some(at) => {
+                            let (before, after) = ligature_split(p, cut, at).unwrap_or((0.0, 0.0));
+                            pen.w += before;
+                            pen.end_part = Some(EndPart {
+                                glyph: cut,
+                                end: at,
+                                advance_pt: before,
+                                extra: true,
+                            });
+                            head = Some(HeadPart {
+                                start: at,
+                                advance_pt: after,
+                                delta: after - g[cut].advance_pt,
+                            });
+                        }
+                    }
                     items.push(pen);
                 }
                 from = cut;

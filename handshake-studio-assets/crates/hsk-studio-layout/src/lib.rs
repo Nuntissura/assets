@@ -72,7 +72,7 @@ pub use hyphenate::{
     EN_US_LICENCE, HyphenationError, HyphenationParams, Hyphenator, INDESIGN_EN_US_EXCEPTIONS, MAX_WORD_BYTES, hyphenated,
 };
 pub use paragraph::{
-    Break, BreakKind, LayoutGlyph, ShapedParagraph, SpaceParams, break_opportunities,
+    Break, BreakKind, LayoutGlyph, LigaturePart, LineEndAdvance, ShapedParagraph, SpaceParams, break_opportunities,
 };
 pub use parent_adapter::{
     LayerAssignment, LayerRects, ParentAdapterError, parent_set_from_records,
@@ -86,7 +86,7 @@ pub use styles::{
     Alignment, ParagraphStyling, ResolvedStyle, StyleSource, length_pt, resolve_style,
 };
 pub use threaded_reflow::{
-    FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow, reflow_flow, reflow_grid, reflow_typeset,
+    FramePlacement, LayoutProposal, Limits, Line, LinePart, ReflowRequest, reflow, reflow_flow, reflow_grid, reflow_typeset,
 };
 pub use preflight::{
     MAX_PREFLIGHT_FINDINGS, PREFLIGHT_RULES, PreflightError, PreflightFinding, PreflightInput, PreflightProfile, PreflightReport,

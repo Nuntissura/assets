@@ -219,6 +219,8 @@ fn running_headers_section_markers_and_variables() {
         hyphenated: false,
         justification: None,
         column: 0,
+        start_part: None,
+        end_part: None,
     };
     let fp = |spread: usize, page: usize, lines: Vec<Line>| FramePlacement { frame_id: "f".into(), frame_index: 0, spread, page, origin_x_pt: 0.0, origin_y_pt: 0.0, lines };
     let placement = LayoutProposal { base_revision: 6, frames: vec![fp(0, 0, vec![line(0, 7), line(7, 12)]), fp(1, 0, vec![line(12, 18)]), fp(1, 1, vec![line(18, 24)])], overset: None };

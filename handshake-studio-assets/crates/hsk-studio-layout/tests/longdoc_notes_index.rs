@@ -252,6 +252,8 @@ fn index_from_marks_nested_run_in_and_refusals() {
         hyphenated: false,
         justification: None,
         column: 0,
+        start_part: None,
+        end_part: None,
     };
     let placement = LayoutProposal {
         base_revision: 4,
