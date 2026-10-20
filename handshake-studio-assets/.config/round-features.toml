@@ -26,7 +26,7 @@ hsk-studio-render-gpu = [["test-faults"], ["shared-device"], ["shared-device", "
 hsk-studio-score-device = [["cpal-backend"]]
 hsk-studio-kernel-bindings = [["test-faults"], ["ckc-test-double"]]
 hsk-studio-worker = [["test-faults"]]
-hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"], ["os-encode"]]
+hsk-studio-harness = [["import-psd"], ["import-psd", "import-raw"], ["import-tiff"], ["import-tiff", "import-raw"], ["import-pdf"], ["import-raster"], ["viewer"], ["desktop", "viewer"], ["media"], ["media-native"], ["audio-device"], ["audio-batch"], ["layout-ui"], ["studio-aac"], ["os-encode"], ["audio-plugin"]]
 hsk-studio-composite = [["motion"]]
 
 [ignored]
@@ -45,3 +45,6 @@ hsk-studio-harness = [["import-psd", "import-raw"]]
 # SMB-PR-SOURCE-MONITOR (R36): timeline_captions.rs h264_preset_encodes_through_the_os_encoder_with_captions spawns the
 # same worker beside the test target; its --encode modes need os-encode.
 "hsk-studio-harness+os-encode" = [["hsk-studio-reel-native", "reel-native-mf-worker", "mf-worker", "os-encode"]]
+# SMB-AU-WAVEFORM-EDITOR slice 4b (557ac06): tests/audio_waveform_plugin.rs spawns score-plugin-worker from the same
+# target directory (else NOT_PROVEN); build it from the candidate right before the unit.
+"hsk-studio-harness+audio-plugin" = [["hsk-studio-score-plugin", "score-plugin-worker"]]

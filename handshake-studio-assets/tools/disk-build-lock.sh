@@ -44,7 +44,14 @@
 #                forks mkdir, mv, rm (ticket), mv, rm; a poll forks sleep.
 # Functions: dbl_acquire ROOT CLASS OWNER COMMAND IMPL (sets DBL_TOKEN, DBL_NESTED, DBL_WAITED_S, DBL_BROKE),
 #   dbl_note_child PID, dbl_release, dbl_recover (own unreleased leftover), dbl_yield (release + open a gap; rounds), dbl_get KEY FILE (sets DBL_V),
-#   dbl_field KEY FILE (prints), dbl_ident PID (sets DBL_START), dbl_alive FILE [PREFIX], dbl_holder_gone FILE.
+#   dbl_field KEY FILE (prints), dbl_ident PID (sets DBL_START), dbl_alive FILE [PREFIX], dbl_holder_gone FILE,
+#   dbl_gpu_run ROOT CLASS OWNER LABEL CMD... (see below).
+# GPU test lock (SMB-STEWARD-GPU-CONTENTION, 2026-10-20): the same protocol on a second, machine-wide root (default
+#   <disk lock search dir>/.gpu-test-lock on D:, shared by both build slots), so GPU test binaries of the C: lane slot
+#   and the D: round/lane slot never overlap (two slots x 8 render-gpu threads timed out). dbl_gpu_run holds it only
+#   around the test run, in a child process (this library keeps one lock per process). Order: a caller may hold its
+#   disk lock while it waits for the GPU lock, never the reverse (no cycle). The child restores the caller's disk-lock
+#   token so wrapped cargo calls inside re-enter the disk lock instead of waiting for it. Rounds queue as class round.
 DBL_SCHEMA=hsk.studio.disk-build-lock@2
 dbl_get() {   # one mapfile read, so the handle is open only for that read (an open reader blocks the release rename)
   DBL_V=""
@@ -263,7 +270,22 @@ dbl_yield() {   # round between units: open a gap for one queued builder, then r
   dbl_release
   return 0
 }
+dbl_gpu_run() {   # ROOT CLASS OWNER LABEL CMD...: run CMD holding the GPU test lock ROOT; CMD's exit status (75: no lock)
+  local groot=$1 gclass=$2 gowner=$3 glabel=$4
+  shift 4
+  bash -c 'groot=$1 gclass=$2 gowner=$3 glabel=$4; shift 4
+    outer=${STUDIO_DISK_BUILD_LOCK_TOKEN:-}
+    unset STUDIO_DISK_BUILD_LOCK_TOKEN
+    dbl_acquire "$groot" "$gclass" "$gowner" "$glabel" gpu-test || exit 75
+    trap "dbl_release" EXIT
+    trap "[ -n \"\${child:-}\" ] && kill \"\$child\" 2>/dev/null; exit 130" INT TERM HUP
+    if [ -n "$outer" ]; then export STUDIO_DISK_BUILD_LOCK_TOKEN=$outer; else unset STUDIO_DISK_BUILD_LOCK_TOKEN; fi
+    "$@" &
+    child=$!
+    dbl_note_child "$child"
+    wait "$child"' dbl-gpu-run "$groot" "$gclass" "$gowner" "$glabel" "$@"
+}
 # Exported so child bash scripts of a holder (and of the cargo wrapper) can re-enter without re-sourcing.
 export -f dbl_get dbl_field dbl_now dbl_utc dbl_ident dbl_winpid dbl_alive dbl_holder_gone dbl_event dbl_fence \
-  dbl_acquire dbl_note_child dbl_release dbl_recover dbl_yield
+  dbl_acquire dbl_note_child dbl_release dbl_recover dbl_yield dbl_gpu_run
 export DBL_SCHEMA

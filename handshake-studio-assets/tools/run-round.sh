@@ -57,6 +57,10 @@
 #   first. Root from STUDIO_DISK_BUILD_LOCK_DIR or the walk-up of .config/disk-build-lock.toml (they must agree);
 #   waits print to stderr; results/disk-lock.json and round.json "disk_lock" record holds, yields, waits and broken
 #   stale locks; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S, default 7200) or a protocol mismatch exits 75.
+# GPU test lock (SMB-STEWARD-GPU-CONTENTION 2026-10-20; dbl_gpu_run in tools/disk-build-lock.sh): a unit whose selection
+#   includes hsk-studio-render-gpu (or --workspace) runs its test step holding the machine-wide GPU test lock (class
+#   round = queue priority; root STUDIO_GPU_TEST_LOCK_DIR or <disk lock root>/../.gpu-test-lock), so GPU tests of the
+#   other build slot never overlap; the build step stays outside it. Giving up waiting is the unit's run status 75.
 # Tree binding: <target-dir>/.studio-workspace-root binds the target dir to ONE workspace root (`cargo
 #   locate-project --workspace` output; the team's studio-env.sh uses the same marker); another root is refused
 #   (exit 2), because trees sharing a target reuse each other's artifacts by mtime.
@@ -152,6 +156,7 @@ fi
 lock_root=${lock_root:-$cfg_lock}
 [ -n "$lock_root" ] || die "no disk build lock root (.config/disk-build-lock.toml search not found; or set STUDIO_DISK_BUILD_LOCK_DIR)"
 lock_root=$(abspath "$lock_root")
+gpu_root=$(abspath "${STUDIO_GPU_TEST_LOCK_DIR:-$(dirname "$lock_root")/.gpu-test-lock}")
 for p in "$target" "$results"; do
   case "$p" in [cC]:*|/c/*) die "refusing C: path $p (build output and temp stay off C:)" ;; esac
   under "$p" "$root" && die "refusing path inside the workspace: $p"
@@ -486,7 +491,11 @@ nextest_unit() {
     run=(cargo nextest run "${nx[@]}" --no-fail-fast --no-tests=warn --profile "$profile" ${locked[@]+"${locked[@]}"} "$@" ${fa[@]+"${fa[@]}"})
     [ -n "$U_FILTER" ] && run+=(-E "$U_FILTER")
     rm -f "$target/nextest/$profile/junit.xml"
-    "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt"
+    case " $* " in
+      *" --workspace "*|*" hsk-studio-render-gpu "*)
+        dbl_gpu_run "$gpu_root" round "$lock_owner" "gpu tests: $lock_label" "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt" ;;
+      *) "${run[@]}" >"$d/run.stdout.txt" 2>"$d/run.stderr.txt" ;;
+    esac
     U_RUN=$?
     [ -f "$target/nextest/$profile/junit.xml" ] && cp "$target/nextest/$profile/junit.xml" "$d/junit.xml"
   fi
