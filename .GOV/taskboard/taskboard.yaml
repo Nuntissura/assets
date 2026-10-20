@@ -1,6 +1,6 @@
 schema_id: ff.taskboard@2
 file_id: FF-GOV-TASKBOARD-001
-updated_at: "2026-08-09"
+updated_at: "2026-10-20"
 authority: canonical_index
 project_id: FF-PROJ-001
 packet_root: .GOV/work_packets/
@@ -35,8 +35,8 @@ rules:
   - id: FF-TASKBOARD-RULE-008
     statement: Superseded packet history is archived and never deleted.
 current_focus:
-  statement: No work packet is active.
-  active_wp_id: null
+  statement: Work packet selected.
+  active_wp_id: WP-FF-022-prerequisite-classifier-remediation-v1
 work_packets:
   - wp_id: WP-FF-001-governance-workflow-v1
     packet: .GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json
@@ -96,3 +96,5 @@ work_packets:
     packet: .GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json
   - wp_id: WP-FF-021-first-runnable-production-slice-v1
     packet: .GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json
+  - wp_id: WP-FF-022-prerequisite-classifier-remediation-v1
+    packet: .GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json

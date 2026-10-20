@@ -1,0 +1,175 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "TRACKED",
+  "identity": {
+    "created_at_utc": "2026-10-20T12:13:51Z",
+    "title": "Repair build-only Phase 0 prerequisite classification",
+    "base_wp_id": "WP-FF-022-prerequisite-classifier-remediation",
+    "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v1",
+    "version": "1",
+    "updated_at_utc": "2026-10-20T12:13:51Z"
+  },
+  "authorization": {
+    "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
+    "source": "operator_message",
+    "recorded_at_utc": "2026-10-20T12:13:51Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+    "work_branch": "codex/wp020-prerequisite-classifier",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "IN_PROGRESS",
+    "risk": "LOW",
+    "blockers": [],
+    "next_action": "Commit this activation checkpoint, reproduce the recorded build-only PREREQUISITE failure through the public runtime-truth-check command, then repair the classifier without weakening declaration or runtime gates.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/id-registry.yaml",
+      "build/tools/fforager-xtask/",
+      "build/fixtures/architecture/",
+      "build/reports/",
+      ".fforager-artifacts/"
+    ],
+    "in_scope": [
+      "Recognize explicitly declared, design-authorized build-only Phase 0 prerequisite artifacts separately from NONE governance/build-tool work, applying all existing declaration, activation, zero-progress, future-consumer and runtime-claim checks.",
+      "Preserve fail-closed NONE/RUNTIME classification, shipped-product path protections and declaration integrity.",
+      "Add executable public-command regression and behavior-changing counterfactual proof for the recorded failure.",
+      "Record canonical validation, independent review, closure commit and main containment."
+    ],
+    "product_impact": "NONE",
+    "summary": "Remediate the recorded WP-020 FF-GATE-RUNTIME-001 classification failure in non-shipped Rust gate tooling only.",
+    "dependencies": [
+      ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json#/lifecycle/blockers records the failing classifier and requires separately authorized fail-closed remediation.",
+      "Existing FF-GATE-RUNTIME-001 prerequisite declarations and runtime proof contract remain authoritative."
+    ],
+    "non_goals": [
+      "Activate, implement or rewrite WP-020 benchmark design or any other packet.",
+      "Change product code, product capability, dependency authorization, design scope, runtime-proof schemas or authority precedence.",
+      "Claim any product, capability, runtime, packaging, release or phase progress.",
+      "Use Python in Ferric implementation or canonical verification; the sole approved use is the separate global gameplan controller."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-001",
+      "requirement": "The public runtime-truth-check command reproduces the original design-authorized build-only PREREQUISITE rejection before the correction and accepts that same input after correction, with no shipped product changes and only policy/contract proof plus explicit zero-progress limitations.",
+      "status": "PENDING",
+      "evidence": [],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-002",
+      "requirement": "The public command rejects undeclared or altered prerequisite declarations, governance-only prerequisite relabeling, RUNTIME without shipped changes, forbidden product-path changes, missing design authority/future consumer/proof and positive product-progress claims; valid NONE governance work retains its existing result.",
+      "status": "PENDING",
+      "evidence": [],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-003",
+      "requirement": "A declaration-preserving counterfactual removes or bypasses the correction and demonstrably makes the public-boundary regression fail; declaration equality or expected-label agreement alone does not satisfy this row.",
+      "status": "PENDING",
+      "evidence": [],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004",
+      "requirement": "Canonical architecture-check and verify-pr plus every activated deep trigger pass for the final code; independent adversarial implementation review verifies the changed public classification boundary and records findings and residual uncertainty.",
+      "status": "PENDING",
+      "evidence": [],
+      "proof_class": "integration"
+    },
+    {
+      "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-005",
+      "requirement": "The accepted closure commit is merged into canonical main and git merge-base --is-ancestor proves containment; WP-020 remains a non-authorizing STUB and zero product/capability/runtime/packaging/release/phase progress is preserved.",
+      "status": "PENDING",
+      "evidence": [],
+      "proof_class": "governance"
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "next_action": "Commit this activation checkpoint, reproduce the recorded build-only PREREQUISITE failure through the public runtime-truth-check command, then repair the classifier without weakening declaration or runtime gates.",
+      "branch": "codex/wp020-prerequisite-classifier",
+      "blockers": [],
+      "checks_run": [
+        "Authority, template, WP-020 packet/refinement and classifier code inspected before edits.",
+        "git branch --show-current: codex/wp020-prerequisite-classifier",
+        "git rev-parse HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "git status --porcelain=v2 --branch: # branch.oid 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54; # branch.head codex/wp020-prerequisite-classifier; no dirty paths before packet authoring."
+      ],
+      "recorded_at_utc": "2026-10-20T12:13:51Z",
+      "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "head_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "dirty_paths": [
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/id-registry.yaml",
+        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json"
+      ]
+    }
+  },
+  "validation": {
+    "checks": [],
+    "not_proven": [
+      "The public classifier regression has not yet been executed.",
+      "Canonical gates, independent review and main containment remain unproven.",
+      "Any product, capability, runtime, packaging, release or phase progress."
+    ]
+  },
+  "extensions": {
+    "delegation": {
+      "proof_review": "primary agent and independent implementation reviewer",
+      "implementation": "implementation subagent",
+      "paperwork": "paperwork subagent",
+      "operator_authorized": true
+    },
+    "canonical_proof_commands": [
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard",
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check",
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+      "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-deep --evidence-from-taskboard"
+    ],
+    "remediation_basis": {
+      "diagnosis": "The no-shipped-product-path branch rejects every non-NONE impact before the existing PREREQUISITE declaration validation can execute.",
+      "profile_rationale": "TRACKED is the smallest profile for this bounded recorded governance-tool bug remediation: no dependency, architecture, public schema or product design changes; independent public-boundary proof remains required.",
+      "inspected_boundary": "build/tools/fforager-xtask/src/main.rs::runtime_truth_check",
+      "recorded_failure": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json#/lifecycle/blockers",
+      "research_policy": "Recorded remediation under GLOBAL-REMEDIATE-001 through GLOBAL-REMEDIATE-004; no new-feature research or refinement ceremony."
+    },
+    "proof_requirements": {
+      "negative_matrix": "Observe nonzero rejection for undeclared/altered declaration, governance-only relabeling, RUNTIME/no shipped changes, forbidden shipped paths and positive progress claims.",
+      "public_regression": "Use the original WP-020-style build-only prerequisite at the public command boundary in an isolated repository; preserve exact committed activation declaration and base identity.",
+      "scratch_root": ".fforager-artifacts/",
+      "counterfactual": "Restore the original classifier behavior while preserving declaration/input and prove the regression rejects it.",
+      "gate_evidence": "Before verify-pr, populate extensions.change_evidence from actual implementation, verification and independent review; pending metadata cannot satisfy a gate.",
+      "timeout": "All public-command probes and gate children use the existing bounded command runner and record actual input, boundary, expected/observed exit and result."
+    }
+  }
+}
