@@ -36,7 +36,7 @@ pub use profile::{
     ProfileLimits, ProfileValidator, ProfileViolation, ValidatedSource, ViolationClass,
     ViolationKind,
 };
-pub use provider::{MotionJsProvider, PROFILE_ID, ProviderStats, RetireReport, report_eval};
+pub use provider::{AE_GLOBALS_PRELUDE, MotionJsProvider, PROFILE_ID, ProviderStats, RetireReport, report_eval};
 #[cfg(feature = "quickjs")]
 pub use quickjs::{
     LimitReadback, QuickJsBackend, QuickJsConfigError, QuickJsOptions, WRAPPER_STACK_LIMIT,

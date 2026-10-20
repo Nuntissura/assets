@@ -10,10 +10,10 @@ use crate::{
     limits::Quotas,
     profile::{ProfileValidator, ProfileViolation, ViolationClass},
 };
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use hsk_studio_motion::{
     DateProfile, EvalTick, ExprError, ExprErrorCode, ExprRequest, ExpressionProvider, Fuel,
-    HostRead, PropertyPath,
+    HostRead, PropertyPath, SourceSpan,
 };
 use hsk_studio_observe::{Observation, Observe, Outcome, Receipt, SinkPort};
 use std::{
@@ -27,6 +27,45 @@ use std::{
 
 /// Provider/profile identifier recorded in Motion receipts.
 pub const PROFILE_ID: &str = "motion-js-es2018@1";
+
+/// After Effects expression globals bound for JavaScript engines (lane SMB-AI-AE-ORACLE-FOLLOWUPS
+/// slice 4; D5 oracle AE-03, After Effects 26.5): `value` (the pre-expression value: a number for one
+/// component, an array otherwise; `undefined` when Motion passes no base, i.e. a property without
+/// keyframes), `time` (the evaluation tick in seconds) and `linear(t, tMin, tMax, value1, value2)` /
+/// `linear(t, value1, value2)` (`t` in 0..1): `value1` at or below `tMin`, `value2` at or above
+/// `tMax`, linear in between, per component for arrays. They are declared by a one-line trusted
+/// prelude in front of the (already validated) user source; spans are reported on the user's lines.
+/// Measured against the oracle: `value*2`, `value + time*10`, `linear(time, 0, 2, 0, 180)` on a
+/// one-component keyframed property; arrays, `tMin > tMax` and static properties are UNVERIFIED.
+pub const AE_GLOBALS_PRELUDE: &str = "function linear(t, a, b, c, d) { if (c === undefined) { c = a; d = b; a = 0; b = 1; } if (t <= a) { return c; } if (t >= b) { return d; } var f = (t - a) / (b - a); if (Array.isArray(c)) { var o = []; for (var i = 0; i < c.length; i++) { o.push(c[i] + (d[i] - c[i]) * f); } return o; } return c + (d - c) * f; }";
+
+/// `value`/`time` declarations plus [`AE_GLOBALS_PRELUDE`] on one line, then the user source.
+fn with_ae_globals(request: &ExprRequest<'_>) -> String {
+    let number = |v: f64| format!("{v}");
+    let value = match request.base {
+        None => "undefined".to_owned(),
+        Some([one]) => number(*one),
+        Some(many) => format!("[{}]", many.iter().map(|v| number(*v)).collect::<Vec<_>>().join(", ")),
+    };
+    let time = request.tick.value() as f64 / TICKS_PER_SECOND as f64;
+    format!("var value = {value}, time = {}; {AE_GLOBALS_PRELUDE}
+{}", number(time), request.source)
+}
+
+/// Moves an engine span from the prelude-prefixed source back onto the user's source (one line up;
+/// a span inside the prelude is dropped).
+fn user_span(span: Option<SourceSpan>) -> Option<SourceSpan> {
+    span.and_then(|s| (s.line > 1).then(|| SourceSpan { line: s.line - 1, column: s.column }))
+}
+
+fn unprefix(failure: EngineFailure) -> EngineFailure {
+    match failure {
+        EngineFailure::Parse(span) => EngineFailure::Parse(user_span(span)),
+        EngineFailure::Unsupported(span) => EngineFailure::Unsupported(user_span(span)),
+        EngineFailure::Thrown { kind, span } => EngineFailure::Thrown { kind, span: user_span(span) },
+        other => other,
+    }
+}
 
 #[derive(Debug, Default)]
 struct Counters {
@@ -423,6 +462,8 @@ impl<E: Engine> ExpressionProvider for MotionJsProvider<E> {
         }
         let _permit = self.acquire()?;
         self.counters.evaluations.fetch_add(1, Ordering::AcqRel);
+        let javascript = self.engine.source_language() == SourceLanguage::JavaScript;
+        let prefixed = javascript.then(|| with_ae_globals(request));
         let deadline_ns = self
             .clock
             .now_ns()
@@ -431,7 +472,7 @@ impl<E: Engine> ExpressionProvider for MotionJsProvider<E> {
             cancel: cancel.clone(),
             clock: Arc::clone(&self.clock),
             deadline_ns,
-            source: request.source,
+            source: prefixed.as_deref().unwrap_or(request.source),
             dimension: request.dimension,
             base: request.base,
             revision: request.revision,
@@ -464,6 +505,7 @@ impl<E: Engine> ExpressionProvider for MotionJsProvider<E> {
         }
         let value = match run.outcome {
             Ok(value) => value,
+            Err(failure) if javascript => return Err(self.map_failure(unprefix(failure))),
             Err(failure) => return Err(self.map_failure(failure)),
         };
         cancel.check().map_err(|_| ExprError::canceled())?;

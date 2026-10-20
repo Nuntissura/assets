@@ -487,3 +487,28 @@ fn quickjs_overlong_host_read_path_is_a_reference_error_not_an_oversize_kill() {
         assert!(provider.retire().is_clean());
     });
 }
+
+/// Lane SMB-AI-AE-ORACLE-FOLLOWUPS slice 4: After Effects globals (`AE_GLOBALS_PRELUDE`). Hand values:
+/// base 45 at tick 1 s: `value*2` = 90, `value + time*10` = 55; `linear(5, 0, 2, 0, 180)` clamps to
+/// 180 and `linear(-1, ...)` to 0; `linear(0.25, [0, 10], [4, 20])` = [1, 12.5] (3-argument form,
+/// per component). Without a base (`value` undefined) the result is not a number: OutputType.
+/// User spans stay on the user's lines behind the prelude.
+#[test]
+fn quickjs_binds_after_effects_globals() {
+    bounded_case("quickjs_binds_after_effects_globals", || {
+        let provider = provider_with(QuotaSpec::default());
+        let with_base = |source: &str, base: &[f64]| {
+            let request = ExprRequest { source, revision: 0, tick: EvalTick::new(S), seed: 0, dimension: base.len(), base: Some(base) };
+            provider.evaluate(&request, &Host, &mut Fuel::new(1000), &CancellationToken::default())
+        };
+        assert_eq!(with_base("value*2", &[45.0]), Ok(vec![90.0]));
+        assert_eq!(with_base("value + time*10", &[45.0]), Ok(vec![55.0]));
+        assert_eq!(with_base("[value[1], value[0]]", &[1.5, -2.0]), Ok(vec![-2.0, 1.5]));
+        assert_eq!(with_base("linear(5, 0, 2, 0, 180)", &[0.0]), Ok(vec![180.0]));
+        assert_eq!(with_base("linear(-1, 0, 2, 0, 180)", &[0.0]), Ok(vec![0.0]));
+        assert_eq!(with_base("linear(0.25, [0, 10], [4, 20])", &[0.0, 0.0]), Ok(vec![1.0, 12.5]));
+        assert_eq!(code(eval(&provider, "value", 1)), (ExprErrorCode::OutputType, None));
+        assert_eq!(code(with_base("value +", &[1.0])), (ExprErrorCode::Parse, Some(1)));
+        assert_eq!(code(with_base("\nmissingName", &[1.0])), (ExprErrorCode::ReferenceMissing, Some(2)));
+    });
+}
