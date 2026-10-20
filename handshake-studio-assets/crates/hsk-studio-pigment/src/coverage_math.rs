@@ -116,7 +116,8 @@ impl BlendChannel {
         }
     }
     /// The channel value of a straight RGB colour. Gray uses [`lum`] (W3C 0.3/0.59/0.11, the one
-    /// luminance owner); Photoshop's gray metric for Blend-If is UNVERIFIED (D5 case 9).
+    /// luminance owner); Blend-If reads [`blend_if_value`], whose gray uses Photoshop's 15-bit weights
+    /// (D5 PS-C09, [`BLEND_IF_GRAY_WEIGHTS`]).
     pub fn value(self, rgb: [f32; 3]) -> f32 {
         match self {
             Self::Gray => lum(rgb),
@@ -194,15 +195,28 @@ pub fn blend_if_weight(
     blend_if_weight_over(entries, source_rgb, backdrop_rgb, 1.0)
 }
 
-/// The channel value a Blend-If range reads: [`BlendChannel::value`], with the gray rounded to a
-/// whole level (`round(255 lum) / 255`; D5 PS-C09: the hard 100/100/200/200 gray variant is exact
-/// only with the rounded gray, lane SMB-PS-ORACLE-PARITY-1).
+/// Photoshop's Blend-If gray weights in 15-bit fixed point (lane SMB-PS-ORACLE-PARITY-2):
+/// `0.30 / 0.59 / 0.11` as `9830 / 19334 / 3604` out of 32768 (the 15-bit roundings `9830.4 ->
+/// 9830`, `3604.48 -> 3604`, green taking the remainder so the sum is 32768). Measured on the D5
+/// oracle PS-C09 `this_gray_50_100__200_240`: on the exact halves of the 0.3/0.59/0.11 sum the
+/// red-only and magenta bands round down (red 185 -> 55, magenta 150 -> 61) while the cyan and
+/// yellow bands round up (cyan 75 -> 53, yellow 250 -> 223), which these weights reproduce (every
+/// sample within one 8-bit code, 176 samples up to 5 codes with the W3C weights); the hard and the
+/// Underlying gray variants stay exact.
+pub const BLEND_IF_GRAY_WEIGHTS: [f32; 3] = [9830.0, 19334.0, 3604.0];
+
+/// The channel value a Blend-If range reads: [`BlendChannel::value`] for red, green and blue; the
+/// gray is [`BLEND_IF_GRAY_WEIGHTS`] on the 0..255 scale rounded to a whole level
+/// (`round((9830 R + 19334 G + 3604 B) / 32768) / 255`; D5 PS-C09: the hard 100/100/200/200 gray
+/// variant is exact only with the rounded gray, lane SMB-PS-ORACLE-PARITY-1). Evaluated in binary32
+/// in this order by every backend.
 pub fn blend_if_value(channel: BlendChannel, rgb: [f32; 3]) -> f32 {
-    let v = channel.value(rgb);
     if channel == BlendChannel::Gray {
-        ((v * 255.0).round() / 255.0).clamp(0.0, 1.0)
+        let [wr, wg, wb] = BLEND_IF_GRAY_WEIGHTS;
+        let level = (wr * rgb[0] + wg * rgb[1] + wb * rgb[2]) * (255.0 / 32768.0);
+        (level.round() / 255.0).clamp(0.0, 1.0)
     } else {
-        v
+        channel.value(rgb)
     }
 }
 

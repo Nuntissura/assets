@@ -29,9 +29,9 @@
 //! The receipt reports the measured peak, which equals the prediction in the tests.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
-    DropShadowOp, EffectError, EffectOp, EffectOrder, GlowSource, LayerParams,
-    MAX_EFFECTS_PER_LAYER, StrokePosition, effect_blur_kernel, effect_support_px,
-    knockout_coverage, shadow_offset, shadow_split, unit,
+    EffectError, EffectOp, EffectOrder, GlowSource, LayerParams, MAX_EFFECTS_PER_LAYER,
+    StrokePosition, effect_blur_kernel, effect_support_px, grow_coverage, grow_distance,
+    grow_reach_px, knockout_coverage, shadow_offset, shadow_split, unit,
 };
 use crate::Rect;
 use crate::blend_math::{
@@ -400,7 +400,7 @@ impl Meter {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Post {
     None,
-    /// `m * (1 - alpha)`: drop shadow with the layer knocking it out.
+    /// `m * (1 - alpha)`: drop shadow with the layer knocking it out, outer glow, outside stroke.
     Knockout,
     /// `m * alpha`: inner shadow, inner glow from the edge.
     MulAlpha,
@@ -430,11 +430,7 @@ impl ChainPlan {
     ) -> WResult<Self> {
         let kernel = effect_blur_kernel(blur_px)?;
         let kb = u32::try_from(kernel.len() / 2).map_err(|_| WindowError::Overflow)?;
-        let kd = if grown_px > 0.0 {
-            grown_px.ceil() as u32
-        } else {
-            0
-        };
+        let kd = grow_reach_px(grown_px);
         Ok(Self {
             inverted,
             grown_px,
@@ -451,19 +447,16 @@ impl ChainPlan {
     }
 }
 
-struct HalfPlan {
-    w: f32,
-    kd: u32,
-    /// Outside half (`true`) dilates the region, inside half dilates its complement.
-    outside: bool,
-}
-
 enum Plan {
     Overlay,
     /// The interior coverage of a colour overlay: 1 everywhere (lane SMB-PS-ORACLE-PARITY-1).
     Ones,
     Chain(ChainPlan),
-    Stroke { halves: Vec<HalfPlan>, centre: bool },
+    /// A matte of zeros (a stroke of size 0).
+    Empty,
+    /// Centre stroke (lane SMB-PS-ORACLE-PARITY-2): `clamp(out + in - 1)` of the grown alpha and
+    /// the grown `1 - alpha` (reference `stroke_matte`).
+    StrokeCentre(ChainPlan, ChainPlan),
     /// Satin and bevel (module `style`): the style function on the window grown by `support`,
     /// clipped to the domain (see [`run_local`]). `per_px` bounds the neighbourhood visits per
     /// grown-window pixel (satin: two blur passes + 4; bevel: `style::bevel_work_per_px`).
@@ -485,11 +478,6 @@ enum Plan {
 /// Bytes per pixel of the grown window reserved for the style function's own buffers (satin keeps
 /// at most four planes alive plus one blur pass buffer, bevel three; six is the bound charged).
 const LOCAL_INTERNAL_BYTES: u64 = 24;
-
-fn half(w: f32, outside: bool) -> HalfPlan {
-    let kd = if w > 0.0 { w.ceil() as u32 } else { 0 };
-    HalfPlan { w, kd, outside }
-}
 
 /// The plan of an interior effect's interior coverage ([`super::reference_interior_matte`]): the
 /// effect's plan without the final multiply by the shape alpha.
@@ -567,7 +555,7 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
             false,
             shadow_split(o.size_px, o.spread),
             (0, 0),
-            Post::None,
+            Post::Knockout,
         )?),
         EffectOp::InnerShadow(o) => Plan::Chain(ChainPlan::new(
             true,
@@ -584,23 +572,28 @@ fn prepare(op: &EffectOp) -> WResult<Plan> {
                 GlowSource::Centre => Post::OneMinusMulAlpha,
             },
         )?),
-        EffectOp::Stroke(o) => match o.position {
-            StrokePosition::Outside => Plan::Stroke {
-                halves: vec![half(o.size_px, true)],
-                centre: false,
-            },
-            StrokePosition::Inside => Plan::Stroke {
-                halves: vec![half(o.size_px, false)],
-                centre: false,
-            },
-            StrokePosition::Centre => {
-                let h = o.size_px / 2.0;
-                Plan::Stroke {
-                    halves: vec![half(h, true), half(h, false)],
-                    centre: true,
+        EffectOp::Stroke(o) => {
+            let w = match o.position {
+                StrokePosition::Centre => o.size_px / 2.0,
+                _ => o.size_px,
+            };
+            if w <= 0.0 {
+                Plan::Empty
+            } else {
+                match o.position {
+                    StrokePosition::Outside => {
+                        Plan::Chain(ChainPlan::new(false, (w, 0.0), (0, 0), Post::Knockout)?)
+                    }
+                    StrokePosition::Inside => {
+                        Plan::Chain(ChainPlan::new(true, (w, 0.0), (0, 0), Post::MulAlpha)?)
+                    }
+                    StrokePosition::Centre => Plan::StrokeCentre(
+                        ChainPlan::new(false, (w, 0.0), (0, 0), Post::None)?,
+                        ChainPlan::new(true, (w, 0.0), (0, 0), Post::None)?,
+                    ),
                 }
             }
-        },
+        }
     })
 }
 
@@ -652,24 +645,6 @@ impl ChainPlan {
     }
 }
 
-impl HalfPlan {
-    fn cost(&self, ww: u64, wh: u64) -> WResult<Cost> {
-        let aw = mulu(ww, wh)?;
-        if self.w <= 0.0 {
-            return Ok(Cost {
-                peak: mulu(aw, 4)?,
-                work: aw,
-            });
-        }
-        let kd = u64::from(self.kd);
-        let a0 = mulu(addu(ww, mulu(kd, 2)?)?, addu(wh, mulu(kd, 2)?)?)?;
-        let (b, w) = dilate_cost(a0, aw, self.kd)?;
-        let peak = mulu(a0, 4)?.max(b).max(mulu(aw, 8)?);
-        let work = addu(addu(a0, w)?, mulu(aw, 2)?)?;
-        Ok(Cost { peak, work })
-    }
-}
-
 impl Plan {
     fn cost(&self, window: Rect) -> WResult<Cost> {
         let (ww, wh) = (u64::from(window.width), u64::from(window.height));
@@ -695,22 +670,16 @@ impl Plan {
                 peak: mulu(aw, 16)?,
                 work: mulu(aw, 3)?,
             }),
-            Self::Stroke { halves, centre } => {
-                let mut costs = Vec::with_capacity(halves.len());
-                for h in halves {
-                    costs.push(h.cost(ww, wh)?);
-                }
-                match (costs.first(), costs.get(1)) {
-                    (Some(a), Some(b)) if *centre => Ok(Cost {
-                        peak: a
-                            .peak
-                            .max(addu(mulu(aw, 4)?, b.peak)?)
-                            .max(mulu(aw, 8)?),
-                        work: addu(addu(a.work, b.work)?, aw)?,
-                    }),
-                    (Some(a), None) => Ok(*a),
-                    _ => Err(WindowError::Geometry),
-                }
+            Self::Empty => Ok(Cost {
+                peak: mulu(aw, 4)?,
+                work: aw,
+            }),
+            Self::StrokeCentre(out, inn) => {
+                let (a, b) = (out.cost(ww, wh)?, inn.cost(ww, wh)?);
+                Ok(Cost {
+                    peak: a.peak.max(addu(mulu(aw, 4)?, b.peak)?).max(mulu(aw, 8)?),
+                    work: addu(addu(a.work, b.work)?, aw)?,
+                })
             }
         }
     }
@@ -786,6 +755,10 @@ fn compose_cost(effects: &[EffectOp], window: Rect) -> WResult<Cost> {
             matte_peak = matte_peak.max(c.peak);
         }
         work = addu(work, c.work)?;
+    }
+    if !effects.is_empty() {
+        // the unit fade by the layer opacity (lane SMB-PS-ORACLE-PARITY-2): one visit per pixel
+        work = addu(work, aw)?;
     }
     if effects.iter().any(EffectOp::is_interior) {
         // The interior unit (lane SMB-PS-ORACLE-PARITY-1): the copy of the result below (rgb 12 +
@@ -874,9 +847,10 @@ fn alpha_window<S: AlphaSource + ?Sized>(
     Ok(buf)
 }
 
-/// `out(x) = max over y of src(y) * ramp(dist(x, y))` over `r1 ∩ domain`, the reference `dilate`
-/// with radius `r` (`kd = ceil(r)`): `src` covers `r0 = r1` grown by `kd` and already holds the
-/// neutral value beyond the domain; samples of `out` beyond the domain keep their pre-filled value.
+/// `out(x) = max over y of grow_coverage(src(y), r, grow_distance(x - y))` over `r1 ∩ domain`, the
+/// reference `grow` with radius `r` (`kd = grow_reach_px(r)`): `src` covers `r0 = r1` grown by `kd`
+/// and already holds the neutral value beyond the domain; samples of `out` beyond the domain keep
+/// their pre-filled value.
 #[allow(clippy::too_many_arguments)]
 fn dilate_into(
     src: &[f32],
@@ -907,20 +881,15 @@ fn dilate_into(
             .fill(0.0);
     }
     let k = i64::from(kd);
-    let mut cov = vec![0.0f32; covs_len];
+    // the grow distance of every |ox| for the current oy (the row of the reference's table)
+    let mut dist = vec![0.0f32; covs_len];
     let lo = k.checked_neg().ok_or(WindowError::Overflow)?;
     for oy in lo..=k {
-        let ay = oy.unsigned_abs();
         let mut any = false;
-        for (ax, c) in cov.iter_mut().enumerate() {
-            *c = if ax == 0 && oy == 0 {
-                1.0
-            } else {
-                let ddx = (ax as f32 - 0.5).max(0.0);
-                let ddy = (ay as f32 - 0.5).max(0.0);
-                (r + 0.5 - ddx.hypot(ddy)).clamp(0.0, 1.0)
-            };
-            any |= *c > 0.0;
+        for (ax, d) in dist.iter_mut().enumerate() {
+            *d = grow_distance(i64::try_from(ax).map_err(|_| WindowError::Overflow)?, oy);
+            // a sample of value at most 1 reaches this offset only when d < r + 1
+            any |= grow_coverage(1.0, r, *d) > 0.0;
         }
         if !any {
             continue;
@@ -934,18 +903,18 @@ fn dilate_into(
                 .ok_or(WindowError::Geometry)?;
             let width = out_row.len();
             for ox in lo..=k {
-                let c = cov
+                let d = dist
                     .get(usize::try_from(ox.unsigned_abs()).map_err(|_| WindowError::Overflow)?)
                     .copied()
                     .ok_or(WindowError::Geometry)?;
-                if c <= 0.0 {
+                if grow_coverage(1.0, r, d) <= 0.0 {
                     continue;
                 }
                 let start = usz(add(ox, k)?)?;
                 let end = start.checked_add(width).ok_or(WindowError::Overflow)?;
                 let shifted = src_row.get(start..end).ok_or(WindowError::Geometry)?;
                 for (b, s) in out_row.iter_mut().zip(shifted) {
-                    *b = b.max(*s * c);
+                    *b = b.max(grow_coverage(*s, r, d));
                 }
             }
         }
@@ -1029,8 +998,8 @@ fn blur_into(
     Ok(s2)
 }
 
-/// Drop shadow, outer glow, inner shadow and inner glow: source (alpha or `1 - alpha`), grow by a
-/// hard disc, blur, shift by the offset (the result rectangle is the window moved by `-offset`, so
+/// Drop shadow, outer glow, inner shadow, inner glow and the stroke halves: source (alpha or
+/// `1 - alpha`), grow ([`grow_coverage`]), blur, shift by the offset (the result rectangle is the window moved by `-offset`, so
 /// its local indices are the window's), then the post step.
 fn run_chain<S: AlphaSource + ?Sized>(
     src: &S,
@@ -1086,47 +1055,6 @@ fn run_chain<S: AlphaSource + ?Sized>(
         meter.give(a);
     }
     Ok(s2)
-}
-
-/// One stroke half over the window (reference `stroke_half`).
-fn run_half<S: AlphaSource + ?Sized>(
-    src: &S,
-    g: &WindowGeometry,
-    h: &HalfPlan,
-    meter: &mut Meter,
-) -> WResult<Vec<f32>> {
-    let aw = count(g.window)?;
-    if h.w <= 0.0 {
-        meter.charge_work(area(g.window)?)?;
-        return meter.take(aw, 0.0);
-    }
-    let neutral = if h.outside { 0.0 } else { 1.0 };
-    let r0 = grow(g.window, h.kd)?;
-    let mut s0 = meter.take(count(r0)?, neutral)?;
-    meter.charge_work(area(r0)?)?;
-    let outside_half = h.outside;
-    read_alpha_into(src, g, r0, &mut s0, |a| {
-        let region = if a >= 0.5 { 1.0 } else { 0.0 };
-        if outside_half { region } else { 1.0 - region }
-    })?;
-    meter.charge_work(mulu(
-        square(addu(mulu(u64::from(h.kd), 2)?, 1)?)?,
-        area(g.window)?,
-    )?)?;
-    let mut d = meter.take(aw, neutral)?;
-    dilate_into(&s0, r0, &mut d, g.window, g.domain, h.w, h.kd, meter)?;
-    meter.give(s0);
-    let a = alpha_window(src, g, meter)?;
-    meter.charge_work(area(g.window)?)?;
-    for (dv, av) in d.iter_mut().zip(&a) {
-        *dv = if outside_half {
-            *dv * (1.0 - *av)
-        } else {
-            *dv * *av
-        };
-    }
-    meter.give(a);
-    Ok(d)
 }
 
 /// The layer bounds as `(x, y, width, height)` for the gradient geometry.
@@ -1280,19 +1208,18 @@ fn run_matte<S: AlphaSource + ?Sized>(
             Ok(m)
         }
         Plan::Chain(c) => run_chain(src, g, c, meter),
-        Plan::Stroke { halves, centre } => {
-            let mut it = halves.iter();
-            let first = it.next().ok_or(WindowError::Geometry)?;
-            let mut out = run_half(src, g, first, meter)?;
-            if *centre {
-                let second = it.next().ok_or(WindowError::Geometry)?;
-                let inn = run_half(src, g, second, meter)?;
-                meter.charge_work(area(g.window)?)?;
-                for (a, b) in out.iter_mut().zip(&inn) {
-                    *a = (*a + *b).min(1.0);
-                }
-                meter.give(inn);
+        Plan::Empty => {
+            meter.charge_work(area(g.window)?)?;
+            meter.take(count(g.window)?, 0.0)
+        }
+        Plan::StrokeCentre(out_plan, in_plan) => {
+            let mut out = run_chain(src, g, out_plan, meter)?;
+            let inn = run_chain(src, g, in_plan, meter)?;
+            meter.charge_work(area(g.window)?)?;
+            for (a, b) in out.iter_mut().zip(&inn) {
+                *a = (*a + *b - 1.0).clamp(0.0, 1.0);
             }
+            meter.give(inn);
             Ok(out)
         }
     }
@@ -1579,6 +1506,13 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
     let cost = compose_cost(effects, window)?;
     check_cost(cost, limits)?;
     let plans = effects.iter().map(prepare_composed).collect::<WResult<Vec<_>>>()?;
+    // Photoshop fades a layer with effects as one unit (lane SMB-PS-ORACLE-PARITY-2, D5 PS-C14
+    // `opacity50`: the drop shadow, overlay, stroke and content composed at opacity 1, then mixed
+    // with the backdrop by the layer opacity, premultiplied (`interior_mix`); fading each pass
+    // separately differed by up to 50 codes). For a layer without effects the two readings are equal
+    // (source-over is linear in the source alpha), so only a stack with effects takes this path.
+    let fade = if effects.is_empty() { 1.0 } else { layer.opacity };
+    let layer = if effects.is_empty() { layer } else { LayerParams { opacity: 1.0, ..layer } };
 
     let mut meter = Meter::new(limits);
     let content_alpha = alpha_window(src, geometry, &mut meter)?;
@@ -1636,7 +1570,7 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
                 continue;
             }
             let mut matte = run_matte(src, geometry, plan, patterns, &mut meter)?;
-            if let EffectOp::DropShadow(DropShadowOp { layer_knocks_out: true, .. }) = op {
+            if op.knocks_out() {
                 // the reference's composition rule (`knockout_coverage`); the multiply is part
                 // of this pass's charged work
                 let of = layer.opacity * layer.fill_opacity;
@@ -1673,6 +1607,22 @@ pub fn render_layer_window_patterned_in<S: AlphaSource + ?Sized>(
                 meter.release(mulu(area(window)?, 12)?);
             }
             meter.give(matte);
+        }
+    }
+    if !effects.is_empty() {
+        // the unit fade: one visit per pixel (charged by `compose_cost`)
+        meter.charge_work(area(window)?)?;
+        if fade < 1.0 {
+            let unit = range != SampleRange::Extended;
+            for (i, (c, a)) in rgb.iter_mut().zip(alpha.iter_mut()).enumerate() {
+                let below = Rgba::new(
+                    *backdrop.rgb.get(i).ok_or(WindowError::Geometry)?,
+                    *backdrop.alpha.get(i).ok_or(WindowError::Geometry)?,
+                );
+                let mixed = super::interior_mix(below, Rgba::new(*c, *a), fade, unit);
+                *c = mixed.rgb;
+                *a = mixed.a;
+            }
         }
     }
     meter.give(content_alpha);
