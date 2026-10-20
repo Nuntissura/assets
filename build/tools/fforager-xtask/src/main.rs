@@ -11722,9 +11722,10 @@ fn contains_forbidden_claim_subject(tokens: &[String]) -> bool {
     ]
     .iter()
     .any(|subject| !token_sequence_positions(tokens, subject).is_empty())
-        || ["product", "runtime", "packaging", "release", "phase"]
+        || tokens
             .iter()
-            .any(|subject| tokens.iter().any(|token| token == subject))
+            .enumerate()
+            .any(|(index, _)| current_progress_subject_at(tokens, index))
 }
 
 fn is_completion_status(token: &str) -> bool {
@@ -11749,12 +11750,11 @@ fn is_completion_status(token: &str) -> bool {
 }
 
 fn single_subject_asserts_completion(tokens: &[String]) -> bool {
-    for (subject, _) in tokens.iter().enumerate().filter(|(_, token)| {
-        matches!(
-            token.as_str(),
-            "product" | "runtime" | "packaging" | "release" | "phase"
-        )
-    }) {
+    for (subject, _) in tokens
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| current_progress_subject_at(tokens, *index))
+    {
         for (status, _) in tokens
             .iter()
             .enumerate()
@@ -11768,6 +11768,24 @@ fn single_subject_asserts_completion(tokens: &[String]) -> bool {
         }
     }
     false
+}
+
+fn current_progress_subject_at(tokens: &[String], index: usize) -> bool {
+    let token = tokens[index].as_str();
+    if token == "release" && index > 0 && tokens[index - 1] == "natural" {
+        return false;
+    }
+    if token == "runtime"
+        && tokens
+            .get(index + 1)
+            .is_some_and(|next| matches!(next.as_str(), "proof" | "dependencies"))
+    {
+        return false;
+    }
+    matches!(
+        token,
+        "product" | "runtime" | "packaging" | "release" | "phase"
+    )
 }
 
 fn pronoun_asserts_completion(tokens: &[String]) -> bool {
@@ -11816,6 +11834,7 @@ fn work_packet_reference(word: &str) -> bool {
 
 fn completion_predicate_at(tokens: &[String], index: usize) -> bool {
     is_completion_status(&tokens[index])
+        && !(tokens[index] == "shipped" && tokens.get(index + 1).is_some_and(|next| next == "path"))
         && !(tokens[index] == "complete"
             && index > 0
             && tokens[index - 1] == "first"
@@ -11855,6 +11874,9 @@ fn claim_subject_is_negated(
         negations.contains(&tokens[index].as_str())
             && !(tokens[index] == "not" && tokens.get(index + 1).is_some_and(|next| next == "only"))
     };
+    if status > 0 && tokens[status - 1] == "without" {
+        return true;
+    }
     if status > 0 && is_effective_negation(status - 1) {
         return true;
     }
@@ -13658,6 +13680,12 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         ),
         "WP-FF-022-FINDING-JOB-ACK-004" => Some(
             "ffmpeg::platform::windows::tests::job_empty_wait_requires_actual_zero_and_natural_release",
+        ),
+        "WP-FF-022-FINDING-REJECTED-INPUT-005" => Some(
+            "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_rejected_input_specification",
+        ),
+        "WP-FF-022-FINDING-TECHNICAL-ROLE-006" => Some(
+            "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_technical_roles_from_progress",
         ),
         "WP-FF-005-FINDING-WIRE-001" => {
             Some("testkit::tests::canonical_public_contract_fixtures_decode_and_validate")

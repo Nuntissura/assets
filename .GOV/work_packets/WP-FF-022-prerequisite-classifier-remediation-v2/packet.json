@@ -8,7 +8,7 @@
     "created_at_utc": "2026-10-20T15:16:03Z",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v2",
     "version": "2",
-    "updated_at_utc": "2026-10-20T15:34:14Z"
+    "updated_at_utc": "2026-10-20T16:21:03Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
@@ -52,10 +52,10 @@
     "status": "IN_PROGRESS",
     "risk": "MEDIUM",
     "blockers": [
-      "Final canonical prerequisite runtime classification, architecture-check and verify-pr remain unproven for the committed changed candidate.",
-      "Closure merge and independent main containment remain unproven; historical immediate-accounting timing cause remains unverified."
+      "Clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required before closure.",
+      "Main merge and independent closure containment remain unproven; historical Windows timing cause remains unverified."
     ],
-    "next_action": "Commit this proven focused candidate checkpoint, then run canonical runtime-truth-check, architecture-check and verify-pr on committed source identity; record actual gate outcomes before any closure/MERGE_PENDING, main merge, containment or limited WP020 blocker status synchronization.",
+    "next_action": "Commit and push this reviewed candidate checkpoint, run canonical runtime-truth-check, architecture-check and verify-pr at clean committed identity, then record actual acceptance before closure merge/main containment and limited WP020 blocker status synchronization.",
     "supersedes": [
       "WP-FF-022-prerequisite-classifier-remediation-v1"
     ],
@@ -171,33 +171,32 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "next_action": "Commit this proven focused candidate checkpoint, then run canonical runtime-truth-check, architecture-check and verify-pr on committed source identity; record actual gate outcomes before any closure/MERGE_PENDING, main merge, containment or limited WP020 blocker status synchronization.",
-      "branch": "codex/wp020-prerequisite-classifier",
-      "recorded_at_utc": "2026-10-20T15:34:14Z",
       "dirty_paths": [
         ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
         "build/tools/fforager-xtask/src/main.rs",
-        "product/crates/fforager-ffmpeg/src/platform/windows.rs"
-      ],
-      "head_sha": "e2e26c22b905a84ef5ffdfa0aac26f73dd7b1177",
-      "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "blockers": [
-        "Final canonical prerequisite runtime classification, architecture-check and verify-pr remain unproven for the committed changed candidate.",
-        "Closure merge and independent main containment remain unproven; historical immediate-accounting timing cause remains unverified."
+        "build/tools/fforager-xtask/src/runtime_classifier_tests.rs"
       ],
       "checks_run": [
-        "git branch current codex/wp020-prerequisite-classifier; HEAD e2e26c22b905a84ef5ffdfa0aac26f73dd7b1177; merge-base main HEAD10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54.",
-        "git status before checkpoint: two modified source files, upstream ahead1/behind0; checkpoint adds only active packet.",
-        "Directly opened current focused/defaultparallel output and independent mutant/restored-v2 JSON/raw diagnostics.",
-        "Fresh activated scope/declaration retained unchanged; exact strict new finding route inspected."
+        "Own git identity: HEAD63647e37b95dabb0e153fc70a1f6294c20297aa4 on codex/wp020-prerequisite-classifier, origin ahead0/behind0; before checkpoint only two xtask files dirty.",
+        "Opened actual runtime dirty PASS report, same-input inventory output, independent v3 rawGREEN and Clippy finish11.41seconds.",
+        "Formal independent MEDIUM005/006 focused implementation review PASS; canonical committed gates still pending."
+      ],
+      "recorded_at_utc": "2026-10-20T16:21:03Z",
+      "branch": "codex/wp020-prerequisite-classifier",
+      "next_action": "Commit and push this reviewed candidate checkpoint, run canonical runtime-truth-check, architecture-check and verify-pr at clean committed identity, then record actual acceptance before closure merge/main containment and limited WP020 blocker status synchronization.",
+      "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "head_sha": "63647e37b95dabb0e153fc70a1f6294c20297aa4",
+      "blockers": [
+        "Clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required before closure.",
+        "Main merge and independent closure containment remain unproven; historical Windows timing cause remains unverified."
       ]
     }
   },
   "validation": {
     "not_proven": [
-      "Canonical runtime-truth-check, architecture-check and verify-pr acceptance for the final committed candidate remain unproven.",
-      "Closure commit/main merge and independent containment remain unproven.",
-      "Historical immediate-accounting timing cause remains unverified; the correction is supported bounded acknowledgment proof rather than a claimed historical cause.",
+      "Final clean committed-candidate runtime-truth-check, architecture-check and verify-pr remain unproven.",
+      "Closure commit merge/main containment remain unproven.",
+      "Historical Windows immediate-accounting timing cause remains unverified.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ],
     "checks": [
@@ -258,6 +257,85 @@
         ],
         "command": "Independent host restoration and actual capability verification",
         "proof_class": "integration"
+      },
+      {
+        "source_dirty": false,
+        "result": "FAIL",
+        "source_commit": "63647e37b95dabb0e153fc70a1f6294c20297aa4",
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "observed": "Exact immutable existing AC002 rejected-input requirement falsely classified as current assertion.",
+        "artifact": "build/reports/runtime-truth-check-1792511018679310300-440792.json",
+        "content_fingerprint": "abd30e842bbb11afecbe086458fc6de31ec07569cd2b9f041b8eb2190f8943d0"
+      },
+      {
+        "source_dirty": true,
+        "result": "FAIL",
+        "source_commit": "63647e37b95dabb0e153fc70a1f6294c20297aa4",
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "observed": "Technical-operation reference falsely classified; full frozen packet inventory identified six string cases and no typed flags before correction.",
+        "artifact": "build/reports/runtime-truth-check-1792511631007193900-403012.json",
+        "content_fingerprint": "5fbd615c4b19f0b37002291fa2343955edd2a3146e3a0e2631b1ffc06f940e71"
+      },
+      {
+        "result": "RED_THEN_GREEN",
+        "command": "Exact public handler regressions for finding005 and finding006",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/rejected-input-red.stderr",
+          ".fforager-artifacts/runtime-classifier-proof/rejected-input-green.stdout",
+          ".fforager-artifacts/runtime-classifier-proof/technical-role-red.stderr",
+          ".fforager-artifacts/runtime-classifier-proof/technical-role-green.stdout"
+        ],
+        "proof_class": "integration",
+        "observed": "Finding005 handler1/1 GREEN174.44seconds covering unchanged requirement and three assertion negatives. Finding006 handler1/1 GREEN119.18seconds covering six frozen references, six assertion negatives and canonical typed rejection."
+      },
+      {
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/active-v2-claim-inventory.stdout",
+          ".fforager-artifacts/runtime-classifier-proof/active-v2-claim-inventory-green.stdout",
+          ".fforager-artifacts/runtime-classifier-proof/technical-role-independent-boundary-v3.txt"
+        ],
+        "result": "PASS",
+        "command": "Frozen complete packet diagnostic inventory and independent v3 complete packet boundary",
+        "observed": "Inventory initially six flaggedstrings/zero typedflags and actualscanner error; corrected sameinput zero flags and actualscanner acceptance. Independent v3 native0/1test passes with four assertion and two canonical typed negatives.",
+        "input_sha256": "f5c8c7beaca0629e75f5b3898d6c6549ec96a7cee6f0cc7dfce249099c3d1078",
+        "limitation": "Inventory is diagnostic only; independent boundary and actual gate separately observed. Earlier v1 compile error and v2 unsupported-alias expectation are invalid full-proof attempts.",
+        "proof_class": "semantic"
+      },
+      {
+        "dirty_paths": [
+          "build/tools/fforager-xtask/src/main.rs",
+          "build/tools/fforager-xtask/src/runtime_classifier_tests.rs"
+        ],
+        "limitation": "Dirty iteration evidence only; not final committed closure proof.",
+        "observed": "Actual iteration gate PASS with exact activated declaration, only policy/scenario_contract proof and zero-progress ceiling; no shipped entrypoint executed.",
+        "artifact": "build/reports/runtime-truth-check-1792512787454694800-310696.json",
+        "proof_class": "scenario_contract",
+        "source_commit": "63647e37b95dabb0e153fc70a1f6294c20297aa4",
+        "content_fingerprint": "70d94e4316cbe6efcedeef19c5347e7666e020f83ef634b785c1a88c31bf84ca",
+        "source_dirty": true,
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS"
+      },
+      {
+        "result": "PASS",
+        "command": "Current fmt check and xtask all-targets/all-features warnings-denied Clippy",
+        "artifact": ".fforager-artifacts/runtime-classifier-proof/technical-role-clippy.stderr",
+        "proof_class": "structural",
+        "observed": "Formatting passed; Clippy finished11.41seconds"
+      },
+      {
+        "result": "RECOVERED_PREPARATION_FAILURE",
+        "command": "Earlier scanner bootstrap preparation and corrected gated recovery",
+        "reported_by": "primary agent",
+        "observed": "Initial scanner build lacked TEMP and preparation gate failed; subsequent continued build was invalid and is not accepted. Corrected preparation gate passed34steps and scanner build passed2.71seconds before candidate commit."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "observed": "Review observation prose coupled an attributive token to later typed-key names. Exact key names moved to structured canonical_typed_keys stringarray; proof facts retained.",
+        "reported_by": "primary agent",
+        "artifact": "build/reports/runtime-truth-check-1792513586522433500-518800.json",
+        "limitation": "No code, acceptance requirement, scope or prerequisite declaration changed.",
+        "result": "FAIL_METADATA_PROSE"
       }
     ]
   },
@@ -302,7 +380,11 @@
         "Fresh-mtime strict candidate restoration recompiled9.66seconds and passed1/1; earlier timestamp-stale restoration explicitly invalidated.",
         "Formatting and both changed-package alltargets/allfeatures warnings-denied Clippy pass14.74seconds.",
         "Independent MEDIUM implementation review PASS and exact canonical JOB-ACK004 mapping inspected.",
-        "Independent host WMIC/symlink proof and focused symlink/WP009 public corpus passed without tracked runtime dependencies; host identities retained in validation."
+        "Independent host WMIC/symlink proof and focused symlink/WP009 public corpus passed without tracked runtime dependencies; host identities retained in validation.",
+        "Immutable requirement and six exact technical-reference cases reproduced public RED then public GREEN with unchanged packet requirements/declaration.",
+        "Independent focused MEDIUM review005/006 PASS, complete frozen packet v3 boundary1/1 and canonical typed controls rejected.",
+        "Same frozen packet inputSHAf5c8c7beaca0629e75f5b3898d6c6549ec96a7cee6f0cc7dfce249099c3d1078 inventory zeroflags/actualacceptance and actual dirty FF-GATE-RUNTIME-001 policy/scenario_contract PASS observed.",
+        "Current fmt and xtask warnings-denied Clippy PASS11.41seconds; clean committed final gates remain required."
       ],
       "applicable_rule_ids": [
         "FF-BUILD-036",
@@ -347,7 +429,8 @@
           "Resource and integration boundary: changed Git paths must map to declared actual build artifacts, exclude reports/governance-only work and retain product-affecting Cargo manifest classification under build/.",
           "Claim-context gate integration: registered gate/WP identifiers, adjacent negation and original imperative/non-goals remain bounded references or exclusions; genuine current claims and escaped JSON-key aliases reject.",
           "Windows test-contract/state boundary: direct exit caching and Job accounting are independent; empty acknowledgment requires a real bounded query and strict deadline admission.",
-          "Resource/termination boundary: real held Job remains occupied through negative assertion; natural accountingzero and cached direct wait precede AlreadyEmpty."
+          "Resource/termination boundary: real held Job remains occupied through negative assertion; natural accountingzero and cached direct wait precede AlreadyEmpty.",
+          "Immutable rejected-input specifications and technical token roles must remain distinguishable from current completion assertions, including prior-clause subject propagation; no requirement, declaration or typed-key policy change."
         ],
         "MANUAL_REVIEW": {
           "reviewer": "independent implementation review subagent",
@@ -384,6 +467,18 @@
             "finding_id": "WP-FF-022-FINDING-JOB-ACK-004",
             "status": "REMEDIATED",
             "proof_id": "ffmpeg::platform::windows::tests::job_empty_wait_requires_actual_zero_and_natural_release"
+          },
+          {
+            "proof_id": "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_rejected_input_specification",
+            "finding": "The immutable rejected-input acceptance requirement was misread as a current assertion; immediate status-adjacent modifier recognition preserves that exact requirement while retaining independent completion-assertion rejection.",
+            "status": "REMEDIATED",
+            "finding_id": "WP-FF-022-FINDING-REJECTED-INPUT-005"
+          },
+          {
+            "proof_id": "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_technical_roles_from_progress",
+            "finding": "Technical operation and modifier references in the exact active packet triggered false completion claims; narrow token-role recognition applies consistently to direct and prior-clause subject matching while retaining canonical typed controls.",
+            "status": "REMEDIATED",
+            "finding_id": "WP-FF-022-FINDING-TECHNICAL-ROLE-006"
           }
         ],
         "INDEPENDENT_CHECKS_RUN": [
@@ -392,14 +487,19 @@
           "Independent normal-token/root WMIC and symlink capabilities were observed after host restoration; the independent root WMIC query was bounded to30seconds.",
           "Reviewer executed canonical realheld/natural-release test plus independent DurationZERO occupied/empty probes:1/1, held1/false25.224milliseconds/naturalzero; both zero-duration boundaries observed.",
           "Reviewer changed only helper to unconditionaltrue with canonical test intact: exit101 at occupied-Job assertion; fresh-mtime strict restore recompiled9.66seconds and passed1/1 held1/false25.168milliseconds/naturalzero.",
-          "Normalized scratch source differs only in three cfg(test) artifact-root offsets and matches primary WindowsSHA8F933AEF3148C98C566B2D096C5D0FA3D8EFB0BEEF65ED860480EFF8D2389FC8; exact finding mapping inspected."
+          "Normalized scratch source differs only in three cfg(test) artifact-root offsets and matches primary WindowsSHA8F933AEF3148C98C566B2D096C5D0FA3D8EFB0BEEF65ED860480EFF8D2389FC8; exact finding mapping inspected.",
+          "Exact frozen acceptance requirement public boundary reproduced RED then passed1/1 across original reference and three genuine assertion controls; independent fullpacket acceptance-row boundary passed.",
+          "Technical-role public handler passed1/1 with six exact frozen reference cases, six genuine assertion controls and canonical typed negative; same full frozen packet inventory yielded zero flagged strings/typedvalues and actual scanner acceptance.",
+          "Reviewer independent v3 boundary observed nativeexit0/1test, frozen inputSHAf5c8c7beaca0629e75f5b3898d6c6549ec96a7cee6f0cc7dfce249099c3d1078, four assertion controls and two canonical typed controls; artifact technical-role-independent-boundary-v3.txt."
         ],
         "NEGATIVE_PATH_CHECKS": [
           "Preserved actual original gate-reference/current-claim rejection evidence and exact14 literal input outcomes in archived v1; no gate weakening.",
           "Preserved actual declaration-freezing, scope-expansion and build-artifact-removal controls in archived v1.",
           "Preserved same-input baseline reversion and restored candidate proof in archived v1.",
           "Unconditional-success mutant compiled, reached realheld assertion and failed the exact occupied-Job check; compiler failure did not masquerade as semantic rejection.",
-          "Realoccupied DurationZERO returnedfalse with actualpositivecount; canonical25millisecond occupiednegative also rejected false-success mutant."
+          "Realoccupied DurationZERO returnedfalse with actualpositivecount; canonical25millisecond occupiednegative also rejected false-success mutant.",
+          "Independent v3 fullpacket probe rejected four appended assertion controls and two canonical typed controls; exact keys retained in classifier_context_review.canonical_typed_keys.",
+          "Earlier reviewer v1 failed harness compilation and v2 relied on an unsupported typed-key alias; neither is accepted as complete behavioral proof. Registered typed-key list unchanged."
         ],
         "BOUNDARY_PROBES": [
           "Original activation declaration, scope, Git artifact and escaped-key probes remain preserved in archived v1.",
@@ -407,18 +507,23 @@
           "Exact original Windows immediate assertion and default-parallel failure history remain preserved without causal reinterpretation.",
           "Actual Job accounting to helper: liveheldcount1 produces false at25milliseconds and DurationZERO; no expected-label substitution.",
           "Release-file writer to real PowerShell exit/accounting: no release before negative; actual naturalzero precedes directwait/cache and AlreadyEmpty.",
-          "Finite deadline admits subsequent actual query only before expiry; remaining-duration sleepmin5milliseconds and mandatory initial query reviewed; production wait/termination functions unchanged."
+          "Finite deadline admits subsequent actual query only before expiry; remaining-duration sleepmin5milliseconds and mandatory initial query reviewed; production wait/termination functions unchanged.",
+          "Exact frozen complete active packet to lexical and typed scanner: all six initial diagnostic strings resolved, zero flaggedstrings/typedvalues and actual typed scanner acceptance observed; diagnostic inventory alone is not gate acceptance.",
+          "Actual dirty iteration FF-GATE-RUNTIME-001 accepted unchanged activation declaration and emitted policy/scenario_contract classes only; clean committed gates remain required."
         ],
         "RESIDUAL_UNCERTAINTY": [
           "Historical immediate Job-accounting timing cause remains unverified. Supported bounded acknowledgment correction preserves actual accounting and proof limits; final canonical gates and main containment remain separate obligations.",
-          "Original bounded lexical classifier limitations remain preserved in archived v1; prerequisite evidence makes no product-progress claim."
+          "Original bounded lexical classifier limitations remain preserved in archived v1; prerequisite evidence makes no product-progress claim.",
+          "Lexical recognition and finite registered typed-key vocabulary are bounded; an unregistered typed-key alias was a pre-existing unsupported expectation, outside these two false-rejection corrections. No exhaustive language claim is made."
         ],
         "COUNTERFACTUAL_CHECKS": [
           "Original same-input classifier baseline reversion and candidate restoration remain preserved in archived v1.",
           "Original sole-artifact removal rejected under unchanged declaration; exact report retained in archived v1.",
           "Original postactivation scope expansion rejected; exact report retained in archived v1.",
           "An unconditionaltrue cfg(test) helper without actual occupancy observation fails unchanged realheld assertion after successful compile with exit101; restored candidate exits0.",
-          "Independent timeoutZERO occupied and alreadyempty real-Job probes prove the initial query is mandatory and cannot be replaced by false success."
+          "Independent timeoutZERO occupied and alreadyempty real-Job probes prove the initial query is mandatory and cannot be replaced by false success.",
+          "Same exact frozen rejected-input requirement and technical-role packet cases produced pre-fix public RED/inventory error and post-fix public GREEN/actual scanner acceptance with declaration and requirements unchanged.",
+          "Independent current-assertion and canonical typed controls rejected after narrow role correction; no packet-wide exemption or declaration omission was introduced."
         ]
       },
       "acceptance_or_authority_ids": [
@@ -446,7 +551,7 @@
         "Generate isolated regression repositories under the shared artifact root rather than introducing tracked synthetic fixtures or external scratch.",
         "Tokenize only the exact bounded canonical FF-GATE-RUNTIME-001 reference, retaining surrounding prose and all future-consumer fields."
       ],
-      "post_simplification_verdict": "PASS: focused original classifier proof and current bounded Job-accounting tests, independent real-held negative/natural-release positive, false-success mutant rejection, restored strict candidate, default-parallel package and warnings-denied Clippy prove the bounded prerequisite contract. Canonical final gate acceptance and main containment remain separate unproven obligations; no product progress is claimed.",
+      "post_simplification_verdict": "PASS: focused classifier requirements and technical references, real Job accounting proof, independent behavioral negatives and current literal prerequisite gate support the bounded prerequisite contract. Exact activation scope, declaration and requirements remain unchanged. Dirty iteration acceptance is supporting evidence only; final committed canonical architecture/PR gates and main containment remain unproven.",
       "ceilings_exceptions_and_evidence": {
         "replacement_trigger": "The first separately authorized shipped consumer executes and re-proves prerequisite behavior through FF-GATE-RUNTIME-001.",
         "likely_upgrade_path": "Keep WP-020 benchmark research/promotion and WP-021/WP-011 shipped runtime proof in their existing sequence and contracts.",
@@ -524,6 +629,27 @@
           ".fforager-artifacts/runtime-classifier-proof/job-ack-final-source-identity.json"
         ],
         "risk": "MEDIUM"
+      },
+      "classifier_context_review": {
+        "main_sha256": "BCE5DF4D67A2E80580D0240CF3330151134A6C4E4F433CF49CD88AEC83DCA2E5",
+        "artifacts": [
+          ".fforager-artifacts/runtime-classifier-proof/without-independent-boundary.json",
+          ".fforager-artifacts/runtime-classifier-proof/technical-role-independent-boundary-v3.txt",
+          ".fforager-artifacts/runtime-classifier-proof/technical-role-review-identity.json"
+        ],
+        "proofs": [
+          "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_rejected_input_specification",
+          "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_technical_roles_from_progress"
+        ],
+        "windows_sha256": "8F933AEF3148C98C566B2D096C5D0FA3D8EFB0BEEF65ED860480EFF8D2389FC8",
+        "reviewer": "independent adversarial implementation review subagent",
+        "risk": "MEDIUM",
+        "scope": "Only immutable rejected-input modifier and technical-token role false-rejection corrections; no blocking scoped finding",
+        "verdict": "PASS",
+        "canonical_typed_keys": [
+          "release_progress",
+          "runtime_status"
+        ]
       }
     },
     "refinement": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json"

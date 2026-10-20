@@ -5,6 +5,33 @@ const WP: &str = "WP-FF-020-equivalent-work-benchmark-design-v1";
 const ARTIFACT: &str = "build/benches/classifier-proof.json";
 const ORIGINAL_WP020_PACKET: &[u8] =
     include_bytes!("testdata/wp020-build-only-prerequisite-v1.json");
+const REJECTED_INPUT_REQUIREMENT: &str = "The public command rejects undeclared or altered prerequisite declarations, governance-only prerequisite relabeling, RUNTIME without shipped changes, forbidden product-path changes, missing design authority/future consumer/proof and positive product-progress claims; valid NONE governance work retains its existing result.";
+const TECHNICAL_ROLE_CASES: &[(&str, &str)] = &[
+    (
+        "Actual focused canonical new boundary1/1 and original exit7/cache/AlreadyEmpty test1/1 pass; actual heldcount1 returned false after25422microseconds, natural release returned true with finalactualcount0.",
+        "Runtime completed.",
+    ),
+    (
+        "Keep WP-020 benchmark research/promotion and WP-021/WP-011 shipped runtime proof in their existing sequence and contracts.",
+        "shipped runtime proof; runtime completed",
+    ),
+    (
+        "Independent host WMIC/symlink proof and focused symlink/WP009 public corpus passed without tracked runtime dependencies; host identities retained in validation.",
+        "runtime without tests passed",
+    ),
+    (
+        "PASS: focused original classifier proof and current bounded Job-accounting tests, independent real-held negative/natural-release positive, false-success mutant rejection, restored strict candidate, default-parallel package and warnings-denied Clippy prove the bounded prerequisite contract. Canonical final gate acceptance and main containment remain separate unproven obligations; no product progress is claimed.",
+        "Product release is ready after natural release",
+    ),
+    (
+        "Preserve NONE governance and shipped-path RUNTIME fail-closed boundaries.",
+        "shipped-path RUNTIME is complete",
+    ),
+    (
+        "Prove bounded rejection with a real held Job and natural-release success, and execute an independent counterfactual; do not assert a historical nonzero-to-zero timing cause without observation.",
+        "runtime is operational without dependencies",
+    ),
+];
 
 struct Fixture {
     root: PathBuf,
@@ -178,6 +205,75 @@ fn build_only_prerequisite_public_handler_accepts_original_wp020_input() {
             .unwrap()
             .contains("build-only")
     );
+}
+
+#[test]
+fn prerequisite_public_handler_distinguishes_rejected_input_specification() {
+    let fixture = Fixture::new("rejected-input-requirement", |packet| {
+        packet["acceptance_matrix"][0]["requirement"] =
+            serde_json::json!(REJECTED_INPUT_REQUIREMENT);
+    });
+    let (result, report) = fixture.invoke();
+    result.unwrap();
+    assert_eq!(report["status"], "PASS");
+    assert_eq!(
+        report["executed_proof_classes"],
+        serde_json::json!(["policy", "scenario_contract"])
+    );
+    for current_claim in [
+        "Runtime completed.",
+        "Product capability is complete.",
+        "Runtime without shipped changes is complete.",
+    ] {
+        let fixture = Fixture::new("rejected-input-with-current-claim", |packet| {
+            packet["acceptance_matrix"][0]["requirement"] =
+                serde_json::json!(format!("{REJECTED_INPUT_REQUIREMENT} {current_claim}"));
+        });
+        fixture.rejects("PREREQUISITE-PROGRESS-CLAIM");
+    }
+}
+
+#[test]
+fn without_modifier_does_not_negate_an_independent_completion_predicate() {
+    assert!(!asserts_forbidden_prerequisite_completion(
+        REJECTED_INPUT_REQUIREMENT
+    ));
+    for claim in [
+        "Runtime without shipped changes is complete",
+        "Without shipped changes, product is complete",
+        "Runtime without shipped changes; product capability complete",
+        "Runtime is complete without shipped changes",
+    ] {
+        assert!(asserts_forbidden_prerequisite_completion(claim), "{claim}");
+    }
+}
+
+#[test]
+fn prerequisite_public_handler_distinguishes_technical_roles_from_progress() {
+    let mut fixture = Fixture::new("technical-role-boundary", |_| {});
+    let baseline = fixture.packet.clone();
+    for (reference, current_claim) in TECHNICAL_ROLE_CASES {
+        fixture.packet = baseline.clone();
+        fixture.packet["acceptance_matrix"][0]["requirement"] = serde_json::json!(reference);
+        fixture.write_packet();
+        let (result, report) = fixture.invoke();
+        result.unwrap_or_else(|error| panic!("technical reference {reference:?}: {error}"));
+        assert_eq!(report["status"], "PASS");
+        assert_eq!(
+            report["executed_proof_classes"],
+            serde_json::json!(["policy", "scenario_contract"])
+        );
+
+        fixture.packet = baseline.clone();
+        fixture.packet["acceptance_matrix"][0]["requirement"] =
+            serde_json::json!(format!("{reference} {current_claim}"));
+        fixture.write_packet();
+        fixture.rejects("FF-RUNTIME-E-PREREQUISITE-PROGRESS-CLAIM");
+    }
+    fixture.packet = baseline;
+    fixture.packet["validation"]["runtime_status"] = serde_json::json!("DONE");
+    fixture.write_packet();
+    fixture.rejects("FF-RUNTIME-E-PREREQUISITE-PROGRESS-CLAIM");
 }
 
 type MutationCase = (&'static str, fn(&mut Value), &'static str);
