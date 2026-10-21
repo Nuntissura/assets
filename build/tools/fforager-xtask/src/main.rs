@@ -13820,6 +13820,9 @@ fn validate_finding_dispositions(value: &Value) -> Result<(), String> {
 #[allow(clippy::too_many_lines)]
 fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> {
     match finding_id {
+        "WP-FF-024-FINDING-TIMEOUT-DIAGNOSTICS-001" => Some(
+            "testkit::fake_child_process::bounded_descendant_outlives_direct_child_then_self_cleans",
+        ),
         "WP-FF-022-FINDING-CLASSIFIER-001" => Some(
             "xtask::runtime_classifier_tests::build_only_prerequisite_public_handler_accepts_original_wp020_input",
         ),

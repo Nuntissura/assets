@@ -45,9 +45,9 @@
     "status": "IN_PROGRESS",
     "risk": "MEDIUM",
     "blockers": [
-      "First committed v2 prerequisite declaration, controlled failurebranch proof, current canonical gates and actual common corrective closure containment remain unproven."
+      "Current prerequisite canonical gates and actual common corrective closure containment remain unproven."
     ],
-    "next_action": "Commit this exact v2 activation before importing the authorized owning-test diagnostics, then execute the controlled unchanged-deadline failure proof and current canonical gates; retain all failures.",
+    "next_action": "Commit the exact reviewed code/evidence after first v2 activation, run current prerequisite canonical gates, then merge only after required verdicts and prove actual common corrective closure containment.",
     "supersedes": [
       "WP-FF-024-predecessor-state-reconciliation-v1"
     ],
@@ -195,10 +195,34 @@
         "artifact": "build/reports/runtime-truth-check-1792567220626521700-480288.json",
         "source_commit": "3ff0067ff0e81a76e5d78de0185a0d16edaa5bbc",
         "proof_ceiling": "Historical v1 NONE classification only; no canonical PR or containment verdict."
+      },
+      {
+        "proof": "controlled timeout diagnostics branch",
+        "result": "EXPECTED_FAILURE",
+        "exit_code": 101,
+        "artifact": ".fforager-artifacts/product-batch/phase1-handler-fault.result.json",
+        "observed": "Original2s assertion retained; live owned parent/marker, bounded captures, taskkill/direct exit acknowledgments, five observed owned actor handles signaled.",
+        "limit": "Controlled fault only; no original slowness diagnosis or canonical acceptance."
+      },
+      {
+        "proof": "exact restored ordinary owning selector",
+        "result": "PASS",
+        "exit_code": 0,
+        "artifact": ".fforager-artifacts/product-batch/phase1-handler-restored.stdout",
+        "observed": "All243 source pins restored; unchanged selector1/1 in1.07s."
+      },
+      {
+        "proof": "activated helper exact owning code",
+        "result": "PASS",
+        "artifacts": [
+          ".fforager-artifacts/product-batch/wp024-v2-owning-clippy.stderr",
+          ".fforager-artifacts/product-batch/wp024-v2-owning.stdout"
+        ],
+        "observed": "Owning Clippy9.12s, test build3.76s, unchanged selector1/1 in1.07s."
       }
     ],
     "not_proven": [
-      "Current v2 declaration classification, controlled timeout failurebranch, canonical checks and actual common closure containment.",
+      "Original cause of the prior two-second failure, current prerequisite canonical gate verdicts and actually merged corrective closure containment.",
       "Any product, capability, runtime, performance, packaging, release or phase progress."
     ]
   },
@@ -312,7 +336,7 @@
         "Reuse existing bounded captures and fixed owned-process cleanup tooling; no new dependency, native boundary, framework, acceptance oracle or measurement.",
         "Keep original report-alias provenance in target006 and archived v1; version only the necessary scope/classification transition."
       ],
-      "post_simplification_verdict": "PASS: the proposed successor scope preserves original outcomes and failed history while authorizing only the exact diagnostic dependency correction. Actual source remediation, controlled failurebranch observation, current gates and containment are separate unproven conditions.",
+      "post_simplification_verdict": "PASS: independent review and controlled failure/ordinary restoration verify the exact owning-test diagnostic correction while retaining the original two-second failure verdict, predecessor requirements and prior failed history. Current canonical gate acceptance and common corrective closure containment remain separate unproven conditions.",
       "complete_post_change_verification": [
         "024 activation public NONE classifier accepted clean8a43243 in runtime-truth-check report1792564393592144300-426356; this is classification only, not final strict PR acceptance.",
         "Current report alias byte identity and ignored generated-output classification were directly verified.",
@@ -320,7 +344,10 @@
         "Independent implementation review accepted exact original three bases/scopes/AC IDs, texts and proof classes/non-product declarations; original006historical30checks and primary09c7WP023stop/recovery/validationprefix are preserved.",
         "Independent current-source/manifest/Git ancestry and physical byte-identical canonical report alias review accepted; no source, dependency, requirement or finding-map changes.",
         "Current correction public NONE classifier accepted cleance1be6355cfa3e0e006ad76c379054afc710953a in report1792566804849471600-499680; strict PR report1792566877321851800-516472 rejected incomplete verification evidence before broad checks, and that failure remains recorded.",
-        "Archived v1 retains actual schema, default-harness Windows waits and serial testkit direct-child deadline failures; focused diagnostic observations never relabel those canonical failures."
+        "Archived v1 retains actual schema, default-harness Windows waits and serial testkit direct-child deadline failures; focused diagnostic observations never relabel those canonical failures.",
+        "Actual controlled handler build5.23s succeeded; unchanged two-second assertion failed101 with live direct child and marker, bounded captures and cleanup details; all five independently observed owned actor handles signaled at root exit.",
+        "All243 handler source input pins restored exactly to baseline74752f00c5283dbaeddaec1c966136803a8ee10e310753d34aa09b6cdc3b50c2; unchanged ordinary selector then succeeded1/1 in1.07s after4.55s build.",
+        "After first v2 activation f2d2b6cfe87ff6fb4bbeee93ede5fb2e831de7c5, helper imported only exact owning testSHAa068b13f6ef170389586383506bd757daa59b815ec700713070a28625fa9cdc9; owning Clippy and unchanged selector succeeded without source deadline changes."
       ],
       "ceilings_exceptions_and_evidence": {
         "ceiling_id": "WP-FF-024-predecessor-state-reconciliation-v2-CEILING-001",
@@ -339,32 +366,36 @@
         "DIFF_ATTACK_SURFACES": [
           "State and integration: historical ancestry may be relabeled as current closure; retain uncontained99139 and actual contained8dcc source separately before predecessor promotion.",
           "Contract and serialization: frozen bases, acceptance requirements, scope and declarations may drift during JSON state correction; exact original canonical fields were compared.",
-          "State and resource boundaries: older helper WP023 could overwrite newer primary failures or Operator-stop history; preserve exact primary09c7 checkpoint, with no product resource or dependency change.",
+          "State and resource boundaries: owning test timeout previously dropped Child and captures; keep the exact two-second failure, bounded drains, retained-parent identity and acknowledged cleanup without inferring tree absence from taskkill status.",
           "Gate integration: copied reports could be overstated as new runs, product proof or evidence for other bytes; bind original artifacts, physical hashes and prerequisite ceilings."
         ],
         "INDEPENDENT_CHECKS_RUN": [
           "Fresh canonical Git ancestry:99139 is not contained in main;8dcc sanitized source and79392 classifier implementation are contained.",
           "Actual optimized WP006 report was opened:7mandatory cases and20probes accepted, both oracle controls true, manifest raw8be identity and quiet worker/corpus artifacts independently reconciled.",
           "Actual clean05aadeb canonical architecture and PR reports were opened;8architecture checks/55fixtures and70PR checks/55fixtures accepted with exact zero-product/runtime-policy ceiling.",
-          "Historical helper/main build and product equality against05aadeb was independently checked before the successor; the only newly authorized source is the exact owning test diagnostic correction."
+          "Historical helper/main build and product equality against05aadeb was independently checked before the successor; the only newly authorized source is the exact owning test diagnostic correction.",
+          "Independent actual controlled-handler stdout/stderr/status and retained lifecycle were opened: original two-second assertion failed101, parent374128/grandchild292016 creation identities matched, and all five observed actor handles signaled; exact source restoration and ordinary success were reread."
         ],
         "COUNTERFACTUAL_CHECKS": [
           "Original resolved WP006 report/manifest finding is revalidated by the actual corpus oracle: original expectation accepted and changed expected output rejected with producer unchanged.",
           "Existing accepted canonical PR executes classifier negatives that reject forbidden product paths, undeclared prerequisite changes and product-progress claims.",
           "Existing accepted coherent obsolete native-approval and source/profile controls retain their original rejection proofs; this correction does not replace their declarations or findings.",
-          "Actual initial environment-induced PR failure and all10 corrected existing controls are retained; accepted later PR does not relabel the failed invocation."
+          "Actual initial environment-induced PR failure and all10 corrected existing controls are retained; accepted later PR does not relabel the failed invocation.",
+          "Ignored-source controlled lifetime30s and post-readiness parent hold5s force the original two-second failure; actual diagnostics report live parent/marker, bounded captures and cleanup. Removing those exact two support faults restores the unchanged ordinary selector to success."
         ],
         "BOUNDARY_PROBES": [
           "Canonical Git reads prove the sanitized-source lineage and reject historical99139 ancestry without importing that history.",
           "The optimized corpus externally executes the pinned Rust worker under original limits and records its exact current manifest and player identities.",
           "The registered report artifact is only a byte-identical generated alias of the retained optimized capture; both SHA values were directly compared and no new run is claimed.",
-          "Historical v1 NONE classifiers ran at exact committed sources; the successor requires its own first-declaration classification and canonical observations."
+          "Historical v1 NONE classifiers ran at exact committed sources; the successor requires its own first-declaration classification and canonical observations.",
+          "The actual owning test executed real fake-child parent/grandchild and fixed SystemRoot taskkill without another dependency/native API. Independent retained handles witnessed observed actor exits; no claim is made about unobserved descendants."
         ],
         "NEGATIVE_PATH_CHECKS": [
           "The old99139 containment claim is explicitly invalidated as current evidence and preserved as historical state.",
           "Primary WP023 four Windows failures and explicit Operator stop are retained verbatim before later authorized closure evidence is appended.",
           "WP022 original WP020STUB condition is bound to79392, while current independently authorized WP020VALIDATED state is stated separately.",
-          "This successor predeclares only non-product supporting evidence; no runtime_proof is present, and product/dependency/native authority is unchanged."
+          "This successor predeclares only non-product supporting evidence; no runtime_proof is present, and product/dependency/native authority is unchanged.",
+          "The controlled handler run retained failure101 despite successful cleanup, preventing diagnostics from converting an exceeded deadline into success; marker remained six bytes and was not treated as proof of surviving or absent actors."
         ],
         "INDEPENDENT_FINDINGS": [
           {
@@ -372,10 +403,16 @@
             "finding": "Revalidation of the original resolved WP006 report/manifest finding only: the actual optimized corpus matches current helper manifest and player pins, all7cases/20probes and oracle controls; the registered path is a byte-identical generated alias of the retained result, with explicit provenance and no new code finding or run.",
             "status": "NO_BLOCKING_FINDING",
             "proof_id": "build/reports/wp-ff-006-youtube-challenge-report.json"
+          },
+          {
+            "finding_id": "WP-FF-024-FINDING-TIMEOUT-DIAGNOSTICS-001",
+            "finding": "The owning descendant test discarded actual child state, captures and cleanup when its two-second wait failed. Bounded diagnostics now retain the unchanged failure, own retained parent/tree cleanup and explicitly distinguish observed actor exit from unproven descendant absence; controlled real parent/grandchild fault and exact restored selector verify the correction.",
+            "status": "REMEDIATED",
+            "proof_id": "testkit::fake_child_process::bounded_descendant_outlives_direct_child_then_self_cleans"
           }
         ],
         "RESIDUAL_UNCERTAINTY": [
-          "The controlled timeout failurebranch, current prerequisite classification/canonical verdicts and actually merged closure must still be observed. Prior isolated success does not identify the failed startup phase or establish a cause."
+          "The original canonical startup delay remains unexplained. Controlled handler proof establishes bounded diagnostics and observed cleanup only; current prerequisite canonical verdicts and actually merged common corrective closure remain unproven."
         ],
         "MANUAL_REVIEW": {
           "artifact": "product/MODEL_MANUAL.md",
