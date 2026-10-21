@@ -254,6 +254,15 @@
   "validation": {
     "checks": [
         {
+          "kind": "effective-mutant-warm-refresh",
+          "retained_failure": "Literal r10 ARCH architecture-check-1792610284861311600-447868 failed incomplete when the exact payload public counterexample Cargo command exceeded unchanged300seconds before the required semantic marker. Owned tree termination and reap succeeded; no semantic acceptance was inferred.",
+          "diagnosis_and_change": "The leased source refresh restored canonical bytes then reapplied the identical mutation, unnecessarily refreshing the effective input timestamp. The exact current canonical-derived mutation is now computed first and passed through both existing content-aware refresh stages; all other files reset normally. The same eight textual mutations, one JSON input, first-anchor/CRLF handling, markers, isolation and fixed deadlines remain unchanged.",
+          "owning_results": "Unified warnings-denied Clippy PASS0/29.00seconds after retaining the test-only copy helper under cfg(test); prior dead-code/missing-wrapper feedback retained. Canonical workspace/all-target/all-feature no-run PASS0/202.88seconds. Existing extended warm refresh selector PASS1/1/1.62seconds checks unchanged effective-file mtime, changed canonical input and unrelated stale mutation reset.",
+          "actual_boundary": "All64 copied source/fixture inputs were compared: only exact canonical-derived JournalPayload mutation differs. Exact retained owner target3a350d9dd9b1813e1de6a7341260509a setup PASS0/249.48seconds, then unchanged public counterexample command exits101/2.95seconds with actual JournalPayload unknown body field must fail closed assertion. Setup alone is not acceptance.",
+          "captures": ".fforager-artifacts/product-batch/phase1-effective-*",
+          "ceiling": "Final clean-source literal ARCH must independently re-execute this boundary within unchanged300seconds; canonical PR, same-run runtime/watcher and main containment remain pending. No deadline or oracle relaxation."
+        },
+        {
           "kind": "r9-incomplete-test-diagnostics-and-build-scheduling",
           "retained_failure": "Independent r9 verify-pr-1792606637649702000-517432 failed incomplete at the unchanged1800-second workspace-test deadline after627seconds compilation. FFmpeg direct-exit precondition and storage preparatory expected-Transport assertion failed; the hardlink attack and final runtime/watcher proof were not reached. Original causes remain UNVERIFIED.",
           "diagnostics": "Storage now prints the actual preparatory fetch result on the same assertion. FFmpeg retains the same10-second direct-exit assertion and success pipe lifetime, adding bounded failure captures and existing owned cleanup outcomes. Mechanical let-else conversion preserves the prior focused proof.",

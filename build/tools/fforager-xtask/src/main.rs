@@ -10773,6 +10773,15 @@ fn with_warm_testkit_fixture<T>(
     label: &str,
     action: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
+    with_effective_warm_testkit_fixture(root, label, None, action)
+}
+
+fn with_effective_warm_testkit_fixture<T>(
+    root: &Path,
+    label: &str,
+    effective_input: Option<(&Path, &[u8])>,
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
     let parent = disposable_artifact_root(root).join("warm-proof-sources");
     fs::create_dir_all(&parent).map_err(|error| error.to_string())?;
     let lock_path = parent.join(format!("{label}.lock"));
@@ -10792,7 +10801,11 @@ fn with_warm_testkit_fixture<T>(
                 .map_err(|error| error.to_string())?;
             let canonical = root.join(relative);
             if canonical.is_file() {
-                copy_fixture_file(&canonical, &path)?;
+                if let Some((_, bytes)) = effective_input.filter(|(input, _)| *input == relative) {
+                    refresh_fixture_bytes(&path, bytes)?;
+                } else {
+                    copy_fixture_file(&canonical, &path)?;
+                }
             } else {
                 fs::remove_file(&path).map_err(|error| error.to_string())?;
             }
@@ -10837,10 +10850,84 @@ fn copy_fixture_file(source: &Path, destination: &Path) -> Result<(), String> {
         fs::copy(source, destination).map_err(|error| error.to_string())?;
         return Ok(());
     }
-    if fs::read(destination).ok().as_deref() != Some(bytes.as_slice()) {
+    refresh_fixture_bytes(destination, &bytes)
+}
+
+fn refresh_fixture_bytes(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+    if fs::read(destination).ok().as_deref() != Some(bytes) {
         fs::write(destination, bytes).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn public_invariant_effective_input(
+    root: &Path,
+    mutation: &str,
+) -> Result<(PathBuf, Vec<u8>, &'static str), String> {
+    if mutation == "unrelated_schema_transition" {
+        return Ok((
+            PathBuf::from("build/fixtures/contracts/diagnostic-protocol-offer-v2.0.json"),
+            br#"{"versions":{"major":1,"minimum_minor":0,"maximum_minor":2},"accepted_schemas":[{"algorithm":"sha256","canonical_input_version":1,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#.to_vec(),
+            "SchemaIncompatible",
+        ));
+    }
+    let (relative, before, after, marker) = match mutation {
+        "effect_acknowledgement_subset" => (
+            "product/crates/fforager-core/src/lifecycle.rs",
+            "        (State::FilesystemProbed, Event::Confine) => step(\n            State::FilesystemConfining,\n            &[EffectIntent::EstablishConfinedPath],\n        ),",
+            "        (State::FilesystemProbed, Event::Confine) => step(State::FilesystemConfined, &[]),",
+            "FilesystemConfining",
+        ),
+        "wire_zero_or_unknown_field" => (
+            "build/crates/fforager-testkit/src/lib.rs",
+            "envelope[\"undeclared_top_level\"] = serde_json::json!(true);",
+            "envelope[\"capability_id\"] = serde_json::json!(\"ff.capability.transport\");",
+            "decode_json_frame",
+        ),
+        "sequence_zero_replay" => (
+            "product/crates/fforager-diagnostics-contract/src/protocol.rs",
+            "        identity.validate()?;\n",
+            "",
+            "InvalidStart",
+        ),
+        "durable_journal_payload_unknown_field" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "    rename_all = \"snake_case\",\n    deny_unknown_fields\n)]\npub enum JournalPayload",
+            "    rename_all = \"snake_case\"\n)]\npub enum JournalPayload",
+            "JournalPayload unknown body field must fail closed",
+        ),
+        "durable_journal_record_unknown_field" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "#[derive(Clone, Debug, PartialEq, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct JournalRecordWire",
+            "#[derive(Clone, Debug, PartialEq, Deserialize)]\nstruct JournalRecordWire",
+            "JournalRecord unknown top-level field must fail closed",
+        ),
+        "durable_reconcile_state_unknown_field" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "#[serde(tag = \"kind\", rename_all = \"snake_case\", deny_unknown_fields)]\npub enum ReconcileState",
+            "#[serde(tag = \"kind\", rename_all = \"snake_case\")]\npub enum ReconcileState",
+            "ReconcileState unknown variant field must fail closed",
+        ),
+        "durable_journal_sequence_zero" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "        record.validate()?;\n        Ok(record)",
+            "        Ok(record)",
+            "JournalRecord sequence zero must fail closed",
+        ),
+        "source_graph_cycle" => (
+            "product/crates/fforager-contracts/src/graph.rs",
+            "        validate_relationship_cycles(self)",
+            "        Ok(())",
+            "RelationshipCycle",
+        ),
+        other => return Err(format!("unknown public invariant mutation {other}")),
+    };
+    let canonical = fs::read_to_string(root.join(relative)).map_err(|error| error.to_string())?;
+    Ok((
+        PathBuf::from(relative),
+        derive_text_mutation(&canonical, before, after)?.into_bytes(),
+        marker,
+    ))
 }
 
 fn public_invariant_mutation_fixture_execution(
@@ -10849,69 +10936,20 @@ fn public_invariant_mutation_fixture_execution(
     diagnostic: &str,
     proof_class: &'static str,
 ) -> Result<FixtureExecution, String> {
-    let observed = with_isolated_fixture_root(root, mutation, |sandbox| {
-        let target_dir = isolated_fixture_target_dir(sandbox, "public-invariant-mutations")?;
-        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let failure_marker = match mutation {
-            "effect_acknowledgement_subset" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-core/src/lifecycle.rs"),
-                "        (State::FilesystemProbed, Event::Confine) => step(\n            State::FilesystemConfining,\n            &[EffectIntent::EstablishConfinedPath],\n        ),",
-                "        (State::FilesystemProbed, Event::Confine) => step(State::FilesystemConfined, &[]),",
+    let (relative, bytes, failure_marker) = public_invariant_effective_input(root, mutation)?;
+    let effective_input = Some((relative.as_path(), bytes.as_slice()));
+    let observed =
+        with_effective_warm_testkit_fixture(root, mutation, effective_input, |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "public-invariant-mutations")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+            prepare_effective_testkit_workspace(root, sandbox, effective_input)?;
+            isolated_public_test_failure_diagnostic(
+                sandbox,
+                &target_dir,
+                diagnostic,
+                failure_marker,
             )
-            .map(|()| "FilesystemConfining")?,
-            "unrelated_schema_transition" => fs::write(
-                sandbox.join("build/fixtures/contracts/diagnostic-protocol-offer-v2.0.json"),
-                br#"{"versions":{"major":1,"minimum_minor":0,"maximum_minor":2},"accepted_schemas":[{"algorithm":"sha256","canonical_input_version":1,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#,
-            )
-            .map_err(|error| error.to_string())
-            .map(|()| "SchemaIncompatible")?,
-            "wire_zero_or_unknown_field" => replace_text_in_file(
-                &sandbox.join("build/crates/fforager-testkit/src/lib.rs"),
-                "envelope[\"undeclared_top_level\"] = serde_json::json!(true);",
-                "envelope[\"capability_id\"] = serde_json::json!(\"ff.capability.transport\");",
-            )
-            .map(|()| "decode_json_frame")?,
-            "sequence_zero_replay" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-diagnostics-contract/src/protocol.rs"),
-                "        identity.validate()?;\n",
-                "",
-            )
-            .map(|()| "InvalidStart")?,
-            "durable_journal_payload_unknown_field" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "    rename_all = \"snake_case\",\n    deny_unknown_fields\n)]\npub enum JournalPayload",
-                "    rename_all = \"snake_case\"\n)]\npub enum JournalPayload",
-            )
-            .map(|()| "JournalPayload unknown body field must fail closed")?,
-            "durable_journal_record_unknown_field" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "#[derive(Clone, Debug, PartialEq, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct JournalRecordWire",
-                "#[derive(Clone, Debug, PartialEq, Deserialize)]\nstruct JournalRecordWire",
-            )
-            .map(|()| "JournalRecord unknown top-level field must fail closed")?,
-            "durable_reconcile_state_unknown_field" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "#[serde(tag = \"kind\", rename_all = \"snake_case\", deny_unknown_fields)]\npub enum ReconcileState",
-                "#[serde(tag = \"kind\", rename_all = \"snake_case\")]\npub enum ReconcileState",
-            )
-            .map(|()| "ReconcileState unknown variant field must fail closed")?,
-            "durable_journal_sequence_zero" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "        record.validate()?;\n        Ok(record)",
-                "        Ok(record)",
-            )
-            .map(|()| "JournalRecord sequence zero must fail closed")?,
-            "source_graph_cycle" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/graph.rs"),
-                "        validate_relationship_cycles(self)",
-                "        Ok(())",
-            )
-            .map(|()| "RelationshipCycle")?,
-            other => return Err(format!("unknown public invariant mutation {other}")),
-        };
-        isolated_public_test_failure_diagnostic(sandbox, &target_dir, diagnostic, failure_marker)
-    })?;
+        })?;
     Ok(proof_fixture(
         vec![observed],
         proof_class,
@@ -11261,6 +11299,15 @@ fn receipt_only_public_counterexample_fixture_execution(
 }
 
 fn prepare_isolated_testkit_workspace(source_root: &Path, sandbox: &Path) -> Result<(), String> {
+    prepare_effective_testkit_workspace(source_root, sandbox, None)
+}
+
+fn prepare_effective_testkit_workspace(
+    source_root: &Path,
+    sandbox: &Path,
+    effective_input: Option<(&Path, &[u8])>,
+) -> Result<(), String> {
+    let effective_file = effective_input.map(|(relative, bytes)| (sandbox.join(relative), bytes));
     for relative in [
         "build/crates/fforager-testkit",
         "build/fixtures/contracts",
@@ -11269,7 +11316,13 @@ fn prepare_isolated_testkit_workspace(source_root: &Path, sandbox: &Path) -> Res
         "product/crates/fforager-core",
         "product/crates/fforager-storage",
     ] {
-        copy_fixture_tree(&source_root.join(relative), &sandbox.join(relative))?;
+        copy_effective_fixture_tree(
+            &source_root.join(relative),
+            &sandbox.join(relative),
+            effective_file
+                .as_ref()
+                .map(|(path, bytes)| (path.as_path(), *bytes)),
+        )?;
     }
     let manifest = r#"[workspace]
 members = [
@@ -11384,7 +11437,16 @@ fn write_isolated_fixture_identity(
     Ok(())
 }
 
+#[cfg(test)]
 fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_effective_fixture_tree(source, destination, None)
+}
+
+fn copy_effective_fixture_tree(
+    source: &Path,
+    destination: &Path,
+    effective_file: Option<(&Path, &[u8])>,
+) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for entry in
         fs::read_dir(source).map_err(|error| format!("read {}: {error}", source.display()))?
@@ -11396,7 +11458,9 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?
             .is_dir()
         {
-            copy_fixture_tree(&entry.path(), &target)?;
+            copy_effective_fixture_tree(&entry.path(), &target, effective_file)?;
+        } else if let Some((_, bytes)) = effective_file.filter(|(path, _)| *path == target) {
+            refresh_fixture_bytes(&target, bytes)?;
         } else {
             copy_fixture_file(&entry.path(), &target)?;
         }
@@ -11406,6 +11470,11 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn replace_text_in_file(path: &Path, before: &str, after: &str) -> Result<(), String> {
     let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    fs::write(path, derive_text_mutation(&source, before, after)?)
+        .map_err(|error| error.to_string())
+}
+
+fn derive_text_mutation(source: &str, before: &str, after: &str) -> Result<String, String> {
     let uses_crlf = source.contains("\r\n");
     let normalized_source = source.replace("\r\n", "\n");
     let normalized_before = before.replace("\r\n", "\n");
@@ -11419,7 +11488,7 @@ fn replace_text_in_file(path: &Path, before: &str, after: &str) -> Result<(), St
     } else {
         mutated
     };
-    fs::write(path, output).map_err(|error| error.to_string())
+    Ok(output)
 }
 
 fn empty_named_test_body(path: &Path, marker: &str) -> Result<(), String> {
@@ -19145,6 +19214,63 @@ product_root = "product"
             Ok(())
         })
         .unwrap();
+        assert_effective_warm_refresh(&root);
+    }
+
+    fn assert_effective_warm_refresh(repository: &Path) {
+        let source = test_root("effective-warm-input");
+        let relative = Path::new("product/crates/fforager-contracts/src/storage.rs");
+        let canonical = source.join(relative);
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::copy(repository.join(relative), &canonical).unwrap();
+        fs::write(source.join("other.rs"), b"canonical other input").unwrap();
+        let mut previous_modified = None;
+        let mut initial_bytes = Vec::new();
+        for revision in 0..3 {
+            if revision == 2 {
+                let mut changed = fs::read_to_string(&canonical).unwrap();
+                changed.push_str("\n// changed canonical fixture input\n");
+                fs::write(&canonical, changed).unwrap();
+            }
+            let (path, bytes, _) =
+                public_invariant_effective_input(&source, "durable_journal_payload_unknown_field")
+                    .unwrap();
+            if revision == 0 {
+                initial_bytes.clone_from(&bytes);
+            } else if revision == 2 {
+                assert_ne!(bytes, initial_bytes);
+            }
+            let modified = with_effective_warm_testkit_fixture(
+                &source,
+                "warm-effective-input-proof",
+                Some((path.as_path(), bytes.as_slice())),
+                |sandbox| {
+                    let effective = sandbox.join(&path);
+                    copy_effective_fixture_tree(
+                        &source,
+                        sandbox,
+                        Some((effective.as_path(), bytes.as_slice())),
+                    )?;
+                    assert_eq!(fs::read(&effective).unwrap(), bytes);
+                    assert_eq!(
+                        fs::read(sandbox.join("other.rs")).unwrap(),
+                        b"canonical other input"
+                    );
+                    let modified = fs::metadata(&effective).unwrap().modified().unwrap();
+                    if revision == 1 {
+                        assert_eq!(Some(modified), previous_modified);
+                    } else if revision == 2 {
+                        assert!(Some(modified) >= previous_modified);
+                    }
+                    fs::write(sandbox.join("other.rs"), b"stale mutant")
+                        .map_err(|error| error.to_string())?;
+                    Ok(modified)
+                },
+            )
+            .unwrap();
+            previous_modified = Some(modified);
+        }
+        fs::remove_dir_all(source).unwrap();
     }
 
     fn architecture_sandbox(label: &str) -> PathBuf {
