@@ -37,17 +37,17 @@
       "head_sha": null,
       "verified_at_utc": null
     },
-    "closure_commit": null,
+    "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
     "main_containment_status": "NOT_STARTED",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "MERGE_PENDING",
     "risk": "MEDIUM",
     "blockers": [
-      "Actual common corrective closure main containment remains unproven."
+      "Actual accepted corrective closure must be merged into canonical main and ancestry verified."
     ],
-    "next_action": "Commit accepted technical closure, bind its exact commit as MERGE_PENDING, push and merge into canonical main, then independently prove ancestry before VALIDATED.",
+    "next_action": "Push the accepted common corrective closure, merge into canonical main, independently verify ancestry, then synchronize VALIDATED state without changing original bases or historical records.",
     "supersedes": [
       "WP-FF-024-predecessor-state-reconciliation-v1"
     ],

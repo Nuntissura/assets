@@ -44,17 +44,17 @@
       "head_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
       "verified_at_utc": "2026-10-20T23:43:20Z"
     },
-    "closure_commit": null,
+    "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
     "main_containment_status": "NOT_STARTED",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "MERGE_PENDING",
     "risk": "HIGH",
     "blockers": [
-      "Current technical evidence is accepted; common corrective closure containment remains unproven."
+      "Actual accepted corrective closure must be merged into canonical main and ancestry verified."
     ],
-    "next_action": "Bind the actual WP024-v2 accepted common corrective closure and prove its canonical-main ancestry before VALIDATED; preserve original bases, requirements and all historical failures.",
+    "next_action": "Push the accepted common corrective closure, merge into canonical main, independently verify ancestry, then synchronize VALIDATED state without changing original bases or historical records.",
     "supersedes": [],
     "superseded_by": null
   },
