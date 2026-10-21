@@ -254,6 +254,14 @@
   "validation": {
     "checks": [
       {
+        "kind": "stable-owned-fixture-target-remediation",
+        "retained_pr_failures": ["verify-pr-1792596893603868800-506796: offline pinned cache missing objc2-core-foundation; cache-only locked fetch restored it without source/lock drift.", "verify-pr-1792599630727164700-462732: workspace test timed out1800seconds; incomplete evidence, owned tree termination and bounded reap acknowledged; runtime/watcher not reached."],
+        "source_reconciliation": "Actual depfiles showed one leased stable receipt-only source compiled into three caller-root-derived PIF targets. Target derivation now occurs inside the existing exclusive callback using the actual sandbox and unchanged distinct labels; mutation, independent graph rejection and all deadlines remain unchanged.",
+        "focused_results": "Owning compile PASS72seconds; existing source-key isolation and warm reset/mutation controls each1/1 PASS; receipt-only public plus independent graph counterexample PASS1/1 in252.86seconds and119.46seconds using the same observed target747cb1d6a94f99b33f5955352783fa3c.",
+        "captures": ".fforager-artifacts/product-batch/phase1-stable-pif-*",
+        "acceptance_boundary": "Focused evidence only; final declared ARCH and independent PR/runtime/watcher acceptance and main containment remain pending. Prior failures retained."
+      },
+      {
         "kind": "approved-phase1-transport-composition",
         "retained_architecture_failure": "FF-GATE-ARCH-001 report1792578671565629000-312672 at clean dd410eb2 failed native caller reachability; not relabeled PASS.",
         "retained_focused_failure": "phase1-ff002-mutations exited101 at shared positive control before the mutation: ordinary profile ec384355 pin differed from actual6b94d937 composition.",

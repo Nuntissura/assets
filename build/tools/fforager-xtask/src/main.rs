@@ -10534,9 +10534,9 @@ fn proof_fixture(
 fn proof_map_string_only_fixture_execution(root: &Path) -> Result<FixtureExecution, String> {
     const DELETED_PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let target_dir = isolated_fixture_target_dir(root, "contract-inventory-resolver")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let diagnostic = with_isolated_fixture_root(root, "proof-map-deleted-test", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "contract-inventory-resolver")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         prepare_isolated_testkit_workspace(root, sandbox)?;
         let source = sandbox.join("product/crates/fforager-contracts/src/identity.rs");
         replace_text_in_file(
@@ -10569,9 +10569,9 @@ fn proof_map_behavior_stub_fixture_execution(root: &Path) -> Result<FixtureExecu
     const PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
     const SELECTOR: &str = "identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let target_dir = isolated_fixture_target_dir(root, "contract-inventory-behavior")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let diagnostic = with_isolated_fixture_root(root, "proof-map-behavior-stub", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "contract-inventory-behavior")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         prepare_isolated_testkit_workspace(root, sandbox)?;
         let identity = sandbox.join("product/crates/fforager-contracts/src/identity.rs");
         replace_named_test_body(
@@ -10849,9 +10849,9 @@ fn public_invariant_mutation_fixture_execution(
     diagnostic: &str,
     proof_class: &'static str,
 ) -> Result<FixtureExecution, String> {
-    let target_dir = isolated_fixture_target_dir(root, "public-invariant-mutations")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let observed = with_isolated_fixture_root(root, mutation, |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "public-invariant-mutations")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         prepare_isolated_testkit_workspace(root, sandbox)?;
         let failure_marker = match mutation {
             "effect_acknowledgement_subset" => replace_text_in_file(
@@ -11123,9 +11123,9 @@ fn proof_report_fixture_execution(mutation: &str) -> Result<FixtureExecution, St
 }
 
 fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecution, String> {
-    let target_dir = isolated_fixture_target_dir(root, "compiled-testkit")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let missing = with_isolated_fixture_root(root, "public-counterexample-removed", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         prepare_isolated_testkit_workspace(root, sandbox)?;
         let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
         replace_text_in_file(
@@ -11136,6 +11136,8 @@ fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecut
         isolated_public_test_diagnostic(sandbox, "removed", &target_dir)
     })?;
     let skipped = with_isolated_fixture_root(root, "public-counterexample-ignored", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         prepare_isolated_testkit_workspace(root, sandbox)?;
         let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
         replace_text_in_file(
@@ -11146,6 +11148,8 @@ fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecut
         isolated_public_test_diagnostic(sandbox, "ignored", &target_dir)
     })?;
     let empty = with_isolated_fixture_root(root, "public-counterexample-empty", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         prepare_isolated_testkit_workspace(root, sandbox)?;
         let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
         empty_named_test_body(
@@ -11166,12 +11170,12 @@ fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecut
 fn receipt_only_public_counterexample_fixture_execution(
     root: &Path,
 ) -> Result<FixtureExecution, String> {
-    let target_dir = isolated_fixture_target_dir(root, "public-receipt-only")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let diagnostic = with_isolated_fixture_root(
         root,
         "public-counterexample-receipt-only",
         |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "public-receipt-only")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
             prepare_isolated_testkit_workspace(root, sandbox)?;
             let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
             replace_named_test_body(
