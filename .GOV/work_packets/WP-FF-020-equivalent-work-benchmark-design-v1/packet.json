@@ -50,17 +50,17 @@
       "head_sha": null,
       "verified_at_utc": null
     },
-    "closure_commit": null,
+    "closure_commit": "a88d961ac066abdf45a4041f435bd5d6c823dd60",
     "main_containment_status": "NOT_STARTED",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "MERGE_PENDING",
     "risk": "HIGH",
     "blockers": [
       "Closure commit main containment is not yet proven."
     ],
-    "next_action": "Commit actual acceptance closure, record its SHA and MERGE_PENDING, push and merge prerequisite-only branch into main, prove containment, then synchronize validated state.",
+    "next_action": "Merge the recorded prerequisite-only closure into main and prove ancestry before VALIDATED; subsequent state repair remains separately scoped.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -169,7 +169,7 @@
     "last_checkpoint": {
       "recorded_at_utc": "2026-10-21T06:05:28Z",
       "branch": "codex/phase1-prerequisite-closure",
-      "head_sha": "05aadebf1eda18dd278b5a077824641eb3b74402",
+      "head_sha": "a88d961ac066abdf45a4041f435bd5d6c823dd60",
       "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
       "merge_base_main": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
       "status_porcelain_v2": [
@@ -185,7 +185,7 @@
       "blockers": [
         "Closure main containment."
       ],
-      "next_action": "Commit actual acceptance closure, record its SHA and MERGE_PENDING, push and merge prerequisite-only branch into main, prove containment, then synchronize validated state."
+      "next_action": "Merge the recorded prerequisite-only closure into main and prove ancestry before VALIDATED; subsequent state repair remains separately scoped."
     }
   },
   "validation": {
@@ -283,6 +283,12 @@
         "artifact": "build/reports/runtime-truth-check-1792562767936477700-421584.json",
         "diagnostic": "FF-RUNTIME-E-PREREQUISITE-PROGRESS-CLAIM",
         "correction": "Separate gate result and report-path evidence into structured fields; frozen requirements and source code unchanged."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "artifact": "build/reports/runtime-truth-check-1792562824396085200-414456.json",
+        "purpose": "Closure metadata validation before closure commit; source code unchanged."
       }
     ],
     "not_proven": [
