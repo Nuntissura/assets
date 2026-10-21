@@ -25,7 +25,7 @@
       "reference": "Start product code now using parallel agents for the bounded direct-HTTP slice. Bundle tests/checks/builds, reuse warm Cargo artifacts, keep paperwork minimal; paperwork or repo ceremony can never be a blocker.",
       "source": "operator_message"
     },
-    "runtime_proof_transition_reference": "Operator direction on 2026-10-21: complete Phase1 using the versioned current-source proof transition, preserve all original acceptance and predecessor obligations, collect approved cases while unresolved authorization remains explicitly blocked."
+    "runtime_proof_transition_reference": "WP-FF-021-current-candidate-r2-2026-10-21"
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -507,8 +507,8 @@
     "runtime_proof": {
       "schema_id": "ff.runtime-proof@2",
       "completion_claim": "operator_usable_runtime",
-      "authorization_reference": "Operator direction on 2026-10-21: complete Phase1 using the versioned current-source proof transition, preserve all original acceptance and predecessor obligations, collect approved cases while unresolved authorization remains explicitly blocked.",
-      "source_commit": "0dfbd843e50b7134e5600b6f9bff6fe4e54ac708",
+      "authorization_reference": "WP-FF-021-current-candidate-r2-2026-10-21",
+      "source_commit": "8e0ea4605539b4ac8826423d1096fa7f1e1edcb5",
       "artifacts": [
         {
           "package": "fforager-launcher",
