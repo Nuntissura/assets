@@ -1,0 +1,142 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "TRACKED",
+  "identity": {
+    "wp_id": "WP-FF-024-predecessor-state-reconciliation-v1",
+    "base_wp_id": "WP-FF-024-predecessor-state-reconciliation",
+    "version": "1",
+    "title": "Reconcile contained prerequisite lineage and closure state",
+    "created_at_utc": "2026-10-21T06:28:35Z",
+    "updated_at_utc": "2026-10-21T06:28:35Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Live-session Phase 1 completion direction and root-authorized minimum metadata-only predecessor reconciliation after WP020 closure; preserve prior requirements, failures and original bases.",
+    "recorded_at_utc": "2026-10-21T06:28:35Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+    "work_branch": "codex/predecessor-state-reconciliation",
+    "worktree_policy": "LINKED_REPO_LOCAL_HELPER",
+    "worktree_id": "phase1-prerequisites",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "IN_PROGRESS",
+    "risk": "LOW",
+    "blockers": [
+      "Activation checkpoint must be committed before target packet repairs."
+    ],
+    "next_action": "Commit this complete activation, then reconcile only the three named predecessor packets against inspected current evidence; obtain independent review and required metadata/gate validation before corrective closure containment.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Repair WP006 sanitized-source lineage and WP022-v2/WP023 closure projections using existing accepted proof, without changing implementation, dependency authority or original acceptance.",
+    "product_impact": "NONE",
+    "in_scope": [
+      "Preserve every original base, requirement, scope, declaration and failure record; retain primary WP023 newer blocked and Operator-stop history rather than replacing it with the older helper state.",
+      "Record WP006 current contained sanitized-source optimized corpus revalidation and explicitly invalidate historical uncontained closure ancestry.",
+      "Bind WP022-v2 and WP023 to actual accepted current prerequisite-source gates and the future common corrective closure only after its real merge and containment.",
+      "Register this correction, keep taskboard as index/focus only, and synchronize final predecessor lifecycle after independent proof."
+    ],
+    "non_goals": [
+      "Change product or build source, dependency versions/features/decisions, native authority, proof producers, finding maps, fixtures or original packet acceptance.",
+      "Import secret-era history, relabel historical failures, assert original99139 ancestry, or claim product, capability, runtime, performance, packaging, release or phase completion.",
+      "Reopen completed research or execute a new measurement campaign."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
+      ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json",
+      ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
+      ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
+      ".GOV/id-registry.yaml",
+      ".GOV/taskboard/taskboard.yaml"
+    ],
+    "dependencies": [
+      "WP-FF-020-equivalent-work-benchmark-design-v1 VALIDATED with closure a88d961ac066abdf45a4041f435bd5d6c823dd60 contained in main.",
+      "Current main bde150fe8d39519a890b2be1c4ac9d44d47c18e4 contains sanitized prerequisite source and the accepted05aadeb build/product tree; actual proof remains prerequisite-only.",
+      "Existing optimized WP006 current-source corpus and clean05aadeb canonical architecture/PR/runtime policy reports supply the evidence to reconcile, not new implementation authority."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v1-AC-001",
+      "requirement": "All three target packets retain their original bases, acceptance requirements, scope and immutable declarations; historical failures and the newer primary WP023 stop/checkpoint remain preserved, while obsolete closure claims are explicitly distinguished from current proof.",
+      "proof_class": "governance",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v1-AC-002",
+      "requirement": "WP006 records independently inspected current sanitized-source and fixture lineage, optimized7case/20probe corpus and oracle counterfactual; WP022-v2/WP023 record the actual clean accepted source-bound canonical evidence without product promotion.",
+      "proof_class": "governance",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v1-AC-003",
+      "requirement": "Only the six declared governance paths change; public runtime-truth-check classifies this active correction as NONE, independent review verifies exact target/frozen-field/history reconciliation, and required canonical verdicts are recorded without relabeling failures.",
+      "proof_class": "governance",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v1-AC-004",
+      "requirement": "The common corrective closure is actually merged into canonical main and ancestry verified before this packet or any repaired target is marked VALIDATED; exact closure identities and active-focus projection are synchronized.",
+      "proof_class": "governance",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-10-21T06:28:35Z",
+      "branch": "codex/predecessor-state-reconciliation",
+      "base_sha": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+      "head_sha": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
+        ".GOV/id-registry.yaml",
+        ".GOV/taskboard/taskboard.yaml"
+      ],
+      "checks_run": [
+        "Inspected existing WP018 TRACKED/NONE metadata-only pattern, current work-packet template/requirements, target proof history and actual canonical main activation base.",
+        "git branch --show-current: codex/predecessor-state-reconciliation; git rev-parse HEAD and git merge-base main HEAD: bde150fe8d39519a890b2be1c4ac9d44d47c18e4; initial git status --porcelain=v2 --branch contained branch identity only."
+      ],
+      "blockers": [
+        "Activation checkpoint must be committed before target packet repairs."
+      ],
+      "next_action": "Commit this complete activation, then reconcile only the three named predecessor packets against inspected current evidence; obtain independent review and required metadata/gate validation before corrective closure containment."
+    }
+  },
+  "validation": {
+    "checks": [],
+    "not_proven": [
+      "Target state repair, correction-specific public NONE/gate verdicts, independent final metadata review and corrective closure containment.",
+      "Any product, capability, runtime, performance, packaging, release or phase progress."
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/refinement.json",
+    "refinement_reuse_scope": "Existing prerequisite context only; this TRACKED metadata correction adds no design, research, implementation or product authorization."
+  }
+}

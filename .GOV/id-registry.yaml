@@ -1,6 +1,6 @@
 schema_id: ff.id_registry@1
 file_id: FF-GOV-ID-REGISTRY-001
-updated_at: "2026-10-20"
+updated_at: "2026-10-21"
 namespaces:
   FF-PROJ:
     entity_kind: project
@@ -44,7 +44,7 @@ namespaces:
     next_numeric_id: 10
   WP-FF:
     entity_kind: work_packet
-    next_numeric_id: 24
+    next_numeric_id: 25
   FF-AC:
     entity_kind: work_packet_acceptance_row
     next_numeric_id: 1
@@ -241,6 +241,8 @@ registered_files:
     path: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json
   - id: WP-FF-023-dependency-security-remediation-v1-CEILING-001
     path: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-024-predecessor-state-reconciliation-v1
+    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json
 registered_rule_ranges:
   - namespace: FF-BOOT
     first: FF-BOOT-001
