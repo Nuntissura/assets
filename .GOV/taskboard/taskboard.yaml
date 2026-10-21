@@ -36,7 +36,7 @@ rules:
     statement: Superseded packet history is archived and never deleted.
 current_focus:
   statement: Work packet selected.
-  active_wp_id: null
+  active_wp_id: WP-FF-024-predecessor-state-reconciliation-v2
 work_packets:
   - wp_id: WP-FF-001-governance-workflow-v1
     packet: .GOV/work_packets/WP-FF-001-governance-workflow-v1/packet.json
@@ -102,3 +102,7 @@ work_packets:
     packet: .GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json
   - wp_id: WP-FF-023-dependency-security-remediation-v1
     packet: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json
+  - wp_id: WP-FF-024-predecessor-state-reconciliation-v1
+    packet: .GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json
+  - wp_id: WP-FF-024-predecessor-state-reconciliation-v2
+    packet: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json

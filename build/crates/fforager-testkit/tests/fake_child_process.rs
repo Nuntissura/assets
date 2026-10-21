@@ -151,6 +151,97 @@ fn wait_for_direct_exit(child: &mut Child, limit: Duration) -> ExitStatus {
     }
 }
 
+#[cfg(windows)]
+fn observe_cleanup_exit(child: &mut Child) -> std::io::Result<Option<ExitStatus>> {
+    let started = Instant::now();
+    loop {
+        let status = child.try_wait()?;
+        if status.is_some() || started.elapsed() >= WAIT_LIMIT {
+            return Ok(status);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(windows)]
+fn descendant_timeout_diagnostics(child: &mut Child, marker: &Path) -> String {
+    use std::os::windows::process::CommandExt;
+
+    let pid = child.id();
+    let status_before = child.try_wait();
+    let marker_before = fs::metadata(marker).map(|metadata| metadata.len());
+    let stdout = child
+        .stdout
+        .take()
+        .map(|pipe| thread::spawn(move || drain_bounded(pipe)));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|pipe| thread::spawn(move || drain_bounded(pipe)));
+    // Keep the owned Child handle alive through tree cleanup so its PID cannot recycle.
+    let tree_cleanup = match child.try_wait() {
+        Ok(None) => std::env::var_os("SystemRoot")
+            .ok_or_else(|| "SystemRoot unavailable".to_owned())
+            .and_then(|root| {
+                let mut cleanup = Command::new(PathBuf::from(root).join("System32/taskkill.exe"))
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .creation_flags(0x0800_0000)
+                    .spawn()
+                    .map_err(|error| error.to_string())?;
+                let status = observe_cleanup_exit(&mut cleanup);
+                if !matches!(status, Ok(Some(_))) {
+                    let kill = cleanup.kill();
+                    let reap = observe_cleanup_exit(&mut cleanup);
+                    return Err(format!(
+                        "taskkill incomplete: {status:?}; kill={kill:?}; reap={reap:?}"
+                    ));
+                }
+                status.map_err(|error| error.to_string())
+            }),
+        state => Err(format!(
+            "tree cleanup not issued: owned parent state={state:?}"
+        )),
+    };
+    let direct_kill = match child.try_wait() {
+        Ok(None) => Some(child.kill()),
+        _ => None,
+    };
+    let direct_cleanup = observe_cleanup_exit(child);
+    let drains_started = Instant::now();
+    while (stdout.as_ref().is_some_and(|drain| !drain.is_finished())
+        || stderr.as_ref().is_some_and(|drain| !drain.is_finished()))
+        && drains_started.elapsed() < WAIT_LIMIT
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let stdout = finished_diagnostic_capture(stdout);
+    let stderr = finished_diagnostic_capture(stderr);
+    format!(
+        "pid={pid} status_before={status_before:?} marker_before={marker_before:?} tree_cleanup={tree_cleanup:?} direct_kill={direct_kill:?} direct_cleanup={direct_cleanup:?} marker_after={:?}; descendant cleanup is not inferred from taskkill status; stdout={stdout}; stderr={stderr}",
+        fs::metadata(marker).map(|metadata| metadata.len())
+    )
+}
+
+#[cfg(windows)]
+fn finished_diagnostic_capture(drain: Option<thread::JoinHandle<BoundedCapture>>) -> String {
+    match drain {
+        Some(drain) if drain.is_finished() => match drain.join() {
+            Ok(capture) => format!(
+                "bytes={} truncated={} prefix={:?}",
+                capture.total_bytes,
+                capture.truncated,
+                String::from_utf8_lossy(&capture.bytes)
+            ),
+            Err(_) => "capture worker panicked".to_owned(),
+        },
+        Some(_) => "capture unavailable at cleanup deadline".to_owned(),
+        None => "pipe unavailable".to_owned(),
+    }
+}
+
 #[test]
 fn spawned_progress_preserves_stdout_stderr_and_exit_boundaries() {
     let output = wait_bounded(spawn_piped(&[
@@ -366,6 +457,24 @@ fn bounded_descendant_outlives_direct_child_then_self_cleans() {
         "--liveness-file",
         marker.to_str().expect("artifact path must be Unicode"),
     ]);
+    #[cfg(windows)]
+    let direct_status = {
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child
+                .try_wait()
+                .expect("direct-child status must be observable")
+            {
+                break status;
+            }
+            if started.elapsed() >= Duration::from_secs(2) {
+                let diagnostics = descendant_timeout_diagnostics(&mut child, &marker);
+                panic!("direct child did not exit within 2s; {diagnostics}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+    #[cfg(not(windows))]
     let direct_status = wait_for_direct_exit(&mut child, Duration::from_secs(2));
     assert!(direct_status.success());
     assert!(

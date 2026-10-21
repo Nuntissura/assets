@@ -8,7 +8,7 @@
     "created_at_utc": "2026-10-20T15:16:03Z",
     "wp_id": "WP-FF-022-prerequisite-classifier-remediation-v2",
     "version": "2",
-    "updated_at_utc": "2026-10-20T20:18:34Z"
+    "updated_at_utc": "2026-10-21T06:42:27Z"
   },
   "authorization": {
     "reference": "Yes, approve Python solely for the gameplan controller. Keep Ferric implementation and canonical verification Python-free, and proceed with the WP-020 classifier fix using subagents for paperwork and implementation.",
@@ -44,19 +44,17 @@
       "head_sha": null,
       "verified_at_utc": null
     },
-    "closure_commit": null,
+    "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
     "main_containment_status": "NOT_STARTED",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "BLOCKED",
+    "status": "MERGE_PENDING",
     "risk": "MEDIUM",
     "blockers": [
-      "FF-GATE-PR-001 dependency-policy failure: eight RustSec findings across five crates at clean79392ff. Required gate acceptance is false despite preceding tests/docs acceptance.",
-      "Dependency remediation requires separate Operator authorization: current immutable allowed_paths excludes build/Cargo.toml and build/Cargo.lock. No scope expansion, dependency edit or gate weakening is authorized by this checkpoint.",
-      "Closure merge/main containment remain unproven; WP020 classifier-blocker status must remain unchanged until accepted contained closure."
+      "Actual accepted corrective closure must be merged into canonical main and ancestry verified."
     ],
-    "next_action": "Obtain Operator authorization for separately scoped dependency remediation while preserving the existing sequence; do not change current frozen scope, dependencies, WP020 state or merge. After authorized remediation and required proof, return to this closure and rerun affected canonical gates.",
+    "next_action": "Push the accepted common corrective closure, merge into canonical main, independently verify ancestry, then synchronize VALIDATED state without changing original bases or historical records.",
     "supersedes": [
       "WP-FF-022-prerequisite-classifier-remediation-v1"
     ],
@@ -137,16 +135,18 @@
         "AADF original candidate FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 reports accepted at clean source; FF-GATE-PR-001 failed twice with exact reports retained.",
         "Current fixture shared-base candidate owning module11/11/defaultparallel and independent HIGH isolation review accepted. Fresh canonical gates must judge changed candidate; no final PR acceptance claimed.",
         "Clean79392ff source-bound FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 accepted; architecture7checks55fixtures.",
-        "FF-GATE-PR-001 report1792527411034803900-383824 rejected dependency-policy: eight RustSec findings across five crates. Preceding xtask147/0/2, FFmpeg65/0/3, testkit17/0 and docs/doctests accepted; no failed classifier/Windows case in this attempt."
+        "FF-GATE-PR-001 report1792527411034803900-383824 rejected dependency-policy: eight RustSec findings across five crates. Preceding xtask147/0/2, FFmpeg65/0/3, testkit17/0 and docs/doctests accepted; no failed classifier/Windows case in this attempt.",
+        "Clean accepted05aadeb architecture and PR with composed deep surface passed; source-equal canonical main and exact report rows are recorded at extensions.predecessor_reconciliation."
       ],
-      "status": "BLOCKED",
+      "status": "PASS",
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-004"
     },
     {
       "proof_class": "governance",
       "requirement": "The accepted closure commit is merged into canonical main and git merge-base --is-ancestor proves containment; WP-020 remains a non-authorizing STUB and zero product/capability/runtime/packaging/release/phase progress is preserved.",
       "evidence": [
-        "Preserved original requirement and actual proof history at .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/acceptance_matrix; final changed candidate remains subject to canonical gates."
+        "Preserved original requirement and actual proof history at .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/acceptance_matrix; final changed candidate remains subject to canonical gates.",
+        "Historical79392ff WP020STUB and later independent WP020promotion are explicitly reconciled without changing this requirement; common corrective closure containment remains pending."
       ],
       "status": "PENDING",
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-005"
@@ -176,26 +176,21 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "head_sha": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
-      "branch": "codex/wp020-prerequisite-classifier",
-      "next_action": "Obtain Operator authorization for separately scoped dependency remediation while preserving the existing sequence; do not change current frozen scope, dependencies, WP020 state or merge. After authorized remediation and required proof, return to this closure and rerun affected canonical gates.",
-      "blockers": [
-        "FF-GATE-PR-001 dependency-policy failure: eight RustSec findings across five crates at clean79392ff. Required gate acceptance is false despite preceding tests/docs acceptance.",
-        "Dependency remediation requires separate Operator authorization: current immutable allowed_paths excludes build/Cargo.toml and build/Cargo.lock. No scope expansion, dependency edit or gate weakening is authorized by this checkpoint.",
-        "Closure merge/main containment remain unproven; WP020 classifier-blocker status must remain unchanged until accepted contained closure."
-      ],
+      "recorded_at_utc": "2026-10-21T06:42:27Z",
+      "branch": "codex/predecessor-state-reconciliation",
+      "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "head_sha": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
       "dirty_paths": [
         ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json"
       ],
-      "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "recorded_at_utc": "2026-10-20T20:18:34Z",
       "checks_run": [
-        "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD: 79392ff8b483af7669699f4dbee719e5e9b18f5a",
-        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: origin ahead0/behind0; clean before blocked checkpoint.",
-        "Opened exact source-bound FF-GATE-PR-001 failure and FF-GATE-ARCH-001 acceptance reports."
-      ]
+        "Original frozen fields and prior failure/stop records reconciled before metadata correction.",
+        "Actual optimized corpus, current accepted source-bound prerequisite reports and canonical main ancestry independently reread; no implementation or acceptance requirement changed."
+      ],
+      "blockers": [
+        "Current technical evidence is accepted; common corrective closure containment remains unproven."
+      ],
+      "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED."
     }
   },
   "validation": {
@@ -520,6 +515,39 @@
         "content_fingerprint": "857df0b75a3a46ff1d86ea8229f6db7523e03f08e6b743652b1b02c11523f388",
         "observed": "Dependency-policy rejected eight RustSec findings across five crates after preceding tests/docs accepted.",
         "limitation": "No classifier or Windows test failed in this gate attempt; prior Windows/Git failure causes remain unresolved and preserved."
+      },
+      {
+        "canonical_main_at_activation": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "command": "git diff --exit-code 05aadebf1eda18dd278b5a077824641eb3b74402 main -- build product",
+        "exit_code": 0
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+        "proof_ceiling": "policy and scenario contract only"
+      },
+      {
+        "gate_id": "FF-GATE-ARCH-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/architecture-check-1792559655529323400-457160.json",
+        "checks": 8,
+        "fixtures": 55
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/verify-pr-1792562549302941800-518188.json",
+        "checks": 70,
+        "fixtures": 55,
+        "xtask_passed": 151,
+        "ffmpeg_passed": 65,
+        "testkit_passed": 17,
+        "dependency_checks": "advisories, bans, licenses and sources accepted",
+        "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
       }
     ]
   },
@@ -874,6 +902,140 @@
         "permission_proof_supersession": "Earlier ACE isolation evidence is historical for the permission function only; final1E focused isolation and refreshed mutant/restoration supersede it. ACE11test owningmodule evidence remains valid for unchanged sharedbase/publictests, and initial-error proof reused from byte-identical initializer."
       }
     },
-    "refinement": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json"
+    "refinement": ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
+    "predecessor_reconciliation": {
+      "correction_packet": "WP-FF-024-predecessor-state-reconciliation-v1",
+      "activation_commit": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
+      "recorded_at_utc": "2026-10-21T06:42:27Z",
+      "authorization": "Later live Operator-directed prerequisite closure and Phase 1 completion; the earlier stop/checkpoint remains historical and does not supply new authority.",
+      "prior_checkpoint": {
+        "lifecycle": {
+          "status": "BLOCKED",
+          "risk": "MEDIUM",
+          "blockers": [
+            "FF-GATE-PR-001 dependency-policy failure: eight RustSec findings across five crates at clean79392ff. Required gate acceptance is false despite preceding tests/docs acceptance.",
+            "Dependency remediation requires separate Operator authorization: current immutable allowed_paths excludes build/Cargo.toml and build/Cargo.lock. No scope expansion, dependency edit or gate weakening is authorized by this checkpoint.",
+            "Closure merge/main containment remain unproven; WP020 classifier-blocker status must remain unchanged until accepted contained closure."
+          ],
+          "next_action": "Obtain Operator authorization for separately scoped dependency remediation while preserving the existing sequence; do not change current frozen scope, dependencies, WP020 state or merge. After authorized remediation and required proof, return to this closure and rerun affected canonical gates.",
+          "supersedes": [
+            "WP-FF-022-prerequisite-classifier-remediation-v1"
+          ],
+          "superseded_by": null
+        },
+        "source_commit": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "source_control": {
+          "canonical_branch": "main",
+          "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+          "work_branch": "codex/wp020-prerequisite-classifier",
+          "worktree_policy": "NONE",
+          "worktree_id": null,
+          "remote_backup": {
+            "required_for_handoff": true,
+            "branch": null,
+            "head_sha": null,
+            "verified_at_utc": null
+          },
+          "closure_commit": null,
+          "main_containment_status": "NOT_STARTED",
+          "merged_main_commit": null
+        },
+        "recovery": {
+          "last_checkpoint": {
+            "head_sha": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+            "branch": "codex/wp020-prerequisite-classifier",
+            "next_action": "Obtain Operator authorization for separately scoped dependency remediation while preserving the existing sequence; do not change current frozen scope, dependencies, WP020 state or merge. After authorized remediation and required proof, return to this closure and rerun affected canonical gates.",
+            "blockers": [
+              "FF-GATE-PR-001 dependency-policy failure: eight RustSec findings across five crates at clean79392ff. Required gate acceptance is false despite preceding tests/docs acceptance.",
+              "Dependency remediation requires separate Operator authorization: current immutable allowed_paths excludes build/Cargo.toml and build/Cargo.lock. No scope expansion, dependency edit or gate weakening is authorized by this checkpoint.",
+              "Closure merge/main containment remain unproven; WP020 classifier-blocker status must remain unchanged until accepted contained closure."
+            ],
+            "dirty_paths": [
+              ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json"
+            ],
+            "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+            "recorded_at_utc": "2026-10-20T20:18:34Z",
+            "checks_run": [
+              "git branch --show-current: codex/wp020-prerequisite-classifier",
+              "git rev-parse HEAD: 79392ff8b483af7669699f4dbee719e5e9b18f5a",
+              "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+              "git status --porcelain=v2 --branch: origin ahead0/behind0; clean before blocked checkpoint.",
+              "Opened exact source-bound FF-GATE-PR-001 failure and FF-GATE-ARCH-001 acceptance reports."
+            ]
+          }
+        }
+      },
+      "accepted_prerequisite_source": "05aadebf1eda18dd278b5a077824641eb3b74402",
+      "accepted_content_fingerprint": "ff6be3915c19fc0a6c6992c0a0af630fe4f5e2691e31b07fab86c560ce3dd8a4",
+      "canonical_source_equivalence": {
+        "canonical_main_at_activation": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "command": "git diff --exit-code 05aadebf1eda18dd278b5a077824641eb3b74402 main -- build product",
+        "exit_code": 0
+      },
+      "current_gate_results": [
+        {
+          "gate_id": "FF-GATE-RUNTIME-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+          "proof_ceiling": "policy and scenario contract only"
+        },
+        {
+          "gate_id": "FF-GATE-ARCH-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/architecture-check-1792559655529323400-457160.json",
+          "checks": 8,
+          "fixtures": 55
+        },
+        {
+          "gate_id": "FF-GATE-PR-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/verify-pr-1792562549302941800-518188.json",
+          "checks": 70,
+          "fixtures": 55,
+          "xtask_passed": 151,
+          "ffmpeg_passed": 65,
+          "testkit_passed": 17,
+          "dependency_checks": "advisories, bans, licenses and sources accepted",
+          "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
+        },
+        {
+          "gate_id": "FF-GATE-PR-001",
+          "result": "PASS",
+          "source_commit": "13b51f6bcfdaa855e01434e42413af2ec942d801",
+          "content_fingerprint": "cea6680bc769e1b12fc057f8aff5424b1f404315129559d1c8745664e0f87867",
+          "dirty": false,
+          "artifact": "build/reports/verify-pr-1792577211387529800-38336.json",
+          "command": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard",
+          "environment": {
+            "RUST_TEST_THREADS": "2",
+            "CARGO_TARGET_DIR": "unset; owner .cargo/config.toml resolves shared artifact target",
+            "TEMP": ".fforager-artifacts/tmp",
+            "TMP": ".fforager-artifacts/tmp",
+            "git_config": "Process-only core.longpaths=true appended after existing GIT_CONFIG_COUNT entries",
+            "logs": "Inherited RUST_LOG=warn retained; no compiler/lint override"
+          },
+          "checks": 70,
+          "fixtures": 55,
+          "ceiling": "Prerequisite-only; no product/runtime/performance completion"
+        }
+      ],
+      "corrective_closure": {
+        "commit": null,
+        "main_containment_status": "NOT_STARTED",
+        "rule": "Only the actually merged common corrective closure may replace this null; original bases and requirements remain unchanged."
+      },
+      "evidence_ceiling": "Prerequisite and governance evidence only; no product, capability, runtime, performance, packaging, release or phase completion.",
+      "historical_wp020_ceiling": {
+        "classifier_source": "79392ff8b483af7669699f4dbee719e5e9b18f5a",
+        "classifier_source_main_ancestry_exit": 0,
+        "wp020_status_at_classifier_source": "STUB",
+        "interpretation": "AC005 retains the original classifier non-authorization ceiling at this snapshot. WP020 was later separately authorized and is now VALIDATED through its own contained a88d961 closure; classifier remediation did not authorize that promotion."
+      },
+      "current_correction_packet": "WP-FF-024-predecessor-state-reconciliation-v2",
+      "current_correction_activation": "f2d2b6cfe87ff6fb4bbeee93ede5fb2e831de7c5"
+    }
   }
 }
