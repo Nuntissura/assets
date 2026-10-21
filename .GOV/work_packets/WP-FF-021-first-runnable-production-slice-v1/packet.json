@@ -32,7 +32,7 @@
       "reference": "Start product code now using parallel agents for the bounded direct-HTTP slice. Bundle tests/checks/builds, reuse warm Cargo artifacts, keep paperwork minimal; paperwork or repo ceremony can never be a blocker.",
       "source": "operator_message"
     },
-    "runtime_proof_transition_reference": "WP-FF-021-current-candidate-r9-2026-10-21",
+    "runtime_proof_transition_reference": "WP-FF-021-current-candidate-r10-2026-10-21",
     "worker_identity_approval": {
       "source": "operator_message",
       "recorded_at_utc": "2026-10-21T06:53:43Z",
@@ -258,7 +258,7 @@
           "retained_failure": "Independent r9 verify-pr-1792606637649702000-517432 failed incomplete at the unchanged1800-second workspace-test deadline after627seconds compilation. FFmpeg direct-exit precondition and storage preparatory expected-Transport assertion failed; the hardlink attack and final runtime/watcher proof were not reached. Original causes remain UNVERIFIED.",
           "diagnostics": "Storage now prints the actual preparatory fetch result on the same assertion. FFmpeg retains the same10-second direct-exit assertion and success pipe lifetime, adding bounded failure captures and existing owned cleanup outcomes. Mechanical let-else conversion preserves the prior focused proof.",
           "focused_results": "Canonical-compatible workspace/all-target/all-feature no-run setup passed; emitted storage hardlink selector PASS1/1 in0.09seconds and FFmpeg direct-exit selector PASS1/1 in3.00seconds. Neither diagnostic failure branch executed; these outcomes do not establish the original causes.",
-          "scheduling": "Actual queued HDD/concurrent linking observations motivated process-only CARGO_BUILD_JOBS=1, without changing artifact inputs, test threads2, limits, config or gate argv. The strict environment guard and sanitizer admit only exact1 and retain compiler/lint/config poison rejection. Scheduling benefit is not claimed.",
+          "scheduling": "Actual queued HDD/concurrent linking observations motivated process-only CARGO_BUILD_JOBS=1, without changing dependency versions/features, compiler flags, test threads2, limits, config or gate argv. The strict environment guard and sanitizer admit only exact1 and retain compiler/lint/config poison rejection. Scheduling benefit is not claimed.",
           "final_source_checks": "Unified workspace/all-target/all-feature warnings-denied Clippy PASS0 in12.94seconds. Final-source matching no-run setup PASS0 in197.30seconds with jobs1; existing extended cargo_verification_strips_lint_and_compiler_overrides PASS1/1. Initial missing OsString import and subsequent manual-let-else lint failures are retained in separate captures.",
           "captures": ".fforager-artifacts/product-batch/phase1-r9-diagnostics-* and phase1-r10-{unified-*,scheduling-guard}*",
           "ceiling": "Required final clean-candidate ARCH, independent canonical PR, same-run runtime/watcher and main containment remain pending. Frozen nine acceptance criteria and twelve scenarios are unchanged."
@@ -572,8 +572,8 @@
     "runtime_proof": {
       "schema_id": "ff.runtime-proof@2",
       "completion_claim": "operator_usable_runtime",
-      "authorization_reference": "WP-FF-021-current-candidate-r9-2026-10-21",
-      "source_commit": "b5dce654cfc7863e5e282172c137adb4ecddbd8f",
+      "authorization_reference": "WP-FF-021-current-candidate-r10-2026-10-21",
+      "source_commit": "f0177e0574fec9d1b85d675f6f420a0483d19407",
       "artifacts": [
         {
           "package": "fforager-launcher",
