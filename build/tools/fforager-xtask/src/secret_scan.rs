@@ -641,26 +641,57 @@ fn scan_objects_batch(
     let status = super::wait_for_child(&mut child, "git", &["cat-file"], GIT_BATCH_TIMEOUT);
     let read_result = reader
         .join()
-        .map_err(|_| "FF-SECRET-E-GIT: Git batch reader panicked".to_owned())?;
+        .map_err(|_| "FF-SECRET-E-GIT: Git batch reader panicked".to_owned())
+        .and_then(std::convert::identity);
     let write_result = writer
         .join()
-        .map_err(|_| "FF-SECRET-E-GIT: Git batch writer panicked".to_owned())?;
-    let (batch_findings, final_budget) = read_result?;
-    write_result.map_err(|error| format!("FF-SECRET-E-GIT: write batch input: {error}"))?;
-    let status = status.map_err(|_| {
-        format!(
-            "FF-SECRET-E-GIT-TIMEOUT: git cat-file exceeded {} seconds",
-            GIT_BATCH_TIMEOUT.as_secs()
-        )
-    })?;
-    if !status.success() {
-        return Err(format!(
-            "FF-SECRET-E-GIT: git cat-file exited {status}; stderr suppressed"
-        ));
-    }
+        .map_err(|_| "FF-SECRET-E-GIT: Git batch writer panicked".to_owned())
+        .and_then(|result| {
+            result.map_err(|error| format!("FF-SECRET-E-GIT: write batch input: {error}"))
+        });
+    let status = status
+        .map_err(|error| {
+            format!(
+                "FF-SECRET-E-GIT-TIMEOUT: git cat-file exceeded {} seconds; {error}",
+                GIT_BATCH_TIMEOUT.as_secs()
+            )
+        })
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "FF-SECRET-E-GIT: git cat-file exited {status}; stderr suppressed"
+                ))
+            }
+        });
+    let (batch_findings, final_budget) = finish_batch_scan(status, read_result, write_result)?;
     findings.extend(batch_findings);
     *budget = final_budget;
     Ok(())
+}
+
+fn finish_batch_scan(
+    status: Result<(), String>,
+    read_result: Result<(Vec<Finding>, ScanBudget), String>,
+    write_result: Result<(), String>,
+) -> Result<(Vec<Finding>, ScanBudget), String> {
+    if let Err(error) = status {
+        let secondary = |result: Option<&String>| {
+            result.map_or_else(
+                || "none".to_owned(),
+                |error| error.chars().take(256).collect(),
+            )
+        };
+        return Err(format!(
+            "{error}; reader_error={}; writer_error={}",
+            secondary(read_result.as_ref().err()),
+            secondary(write_result.as_ref().err())
+        ));
+    }
+    let result = read_result?;
+    write_result?;
+    Ok(result)
 }
 
 fn read_batch_objects(
@@ -846,7 +877,8 @@ fn scan_bytes(source: &str, bytes: &[u8]) -> Vec<Finding> {
             if start > 0 && bytes[start - 1] == b'\n' {
                 line += 1;
             }
-            if bytes[start..].starts_with(pattern.prefix)
+            if bytes[start] == pattern.prefix[0]
+                && bytes[start..].starts_with(pattern.prefix)
                 && tail_length(bytes, start + pattern.prefix.len(), pattern.class)
                     >= pattern.minimum_tail
             {
@@ -865,12 +897,19 @@ fn scan_bytes(source: &str, bytes: &[u8]) -> Vec<Finding> {
             if bytes.len() < encoded_prefix_bytes + pattern.minimum_tail * 2 {
                 continue;
             }
+            let leading = if little_endian {
+                [pattern.prefix[0], 0]
+            } else {
+                [0, pattern.prefix[0]]
+            };
             let mut line = 1;
             for start in 0..=bytes.len() - encoded_prefix_bytes {
                 if start > 0 && bytes[start - 1] == b'\n' {
                     line += 1;
                 }
-                if encoded_prefix_matches(bytes, start, pattern.prefix, little_endian)
+                if bytes[start] == leading[0]
+                    && bytes[start + 1] == leading[1]
+                    && encoded_prefix_matches(bytes, start, pattern.prefix, little_endian)
                     && encoded_tail_length(
                         bytes,
                         start + encoded_prefix_bytes,
@@ -1209,7 +1248,148 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn unfiltered_scan_reference(source: &str, bytes: &[u8]) -> Vec<Finding> {
+        let mut findings = BTreeSet::new();
+        for pattern in PATTERNS {
+            if bytes.len() < pattern.prefix.len() + pattern.minimum_tail {
+                continue;
+            }
+            let mut line = 1;
+            for start in 0..=bytes.len() - pattern.prefix.len() {
+                if start > 0 && bytes[start - 1] == b'\n' {
+                    line += 1;
+                }
+                if bytes[start..].starts_with(pattern.prefix)
+                    && tail_length(bytes, start + pattern.prefix.len(), pattern.class)
+                        >= pattern.minimum_tail
+                {
+                    findings.insert(Finding {
+                        pattern_id: pattern.id,
+                        source: source.to_owned(),
+                        line,
+                    });
+                    if findings.len() >= MAX_REPORTED_FINDINGS {
+                        return findings.into_iter().collect();
+                    }
+                }
+            }
+            for little_endian in [true, false] {
+                let encoded_prefix_bytes = pattern.prefix.len() * 2;
+                if bytes.len() < encoded_prefix_bytes + pattern.minimum_tail * 2 {
+                    continue;
+                }
+                let mut line = 1;
+                for start in 0..=bytes.len() - encoded_prefix_bytes {
+                    if start > 0 && bytes[start - 1] == b'\n' {
+                        line += 1;
+                    }
+                    if encoded_prefix_matches(bytes, start, pattern.prefix, little_endian)
+                        && encoded_tail_length(
+                            bytes,
+                            start + encoded_prefix_bytes,
+                            pattern.class,
+                            little_endian,
+                        ) >= pattern.minimum_tail
+                    {
+                        findings.insert(Finding {
+                            pattern_id: pattern.id,
+                            source: source.to_owned(),
+                            line,
+                        });
+                        if findings.len() >= MAX_REPORTED_FINDINGS {
+                            return findings.into_iter().collect();
+                        }
+                    }
+                }
+            }
+        }
+        findings.into_iter().collect()
+    }
+
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn prefix_prefilter_matches_unfiltered_scanner_on_identical_inputs() {
+        for pattern in PATTERNS {
+            let mut input = b"first\nembedded\0".to_vec();
+            input.extend(pattern.prefix);
+            input.extend(vec![b'A'; pattern.minimum_tail]);
+            input.extend(b"\nshort:");
+            input.extend(pattern.prefix);
+            input.extend(vec![b'A'; pattern.minimum_tail - 1]);
+            input.extend(b"!\n");
+            assert_eq!(
+                scan_bytes("fixture", &input),
+                unfiltered_scan_reference("fixture", &input)
+            );
+            for little_endian in [true, false] {
+                for alignment in [0, 1] {
+                    let mut encoded = vec![0xff; alignment];
+                    for byte in &input {
+                        encoded.extend(if little_endian {
+                            [*byte, 0]
+                        } else {
+                            [0, *byte]
+                        });
+                    }
+                    encoded.extend([0xd8, 0xff, 0]);
+                    assert_eq!(
+                        scan_bytes("encoded-fixture", &encoded),
+                        unfiltered_scan_reference("encoded-fixture", &encoded)
+                    );
+                }
+            }
+        }
+        let dense = format!("{}{}\n", ["AI", "za"].concat(), "Q".repeat(35))
+            .repeat(MAX_REPORTED_FINDINGS * 2);
+        assert_eq!(
+            scan_bytes("dense", dense.as_bytes()),
+            unfiltered_scan_reference("dense", dense.as_bytes())
+        );
+        let input = include_bytes!("main.rs");
+        let started = std::time::Instant::now();
+        let reference = unfiltered_scan_reference("same-source", input);
+        let reference_elapsed = started.elapsed();
+        let started = std::time::Instant::now();
+        let optimized = scan_bytes("same-source", input);
+        let optimized_elapsed = started.elapsed();
+        assert_eq!(optimized, reference);
+        println!(
+            "same_input_bytes={} reference={reference_elapsed:?} prefiltered={optimized_elapsed:?}",
+            input.len()
+        );
+    }
+
+    #[test]
+    fn batch_timeout_preserves_primary_status_and_truncated_reader_error() {
+        let object = "a".repeat(40);
+        let objects = BTreeMap::from([(object.clone(), "fixture".to_owned())]);
+        let input = format!("{object} blob 4\nab");
+        let read = || {
+            read_batch_objects(
+                input.as_bytes(),
+                objects.clone(),
+                Some("blob"),
+                ScanBudget::default(),
+            )
+        };
+        let truncated = read().unwrap_err();
+        assert!(truncated.contains("read batch object"));
+        let timeout = finish_batch_scan(
+            Err("FF-SECRET-E-GIT-TIMEOUT: owned deadline; bounded_reap=acknowledged".into()),
+            read(),
+            Err("broken input pipe".into()),
+        )
+        .unwrap_err();
+        assert!(timeout.starts_with("FF-SECRET-E-GIT-TIMEOUT:"));
+        assert!(timeout.contains("bounded_reap=acknowledged"));
+        assert!(timeout.contains(&truncated));
+        assert!(timeout.contains("writer_error=broken input pipe"));
+        assert_eq!(
+            finish_batch_scan(Ok(()), read(), Ok(())).unwrap_err(),
+            truncated
+        );
+    }
 
     #[test]
     fn provider_patterns_detect_without_echoing_secret() {

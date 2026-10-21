@@ -254,6 +254,15 @@
   "validation": {
     "checks": [
       {
+        "kind": "bounded-secret-history-remediation",
+        "retained_failure": "verify-pr-1792602396602690400-496872 at clean r8 stopped before tests/runtime with FF-SECRET-E-GIT read batch object failed to fill whole buffer. Original cause remains UNVERIFIED; masked wait status cannot retrospectively establish timeout.",
+        "diagnostic": "Full git fsck --full --no-dangling PASS0 with empty output. Status-first batch completion preserves owned wait/cleanup failure ahead of bounded secondary reader/writer errors. Diagnostic-only standalone history passed without reproducing the prior failure.",
+        "implementation": "Necessary first-byte ASCII and UTF16 candidate-pair checks precede unchanged prefix/decoder/tail matchers. Patterns, offset traversal, line accounting, object/byte caps, fail-closed behavior and five-minute batch limit are unchanged.",
+        "focused_results": "Owning20/20 scanner tests PASS29.84seconds including exact prechange/new finding equality; same739768 source bytes measured2.6766299seconds reference and0.4796899seconds prefiltered. Owning warnings-denied Clippy PASS. One actual prefiltered history scan PASS0/findings0 in125.74seconds including17.69seconds build; CPU/IO observations retained.",
+        "captures": ".fforager-artifacts/product-batch/phase1-secret-*",
+        "acceptance_boundary": "Focused and history evidence only; final clean declaration, required ARCH and independent PR/runtime/watcher and main containment remain pending. Earlier r8 preflight FAIL is retained."
+      },
+      {
         "kind": "stable-owned-fixture-target-remediation",
         "retained_pr_failures": ["verify-pr-1792596893603868800-506796: offline pinned cache missing objc2-core-foundation; cache-only locked fetch restored it without source/lock drift.", "verify-pr-1792599630727164700-462732: workspace test timed out1800seconds; incomplete evidence, owned tree termination and bounded reap acknowledged; runtime/watcher not reached."],
         "source_reconciliation": "Actual depfiles showed one leased stable receipt-only source compiled into three caller-root-derived PIF targets. Target derivation now occurs inside the existing exclusive callback using the actual sandbox and unchanged distinct labels; mutation, independent graph rejection and all deadlines remain unchanged.",
