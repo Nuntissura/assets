@@ -1,6 +1,6 @@
 //! Core half of STUDIO-MODULE-INTEROP_VECTOR (SMB-CRATE-SEAM-SPLITS slice 3a): the vector model,
 //! ids, errors, the .ai import through the PDF drawing port and the Press provider port, and the
-//! other vector interchange formats (lane SMB-DXF-EPS-IMPORT): DXF (feature `dxf`), the DWG refusal,
+//! other vector interchange formats (lane SMB-DXF-EPS-IMPORT): DXF (own reader, default build), the DWG refusal,
 //! EPS (DSC comments, DOS header and preview in process; no PostScript interpreter: vector
 //! conversion is a typed refusal, see `eps`) and EPSF export.
 //! `hsk-studio-interop-vector` is the public face; the `#[doc(hidden)]` modules are the seam
@@ -10,10 +10,9 @@
 mod ai_adapter;
 mod ai_import;
 mod cad;
-#[cfg(feature = "dxf")]
 mod dxf_aci;
-#[cfg(feature = "dxf")]
 mod dxf_import;
+mod dxf_reader;
 mod eps;
 mod eps_export;
 #[doc(hidden)]
@@ -30,7 +29,6 @@ pub use ai_import::{
     PdfFont, PdfGlyph, PdfIcc, PdfLayer, PdfPaint, PdfSpace, PdfStroke, PdfTextFont, PdfTextRun, import_ai_document, import_ai_with,
 };
 pub use cad::{CadKind, DWG_ROUTE, identify_cad, import_dwg};
-#[cfg(feature = "dxf")]
 pub use dxf_import::import_dxf;
 pub use eps::{
     DOS_EPS_HEADER_LEN, DOS_EPS_MAGIC, EPS_ROUTE, EpsInfo, EpsPdfConverter, EpsPreview, EpsPreviewImport, MAX_PREVIEW_PIXELS, MAX_PREVIEW_SIDE, import_eps, import_eps_preview,

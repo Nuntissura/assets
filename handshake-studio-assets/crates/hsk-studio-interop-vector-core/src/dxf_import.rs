@@ -1,7 +1,8 @@
-//! DXF import (lane SMB-DXF-EPS-IMPORT, feature `dxf`; parity row AF-06). ASCII and binary DXF are
-//! read by the `dxf` crate (ixmilia/dxf-rs, MIT) and turned into the drawing model the `.ai`
-//! import already builds Folio proposals from, so DXF reuses that builder (layers, paint styles,
-//! validation):
+//! DXF import (lane SMB-DXF-EPS-IMPORT; parity row AF-06). ASCII and binary DXF are read by the
+//! crate's own reader ([`crate::dxf_reader`], adapted from the MIT `dxf` crate 0.6.2 with NOTICE
+//! attribution; no external dependency, built by default) and turned into the drawing model the
+//! `.ai` import already builds Folio proposals from, so DXF reuses that builder (layers, paint
+//! styles, validation):
 //!
 //! - model space only; one artboard spanning the drawn geometry; DXF y-up user space becomes
 //!   document points with `$INSUNITS` (unitless: millimetres for a metric `$MEASUREMENT`, inches
@@ -14,30 +15,33 @@
 //!   clamped non-rational degree 1..=3 is exact Bézier, anything else sampled
 //!   (`dxf_spline_sampled`), fit points only as a polyline (`dxf_spline_fit_points_as_polyline`);
 //! - INSERT expands its BLOCK (base point, scale, rotation, column/row arrays) up to the policy
-//!   depth, with a cycle check; BYBLOCK colour and weight come from the insert;
+//!   depth, with a cycle check; BYBLOCK colour and weight come from the insert; entities on layer
+//!   0 inside a block take the insert's layer;
 //! - colour: true colour, else the ACI palette (`dxf_aci`; ACI 7 is drawn black on the white
 //!   artboard, `dxf_aci_7_drawn_black`), BYLAYER from the layer table; weight: lineweight in
 //!   hundredths of a millimetre (default 0.25 mm); linetypes other than CONTINUOUS are drawn solid
 //!   (`dxf_linetype_drawn_solid`);
-//! - typed losses for what is not drawn: text (`dxf_text_not_imported`), dimensions, leaders,
-//!   hatches, images, 3D solids, regions, proxies and other entity types
-//!   (`dxf_entity_not_imported`), points, paper space, polyline widths, non-planar extrusions.
+//! - typed losses for what is not drawn: text and attributes (`dxf_text_not_imported`),
+//!   dimensions, leaders, images and wipeouts, points, paper space, invisible entities, polyline
+//!   widths, polygon meshes, non-planar extrusions, and every other entity type (hatches, 3D faces,
+//!   3D solids, regions, proxies, stray VERTEX/SEQEND records: `dxf_entity_not_imported`). No
+//!   entity type is skipped without a loss. The DXF thumbnail (a BMP preview) is not read.
 //!
 //! Hostile input: the input size is capped by `max_bytes`; the code-0 records are counted in a
-//! pre-scan before the parser allocates entities (`BudgetExceeded("dxf_records")`); a parser
-//! panic is caught and reported as `MalformedDxf("parser_panicked")`; insert expansion is bounded by
-//! depth, a cycle check and the segment and item budgets (proof: `tests/dxf_import.rs`
-//! `hostile_dxf_is_bounded_and_typed`).
+//! pre-scan before the reader allocates entities (`BudgetExceeded("dxf_records")`); stored
+//! vertices, knots, weights and points are capped (`BudgetExceeded("dxf_values")`); damaged or
+//! truncated input is `MalformedDxf`; insert expansion is bounded by depth, a cycle check, the
+//! array size, the entity-visit budget (`BudgetExceeded("dxf_entity_visits")`) and the segment
+//! and item budgets (proofs: `tests/dxf_import.rs` `hostile_dxf_is_bounded_and_typed`,
+//! `adapted_reader_rejects_damage`, `insert_fan_out_is_bounded`; unit tests below).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::ai_import::{DrawingSource, PdfDrawItem, PdfDrawing, PdfDrawingPage, PdfDrawingProvider, PdfEl, PdfLayer, PdfPaint, PdfStroke, document_from_drawing};
 use crate::cad::{BINARY_DXF_SENTINEL, CadKind, identify_cad};
 use crate::dxf_aci::ACI_RGB;
+use crate::dxf_reader::{Drawing, Entity, Kind, P3, read_drawing};
 use crate::error::{Result, VectorError};
 use crate::ids::IdMint;
 use crate::model::{COORDINATE_LIMIT, ImportPolicy, LossKind, VectorProposal};
-use dxf::entities::{Entity, EntityType};
-use dxf::enums::{DrawingUnits, Units};
-use dxf::{Color, Drawing};
 use hsk_studio_accord::CancellationToken;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -51,6 +55,7 @@ const SPLINE_SAMPLES: usize = 16;
 
 /// Affine `[a b c d e f]`: `x' = a x + c y + e`, `y' = b x + d y + f`.
 type Affine = [f64; 6];
+const IDENTITY: Affine = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 fn apply(m: &Affine, p: [f64; 2]) -> [f64; 2] {
     [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]]
@@ -67,36 +72,41 @@ fn compose(a: &Affine, b: &Affine) -> Affine {
     ]
 }
 
+fn xy(p: P3) -> [f64; 2] {
+    [p[0], p[1]]
+}
+
 /// Points per drawing unit and the unit label for provenance; `true` when unitless was assumed.
+/// `$INSUNITS` codes as in the DXF reference (and `dxf` 0.6.2 `Units`); an unknown code is unitless.
 fn unit_scale(drawing: &Drawing) -> (f64, &'static str, bool) {
-    let metric = matches!(drawing.header.drawing_units, DrawingUnits::Metric);
-    let (mm, label) = match drawing.header.default_drawing_units {
-        Units::Inches => (25.4, "in"),
-        Units::Feet => (304.8, "ft"),
-        Units::Miles => (1_609_344.0, "mi"),
-        Units::Millimeters => (1.0, "mm"),
-        Units::Centimeters => (10.0, "cm"),
-        Units::Meters => (1000.0, "m"),
-        Units::Kilometers => (1_000_000.0, "km"),
-        Units::Microinches => (25.4e-6, "uin"),
-        Units::Mils => (0.0254, "mil"),
-        Units::Yards => (914.4, "yd"),
-        Units::Angstroms => (1.0e-7, "angstrom"),
-        Units::Nanometers => (1.0e-6, "nm"),
-        Units::Microns => (1.0e-3, "um"),
-        Units::Decimeters => (100.0, "dm"),
-        Units::Decameters => (10_000.0, "dam"),
-        Units::Hectometers => (100_000.0, "hm"),
-        Units::USSurveyFeet => (1200.0 / 3937.0 * 1000.0, "us_survey_ft"),
-        Units::USSurveyInch => (100.0 / 3937.0 * 1000.0, "us_survey_in"),
-        Units::USSurveyYard => (3600.0 / 3937.0 * 1000.0, "us_survey_yd"),
-        Units::USSurveyMile => (6_336_000.0 / 3937.0 * 1000.0, "us_survey_mi"),
+    let metric = drawing.measurement == 1;
+    let (mm, label) = match drawing.insunits {
+        1 => (25.4, "in"),
+        2 => (304.8, "ft"),
+        3 => (1_609_344.0, "mi"),
+        4 => (1.0, "mm"),
+        5 => (10.0, "cm"),
+        6 => (1000.0, "m"),
+        7 => (1_000_000.0, "km"),
+        8 => (25.4e-6, "uin"),
+        9 => (0.0254, "mil"),
+        10 => (914.4, "yd"),
+        11 => (1.0e-7, "angstrom"),
+        12 => (1.0e-6, "nm"),
+        13 => (1.0e-3, "um"),
+        14 => (100.0, "dm"),
+        15 => (10_000.0, "dam"),
+        16 => (100_000.0, "hm"),
         // Astronomical lengths cannot hold a drawing within the coordinate cap: refused by geometry.
-        Units::Gigameters => (1.0e12, "Gm"),
-        Units::AstronomicalUnits => (1.495_978_707e14, "au"),
-        Units::LightYears => (9.460_730_472_580_8e18, "ly"),
-        Units::Parsecs => (3.085_677_581_491_367e19, "pc"),
-        Units::Unitless => {
+        17 => (1.0e12, "Gm"),
+        18 => (1.495_978_707e14, "au"),
+        19 => (9.460_730_472_580_8e18, "ly"),
+        20 => (3.085_677_581_491_367e19, "pc"),
+        21 => (1200.0 / 3937.0 * 1000.0, "us_survey_ft"),
+        22 => (100.0 / 3937.0 * 1000.0, "us_survey_in"),
+        23 => (3600.0 / 3937.0 * 1000.0, "us_survey_yd"),
+        24 => (6_336_000.0 / 3937.0 * 1000.0, "us_survey_mi"),
+        _ => {
             return if metric { (PT_PER_MM, "unitless_as_mm", true) } else { (72.0, "unitless_as_in", true) };
         }
     };
@@ -146,6 +156,8 @@ struct Layered {
 struct Conv<'d> {
     drawing: &'d Drawing,
     policy: ImportPolicy,
+    /// Upper-case block name to its index (the first block of a name wins).
+    blocks: BTreeMap<String, usize>,
     layer_colour: BTreeMap<String, (u8, bool)>,
     layer_weight: BTreeMap<String, i16>,
     layer_linetype: BTreeMap<String, String>,
@@ -159,6 +171,7 @@ struct Conv<'d> {
     noted: BTreeSet<&'static str>,
     segments: usize,
     items: usize,
+    /// Entities visited, every insert copy included (bounded by `max_segments`).
     entities_seen: usize,
     bounds: Option<[f64; 4]>,
     block_stack: Vec<String>,
@@ -182,21 +195,22 @@ impl Conv<'_> {
         i
     }
 
-    fn colour(&mut self, e: &Entity, inherit: Inherit) -> [f32; 4] {
+    /// `layer` is the entity's effective layer (layer 0 inside a block becomes the insert's).
+    fn colour(&mut self, e: &Entity, layer: &str, inherit: Inherit) -> [f32; 4] {
         let c = &e.common;
-        if c.color_24_bit != 0 {
-            let v = u32::try_from(c.color_24_bit & 0x00FF_FFFF).unwrap_or(0);
+        if c.true_colour != 0 {
+            let v = u32::try_from(c.true_colour & 0x00FF_FFFF).unwrap_or(0);
             return rgb_of(v);
         }
-        let aci = if c.color.is_by_layer() {
-            self.layer_colour.get(&c.layer).map_or(7, |(a, _)| *a)
-        } else if c.color.is_by_block() {
+        let aci = if c.colour.is_by_layer() {
+            self.layer_colour.get(layer).map_or(7, |(a, _)| *a)
+        } else if c.colour.is_by_block() {
             if let Some(v) = inherit.true_colour {
                 return rgb_of(v);
             }
             inherit.aci
         } else {
-            c.color.index().unwrap_or(7)
+            c.colour.index().unwrap_or(7)
         };
         self.aci(aci)
     }
@@ -209,12 +223,17 @@ impl Conv<'_> {
         rgb_of(ACI_RGB[usize::from(aci)])
     }
 
-    fn weight_pt(&self, e: &Entity, inherit: Inherit) -> f64 {
-        let raw = match e.common.lineweight_enum_value {
-            -1 => self.layer_weight.get(&e.common.layer).copied().unwrap_or(DEFAULT_LINEWEIGHT),
+    /// Lineweight in hundredths of a millimetre: -1 BYLAYER, -2 BYBLOCK, else the value.
+    fn raw_weight(&self, e: &Entity, layer: &str, inherit: Inherit) -> i16 {
+        match e.common.lineweight {
+            -1 => self.layer_weight.get(layer).copied().unwrap_or(DEFAULT_LINEWEIGHT),
             -2 => inherit.weight,
             v => v,
-        };
+        }
+    }
+
+    fn weight_pt(&self, e: &Entity, layer: &str, inherit: Inherit) -> f64 {
+        let raw = self.raw_weight(e, layer, inherit);
         let hundredths = if raw <= 0 { DEFAULT_LINEWEIGHT } else { raw };
         f64::from(hundredths) / 100.0 * PT_PER_MM
     }
@@ -243,7 +262,7 @@ impl Conv<'_> {
     }
 
     /// Transforms a path built in entity space to points and records it on the entity's layer.
-    fn emit(&mut self, e: &Entity, m: &Affine, path: Vec<PdfEl>, fill: bool, inherit: Inherit) -> Result<()> {
+    fn emit(&mut self, e: &Entity, layer: &str, m: &Affine, path: Vec<PdfEl>, fill: bool, inherit: Inherit) -> Result<()> {
         if path.len() < 2 {
             return Ok(());
         }
@@ -257,21 +276,21 @@ impl Conv<'_> {
                 PdfEl::Close => PdfEl::Close,
             });
         }
-        let paint = PdfPaint::Solid(self.colour(e, inherit));
+        let paint = PdfPaint::Solid(self.colour(e, layer, inherit));
         let item = if fill {
             PdfDrawItem::Fill { path: out, even_odd: false, paint, blend: 0, glyph: None, source: None }
         } else {
-            let lt = match e.common.line_type_name.to_ascii_uppercase().as_str() {
-                "BYLAYER" | "" => self.layer_linetype.get(&e.common.layer).cloned().unwrap_or_default().to_ascii_uppercase(),
+            let lt = match e.common.line_type.to_ascii_uppercase().as_str() {
+                "BYLAYER" | "" => self.layer_linetype.get(layer).cloned().unwrap_or_default().to_ascii_uppercase(),
                 other => other.to_owned(),
             };
             if !matches!(lt.as_str(), "" | "CONTINUOUS" | "BYBLOCK") {
                 self.loss(LossKind::Approximated, "dxf_linetype_drawn_solid");
             }
-            let stroke = PdfStroke { width: self.weight_pt(e, inherit), cap: 1, join: 1, miter_limit: 10.0, dash: Vec::new(), dash_offset: 0.0 };
+            let stroke = PdfStroke { width: self.weight_pt(e, layer, inherit), cap: 1, join: 1, miter_limit: 10.0, dash: Vec::new(), dash_offset: 0.0 };
             PdfDrawItem::Stroke { path: out, stroke, paint, blend: 0, glyph: None, source: None }
         };
-        let slot = self.layer_slot(&e.common.layer);
+        let slot = self.layer_slot(layer);
         if let Some(last) = self.last_layer
             && last != slot
         {
@@ -289,199 +308,187 @@ impl Conv<'_> {
 
     /// Object coordinate system: an extrusion of (0, 0, -1) mirrors x; any other non-default
     /// normal is projected onto the XY plane and reported.
-    fn ocs(&mut self, nz: f64, nx: f64, ny: f64) -> Affine {
+    fn ocs(&mut self, n: P3) -> Affine {
+        let [nx, ny, nz] = n;
         if nx.abs() < 1e-9 && ny.abs() < 1e-9 {
             if nz < 0.0 {
                 return [-1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
             }
-            return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+            return IDENTITY;
         }
         self.loss(LossKind::Approximated, "dxf_non_planar_extrusion_projected");
-        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        IDENTITY
     }
 
-    fn entity(&mut self, e: &Entity, m: &Affine, inherit: Inherit, depth: usize, cancel: &CancellationToken) -> Result<()> {
+    fn entity(&mut self, e: &Entity, layer: &str, m: &Affine, inherit: Inherit, depth: usize, cancel: &CancellationToken) -> Result<()> {
         self.entities_seen = self.entities_seen.saturating_add(1);
+        if self.entities_seen > self.policy.limits.max_segments {
+            return Err(VectorError::BudgetExceeded("dxf_entity_visits"));
+        }
         if self.entities_seen.is_multiple_of(256) {
             cancel.check().map_err(|_| VectorError::Canceled)?;
         }
-        if e.common.is_in_paper_space {
+        if e.common.paper_space {
             self.loss(LossKind::Ignored, "dxf_paper_space_ignored");
             return Ok(());
         }
-        if !e.common.is_visible {
+        if !e.common.visible {
             self.loss(LossKind::Ignored, "dxf_invisible_entity_ignored");
             return Ok(());
         }
-        match &e.specific {
-            EntityType::Line(l) => {
-                let path = vec![PdfEl::MoveTo([l.p1.x, l.p1.y]), PdfEl::LineTo([l.p2.x, l.p2.y])];
-                self.emit(e, m, path, false, inherit)
+        match &e.kind {
+            Kind::Line { p1, p2 } => {
+                let path = vec![PdfEl::MoveTo(xy(*p1)), PdfEl::LineTo(xy(*p2))];
+                self.emit(e, layer, m, path, false, inherit)
             }
-            EntityType::Circle(c) => {
-                let o = self.ocs(c.normal.z, c.normal.x, c.normal.y);
-                let path = arc_path(c.center.x, c.center.y, c.radius, 0.0, TAU, true)?;
+            Kind::Circle { centre, radius, normal } => {
+                let o = self.ocs(*normal);
+                let path = arc_path(centre[0], centre[1], *radius, 0.0, TAU, true)?;
                 self.loss(LossKind::Approximated, "dxf_arc_to_cubic");
-                self.emit(e, &compose(m, &o), path, false, inherit)
+                self.emit(e, layer, &compose(m, &o), path, false, inherit)
             }
-            EntityType::Arc(a) => {
-                let o = self.ocs(a.normal.z, a.normal.x, a.normal.y);
-                let start = a.start_angle.to_radians();
-                let mut sweep = a.end_angle.to_radians() - start;
+            Kind::Arc { centre, radius, normal, start, end } => {
+                let o = self.ocs(*normal);
+                let start = start.to_radians();
+                let mut sweep = end.to_radians() - start;
                 if sweep <= 0.0 {
                     sweep += TAU;
                 }
-                let path = arc_path(a.center.x, a.center.y, a.radius, start, sweep, true)?;
+                let path = arc_path(centre[0], centre[1], *radius, start, sweep, true)?;
                 self.loss(LossKind::Approximated, "dxf_arc_to_cubic");
-                self.emit(e, &compose(m, &o), path, false, inherit)
+                self.emit(e, layer, &compose(m, &o), path, false, inherit)
             }
-            EntityType::Ellipse(el) => {
-                let (mx, my) = (el.major_axis.x, el.major_axis.y);
-                let r = el.minor_axis_ratio;
-                let flip = if el.normal.z < 0.0 { -1.0 } else { 1.0 };
-                let frame: Affine = [mx, my, -my * r * flip, mx * r * flip, el.center.x, el.center.y];
-                let start = el.start_parameter;
-                let mut sweep = el.end_parameter - start;
+            Kind::Ellipse { centre, major, normal, ratio, start, end } => {
+                let (mx, my) = (major[0], major[1]);
+                let r = *ratio;
+                let flip = if normal[2] < 0.0 { -1.0 } else { 1.0 };
+                let frame: Affine = [mx, my, -my * r * flip, mx * r * flip, centre[0], centre[1]];
+                let mut sweep = *end - *start;
                 if sweep <= 0.0 {
                     sweep += TAU;
                 }
                 let closed = (sweep - TAU).abs() < 1e-9;
-                let path = arc_path(0.0, 0.0, 1.0, start, sweep.min(TAU), closed)?;
+                let path = arc_path(0.0, 0.0, 1.0, *start, sweep.min(TAU), closed)?;
                 self.loss(LossKind::Approximated, "dxf_arc_to_cubic");
-                self.emit(e, &compose(m, &frame), path, false, inherit)
+                self.emit(e, layer, &compose(m, &frame), path, false, inherit)
             }
-            EntityType::LwPolyline(p) => {
-                let o = self.ocs(p.extrusion_direction.z, p.extrusion_direction.x, p.extrusion_direction.y);
-                if p.constant_width != 0.0 || p.vertices.iter().any(|v| v.starting_width != 0.0 || v.ending_width != 0.0) {
+            Kind::LwPolyline { flags, constant_width, vertices, extrusion } => {
+                let o = self.ocs(*extrusion);
+                if *constant_width != 0.0 || vertices.iter().any(|v| v.start_width != 0.0 || v.end_width != 0.0) {
                     self.loss(LossKind::Unsupported, "dxf_polyline_width_not_imported");
                 }
-                let closed = p.flags & 1 != 0;
-                let verts: Vec<([f64; 2], f64)> = p.vertices.iter().map(|v| ([v.x, v.y], v.bulge)).collect();
+                let closed = *flags & 1 != 0;
+                let verts: Vec<([f64; 2], f64)> = vertices.iter().map(|v| ([v.x, v.y], v.bulge)).collect();
                 let path = self.bulge_path(&verts, closed)?;
-                self.emit(e, &compose(m, &o), path, false, inherit)
+                self.emit(e, layer, &compose(m, &o), path, false, inherit)
             }
-            EntityType::Polyline(p) => {
-                if p.flags & (16 | 64) != 0 {
+            Kind::Polyline { flags, start_width, end_width, normal, vertices } => {
+                if *flags & (16 | 64) != 0 {
                     self.loss(LossKind::Unsupported, "dxf_polygon_mesh_not_imported");
                     return Ok(());
                 }
-                if p.flags & 8 != 0 {
+                if *flags & 8 != 0 {
                     self.loss(LossKind::Approximated, "dxf_3d_polyline_projected");
                 }
-                let o = if p.flags & 8 != 0 { [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] } else { self.ocs(p.normal.z, p.normal.x, p.normal.y) };
-                if p.default_starting_width != 0.0 || p.default_ending_width != 0.0 {
+                let o = if *flags & 8 != 0 { IDENTITY } else { self.ocs(*normal) };
+                if *start_width != 0.0 || *end_width != 0.0 || vertices.iter().any(|v| v.start_width != 0.0 || v.end_width != 0.0) {
                     self.loss(LossKind::Unsupported, "dxf_polyline_width_not_imported");
                 }
-                let closed = p.flags & 1 != 0;
-                let verts: Vec<([f64; 2], f64)> = p.vertices().filter(|v| v.flags & 16 == 0).map(|v| ([v.location.x, v.location.y], v.bulge)).collect();
+                let closed = *flags & 1 != 0;
+                let verts: Vec<([f64; 2], f64)> = vertices.iter().filter(|v| v.flags & 16 == 0).map(|v| (xy(v.location), v.bulge)).collect();
                 let path = self.bulge_path(&verts, closed)?;
-                self.emit(e, &compose(m, &o), path, false, inherit)
+                self.emit(e, layer, &compose(m, &o), path, false, inherit)
             }
-            EntityType::Spline(s) => {
-                let path = self.spline_path(s)?;
-                self.emit(e, m, path, false, inherit)
+            Kind::Spline { .. } => {
+                let path = self.spline_path(&e.kind)?;
+                self.emit(e, layer, m, path, false, inherit)
             }
-            EntityType::Solid(s) => {
-                let o = self.ocs(s.extrusion_direction.z, s.extrusion_direction.x, s.extrusion_direction.y);
-                let path = quad([s.first_corner.x, s.first_corner.y], [s.second_corner.x, s.second_corner.y], [s.third_corner.x, s.third_corner.y], [s.fourth_corner.x, s.fourth_corner.y]);
-                self.emit(e, &compose(m, &o), path, true, inherit)
+            Kind::Solid { corners, extrusion } | Kind::Trace { corners, extrusion } => {
+                let o = self.ocs(*extrusion);
+                let path = quad(xy(corners[0]), xy(corners[1]), xy(corners[2]), xy(corners[3]));
+                self.emit(e, layer, &compose(m, &o), path, true, inherit)
             }
-            EntityType::Trace(s) => {
-                let o = self.ocs(s.extrusion_direction.z, s.extrusion_direction.x, s.extrusion_direction.y);
-                let path = quad([s.first_corner.x, s.first_corner.y], [s.second_corner.x, s.second_corner.y], [s.third_corner.x, s.third_corner.y], [s.fourth_corner.x, s.fourth_corner.y]);
-                self.emit(e, &compose(m, &o), path, true, inherit)
-            }
-            EntityType::Insert(ins) => self.insert(e, ins, m, inherit, depth, cancel),
-            EntityType::ModelPoint(_) => {
+            Kind::Insert { .. } => self.insert(e, layer, m, inherit, depth, cancel),
+            Kind::Point => {
                 self.loss(LossKind::Ignored, "dxf_point_ignored");
                 Ok(())
             }
-            EntityType::Text(_) | EntityType::MText(_) | EntityType::Attribute(_) | EntityType::AttributeDefinition(_) => {
+            Kind::Text | Kind::Attrib => {
                 self.loss(LossKind::Unsupported, "dxf_text_not_imported");
                 Ok(())
             }
-            EntityType::RotatedDimension(_)
-            | EntityType::RadialDimension(_)
-            | EntityType::DiameterDimension(_)
-            | EntityType::AngularThreePointDimension(_)
-            | EntityType::OrdinateDimension(_) => {
+            Kind::Dimension => {
                 self.loss(LossKind::Unsupported, "dxf_dimension_not_imported");
                 Ok(())
             }
-            EntityType::Leader(_) => {
+            Kind::Leader => {
                 self.loss(LossKind::Unsupported, "dxf_leader_not_imported");
                 Ok(())
             }
-            EntityType::Image(_) | EntityType::Wipeout(_) => {
+            Kind::Image => {
                 self.loss(LossKind::Unsupported, "dxf_image_not_imported");
                 Ok(())
             }
-            _ => {
+            Kind::Vertex(_) | Kind::Seqend | Kind::Other => {
                 self.loss(LossKind::Unsupported, "dxf_entity_not_imported");
                 Ok(())
             }
         }
     }
 
-    fn insert(&mut self, e: &Entity, ins: &dxf::entities::Insert, m: &Affine, inherit: Inherit, depth: usize, cancel: &CancellationToken) -> Result<()> {
-        if ins.attributes().next().is_some() {
+    fn insert(&mut self, e: &Entity, layer: &str, m: &Affine, inherit: Inherit, depth: usize, cancel: &CancellationToken) -> Result<()> {
+        let Kind::Insert { name, location, x_scale, y_scale, rotation, columns, rows, column_spacing, row_spacing, extrusion, attributes, .. } = &e.kind else {
+            return Ok(());
+        };
+        if *attributes > 0 {
             self.loss(LossKind::Unsupported, "dxf_text_not_imported");
         }
         let next_depth = depth.saturating_add(1);
         if next_depth > self.policy.limits.max_depth {
             return Err(VectorError::BudgetExceeded("dxf_insert_depth"));
         }
-        if self.block_stack.iter().any(|b| b.eq_ignore_ascii_case(&ins.name)) {
+        if self.block_stack.iter().any(|b| b.eq_ignore_ascii_case(name)) {
             self.loss(LossKind::Ignored, "dxf_block_reference_cycle_skipped");
             return Ok(());
         }
         let drawing = self.drawing;
-        let Some(block) = drawing.blocks().find(|b| b.name.eq_ignore_ascii_case(&ins.name)) else {
+        let Some(block) = self.blocks.get(&name.to_ascii_uppercase()).and_then(|i| drawing.blocks.get(*i)) else {
             self.loss(LossKind::Ignored, "dxf_block_missing");
             return Ok(());
         };
-        let o = self.ocs(ins.extrusion_direction.z, ins.extrusion_direction.x, ins.extrusion_direction.y);
+        let o = self.ocs(*extrusion);
+        let c = &e.common;
         let child = Inherit {
-            aci: if e.common.color.is_by_layer() {
-                self.layer_colour.get(&e.common.layer).map_or(7, |(a, _)| *a)
-            } else if e.common.color.is_by_block() {
+            aci: if c.colour.is_by_layer() {
+                self.layer_colour.get(layer).map_or(7, |(a, _)| *a)
+            } else if c.colour.is_by_block() {
                 inherit.aci
             } else {
-                e.common.color.index().unwrap_or(7)
+                c.colour.index().unwrap_or(7)
             },
-            true_colour: if e.common.color_24_bit != 0 { u32::try_from(e.common.color_24_bit & 0x00FF_FFFF).ok() } else if e.common.color.is_by_block() { inherit.true_colour } else { None },
-            weight: match e.common.lineweight_enum_value {
-                -1 => self.layer_weight.get(&e.common.layer).copied().unwrap_or(DEFAULT_LINEWEIGHT),
-                -2 => inherit.weight,
-                v => v,
-            },
+            true_colour: if c.true_colour != 0 { u32::try_from(c.true_colour & 0x00FF_FFFF).ok() } else if c.colour.is_by_block() { inherit.true_colour } else { None },
+            weight: self.raw_weight(e, layer, inherit),
         };
-        let (sin, cos) = ins.rotation.to_radians().sin_cos();
-        let cols = ins.column_count.max(1);
-        let rows = ins.row_count.max(1);
+        let (sin, cos) = rotation.to_radians().sin_cos();
+        let cols = (*columns).max(1);
+        let rows = (*rows).max(1);
         let copies = usize::try_from(i32::from(cols).saturating_mul(i32::from(rows))).unwrap_or(usize::MAX);
         if copies > self.policy.limits.max_nodes as usize {
             return Err(VectorError::BudgetExceeded("dxf_insert_array"));
         }
         self.block_stack.push(block.name.clone());
         for r in 0..rows {
-            for c in 0..cols {
-                let ox = f64::from(c) * ins.column_spacing;
-                let oy = f64::from(r) * ins.row_spacing;
-                // block space -> insert: translate(-base) , scale, (array offset in rotated frame), rotate, translate(location).
-                let local: Affine = [ins.x_scale_factor, 0.0, 0.0, ins.y_scale_factor, -block.base_point.x * ins.x_scale_factor + ox, -block.base_point.y * ins.y_scale_factor + oy];
-                let rot: Affine = [cos, sin, -sin, cos, ins.location.x, ins.location.y];
+            for col in 0..cols {
+                let ox = f64::from(col) * *column_spacing;
+                let oy = f64::from(r) * *row_spacing;
+                // block space -> insert: translate(-base), scale, (array offset in rotated frame), rotate, translate(location).
+                let local: Affine = [*x_scale, 0.0, 0.0, *y_scale, -block.base[0] * *x_scale + ox, -block.base[1] * *y_scale + oy];
+                let rot: Affine = [cos, sin, -sin, cos, location[0], location[1]];
                 let t = compose(m, &compose(&o, &compose(&rot, &local)));
                 for child_entity in &block.entities {
-                    let child_entity: &Entity = child_entity;
-                    if child_entity.common.layer == "0" {
-                        // Entities on layer 0 inside a block take the insert's layer.
-                        let mut moved = child_entity.clone();
-                        moved.common.layer.clone_from(&e.common.layer);
-                        self.entity(&moved, &t, child, next_depth, cancel)?;
-                    } else {
-                        self.entity(child_entity, &t, child, next_depth, cancel)?;
-                    }
+                    // Entities on layer 0 inside a block take the insert's layer.
+                    let child_layer = if child_entity.common.layer == "0" { layer } else { child_entity.common.layer.as_str() };
+                    self.entity(child_entity, child_layer, &t, child, next_depth, cancel)?;
                 }
             }
         }
@@ -523,33 +530,32 @@ impl Conv<'_> {
         Ok(path)
     }
 
-    fn spline_path(&mut self, s: &dxf::entities::Spline) -> Result<Vec<PdfEl>> {
-        let ctrl: Vec<[f64; 2]> = s.control_points.iter().map(|p| [p.x, p.y]).collect();
-        if s.normal.z < 0.0 && s.normal.x.abs() < 1e-9 && s.normal.y.abs() < 1e-9 {
+    fn spline_path(&mut self, spline: &Kind) -> Result<Vec<PdfEl>> {
+        let Kind::Spline { normal, flags, degree, knots, weights, control, fit } = spline else { return Ok(Vec::new()) };
+        let ctrl: Vec<[f64; 2]> = control.iter().map(|p| xy(*p)).collect();
+        if normal[0].abs() > 1e-9 || normal[1].abs() > 1e-9 {
             // Splines are in world coordinates; the normal only states the plane.
-        } else if s.normal.x.abs() > 1e-9 || s.normal.y.abs() > 1e-9 {
             self.loss(LossKind::Approximated, "dxf_non_planar_extrusion_projected");
         }
         if ctrl.is_empty() {
-            let fit: Vec<[f64; 2]> = s.fit_points.iter().map(|p| [p.x, p.y]).collect();
+            let fit: Vec<[f64; 2]> = fit.iter().map(|p| xy(*p)).collect();
             if fit.len() < 2 {
                 return Ok(Vec::new());
             }
             self.loss(LossKind::Approximated, "dxf_spline_fit_points_as_polyline");
             let mut path = vec![PdfEl::MoveTo(fit[0])];
             path.extend(fit.iter().skip(1).map(|p| PdfEl::LineTo(*p)));
-            if s.flags & 1 != 0 {
+            if *flags & 1 != 0 {
                 path.push(PdfEl::Close);
             }
             return Ok(path);
         }
-        let degree = usize::try_from(s.degree_of_curve).map_err(|_| VectorError::MalformedDxf("spline_degree"))?;
-        let knots = &s.knot_values;
+        let degree = usize::try_from(*degree).map_err(|_| VectorError::MalformedDxf("spline_degree"))?;
         let n = ctrl.len();
         if degree == 0 || degree >= n || knots.len() != n.saturating_add(degree).saturating_add(1) || !knots.iter().all(|k| k.is_finite()) || knots.windows(2).any(|w| w[0] > w[1]) {
             return Err(VectorError::MalformedDxf("spline_knots"));
         }
-        let weights: Vec<f64> = if s.weight_values.len() == n { s.weight_values.clone() } else { vec![1.0; n] };
+        let weights: Vec<f64> = if weights.len() == n { weights.clone() } else { vec![1.0; n] };
         if weights.iter().any(|w| !w.is_finite() || *w <= 0.0) {
             return Err(VectorError::MalformedDxf("spline_weights"));
         }
@@ -723,14 +729,18 @@ pub fn import_dxf(bytes: &[u8], policy: &ImportPolicy, mint: &mut dyn IdMint, ca
     if records > record_cap {
         return Err(VectorError::BudgetExceeded("dxf_records"));
     }
-    let drawing = std::panic::catch_unwind(|| Drawing::load(&mut std::io::Cursor::new(bytes)))
-        .map_err(|_| VectorError::MalformedDxf("parser_panicked"))?
-        .map_err(|_| VectorError::MalformedDxf("parse"))?;
+    let value_cap = policy.limits.max_segments.saturating_mul(2).saturating_add(4096);
+    let drawing = read_drawing(bytes, matches!(kind, CadKind::DxfBinary), value_cap, cancel)?;
     cancel.check().map_err(|_| VectorError::Canceled)?;
     let (scale, unit, unitless) = unit_scale(&drawing);
+    let mut blocks = BTreeMap::new();
+    for (i, b) in drawing.blocks.iter().enumerate() {
+        blocks.entry(b.name.to_ascii_uppercase()).or_insert(i);
+    }
     let mut conv = Conv {
         drawing: &drawing,
         policy: *policy,
+        blocks,
         layer_colour: BTreeMap::new(),
         layer_weight: BTreeMap::new(),
         layer_linetype: BTreeMap::new(),
@@ -750,18 +760,17 @@ pub fn import_dxf(bytes: &[u8], policy: &ImportPolicy, mint: &mut dyn IdMint, ca
     if unitless {
         conv.loss(LossKind::Approximated, "dxf_units_unitless_assumed");
     }
-    for layer in drawing.layers() {
-        let colour: &Color = &layer.color;
-        let aci = colour.index().filter(|a| *a > 0).unwrap_or(7);
-        conv.layer_colour.insert(layer.name.clone(), (aci, layer.is_layer_on));
-        conv.layer_weight.insert(layer.name.clone(), layer.line_weight.raw_value());
-        conv.layer_linetype.insert(layer.name.clone(), layer.line_type_name.clone());
+    for layer in &drawing.layers {
+        let aci = layer.colour.index().unwrap_or(7);
+        conv.layer_colour.insert(layer.name.clone(), (aci, layer.on));
+        conv.layer_weight.insert(layer.name.clone(), layer.line_weight);
+        conv.layer_linetype.insert(layer.name.clone(), layer.line_type.clone());
         conv.layer_slot(&layer.name);
     }
     let top: Affine = [scale, 0.0, 0.0, scale, 0.0, 0.0];
     let inherit = Inherit { aci: 7, true_colour: None, weight: DEFAULT_LINEWEIGHT };
-    for e in drawing.entities() {
-        conv.entity(e, &top, inherit, 0, cancel)?;
+    for e in &drawing.entities {
+        conv.entity(e, &e.common.layer, &top, inherit, 0, cancel)?;
     }
     if conv.regrouped {
         conv.loss(LossKind::Approximated, "dxf_draw_order_grouped_by_layer");
@@ -796,27 +805,127 @@ pub fn import_dxf(bytes: &[u8], policy: &ImportPolicy, mint: &mut dyn IdMint, ca
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+    use crate::dxf_reader::{ValueType, value_type};
     use crate::ids::SequentialIdMint;
-    use dxf::Point as DxfPoint;
-    use dxf::entities::{Circle, Line};
 
-    /// The same drawing saved by the `dxf` crate as ASCII and as binary DXF imports to the same paths.
+    /// `(code, value)` pairs of a small drawing: a layer table with an escaped non-ASCII name, a
+    /// block, a line with true colour, a circle and an insert, plus 64-bit, boolean and
+    /// binary-chunk pairs the reader must skip by type.
+    fn sample() -> Vec<(i32, &'static str)> {
+        vec![
+            (0, "SECTION"), (2, "HEADER"), (9, "$INSUNITS"), (70, "4"), (9, "$HANDSEED"), (5, "FF"), (0, "ENDSEC"),
+            (0, "SECTION"), (2, "TABLES"), (0, "TABLE"), (2, "LAYER"), (70, "1"),
+            (0, "LAYER"), (2, "Te\\U+00DFt"), (70, "0"), (62, "-3"), (6, "CONTINUOUS"), (370, "50"), (290, "1"),
+            (0, "ENDTAB"), (0, "ENDSEC"),
+            (0, "SECTION"), (2, "BLOCKS"), (0, "BLOCK"), (8, "0"), (2, "B"), (70, "0"), (10, "1"), (20, "1"), (30, "0"),
+            (0, "LINE"), (8, "0"), (10, "1"), (20, "1"), (30, "0"), (11, "2"), (21, "2"), (31, "0"), (0, "ENDBLK"), (8, "0"), (0, "ENDSEC"),
+            (0, "SECTION"), (2, "ENTITIES"),
+            (0, "LINE"), (5, "1A"), (8, "Te\\U+00DFt"), (10, "0"), (20, "0"), (30, "0"), (11, "10"), (21, "5"), (31, "0"), (420, "65280"),
+            (0, "CIRCLE"), (8, "Te\\U+00DFt"), (10, "5"), (20, "5"), (30, "0"), (40, "2"), (160, "12345678901"), (310, "00FF"),
+            (0, "INSERT"), (8, "0"), (2, "b"), (10, "20"), (20, "0"), (30, "0"),
+            (0, "ENDSEC"), (0, "EOF"),
+        ]
+    }
+
+    fn ascii(pairs: &[(i32, &str)]) -> Vec<u8> {
+        let mut s = String::from("999\r\na comment\r\n");
+        for (c, v) in pairs {
+            s.push_str(&format!("{c:>3}\r\n{v}\r\n"));
+        }
+        s.into_bytes()
+    }
+
+    /// Binary DXF of the same pairs: two-byte codes (R13+) or one-byte codes with the 255 escape
+    /// (R12), values encoded by the group-code type table.
+    fn binary(pairs: &[(i32, &str)], two_byte: bool) -> Vec<u8> {
+        let mut out = BINARY_DXF_SENTINEL.to_vec();
+        for (c, v) in pairs {
+            if two_byte {
+                out.extend_from_slice(&u16::try_from(*c).expect("code").to_le_bytes());
+            } else if *c >= 255 {
+                out.push(255);
+                out.extend_from_slice(&i16::try_from(*c).expect("code").to_le_bytes());
+            } else {
+                out.push(u8::try_from(*c).expect("code"));
+            }
+            match value_type(*c).expect("type") {
+                ValueType::Str => {
+                    out.extend_from_slice(v.as_bytes());
+                    out.push(0);
+                }
+                ValueType::F64 => out.extend_from_slice(&v.parse::<f64>().expect("f64").to_le_bytes()),
+                ValueType::I16 => out.extend_from_slice(&v.parse::<i16>().expect("i16").to_le_bytes()),
+                ValueType::Bool if two_byte => out.push(v.parse::<u8>().expect("bool")),
+                ValueType::Bool => out.extend_from_slice(&v.parse::<i16>().expect("bool").to_le_bytes()),
+                ValueType::I32 => out.extend_from_slice(&v.parse::<i32>().expect("i32").to_le_bytes()),
+                ValueType::I64 => out.extend_from_slice(&v.parse::<i64>().expect("i64").to_le_bytes()),
+                ValueType::Binary => {
+                    let bytes: Vec<u8> = (0..v.len() / 2).map(|i| u8::from_str_radix(&v[i * 2..i * 2 + 2], 16).expect("hex")).collect();
+                    out.push(u8::try_from(bytes.len()).expect("len"));
+                    out.extend_from_slice(&bytes);
+                }
+            }
+        }
+        out
+    }
+
+    fn run(bytes: &[u8]) -> Result<VectorProposal> {
+        import_dxf(bytes, &ImportPolicy::default(), &mut SequentialIdMint::new(2), &CancellationToken::default())
+    }
+
+    /// The same drawing as ASCII (CRLF lines, a leading comment), R13+ binary and R12 binary reads
+    /// to the same drawing and imports to the same paths: `\U+` escapes in names decoded, an off
+    /// layer (negative colour), true colour, the block found case-insensitively, 64-bit, boolean
+    /// and binary-chunk pairs skipped by type.
     #[test]
     fn binary_dxf_imports_like_ascii() {
-        let mut d = Drawing::new();
-        d.add_entity(Entity::new(EntityType::Line(Line::new(DxfPoint::new(0.0, 0.0, 0.0), DxfPoint::new(10.0, 5.0, 0.0)))));
-        d.add_entity(Entity::new(EntityType::Circle(Circle::new(DxfPoint::new(5.0, 5.0, 0.0), 2.0))));
-        let (mut ascii, mut binary) = (Vec::new(), Vec::new());
-        d.save(&mut ascii).expect("ascii");
-        d.save_binary(&mut binary).expect("binary");
-        assert_eq!(identify_cad(&binary), CadKind::DxfBinary);
-        let run = |bytes: &[u8]| import_dxf(bytes, &ImportPolicy::default(), &mut SequentialIdMint::new(2), &CancellationToken::default()).expect("import");
-        let (a, b) = (run(&ascii), run(&binary));
-        assert_eq!(a.provenance.source_format, "dxf_ascii");
-        assert_eq!(b.provenance.source_format, "dxf_binary");
-        assert_eq!(a.paths.len(), 2);
-        assert_eq!(a.paths, b.paths);
+        let pairs = sample();
+        let (a, b2, b1) = (ascii(&pairs), binary(&pairs, true), binary(&pairs, false));
+        assert_eq!(identify_cad(&b2), CadKind::DxfBinary);
+        let token = CancellationToken::default();
+        let d = read_drawing(&a, false, 1000, &token).expect("ascii read");
+        assert_eq!(d.insunits, 4);
+        assert_eq!(d.layers.len(), 1);
+        assert_eq!(d.layers[0].name, "Teßt");
+        assert!(!d.layers[0].on);
+        assert_eq!(d.layers[0].colour.index(), Some(3));
+        assert_eq!(d.layers[0].line_weight, 50);
+        assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.blocks[0].base, [1.0, 1.0, 0.0]);
+        assert_eq!(d.entities.len(), 3);
+        assert_eq!(d.entities[0].common.true_colour, 65280);
+        assert_eq!(read_drawing(&b2, true, 1000, &token).expect("binary r13"), d);
+        assert_eq!(read_drawing(&b1, true, 1000, &token).expect("binary r12"), d);
+        let (pa, pb2, pb1) = (run(&a).expect("ascii"), run(&b2).expect("binary r13"), run(&b1).expect("binary r12"));
+        assert_eq!(pa.provenance.source_format, "dxf_ascii");
+        assert_eq!(pb2.provenance.source_format, "dxf_binary");
+        assert_eq!(pa.paths.len(), 3, "line, circle, inserted block line");
+        assert_eq!(pa.paths, pb2.paths);
+        assert_eq!(pa.paths, pb1.paths);
+    }
+
+    /// Damaged binary input is typed: a value cut short at three places, an unknown group code, a
+    /// missing sentinel; the value budget is enforced while reading.
+    #[test]
+    fn damaged_binary_dxf_is_typed() {
+        let token = CancellationToken::default();
+        let full = binary(&sample(), true);
+        for cut in [BINARY_DXF_SENTINEL.len() + 1, BINARY_DXF_SENTINEL.len() + 5, full.len() - 3] {
+            let r = read_drawing(&full[..cut], true, 1000, &token);
+            assert!(matches!(r, Err(VectorError::MalformedDxf(_))), "cut {cut}: {r:?}");
+        }
+        let mut unknown = BINARY_DXF_SENTINEL.to_vec();
+        unknown.extend_from_slice(&[0, 0]);
+        unknown.extend_from_slice(b"SECTION\0");
+        unknown.extend_from_slice(&[0xF0, 0x00, 0, 0]);
+        assert_eq!(read_drawing(&unknown, true, 1000, &token).err(), Some(VectorError::MalformedDxf("group_code")));
+        assert_eq!(read_drawing(b"AutoCAD Binary DXF\r\n", true, 1000, &token).err(), Some(VectorError::MalformedDxf("binary_header")));
+        // A polyline with 3 vertices needs 3 values: a cap of 2 is exceeded while reading.
+        let poly = [(0, "SECTION"), (2, "ENTITIES"), (0, "LWPOLYLINE"), (10, "0"), (20, "0"), (10, "1"), (20, "0"), (10, "1"), (20, "1"), (0, "ENDSEC"), (0, "EOF")];
+        assert_eq!(read_drawing(&binary(&poly, true), true, 2, &token).err(), Some(VectorError::BudgetExceeded("dxf_values")));
+        assert!(read_drawing(&binary(&poly, true), true, 3, &token).is_ok());
     }
 }

@@ -23,5 +23,37 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-DXF parsing uses dxf 0.6.2 (https://github.com/ixmilia/dxf-rs, MIT) through its public API; its
-licence text ships with the crate.
+src/dxf_reader.rs (the DXF group-code reader and the DXF record subset the import draws) is
+adapted from the dxf crate 0.6.2 (https://github.com/ixmilia/dxf-rs, crates.io dxf 0.6.2, read
+from the local cargo registry 2026-10-21; lane SMB-DXF-EPS-IMPORT remediation): the group-code
+value-type table (src/expected_type.rs), the ASCII and binary code-pair readers
+(src/code_pair_iter.rs), the string un-escaping (src/code_pair_value.rs), the section, table,
+block and entity reading order and the POLYLINE/VERTEX and INSERT/ATTRIB gathering
+(src/drawing.rs, src/block.rs, src/entity.rs, src/entity_iter.rs), and the field codes and
+default values of the entity, LAYER and header records it reads (spec/EntitiesSpec.xml,
+spec/TableSpec.xml, spec/HeaderVariablesSpec.xml). The dxf crate itself is not a dependency.
+The dxf crate is licensed under the MIT License, Copyright (c) IxMilia; the MIT terms are
+reproduced below.
+
+The MIT License (MIT)
+
+Copyright (c) IxMilia.
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

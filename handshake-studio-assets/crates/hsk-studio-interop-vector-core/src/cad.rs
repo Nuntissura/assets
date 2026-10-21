@@ -2,7 +2,7 @@
 //! DWG is never decoded: no permissively licensed DWG reader exists (acadrust is MPL-2.0,
 //! LibreDWG GPL-3.0, the ODA SDK proprietary; START_LOG lead decision 2026-10-16), so a DWG file
 //! is refused with [`VectorError::DwgUnavailable`] naming the DXF export route, original bytes
-//! preserved. DXF import is [`crate::import_dxf`] (feature `dxf`).
+//! preserved. DXF import is [`crate::import_dxf`].
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{PreservedBlob, Result, VectorError};
 use crate::model::ImportPolicy;

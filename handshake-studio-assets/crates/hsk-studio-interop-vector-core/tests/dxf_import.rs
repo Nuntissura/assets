@@ -1,4 +1,4 @@
-//! DXF import and the DWG refusal (lane SMB-DXF-EPS-IMPORT, feature `dxf`). Fixtures are generated
+//! DXF import and the DWG refusal (lane SMB-DXF-EPS-IMPORT). Fixtures are generated
 //! here as DXF text (group code / value line pairs), no external files.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Payload, StudioAppearanceRow, StudioPaint};
@@ -195,4 +195,94 @@ fn hostile_dxf_is_bounded_and_typed() {
     empty.extend([(0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (8, "0"), (10, "0"), (20, "0"), (30, "0"), (40, "1"), (1, "t"), (0, "ENDSEC"), (0, "EOF")]);
     assert_eq!(import(&dxf(&empty)).err(), Some(VectorError::Unsupported("dxf_without_drawable_entities")));
     let _ = LossKind::Unsupported;
+}
+
+/// An ENTITIES section around `body`, after the millimetre header.
+fn entities(body: &[(i32, &'static str)]) -> Vec<u8> {
+    let mut v = header("4");
+    v.extend([(0, "SECTION"), (2, "ENTITIES")]);
+    v.extend_from_slice(body);
+    v.extend([(0, "ENDSEC"), (0, "EOF")]);
+    dxf(&v)
+}
+
+/// The crate's own reader (remediation 2026-10-21, adapted from the MIT `dxf` 0.6.2): POLYLINE
+/// gathers its VERTEX records up to SEQEND (a bulge and a width loss), ELLIPSE and TRACE draw;
+/// entity types it does not draw (HATCH, a DIMENSION without a subclass marker, a stray SEQEND) are
+/// typed losses, never skipped silently. Damage is typed: a number that does not parse, a y before
+/// its x in LWPOLYLINE and SPLINE, an undefined group code, a truncated pair, a section ended
+/// without ENDSEC; a NaN coordinate is refused as geometry; a layer colour of i16::MIN is read
+/// without overflow (the layer is off).
+#[test]
+fn adapted_reader_rejects_damage() {
+    let p = import(&entities(&[
+        (0, "POLYLINE"), (8, "0"), (66, "1"), (10, "0"), (20, "0"), (30, "0"), (70, "0"), (40, "0.5"),
+        (0, "VERTEX"), (8, "0"), (10, "0"), (20, "0"), (30, "0"), (42, "1"),
+        (0, "VERTEX"), (8, "0"), (10, "10"), (20, "0"), (30, "0"),
+        (0, "VERTEX"), (8, "0"), (10, "10"), (20, "10"), (30, "0"),
+        (0, "SEQEND"), (8, "0"),
+        (0, "ELLIPSE"), (8, "0"), (10, "50"), (20, "50"), (30, "0"), (11, "10"), (21, "0"), (31, "0"), (40, "0.5"), (41, "0"), (42, "6.283185307179586"),
+        (0, "TRACE"), (8, "0"), (10, "0"), (20, "20"), (30, "0"), (11, "5"), (21, "20"), (31, "0"), (12, "0"), (22, "25"), (32, "0"), (13, "5"), (23, "25"), (33, "0"),
+        (0, "HATCH"), (8, "0"), (2, "SOLID"), (70, "1"),
+        (0, "DIMENSION"), (8, "0"), (10, "0"), (20, "0"), (30, "0"), (70, "0"),
+        (0, "SEQEND"), (8, "0"),
+    ]))
+    .expect("polyline, ellipse, trace");
+    assert_eq!(p.paths.len(), 3, "polyline, ellipse, trace");
+    for code in ["dxf_polyline_width_not_imported", "dxf_entity_not_imported", "dxf_dimension_not_imported", "dxf_arc_to_cubic"] {
+        assert!(p.has_loss_code(code), "{code}");
+    }
+    // The bulge-1 semicircle from (0,0) to (10,0) runs counter-clockwise below the chord: the
+    // polyline's lowest point is y = -5 mm, so the artboard spans y -5..55 mm (ellipse top 55).
+    let mm = 72.0 / 25.4;
+    let lowest = p.paths[0].anchors.iter().map(|a| a.position.y.value()).fold(f64::MIN, f64::max);
+    assert!((lowest - 60.0 * mm).abs() < 1e-6, "polyline bottom at the artboard bottom, got {lowest}");
+
+    for (what, body) in [
+        ("value", vec![(0, "LINE"), (10, "1.0.0")]),
+        ("lwpolyline_vertex", vec![(0, "LWPOLYLINE"), (20, "1")]),
+        ("spline_point", vec![(0, "SPLINE"), (20, "1")]),
+        ("group_code", vec![(0, "LINE"), (85, "1")]),
+    ] {
+        assert_eq!(import(&entities(&body)).err(), Some(VectorError::MalformedDxf(what)), "{what}");
+    }
+    assert_eq!(import(b"  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n 10\n").err(), Some(VectorError::MalformedDxf("truncated")));
+    assert_eq!(import(b"  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n 10\n1\n").err(), Some(VectorError::MalformedDxf("truncated")));
+    assert_eq!(import(b"  0\nSECTION\n  2\nHEADER\n  0\nEOF\n").err(), Some(VectorError::MalformedDxf("endsec")));
+    assert_eq!(import(&entities(&[(0, "LINE"), (10, "NaN"), (11, "1")])).err(), Some(VectorError::InvalidGeometry));
+    let mut off = header("4");
+    off.extend(layers(&[("Off", "-32768")]));
+    off.extend([(0, "SECTION"), (2, "ENTITIES"), (0, "LINE"), (8, "Off"), (10, "0"), (20, "0"), (30, "0"), (11, "1"), (21, "1"), (31, "0"), (0, "ENDSEC"), (0, "EOF")]);
+    let p = import(&dxf(&off)).expect("i16::MIN layer colour");
+    let layer = p.snapshot.document().layers.iter().find(|l| l.name == "Off" && matches!(l.payload, Payload::Group)).expect("layer");
+    assert!(!layer.visible, "a negative colour turns the layer off");
+}
+
+/// Insert fan-out is bounded by the entity-visit aggregate (V4-02): three nested 100 x 100 arrays
+/// of a block holding only TEXT would visit 10^8 entities without drawing anything; the import stops
+/// at `max_segments` visits with a typed error.
+#[test]
+fn insert_fan_out_is_bounded() {
+    let mut pairs = header("4");
+    pairs.extend([
+        (0, "SECTION"), (2, "BLOCKS"),
+        (0, "BLOCK"), (8, "0"), (2, "C"), (70, "0"), (10, "0"), (20, "0"), (30, "0"),
+        (0, "TEXT"), (8, "0"), (10, "0"), (20, "0"), (30, "0"), (40, "1"), (1, "t"), (0, "ENDBLK"), (8, "0"),
+        (0, "BLOCK"), (8, "0"), (2, "B"), (70, "0"), (10, "0"), (20, "0"), (30, "0"),
+        (0, "INSERT"), (8, "0"), (2, "C"), (10, "0"), (20, "0"), (30, "0"), (70, "100"), (71, "100"), (44, "1"), (45, "1"), (0, "ENDBLK"), (8, "0"),
+        (0, "BLOCK"), (8, "0"), (2, "A"), (70, "0"), (10, "0"), (20, "0"), (30, "0"),
+        (0, "INSERT"), (8, "0"), (2, "B"), (10, "0"), (20, "0"), (30, "0"), (70, "100"), (71, "100"), (44, "1"), (45, "1"), (0, "ENDBLK"), (8, "0"),
+        (0, "ENDSEC"),
+        (0, "SECTION"), (2, "ENTITIES"), (0, "INSERT"), (8, "0"), (2, "A"), (10, "0"), (20, "0"), (30, "0"), (0, "ENDSEC"), (0, "EOF"),
+    ]);
+    assert_eq!(import(&dxf(&pairs)).err(), Some(VectorError::BudgetExceeded("dxf_entity_visits")));
+    // A short-row and column count written as a double far beyond i16 saturates and is refused
+    // as an array, not wrapped.
+    let mut big = header("4");
+    big.extend([
+        (0, "SECTION"), (2, "BLOCKS"), (0, "BLOCK"), (8, "0"), (2, "B"), (70, "0"), (10, "0"), (20, "0"), (30, "0"),
+        (0, "LINE"), (8, "0"), (10, "0"), (20, "0"), (30, "0"), (11, "1"), (21, "1"), (31, "0"), (0, "ENDBLK"), (8, "0"), (0, "ENDSEC"),
+        (0, "SECTION"), (2, "ENTITIES"), (0, "INSERT"), (8, "0"), (2, "B"), (10, "0"), (20, "0"), (30, "0"), (70, "1e30"), (71, "4294967295"), (0, "ENDSEC"), (0, "EOF"),
+    ]);
+    assert_eq!(import(&dxf(&big)).err(), Some(VectorError::BudgetExceeded("dxf_insert_array")));
 }
