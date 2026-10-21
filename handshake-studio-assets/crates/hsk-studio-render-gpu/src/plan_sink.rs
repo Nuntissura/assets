@@ -2132,6 +2132,7 @@ impl Exec<'_> {
             density: 1.0,
             extended: self.extended,
             quantise: false,
+            eight_bit: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2171,6 +2172,7 @@ impl Exec<'_> {
             density: 1.0,
             extended: self.extended,
             quantise: true,
+            eight_bit: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2263,6 +2265,7 @@ impl Exec<'_> {
             density: mask.map_or(1.0, |m| m.density),
             extended: self.extended,
             quantise: false,
+            eight_bit: self.eight_bit,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2594,6 +2597,7 @@ impl Exec<'_> {
             // Effect colour over the running frame (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE).
             extended: self.extended,
             quantise: false,
+            eight_bit: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let mut encoder = ctx
@@ -2657,6 +2661,7 @@ impl Exec<'_> {
             // Adjustment layer (lane SMB-RENDER-GPU-EXTENDED-ENVELOPE: linear exposure only).
             extended: self.extended,
             quantise: false,
+            eight_bit: false,
         };
         let Some(env) = self.ext.as_ref() else {
             return Err(unsupported("plan_shape"));

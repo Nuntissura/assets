@@ -293,8 +293,9 @@ pub(crate) fn shader_source() -> String {
         "fn fill_inside(mode: u32) -> bool {{
     return {};
 }}
-         fn fill_source(mode: u32, s: f32, f: f32) -> f32 {{
+         fn fill_source(mode: u32, s: f32, f: f32, eight_bit: bool) -> f32 {{
              if (mode == {}u || mode == {}u) {{ return 1.0 - (1.0 - s) * f; }}
+             if (eight_bit && mode == {}u) {{ return floor((0.5 + (s - 0.5) * f) * 255.0) / 255.0; }}
              if (mode == {}u || mode == {}u) {{ return 0.5 + (s - 0.5) * f; }}
              return s * f;
 }}
@@ -305,6 +306,7 @@ pub(crate) fn shader_source() -> String {
         if special.is_empty() { "false".to_string() } else { special.join(" || ") },
         d(StudioBlendMode::ColourBurn),
         d(StudioBlendMode::LinearBurn),
+        d(StudioBlendMode::LinearLight),
         d(StudioBlendMode::VividLight),
         d(StudioBlendMode::LinearLight),
         d(StudioBlendMode::HardMix),
@@ -397,6 +399,9 @@ pub(crate) struct LayerParams {
     /// `flags` bit 6 (lane SMB-PS-ORACLE-PARITY-2): no composite, the destination texel is stored
     /// in 8-bit levels (pigment `render_plan::quantise_8bit`), the 8-bit working depth.
     pub quantise: bool,
+    /// `flags` bit 7 (lane SMB-PS-ORACLE-PARITY-2): an 8-bit document, the linear-light fill
+    /// source is a whole level (pigment `blend_math::composite_over_fill_at`).
+    pub eight_bit: bool,
 }
 impl LayerParams {
     pub(crate) fn to_bytes(self) -> [u8; PARAMS_BYTES as usize] {
@@ -410,6 +415,7 @@ impl LayerParams {
             | if self.opaque_source { 8 } else { 0 }
             | if self.mix { 16 } else { 0 }
             | if self.quantise { 64 } else { 0 }
+            | if self.eight_bit { 128 } else { 0 }
             | if self.extended {
                 crate::plan_sink::EXTENDED_FLAG
             } else {

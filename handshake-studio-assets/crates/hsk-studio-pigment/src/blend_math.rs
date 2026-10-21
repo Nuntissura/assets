@@ -867,11 +867,15 @@ pub const fn fill_inside_blend(mode: StudioBlendMode) -> bool {
 
 /// The source of a special-eight mode scaled toward the mode's neutral colour by `fill`: dodges,
 /// linear dodge and difference `s f`, burns `1 - (1 - s) f`, vivid and linear light
-/// `0.5 + (s - 0.5) f`.
-fn fill_scaled_source(mode: StudioBlendMode, s: f32, fill: f32) -> f32 {
+/// `0.5 + (s - 0.5) f`. In an 8-bit document (`eight_bit`, lane SMB-PS-ORACLE-PARITY-2) Photoshop
+/// floors the linear-light scaled source to a whole level, `floor(255 s') / 255` (D5 PS-B01
+/// `d8_o100_f50_LINEARLIGHT`: within one code, 2 codes on 12447 samples with the float source); the
+/// other special modes keep the float source (the floor broke the colour dodge and burn grids).
+fn fill_scaled_source(mode: StudioBlendMode, s: f32, fill: f32, eight_bit: bool) -> f32 {
     use StudioBlendMode::*;
     match mode {
         ColourBurn | LinearBurn => 1.0 - (1.0 - s) * fill,
+        LinearLight if eight_bit => ((0.5 + (s - 0.5) * fill) * 255.0).floor() / 255.0,
         VividLight | LinearLight => 0.5 + (s - 0.5) * fill,
         _ => s * fill,
     }
@@ -897,6 +901,21 @@ pub fn composite_over_fill(
     fill: f32,
     site: PixelSite,
 ) -> Result<Rgba, BlendError> {
+    composite_over_fill_at(mode, backdrop, source, opacity, fill, site, false)
+}
+
+/// [`composite_over_fill`] in an 8-bit document when `eight_bit` (lane SMB-PS-ORACLE-PARITY-2, the
+/// render plan's `WorkingDepth::Eight`): the linear-light scaled source is a whole level
+/// ([`fill_scaled_source`]); every other case is [`composite_over_fill`].
+pub fn composite_over_fill_at(
+    mode: StudioBlendMode,
+    backdrop: Rgba,
+    source: Rgba,
+    opacity: f32,
+    fill: f32,
+    site: PixelSite,
+    eight_bit: bool,
+) -> Result<Rgba, BlendError> {
     if !in_unit(fill) {
         return Err(BlendError::OutOfDomain);
     }
@@ -917,7 +936,7 @@ pub fn composite_over_fill(
             f(backdrop.rgb[2], source.rgb[2]),
         ]
     } else {
-        let s = source.rgb.map(|v| fill_scaled_source(mode, v, fill));
+        let s = source.rgb.map(|v| fill_scaled_source(mode, v, fill, eight_bit));
         blend_rgb(mode, backdrop.rgb, s)?
     };
     let a = source.a * opacity;

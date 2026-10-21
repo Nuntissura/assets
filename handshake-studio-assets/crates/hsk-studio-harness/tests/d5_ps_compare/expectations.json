@@ -38,13 +38,6 @@
    "reason": "8-bit vivid light: up to 2 codes on the burn half (source < 0.5) from Photoshop's 8-bit integer arithmetic; the 16-bit grid matches (after FIX-VIVID-ENDPOINTS, which removed the 255-code end-point errors at source 0 and 1)"
   },
   {
-   "case": "PS-B01",
-   "variant": "d8_o100_f50_LINEARLIGHT",
-   "verdict": "MISMATCH",
-   "class": "rounding_8bit",
-   "reason": "fill inside the blend (SMB-PS-ORACLE-PARITY-1, pigment composite_over_fill) matches the other seven special modes; linear light differs by up to 2 codes because Photoshop floors the fill-scaled source 0.5 + (s - 0.5) f to 8 bits in the 8-bit document (scratch: the floored source reproduces the grid within 1 code); Studio's float source is depth-independent"
-  },
-  {
    "case": "PS-L01",
    "variant": "lab16_to_swop_relcol",
    "verdict": "MISMATCH",

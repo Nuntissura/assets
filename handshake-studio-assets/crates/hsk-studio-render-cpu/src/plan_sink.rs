@@ -1416,6 +1416,7 @@ impl Eval<'_, '_> {
                         y,
                         seed: self.prepared.seed,
                     },
+                    self.prepared.ext.output.is_eight_bit(),
                 )
                 .map_err(blend_error)?;
                 *run.get_mut(at).ok_or_else(overflow)? =
@@ -1720,6 +1721,7 @@ impl Eval<'_, '_> {
                         y,
                         seed: self.prepared.seed,
                     },
+                    self.prepared.ext.output.is_eight_bit(),
                 )
                 .map_err(blend_error)?;
                 // Alpha can round 1 ulp above 1; keep the working buffer inside the blend domain.

@@ -245,6 +245,7 @@ impl Exec<'_> {
             density: 1.0,
             extended: false,
             quantise: false,
+            eight_bit: false,
         };
         ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
         let ko = self.ko_buffers()?;
@@ -349,6 +350,7 @@ pub(super) fn eval_knockout_layer(
         density: layer.mask.as_ref().map_or(1.0, |m| m.density),
         extended: false,
         quantise: false,
+        eight_bit: false,
     };
     ctx.queue.write_buffer(&ex.params, 0, &params.to_bytes());
     let extended = if ex.extended { KO_EXTENDED } else { 0 };

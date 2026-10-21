@@ -7,7 +7,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::adjust_math::{
     AdjustmentOp, Levels, LevelsRecord, composite_adjustment,
 };
-use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over, pass_through_mix};
+use hsk_studio_pigment::blend_math::{
+    PixelSite, Rgba, composite_over, composite_over_fill_at, pass_through_mix,
+};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BlendSpace, ColourTag, Exactness, ExecuteRequest, ExtOperator, Group, Layer,
     LayerExtension, NoVector, OutputStage, OutputTarget, PlanExtensions, PlanNode, PlanNodeId,
@@ -196,4 +198,47 @@ fn pass_through_opacity_is_the_premultiplied_lerp() {
             }
         }
     }
+}
+
+/// Linear light at fill 0.5 in an 8-bit document: the scaled source 0.5 + (s - 0.5) f is floored to
+/// a whole level (pigment `composite_over_fill_at`, D5 PS-B01 d8_o100_f50_LINEARLIGHT); the float
+/// document keeps the float source.
+#[test]
+fn eight_bit_linear_light_fill_floors_the_scaled_source() {
+    let backdrop = [0.4, 0.4, 0.4, 1.0];
+    let src = [41.0 / 255.0, 0.31, 200.0 / 255.0, 1.0];
+    let nodes = vec![
+        PlanNode::Solid { rect: extent(), rgba: backdrop },
+        PlanNode::Solid { rect: extent(), rgba: src },
+        PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![
+                layer(0, NORMAL, 1.0),
+                Layer { fill_opacity: 0.5, ..layer(1, StudioBlendMode::LinearLight, 1.0) },
+            ],
+        }),
+    ];
+    let p = plan(nodes, 2);
+    let site = PixelSite { x: 0, y: 0, seed: 3 };
+    let b1 = over(NORMAL, [0.0; 4], backdrop, 1.0).map(quantise_8bit);
+    let want = |eight: bool| {
+        let out = composite_over_fill_at(
+            StudioBlendMode::LinearLight,
+            Rgba::new([b1[0], b1[1], b1[2]], b1[3]),
+            Rgba::new([src[0], src[1], src[2]], src[3]),
+            1.0,
+            0.5,
+            site,
+            eight,
+        )
+        .unwrap();
+        [out.rgb[0], out.rgb[1], out.rgb[2], out.a.min(1.0)]
+    };
+    let eight = PlanExtensions::default()
+        .with_output(OutputStage::default().with_working_depth(WorkingDepth::Eight));
+    let got = render(4, &p, &eight);
+    assert!(got.iter().all(|px| px.map(f32::to_bits) == want(true).map(f32::to_bits)), "{:?}", got[0]);
+    // red: s 41 -> s' = 0.5 + (41 / 255 - 0.5) / 2 = 84.25 levels -> floor 84; the float source
+    // differs (no channel's scaled source lies on a whole level)
+    assert_ne!(want(true)[0].to_bits(), want(false)[0].to_bits());
 }

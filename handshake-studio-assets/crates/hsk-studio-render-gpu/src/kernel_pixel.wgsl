@@ -106,7 +106,10 @@ fn @ENTRY@(@builtin(global_invocation_id) gid: vec3<u32>) {
     let f = p.fill;
     var cs_blend = s.rgb;
     if (special) {
-        cs_blend = vec3<f32>(fill_source(p.mode, s.r, f), fill_source(p.mode, s.g, f), fill_source(p.mode, s.b, f));
+        // pigment blend_math::composite_over_fill_at: an 8-bit document (flags bit 7) floors the
+        // linear-light scaled source to a whole level (lane SMB-PS-ORACLE-PARITY-2)
+        let eight = (p.flags & 128u) != 0u;
+        cs_blend = vec3<f32>(fill_source(p.mode, s.r, f, eight), fill_source(p.mode, s.g, f, eight), fill_source(p.mode, s.b, f, eight));
     }
     var blended = blend(p.mode, b.rgb, cs_blend);
     if (special) {

@@ -14,7 +14,7 @@
 use super::{RenderError, f32_at};
 use crate::px::{add_u, overflow};
 use hsk_studio_pigment::blend_math::{
-    BlendError, PixelSite, Rgba, composite_over, composite_over_extended, composite_over_fill,
+    BlendError, PixelSite, Rgba, composite_over, composite_over_extended, composite_over_fill_at,
     fill_inside_blend,
 };
 pub use hsk_studio_pigment::render_plan::{DISPLAY_CLIP_OPERATOR, DisplayTransform};
@@ -66,6 +66,7 @@ pub(crate) fn over(
 /// `folded` (the layer's `opacity * fill * coverage`, bits unchanged). `unfilled` is the same product
 /// without the fill.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn over_fill(
     extended: bool,
     mode: StudioBlendMode,
@@ -75,9 +76,11 @@ pub(crate) fn over_fill(
     unfilled: f32,
     fill: f32,
     site: PixelSite,
+    eight_bit: bool,
 ) -> Result<Rgba, BlendError> {
     if !extended && fill < 1.0 && fill_inside_blend(mode) {
-        composite_over_fill(mode, backdrop, source, unfilled, fill, site)
+        // an 8-bit document floors the linear-light scaled source (lane SMB-PS-ORACLE-PARITY-2)
+        composite_over_fill_at(mode, backdrop, source, unfilled, fill, site, eight_bit)
     } else {
         over(extended, mode, backdrop, source, folded, site)
     }

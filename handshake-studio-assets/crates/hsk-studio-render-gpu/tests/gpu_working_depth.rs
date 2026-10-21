@@ -9,7 +9,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::adjust_math::{
     AdjustmentOp, Levels, LevelsRecord, composite_adjustment,
 };
-use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over, pass_through_mix};
+use hsk_studio_pigment::blend_math::{
+    PixelSite, Rgba, composite_over, composite_over_fill_at, pass_through_mix,
+};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BlendSpace, ColourTag, Exactness, ExecuteRequest, ExtOperator, Group, Layer,
     LayerExtension, NoVector, Operator, OutputStage, OutputTarget, PlanExtensions, PlanNode,
@@ -234,4 +236,47 @@ fn gpu_pass_through_opacity_matches_pigment() {
     });
     println!("pass-through opacity: max |delta| = {dev:e} (tolerance {TOLERANCE:e})");
     assert!(dev <= TOLERANCE, "deviation {dev:e}");
+}
+
+/// Linear light at fill 0.5 in an 8-bit document (pigment `composite_over_fill_at`, D5 PS-B01
+/// d8_o100_f50_LINEARLIGHT): the floored scaled source, within the tolerance of pigment.
+#[test]
+fn gpu_eight_bit_linear_light_fill_matches_pigment() {
+    if !gate("gpu 8-bit linear light fill parity") {
+        return;
+    }
+    let backdrop = [0.4, 0.4, 0.4, 1.0];
+    let src = [41.0 / 255.0, 0.31, 200.0 / 255.0, 1.0];
+    let p = plan(
+        vec![
+            PlanNode::Solid { rect: extent(), rgba: backdrop },
+            PlanNode::Solid { rect: extent(), rgba: src },
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(0, NORMAL, 1.0),
+                    Layer { fill_opacity: 0.5, ..layer(1, StudioBlendMode::LinearLight, 1.0) },
+                ],
+            }),
+        ],
+        2,
+    );
+    let b1 = over(NORMAL, [0.0; 4], backdrop, 1.0).map(quantise_8bit);
+    let out = composite_over_fill_at(
+        StudioBlendMode::LinearLight,
+        Rgba::new([b1[0], b1[1], b1[2]], b1[3]),
+        Rgba::new([src[0], src[1], src[2]], src[3]),
+        1.0,
+        0.5,
+        PixelSite { x: 0, y: 0, seed: 3 },
+        true,
+    )
+    .unwrap();
+    let want = [out.rgb[0], out.rgb[1], out.rgb[2], out.a.min(1.0)];
+    let eight = PlanExtensions::default()
+        .with_output(OutputStage::default().with_working_depth(WorkingDepth::Eight));
+    let got = render(&p, &eight);
+    let dev = deviation(&got, |_, _| want);
+    println!("8-bit linear light fill: max |delta| = {dev:e} (tolerance {TOLERANCE:e})");
+    assert!(dev <= TOLERANCE, "deviation {dev:e}: {:?} vs {want:?}", got[0]);
 }
