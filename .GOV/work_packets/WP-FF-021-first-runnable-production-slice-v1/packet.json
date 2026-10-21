@@ -74,12 +74,12 @@
       "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
       "verified_at_utc": "2026-10-21T23:44:07.6947114Z"
     },
-    "closure_commit": null,
-    "main_containment_status": "NOT_STARTED",
+    "closure_commit": "763eed9d60b20ab6802b3a5c60e503f89b32c6cb",
+    "main_containment_status": "PENDING",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "MERGE_PENDING",
     "risk": "HIGH",
     "blockers": [
       "Technical acceptance passed; canonical-main closure containment remains unproven."
