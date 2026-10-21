@@ -1872,9 +1872,12 @@ mod tests {
     fn force_terminate_cleans_descendant_after_direct_child_was_reaped() {
         let executable = powershell();
         let command = concat!(
+            "[Console]::Error.WriteLine('fixture_started'); ",
             "$tool=Join-Path $env:SystemRoot 'System32\\ping.exe'; ",
+            "[Console]::Error.WriteLine('before_descendant_start'); ",
             "$p=Start-Process -FilePath $tool -ArgumentList '-n','30','127.0.0.1' ",
-            "-WindowStyle Hidden -PassThru; [Console]::Out.WriteLine($p.Id); exit 0"
+            "-WindowStyle Hidden -PassThru; [Console]::Error.WriteLine('descendant_started'); ",
+            "[Console]::Out.WriteLine($p.Id); exit 0"
         );
         let arguments = vec![
             "-NoProfile".to_owned(),
@@ -1890,11 +1893,13 @@ mod tests {
         )
         .expect("spawn");
         assert_eq!(child.preexecution_active_process_count(), 1);
-        let (_stdout, _stderr) = child.take_pipes().expect("pipes");
-        let direct_exit = child
-            .wait_timeout(Duration::from_secs(10))
-            .expect("wait")
-            .expect("direct exit");
+        let (stdout, stderr) = child.take_pipes().expect("pipes");
+        let Some(direct_exit) = child.wait_timeout(Duration::from_secs(10)).expect("wait") else {
+            panic!(
+                "direct exit not observed within unchanged 10s: {}",
+                direct_exit_failure_diagnostic(&mut child, stdout, stderr)
+            )
+        };
         assert_eq!(direct_exit.exit_code, Some(0));
         assert!(!child.declared_scope_empty().expect("descendant active"));
         assert!(child.active_process_count().expect("active count") > 0);
@@ -1912,6 +1917,44 @@ mod tests {
             Some(direct_exit),
             "descendant termination must not rewrite or repeat the direct-child reap"
         );
+    }
+
+    fn direct_exit_failure_diagnostic(
+        child: &mut PlatformChild,
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    ) -> String {
+        let active_before_cleanup = child.active_process_count();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for (name, pipe) in [("stdout", stdout), ("stderr", stderr)] {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = pipe.take(65_536).read_to_end(&mut bytes);
+                let _ = sender.send((name, result, bytes));
+            });
+        }
+        drop(sender);
+        let cleanup = child.cleanup_force_reap(Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut captures = Vec::new();
+        for _ in 0..2 {
+            match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok((name, result, bytes)) => {
+                    captures.push(format!(
+                        "{name} read={result:?} text={:?}",
+                        String::from_utf8_lossy(&bytes)
+                    ));
+                }
+                Err(error) => {
+                    captures.push(format!("capture incomplete: {error}"));
+                    break;
+                }
+            }
+        }
+        format!(
+            "active_before_cleanup={active_before_cleanup:?}; cleanup={cleanup:?}; {captures:?}"
+        )
     }
 
     #[test]

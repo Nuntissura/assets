@@ -91,10 +91,11 @@ mod tests {
         let mut engine =
             FetchEngine::new(AbortingTransport(calls.clone()), DurableFetchStorage::new());
         let cancel = AtomicBool::new(false);
-        assert!(matches!(
-            engine.fetch(&request, &cancel),
-            Err(FetchError::Transport(_))
-        ));
+        let prepared = engine.fetch(&request, &cancel);
+        assert!(
+            matches!(prepared, Err(FetchError::Transport(_))),
+            "preparatory fetch must reach the intentional transport error: {prepared:?}"
+        );
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         let stages = fs::read_dir(&root)
             .unwrap()

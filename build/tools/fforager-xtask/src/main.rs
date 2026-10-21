@@ -15246,8 +15246,9 @@ fn validate_rust_verification_environment(root: &Path) -> Result<(), String> {
             // Cargo supplies its default home to child test processes.  It is
             // not an override when it is exactly the controlled home that
             // nested validator commands will use as well.
-            if key == OsStr::new("CARGO_HOME")
-                && controlled_cargo_home().as_deref() == Some(Path::new(&value))
+            if (key == OsStr::new("CARGO_HOME")
+                && controlled_cargo_home().as_deref() == Some(Path::new(&value)))
+                || approved_cargo_build_jobs(&key, Some(&value))
             {
                 None
             } else {
@@ -15334,6 +15335,23 @@ fn sanitize_rust_command_environment(command: &mut Command, program: &str) {
     if !matches!(executable.as_str(), "cargo" | "cargo.exe") {
         return;
     }
+    // Only the reviewed serial scheduling value survives; explicit command
+    // removal or poisoning takes precedence over the inherited value.
+    let preserve_single_job = command
+        .get_envs()
+        .find(|(key, _)| {
+            key.to_string_lossy()
+                .eq_ignore_ascii_case("CARGO_BUILD_JOBS")
+        })
+        .map_or_else(
+            || {
+                approved_cargo_build_jobs(
+                    OsStr::new("CARGO_BUILD_JOBS"),
+                    env::var_os("CARGO_BUILD_JOBS").as_deref(),
+                )
+            },
+            |(key, value)| approved_cargo_build_jobs(key, value),
+        );
     for key in RUST_ENVIRONMENT_OVERRIDES {
         command.env_remove(key);
     }
@@ -15357,6 +15375,9 @@ fn sanitize_rust_command_environment(command: &mut Command, program: &str) {
             command.env_remove(key);
         }
     }
+    if preserve_single_job {
+        command.env("CARGO_BUILD_JOBS", "1");
+    }
     if let Some(cargo_home) = controlled_cargo_home() {
         command.env("CARGO_HOME", cargo_home);
     }
@@ -15367,6 +15388,12 @@ fn controlled_cargo_home() -> Option<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .map(|home| home.join(".cargo"))
+}
+
+fn approved_cargo_build_jobs(key: &OsStr, value: Option<&OsStr>) -> bool {
+    key.to_string_lossy()
+        .eq_ignore_ascii_case("CARGO_BUILD_JOBS")
+        && value == Some(OsStr::new("1"))
 }
 
 fn rust_environment_override(key: &OsStr) -> bool {
@@ -17247,6 +17274,7 @@ mod tests {
             "RUSTFLAGS",
             "CARGO_ENCODED_RUSTFLAGS",
             "RUSTC_WRAPPER",
+            "CARGO_BUILD_JOBS",
             "CARGO_BUILD_RUSTFLAGS",
             "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
             "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER",
@@ -17259,6 +17287,7 @@ mod tests {
             .env("RUSTFLAGS", "--cap-lints=allow")
             .env("RUSTUP_TOOLCHAIN", "poison-toolchain")
             .env("CARGO_HOME", "poison-home")
+            .env("CARGO_BUILD_JOBS", "1")
             .env("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER", "fake-runner");
         sanitize_rust_command_environment(&mut command, "cargo");
         let environment = command
@@ -17267,6 +17296,45 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         assert_eq!(environment.get(OsStr::new("CLIPPY_CONF_DIR")), Some(&None));
         assert_eq!(environment.get(OsStr::new("RUSTFLAGS")), Some(&None));
+        assert_eq!(
+            environment.get(OsStr::new("CARGO_BUILD_JOBS")),
+            Some(&Some(std::ffi::OsString::from("1")))
+        );
+        assert!(approved_cargo_build_jobs(
+            OsStr::new("cargo_build_jobs"),
+            Some(OsStr::new("1"))
+        ));
+        assert!(!approved_cargo_build_jobs(
+            OsStr::new("RUSTFLAGS"),
+            Some(OsStr::new("1"))
+        ));
+        for value in ["", "0", "2", "-1", "01", "+1", "1 ", " 1", "one"] {
+            assert!(!approved_cargo_build_jobs(
+                OsStr::new("CARGO_BUILD_JOBS"),
+                Some(OsStr::new(value))
+            ));
+            let mut poison = Command::new("cargo");
+            poison.env("CARGO_BUILD_JOBS", value);
+            sanitize_rust_command_environment(&mut poison, "cargo");
+            assert!(
+                poison
+                    .get_envs()
+                    .any(|(key, value)| key == OsStr::new("CARGO_BUILD_JOBS") && value.is_none())
+            );
+        }
+        assert!(!approved_cargo_build_jobs(
+            OsStr::new("CARGO_BUILD_JOBS"),
+            None
+        ));
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let malformed = std::ffi::OsString::from_wide(&[0xd800]);
+            assert!(!approved_cargo_build_jobs(
+                OsStr::new("CARGO_BUILD_JOBS"),
+                Some(&malformed)
+            ));
+        }
         let expected_cargo_home = controlled_cargo_home().map(PathBuf::into_os_string);
         assert_eq!(
             environment.get(OsStr::new("CARGO_HOME")),
