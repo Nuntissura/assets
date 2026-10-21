@@ -32,7 +32,7 @@
       "reference": "Start product code now using parallel agents for the bounded direct-HTTP slice. Bundle tests/checks/builds, reuse warm Cargo artifacts, keep paperwork minimal; paperwork or repo ceremony can never be a blocker.",
       "source": "operator_message"
     },
-    "runtime_proof_transition_reference": "WP-FF-021-current-candidate-r13-2026-10-21",
+    "runtime_proof_transition_reference": "WP-FF-021-current-candidate-r14-2026-10-21",
     "worker_identity_approval": {
       "source": "operator_message",
       "recorded_at_utc": "2026-10-21T06:53:43Z",
@@ -605,8 +605,8 @@
     "runtime_proof": {
       "schema_id": "ff.runtime-proof@2",
       "completion_claim": "operator_usable_runtime",
-      "authorization_reference": "WP-FF-021-current-candidate-r13-2026-10-21",
-      "source_commit": "ba438038b77aa33675fda3189c52e2f1cb53148f",
+      "authorization_reference": "WP-FF-021-current-candidate-r14-2026-10-21",
+      "source_commit": "6be53b5fd48f43c70af00b229a6557fff26cfe45",
       "artifacts": [
         {
           "package": "fforager-launcher",
