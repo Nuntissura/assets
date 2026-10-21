@@ -4,7 +4,10 @@
 //! maintained pure-Rust store candidates can be judged against the same Ferric
 //! identity, claim, lease, migration, reconciliation, and failure contract.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+mod fetch;
+pub use fetch::{DurableFetchStorage, DurableFetchWriter};
 
 use fforager_contracts::{
     ARCHIVE_SCHEMA, ArchiveClaimOutcome, ArchiveClaimRequest, ArchiveCommitOutcome,
@@ -278,6 +281,34 @@ impl ArchiveStore {
             .commit()
             .map_err(|error| write_detail("commit claim", error))?;
         Ok(ArchiveClaimOutcome::Acquired { lease })
+    }
+
+    // Release only the exact uncommitted claim; generation history is retained.
+    fn release_claim(&self, lease: &ArchiveLease) -> Result<(), ArchiveStoreError> {
+        lease.validate(self.limits)?;
+        let key = lease.key.canonical_key(self.limits)?;
+        let transaction = self.begin_archive_write()?;
+        {
+            let mut leases = transaction
+                .open_table(LEASES)
+                .map_err(|error| write_detail("open released lease", error))?;
+            let stored = leases
+                .get(key.as_str())
+                .map_err(|error| write_detail("read released lease", error))?
+                .map(|bytes| decode_lease_for_key(key.as_str(), bytes.value(), self.limits))
+                .transpose()?;
+            match stored {
+                None => return Ok(()),
+                Some(stored) if stored == *lease => {}
+                Some(_) => return Err(ArchiveStoreError::LeaseMismatch),
+            }
+            leases
+                .remove(key.as_str())
+                .map_err(|error| write_detail("remove released lease", error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| write_detail("commit released lease", error))
     }
 
     /// Renews exact current ownership with an explicit deterministic clock and

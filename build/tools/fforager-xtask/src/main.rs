@@ -1,6 +1,8 @@
 mod benchmark;
 mod compatibility;
 mod ffmpeg_report;
+mod phase1_runtime;
+mod promotion;
 #[cfg(test)]
 mod runtime_classifier_tests;
 mod secret_scan;
@@ -449,6 +451,7 @@ struct GateReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SourceState {
     pub(crate) git_commit: String,
     pub(crate) dirty: bool,
@@ -469,7 +472,7 @@ struct InputState {
     git_blob: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Check {
     id: String,
     status: &'static str,
@@ -521,6 +524,22 @@ struct GateReportArtifact {
     aggregate_executed_proof_class: String,
     proof_limitations: Vec<String>,
     artifacts: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_runtime_evidence")]
+    runtime_evidence: Option<phase1_runtime::RuntimeEvidence>,
+    #[serde(default, deserialize_with = "deserialize_derived_invocation")]
+    derived_from: Option<GateReportInvocationArtifact>,
+}
+
+fn deserialize_derived_invocation<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<GateReportInvocationArtifact>, D::Error> {
+    GateReportInvocationArtifact::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_runtime_evidence<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<phase1_runtime::RuntimeEvidence>, D::Error> {
+    phase1_runtime::RuntimeEvidence::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]
@@ -684,6 +703,7 @@ fn run() -> Result<(), String> {
             ffmpeg_report::run_producer(&root, rest)
         }
         [command, rest @ ..] if command == "secret-scan" => secret_scan::run(&root, rest),
+        [command, flag, id] if command == "packet-promotion-check" && flag == "--packet" => promotion::run(&root, id),
         [gate, evidence] if gate == "verify-pr" && evidence == "--evidence-from-taskboard" => {
             run_verify_pr(&root, &args)
         }
@@ -697,10 +717,11 @@ fn run() -> Result<(), String> {
         {
             run_verify_deep(&root, &args)
         }
-        [gate] if matches!(gate.as_str(), "verify-release" | "watcher-check") => {
+        [gate] if gate == "watcher-check" => run_watcher_gate(&root, &args),
+        [gate] if gate == "verify-release" => {
             Err(format!("{gate} is NOT_IMPLEMENTED for Phase 0 and cannot report PASS"))
         }
-        _ => Err("usage: fforager-xtask <benchmark-validate --input BUNDLE --report REPORT|benchmark-calibrate --host-profile TEMPLATE --ffmpeg ABSOLUTE --ffprobe ABSOLUTE --fixture RELATIVE --output NEW_ARTIFACT_DIR|benchmark-bundle --windows-profile PROFILE --unix-profile PROFILE --active-profile ID --controls CALIBRATION --output NEW_ARTIFACT_DIR|architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|archive-store-evidence|resource-durability-models|ffmpeg-supervision-produce --platform <windows_x86_64|linux_x86_64> --fixture-root PATH --report PATH --receipt PATH|ffmpeg-supervision-aggregate --windows-report PATH --windows-receipt PATH --linux-report PATH --linux-receipt PATH|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
+        _ => Err("usage: fforager-xtask <packet-promotion-check --packet ID|benchmark-validate --input BUNDLE --report REPORT|benchmark-calibrate --host-profile TEMPLATE --ffmpeg ABSOLUTE --ffprobe ABSOLUTE --fixture RELATIVE --output NEW_ARTIFACT_DIR|benchmark-bundle --windows-profile PROFILE --unix-profile PROFILE --active-profile ID --controls CALIBRATION --output NEW_ARTIFACT_DIR|architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|archive-store-evidence|resource-durability-models|ffmpeg-supervision-produce --platform <windows_x86_64|linux_x86_64> --fixture-root PATH --report PATH --receipt PATH|ffmpeg-supervision-aggregate --windows-report PATH --windows-receipt PATH --linux-report PATH --linux-receipt PATH|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
     }
 }
 
@@ -5907,7 +5928,15 @@ fn scan_data_only_product_models(root: &Path, checks: &mut Vec<Check>) -> Result
             }
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("read {}: {error}", path.display()))?;
-            if let Some(token) = forbidden_data_model_token(&source) {
+            let relative = slash(path.strip_prefix(root).map_err(|error| error.to_string())?);
+            let model_source = if relative == "product/crates/fforager-core/src/engine.rs" {
+                source
+                    .replace("use std::net::SocketAddr;", "")
+                    .replace("use std::sync::atomic::{AtomicBool, Ordering};", "")
+            } else {
+                source
+            };
+            if let Some(token) = forbidden_data_model_token(&model_source) {
                 return Err(format!(
                     "FF-DEEP-E-RUNTIME-HANDLE: {} contains forbidden data-model token {token}",
                     slash(path.strip_prefix(root).map_err(|error| error.to_string())?)
@@ -6347,7 +6376,7 @@ fn validate_policy_identity(
         .collect();
     if policy.unsafe_policy != "forbid_except_scoped_policy_listed_boundary"
         || policy.unsafe_exception_authority != ".GOV/rules/build-rules.yaml#exception_authority"
-        || policy.unsafe_decision_ids != ["FF-DEC-003"]
+        || policy.unsafe_decision_ids != ["FF-DEC-003", "FF-DEC-004", "FF-DEC-005"]
         || policy.internal_edge_default != "deny"
         || observed_forbidden != expected_forbidden
     {
@@ -6989,7 +7018,21 @@ fn validate_member_metadata(
             member.name, member.split_trigger
         ));
     }
-    let exception_refs_valid = if is_ffmpeg_prerequisite {
+    let exception_refs_valid = if member.name == "fforager-storage" {
+        member.runtime_native_constraint_ref == "FF-DEC-004"
+            && member.unsafe_policy_ref == "FF-BUILD-050;FF-DEC-004"
+            && member.exception_policy_ref == "FF-DEC-004"
+            && member.shipped
+            && member.layer == "adapter"
+            && !member.test_only
+    } else if member.name == "fforager-xtask" {
+        member.runtime_native_constraint_ref == "FF-DEC-005"
+            && member.unsafe_policy_ref == "FF-BUILD-050;FF-DEC-005"
+            && member.exception_policy_ref == "FF-DEC-005"
+            && !member.shipped
+            && member.layer == "build_tooling"
+            && !member.test_only
+    } else if is_ffmpeg_prerequisite {
         member.runtime_native_constraint_ref == "FF-DEC-003"
             && member.unsafe_policy_ref == "FF-BUILD-050;FF-DEC-003"
             && member.exception_policy_ref == "FF-DEC-003"
@@ -7104,6 +7147,8 @@ fn product_local_lint_manifest(manifest_path: &str, manifest_text: &str) -> Resu
             | "product/crates/fforager-diagnostics-contract/Cargo.toml"
             | "product/crates/fforager-core/Cargo.toml"
             | "product/crates/fforager-ffmpeg/Cargo.toml"
+            | "product/crates/fforager-storage/Cargo.toml"
+            | "build/tools/fforager-xtask/Cargo.toml"
     ) {
         return Ok(false);
     }
@@ -7122,7 +7167,12 @@ fn product_local_lint_manifest(manifest_path: &str, manifest_text: &str) -> Resu
         .get("clippy")
         .and_then(toml::Value::as_table)
         .ok_or("product member omits lints.clippy")?;
-    let expected_unsafe_level = if manifest_path == "product/crates/fforager-ffmpeg/Cargo.toml" {
+    let expected_unsafe_level = if matches!(
+        manifest_path,
+        "product/crates/fforager-ffmpeg/Cargo.toml"
+            | "product/crates/fforager-storage/Cargo.toml"
+            | "build/tools/fforager-xtask/Cargo.toml"
+    ) {
         "deny"
     } else {
         "forbid"
@@ -7645,15 +7695,20 @@ fn ferric_implementation_dependency_diagnostic(
 fn product_oracle_boundary_diagnostic(relative: &str, bytes: &[u8]) -> Option<&'static str> {
     if !relative.starts_with("product/")
         || relative == "product/clippy.toml"
+        || relative == "product/apps/fforager-launcher/clippy.toml"
         || product_oracle_documentation_exception(relative, bytes)
     {
         return None;
     }
+    let source = String::from_utf8_lossy(bytes);
+    let reference_source = if relative == "product/apps/fforager-launcher/src/main.rs" {
+        source.replace("Command", "ApprovedLauncherProcess")
+    } else {
+        source.to_string()
+    };
     product_oracle_path_diagnostic(relative)
         .or_else(|| product_oracle_source_diagnostic(&String::from_utf8_lossy(bytes)))
-        .or_else(|| {
-            product_documentation_asset_reference_diagnostic(&String::from_utf8_lossy(bytes))
-        })
+        .or_else(|| product_documentation_asset_reference_diagnostic(&reference_source))
 }
 
 fn product_oracle_documentation_exception(relative: &str, bytes: &[u8]) -> bool {
@@ -7750,6 +7805,42 @@ fn validate_product_clippy_guard(root: &Path) -> Result<(), String> {
                 "FF-ARCH-E-PRODUCT-CLIPPY-GUARD: product/clippy.toml omits required compiler guard {required}"
             ));
         }
+    }
+    let launcher_guard: toml::Table =
+        read_toml(&root.join("product/apps/fforager-launcher/clippy.toml"))?;
+    let launcher_keys = launcher_guard
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let macros = launcher_guard
+        .get("disallowed-macros")
+        .and_then(toml::Value::as_array)
+        .ok_or("FF-ARCH-E-PRODUCT-CLIPPY-GUARD: launcher macro guard missing")?;
+    let macro_paths = macros
+        .iter()
+        .filter_map(|row| row.get("path").and_then(toml::Value::as_str))
+        .collect::<BTreeSet<_>>();
+    if launcher_keys
+        != BTreeSet::from([
+            "disallowed-types",
+            "disallowed-methods",
+            "disallowed-macros",
+        ])
+        || !["disallowed-types", "disallowed-methods"]
+            .iter()
+            .all(|key| {
+                launcher_guard
+                    .get(*key)
+                    .and_then(toml::Value::as_array)
+                    .is_some_and(Vec::is_empty)
+            })
+        || macros.len() != 2
+        || macro_paths != BTreeSet::from(["core::include_bytes", "core::include_str"])
+    {
+        return Err(
+            "FF-ARCH-E-PRODUCT-CLIPPY-GUARD: launcher may relax only sibling process construction"
+                .into(),
+        );
     }
     for manifest in [
         "product/crates/fforager-contracts/Cargo.toml",
@@ -7923,7 +8014,7 @@ fn dependency_native_exception_valid(
     } else {
         &exception.allowed_prerequisite_consumers
     };
-    (decision.native || exception_id == "FF-DEC-003")
+    (decision.native || matches!(exception_id, "FF-DEC-003" | "FF-DEC-004" | "FF-DEC-005"))
         && exception.owner == decision.owner
         && exception.approval_id == decision.approval_id
         && allowed_consumers.contains(&decision.consumer)
@@ -8090,7 +8181,10 @@ fn validate_native_exception_reachability(
                 "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: missing native exception {exception_id}"
             )
         })?;
-        if exception_id == "FF-DEC-003" {
+        if matches!(
+            exception_id.as_str(),
+            "FF-DEC-003" | "FF-DEC-004" | "FF-DEC-005"
+        ) {
             validate_ffi_boundary_direct_attribution(policy, metadata, exception_id, exception)?;
             continue;
         }
@@ -8182,6 +8276,26 @@ fn validate_native_exception_reachability(
                         member.name
                     )
                 })?;
+            // Only the two explicitly authorized ordinary-transport composition edges
+            // can carry native reachability without becoming native dependency decisions.
+            let approved_transitive_target = match (
+                exception_id.as_str(),
+                member.name.as_str(),
+                member.manifest.as_str(),
+                is_product,
+            ) {
+                ("FF-DEC-002", "fforager", "product/crates/fforager/Cargo.toml", true) => {
+                    Some(("fforager-net", "product/crates/fforager-net/Cargo.toml"))
+                }
+                (
+                    "FF-DEC-002",
+                    "fforager-worker",
+                    "product/apps/fforager-worker/Cargo.toml",
+                    true,
+                ) => Some(("fforager", "product/crates/fforager/Cargo.toml")),
+                _ => None,
+            };
+            let mut approved_transitive_edge = false;
             for dependency in &workspace_node.deps {
                 let direct_package_id = dependency.pkg.to_string();
                 let mut pending = vec![direct_package_id.clone()];
@@ -8220,6 +8334,36 @@ fn validate_native_exception_reachability(
                             "FF-ARCH-E-NATIVE-EDGE-ATTRIBUTION: direct package {direct_package_id} is absent from metadata"
                         )
                     })?;
+                if let Some((expected_name, expected_manifest)) = approved_transitive_target {
+                    let target_member = policy.members.iter().find(|target| {
+                        target.name == expected_name
+                            && target.manifest == expected_manifest
+                            && target.shipped
+                    });
+                    if direct_package.name.as_str() != expected_name
+                        || direct_package.version.to_string() != "0.1.0"
+                        || direct_package.source.is_some()
+                        || !metadata.workspace_members.contains(&dependency.pkg)
+                        || !direct_package
+                            .manifest_path
+                            .as_std_path()
+                            .ends_with(expected_manifest)
+                        || target_member.is_none()
+                        || dependency.name != expected_name.replace('-', "_")
+                        || dependency.dep_kinds.is_empty()
+                        || dependency.dep_kinds.iter().any(|kind| {
+                            kind.kind != cargo_metadata::DependencyKind::Normal
+                                || kind.target.is_some()
+                        })
+                    {
+                        return Err(format!(
+                            "FF-ARCH-E-NATIVE-EDGE-ATTRIBUTION: {} -> {} is outside the exact approved FF-DEC-002 workspace composition route",
+                            member.name, direct_package.name
+                        ));
+                    }
+                    approved_transitive_edge = true;
+                    continue;
+                }
                 let decision = policy.dependency_decisions.iter().find(|decision| {
                     decision.consumer == member.name
                         && decision.name == direct_package.name.as_str()
@@ -8237,6 +8381,15 @@ fn validate_native_exception_reachability(
                         member.name, direct_package.name
                     ));
                 }
+            }
+            if approved_transitive_target.is_some() {
+                if !approved_transitive_edge {
+                    return Err(format!(
+                        "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: {} lacks its exact approved FF-DEC-002 workspace composition edge",
+                        member.name
+                    ));
+                }
+                continue;
             }
             let direct_exception_decisions = policy
                 .dependency_decisions
@@ -8274,6 +8427,7 @@ fn validate_ffi_boundary_direct_attribution(
     let consumer = exception
         .allowed_prerequisite_consumers
         .iter()
+        .chain(exception.allowed_product_consumers.iter())
         .next()
         .ok_or_else(|| {
             format!(
@@ -8333,7 +8487,7 @@ fn validate_ffi_boundary_direct_attribution(
                 consumer.clone(),
                 name.to_owned(),
                 version.to_owned(),
-                "non_shipped_phase0_prerequisite".to_owned(),
+                if exception_id == "FF-DEC-004" { "shipped_rust_product" } else if exception_id == "FF-DEC-005" { "non_shipped_build_tooling" } else { "non_shipped_phase0_prerequisite" }.to_owned(),
                 false,
             ))
         })
@@ -9099,7 +9253,8 @@ fn read_native_dependency_exceptions(
         };
         let valid_scope = match status {
             "ACTIVE_NON_SHIPPED_ADJUDICATION_ONLY"
-            | "ACTIVE_NON_SHIPPED_FFMPEG_PREREQUISITE_ONLY" => {
+            | "ACTIVE_NON_SHIPPED_FFMPEG_PREREQUISITE_ONLY"
+            | "ACTIVE_NON_SHIPPED_VALIDATION_ONLY" => {
                 !allow_product_use
                     && !allow_packaging_or_release
                     && promotion_requires_new_operator_decision
@@ -9107,6 +9262,11 @@ fn read_native_dependency_exceptions(
             "ACTIVE_SHIPPED_PRODUCT_NARROW_ONLY" => {
                 allow_product_use
                     && allow_packaging_or_release
+                    && !promotion_requires_new_operator_decision
+            }
+            "ACTIVE_SHIPPED_STORAGE_NARROW_ONLY" => {
+                allow_product_use
+                    && !allow_packaging_or_release
                     && !promotion_requires_new_operator_decision
             }
             _ => false,
@@ -9157,7 +9317,12 @@ fn read_native_dependency_exceptions(
                     && status == "ACTIVE_SHIPPED_PRODUCT_NARROW_ONLY"
                     && allowed_prerequisite_consumers
                         == BTreeSet::from(["fforager-transport".to_owned()])
-                    && allowed_product_consumers == BTreeSet::from(["fforager-net".to_owned()])
+                    && allowed_product_consumers
+                        == BTreeSet::from([
+                            "fforager-net".to_owned(),
+                            "fforager".to_owned(),
+                            "fforager-worker".to_owned(),
+                        ])
                     && allowed_direct_dependencies
                         == BTreeSet::from(["reqwest".to_owned(), "rustls".to_owned()])
                     && allowed_versions
@@ -9196,7 +9361,7 @@ fn read_native_dependency_exceptions(
                             ),
                         ])
                     && ordinary_transport_resolved_closure_sha256
-                        == "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+                        == "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
                     && ordinary_transport_registry_source_closure_sha256
                         == "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
                     && allowed_runtime_classes
@@ -9247,6 +9412,94 @@ fn read_native_dependency_exceptions(
                             "validated_direct_arguments_only".to_owned(),
                         ])
             }
+            "FF-DEC-004" | "FF-DEC-005" => {
+                let storage_boundary = id == "FF-DEC-004";
+                owner == "WP-FF-021-first-runnable-production-slice"
+                    && approval_id
+                        == if storage_boundary {
+                            "WP-FF-021-first-runnable-production-slice-v1-AC-003"
+                        } else {
+                            "WP-FF-021-first-runnable-production-slice-v1-AC-004"
+                        }
+                    && status
+                        == if storage_boundary {
+                            "ACTIVE_SHIPPED_STORAGE_NARROW_ONLY"
+                        } else {
+                            "ACTIVE_NON_SHIPPED_VALIDATION_ONLY"
+                        }
+                    && allowed_prerequisite_consumers
+                        == if storage_boundary {
+                            BTreeSet::new()
+                        } else {
+                            BTreeSet::from(["fforager-xtask".to_owned()])
+                        }
+                    && allowed_product_consumers
+                        == if storage_boundary {
+                            BTreeSet::from(["fforager-storage".to_owned()])
+                        } else {
+                            BTreeSet::new()
+                        }
+                    && allowed_direct_dependencies == BTreeSet::from(["windows-sys".to_owned()])
+                    && allowed_versions == BTreeSet::from(["windows-sys@0.61.2".to_owned()])
+                    && allowed_native_link_packages.is_empty()
+                    && allowed_native_runtime_packages.is_empty()
+                    && allowed_package_archive_sha256.is_empty()
+                    && allowed_package_source_inventory_sha256.is_empty()
+                    && ordinary_transport_resolved_closure_sha256.is_empty()
+                    && ordinary_transport_registry_source_closure_sha256.is_empty()
+                    && allowed_runtime_classes
+                        == BTreeSet::from([if storage_boundary {
+                            "shipped_rust_product"
+                        } else {
+                            "non_shipped_build_tooling"
+                        }
+                        .to_owned()])
+                    && !allow_build_scripts
+                    && allow_ffi
+                    && allow_unsafe
+                        == if storage_boundary {
+                            "scoped_storage_platform_module_only"
+                        } else {
+                            "scoped_owned_watcher_pause_module_only"
+                        }
+                    && operator_decision
+                        == if storage_boundary {
+                            "The Operator explicitly approved the narrow production storage boundary using the already-pinned windows-sys for directory handles, filesystem identity, and flush operations on 2026-10-21."
+                        } else {
+                            "The Operator explicitly approved validation-only watcher pause/resume and, in the subsequent 2026-10-21 live approval, read-only identity and exit acknowledgment for the launcher-owned worker, using already-pinned windows-sys. Worker pause or process-control authority is not extended."
+                        }
+                    && safety_invariants
+                        == if storage_boundary {
+                            BTreeSet::from(
+                                [
+                                    "retained_root_handles",
+                                    "no_reparse_traversal",
+                                    "verified_volume_identity",
+                                    "live_host_profile",
+                                    "acknowledged_file_and_directory_flush",
+                                    "exact_handle_ownership",
+                                ]
+                                .map(str::to_owned),
+                            )
+                        } else {
+                            BTreeSet::from(
+                                [
+                                    "validator_owned_watcher_pause_only",
+                                    "validator_owned_worker_read_only_identity",
+                                    "retained_process_handle",
+                                    "pid_and_creation_time_identity",
+                                    "verified_staged_image_identity",
+                                    "launcher_parent_identity",
+                                    "worker_identity_has_no_pause_or_process_control",
+                                    "pause_at_most_two_seconds",
+                                    "unconditional_detach_guard",
+                                    "no_shell",
+                                    "no_unowned_process_control",
+                                ]
+                                .map(str::to_owned),
+                            )
+                        }
+            }
             _ => false,
         };
         if !id.starts_with("FF-DEC-")
@@ -9294,7 +9547,8 @@ fn read_native_dependency_exceptions(
                 ordinary_transport_registry_source_closure_sha256.to_owned(),
             allowed_runtime_classes,
         };
-        if exception.allowed_prerequisite_consumers.is_empty()
+        if (exception.allowed_prerequisite_consumers.is_empty()
+            && exception.allowed_product_consumers.is_empty())
             || exception.allowed_direct_dependencies.is_empty()
             || exception.allowed_versions.is_empty()
             || exception.allowed_runtime_classes.is_empty()
@@ -10277,19 +10531,92 @@ fn proof_fixture(
     }
 }
 
+fn remaining_fixture_effective_inputs(
+    root: &Path,
+    label: &str,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    let identity = PathBuf::from("product/crates/fforager-contracts/src/identity.rs");
+    let public = PathBuf::from("build/crates/fforager-testkit/src/lib.rs");
+    let identity_marker = "fn typed_ids_reject_wrong_prefix_and_uppercase()";
+    let public_marker = "fn public_boundary_counterexamples_reject_audit_failures()";
+    let (relative, marker) =
+        if matches!(label, "proof-map-deleted-test" | "proof-map-behavior-stub") {
+            (identity, identity_marker)
+        } else {
+            (public, public_marker)
+        };
+    let canonical = fs::read_to_string(root.join(&relative)).map_err(|error| error.to_string())?;
+    let mut inputs = Vec::new();
+    let effective = match label {
+        "proof-map-deleted-test" => derive_text_mutation(
+            &canonical,
+            marker,
+            "fn deleted_typed_ids_reject_wrong_prefix_and_uppercase()",
+        )?,
+        "proof-map-behavior-stub" => {
+            let body = derive_named_test_body(canonical, marker, "{ assert!(true); }")?;
+            inputs.push((PathBuf::from("product/crates/fforager-contracts/tests/inventory_identity_behavior.rs"),
+                b"use fforager_contracts::ItemId;\n\n#[test]\nfn inventory_identity_behavior_rejects_wrong_prefix() {\n    assert!(ItemId::new(\"node_wrong\").is_err());\n}\n".to_vec()));
+            derive_text_mutation(
+                &body,
+                "    if !value.starts_with(prefix) || value.len() == prefix.len() {",
+                "    if false {",
+            )?
+        }
+        "public-counterexample-removed" => derive_text_mutation(
+            &canonical,
+            marker,
+            "fn removed_public_boundary_counterexamples_reject_audit_failures()",
+        )?,
+        "public-counterexample-ignored" => derive_text_mutation(
+            &canonical,
+            "#[test]\n    fn public_boundary_counterexamples_reject_audit_failures()",
+            "#[test]\n    #[ignore]\n    fn public_boundary_counterexamples_reject_audit_failures()",
+        )?,
+        "public-counterexample-empty" => derive_named_test_body(canonical, marker, "{}")?,
+        "public-counterexample-receipt-only" => {
+            let graph = PathBuf::from("product/crates/fforager-contracts/src/graph.rs");
+            let graph_source =
+                fs::read_to_string(root.join(&graph)).map_err(|error| error.to_string())?;
+            inputs.push((
+                graph,
+                derive_text_mutation(
+                    &graph_source,
+                    "        validate_relationship_cycles(self)",
+                    "        Ok(())",
+                )?
+                .into_bytes(),
+            ));
+            derive_named_test_body(
+                canonical,
+                marker,
+                &format!("{{ println!(\"{PUBLIC_BOUNDARY_COUNTEREXAMPLE_RECEIPT}\"); }}"),
+            )?
+        }
+        other => return Err(format!("unknown retained compiled fixture {other}")),
+    };
+    inputs.push((relative, effective.into_bytes()));
+    Ok(inputs)
+}
+
+fn with_remaining_mutant_fixture<T>(
+    root: &Path,
+    label: &str,
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let inputs = remaining_fixture_effective_inputs(root, label)?;
+    with_effective_warm_testkit_fixture(root, label, &inputs, |sandbox| {
+        prepare_effective_testkit_workspace(root, sandbox, &inputs)?;
+        action(sandbox)
+    })
+}
+
 fn proof_map_string_only_fixture_execution(root: &Path) -> Result<FixtureExecution, String> {
     const DELETED_PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let target_dir = isolated_fixture_target_dir(root, "contract-inventory-resolver")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-    let diagnostic = with_isolated_fixture_root(root, "proof-map-deleted-test", |sandbox| {
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("product/crates/fforager-contracts/src/identity.rs");
-        replace_text_in_file(
-            &source,
-            "fn typed_ids_reject_wrong_prefix_and_uppercase()",
-            "fn deleted_typed_ids_reject_wrong_prefix_and_uppercase()",
-        )?;
+    let diagnostic = with_remaining_mutant_fixture(root, "proof-map-deleted-test", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "contract-inventory-resolver")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         let error = resolve_and_execute_inventory_proofs_with_cargo_mode(
             sandbox,
             &[DELETED_PROOF_ID.to_owned()],
@@ -10315,21 +10642,9 @@ fn proof_map_behavior_stub_fixture_execution(root: &Path) -> Result<FixtureExecu
     const PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
     const SELECTOR: &str = "identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let target_dir = isolated_fixture_target_dir(root, "contract-inventory-behavior")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-    let diagnostic = with_isolated_fixture_root(root, "proof-map-behavior-stub", |sandbox| {
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let identity = sandbox.join("product/crates/fforager-contracts/src/identity.rs");
-        replace_named_test_body(
-            &identity,
-            "fn typed_ids_reject_wrong_prefix_and_uppercase()",
-            "{ assert!(true); }",
-        )?;
-        replace_text_in_file(
-            &identity,
-            "    if !value.starts_with(prefix) || value.len() == prefix.len() {",
-            "    if false {",
-        )?;
+    let diagnostic = with_remaining_mutant_fixture(root, "proof-map-behavior-stub", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "contract-inventory-behavior")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         let target_dir_text = target_dir
             .to_str()
             .ok_or("inventory behavior target directory is not valid UTF-8")?;
@@ -10357,13 +10672,6 @@ fn proof_map_behavior_stub_fixture_execution(root: &Path) -> Result<FixtureExecu
                 "behavior-stub counterfactual did not execute its mapped exact test".to_owned(),
             );
         }
-        let tests = sandbox.join("product/crates/fforager-contracts/tests");
-        fs::create_dir_all(&tests).map_err(|error| error.to_string())?;
-        fs::write(
-            tests.join("inventory_identity_behavior.rs"),
-            "use fforager_contracts::ItemId;\n\n#[test]\nfn inventory_identity_behavior_rejects_wrong_prefix() {\n    assert!(ItemId::new(\"node_wrong\").is_err());\n}\n",
-        )
-        .map_err(|error| error.to_string())?;
         let independent_failure = cargo_proof_output(
             sandbox,
             "cargo",
@@ -10474,6 +10782,26 @@ fn with_isolated_fixture_root<T>(
     label: &str,
     action: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
+    if matches!(
+        label,
+        "proof-map-deleted-test"
+            | "proof-map-behavior-stub"
+            | "public-counterexample-removed"
+            | "public-counterexample-ignored"
+            | "public-counterexample-empty"
+            | "public-counterexample-receipt-only"
+            | "effect_acknowledgement_subset"
+            | "unrelated_schema_transition"
+            | "wire_zero_or_unknown_field"
+            | "sequence_zero_replay"
+            | "durable_journal_payload_unknown_field"
+            | "durable_journal_record_unknown_field"
+            | "durable_reconcile_state_unknown_field"
+            | "durable_journal_sequence_zero"
+            | "source_graph_cycle"
+    ) {
+        return with_warm_testkit_fixture(root, label, action);
+    }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
@@ -10494,75 +10822,189 @@ fn with_isolated_fixture_root<T>(
     }
 }
 
+fn with_warm_testkit_fixture<T>(
+    root: &Path,
+    label: &str,
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    with_effective_warm_testkit_fixture(root, label, &[], action)
+}
+
+fn with_effective_warm_testkit_fixture<T>(
+    root: &Path,
+    label: &str,
+    effective_inputs: &[(PathBuf, Vec<u8>)],
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let parent = disposable_artifact_root(root).join("warm-proof-sources");
+    fs::create_dir_all(&parent).map_err(|error| error.to_string())?;
+    let lock_path = parent.join(format!("{label}.lock"));
+    let lock = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!("exclusive warm fixture {label} unavailable (no stale-lease takeover): {error}")
+        })?;
+    let sandbox = parent.join(label);
+    let result = (|| {
+        fs::create_dir_all(&sandbox).map_err(|error| error.to_string())?;
+        for path in walk_files(&sandbox)? {
+            let relative = path
+                .strip_prefix(&sandbox)
+                .map_err(|error| error.to_string())?;
+            let canonical = root.join(relative);
+            if let Some((_, bytes)) = effective_inputs
+                .iter()
+                .find(|(input, _)| input.as_path() == relative)
+            {
+                refresh_fixture_bytes(&path, bytes)?;
+            } else if canonical.is_file() {
+                copy_fixture_file(&canonical, &path)?;
+            } else {
+                fs::remove_file(&path).map_err(|error| error.to_string())?;
+            }
+        }
+        remove_empty_fixture_directories(&sandbox)?;
+        action(&sandbox)
+    })();
+    drop(lock);
+    let release = fs::remove_file(&lock_path)
+        .map_err(|error| format!("warm fixture lease release failed: {error}"));
+    match (result, release) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; {cleanup}")),
+    }
+}
+
+fn remove_empty_fixture_directories(root: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            remove_empty_fixture_directories(&entry.path())?;
+            if fs::read_dir(entry.path())
+                .map_err(|error| error.to_string())?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(entry.path()).map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_fixture_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let bytes = fs::read(source).map_err(|error| error.to_string())?;
+    if !destination.exists() {
+        fs::copy(source, destination).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    refresh_fixture_bytes(destination, &bytes)
+}
+
+fn refresh_fixture_bytes(destination: &Path, bytes: &[u8]) -> Result<(), String> {
+    if fs::read(destination).ok().as_deref() != Some(bytes) {
+        fs::write(destination, bytes).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn public_invariant_effective_input(
+    root: &Path,
+    mutation: &str,
+) -> Result<(PathBuf, Vec<u8>, &'static str), String> {
+    if mutation == "unrelated_schema_transition" {
+        return Ok((
+            PathBuf::from("build/fixtures/contracts/diagnostic-protocol-offer-v2.0.json"),
+            br#"{"versions":{"major":1,"minimum_minor":0,"maximum_minor":2},"accepted_schemas":[{"algorithm":"sha256","canonical_input_version":1,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#.to_vec(),
+            "SchemaIncompatible",
+        ));
+    }
+    let (relative, before, after, marker) = match mutation {
+        "effect_acknowledgement_subset" => (
+            "product/crates/fforager-core/src/lifecycle.rs",
+            "        (State::FilesystemProbed, Event::Confine) => step(\n            State::FilesystemConfining,\n            &[EffectIntent::EstablishConfinedPath],\n        ),",
+            "        (State::FilesystemProbed, Event::Confine) => step(State::FilesystemConfined, &[]),",
+            "FilesystemConfining",
+        ),
+        "wire_zero_or_unknown_field" => (
+            "build/crates/fforager-testkit/src/lib.rs",
+            "envelope[\"undeclared_top_level\"] = serde_json::json!(true);",
+            "envelope[\"capability_id\"] = serde_json::json!(\"ff.capability.transport\");",
+            "decode_json_frame",
+        ),
+        "sequence_zero_replay" => (
+            "product/crates/fforager-diagnostics-contract/src/protocol.rs",
+            "        identity.validate()?;\n",
+            "",
+            "InvalidStart",
+        ),
+        "durable_journal_payload_unknown_field" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "    rename_all = \"snake_case\",\n    deny_unknown_fields\n)]\npub enum JournalPayload",
+            "    rename_all = \"snake_case\"\n)]\npub enum JournalPayload",
+            "JournalPayload unknown body field must fail closed",
+        ),
+        "durable_journal_record_unknown_field" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "#[derive(Clone, Debug, PartialEq, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct JournalRecordWire",
+            "#[derive(Clone, Debug, PartialEq, Deserialize)]\nstruct JournalRecordWire",
+            "JournalRecord unknown top-level field must fail closed",
+        ),
+        "durable_reconcile_state_unknown_field" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "#[serde(tag = \"kind\", rename_all = \"snake_case\", deny_unknown_fields)]\npub enum ReconcileState",
+            "#[serde(tag = \"kind\", rename_all = \"snake_case\")]\npub enum ReconcileState",
+            "ReconcileState unknown variant field must fail closed",
+        ),
+        "durable_journal_sequence_zero" => (
+            "product/crates/fforager-contracts/src/storage.rs",
+            "        record.validate()?;\n        Ok(record)",
+            "        Ok(record)",
+            "JournalRecord sequence zero must fail closed",
+        ),
+        "source_graph_cycle" => (
+            "product/crates/fforager-contracts/src/graph.rs",
+            "        validate_relationship_cycles(self)",
+            "        Ok(())",
+            "RelationshipCycle",
+        ),
+        other => return Err(format!("unknown public invariant mutation {other}")),
+    };
+    let canonical = fs::read_to_string(root.join(relative)).map_err(|error| error.to_string())?;
+    Ok((
+        PathBuf::from(relative),
+        derive_text_mutation(&canonical, before, after)?.into_bytes(),
+        marker,
+    ))
+}
+
 fn public_invariant_mutation_fixture_execution(
     root: &Path,
     mutation: &str,
     diagnostic: &str,
     proof_class: &'static str,
 ) -> Result<FixtureExecution, String> {
-    let target_dir = isolated_fixture_target_dir(root, "public-invariant-mutations")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-    let observed = with_isolated_fixture_root(root, mutation, |sandbox| {
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let failure_marker = match mutation {
-            "effect_acknowledgement_subset" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-core/src/lifecycle.rs"),
-                "        (State::FilesystemProbed, Event::Confine) => step(\n            State::FilesystemConfining,\n            &[EffectIntent::EstablishConfinedPath],\n        ),",
-                "        (State::FilesystemProbed, Event::Confine) => step(State::FilesystemConfined, &[]),",
+    let (relative, bytes, failure_marker) = public_invariant_effective_input(root, mutation)?;
+    let effective_inputs = [(relative, bytes)];
+    let observed =
+        with_effective_warm_testkit_fixture(root, mutation, &effective_inputs, |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "public-invariant-mutations")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+            prepare_effective_testkit_workspace(root, sandbox, &effective_inputs)?;
+            isolated_public_test_failure_diagnostic(
+                sandbox,
+                &target_dir,
+                diagnostic,
+                failure_marker,
             )
-            .map(|()| "FilesystemConfining")?,
-            "unrelated_schema_transition" => fs::write(
-                sandbox.join("build/fixtures/contracts/diagnostic-protocol-offer-v2.0.json"),
-                br#"{"versions":{"major":1,"minimum_minor":0,"maximum_minor":2},"accepted_schemas":[{"algorithm":"sha256","canonical_input_version":1,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#,
-            )
-            .map_err(|error| error.to_string())
-            .map(|()| "SchemaIncompatible")?,
-            "wire_zero_or_unknown_field" => replace_text_in_file(
-                &sandbox.join("build/crates/fforager-testkit/src/lib.rs"),
-                "envelope[\"undeclared_top_level\"] = serde_json::json!(true);",
-                "envelope[\"capability_id\"] = serde_json::json!(\"ff.capability.transport\");",
-            )
-            .map(|()| "decode_json_frame")?,
-            "sequence_zero_replay" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-diagnostics-contract/src/protocol.rs"),
-                "        identity.validate()?;\n",
-                "",
-            )
-            .map(|()| "InvalidStart")?,
-            "durable_journal_payload_unknown_field" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "    rename_all = \"snake_case\",\n    deny_unknown_fields\n)]\npub enum JournalPayload",
-                "    rename_all = \"snake_case\"\n)]\npub enum JournalPayload",
-            )
-            .map(|()| "JournalPayload unknown body field must fail closed")?,
-            "durable_journal_record_unknown_field" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "#[derive(Clone, Debug, PartialEq, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct JournalRecordWire",
-                "#[derive(Clone, Debug, PartialEq, Deserialize)]\nstruct JournalRecordWire",
-            )
-            .map(|()| "JournalRecord unknown top-level field must fail closed")?,
-            "durable_reconcile_state_unknown_field" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "#[serde(tag = \"kind\", rename_all = \"snake_case\", deny_unknown_fields)]\npub enum ReconcileState",
-                "#[serde(tag = \"kind\", rename_all = \"snake_case\")]\npub enum ReconcileState",
-            )
-            .map(|()| "ReconcileState unknown variant field must fail closed")?,
-            "durable_journal_sequence_zero" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/storage.rs"),
-                "        record.validate()?;\n        Ok(record)",
-                "        Ok(record)",
-            )
-            .map(|()| "JournalRecord sequence zero must fail closed")?,
-            "source_graph_cycle" => replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/graph.rs"),
-                "        validate_relationship_cycles(self)",
-                "        Ok(())",
-            )
-            .map(|()| "RelationshipCycle")?,
-            other => return Err(format!("unknown public invariant mutation {other}")),
-        };
-        isolated_public_test_failure_diagnostic(sandbox, &target_dir, diagnostic, failure_marker)
-    })?;
+        })?;
     Ok(proof_fixture(
         vec![observed],
         proof_class,
@@ -10774,35 +11216,21 @@ fn proof_report_fixture_execution(mutation: &str) -> Result<FixtureExecution, St
 }
 
 fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecution, String> {
-    let target_dir = isolated_fixture_target_dir(root, "compiled-testkit")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-    let missing = with_isolated_fixture_root(root, "public-counterexample-removed", |sandbox| {
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-        replace_text_in_file(
-            &source,
-            "fn public_boundary_counterexamples_reject_audit_failures()",
-            "fn removed_public_boundary_counterexamples_reject_audit_failures()",
-        )?;
-        isolated_public_test_diagnostic(sandbox, "removed", &target_dir)
-    })?;
-    let skipped = with_isolated_fixture_root(root, "public-counterexample-ignored", |sandbox| {
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-        replace_text_in_file(
-            &source,
-            "#[test]\n    fn public_boundary_counterexamples_reject_audit_failures()",
-            "#[test]\n    #[ignore]\n    fn public_boundary_counterexamples_reject_audit_failures()",
-        )?;
-        isolated_public_test_diagnostic(sandbox, "ignored", &target_dir)
-    })?;
-    let empty = with_isolated_fixture_root(root, "public-counterexample-empty", |sandbox| {
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-        empty_named_test_body(
-            &source,
-            "fn public_boundary_counterexamples_reject_audit_failures()",
-        )?;
+    let missing =
+        with_remaining_mutant_fixture(root, "public-counterexample-removed", |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+            isolated_public_test_diagnostic(sandbox, "removed", &target_dir)
+        })?;
+    let skipped =
+        with_remaining_mutant_fixture(root, "public-counterexample-ignored", |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+            isolated_public_test_diagnostic(sandbox, "ignored", &target_dir)
+        })?;
+    let empty = with_remaining_mutant_fixture(root, "public-counterexample-empty", |sandbox| {
+        let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
         isolated_public_test_diagnostic(sandbox, "empty", &target_dir)
     })?;
     Ok(proof_fixture(
@@ -10817,24 +11245,12 @@ fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecut
 fn receipt_only_public_counterexample_fixture_execution(
     root: &Path,
 ) -> Result<FixtureExecution, String> {
-    let target_dir = isolated_fixture_target_dir(root, "public-receipt-only")?;
-    fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-    let diagnostic = with_isolated_fixture_root(
+    let diagnostic = with_remaining_mutant_fixture(
         root,
         "public-counterexample-receipt-only",
         |sandbox| {
-            prepare_isolated_testkit_workspace(root, sandbox)?;
-            let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-            replace_named_test_body(
-                &source,
-                "fn public_boundary_counterexamples_reject_audit_failures()",
-                &format!("{{ println!(\"{PUBLIC_BOUNDARY_COUNTEREXAMPLE_RECEIPT}\"); }}"),
-            )?;
-            replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/graph.rs"),
-                "        validate_relationship_cycles(self)",
-                "        Ok(())",
-            )?;
+            let target_dir = isolated_fixture_target_dir(sandbox, "public-receipt-only")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
             let public_output = cargo_proof_output(
                 sandbox,
                 "cargo",
@@ -10908,6 +11324,18 @@ fn receipt_only_public_counterexample_fixture_execution(
 }
 
 fn prepare_isolated_testkit_workspace(source_root: &Path, sandbox: &Path) -> Result<(), String> {
+    prepare_effective_testkit_workspace(source_root, sandbox, &[])
+}
+
+fn prepare_effective_testkit_workspace(
+    source_root: &Path,
+    sandbox: &Path,
+    effective_inputs: &[(PathBuf, Vec<u8>)],
+) -> Result<(), String> {
+    let effective_files = effective_inputs
+        .iter()
+        .map(|(relative, bytes)| (sandbox.join(relative), bytes.as_slice()))
+        .collect::<Vec<_>>();
     for relative in [
         "build/crates/fforager-testkit",
         "build/fixtures/contracts",
@@ -10916,7 +11344,19 @@ fn prepare_isolated_testkit_workspace(source_root: &Path, sandbox: &Path) -> Res
         "product/crates/fforager-core",
         "product/crates/fforager-storage",
     ] {
-        copy_fixture_tree(&source_root.join(relative), &sandbox.join(relative))?;
+        copy_effective_fixture_tree(
+            &source_root.join(relative),
+            &sandbox.join(relative),
+            &effective_files,
+        )?;
+    }
+    for (path, bytes) in &effective_files {
+        fs::create_dir_all(
+            path.parent()
+                .ok_or("effective fixture input has no parent")?,
+        )
+        .map_err(|error| error.to_string())?;
+        refresh_fixture_bytes(path, bytes)?;
     }
     let manifest = r#"[workspace]
 members = [
@@ -10954,16 +11394,93 @@ pedantic = { level = "warn", priority = -1 }
             .ok_or("isolated workspace has no build parent")?,
     )
     .map_err(|error| error.to_string())?;
-    fs::write(&path, manifest).map_err(|error| error.to_string())?;
-    fs::copy(
-        source_root.join("build/Cargo.lock"),
-        sandbox.join("build/Cargo.lock"),
+    let mut isolated_manifest: toml::Table = manifest
+        .parse()
+        .map_err(|error: toml::de::Error| error.to_string())?;
+    let source_manifest: toml::Table = read_toml(&source_root.join("build/Cargo.toml"))?;
+    let windows = source_manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml::Value::as_table)
+        .and_then(|dependencies| dependencies.get("windows-sys"))
+        .ok_or("canonical workspace windows-sys binding is missing")?
+        .clone();
+    isolated_manifest
+        .get_mut("workspace")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|workspace| workspace.get_mut("dependencies"))
+        .and_then(toml::Value::as_table_mut)
+        .ok_or("isolated workspace dependencies are missing")?
+        .insert("windows-sys".into(), windows);
+    let manifest = toml::to_string(&isolated_manifest).map_err(|error| error.to_string())?;
+    if fs::read(&path).ok().as_deref() != Some(manifest.as_bytes()) {
+        fs::write(&path, &manifest).map_err(|error| error.to_string())?;
+    }
+    copy_fixture_file(
+        &source_root.join("build/Cargo.lock"),
+        &sandbox.join("build/Cargo.lock"),
+    )?;
+    write_isolated_fixture_identity(source_root, sandbox, &manifest)
+}
+
+fn write_isolated_fixture_identity(
+    source_root: &Path,
+    sandbox: &Path,
+    manifest: &str,
+) -> Result<(), String> {
+    let mut files = walk_files(sandbox)?;
+    files.sort();
+    let mut inputs = Sha256::new();
+    for file in &files {
+        inputs.update(
+            slash(
+                file.strip_prefix(sandbox)
+                    .map_err(|error| error.to_string())?,
+            )
+            .as_bytes(),
+        );
+        inputs.update([0]);
+        inputs.update(fs::read(file).map_err(|error| error.to_string())?);
+        inputs.update([0]);
+    }
+    let source_identity =
+        command_output(source_root, "git", &["rev-parse", "HEAD", "HEAD^{tree}"])?;
+    let input_sha256 = inputs
+        .finalize()
+        .iter()
+        .flat_map(|byte| {
+            let hex = b"0123456789abcdef";
+            [
+                char::from(hex[usize::from(byte >> 4)]),
+                char::from(hex[usize::from(byte & 15)]),
+            ]
+        })
+        .collect::<String>();
+    let identity = serde_json::json!({"source_commit_and_tree":source_identity.lines().collect::<Vec<_>>(), "file_count":files.len(), "manifest_sha256":encode_sha256(manifest.as_bytes()), "input_sha256":input_sha256, "source_path":slash(sandbox)});
+    let parent = sandbox.parent().ok_or("fixture has no identity parent")?;
+    let name = sandbox
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or("fixture identity name invalid")?;
+    fs::write(
+        parent.join(format!("{name}.identity.json")),
+        serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
     )
-    .map_err(|error| format!("copy isolated workspace lockfile: {error}"))?;
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
+#[cfg(test)]
 fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_effective_fixture_tree(source, destination, &[])
+}
+
+fn copy_effective_fixture_tree(
+    source: &Path,
+    destination: &Path,
+    effective_files: &[(PathBuf, &[u8])],
+) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for entry in
         fs::read_dir(source).map_err(|error| format!("read {}: {error}", source.display()))?
@@ -10975,9 +11492,11 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?
             .is_dir()
         {
-            copy_fixture_tree(&entry.path(), &target)?;
+            copy_effective_fixture_tree(&entry.path(), &target, effective_files)?;
+        } else if let Some((_, bytes)) = effective_files.iter().find(|(path, _)| path == &target) {
+            refresh_fixture_bytes(&target, bytes)?;
         } else {
-            fs::copy(entry.path(), target).map_err(|error| error.to_string())?;
+            copy_fixture_file(&entry.path(), &target)?;
         }
     }
     Ok(())
@@ -10985,6 +11504,11 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn replace_text_in_file(path: &Path, before: &str, after: &str) -> Result<(), String> {
     let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    fs::write(path, derive_text_mutation(&source, before, after)?)
+        .map_err(|error| error.to_string())
+}
+
+fn derive_text_mutation(source: &str, before: &str, after: &str) -> Result<String, String> {
     let uses_crlf = source.contains("\r\n");
     let normalized_source = source.replace("\r\n", "\n");
     let normalized_before = before.replace("\r\n", "\n");
@@ -10998,15 +11522,20 @@ fn replace_text_in_file(path: &Path, before: &str, after: &str) -> Result<(), St
     } else {
         mutated
     };
-    fs::write(path, output).map_err(|error| error.to_string())
-}
-
-fn empty_named_test_body(path: &Path, marker: &str) -> Result<(), String> {
-    replace_named_test_body(path, marker, "{}")
+    Ok(output)
 }
 
 fn replace_named_test_body(path: &Path, marker: &str, replacement: &str) -> Result<(), String> {
-    let mut source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    fs::write(path, derive_named_test_body(source, marker, replacement)?)
+        .map_err(|error| error.to_string())
+}
+
+fn derive_named_test_body(
+    mut source: String,
+    marker: &str,
+    replacement: &str,
+) -> Result<String, String> {
     let start = source
         .find(marker)
         .ok_or_else(|| format!("isolated empty-body marker is absent: {marker}"))?;
@@ -11031,7 +11560,7 @@ fn replace_named_test_body(path: &Path, marker: &str, replacement: &str) -> Resu
     }
     let closing = closing.ok_or("isolated public test has unbalanced body braces")?;
     source.replace_range(opening..=closing, replacement);
-    fs::write(path, source).map_err(|error| error.to_string())
+    Ok(source)
 }
 
 fn isolated_public_test_diagnostic(
@@ -11205,6 +11734,109 @@ fn run_runtime_truth_gate_inner(root: &Path, gate_args: &[String]) -> Result<(),
     let path = write_report(root, "runtime-truth-check", &report)?;
     println!("PASS {RUNTIME_GATE}; report={}", slash(&path));
     Ok(())
+}
+
+fn run_watcher_gate(root: &Path, gate_args: &[String]) -> Result<(), String> {
+    let result = (|| {
+        let result = runtime_truth_check(root)?;
+        if !result.checks.iter().any(|check| {
+            check.id == "phase1-watcher-boundaries"
+                && check.status == "PASS"
+                && check.proof_class == "runtime_fault"
+        }) {
+            return Err(
+                "FF-WATCHER-E-PROOF-MISSING: real staged watcher cases did not execute".to_owned(),
+            );
+        }
+        let executed_proof_classes = executed_proof_classes(&result.checks, &[]);
+        let report = GateReport {
+            schema_id: "ff.gate-report@1",
+            schema_version: "1.0.0",
+            gate_id: "FF-GATE-WATCHER-001".into(),
+            gate_version: 1,
+            status: "PASS",
+            exit_code: 0,
+            source: source_state(root)?,
+            invocation: invocation(gate_args),
+            inputs: collect_inputs(root)?,
+            checks: result.checks,
+            rules: vec!["FF-BUILD-088".into()],
+            fixtures: Vec::new(),
+            aggregate_executed_proof_class: aggregate_executed_proof_class(&executed_proof_classes),
+            declared_supported_proof_classes: result.proof_classes,
+            executed_proof_classes,
+            proof_limitations: result.limitations,
+            artifacts: result.artifacts,
+        };
+        let path = write_report(root, "watcher-check", &report)?;
+        println!("PASS FF-GATE-WATCHER-001; report={}", slash(&path));
+        Ok(())
+    })();
+    result.or_else(|error| {
+        fail_with_report(
+            root,
+            "FF-GATE-WATCHER-001",
+            "watcher-check",
+            gate_args,
+            &error,
+        )
+    })
+}
+
+fn write_executed_runtime_children(
+    root: &Path,
+    result: &RuntimeTruthResult,
+) -> Result<Vec<String>, String> {
+    if !result.checks.iter().any(|check| {
+        check.id == "phase1-watcher-boundaries"
+            && check.status == "PASS"
+            && check.proof_class == "runtime_fault"
+    }) {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    for (gate, command, args) in [
+        (
+            RUNTIME_GATE,
+            "runtime-truth-check",
+            vec![
+                "runtime-truth-check".into(),
+                "--evidence-from-taskboard".into(),
+            ],
+        ),
+        (
+            "FF-GATE-WATCHER-001",
+            "watcher-check",
+            vec!["watcher-check".into()],
+        ),
+    ] {
+        let classes = executed_proof_classes(&result.checks, &[]);
+        let mut limitations = result.limitations.clone();
+        limitations.push("Triggered child verdict within this verify-pr execution; the same actual staged cases and artifact bytes were evaluated once, without rerunning a separate CLI process.".into());
+        let report = GateReport {
+            schema_id: "ff.gate-report@1",
+            schema_version: "1.0.0",
+            gate_id: gate.into(),
+            gate_version: 1,
+            status: "PASS",
+            exit_code: 0,
+            source: source_state(root)?,
+            invocation: invocation(&args),
+            inputs: collect_inputs(root)?,
+            checks: result.checks.clone(),
+            rules: (78..=88)
+                .map(|number| format!("FF-BUILD-{number:03}"))
+                .collect(),
+            fixtures: Vec::new(),
+            aggregate_executed_proof_class: aggregate_executed_proof_class(&classes),
+            executed_proof_classes: classes,
+            declared_supported_proof_classes: result.proof_classes.clone(),
+            proof_limitations: limitations,
+            artifacts: result.artifacts.clone(),
+        };
+        paths.push(slash(&write_report(root, command, &report)?));
+    }
+    Ok(paths)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -11404,6 +12036,14 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
     let proof_value = packet
         .pointer("/extensions/runtime_proof")
         .ok_or("FF-RUNTIME-E-PROOF-MISSING: product change has no extensions.runtime_proof")?;
+    if proof_value.get("schema_id").and_then(Value::as_str) == Some("ff.runtime-proof@2") {
+        let executed = phase1_runtime::execute(root, &packet, proof_value, &id)?;
+        promotion::check(root, &packet)?;
+        return Ok(executed);
+    }
+    if id == "WP-FF-021-first-runnable-production-slice-v1" || id.starts_with("WP-FF-011-") {
+        promotion::check(root, &packet)?;
+    }
     if !runtime_proof_predeclared(&activated_packet, proof_value) {
         return Err(
             "FF-RUNTIME-E-PROOF-NOT-PREDECLARED: exact runtime proof must exist in the packet activation checkpoint before product implementation"
@@ -13160,6 +13800,7 @@ fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> 
     )?;
     verify_advisory_databases(root, &mut checks)?;
     let runtime = runtime_truth_check(root)?;
+    let runtime_child_reports = write_executed_runtime_children(root, &runtime)?;
     checks.extend(runtime.checks);
     verify_future_gate_applicability(root, &mut checks)?;
     let mut declared_supported_proof_classes = architecture.declared_supported_proof_classes;
@@ -13176,6 +13817,7 @@ fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> 
         resource_durability_receipt.report_path,
     ];
     artifacts.extend(runtime.artifacts);
+    artifacts.extend(runtime_child_reports);
     artifacts.sort();
     artifacts.dedup();
     let executed_proof_classes = executed_proof_classes(&checks, &architecture.fixtures);
@@ -13206,12 +13848,15 @@ fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> 
 
 fn verify_future_gate_applicability(root: &Path, checks: &mut Vec<Check>) -> Result<(), String> {
     if root.join("product/watcher/Cargo.toml").exists() {
-        return Err(
-            "watcher-check is applicable because product/watcher/Cargo.toml exists, but the gate is NOT_IMPLEMENTED"
-                .to_owned(),
-        );
-    }
-    checks.push(Check {
+        if !checks.iter().any(|check| {
+            check.id == "phase1-watcher-boundaries"
+                && check.status == "PASS"
+                && check.proof_class == "runtime_fault"
+        }) {
+            return Err("FF-WATCHER-E-PROOF-MISSING: applicable watcher boundaries were not executed by this verification".into());
+        }
+    } else {
+        checks.push(Check {
         id: "watcher-check".to_owned(),
         status: "PASS",
         proof_class: "structural",
@@ -13222,6 +13867,7 @@ fn verify_future_gate_applicability(root: &Path, checks: &mut Vec<Check>) -> Res
         skipped_semantic_dependencies: vec!["Watcher package is not present.".to_owned()],
         detail: "product/watcher/Cargo.toml is absent; activation trigger is the watcher package or a watcher/release claim.".to_owned(),
     });
+    }
     checks.push(Check {
         id: "verify-release".to_owned(),
         status: "PASS",
@@ -13999,6 +14645,22 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-020-FINDING-BUILD-EDGE-002" => {
             Some("xtask::tests::build_only_contract_reuse_rejects_dependency_and_product_drift")
         }
+        "WP-FF-021-FINDING-HARDLINK-001" => {
+            Some("storage::fetch::tests::hardlinked_stage_is_rejected_before_truncation")
+        }
+        "WP-FF-021-FINDING-BYTE-CREDIT-002" => Some("FF-GATE-RUNTIME-001::phase1-success"),
+        "WP-FF-021-FINDING-ACTOR-METADATA-003" => Some(
+            "xtask::phase1_runtime::tests::actor_metadata_decodes_utf16_and_rejects_malformed_bytes",
+        ),
+        "WP-FF-021-FINDING-ARCHIVE-SCHEMA-004" => Some(
+            "xtask::phase1_runtime::tests::archive_oracle_uses_metadata_and_rejects_invalid_rows_and_versions",
+        ),
+        "WP-FF-021-FINDING-OUTPUT-IDENTITY-005" => {
+            Some("xtask::phase1_runtime::tests::output_identity_requires_the_same_existing_target")
+        }
+        "WP-FF-021-FINDING-WATCHER-VARIANT-006" => Some(
+            "xtask::phase1_runtime::watcher_mutant::tests::source_variant_uses_approved_lock_and_emits_incompatible_wire",
+        ),
         "WP-FF-017-FINDING-GRAPH-CLOSURE-005" | "WP-FF-017-FINDING-SOURCE-CLOSURE-006" => {
             Some("xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification")
         }
@@ -14692,8 +15354,9 @@ fn validate_rust_verification_environment(root: &Path) -> Result<(), String> {
             // Cargo supplies its default home to child test processes.  It is
             // not an override when it is exactly the controlled home that
             // nested validator commands will use as well.
-            if key == OsStr::new("CARGO_HOME")
-                && controlled_cargo_home().as_deref() == Some(Path::new(&value))
+            if (key == OsStr::new("CARGO_HOME")
+                && controlled_cargo_home().as_deref() == Some(Path::new(&value)))
+                || approved_cargo_build_jobs(&key, Some(&value))
             {
                 None
             } else {
@@ -14780,6 +15443,23 @@ fn sanitize_rust_command_environment(command: &mut Command, program: &str) {
     if !matches!(executable.as_str(), "cargo" | "cargo.exe") {
         return;
     }
+    // Only the reviewed serial scheduling value survives; explicit command
+    // removal or poisoning takes precedence over the inherited value.
+    let preserve_single_job = command
+        .get_envs()
+        .find(|(key, _)| {
+            key.to_string_lossy()
+                .eq_ignore_ascii_case("CARGO_BUILD_JOBS")
+        })
+        .map_or_else(
+            || {
+                approved_cargo_build_jobs(
+                    OsStr::new("CARGO_BUILD_JOBS"),
+                    env::var_os("CARGO_BUILD_JOBS").as_deref(),
+                )
+            },
+            |(key, value)| approved_cargo_build_jobs(key, value),
+        );
     for key in RUST_ENVIRONMENT_OVERRIDES {
         command.env_remove(key);
     }
@@ -14803,6 +15483,9 @@ fn sanitize_rust_command_environment(command: &mut Command, program: &str) {
             command.env_remove(key);
         }
     }
+    if preserve_single_job {
+        command.env("CARGO_BUILD_JOBS", "1");
+    }
     if let Some(cargo_home) = controlled_cargo_home() {
         command.env("CARGO_HOME", cargo_home);
     }
@@ -14813,6 +15496,12 @@ fn controlled_cargo_home() -> Option<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .map(|home| home.join(".cargo"))
+}
+
+fn approved_cargo_build_jobs(key: &OsStr, value: Option<&OsStr>) -> bool {
+    key.to_string_lossy()
+        .eq_ignore_ascii_case("CARGO_BUILD_JOBS")
+        && value == Some(OsStr::new("1"))
 }
 
 fn rust_environment_override(key: &OsStr) -> bool {
@@ -15049,7 +15738,43 @@ fn invocation(gate_args: &[String]) -> Invocation {
 
 fn write_report(root: &Path, prefix: &str, report: &GateReport) -> Result<PathBuf, String> {
     validate_gate_report_evidence(report)?;
-    let bytes = serde_json::to_vec_pretty(report).map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(report).map_err(|error| error.to_string())?;
+    if report.executed_proof_classes.iter().any(|class| {
+        matches!(
+            class.as_str(),
+            "production_runtime" | "runtime_fault" | "runtime_observable"
+        )
+    }) {
+        let receipts = report
+            .artifacts
+            .iter()
+            .filter(|path| path.ends_with("/runtime-evidence.json"))
+            .collect::<Vec<_>>();
+        if receipts.len() != 1 || !safe_relative(receipts[0]) {
+            return Err(
+                "FF-ARCH-E-GATE-REPORT-RUNTIME: actual staged runtime evidence receipt is required"
+                    .into(),
+            );
+        }
+        let evidence: phase1_runtime::RuntimeEvidence = serde_json::from_slice(
+            &fs::read(root.join(receipts[0])).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        phase1_runtime::validate_evidence(&evidence, Some(root))?;
+        if evidence.source != report.source {
+            return Err("FF-ARCH-E-GATE-REPORT-RUNTIME: evidence source mismatch".into());
+        }
+        value["schema_id"] = Value::String("ff.gate-report@2".into());
+        value["schema_version"] = Value::String("2.0.0".into());
+        if report.invocation.gate_args != evidence.originating_gate_args {
+            value["derived_from"] =
+                serde_json::to_value(invocation(&evidence.originating_gate_args))
+                    .map_err(|error| error.to_string())?;
+        }
+        value["runtime_evidence"] =
+            serde_json::to_value(evidence).map_err(|error| error.to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
     let artifact: GateReportArtifact = serde_json::from_slice(&bytes).map_err(|error| {
         format!("FF-ARCH-E-GATE-REPORT-SCHEMA: serialize/parse report: {error}")
     })?;
@@ -15087,6 +15812,9 @@ fn write_report(root: &Path, prefix: &str, report: &GateReport) -> Result<PathBu
             format!("FF-ARCH-E-GATE-REPORT-SCHEMA: parse persisted report: {error}")
         })?;
     validate_gate_report_artifact(&persisted_artifact)?;
+    if let Some(evidence) = &persisted_artifact.runtime_evidence {
+        phase1_runtime::validate_evidence(evidence, Some(root))?;
+    }
     final_path
         .strip_prefix(root)
         .map(Path::to_path_buf)
@@ -15162,14 +15890,117 @@ const GATE_REPORT_PROOF_CLASSES: &[&str] = &[
 
 #[allow(clippy::too_many_lines)]
 fn validate_gate_report_artifact(report: &GateReportArtifact) -> Result<(), String> {
-    if report.schema_id != "ff.gate-report@1" || report.schema_version != "1.0.0" {
+    let version_two = report.schema_id == "ff.gate-report@2" && report.schema_version == "2.0.0";
+    if !version_two
+        && (report.schema_id != "ff.gate-report@1"
+            || report.schema_version != "1.0.0"
+            || report.runtime_evidence.is_some()
+            || report.derived_from.is_some())
+    {
         return Err("FF-ARCH-E-GATE-REPORT-SCHEMA: invalid gate report identity".to_owned());
+    }
+    if version_two {
+        if !matches!(
+            report.gate_id.as_str(),
+            RUNTIME_GATE | PR_GATE | "FF-GATE-WATCHER-001"
+        ) || report.status != "PASS"
+        {
+            return Err("FF-ARCH-E-GATE-REPORT-RUNTIME: successor is confined to actual successful runtime gates".into());
+        }
+        let evidence = report
+            .runtime_evidence
+            .as_ref()
+            .ok_or("FF-ARCH-E-GATE-REPORT-RUNTIME: direct staged-artifact evidence missing")?;
+        phase1_runtime::validate_evidence(evidence, None)?;
+        if let Some(origin) = &report.derived_from {
+            if origin.repository_root != "."
+                || origin.gate_args != evidence.originating_gate_args
+                || origin.canonical_command != invocation(&origin.gate_args).canonical_command
+            {
+                return Err("FF-ARCH-E-GATE-REPORT-RUNTIME: derived verdict misstates its actual batch invocation".into());
+            }
+        } else if report.invocation.gate_args != evidence.originating_gate_args {
+            return Err(
+                "FF-ARCH-E-GATE-REPORT-RUNTIME: derived verdict omits actual invocation provenance"
+                    .into(),
+            );
+        }
+        if !report.checks.iter().any(|check| {
+            check.id == "phase1-release-build"
+                && check.status == "PASS"
+                && check.proof_class == "external_process"
+        }) {
+            return Err(
+                "FF-ARCH-E-GATE-REPORT-RUNTIME: locked release build execution missing".into(),
+            );
+        }
+        for name in [
+            "success",
+            "transport-failure",
+            "external-cancellation",
+            "crash-restart",
+            "durable-prefixes",
+            "state-counterfactual",
+            "watcher-missing",
+            "watcher-corrupt",
+            "watcher-incompatible",
+            "watcher-crash",
+            "watcher-hung",
+            "watcher-storage-failure",
+        ] {
+            let matches = report
+                .checks
+                .iter()
+                .filter(|check| check.id == format!("phase1-{name}"))
+                .collect::<Vec<_>>();
+            let class = match name {
+                "durable-prefixes" => "state_effect",
+                "state-counterfactual" => "counterfactual",
+                _ => "production_runtime",
+            };
+            if matches.len() != 1
+                || matches[0].proof_class != class
+                || matches[0].status != "PASS"
+                || !matches[0].skipped_semantic_dependencies.is_empty()
+            {
+                return Err(
+                    "FF-ARCH-E-GATE-REPORT-RUNTIME: exact executed scenario checks missing".into(),
+                );
+            }
+        }
+        if !report.checks.iter().any(|check| {
+            check.id == "phase1-watcher-boundaries"
+                && check.status == "PASS"
+                && check.proof_class == "runtime_fault"
+                && check.skipped_semantic_dependencies.is_empty()
+        }) {
+            return Err("FF-ARCH-E-GATE-REPORT-RUNTIME: watcher fault execution missing".into());
+        }
+        if evidence.source.git_commit != report.source.git_commit
+            || evidence.source.content_fingerprint != report.source.content_fingerprint
+            || evidence.source.dirty != report.source.dirty
+            || evidence.source.dirty_paths != report.source.dirty_paths
+        {
+            return Err("FF-ARCH-E-GATE-REPORT-RUNTIME: direct evidence source differs".into());
+        }
+        if report.checks.iter().any(|check| {
+            matches!(
+                check.proof_class.as_str(),
+                "production_runtime" | "runtime_fault"
+            ) && !check.skipped_semantic_dependencies.is_empty()
+        }) {
+            return Err(
+                "FF-ARCH-E-GATE-REPORT-RUNTIME: actual runtime check claims skipped execution"
+                    .into(),
+            );
+        }
     }
     let expected_args: &[&str] = match report.gate_id.as_str() {
         ARCH_GATE => &["architecture-check"],
         DEEP_GATE => &["verify-deep", "--evidence-from-taskboard"],
         PR_GATE => &["verify-pr", "--evidence-from-taskboard"],
         RUNTIME_GATE => &["runtime-truth-check", "--evidence-from-taskboard"],
+        "FF-GATE-WATCHER-001" if version_two || report.status == "FAIL" => &["watcher-check"],
         _ => {
             return Err(
                 "FF-ARCH-E-GATE-REPORT-SCHEMA: report names an unknown gate identity".to_owned(),
@@ -15244,12 +16075,14 @@ fn validate_gate_report_artifact(report: &GateReportArtifact) -> Result<(), Stri
                 .to_owned(),
         );
     }
-    if report.executed_proof_classes.iter().any(|class| {
-        matches!(
-            class.as_str(),
-            "production_runtime" | "runtime_observable" | "runtime_fault"
-        )
-    }) {
+    if !version_two
+        && report.executed_proof_classes.iter().any(|class| {
+            matches!(
+                class.as_str(),
+                "production_runtime" | "runtime_observable" | "runtime_fault"
+            )
+        })
+    {
         return Err(
             "FF-ARCH-E-GATE-REPORT-RUNTIME: runtime-class execution is forbidden until a gate schema includes direct staged-artifact runtime evidence"
                 .to_owned(),
@@ -16549,6 +17382,7 @@ mod tests {
             "RUSTFLAGS",
             "CARGO_ENCODED_RUSTFLAGS",
             "RUSTC_WRAPPER",
+            "CARGO_BUILD_JOBS",
             "CARGO_BUILD_RUSTFLAGS",
             "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
             "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER",
@@ -16561,6 +17395,7 @@ mod tests {
             .env("RUSTFLAGS", "--cap-lints=allow")
             .env("RUSTUP_TOOLCHAIN", "poison-toolchain")
             .env("CARGO_HOME", "poison-home")
+            .env("CARGO_BUILD_JOBS", "1")
             .env("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER", "fake-runner");
         sanitize_rust_command_environment(&mut command, "cargo");
         let environment = command
@@ -16569,6 +17404,45 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         assert_eq!(environment.get(OsStr::new("CLIPPY_CONF_DIR")), Some(&None));
         assert_eq!(environment.get(OsStr::new("RUSTFLAGS")), Some(&None));
+        assert_eq!(
+            environment.get(OsStr::new("CARGO_BUILD_JOBS")),
+            Some(&Some(std::ffi::OsString::from("1")))
+        );
+        assert!(approved_cargo_build_jobs(
+            OsStr::new("cargo_build_jobs"),
+            Some(OsStr::new("1"))
+        ));
+        assert!(!approved_cargo_build_jobs(
+            OsStr::new("RUSTFLAGS"),
+            Some(OsStr::new("1"))
+        ));
+        for value in ["", "0", "2", "-1", "01", "+1", "1 ", " 1", "one"] {
+            assert!(!approved_cargo_build_jobs(
+                OsStr::new("CARGO_BUILD_JOBS"),
+                Some(OsStr::new(value))
+            ));
+            let mut poison = Command::new("cargo");
+            poison.env("CARGO_BUILD_JOBS", value);
+            sanitize_rust_command_environment(&mut poison, "cargo");
+            assert!(
+                poison
+                    .get_envs()
+                    .any(|(key, value)| key == OsStr::new("CARGO_BUILD_JOBS") && value.is_none())
+            );
+        }
+        assert!(!approved_cargo_build_jobs(
+            OsStr::new("CARGO_BUILD_JOBS"),
+            None
+        ));
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let malformed = std::ffi::OsString::from_wide(&[0xd800]);
+            assert!(!approved_cargo_build_jobs(
+                OsStr::new("CARGO_BUILD_JOBS"),
+                Some(&malformed)
+            ));
+        }
         let expected_cargo_home = controlled_cargo_home().map(PathBuf::into_os_string);
         assert_eq!(
             environment.get(OsStr::new("CARGO_HOME")),
@@ -16846,8 +17720,8 @@ mod tests {
             |root| {
                 replace_file_text(
                     &root.join("build/architecture-policy.toml"),
-                    "exception_decision_ids = [\"FF-DEC-001\", \"FF-DEC-002\", \"FF-DEC-003\"]",
-                    "exception_decision_ids = [\"SELF-AUTHORIZED\", \"FF-DEC-002\", \"FF-DEC-003\"]",
+                    "exception_decision_ids = [\"FF-DEC-001\", \"FF-DEC-002\", \"FF-DEC-003\", \"FF-DEC-004\", \"FF-DEC-005\"]",
+                    "exception_decision_ids = [\"SELF-AUTHORIZED\", \"FF-DEC-002\", \"FF-DEC-003\", \"FF-DEC-004\", \"FF-DEC-005\"]",
                 );
             },
             "FF-ARCH-E-UNAPPROVED-EXCEPTION",
@@ -17042,8 +17916,8 @@ mod tests {
             |root| {
                 replace_file_text(
                     &root.join(".GOV/rules/build-rules.yaml"),
-                    "allowed_product_consumers: [fforager-net]",
-                    "allowed_product_consumers: [fforager-core, fforager-net]",
+                    "allowed_product_consumers: [fforager-net, fforager, fforager-worker]",
+                    "allowed_product_consumers: [fforager-net, fforager, fforager-worker, fforager-core]",
                 );
             },
             "FF-ARCH-E-EXCEPTION-SCHEMA",
@@ -17455,7 +18329,7 @@ mod tests {
         );
         assert_eq!(
             yaml_string(exception, "ordinary_transport_resolved_closure_sha256").unwrap(),
-            "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+            "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
         );
         assert_eq!(
             yaml_string(
@@ -17499,9 +18373,18 @@ mod tests {
 
     #[test]
     fn native_exception_accepts_only_the_exact_approved_product_consumer() {
+        let _execution_guard = ARCHITECTURE_CHECK_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = architecture_sandbox("native-exception-approved-product-resolve-graph");
-        mutate_approved_shipped_product_native_reachability(&root);
-        architecture_check(&root).expect("exact approved fforager-net reachability");
+        let policy: ArchitecturePolicy =
+            read_toml(&root.join("build/architecture-policy.toml")).unwrap();
+        let native_exceptions =
+            read_native_dependency_exceptions(&root.join(&policy.exception_authority)).unwrap();
+        let tooling: ToolingPolicy = read_toml(&root.join("build/tooling-policy.toml")).unwrap();
+        let metadata = cargo_metadata(&root, &policy, &tooling.supported_hosts[0]).unwrap();
+        validate_native_exception_reachability(&policy, &metadata, &native_exceptions)
+            .expect("exact approved net, facade, and worker reachability");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -18324,6 +19207,179 @@ product_root = "product"
         );
     }
 
+    #[test]
+    fn warm_fixture_reuses_unchanged_inputs_and_rejects_shared_mutation() {
+        let root = repo_root().unwrap();
+        let label = "warm-fixture-isolation-proof";
+        let expected = fs::read(root.join("rust-toolchain.toml")).unwrap();
+        with_warm_testkit_fixture(&root, label, |sandbox| {
+            copy_fixture_file(
+                &root.join("rust-toolchain.toml"),
+                &sandbox.join("rust-toolchain.toml"),
+            )?;
+            fs::write(sandbox.join("rust-toolchain.toml"), b"mutated input")
+                .map_err(|error| error.to_string())?;
+            fs::create_dir_all(sandbox.join("stale-extra")).map_err(|error| error.to_string())?;
+            fs::write(sandbox.join("stale-extra/not-canonical"), b"stale")
+                .map_err(|error| error.to_string())?;
+            assert!(with_warm_testkit_fixture(&root, label, |_| Ok(())).is_err());
+            Ok(())
+        })
+        .unwrap();
+        let modified = with_warm_testkit_fixture(&root, label, |sandbox| {
+            assert_eq!(
+                fs::read(sandbox.join("rust-toolchain.toml")).unwrap(),
+                expected
+            );
+            assert!(!sandbox.join("stale-extra").exists());
+            Ok(fs::metadata(sandbox.join("rust-toolchain.toml"))
+                .unwrap()
+                .modified()
+                .unwrap())
+        })
+        .unwrap();
+        with_warm_testkit_fixture(&root, label, |sandbox| {
+            assert_eq!(
+                fs::metadata(sandbox.join("rust-toolchain.toml"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                modified
+            );
+            assert_eq!(
+                fs::read(sandbox.join("rust-toolchain.toml")).unwrap(),
+                expected
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_effective_warm_refresh(&root);
+        assert_remaining_effective_warm_refresh(&root);
+    }
+
+    fn assert_effective_warm_refresh(repository: &Path) {
+        let source = test_root("effective-warm-input");
+        let relative = Path::new("product/crates/fforager-contracts/src/storage.rs");
+        let canonical = source.join(relative);
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::copy(repository.join(relative), &canonical).unwrap();
+        fs::write(source.join("other.rs"), b"canonical other input").unwrap();
+        let mut previous_modified = None;
+        let mut initial_bytes = Vec::new();
+        for revision in 0..3 {
+            if revision == 2 {
+                let mut changed = fs::read_to_string(&canonical).unwrap();
+                changed.push_str("\n// changed canonical fixture input\n");
+                fs::write(&canonical, changed).unwrap();
+            }
+            let (path, bytes, _) =
+                public_invariant_effective_input(&source, "durable_journal_payload_unknown_field")
+                    .unwrap();
+            if revision == 0 {
+                initial_bytes.clone_from(&bytes);
+            } else if revision == 2 {
+                assert_ne!(bytes, initial_bytes);
+            }
+            let modified = with_effective_warm_testkit_fixture(
+                &source,
+                "warm-effective-input-proof",
+                &[(path.clone(), bytes.clone())],
+                |sandbox| {
+                    let effective = sandbox.join(&path);
+                    copy_effective_fixture_tree(
+                        &source,
+                        sandbox,
+                        &[(effective.clone(), bytes.as_slice())],
+                    )?;
+                    assert_eq!(fs::read(&effective).unwrap(), bytes);
+                    assert_eq!(
+                        fs::read(sandbox.join("other.rs")).unwrap(),
+                        b"canonical other input"
+                    );
+                    let modified = fs::metadata(&effective).unwrap().modified().unwrap();
+                    if revision == 1 {
+                        assert_eq!(Some(modified), previous_modified);
+                    } else if revision == 2 {
+                        assert!(Some(modified) >= previous_modified);
+                    }
+                    fs::write(sandbox.join("other.rs"), b"stale mutant")
+                        .map_err(|error| error.to_string())?;
+                    Ok(modified)
+                },
+            )
+            .unwrap();
+            previous_modified = Some(modified);
+        }
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    fn assert_remaining_effective_warm_refresh(repository: &Path) {
+        let source = test_root("remaining-effective-inputs");
+        for relative in [
+            "build/crates/fforager-testkit",
+            "build/fixtures/contracts",
+            "product/crates/fforager-contracts",
+            "product/crates/fforager-diagnostics-contract",
+            "product/crates/fforager-core",
+            "product/crates/fforager-storage",
+        ] {
+            copy_effective_fixture_tree(&repository.join(relative), &source.join(relative), &[])
+                .unwrap();
+        }
+        for relative in ["build/Cargo.toml", "build/Cargo.lock"] {
+            copy_fixture_file(&repository.join(relative), &source.join(relative)).unwrap();
+        }
+        for label in [
+            "proof-map-behavior-stub",
+            "public-counterexample-receipt-only",
+        ] {
+            let mut previous = Vec::new();
+            for revision in 0..3 {
+                if revision == 2 {
+                    for relative in [
+                        "product/crates/fforager-contracts/src/identity.rs",
+                        "product/crates/fforager-contracts/src/graph.rs",
+                        "build/crates/fforager-testkit/src/lib.rs",
+                    ] {
+                        let path = source.join(relative);
+                        let mut text = fs::read_to_string(&path).unwrap();
+                        text.push_str("\n// updated canonical input\n");
+                        fs::write(path, text).unwrap();
+                    }
+                }
+                let inputs = remaining_fixture_effective_inputs(&source, label).unwrap();
+                let observed = with_effective_warm_testkit_fixture(
+                    &source,
+                    &format!("warm-refresh-{label}"),
+                    &inputs,
+                    |sandbox| {
+                        prepare_effective_testkit_workspace(&source, sandbox, &inputs)?;
+                        let observed = inputs
+                            .iter()
+                            .map(|(relative, bytes)| {
+                                let path = sandbox.join(relative);
+                                assert_eq!(fs::read(&path).unwrap(), *bytes);
+                                (
+                                    bytes.clone(),
+                                    fs::metadata(path).unwrap().modified().unwrap(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        if revision == 1 {
+                            assert_eq!(observed, previous);
+                        } else if revision == 2 {
+                            assert_ne!(observed, previous);
+                        }
+                        Ok(observed)
+                    },
+                )
+                .unwrap();
+                previous = observed;
+            }
+        }
+        fs::remove_dir_all(source).unwrap();
+    }
+
     fn architecture_sandbox(label: &str) -> PathBuf {
         let source = repo_root().unwrap();
         let root = test_root(label);
@@ -18358,6 +19414,15 @@ product_root = "product"
             &root.join("build/fixtures/contracts"),
         );
         copy_test_tree(&source.join("product/crates"), &root.join("product/crates"));
+        copy_test_tree(&source.join("product/apps"), &root.join("product/apps"));
+        copy_test_tree(
+            &source.join("product/watcher"),
+            &root.join("product/watcher"),
+        );
+        copy_test_tree(
+            &source.join("build/tools/fforager-xtask/src"),
+            &root.join("build/tools/fforager-xtask/src"),
+        );
         copy_test_tree(&source.join("build/crates"), &root.join("build/crates"));
         root
     }
@@ -18395,46 +19460,6 @@ product_root = "product"
             &root.join("build/architecture-policy.toml"),
             "[[dependency_decisions]]\nname = \"toml\"",
             "[[dependency_decisions]]\nname = \"wreq\"\nversion = \"6.0.0-rc.29\"\nconsumer = \"fforager-core\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only shipped consumer bypass probe.\"\nnative = false\nowner = \"WP-FF-015-wreq-transport-adjudication\"\nallowed_consumers = [\"fforager-core\"]\nreason = \"Mutation-only reachability proof.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-015-wreq-transport-adjudication-v1-AC-001\"\nfeatures = [\"stream\", \"tokio-rt\", \"webpki-roots\"]\ndefault_features = false\n\n[[dependency_decisions]]\nname = \"toml\"",
-        );
-    }
-
-    fn mutate_approved_shipped_product_native_reachability(root: &Path) {
-        replace_file_text(
-            &root.join("build/Cargo.toml"),
-            "members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-contracts\",",
-            "members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-net\",\n    \"../product/crates/fforager-contracts\",",
-        );
-        replace_file_text(
-            &root.join("build/Cargo.toml"),
-            "default-members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-contracts\",",
-            "default-members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-net\",\n    \"../product/crates/fforager-contracts\",",
-        );
-        let manifest = root.join("product/crates/fforager-net/Cargo.toml");
-        fs::create_dir_all(manifest.parent().unwrap().join("src")).unwrap();
-        fs::write(
-            &manifest,
-            "[package]\nname = \"fforager-net\"\nversion = \"0.1.0\"\nworkspace = \"../../../build\"\nedition = \"2024\"\nrust-version = \"1.97.1\"\nlicense = \"MIT OR Apache-2.0\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nreqwest.workspace = true\nrustls.workspace = true\n\n[lints]\nworkspace = true\n",
-        )
-        .unwrap();
-        fs::write(
-            manifest.parent().unwrap().join("src/lib.rs"),
-            "#![forbid(unsafe_code)]\n//! Mutation-only approved shipped native consumer.\n",
-        )
-        .unwrap();
-        replace_file_text(
-            &root.join("build/Cargo.lock"),
-            "[[package]]\nname = \"fforager-diagnostics-contract\"",
-            "[[package]]\nname = \"fforager-net\"\nversion = \"0.1.0\"\ndependencies = [\n \"reqwest\",\n \"rustls\",\n]\n\n[[package]]\nname = \"fforager-diagnostics-contract\"",
-        );
-        replace_file_text(
-            &root.join("build/architecture-policy.toml"),
-            "[[members]]\nname = \"fforager-core\"",
-            "[[members]]\nname = \"fforager-net\"\nmanifest = \"product/crates/fforager-net/Cargo.toml\"\nsource_root = \"product/crates/fforager-net/src\"\nlayer = \"adapter\"\nartifact_role = \"mutation_only_approved_shipped_transport\"\nshipped = true\ntest_only = false\npublish_allowed = false\nallowed_internal_dependencies = []\nsplit_trigger = \"WP-FF-017-ordinary-transport-decision-v1-AC-001\"\nfeature_owner = \"WP-FF-017-ordinary-transport-decision-v1\"\nprofile = \"mutation_only_product_reachability\"\nremoval_condition = \"Mutation sandbox is deleted after the assertion.\"\nruntime_native_constraint_ref = \"FF-START-BOUNDARY-001\"\nunsafe_policy_ref = \"FF-BUILD-050\"\nexception_policy_ref = \"FF-BUILD-052\"\n\n[[members]]\nname = \"fforager-core\"",
-        );
-        replace_file_text(
-            &root.join("build/architecture-policy.toml"),
-            "[[dependency_decisions]]\nname = \"toml\"",
-            "[[dependency_decisions]]\nname = \"reqwest\"\nversion = \"0.13.4\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved product-native consumer.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise the positive product-authorized reachability branch.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"http2\", \"rustls-no-provider\", \"stream\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"rustls\"\nversion = \"0.23.46\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved ring provider edge.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise exact rustls product-native attribution.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"ring\", \"std\", \"tls12\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"toml\"",
         );
     }
 

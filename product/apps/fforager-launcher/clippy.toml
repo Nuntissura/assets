@@ -1,0 +1,7 @@
+# WP021 launcher owns only the fixed sibling worker/watcher process boundary.
+disallowed-types = []
+disallowed-methods = []
+disallowed-macros = [
+  { path = "core::include_bytes", reason = "Product code must not embed documentation or research assets." },
+  { path = "core::include_str", reason = "Product code must not embed documentation or research assets." },
+]

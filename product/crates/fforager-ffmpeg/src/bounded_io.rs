@@ -403,12 +403,15 @@ mod tests {
                 consumer_stall_timeout: Duration::from_secs(1),
             },
         );
-        assert!(matches!(
-            result,
-            Err(ProgressDrainError::Progress(
-                ProgressError::EvidenceBytesExceeded
-            ))
-        ));
+        assert!(
+            matches!(
+                result,
+                Err(ProgressDrainError::Progress(
+                    ProgressError::EvidenceBytesExceeded
+                ))
+            ),
+            "expected governed transcript rejection, observed {result:?}"
+        );
     }
 
     #[test]

@@ -103,14 +103,14 @@ exception_authority:
       owner: WP-FF-023-dependency-security-remediation
       approval_id: WP-FF-023-dependency-security-remediation-v1-AC-001
       allowed_prerequisite_consumers: [fforager-transport]
-      allowed_product_consumers: [fforager-net]
+      allowed_product_consumers: [fforager-net, fforager, fforager-worker]
       allowed_direct_dependencies: [reqwest, rustls]
       allowed_versions: ["reqwest@0.13.4", "ring@0.17.14", "rustls@0.23.46"]
       allowed_native_link_packages: ["ring@0.17.14"]
       allowed_native_runtime_packages: ["rustls-platform-verifier@0.7.0"]
       allowed_package_archive_sha256: ["ring@0.17.14=a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7", "rustls-platform-verifier@0.7.0=26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"]
       allowed_package_source_inventory_sha256: ["ring@0.17.14=60be074c360264320b3fa0a46515ca828e44954988d8843ad3766bf84fc452d3", "rustls-platform-verifier@0.7.0=8d7a222bf3a643ce4c2003c1ede94bbd0d4e10443271602ab445c9d940ac40b0"]
-      ordinary_transport_resolved_closure_sha256: "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+      ordinary_transport_resolved_closure_sha256: "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
       ordinary_transport_registry_source_closure_sha256: "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
       allowed_runtime_classes: [non_shipped_phase0_prerequisite, shipped_rust_product]
       allow_build_scripts: true
@@ -121,7 +121,7 @@ exception_authority:
       allow_product_use: true
       allow_packaging_or_release: true
       promotion_requires_new_operator_decision: false
-      reason: The Operator originally approved shipped reqwest 0.13.4 with rustls 0.23.42, rustls-no-provider, and native ring 0.17.14 for Ferric's ordinary transport under narrow Ferric-owned policy controls; WP-FF-023-dependency-security-remediation-v1-AC-001 reauthorizes the five exact security patch versions with the same provider, feature, native, and consumer boundaries; the exact locked ring crate includes a digest-pinned packaged Windows assembly-object inventory, and rustls-no-provider selects rustls-platform-verifier 0.7.0 whose Windows FFI remains supply-chain governed even though Ferric's provider-bound ClientConfig bypasses it at runtime.
+      reason: The Operator originally approved shipped reqwest 0.13.4 with rustls 0.23.42, rustls-no-provider, and native ring 0.17.14 for Ferric's ordinary transport under narrow Ferric-owned policy controls; WP-FF-023-dependency-security-remediation-v1-AC-001 reauthorizes the five exact security patch versions with the same provider, feature and native boundaries; the separately approved narrow WP021 composition decision permits only fforager -> fforager-net and fforager-worker -> fforager -> fforager-net as normal first-party callers, while fforager-net remains the only direct product reqwest/rustls consumer; the exact locked ring crate includes a digest-pinned packaged Windows assembly-object inventory, and rustls-no-provider selects rustls-platform-verifier 0.7.0 whose Windows FFI remains supply-chain governed even though Ferric's provider-bound ClientConfig bypasses it at runtime.
       removal_trigger: Replace only through a new explicit Operator decision that re-proves the exact provider, native-link, feature, consumer, runtime-class, policy-control, and staged-runtime boundaries.
     - id: FF-DEC-003
       kind: native_ffi_and_unsafe_boundary
@@ -149,6 +149,58 @@ exception_authority:
       reason: WP-010 requires exact Windows pre-execution Job assignment and Unix process-group supervision that stable Rust std does not expose completely; the Operator selected the smallest Ferric-owned boundary instead of the larger processkit dependency and its additional supply-chain surface.
       residual_uncertainty: Windows parent death during suspended pre-execution setup can leave a suspended orphan unless a separately approved broker removes the interval; Unix process groups are signal scopes and do not contain hostile setsid or setpgid escape.
       removal_trigger: Remove if stable Rust exposes the complete proven boundary, a smaller maintained safe binding passes the same behavior-sensitive corpus, or the prerequisite is retired; shipped promotion requires a new explicit Operator decision and FF-GATE-RUNTIME-001 proof.
+    - id: FF-DEC-004
+      kind: native_ffi_and_unsafe_boundary
+      status: ACTIVE_SHIPPED_STORAGE_NARROW_ONLY
+      owner: WP-FF-021-first-runnable-production-slice
+      approval_id: WP-FF-021-first-runnable-production-slice-v1-AC-003
+      operator_decision: The Operator explicitly approved the narrow production storage boundary using the already-pinned windows-sys for directory handles, filesystem identity, and flush operations on 2026-10-21.
+      allowed_prerequisite_consumers: []
+      allowed_product_consumers: [fforager-storage]
+      allowed_direct_dependencies: [windows-sys]
+      allowed_versions: ["windows-sys@0.61.2"]
+      allowed_native_link_packages: []
+      allowed_native_runtime_packages: []
+      allowed_runtime_classes: [shipped_rust_product]
+      allow_build_scripts: false
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      allow_ffi: true
+      allow_unsafe: scoped_storage_platform_module_only
+      safety_invariants: [retained_root_handles, no_reparse_traversal, verified_volume_identity, live_host_profile, acknowledged_file_and_directory_flush, exact_handle_ownership]
+      allow_product_use: true
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: false
+      reason: Stable Rust does not expose the Windows directory-handle, live filesystem identity, and directory-flush operations required for confined durable output and truthful archive commitments.
+      residual_uncertainty: Runtime acceptance and independent review remain unproven; unsupported filesystems or failed flush operations must fail closed.
+      removal_trigger: Replace only with an equally confined and durable platform boundary; any broader native API purpose or consumer requires a new Operator decision.
+    - id: FF-DEC-005
+      kind: native_ffi_and_unsafe_boundary
+      status: ACTIVE_NON_SHIPPED_VALIDATION_ONLY
+      owner: WP-FF-021-first-runnable-production-slice
+      approval_id: WP-FF-021-first-runnable-production-slice-v1-AC-004
+      operator_decision: The Operator explicitly approved validation-only watcher pause/resume and, in the subsequent 2026-10-21 live approval, read-only identity and exit acknowledgment for the launcher-owned worker, using already-pinned windows-sys. Worker pause or process-control authority is not extended.
+      allowed_prerequisite_consumers: [fforager-xtask]
+      allowed_product_consumers: []
+      allowed_direct_dependencies: [windows-sys]
+      allowed_versions: ["windows-sys@0.61.2"]
+      allowed_native_link_packages: []
+      allowed_native_runtime_packages: []
+      allowed_runtime_classes: [non_shipped_build_tooling]
+      allow_build_scripts: false
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      allow_ffi: true
+      allow_unsafe: scoped_owned_watcher_pause_module_only
+      safety_invariants: [validator_owned_watcher_pause_only, validator_owned_worker_read_only_identity, retained_process_handle, pid_and_creation_time_identity, verified_staged_image_identity, launcher_parent_identity, worker_identity_has_no_pause_or_process_control, pause_at_most_two_seconds, unconditional_detach_guard, no_shell, no_unowned_process_control]
+      allow_product_use: false
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: true
+      reason: Actual watcher-hang validation requires bounded watcher pause; crash/restart validation additionally retains a read-only handle for the independently identified launcher-owned worker through the existing owned actuator and exit acknowledgment. No new native API or dependency is authorized.
+      residual_uncertainty: "Native calls remain confined to phase1_runtime/windows_pause.rs: only owned watchers can pause/resume; owned workers expose read-only identity and exit acknowledgment. Failed identity, parent, liveness or detach checks are explicit proof failures."
+      removal_trigger: Remove when an equally direct bounded owned-process fault mechanism replaces it or watcher hang validation is retired; broader APIs, consumers or product use require a new Operator decision.
   rule: build/architecture-policy.toml MUST reference a stable decision ID in this separate allowlist and MUST NOT authorize native runtimes, unsafe crates, forbidden edges, build-time downloads, prebuilt binaries, FFI, or other architecture exceptions by editing build policy alone.
 rules:
   - id: FF-BUILD-001

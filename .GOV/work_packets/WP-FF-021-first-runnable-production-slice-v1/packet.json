@@ -8,12 +8,36 @@
     "version": "1",
     "title": "Deliver the Phase 1 first runnable production slice",
     "created_at_utc": "2026-08-09T15:39:12Z",
-    "updated_at_utc": "2026-08-09T15:39:12Z"
+    "updated_at_utc": "2026-10-21T06:53:43Z"
   },
   "authorization": {
+    "ordinary_transport_caller_approval": {
+      "source": "operator_message",
+      "reference": "Approve the narrow caller amendment",
+      "boundary": "FF-DEC-002 permits only fforager -> fforager-net and fforager-worker -> fforager -> fforager-net as normal first-party callers; fforager-net remains the sole direct product reqwest/rustls consumer. Dependency versions, features, providers, native APIs and supply-chain pins remain unchanged.",
+      "reviewed_proposal_sha256": "9fe29bbfe63bae84e347d6bb840740bc05f2612e3f1bb50e910173549e5da4b3",
+      "composed_profile_reconciliation": "Subsequent explicit Operator permission covers necessary Phase1 fixes and scope expansion. Exact locked ordinary-profile metadata contains the same111 package identities, sources and edges; only windows-sys0.61.2 adds Wdk_System_SystemServices, Win32_System_Diagnostics and Win32_System_Diagnostics_Debug from the already-approved storage/validator manifests. Pin the complete actual composition6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388 without projecting features away; retain the prior ec384355 profile and failed positive-control capture as history."
+    },
+    "current_closure_direction": {
+      "source": "operator_message",
+      "reference": "Bring the existing Phase 1/WP021 implementation to completion using parallel implementation and adversarial review, one shared Cargo manager, agreed selective cleanup and warm artifact reuse; perform necessary proof and dependency work, then merge only after required acceptance passes.",
+      "proof_boundary": "This resumes necessary verification and authorizes the smallest required dependency work. Earlier implementation-start sequencing overrides remain historical; no retrospective proof predeclaration or predecessor containment is asserted."
+    },
     "source": "operator_message",
     "reference": "Create a Phase 1 runnable-production-slice work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
-    "recorded_at_utc": "2026-08-09T15:39:12Z"
+    "recorded_at_utc": "2026-08-09T15:39:12Z",
+    "latest_implementation_direction": {
+      "recorded_at_utc": "2026-10-21T00:17:58Z",
+      "effect": "Explicit implementation-start priority overrides prior cleanup, activation-commit, predecessor and proof-preparation sequencing as start blockers only; it does not satisfy or remove original acceptance or closure obligations.",
+      "reference": "Start product code now using parallel agents for the bounded direct-HTTP slice. Bundle tests/checks/builds, reuse warm Cargo artifacts, keep paperwork minimal; paperwork or repo ceremony can never be a blocker.",
+      "source": "operator_message"
+    },
+    "runtime_proof_transition_reference": "WP-FF-021-current-candidate-r14-2026-10-21",
+    "worker_identity_approval": {
+      "source": "operator_message",
+      "recorded_at_utc": "2026-10-21T06:53:43Z",
+      "reference": "The Operator explicitly approved the pending read-only owned-worker identity extension under FF-DEC-005; watcher pause remains watcher-only, with no new dependency or product-native boundary."
+    }
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -33,38 +57,34 @@
       ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/phase_readiness/1"
     ],
     "decision_ids": [
-      "FF-DEC-002"
+      "FF-DEC-002",
+      "FF-DEC-004",
+      "FF-DEC-005"
     ]
   },
   "source_control": {
     "canonical_branch": "main",
-    "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-    "work_branch": "codex/wp-ff-021-first-runtime-slice",
+    "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+    "work_branch": "codex/wp020-prerequisite-classifier",
     "worktree_policy": "NONE",
     "worktree_id": null,
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
+      "verified_at_utc": "2026-10-21T23:44:07.6947114Z"
     },
-    "closure_commit": null,
-    "main_containment_status": "NOT_STARTED",
+    "closure_commit": "763eed9d60b20ab6802b3a5c60e503f89b32c6cb",
+    "main_containment_status": "PENDING",
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "STUB",
+    "status": "MERGE_PENDING",
     "risk": "HIGH",
     "blockers": [
-      "The packet is a STUB and does not authorize product implementation.",
-      "WP-FF-010 cross-platform FFmpeg supervision and WP-FF-020 Phase 0D benchmark design must be VALIDATED in main before this packet is promoted.",
-      "WP-FF-006-rust-youtube-challenge-spike-v1 records closure 99139e04d12ec9f099f2092c624336702143e9fd as contained, but that commit is not an ancestor of main; its governance must be repaired and independently revalidated before this packet may consume WP-FF-006 evidence.",
-      "Every other Phase 0 contract, dependency, compatibility, transport, archive, resource, durability, proof-integrity, and runtime-truth prerequisite consumed by this slice must be bound to a VALIDATED closure commit.",
-      "The current ff.runtime-proof@1 executor cannot prove the multi-artifact, multi-process, deterministic-origin, external-cancellation, restart/reconciliation, watcher, archive, and behavior-mutation boundaries required by this packet; a backwards-compatible versioned proof contract and gate extension must be implemented and independently validated before closure.",
-      "The exact committed direct-HTTP fixture, deterministic local protocol-server boundary, shipping artifact identities, runtime-proof scenarios, expected output digest, negative path, and declaration-preserving behavior/state counterfactual are not yet frozen.",
-      "Current source-level research and a dependency/feature decision for any implementation mechanism not already approved must be completed before promotion."
+      "Technical acceptance passed; canonical-main closure containment remains unproven."
     ],
-    "next_action": "After exact WP-FF-010-ffmpeg-supervision-spike-v1 and WP-FF-020-equivalent-work-benchmark-design-v1 closures are VALIDATED and contained in main, bind every prerequisite closure SHA, refresh current implementation research, freeze the backwards-compatible multi-artifact and multi-step runtime-proof contract plus deterministic local HTTP proof boundary, promote this STUB, and implement the smallest complete Phase 1 operator-usable vertical slice.",
+    "next_action": "Record this technical closure commit as MERGE_PENDING, merge into canonical main, prove closure ancestry and unchanged accepted product/build inputs, then mark VALIDATED and clear active focus. WP011 remains STUB.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -96,6 +116,7 @@
       ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
       ".GOV/taskboard/taskboard.yaml",
       ".GOV/id-registry.yaml",
+      ".GOV/rules/build-rules.yaml",
       "build/Cargo.toml",
       "build/Cargo.lock",
       "build/architecture-policy.toml",
@@ -142,104 +163,258 @@
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-001",
       "requirement": "The exact staged release fforager launcher, worker, and watcher artifacts accept the committed representative direct HTTP/HTTPS fixture through the production entrypoint, launcher-owned sibling topology, worker engine, approved production transport, source graph, selection, storage, diagnostics, and operator-visible result; the launcher exits zero only after producing the expected hash-bound durable output and reconciled archive result within the declared timeout.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime report phase1-release-build and phase1-success PASS: exact staged release launcher/worker/watcher and hash-bound524332-byte output; independent archive-reader predicates accepted.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-002",
       "requirement": "Production-runtime cancellation and transport-failure scenarios exercise the shipped artifact and prove bounded cancellation progress, complete resource release, no corrupt final output, typed nonzero failure, retained diagnostics, and no success or archive insertion before required effects are acknowledged.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime phase1-transport-failure and phase1-external-cancellation PASS; independent actual DB readback both empty/sequence0/zero leases and no final output.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-003",
       "requirement": "Crash/restart runtime scenarios cover every implemented durable prefix, run reconciliation twice, reject inconsistent resume state, and produce the same correct output/archive verdict without advancing beyond durable bytes or deleting recoverable evidence early.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime phase1-crash-restart, phase1-durable-prefixes and phase1-state-counterfactual PASS; independent current durable-state readback accepted.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-004",
       "requirement": "The staged launcher starts an independent watcher with bounded readiness and shutdown; missing, corrupt, incompatible, hung, crashed, and storage-failed watcher scenarios expose diagnostics degradation while leaving the same Ferric bytes, archive decision, exit semantics, and bounded launcher completion, and an uncommanded Ferric crash leaves retrievable watcher evidence.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime all six watcher-degraded scenarios and phase1-watcher-boundaries PASS; same-run watcher companion14/14 PASS with independent evidence readback.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-005",
       "requirement": "The product dependency and execution graph contains no Python, yt-dlp, yt-dlp companion asset, wreq product route, testkit normal/build edge, hidden governance/build runtime read, unapproved process, or undeclared native/runtime dependency; an indirect-wrapper negative fixture fails the canonical gate.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current canonical PR dependency/native/source boundary checks and55 architecture fixtures PASS, including indirect-wrapper rejection; exact approved dependency composition preserved.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-006",
       "requirement": "A backwards-compatible FF-GATE-RUNTIME-001 proof-contract extension builds once; hashes and stages every exact release artifact; supervises the deterministic HTTP origin, launcher, product process, and independent watcher; executes ordered success, transport-failure, external-cancellation, crash/restart/reconciliation, and watcher-degraded actions with real production adapters; semantically inspects output, archive, journal, and watcher evidence; and rejects a declaration-preserving mutation of product behavior or durable state. Prior ff.runtime-proof@1 fixtures continue to pass, and an independent validator that did not author the proof producer reruns the gate.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Independent validator_final authored no proof producer and executed current canonical PR with same-run runtime/watcher. Current runtime14/14 and all12 scenarios PASS; independently rehashed233 case pins and3 release artifacts and read all12 DBs.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-007",
       "requirement": "The no-context model manual names only runtime-proven commands and accurately documents purpose, startup, inputs, outputs, navigation, stable diagnostics, limits, common failures, recovery, watcher degradation, and artifact-proof reproduction; executing its canonical workflow reproduces the accepted result.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Actual model manual source review PASS and its canonical staged production workflow accepted through current independent runtime execution; no manual change after reviewed source.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-008",
       "requirement": "FF-GATE-ARCH-001, FF-GATE-PR-001, FF-GATE-RUNTIME-001, triggered deep/fault/platform gates, FF-GATE-WATCHER-001, secret scan, artifact hygiene, and independent HIGH-risk adversarial review pass for one source, lockfile, fixture, artifact, watcher, and runtime-proof manifest with no unresolved finding.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Literal ARCH8/8+55/55, canonical PR80/80+55/55, same-run runtime14/14 and watcher14/14 PASS at one clean candidate/fingerprint; independent HIGH-risk review PASS/no unresolved finding. Shared deep checks executed inside PR, no standalone DEEP claim. Existing selective cleanup/user override and retained proof pins/warm cache remain qualified, not empty-root VerifyOnly.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-009",
       "requirement": "An executable packet-promotion check parses exact dependency IDs and independently verifies lifecycle VALIDATED, recorded closure commit, canonical-main ancestry, and non-supersession; negative fixtures for a range, alternative revision, missing packet, STUB status, absent closure, uncontained closure, superseded ID, and forged packet claim all fail. WP-FF-011 activation is rejected until its exact WP-FF-020 and WP-FF-021 bindings and every other named predecessor pass this check.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current canonical exact-dependency promotion owning negatives and actual prerequisite closure/main ancestry checks PASS; WP011 remains STUB and is not activated by this closure.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     }
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-08-09T15:39:12Z",
-      "branch": "codex/wp-ff-020-021-planning",
-      "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-      "head_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+      "recorded_at_utc": "2026-10-21T23:44:07.6983028Z",
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
+      "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+      "merge_base_main": "c0bbd293c473b57de264efc2fcb8345b958e981d",
+      "status_porcelain_v2": [
+        "# branch.oid 63a02773e8097b525381536311dfab36c91a9e33",
+        "# branch.head codex/wp020-prerequisite-classifier",
+        "# branch.upstream origin/codex/wp020-prerequisite-classifier",
+        "# branch.ab +0 -0"
+      ],
       "dirty_paths": [
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
-        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json",
-        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
-        ".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json",
-        ".GOV/taskboard/taskboard.yaml",
-        ".GOV/id-registry.yaml"
+        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json"
       ],
       "checks_run": [
-        "Authority, template, technical-design, readiness-matrix, taskboard, runtime-proof schema, and predecessor packet inspection completed before packet authoring."
+        "Independent canonical acceptance and nine-AC HIGH-risk review PASS; technical closure only, main containment pending."
       ],
       "blockers": [
-        "Packet remains a non-authorizing STUB until every named prerequisite and strict runtime-proof promotion condition passes."
+        "Technical acceptance passed; canonical-main closure containment remains unproven."
       ],
-      "next_action": "After WP-FF-010 and WP-FF-020 closure, bind exact prerequisite commits and freeze the strict production-runtime proof before activation."
+      "next_action": "Record this technical closure commit as MERGE_PENDING, merge into canonical main, prove closure ancestry and unchanged accepted product/build inputs, then mark VALIDATED and clear active focus. WP011 remains STUB."
     }
   },
   "validation": {
-    "checks": [],
+    "checks": [
+      {
+        "kind": "final-phase1-independent-acceptance",
+        "candidate": "63a02773e8097b525381536311dfab36c91a9e33",
+        "source_commit": "6be53b5fd48f43c70af00b229a6557fff26cfe45",
+        "content_fingerprint": "910b5eaacdbb041edc30c8006507239882652c4ed66c64c21ecb9868bebdb686",
+        "result": "PASS",
+        "evidence": "Literal ARCH8/55; independent canonical PR80/55 with same-run runtime14/14 and watcher14/14, all12 cases; independent233pins/3releasehashes/12DBs and HIGH-risk nine-AC review PASS. Original r13 six causes remain UNVERIFIED and all earlier FAIL evidence retained.",
+        "reports": [
+          "build/reports/verify-pr-1792626083248772700-472536.json",
+          "build/reports/runtime-truth-check-1792625981736118400-472536.json",
+          "build/reports/watcher-check-1792626031666888000-472536.json",
+          "build/reports/architecture-check-1792622187838028100-262192.json"
+        ]
+      },
+      {
+        "kind": "r13-ffmpeg-context-diagnostics",
+        "retained_failure": "Independent r13 verify-pr-1792621105330203700-486780 failed workspace tests: FFmpeg59/6/3ignored; all other targets passed. Six original causes remain UNVERIFIED. Runtime, watcher and composed deep checks were not reached.",
+        "diagnostic_change": "Only the governed-progress-share assertion failure message now prints its actual typed Result; original predicate, transcript and limits are unchanged. No functional fix is claimed.",
+        "focused_results": "Canonical-compatible unified no-run setup PASS0/85.57seconds. Same emitted b65 binary SHA25626A5B1F02BE08F750F410084A17F0BD507007146025D82176DEAF99A422C2CF0 passed65/0/3ignored in4.61seconds direct nocapture,2.78seconds direct default capture, and4.84seconds through Cargo. The Cargo comparison retained workspace/all-target/all-feature/locked/no-fail-fast/canonical target selection and exact68 existing test-name filters; unrelated targets executed zero cases. Process-only jobs1/threads2 and original deadlines were retained. Capture and Cargo context did not reproduce the failures; this is diagnostic evidence, not canonical acceptance.",
+        "captures": ".fforager-artifacts/product-batch/phase1-r13-independent-pr.*; phase1-r13-ffmpeg-diagnostic-build.*; phase1-r13-ffmpeg-owner*; phase1-r13-ffmpeg-cargo-owner.*",
+        "ceiling": "Final declared literal ARCH, independent canonical PR, same-run runtime/watcher, nine acceptance criteria and main containment remain required. Frozen twelve scenarios and limits are unchanged."
+      },
+      {
+        "kind": "bounded-full-history-batches",
+        "retained_failure": "Independent r12 PR verify-pr-1792617752445027300-4536 failed during history preflight with actual primary FF-SECRET-E-GIT-TIMEOUT300seconds, acknowledged owned termination/reap, and secondary reader EOF. Workspace/runtime/watcher were not reached. This current timeout is proven; original r8 cause remains UNVERIFIED.",
+        "implementation": "Full sorted history objects are retained. Strict Git metadata and body agreement determine bounded multi-object chunks of8MiB/1024objects, retaining the existing allowed oversized singleton and one original global scan budget. Metadata60seconds and each body process300seconds, concurrent input/output, patterns, body checks, cleanup and fail-closed behavior are unchanged. No per-object spawn, skipped history or deadline increase.",
+        "focused_results": "Canonical unified warnings-denied Clippy PASS0/20.89seconds after equivalent borrowed-map correction; initial lint failure retained. Canonical workspace/all-target/all-feature no-run PASS0/39.97seconds, existing scanner owner20/20 PASS63.40seconds including count1025, allowed singleton and metadata/body mismatch controls. One existing FULL secret-scan --history command PASS0/findings0 in253.64seconds including30.00seconds toolbuild.",
+        "captures": ".fforager-artifacts/product-batch/phase1-history-chunks-*; phase1-r12-independent-pr.* and verify-pr-1792617752445027300-4536.json",
+        "ceiling": "Focused history success does not replace final clean-source literal ARCH, independent canonical PR, same-run runtime/watcher or main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
+      },
+      {
+        "kind": "six-helper-effective-input-refresh",
+        "retained_failure": "r11 ARCH architecture-check-1792612992572433700-473084 passed the reused payload boundary then timed out300seconds at JournalRecord. The authorized preparation-only batch completed all14 remaining owners in600.99seconds without acceptance claims. Subsequent warmed ARCH architecture-check-1792614838063034900-31056 still timed out300seconds at behavior-stub contracts lib after its helper reset and rewrote the same effective input; all original failure reports are retained.",
+        "implementation": "The existing effective-input refresh now covers the six remaining proof-map/public-test/receipt helpers, including their bounded multi-file and generated integration inputs. Current canonical-derived mutation bytes, source/target isolation, actual final-input identity, package profiles, positive then independent-negative ordering, markers and deadlines are preserved; no timestamp restoration or cached verdict substitution.",
+        "focused_results": "Canonical workspace/all-target/all-feature warnings-denied Clippy PASS0/23.09seconds, matching no-run setup PASS0/38.95seconds, and existing extended warm_fixture_reuses_unchanged_inputs_and_rejects_shared_mutation PASS1/1/14.40seconds. The owning test covers repeated effective bytes/mtime, changed canonical input, generated behavior input and two-input receipt reset. No full suite or runtime claim is inferred from setup or this component proof.",
+        "captures": ".fforager-artifacts/product-batch/phase1-six-helper-*; phase1-r11-arch-warmed.*; phase1-r11-remaining-setup.* and remaining-fixture-setup/",
+        "ceiling": "Final clean-candidate literal ARCH must execute every original oracle under unchanged limits, followed by independent canonical PR and same-run runtime/watcher before closure/main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
+      },
+      {
+        "kind": "effective-mutant-warm-refresh",
+        "retained_failure": "Literal r10 ARCH architecture-check-1792610284861311600-447868 failed incomplete when the exact payload public counterexample Cargo command exceeded unchanged300seconds before the required semantic marker. Owned tree termination and reap succeeded; no semantic acceptance was inferred.",
+        "diagnosis_and_change": "The leased source refresh restored canonical bytes then reapplied the identical mutation, unnecessarily refreshing the effective input timestamp. The exact current canonical-derived mutation is now computed first and passed through both existing content-aware refresh stages; all other files reset normally. The same eight textual mutations, one JSON input, first-anchor/CRLF handling, markers, isolation and fixed deadlines remain unchanged.",
+        "owning_results": "Unified warnings-denied Clippy PASS0/29.00seconds after retaining the test-only copy helper under cfg(test); prior dead-code/missing-wrapper feedback retained. Canonical workspace/all-target/all-feature no-run PASS0/202.88seconds. Existing extended warm refresh selector PASS1/1/1.62seconds checks unchanged effective-file mtime, changed canonical input and unrelated stale mutation reset.",
+        "actual_boundary": "All64 copied source/fixture inputs were compared: only exact canonical-derived JournalPayload mutation differs. Exact retained owner target3a350d9dd9b1813e1de6a7341260509a setup PASS0/249.48seconds, then unchanged public counterexample command exits101/2.95seconds with actual JournalPayload unknown body field must fail closed assertion. Setup alone is not acceptance.",
+        "captures": ".fforager-artifacts/product-batch/phase1-effective-*",
+        "ceiling": "Final clean-source literal ARCH must independently re-execute this boundary within unchanged300seconds; canonical PR, same-run runtime/watcher and main containment remain pending. No deadline or oracle relaxation."
+      },
+      {
+        "kind": "r9-incomplete-test-diagnostics-and-build-scheduling",
+        "retained_failure": "Independent r9 verify-pr-1792606637649702000-517432 failed incomplete at the unchanged1800-second workspace-test deadline after627seconds compilation. FFmpeg direct-exit precondition and storage preparatory expected-Transport assertion failed; the hardlink attack and final runtime/watcher proof were not reached. Original causes remain UNVERIFIED.",
+        "diagnostics": "Storage now prints the actual preparatory fetch result on the same assertion. FFmpeg retains the same10-second direct-exit assertion and success pipe lifetime, adding bounded failure captures and existing owned cleanup outcomes. Mechanical let-else conversion preserves the prior focused proof.",
+        "focused_results": "Canonical-compatible workspace/all-target/all-feature no-run setup passed; emitted storage hardlink selector PASS1/1 in0.09seconds and FFmpeg direct-exit selector PASS1/1 in3.00seconds. Neither diagnostic failure branch executed; these outcomes do not establish the original causes.",
+        "scheduling": "Actual queued HDD/concurrent linking observations motivated process-only CARGO_BUILD_JOBS=1, without changing dependency versions/features, compiler flags, test threads2, limits, config or gate argv. The strict environment guard and sanitizer admit only exact1 and retain compiler/lint/config poison rejection. Scheduling benefit is not claimed.",
+        "final_source_checks": "Unified workspace/all-target/all-feature warnings-denied Clippy PASS0 in12.94seconds. Final-source matching no-run setup PASS0 in197.30seconds with jobs1; existing extended cargo_verification_strips_lint_and_compiler_overrides PASS1/1. Initial missing OsString import and subsequent manual-let-else lint failures are retained in separate captures.",
+        "captures": ".fforager-artifacts/product-batch/phase1-r9-diagnostics-* and phase1-r10-{unified-*,scheduling-guard}*",
+        "ceiling": "Required final clean-candidate ARCH, independent canonical PR, same-run runtime/watcher and main containment remain pending. Frozen nine acceptance criteria and twelve scenarios are unchanged."
+      },
+      {
+        "kind": "bounded-secret-history-remediation",
+        "retained_failure": "verify-pr-1792602396602690400-496872 at clean r8 stopped before tests/runtime with FF-SECRET-E-GIT read batch object failed to fill whole buffer. Original cause remains UNVERIFIED; masked wait status cannot retrospectively establish timeout.",
+        "diagnostic": "Full git fsck --full --no-dangling PASS0 with empty output. Status-first batch completion preserves owned wait/cleanup failure ahead of bounded secondary reader/writer errors. Diagnostic-only standalone history passed without reproducing the prior failure.",
+        "implementation": "Necessary first-byte ASCII and UTF16 candidate-pair checks precede unchanged prefix/decoder/tail matchers. Patterns, offset traversal, line accounting, object/byte caps, fail-closed behavior and five-minute batch limit are unchanged.",
+        "focused_results": "Owning20/20 scanner tests PASS29.84seconds including exact prechange/new finding equality; same739768 source bytes measured2.6766299seconds reference and0.4796899seconds prefiltered. Owning warnings-denied Clippy PASS. One actual prefiltered history scan PASS0/findings0 in125.74seconds including17.69seconds build; CPU/IO observations retained.",
+        "captures": ".fforager-artifacts/product-batch/phase1-secret-*",
+        "acceptance_boundary": "Focused and history evidence only; final clean declaration, required ARCH and independent PR/runtime/watcher and main containment remain pending. Earlier r8 preflight FAIL is retained."
+      },
+      {
+        "kind": "stable-owned-fixture-target-remediation",
+        "retained_pr_failures": [
+          "verify-pr-1792596893603868800-506796: offline pinned cache missing objc2-core-foundation; cache-only locked fetch restored it without source/lock drift.",
+          "verify-pr-1792599630727164700-462732: workspace test timed out1800seconds; incomplete evidence, owned tree termination and bounded reap acknowledged; runtime/watcher not reached."
+        ],
+        "source_reconciliation": "Actual depfiles showed one leased stable receipt-only source compiled into three caller-root-derived PIF targets. Target derivation now occurs inside the existing exclusive callback using the actual sandbox and unchanged distinct labels; mutation, independent graph rejection and all deadlines remain unchanged.",
+        "focused_results": "Owning compile PASS72seconds; existing source-key isolation and warm reset/mutation controls each1/1 PASS; receipt-only public plus independent graph counterexample PASS1/1 in252.86seconds and119.46seconds using the same observed target747cb1d6a94f99b33f5955352783fa3c.",
+        "captures": ".fforager-artifacts/product-batch/phase1-stable-pif-*",
+        "acceptance_boundary": "Focused evidence only; final declared ARCH and independent PR/runtime/watcher acceptance and main containment remain pending. Prior failures retained."
+      },
+      {
+        "kind": "approved-phase1-transport-composition",
+        "retained_architecture_failure": "FF-GATE-ARCH-001 report1792578671565629000-312672 at clean dd410eb2 failed native caller reachability; not relabeled PASS.",
+        "retained_focused_failure": "phase1-ff002-mutations exited101 at shared positive control before the mutation: ordinary profile ec384355 pin differed from actual6b94d937 composition.",
+        "reconciliation": "Independent current/prerequisite ordinary metadata comparison reproduced111 package identities with unchanged sources and edges; only the three already-approved windows-sys features differ. Strict complete closure validation remains enabled.",
+        "focused_results": "Reconciled owning build18.66s; existing mutation suite1/1 in401.93s, actual unauthorized resolve1/1 in6.70s, full real-workspace positive1/1 in421.93s and stale approval1/1 in0.66s. Independent review narrowed only that positive to the same actual resolve boundary; its owning rerun passed1/1 in3.68s without repeating shared fixtures.",
+        "captures": ".fforager-artifacts/product-batch/phase1-ff002-reconciled-*",
+        "acceptance_boundary": "Focused implementation evidence only; final clean declared ARCH, independent canonical PR/runtime/watcher and main containment remain pending."
+      },
+      {
+        "kind": "focused-owning-feedback",
+        "source_code": "dd6483ac5cef60793cebda71fe9e7c9e47ad246f",
+        "clippy": "PASS16.21seconds fforager-xtask owning-package alltargets/allfeatures warningsdenied; not workspace coverage",
+        "test_target": "PASS4minutes27seconds",
+        "report_receipt_guards": "PASS2of2 in1.87seconds",
+        "authority_parser": "PASS1of1 in0.09seconds after exact YAML scalar quoting",
+        "captures": [
+          ".fforager-artifacts/product-batch/phase1-worker-identity-clippy-fixed2.stderr",
+          ".fforager-artifacts/product-batch/phase1-worker-identity-guards.stdout",
+          ".fforager-artifacts/product-batch/phase1-worker-identity-authority.stdout"
+        ],
+        "retained_failures": "Initial style diagnostics and subsequent explicit-import compiler failures retained; no limit/schema/guard weakening."
+      }
+    ],
     "not_proven": [
+      "Canonical-main containment of the technical closure commit remains unproven."
+    ],
+    "historical_not_proven": [
       "Any shipped Ferric product artifact or command",
       "Any direct HTTP/HTTPS acquisition",
       "Any durable output, resume, archive, or recovery behavior",
       "Any watcher runtime behavior or independence",
-      "Any production-runtime proof or Phase 1 progress"
+      "Any production-runtime proof or Phase 1 progress",
+      "Named predecessor lifecycle/main-containment conditions remain unproven and are deferred as implementation-start blockers only by explicit Operator direction.",
+      "Strict runtime-proof declaration and staged production scenarios remain deferred/unproven; existing blueprint is not executed proof.",
+      "Parallel implementation start is authorized, but no acceptance row or readiness condition is marked satisfied."
     ]
   },
   "extensions": {
+    "current_implementation_observation": {
+      "approval": "Operator approved the narrow storage boundary recorded as FF-DEC-004: pinned windows-sys directory-handle confinement, filesystem/host identity and actual synchronization; no new dependency.",
+      "build": {
+        "command": "cargo build --offline --locked --keep-going -p fforager-launcher -p fforager-worker -p fforager-watcher",
+        "profile": "dev",
+        "observed_by": "primary implementation agent",
+        "exit_code": 0,
+        "elapsed_seconds": 2.61,
+        "source_boundary": "Final source after the single-link handle guard."
+      },
+      "observations": [
+        "Saved run-1 prepared stage reconciled with its origin absent.",
+        "Fresh run-2 launcher acquisition returned recovered=false, bytes=3244 and archive_sequence=1; after origin exit the identical command returned recovered=true and the same sequence.",
+        "Final post-guard run-3 returned recovered=false, bytes=3244 and archive_sequence=1; origin served once and exited, then the identical command returned recovered=true with the same sequence and digest.",
+        "A preexisting NTFS stage hardlink returned storage exit=4 with HANDLE-CONFINEMENT; independent sentinel SHA256 was unchanged.",
+        "Independent Get-FileHash output matched the .NET origin expected SHA256 2976da01e205a110c9fa41d47659e238a5c6d3c3f3137582f2949853faa201dd."
+      ],
+      "proof_limits": "Development artifact observations only. Acceptance rows remain PENDING; canonical gates were not run for this implementation and the implementation is unmerged."
+    },
     "refinement": ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
     "stub_contract": {
-      "implementation_authorized": false,
+      "implementation_authorized": true,
       "promotion_requirements": [
         "Every exact named Phase 0 dependency, including WP-FF-010-ffmpeg-supervision-spike-v1 and WP-FF-020-equivalent-work-benchmark-design-v1, is bound to a VALIDATED closure commit contained in main; supersession requires this packet to be revised before activation.",
         "Current source-level implementation research and reuse inspection are recorded; any new runtime or native dependency has explicit Operator authority.",
@@ -279,21 +454,36 @@
         "addition": "Use one stable run/job identity across CLI output, source graph, transport receipt, journal, archive, watcher evidence, and runtime-proof receipt.",
         "why_high_roi": "Every boundary already needs identity, and one correlation path makes failures observable and parallel-agent work attributable.",
         "gap_closed": "No-context operators could otherwise be unable to join product and watcher evidence for one run.",
-        "reuses": ["WP-005 identity contracts", "diagnostic envelopes", "journal records", "runtime-proof reports"],
+        "reuses": [
+          "WP-005 identity contracts",
+          "diagnostic envelopes",
+          "journal records",
+          "runtime-proof reports"
+        ],
         "validation": "The runtime gate rejects missing or mismatched identity at every boundary."
       },
       {
         "addition": "Package a deterministic replay bundle for every failed runtime scenario under the existing structured evidence model.",
         "why_high_roi": "The fixture, receipts, journal, diagnostics, and artifact hashes already exist during proof, so bundling them makes later debugging and agent handoff much cheaper.",
         "gap_closed": "Transport, cancellation, recovery, and watcher failures are otherwise hard to reproduce.",
-        "reuses": ["committed fixtures", "structured events", "recovery journal", "artifact hashes"],
+        "reuses": [
+          "committed fixtures",
+          "structured events",
+          "recovery journal",
+          "artifact hashes"
+        ],
         "validation": "A fresh no-context run reproduces the same normalized failure without live internet."
       },
       {
         "addition": "Expose a machine-readable diagnostic-summary command for the proven slice using the same engine and event contracts.",
         "why_high_roi": "Diagnostics are already required; a stable summary gives operators and models a direct health and recovery surface at low marginal cost.",
         "gap_closed": "Raw logs alone make state and recovery decisions ambiguous.",
-        "reuses": ["typed diagnostics", "watcher health", "stable IDs", "MODEL_MANUAL"],
+        "reuses": [
+          "typed diagnostics",
+          "watcher health",
+          "stable IDs",
+          "MODEL_MANUAL"
+        ],
         "validation": "Success, cancellation, restart, and watcher-degraded runs produce complete bounded summaries with identical product semantics."
       }
     ],
@@ -312,38 +502,106 @@
     "red_team": [
       {
         "risk": "A polished scaffold or test substitute is claimed as Phase 1 product runtime.",
-        "failure_scenarios": ["direct internal function test", "fixture-only adapter", "hardcoded success", "binary never stages", "source-tree helper supplies behavior"],
-        "mitigations": ["strict immutable runtime proof", "clean staged release artifact", "production adapters only", "counterfactual observable", "unreachable code removal"],
+        "failure_scenarios": [
+          "direct internal function test",
+          "fixture-only adapter",
+          "hardcoded success",
+          "binary never stages",
+          "source-tree helper supplies behavior"
+        ],
+        "mitigations": [
+          "strict immutable runtime proof",
+          "clean staged release artifact",
+          "production adapters only",
+          "counterfactual observable",
+          "unreachable code removal"
+        ],
         "verification": "FF-GATE-RUNTIME-001 must reject each substitute independently."
       },
       {
         "risk": "Success is recorded before durable output and archive effects complete.",
-        "failure_scenarios": ["rename without archive", "archive row without output", "journal ahead of durable bytes", "cleanup before recovery state"],
-        "mitigations": ["required effect acknowledgements", "durable-prefix model", "idempotent reconciliation", "success after output/archive agreement"],
+        "failure_scenarios": [
+          "rename without archive",
+          "archive row without output",
+          "journal ahead of durable bytes",
+          "cleanup before recovery state"
+        ],
+        "mitigations": [
+          "required effect acknowledgements",
+          "durable-prefix model",
+          "idempotent reconciliation",
+          "success after output/archive agreement"
+        ],
         "verification": "Fault every implemented prefix and run reconciliation twice."
       },
       {
         "risk": "Watcher becomes a hidden correctness or shutdown dependency.",
-        "failure_scenarios": ["ready timeout blocks product", "watcher crash changes result", "storage failure backpressures Ferric", "flush timeout holds exit"],
-        "mitigations": ["independent sibling process", "bounded readiness and shutdown", "diagnostics degradation separate from result", "reserved bounded queues"],
+        "failure_scenarios": [
+          "ready timeout blocks product",
+          "watcher crash changes result",
+          "storage failure backpressures Ferric",
+          "flush timeout holds exit"
+        ],
+        "mitigations": [
+          "independent sibling process",
+          "bounded readiness and shutdown",
+          "diagnostics degradation separate from result",
+          "reserved bounded queues"
+        ],
         "verification": "All watcher failure modes preserve identical bytes, archive decision, product exit, and bounded launcher completion."
       },
       {
         "risk": "Transport or cancellation leaks work or broadens dependencies.",
-        "failure_scenarios": ["retry after cancellation", "unbounded body buffering", "redirect bypass", "ambient proxy/cookie use", "wreq fallback"],
-        "mitigations": ["Ferric-owned policy controls", "atomic admission", "byte bounds", "typed unsupported fingerprint result", "dependency gates"],
+        "failure_scenarios": [
+          "retry after cancellation",
+          "unbounded body buffering",
+          "redirect bypass",
+          "ambient proxy/cookie use",
+          "wreq fallback"
+        ],
+        "mitigations": [
+          "Ferric-owned policy controls",
+          "atomic admission",
+          "byte bounds",
+          "typed unsupported fingerprint result",
+          "dependency gates"
+        ],
         "verification": "Negative transport fixtures and staged runtime tests prove bounded refusal and no forbidden route."
       },
       {
         "risk": "The proof producer cannot express the claimed runtime or validates its own declarations.",
-        "failure_scenarios": ["only one binary is staged", "HTTP origin is unsupervised", "cancellation or restart is simulated", "archive semantics reduce to file existence", "captured observations are edited after the run"],
-        "mitigations": ["backwards-compatible multi-artifact and multi-step schema", "supervised actors and ordered actions", "semantic durable-state inspection", "declaration-preserving behavior/state mutation", "independent validator rerun"],
+        "failure_scenarios": [
+          "only one binary is staged",
+          "HTTP origin is unsupervised",
+          "cancellation or restart is simulated",
+          "archive semantics reduce to file existence",
+          "captured observations are edited after the run"
+        ],
+        "mitigations": [
+          "backwards-compatible multi-artifact and multi-step schema",
+          "supervised actors and ordered actions",
+          "semantic durable-state inspection",
+          "declaration-preserving behavior/state mutation",
+          "independent validator rerun"
+        ],
         "verification": "Prior ff.runtime-proof@1 fixtures pass, every new capability has a failing negative fixture, a real behavior/state mutation is rejected, and an independent validator reruns the producer."
       },
       {
         "risk": "WP-FF-011 starts from dependency prose without proven predecessor closure.",
-        "failure_scenarios": ["range accepts an archived revision", "alternative text chooses an unvalidated packet", "closure SHA is absent or outside main", "superseded ID remains bound", "packet self-asserts containment"],
-        "mitigations": ["parse exact dependency IDs", "independently read lifecycle and closure fields", "verify canonical-main ancestry", "reject supersession", "fail-closed counterexample fixtures"],
+        "failure_scenarios": [
+          "range accepts an archived revision",
+          "alternative text chooses an unvalidated packet",
+          "closure SHA is absent or outside main",
+          "superseded ID remains bound",
+          "packet self-asserts containment"
+        ],
+        "mitigations": [
+          "parse exact dependency IDs",
+          "independently read lifecycle and closure fields",
+          "verify canonical-main ancestry",
+          "reject supersession",
+          "fail-closed counterexample fixtures"
+        ],
         "verification": "WP-FF-021-first-runnable-production-slice-v1-AC-009 negative fixtures all fail and WP-FF-011 cannot activate before exact WP-FF-020/WP-FF-021 closure."
       }
     ],
@@ -369,6 +627,454 @@
         "independent adversarial review"
       ],
       "closure_rule": "No VALIDATED result until the exact closure commit is contained in main and its exact staged release artifact passes operator-visible success, negative, recovery, watcher, and counterfactual runtime proof; compilation, tests, scaffolding, and reports alone cannot close Phase 1."
+    },
+    "execution_priority_override": {
+      "artifact_policy": "Reuse current warm Cargo artifact root; no cleanup/activation commit is required before current authorized code writes.",
+      "verification_status": "No new tests, checks, builds or proof execution in this activation; earlier separate packet outcomes are not product acceptance.",
+      "source": "latest explicit Operator implementation direction",
+      "deferred_start_conditions": [
+        "The packet is a STUB and does not authorize product implementation.",
+        "WP-FF-010 cross-platform FFmpeg supervision and WP-FF-020 Phase 0D benchmark design must be VALIDATED in main before this packet is promoted.",
+        "WP-FF-006-rust-youtube-challenge-spike-v1 records closure 99139e04d12ec9f099f2092c624336702143e9fd as contained, but that commit is not an ancestor of main; its governance must be repaired and independently revalidated before this packet may consume WP-FF-006 evidence.",
+        "Every other Phase 0 contract, dependency, compatibility, transport, archive, resource, durability, proof-integrity, and runtime-truth prerequisite consumed by this slice must be bound to a VALIDATED closure commit.",
+        "The current ff.runtime-proof@1 executor cannot prove the multi-artifact, multi-process, deterministic-origin, external-cancellation, restart/reconciliation, watcher, archive, and behavior-mutation boundaries required by this packet; a backwards-compatible versioned proof contract and gate extension must be implemented and independently validated before closure.",
+        "The exact committed direct-HTTP fixture, deterministic local protocol-server boundary, shipping artifact identities, runtime-proof scenarios, expected output digest, negative path, and declaration-preserving behavior/state counterfactual are not yet frozen.",
+        "Current source-level research and a dependency/feature decision for any implementation mechanism not already approved must be completed before promotion."
+      ],
+      "condition_status": "Deferred for implementation start by Operator priority; not satisfied, removed or validated.",
+      "recorded_at_utc": "2026-10-21T00:17:58Z",
+      "runtime_proof_status": "Existing blueprint retained as context only; no new schema or fabricated proof declaration authored. Strict predeclaration and versioned proof gap remains explicit.",
+      "implementation_scope": "Existing direct-HTTP production slice only; no broad parallel implementation beyond original packet scope."
+    },
+    "runtime_proof": {
+      "schema_id": "ff.runtime-proof@2",
+      "completion_claim": "operator_usable_runtime",
+      "authorization_reference": "WP-FF-021-current-candidate-r14-2026-10-21",
+      "source_commit": "6be53b5fd48f43c70af00b229a6557fff26cfe45",
+      "artifacts": [
+        {
+          "package": "fforager-launcher",
+          "binary": "fforager"
+        },
+        {
+          "package": "fforager-worker",
+          "binary": "fforager-worker"
+        },
+        {
+          "package": "fforager-watcher",
+          "binary": "fforager-watcher"
+        }
+      ],
+      "fixture": {
+        "bytes": 524332,
+        "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+        "source": "build/fixtures/phase1-direct-http/media.wav"
+      },
+      "scenarios": [
+        "success",
+        "transport-failure",
+        "external-cancellation",
+        "crash-restart",
+        "durable-prefixes",
+        "state-counterfactual",
+        "watcher-missing",
+        "watcher-corrupt",
+        "watcher-incompatible",
+        "watcher-crash",
+        "watcher-hung",
+        "watcher-storage-failure"
+      ],
+      "timeout_seconds": 30
+    },
+    "current_runtime_attempt": {
+      "authorization_reference": "WP-FF-021-current-candidate-r5-2026-10-21",
+      "source_commit": "dd6483ac5cef60793cebda71fe9e7c9e47ad246f",
+      "verdict": "NOT_RUN",
+      "case_guards": "NOT_RUN",
+      "predecessor_acceptance": "WP024 corrective closure not yet contained; aggregate promotion remains separately blocked.",
+      "canonical_acceptance": "NOT_RUN",
+      "main_containment": "NOT_PROVEN"
+    },
+    "runtime_attempt_history": [
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792548038243491200-424088.json",
+        "source_commit": "dd7d20f7c47a1f374198a6ab6d9111453c20f1be",
+        "source_dirty": false,
+        "implementation_commit": "0dfbd843e50b7134e5600b6f9bff6fe4e54ac708",
+        "release_build": {
+          "exit_code": 0,
+          "elapsed_seconds": 72
+        },
+        "stage": ".fforager-artifacts/runtime-proof/phase1-424088-1792547967253557600",
+        "observations": {
+          "fixture_bytes": 524332,
+          "transport_failure_exit_code": 3,
+          "crash_restart": "BLOCKED_NO_ACTUATOR",
+          "declared_maximum_bytes": 4194304,
+          "external_cancellation_elapsed_ms": 839,
+          "external_cancellation_exit_code": 130,
+          "predecessor_acceptance": "NOT_REACHED",
+          "watcher_storage_fault_exit_code": 3,
+          "watcher_process_probe_error": "WMIC stdout is not UTF-8",
+          "successful_case_exit_code": 5,
+          "successful_case_error": "byte_limit_exceeded",
+          "watcher_storage_fault_error": "transport_failed"
+        },
+        "limitations": [
+          "No Phase1 acceptance or closure is established.",
+          "Historical scenario captures remain bound to this exact candidate; later source revisions require explicit versioned binding."
+        ]
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792549137980631900-400692.json",
+        "source_commit": "96afa7fd0a369d7596022d8b5529a37ac0e820ef",
+        "source_dirty": false,
+        "content_fingerprint": "ab0409552aa45e18ea9917999f788ec8fdef5676925574e6f05f9a3ececb58e2",
+        "release_build": {
+          "elapsed_seconds": 6.58,
+          "exit_code": 0
+        },
+        "stage": ".fforager-artifacts/runtime-proof/phase1-400692-1792549072256871500",
+        "observations": {
+          "transferred_bytes": 524332,
+          "oracle_error": "Hardcoded inactive v2 table was empty",
+          "predecessor_acceptance": "NOT_REACHED",
+          "crash_restart": "BLOCKED_NO_ACTUATOR",
+          "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+          "watcher_crash_actuation": "PID absent after observed governed shutdown at3980ms; crash not established"
+        },
+        "independent_read_only_archive": {
+          "outstanding_leases": 0,
+          "canonical_key_matches": true,
+          "active_v1_rows": 1,
+          "store_version": 1,
+          "source": ".fforager-artifacts/phase1-archive-reader/main.rs",
+          "output_bytes": 524332,
+          "inactive_v2_rows": 0,
+          "exit_code": 0,
+          "commit_sequence": 1,
+          "output": ".fforager-artifacts/phase1-archive-reader/retained-success.stdout",
+          "output_sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873"
+        },
+        "limitation": "The retained success case proves an actual committed row; overall scenario and predecessor acceptance remain unproven."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792550554366559900-500252.json",
+        "source_commit": "5b279ede8d725360b9c8f6e619c92191d1c2d0d9",
+        "source_dirty": false,
+        "content_fingerprint": "28ca7aa1daf35d966cda1aa5b38234d14455cbf8422f175001c59669d37e7cc2",
+        "stage": ".fforager-artifacts/runtime-proof/phase1-500252-1792550485967963200",
+        "release_build": {
+          "exit_code": 0,
+          "elapsed_seconds": 2.61
+        },
+        "observations": {
+          "predecessor_acceptance": "NOT_REACHED",
+          "variant": "Stopped before build on unapproved resolved package identity",
+          "success_guard": "Only output text differs: mixed separators; physical canonical target agrees",
+          "crash_restart": "BLOCKED_NO_ACTUATOR"
+        },
+        "independent_read_only_archive": {
+          "commit_sequence": 1,
+          "exit_code": 0,
+          "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+          "output_text": false,
+          "output_canonical_equal": true,
+          "bytes": 524332,
+          "active_v1_rows": 1,
+          "output": ".fforager-artifacts/phase1-archive-reader/predicates-source-mixed.stdout",
+          "outstanding_leases": 0,
+          "inactive_v2_rows": 0,
+          "all_non_path_guards": true
+        },
+        "focused_corrections": {
+          "variant": {
+            "corrected_exit": 0,
+            "passed": 1,
+            "elapsed_seconds": 28.2,
+            "initial_exit": 101,
+            "proof": ".fforager-artifacts/product-batch/phase1-r4b-variant.stdout",
+            "diagnostic": "Generated lock required update under locked build"
+          },
+          "path_identity": {
+            "test": "phase1_runtime::tests::output_identity_requires_the_same_existing_target",
+            "exit_code": 0,
+            "passed": 1
+          }
+        },
+        "limitation": "Focused component corrections do not establish scenario acceptance or main containment."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792551775473915900-499360.json",
+        "source_commit": "09c7a075703135f07ee00d7356aedb78a6a93718",
+        "source_dirty": false,
+        "content_fingerprint": "2e8e94fdee518268a913b694d332ea3606bce3a589dc27656b6d64ae2e668e55",
+        "stage": ".fforager-artifacts/runtime-proof/phase1-499360-1792551684959568900",
+        "release_build": {
+          "elapsed_seconds": 0.33,
+          "exit_code": 0
+        },
+        "case_guards": {
+          "blocked": 1,
+          "returned_without_error": 11,
+          "blocked_reason": "Retained worker identity approval pending; no actuator invoked",
+          "blocked_case": "crash-restart"
+        },
+        "independent_review": {
+          "four_prefixes_replayed_twice": true,
+          "fault_degradations": 6,
+          "journal_chains": "VALID",
+          "negative_sequence": 0,
+          "worker_parent_identity": "MATCH",
+          "archive_read_only_databases": 11,
+          "positive_sequence": 1,
+          "reviewer": "review_fresh",
+          "staged_binary_hashes": "MATCH",
+          "outstanding_leases": 0,
+          "positive_rows": 1,
+          "negative_rows": 0,
+          "actual_incompatible_wire": "ff.watcher-ready@9",
+          "capture_digests": "MATCH"
+        },
+        "predecessor_acceptance": "NOT_REACHED",
+        "canonical_acceptance": "PENDING",
+        "main_containment": "PENDING"
+      }
+    ],
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-021-first-runnable-production-slice-v1-AC-001",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-002",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-003",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-004",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-005",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-006",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-007",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-008",
+        "WP-FF-021-first-runnable-production-slice-v1-AC-009"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "The exact staged release fforager launcher, worker, and watcher artifacts accept the committed representative direct HTTP/HTTPS fixture through the production entrypoint, launcher-owned sibling topology, worker engine, approved production transport, source graph, selection, storage, diagnostics, and operator-visible result; the launcher exits zero only after producing the expected hash-bound durable output and reconciled archive result within the declared timeout.",
+          "Production-runtime cancellation and transport-failure scenarios exercise the shipped artifact and prove bounded cancellation progress, complete resource release, no corrupt final output, typed nonzero failure, retained diagnostics, and no success or archive insertion before required effects are acknowledged.",
+          "Crash/restart runtime scenarios cover every implemented durable prefix, run reconciliation twice, reject inconsistent resume state, and produce the same correct output/archive verdict without advancing beyond durable bytes or deleting recoverable evidence early.",
+          "The staged launcher starts an independent watcher with bounded readiness and shutdown; missing, corrupt, incompatible, hung, crashed, and storage-failed watcher scenarios expose diagnostics degradation while leaving the same Ferric bytes, archive decision, exit semantics, and bounded launcher completion, and an uncommanded Ferric crash leaves retrievable watcher evidence.",
+          "The product dependency and execution graph contains no Python, yt-dlp, yt-dlp companion asset, wreq product route, testkit normal/build edge, hidden governance/build runtime read, unapproved process, or undeclared native/runtime dependency; an indirect-wrapper negative fixture fails the canonical gate.",
+          "A backwards-compatible FF-GATE-RUNTIME-001 proof-contract extension builds once; hashes and stages every exact release artifact; supervises the deterministic HTTP origin, launcher, product process, and independent watcher; executes ordered success, transport-failure, external-cancellation, crash/restart/reconciliation, and watcher-degraded actions with real production adapters; semantically inspects output, archive, journal, and watcher evidence; and rejects a declaration-preserving mutation of product behavior or durable state. Prior ff.runtime-proof@1 fixtures continue to pass, and an independent validator that did not author the proof producer reruns the gate.",
+          "The no-context model manual names only runtime-proven commands and accurately documents purpose, startup, inputs, outputs, navigation, stable diagnostics, limits, common failures, recovery, watcher degradation, and artifact-proof reproduction; executing its canonical workflow reproduces the accepted result.",
+          "FF-GATE-ARCH-001, FF-GATE-PR-001, FF-GATE-RUNTIME-001, triggered deep/fault/platform gates, FF-GATE-WATCHER-001, secret scan, artifact hygiene, and independent HIGH-risk adversarial review pass for one source, lockfile, fixture, artifact, watcher, and runtime-proof manifest with no unresolved finding.",
+          "An executable packet-promotion check parses exact dependency IDs and independently verifies lifecycle VALIDATED, recorded closure commit, canonical-main ancestry, and non-supersession; negative fixtures for a range, alternative revision, missing packet, STUB status, absent closure, uncontained closure, superseded ID, and forged packet claim all fail. WP-FF-011 activation is rejected until its exact WP-FF-020 and WP-FF-021 bindings and every other named predecessor pass this check."
+        ],
+        "risk_cases": [
+          "Stage confinement must reject a preexisting hardlink before truncation; real sentinel regression and one-predicate counterfact verify this boundary.",
+          "Dependency delivery frames can exceed logical write credit; retain one bounded frame, admit resources before effects, and preserve aggregate limits.",
+          "Process faults require retained owned creation/image identity; watcher debug control cannot be exposed through the readonly worker wrapper.",
+          "Report, archive and path representations can manufacture false results; strict schemas, active metadata and physical target identity must remain fail-closed."
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Existing data-only prerequisites cannot execute the accepted direct-fetch entrypoint; the bounded product slice is necessary."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Reuse SourceGraph, deterministic selection, OwnedResourceBroker, archive contracts, diagnostics and approved dependency boundaries."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Use standard owned files, atomic cancellation, bounded process polling and strict argument parsing without another runtime language."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Use only FF-DEC-004 confined Windows storage and FF-DEC-005 validation-only owned actor identity/watcher pause scopes."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Reuse exact FF-DEC-002 transport, Tokio, redb and existing pinned serialization/hash dependencies; no new dependency campaign."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "One engine/facade path, launcher-owned worker plus independent watcher, direct HTTP input and exact twelve production scenarios; broader acquisition remains excluded."
+        }
+      ],
+      "artifact_specific_justification": {
+        "product": "Actual CLI/launcher/worker/watcher, core admission/engine, transport and durable storage implement the accepted direct-fetch slice.",
+        "validator": "Versioned runtime evidence and promotion checker independently enforce exact artifacts, physical effects, source history and predecessor containment.",
+        "manual": "The direct-fetch topic documents actual parser limits, startup, typed results, diagnostics and retained-state recovery.",
+        "governance": "Current approval, declaration and finding evidence preserve original acceptance and historical failures without product closure claims."
+      },
+      "pre_simplification_verdict": "FAIL: initial implementation and proof attempts exposed hardlink truncation, frame/credit confusion, actor decoding, archive schema selection, output text identity and ineffective watcher mutation; actual failed evidence is retained.",
+      "simplification_changes": [
+        "Reuse existing public engine/storage and exact twelve-case runner; add one hardlink regression and two bounded single-predicate counterfacts instead of a new proof framework.",
+        "Use actual active archive metadata and canonical physical output identity; preserve strict versioned report consumption and original runtime-proof contract.",
+        "Keep worker native checks readonly and watcher pause type-restricted; document only the proven direct-fetch candidate and retain all final acceptance boundaries."
+      ],
+      "post_simplification_verdict": "PASS: source review and focused public-boundary checks resolve the six observed findings, including actual single-predicate semantic failures and restored success. This verdict covers implementation/remediation review only; final canonical gates, predecessor promotion and main containment are separate requirements.",
+      "complete_post_change_verification": [
+        "Independent r5 readback rehashed all236 staged evidence pins for cleanbe26c70/source fingerprint6da2613fb23489cc0a6b14ca534f716ac41d20da00440f02d3586974d0e80b69; all12 actual case receipts were retained.",
+        "Independent readonly archive reads for positive and watcher cases found canonical active-v1 row/sequence1/524332bytes/expected SHA and zero leases; cancellation and503 had empty tables/sequence0/no final output.",
+        "Implementation independently inspected actual crash/restart retained actor metadata, watcher lifetime, valid journal checksum chain, output and archive, including repeated recovery without duplicate commit.",
+        "Hardlink public Engine regression passed; deleting only link-count rejection compiled and failed because sentinel became empty; exact restored source passed the same unchanged test.",
+        "Fresh64KiB frame counterfact compiled and exited5 on a131072-byte frame after122880bytes; unchanged4MiB fixture probe with golden worker exited0 and independently matched physical output/archive. All243 stable source inputs were restored.",
+        "Owning actor UTF16, archive metadata, physical path and real source-variant guards passed at their recorded candidate boundaries; later mechanical refactoring received independent source review and owning receipt/report checks.",
+        "Manual direct read reconciled actual locked Cargo package/bin names, parser limits, exit mappings, stop newline, cancellation and recovery against current source and actual r5 captures.",
+        "r5 aggregate runtime report1792566456989051700-489988 remains FAIL for oldWP006 closure containment after actual case collection; predecessor repair and final source-bound gate/merge acceptance remain separate.",
+        "The actual controlled testkit handler fault compiled and retained the original two-second assertion/native101 with live parent/marker and bounded captures; independent retained creation identities observed the parent, grandchild and all five monitored actor handles signaled at root exit.",
+        "All243 handler source pins restored exactly; the unchanged ordinary selector succeeded1/1 in1.07s. This proves the added diagnostic/cleanup branch under controlled fault, not the cause of the earlier canonical startup delay.",
+        "Actual full workspace all-target/all-feature warnings-denied Clippy fixed4 completed exit0 in2.71s. Earlier fixed/fixed2/fixed3 compiler failures remain retained in product-batch captures; no failed invocation is relabeled.",
+        "Independent reciprocal source review accepted exact lint corrections: CLI/worker predicate syntax, facade drop scope/error borrows, launcher loop/heartbeat extraction, transport duration/error syntax and storage checked native buffer/pointer conversions with unchanged confinement/no-overwrite/control semantics."
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-021-first-runnable-production-slice-v1-CEILING-001",
+        "current_ceiling": "Bounded direct HTTP candidate on approved Windows/NTFS profile; no general extraction, challenge, streaming protocol, performance, packaging, release or replacement-parity claim.",
+        "replacement_trigger": "All original acceptance rows, current canonical gates, exact predecessor promotion and actual corrective closure containment pass independently.",
+        "likely_upgrade_path": "Complete this exact slice before separately authorized WP011 cross-boundary work.",
+        "trigger_detection_method": "Runtime and promotion consumers reject missing effects, changed proof declarations, invalid predecessor lifecycle or uncontained closure.",
+        "linked_evidence": [
+          ".fforager-artifacts/runtime-proof/phase1-489988-1792566298418301100/runtime-evidence.json",
+          ".fforager-artifacts/product-batch/phase1-regressions/baseline-identity.json",
+          "product/MODEL_MANUAL.md"
+        ]
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract and serialization: runtime-proof candidate references, strict v1/v2 report shapes, status receipts and exact artifact/case sets can otherwise accept declarations as execution.",
+          "State and resource: prepare/truncate/publication, journal replay, archive leases and frame admission can corrupt another file or overstate an acknowledged commit.",
+          "Integration and gate: actual active archive schema, physical output identity and exact predecessor IDs/containment must be independently consumed rather than inferred from stdout.",
+          "Process integration: launcher-owned worker/watchers require creation/image/parent identity, retained exit acknowledgment, bounded cancellation and watcher-only pause control."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Actual diff and scope review followed core/storage/net, launcher/facade, strict report consumers, native ownership wrappers and exact promotion boundaries.",
+          "Independent physical readback of236 r5 pins and raw status/capture hashes matched all12 actual case receipts; canonical archive data was reread outside the proof producer.",
+          "Separate implementation reviewer inspected runtime producer changes, owned worker guard and actual crash/restart evidence; manager exclusively ran Cargo and production boundaries.",
+          "Independent manual review compared actual parser defaults/limits, worker/launcher exits, stop bytes and package binaries against documented commands and r5 output.",
+          "The complete actual full-workspace Clippy fixed4 result and source-only lint equivalence were independently read; the prior warning/error captures remain historical failures."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "Hardlink guard removal alone compiled, then unchanged public regression failed on truncated sentinel; exact restored source passed unchanged selector.",
+          "Frame constant1MiB to64KiB alone produced actual limit failure5 on valid524332-byte fixture under4MiB cap; golden worker fresh-state probe succeeded with exact hash and archive.",
+          "Actual durable-prefix checksum-valid invalid phase exited4 JOURNAL-PHASE; physical final-byte mutation exited4 RECOVERY-HASH while canonical committed archive remained unchanged.",
+          "Existing owning strict evidence, candidate-history and promotion negatives reject unknown/missing fields, altered frozen contracts, reused authorization references and forged predecessor claims.",
+          "Controlled ignored-source parent hold5s and descendant lifetime30s force the unchanged two-second assertion into actual diagnostics/owned cleanup, ending native101; exact source restoration then passes the unchanged ordinary selector."
+        ],
+        "BOUNDARY_PROBES": [
+          "Production launcher/worker/watcher executed outside source through actual HTTP origin and approved net/storage adapters; all236 physical evidence pins were independently reconciled.",
+          "Public Engine with DurableFetchStorage rejected real owned NTFS stage hardlink before truncation and retained sentinel bytes; mutation reached the physical failure, not compile failure.",
+          "Actual direct CLI counterfact preserved same fixture/4MiB/30s/explicitloopback policy with distinct owned stages and byte-identical launcher/watcher/origin.",
+          "Actual watcher incompatible source variant emitted ready@9; missing/corrupt/crash/hung/storage failure exposed degradation without changing successful media/archive decisions.",
+          "The owning test uses retained real parent/grandchild processes and fixed SystemRoot cleanup under the existing diagnostic authorization; monitored creation identities independently acknowledge only the five observed actor exits."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Transport503 exited3 and cancellation exited130/1810ms; both actual databases had zero committed rows/leases and no final output.",
+          "Unsupported archive version and invalid row fixtures fail; metadata-aware positive/negative/rollback readers retain exact key and sequence constraints.",
+          "Physical output identity accepts a distinct valid alias of the same existing target but rejects missing, relative or genuinely different targets, including identical bytes.",
+          "Actor metadata rejects malformed UTF16/UTF8 and oversized input; readonly OwnedWorker exposes no watcher pause/debug method and requires live creation/image/parent checks.",
+          "Cleanup acknowledgment cannot turn the original exceeded two-second bound into success, and taskkill status is explicitly not a substitute for descendant absence; raw controlled marker remained six bytes."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding_id": "WP-FF-021-FINDING-HARDLINK-001",
+            "finding": "Preexisting stage hardlink could truncate another owned file; retained-handle link-count check now rejects before truncation, independently witnessed by real public regression and semantic single-predicate counterfact.",
+            "status": "REMEDIATED",
+            "proof_id": "storage::fetch::tests::hardlinked_stage_is_rejected_before_truncation"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-BYTE-CREDIT-002",
+            "finding": "A valid dependency delivery frame was confused with64KiB logical credit. Explicit1MiB retained frame guard,16KiB borrowed writes and2MiB admission preserve total bounds; fresh old-limit variant fails and golden CLI succeeds.",
+            "status": "REMEDIATED",
+            "proof_id": "FF-GATE-RUNTIME-001::phase1-success"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-ACTOR-METADATA-003",
+            "finding": "Actual Windows actor metadata was UTF16 rather than UTF8. Bounded BOM-aware strict decoding preserves owned PID/parent/image checks and rejects malformed bytes.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::tests::actor_metadata_decodes_utf16_and_rejects_malformed_bytes"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-ARCHIVE-SCHEMA-004",
+            "finding": "The proof reader hardcoded inactive v2 table while actual store metadata selectedv1. Independently observed physical row justified metadata-aware strict positive/negative/rollback consumption.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::tests::archive_oracle_uses_metadata_and_rejects_invalid_rows_and_versions"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-OUTPUT-IDENTITY-005",
+            "finding": "Text-only output path equality rejected the same Windows physical target with mixed separators. Existing-target canonical identity now accepts aliases and rejects genuinely different targets.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::tests::output_identity_requires_the_same_existing_target"
+          },
+          {
+            "finding_id": "WP-FF-021-FINDING-WATCHER-VARIANT-006",
+            "finding": "Binary literal mutation did not establish incompatible wire behavior. Exact single-literal source variant uses only approved lock identities, distinct staging, retained hashes and actual ready@9 observation.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::phase1_runtime::watcher_mutant::tests::source_variant_uses_approved_lock_and_emits_incompatible_wire"
+          },
+          {
+            "finding_id": "WP-FF-024-FINDING-TIMEOUT-DIAGNOSTICS-001",
+            "finding": "The actual owning testkit two-second failure dropped child status, captures and cleanup evidence. Existing approved diagnostic remediation preserves that deadline failure, records bounded actual phase/capture facts and cleans only the retained owned parent/tree; a controlled real parent/grandchild fault and exact ordinary restoration demonstrate the branch without claiming the original startup cause.",
+            "status": "REMEDIATED",
+            "proof_id": "testkit::fake_child_process::bounded_descendant_outlives_direct_child_then_self_cleans"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "Current runtime observations and full workspace Clippy do not override the retained r5 aggregate prerequisite containment failure or final exact-candidate canonical/main acceptance. Earlier startup delay cause remains unverified; the controlled handler proves only bounded diagnostics/owned cleanup. Storage remains approved Windows/NTFS only; frame guard does not bound dependency allocation or OS RSS."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "review_fresh independent adversarial subagent",
+          "method": "Direct manual/source comparison plus independent actual runtime and physical archive readback",
+          "verdict": "PASS",
+          "evidence": [
+            "The locked Cargo release command names actual launcher/worker/watcher packages and sibling binaries; fetch flags, defaults and numeric limits match current parser.",
+            "Documented failure/recovery, typed exits, retained journal/archive handling and exact watcher stop newline match current source and actual success/cancellation/corruption observations.",
+            "FF-GATE-RUNTIME-001 and main containment remain final acceptance requirements; manual text distinguishes actual direct-fetch candidate from historical prerequisites and does not certify current gate closure."
+          ]
+        }
+      }
     }
   }
 }
