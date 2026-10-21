@@ -58,11 +58,9 @@
     "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "Measured Windows and Unix control variance and exact replay profiles remain unproven.",
-      "Concrete domain-derived observations, public counterfactual execution and required canonical gates remain pending.",
-      "Predecessor remediations and final closure containment remain unproven."
+      "Closure commit main containment is not yet proven."
     ],
-    "next_action": "Commit the exact finding route and required evidence metadata, acquire source-bound native cohorts once, then run required canonical gates before closure containment.",
+    "next_action": "Commit actual acceptance closure, record its SHA and MERGE_PENDING, push and merge prerequisite-only branch into main, prove containment, then synchronize validated state.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -116,75 +114,181 @@
       "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-001",
       "requirement": "Strict versioned schemas bind every run and sample to exact source, build, toolchain, features, optional comparison artifact, FFmpeg/ffprobe, dependency decisions, fixture/corpus, host, filesystem, cache, process-topology, and metric identities; unknown fields, missing identities, duplicate sample IDs, and mismatched manifests are rejected.",
       "proof_class": "semantic",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Strict public corpus and physical-domain owning controls; clean05aadeb canonical ARCH8checks/55fixtures and PR70checks/55fixtures allPASS."
+      ]
     },
     {
       "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-002",
       "requirement": "A public admission boundary compares concrete normalized observations and rejects deliberately cheaper or different work before statistics, including lower-quality selection, omitted metadata/sidecar/archive/validation work, changed cache state, different request sequence, shifted subprocess work, and changed process topology.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Physical11dimension derived admission,106 actual B observations and three fresh native tamper refusals; exact SAMPLE-BINDING/UNVERIFIED-CONTROL/UNMEASURED-COST diagnoses."
+      ]
     },
     {
       "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-003",
       "requirement": "Windows and Unix profile manifests define replayable host and environment conditions, bounded preparation and cleanup, cold/warm policy, noise thresholds, measurement availability, and explicit unsupported metrics without hardcoded paths or silent substitution.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Four final05aadeb native A/B cohorts106controls/100measured each, both replay profiles independently reconciled; unavailable properties remain explicit."
+      ]
     },
     {
       "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-004",
       "requirement": "The statistical contract retains raw samples and enforces randomized paired order, declared warmup, minimum repetitions, outlier/noise policy, distributions, and 95-percent confidence bounds; a single mean, missing samples, unstable noise, and a confidence interval crossing its declared gate cannot PASS.",
       "proof_class": "semantic",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Independent A threshold125267ppm, B106raw samples/50clusters and independently reproduced95percent CI[0.995661006738992,1.0400419316809029]; WindowsA NOISE605310ppm over500000cap refused."
+      ]
     },
     {
       "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-005",
       "requirement": "Machine-readable reports preserve the weakest executed proof class, separate total-system, Ferric, FFmpeg, and other authorized worker costs, disclose unavailable metrics and residual uncertainty, and cannot promote structural or declaration-only evidence to behavioral or performance PASS.",
       "proof_class": "semantic",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Semantic nonfixture Linux report keeps product_progress=false/performance_claim=false and CPU/RSS/I/O unavailable; Windows refusal and structural corpus ceiling preserved."
+      ]
     },
     {
       "id": "WP-FF-020-equivalent-work-benchmark-design-v1-AC-006",
       "requirement": "Canonical architecture, PR, and triggered benchmark/deep gates execute the equality and statistics validators plus isolated counterfactual fixtures; independent adversarial review finds no unresolved false-equivalence, provenance, topology, noise, or self-validation path.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "FF-GATE-ARCH-001 report1792559655529323400-457160 and FF-GATE-PR-001 report1792562549302941800-518188 execute actual shared corpus/deep boundary; independent reviewer six-AC PASS, containment separate."
+      ]
     }
   ],
   "recovery": {
     "last_checkpoint": {
+      "recorded_at_utc": "2026-10-21T06:05:28Z",
+      "branch": "codex/phase1-prerequisite-closure",
+      "head_sha": "05aadebf1eda18dd278b5a077824641eb3b74402",
+      "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+      "merge_base_main": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "status_porcelain_v2": [
+        "# branch.oid 05aadebf1eda18dd278b5a077824641eb3b74402",
+        "# branch.head codex/phase1-prerequisite-closure"
+      ],
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json"
+      ],
       "checks_run": [
-        "Comparator owning1/1 and FF-GATE-RUNTIME-001 diagnostic iteration PASS; exact reports and prior rejection retained in change_evidence."
+        "All six acceptance rows proven; exact canonical gate reports and native data retained."
       ],
       "blockers": [
-        "Final source-bound cohorts, required canonical verdicts and main containment are not established."
+        "Closure main containment."
       ],
-      "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
-        "build/tools/fforager-xtask/src/main.rs"
-      ],
-      "recorded_at_utc": "2026-10-21T04:51:45Z",
-      "branch": "codex/phase1-prerequisite-closure",
-      "head_sha": "c3906c9b8c2350b51703c7d87e83f87fcafce2b4",
-      "next_action": "Commit exact comparator and evidence metadata, refresh optimized collectors, acquire source-bound native cohorts once, then required canonical gates and containment."
+      "next_action": "Commit actual acceptance closure, record its SHA and MERGE_PENDING, push and merge prerequisite-only branch into main, prove containment, then synchronize validated state."
     }
   },
   "validation": {
     "checks": [
       "Historical source1e07fa8: public and physical-domain focused checks, native A/B captures, independent readback and precise public negatives recorded in change_evidence.",
       "Historical Windows measurement disposition: REJECTED by OUTLIERS18/100 over10percent policy; no threshold adjustment or retry to force admission.",
-      "Historical Linux measurement disposition: semantic admission with independent A/B data, confidence bounds and false product/performance flags."
+      "Historical Linux measurement disposition: semantic admission with independent A/B data, confidence bounds and false product/performance flags.",
+      {
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "source_tree": "c26b10a4a4ba537a263663ace2b0542896cc6633",
+        "source_dirty": false,
+        "content_fingerprint": "ff6be3915c19fc0a6c6992c0a0af630fe4f5e2691e31b07fab86c560ce3dd8a4",
+        "native_cohorts": [
+          {
+            "host": "windows",
+            "role": "a",
+            "calibration": ".fforager-artifacts/benchmark-native/final-windows-a/calibration.json",
+            "calibration_sha256": "eb64e5c8fe0d2da6a55ae52e349a100a2b02dd14de1bbd2fad4a8c7c27f05ea5",
+            "control_receipt": {
+              "path": ".fforager-artifacts/benchmark-native/final-windows-a/identity.json",
+              "sha256": "5a1b130d1da2f28a611c486bedc38f821e8f8c6fe84b96e125d8c8bbe2dd8a57",
+              "bytes": 2369
+            }
+          },
+          {
+            "host": "windows",
+            "role": "b",
+            "calibration": ".fforager-artifacts/benchmark-native/final-windows-b/calibration.json",
+            "calibration_sha256": "8f4497aa188dab4f84dc90a3435a1064e7d031e87b1d43be8354d30fffa071b5",
+            "control_receipt": {
+              "path": ".fforager-artifacts/benchmark-native/final-windows-b/identity.json",
+              "sha256": "2b732c7b002f3cc9a5d223d853fb76001b8b2fee39f9a771f9969572fa98a9ea",
+              "bytes": 2369
+            }
+          },
+          {
+            "host": "linux",
+            "role": "a",
+            "calibration": ".fforager-artifacts/benchmark-native/final-linux-a/calibration.json",
+            "calibration_sha256": "fc339f6d743bc29aa5cbd967f0f240bc5778ae74631df7edff07e435c436bb32",
+            "control_receipt": {
+              "path": ".fforager-artifacts/benchmark-native/final-linux-a/identity.json",
+              "sha256": "1142a1a4ebcad8497d2da92dbd346e497392542a087b1d6197c987f3be0475c3",
+              "bytes": 2336
+            }
+          },
+          {
+            "host": "linux",
+            "role": "b",
+            "calibration": ".fforager-artifacts/benchmark-native/final-linux-b/calibration.json",
+            "calibration_sha256": "77ec07de8b0094ec4894faf1a1a517ecb186f851d0e5c3d065bc20935feb4191",
+            "control_receipt": {
+              "path": ".fforager-artifacts/benchmark-native/final-linux-b/identity.json",
+              "sha256": "9de7c03401bc9860ade37703c405d652aa91ee069fee39c24acb83c3a0c75587",
+              "bytes": 2336
+            }
+          }
+        ],
+        "linux_admission": {
+          "result": "PASS",
+          "report": ".fforager-artifacts/benchmark-native/final-linux-bundle/report.json",
+          "report_sha256": "10732452c243b2ae7b11839360d5f46d20ab3e688e16d8eb02205021d7c260cc",
+          "threshold_ppm": 125267,
+          "confidence_interval": [
+            0.995661006738992,
+            1.0400419316809029
+          ],
+          "product_progress": false,
+          "performance_claim": false
+        },
+        "windows_measurement": {
+          "result": "REJECTED",
+          "diagnostic": "FF-BENCH-E-NOISE",
+          "observed_relative_ppm": 605310,
+          "maximum_relative_ppm": 500000
+        },
+        "independent_review": "Six-AC scoped PASS by review_fresh;2572pins/424WAVs/848invocations reconciled, no unresolved blocking finding."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+        "source_dirty": false
+      },
+      "FF-GATE-ARCH-001 PASS clean05aadeb: build/reports/architecture-check-1792559655529323400-457160.json;8checks55fixtures.",
+      "FF-GATE-PR-001 FAIL first clean05aadeb: build/reports/verify-pr-1792560336204349300-302184.json; inherited target override and nested Git long-path failures.",
+      "Exact existing canonical testbinary10affected controls PASS550.06s with CARGO_TARGET_DIR removed, canonical .cargo/config.toml retained, process Git configuration appended core.longpaths=true; no source change.",
+      "FF-GATE-PR-001 PASS clean05aadeb: build/reports/verify-pr-1792562549302941800-518188.json;151xtask/65FFmpeg/17testkit passed, docs/dependency/advisories accepted.",
+      "Executed canonical command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-pr --evidence-from-taskboard; process CARGO_TARGET_DIR absent, GIT_CONFIG_COUNT=1/GIT_CONFIG_KEY_0=core.longpaths/GIT_CONFIG_VALUE_0=true, TEMP/TMP under owning artifact root. No persistent configuration change.",
+      "Retained command-assembly usage rejection and logical-target spelling rejection report1792559250693310900-402056; corrected invocation only, no source/threshold change.",
+      {
+        "kind": "closure-metadata-iteration",
+        "result": "FAIL",
+        "artifact": "build/reports/runtime-truth-check-1792562767936477700-421584.json",
+        "diagnostic": "FF-RUNTIME-E-PREREQUISITE-PROGRESS-CLAIM",
+        "correction": "Separate gate result and report-path evidence into structured fields; frozen requirements and source code unchanged."
+      }
     ],
     "not_proven": [
-      "Registered-source native cohort acquisition and required canonical gate verdicts.",
       "Any Ferric performance or no-regression claim.",
       "Any product, capability, packaging, release or phase progress.",
-      "Main containment and predecessor closure."
+      "Closure main containment and separate predecessor state repair."
     ]
   },
   "extensions": {
@@ -333,7 +437,9 @@
         "Historical public negatives rejected elapsed+1, pinned A-cohort substitution and forged measured RSS with exact diagnostics.",
         "FF-GATE-RUNTIME-001 c390 clean report1792557670155769100-514432 rejected build/Cargo.lock and architecture-policy.toml; exact non-shipped contracts reuse was the recorded blocker.",
         "Comparator owning regression passed1/1 after14.70s compile; initial TOML missing-key fixture panic was corrected without changing the comparator.",
-        "FF-GATE-RUNTIME-001 diagnostic iteration PASS report1792558129277152100-309524, c390 dirty only main.rs, fingerprint623f2ba2b48a73108963f3557af6a1f0f13aafed6faea617ac2d1e52d8ba4507; clean final acceptance remains separate."
+        "FF-GATE-RUNTIME-001 diagnostic iteration PASS report1792558129277152100-309524, c390 dirty only main.rs, fingerprint623f2ba2b48a73108963f3557af6a1f0f13aafed6faea617ac2d1e52d8ba4507; clean final acceptance remains separate.",
+        "Final registered05aadeb four native cohorts independently reconciled; Linux public semantic admission and three fresh exact tamper refusals executed.",
+        "Clean05aadeb canonical FF-GATE-RUNTIME-001, FF-GATE-ARCH-001 and FF-GATE-PR-001 accepted; prior environmental failures retained without source changes."
       ],
       "adversarial_review": {
         "DIFF_ATTACK_SURFACES": [
@@ -382,7 +488,7 @@
           }
         ],
         "RESIDUAL_UNCERTAINTY": [
-          "Historical1e07 controls are not final registered-source measurements; fresh source-bound acquisition, canonical verdicts and main containment remain required. External controls make no Ferric speed or no-regression claim. CPU/RSS/I/O unavailable values and synchronous filesystem post-operation admission bounds remain explicit."
+          "Final native controls establish only bounded external-tool equality and statistics; no Ferric performance or product claim. CPU/RSS/I/O unavailable and synchronous filesystem post-operation bounds remain explicit. Closure main containment is separate."
         ],
         "MANUAL_REVIEW": {
           "artifact": "product/MODEL_MANUAL.md",
