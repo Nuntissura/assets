@@ -253,6 +253,14 @@
   },
   "validation": {
     "checks": [
+    {
+      "kind": "r13-ffmpeg-context-diagnostics",
+      "retained_failure": "Independent r13 verify-pr-1792621105330203700-486780 failed workspace tests: FFmpeg59/6/3ignored; all other targets passed. Six original causes remain UNVERIFIED. Runtime, watcher and composed deep checks were not reached.",
+      "diagnostic_change": "Only the governed-progress-share assertion failure message now prints its actual typed Result; original predicate, transcript and limits are unchanged. No functional fix is claimed.",
+      "focused_results": "Canonical-compatible unified no-run setup PASS0/85.57seconds. Same emitted b65 binary SHA25626A5B1F02BE08F750F410084A17F0BD507007146025D82176DEAF99A422C2CF0 passed65/0/3ignored in4.61seconds direct nocapture,2.78seconds direct default capture, and4.84seconds through Cargo. The Cargo comparison retained workspace/all-target/all-feature/locked/no-fail-fast/canonical target selection and exact68 existing test-name filters; unrelated targets executed zero cases. Process-only jobs1/threads2 and original deadlines were retained. Capture and Cargo context did not reproduce the failures; this is diagnostic evidence, not canonical acceptance.",
+      "captures": ".fforager-artifacts/product-batch/phase1-r13-independent-pr.*; phase1-r13-ffmpeg-diagnostic-build.*; phase1-r13-ffmpeg-owner*; phase1-r13-ffmpeg-cargo-owner.*",
+      "ceiling": "Final declared literal ARCH, independent canonical PR, same-run runtime/watcher, nine acceptance criteria and main containment remain required. Frozen twelve scenarios and limits are unchanged."
+    },
         {
           "kind": "bounded-full-history-batches",
           "retained_failure": "Independent r12 PR verify-pr-1792617752445027300-4536 failed during history preflight with actual primary FF-SECRET-E-GIT-TIMEOUT300seconds, acknowledged owned termination/reap, and secondary reader EOF. Workspace/runtime/watcher were not reached. This current timeout is proven; original r8 cause remains UNVERIFIED.",
