@@ -24,7 +24,8 @@
       "effect": "Explicit implementation-start priority overrides prior cleanup, activation-commit, predecessor and proof-preparation sequencing as start blockers only; it does not satisfy or remove original acceptance or closure obligations.",
       "reference": "Start product code now using parallel agents for the bounded direct-HTTP slice. Bundle tests/checks/builds, reuse warm Cargo artifacts, keep paperwork minimal; paperwork or repo ceremony can never be a blocker.",
       "source": "operator_message"
-    }
+    },
+    "runtime_proof_transition_reference": "Operator direction on 2026-10-21: complete Phase1 using the versioned current-source proof transition, preserve all original acceptance and predecessor obligations, collect approved cases while unresolved authorization remains explicitly blocked."
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -502,6 +503,46 @@
       "recorded_at_utc": "2026-10-21T00:17:58Z",
       "runtime_proof_status": "Existing blueprint retained as context only; no new schema or fabricated proof declaration authored. Strict predeclaration and versioned proof gap remains explicit.",
       "implementation_scope": "Existing direct-HTTP production slice only; no broad parallel implementation beyond original packet scope."
+    },
+    "runtime_proof": {
+      "schema_id": "ff.runtime-proof@2",
+      "completion_claim": "operator_usable_runtime",
+      "authorization_reference": "Operator direction on 2026-10-21: complete Phase1 using the versioned current-source proof transition, preserve all original acceptance and predecessor obligations, collect approved cases while unresolved authorization remains explicitly blocked.",
+      "source_commit": "0dfbd843e50b7134e5600b6f9bff6fe4e54ac708",
+      "artifacts": [
+        {
+          "package": "fforager-launcher",
+          "binary": "fforager"
+        },
+        {
+          "package": "fforager-worker",
+          "binary": "fforager-worker"
+        },
+        {
+          "package": "fforager-watcher",
+          "binary": "fforager-watcher"
+        }
+      ],
+      "fixture": {
+        "bytes": 524332,
+        "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+        "source": "build/fixtures/phase1-direct-http/media.wav"
+      },
+      "scenarios": [
+        "success",
+        "transport-failure",
+        "external-cancellation",
+        "crash-restart",
+        "durable-prefixes",
+        "state-counterfactual",
+        "watcher-missing",
+        "watcher-corrupt",
+        "watcher-incompatible",
+        "watcher-crash",
+        "watcher-hung",
+        "watcher-storage-failure"
+      ],
+      "timeout_seconds": 30
     }
   }
 }
