@@ -6,12 +6,6 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-# DXF import (hsk-studio-interop-vector-core feature `dxf`, lane SMB-DXF-EPS-IMPORT). Default off.
-dxf = ["hsk-studio-interop-vector-core/dxf"]
-# Host side of the isolated EPS-to-PDF worker (core feature `eps`). Default off.
-eps = ["hsk-studio-interop-vector-core/eps"]
-# Also builds the worker binary into this build (core feature `eps-worker`). Default off.
-eps-worker = ["hsk-studio-interop-vector-core/eps-worker"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

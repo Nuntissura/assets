@@ -63,6 +63,37 @@ fn dos_header_and_dsc_comments_are_read() {
     assert_eq!(import.preview, Some(EpsPreview::Wmf(wmf)));
 }
 
+/// EPS content conversion is a typed refusal (remediation 2026-10-21): the route names that the
+/// PostScript interpreter route was removed for licensing and that DSC data and the preview stay
+/// available; the error is `eps_vector_not_decoded` (Unavailable) with the bytes preserved, a plain
+/// PostScript file is refused the same way, and the DSC data and the EPSI preview of the same file
+/// are still read.
+#[test]
+fn eps_conversion_refusal_names_the_removed_interpreter_route() {
+    assert!(EPS_ROUTE.contains("postscript_interpreter_route_removed_for_licensing"), "{EPS_ROUTE}");
+    assert!(EPS_ROUTE.contains("read_eps") && EPS_ROUTE.contains("import_eps_preview"), "{EPS_ROUTE}");
+    let epsi = "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 2 1\n%%EndComments\n%%BeginPreview: 2 1 8 1\n% 00 ff\n%%EndPreview\nnewpath 0 0 moveto 2 1 lineto stroke\nshowpage\n%%EOF\n";
+    for bytes in [epsi.as_bytes(), b"%!PS-Adobe-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n".as_slice()] {
+        match import_eps(bytes, &policy(), &CancellationToken::default()) {
+            Err(e @ VectorError::EpsVectorNotDecoded { .. }) => {
+                assert_eq!(e.code(), "eps_vector_not_decoded");
+                assert_eq!(e.failure_code(), Some(hsk_studio_observe::FailureCode::Unavailable));
+                let VectorError::EpsVectorNotDecoded { route, preserved } = e else { unreachable!() };
+                assert_eq!(route, EPS_ROUTE);
+                assert_eq!(preserved.bytes, bytes);
+                assert_eq!(preserved.kind, "eps");
+            }
+            other => panic!("expected eps_vector_not_decoded, got {other:?}"),
+        }
+    }
+    let info = read_eps(epsi.as_bytes(), &policy()).expect("dsc data");
+    assert_eq!(info.bounding_box, Some([0, 0, 2, 1]));
+    let preview = import_eps_preview(epsi.as_bytes(), &policy(), &CancellationToken::default()).expect("preview");
+    assert_eq!(preview.preview, Some(EpsPreview::Epsi { width: 2, height: 1, depth: 8, gray: vec![0, 255] }));
+    // Damaged input is still a malformed-file error, not the conversion refusal.
+    assert_eq!(import_eps(b"<svg/>", &policy(), &CancellationToken::default()).err(), Some(VectorError::Unsupported("not_an_eps_file")));
+}
+
 /// EPSI previews decode to 8-bit gray (depth 1 and 8, rows padded to bytes); `(atend)` boxes come
 /// from the trailer; a file with no preview reports `eps_preview_missing`.
 #[test]

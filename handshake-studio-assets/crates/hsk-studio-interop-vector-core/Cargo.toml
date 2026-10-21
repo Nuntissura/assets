@@ -6,47 +6,20 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-# DXF import through the `dxf` crate (ixmilia/dxf-rs, MIT; lane SMB-DXF-EPS-IMPORT). Default off.
-dxf = ["dep:dxf"]
-# Host side of the isolated EPS-to-PDF worker (hsk-studio-worker supervision; Job Object caps on
-# Windows). Default off.
-eps = ["dep:hsk-studio-worker", "hsk-studio-worker/job-caps"]
-# The worker binary itself: links the `stet` PostScript interpreter (Apache-2.0 OR MIT). Only the
-# worker process runs PostScript. Default off.
-eps-worker = ["eps", "dep:stet", "dep:stet-core", "dep:stet-fonts", "dep:stet-graphics"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
 hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
-dxf = { version = "=0.6.2", default-features = false, optional = true }
-hsk-studio-worker = { path = "../hsk-studio-worker", version = "=0.1.0", default-features = false, optional = true }
-stet = { version = "=0.8.4", default-features = false, features = ["pdf-output"], optional = true }
-stet-core = { version = "=0.8.4", default-features = false, optional = true }
-# Pinned so the interpreter's closure stays on the 0.8.4 release set (dependency age rule: 0.8.5+ is newer
-# than two weeks on 2026-10-20); not used directly.
-stet-fonts = { version = "=0.8.4", default-features = false, optional = true }
-stet-graphics = { version = "=0.8.4", default-features = false, optional = true }
 
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "interop-vector-eps-worker"
-path = "src/bin/interop-vector-eps-worker.rs"
-required-features = ["eps-worker"]
-
 [[test]]
 name = "dxf_import"
 path = "tests/dxf_import.rs"
-required-features = ["dxf"]
 
 [[test]]
 name = "eps_import"
 path = "tests/eps_import.rs"
-
-[[test]]
-name = "eps_worker"
-path = "tests/eps_worker.rs"
-required-features = ["eps-worker"]

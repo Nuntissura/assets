@@ -23,19 +23,5 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The EPS worker binary interop-vector-eps-worker (feature eps-worker) links the stet PostScript
-interpreter 0.8.4 (https://github.com/AndyCappDev/stet, Apache-2.0 OR MIT), used through its public
-API, not copied. stet embeds resources under their own terms, which travel with any distributed
-worker binary:
-
-- the 35 URW++ base 35 Type 1 font programs (stet resources/Font/*.t1), SIL Open Font License,
-  Version 1.1: full text in stet-0.8.4 LICENSE-URW-FONTS;
-- a CMYK ICC profile (stet resources/default_cmyk.icc), stated by stet as CC0-licensed
-  (src/embedded_resources.rs);
-- Adobe CMap-derived CID/Unicode tables (stet-fonts 0.8.4 src/cid_*.bin), BSD-3-Clause-style terms,
-  Copyright 1990-2023 Adobe: full text in stet-fonts-0.8.4 LICENSE-ADOBE-CMAP;
-- the Adobe Glyph List and ITC Zapf Dingbats Glyph List (stet-fonts 0.8.4 src/glyphlist.txt,
-  src/zapfdingbats.txt), Adobe's terms: full text in stet-fonts-0.8.4 LICENSE-ADOBE-AGL.
-
 DXF parsing uses dxf 0.6.2 (https://github.com/ixmilia/dxf-rs, MIT) through its public API; its
 licence text ships with the crate.
