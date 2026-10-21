@@ -13,9 +13,9 @@ use std::time::Duration;
 const SCHEMA_VERSION: &str = "ff-ordinary-transport-component-proof-v1";
 const DECISION_ID: &str = "FF-DEC-002";
 const REQWEST_ID: &str = "reqwest@0.13.4";
-const RUSTLS_ID: &str = "rustls@0.23.42";
+const RUSTLS_ID: &str = "rustls@0.23.46";
 const RING_ID: &str = "ring@0.17.14";
-const TRUST_ROOTS_ID: &str = "webpki-roots@1.0.9";
+const TRUST_ROOTS_ID: &str = "webpki-roots@1.0.10";
 const PLATFORM_VERIFIER_ID: &str = "rustls-platform-verifier@0.7.0";
 const COMPONENT_PASS: &str = "PASS_ORDINARY_TRANSPORT_COMPONENT_PROOF";
 const ZERO_PROGRESS: &str =

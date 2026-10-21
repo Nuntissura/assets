@@ -18,7 +18,7 @@ internal_edge_default = "deny"
 forbidden_layer_edges = ["engine->frontend", "engine->adapter", "engine->watcher", "adapter->adapter", "product->watcher", "watcher->engine", "normal_or_build:product->testkit"]
 forbidden_product_runtime_roots = [".GOV", "build", ".fforager-artifacts"]
 allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe", "FF-DEC-001", "FF-DEC-002", "FF-DEC-003"]
-approved_transitive_build_packages = ["bindgen@0.72.1", "btls-sys@0.5.6", "camino@1.2.4", "clang-sys@1.8.1", "crc32fast@1.5.0", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "getrandom@0.4.3", "httparse@1.10.1", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "redb@4.1.0", "ring@0.17.14", "rustls@0.23.42", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi@0.3.9", "zerocopy@0.8.55", "zmij@1.0.23", "zstd-safe@7.2.4", "zstd-sys@2.0.16+zstd.1.5.7"]
+approved_transitive_build_packages = ["bindgen@0.72.1", "btls-sys@0.5.6", "camino@1.2.4", "clang-sys@1.8.1", "crc32fast@1.5.0", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "getrandom@0.4.3", "httparse@1.10.1", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "redb@4.1.0", "ring@0.17.14", "rustls@0.23.46", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi@0.3.9", "zerocopy@0.8.55", "zmij@1.0.23", "zstd-safe@7.2.4", "zstd-sys@2.0.16+zstd.1.5.7"]
 approved_transitive_proc_macros = ["boa_macros@0.21.1", "bytemuck_derive@1.11.0", "derive_arbitrary@1.4.2", "displaydoc@0.2.6", "dynify-macros@0.1.2", "equator-macro@0.4.2", "foreign-types-macros@0.2.4", "futures-macro@0.3.33", "num_enum_derive@0.7.6", "openssl-macros@0.1.1", "paste@1.0.15", "phf_macros@0.13.1", "pin-project-internal@1.1.13", "rustversion@1.0.23", "serde_derive@1.0.228", "thiserror-impl@2.0.19", "time-macros@0.2.32", "typed-builder-macro@0.23.2", "windows-implement@0.60.2", "windows-interface@0.59.3", "yoke-derive@0.8.2", "zerofrom-derive@0.1.7", "zerovec-derive@0.11.3"]
 
 [[members]]
@@ -30,7 +30,7 @@ artifact_role = "non_shipped_gate_runner"
 shipped = false
 test_only = false
 publish_allowed = false
-allowed_internal_dependencies = []
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
 split_trigger = "FF-BUILD-036"
 feature_owner = "WP-FF-003-executable-gate-bootstrap-v1"
 profile = "phase0_bootstrap"
@@ -510,16 +510,16 @@ default_features = false
 
 [[dependency_decisions]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 consumer = "fforager-transport"
 runtime_class = "non_shipped_phase0_prerequisite"
 purpose = "Bind the ordinary candidate to an exact Ferric-selected Mozilla trust-root snapshot instead of machine-dependent platform trust."
 native = false
-owner = "WP-FF-017-ordinary-transport-decision"
+owner = "WP-FF-023-dependency-security-remediation"
 allowed_consumers = ["fforager-transport"]
 reason = "A provider-bound rustls ClientConfig requires an explicit root store so ordinary HTTPS trust does not vary with host-injected platform roots."
 removal_trigger = "Replace through a versioned Ferric trust-store policy that preserves explicit root provenance and staged trust-decision tests."
-approval_id = "WP-FF-017-ordinary-transport-decision-v1-AC-003"
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
 features = []
 default_features = false
 
@@ -562,27 +562,27 @@ consumer = "fforager-transport"
 runtime_class = "non_shipped_phase0_prerequisite"
 purpose = "Resolve and exercise the exact ordinary HTTPS engine selected for future fforager-net product use while retaining zero product progress."
 native = true
-owner = "WP-FF-017-ordinary-transport-decision"
+owner = "WP-FF-023-dependency-security-remediation"
 allowed_consumers = ["fforager-transport"]
 reason = "The Operator approved reqwest only with default features disabled, rustls-no-provider, and Ferric-owned transport policy controls."
 removal_trigger = "Remove if the exact dependency, provider, policy-control, or typed browser-required boundary fails validation."
-approval_id = "WP-FF-017-ordinary-transport-decision-v1-AC-001"
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
 features = ["http2", "rustls-no-provider", "stream"]
 default_features = false
 exception_id = "FF-DEC-002"
 
 [[dependency_decisions]]
 name = "rustls"
-version = "0.23.42"
+version = "0.23.46"
 consumer = "fforager-transport"
 runtime_class = "non_shipped_phase0_prerequisite"
 purpose = "Construct reqwest with the exact explicit ring crypto provider without enabling reqwest's AWS-LC-selecting rustls feature."
 native = true
-owner = "WP-FF-017-ordinary-transport-decision"
+owner = "WP-FF-023-dependency-security-remediation"
 allowed_consumers = ["fforager-transport"]
 reason = "An explicit rustls dependency is required to build the provider-bound ClientConfig supplied through reqwest's preconfigured TLS boundary."
 removal_trigger = "Remove if reqwest gains an equally narrow provider-specific stable surface or the Operator selects a replacement ordinary transport."
-approval_id = "WP-FF-017-ordinary-transport-decision-v1-AC-001"
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
 features = ["ring", "std", "tls12"]
 default_features = false
 exception_id = "FF-DEC-002"

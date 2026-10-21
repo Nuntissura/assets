@@ -1,5 +1,8 @@
+mod benchmark;
 mod compatibility;
 mod ffmpeg_report;
+#[cfg(test)]
+mod runtime_classifier_tests;
 mod secret_scan;
 
 use cargo_metadata::{DependencyKind, Metadata, PackageId};
@@ -647,6 +650,9 @@ fn run() -> Result<(), String> {
     let root = repo_root()?;
     require_repository_root_cwd(&root)?;
     match args.as_slice() {
+        [command, rest @ ..] if command == "benchmark-validate" => benchmark::run(&root, rest),
+        [command, rest @ ..] if command == "benchmark-calibrate" => benchmark::calibrate(&root, rest),
+        [command, rest @ ..] if command == "benchmark-bundle" => benchmark::materialize(&root, rest),
         [gate] if gate == "architecture-check" => run_architecture_gate(&root, &args),
         [command, rest @ ..] if command == "compatibility-generate" => {
             compatibility::run_generate(&root, rest)
@@ -694,7 +700,7 @@ fn run() -> Result<(), String> {
         [gate] if matches!(gate.as_str(), "verify-release" | "watcher-check") => {
             Err(format!("{gate} is NOT_IMPLEMENTED for Phase 0 and cannot report PASS"))
         }
-        _ => Err("usage: fforager-xtask <architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|archive-store-evidence|resource-durability-models|ffmpeg-supervision-produce --platform <windows_x86_64|linux_x86_64> --fixture-root PATH --report PATH --receipt PATH|ffmpeg-supervision-aggregate --windows-report PATH --windows-receipt PATH --linux-report PATH --linux-receipt PATH|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
+        _ => Err("usage: fforager-xtask <benchmark-validate --input BUNDLE --report REPORT|benchmark-calibrate --host-profile TEMPLATE --ffmpeg ABSOLUTE --ffprobe ABSOLUTE --fixture RELATIVE --output NEW_ARTIFACT_DIR|benchmark-bundle --windows-profile PROFILE --unix-profile PROFILE --active-profile ID --controls CALIBRATION --output NEW_ARTIFACT_DIR|architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|archive-store-evidence|resource-durability-models|ffmpeg-supervision-produce --platform <windows_x86_64|linux_x86_64> --fixture-root PATH --report PATH --receipt PATH|ffmpeg-supervision-aggregate --windows-report PATH --windows-receipt PATH --linux-report PATH --linux-receipt PATH|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
     }
 }
 
@@ -6223,6 +6229,16 @@ fn architecture_check(root: &Path) -> Result<ArchitectureResult, String> {
     validate_ordinary_profile_isolation(&ordinary_metadata, &native_exceptions, &mut checks)?;
     let canonical_rules = required_architecture_rules(&root.join(".GOV/rules/build-rules.yaml"))?;
     validate_rule_map(&rule_map, &canonical_rules, &mut checks)?;
+    let benchmark_contract = benchmark::contract_execution(root)?;
+    checks.push(Check {
+        id: "benchmark-admission-contract".to_owned(), status: "PASS", proof_class: "structural",
+        concrete_input: "existing bounded benchmark equality/statistics counterexample corpus".to_owned(),
+        executed_boundary: "benchmark admission and public benchmark-validate handler".to_owned(),
+        expected_result: "equal fixture admitted; unequal work and invalid statistics rejected".to_owned(),
+        observed_result: benchmark_contract,
+        skipped_semantic_dependencies: vec!["Synthetic contract fixtures do not establish native execution, product progress or performance.".to_owned()],
+        detail: "Canonical validation executes the benchmark contract with its structural proof ceiling.".to_owned(),
+    });
     let fixtures = validate_fixtures(root, &rule_map, &mut checks)?;
     let limitations = rule_map
         .rules
@@ -6588,13 +6604,13 @@ fn validate_ordinary_profile_isolation(
             "reqwest@0.13.4",
             BTreeSet::from(["__rustls", "__tls", "http2", "rustls-no-provider", "stream"]),
         ),
-        ("rustls@0.23.42", BTreeSet::from(["ring", "std", "tls12"])),
+        ("rustls@0.23.46", BTreeSet::from(["ring", "std", "tls12"])),
         (
             "ring@0.17.14",
             BTreeSet::from(["alloc", "default", "dev_urandom_fallback"]),
         ),
         ("rustls-platform-verifier@0.7.0", BTreeSet::new()),
-        ("webpki-roots@1.0.9", BTreeSet::new()),
+        ("webpki-roots@1.0.10", BTreeSet::new()),
     ]);
     for (identity, expected) in expected_features {
         let package_id = resolved_packages.get(identity).ok_or_else(|| {
@@ -9136,8 +9152,8 @@ fn read_native_dependency_exceptions(
                         == BTreeSet::from(["non_shipped_phase0_prerequisite".to_owned()])
             }
             "FF-DEC-002" => {
-                owner == "WP-FF-017-ordinary-transport-decision"
-                    && approval_id == "WP-FF-017-ordinary-transport-decision-v1-AC-001"
+                owner == "WP-FF-023-dependency-security-remediation"
+                    && approval_id == "WP-FF-023-dependency-security-remediation-v1-AC-001"
                     && status == "ACTIVE_SHIPPED_PRODUCT_NARROW_ONLY"
                     && allowed_prerequisite_consumers
                         == BTreeSet::from(["fforager-transport".to_owned()])
@@ -9148,7 +9164,7 @@ fn read_native_dependency_exceptions(
                         == BTreeSet::from([
                             "reqwest@0.13.4".to_owned(),
                             "ring@0.17.14".to_owned(),
-                            "rustls@0.23.42".to_owned(),
+                            "rustls@0.23.46".to_owned(),
                         ])
                     && allowed_native_link_packages == BTreeSet::from(["ring@0.17.14".to_owned()])
                     && allowed_native_runtime_packages
@@ -9180,9 +9196,9 @@ fn read_native_dependency_exceptions(
                             ),
                         ])
                     && ordinary_transport_resolved_closure_sha256
-                        == "fa4ad0c30538fbc8efcae40cf1faa3f051bb80dcd8c814177b82e72495ec06fb"
+                        == "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
                     && ordinary_transport_registry_source_closure_sha256
-                        == "77cd4f81824d693e36750605c68eadedb57dbda5db35ec85bc4aae8b78719bc3"
+                        == "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
                     && allowed_runtime_classes
                         == BTreeSet::from([
                             "non_shipped_phase0_prerequisite".to_owned(),
@@ -11234,9 +11250,21 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
         architecture_policy_product_affecting(&base_policy_text, &current_policy_text)?;
     let base_has_shipped_member = base_policy.members.iter().any(|member| member.shipped);
     let has_shipped_member = current_has_shipped_member || base_has_shipped_member;
+    let build_only_contract_reuse = impact == "PREREQUISITE"
+        && changed.contains("build/Cargo.lock")
+        && changed.contains("build/architecture-policy.toml")
+        && exact_build_only_contract_reuse(root, base, &changed)?;
     let product_paths = changed
         .iter()
         .filter(|path| {
+            if build_only_contract_reuse
+                && matches!(
+                    path.as_str(),
+                    "build/Cargo.lock" | "build/architecture-policy.toml"
+                )
+            {
+                return false;
+            }
             if path.replace('\\', "/") == "build/architecture-policy.toml" {
                 has_shipped_member && architecture_policy_affects_product
             } else {
@@ -11245,11 +11273,20 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    if product_paths.is_empty() {
+    if product_paths.is_empty() && impact != "PREREQUISITE" {
         if impact != "NONE" {
             return Err(format!(
                 "FF-RUNTIME-E-IMPACT-MISMATCH: packet declares {impact} but no shipped product path changed"
             ));
+        }
+        if packet
+            .pointer("/extensions/non_product_prerequisite")
+            .is_some()
+        {
+            return Err(
+                "FF-RUNTIME-E-IMPACT-MISMATCH: NONE packet contains a non-product prerequisite declaration"
+                    .to_owned(),
+            );
         }
         if packet.pointer("/extensions/runtime_proof").is_some()
             || packet
@@ -11312,8 +11349,39 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
             .map_err(|error| format!("FF-RUNTIME-E-PREREQUISITE-SCHEMA: {error}"))?;
         validate_non_product_prerequisite(&declaration)?;
         validate_prerequisite_zero_claim_surface(&packet)?;
+        let build_only = product_paths.is_empty()
+            || activated_packet
+                .pointer("/scope/allowed_paths")
+                .and_then(Value::as_array)
+                .is_some_and(|paths| {
+                    !paths.is_empty()
+                        && !paths.iter().any(|path| {
+                            path.as_str()
+                                .is_some_and(|path| path.starts_with("product/"))
+                        })
+                });
+        if build_only {
+            validate_build_only_prerequisite(
+                root,
+                base,
+                &packet,
+                &activated_packet,
+                &declaration,
+                &changed,
+                &product_paths,
+            )?;
+        }
+        let prerequisite_paths = if build_only {
+            changed.iter().cloned().collect::<Vec<_>>()
+        } else {
+            product_paths
+        };
         return Ok(RuntimeTruthResult {
-            checks: prerequisite_runtime_checks(&id, &product_paths),
+            checks: prerequisite_runtime_checks(
+                &id,
+                &prerequisite_paths,
+                build_only,
+            ),
             proof_classes: vec!["policy".to_owned(), "scenario_contract".to_owned()],
             limitations: vec![
                 "This PASS is supporting policy/contract proof only: it proves no product progress, capability progress, phase progress, runtime completion, packaging progress, or release progress.".to_owned(),
@@ -11348,14 +11416,19 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
     execute_runtime_proof(root, &proof, &id, &product_paths)
 }
 
-fn prerequisite_runtime_checks(id: &str, product_paths: &[String]) -> Vec<Check> {
+fn prerequisite_runtime_checks(id: &str, paths: &[String], build_only: bool) -> Vec<Check> {
+    let classification = if build_only {
+        "build-only artifacts"
+    } else {
+        "product paths"
+    };
     vec![
         pass_with_class(
             "runtime-impact",
             "policy",
             "active packet impact and changed-path classification",
             &format!(
-                "packet {id} changes product paths only as a predeclared Phase 0 non-product prerequisite: {product_paths:?}"
+                "packet {id} changes {classification} only as a predeclared Phase 0 non-product prerequisite: {paths:?}"
             ),
         ),
         pass_with_class(
@@ -11371,6 +11444,105 @@ fn prerequisite_runtime_checks(id: &str, product_paths: &[String]) -> Vec<Check>
             "zero product completion; zero capability completion; zero phase completion; zero runtime completion; zero packaging or release progress",
         ),
     ]
+}
+
+fn validate_build_only_prerequisite(
+    root: &Path,
+    base: &str,
+    packet: &Value,
+    activated_packet: &Value,
+    declaration: &NonProductPrerequisite,
+    changed: &BTreeSet<String>,
+    product_paths: &[String],
+) -> Result<(), String> {
+    let activated_paths = activated_packet.pointer("/scope/allowed_paths");
+    if packet.pointer("/scope/allowed_paths") != activated_paths {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: allowed paths differ from the activation checkpoint".to_owned());
+    }
+    let allowed = activated_paths.and_then(Value::as_array).ok_or(
+        "FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: activation requires explicit allowed paths",
+    )?;
+    let paths = allowed.iter().map(|path| {
+        let path = path.as_str().ok_or("FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: allowed paths must be strings")?;
+        let normalized = path.strip_suffix('/').unwrap_or(path);
+        if !safe_relative(normalized) || path.contains('*') || path.contains('\\') {
+            return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-SCOPE: allowed paths must be safe exact paths or directories");
+        }
+        Ok(path)
+    }).collect::<Result<Vec<_>, _>>()?;
+    if !product_paths.is_empty() {
+        return Err(format!(
+            "FF-RUNTIME-E-BUILD-PREREQUISITE-PATH: build-only activation changes product-affecting paths: {product_paths:?}"
+        ));
+    }
+    for path in changed {
+        if !safe_relative(path)
+            || !paths.iter().any(|allowed| {
+                if allowed.ends_with('/') {
+                    path.starts_with(allowed)
+                } else {
+                    path == allowed
+                }
+            })
+        {
+            return Err(format!(
+                "FF-RUNTIME-E-BUILD-PREREQUISITE-PATH: undeclared changed path {path}"
+            ));
+        }
+    }
+    if !changed.iter().any(|path| {
+        path.starts_with("build/")
+            && !path.starts_with("build/reports/")
+            && root.join(path).is_file()
+    }) {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-ARTIFACT: no changed declared build artifact; governance and reports alone are not a prerequisite".to_owned());
+    }
+    let authority = &declaration.design_authority;
+    if !activated_packet
+        .pointer("/authority/spec_anchors")
+        .and_then(Value::as_array)
+        .is_some_and(|anchors| {
+            anchors
+                .iter()
+                .any(|anchor| anchor.as_str() == Some(authority))
+        })
+    {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design authority is not an activation spec anchor".to_owned());
+    }
+    let (path, anchor) = authority.split_once('#').ok_or(
+        "FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design authority must name a prerequisite section",
+    )?;
+    if path != ".GOV/spec/ferric_forager_technical_design_v0.3.0.md" {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design authority must name the canonical technical design".to_owned());
+    }
+    let design = command_output(root, "git", &["show", &format!("{base}:{path}")])
+        .map_err(|error| format!("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: {error}"))?;
+    let authorized = design
+        .lines()
+        .filter_map(|line| line.strip_prefix("## "))
+        .filter(|heading| heading.starts_with("Prerequisite 0"))
+        .any(|heading| {
+            let slug = heading
+                .chars()
+                .filter(|character| {
+                    character.is_ascii_alphanumeric()
+                        || character.is_whitespace()
+                        || *character == '-'
+                })
+                .map(|character| {
+                    if character.is_whitespace() {
+                        '-'
+                    } else {
+                        character.to_ascii_lowercase()
+                    }
+                })
+                .collect::<String>();
+            slug == anchor
+        });
+    if !authorized {
+        return Err("FF-RUNTIME-E-BUILD-PREREQUISITE-AUTHORITY: design anchor is not a pre-existing Phase 0 prerequisite section".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_prerequisite_zero_claim_surface(packet: &Value) -> Result<(), String> {
@@ -11398,10 +11570,14 @@ fn validate_prerequisite_zero_claim_surface(packet: &Value) -> Result<(), String
 }
 
 fn reject_progress_claims(value: &Value) -> Result<(), String> {
-    reject_progress_claims_at(value, false)
+    reject_progress_claims_at(value, false, "")
 }
 
-fn reject_progress_claims_at(value: &Value, progress_subject_in_scope: bool) -> Result<(), String> {
+fn reject_progress_claims_at(
+    value: &Value,
+    progress_subject_in_scope: bool,
+    path: &str,
+) -> Result<(), String> {
     match value {
         Value::Object(object) => {
             for (key, child) in object {
@@ -11414,12 +11590,25 @@ fn reject_progress_claims_at(value: &Value, progress_subject_in_scope: bool) -> 
                         "FF-RUNTIME-E-PREREQUISITE-PROGRESS-CLAIM: {key}={child}"
                     ));
                 }
-                reject_progress_claims_at(child, child_progress_subject)?;
+                let component = key.replace('~', "~0").replace('/', "~1");
+                reject_progress_claims_at(
+                    child,
+                    child_progress_subject,
+                    &format!("{path}/{component}"),
+                )?;
             }
         }
         Value::Array(values) => {
             for child in values {
-                reject_progress_claims_at(child, progress_subject_in_scope)?;
+                // Canonical non-goal strings declare exclusions, not outcomes.
+                // Structured values still undergo all typed claim checks.
+                if path != "/scope/non_goals" || !child.is_string() {
+                    reject_progress_claims_at(
+                        child,
+                        progress_subject_in_scope,
+                        &format!("{path}/[]"),
+                    )?;
+                }
             }
         }
         Value::String(text) if asserts_forbidden_prerequisite_completion(text) => {
@@ -11534,7 +11723,7 @@ fn clause_asserts_forbidden_prerequisite_completion(clause: &str) -> bool {
             for (status, _) in tokens
                 .iter()
                 .enumerate()
-                .filter(|(_, token)| is_completion_status(token))
+                .filter(|(index, _)| completion_predicate_at(&tokens, *index))
             {
                 if !claim_subject_is_negated(&tokens, start, end, status) {
                     return true;
@@ -11559,9 +11748,10 @@ fn contains_forbidden_claim_subject(tokens: &[String]) -> bool {
     ]
     .iter()
     .any(|subject| !token_sequence_positions(tokens, subject).is_empty())
-        || ["product", "runtime", "packaging", "release", "phase"]
+        || tokens
             .iter()
-            .any(|subject| tokens.iter().any(|token| token == subject))
+            .enumerate()
+            .any(|(index, _)| current_progress_subject_at(tokens, index))
 }
 
 fn is_completion_status(token: &str) -> bool {
@@ -11586,16 +11776,15 @@ fn is_completion_status(token: &str) -> bool {
 }
 
 fn single_subject_asserts_completion(tokens: &[String]) -> bool {
-    for (subject, _) in tokens.iter().enumerate().filter(|(_, token)| {
-        matches!(
-            token.as_str(),
-            "product" | "runtime" | "packaging" | "release" | "phase"
-        )
-    }) {
+    for (subject, _) in tokens
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| current_progress_subject_at(tokens, *index))
+    {
         for (status, _) in tokens
             .iter()
             .enumerate()
-            .filter(|(_, token)| is_completion_status(token))
+            .filter(|(index, _)| completion_predicate_at(tokens, *index))
         {
             if subject.abs_diff(status) <= 5
                 && !claim_subject_is_negated(tokens, subject, subject + 1, status)
@@ -11607,21 +11796,83 @@ fn single_subject_asserts_completion(tokens: &[String]) -> bool {
     false
 }
 
+fn current_progress_subject_at(tokens: &[String], index: usize) -> bool {
+    let token = tokens[index].as_str();
+    if token == "release" && index > 0 && tokens[index - 1] == "natural" {
+        return false;
+    }
+    if token == "runtime"
+        && tokens
+            .get(index + 1)
+            .is_some_and(|next| matches!(next.as_str(), "proof" | "dependencies"))
+    {
+        return false;
+    }
+    matches!(
+        token,
+        "product" | "runtime" | "packaging" | "release" | "phase"
+    )
+}
+
 fn pronoun_asserts_completion(tokens: &[String]) -> bool {
     tokens.first().is_some_and(|token| {
         matches!(token.as_str(), "it" | "this" | "that")
-            && tokens.iter().enumerate().any(|(status, token)| {
-                is_completion_status(token) && !claim_subject_is_negated(tokens, 0, 1, status)
+            && tokens.iter().enumerate().any(|(status, _)| {
+                completion_predicate_at(tokens, status)
+                    && !claim_subject_is_negated(tokens, 0, 1, status)
             })
     })
 }
 
 fn claim_tokens(text: &str) -> Vec<String> {
-    text.to_ascii_lowercase()
-        .split(|character: char| !character.is_ascii_alphanumeric())
+    let normalized = text.to_ascii_lowercase();
+    let gate = RUNTIME_GATE.to_ascii_lowercase();
+    let identifier_character =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '-' | '_');
+    // Stable identifiers are references; surrounding outcome prose remains.
+    normalized
+        .split(|character| !identifier_character(character))
+        .filter(|word| *word != gate && !work_packet_reference(word))
+        .flat_map(|word| word.split(|character: char| !character.is_ascii_alphanumeric()))
         .filter(|token| !token.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn work_packet_reference(word: &str) -> bool {
+    let Some(rest) = word.strip_prefix("wp-ff-") else {
+        return false;
+    };
+    let Some((number, rest)) = rest.split_once('-') else {
+        return false;
+    };
+    let Some((name, version)) = rest.rsplit_once("-v") else {
+        return false;
+    };
+    !number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && name.split('-').all(|segment| {
+            !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
+fn completion_predicate_at(tokens: &[String], index: usize) -> bool {
+    is_completion_status(&tokens[index])
+        && !(tokens[index] == "shipped" && tokens.get(index + 1).is_some_and(|next| next == "path"))
+        && !(tokens[index] == "complete"
+            && index > 0
+            && tokens[index - 1] == "first"
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.as_str(), "a" | "an" | "the"))
+            && !tokens[..index - 1].iter().any(|prior| {
+                matches!(
+                    prior.as_str(),
+                    "is" | "are" | "was" | "were" | "be" | "been" | "being"
+                )
+            }))
 }
 
 fn token_sequence_positions(tokens: &[String], sequence: &[&str]) -> Vec<usize> {
@@ -11649,6 +11900,12 @@ fn claim_subject_is_negated(
         negations.contains(&tokens[index].as_str())
             && !(tokens[index] == "not" && tokens.get(index + 1).is_some_and(|next| next == "only"))
     };
+    if status > 0 && tokens[status - 1] == "without" {
+        return true;
+    }
+    if status > 0 && is_effective_negation(status - 1) {
+        return true;
+    }
     if subject_start > 0 && is_effective_negation(subject_start - 1) {
         return true;
     }
@@ -11796,6 +12053,131 @@ fn product_affecting_path(path: &str, has_shipped_member: bool) -> bool {
                 | "build/architecture-policy.toml"
                 | "rust-toolchain.toml"
         )
+}
+
+fn exact_build_only_contract_reuse(
+    root: &Path,
+    base: &str,
+    changed: &BTreeSet<String>,
+) -> Result<bool, String> {
+    let tool = "build/tools/fforager-xtask/Cargo.toml";
+    if changed.iter().any(|path| {
+        path.starts_with("product/crates/fforager-contracts/")
+            || (path.ends_with("Cargo.toml") && path != tool)
+    }) {
+        return Ok(false);
+    }
+    let read = |path: &str| -> Result<(toml::Value, toml::Value), String> {
+        let old = command_output(root, "git", &["show", &format!("{base}:{path}")])?;
+        let new = fs::read_to_string(root.join(path)).map_err(|error| error.to_string())?;
+        Ok((
+            toml::from_str(&old).map_err(|error| error.to_string())?,
+            toml::from_str(&new).map_err(|error| error.to_string())?,
+        ))
+    };
+    let provider = root.join("product/crates/fforager-contracts");
+    let provider_manifest: toml::Value = read_toml(&provider.join("Cargo.toml"))?;
+    if provider_manifest.get("features").is_some()
+        || provider_manifest
+            .get("package")
+            .and_then(|package| package.get("build"))
+            .is_some()
+        || provider.join("build.rs").exists()
+    {
+        return Ok(false);
+    }
+    let (old_tool, new_tool) = read(tool)?;
+    let (old_lock, new_lock) = read("build/Cargo.lock")?;
+    let (old_policy, new_policy) = read("build/architecture-policy.toml")?;
+    exact_contract_reuse_declarations(
+        &old_tool, new_tool, &old_lock, new_lock, old_policy, new_policy,
+    )
+}
+
+fn exact_contract_reuse_declarations(
+    old_tool: &toml::Value,
+    mut new_tool: toml::Value,
+    old_lock: &toml::Value,
+    mut new_lock: toml::Value,
+    mut old_policy: toml::Value,
+    mut new_policy: toml::Value,
+) -> Result<bool, String> {
+    let expected_dependency: toml::Value =
+        toml::from_str("version = '0.1.0'\npath = '../../../product/crates/fforager-contracts'")
+            .map_err(|error| error.to_string())?;
+    let Some(dependencies) = new_tool
+        .get_mut("dependencies")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(false);
+    };
+    if dependencies.remove("fforager-contracts") != Some(expected_dependency)
+        || &new_tool != old_tool
+    {
+        return Ok(false);
+    }
+    let Some(packages) = new_lock
+        .get_mut("package")
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let tools = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, package)| {
+            package.get("name").and_then(toml::Value::as_str) == Some("fforager-xtask")
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let [tool] = tools.as_slice() else {
+        return Ok(false);
+    };
+    let Some(dependencies) = packages[*tool]
+        .get_mut("dependencies")
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let count = dependencies
+        .iter()
+        .filter(|dependency| dependency.as_str() == Some("fforager-contracts"))
+        .count();
+    if count != 1 {
+        return Ok(false);
+    }
+    dependencies.retain(|dependency| dependency.as_str() != Some("fforager-contracts"));
+    if &new_lock != old_lock {
+        return Ok(false);
+    }
+    let expected_edge: toml::Value = toml::from_str(
+        "edges = [{ package = 'fforager-contracts', kinds = ['normal'], optional = false }]",
+    )
+    .map_err(|error| error.to_string())?;
+    let Some(members) = new_policy
+        .get_mut("members")
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let mut matches = 0;
+    for member in members {
+        if member.get("name").and_then(toml::Value::as_str) != Some("fforager-xtask") {
+            continue;
+        }
+        matches += 1;
+        if member.get("shipped").and_then(toml::Value::as_bool) != Some(false)
+            || member.get("artifact_role").and_then(toml::Value::as_str)
+                != Some("non_shipped_gate_runner")
+            || member.get("allowed_internal_dependencies") != expected_edge.get("edges")
+        {
+            return Ok(false);
+        }
+        member["allowed_internal_dependencies"] = toml::Value::Array(Vec::new());
+    }
+    normalize_architecture_policy_hygiene(&mut old_policy)?;
+    normalize_architecture_policy_hygiene(&mut new_policy)?;
+    Ok(matches == 1 && old_policy == new_policy)
 }
 
 fn architecture_policy_product_affecting(
@@ -13438,6 +13820,24 @@ fn validate_finding_dispositions(value: &Value) -> Result<(), String> {
 #[allow(clippy::too_many_lines)]
 fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> {
     match finding_id {
+        "WP-FF-022-FINDING-CLASSIFIER-001" => Some(
+            "xtask::runtime_classifier_tests::build_only_prerequisite_public_handler_accepts_original_wp020_input",
+        ),
+        "WP-FF-022-FINDING-GATE-REFERENCE-002" => {
+            Some("xtask::runtime_classifier_tests::gate_identifier_is_not_a_current_runtime_claim")
+        }
+        "WP-FF-022-FINDING-CLAIM-CONTEXT-003" => Some(
+            "xtask::runtime_classifier_tests::original_wp020_context_corrections_keep_current_claims_closed",
+        ),
+        "WP-FF-022-FINDING-JOB-ACK-004" => Some(
+            "ffmpeg::platform::windows::tests::job_empty_wait_requires_actual_zero_and_natural_release",
+        ),
+        "WP-FF-022-FINDING-REJECTED-INPUT-005" => Some(
+            "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_rejected_input_specification",
+        ),
+        "WP-FF-022-FINDING-TECHNICAL-ROLE-006" => Some(
+            "xtask::runtime_classifier_tests::prerequisite_public_handler_distinguishes_technical_roles_from_progress",
+        ),
         "WP-FF-005-FINDING-WIRE-001" => {
             Some("testkit::tests::canonical_public_contract_fixtures_decode_and_validate")
         }
@@ -13586,6 +13986,15 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         }
         "WP-FF-017-FINDING-PACKAGE-SOURCE-004" => {
             Some("xtask::tests::package_source_and_archive_content_mutations_fail_closed")
+        }
+        "WP-FF-023-FINDING-APPROVAL-001" => {
+            Some("xtask::tests::native_exception_rejects_stale_security_patch_approval")
+        }
+        "WP-FF-020-FINDING-DOMAIN-001" => Some(
+            "xtask::benchmark::domain::tests::physical_domain_rejects_rehashed_cheaper_work_and_missing_effects",
+        ),
+        "WP-FF-020-FINDING-BUILD-EDGE-002" => {
+            Some("xtask::tests::build_only_contract_reuse_rejects_dependency_and_product_drift")
         }
         "WP-FF-017-FINDING-GRAPH-CLOSURE-005" | "WP-FF-017-FINDING-SOURCE-CLOSURE-006" => {
             Some("xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification")
@@ -16014,6 +16423,7 @@ mod tests {
         let checks = prerequisite_runtime_checks(
             "WP-FF-013-proof-integrity-remediation-v2",
             &["product/crates/fforager-core/src/lifecycle.rs".to_owned()],
+            false,
         );
         assert_eq!(
             executed_proof_classes(&checks, &[]),
@@ -17003,6 +17413,88 @@ mod tests {
     }
 
     #[test]
+    fn native_exception_rejects_stale_security_patch_approval() {
+        let root = architecture_sandbox("native-exception-stale-security-patch-approval");
+        let locked_packages = fs::read(root.join("build/Cargo.lock")).unwrap();
+        for relative in [
+            ".GOV/rules/build-rules.yaml",
+            "build/architecture-policy.toml",
+        ] {
+            let path = root.join(relative);
+            let text = fs::read_to_string(&path).unwrap().replace(
+                "WP-FF-023-dependency-security-remediation",
+                "WP-FF-017-ordinary-transport-decision",
+            );
+            fs::write(path, text).unwrap();
+        }
+        let rules_text = fs::read_to_string(root.join(".GOV/rules/build-rules.yaml")).unwrap();
+        let rules = parse_single_yaml(&rules_text, "coherent stale approval fixture").unwrap();
+        let exception = rules
+            .as_mapping_get("exception_authority")
+            .and_then(|authority| authority.as_mapping_get("canonical_allowlist"))
+            .and_then(Yaml::as_sequence)
+            .unwrap()
+            .iter()
+            .find(|row| yaml_string(row, "id").unwrap() == "FF-DEC-002")
+            .unwrap();
+        let owner = "WP-FF-017-ordinary-transport-decision";
+        let approval = "WP-FF-017-ordinary-transport-decision-v1-AC-001";
+        assert_eq!(yaml_string(exception, "owner").unwrap(), owner);
+        assert_eq!(yaml_string(exception, "approval_id").unwrap(), approval);
+        assert!(decision_approval_matches_owner(approval, owner));
+        assert_eq!(
+            yaml_string_set(exception, "allowed_versions").unwrap(),
+            BTreeSet::from([
+                "reqwest@0.13.4".to_owned(),
+                "ring@0.17.14".to_owned(),
+                "rustls@0.23.46".to_owned(),
+            ])
+        );
+        assert_eq!(
+            yaml_string(exception, "ordinary_transport_resolved_closure_sha256").unwrap(),
+            "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+        );
+        assert_eq!(
+            yaml_string(
+                exception,
+                "ordinary_transport_registry_source_closure_sha256"
+            )
+            .unwrap(),
+            "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
+        );
+        let policy: ArchitecturePolicy =
+            read_toml(&root.join("build/architecture-policy.toml")).unwrap();
+        for (name, version) in [
+            ("reqwest", "0.13.4"),
+            ("rustls", "0.23.46"),
+            ("webpki-roots", "1.0.10"),
+        ] {
+            let decision = policy
+                .dependency_decisions
+                .iter()
+                .find(|decision| decision.name == name)
+                .unwrap();
+            assert_eq!(decision.version, version);
+            assert_eq!(decision.owner, owner);
+            assert_eq!(decision.approval_id, approval);
+            assert!(decision_approval_matches_owner(
+                &decision.approval_id,
+                &decision.owner
+            ));
+        }
+        assert_eq!(
+            fs::read(root.join("build/Cargo.lock")).unwrap(),
+            locked_packages
+        );
+        let error = architecture_check(&root).unwrap_err();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            error.contains("FF-ARCH-E-EXCEPTION-SCHEMA"),
+            "stale patch approval must fail the canonical exception boundary: {error}"
+        );
+    }
+
+    #[test]
     fn native_exception_accepts_only_the_exact_approved_product_consumer() {
         let root = architecture_sandbox("native-exception-approved-product-resolve-graph");
         mutate_approved_shipped_product_native_reachability(&root);
@@ -17186,6 +17678,101 @@ mod tests {
                 .unwrap_err()
                 .contains("FF-RUNTIME-E-OBSERVABLE-MISSING")
         );
+    }
+
+    #[test]
+    fn build_only_contract_reuse_rejects_dependency_and_product_drift() {
+        let old_tool: toml::Value = toml::from_str(
+            "[package]\nname='fforager-xtask'\n[dependencies]\nserde={workspace=true}",
+        )
+        .unwrap();
+        let mut new_tool = old_tool.clone();
+        new_tool["dependencies"].as_table_mut().unwrap().insert(
+            "fforager-contracts".into(),
+            toml::from_str("version='0.1.0'\npath='../../../product/crates/fforager-contracts'")
+                .unwrap(),
+        );
+        let old_lock: toml::Value = toml::from_str("version=4\n[[package]]\nname='fforager-contracts'\nversion='0.1.0'\n[[package]]\nname='fforager-xtask'\nversion='0.1.0'\ndependencies=['serde']\n[[package]]\nname='serde'\nversion='1.0.228'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='retained-original-checksum'").unwrap();
+        let mut new_lock = old_lock.clone();
+        new_lock["package"][1]["dependencies"] =
+            toml::Value::Array(vec!["fforager-contracts".into(), "serde".into()]);
+        let old_policy: toml::Value = toml::from_str("forbidden_product_runtime_roots=['.GOV','build']\n[[members]]\nname='fforager-xtask'\nshipped=false\nartifact_role='non_shipped_gate_runner'\nallowed_internal_dependencies=[]\n[[members]]\nname='fforager-contracts'\nshipped=true").unwrap();
+        let mut new_policy = old_policy.clone();
+        let edges: toml::Value = toml::from_str(
+            "edges=[{package='fforager-contracts',kinds=['normal'],optional=false}]",
+        )
+        .unwrap();
+        new_policy["members"][0]["allowed_internal_dependencies"] = edges["edges"].clone();
+        let admitted = |tool, lock, policy| {
+            exact_contract_reuse_declarations(
+                &old_tool,
+                tool,
+                &old_lock,
+                lock,
+                old_policy.clone(),
+                policy,
+            )
+            .unwrap()
+        };
+        assert!(admitted(
+            new_tool.clone(),
+            new_lock.clone(),
+            new_policy.clone()
+        ));
+        for mutation in [
+            "feature",
+            "optional",
+            "path",
+            "version",
+            "registry-version",
+            "checksum",
+            "source",
+            "other-edge",
+            "shipped",
+            "native",
+        ] {
+            let (mut tool, mut lock, mut policy) =
+                (new_tool.clone(), new_lock.clone(), new_policy.clone());
+            match mutation {
+                "feature" => {
+                    tool["dependencies"]["fforager-contracts"]
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("features".into(), toml::Value::Array(vec!["extra".into()]));
+                }
+                "optional" => {
+                    tool["dependencies"]["fforager-contracts"]
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("optional".into(), true.into());
+                }
+                "path" => {
+                    tool["dependencies"]["fforager-contracts"]["path"] = "foreign-contracts".into();
+                }
+                "version" => tool["dependencies"]["fforager-contracts"]["version"] = "0.2.0".into(),
+                "registry-version" => lock["package"][2]["version"] = "1.0.229".into(),
+                "checksum" => lock["package"][2]["checksum"] = "substituted".into(),
+                "source" => {
+                    lock["package"][2]["source"] =
+                        "registry+https://unapproved.invalid/index".into();
+                }
+                "other-edge" => {
+                    lock["package"][0].as_table_mut().unwrap().insert(
+                        "dependencies".into(),
+                        toml::Value::Array(vec!["serde".into()]),
+                    );
+                }
+                "shipped" => policy["members"][1]["shipped"] = false.into(),
+                "native" => {
+                    policy
+                        .as_table_mut()
+                        .unwrap()
+                        .insert("native_decision".into(), "unapproved".into());
+                }
+                _ => unreachable!(),
+            }
+            assert!(!admitted(tool, lock, policy), "{mutation} admitted");
+        }
     }
 
     #[test]
@@ -17844,7 +18431,7 @@ product_root = "product"
         replace_file_text(
             &root.join("build/architecture-policy.toml"),
             "[[dependency_decisions]]\nname = \"toml\"",
-            "[[dependency_decisions]]\nname = \"reqwest\"\nversion = \"0.13.4\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved product-native consumer.\"\nnative = true\nowner = \"WP-FF-017-ordinary-transport-decision\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise the positive product-authorized reachability branch.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-017-ordinary-transport-decision-v1-AC-001\"\nfeatures = [\"http2\", \"rustls-no-provider\", \"stream\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"rustls\"\nversion = \"0.23.42\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved ring provider edge.\"\nnative = true\nowner = \"WP-FF-017-ordinary-transport-decision\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise exact rustls product-native attribution.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-017-ordinary-transport-decision-v1-AC-001\"\nfeatures = [\"ring\", \"std\", \"tls12\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"toml\"",
+            "[[dependency_decisions]]\nname = \"reqwest\"\nversion = \"0.13.4\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved product-native consumer.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise the positive product-authorized reachability branch.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"http2\", \"rustls-no-provider\", \"stream\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"rustls\"\nversion = \"0.23.46\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved ring provider edge.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise exact rustls product-native attribution.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"ring\", \"std\", \"tls12\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"toml\"",
         );
     }
 

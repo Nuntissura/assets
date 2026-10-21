@@ -4,6 +4,20 @@
   "wp_id": "WP-FF-020-equivalent-work-benchmark-design-v1",
   "updated_at_utc": "2026-08-09T15:39:12Z",
   "operator_request": "Create a dedicated Phase 0D benchmark-design work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
+  "implementation_research_refresh": {
+    "checked_at": "2026-10-21",
+    "trigger": "The existing August planning basis leaves the implementation statistics source and environment identities unpinned; this refresh addresses those named gaps only.",
+    "sources": [
+      "https://github.com/criterion-rs/criterion.rs/blob/82b191ebf278cbe47d8da6c1bff76d8a812f61c0/src/stats/bivariate/mod.rs",
+      "https://github.com/criterion-rs/criterion.rs/blob/82b191ebf278cbe47d8da6c1bff76d8a812f61c0/src/stats/mod.rs",
+      "https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h.htm"
+    ],
+    "observed_patterns": "Criterion retains paired observations during resampling and derives percentile confidence intervals from the resulting distribution; NIST distinguishes outlier labeling from silently deleting observations.",
+    "selected_approach": "Reuse existing serde, SHA256, artifact and report primitives. Implement a bounded Ferric-owned paired-cluster percentile bootstrap with retained raw samples, deterministic declared resampling, explicit noise/outlier refusal, and strict concrete-work admission before statistical processing. No statistics dependency is present in the workspace, and Criterion identifies its statistics API as an unstable implementation detail.",
+    "rejected_options": "Adding Criterion, Hyperfine or another runtime; shell-composed measurement; independent resampling that destroys pair/cluster correlation; dropping inconvenient raw samples; treating synthetic fixture timings as measured performance.",
+    "risks_and_controls": "Externally supplied timing records remain untrusted. Bind artifacts and observations, compare all work dimensions before statistics, resample independent paired clusters, reject missing/duplicate/noisy data and crossing confidence bounds, retain unavailable metrics explicitly, and keep every design report below product or performance acceptance.",
+    "verification": "Public input parser and admission boundary; deterministic cheaper-work/provenance/topology/cache/sample/noise/statistical counterexamples; independent algorithm and source review; actual host observations only when collected, with unavailable fields explicit. No live benchmark campaign or performance claim."
+  },
   "basis": {
     "research_status": "CURRENT_PLANNING_BASIS_RECORDED_IMPLEMENTATION_RESEARCH_REQUIRED_BEFORE_PROMOTION",
     "sources_checked": [

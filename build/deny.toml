@@ -15,11 +15,11 @@ exceptions = [
   { crate = "brotli@8.0.4", allow = ["BSD-3-Clause"] },
   { crate = "libloading@0.8.9", allow = ["ISC"] },
   { crate = "ring@0.17.14", allow = ["Apache-2.0", "ISC"] },
-  { crate = "rustls-webpki@0.103.13", allow = ["ISC"] },
+  { crate = "rustls-webpki@0.103.16", allow = ["ISC"] },
   { crate = "subtle@2.6.1", allow = ["BSD-3-Clause"] },
   { crate = "untrusted@0.9.0", allow = ["ISC"] },
-  { crate = "webpki-root-certs@1.0.9", allow = ["CDLA-Permissive-2.0"] },
-  { crate = "webpki-roots@1.0.9", allow = ["CDLA-Permissive-2.0"] },
+  { crate = "webpki-root-certs@1.0.10", allow = ["CDLA-Permissive-2.0"] },
+  { crate = "webpki-roots@1.0.10", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]

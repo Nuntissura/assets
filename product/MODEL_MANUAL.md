@@ -1,7 +1,7 @@
 ---
 file_id: FF-PRODUCT-MODEL-MANUAL-001
 file_kind: model_manual
-updated_at: "2026-08-10"
+updated_at: "2026-10-20"
 ---
 
 <topic id="phase-0-purpose" status="active" version="4" wp="WP-FF-006-rust-youtube-challenge-spike-v1" updated_at="2026-07-26">
@@ -261,7 +261,7 @@ Recovery follows the stable diagnostic:
 
 </topic>
 
-<topic id="phase-0-commands" status="active" version="2" wp="WP-FF-003-executable-gate-bootstrap-v2" ingestable="true" updated_at="2026-07-19">
+<topic id="phase-0-commands" status="active" version="3" wp="WP-FF-022-prerequisite-classifier-remediation-v1" ingestable="true" updated_at="2026-10-20">
 
 ## Start and run
 
@@ -276,7 +276,7 @@ cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- verify-
 
 `architecture-check` consumes `build/architecture-policy.toml`, `build/tooling-policy.toml`, `build/rule-to-proof.toml`, locked Cargo metadata, parsed canonical YAML authority, governed source paths, and `build/fixtures/architecture/`. Proof-integrity fixtures mutate isolated product trees, serialized report evidence, and compiled isolated testkit workspaces, then execute the same product scanner, report validator, or exact public test boundary used by the gate. Legacy architecture fixtures remain structural policy checks. It emits a unique versioned JSON report under `build/reports/` and exits nonzero on mismatch.
 
-`runtime-truth-check` compares the active packet base SHA with current changed paths. A governance/build-only packet must declare `scope.product_impact` as `NONE`; its PASS proves only that no product claim is legal. A product-affecting packet must declare `RUNTIME`, supply strict `ff.runtime-proof@1` evidence, and have a declared shipped member. The gate then builds the locked release profile, hashes and stages the exact binary, copies hash-bound inputs into a clean package directory, launches the staged binary as an external process, verifies success and negative scenarios, and removes a required observable to prove the same oracle rejects the counterfactual. Missing runtime proof is `FAIL`/`BLOCKED`, never `PASS` or `NOT_APPLICABLE`.
+`runtime-truth-check` compares the active packet base SHA with current changed paths. An ordinary governance/build-tool-only packet declares `scope.product_impact` as `NONE`; its PASS proves only that no product claim is legal. A design-authorized Phase 0 build-only prerequisite instead declares `PREREQUISITE`, freezes its exact declaration and allowed paths at activation, and changes an actual declared build artifact. Its PASS is policy/contract proof only, requires a future shipped consumer and runtime re-proof, and claims zero product, capability, runtime, packaging, release, or phase progress. A product-affecting packet must declare `RUNTIME`, supply strict `ff.runtime-proof@1` evidence, and have a declared shipped member. The gate then builds the locked release profile, hashes and stages the exact binary, copies hash-bound inputs into a clean package directory, launches the staged binary as an external process, verifies success and negative scenarios, and removes a required observable to prove the same oracle rejects the counterfactual. Missing runtime proof is `FAIL`/`BLOCKED`, never `PASS` or `NOT_APPLICABLE`.
 
 Supporting unit, fixture, replay, fuzz, property, and mock-based tests remain useful, but `cfg(test)`, dev-dependencies, testkit, mock/fake/stub adapters, in-memory substitutes, hardcoded success, and direct internal calls cannot satisfy `ff.runtime-proof@1`. A product packet requires at least one success and one negative scenario. Exit status alone is not an observable; require stdout, stderr, or a bounded output file with optional SHA-256.
 
@@ -533,11 +533,11 @@ Failure and recovery:
 
 </topic>
 
-<topic id="ordinary-transport-dependency-decision" status="active" version="1" wp="WP-FF-017-ordinary-transport-decision-v1" ingestable="true" updated_at="2026-07-29">
+<topic id="ordinary-transport-dependency-decision" status="active" version="2" wp="WP-FF-017-ordinary-transport-decision-v1" ingestable="true" updated_at="2026-10-20">
 
 ## Verify the ordinary transport dependency decision
 
-`FF-DEC-002` authorizes future shipped `fforager-net` use of exact `reqwest 0.13.4`, `rustls 0.23.42`, native `ring 0.17.14`, and `webpki-roots 1.0.9`. Reqwest default features are off; the only requested reqwest features are `http2`, `rustls-no-provider`, and `stream`; the explicit rustls features are `ring`, `std`, and `tls12`. The resolved ordinary profile is pinned, including reqwest's internal `__rustls` and `__tls` features. AWS-LC, native-tls, OpenSSL, ambient system proxy configuration, automatic redirects, cookie storage, automatic decompression, and dependency retry authority are not part of this decision.
+`FF-DEC-002` authorizes future shipped `fforager-net` use of exact `reqwest 0.13.4`, `rustls 0.23.46`, native `ring 0.17.14`, and `webpki-roots 1.0.10`. Reqwest default features are off; the only requested reqwest features are `http2`, `rustls-no-provider`, and `stream`; the explicit rustls features are `ring`, `std`, and `tls12`. The resolved ordinary profile is pinned, including reqwest's internal `__rustls` and `__tls` features. AWS-LC, native-tls, OpenSSL, ambient system proxy configuration, automatic redirects, cookie storage, automatic decompression, and dependency retry authority are not part of this decision.
 
 Run the exact non-shipped construction and typed refusal proof from the repository root:
 

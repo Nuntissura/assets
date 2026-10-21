@@ -1563,6 +1563,35 @@ mod tests {
         environment
     }
 
+    fn wait_for_test_job_empty(
+        child: &PlatformChild,
+        timeout: Duration,
+    ) -> Result<bool, PlatformError> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        if child.declared_scope_empty()? {
+            return Ok(true);
+        }
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            let empty = child.declared_scope_empty()?;
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            if empty {
+                return Ok(true);
+            }
+        }
+    }
+
     #[test]
     fn every_preexecution_verification_failure_terminates_waits_and_proves_active_zero() {
         for (fault, expected) in [
@@ -1744,7 +1773,10 @@ mod tests {
             child.wait_timeout(Duration::ZERO).expect("cached"),
             Some(exit)
         );
-        assert!(child.declared_scope_empty().expect("active zero"));
+        assert!(
+            wait_for_test_job_empty(&child, Duration::from_secs(10))
+                .expect("bounded active-zero observation")
+        );
         assert_eq!(child.active_process_count().expect("active count"), 0);
         assert_eq!(
             child
@@ -1752,6 +1784,88 @@ mod tests {
                 .expect("force after exact cached reap"),
             ForceTerminationOutcome::AlreadyEmpty
         );
+    }
+
+    #[test]
+    fn job_empty_wait_requires_actual_zero_and_natural_release() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let control_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("repository root")
+            .join(format!(
+                ".fforager-artifacts/test-runs/job-empty-release-{}-{nonce}",
+                std::process::id()
+            ));
+        std::fs::create_dir_all(&control_root).expect("owned release root");
+        let release = control_root.join("release");
+        let release_literal = release.to_str().expect("release path").replace('\'', "''");
+        let command = format!(
+            "$deadline=[DateTime]::UtcNow.AddSeconds(30); while (!(Test-Path -LiteralPath '{release_literal}')) {{ if ([DateTime]::UtcNow -ge $deadline) {{ exit 29 }}; Start-Sleep -Milliseconds 5 }}; exit 0"
+        );
+        let mut child = spawn(
+            &powershell(),
+            &[
+                "-NoProfile".to_owned(),
+                "-NonInteractive".to_owned(),
+                "-Command".to_owned(),
+                command,
+            ],
+            &trusted_environment(),
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+        )
+        .expect("spawn release-held Job");
+        let (_stdout, _stderr) = child.take_pipes().expect("pipes");
+        assert_eq!(
+            child
+                .wait_timeout(Duration::ZERO)
+                .expect("held direct wait"),
+            None
+        );
+        let held_active = child.active_process_count().expect("held Job count");
+        assert!(held_active > 0, "the real Job must be occupied");
+        let negative_started = Instant::now();
+        let held_empty = wait_for_test_job_empty(&child, Duration::from_millis(25))
+            .expect("bounded occupied Job observation");
+        eprintln!(
+            "JOB-EMPTY-PROOF held_active={held_active} observed_empty={held_empty} elapsed_us={}",
+            negative_started.elapsed().as_micros()
+        );
+        assert!(!held_empty, "an occupied Job must never acknowledge empty");
+        assert!(negative_started.elapsed() >= Duration::from_millis(25));
+        assert!(child.active_process_count().expect("still held Job") > 0);
+
+        let release_writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            std::fs::write(release, b"release").expect("naturally release owned Job");
+        });
+        let empty = wait_for_test_job_empty(&child, Duration::from_secs(10))
+            .expect("bounded naturally released Job observation");
+        release_writer.join().expect("release writer");
+        assert!(empty, "natural release must reach observed zero accounting");
+        let exit = child
+            .wait_timeout(Duration::from_secs(10))
+            .expect("direct wait")
+            .expect("direct exit");
+        assert_eq!(exit.exit_code, Some(0));
+        assert!(!exit.forced_by_supervisor);
+        assert_eq!(
+            child
+                .wait_timeout(Duration::ZERO)
+                .expect("cached direct wait"),
+            Some(exit)
+        );
+        let final_active = child.active_process_count().expect("final Job count");
+        eprintln!("JOB-EMPTY-PROOF natural_release_empty={empty} final_active={final_active}");
+        assert_eq!(final_active, 0);
+        assert_eq!(
+            child.force_terminate().expect("already empty Job"),
+            ForceTerminationOutcome::AlreadyEmpty
+        );
+        std::fs::remove_dir_all(control_root).expect("remove owned release root");
     }
 
     #[test]
