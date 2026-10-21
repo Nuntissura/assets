@@ -8,7 +8,7 @@
     "version": "1",
     "title": "Prove or reject the bounded Rust-only YouTube challenge path",
     "created_at_utc": "2026-07-18T21:12:21Z",
-    "updated_at_utc": "2026-07-27T02:44:14Z"
+    "updated_at_utc": "2026-10-21T06:42:27Z"
   },
   "authorization": {
     "source": "operator_message",
@@ -41,16 +41,23 @@
     "work_branch": "codex/rust-youtube-challenge-spike",
     "worktree_policy": "NONE",
     "worktree_id": null,
-    "remote_backup": {"required_for_handoff": true, "branch": "origin/codex/rust-youtube-challenge-spike", "head_sha": "a010b13c749a642dc62b0b4e825a3c5e2aec6e43", "verified_at_utc": "2026-07-27T02:44:14Z"},
-    "closure_commit": "99139e04d12ec9f099f2092c624336702143e9fd",
-    "main_containment_status": "VERIFIED",
-    "merged_main_commit": "4cf69072ffd47e80204f79d78214271c0a9bb7f6"
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": "origin/codex/rust-youtube-challenge-spike",
+      "head_sha": "a010b13c749a642dc62b0b4e825a3c5e2aec6e43",
+      "verified_at_utc": "2026-07-27T02:44:14Z"
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "VALIDATED",
+    "status": "IN_PROGRESS",
     "risk": "HIGH",
-    "blockers": [],
-    "next_action": "Await Operator selection before activating any later work-packet stub.",
+    "blockers": [
+      "Current technical evidence is accepted; common corrective closure containment remains unproven."
+    ],
+    "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -120,7 +127,8 @@
       "evidence": [
         "Research checkpoint 8aa0364c2303a855ef7123ca6217c5b4cfd82707 records current primary-source inspection of Boa 0.21.1, sysinfo 0.39.6, NewPipeExtractor, YouTube.js, and inert yt-dlp-ejs observations before implementation.",
         "refinement.json records source identities, inspected implementation patterns, selected Boa/parser and parent-RSS approach, rejected external/native/runtime and regex-only alternatives, risks, mitigations, and the validation plan.",
-        "Cargo.lock pins the selected pure-Rust dependency graph; no external runtime or yt-dlp-family implementation was authorized."
+        "Cargo.lock pins the selected pure-Rust dependency graph; no external runtime or yt-dlp-family implementation was authorized.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     },
     {
@@ -131,7 +139,8 @@
       "evidence": [
         "build/reports/wp-ff-006-youtube-challenge-report.json records PASS_RUST_ONLY_PATH with mandatory_passed=7 and mandatory_total=7 across three raw player generations.",
         "Every case row records stable case ID, raw player SHA-256, deterministic input, expected and observed result, boa_engine@0.21.1, ferric-player-ast-v1, extractor version, fresh-context flag, duration, worker PID, and peak RSS; all seven matched exactly.",
-        "The same aggregate behavioral_acceptance path accepts the original evidence and rejects the mutated expected output."
+        "The same aggregate behavioral_acceptance path accepts the original evidence and rejects the mutated expected output.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     },
     {
@@ -142,7 +151,8 @@
       "evidence": [
         "fforager-javascript 15/15 unit tests pass across library, corpus, and worker targets, including bounded frames/cache, fresh context, capability denial, AST decoys, CRLF spans, manifest policy, response correlation, sequence overflow, destructive-probe authorization, and path confinement.",
         "The machine report records passing capability, fresh-context, cache-key, frame, protocol numeric-limit, hash, and path-confinement probes.",
-        "The worker uses a new Boa Context per job, registers no host functions, receives an empty inherited environment plus only a per-worker probe grant, and keeps only host-owned prepared-program cache entries."
+        "The worker uses a new Boa Context per job, registers no host functions, receives an empty inherited environment plus only a per-worker probe grant, and keeps only host-owned prepared-program cache entries.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     },
     {
@@ -153,7 +163,8 @@
       "evidence": [
         "The final report records 20/20 passing probes, including exact fatal categories for zero/oversized/partial/malformed frames and protocol version/reference/unknown-field/numeric-limit rejection.",
         "Timeout, acknowledged cancellation generation 1, RSS memory limit, deliberate crash, two-strike provenance-keyed quarantine, and 64-job recycling all record bounded outcomes with reaped=true and process_absent_after_reap=true.",
-        "Supervisor response validation binds request ID, job ID, sequence, schema/version, producer, compatibility, provenance, and capability grant; RAII Drop cleanup terminates/reaps and joins the reader on error paths."
+        "Supervisor response validation binds request ID, job ID, sequence, schema/version, producer, compatibility, provenance, and capability grant; RAII Drop cleanup terminates/reaps and joins the reader on error paths.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     },
     {
@@ -165,7 +176,8 @@
         "FF-GATE-ARCH-001 passed at build/reports/architecture-check-1785114808827769300-115396.json after the hardened source, locked dependency graph, deny policy, and canonical finding-proof bindings were present.",
         "build/architecture-policy.toml declares the non-shipped crate and direct/transitive dependency decisions; Cargo metadata, workspace check/test/doc/Clippy, and source/asset policy scans require no forbidden runtime, native link, build-time download, prebuilt binary, or yt-dlp-family solver asset.",
         "cargo-deny 0.20.2 advisories, bans, licenses, and sources pass after pinning the local contracts dependency and recording the exact reasoned RUSTSEC-2024-0436 unmaintained-paste exception; the exception is bounded to this non-shipped prerequisite and is forbidden from automatic promotion.",
-        "The final machine verdict reports skipped_semantic_dependencies for the forbidden external paths and zero_product_progress=true."
+        "The final machine verdict reports skipped_semantic_dependencies for the forbidden external paths and zero_product_progress=true.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     },
     {
@@ -178,7 +190,8 @@
         "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785114808827769300-115396.json.",
         "FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785114203232961100-102424.json.",
         "PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785115216398408400-102448.json with 35 contracts, 45 core, 14 diagnostics, 15 JavaScript, 11 testkit, and 79 xtask tests plus doctests.",
-        "PASS FF-GATE-PR-001: build/reports/verify-pr-1785114607079587300-102404.json with dependency advisories/bans/licenses/sources, formatting, check, tests, docs, Clippy, evidence, and architecture policy passing."
+        "PASS FF-GATE-PR-001: build/reports/verify-pr-1785114607079587300-102404.json with dependency advisories/bans/licenses/sources, formatting, check, tests, docs, Clippy, evidence, and architecture policy passing.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     },
     {
@@ -189,61 +202,96 @@
       "evidence": [
         "product/MODEL_MANUAL.md topic phase-0-javascript-challenge-spike version 4 documents Ferric's independent replacement identity, exact commands, artifact navigation, inputs/outputs, limits, authorization/correlation, reports, and prohibited substitutes.",
         "The manual documents exact report inspection, acknowledged cancellation, quarantine threshold/operator clear, cleanup/reaping, stale-cache and mismatch diagnosis, disk recovery, and the non-product prerequisite ceiling.",
-        "Direct manual review against the worker, corpus runner, manifest, report schema, packet, and design contract is recorded in extensions.change_evidence.adversarial_review.MANUAL_REVIEW."
+        "Direct manual review against the worker, corpus runner, manifest, report schema, packet, and design contract is recorded in extensions.change_evidence.adversarial_review.MANUAL_REVIEW.",
+        "Current sanitized-source revalidation and exact accepted gate evidence are recorded at extensions.predecessor_reconciliation; original requirements and historical evidence are retained."
       ]
     }
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-07-27T02:44:14Z",
-      "branch": "main",
+      "recorded_at_utc": "2026-10-21T06:42:27Z",
+      "branch": "codex/predecessor-state-reconciliation",
       "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
-      "head_sha": "4cf69072ffd47e80204f79d78214271c0a9bb7f6",
+      "head_sha": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
       "dirty_paths": [
-        ".GOV/taskboard/taskboard.yaml",
         ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json"
       ],
       "checks_run": [
-        "Verified the worktree is clean before activation on codex/rust-youtube-challenge-spike at 6f1b1e51b40dab7c1401418bf3d7514420b93059 with merge-base main 405c054005102417a6ce992795a2752bc26c40dc.",
-        "Re-read START_HERE.yaml, byte-identical AGENTS.md and CLAUDE.md, .GOV/codex.yaml, taskboard, active packet, refinement, topology, build rules, cited design/readiness anchors, WP-005 status, and WP-005 framing/protocol source.",
-        "Verified crates.io boa_engine 0.21.1 remains current; inspected tag v0.21.1 commit bc36c3fac0969ea21ea0570b62e7846f97389b73, runtime limits, instruction budget, parser, context, and absence of an exact heap cap.",
-        "Inspected current NewPipeExtractor commit 4b70576661aadf663a935df5b904a43147d9fc50 and YouTube.js commit 14825d7712e32b208830895701973a5a934a3522 player-discovery implementations as independent field evidence.",
-        "Inspected yt-dlp-ejs 0.8.0 tag 4fb477f4af56880cfd324c48bd4294a2d2294e50 only for inert player IDs and expected n/signature observations; no external solver code or executable was run or adopted.",
-        "Verified the committed raw YouTube player_ias base.js inputs for player IDs 74edf1a3, 901741ab, and e7573094 against direct youtube.com responses; all three returned HTTP 200 with byte counts and SHA-256 identities exactly matching the committed files.",
-        "Verified sysinfo 0.39.6 system-only feature is current, pure Rust at the Cargo boundary, Rust 1.95 compatible, and supplies cross-platform process RSS observation without an external runtime or Cargo links dependency.",
-        "PASS_RUST_ONLY_PATH: build/reports/wp-ff-006-youtube-challenge-report.json records 7/7 mandatory cases, 20/20 probes, a rejecting behavioral counterfactual, exact terminal/reap evidence, and zero_product_progress=true.",
-        "PASS: fforager-javascript 16/16 tests, complete workspace all-target/all-feature tests, all-feature doctests, formatting, check, and warnings-denied Clippy.",
-        "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785112455778310700-86884.json.",
-        "Completed exactly two Operator-requested adversarial implementation reviews through correctness/proof-integrity and security/resource-isolation lenses; all confirmed findings were remediated and rerun.",
-        "FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785114203232961100-102424.json.",
-        "PASS FF-GATE-PR-001: build/reports/verify-pr-1785114607079587300-102404.json.",
-        "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785114808827769300-115396.json.",
-        "PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785115216398408400-102448.json.",
-        "Clean closure source PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785115795156166700-103740.json.",
-        "Clean closure source FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785115805934789400-96328.json.",
-        "Clean closure source PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785116172633196200-105924.json.",
-        "Clean closure source PASS FF-GATE-PR-001: build/reports/verify-pr-1785116604179772200-115056.json.",
-        "MERGE_PENDING evidence PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785116843567652400-94324.json.",
-        "RED after first main merge: a fresh checkout converted the three raw-player fixtures from LF to CRLF, all seven cases returned typed ScriptHashMismatch, and the aggregate exited nonzero before the cache probe.",
-        "GREEN hardening: scoped .gitattributes -text preservation, the checked_in_player_bytes_match_manifest_hashes regression, and richer case diagnostics restore exact manifest hashes; the optimized corpus again records 7/7 mandatory cases, 20/20 probes, and rejecting counterfactual in build/reports/wp-ff-006-youtube-challenge-report.json.",
-        "Replacement closure FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785118515958714800-92488.json.",
-        "Replacement closure PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785118599008827700-100660.json.",
-        "Replacement closure PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785118964286530400-41276.json.",
-        "Replacement closure PASS FF-GATE-PR-001: build/reports/verify-pr-1785119381714859300-98448.json.",
-        "Replacement MERGE_PENDING evidence PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785119508903991000-82500.json.",
-        "Remote backup origin/codex/rust-youtube-challenge-spike verified at a010b13c749a642dc62b0b4e825a3c5e2aec6e43.",
-        "Replacement closure 99139e04d12ec9f099f2092c624336702143e9fd and evidence a010b13c749a642dc62b0b4e825a3c5e2aec6e43 are ancestors of main merge 4cf69072ffd47e80204f79d78214271c0a9bb7f6.",
-        "Post-merge pinned-byte regression passed 5/5 corpus-runner tests and the optimized corpus recorded 7/7 mandatory cases, 20/20 probes, and rejecting counterfactual.",
-        "Post-merge PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785120244586756900-103168.json.",
-        "Validated-state PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785120407329309300-99372.json.",
-        "Validated-state runtime-truth invocation returned expected closed-state error FF-RUNTIME-E-NO-ACTIVE-PACKET after active_wp_id was cleared."
+        "Original frozen fields and prior failure/stop records reconciled before metadata correction.",
+        "Actual optimized corpus, current accepted source-bound prerequisite reports and canonical main ancestry independently reread; no implementation or acceptance requirement changed."
       ],
-      "blockers": [],
-      "next_action": "Await Operator selection before activating any later work-packet stub."
+      "blockers": [
+        "Current technical evidence is accepted; common corrective closure containment remains unproven."
+      ],
+      "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED."
     }
   },
   "validation": {
     "checks": [
+      "Legacy validation rows are retained under historical_checks and must not be read as current99139containment.",
+      {
+        "artifact": ".fforager-artifacts/product-batch/wp006-optimized-corpus.json",
+        "sha256": "1aec75be24511b4094c873d28eb255057eb37aadc3481a5f40596011f353544a",
+        "verdict": "PASS_RUST_ONLY_PATH",
+        "mandatory_passed": 7,
+        "mandatory_total": 7,
+        "probes_passed": 20,
+        "probes_total": 20,
+        "original_oracle_passed": true,
+        "mutated_oracle_rejected": true,
+        "zero_product_progress": true,
+        "executed_manifest_sha256": "8be6628f19a830e90c11157391768f15c0dd0aad358e31bdd67e4725f7a2e8ef",
+        "primary_manifest_sha256": "8115720bc9226fbb9222a22a6ba434a8aec29b46c1c94953a71c7fcc61860969",
+        "manifest_equivalence": "Helper has85CRLF sequences; primary is LF. Normalized bytes and parsed JSON match; both Git blobs are22ad11caea641f3695ac45bdf351b6d35978200f. Raw hashes remain distinct.",
+        "corpus_binary_sha256": "cbabae0d9e1bb20224e7ef49fcd06d2fa69f70c675b528efddef6ef7d568df18",
+        "worker_binary_sha256": "ec227547596d146ccd3c80687213cecc3cb94643118cc4fe64bed2b2ded4e1fd",
+        "limits": "Original optimized corpus limits unchanged; initial debug-profile timeout is retained as invalid evidence for optimized acceptance."
+      },
+      {
+        "canonical_main_at_activation": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "command": "git diff --exit-code 05aadebf1eda18dd278b5a077824641eb3b74402 main -- build product",
+        "exit_code": 0
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+        "proof_ceiling": "policy and scenario contract only"
+      },
+      {
+        "gate_id": "FF-GATE-ARCH-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/architecture-check-1792559655529323400-457160.json",
+        "checks": 8,
+        "fixtures": 55
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/verify-pr-1792562549302941800-518188.json",
+        "checks": 70,
+        "fixtures": 55,
+        "xtask_passed": 151,
+        "ffmpeg_passed": 65,
+        "testkit_passed": 17,
+        "dependency_checks": "advisories, bans, licenses and sources accepted",
+        "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
+      }
+    ],
+    "not_proven": [
+      "Full YouTube support, extractor behavior, download behavior, or replacement parity",
+      "No JavaScript adapter or production runtime composition is proven",
+      "Compatibility beyond the three committed raw player generations and seven mandatory observations",
+      "An exact in-engine heap ceiling; parent RSS sampling can observe transient overshoot before termination",
+      "Cross-platform runtime behavior outside this Windows proof run",
+      "Protection against a hostile local actor replacing a canonicalized player path after confinement validation",
+      "Any product, capability, runtime, packaging, release, or phase progress",
+      "Common corrective closure containment, full YouTube parity and all product/runtime claims remain unproven."
+    ],
+    "historical_checks": [
       "PASS: optimized corpus build and execution; build/reports/wp-ff-006-youtube-challenge-report.json records PASS_RUST_ONLY_PATH, 7/7 mandatory cases, 20/20 probes, and a rejecting counterfactual",
       "PASS: fforager-javascript 16/16 all-target tests",
       "PASS: cargo fmt --manifest-path build/Cargo.toml --all -- --check",
@@ -274,15 +322,6 @@
       "PASS: validated-state FF-GATE-ARCH-001; build/reports/architecture-check-1785120407329309300-99372.json",
       "POST-MERGE EXPECTED CLOSED-STATE REJECTION: FF-RUNTIME-E-NO-ACTIVE-PACKET after taskboard active_wp_id was cleared",
       "PASS: exactly two independent adversarial implementation reviews completed and all confirmed findings remediated"
-    ],
-    "not_proven": [
-      "Full YouTube support, extractor behavior, download behavior, or replacement parity",
-      "No JavaScript adapter or production runtime composition is proven",
-      "Compatibility beyond the three committed raw player generations and seven mandatory observations",
-      "An exact in-engine heap ceiling; parent RSS sampling can observe transient overshoot before termination",
-      "Cross-platform runtime behavior outside this Windows proof run",
-      "Protection against a hostile local actor replacing a canonicalized player path after confinement validation",
-      "Any product, capability, runtime, packaging, release, or phase progress"
     ]
   },
   "extensions": {
@@ -301,7 +340,73 @@
     },
     "change_evidence": {
       "applicable_rule_ids": [
-        "FF-BUILD-011", "FF-BUILD-012", "FF-BUILD-013", "FF-BUILD-014", "FF-BUILD-017", "FF-BUILD-018", "FF-BUILD-019", "FF-BUILD-021", "FF-BUILD-023", "FF-BUILD-024", "FF-BUILD-029", "FF-BUILD-030", "FF-BUILD-031", "FF-BUILD-032", "FF-BUILD-033", "FF-BUILD-034", "FF-BUILD-035", "FF-BUILD-036", "FF-BUILD-037", "FF-BUILD-038", "FF-BUILD-039", "FF-BUILD-040", "FF-BUILD-041", "FF-BUILD-042", "FF-BUILD-043", "FF-BUILD-044", "FF-BUILD-045", "FF-BUILD-046", "FF-BUILD-047", "FF-BUILD-048", "FF-BUILD-050", "FF-BUILD-052", "FF-BUILD-054", "FF-BUILD-055", "FF-BUILD-057", "FF-BUILD-058", "FF-BUILD-059", "FF-BUILD-060", "FF-BUILD-061", "FF-BUILD-062", "FF-BUILD-063", "FF-BUILD-064", "FF-BUILD-065", "FF-BUILD-066", "FF-BUILD-067", "FF-BUILD-077", "FF-BUILD-078", "FF-BUILD-079", "FF-BUILD-080", "FF-BUILD-081", "FF-BUILD-082", "FF-BUILD-083", "FF-BUILD-084", "FF-BUILD-085", "FF-BUILD-086", "FF-BUILD-087", "FF-BUILD-088", "FF-BUILD-089", "FF-BUILD-090", "FF-BUILD-091", "FF-BUILD-092", "FF-BUILD-093", "FF-BUILD-094", "FF-BUILD-095", "FF-BUILD-096", "FF-BUILD-097", "FF-BUILD-098"
+        "FF-BUILD-011",
+        "FF-BUILD-012",
+        "FF-BUILD-013",
+        "FF-BUILD-014",
+        "FF-BUILD-017",
+        "FF-BUILD-018",
+        "FF-BUILD-019",
+        "FF-BUILD-021",
+        "FF-BUILD-023",
+        "FF-BUILD-024",
+        "FF-BUILD-029",
+        "FF-BUILD-030",
+        "FF-BUILD-031",
+        "FF-BUILD-032",
+        "FF-BUILD-033",
+        "FF-BUILD-034",
+        "FF-BUILD-035",
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-050",
+        "FF-BUILD-052",
+        "FF-BUILD-054",
+        "FF-BUILD-055",
+        "FF-BUILD-057",
+        "FF-BUILD-058",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-061",
+        "FF-BUILD-062",
+        "FF-BUILD-063",
+        "FF-BUILD-064",
+        "FF-BUILD-065",
+        "FF-BUILD-066",
+        "FF-BUILD-067",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098"
       ],
       "acceptance_or_authority_ids": [
         "WP-FF-006-rust-youtube-challenge-spike-v1-AC-001",
@@ -328,12 +433,30 @@
         ]
       },
       "reuse_candidates_in_order_with_result": [
-        {"candidate": "no mechanism beyond the accepted outcome", "result": "Rejected because executing site-supplied challenge JavaScript is an explicit accepted requirement."},
-        {"candidate": "reuse current Ferric code", "result": "Selected for WP-005 framing/envelopes, state IDs, architecture gates, reports, and negative-fixture machinery."},
-        {"candidate": "Rust core/std", "result": "Selected for process supervision, bounded pipes, clocks, deterministic collections, and filesystem isolation."},
-        {"candidate": "approved platform capability", "result": "Selected for OS process termination/reaping and RSS observation without adding an external runtime."},
-        {"candidate": "already-approved dependency", "result": "Existing serde, serde_json, and sha2 cover contracts, reports, hashing, and corpus identity."},
-        {"candidate": "smallest complete clear implementation", "result": "Selected: Boa 0.21.1 with default features disabled, Boa-parser AST-structural player discovery, a side-effect-reduced retained declaration/assignment program, and sysinfo 0.39.6 system-only parent RSS observation. No external solver or runtime is executed or required."}
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Rejected because executing site-supplied challenge JavaScript is an explicit accepted requirement."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Selected for WP-005 framing/envelopes, state IDs, architecture gates, reports, and negative-fixture machinery."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Selected for process supervision, bounded pipes, clocks, deterministic collections, and filesystem isolation."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Selected for OS process termination/reaping and RSS observation without adding an external runtime."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Existing serde, serde_json, and sha2 cover contracts, reports, hashing, and corpus identity."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "Selected: Boa 0.21.1 with default features disabled, Boa-parser AST-structural player discovery, a side-effect-reduced retained declaration/assignment program, and sysinfo 0.39.6 system-only parent RSS observation. No external solver or runtime is executed or required."
+        }
       ],
       "artifact_specific_justification": {
         "javascript_worker": "A separate executable is required by the accepted process-isolation, timeout, cancellation, crash, quarantine, and no-cross-job-heap contract.",
@@ -343,7 +466,13 @@
         "model_manual": "A no-context model needs exact commands, limits, reports, recovery, security constraints, and the prerequisite ceiling."
       },
       "pre_simplification_verdict": "PASS: the invalid external solver path was absent; current source-level research selected a Ferric-owned Boa/parser worker path and rejected regex-only, full-player, duplicate-parser, and external-solver approaches before code creation.",
-      "simplification_changes": ["Removed the untracked yt-dlp-ejs-based worker, solver assets, generated player corpus, runner, and associated proof fixtures.", "Selected one pure-Rust parser/engine stack rather than adding a second JavaScript parser or external runtime.", "Selected a reduced player program so browser initialization code and ambient capabilities are not evaluated.", "Replaced formatter-text candidate nomination with Boa AST assignment/variable target extraction and structural marker inspection.", "Kept destructive fault injection behind one fresh per-worker host grant rather than exposing additional worker modes or binaries."],
+      "simplification_changes": [
+        "Removed the untracked yt-dlp-ejs-based worker, solver assets, generated player corpus, runner, and associated proof fixtures.",
+        "Selected one pure-Rust parser/engine stack rather than adding a second JavaScript parser or external runtime.",
+        "Selected a reduced player program so browser initialization code and ambient capabilities are not evaluated.",
+        "Replaced formatter-text candidate nomination with Boa AST assignment/variable target extraction and structural marker inspection.",
+        "Kept destructive fault injection behind one fresh per-worker host grant rather than exposing additional worker modes or binaries."
+      ],
       "post_simplification_verdict": "PASS: the final corpus executes the simplified Ferric-owned path with 7/7 exact challenge results, 20/20 bounded probes, a rejecting aggregate counterfactual, and no forbidden implementation dependency; this remains non-shipped prerequisite evidence with zero product progress.",
       "complete_post_change_verification": [
         "cargo fmt --manifest-path build/Cargo.toml --all -- --check",
@@ -494,9 +623,26 @@
     "repository_layout": {
       "governance_root": ".GOV/",
       "product_root": "product/",
-      "product_owns": ["application execution code", "product apps", "product assets", "independent watcher", "product-package-local tests", "MODEL_MANUAL.md"],
+      "product_owns": [
+        "application execution code",
+        "product apps",
+        "product assets",
+        "independent watcher",
+        "product-package-local tests",
+        "MODEL_MANUAL.md"
+      ],
       "build_root": "build/",
-      "build_owns": ["Cargo workspace and lockfile", "architecture/tooling/rule-to-proof policies", "non-shipped xtask and testkit", "shared fixtures", "cross-package integration tests", "fuzz targets", "benchmarks", "generated reports", "Cargo target output"],
+      "build_owns": [
+        "Cargo workspace and lockfile",
+        "architecture/tooling/rule-to-proof policies",
+        "non-shipped xtask and testkit",
+        "shared fixtures",
+        "cross-package integration tests",
+        "fuzz targets",
+        "benchmarks",
+        "generated reports",
+        "Cargo target output"
+      ],
       "toolchain_selector": "rust-toolchain.toml",
       "canonical_manifest": "build/Cargo.toml",
       "canonical_command_prefix": "cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask --",
@@ -507,14 +653,21 @@
       "readiness_matrix_links": {
         "path": ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json",
         "phase": "Phase 0",
-        "consensus_blocker_ids": ["SYN-001", "SYN-009"],
+        "consensus_blocker_ids": [
+          "SYN-001",
+          "SYN-009"
+        ],
         "adjudicated_disagreement_topic": "youtube_javascript",
         "implementation_readiness_gate_items": [
           "Rust-only YouTube challenge corpus result",
           "Versioned serializable source graph, identity, plugin IPC, event, error, cancellation, and process protocols",
           "Executable phase gates with machine-readable reports"
         ],
-        "peer_question_numbers": [6, 7, 18]
+        "peer_question_numbers": [
+          6,
+          7,
+          18
+        ]
       },
       "promotion_requirements": [
         "Verify current pure-Rust JavaScript engine candidates through official source, docs, releases, issue trackers, security records, benchmarks, and implementation tests; do not rely on model memory.",
@@ -623,6 +776,165 @@
         "Emit PASS_RUST_ONLY_PATH or FAILED_SPIKE_REQUIRES_OPERATOR_DECISION with exact residual uncertainty; never silently add a fallback.",
         "Update manual and packet proof; merge only after canonical gates and independent adversarial validation pass."
       ]
+    },
+    "predecessor_reconciliation": {
+      "correction_packet": "WP-FF-024-predecessor-state-reconciliation-v1",
+      "activation_commit": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
+      "recorded_at_utc": "2026-10-21T06:42:27Z",
+      "authorization": "Later live Operator-directed prerequisite closure and Phase 1 completion; the earlier stop/checkpoint remains historical and does not supply new authority.",
+      "prior_checkpoint": {
+        "lifecycle": {
+          "status": "VALIDATED",
+          "risk": "HIGH",
+          "blockers": [],
+          "next_action": "Await Operator selection before activating any later work-packet stub.",
+          "supersedes": [],
+          "superseded_by": null
+        },
+        "source_commit": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "source_control": {
+          "canonical_branch": "main",
+          "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
+          "work_branch": "codex/rust-youtube-challenge-spike",
+          "worktree_policy": "NONE",
+          "worktree_id": null,
+          "remote_backup": {
+            "required_for_handoff": true,
+            "branch": "origin/codex/rust-youtube-challenge-spike",
+            "head_sha": "a010b13c749a642dc62b0b4e825a3c5e2aec6e43",
+            "verified_at_utc": "2026-07-27T02:44:14Z"
+          },
+          "closure_commit": "99139e04d12ec9f099f2092c624336702143e9fd",
+          "main_containment_status": "VERIFIED",
+          "merged_main_commit": "4cf69072ffd47e80204f79d78214271c0a9bb7f6"
+        },
+        "recovery": {
+          "last_checkpoint": {
+            "recorded_at_utc": "2026-07-27T02:44:14Z",
+            "branch": "main",
+            "base_sha": "405c054005102417a6ce992795a2752bc26c40dc",
+            "head_sha": "4cf69072ffd47e80204f79d78214271c0a9bb7f6",
+            "dirty_paths": [
+              ".GOV/taskboard/taskboard.yaml",
+              ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json"
+            ],
+            "checks_run": [
+              "Verified the worktree is clean before activation on codex/rust-youtube-challenge-spike at 6f1b1e51b40dab7c1401418bf3d7514420b93059 with merge-base main 405c054005102417a6ce992795a2752bc26c40dc.",
+              "Re-read START_HERE.yaml, byte-identical AGENTS.md and CLAUDE.md, .GOV/codex.yaml, taskboard, active packet, refinement, topology, build rules, cited design/readiness anchors, WP-005 status, and WP-005 framing/protocol source.",
+              "Verified crates.io boa_engine 0.21.1 remains current; inspected tag v0.21.1 commit bc36c3fac0969ea21ea0570b62e7846f97389b73, runtime limits, instruction budget, parser, context, and absence of an exact heap cap.",
+              "Inspected current NewPipeExtractor commit 4b70576661aadf663a935df5b904a43147d9fc50 and YouTube.js commit 14825d7712e32b208830895701973a5a934a3522 player-discovery implementations as independent field evidence.",
+              "Inspected yt-dlp-ejs 0.8.0 tag 4fb477f4af56880cfd324c48bd4294a2d2294e50 only for inert player IDs and expected n/signature observations; no external solver code or executable was run or adopted.",
+              "Verified the committed raw YouTube player_ias base.js inputs for player IDs 74edf1a3, 901741ab, and e7573094 against direct youtube.com responses; all three returned HTTP 200 with byte counts and SHA-256 identities exactly matching the committed files.",
+              "Verified sysinfo 0.39.6 system-only feature is current, pure Rust at the Cargo boundary, Rust 1.95 compatible, and supplies cross-platform process RSS observation without an external runtime or Cargo links dependency.",
+              "PASS_RUST_ONLY_PATH: build/reports/wp-ff-006-youtube-challenge-report.json records 7/7 mandatory cases, 20/20 probes, a rejecting behavioral counterfactual, exact terminal/reap evidence, and zero_product_progress=true.",
+              "PASS: fforager-javascript 16/16 tests, complete workspace all-target/all-feature tests, all-feature doctests, formatting, check, and warnings-denied Clippy.",
+              "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785112455778310700-86884.json.",
+              "Completed exactly two Operator-requested adversarial implementation reviews through correctness/proof-integrity and security/resource-isolation lenses; all confirmed findings were remediated and rerun.",
+              "FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785114203232961100-102424.json.",
+              "PASS FF-GATE-PR-001: build/reports/verify-pr-1785114607079587300-102404.json.",
+              "PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785114808827769300-115396.json.",
+              "PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785115216398408400-102448.json.",
+              "Clean closure source PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785115795156166700-103740.json.",
+              "Clean closure source FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785115805934789400-96328.json.",
+              "Clean closure source PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785116172633196200-105924.json.",
+              "Clean closure source PASS FF-GATE-PR-001: build/reports/verify-pr-1785116604179772200-115056.json.",
+              "MERGE_PENDING evidence PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785116843567652400-94324.json.",
+              "RED after first main merge: a fresh checkout converted the three raw-player fixtures from LF to CRLF, all seven cases returned typed ScriptHashMismatch, and the aggregate exited nonzero before the cache probe.",
+              "GREEN hardening: scoped .gitattributes -text preservation, the checked_in_player_bytes_match_manifest_hashes regression, and richer case diagnostics restore exact manifest hashes; the optimized corpus again records 7/7 mandatory cases, 20/20 probes, and rejecting counterfactual in build/reports/wp-ff-006-youtube-challenge-report.json.",
+              "Replacement closure FF-GATE-RUNTIME-001 prerequisite ceiling exited 0: build/reports/runtime-truth-check-1785118515958714800-92488.json.",
+              "Replacement closure PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785118599008827700-100660.json.",
+              "Replacement closure PASS FF-GATE-DEEP-001: build/reports/verify-deep-1785118964286530400-41276.json.",
+              "Replacement closure PASS FF-GATE-PR-001: build/reports/verify-pr-1785119381714859300-98448.json.",
+              "Replacement MERGE_PENDING evidence PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785119508903991000-82500.json.",
+              "Remote backup origin/codex/rust-youtube-challenge-spike verified at a010b13c749a642dc62b0b4e825a3c5e2aec6e43.",
+              "Replacement closure 99139e04d12ec9f099f2092c624336702143e9fd and evidence a010b13c749a642dc62b0b4e825a3c5e2aec6e43 are ancestors of main merge 4cf69072ffd47e80204f79d78214271c0a9bb7f6.",
+              "Post-merge pinned-byte regression passed 5/5 corpus-runner tests and the optimized corpus recorded 7/7 mandatory cases, 20/20 probes, and rejecting counterfactual.",
+              "Post-merge PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785120244586756900-103168.json.",
+              "Validated-state PASS FF-GATE-ARCH-001: build/reports/architecture-check-1785120407329309300-99372.json.",
+              "Validated-state runtime-truth invocation returned expected closed-state error FF-RUNTIME-E-NO-ACTIVE-PACKET after active_wp_id was cleared."
+            ],
+            "blockers": [],
+            "next_action": "Await Operator selection before activating any later work-packet stub."
+          }
+        }
+      },
+      "accepted_prerequisite_source": "05aadebf1eda18dd278b5a077824641eb3b74402",
+      "accepted_content_fingerprint": "ff6be3915c19fc0a6c6992c0a0af630fe4f5e2691e31b07fab86c560ce3dd8a4",
+      "canonical_source_equivalence": {
+        "canonical_main_at_activation": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "command": "git diff --exit-code 05aadebf1eda18dd278b5a077824641eb3b74402 main -- build product",
+        "exit_code": 0
+      },
+      "current_gate_results": [
+        {
+          "gate_id": "FF-GATE-RUNTIME-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+          "proof_ceiling": "policy and scenario contract only"
+        },
+        {
+          "gate_id": "FF-GATE-ARCH-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/architecture-check-1792559655529323400-457160.json",
+          "checks": 8,
+          "fixtures": 55
+        },
+        {
+          "gate_id": "FF-GATE-PR-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/verify-pr-1792562549302941800-518188.json",
+          "checks": 70,
+          "fixtures": 55,
+          "xtask_passed": 151,
+          "ffmpeg_passed": 65,
+          "testkit_passed": 17,
+          "dependency_checks": "advisories, bans, licenses and sources accepted",
+          "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
+        }
+      ],
+      "corrective_closure": {
+        "commit": null,
+        "main_containment_status": "NOT_STARTED",
+        "rule": "Only the actually merged common corrective closure may replace this null; original bases and requirements remain unchanged."
+      },
+      "evidence_ceiling": "Prerequisite and governance evidence only; no product, capability, runtime, performance, packaging, release or phase completion.",
+      "historical_lineage_disposition": {
+        "recorded_closure": "99139e04d12ec9f099f2092c624336702143e9fd",
+        "current_main_ancestry_exit": 1,
+        "status": "INVALID_AS_CURRENT_CONTAINMENT",
+        "sanitized_source": "8dcc3a5e14bbe67c61dca0d68697c73d2bd11849",
+        "sanitized_source_main_ancestry_exit": 0,
+        "source_equivalence": "Current crate Git content equals sanitized contained source and original solver crate content; old secret-era history is not imported."
+      },
+      "current_optimized_corpus": {
+        "artifact": ".fforager-artifacts/product-batch/wp006-optimized-corpus.json",
+        "sha256": "1aec75be24511b4094c873d28eb255057eb37aadc3481a5f40596011f353544a",
+        "verdict": "PASS_RUST_ONLY_PATH",
+        "mandatory_passed": 7,
+        "mandatory_total": 7,
+        "probes_passed": 20,
+        "probes_total": 20,
+        "original_oracle_passed": true,
+        "mutated_oracle_rejected": true,
+        "zero_product_progress": true,
+        "executed_manifest_sha256": "8be6628f19a830e90c11157391768f15c0dd0aad358e31bdd67e4725f7a2e8ef",
+        "primary_manifest_sha256": "8115720bc9226fbb9222a22a6ba434a8aec29b46c1c94953a71c7fcc61860969",
+        "manifest_equivalence": "Helper has85CRLF sequences; primary is LF. Normalized bytes and parsed JSON match; both Git blobs are22ad11caea641f3695ac45bdf351b6d35978200f. Raw hashes remain distinct.",
+        "corpus_binary_sha256": "cbabae0d9e1bb20224e7ef49fcd06d2fa69f70c675b528efddef6ef7d568df18",
+        "worker_binary_sha256": "ec227547596d146ccd3c80687213cecc3cb94643118cc4fe64bed2b2ded4e1fd",
+        "limits": "Original optimized corpus limits unchanged; initial debug-profile timeout is retained as invalid evidence for optimized acceptance.",
+        "canonical_alias_provenance": {
+          "original_capture": ".fforager-artifacts/product-batch/wp006-optimized-corpus.json",
+          "canonical_generated_alias": "build/reports/wp-ff-006-youtube-challenge-report.json",
+          "sha256": "1aec75be24511b4094c873d28eb255057eb37aadc3481a5f40596011f353544a",
+          "byte_identical": true,
+          "new_execution": false,
+          "authorization": "Explicit live root authorization for this byte-identical ignored generated alias; no tracked build/report/source path changed."
+        }
+      }
     }
   }
 }

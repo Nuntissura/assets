@@ -6,14 +6,19 @@
     "version": "1",
     "created_at_utc": "2026-10-20T21:19:21Z",
     "base_wp_id": "WP-FF-023-dependency-security-remediation",
-    "updated_at_utc": "2026-10-20T22:37:44Z",
+    "updated_at_utc": "2026-10-21T06:42:27Z",
     "title": "Remediate five approved dependency versions and exact FF-DEC-002 policy",
     "wp_id": "WP-FF-023-dependency-security-remediation-v1"
   },
   "authorization": {
     "recorded_at_utc": "2026-10-20T21:19:21Z",
     "reference": "Operator explicitly approved separate-packet remediation to h2 0.4.16, rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.10 and webpki-root-certs 1.0.10 with matching FF-DEC-002 policy/proof. Preserve the existing sequence and keep Python limited to the global gameplan controller.",
-    "source": "operator_message"
+    "source": "operator_message",
+    "latest_execution_direction": {
+      "reference": "Operator explicitly directs starting product code with parallel agents now, without resumed tests or proof work.",
+      "source": "operator_message",
+      "recorded_at_utc": "2026-10-21T00:15:30Z"
+    }
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -35,9 +40,9 @@
     "worktree_id": null,
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+      "verified_at_utc": "2026-10-20T23:43:20Z"
     },
     "closure_commit": null,
     "main_containment_status": "NOT_STARTED",
@@ -47,10 +52,9 @@
     "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "Final clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required.",
-      "Closure/main containment and return to the existing WP022 dependency gate remain unproven."
+      "Current technical evidence is accepted; common corrective closure containment remains unproven."
     ],
-    "next_action": "Validate current packet metadata, commit/push the reviewed stable candidate, then execute canonical runtime-truth-check, architecture-check and verify-pr on clean committed identity; record actual acceptance before closure merge/main containment.",
+    "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -148,8 +152,12 @@
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-006",
       "proof_class": "integration",
       "requirement": "Canonical runtime-truth-check, architecture-check and verify-pr plus any actually activated deep triggers accept the same committed candidate; exact source-bound results are recorded.",
-      "evidence": [],
-      "status": "PENDING"
+      "evidence": [
+        "Clean954a1763be80709b845fc2b787e173a80ba9579a source fingerprintb5423210a34d455279444e1c52fcb6bfcf8a93d0c33359eef260b0266e49825a: FF-GATE-RUNTIME-001 and FF-GATE-ARCH-001 accepted, FF-GATE-PR-001 rejected on four exact Windows test failures.",
+        "Actual counts and named cases are retained in validation.checks; xtask classifier/approval148passed. PR did not reach later dependency stage; no final dependency-gate success is asserted.",
+        "Clean accepted05aadeb same-source architecture/PR/runtime policy gates passed with dependency checks accepted; original954failure remains historical and exact corrective evidence is recorded at extensions.predecessor_reconciliation."
+      ],
+      "status": "PASS"
     },
     {
       "id": "WP-FF-023-dependency-security-remediation-v1-AC-007",
@@ -161,40 +169,28 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "branch": "codex/wp020-prerequisite-classifier",
+      "recorded_at_utc": "2026-10-21T06:42:27Z",
+      "branch": "codex/predecessor-state-reconciliation",
       "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
-      "checks_run": [
-        "git branch --show-current: codex/wp020-prerequisite-classifier",
-        "git rev-parse HEAD:408e75a7d56fb53464ca582a7aef798585b9d72d",
-        "git merge-base main HEAD:10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-        "git status --porcelain=v2 --branch: upstream ahead1/behind0; eight operational files and active packet modified.",
-        "Get-FileHash main.rs:E1768E42ED9AB8F438B6F5AD0E7DFD9747E05B5921522C7FFAAFDDD4E9747853; exact restored primary source independently verified.",
-        "Opened primary mutation-result JSON and semantic failure/restored success raw output; independent HIGH review accepted bounded implementation."
-      ],
-      "recorded_at_utc": "2026-10-20T22:37:44Z",
-      "blockers": [
-        "Final clean committed-candidate canonical runtime classification, architecture-check and verify-pr remain required.",
-        "Closure/main containment and return to the existing WP022 dependency gate remain unproven."
-      ],
+      "head_sha": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
       "dirty_paths": [
-        ".GOV/rules/build-rules.yaml",
-        ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
-        "build/Cargo.lock",
-        "build/Cargo.toml",
-        "build/architecture-policy.toml",
-        "build/crates/fforager-transport/src/ordinary.rs",
-        "build/deny.toml",
-        "build/tools/fforager-xtask/src/main.rs",
-        "product/MODEL_MANUAL.md"
+        ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json"
       ],
-      "next_action": "Validate current packet metadata, commit/push the reviewed stable candidate, then execute canonical runtime-truth-check, architecture-check and verify-pr on clean committed identity; record actual acceptance before closure merge/main containment.",
-      "head_sha": "408e75a7d56fb53464ca582a7aef798585b9d72d"
+      "checks_run": [
+        "Original frozen fields and prior failure/stop records reconciled before metadata correction.",
+        "Actual optimized corpus, current accepted source-bound prerequisite reports and canonical main ancestry independently reread; no implementation or acceptance requirement changed."
+      ],
+      "blockers": [
+        "Current technical evidence is accepted; common corrective closure containment remains unproven."
+      ],
+      "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED."
     }
   },
   "validation": {
     "not_proven": [
-      "Final clean canonical gate acceptance and closure/main containment remain unproven.",
-      "WP022 dependency unblock remains unproven until its required accepted closure and gate evidence.",
+      "Final canonical PR acceptance remains unproven; retry explicitly stopped before verdict.",
+      "Historical Windows first-failure cause remains unresolved; unchanged exact binary package success does not erase canonical failure.",
+      "Closure/main containment and WP022 dependency unblock remain unproven.",
       "Any product, capability, runtime, packaging, release or phase progress."
     ],
     "checks": [
@@ -492,6 +488,89 @@
         "command": "Retired preparation-handler native recovery",
         "reported_by": "primary agent",
         "backup_name": "hooks.json.gameplan-retired-20261020T221835Z.backup"
+      },
+      {
+        "limitation": "Bounded prerequisite policy/contract ceiling only.",
+        "source_commit": "954a1763be80709b845fc2b787e173a80ba9579a",
+        "source_dirty": false,
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "artifact": "build/reports/runtime-truth-check-1792536198739055600-442176.json",
+        "result": "PASS",
+        "content_fingerprint": "b5423210a34d455279444e1c52fcb6bfcf8a93d0c33359eef260b0266e49825a",
+        "proof_class": "scenario_contract"
+      },
+      {
+        "artifact": "build/reports/architecture-check-1792536725932469500-478692.json",
+        "content_fingerprint": "b5423210a34d455279444e1c52fcb6bfcf8a93d0c33359eef260b0266e49825a",
+        "gate_id": "FF-GATE-ARCH-001",
+        "source_dirty": false,
+        "result": "PASS",
+        "source_commit": "954a1763be80709b845fc2b787e173a80ba9579a"
+      },
+      {
+        "result": "FAIL",
+        "observed": "Test command failed exit101 due FFmpeg Windows target61passed4failed3ignored20.13seconds; xtask148passed0failed2ignored668.36seconds including classifier/approval tests. Later canonical stages not reached.",
+        "limitation": "No final PR dependency-policy acceptance claimed; earlier focused deny result remains separately valid. Failure causes unresolved.",
+        "content_fingerprint": "b5423210a34d455279444e1c52fcb6bfcf8a93d0c33359eef260b0266e49825a",
+        "source_commit": "954a1763be80709b845fc2b787e173a80ba9579a",
+        "source_dirty": false,
+        "gate_id": "FF-GATE-PR-001",
+        "artifact": "build/reports/verify-pr-1792539719366424200-444624.json",
+        "artifacts": [
+          ".fforager-artifacts/wp023/canonical-pr.stdout",
+          ".fforager-artifacts/wp023/canonical-pr.stderr"
+        ],
+        "failed_tests": [
+          "platform::windows::tests::force_terminate_cleans_descendant_after_direct_child_was_reaped",
+          "platform::windows::tests::handle_list_excludes_forbidden_inheritable_sentinel_and_mutation_leaks_it",
+          "platform::windows::tests::job_empty_wait_requires_actual_zero_and_natural_release",
+          "platform::windows::tests::kill_on_job_close_terminates_child_and_descendant_after_abrupt_parent_exit"
+        ]
+      },
+      {
+        "limitation": "Historical first failure cause remains unresolved; narrower or interrupted results do not close AC006.",
+        "reported_by": "primary agent",
+        "result": "STOPPED_BY_OPERATOR",
+        "observations": {
+          "retry_windows_target": "65passed0failed3ignored1.30seconds",
+          "same_binary_full_parallel": "65passed0failed3ignored11.03seconds, no source/binary changes",
+          "original_pr": "Source-bound canonical failure retained above",
+          "retry_final": "Aborted by explicit Operator directive before final verdict; no final PR acceptance"
+        },
+        "command": "Unchanged exact canonical binary full-package observation and interrupted PR retry"
+      },
+      {
+        "canonical_main_at_activation": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "command": "git diff --exit-code 05aadebf1eda18dd278b5a077824641eb3b74402 main -- build product",
+        "exit_code": 0
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+        "proof_ceiling": "policy and scenario contract only"
+      },
+      {
+        "gate_id": "FF-GATE-ARCH-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/architecture-check-1792559655529323400-457160.json",
+        "checks": 8,
+        "fixtures": 55
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "PASS",
+        "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "artifact": "build/reports/verify-pr-1792562549302941800-518188.json",
+        "checks": 70,
+        "fixtures": 55,
+        "xtask_passed": 151,
+        "ffmpeg_passed": 65,
+        "testkit_passed": 17,
+        "dependency_checks": "advisories, bans, licenses and sources accepted",
+        "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
       }
     ]
   },
@@ -738,6 +817,115 @@
       "product_progress": false,
       "runtime_completion": false,
       "phase_progress": false
+    },
+    "predecessor_reconciliation": {
+      "correction_packet": "WP-FF-024-predecessor-state-reconciliation-v1",
+      "activation_commit": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
+      "recorded_at_utc": "2026-10-21T06:42:27Z",
+      "authorization": "Later live Operator-directed prerequisite closure and Phase 1 completion; the earlier stop/checkpoint remains historical and does not supply new authority.",
+      "prior_checkpoint": {
+        "lifecycle": {
+          "status": "BLOCKED",
+          "risk": "HIGH",
+          "blockers": [
+            "FF-GATE-PR-001 rejected four named Windows FFmpeg test failures at clean954a1763be80709b845fc2b787e173a80ba9579a; exact cases and source-bound report retained in validation.checks.",
+            "Fresh canonical acceptance and closure/main containment remain unproven; no merge is permitted while the required gate fails."
+          ],
+          "next_action": "Verification stopped by explicit Operator direction. Preserve unresolved canonical failure and pending containment; do not resume tests/proofs or merge. Root will separately activate product implementation after required artifact cleanup under current Operator direction.",
+          "supersedes": [],
+          "superseded_by": null
+        },
+        "source_commit": "09c7a075703135f07ee00d7356aedb78a6a93718",
+        "source_control": {
+          "canonical_branch": "main",
+          "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
+          "work_branch": "codex/wp020-prerequisite-classifier",
+          "worktree_policy": "NONE",
+          "worktree_id": null,
+          "remote_backup": {
+            "required_for_handoff": true,
+            "branch": "codex/wp020-prerequisite-classifier",
+            "head_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+            "verified_at_utc": "2026-10-20T23:43:20Z"
+          },
+          "closure_commit": null,
+          "main_containment_status": "NOT_STARTED",
+          "merged_main_commit": null
+        },
+        "recovery": {
+          "last_checkpoint": {
+            "recorded_at_utc": "2026-10-21T00:15:30Z",
+            "branch": "codex/wp020-prerequisite-classifier",
+            "dirty_paths": [
+              ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json"
+            ],
+            "blockers": [
+              "FF-GATE-PR-001 rejected four named Windows FFmpeg test failures at clean954a1763be80709b845fc2b787e173a80ba9579a; exact cases and source-bound report retained in validation.checks.",
+              "Fresh canonical acceptance and closure/main containment remain unproven; no merge is permitted while the required gate fails."
+            ],
+            "next_action": "Verification stopped by explicit Operator direction. Preserve unresolved canonical failure and pending containment; do not resume tests/proofs or merge. Root will separately activate product implementation after required artifact cleanup under current Operator direction.",
+            "checks_run": [
+              "git branch --show-current: codex/wp020-prerequisite-classifier",
+              "git rev-parse HEAD: 954a1763be80709b845fc2b787e173a80ba9579a",
+              "git merge-base main HEAD:10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+              "git status --porcelain=v2 --branch: origin ahead0/behind0; clean before blocked checkpoint.",
+              "Opened exact three source-bound canonical reports and raw PR output with four named failures.",
+              "Saved first-failure packet restored after scope, all seven requirements and prerequisite declaration matched committed954a1763be80709b845fc2b787e173a80ba9579a.",
+              "Operator stopped verification and directed parallel product implementation; interrupted retry has no final gate verdict."
+            ],
+            "base_sha": "ace9fcd3c250bdc261c44c43d070383e45246c1a",
+            "head_sha": "954a1763be80709b845fc2b787e173a80ba9579a"
+          }
+        }
+      },
+      "accepted_prerequisite_source": "05aadebf1eda18dd278b5a077824641eb3b74402",
+      "accepted_content_fingerprint": "ff6be3915c19fc0a6c6992c0a0af630fe4f5e2691e31b07fab86c560ce3dd8a4",
+      "canonical_source_equivalence": {
+        "canonical_main_at_activation": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+        "command": "git diff --exit-code 05aadebf1eda18dd278b5a077824641eb3b74402 main -- build product",
+        "exit_code": 0
+      },
+      "current_gate_results": [
+        {
+          "gate_id": "FF-GATE-RUNTIME-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/runtime-truth-check-1792559155987000300-520088.json",
+          "proof_ceiling": "policy and scenario contract only"
+        },
+        {
+          "gate_id": "FF-GATE-ARCH-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/architecture-check-1792559655529323400-457160.json",
+          "checks": 8,
+          "fixtures": 55
+        },
+        {
+          "gate_id": "FF-GATE-PR-001",
+          "result": "PASS",
+          "source_commit": "05aadebf1eda18dd278b5a077824641eb3b74402",
+          "artifact": "build/reports/verify-pr-1792562549302941800-518188.json",
+          "checks": 70,
+          "fixtures": 55,
+          "xtask_passed": 151,
+          "ffmpeg_passed": 65,
+          "testkit_passed": 17,
+          "dependency_checks": "advisories, bans, licenses and sources accepted",
+          "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
+        }
+      ],
+      "corrective_closure": {
+        "commit": null,
+        "main_containment_status": "NOT_STARTED",
+        "rule": "Only the actually merged common corrective closure may replace this null; original bases and requirements remain unchanged."
+      },
+      "evidence_ceiling": "Prerequisite and governance evidence only; no product, capability, runtime, performance, packaging, release or phase completion.",
+      "newer_primary_history": {
+        "source_commit": "09c7a075703135f07ee00d7356aedb78a6a93718",
+        "status": "BLOCKED",
+        "preservation": "Prior blocked lifecycle, exact four Windows failures and explicit Operator-stop next_action/recovery are retained verbatim in prior_checkpoint and original validation arrays; subsequent current state derives from later authorized closure and actual accepted proof."
+      }
     }
   }
 }
