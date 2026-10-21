@@ -933,6 +933,15 @@ fn archive_is_empty(stage: &Path) -> Result<bool, String> {
     leases.is_empty().map_err(failure)
 }
 
+fn same_output_target(expected: &Path, recorded: &str) -> Result<bool, String> {
+    let recorded = Path::new(recorded);
+    if !recorded.is_absolute() {
+        return Ok(false);
+    }
+    // Compare existing targets; this is not a path-confinement authorization check.
+    Ok(recorded.canonicalize().map_err(failure)? == expected.canonicalize().map_err(failure)?)
+}
+
 fn success(stage: &Path, observation: &(i32, String, String), proof: &Proof) -> Result<(), String> {
     if observation.0 != 0 {
         return Err(failure(format!(
@@ -951,7 +960,7 @@ fn success(stage: &Path, observation: &(i32, String, String), proof: &Proof) -> 
         || record.output.artifact_digest != proof.fixture.sha256
         || record.output.artifact_size_bytes != proof.fixture.bytes
         || record.commit_sequence != 1
-        || record.output.final_output_identity != output.to_string_lossy()
+        || !same_output_target(&output, &record.output.final_output_identity)?
         || value.get("archive_sequence").and_then(Value::as_u64) != Some(record.commit_sequence)
         || value.get("job_id").and_then(Value::as_str) != Some(record.provenance.job_id.as_str())
     {
@@ -2080,6 +2089,31 @@ mod tests {
             Ok(())
         })
         .expect("delayed real TCP request");
+    }
+
+    #[test]
+    fn output_identity_requires_the_same_existing_target() {
+        let canonical = repo_root().expect("repository root");
+        with_isolated_fixture_root(&canonical, "phase1-output-identity", |stage| {
+            fs::create_dir_all(stage.join("identity")).map_err(failure)?;
+            let output = stage.join("identity/output.wav");
+            let other = stage.join("identity/other.wav");
+            fs::write(&output, b"same physical content").map_err(failure)?;
+            fs::write(&other, b"same physical content").map_err(failure)?;
+            let recorded = output.canonicalize().map_err(failure)?;
+            let alias = format!("{}/./output.wav", slash(&stage.join("identity")));
+            if alias == output.to_string_lossy() || !same_output_target(&output, &alias)? {
+                return Err("textually different existing alias was not reconciled".into());
+            }
+            if !same_output_target(&output, recorded.to_str().ok_or("nonunicode test path")?)?
+                || same_output_target(&output, other.to_str().ok_or("nonunicode test path")?)?
+                || same_output_target(&output, "identity/output.wav")?
+                || same_output_target(&output, &stage.join("absent.wav").to_string_lossy()).is_ok()
+            {
+                return Err("output identity accepted a different, relative or missing target".into());
+            }
+            Ok(())
+        }).expect("existing output target identity");
     }
 
     #[test]

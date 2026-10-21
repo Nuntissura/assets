@@ -547,37 +547,50 @@
     "current_runtime_attempt": {
       "gate_id": "FF-GATE-RUNTIME-001",
       "verdict": "FAIL",
-      "report": "build/reports/runtime-truth-check-1792549137980631900-400692.json",
-      "source_commit": "96afa7fd0a369d7596022d8b5529a37ac0e820ef",
+      "report": "build/reports/runtime-truth-check-1792550554366559900-500252.json",
+      "source_commit": "5b279ede8d725360b9c8f6e619c92191d1c2d0d9",
       "source_dirty": false,
-      "content_fingerprint": "ab0409552aa45e18ea9917999f788ec8fdef5676925574e6f05f9a3ececb58e2",
+      "content_fingerprint": "28ca7aa1daf35d966cda1aa5b38234d14455cbf8422f175001c59669d37e7cc2",
+      "stage": ".fforager-artifacts/runtime-proof/phase1-500252-1792550485967963200",
       "release_build": {
-        "elapsed_seconds": 6.58,
-        "exit_code": 0
+        "exit_code": 0,
+        "elapsed_seconds": 2.61
       },
-      "stage": ".fforager-artifacts/runtime-proof/phase1-400692-1792549072256871500",
       "observations": {
-        "transferred_bytes": 524332,
-        "oracle_error": "Hardcoded inactive v2 table was empty",
         "predecessor_acceptance": "NOT_REACHED",
-        "crash_restart": "BLOCKED_NO_ACTUATOR",
-        "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
-        "watcher_crash_actuation": "PID absent after observed governed shutdown at3980ms; crash not established"
+        "variant": "Stopped before build on unapproved resolved package identity",
+        "success_guard": "Only output text differs: mixed separators; physical canonical target agrees",
+        "crash_restart": "BLOCKED_NO_ACTUATOR"
       },
       "independent_read_only_archive": {
-        "outstanding_leases": 0,
-        "canonical_key_matches": true,
-        "active_v1_rows": 1,
-        "store_version": 1,
-        "source": ".fforager-artifacts/phase1-archive-reader/main.rs",
-        "output_bytes": 524332,
-        "inactive_v2_rows": 0,
-        "exit_code": 0,
         "commit_sequence": 1,
-        "output": ".fforager-artifacts/phase1-archive-reader/retained-success.stdout",
-        "output_sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873"
+        "exit_code": 0,
+        "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+        "output_text": false,
+        "output_canonical_equal": true,
+        "bytes": 524332,
+        "active_v1_rows": 1,
+        "output": ".fforager-artifacts/phase1-archive-reader/predicates-source-mixed.stdout",
+        "outstanding_leases": 0,
+        "inactive_v2_rows": 0,
+        "all_non_path_guards": true
       },
-      "limitation": "The retained success case proves an actual committed row; overall scenario and predecessor acceptance remain unproven."
+      "focused_corrections": {
+        "variant": {
+          "corrected_exit": 0,
+          "passed": 1,
+          "elapsed_seconds": 28.2,
+          "initial_exit": 101,
+          "proof": ".fforager-artifacts/product-batch/phase1-r4b-variant.stdout",
+          "diagnostic": "Generated lock required update under locked build"
+        },
+        "path_identity": {
+          "test": "phase1_runtime::tests::output_identity_requires_the_same_existing_target",
+          "exit_code": 0,
+          "passed": 1
+        }
+      },
+      "limitation": "Focused component corrections do not establish scenario acceptance or main containment."
     },
     "runtime_attempt_history": [
       {
@@ -610,6 +623,41 @@
           "No Phase1 acceptance or closure is established.",
           "Historical scenario captures remain bound to this exact candidate; later source revisions require explicit versioned binding."
         ]
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792549137980631900-400692.json",
+        "source_commit": "96afa7fd0a369d7596022d8b5529a37ac0e820ef",
+        "source_dirty": false,
+        "content_fingerprint": "ab0409552aa45e18ea9917999f788ec8fdef5676925574e6f05f9a3ececb58e2",
+        "release_build": {
+          "elapsed_seconds": 6.58,
+          "exit_code": 0
+        },
+        "stage": ".fforager-artifacts/runtime-proof/phase1-400692-1792549072256871500",
+        "observations": {
+          "transferred_bytes": 524332,
+          "oracle_error": "Hardcoded inactive v2 table was empty",
+          "predecessor_acceptance": "NOT_REACHED",
+          "crash_restart": "BLOCKED_NO_ACTUATOR",
+          "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+          "watcher_crash_actuation": "PID absent after observed governed shutdown at3980ms; crash not established"
+        },
+        "independent_read_only_archive": {
+          "outstanding_leases": 0,
+          "canonical_key_matches": true,
+          "active_v1_rows": 1,
+          "store_version": 1,
+          "source": ".fforager-artifacts/phase1-archive-reader/main.rs",
+          "output_bytes": 524332,
+          "inactive_v2_rows": 0,
+          "exit_code": 0,
+          "commit_sequence": 1,
+          "output": ".fforager-artifacts/phase1-archive-reader/retained-success.stdout",
+          "output_sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873"
+        },
+        "limitation": "The retained success case proves an actual committed row; overall scenario and predecessor acceptance remain unproven."
       }
     ]
   }
