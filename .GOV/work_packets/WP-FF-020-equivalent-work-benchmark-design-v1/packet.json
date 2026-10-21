@@ -8,7 +8,7 @@
     "version": "1",
     "title": "Define the Phase 0D equivalent-work benchmark design",
     "created_at_utc": "2026-08-09T15:39:12Z",
-    "updated_at_utc": "2026-10-21T02:27:11Z"
+    "updated_at_utc": "2026-10-21T04:38:30Z"
   },
   "authorization": {
     "source": "operator_message",
@@ -62,7 +62,7 @@
       "Concrete domain-derived observations, public counterfactual execution and required canonical gates remain pending.",
       "Predecessor remediations and final closure containment remain unproven."
     ],
-    "next_action": "Implement actual domain decoding and bounded native media control calibration, run focused admission/statistics checks, then obtain independent review and required canonical verdicts before containment.",
+    "next_action": "Commit the exact finding route and required evidence metadata, acquire source-bound native cohorts once, then run required canonical gates before closure containment.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -157,35 +157,34 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-08-09T15:39:12Z",
-      "branch": "codex/wp-ff-020-021-planning",
-      "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-      "head_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
-        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json",
-        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
-        ".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json",
-        ".GOV/taskboard/taskboard.yaml",
-        ".GOV/id-registry.yaml"
-      ],
       "checks_run": [
-        "Authority, template, technical-design, readiness-matrix, taskboard, and current packet inspection completed before packet authoring."
+        "Historical source-bound proof and exact final route review recorded in change_evidence."
       ],
       "blockers": [
-        "Packet remains a non-authorizing STUB until its promotion requirements are satisfied."
+        "Final source-bound cohorts, required canonical verdicts and main containment are not established."
       ],
-      "next_action": "Refresh current benchmark implementation research, freeze exact schemas and host profiles, then promote before implementation."
+      "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
+        "build/tools/fforager-xtask/src/main.rs"
+      ],
+      "recorded_at_utc": "2026-10-21T04:38:30Z",
+      "branch": "codex/phase1-prerequisite-closure",
+      "head_sha": "1e07fa8bc6593899dd08dee8795680afffbc3727",
+      "next_action": "Commit the exact finding route and required evidence metadata, acquire source-bound native cohorts once, then run required canonical gates before closure containment."
     }
   },
   "validation": {
-    "checks": [],
+    "checks": [
+      "Historical source1e07fa8: public and physical-domain focused checks, native A/B captures, independent readback and precise public negatives recorded in change_evidence.",
+      "Historical Windows measurement disposition: REJECTED by OUTLIERS18/100 over10percent policy; no threshold adjustment or retry to force admission.",
+      "Historical Linux measurement disposition: semantic admission with independent A/B data, confidence bounds and false product/performance flags."
+    ],
     "not_proven": [
-      "Any benchmark implementation or executable benchmark gate",
-      "Any equivalent-work runtime sample",
-      "Any Ferric performance or no-regression claim",
-      "Any product, capability, runtime, packaging, release, or phase progress"
+      "Registered-source native cohort acquisition and required canonical gate verdicts.",
+      "Any Ferric performance or no-regression claim.",
+      "Any product, capability, packaging, release or phase progress.",
+      "Main containment and predecessor closure."
     ]
   },
   "extensions": {
@@ -221,6 +220,187 @@
         "Pinned Windows and Unix replay host profiles and measured baseline-variance evidence are not yet recorded.",
         "FF-GATE-RUNTIME-001 currently rejects a design-authorized build-only PREREQUISITE when no shipped product path changes; a separately authorized fail-closed classifier remediation must distinguish declared Phase 0 prerequisite artifacts from NONE governance work before this packet can be promoted."
       ]
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-020-equivalent-work-benchmark-design-v1-AC-001",
+        "WP-FF-020-equivalent-work-benchmark-design-v1-AC-002",
+        "WP-FF-020-equivalent-work-benchmark-design-v1-AC-003",
+        "WP-FF-020-equivalent-work-benchmark-design-v1-AC-004",
+        "WP-FF-020-equivalent-work-benchmark-design-v1-AC-005",
+        "WP-FF-020-equivalent-work-benchmark-design-v1-AC-006"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Strict versioned schemas bind every run and sample to exact source, build, toolchain, features, optional comparison artifact, FFmpeg/ffprobe, dependency decisions, fixture/corpus, host, filesystem, cache, process-topology, and metric identities; unknown fields, missing identities, duplicate sample IDs, and mismatched manifests are rejected.",
+          "A public admission boundary compares concrete normalized observations and rejects deliberately cheaper or different work before statistics, including lower-quality selection, omitted metadata/sidecar/archive/validation work, changed cache state, different request sequence, shifted subprocess work, and changed process topology.",
+          "Windows and Unix profile manifests define replayable host and environment conditions, bounded preparation and cleanup, cold/warm policy, noise thresholds, measurement availability, and explicit unsupported metrics without hardcoded paths or silent substitution.",
+          "The statistical contract retains raw samples and enforces randomized paired order, declared warmup, minimum repetitions, outlier/noise policy, distributions, and 95-percent confidence bounds; a single mean, missing samples, unstable noise, and a confidence interval crossing its declared gate cannot PASS.",
+          "Machine-readable reports preserve the weakest executed proof class, separate total-system, Ferric, FFmpeg, and other authorized worker costs, disclose unavailable metrics and residual uncertainty, and cannot promote structural or declaration-only evidence to behavioral or performance PASS.",
+          "Canonical architecture, PR, and triggered benchmark/deep gates execute the equality and statistics validators plus isolated counterfactual fixtures; independent adversarial review finds no unresolved false-equivalence, provenance, topology, noise, or self-validation path."
+        ],
+        "risk_cases": [
+          "Matching caller facts conceal cheaper media or missing effects; derive physical work before reduction.",
+          "Forged timing or duplicated invocations conceal unequal acquisition; bind exact controls and unique consumption.",
+          "In-sample thresholds conceal noise; acquire independent A and B cohorts and refuse unstable observations.",
+          "Proof labels conceal missing execution; retain raw inputs, exact source bindings and independent readback."
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Insufficient: the preserved contract requires an executable admission and statistics boundary."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Reuse SourceGraph validation, gate reports, command capture, source identities and existing pinned tools."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Use owned process handles, filesystem reads, Instant and deterministic Rust reductions."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "No new native boundary; native host controls use existing Rust process operations."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Reuse existing serde, sha2, contracts and Cargo tooling without new external versions."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "Finite local PCM remux reader, shared receipt context and one canonical counterexample corpus."
+        }
+      ],
+      "artifact_specific_justification": {
+        "packet-state": "Current actual proof, retained failures and remaining gate obligations are required canonical inputs.",
+        "canonical-hook": "One shared corpus executes through architecture and inherited PR/deep checks without duplicate mechanisms.",
+        "benchmark-contract": "Strict typed identities, equality admission and paired statistics fulfill the preserved six criteria.",
+        "domain-reader": "Physical media, probes, inventories and captures prevent supplied facts from self-authorizing equality.",
+        "native-control": "Independent host A/B controls establish actual measured variance with explicit unavailable fields."
+      },
+      "pre_simplification_verdict": "FAIL: source review found normalized caller facts lacked independent domain derivation and raw-control provenance; accepted labels could not supply the required oracle.",
+      "simplification_changes": [
+        "Reuse one verified receipt context per evaluation and one projection map per observation.",
+        "Reuse one owning counterexample corpus in the public component and canonical architecture hook.",
+        "Use independent A thresholds and B samples with finite file-only applicability instead of generic caller exceptions."
+      ],
+      "post_simplification_verdict": "PASS: focused public and physical-domain controls exercised the finite shared implementation; historical native cohorts were independently reconciled and the noisy cohort was refused. Registered-source acquisition and canonical closure remain separate obligations.",
+      "complete_post_change_verification": [
+        "Public owning contract1/1 in0.35s, including actual false report fields and all eleven unequal-work controls.",
+        "Physical-domain owning control1/1 in0.18s after fixture-path correction; actual media and omitted-effect negatives exercised.",
+        "Owning warnings-denied Clippy exited0 in10.96s after canonical corpus extraction.",
+        "Historical1e07 Windows A/B each106 controls and100 measured observations, native exit0 with independent physical reconciliation.",
+        "Historical1e07 Linux A/B each106 controls and100 measured observations, native exit0 with independent physical reconciliation.",
+        "Historical Windows materializer rejected18percent outliers against unchanged10percent ceiling.",
+        "Historical Linux public admission exited0; independent seeded bootstrap exactly matched95percent bounds.",
+        "Historical public negatives rejected elapsed+1, pinned A-cohort substitution and forged measured RSS with exact diagnostics."
+      ],
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "Contract and serialization boundary: caller JSON crosses into physical media, probe, capture and inventory reads; facts alone cannot authorize equality.",
+          "Resource and state boundary: timing provenance crosses recorded source/tool identities, retained child receipts, profile conditions and exact raw controls.",
+          "Integration boundary: independent A threshold calibration remains separate from B observations and reduction, retaining full paired raw data.",
+          "Gate/report consumers preserve semantic and structural ceilings with exact executable finding attribution."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Opened benchmark, calibration, domain and bundle source plus strict AC001 through AC006; the final finding registration changes only three lines.",
+          "Independently reconciled643 physical file pins per cohort across historical1e07 Windows/Linux A/B, all424 output WAVs, probe facts and native argv.",
+          "Reconciled distinct A/B identities, invocation statuses and elapsed values, owned parent-child tuples, calibration arrays and committed source/tree/lock bindings.",
+          "Opened historical Linux public admission exit0 and reconciled106 B samples, independent A-only175071ppm threshold,50 ratios and exact2000-resample confidence bounds."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "The executed physical-domain owning proof rejects rehashed changed payload; caller-authored facts alone cannot satisfy actual physical decoding.",
+          "The physical-domain proof rejects omitted metadata argv, extra URL, failed exit, shifted parent, missing validation and extra sidecar.",
+          "The public admission corpus rejects unequal work, provenance/topology changes, missing or duplicate samples, false statistical promotion and crossing confidence bounds.",
+          "Historical Windows materialization rejected18/100 outliers beyond the declared10percent policy; threshold inflation or observation removal would reverse this required refusal."
+        ],
+        "BOUNDARY_PROBES": [
+          "Historical Windows A/B each executed106 controls with100 measured controls, fixed file-only argv and independently reconciled physical outputs and captures.",
+          "Historical Linux A/B executed the bounded control contract through ELF tools with separately pinned native versions and recorded portable roots.",
+          "Historical Linux public admission consumed B-bound observations and retained all106 raw samples with semantic evidence and false progress flags.",
+          "The canonical architecture hook calls the same public counterexample corpus with assertion propagation and fresh owned per-invocation state; broad verdicts are separate obligations."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "Historical Windows noisy measurement was retained as rejected evidence rather than relabeled or substituted with Linux values.",
+          "Physical-domain negatives require actual media, probe, capture and inventory evidence rather than matching rehashed normalized JSON.",
+          "Public owning negatives preserve strict schema, equality, sample identity, randomized order, raw retention and confidence refusal.",
+          "Actual historical public mutations rejected elapsed tampering, A-cohort substitution and forged RSS availability with their exact domain diagnostics."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding_id": "WP-FF-020-FINDING-DOMAIN-001",
+            "finding": "Caller-normalized facts lacked an independent physical-domain oracle. Finite local PCM remux admission now derives work from bounded media, probe, argv, inventory and source-bound controls; executed physical-domain negatives reject coherent cheaper-work substitutions.",
+            "status": "REMEDIATED",
+            "proof_id": "xtask::benchmark::domain::tests::physical_domain_rejects_rehashed_cheaper_work_and_missing_effects"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "Historical1e07 controls are not final registered-source measurements; fresh source-bound acquisition, canonical verdicts and main containment remain required. External controls make no Ferric speed or no-regression claim. CPU/RSS/I/O unavailable values and synchronous filesystem post-operation admission bounds remain explicit."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "reviewer": "review_fresh independent subagent",
+          "method": "Direct affected-topic comparison against CLI help, authority commands and non-product proof limits",
+          "verdict": "PASS",
+          "evidence": [
+            "The unchanged phase-0-commands topic retains locked Cargo architecture, runtime-truth, deep and PR commands; benchmark CLI help supplies this non-shipped workflow.",
+            "The safety-recovery topic requires exact tools, repository-local artifacts, immutable --locked reconciliation and named-diagnostic recovery without bypassing refusal.",
+            "The FF-GATE-RUNTIME-001 ceiling reserves production-entrypoint verification for a later consuming packet; all product/performance flags stay false."
+          ]
+        }
+      },
+      "ceilings_exceptions_and_evidence": {
+        "linked_evidence": [
+          "build/tools/fforager-xtask/src/benchmark.rs",
+          "build/tools/fforager-xtask/src/benchmark/calibration.rs",
+          "build/tools/fforager-xtask/src/benchmark/domain.rs",
+          "build/tools/fforager-xtask/src/benchmark/domain/bundle.rs",
+          "build/fixtures/benchmarks/",
+          ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json#/validation"
+        ],
+        "trigger_detection_method": "Taskboard activation, declared packet impact and FF-GATE-RUNTIME-001 enforce later consumption.",
+        "replacement_trigger": "A later authorized consumer supplies its required staged production evidence and equivalent-work observations.",
+        "ceiling_id": "WP-FF-020-equivalent-work-benchmark-design-v1-CEILING-001",
+        "likely_upgrade_path": "Retain future WP021 and WP011 proof obligations without promoting this design evidence.",
+        "current_ceiling": "Non-shipped benchmark design and bounded external-tool controls only; zero product, capability, phase, packaging or release progress."
+      }
     }
   }
 }

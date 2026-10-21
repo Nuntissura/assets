@@ -13853,6 +13853,9 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-023-FINDING-APPROVAL-001" => {
             Some("xtask::tests::native_exception_rejects_stale_security_patch_approval")
         }
+        "WP-FF-020-FINDING-DOMAIN-001" => Some(
+            "xtask::benchmark::domain::tests::physical_domain_rejects_rehashed_cheaper_work_and_missing_effects",
+        ),
         "WP-FF-017-FINDING-GRAPH-CLOSURE-005" | "WP-FF-017-FINDING-SOURCE-CLOSURE-006" => {
             Some("xtask::tests::ordinary_profile_rejects_resolved_transitive_feature_unification")
         }
