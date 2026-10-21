@@ -46,21 +46,19 @@
     "worktree_id": "phase1-prerequisites",
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "branch": "codex/phase1-prerequisite-closure",
+      "head_sha": "0a16e8ea61d6805272863f95e01ef807d5f2bc58",
+      "verified_at_utc": "2026-10-21T06:14:42Z"
     },
     "closure_commit": "a88d961ac066abdf45a4041f435bd5d6c823dd60",
-    "main_containment_status": "NOT_STARTED",
-    "merged_main_commit": null
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "1bdd0ffa11d287f08e2908b438a94a90ed53974a"
   },
   "lifecycle": {
-    "status": "MERGE_PENDING",
+    "status": "VALIDATED",
     "risk": "HIGH",
-    "blockers": [
-      "Closure commit main containment is not yet proven."
-    ],
-    "next_action": "Merge the recorded prerequisite-only closure into main and prove ancestry before VALIDATED; subsequent state repair remains separately scoped.",
+    "blockers": [],
+    "next_action": "No WP020 action remains; continue separately scoped predecessor-state repair before dependent Phase1 acceptance.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -167,25 +165,26 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-10-21T06:05:28Z",
-      "branch": "codex/phase1-prerequisite-closure",
-      "head_sha": "a88d961ac066abdf45a4041f435bd5d6c823dd60",
+      "recorded_at_utc": "2026-10-21T06:14:42Z",
+      "branch": "main",
+      "head_sha": "1bdd0ffa11d287f08e2908b438a94a90ed53974a",
       "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
-      "merge_base_main": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+      "merge_base_main": "1bdd0ffa11d287f08e2908b438a94a90ed53974a",
       "status_porcelain_v2": [
-        "# branch.oid 05aadebf1eda18dd278b5a077824641eb3b74402",
-        "# branch.head codex/phase1-prerequisite-closure"
+        "# branch.oid 1bdd0ffa11d287f08e2908b438a94a90ed53974a",
+        "# branch.head main",
+        "# branch.upstream origin/main",
+        "# branch.ab +19 -0"
       ],
       "dirty_paths": [
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json"
+        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
+        ".GOV/taskboard/taskboard.yaml"
       ],
       "checks_run": [
         "All six acceptance rows proven; exact canonical gate reports and native data retained."
       ],
-      "blockers": [
-        "Closure main containment."
-      ],
-      "next_action": "Merge the recorded prerequisite-only closure into main and prove ancestry before VALIDATED; subsequent state repair remains separately scoped."
+      "blockers": [],
+      "next_action": "No WP020 action remains; continue separately scoped predecessor-state repair before dependent Phase1 acceptance."
     }
   },
   "validation": {
@@ -289,12 +288,20 @@
         "result": "PASS",
         "artifact": "build/reports/runtime-truth-check-1792562824396085200-414456.json",
         "purpose": "Closure metadata validation before closure commit; source code unchanged."
+      },
+      {
+        "command": "git merge-base --is-ancestor a88d961ac066abdf45a4041f435bd5d6c823dd60 main",
+        "exit_code": 0,
+        "observed_main": "1bdd0ffa11d287f08e2908b438a94a90ed53974a",
+        "accepted_source": "05aadebf1eda18dd278b5a077824641eb3b74402",
+        "accepted_build_product_diff_exit": 0,
+        "product_512_ancestor_exit": 1
       }
     ],
     "not_proven": [
       "Any Ferric performance or no-regression claim.",
       "Any product, capability, packaging, release or phase progress.",
-      "Closure main containment and separate predecessor state repair."
+      "Separate predecessor-state repair and dependent Phase1 acceptance."
     ]
   },
   "extensions": {
