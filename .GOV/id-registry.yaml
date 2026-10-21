@@ -53,7 +53,7 @@ namespaces:
     next_numeric_id: 1
   FF-DEC:
     entity_kind: decision
-    next_numeric_id: 4
+    next_numeric_id: 5
 registered_files:
   - id: FF-DOC-START-001
     path: START_HERE.yaml
@@ -209,6 +209,8 @@ registered_files:
     path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/1
   - id: FF-DEC-003
     path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/2
+  - id: FF-DEC-004
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/3
   - id: WP-FF-018-governance-state-wording-fix-v1
     path: .GOV/work_packets/WP-FF-018-governance-state-wording-fix-v1/packet.json
   - id: WP-FF-018-governance-state-wording-fix-v1-REFINEMENT-001

@@ -10,14 +10,14 @@ governance_root = ".GOV"
 product_root = "product"
 build_root = "build"
 exception_authority = ".GOV/rules/build-rules.yaml"
-exception_decision_ids = ["FF-DEC-001", "FF-DEC-002", "FF-DEC-003"]
+exception_decision_ids = ["FF-DEC-001", "FF-DEC-002", "FF-DEC-003", "FF-DEC-004"]
 unsafe_policy = "forbid_except_scoped_policy_listed_boundary"
 unsafe_exception_authority = ".GOV/rules/build-rules.yaml#exception_authority"
-unsafe_decision_ids = ["FF-DEC-003"]
+unsafe_decision_ids = ["FF-DEC-003", "FF-DEC-004"]
 internal_edge_default = "deny"
 forbidden_layer_edges = ["engine->frontend", "engine->adapter", "engine->watcher", "adapter->adapter", "product->watcher", "watcher->engine", "normal_or_build:product->testkit"]
 forbidden_product_runtime_roots = [".GOV", "build", ".fforager-artifacts"]
-allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe", "FF-DEC-001", "FF-DEC-002", "FF-DEC-003"]
+allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe", "FF-DEC-001", "FF-DEC-002", "FF-DEC-003", "FF-DEC-004"]
 approved_transitive_build_packages = ["bindgen@0.72.1", "btls-sys@0.5.6", "camino@1.2.4", "clang-sys@1.8.1", "crc32fast@1.5.0", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "getrandom@0.4.3", "httparse@1.10.1", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "redb@4.1.0", "ring@0.17.14", "rustls@0.23.46", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi@0.3.9", "zerocopy@0.8.55", "zmij@1.0.23", "zstd-safe@7.2.4", "zstd-sys@2.0.16+zstd.1.5.7"]
 approved_transitive_proc_macros = ["boa_macros@0.21.1", "bytemuck_derive@1.11.0", "derive_arbitrary@1.4.2", "displaydoc@0.2.6", "dynify-macros@0.1.2", "equator-macro@0.4.2", "foreign-types-macros@0.2.4", "futures-macro@0.3.33", "num_enum_derive@0.7.6", "openssl-macros@0.1.1", "paste@1.0.15", "phf_macros@0.13.1", "pin-project-internal@1.1.13", "rustversion@1.0.23", "serde_derive@1.0.228", "thiserror-impl@2.0.19", "time-macros@0.2.32", "typed-builder-macro@0.23.2", "windows-implement@0.60.2", "windows-interface@0.59.3", "yoke-derive@0.8.2", "zerofrom-derive@0.1.7", "zerovec-derive@0.11.3"]
 
@@ -138,14 +138,14 @@ artifact_role = "shipped_archive_store_prerequisite"
 shipped = true
 test_only = false
 publish_allowed = false
-allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }]
+allowed_internal_dependencies = [{ package = "fforager-contracts", kinds = ["normal"], optional = false }, { package = "fforager-core", kinds = ["normal"], optional = false }]
 split_trigger = "WP-FF-008-archive-store-evidence-v2-AC-001"
 feature_owner = "WP-FF-008-archive-store-evidence-v2"
 profile = "phase0_prerequisite_archive_store"
 removal_condition = "Replace only through a versioned archive-store migration that reruns the complete candidate-neutral crash, concurrency, migration, reconciliation, and scale corpus."
-runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
-unsafe_policy_ref = "FF-BUILD-050"
-exception_policy_ref = "FF-BUILD-052"
+runtime_native_constraint_ref = "FF-DEC-004"
+unsafe_policy_ref = "FF-BUILD-050;FF-DEC-004"
+exception_policy_ref = "FF-DEC-004"
 
 [[members]]
 name = "fforager-ffmpeg"
@@ -781,3 +781,324 @@ removal_trigger = "Rust supplies a standard SHA-256 implementation or the retain
 approval_id = "WP-FF-007-transport-fingerprint-spike-v1-AC-002"
 features = []
 default_features = false
+
+[[members]]
+name = "fforager-net"
+manifest = "product/crates/fforager-net/Cargo.toml"
+source_root = "product/crates/fforager-net/src"
+layer = "adapter"
+artifact_role = "shipped_ordinary_http_transport"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = []
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager"
+manifest = "product/crates/fforager/Cargo.toml"
+source_root = "product/crates/fforager/src"
+layer = "composition"
+artifact_role = "shipped_library_composition"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-core", kinds = ["normal"], optional = false }, { package = "fforager-net", kinds = ["normal"], optional = false }, { package = "fforager-storage", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-cli"
+manifest = "product/apps/fforager-cli/Cargo.toml"
+source_root = "product/apps/fforager-cli/src"
+layer = "frontend"
+artifact_role = "shipped_command_parser"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = []
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-launcher"
+manifest = "product/apps/fforager-launcher/Cargo.toml"
+source_root = "product/apps/fforager-launcher/src"
+layer = "frontend"
+artifact_role = "shipped_worker_watcher_launcher"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-cli", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-004"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-worker"
+manifest = "product/apps/fforager-worker/Cargo.toml"
+source_root = "product/apps/fforager-worker/src"
+layer = "frontend"
+artifact_role = "shipped_acquisition_worker"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager", kinds = ["normal"], optional = false }, { package = "fforager-cli", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[members]]
+name = "fforager-watcher"
+manifest = "product/watcher/Cargo.toml"
+source_root = "product/watcher/src"
+layer = "watcher"
+artifact_role = "shipped_independent_diagnostic_watcher"
+shipped = true
+test_only = false
+publish_allowed = false
+allowed_internal_dependencies = [{ package = "fforager-diagnostics-contract", kinds = ["normal"], optional = false }]
+split_trigger = "WP-FF-021-first-runnable-production-slice-v1-AC-004"
+feature_owner = "WP-FF-021-first-runnable-production-slice-v1"
+profile = "phase1_direct_http_runtime"
+removal_condition = "Replace only with a versioned implementation preserving the accepted direct HTTP, durability and diagnostic boundaries."
+runtime_native_constraint_ref = "FF-START-BOUNDARY-001"
+unsafe_policy_ref = "FF-BUILD-050"
+exception_policy_ref = "FF-BUILD-052"
+
+[[dependency_decisions]]
+name = "reqwest"
+version = "0.13.4"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Execute provider-bound ordinary HTTP requests with Ferric-owned admission and bounded transfers."
+native = true
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = ["http2", "rustls-no-provider", "stream"]
+default_features = false
+exception_id = "FF-DEC-002"
+
+[[dependency_decisions]]
+name = "rustls"
+version = "0.23.46"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Bind the ordinary client explicitly to the approved ring provider."
+native = true
+owner = "WP-FF-023-dependency-security-remediation"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-023-dependency-security-remediation-v1-AC-001"
+features = ["ring", "std", "tls12"]
+default_features = false
+exception_id = "FF-DEC-002"
+
+[[dependency_decisions]]
+name = "webpki-roots"
+version = "1.0.10"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Construct an explicit pinned Mozilla trust-root store for the ordinary client."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "tokio"
+version = "1.53.1"
+consumer = "fforager-net"
+runtime_class = "shipped_rust_product"
+purpose = "Drive bounded asynchronous networking through the production composition runtime."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-net"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["rt-multi-thread", "time"]
+default_features = false
+
+[[dependency_decisions]]
+name = "tokio"
+version = "1.53.1"
+consumer = "fforager"
+runtime_class = "shipped_rust_product"
+purpose = "Drive bounded asynchronous networking through the production composition runtime."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["rt-multi-thread", "time"]
+default_features = false
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-launcher"
+runtime_class = "shipped_rust_product"
+purpose = "Deserialize strict deny-unknown-fields readiness or durable journal records."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-launcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde"
+version = "1.0.228"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Deserialize strict deny-unknown-fields readiness or durable journal records."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["derive"]
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-launcher"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-launcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-worker"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-worker"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-watcher"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-watcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "serde_json"
+version = "1.0.150"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Read and emit bounded structured production results, diagnostics or durable state."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = true
+
+[[dependency_decisions]]
+name = "sysinfo"
+version = "0.39.6"
+consumer = "fforager-watcher"
+runtime_class = "shipped_rust_product"
+purpose = "Observe worker identity and lifetime without controlling worker correctness."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-watcher"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = ["system"]
+default_features = false
+
+[[dependency_decisions]]
+name = "sha2"
+version = "0.11.0"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Bind durable byte content, archive identity and recovery journals to SHA-256."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-001"
+features = []
+default_features = false
+
+[[dependency_decisions]]
+name = "windows-sys"
+version = "0.61.2"
+consumer = "fforager-storage"
+runtime_class = "shipped_rust_product"
+purpose = "Open confined Windows directory handles, validate filesystem identity and acknowledge durable flushes."
+native = false
+owner = "WP-FF-021-first-runnable-production-slice"
+allowed_consumers = ["fforager-storage"]
+reason = "Reuse the existing exact-pinned workspace dependency for the accepted production boundary without adding a runtime or broadening its feature profile."
+removal_trigger = "Replace only through an approved versioned boundary change with retained behavioral and production runtime evidence."
+approval_id = "WP-FF-021-first-runnable-production-slice-v1-AC-003"
+features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Threading", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_IO"]
+default_features = false
+exception_id = "FF-DEC-004"

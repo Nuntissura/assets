@@ -1,10 +1,11 @@
-//! Pure, deterministic Phase 0 lifecycle and resource-accounting models.
-//!
-//! The crate deliberately contains no runtime handles or effectful adapters. A
-//! transition returns effect *intent* data which a later production adapter may
-//! execute and acknowledge through another transition.
+//! Deterministic planning, resource ownership, lifecycle models and job orchestration.
+//! Concrete network and filesystem effects remain behind inward-facing ports.
 
 #![forbid(unsafe_code)]
 
+pub mod direct;
+pub mod engine;
 pub mod lifecycle;
 pub mod resource;
+
+mod admission;

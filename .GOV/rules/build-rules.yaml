@@ -149,6 +149,33 @@ exception_authority:
       reason: WP-010 requires exact Windows pre-execution Job assignment and Unix process-group supervision that stable Rust std does not expose completely; the Operator selected the smallest Ferric-owned boundary instead of the larger processkit dependency and its additional supply-chain surface.
       residual_uncertainty: Windows parent death during suspended pre-execution setup can leave a suspended orphan unless a separately approved broker removes the interval; Unix process groups are signal scopes and do not contain hostile setsid or setpgid escape.
       removal_trigger: Remove if stable Rust exposes the complete proven boundary, a smaller maintained safe binding passes the same behavior-sensitive corpus, or the prerequisite is retired; shipped promotion requires a new explicit Operator decision and FF-GATE-RUNTIME-001 proof.
+    - id: FF-DEC-004
+      kind: native_ffi_and_unsafe_boundary
+      status: ACTIVE_SHIPPED_STORAGE_NARROW_ONLY
+      owner: WP-FF-021-first-runnable-production-slice
+      approval_id: WP-FF-021-first-runnable-production-slice-v1-AC-003
+      operator_decision: The Operator explicitly approved the narrow production storage boundary using the already-pinned windows-sys for directory handles, filesystem identity, and flush operations on 2026-10-21.
+      allowed_prerequisite_consumers: []
+      allowed_product_consumers: [fforager-storage]
+      allowed_direct_dependencies: [windows-sys]
+      allowed_versions: ["windows-sys@0.61.2"]
+      allowed_native_link_packages: []
+      allowed_native_runtime_packages: []
+      allowed_runtime_classes: [shipped_rust_product]
+      allow_build_scripts: false
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_packaged_pregenerated_assembly_objects: false
+      packaged_object_inventory_sha256: ""
+      allow_ffi: true
+      allow_unsafe: scoped_storage_platform_module_only
+      safety_invariants: [retained_root_handles, no_reparse_traversal, verified_volume_identity, live_host_profile, acknowledged_file_and_directory_flush, exact_handle_ownership]
+      allow_product_use: true
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: false
+      reason: Stable Rust does not expose the Windows directory-handle, live filesystem identity, and directory-flush operations required for confined durable output and truthful archive commitments.
+      residual_uncertainty: Runtime acceptance and independent review remain unproven; unsupported filesystems or failed flush operations must fail closed.
+      removal_trigger: Replace only with an equally confined and durable platform boundary; any broader native API purpose or consumer requires a new Operator decision.
   rule: build/architecture-policy.toml MUST reference a stable decision ID in this separate allowlist and MUST NOT authorize native runtimes, unsafe crates, forbidden edges, build-time downloads, prebuilt binaries, FFI, or other architecture exceptions by editing build policy alone.
 rules:
   - id: FF-BUILD-001

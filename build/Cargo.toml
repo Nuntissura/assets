@@ -8,6 +8,12 @@ members = [
     "../product/crates/fforager-core",
     "../product/crates/fforager-ffmpeg",
     "../product/crates/fforager-storage",
+    "../product/crates/fforager-net",
+    "../product/crates/fforager",
+    "../product/apps/fforager-cli",
+    "../product/apps/fforager-launcher",
+    "../product/apps/fforager-worker",
+    "../product/watcher",
     "crates/fforager-testkit",
 ]
 default-members = [
@@ -19,6 +25,12 @@ default-members = [
     "../product/crates/fforager-core",
     "../product/crates/fforager-ffmpeg",
     "../product/crates/fforager-storage",
+    "../product/crates/fforager-net",
+    "../product/crates/fforager",
+    "../product/apps/fforager-cli",
+    "../product/apps/fforager-launcher",
+    "../product/apps/fforager-worker",
+    "../product/watcher",
     "crates/fforager-testkit",
 ]
 resolver = "3"

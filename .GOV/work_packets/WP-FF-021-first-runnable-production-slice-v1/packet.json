@@ -8,12 +8,18 @@
     "version": "1",
     "title": "Deliver the Phase 1 first runnable production slice",
     "created_at_utc": "2026-08-09T15:39:12Z",
-    "updated_at_utc": "2026-08-09T15:39:12Z"
+    "updated_at_utc": "2026-10-21T00:17:58Z"
   },
   "authorization": {
     "source": "operator_message",
     "reference": "Create a Phase 1 runnable-production-slice work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
-    "recorded_at_utc": "2026-08-09T15:39:12Z"
+    "recorded_at_utc": "2026-08-09T15:39:12Z",
+    "latest_implementation_direction": {
+      "recorded_at_utc": "2026-10-21T00:17:58Z",
+      "effect": "Explicit implementation-start priority overrides prior cleanup, activation-commit, predecessor and proof-preparation sequencing as start blockers only; it does not satisfy or remove original acceptance or closure obligations.",
+      "reference": "Start product code now using parallel agents for the bounded direct-HTTP slice. Bundle tests/checks/builds, reuse warm Cargo artifacts, keep paperwork minimal; paperwork or repo ceremony can never be a blocker.",
+      "source": "operator_message"
+    }
   },
   "authority": {
     "bootstrap": "START_HERE.yaml",
@@ -33,13 +39,14 @@
       ".GOV/reviews/peer-review-v0.2.0/implementation-readiness-matrix.json#/phase_readiness/1"
     ],
     "decision_ids": [
-      "FF-DEC-002"
+      "FF-DEC-002",
+      "FF-DEC-004"
     ]
   },
   "source_control": {
     "canonical_branch": "main",
-    "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-    "work_branch": "codex/wp-ff-021-first-runtime-slice",
+    "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+    "work_branch": "codex/wp020-prerequisite-classifier",
     "worktree_policy": "NONE",
     "worktree_id": null,
     "remote_backup": {
@@ -53,18 +60,14 @@
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "STUB",
+    "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "The packet is a STUB and does not authorize product implementation.",
-      "WP-FF-010 cross-platform FFmpeg supervision and WP-FF-020 Phase 0D benchmark design must be VALIDATED in main before this packet is promoted.",
-      "WP-FF-006-rust-youtube-challenge-spike-v1 records closure 99139e04d12ec9f099f2092c624336702143e9fd as contained, but that commit is not an ancestor of main; its governance must be repaired and independently revalidated before this packet may consume WP-FF-006 evidence.",
-      "Every other Phase 0 contract, dependency, compatibility, transport, archive, resource, durability, proof-integrity, and runtime-truth prerequisite consumed by this slice must be bound to a VALIDATED closure commit.",
-      "The current ff.runtime-proof@1 executor cannot prove the multi-artifact, multi-process, deterministic-origin, external-cancellation, restart/reconciliation, watcher, archive, and behavior-mutation boundaries required by this packet; a backwards-compatible versioned proof contract and gate extension must be implemented and independently validated before closure.",
-      "The exact committed direct-HTTP fixture, deterministic local protocol-server boundary, shipping artifact identities, runtime-proof scenarios, expected output digest, negative path, and declaration-preserving behavior/state counterfactual are not yet frozen.",
-      "Current source-level research and a dependency/feature decision for any implementation mechanism not already approved must be completed before promotion."
+      "Predecessor closure/containment bindings remain unproven; original conditions are retained in execution_priority_override and do not block Operator-directed implementation.",
+      "Strict staged multi-artifact proof contract and actual scenarios remain unproven/deferred; original runtime acceptance remains unsatisfied.",
+      "No product-readiness, accepted runtime behavior, phase completion or main containment is claimed."
     ],
-    "next_action": "After exact WP-FF-010-ffmpeg-supervision-spike-v1 and WP-FF-020-equivalent-work-benchmark-design-v1 closures are VALIDATED and contained in main, bind every prerequisite closure SHA, refresh current implementation research, freeze the backwards-compatible multi-artifact and multi-step runtime-proof contract plus deterministic local HTTP proof boundary, promote this STUB, and implement the smallest complete Phase 1 operator-usable vertical slice.",
+    "next_action": "Implement the existing bounded direct-HTTP product slice with parallel product agents now, reusing warm Cargo and existing contracts. Do not resume tests/proofs or create ceremony blockers; preserve original acceptance and unproven prerequisite/proof gaps for later explicit verification direction.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -204,26 +207,26 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-08-09T15:39:12Z",
-      "branch": "codex/wp-ff-020-021-planning",
-      "base_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
-      "head_sha": "f630955445a9295d59a78cb8808e0d73e50c20c6",
+      "branch": "codex/wp020-prerequisite-classifier",
       "dirty_paths": [
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/packet.json",
-        ".GOV/work_packets/WP-FF-020-equivalent-work-benchmark-design-v1/refinement.json",
         ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json",
-        ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
-        ".GOV/work_packets/WP-FF-011-equivalent-work-vertical-slice-v1/packet.json",
-        ".GOV/taskboard/taskboard.yaml",
-        ".GOV/id-registry.yaml"
+        ".GOV/taskboard/taskboard.yaml"
       ],
-      "checks_run": [
-        "Authority, template, technical-design, readiness-matrix, taskboard, runtime-proof schema, and predecessor packet inspection completed before packet authoring."
-      ],
+      "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
       "blockers": [
-        "Packet remains a non-authorizing STUB until every named prerequisite and strict runtime-proof promotion condition passes."
+        "Predecessor closure/containment bindings remain unproven; original conditions are retained in execution_priority_override and do not block Operator-directed implementation.",
+        "Strict staged multi-artifact proof contract and actual scenarios remain unproven/deferred; original runtime acceptance remains unsatisfied.",
+        "No product-readiness, accepted runtime behavior, phase completion or main containment is claimed."
       ],
-      "next_action": "After WP-FF-010 and WP-FF-020 closure, bind exact prerequisite commits and freeze the strict production-runtime proof before activation."
+      "recorded_at_utc": "2026-10-21T00:17:58Z",
+      "head_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
+      "checks_run": [
+        "git branch --show-current: codex/wp020-prerequisite-classifier",
+        "git rev-parse HEAD: 954a1763be80709b845fc2b787e173a80ba9579a",
+        "git merge-base main HEAD: 10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
+        "Only minimal activation metadata changed; existing scope and all nine acceptance requirements retained. No tests/builds/proofs/commits executed."
+      ],
+      "next_action": "Implement the existing bounded direct-HTTP product slice with parallel product agents now, reusing warm Cargo and existing contracts. Do not resume tests/proofs or create ceremony blockers; preserve original acceptance and unproven prerequisite/proof gaps for later explicit verification direction."
     }
   },
   "validation": {
@@ -233,13 +236,35 @@
       "Any direct HTTP/HTTPS acquisition",
       "Any durable output, resume, archive, or recovery behavior",
       "Any watcher runtime behavior or independence",
-      "Any production-runtime proof or Phase 1 progress"
+      "Any production-runtime proof or Phase 1 progress",
+      "Named predecessor lifecycle/main-containment conditions remain unproven and are deferred as implementation-start blockers only by explicit Operator direction.",
+      "Strict runtime-proof declaration and staged production scenarios remain deferred/unproven; existing blueprint is not executed proof.",
+      "Parallel implementation start is authorized, but no acceptance row or readiness condition is marked satisfied."
     ]
   },
   "extensions": {
+    "current_implementation_observation": {
+      "approval": "Operator approved the narrow storage boundary recorded as FF-DEC-004: pinned windows-sys directory-handle confinement, filesystem/host identity and actual synchronization; no new dependency.",
+      "build": {
+        "command": "cargo build --offline --locked --keep-going -p fforager-launcher -p fforager-worker -p fforager-watcher",
+        "profile": "dev",
+        "observed_by": "primary implementation agent",
+        "exit_code": 0,
+        "elapsed_seconds": 2.61,
+        "source_boundary": "Final source after the single-link handle guard."
+      },
+      "observations": [
+        "Saved run-1 prepared stage reconciled with its origin absent.",
+        "Fresh run-2 launcher acquisition returned recovered=false, bytes=3244 and archive_sequence=1; after origin exit the identical command returned recovered=true and the same sequence.",
+        "Final post-guard run-3 returned recovered=false, bytes=3244 and archive_sequence=1; origin served once and exited, then the identical command returned recovered=true with the same sequence and digest.",
+        "A preexisting NTFS stage hardlink returned storage exit=4 with HANDLE-CONFINEMENT; independent sentinel SHA256 was unchanged.",
+        "Independent Get-FileHash output matched the .NET origin expected SHA256 2976da01e205a110c9fa41d47659e238a5c6d3c3f3137582f2949853faa201dd."
+      ],
+      "proof_limits": "Development artifact observations only. Acceptance rows remain PENDING; canonical gates were not run for this implementation and the implementation is unmerged."
+    },
     "refinement": ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
     "stub_contract": {
-      "implementation_authorized": false,
+      "implementation_authorized": true,
       "promotion_requirements": [
         "Every exact named Phase 0 dependency, including WP-FF-010-ffmpeg-supervision-spike-v1 and WP-FF-020-equivalent-work-benchmark-design-v1, is bound to a VALIDATED closure commit contained in main; supersession requires this packet to be revised before activation.",
         "Current source-level implementation research and reuse inspection are recorded; any new runtime or native dependency has explicit Operator authority.",
@@ -279,21 +304,36 @@
         "addition": "Use one stable run/job identity across CLI output, source graph, transport receipt, journal, archive, watcher evidence, and runtime-proof receipt.",
         "why_high_roi": "Every boundary already needs identity, and one correlation path makes failures observable and parallel-agent work attributable.",
         "gap_closed": "No-context operators could otherwise be unable to join product and watcher evidence for one run.",
-        "reuses": ["WP-005 identity contracts", "diagnostic envelopes", "journal records", "runtime-proof reports"],
+        "reuses": [
+          "WP-005 identity contracts",
+          "diagnostic envelopes",
+          "journal records",
+          "runtime-proof reports"
+        ],
         "validation": "The runtime gate rejects missing or mismatched identity at every boundary."
       },
       {
         "addition": "Package a deterministic replay bundle for every failed runtime scenario under the existing structured evidence model.",
         "why_high_roi": "The fixture, receipts, journal, diagnostics, and artifact hashes already exist during proof, so bundling them makes later debugging and agent handoff much cheaper.",
         "gap_closed": "Transport, cancellation, recovery, and watcher failures are otherwise hard to reproduce.",
-        "reuses": ["committed fixtures", "structured events", "recovery journal", "artifact hashes"],
+        "reuses": [
+          "committed fixtures",
+          "structured events",
+          "recovery journal",
+          "artifact hashes"
+        ],
         "validation": "A fresh no-context run reproduces the same normalized failure without live internet."
       },
       {
         "addition": "Expose a machine-readable diagnostic-summary command for the proven slice using the same engine and event contracts.",
         "why_high_roi": "Diagnostics are already required; a stable summary gives operators and models a direct health and recovery surface at low marginal cost.",
         "gap_closed": "Raw logs alone make state and recovery decisions ambiguous.",
-        "reuses": ["typed diagnostics", "watcher health", "stable IDs", "MODEL_MANUAL"],
+        "reuses": [
+          "typed diagnostics",
+          "watcher health",
+          "stable IDs",
+          "MODEL_MANUAL"
+        ],
         "validation": "Success, cancellation, restart, and watcher-degraded runs produce complete bounded summaries with identical product semantics."
       }
     ],
@@ -312,38 +352,106 @@
     "red_team": [
       {
         "risk": "A polished scaffold or test substitute is claimed as Phase 1 product runtime.",
-        "failure_scenarios": ["direct internal function test", "fixture-only adapter", "hardcoded success", "binary never stages", "source-tree helper supplies behavior"],
-        "mitigations": ["strict immutable runtime proof", "clean staged release artifact", "production adapters only", "counterfactual observable", "unreachable code removal"],
+        "failure_scenarios": [
+          "direct internal function test",
+          "fixture-only adapter",
+          "hardcoded success",
+          "binary never stages",
+          "source-tree helper supplies behavior"
+        ],
+        "mitigations": [
+          "strict immutable runtime proof",
+          "clean staged release artifact",
+          "production adapters only",
+          "counterfactual observable",
+          "unreachable code removal"
+        ],
         "verification": "FF-GATE-RUNTIME-001 must reject each substitute independently."
       },
       {
         "risk": "Success is recorded before durable output and archive effects complete.",
-        "failure_scenarios": ["rename without archive", "archive row without output", "journal ahead of durable bytes", "cleanup before recovery state"],
-        "mitigations": ["required effect acknowledgements", "durable-prefix model", "idempotent reconciliation", "success after output/archive agreement"],
+        "failure_scenarios": [
+          "rename without archive",
+          "archive row without output",
+          "journal ahead of durable bytes",
+          "cleanup before recovery state"
+        ],
+        "mitigations": [
+          "required effect acknowledgements",
+          "durable-prefix model",
+          "idempotent reconciliation",
+          "success after output/archive agreement"
+        ],
         "verification": "Fault every implemented prefix and run reconciliation twice."
       },
       {
         "risk": "Watcher becomes a hidden correctness or shutdown dependency.",
-        "failure_scenarios": ["ready timeout blocks product", "watcher crash changes result", "storage failure backpressures Ferric", "flush timeout holds exit"],
-        "mitigations": ["independent sibling process", "bounded readiness and shutdown", "diagnostics degradation separate from result", "reserved bounded queues"],
+        "failure_scenarios": [
+          "ready timeout blocks product",
+          "watcher crash changes result",
+          "storage failure backpressures Ferric",
+          "flush timeout holds exit"
+        ],
+        "mitigations": [
+          "independent sibling process",
+          "bounded readiness and shutdown",
+          "diagnostics degradation separate from result",
+          "reserved bounded queues"
+        ],
         "verification": "All watcher failure modes preserve identical bytes, archive decision, product exit, and bounded launcher completion."
       },
       {
         "risk": "Transport or cancellation leaks work or broadens dependencies.",
-        "failure_scenarios": ["retry after cancellation", "unbounded body buffering", "redirect bypass", "ambient proxy/cookie use", "wreq fallback"],
-        "mitigations": ["Ferric-owned policy controls", "atomic admission", "byte bounds", "typed unsupported fingerprint result", "dependency gates"],
+        "failure_scenarios": [
+          "retry after cancellation",
+          "unbounded body buffering",
+          "redirect bypass",
+          "ambient proxy/cookie use",
+          "wreq fallback"
+        ],
+        "mitigations": [
+          "Ferric-owned policy controls",
+          "atomic admission",
+          "byte bounds",
+          "typed unsupported fingerprint result",
+          "dependency gates"
+        ],
         "verification": "Negative transport fixtures and staged runtime tests prove bounded refusal and no forbidden route."
       },
       {
         "risk": "The proof producer cannot express the claimed runtime or validates its own declarations.",
-        "failure_scenarios": ["only one binary is staged", "HTTP origin is unsupervised", "cancellation or restart is simulated", "archive semantics reduce to file existence", "captured observations are edited after the run"],
-        "mitigations": ["backwards-compatible multi-artifact and multi-step schema", "supervised actors and ordered actions", "semantic durable-state inspection", "declaration-preserving behavior/state mutation", "independent validator rerun"],
+        "failure_scenarios": [
+          "only one binary is staged",
+          "HTTP origin is unsupervised",
+          "cancellation or restart is simulated",
+          "archive semantics reduce to file existence",
+          "captured observations are edited after the run"
+        ],
+        "mitigations": [
+          "backwards-compatible multi-artifact and multi-step schema",
+          "supervised actors and ordered actions",
+          "semantic durable-state inspection",
+          "declaration-preserving behavior/state mutation",
+          "independent validator rerun"
+        ],
         "verification": "Prior ff.runtime-proof@1 fixtures pass, every new capability has a failing negative fixture, a real behavior/state mutation is rejected, and an independent validator reruns the producer."
       },
       {
         "risk": "WP-FF-011 starts from dependency prose without proven predecessor closure.",
-        "failure_scenarios": ["range accepts an archived revision", "alternative text chooses an unvalidated packet", "closure SHA is absent or outside main", "superseded ID remains bound", "packet self-asserts containment"],
-        "mitigations": ["parse exact dependency IDs", "independently read lifecycle and closure fields", "verify canonical-main ancestry", "reject supersession", "fail-closed counterexample fixtures"],
+        "failure_scenarios": [
+          "range accepts an archived revision",
+          "alternative text chooses an unvalidated packet",
+          "closure SHA is absent or outside main",
+          "superseded ID remains bound",
+          "packet self-asserts containment"
+        ],
+        "mitigations": [
+          "parse exact dependency IDs",
+          "independently read lifecycle and closure fields",
+          "verify canonical-main ancestry",
+          "reject supersession",
+          "fail-closed counterexample fixtures"
+        ],
         "verification": "WP-FF-021-first-runnable-production-slice-v1-AC-009 negative fixtures all fail and WP-FF-011 cannot activate before exact WP-FF-020/WP-FF-021 closure."
       }
     ],
@@ -369,6 +477,24 @@
         "independent adversarial review"
       ],
       "closure_rule": "No VALIDATED result until the exact closure commit is contained in main and its exact staged release artifact passes operator-visible success, negative, recovery, watcher, and counterfactual runtime proof; compilation, tests, scaffolding, and reports alone cannot close Phase 1."
+    },
+    "execution_priority_override": {
+      "artifact_policy": "Reuse current warm Cargo artifact root; no cleanup/activation commit is required before current authorized code writes.",
+      "verification_status": "No new tests, checks, builds or proof execution in this activation; earlier separate packet outcomes are not product acceptance.",
+      "source": "latest explicit Operator implementation direction",
+      "deferred_start_conditions": [
+        "The packet is a STUB and does not authorize product implementation.",
+        "WP-FF-010 cross-platform FFmpeg supervision and WP-FF-020 Phase 0D benchmark design must be VALIDATED in main before this packet is promoted.",
+        "WP-FF-006-rust-youtube-challenge-spike-v1 records closure 99139e04d12ec9f099f2092c624336702143e9fd as contained, but that commit is not an ancestor of main; its governance must be repaired and independently revalidated before this packet may consume WP-FF-006 evidence.",
+        "Every other Phase 0 contract, dependency, compatibility, transport, archive, resource, durability, proof-integrity, and runtime-truth prerequisite consumed by this slice must be bound to a VALIDATED closure commit.",
+        "The current ff.runtime-proof@1 executor cannot prove the multi-artifact, multi-process, deterministic-origin, external-cancellation, restart/reconciliation, watcher, archive, and behavior-mutation boundaries required by this packet; a backwards-compatible versioned proof contract and gate extension must be implemented and independently validated before closure.",
+        "The exact committed direct-HTTP fixture, deterministic local protocol-server boundary, shipping artifact identities, runtime-proof scenarios, expected output digest, negative path, and declaration-preserving behavior/state counterfactual are not yet frozen.",
+        "Current source-level research and a dependency/feature decision for any implementation mechanism not already approved must be completed before promotion."
+      ],
+      "condition_status": "Deferred for implementation start by Operator priority; not satisfied, removed or validated.",
+      "recorded_at_utc": "2026-10-21T00:17:58Z",
+      "runtime_proof_status": "Existing blueprint retained as context only; no new schema or fabricated proof declaration authored. Strict predeclaration and versioned proof gap remains explicit.",
+      "implementation_scope": "Existing direct-HTTP production slice only; no broad parallel implementation beyond original packet scope."
     }
   }
 }

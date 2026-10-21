@@ -4,7 +4,10 @@
 //! maintained pure-Rust store candidates can be judged against the same Ferric
 //! identity, claim, lease, migration, reconciliation, and failure contract.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+mod fetch;
+pub use fetch::{DurableFetchStorage, DurableFetchWriter};
 
 use fforager_contracts::{
     ARCHIVE_SCHEMA, ArchiveClaimOutcome, ArchiveClaimRequest, ArchiveCommitOutcome,

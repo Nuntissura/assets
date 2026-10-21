@@ -600,6 +600,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fforager"
+version = "0.1.0"
+dependencies = [
+ "fforager-core",
+ "fforager-net",
+ "fforager-storage",
+ "tokio",
+]
+
+[[package]]
+name = "fforager-cli"
+version = "0.1.0"
+
+[[package]]
 name = "fforager-contracts"
 version = "0.1.0"
 dependencies = [
@@ -653,11 +667,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "fforager-launcher"
+version = "0.1.0"
+dependencies = [
+ "fforager-cli",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "fforager-net"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustls",
+ "tokio",
+ "webpki-roots",
+]
+
+[[package]]
 name = "fforager-storage"
 version = "0.1.0"
 dependencies = [
  "fforager-contracts",
+ "fforager-core",
  "redb",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -688,6 +726,24 @@ dependencies = [
  "webpki-roots",
  "wreq",
  "wreq-util",
+]
+
+[[package]]
+name = "fforager-watcher"
+version = "0.1.0"
+dependencies = [
+ "fforager-diagnostics-contract",
+ "serde_json",
+ "sysinfo",
+]
+
+[[package]]
+name = "fforager-worker"
+version = "0.1.0"
+dependencies = [
+ "fforager",
+ "fforager-cli",
+ "serde_json",
 ]
 
 [[package]]
