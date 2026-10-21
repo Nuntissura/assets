@@ -180,7 +180,7 @@ exception_authority:
       status: ACTIVE_NON_SHIPPED_VALIDATION_ONLY
       owner: WP-FF-021-first-runnable-production-slice
       approval_id: WP-FF-021-first-runnable-production-slice-v1-AC-004
-      operator_decision: The Operator explicitly approved a validation-only pause/resume helper for the validator-owned watcher using already-pinned windows-sys on 2026-10-21.
+      operator_decision: The Operator explicitly approved validation-only watcher pause/resume and, in the subsequent 2026-10-21 live approval, read-only identity and exit acknowledgment for the launcher-owned worker, using already-pinned windows-sys. Worker pause or process-control authority is not extended.
       allowed_prerequisite_consumers: [fforager-xtask]
       allowed_product_consumers: []
       allowed_direct_dependencies: [windows-sys]
@@ -194,12 +194,12 @@ exception_authority:
       allow_packaged_pregenerated_assembly_objects: false
       allow_ffi: true
       allow_unsafe: scoped_owned_watcher_pause_module_only
-      safety_invariants: [validator_owned_watcher_only, retained_process_handle, pid_and_creation_time_identity, verified_staged_image_identity, pause_at_most_two_seconds, unconditional_detach_guard, no_shell, no_unowned_process_control]
+      safety_invariants: [validator_owned_watcher_pause_only, validator_owned_worker_read_only_identity, retained_process_handle, pid_and_creation_time_identity, verified_staged_image_identity, launcher_parent_identity, worker_identity_has_no_pause_or_process_control, pause_at_most_two_seconds, unconditional_detach_guard, no_shell, no_unowned_process_control]
       allow_product_use: false
       allow_packaging_or_release: false
       promotion_requires_new_operator_decision: true
-      reason: A real hung-watcher scenario requires temporarily pausing only the independently launched and identity-verified watcher; stable Rust does not expose that validation-only process-debug boundary.
-      residual_uncertainty: Pause/resume is confined to phase1_runtime/windows_pause.rs and validator-owned watcher processes; failed ownership verification or detach remains an explicit proof failure, never an accepted hang result.
+      reason: Actual watcher-hang validation requires bounded watcher pause; crash/restart validation additionally retains a read-only handle for the independently identified launcher-owned worker through the existing owned actuator and exit acknowledgment. No new native API or dependency is authorized.
+      residual_uncertainty: Native calls remain confined to phase1_runtime/windows_pause.rs: only owned watchers can pause/resume; owned workers expose read-only identity and exit acknowledgment. Failed identity, parent, liveness or detach checks are explicit proof failures.
       removal_trigger: Remove when an equally direct bounded owned-process fault mechanism replaces it or watcher hang validation is retired; broader APIs, consumers or product use require a new Operator decision.
   rule: build/architecture-policy.toml MUST reference a stable decision ID in this separate allowlist and MUST NOT authorize native runtimes, unsafe crates, forbidden edges, build-time downloads, prebuilt binaries, FFI, or other architecture exceptions by editing build policy alone.
 rules:

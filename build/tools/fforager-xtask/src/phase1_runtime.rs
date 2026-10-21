@@ -1017,11 +1017,6 @@ fn execute_case(
     fixture: &[u8],
     proof: &Proof,
 ) -> Result<(), String> {
-    if case == "crash-restart" {
-        return Err(failure(
-            "BLOCKED: retained worker identity approval is pending; no crash actuator was invoked",
-        ));
-    }
     if !cfg!(windows) {
         return Err(failure(
             "Phase 1 storage contract currently supports the approved Windows/NTFS profile only",
@@ -1109,7 +1104,7 @@ fn execute_case(
                 .and_then(Value::as_u64)
                 .and_then(|pid| u32::try_from(pid).ok())
                 .ok_or_else(|| failure("missing worker actor identity"))?;
-            kill_worker(stage, &mut invocation, worker)?;
+            kill_worker(stage, &mut invocation, worker, launched)?;
             let observation = invocation.finish(proof.timeout_seconds)?;
             if observation.0 == 0 {
                 return Err(failure("uncommanded worker death was reported successful"));
@@ -1340,17 +1335,38 @@ fn taskkill(stage: &Path, pid: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn kill_worker(stage: &Path, invocation: &mut Invocation, pid: u32) -> Result<(), String> {
+fn kill_worker(
+    stage: &Path,
+    invocation: &mut Invocation,
+    pid: u32,
+    launched: SystemTime,
+) -> Result<(), String> {
     if !matches!(invocation.child.try_wait(), Ok(None)) {
         return Err(failure("owned launcher already exited before worker fault"));
     }
-    verify_actor_parent(
-        stage,
-        pid,
-        invocation.child.id(),
-        &stage.join(executable_name_worker()),
-    )?;
-    taskkill(stage, pid)
+    #[cfg(windows)]
+    {
+        let image = stage.join(executable_name_worker());
+        let actor = windows_pause::OwnedWorker::open(pid, &image, launched).map_err(failure)?;
+        verify_actor_parent(stage, actor.pid(), invocation.child.id(), &image)?;
+        if invocation.child.try_wait().map_err(failure)?.is_some() {
+            return Err(failure(
+                "owned launcher exited during worker identity verification",
+            ));
+        }
+        actor.verify_live().map_err(failure)?;
+        // The retained process handle preserves this PID's process-object identity
+        // through the existing actuator and independent exit acknowledgement.
+        taskkill(stage, actor.pid())?;
+        actor.wait_exit(Duration::from_secs(2)).map_err(failure)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (stage, pid, launched);
+        Err(failure(
+            "retained worker identity requires the approved Windows profile",
+        ))
+    }
 }
 
 fn verify_actor_parent(
@@ -2110,10 +2126,13 @@ mod tests {
                 || same_output_target(&output, "identity/output.wav")?
                 || same_output_target(&output, &stage.join("absent.wav").to_string_lossy()).is_ok()
             {
-                return Err("output identity accepted a different, relative or missing target".into());
+                return Err(
+                    "output identity accepted a different, relative or missing target".into(),
+                );
             }
             Ok(())
-        }).expect("existing output target identity");
+        })
+        .expect("existing output target identity");
     }
 
     #[test]

@@ -1,0 +1,143 @@
+{
+  "schema_id": "ff.benchmark-host@1",
+  "id": "wp020-windows-native-control-v1",
+  "platform": "windows",
+  "machine": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "os": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "filesystem": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "storage": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "security": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "power_governor": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "affinity": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "memory_pressure": {
+    "reason": "Not queried; this profile makes no claim for this host property.",
+    "availability": "Unavailable"
+  },
+  "filesystem_cache": {
+    "reason": "OS page cache is uncontrolled; identical pinned input receives three warmup pairs.",
+    "availability": "Unavailable"
+  },
+  "dns_cache": {
+    "reason": "DNS cache is not queried or flushed; measured argv permits file protocol only.",
+    "availability": "Unavailable"
+  },
+  "network_replay": {
+    "value": "Controlled local PCM remux: file protocol only, one pinned input, fresh per-invocation output directory.",
+    "availability": "Observed"
+  },
+  "preparation": [
+    "Create one new owned artifact root, pin tools/input, then perform exactly three warmup pairs before fifty randomized measured pairs."
+  ],
+  "cleanup": [
+    "Exit and reap each owned child within its deadline; retain raw controls and output artifacts for independent inspection."
+  ],
+  "preparation_deadline_ms": 30000,
+  "cleanup_deadline_ms": 30000,
+  "metrics": {
+    "wall_ns": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "user_cpu_ns": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "kernel_cpu_ns": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "peak_rss_bytes": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "allocation_count": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "allocation_bytes": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "context_switches": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "tasks_created": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "files_opened": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "bytes_written": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "bytes_read": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "journal_writes": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "http_requests": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "retries": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "throughput_bytes_per_second": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "first_progress_ns": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "first_byte_ns": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    },
+    "ffmpeg_cpu_ns": {
+      "reason": "Not measured by the native wall-clock control collector.",
+      "availability": "Unavailable"
+    }
+  },
+  "baseline_calibration": {
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "path": "UNMEASURED",
+    "bytes": 0
+  },
+  "noise_policy": {
+    "schema_id": "ff.benchmark-noise-policy@1",
+    "threshold_derivation": "at_most_three_independent_baseline_iqr_over_median",
+    "maximum_relative_noise_ppm": 500000,
+    "maximum_outlier_ppm": 100000,
+    "confidence_percent": 95
+  }
+}

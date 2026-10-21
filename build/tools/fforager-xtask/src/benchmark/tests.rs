@@ -1,4 +1,11 @@
-use super::*;
+#[cfg(test)]
+use super::contract_execution;
+use super::{
+    Artifact, BTreeMap, BuildIdentity, Bundle, Calibration, DIMENSIONS, Dimension, HostProfile,
+    METRICS, Manifest, Metric, NormalizedRecord, Observation, ObservationValue, Operation, Path,
+    ProcessCosts, ProcessRole, ProofClass, Random, Sample, SampleOrigin, Sampling, Side, Tool,
+    Topology, canonical_hash, evaluate, fs, native_noise_policy, run,
+};
 
 fn pin(root: &Path, name: &str, bytes: &[u8]) -> Artifact {
     fs::write(root.join(name), bytes).expect("fixture artifact");
@@ -9,7 +16,7 @@ fn pin(root: &Path, name: &str, bytes: &[u8]) -> Artifact {
     }
 }
 
-fn fixture(root: &Path) -> Bundle {
+pub(super) fn fixture(root: &Path) -> Bundle {
     let executable = pin(
         root,
         "statistical-fixture-input.txt",
@@ -30,23 +37,7 @@ fn fixture(root: &Path) -> Bundle {
         )]),
         lock_sha256: "3".repeat(64),
     };
-    let unavailable = ObservationValue::Unavailable {
-        reason: "Statistical fixture; host behavior was not measured".into(),
-    };
-    let profiles = ["windows", "unix"].into_iter().map(|platform| {
-        let calibration = Calibration { schema_id: "ff.benchmark-calibration@1".into(), profile_id: platform.into(),
-            source_identity: "synthetic_control_not_host_variance".into(), origin: SampleOrigin::StatisticalFixture,
-            elapsed_ns: (0..50).map(|index| 1_000_000 + index * 100).collect() };
-        let calibration_pin = pin(root, &format!("{platform}-calibration.json"), &serde_json::to_vec(&calibration).expect("calibration"));
-        HostProfile { schema_id: "ff.benchmark-host@1".into(), id: platform.into(), platform: platform.into(),
-            machine: unavailable.clone(), os: unavailable.clone(), filesystem: unavailable.clone(), storage: unavailable.clone(),
-            security: unavailable.clone(), power_governor: unavailable.clone(), affinity: unavailable.clone(),
-            memory_pressure: unavailable.clone(), filesystem_cache: unavailable.clone(), dns_cache: unavailable.clone(), network_replay: unavailable.clone(),
-            preparation: vec!["Create isolated replay state; record real control availability before measurements".into()],
-            cleanup: vec!["Release owned handles and remove only owned replay state".into()], preparation_deadline_ms: 30_000,
-            cleanup_deadline_ms: 30_000, metrics: METRICS.into_iter().map(|name| (name.into(), unavailable.clone())).collect(),
-            baseline_calibration: calibration_pin }
-    }).collect::<Vec<_>>();
+    let profiles = fixture_profiles(root);
     let topology = Topology {
         processes: vec![ProcessRole {
             role: "ferric".into(),
@@ -59,6 +50,8 @@ fn fixture(root: &Path) -> Bundle {
         reason: "No optional external tool is required by this statistical fixture".into(),
     };
     let manifest = Manifest {
+        operation: Operation::StatisticalContractFixture,
+        control_calibration: None,
         schema_id: "ff.benchmark-manifest@1".into(),
         run_id: "contract-fixture".into(),
         baseline: build.clone(),
@@ -90,6 +83,43 @@ fn fixture(root: &Path) -> Bundle {
         },
     };
     let digest = canonical_hash(&manifest).expect("manifest digest");
+    let observations = fixture_observations(root, &manifest, &digest, &topology);
+    let samples = fixture_samples(&digest);
+    Bundle {
+        schema_id: "ff.benchmark-bundle@1".into(),
+        manifest,
+        profiles,
+        observations,
+        samples,
+    }
+}
+
+fn fixture_profiles(root: &Path) -> Vec<HostProfile> {
+    let unavailable = ObservationValue::Unavailable {
+        reason: "Statistical fixture; host behavior was not measured".into(),
+    };
+    ["windows", "unix"].into_iter().map(|platform| {
+        let calibration = Calibration { schema_id: "ff.benchmark-calibration@1".into(), profile_id: platform.into(),
+            source_identity: "synthetic_control_not_host_variance".into(), origin: SampleOrigin::StatisticalFixture,
+            elapsed_ns: (0..50).map(|index| 1_000_000 + index * 100).collect(), control_receipt: None };
+        let calibration_pin = pin(root, &format!("{platform}-calibration.json"), &serde_json::to_vec(&calibration).expect("calibration"));
+        HostProfile { schema_id: "ff.benchmark-host@1".into(), id: platform.into(), platform: platform.into(),
+            machine: unavailable.clone(), os: unavailable.clone(), filesystem: unavailable.clone(), storage: unavailable.clone(),
+            security: unavailable.clone(), power_governor: unavailable.clone(), affinity: unavailable.clone(),
+            memory_pressure: unavailable.clone(), filesystem_cache: unavailable.clone(), dns_cache: unavailable.clone(), network_replay: unavailable.clone(),
+            preparation: vec!["Create isolated replay state; record real control availability before measurements".into()],
+            cleanup: vec!["Release owned handles and remove only owned replay state".into()], preparation_deadline_ms: 30_000,
+            cleanup_deadline_ms: 30_000, metrics: METRICS.into_iter().map(|name| (name.into(), unavailable.clone())).collect(), noise_policy: native_noise_policy(),
+            baseline_calibration: calibration_pin }
+    }).collect::<Vec<_>>()
+}
+
+fn fixture_observations(
+    root: &Path,
+    manifest: &Manifest,
+    digest: &str,
+    topology: &Topology,
+) -> Vec<Observation> {
     let dimensions = DIMENSIONS
         .into_iter()
         .map(|name| {
@@ -110,7 +140,7 @@ fn fixture(root: &Path) -> Bundle {
             }
         })
         .collect::<Vec<_>>();
-    let observations = [Side::Baseline, Side::Candidate]
+    [Side::Baseline, Side::Candidate]
         .into_iter()
         .map(|side| Observation {
             schema_id: "ff.benchmark-observation@1".into(),
@@ -120,7 +150,7 @@ fn fixture(root: &Path) -> Bundle {
                 "candidate"
             }
             .into(),
-            manifest_sha256: digest.clone(),
+            manifest_sha256: digest.to_owned(),
             profile_id: "windows".into(),
             build_side: side,
             build_artifact_sha256: manifest.baseline.artifact.sha256.clone(),
@@ -128,7 +158,10 @@ fn fixture(root: &Path) -> Bundle {
             dimensions: dimensions.clone(),
             proof_class: ProofClass::Structural,
         })
-        .collect();
+        .collect()
+}
+
+fn fixture_samples(digest: &str) -> Vec<Sample> {
     let metric = Metric::Unavailable {
         reason: "not measured in a statistical fixture".into(),
     };
@@ -148,7 +181,7 @@ fn fixture(root: &Path) -> Bundle {
             let baseline = side == Side::Baseline;
             samples.push(Sample {
                 id: format!("{pair}-{}", u8::from(baseline)),
-                manifest_sha256: digest.clone(),
+                manifest_sha256: digest.to_owned(),
                 cluster_id: if pair < 3 { 0 } else { (pair - 3) / 2 + 1 },
                 pair_index: pair,
                 order_index: u32::from(if baseline { !first } else { first }),
@@ -162,29 +195,34 @@ fn fixture(root: &Path) -> Bundle {
             });
         }
     }
-    Bundle {
-        schema_id: "ff.benchmark-bundle@1".into(),
-        manifest,
-        profiles,
-        observations,
-        samples,
-    }
+    samples
 }
 
 #[test]
 fn public_admission_rejects_unequal_work_and_false_statistics() {
     let repo = super::super::repo_root().expect("repository");
-    let root = super::super::disposable_artifact_root(&repo)
-        .join(format!("benchmark-contract-{}", std::process::id()));
-    fs::create_dir_all(&root).expect("fixture directory");
+    contract_execution(&repo).expect("canonical contract execution");
+}
+
+pub(super) fn execute(repo: &Path) {
+    static INVOCATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let invocation = INVOCATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = super::super::disposable_artifact_root(repo).join(format!(
+        "benchmark-contract-{}-{invocation}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("fresh isolated fixture directory");
     let good = fixture(&root);
     let report = evaluate(&root, good.clone()).expect("admitted statistical fixture");
     assert_eq!(report.proof_class, ProofClass::Structural);
-    assert!(report.statistical_fixture && !report.performance_claim && !report.product_progress);
+    assert!(report.statistical_fixture);
+    let wire = serde_json::to_value(&report).expect("actual report serialization");
+    assert_eq!(wire["performance_claim"], false);
+    assert_eq!(wire["product_progress"], false);
     assert_eq!(report.raw_samples.len(), 206);
     assert_eq!(report.paired_cluster_ratios.len(), 50);
     assert!(!report.unavailable_metrics.is_empty());
-    for index in 0..DIMENSIONS.len() {
+    for (index, dimension_name) in DIMENSIONS.iter().enumerate() {
         let mut unequal = good.clone();
         unequal.observations[1].dimensions[index]
             .facts
@@ -204,63 +242,10 @@ fn public_admission_rejects_unequal_work_and_false_statistics() {
             evaluate(&root, unequal)
                 .expect_err("unequal concrete work")
                 .contains("UNEQUAL-WORK"),
-            "dimension {} admitted",
-            DIMENSIONS[index]
+            "dimension {dimension_name} admitted"
         );
     }
-    let mut missing = good.clone();
-    missing.samples.pop();
-    assert!(
-        evaluate(&root, missing)
-            .expect_err("missing raw")
-            .contains("MISSING-RAW")
-    );
-    let mut duplicate = good.clone();
-    duplicate.samples[1].id = duplicate.samples[0].id.clone();
-    assert!(
-        evaluate(&root, duplicate)
-            .expect_err("duplicate")
-            .contains("SAMPLE-IDENTITY")
-    );
-    let mut provenance = good.clone();
-    provenance.samples[0].manifest_sha256 = "4".repeat(64);
-    assert!(
-        evaluate(&root, provenance)
-            .expect_err("manifest")
-            .contains("SAMPLE-IDENTITY")
-    );
-    let mut order = good.clone();
-    order.samples[0].order_index ^= 1;
-    assert!(
-        evaluate(&root, order)
-            .expect_err("order")
-            .contains("RANDOMIZED-PAIR-ORDER")
-    );
-    let mut cluster = good.clone();
-    cluster.samples[6].cluster_id = 40;
-    assert!(
-        evaluate(&root, cluster)
-            .expect_err("cluster")
-            .contains("CLUSTER-OR-WARMUP")
-    );
-    let mut slower = good.clone();
-    for sample in &mut slower.samples {
-        if sample.side == Side::Candidate {
-            sample.elapsed_ns += 200_000;
-        }
-    }
-    assert!(
-        evaluate(&root, slower)
-            .expect_err("confidence")
-            .contains("CONFIDENCE-GATE")
-    );
-    let mut noisy = good.clone();
-    for sample in &mut noisy.samples {
-        if sample.pair_index % 2 == 0 {
-            sample.elapsed_ns *= 2;
-        }
-    }
-    assert!(evaluate(&root, noisy).is_err());
+    statistics_negatives(&root, &good);
     let mut topology = good.clone();
     topology.observations[1].topology.processes[0].parent = "shifted_worker".into();
     assert!(
@@ -292,4 +277,61 @@ fn public_admission_rejects_unequal_work_and_false_statistics() {
             .expect_err("actual file mutation")
             .contains("ARTIFACT-LENGTH")
     );
+}
+
+fn statistics_negatives(root: &Path, good: &Bundle) {
+    let mut missing = good.clone();
+    missing.samples.pop();
+    assert!(
+        evaluate(root, missing)
+            .expect_err("missing raw")
+            .contains("MISSING-RAW")
+    );
+    let mut duplicate = good.clone();
+    let (first, remaining) = duplicate.samples.split_at_mut(1);
+    remaining[0].id.clone_from(&first[0].id);
+    assert!(
+        evaluate(root, duplicate)
+            .expect_err("duplicate")
+            .contains("SAMPLE-IDENTITY")
+    );
+    let mut provenance = good.clone();
+    provenance.samples[0].manifest_sha256 = "4".repeat(64);
+    assert!(
+        evaluate(root, provenance)
+            .expect_err("manifest")
+            .contains("SAMPLE-IDENTITY")
+    );
+    let mut order = good.clone();
+    order.samples[0].order_index ^= 1;
+    assert!(
+        evaluate(root, order)
+            .expect_err("order")
+            .contains("RANDOMIZED-PAIR-ORDER")
+    );
+    let mut cluster = good.clone();
+    cluster.samples[6].cluster_id = 40;
+    assert!(
+        evaluate(root, cluster)
+            .expect_err("cluster")
+            .contains("CLUSTER-OR-WARMUP")
+    );
+    let mut slower = good.clone();
+    for sample in &mut slower.samples {
+        if sample.side == Side::Candidate {
+            sample.elapsed_ns += 200_000;
+        }
+    }
+    assert!(
+        evaluate(root, slower)
+            .expect_err("confidence")
+            .contains("CONFIDENCE-GATE")
+    );
+    let mut noisy = good.clone();
+    for sample in &mut noisy.samples {
+        if sample.pair_index % 2 == 0 {
+            sample.elapsed_ns *= 2;
+        }
+    }
+    assert!(evaluate(root, noisy).is_err());
 }

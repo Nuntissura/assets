@@ -160,7 +160,12 @@ fn variant_manifest(root: &Path) -> Result<String, String> {
     toml::to_string(&manifest).map_err(failure)
 }
 
-fn prepare_lock(root: &Path, source: &Path, stage: &Path, manifest_text: &str) -> Result<Vec<u8>, String> {
+fn prepare_lock(
+    root: &Path,
+    source: &Path,
+    stage: &Path,
+    manifest_text: &str,
+) -> Result<Vec<u8>, String> {
     let canonical_lock = fs::read(root.join("build/Cargo.lock")).map_err(failure)?;
     let canonical_lock_digest = sha256_bytes(&canonical_lock);
     let resolve = fs::read(source.join("Cargo.toml")).ok().as_deref()
@@ -178,18 +183,18 @@ fn prepare_lock(root: &Path, source: &Path, stage: &Path, manifest_text: &str) -
     }
     // Full resolution is required: --no-deps leaves a seeded workspace lock untouched.
     command_output_with_timeout(
-            root,
-            "cargo",
-            &[
-                "metadata",
-                "--offline",
-                "--format-version",
-                "1",
-                "--manifest-path",
-                &manifest_path,
-            ],
-            TOOL_COMMAND_TIMEOUT,
-        )?;
+        root,
+        "cargo",
+        &[
+            "metadata",
+            "--offline",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            &manifest_path,
+        ],
+        TOOL_COMMAND_TIMEOUT,
+    )?;
     let lock_bytes = fs::read(source.join("Cargo.lock")).map_err(failure)?;
     let resolved: toml::Value =
         toml::from_str(std::str::from_utf8(&lock_bytes).map_err(failure)?).map_err(failure)?;
@@ -270,9 +275,14 @@ mod tests {
     #[test]
     fn source_variant_uses_approved_lock_and_emits_incompatible_wire() {
         let root = repo_root().expect("repository root");
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
-        let stage = root.join(".fforager-artifacts/runtime-proof")
-            .join(format!("watcher-variant-component-{}-{stamp}", std::process::id()));
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let stage = root.join(".fforager-artifacts/runtime-proof").join(format!(
+            "watcher-variant-component-{}-{stamp}",
+            std::process::id()
+        ));
         fs::create_dir_all(&stage).expect("owned component stage");
         let binary = build(&root, &stage).expect("actual approved-dependency variant build");
         let ready = stage.join("ready.json");
@@ -281,27 +291,54 @@ mod tests {
         let stdout = stage.join("watcher.stdout");
         let stderr = stage.join("watcher.stderr");
         let mut command = Command::new(&binary);
-        command.current_dir(&stage)
-            .arg("--state-dir").arg(stage.join("diagnostics"))
-            .arg("--worker-pid").arg(std::process::id().to_string())
-            .arg("--ready-file").arg(&ready)
-            .arg("--stop-file").arg(&stop)
+        command
+            .current_dir(&stage)
+            .arg("--state-dir")
+            .arg(stage.join("diagnostics"))
+            .arg("--worker-pid")
+            .arg(std::process::id().to_string())
+            .arg("--ready-file")
+            .arg(&ready)
+            .arg("--stop-file")
+            .arg(&stop)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(File::create(&stdout).expect("component stdout")))
-            .stderr(Stdio::from(File::create(&stderr).expect("component stderr")));
+            .stdout(Stdio::from(
+                File::create(&stdout).expect("component stdout"),
+            ))
+            .stderr(Stdio::from(
+                File::create(&stderr).expect("component stderr"),
+            ));
         configure_quiet_process(&mut command);
         let child = command.spawn().expect("real incompatible watcher");
         let watcher_pid = child.id();
         // Reuse the existing bounded owned-child cleanup guard, without creating
         // a production-invocation receipt for this component-only watcher run.
-        let mut owned = Invocation { child, stdout, stderr, started: Instant::now() };
-        let status = wait_for_child(&mut owned.child, "component-incompatible-watcher", &[], Duration::from_secs(5))
-            .expect("bounded watcher stop and reap");
-        assert!(status.success(), "actual watcher stderr: {}", bounded_capture(&owned.stderr).expect("stderr"));
-        let value: Value = serde_json::from_slice(&fs::read(&ready).expect("physical ready message"))
-            .expect("actual ready JSON");
+        let mut owned = Invocation {
+            child,
+            stdout,
+            stderr,
+            started: Instant::now(),
+        };
+        let status = wait_for_child(
+            &mut owned.child,
+            "component-incompatible-watcher",
+            &[],
+            Duration::from_secs(5),
+        )
+        .expect("bounded watcher stop and reap");
+        assert!(
+            status.success(),
+            "actual watcher stderr: {}",
+            bounded_capture(&owned.stderr).expect("stderr")
+        );
+        let value: Value =
+            serde_json::from_slice(&fs::read(&ready).expect("physical ready message"))
+                .expect("actual ready JSON");
         assert_eq!(value["schema"], "ff.watcher-ready@9");
-        assert_eq!(value["worker_pid"].as_u64(), Some(u64::from(std::process::id())));
+        assert_eq!(
+            value["worker_pid"].as_u64(),
+            Some(u64::from(std::process::id()))
+        );
         assert_eq!(value["watcher_pid"].as_u64(), Some(u64::from(watcher_pid)));
         assert_eq!(value["ready"], true);
     }

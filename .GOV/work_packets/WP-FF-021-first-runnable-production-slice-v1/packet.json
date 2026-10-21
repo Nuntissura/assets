@@ -547,50 +547,40 @@
     "current_runtime_attempt": {
       "gate_id": "FF-GATE-RUNTIME-001",
       "verdict": "FAIL",
-      "report": "build/reports/runtime-truth-check-1792550554366559900-500252.json",
-      "source_commit": "5b279ede8d725360b9c8f6e619c92191d1c2d0d9",
+      "report": "build/reports/runtime-truth-check-1792551775473915900-499360.json",
+      "source_commit": "09c7a075703135f07ee00d7356aedb78a6a93718",
       "source_dirty": false,
-      "content_fingerprint": "28ca7aa1daf35d966cda1aa5b38234d14455cbf8422f175001c59669d37e7cc2",
-      "stage": ".fforager-artifacts/runtime-proof/phase1-500252-1792550485967963200",
+      "content_fingerprint": "2e8e94fdee518268a913b694d332ea3606bce3a589dc27656b6d64ae2e668e55",
+      "stage": ".fforager-artifacts/runtime-proof/phase1-499360-1792551684959568900",
       "release_build": {
-        "exit_code": 0,
-        "elapsed_seconds": 2.61
+        "elapsed_seconds": 0.33,
+        "exit_code": 0
       },
-      "observations": {
-        "predecessor_acceptance": "NOT_REACHED",
-        "variant": "Stopped before build on unapproved resolved package identity",
-        "success_guard": "Only output text differs: mixed separators; physical canonical target agrees",
-        "crash_restart": "BLOCKED_NO_ACTUATOR"
+      "case_guards": {
+        "blocked": 1,
+        "returned_without_error": 11,
+        "blocked_reason": "Retained worker identity approval pending; no actuator invoked",
+        "blocked_case": "crash-restart"
       },
-      "independent_read_only_archive": {
-        "commit_sequence": 1,
-        "exit_code": 0,
-        "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
-        "output_text": false,
-        "output_canonical_equal": true,
-        "bytes": 524332,
-        "active_v1_rows": 1,
-        "output": ".fforager-artifacts/phase1-archive-reader/predicates-source-mixed.stdout",
+      "independent_review": {
+        "four_prefixes_replayed_twice": true,
+        "fault_degradations": 6,
+        "journal_chains": "VALID",
+        "negative_sequence": 0,
+        "worker_parent_identity": "MATCH",
+        "archive_read_only_databases": 11,
+        "positive_sequence": 1,
+        "reviewer": "review_fresh",
+        "staged_binary_hashes": "MATCH",
         "outstanding_leases": 0,
-        "inactive_v2_rows": 0,
-        "all_non_path_guards": true
+        "positive_rows": 1,
+        "negative_rows": 0,
+        "actual_incompatible_wire": "ff.watcher-ready@9",
+        "capture_digests": "MATCH"
       },
-      "focused_corrections": {
-        "variant": {
-          "corrected_exit": 0,
-          "passed": 1,
-          "elapsed_seconds": 28.2,
-          "initial_exit": 101,
-          "proof": ".fforager-artifacts/product-batch/phase1-r4b-variant.stdout",
-          "diagnostic": "Generated lock required update under locked build"
-        },
-        "path_identity": {
-          "test": "phase1_runtime::tests::output_identity_requires_the_same_existing_target",
-          "exit_code": 0,
-          "passed": 1
-        }
-      },
-      "limitation": "Focused component corrections do not establish scenario acceptance or main containment."
+      "predecessor_acceptance": "NOT_REACHED",
+      "canonical_acceptance": "PENDING",
+      "main_containment": "PENDING"
     },
     "runtime_attempt_history": [
       {
@@ -658,6 +648,54 @@
           "output_sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873"
         },
         "limitation": "The retained success case proves an actual committed row; overall scenario and predecessor acceptance remain unproven."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792550554366559900-500252.json",
+        "source_commit": "5b279ede8d725360b9c8f6e619c92191d1c2d0d9",
+        "source_dirty": false,
+        "content_fingerprint": "28ca7aa1daf35d966cda1aa5b38234d14455cbf8422f175001c59669d37e7cc2",
+        "stage": ".fforager-artifacts/runtime-proof/phase1-500252-1792550485967963200",
+        "release_build": {
+          "exit_code": 0,
+          "elapsed_seconds": 2.61
+        },
+        "observations": {
+          "predecessor_acceptance": "NOT_REACHED",
+          "variant": "Stopped before build on unapproved resolved package identity",
+          "success_guard": "Only output text differs: mixed separators; physical canonical target agrees",
+          "crash_restart": "BLOCKED_NO_ACTUATOR"
+        },
+        "independent_read_only_archive": {
+          "commit_sequence": 1,
+          "exit_code": 0,
+          "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+          "output_text": false,
+          "output_canonical_equal": true,
+          "bytes": 524332,
+          "active_v1_rows": 1,
+          "output": ".fforager-artifacts/phase1-archive-reader/predicates-source-mixed.stdout",
+          "outstanding_leases": 0,
+          "inactive_v2_rows": 0,
+          "all_non_path_guards": true
+        },
+        "focused_corrections": {
+          "variant": {
+            "corrected_exit": 0,
+            "passed": 1,
+            "elapsed_seconds": 28.2,
+            "initial_exit": 101,
+            "proof": ".fforager-artifacts/product-batch/phase1-r4b-variant.stdout",
+            "diagnostic": "Generated lock required update under locked build"
+          },
+          "path_identity": {
+            "test": "phase1_runtime::tests::output_identity_requires_the_same_existing_target",
+            "exit_code": 0,
+            "passed": 1
+          }
+        },
+        "limitation": "Focused component corrections do not establish scenario acceptance or main containment."
       }
     ]
   }

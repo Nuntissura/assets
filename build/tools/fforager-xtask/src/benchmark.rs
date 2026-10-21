@@ -5,9 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod calibration;
+mod domain;
+pub(super) fn materialize(root: &Path, args: &[String]) -> Result<(), String> {
+    domain::bundle(root, args)
+}
+pub(super) use calibration::calibrate;
+
 const LIMIT: usize = 4 * 1024 * 1024;
 const MAX_SAMPLES: usize = 8192;
 const MAX_DURATION_NS: u64 = 3_600_000_000_000;
+type ControlContext = BTreeMap<String, Vec<calibration::ControlSample>>;
 const DIMENSIONS: [&str; 11] = [
     "source_graph",
     "request_sequence",
@@ -95,6 +103,8 @@ struct ProcessRole {
 #[serde(deny_unknown_fields)]
 struct Manifest {
     schema_id: String,
+    operation: Operation,
+    control_calibration: Option<Artifact>,
     run_id: String,
     baseline: BuildIdentity,
     candidate: BuildIdentity,
@@ -111,6 +121,13 @@ struct Manifest {
     topology: Topology,
     required_dimensions: Vec<String>,
     sampling: Sampling,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Operation {
+    StatisticalContractFixture,
+    LocalPcmRemux,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -159,7 +176,28 @@ struct HostProfile {
     preparation_deadline_ms: u32,
     cleanup_deadline_ms: u32,
     metrics: BTreeMap<String, ObservationValue>,
+    noise_policy: NoisePolicy,
     baseline_calibration: Artifact,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct NoisePolicy {
+    schema_id: String,
+    threshold_derivation: String,
+    maximum_relative_noise_ppm: u32,
+    maximum_outlier_ppm: u32,
+    confidence_percent: u32,
+}
+
+fn native_noise_policy() -> NoisePolicy {
+    NoisePolicy {
+        schema_id: "ff.benchmark-noise-policy@1".into(),
+        threshold_derivation: "at_most_three_independent_baseline_iqr_over_median".into(),
+        maximum_relative_noise_ppm: 500_000,
+        maximum_outlier_ppm: 100_000,
+        confidence_percent: 95,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -170,6 +208,8 @@ struct Calibration {
     source_identity: String,
     origin: SampleOrigin,
     elapsed_ns: Vec<u64>,
+    #[serde(default)]
+    control_receipt: Option<Artifact>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -289,9 +329,18 @@ struct Report {
     candidate_baseline_ratio_bound_met: bool,
     requested_improvement_bound_met: bool,
     unavailable_metrics: BTreeSet<String>,
-    product_progress: bool,
-    performance_claim: bool,
+    product_progress: FalseClaim,
+    performance_claim: FalseClaim,
     limitations: Vec<String>,
+}
+
+#[derive(Debug)]
+struct FalseClaim;
+
+impl Serialize for FalseClaim {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(false)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -330,7 +379,14 @@ fn relative(root: &Path, value: &str) -> Result<PathBuf, String> {
         .canonicalize()
         .map_err(|e| error(&format!("PATH:{e}")))?;
     let canonical = root.canonicalize().map_err(|e| e.to_string())?;
-    if !resolved.starts_with(canonical) {
+    let shared_artifact = root.join(".fforager-artifacts").canonicalize().ok();
+    let explicit_artifact = path
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == ".fforager-artifacts");
+    if !(resolved.starts_with(canonical)
+        || explicit_artifact && shared_artifact.is_some_and(|owned| resolved.starts_with(owned)))
+    {
         return Err(error("PATH-ESCAPE"));
     }
     Ok(resolved)
@@ -428,8 +484,9 @@ fn topology(value: &Topology) -> Result<(), String> {
     Ok(())
 }
 
-fn host(root: &Path, profile: &HostProfile) -> Result<(), String> {
+fn host_conditions(profile: &HostProfile) -> Result<(), String> {
     if profile.schema_id != "ff.benchmark-host@1"
+        || profile.noise_policy != native_noise_policy()
         || !bounded(&profile.id, 128)
         || !matches!(profile.platform.as_str(), "windows" | "unix")
         || profile.preparation.is_empty()
@@ -474,6 +531,14 @@ fn host(root: &Path, profile: &HostProfile) -> Result<(), String> {
             return Err(error("HOST-OBSERVATION"));
         }
     }
+    Ok(())
+}
+
+fn host(root: &Path, profile: &HostProfile, controls: &mut ControlContext) -> Result<(), String> {
+    host_conditions(profile)?;
+    if profile.baseline_calibration.bytes > LIMIT as u64 {
+        return Err(error("CONTROL-JSON-BOUND"));
+    }
     artifact(root, &profile.baseline_calibration)?;
     let calibration: Calibration = serde_json::from_slice(
         &fs::read(relative(root, &profile.baseline_calibration.path)?)
@@ -491,10 +556,32 @@ fn host(root: &Path, profile: &HostProfile) -> Result<(), String> {
     {
         return Err(error("CALIBRATION"));
     }
+    if calibration.origin == SampleOrigin::SuppliedMeasurement {
+        let verified = calibration::verify(root, profile, &calibration)?;
+        controls.insert(
+            calibration
+                .control_receipt
+                .as_ref()
+                .ok_or_else(|| error("CONTROL-RECEIPT-REQUIRED"))?
+                .sha256
+                .clone(),
+            verified,
+        );
+    } else if calibration.control_receipt.is_some() {
+        return Err(error("FIXTURE-CALIBRATION-RECEIPT"));
+    }
     Ok(())
 }
 
-fn validate_manifest(root: &Path, bundle: &Bundle) -> Result<String, String> {
+fn validate_manifest(root: &Path, bundle: &Bundle) -> Result<(String, ControlContext), String> {
+    manifest_schema(bundle)?;
+    manifest_artifacts(root, bundle)?;
+    let (active, calibration, mut controls) = profile_controls(root, bundle)?;
+    select_measured_controls(root, &bundle.manifest, active, &calibration, &mut controls)?;
+    Ok((canonical_hash(&bundle.manifest)?, controls))
+}
+
+fn manifest_schema(bundle: &Bundle) -> Result<(), String> {
     let m = &bundle.manifest;
     if bundle.schema_id != "ff.benchmark-bundle@1"
         || m.schema_id != "ff.benchmark-manifest@1"
@@ -518,13 +605,41 @@ fn validate_manifest(root: &Path, bundle: &Bundle) -> Result<String, String> {
     {
         return Err(error("MANIFEST"));
     }
+    if bundle.samples.iter().any(|sample| {
+        (sample.origin == SampleOrigin::StatisticalFixture)
+            != (m.operation == Operation::StatisticalContractFixture)
+    }) {
+        return Err(error("OPERATION-ORIGIN"));
+    }
+    Ok(())
+}
+
+fn manifest_artifacts(root: &Path, bundle: &Bundle) -> Result<(), String> {
+    let m = &bundle.manifest;
     build(root, &m.baseline)?;
     build(root, &m.candidate)?;
-    if bundle.samples.iter().any(|sample| sample.origin == SampleOrigin::SuppliedMeasurement) {
+    if bundle
+        .samples
+        .iter()
+        .any(|sample| sample.origin == SampleOrigin::SuppliedMeasurement)
+    {
         for identity in [&m.baseline, &m.candidate] {
-            let tree = super::command_output(root, "git", &["rev-parse", &format!("{}^{{tree}}", identity.source_commit)])?;
-            let lock = super::command_output(root, "git", &["show", &format!("{}:build/Cargo.lock", identity.source_commit)])?;
-            if tree.trim() != identity.source_tree || super::encode_sha256(lock.as_bytes()) != identity.lock_sha256 {
+            let tree = super::command_output(
+                root,
+                "git",
+                &["rev-parse", &format!("{}^{{tree}}", identity.source_commit)],
+            )?;
+            let lock = super::command_output(
+                root,
+                "git",
+                &[
+                    "show",
+                    &format!("{}:build/Cargo.lock", identity.source_commit),
+                ],
+            )?;
+            if tree.trim() != identity.source_tree
+                || super::encode_sha256(lock.as_bytes()) != identity.lock_sha256
+            {
                 return Err(error("SOURCE-BINDING"));
             }
         }
@@ -563,6 +678,14 @@ fn validate_manifest(root: &Path, bundle: &Bundle) -> Result<String, String> {
     {
         return Err(error("TOPOLOGY-ARTIFACT"));
     }
+    Ok(())
+}
+
+fn profile_controls<'a>(
+    root: &Path,
+    bundle: &'a Bundle,
+) -> Result<(&'a HostProfile, Calibration, ControlContext), String> {
+    let m = &bundle.manifest;
     let ids = bundle
         .profiles
         .iter()
@@ -582,8 +705,9 @@ fn validate_manifest(root: &Path, bundle: &Bundle) -> Result<String, String> {
     {
         return Err(error("HOST-IDENTITIES"));
     }
+    let mut controls = ControlContext::new();
     for profile in &bundle.profiles {
-        host(root, profile)?;
+        host(root, profile, &mut controls)?;
     }
     let p = &m.sampling;
     if !(50..=512).contains(&p.independent_clusters)
@@ -627,7 +751,69 @@ fn validate_manifest(root: &Path, bundle: &Bundle) -> Result<String, String> {
     {
         return Err(error("UNCALIBRATED-THRESHOLD"));
     }
-    canonical_hash(m)
+    Ok((active, calibration, controls))
+}
+
+fn select_measured_controls(
+    root: &Path,
+    m: &Manifest,
+    active: &HostProfile,
+    calibration: &Calibration,
+    controls: &mut ControlContext,
+) -> Result<(), String> {
+    if m.operation == Operation::LocalPcmRemux {
+        if controls.len() != 2 {
+            return Err(error("NATIVE-HOST-CONTROLS-REQUIRED"));
+        }
+        let pin = m
+            .control_calibration
+            .as_ref()
+            .ok_or_else(|| error("MEASURED-CONTROLS-REQUIRED"))?;
+        if pin.bytes > LIMIT as u64 {
+            return Err(error("CONTROL-JSON-BOUND"));
+        }
+        artifact(root, pin)?;
+        let measured: Calibration = serde_json::from_slice(
+            &fs::read(relative(root, &pin.path)?).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| error(&format!("CALIBRATION-SCHEMA:{e}")))?;
+        let measured_pin = measured
+            .control_receipt
+            .as_ref()
+            .ok_or_else(|| error("MEASURED-CONTROLS-REQUIRED"))?;
+        let baseline_pin = calibration
+            .control_receipt
+            .as_ref()
+            .ok_or_else(|| error("BASELINE-CONTROLS-REQUIRED"))?;
+        if measured.origin != SampleOrigin::SuppliedMeasurement
+            || measured_pin.sha256 == baseline_pin.sha256
+        {
+            return Err(error("INDEPENDENT-CALIBRATION-REQUIRED"));
+        }
+        let verified = calibration::verify(root, active, &measured)?;
+        let baseline = controls
+            .get(&baseline_pin.sha256)
+            .ok_or_else(|| error("BASELINE-CONTROLS-REQUIRED"))?;
+        let baseline_pids = baseline
+            .iter()
+            .flat_map(|control| [&control.invocation, &control.probe_invocation])
+            .map(|invocation| (invocation.parent_pid, invocation.child_pid))
+            .collect::<BTreeSet<_>>();
+        if verified
+            .iter()
+            .flat_map(|control| [&control.invocation, &control.probe_invocation])
+            .any(|invocation| {
+                baseline_pids.contains(&(invocation.parent_pid, invocation.child_pid))
+            })
+        {
+            return Err(error("REUSED-BASELINE-INVOCATION"));
+        }
+        controls.clear();
+        controls.insert(measured_pin.sha256.clone(), verified);
+    } else if m.control_calibration.is_some() {
+        return Err(error("FIXTURE-MEASURED-CONTROLS"));
+    }
+    Ok(())
 }
 
 fn validate_observation(
@@ -635,7 +821,8 @@ fn validate_observation(
     observation: &Observation,
     manifest: &Manifest,
     digest: &str,
-) -> Result<(), String> {
+    controls: &ControlContext,
+) -> Result<Option<(calibration::ControlSample, String)>, String> {
     if observation.schema_id != "ff.benchmark-observation@1"
         || !bounded(&observation.id, 128)
         || observation.manifest_sha256 != digest
@@ -657,6 +844,38 @@ fn validate_observation(
     {
         return Err(error("OBSERVATION-PROVENANCE"));
     }
+    let control = if manifest.operation == Operation::LocalPcmRemux {
+        let first = &observation.dimensions[0].artifacts;
+        if first.len() != 1
+            || observation
+                .dimensions
+                .iter()
+                .any(|dimension| dimension.artifacts != *first)
+        {
+            return Err(error("DOMAIN-ONE-CONTROL"));
+        }
+        let envelope = domain::read_envelope(root, &observation.dimensions[0])?;
+        artifact(root, &envelope.control_receipt)?;
+        let control = controls
+            .get(&envelope.control_receipt.sha256)
+            .and_then(|values| {
+                values.iter().find(|control| {
+                    control.pair == envelope.pair && control.order == envelope.order
+                })
+            })
+            .ok_or_else(|| error("DOMAIN-UNVERIFIED-CONTROL"))?
+            .clone();
+        if control.side != observation.build_side {
+            return Err(error("DOMAIN-BUILD-SIDE"));
+        }
+        Some((control, envelope.control_receipt.sha256))
+    } else {
+        None
+    };
+    let derived = control
+        .as_ref()
+        .map(|(control, _)| domain::derive_all_control(root, manifest, control))
+        .transpose()?;
     for dimension in &observation.dimensions {
         if dimension.facts.is_empty()
             || dimension.facts.len() > 128
@@ -668,6 +887,12 @@ fn validate_observation(
                 .any(|(k, v)| !bounded(k, 128) || !bounded(v, 4096))
         {
             return Err(error("CONCRETE-WORK-MISSING"));
+        }
+        if let Some(derived) = &derived {
+            if derived.get(&dimension.name) != Some(&dimension.facts) {
+                return Err(error("DOMAIN-DERIVED-FACTS"));
+            }
+            continue;
         }
         for pin in &dimension.artifacts {
             artifact(root, pin)?;
@@ -686,10 +911,10 @@ fn validate_observation(
             return Err(error("NORMALIZED-FACTS"));
         }
     }
-    Ok(())
+    Ok(control)
 }
 
-fn admit(left: &Observation, right: &Observation) -> Result<(), String> {
+fn admit(left: &Observation, right: &Observation, operation: Operation) -> Result<(), String> {
     if left.profile_id != right.profile_id || left.topology != right.topology {
         return Err(error("UNEQUAL-HOST-OR-TOPOLOGY"));
     }
@@ -711,7 +936,10 @@ fn admit(left: &Observation, right: &Observation) -> Result<(), String> {
                 .map(|a| (a.sha256.clone(), a.bytes))
                 .collect::<Vec<_>>()
         };
-        if a.facts != b.facts || normalized(a) != normalized(b) {
+        if a.facts != b.facts
+            || (operation == Operation::StatisticalContractFixture
+                && normalized(a) != normalized(b))
+        {
             return Err(error(&format!("UNEQUAL-WORK:{name}")));
         }
     }
@@ -792,12 +1020,41 @@ fn metric(value: &Metric, name: &str, unavailable: &mut BTreeSet<String>) -> Res
     }
 }
 
-fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
-    let manifest_sha256 = validate_manifest(root, &bundle)?;
+struct AdmittedInputs<'a> {
+    observations: BTreeMap<&'a str, &'a Observation>,
+    controls: BTreeMap<&'a str, calibration::ControlSample>,
+    weakest: ProofClass,
+}
+
+struct PairedInputs<'a> {
+    pairs: BTreeMap<u32, Vec<&'a Sample>>,
+    unavailable: BTreeSet<String>,
+    statistical_fixture: bool,
+}
+
+fn observation_inputs<'a>(
+    root: &Path,
+    bundle: &'a Bundle,
+    manifest_sha256: &str,
+    receipt_controls: &ControlContext,
+) -> Result<AdmittedInputs<'a>, String> {
     let mut observations = BTreeMap::new();
+    let mut controls = BTreeMap::new();
+    let mut control_identities = BTreeSet::new();
     let mut weakest = ProofClass::Semantic; // This validator does not execute product runtime.
     for observation in &bundle.observations {
-        validate_observation(root, observation, &bundle.manifest, &manifest_sha256)?;
+        if let Some((control, receipt)) = validate_observation(
+            root,
+            observation,
+            &bundle.manifest,
+            manifest_sha256,
+            receipt_controls,
+        )? {
+            if !control_identities.insert((receipt, control.pair, control.order)) {
+                return Err(error("DOMAIN-REUSED-CONTROL"));
+            }
+            controls.insert(observation.id.as_str(), control);
+        }
         if observations
             .insert(observation.id.as_str(), observation)
             .is_some()
@@ -806,21 +1063,20 @@ fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
         }
         weakest = weakest.min(observation.proof_class);
     }
-    let p = &bundle.manifest.sampling;
-    let measured_pairs = p
-        .independent_clusters
-        .checked_mul(p.pairs_per_cluster)
-        .ok_or_else(|| error("SAMPLE-BOUND"))?;
-    let expected = usize::try_from((measured_pairs + p.warmup_pairs) * 2)
-        .map_err(|_| error("SAMPLE-BOUND"))?;
-    if bundle.samples.len() != expected {
-        return Err(error("MISSING-RAW-SAMPLES"));
-    }
-    let mut sample_ids = BTreeSet::new();
-    let mut pairs = BTreeMap::<u32, Vec<&Sample>>::new();
-    let mut unavailable = BTreeSet::new();
+    Ok(AdmittedInputs {
+        observations,
+        controls,
+        weakest,
+    })
+}
+
+fn profile_availability(
+    root: &Path,
+    profiles: &[HostProfile],
+    unavailable: &mut BTreeSet<String>,
+) -> Result<bool, String> {
     let mut statistical_fixture = false;
-    for profile in &bundle.profiles {
+    for profile in profiles {
         let calibration: Calibration = serde_json::from_slice(
             &fs::read(relative(root, &profile.baseline_calibration.path)?)
                 .map_err(|e| e.to_string())?,
@@ -850,6 +1106,32 @@ fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
             }
         }
     }
+    Ok(statistical_fixture)
+}
+
+fn paired_inputs<'a>(
+    root: &Path,
+    bundle: &'a Bundle,
+    manifest_sha256: &str,
+    admitted: &AdmittedInputs<'_>,
+) -> Result<PairedInputs<'a>, String> {
+    let observations = &admitted.observations;
+    let controls = &admitted.controls;
+    let p = &bundle.manifest.sampling;
+    let measured_pairs = p
+        .independent_clusters
+        .checked_mul(p.pairs_per_cluster)
+        .ok_or_else(|| error("SAMPLE-BOUND"))?;
+    let expected = usize::try_from((measured_pairs + p.warmup_pairs) * 2)
+        .map_err(|_| error("SAMPLE-BOUND"))?;
+    if bundle.samples.len() != expected {
+        return Err(error("MISSING-RAW-SAMPLES"));
+    }
+    let mut sample_ids = BTreeSet::new();
+    let mut pairs = BTreeMap::<u32, Vec<&Sample>>::new();
+    let mut unavailable = BTreeSet::new();
+    let mut statistical_fixture = profile_availability(root, &bundle.profiles, &mut unavailable)?;
+    let mut consumed_controls = BTreeSet::new();
     for sample in &bundle.samples {
         if !bounded(&sample.id, 128)
             || !sample_ids.insert(sample.id.as_str())
@@ -864,6 +1146,30 @@ fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
         if observations[sample.observation_id.as_str()].build_side != sample.side {
             return Err(error("SAMPLE-BUILD-SIDE"));
         }
+        if let Some(control) = controls.get(sample.observation_id.as_str()) {
+            if !consumed_controls.insert(sample.observation_id.as_str())
+                || sample.elapsed_ns != control.elapsed_ns
+                || sample.side != control.side
+                || sample.pair_index != control.pair
+                || sample.order_index != control.order
+                || sample.warmup != control.warmup
+            {
+                return Err(error("DOMAIN-SAMPLE-BINDING"));
+            }
+            if [
+                &sample.costs.total_system_cpu_ns,
+                &sample.costs.ferric_cpu_ns,
+                &sample.costs.ffmpeg_cpu_ns,
+                &sample.costs.other_worker_cpu_ns,
+                &sample.costs.peak_rss_bytes,
+                &sample.costs.io_bytes,
+            ]
+            .iter()
+            .any(|metric| matches!(metric, Metric::Measured { .. }))
+            {
+                return Err(error("DOMAIN-UNMEASURED-COST"));
+            }
+        }
         statistical_fixture |= sample.origin == SampleOrigin::StatisticalFixture;
         for (name, value) in [
             ("total_system_cpu_ns", &sample.costs.total_system_cpu_ns),
@@ -877,6 +1183,57 @@ fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
         }
         pairs.entry(sample.pair_index).or_default().push(sample);
     }
+    if consumed_controls.len() != controls.len() {
+        return Err(error("DOMAIN-UNUSED-CONTROL"));
+    }
+    Ok(PairedInputs {
+        pairs,
+        unavailable,
+        statistical_fixture,
+    })
+}
+
+fn confidence(ratios: &[f64], p: &Sampling) -> Result<(f64, f64, bool, bool), String> {
+    let mut bootstrap = Random(p.random_seed ^ 0xa076_1d64_78bd_642f);
+    if bootstrap.0 == 0 {
+        bootstrap.0 = 1;
+    }
+    let mut estimates =
+        Vec::with_capacity(usize::try_from(p.bootstrap_resamples).map_err(|_| error("RESAMPLES"))?);
+    for _ in 0..p.bootstrap_resamples {
+        let mut sum = 0.0;
+        for _ in 0..ratios.len() {
+            sum += ratios[bootstrap.index(ratios.len())?];
+        }
+        estimates.push(sum / number(u64::try_from(ratios.len()).map_err(|_| error("CLUSTERS"))?));
+    }
+    estimates.sort_by(f64::total_cmp);
+    let lower = percentile(&estimates, 25, 1000);
+    let upper = percentile(&estimates, 975, 1000);
+    let ratio_gate = upper <= f64::from(p.maximum_candidate_baseline_ratio_ppm) / 1_000_000.0;
+    let improvement_gate = p.minimum_improvement_ppm == 0
+        || (1.0 - upper) >= f64::from(p.minimum_improvement_ppm) / 1_000_000.0;
+    if !ratio_gate || !improvement_gate {
+        return Err(error("CONFIDENCE-GATE-CROSSED"));
+    }
+    Ok((lower, upper, ratio_gate, improvement_gate))
+}
+
+fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
+    let (manifest_sha256, receipt_controls) = validate_manifest(root, &bundle)?;
+    let admitted = observation_inputs(root, &bundle, &manifest_sha256, &receipt_controls)?;
+    let observations = &admitted.observations;
+    let weakest = admitted.weakest;
+    let PairedInputs {
+        pairs,
+        unavailable,
+        statistical_fixture,
+    } = paired_inputs(root, &bundle, &manifest_sha256, &admitted)?;
+    let p = &bundle.manifest.sampling;
+    let measured_pairs = p
+        .independent_clusters
+        .checked_mul(p.pairs_per_cluster)
+        .ok_or_else(|| error("SAMPLE-BOUND"))?;
     let mut schedule = Random(p.random_seed);
     let mut cluster_ratios = BTreeMap::<u32, Vec<f64>>::new();
     let mut baseline_times = Vec::new();
@@ -918,6 +1275,7 @@ fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
         admit(
             observations[baseline.observation_id.as_str()],
             observations[candidate.observation_id.as_str()],
+            bundle.manifest.operation,
         )?;
         if !warmup {
             baseline_times.push(number(baseline.elapsed_ns));
@@ -947,38 +1305,18 @@ fn evaluate(root: &Path, bundle: Bundle) -> Result<Report, String> {
     if ratios.len() != usize::try_from(p.independent_clusters).map_err(|_| error("CLUSTERS"))? {
         return Err(error("CLUSTERS"));
     }
-    let mut bootstrap = Random(p.random_seed ^ 0xa076_1d64_78bd_642f);
-    if bootstrap.0 == 0 {
-        bootstrap.0 = 1;
-    }
-    let mut estimates =
-        Vec::with_capacity(usize::try_from(p.bootstrap_resamples).map_err(|_| error("RESAMPLES"))?);
-    for _ in 0..p.bootstrap_resamples {
-        let mut sum = 0.0;
-        for _ in 0..ratios.len() {
-            sum += ratios[bootstrap.index(ratios.len())?];
-        }
-        estimates.push(sum / number(u64::try_from(ratios.len()).map_err(|_| error("CLUSTERS"))?));
-    }
-    estimates.sort_by(f64::total_cmp);
-    let lower = percentile(&estimates, 25, 1000);
-    let upper = percentile(&estimates, 975, 1000);
-    let ratio_gate = upper <= f64::from(p.maximum_candidate_baseline_ratio_ppm) / 1_000_000.0;
-    let improvement_gate = p.minimum_improvement_ppm == 0
-        || (1.0 - upper) >= f64::from(p.minimum_improvement_ppm) / 1_000_000.0;
-    if !ratio_gate || !improvement_gate {
-        return Err(error("CONFIDENCE-GATE-CROSSED"));
-    }
+    let (lower, upper, ratio_gate, improvement_gate) = confidence(&ratios, p)?;
+    let admitted_observations = observations.keys().map(|s| (*s).to_owned()).collect();
     Ok(Report {
         schema_id: "ff.benchmark-admission-report@1", manifest_sha256,
         raw_samples_sha256: canonical_hash(&bundle.samples)?, raw_samples: bundle.samples,
-        admitted_observations: observations.keys().map(|s| (*s).to_owned()).collect(),
+        admitted_observations,
         proof_class: weakest, statistical_fixture, independent_clusters: ratios.len(),
         statistic_metric: "paired_cluster_candidate_baseline_wall_clock_ratio",
         distribution: distribution(&ratios), paired_cluster_ratios: ratios,
         confidence_95_lower: lower, confidence_95_upper: upper,
         candidate_baseline_ratio_bound_met: ratio_gate, requested_improvement_bound_met: improvement_gate,
-        unavailable_metrics: unavailable, product_progress: false, performance_claim: false,
+        unavailable_metrics: unavailable, product_progress: FalseClaim, performance_claim: FalseClaim,
         limitations: vec!["Supplied measurements are untrusted inputs; this boundary proves admission/statistical calculations, not execution of the measured implementation.".into(),
             "Statistical fixtures and baseline-control calibrations never establish a Ferric speed, no-regression, runtime, packaging or release claim.".into()],
     })
@@ -1016,7 +1354,10 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let parent = destination.parent().ok_or_else(|| error("REPORT-PATH"))?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let canonical_parent = parent.canonicalize().map_err(|e| e.to_string())?;
-    if !canonical_parent.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+    let shared_artifact = root.join(".fforager-artifacts").canonicalize().ok();
+    if !canonical_parent.starts_with(root.canonicalize().map_err(|e| e.to_string())?)
+        && !shared_artifact.is_some_and(|owned| canonical_parent.starts_with(owned))
+    {
         return Err(error("REPORT-PATH-ESCAPE"));
     }
     fs::write(
@@ -1030,5 +1371,16 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
 mod tests;
+
+pub(super) fn contract_execution(root: &Path) -> Result<String, String> {
+    std::panic::catch_unwind(|| tests::execute(root)).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string assertion payload");
+        error(&format!("CONTRACT-COUNTERFACTUAL:{detail}"))
+    })?;
+    Ok("Executed public admission, eleven unequal-work controls, raw-sample/provenance/order/cluster/noise/confidence/topology/schema/file-mutation controls; structural statistical fixtures only; native execution and performance claims excluded.".into())
+}
