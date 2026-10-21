@@ -1,0 +1,394 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "TRACKED",
+  "identity": {
+    "wp_id": "WP-FF-024-predecessor-state-reconciliation-v2",
+    "base_wp_id": "WP-FF-024-predecessor-state-reconciliation",
+    "version": "2",
+    "title": "Reconcile contained prerequisite lineage and closure state",
+    "created_at_utc": "2026-10-21T06:28:35Z",
+    "updated_at_utc": "2026-10-21T08:42:57Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Live Phase1 completion direction; root authorized the minimum versioned prerequisite successor for exact testkit timeout diagnostics/owned cleanup and predecessor reconciliation, preserving v1 historical scope and failed gates. Narrow AC003 revision explicitly authorized; no dependency, native or product scope extension.",
+    "recorded_at_utc": "2026-10-21T08:42:57Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0c--dependency-and-risk-spikes"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+    "work_branch": "codex/predecessor-state-reconciliation",
+    "worktree_policy": "LINKED_REPO_LOCAL_HELPER",
+    "worktree_id": "phase1-prerequisites",
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "IN_PROGRESS",
+    "risk": "MEDIUM",
+    "blockers": [
+      "First committed v2 prerequisite declaration, controlled failurebranch proof, current canonical gates and actual common corrective closure containment remain unproven."
+    ],
+    "next_action": "Commit this exact v2 activation before importing the authorized owning-test diagnostics, then execute the controlled unchanged-deadline failure proof and current canonical gates; retain all failures.",
+    "supersedes": [
+      "WP-FF-024-predecessor-state-reconciliation-v1"
+    ],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Preserve predecessor lineage repair and add only the owning testkit descendant timeout diagnostic/owned-cleanup correction required by actual canonical failure; all evidence remains non-product.",
+    "product_impact": "PREREQUISITE",
+    "in_scope": [
+      "Preserve every original base, requirement, scope, declaration and failure record; retain primary WP023 newer blocked and Operator-stop history rather than replacing it with the older helper state.",
+      "Record WP006 current contained sanitized-source optimized corpus revalidation and explicitly invalidate historical uncontained closure ancestry.",
+      "Bind WP022-v2 and WP023 to actual accepted current prerequisite-source gates and the future common corrective closure only after its real merge and containment.",
+      "Register this correction, keep taskboard as index/focus only, and synchronize final predecessor lifecycle after independent proof.",
+      "Preserve the exact two-second test verdict while recording bounded owned child status, marker and captures, and bounded owned cleanup on failure in the existing testkit integration test; any strictly required finding route is one exact mapping only."
+    ],
+    "non_goals": [
+      "Change product implementation, test deadline, acceptance oracle, fixture behavior, dependency versions/features, native authority, allowlists or proof-consumer behavior.",
+      "Import secret-era history, erase prior failed verdicts or assert product, capability, runtime, performance, packaging, release or phase completion.",
+      "Reopen research, measurements or add a generic diagnostic framework."
+    ],
+    "allowed_paths": [
+      ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json",
+      ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
+      ".GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
+      ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json",
+      ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
+      ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
+      ".GOV/id-registry.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      "build/crates/fforager-testkit/tests/fake_child_process.rs",
+      "build/tools/fforager-xtask/src/main.rs"
+    ],
+    "dependencies": [
+      "WP-FF-020-equivalent-work-benchmark-design-v1 VALIDATED with closure a88d961ac066abdf45a4041f435bd5d6c823dd60 contained in main.",
+      "Current main bde150fe8d39519a890b2be1c4ac9d44d47c18e4 contains sanitized prerequisite source and the accepted05aadeb build/product tree; actual proof remains prerequisite-only.",
+      "Existing optimized WP006 current-source corpus and clean05aadeb canonical architecture/PR/runtime policy reports supply the evidence to reconcile, not new implementation authority.",
+      "Archived v1 retains the original six-governance-path/NONE requirements and actual failed canonical invocations; the new owning-test source is authorized only in this successor after its first activation commit."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-001",
+      "requirement": "All three target packets retain their original bases, acceptance requirements, scope and immutable declarations; historical failures and the newer primary WP023 stop/checkpoint remain preserved, while obsolete closure claims are explicitly distinguished from current proof.",
+      "proof_class": "governance",
+      "status": "PASS",
+      "evidence": [
+        "Actual source/report/Git readback and independent implementation review accepted this row; exact facts are recorded in target extensions.predecessor_reconciliation and this packet change_evidence."
+      ]
+    },
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-002",
+      "requirement": "WP006 records independently inspected current sanitized-source and fixture lineage, optimized7case/20probe corpus and oracle counterfactual; WP022-v2/WP023 record the actual clean accepted source-bound canonical evidence without product promotion.",
+      "proof_class": "governance",
+      "status": "PASS",
+      "evidence": [
+        "Actual source/report/Git readback and independent implementation review accepted this row; exact facts are recorded in target extensions.predecessor_reconciliation and this packet change_evidence."
+      ]
+    },
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-003",
+      "requirement": "The original v1 six-governance-path/NONE scope and its failed canonical verdicts remain explicit historical evidence. This successor changes only its declared governance paths and exact necessary owning-test diagnostic/cleanup source, plus a strictly required finding-map arm if needed, under a freshly committed PREREQUISITE declaration; independent review verifies original target/frozen-field/history preservation and current required canonical verdicts without relabeling failures.",
+      "proof_class": "governance",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-004",
+      "requirement": "The common corrective closure is actually merged into canonical main and ancestry verified before this packet or any repaired target is marked VALIDATED; exact closure identities and active-focus projection are synchronized.",
+      "proof_class": "governance",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-10-21T06:28:35Z",
+      "branch": "codex/predecessor-state-reconciliation",
+      "base_sha": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+      "head_sha": "3ff0067ff0e81a76e5d78de0185a0d16edaa5bbc",
+      "dirty_paths": [
+        ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json",
+        ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
+        ".GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
+        ".GOV/id-registry.yaml",
+        ".GOV/taskboard/taskboard.yaml"
+      ],
+      "checks_run": [
+        "Inspected existing WP018 TRACKED/NONE metadata-only pattern, current work-packet template/requirements, target proof history and actual canonical main activation base.",
+        "git branch --show-current: codex/predecessor-state-reconciliation; git rev-parse HEAD and git merge-base main HEAD: bde150fe8d39519a890b2be1c4ac9d44d47c18e4; initial git status --porcelain=v2 --branch contained branch identity only."
+      ],
+      "blockers": [
+        "First committed v2 prerequisite declaration, controlled failurebranch proof, current canonical gates and actual common corrective closure containment remain unproven."
+      ],
+      "next_action": "Commit this exact v2 activation before importing the authorized owning-test diagnostics, then execute the controlled unchanged-deadline failure proof and current canonical gates; retain all failures."
+    }
+  },
+  "validation": {
+    "checks": [
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
+        "artifact": "build/reports/runtime-truth-check-1792564393592144300-426356.json",
+        "proof_ceiling": "Activation NONE classification only; final edited target metadata and strict PR are not asserted by this result."
+      },
+      {
+        "original_capture": ".fforager-artifacts/product-batch/wp006-optimized-corpus.json",
+        "canonical_generated_alias": "build/reports/wp-ff-006-youtube-challenge-report.json",
+        "sha256": "1aec75be24511b4094c873d28eb255057eb37aadc3481a5f40596011f353544a",
+        "byte_identical": true,
+        "new_execution": false,
+        "authorization": "Explicit live root authorization for this byte-identical ignored generated alias; no tracked build/report/source path changed."
+      },
+      "Independent implementation subagent target/packet review accepted exact frozen-field/history preservation, temporal022STUBceiling and actual006reportalias provenance.",
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "source_commit": "ce1be6355cfa3e0e006ad76c379054afc710953a",
+        "artifact": "build/reports/runtime-truth-check-1792566804849471600-499680.json",
+        "proof_ceiling": "Current NONE classification only; no strict PR or containment acceptance."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "source_commit": "ce1be6355cfa3e0e006ad76c379054afc710953a",
+        "artifact": "build/reports/verify-pr-1792566877321851800-516472.json",
+        "diagnostic": "simplification or complete post-change verification evidence is incomplete",
+        "disposition": "Missing minimum verification evidence and explicit review lenses corrected; retry verdict not yet observed."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "artifact": "build/reports/verify-pr-1792569238493403200-214708.json",
+        "diagnostic": "Three Windows FFmpeg ten-second waits failed under default harness scheduling; no cause established."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "artifact": "build/reports/verify-pr-1792571314102687600-465016.json",
+        "diagnostic": "Serial harness: FFmpeg65 accepted; testkit descendant direct-child two-second wait failed; cause not established."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "artifact": "build/reports/runtime-truth-check-1792567220626521700-480288.json",
+        "source_commit": "3ff0067ff0e81a76e5d78de0185a0d16edaa5bbc",
+        "proof_ceiling": "Historical v1 NONE classification only; no canonical PR or containment verdict."
+      }
+    ],
+    "not_proven": [
+      "Current v2 declaration classification, controlled timeout failurebranch, canonical checks and actual common closure containment.",
+      "Any product, capability, runtime, performance, packaging, release or phase progress."
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/refinement.json",
+    "non_product_prerequisite": {
+      "schema_id": "ff.non-product-prerequisite@1",
+      "classification": "phase0_supporting_evidence",
+      "design_authority": ".GOV/spec/ferric_forager_technical_design_v0.3.0.md#prerequisite-0c--dependency-and-risk-spikes",
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false,
+      "required_future_consumer": "WP-FF-021-first-runnable-production-slice-v1",
+      "required_future_proof": "FF-GATE-RUNTIME-001 exact staged-artifact production proof under WP-FF-021 acceptance"
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-024-predecessor-state-reconciliation-v2-AC-001",
+        "WP-FF-024-predecessor-state-reconciliation-v2-AC-002",
+        "WP-FF-024-predecessor-state-reconciliation-v2-AC-003",
+        "WP-FF-024-predecessor-state-reconciliation-v2-AC-004"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "All three target packets retain their original bases, acceptance requirements, scope and immutable declarations; historical failures and the newer primary WP023 stop/checkpoint remain preserved, while obsolete closure claims are explicitly distinguished from current proof.",
+          "WP006 records independently inspected current sanitized-source and fixture lineage, optimized7case/20probe corpus and oracle counterfactual; WP022-v2/WP023 record the actual clean accepted source-bound canonical evidence without product promotion.",
+          "The original v1 six-governance-path/NONE scope and its failed canonical verdicts remain explicit historical evidence. This successor changes only its declared governance paths and exact necessary owning-test diagnostic/cleanup source, plus a strictly required finding-map arm if needed, under a freshly committed PREREQUISITE declaration; independent review verifies original target/frozen-field/history preservation and current required canonical verdicts without relabeling failures.",
+          "The common corrective closure is actually merged into canonical main and ancestry verified before this packet or any repaired target is marked VALIDATED; exact closure identities and active-focus projection are synchronized."
+        ],
+        "risk_cases": [
+          "Historical lineage or failed reports could be silently relabeled; retain exact prior checkpoints and source-bound facts.",
+          "Frozen acceptance or scope could be narrowed; compare all original requirement, declaration, base and scope values.",
+          "Historical governance-only evidence could imply product acceptance; retain v1 NONE observations as history and require the current v2 PREREQUISITE declaration and original non-product ceilings.",
+          "Timeout diagnostics could weaken the two-second assertion or claim tree absence from taskkill status; preserve the failure verdict, bounded captures and explicit cleanup uncertainty."
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Stale target lifecycle and uncontained historical closure prevent truthful predecessor admission, so bounded metadata correction is required."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Reuse existing optimized corpus, canonical reports, Git ancestry, packet schema, public NONE classifier and original registered report finding."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "No new implementation mechanism; existing validators and JSON/Git reconciliation suffice."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Reuse existing owned-process tooling only; no new native API, dependency or broader process authority."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "No dependency or feature changes; existing approved tools and proofs are retained."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "Exact predecessor governance repair plus one owning integration-test diagnostic file and only a strictly required finding-map arm; preserve original deadlines and oracles."
+        }
+      ],
+      "artifact_specific_justification": {
+        "packet024": "First commit the fresh v2 prerequisite declaration before source import; full original v1 remains archived.",
+        "target_packets": "Correct only current lineage/lifecycle/proof projections while preserving original requirements and failure histories.",
+        "registry_board": "Allocate the correction ID and select its focus; detailed lifecycle stays in packet JSON.",
+        "owning_test": "Actual canonical two-second failure discarded child phase/capture evidence; bounded diagnostics and owned cleanup are the exact authorized correction.",
+        "archived_v1": "Retains the complete original contract, six-path/NONE scope, original requirements and all failed gate history."
+      },
+      "pre_simplification_verdict": "FAIL: current WP006 claimed uncontained historical closure and target WP022/WP023 current state did not incorporate accepted current prerequisite proof; newer primary WP023 stop/failure history must be preserved.",
+      "simplification_changes": [
+        "Preserve the full archived v1 and all three target contracts; add only exact test failure diagnostics and owned cleanup without changing the two-second failure verdict.",
+        "Reuse existing bounded captures and fixed owned-process cleanup tooling; no new dependency, native boundary, framework, acceptance oracle or measurement.",
+        "Keep original report-alias provenance in target006 and archived v1; version only the necessary scope/classification transition."
+      ],
+      "post_simplification_verdict": "PASS: the proposed successor scope preserves original outcomes and failed history while authorizing only the exact diagnostic dependency correction. Actual source remediation, controlled failurebranch observation, current gates and containment are separate unproven conditions.",
+      "complete_post_change_verification": [
+        "024 activation public NONE classifier accepted clean8a43243 in runtime-truth-check report1792564393592144300-426356; this is classification only, not final strict PR acceptance.",
+        "Current report alias byte identity and ignored generated-output classification were directly verified.",
+        "Original source/main ancestry and accepted-source build/product equality were directly reread before target-state edits.",
+        "Independent implementation review accepted exact original three bases/scopes/AC IDs, texts and proof classes/non-product declarations; original006historical30checks and primary09c7WP023stop/recovery/validationprefix are preserved.",
+        "Independent current-source/manifest/Git ancestry and physical byte-identical canonical report alias review accepted; no source, dependency, requirement or finding-map changes.",
+        "Current correction public NONE classifier accepted cleance1be6355cfa3e0e006ad76c379054afc710953a in report1792566804849471600-499680; strict PR report1792566877321851800-516472 rejected incomplete verification evidence before broad checks, and that failure remains recorded.",
+        "Archived v1 retains actual schema, default-harness Windows waits and serial testkit direct-child deadline failures; focused diagnostic observations never relabel those canonical failures."
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-024-predecessor-state-reconciliation-v2-CEILING-001",
+        "current_ceiling": "Prerequisite-only predecessor state and owning-test failure diagnostics; no product or phase completion.",
+        "replacement_trigger": "A later separately authorized product consumer executes its own exact staged production proof.",
+        "likely_upgrade_path": "Retain WP021/WP011 product acceptance unchanged; this correction supplies only honest predecessor state.",
+        "trigger_detection_method": "Active PREREQUISITE declaration and future exact staged gate reject product claims and invalid lineage.",
+        "linked_evidence": [
+          ".GOV/work_packets/WP-FF-006-rust-youtube-challenge-spike-v1/packet.json",
+          ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json",
+          ".GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json",
+          ".GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json"
+        ]
+      },
+      "adversarial_review": {
+        "DIFF_ATTACK_SURFACES": [
+          "State and integration: historical ancestry may be relabeled as current closure; retain uncontained99139 and actual contained8dcc source separately before predecessor promotion.",
+          "Contract and serialization: frozen bases, acceptance requirements, scope and declarations may drift during JSON state correction; exact original canonical fields were compared.",
+          "State and resource boundaries: older helper WP023 could overwrite newer primary failures or Operator-stop history; preserve exact primary09c7 checkpoint, with no product resource or dependency change.",
+          "Gate integration: copied reports could be overstated as new runs, product proof or evidence for other bytes; bind original artifacts, physical hashes and prerequisite ceilings."
+        ],
+        "INDEPENDENT_CHECKS_RUN": [
+          "Fresh canonical Git ancestry:99139 is not contained in main;8dcc sanitized source and79392 classifier implementation are contained.",
+          "Actual optimized WP006 report was opened:7mandatory cases and20probes accepted, both oracle controls true, manifest raw8be identity and quiet worker/corpus artifacts independently reconciled.",
+          "Actual clean05aadeb canonical architecture and PR reports were opened;8architecture checks/55fixtures and70PR checks/55fixtures accepted with exact zero-product/runtime-policy ceiling.",
+          "Historical helper/main build and product equality against05aadeb was independently checked before the successor; the only newly authorized source is the exact owning test diagnostic correction."
+        ],
+        "COUNTERFACTUAL_CHECKS": [
+          "Original resolved WP006 report/manifest finding is revalidated by the actual corpus oracle: original expectation accepted and changed expected output rejected with producer unchanged.",
+          "Existing accepted canonical PR executes classifier negatives that reject forbidden product paths, undeclared prerequisite changes and product-progress claims.",
+          "Existing accepted coherent obsolete native-approval and source/profile controls retain their original rejection proofs; this correction does not replace their declarations or findings.",
+          "Actual initial environment-induced PR failure and all10 corrected existing controls are retained; accepted later PR does not relabel the failed invocation."
+        ],
+        "BOUNDARY_PROBES": [
+          "Canonical Git reads prove the sanitized-source lineage and reject historical99139 ancestry without importing that history.",
+          "The optimized corpus externally executes the pinned Rust worker under original limits and records its exact current manifest and player identities.",
+          "The registered report artifact is only a byte-identical generated alias of the retained optimized capture; both SHA values were directly compared and no new run is claimed.",
+          "Historical v1 NONE classifiers ran at exact committed sources; the successor requires its own first-declaration classification and canonical observations."
+        ],
+        "NEGATIVE_PATH_CHECKS": [
+          "The old99139 containment claim is explicitly invalidated as current evidence and preserved as historical state.",
+          "Primary WP023 four Windows failures and explicit Operator stop are retained verbatim before later authorized closure evidence is appended.",
+          "WP022 original WP020STUB condition is bound to79392, while current independently authorized WP020VALIDATED state is stated separately.",
+          "This successor predeclares only non-product supporting evidence; no runtime_proof is present, and product/dependency/native authority is unchanged."
+        ],
+        "INDEPENDENT_FINDINGS": [
+          {
+            "finding_id": "WP-FF-006-FINDING-REPORT-MANIFEST-005",
+            "finding": "Revalidation of the original resolved WP006 report/manifest finding only: the actual optimized corpus matches current helper manifest and player pins, all7cases/20probes and oracle controls; the registered path is a byte-identical generated alias of the retained result, with explicit provenance and no new code finding or run.",
+            "status": "NO_BLOCKING_FINDING",
+            "proof_id": "build/reports/wp-ff-006-youtube-challenge-report.json"
+          }
+        ],
+        "RESIDUAL_UNCERTAINTY": [
+          "The controlled timeout failurebranch, current prerequisite classification/canonical verdicts and actually merged closure must still be observed. Prior isolated success does not identify the failed startup phase or establish a cause."
+        ],
+        "MANUAL_REVIEW": {
+          "artifact": "product/MODEL_MANUAL.md",
+          "method": "Direct unchanged prerequisite command, optimized corpus output, recovery and runtime-ceiling inspection",
+          "reviewer": "implementation independent subagent",
+          "verdict": "PASS",
+          "evidence": [
+            "The JavaScript prerequisite topic retains the exact locked Cargo release build/corpus commands and mandatory report fields; the alias preserves actual executed report bytes.",
+            "Failure/recovery instructions preserve original limits, worker cleanup and hash mismatch refusal rather than rewriting an oracle or broadening a dependency.",
+            "FF-GATE-RUNTIME-001 remains the mandatory later exact staged product-consumer boundary; this metadata correction and its historical finding revalidation claim no product/runtime completion."
+          ]
+        }
+      }
+    }
+  }
+}

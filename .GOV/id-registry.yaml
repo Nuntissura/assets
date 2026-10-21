@@ -242,9 +242,13 @@ registered_files:
   - id: WP-FF-023-dependency-security-remediation-v1-CEILING-001
     path: .GOV/work_packets/WP-FF-023-dependency-security-remediation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
   - id: WP-FF-024-predecessor-state-reconciliation-v1
-    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json
+    path: .GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json
+  - id: WP-FF-024-predecessor-state-reconciliation-v2
+    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json
+  - id: WP-FF-024-predecessor-state-reconciliation-v2-CEILING-001
+    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
   - id: WP-FF-024-predecessor-state-reconciliation-v1-CEILING-001
-    path: .GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+    path: .GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
 registered_rule_ranges:
   - namespace: FF-BOOT
     first: FF-BOOT-001

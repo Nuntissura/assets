@@ -8,7 +8,7 @@
     "version": "1",
     "title": "Reconcile contained prerequisite lineage and closure state",
     "created_at_utc": "2026-10-21T06:28:35Z",
-    "updated_at_utc": "2026-10-21T06:48:18Z"
+    "updated_at_utc": "2026-10-21T08:42:57Z"
   },
   "authorization": {
     "source": "operator_message",
@@ -40,14 +40,14 @@
     "merged_main_commit": null
   },
   "lifecycle": {
-    "status": "IN_PROGRESS",
+    "status": "SUPERSEDED",
     "risk": "LOW",
     "blockers": [
-      "Correction-specific current metadata/gate validation and actually merged common corrective closure containment remain unproven."
+      "Historical v1 canonical checks failed; exact reports retained."
     ],
-    "next_action": "Obtain independent target-history/frozen-field review and required current correction validation, then commit and merge the common corrective closure; mark target packets VALIDATED only after actual main ancestry.",
+    "next_action": "Continue through WP-FF-024-predecessor-state-reconciliation-v2 without relabeling failed v1 acceptance.",
     "supersedes": [],
-    "superseded_by": null
+    "superseded_by": "WP-FF-024-predecessor-state-reconciliation-v2"
   },
   "scope": {
     "summary": "Repair WP006 sanitized-source lineage and WP022-v2/WP023 closure projections using existing accepted proof, without changing implementation, dependency authority or original acceptance.",
@@ -165,6 +165,25 @@
         "artifact": "build/reports/verify-pr-1792566877321851800-516472.json",
         "diagnostic": "simplification or complete post-change verification evidence is incomplete",
         "disposition": "Missing minimum verification evidence and explicit review lenses corrected; retry verdict not yet observed."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "artifact": "build/reports/verify-pr-1792569238493403200-214708.json",
+        "diagnostic": "Three Windows FFmpeg ten-second waits failed under default harness scheduling; no cause established."
+      },
+      {
+        "gate_id": "FF-GATE-PR-001",
+        "result": "FAIL",
+        "artifact": "build/reports/verify-pr-1792571314102687600-465016.json",
+        "diagnostic": "Serial harness: FFmpeg65 accepted; testkit descendant direct-child two-second wait failed; cause not established."
+      },
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "result": "PASS",
+        "artifact": "build/reports/runtime-truth-check-1792567220626521700-480288.json",
+        "source_commit": "3ff0067ff0e81a76e5d78de0185a0d16edaa5bbc",
+        "proof_ceiling": "Historical v1 NONE classification only; no canonical PR or containment verdict."
       }
     ],
     "not_proven": [
@@ -351,6 +370,16 @@
       "byte_identical": true,
       "new_execution": false,
       "authorization": "Explicit live root authorization for this byte-identical ignored generated alias; no tracked build/report/source path changed."
+    },
+    "supersession_prior_lifecycle": {
+      "status": "IN_PROGRESS",
+      "risk": "LOW",
+      "blockers": [
+        "Correction-specific current metadata/gate validation and actually merged common corrective closure containment remain unproven."
+      ],
+      "next_action": "Obtain independent target-history/frozen-field review and required current correction validation, then commit and merge the common corrective closure; mark target packets VALIDATED only after actual main ancestry.",
+      "supersedes": [],
+      "superseded_by": null
     }
   }
 }
