@@ -37,6 +37,7 @@ dependencies = [
 [[package]]
 name = "handshake_text_mechanics"
 version = "0.1.0"
+source = "git+https://github.com/Nuntissura/assets.git?rev=9339227c05a813600db1fa4cdb71b9b9988d5992#9339227c05a813600db1fa4cdb71b9b9988d5992"
 dependencies = [
  "ecolor",
  "ropey",

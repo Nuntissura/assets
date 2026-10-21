@@ -7,6 +7,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-handshake_text_mechanics = { path = "../../handshake_text_mechanics" }
+handshake_text_mechanics = { git = "https://github.com/Nuntissura/assets.git", rev = "9339227c05a813600db1fa4cdb71b9b9988d5992" }
 similar = "2"
 serde_json = "1"
