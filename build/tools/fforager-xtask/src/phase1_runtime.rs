@@ -8,6 +8,7 @@ use redb::{
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, atomic::AtomicBool};
 
+mod watcher_mutant;
 #[cfg(windows)]
 mod windows_pause;
 
@@ -360,7 +361,7 @@ pub(super) fn execute(
                 return Err(failure("staged executable digest changed"));
             }
         }
-        if let Err(error) = execute_case(&stage, case, &fixture, &proof) {
+        if let Err(error) = execute_case(root, &stage, case, &fixture, &proof) {
             case_failures.push(format!("scenario={case}; stage={}; {error}", slash(&stage)));
             continue;
         }
@@ -636,11 +637,24 @@ fn executable(name: &str) -> String {
 struct Origin {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
+    body_released: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Origin {
+    #[cfg(test)]
     fn start(stage: &Path, fixture: &[u8], negative: bool, slow: bool) -> Result<Self, String> {
+        Self::start_controlled(stage, fixture, negative, slow, false, 30)
+    }
+
+    fn start_controlled(
+        stage: &Path,
+        fixture: &[u8],
+        negative: bool,
+        slow: bool,
+        hold_body: bool,
+        timeout: u64,
+    ) -> Result<Self, String> {
         let mut diagnostics =
             File::create(stage.join("origin-diagnostics.jsonl")).map_err(failure)?;
         let listener = TcpListener::bind("127.0.0.1:0").map_err(failure)?;
@@ -648,13 +662,23 @@ impl Origin {
         let address = listener.local_addr().map_err(failure)?;
         let stop = Arc::new(AtomicBool::new(false));
         let running = Arc::clone(&stop);
+        let body_released = Arc::new(AtomicBool::new(!hold_body));
+        let release = Arc::clone(&body_released);
         let bytes = fixture.to_vec();
         let thread = thread::spawn(move || {
             let mut failures = 0_u32;
             while !running.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        if let Err(error) = serve(&mut stream, &bytes, negative, slow, &running) {
+                        if let Err(error) = serve(
+                            &mut stream,
+                            &bytes,
+                            negative,
+                            slow,
+                            &running,
+                            &release,
+                            timeout,
+                        ) {
                             if failures < 32 {
                                 failures += 1;
                                 let event = serde_json::json!({"schema":"ff.origin-diagnostic@1", "sequence":failures, "kind":format!("{:?}",error.kind()), "os_error":error.raw_os_error(), "detail":error.to_string().chars().take(1024).collect::<String>()});
@@ -677,8 +701,13 @@ impl Origin {
         Ok(Self {
             address,
             stop,
+            body_released,
             thread: Some(thread),
         })
+    }
+
+    fn release_body(&self) {
+        self.body_released.store(true, Ordering::Release);
     }
 }
 
@@ -697,6 +726,8 @@ fn serve(
     negative: bool,
     slow: bool,
     stop: &AtomicBool,
+    released: &AtomicBool,
+    timeout: u64,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_millis(200)))?;
@@ -726,7 +757,14 @@ fn serve(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: audio/wav\r\nConnection: close\r\n\r\n",
         bytes.len()
     )?;
-    for chunk in bytes.chunks(8192) {
+    let body_deadline = Instant::now() + Duration::from_secs(timeout);
+    for (index, chunk) in bytes.chunks(8192).enumerate() {
+        while index > 0 && !released.load(Ordering::Acquire) {
+            if stop.load(Ordering::Acquire) || Instant::now() >= body_deadline {
+                return Err(io::Error::other("owned origin body gate deadline"));
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
         if stop.load(Ordering::Acquire) {
             break;
         }
@@ -820,19 +858,51 @@ fn bounded_capture(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(failure)
 }
 
+fn archive_table_name(version: Option<u64>) -> Result<&'static str, String> {
+    match version {
+        Some(1) => Ok("ff_archive_records_v1"),
+        Some(2) => Ok("ff_archive_records_v2"),
+        _ => Err(failure("archive store version is missing or unsupported")),
+    }
+}
+
+fn active_archive_table(transaction: &redb::ReadTransaction) -> Result<&'static str, String> {
+    let metadata = transaction
+        .open_table(TableDefinition::<&str, u64>::new("ff_archive_meta_u64_v1"))
+        .map_err(failure)?;
+    archive_table_name(
+        metadata
+            .get("store_version")
+            .map_err(failure)?
+            .map(|value| value.value()),
+    )
+}
+
 fn archive_record(stage: &Path) -> Result<ArchiveRecord, String> {
     let database = ReadOnlyDatabase::open(stage.join("state/archive.redb")).map_err(failure)?;
     let transaction = database.begin_read().map_err(failure)?;
     let table = transaction
-        .open_table(TableDefinition::<&str, &[u8]>::new("ff_archive_records_v2"))
+        .open_table(TableDefinition::<&str, &[u8]>::new(active_archive_table(
+            &transaction,
+        )?))
         .map_err(failure)?;
     let mut rows = table.iter().map_err(failure)?;
-    let (_, record) = rows
+    let (key, record) = rows
         .next()
         .ok_or_else(|| failure("archive contains no committed row"))?
         .map_err(failure)?;
     let record = ArchiveRecord::from_wire_bytes(record.value(), ArchiveLimits::default())
         .map_err(failure)?;
+    if key.value()
+        != record
+            .key
+            .canonical_key(ArchiveLimits::default())
+            .map_err(failure)?
+    {
+        return Err(failure(
+            "archive physical key differs from decoded record identity",
+        ));
+    }
     if rows.next().is_some() {
         return Err(failure("isolated single-job archive contains extra rows"));
     }
@@ -848,13 +918,19 @@ fn archive_is_empty(stage: &Path) -> Result<bool, String> {
     }
     let database = ReadOnlyDatabase::open(path).map_err(failure)?;
     let transaction = database.begin_read().map_err(failure)?;
-    let table = transaction
-        .open_table(TableDefinition::<&str, &[u8]>::new("ff_archive_records_v2"))
-        .map_err(failure)?;
+    active_archive_table(&transaction)?;
+    for name in ["ff_archive_records_v1", "ff_archive_records_v2"] {
+        let table = transaction
+            .open_table(TableDefinition::<&str, &[u8]>::new(name))
+            .map_err(failure)?;
+        if !table.is_empty().map_err(failure)? {
+            return Ok(false);
+        }
+    }
     let leases = transaction
         .open_table(TableDefinition::<&str, &[u8]>::new("ff_archive_leases_v1"))
         .map_err(failure)?;
-    Ok(table.is_empty().map_err(failure)? && leases.is_empty().map_err(failure)?)
+    leases.is_empty().map_err(failure)
 }
 
 fn success(stage: &Path, observation: &(i32, String, String), proof: &Proof) -> Result<(), String> {
@@ -925,7 +1001,13 @@ fn success(stage: &Path, observation: &(i32, String, String), proof: &Proof) -> 
     Ok(())
 }
 
-fn execute_case(stage: &Path, case: &str, fixture: &[u8], proof: &Proof) -> Result<(), String> {
+fn execute_case(
+    root: &Path,
+    stage: &Path,
+    case: &str,
+    fixture: &[u8],
+    proof: &Proof,
+) -> Result<(), String> {
     if case == "crash-restart" {
         return Err(failure(
             "BLOCKED: retained worker identity approval is pending; no crash actuator was invoked",
@@ -943,22 +1025,19 @@ fn execute_case(stage: &Path, case: &str, fixture: &[u8], proof: &Proof) -> Resu
             fs::write(&watcher, b"deliberately invalid executable image").map_err(failure)?
         }
         "watcher-incompatible" => {
-            let mut bytes = fs::read(&watcher).map_err(failure)?;
-            let needle = b"ff.watcher-ready@1";
-            let positions = bytes
-                .windows(needle.len())
-                .enumerate()
-                .filter_map(|(index, bytes)| (bytes == needle).then_some(index))
-                .collect::<Vec<_>>();
-            if positions.is_empty() {
+            let original = sha256_file(&watcher)?;
+            let variant = watcher_mutant::build(root, stage)?;
+            let variant_hash = sha256_file(&variant)?;
+            if variant_hash == original {
                 return Err(failure(
-                    "compiled watcher readiness literal is not independently mutable",
+                    "source-mutated watcher equals the original artifact",
                 ));
             }
-            for index in positions {
-                bytes[index + needle.len() - 1] = b'9';
+            fs::copy(variant, &watcher).map_err(failure)?;
+            if sha256_file(&watcher)? != variant_hash {
+                return Err(failure("source-mutated watcher staging identity changed"));
             }
-            fs::write(&watcher, bytes).map_err(failure)?;
+            fs::write(stage.join("watcher-original-artifact.sha256"), original).map_err(failure)?;
         }
         "watcher-storage-failure" => {
             fs::create_dir_all(stage.join("state")).map_err(failure)?;
@@ -974,7 +1053,15 @@ fn execute_case(stage: &Path, case: &str, fixture: &[u8], proof: &Proof) -> Resu
         case,
         "external-cancellation" | "crash-restart" | "watcher-crash" | "watcher-hung"
     );
-    let origin = Origin::start(stage, fixture, case == "transport-failure", slow)?;
+    let held = matches!(case, "crash-restart" | "watcher-crash" | "watcher-hung");
+    let origin = Origin::start_controlled(
+        stage,
+        fixture,
+        case == "transport-failure",
+        slow,
+        held,
+        proof.timeout_seconds,
+    )?;
     let launched = SystemTime::now();
     let mut invocation = Invocation::start(stage, &origin, proof.timeout_seconds)?;
     match case {
@@ -1026,6 +1113,7 @@ fn execute_case(stage: &Path, case: &str, fixture: &[u8], proof: &Proof) -> Resu
             watcher_actor
                 .wait_exit(Duration::from_secs(2))
                 .map_err(failure)?;
+            origin.release_body();
             let first = Invocation::start(stage, &origin, proof.timeout_seconds)?
                 .finish(proof.timeout_seconds)?;
             success(stage, &first, proof)?;
@@ -1050,14 +1138,21 @@ fn execute_case(stage: &Path, case: &str, fixture: &[u8], proof: &Proof) -> Resu
                 let mut actor =
                     windows_pause::OwnedWatcher::open(pid, &watcher, launched).map_err(failure)?;
                 verify_actor_parent(stage, actor.pid(), invocation.child.id(), &watcher)?;
+                if invocation.child.try_wait().map_err(failure)?.is_some() {
+                    return Err(failure(
+                        "owned launcher exited before watcher fault actuation",
+                    ));
+                }
                 if case == "watcher-hung" {
                     actor.pause().map_err(failure)?;
                     thread::sleep(Duration::from_secs(1));
                     actor.resume().map_err(failure)?;
                 } else {
                     taskkill(stage, actor.pid())?;
+                    actor.wait_exit(Duration::from_secs(2)).map_err(failure)?;
                 }
             }
+            origin.release_body();
             let observation = invocation.finish(proof.timeout_seconds)?;
             success(stage, &observation, proof)?;
             let expected = if case == "watcher-hung" {
@@ -1514,9 +1609,35 @@ fn rollback_archive(path: &Path, commit: &Value) -> Result<(), String> {
         .map_err(failure)?;
     transaction.set_two_phase_commit(true);
     transaction.set_quick_repair(true);
+    let active = {
+        let metadata = transaction
+            .open_table(TableDefinition::<&str, u64>::new("ff_archive_meta_u64_v1"))
+            .map_err(failure)?;
+        archive_table_name(
+            metadata
+                .get("store_version")
+                .map_err(failure)?
+                .map(|value| value.value()),
+        )?
+    };
+    let inactive = if active == "ff_archive_records_v1" {
+        "ff_archive_records_v2"
+    } else {
+        "ff_archive_records_v1"
+    };
+    if !transaction
+        .open_table(TableDefinition::<&str, &[u8]>::new(inactive))
+        .map_err(failure)?
+        .is_empty()
+        .map_err(failure)?
+    {
+        return Err(failure(
+            "isolated prefix baseline contains unexpected inactive records",
+        ));
+    }
     {
         let mut records = transaction
-            .open_table(TableDefinition::<&str, &[u8]>::new("ff_archive_records_v2"))
+            .open_table(TableDefinition::<&str, &[u8]>::new(active))
             .map_err(failure)?;
         if records.len().map_err(failure)? != 1 {
             return Err(failure(
@@ -1532,6 +1653,7 @@ fn rollback_archive(path: &Path, commit: &Value) -> Result<(), String> {
                 .map_err(failure)?
         };
         if record.commit_sequence != 1
+            || record.key != commit.lease.key
             || record.output != commit.output
             || record.provenance != commit.provenance
             || record.claim_lease_token != commit.lease.token
@@ -1921,8 +2043,105 @@ mod tests {
                 return Err("origin body differs from real controlled source".into());
             }
             drop(origin);
+            let payload = vec![17_u8; 16384];
+            let origin = Origin::start_controlled(stage, &payload, false, false, true, 2)?;
+            let mut client = TcpStream::connect(origin.address).map_err(failure)?;
+            client
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .map_err(failure)?;
+            client
+                .write_all(b"GET /media HTTP/1.1\r\nHost: owned-origin\r\n\r\n")
+                .map_err(failure)?;
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") && header.len() < 4096 {
+                let mut byte = [0];
+                client.read_exact(&mut byte).map_err(failure)?;
+                header.push(byte[0]);
+            }
+            let mut body = vec![0; 8192];
+            client.read_exact(&mut body).map_err(failure)?;
+            let error = client
+                .read(&mut [0])
+                .expect_err("body remains held before fault acknowledgment");
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) {
+                return Err(failure(error));
+            }
+            origin.release_body();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .map_err(failure)?;
+            client.read_to_end(&mut body).map_err(failure)?;
+            if body != payload {
+                return Err("released body differs from controlled fixture".into());
+            }
             Ok(())
         })
         .expect("delayed real TCP request");
+    }
+
+    #[test]
+    fn archive_oracle_uses_metadata_and_rejects_invalid_rows_and_versions() {
+        let canonical = repo_root().expect("repository root");
+        with_isolated_fixture_root(&canonical, "phase1-active-archive", |stage| {
+            fs::create_dir_all(stage.join("state")).map_err(failure)?;
+            let path = stage.join("state/archive.redb");
+            for version in [1_u64, 2, 99] {
+                {
+                    let database = redb::Database::create(&path).map_err(failure)?;
+                    let transaction = database.begin_write().map_err(failure)?;
+                    {
+                        let mut metadata = transaction
+                            .open_table(TableDefinition::<&str, u64>::new("ff_archive_meta_u64_v1"))
+                            .map_err(failure)?;
+                        metadata.insert("store_version", version).map_err(failure)?;
+                    }
+                    for name in [
+                        "ff_archive_records_v1",
+                        "ff_archive_records_v2",
+                        "ff_archive_leases_v1",
+                    ] {
+                        transaction
+                            .open_table(TableDefinition::<&str, &[u8]>::new(name))
+                            .map_err(failure)?;
+                    }
+                    transaction.commit().map_err(failure)?;
+                }
+                if version == 99 {
+                    if archive_is_empty(stage).is_ok() || archive_record(stage).is_ok() {
+                        return Err("unsupported archive version accepted".into());
+                    }
+                    continue;
+                }
+                if !archive_is_empty(stage)? {
+                    return Err("new archive was not empty".into());
+                }
+                {
+                    let database = redb::Database::open(&path).map_err(failure)?;
+                    let transaction = database.begin_write().map_err(failure)?;
+                    transaction
+                        .open_table(TableDefinition::<&str, &[u8]>::new(archive_table_name(
+                            Some(version),
+                        )?))
+                        .map_err(failure)?
+                        .insert("actual-active-key", b"invalid-record".as_slice())
+                        .map_err(failure)?;
+                    transaction.commit().map_err(failure)?;
+                }
+                if archive_is_empty(stage)? {
+                    return Err("active record incorrectly reported absent".into());
+                }
+                let error =
+                    archive_record(stage).expect_err("corrupt active record must fail decoding");
+                if error.contains("no committed row") {
+                    return Err("reader ignored metadata-active row".into());
+                }
+                fs::remove_file(&path).map_err(failure)?;
+            }
+            Ok(())
+        })
+        .expect("active archive schema boundary");
     }
 }

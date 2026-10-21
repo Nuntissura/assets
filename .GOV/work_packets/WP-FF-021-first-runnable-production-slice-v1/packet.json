@@ -547,33 +547,70 @@
     "current_runtime_attempt": {
       "gate_id": "FF-GATE-RUNTIME-001",
       "verdict": "FAIL",
-      "report": "build/reports/runtime-truth-check-1792548038243491200-424088.json",
-      "source_commit": "dd7d20f7c47a1f374198a6ab6d9111453c20f1be",
+      "report": "build/reports/runtime-truth-check-1792549137980631900-400692.json",
+      "source_commit": "96afa7fd0a369d7596022d8b5529a37ac0e820ef",
       "source_dirty": false,
-      "implementation_commit": "0dfbd843e50b7134e5600b6f9bff6fe4e54ac708",
+      "content_fingerprint": "ab0409552aa45e18ea9917999f788ec8fdef5676925574e6f05f9a3ececb58e2",
       "release_build": {
-        "exit_code": 0,
-        "elapsed_seconds": 72
+        "elapsed_seconds": 6.58,
+        "exit_code": 0
       },
-      "stage": ".fforager-artifacts/runtime-proof/phase1-424088-1792547967253557600",
+      "stage": ".fforager-artifacts/runtime-proof/phase1-400692-1792549072256871500",
       "observations": {
-        "fixture_bytes": 524332,
-        "transport_failure_exit_code": 3,
-        "crash_restart": "BLOCKED_NO_ACTUATOR",
-        "declared_maximum_bytes": 4194304,
-        "external_cancellation_elapsed_ms": 839,
-        "external_cancellation_exit_code": 130,
+        "transferred_bytes": 524332,
+        "oracle_error": "Hardcoded inactive v2 table was empty",
         "predecessor_acceptance": "NOT_REACHED",
-        "watcher_storage_fault_exit_code": 3,
-        "watcher_process_probe_error": "WMIC stdout is not UTF-8",
-        "successful_case_exit_code": 5,
-        "successful_case_error": "byte_limit_exceeded",
-        "watcher_storage_fault_error": "transport_failed"
+        "crash_restart": "BLOCKED_NO_ACTUATOR",
+        "sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873",
+        "watcher_crash_actuation": "PID absent after observed governed shutdown at3980ms; crash not established"
       },
-      "limitations": [
-        "No Phase1 acceptance or closure is established.",
-        "Historical scenario captures remain bound to this exact candidate; later source revisions require explicit versioned binding."
-      ]
-    }
+      "independent_read_only_archive": {
+        "outstanding_leases": 0,
+        "canonical_key_matches": true,
+        "active_v1_rows": 1,
+        "store_version": 1,
+        "source": ".fforager-artifacts/phase1-archive-reader/main.rs",
+        "output_bytes": 524332,
+        "inactive_v2_rows": 0,
+        "exit_code": 0,
+        "commit_sequence": 1,
+        "output": ".fforager-artifacts/phase1-archive-reader/retained-success.stdout",
+        "output_sha256": "2b4d57762581e0b62b405a9d5df49e265d2cac05922ee5365588611598390873"
+      },
+      "limitation": "The retained success case proves an actual committed row; overall scenario and predecessor acceptance remain unproven."
+    },
+    "runtime_attempt_history": [
+      {
+        "gate_id": "FF-GATE-RUNTIME-001",
+        "verdict": "FAIL",
+        "report": "build/reports/runtime-truth-check-1792548038243491200-424088.json",
+        "source_commit": "dd7d20f7c47a1f374198a6ab6d9111453c20f1be",
+        "source_dirty": false,
+        "implementation_commit": "0dfbd843e50b7134e5600b6f9bff6fe4e54ac708",
+        "release_build": {
+          "exit_code": 0,
+          "elapsed_seconds": 72
+        },
+        "stage": ".fforager-artifacts/runtime-proof/phase1-424088-1792547967253557600",
+        "observations": {
+          "fixture_bytes": 524332,
+          "transport_failure_exit_code": 3,
+          "crash_restart": "BLOCKED_NO_ACTUATOR",
+          "declared_maximum_bytes": 4194304,
+          "external_cancellation_elapsed_ms": 839,
+          "external_cancellation_exit_code": 130,
+          "predecessor_acceptance": "NOT_REACHED",
+          "watcher_storage_fault_exit_code": 3,
+          "watcher_process_probe_error": "WMIC stdout is not UTF-8",
+          "successful_case_exit_code": 5,
+          "successful_case_error": "byte_limit_exceeded",
+          "watcher_storage_fault_error": "transport_failed"
+        },
+        "limitations": [
+          "No Phase1 acceptance or closure is established.",
+          "Historical scenario captures remain bound to this exact candidate; later source revisions require explicit versioned binding."
+        ]
+      }
+    ]
   }
 }
