@@ -254,6 +254,14 @@
   "validation": {
     "checks": [
         {
+          "kind": "bounded-full-history-batches",
+          "retained_failure": "Independent r12 PR verify-pr-1792617752445027300-4536 failed during history preflight with actual primary FF-SECRET-E-GIT-TIMEOUT300seconds, acknowledged owned termination/reap, and secondary reader EOF. Workspace/runtime/watcher were not reached. This current timeout is proven; original r8 cause remains UNVERIFIED.",
+          "implementation": "Full sorted history objects are retained. Strict Git metadata and body agreement determine bounded multi-object chunks of8MiB/1024objects, retaining the existing allowed oversized singleton and one original global scan budget. Metadata60seconds and each body process300seconds, concurrent input/output, patterns, body checks, cleanup and fail-closed behavior are unchanged. No per-object spawn, skipped history or deadline increase.",
+          "focused_results": "Canonical unified warnings-denied Clippy PASS0/20.89seconds after equivalent borrowed-map correction; initial lint failure retained. Canonical workspace/all-target/all-feature no-run PASS0/39.97seconds, existing scanner owner20/20 PASS63.40seconds including count1025, allowed singleton and metadata/body mismatch controls. One existing FULL secret-scan --history command PASS0/findings0 in253.64seconds including30.00seconds toolbuild.",
+          "captures": ".fforager-artifacts/product-batch/phase1-history-chunks-*; phase1-r12-independent-pr.* and verify-pr-1792617752445027300-4536.json",
+          "ceiling": "Focused history success does not replace final clean-source literal ARCH, independent canonical PR, same-run runtime/watcher or main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
+        },
+        {
           "kind": "six-helper-effective-input-refresh",
           "retained_failure": "r11 ARCH architecture-check-1792612992572433700-473084 passed the reused payload boundary then timed out300seconds at JournalRecord. The authorized preparation-only batch completed all14 remaining owners in600.99seconds without acceptance claims. Subsequent warmed ARCH architecture-check-1792614838063034900-31056 still timed out300seconds at behavior-stub contracts lib after its helper reset and rewrote the same effective input; all original failure reports are retained.",
           "implementation": "The existing effective-input refresh now covers the six remaining proof-map/public-test/receipt helpers, including their bounded multi-file and generated integration inputs. Current canonical-derived mutation bytes, source/target isolation, actual final-input identity, package profiles, positive then independent-negative ordering, markers and deadlines are preserved; no timestamp restoration or cached verdict substitution.",

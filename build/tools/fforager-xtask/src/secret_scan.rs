@@ -16,6 +16,8 @@ const MAX_GIT_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REPORTED_FINDINGS: usize = 100;
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_mins(1);
 const GIT_BATCH_TIMEOUT: Duration = Duration::from_mins(5);
+const GIT_BATCH_BYTES: u64 = 8 * 1024 * 1024;
+const GIT_BATCH_OBJECTS: usize = 1024;
 const MAX_TAG_DEPTH: usize = 16;
 const HOOKS_PATH: &str = "build/git-hooks";
 const PRE_COMMIT_HOOK: &[u8] = b"#!/bin/sh\nset -eu\nrepo_root=$(git rev-parse --show-toplevel)\ncd \"$repo_root\"\nhook_target=.fforager-artifacts/cargo-target\nif ! CARGO_TARGET_DIR=\"$hook_target\" cargo build --quiet --manifest-path build/Cargo.toml --locked -p fforager-xtask >/dev/null 2>&1; then\n  echo \"FF-SECRET-E-BOOTSTRAP: scanner build failed; compiler output suppressed\" >&2\n  exit 1\nfi\nscanner=\"$hook_target/debug/fforager-xtask\"\nif [ -x \"$scanner.exe\" ]; then scanner=\"$scanner.exe\"; fi\nexec \"$scanner\" secret-scan --staged\n";
@@ -607,12 +609,100 @@ fn scan_objects_batch(
             "FF-SECRET-E-SCAN-LIMIT: batch objects exceed {MAX_SCAN_OBJECTS}"
         ));
     }
+    let input = batch_input(&objects)?;
+    let metadata = git_bytes_with_input(root, &["cat-file", "--batch-check"], Some(input))?;
+    let sizes = batch_object_sizes(&metadata, &objects, expected_type)?;
+    for chunk in partition_batch_objects(objects, &sizes) {
+        let chunk_sizes = chunk.keys().map(|id| (id.clone(), sizes[id])).collect();
+        scan_object_chunk(root, chunk, expected_type, chunk_sizes, findings, budget)?;
+    }
+    Ok(())
+}
+
+fn batch_input(objects: &BTreeMap<String, String>) -> Result<Vec<u8>, String> {
     let mut input = Vec::with_capacity(objects.len() * 65);
     for object_id in objects.keys() {
         validate_object_id(object_id)?;
         input.extend_from_slice(object_id.as_bytes());
         input.push(b'\n');
     }
+    Ok(input)
+}
+
+fn batch_object_sizes(
+    metadata: &[u8],
+    objects: &BTreeMap<String, String>,
+    expected_type: Option<&str>,
+) -> Result<BTreeMap<String, u64>, String> {
+    let text =
+        std::str::from_utf8(metadata).map_err(|_| "FF-SECRET-E-GIT: non-UTF-8 batch metadata")?;
+    let mut sizes = BTreeMap::new();
+    for line in text.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if line.len() > 256 || fields.len() != 3 {
+            return Err("FF-SECRET-E-GIT: malformed batch metadata".to_owned());
+        }
+        validate_object_id(fields[0])?;
+        if !objects.contains_key(fields[0]) || sizes.contains_key(fields[0]) {
+            return Err("FF-SECRET-E-GIT: unexpected or duplicate batch metadata".to_owned());
+        }
+        if expected_type.is_some_and(|expected| expected != fields[1]) {
+            return Err("FF-SECRET-E-OBJECT-TYPE: batch metadata type mismatch".to_owned());
+        }
+        let size = fields[2]
+            .parse::<u64>()
+            .map_err(|_| "FF-SECRET-E-OBJECT-SIZE: invalid batch metadata size")?;
+        if size > MAX_BLOB_BYTES {
+            return Err("FF-SECRET-E-OBJECT-LIMIT: batch metadata exceeds object limit".to_owned());
+        }
+        sizes.insert(fields[0].to_owned(), size);
+    }
+    if sizes.len() != objects.len() {
+        return Err("FF-SECRET-E-GIT: missing batch metadata".to_owned());
+    }
+    Ok(sizes)
+}
+
+fn partition_batch_objects(
+    objects: BTreeMap<String, String>,
+    sizes: &BTreeMap<String, u64>,
+) -> Vec<BTreeMap<String, String>> {
+    let mut chunks = Vec::new();
+    let mut chunk = BTreeMap::new();
+    let mut bytes = 0;
+    for (id, source) in objects {
+        let size = sizes[&id];
+        if !chunk.is_empty() && (chunk.len() == GIT_BATCH_OBJECTS || bytes + size > GIT_BATCH_BYTES)
+        {
+            chunks.push(std::mem::take(&mut chunk));
+            bytes = 0;
+        }
+        bytes += size;
+        chunk.insert(id, source);
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+fn scan_object_chunk(
+    root: &Path,
+    objects: BTreeMap<String, String>,
+    expected_type: Option<&'static str>,
+    sizes: BTreeMap<String, u64>,
+    findings: &mut Vec<Finding>,
+    budget: &mut ScanBudget,
+) -> Result<(), String> {
+    if objects.is_empty() {
+        return Ok(());
+    }
+    if objects.len() > MAX_SCAN_OBJECTS {
+        return Err(format!(
+            "FF-SECRET-E-SCAN-LIMIT: batch objects exceed {MAX_SCAN_OBJECTS}"
+        ));
+    }
+    let input = batch_input(&objects)?;
     let mut child = Command::new("git")
         .args(["cat-file", "--batch"])
         .current_dir(root)
@@ -636,8 +726,9 @@ fn scan_objects_batch(
         result
     });
     let initial_budget = *budget;
-    let reader =
-        thread::spawn(move || read_batch_objects(stdout, objects, expected_type, initial_budget));
+    let reader = thread::spawn(move || {
+        read_batch_objects(stdout, objects, expected_type, initial_budget, Some(&sizes))
+    });
     let status = super::wait_for_child(&mut child, "git", &["cat-file"], GIT_BATCH_TIMEOUT);
     let read_result = reader
         .join()
@@ -699,6 +790,7 @@ fn read_batch_objects(
     mut sources: BTreeMap<String, String>,
     expected_type: Option<&str>,
     mut budget: ScanBudget,
+    sizes: Option<&BTreeMap<String, u64>>,
 ) -> Result<(Vec<Finding>, ScanBudget), String> {
     let mut output = BufReader::new(stdout);
     let mut findings = Vec::new();
@@ -730,6 +822,12 @@ fn read_batch_objects(
         let size = fields[2]
             .parse::<u64>()
             .map_err(|error| format!("FF-SECRET-E-OBJECT-SIZE: parse batch size: {error}"))?;
+        if sizes
+            .as_ref()
+            .is_some_and(|sizes| sizes.get(fields[0]) != Some(&size))
+        {
+            return Err("FF-SECRET-E-OBJECT-SIZE: batch body differs from metadata".to_owned());
+        }
         if size > MAX_BLOB_BYTES {
             return Err(format!(
                 "FF-SECRET-E-OBJECT-LIMIT: {} is {size} bytes; maximum scannable size is {MAX_BLOB_BYTES}",
@@ -1108,11 +1206,23 @@ fn git_text(root: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    git_bytes_with_input(root, args, None)
+}
+
+fn git_bytes_with_input(
+    root: &Path,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+) -> Result<Vec<u8>, String> {
     let mut child = Command::new("git")
         .args(args)
         .current_dir(root)
         .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -1122,6 +1232,15 @@ fn git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
                 git_subcommand(args)
             )
         })?;
+    let writer = if let Some(input) = input {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or("FF-SECRET-E-GIT: input pipe unavailable")?;
+        Some(thread::spawn(move || stdin.write_all(&input)))
+    } else {
+        None
+    };
     let stdout = child
         .stdout
         .take()
@@ -1136,24 +1255,36 @@ fn git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let subcommand = git_subcommand(args);
     let safe_args = [subcommand.as_str()];
     let status = super::wait_for_child(&mut child, "git", &safe_args, GIT_COMMAND_TIMEOUT);
-    let bytes = reader
+    let read_result = reader
         .join()
-        .map_err(|_| "FF-SECRET-E-GIT: Git output reader panicked".to_owned())?
-        .map_err(|error| format!("FF-SECRET-E-GIT: read Git output: {error}"))?;
-    if bytes.len() as u64 > MAX_GIT_OUTPUT_BYTES {
-        return Err(format!(
-            "FF-SECRET-E-SCAN-LIMIT: git {subcommand} output exceeds {MAX_GIT_OUTPUT_BYTES} bytes"
-        ));
-    }
-    let status = status.map_err(|_| {
+        .map_err(|_| "FF-SECRET-E-GIT: Git output reader panicked".to_owned())
+        .and_then(|result| {
+            result.map_err(|error| format!("FF-SECRET-E-GIT: read Git output: {error}"))
+        });
+    let write_result = writer.map_or(Ok(()), |writer| {
+        writer
+            .join()
+            .map_err(|_| "FF-SECRET-E-GIT: input writer panicked".to_owned())
+            .and_then(|result| {
+                result.map_err(|error| format!("FF-SECRET-E-GIT: write Git input: {error}"))
+            })
+    });
+    let status = status.map_err(|error| {
         format!(
-            "FF-SECRET-E-GIT-TIMEOUT: git {subcommand} exceeded {} seconds",
+            "FF-SECRET-E-GIT-TIMEOUT: git {subcommand} exceeded {} seconds; {error}",
             GIT_COMMAND_TIMEOUT.as_secs()
         )
     })?;
     if !status.success() {
         return Err(format!(
             "FF-SECRET-E-GIT: git {subcommand} exited {status}; stderr suppressed",
+        ));
+    }
+    let bytes = read_result?;
+    write_result?;
+    if bytes.len() as u64 > MAX_GIT_OUTPUT_BYTES {
+        return Err(format!(
+            "FF-SECRET-E-SCAN-LIMIT: git {subcommand} output exceeds {MAX_GIT_OUTPUT_BYTES} bytes"
         ));
     }
     Ok(bytes)
@@ -1362,6 +1493,7 @@ mod tests {
 
     #[test]
     fn batch_timeout_preserves_primary_status_and_truncated_reader_error() {
+        assert_multi_batch_guards();
         let object = "a".repeat(40);
         let objects = BTreeMap::from([(object.clone(), "fixture".to_owned())]);
         let input = format!("{object} blob 4\nab");
@@ -1371,6 +1503,7 @@ mod tests {
                 objects.clone(),
                 Some("blob"),
                 ScanBudget::default(),
+                None,
             )
         };
         let truncated = read().unwrap_err();
@@ -1389,6 +1522,101 @@ mod tests {
             finish_batch_scan(Ok(()), read(), Ok(())).unwrap_err(),
             truncated
         );
+    }
+
+    fn assert_multi_batch_guards() {
+        let first = "a".repeat(40);
+        let last = "b".repeat(40);
+        let objects = BTreeMap::from([
+            (first.clone(), "first".to_owned()),
+            (last.clone(), "last".to_owned()),
+        ]);
+        let metadata = format!("{first} blob {GIT_BATCH_BYTES}\n{last} blob 1\n");
+        let sizes = batch_object_sizes(metadata.as_bytes(), &objects, Some("blob")).unwrap();
+        let chunks = partition_batch_objects(objects.clone(), &sizes);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks.iter().map(BTreeMap::len).sum::<usize>(), 2);
+        let many = (0..=GIT_BATCH_OBJECTS)
+            .map(|index| (format!("{index:040x}"), "empty".to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        let zero_sizes = many.keys().map(|id| (id.clone(), 0)).collect();
+        let count_chunks = partition_batch_objects(many, &zero_sizes);
+        assert_eq!(
+            count_chunks.iter().map(BTreeMap::len).collect::<Vec<_>>(),
+            [1024, 1]
+        );
+        let large_sizes = BTreeMap::from([(first.clone(), MAX_BLOB_BYTES), (last.clone(), 1)]);
+        assert_eq!(
+            partition_batch_objects(objects.clone(), &large_sizes).len(),
+            2
+        );
+        assert!(
+            read_batch_objects(
+                format!("{first} blob 1\nx\n").as_bytes(),
+                BTreeMap::from([(first.clone(), "size mismatch".to_owned())]),
+                Some("blob"),
+                ScanBudget::default(),
+                Some(&BTreeMap::from([(first.clone(), 2)])),
+            )
+            .unwrap_err()
+            .contains("differs from metadata")
+        );
+        for invalid in [
+            format!("{first} blob 1\n"),
+            format!("{first} blob 1\n{first} blob 1\n"),
+            format!("{} blob 1\n{last} blob 1\n", "c".repeat(40)),
+            format!("{first} commit 1\n{last} blob 1\n"),
+            format!("{first} blob invalid\n{last} blob 1\n"),
+            format!("{first} blob {}\n{last} blob 1\n", MAX_BLOB_BYTES + 1),
+        ] {
+            assert!(batch_object_sizes(invalid.as_bytes(), &objects, Some("blob")).is_err());
+        }
+        let secret = format!("{}{}", ["AI", "za"].concat(), "A".repeat(35));
+        let mut budget = ScanBudget::default();
+        let mut findings = Vec::new();
+        for (id, bytes) in [(first, "clean"), (last, secret.as_str())] {
+            let body = format!("{id} blob {}\n{bytes}\n", bytes.len());
+            let source = BTreeMap::from([(id.clone(), "fixture".to_owned())]);
+            let sizes = BTreeMap::from([(id, bytes.len() as u64)]);
+            let (found, updated) = read_batch_objects(
+                body.as_bytes(),
+                source.clone(),
+                Some("blob"),
+                budget,
+                Some(&sizes),
+            )
+            .unwrap();
+            budget = updated;
+            findings.extend(found);
+            assert!(
+                read_batch_objects(
+                    body.as_bytes(),
+                    source.clone(),
+                    Some("blob"),
+                    ScanBudget {
+                        objects: MAX_SCAN_OBJECTS,
+                        bytes: 0
+                    },
+                    Some(&sizes),
+                )
+                .is_err()
+            );
+            assert!(
+                read_batch_objects(
+                    body.as_bytes(),
+                    source,
+                    Some("blob"),
+                    ScanBudget {
+                        objects: 0,
+                        bytes: MAX_SCAN_BYTES
+                    },
+                    Some(&sizes),
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(budget.objects, 2);
+        assert_eq!(findings.len(), 1);
     }
 
     #[test]
