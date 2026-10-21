@@ -8276,6 +8276,26 @@ fn validate_native_exception_reachability(
                         member.name
                     )
                 })?;
+            // Only the two explicitly authorized ordinary-transport composition edges
+            // can carry native reachability without becoming native dependency decisions.
+            let approved_transitive_target = match (
+                exception_id.as_str(),
+                member.name.as_str(),
+                member.manifest.as_str(),
+                is_product,
+            ) {
+                ("FF-DEC-002", "fforager", "product/crates/fforager/Cargo.toml", true) => {
+                    Some(("fforager-net", "product/crates/fforager-net/Cargo.toml"))
+                }
+                (
+                    "FF-DEC-002",
+                    "fforager-worker",
+                    "product/apps/fforager-worker/Cargo.toml",
+                    true,
+                ) => Some(("fforager", "product/crates/fforager/Cargo.toml")),
+                _ => None,
+            };
+            let mut approved_transitive_edge = false;
             for dependency in &workspace_node.deps {
                 let direct_package_id = dependency.pkg.to_string();
                 let mut pending = vec![direct_package_id.clone()];
@@ -8314,6 +8334,36 @@ fn validate_native_exception_reachability(
                             "FF-ARCH-E-NATIVE-EDGE-ATTRIBUTION: direct package {direct_package_id} is absent from metadata"
                         )
                     })?;
+                if let Some((expected_name, expected_manifest)) = approved_transitive_target {
+                    let target_member = policy.members.iter().find(|target| {
+                        target.name == expected_name
+                            && target.manifest == expected_manifest
+                            && target.shipped
+                    });
+                    if direct_package.name.as_str() != expected_name
+                        || direct_package.version.to_string() != "0.1.0"
+                        || direct_package.source.is_some()
+                        || !metadata.workspace_members.contains(&dependency.pkg)
+                        || !direct_package
+                            .manifest_path
+                            .as_std_path()
+                            .ends_with(expected_manifest)
+                        || target_member.is_none()
+                        || dependency.name != expected_name.replace('-', "_")
+                        || dependency.dep_kinds.is_empty()
+                        || dependency.dep_kinds.iter().any(|kind| {
+                            kind.kind != cargo_metadata::DependencyKind::Normal
+                                || kind.target.is_some()
+                        })
+                    {
+                        return Err(format!(
+                            "FF-ARCH-E-NATIVE-EDGE-ATTRIBUTION: {} -> {} is outside the exact approved FF-DEC-002 workspace composition route",
+                            member.name, direct_package.name
+                        ));
+                    }
+                    approved_transitive_edge = true;
+                    continue;
+                }
                 let decision = policy.dependency_decisions.iter().find(|decision| {
                     decision.consumer == member.name
                         && decision.name == direct_package.name.as_str()
@@ -8331,6 +8381,15 @@ fn validate_native_exception_reachability(
                         member.name, direct_package.name
                     ));
                 }
+            }
+            if approved_transitive_target.is_some() {
+                if !approved_transitive_edge {
+                    return Err(format!(
+                        "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: {} lacks its exact approved FF-DEC-002 workspace composition edge",
+                        member.name
+                    ));
+                }
+                continue;
             }
             let direct_exception_decisions = policy
                 .dependency_decisions
@@ -9258,7 +9317,12 @@ fn read_native_dependency_exceptions(
                     && status == "ACTIVE_SHIPPED_PRODUCT_NARROW_ONLY"
                     && allowed_prerequisite_consumers
                         == BTreeSet::from(["fforager-transport".to_owned()])
-                    && allowed_product_consumers == BTreeSet::from(["fforager-net".to_owned()])
+                    && allowed_product_consumers
+                        == BTreeSet::from([
+                            "fforager-net".to_owned(),
+                            "fforager".to_owned(),
+                            "fforager-worker".to_owned(),
+                        ])
                     && allowed_direct_dependencies
                         == BTreeSet::from(["reqwest".to_owned(), "rustls".to_owned()])
                     && allowed_versions
@@ -9297,7 +9361,7 @@ fn read_native_dependency_exceptions(
                             ),
                         ])
                     && ordinary_transport_resolved_closure_sha256
-                        == "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+                        == "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
                     && ordinary_transport_registry_source_closure_sha256
                         == "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
                     && allowed_runtime_classes
@@ -17672,8 +17736,8 @@ mod tests {
             |root| {
                 replace_file_text(
                     &root.join(".GOV/rules/build-rules.yaml"),
-                    "allowed_product_consumers: [fforager-net]",
-                    "allowed_product_consumers: [fforager-core, fforager-net]",
+                    "allowed_product_consumers: [fforager-net, fforager, fforager-worker]",
+                    "allowed_product_consumers: [fforager-net, fforager, fforager-worker, fforager-core]",
                 );
             },
             "FF-ARCH-E-EXCEPTION-SCHEMA",
@@ -18085,7 +18149,7 @@ mod tests {
         );
         assert_eq!(
             yaml_string(exception, "ordinary_transport_resolved_closure_sha256").unwrap(),
-            "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+            "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
         );
         assert_eq!(
             yaml_string(
@@ -18129,9 +18193,18 @@ mod tests {
 
     #[test]
     fn native_exception_accepts_only_the_exact_approved_product_consumer() {
+        let _execution_guard = ARCHITECTURE_CHECK_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = architecture_sandbox("native-exception-approved-product-resolve-graph");
-        mutate_approved_shipped_product_native_reachability(&root);
-        architecture_check(&root).expect("exact approved fforager-net reachability");
+        let policy: ArchitecturePolicy =
+            read_toml(&root.join("build/architecture-policy.toml")).unwrap();
+        let native_exceptions =
+            read_native_dependency_exceptions(&root.join(&policy.exception_authority)).unwrap();
+        let tooling: ToolingPolicy = read_toml(&root.join("build/tooling-policy.toml")).unwrap();
+        let metadata = cargo_metadata(&root, &policy, &tooling.supported_hosts[0]).unwrap();
+        validate_native_exception_reachability(&policy, &metadata, &native_exceptions)
+            .expect("exact approved net, facade, and worker reachability");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -19082,46 +19155,6 @@ product_root = "product"
             &root.join("build/architecture-policy.toml"),
             "[[dependency_decisions]]\nname = \"toml\"",
             "[[dependency_decisions]]\nname = \"wreq\"\nversion = \"6.0.0-rc.29\"\nconsumer = \"fforager-core\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only shipped consumer bypass probe.\"\nnative = false\nowner = \"WP-FF-015-wreq-transport-adjudication\"\nallowed_consumers = [\"fforager-core\"]\nreason = \"Mutation-only reachability proof.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-015-wreq-transport-adjudication-v1-AC-001\"\nfeatures = [\"stream\", \"tokio-rt\", \"webpki-roots\"]\ndefault_features = false\n\n[[dependency_decisions]]\nname = \"toml\"",
-        );
-    }
-
-    fn mutate_approved_shipped_product_native_reachability(root: &Path) {
-        replace_file_text(
-            &root.join("build/Cargo.toml"),
-            "members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-contracts\",",
-            "members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-net\",\n    \"../product/crates/fforager-contracts\",",
-        );
-        replace_file_text(
-            &root.join("build/Cargo.toml"),
-            "default-members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-contracts\",",
-            "default-members = [\n    \"tools/fforager-xtask\",\n    \"crates/fforager-javascript\",\n    \"crates/fforager-transport\",\n    \"../product/crates/fforager-net\",\n    \"../product/crates/fforager-contracts\",",
-        );
-        let manifest = root.join("product/crates/fforager-net/Cargo.toml");
-        fs::create_dir_all(manifest.parent().unwrap().join("src")).unwrap();
-        fs::write(
-            &manifest,
-            "[package]\nname = \"fforager-net\"\nversion = \"0.1.0\"\nworkspace = \"../../../build\"\nedition = \"2024\"\nrust-version = \"1.97.1\"\nlicense = \"MIT OR Apache-2.0\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nreqwest.workspace = true\nrustls.workspace = true\n\n[lints]\nworkspace = true\n",
-        )
-        .unwrap();
-        fs::write(
-            manifest.parent().unwrap().join("src/lib.rs"),
-            "#![forbid(unsafe_code)]\n//! Mutation-only approved shipped native consumer.\n",
-        )
-        .unwrap();
-        replace_file_text(
-            &root.join("build/Cargo.lock"),
-            "[[package]]\nname = \"fforager-diagnostics-contract\"",
-            "[[package]]\nname = \"fforager-net\"\nversion = \"0.1.0\"\ndependencies = [\n \"reqwest\",\n \"rustls\",\n]\n\n[[package]]\nname = \"fforager-diagnostics-contract\"",
-        );
-        replace_file_text(
-            &root.join("build/architecture-policy.toml"),
-            "[[members]]\nname = \"fforager-core\"",
-            "[[members]]\nname = \"fforager-net\"\nmanifest = \"product/crates/fforager-net/Cargo.toml\"\nsource_root = \"product/crates/fforager-net/src\"\nlayer = \"adapter\"\nartifact_role = \"mutation_only_approved_shipped_transport\"\nshipped = true\ntest_only = false\npublish_allowed = false\nallowed_internal_dependencies = []\nsplit_trigger = \"WP-FF-017-ordinary-transport-decision-v1-AC-001\"\nfeature_owner = \"WP-FF-017-ordinary-transport-decision-v1\"\nprofile = \"mutation_only_product_reachability\"\nremoval_condition = \"Mutation sandbox is deleted after the assertion.\"\nruntime_native_constraint_ref = \"FF-START-BOUNDARY-001\"\nunsafe_policy_ref = \"FF-BUILD-050\"\nexception_policy_ref = \"FF-BUILD-052\"\n\n[[members]]\nname = \"fforager-core\"",
-        );
-        replace_file_text(
-            &root.join("build/architecture-policy.toml"),
-            "[[dependency_decisions]]\nname = \"toml\"",
-            "[[dependency_decisions]]\nname = \"reqwest\"\nversion = \"0.13.4\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved product-native consumer.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise the positive product-authorized reachability branch.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"http2\", \"rustls-no-provider\", \"stream\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"rustls\"\nversion = \"0.23.46\"\nconsumer = \"fforager-net\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only proof of the exact approved ring provider edge.\"\nnative = true\nowner = \"WP-FF-023-dependency-security-remediation\"\nallowed_consumers = [\"fforager-net\"]\nreason = \"Exercise exact rustls product-native attribution.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-023-dependency-security-remediation-v1-AC-001\"\nfeatures = [\"ring\", \"std\", \"tls12\"]\ndefault_features = false\nexception_id = \"FF-DEC-002\"\n\n[[dependency_decisions]]\nname = \"toml\"",
         );
     }
 

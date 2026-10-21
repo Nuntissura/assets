@@ -103,14 +103,14 @@ exception_authority:
       owner: WP-FF-023-dependency-security-remediation
       approval_id: WP-FF-023-dependency-security-remediation-v1-AC-001
       allowed_prerequisite_consumers: [fforager-transport]
-      allowed_product_consumers: [fforager-net]
+      allowed_product_consumers: [fforager-net, fforager, fforager-worker]
       allowed_direct_dependencies: [reqwest, rustls]
       allowed_versions: ["reqwest@0.13.4", "ring@0.17.14", "rustls@0.23.46"]
       allowed_native_link_packages: ["ring@0.17.14"]
       allowed_native_runtime_packages: ["rustls-platform-verifier@0.7.0"]
       allowed_package_archive_sha256: ["ring@0.17.14=a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7", "rustls-platform-verifier@0.7.0=26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"]
       allowed_package_source_inventory_sha256: ["ring@0.17.14=60be074c360264320b3fa0a46515ca828e44954988d8843ad3766bf84fc452d3", "rustls-platform-verifier@0.7.0=8d7a222bf3a643ce4c2003c1ede94bbd0d4e10443271602ab445c9d940ac40b0"]
-      ordinary_transport_resolved_closure_sha256: "ec38435517372f6afde502e138537603a66dc75f10e56a251e56ce183d5e3251"
+      ordinary_transport_resolved_closure_sha256: "6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388"
       ordinary_transport_registry_source_closure_sha256: "929ab243eb663039dbc457eda301eb375fb3c284c586da41ae8d660bfabdcb8c"
       allowed_runtime_classes: [non_shipped_phase0_prerequisite, shipped_rust_product]
       allow_build_scripts: true
@@ -121,7 +121,7 @@ exception_authority:
       allow_product_use: true
       allow_packaging_or_release: true
       promotion_requires_new_operator_decision: false
-      reason: The Operator originally approved shipped reqwest 0.13.4 with rustls 0.23.42, rustls-no-provider, and native ring 0.17.14 for Ferric's ordinary transport under narrow Ferric-owned policy controls; WP-FF-023-dependency-security-remediation-v1-AC-001 reauthorizes the five exact security patch versions with the same provider, feature, native, and consumer boundaries; the exact locked ring crate includes a digest-pinned packaged Windows assembly-object inventory, and rustls-no-provider selects rustls-platform-verifier 0.7.0 whose Windows FFI remains supply-chain governed even though Ferric's provider-bound ClientConfig bypasses it at runtime.
+      reason: The Operator originally approved shipped reqwest 0.13.4 with rustls 0.23.42, rustls-no-provider, and native ring 0.17.14 for Ferric's ordinary transport under narrow Ferric-owned policy controls; WP-FF-023-dependency-security-remediation-v1-AC-001 reauthorizes the five exact security patch versions with the same provider, feature and native boundaries; the separately approved narrow WP021 composition decision permits only fforager -> fforager-net and fforager-worker -> fforager -> fforager-net as normal first-party callers, while fforager-net remains the only direct product reqwest/rustls consumer; the exact locked ring crate includes a digest-pinned packaged Windows assembly-object inventory, and rustls-no-provider selects rustls-platform-verifier 0.7.0 whose Windows FFI remains supply-chain governed even though Ferric's provider-bound ClientConfig bypasses it at runtime.
       removal_trigger: Replace only through a new explicit Operator decision that re-proves the exact provider, native-link, feature, consumer, runtime-class, policy-control, and staged-runtime boundaries.
     - id: FF-DEC-003
       kind: native_ffi_and_unsafe_boundary

@@ -11,6 +11,13 @@
     "updated_at_utc": "2026-10-21T06:53:43Z"
   },
   "authorization": {
+    "ordinary_transport_caller_approval": {
+      "source": "operator_message",
+      "reference": "Approve the narrow caller amendment",
+      "boundary": "FF-DEC-002 permits only fforager -> fforager-net and fforager-worker -> fforager -> fforager-net as normal first-party callers; fforager-net remains the sole direct product reqwest/rustls consumer. Dependency versions, features, providers, native APIs and supply-chain pins remain unchanged.",
+      "reviewed_proposal_sha256": "9fe29bbfe63bae84e347d6bb840740bc05f2612e3f1bb50e910173549e5da4b3",
+      "composed_profile_reconciliation": "Subsequent explicit Operator permission covers necessary Phase1 fixes and scope expansion. Exact locked ordinary-profile metadata contains the same111 package identities, sources and edges; only windows-sys0.61.2 adds Wdk_System_SystemServices, Win32_System_Diagnostics and Win32_System_Diagnostics_Debug from the already-approved storage/validator manifests. Pin the complete actual composition6b94d937622dc36f58d37908ee686791f9ff741bb6ec2cf817b01b6949243388 without projecting features away; retain the prior ec384355 profile and failed positive-control capture as history."
+    },
     "current_closure_direction": {
       "source": "operator_message",
       "reference": "Bring the existing Phase 1/WP021 implementation to completion using parallel implementation and adversarial review, one shared Cargo manager, agreed selective cleanup and warm artifact reuse; perform necessary proof and dependency work, then merge only after required acceptance passes.",
@@ -75,11 +82,10 @@
     "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "Current r5 twelve-case boundary has not executed for the final source.",
-      "WP024 predecessor-state correction is not yet contained; aggregate promotion remains blocked until actual canonical proof.",
+      "Final source-bound canonical runtime and watcher proof remain pending.",
       "Final Phase1 canonical acceptance and main containment remain unproven."
     ],
-    "next_action": "Run the existing twelve-case boundary at this clean source-bound candidate; report individual case guards separately from prerequisite promotion, then complete required canonical acceptance and main containment without weakening original requirements.",
+    "next_action": "Apply the explicitly approved narrow FF-DEC-002 caller amendment, obtain focused checker proof and literal ARCH PASS at the next clean declaration, then hand the single canonical PR/runtime/watcher execution to the independent validator before closure and main containment.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -247,6 +253,15 @@
   },
   "validation": {
     "checks": [
+      {
+        "kind": "approved-phase1-transport-composition",
+        "retained_architecture_failure": "FF-GATE-ARCH-001 report1792578671565629000-312672 at clean dd410eb2 failed native caller reachability; not relabeled PASS.",
+        "retained_focused_failure": "phase1-ff002-mutations exited101 at shared positive control before the mutation: ordinary profile ec384355 pin differed from actual6b94d937 composition.",
+        "reconciliation": "Independent current/prerequisite ordinary metadata comparison reproduced111 package identities with unchanged sources and edges; only the three already-approved windows-sys features differ. Strict complete closure validation remains enabled.",
+        "focused_results": "Reconciled owning build18.66s; existing mutation suite1/1 in401.93s, actual unauthorized resolve1/1 in6.70s, full real-workspace positive1/1 in421.93s and stale approval1/1 in0.66s. Independent review narrowed only that positive to the same actual resolve boundary; its owning rerun passed1/1 in3.68s without repeating shared fixtures.",
+        "captures": ".fforager-artifacts/product-batch/phase1-ff002-reconciled-*",
+        "acceptance_boundary": "Focused implementation evidence only; final clean declared ARCH, independent canonical PR/runtime/watcher and main containment remain pending."
+      },
       {
         "kind": "focused-owning-feedback",
         "source_code": "dd6483ac5cef60793cebda71fe9e7c9e47ad246f",
