@@ -11,6 +11,11 @@
     "updated_at_utc": "2026-10-21T00:17:58Z"
   },
   "authorization": {
+    "current_closure_direction": {
+      "source": "operator_message",
+      "reference": "Bring the existing Phase 1/WP021 implementation to completion using parallel implementation and adversarial review, one shared Cargo manager, agreed selective cleanup and warm artifact reuse; perform necessary proof and dependency work, then merge only after required acceptance passes.",
+      "proof_boundary": "This resumes necessary verification and authorizes the smallest required dependency work. Earlier implementation-start sequencing overrides remain historical; no retrospective proof predeclaration or predecessor containment is asserted."
+    },
     "source": "operator_message",
     "reference": "Create a Phase 1 runnable-production-slice work packet, ensure it is completed before WP-FF-011, commit and push the packet changes, then start WP-FF-010.",
     "recorded_at_utc": "2026-08-09T15:39:12Z",
@@ -40,7 +45,8 @@
     ],
     "decision_ids": [
       "FF-DEC-002",
-      "FF-DEC-004"
+      "FF-DEC-004",
+      "FF-DEC-005"
     ]
   },
   "source_control": {
@@ -67,7 +73,7 @@
       "Strict staged multi-artifact proof contract and actual scenarios remain unproven/deferred; original runtime acceptance remains unsatisfied.",
       "No product-readiness, accepted runtime behavior, phase completion or main containment is claimed."
     ],
-    "next_action": "Implement the existing bounded direct-HTTP product slice with parallel product agents now, reusing warm Cargo and existing contracts. Do not resume tests/proofs or create ceremony blockers; preserve original acceptance and unproven prerequisite/proof gaps for later explicit verification direction.",
+    "next_action": "Finish the bounded direct-HTTP implementation and independently reviewed versioned runtime-proof transition; resolve exact predecessor proof gaps, then execute required canonical acceptance through one shared Cargo manager reusing warm artifacts. Commit, push and merge only after acceptance passes; prove main containment before VALIDATED.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -99,6 +105,7 @@
       ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/refinement.json",
       ".GOV/taskboard/taskboard.yaml",
       ".GOV/id-registry.yaml",
+      ".GOV/rules/build-rules.yaml",
       "build/Cargo.toml",
       "build/Cargo.lock",
       "build/architecture-policy.toml",

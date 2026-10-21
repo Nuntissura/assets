@@ -78,13 +78,14 @@ fn main() -> std::process::ExitCode {
             let (code, exit) = match &error {
                 fforager::FetchError::InvalidRequest(_) => ("invalid_request", 2),
                 fforager::FetchError::Cancelled => ("cancelled", 130),
+                fforager::FetchError::TimedOut => ("timed_out", 124),
                 fforager::FetchError::Transport(_) => ("transport_failed", 3),
                 fforager::FetchError::Storage(_) => ("storage_failed", 4),
                 fforager::FetchError::LimitExceeded => ("limit_exceeded", 5),
             };
             eprintln!(
                 "{}",
-                serde_json::json!({"status":"error","code":code,"detail":format!("{error:?}")})
+                serde_json::json!({"status":"error","code":code,"detail":error.to_string()})
             );
             std::process::ExitCode::from(exit)
         }

@@ -3,6 +3,13 @@
 
 mod address;
 
+/// Parses the ordinary URL before a caller opens durable job state.
+/// # Errors
+/// Rejects invalid schemes, authorities, credentials, and fragments.
+pub fn validate_url(input: &str) -> Result<(), TransportError> {
+    address::parse_url(input).map(|_| ())
+}
+
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING};
 use std::fmt;
 use std::future::Future;

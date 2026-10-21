@@ -751,11 +751,14 @@ name = "fforager-xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "fforager-contracts",
+ "redb",
  "saphyr",
  "serde",
  "serde_json",
  "sha2",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

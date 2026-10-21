@@ -98,6 +98,19 @@ fn stop_requested(path: &Path) -> io::Result<bool> {
     Ok(bytes == b"stop\n")
 }
 
+fn heartbeat(root: &Path, worker_pid: u32, sequence: u64) -> io::Result<()> {
+    let temporary = root.join("heartbeat.tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let message = serde_json::json!({"schema":"ff.watcher-heartbeat@1", "worker_pid":worker_pid, "watcher_pid":std::process::id(), "sequence":sequence});
+    serde_json::to_writer(&mut file, &message).map_err(io::Error::other)?;
+    file.flush()?;
+    drop(file);
+    fs::rename(temporary, root.join("heartbeat.json"))
+}
+
 fn run(options: Options) -> io::Result<()> {
     let started = Instant::now();
     fs::create_dir_all(&options.state_dir)?;
@@ -131,7 +144,12 @@ fn run(options: Options) -> io::Result<()> {
     ready_file.sync_all()?;
     drop(ready_file);
     let mut exited_at = None;
+    let mut heartbeat_sequence = 1_u64;
     loop {
+        heartbeat(&options.state_dir, options.worker_pid, heartbeat_sequence)?;
+        heartbeat_sequence = heartbeat_sequence
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("heartbeat sequence exhausted"))?;
         if stop_requested(&options.stop_file)? {
             event(
                 &mut log,

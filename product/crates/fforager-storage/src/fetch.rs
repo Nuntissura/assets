@@ -9,7 +9,9 @@ use fforager_contracts::{
     AssetId, DerivedOutputId, FilesystemProfileContract, JobId, LeaseToken,
     ReconciledArchiveOutput, TransactionId,
 };
-use fforager_core::engine::{FetchError, FetchRequest, FetchResult, FetchStorage, TransferReceipt};
+use fforager_core::engine::{
+    FetchControl, FetchError, FetchRequest, FetchResult, FetchStorage, TransferReceipt,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -59,8 +61,9 @@ impl DurableFetchStorage {
         Self
     }
 
-    fn session(request: &FetchRequest) -> Result<Session, FetchError> {
+    fn session(request: &FetchRequest, control: &FetchControl<'_>) -> Result<Session, FetchError> {
         request.validate()?;
+        control.check()?;
         let output = std::path::absolute(&request.output).map_err(storage)?;
         let output_parent = output
             .parent()
@@ -79,6 +82,7 @@ impl DurableFetchStorage {
         state_root.profile()?;
         output_root.sync()?;
         state_root.sync()?;
+        control.check()?;
         let source_digest = digest(request.url.as_bytes());
         let output_identity = output
             .to_str()
@@ -164,13 +168,22 @@ impl FetchStorage for DurableFetchStorage {
         Ok(writer.session.source_digest.clone())
     }
 
-    fn recover(&mut self, request: &FetchRequest) -> Result<Option<FetchResult>, FetchError> {
-        let mut session = Self::session(request)?;
-        session.recover(request.max_bytes)
+    fn recover(
+        &mut self,
+        request: &FetchRequest,
+        control: &FetchControl<'_>,
+    ) -> Result<Option<FetchResult>, FetchError> {
+        let mut session = Self::session(request, control)?;
+        session.recover(request.max_bytes, control)
     }
 
-    fn prepare(&mut self, request: &FetchRequest) -> Result<Self::Writer, FetchError> {
-        let mut session = Self::session(request)?;
+    fn prepare(
+        &mut self,
+        request: &FetchRequest,
+        control: &FetchControl<'_>,
+    ) -> Result<Self::Writer, FetchError> {
+        let mut session = Self::session(request, control)?;
+        control.check()?;
         if session.output_root.exists(&session.output_name)? {
             return Err(storage(
                 "FF-STORAGE-E-OUTPUT-EXISTS: recovery required; refusing overwrite",
@@ -192,7 +205,14 @@ impl FetchStorage for DurableFetchStorage {
             ),
         };
         let lease = session.acquire(&provenance)?;
-        session.journal.append(Phase::Prepared, None)?;
+        if let Err(primary) = session.journal.append(Phase::Prepared, None) {
+            return match session.archive.release_claim(&lease) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(storage(format!(
+                    "primary={primary}; claim cleanup={cleanup}"
+                ))),
+            };
+        }
         Ok(DurableFetchWriter {
             session,
             file,
@@ -209,60 +229,97 @@ impl FetchStorage for DurableFetchStorage {
         request: &FetchRequest,
         mut writer: Self::Writer,
         receipt: TransferReceipt,
+        control: &FetchControl<'_>,
     ) -> Result<FetchResult, FetchError> {
-        if receipt.bytes != writer.bytes || writer.bytes > request.max_bytes {
-            return Err(storage(
-                "FF-STORAGE-E-LENGTH: transfer and staged bytes disagree",
-            ));
+        let result = (|| {
+            control.check()?;
+            if receipt.bytes != writer.bytes || writer.bytes > request.max_bytes {
+                return Err(storage(
+                    "FF-STORAGE-E-LENGTH: transfer and staged bytes disagree",
+                ));
+            }
+            writer.file.flush().map_err(storage)?;
+            writer.file.sync_all().map_err(storage)?;
+            writer
+                .session
+                .output_root
+                .verify(&writer.file, &writer.session.stage_name)?;
+            let expected = lower_hex(&writer.hash.clone().finalize());
+            let (observed_bytes, observed_digest) =
+                hash_file(&mut writer.file, request.max_bytes, control)?;
+            if observed_bytes != receipt.bytes || observed_digest != expected {
+                return Err(storage(
+                    "FF-STORAGE-E-HASH: staged file reread differs from transfer",
+                ));
+            }
+            let mut commit = writer.session.commit_request(
+                writer.lease.clone(),
+                writer.provenance.clone(),
+                observed_bytes,
+                observed_digest,
+            )?;
+            control.check()?;
+            writer
+                .session
+                .journal
+                .append(Phase::Validated, Some(commit.clone()))?;
+            writer.session.output_root.sync()?;
+            control.check()?;
+            writer
+                .session
+                .output_root
+                .publish(&writer.file, &writer.session.output_name)?;
+            writer
+                .session
+                .output_root
+                .verify(&writer.file, &writer.session.output_name)?;
+            writer.file.sync_all().map_err(storage)?;
+            writer.session.output_root.sync()?;
+            writer
+                .session
+                .journal
+                .append(Phase::Placed, Some(commit.clone()))?;
+            commit.committed_at_unix_millis = now()?;
+            writer.session.finish(commit, false)
+        })();
+        if let Err(primary) = result {
+            if writer
+                .session
+                .journal
+                .last
+                .as_ref()
+                .is_some_and(|record| matches!(record.phase, Phase::Prepared | Phase::Aborted))
+            {
+                return match self.abort(writer) {
+                    Ok(()) => Err(primary),
+                    Err(cleanup) => Err(storage(format!("primary={primary}; cleanup={cleanup}"))),
+                };
+            }
+            return Err(primary);
         }
-        writer.file.flush().map_err(storage)?;
-        writer.file.sync_all().map_err(storage)?;
-        writer
-            .session
-            .output_root
-            .verify(&writer.file, &writer.session.stage_name)?;
-        let expected = lower_hex(&writer.hash.finalize());
-        let (observed_bytes, observed_digest) = hash_file(&mut writer.file, request.max_bytes)?;
-        if observed_bytes != receipt.bytes || observed_digest != expected {
-            return Err(storage(
-                "FF-STORAGE-E-HASH: staged file reread differs from transfer",
-            ));
-        }
-        let mut commit = writer.session.commit_request(
-            writer.lease,
-            writer.provenance,
-            observed_bytes,
-            observed_digest,
-        )?;
-        writer
-            .session
-            .journal
-            .append(Phase::Validated, Some(commit.clone()))?;
-        writer.session.output_root.sync()?;
-        writer
-            .session
-            .output_root
-            .publish(&writer.file, &writer.session.output_name)?;
-        writer
-            .session
-            .output_root
-            .verify(&writer.file, &writer.session.output_name)?;
-        writer.file.sync_all().map_err(storage)?;
-        writer.session.output_root.sync()?;
-        writer
-            .session
-            .journal
-            .append(Phase::Placed, Some(commit.clone()))?;
-        commit.committed_at_unix_millis = now()?;
-        writer.session.finish(commit, false)
+        result
     }
 
     fn abort(&mut self, mut writer: Self::Writer) -> Result<(), FetchError> {
-        writer.file.flush().map_err(storage)?;
-        writer.file.sync_all().map_err(storage)?;
-        writer.session.journal.append(Phase::Aborted, None)?;
+        let mut failures = Vec::new();
+        if let Err(error) = writer.file.flush() {
+            failures.push(format!("flush={error}"));
+        }
+        if let Err(error) = writer.file.sync_all() {
+            failures.push(format!("sync={error}"));
+        }
+        if let Err(error) = writer.session.journal.append(Phase::Aborted, None) {
+            failures.push(format!("journal={error}"));
+        }
+        if let Err(error) = writer.session.archive.release_claim(&writer.lease) {
+            failures.push(format!("claim={error}"));
+        }
         // Keep stage and journal for explicit recovery; never remove final media.
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(storage(failures.join("; ")))
+        }
     }
 }
 
@@ -363,7 +420,12 @@ impl Session {
         })
     }
 
-    fn recover(&mut self, maximum: u64) -> Result<Option<FetchResult>, FetchError> {
+    fn recover(
+        &mut self,
+        maximum: u64,
+        control: &FetchControl<'_>,
+    ) -> Result<Option<FetchResult>, FetchError> {
+        control.check()?;
         let pending = self
             .journal
             .last
@@ -374,6 +436,18 @@ impl Session {
                 return Err(storage(
                     "FF-STORAGE-E-UNOWNED-OUTPUT: no validated recovery record",
                 ));
+            }
+            if let ArchiveMembership::Claimed { lease } =
+                self.archive.membership(&self.key).map_err(storage)?
+            {
+                if lease.owner_job_id.as_str() != self.job
+                    || lease.claim_provenance.transaction_id.as_str()
+                        != format!("transaction_{}", self.key_digest)
+                    || lease.claim_provenance.source_locator_digest != self.source_digest
+                {
+                    return Err(storage("FF-STORAGE-E-RECOVERY-LEASE"));
+                }
+                self.archive.release_claim(&lease).map_err(storage)?;
             }
             return Ok(None);
         };
@@ -392,20 +466,41 @@ impl Session {
             return Err(storage("FF-STORAGE-E-RECOVERY-OUTPUT-MISSING"));
         }
         let mut file = self.output_root.open_existing(path)?;
-        let (bytes, sha256) = hash_file(&mut file, maximum)?;
+        let (bytes, sha256) = hash_file(&mut file, maximum, control)?;
         if bytes != commit.output.artifact_size_bytes || sha256 != commit.output.artifact_digest {
             return Err(storage("FF-STORAGE-E-RECOVERY-HASH"));
         }
         file.sync_all().map_err(storage)?;
+        control.check()?;
         if !final_exists {
             self.output_root.publish(&file, &self.output_name)?;
         }
         self.output_root.verify(&file, &self.output_name)?;
         self.output_root.sync()?;
+        if final_exists {
+            control.check()?;
+        }
         match self.archive.membership(&self.key).map_err(storage)? {
             ArchiveMembership::Committed { record } => {
-                if record.output != commit.output {
+                if record.output != commit.output
+                    || record.provenance != commit.provenance
+                    || record.success_event != commit.success_event
+                    || record.claim_lease_token != commit.lease.token
+                    || record.claim_lease_generation != commit.lease.generation
+                {
                     return Err(storage("FF-STORAGE-E-RECOVERY-ARCHIVE"));
+                }
+                if self
+                    .journal
+                    .last
+                    .as_ref()
+                    .is_some_and(|body| !matches!(body.phase, Phase::Archived))
+                {
+                    if final_exists {
+                        control.check()?;
+                    }
+                    commit.committed_at_unix_millis = record.committed_at_unix_millis;
+                    self.journal.append(Phase::Archived, Some(commit))?;
                 }
                 return Ok(Some(FetchResult {
                     job_id: self.job.clone(),
@@ -431,18 +526,33 @@ impl Session {
                 return Err(storage("FF-STORAGE-E-RECOVERY-IMPORTED"));
             }
         }
+        if final_exists {
+            control.check()?;
+        }
         commit.committed_at_unix_millis = now()?;
-        self.journal.append(Phase::Placed, Some(commit.clone()))?;
+        if self
+            .journal
+            .last
+            .as_ref()
+            .is_some_and(|body| matches!(body.phase, Phase::Validated))
+        {
+            self.journal.append(Phase::Placed, Some(commit.clone()))?;
+        }
         self.finish(commit, true).map(Some)
     }
 }
 
-fn hash_file(file: &mut File, maximum: u64) -> Result<(u64, String), FetchError> {
+fn hash_file(
+    file: &mut File,
+    maximum: u64,
+    control: &FetchControl<'_>,
+) -> Result<(u64, String), FetchError> {
     file.seek(SeekFrom::Start(0)).map_err(storage)?;
     let mut bytes = 0_u64;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
+        control.check()?;
         let count = file.read(&mut buffer).map_err(storage)?;
         if count == 0 {
             break;
@@ -455,10 +565,11 @@ fn hash_file(file: &mut File, maximum: u64) -> Result<(u64, String), FetchError>
         }
         hash.update(&buffer[..count]);
     }
+    control.check()?;
     Ok((bytes, lower_hex(&hash.finalize())))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Phase {
     Prepared,
@@ -496,6 +607,39 @@ struct Journal {
 }
 
 impl Journal {
+    fn validate_next(&self, body: &JournalBody) -> Result<(), FetchError> {
+        let allowed = match self.last.as_ref().map(|last| &last.phase) {
+            None | Some(Phase::Aborted) => matches!(body.phase, Phase::Prepared),
+            Some(Phase::Prepared) => matches!(
+                body.phase,
+                Phase::Validated | Phase::Aborted | Phase::Prepared
+            ),
+            Some(Phase::Validated) => matches!(body.phase, Phase::Placed),
+            Some(Phase::Placed) => matches!(body.phase, Phase::Archived),
+            Some(Phase::Archived) => false,
+        };
+        if !allowed
+            || matches!(body.phase, Phase::Prepared | Phase::Aborted) != body.commit.is_none()
+        {
+            return Err(storage("FF-STORAGE-E-JOURNAL-PHASE"));
+        }
+        if let Some(commit) = &body.commit {
+            commit.validate(ArchiveLimits::default()).map_err(storage)?;
+            if let Some(previous) = self.last.as_ref().and_then(|last| last.commit.as_ref()) {
+                if commit.output != previous.output
+                    || commit.provenance != previous.provenance
+                    || commit.success_event != previous.success_event
+                    || commit.lease.key != previous.lease.key
+                    || commit.lease.owner_job_id != previous.lease.owner_job_id
+                    || commit.lease.claim_provenance != previous.lease.claim_provenance
+                {
+                    return Err(storage("FF-STORAGE-E-JOURNAL-COMMIT"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn open(mut file: File, identity: &str) -> Result<Self, FetchError> {
         if file.metadata().map_err(storage)?.len() > JOURNAL_LIMIT as u64 {
             return Err(storage("FF-STORAGE-E-JOURNAL-BOUND"));
@@ -527,6 +671,7 @@ impl Journal {
             {
                 return Err(storage("FF-STORAGE-E-JOURNAL-INTEGRITY"));
             }
+            journal.validate_next(&record.body)?;
             journal.sequence = record.body.sequence;
             journal.previous = record.checksum;
             journal.last = Some(record.body);
@@ -556,6 +701,7 @@ impl Journal {
             phase,
             commit,
         };
+        self.validate_next(&body)?;
         let checksum = digest(&serde_json::to_vec(&body).map_err(storage)?);
         let mut wire = serde_json::to_vec(&JournalRecord {
             body: body.clone(),

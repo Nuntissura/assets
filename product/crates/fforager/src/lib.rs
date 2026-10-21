@@ -1,7 +1,7 @@
 //! Production composition of the single fetch engine and its adapters.
 #![forbid(unsafe_code)]
 
-use fforager_core::engine::{FetchEngine, FetchTransport, TransferReceipt};
+use fforager_core::engine::{FetchControl, FetchEngine, FetchTransport, TransferReceipt};
 pub use fforager_core::engine::{FetchError, FetchRequest, FetchResult};
 use fforager_net::{OrdinaryTransport, TransportError, TransportErrorKind, TransportPolicy};
 use fforager_storage::DurableFetchStorage;
@@ -19,22 +19,32 @@ impl FetchTransport for NetPort<'_> {
         &mut self,
         request: &FetchRequest,
         sink: &mut dyn Write,
-        cancel: &AtomicBool,
+        control: &FetchControl<'_>,
     ) -> Result<TransferReceipt, FetchError> {
         self.runtime.block_on(async {
-            let addresses = self
-                .transport
-                .resolve_addresses(&request.url, cancel)
-                .await
-                .map_err(map_transport_error)?;
-            let receipt = self
-                .transport
-                .download(&request.url, &addresses, sink, cancel)
-                .await
-                .map_err(map_transport_error)?;
-            Ok(TransferReceipt {
-                bytes: receipt.bytes_received,
-            })
+            control.check()?;
+            let transfer = async {
+                let addresses = self
+                    .transport
+                    .resolve_addresses(&request.url, control.cancellation_flag())
+                    .await
+                    .map_err(map_transport_error)?;
+                let receipt = self
+                    .transport
+                    .download(&request.url, &addresses, sink, control.cancellation_flag())
+                    .await
+                    .map_err(map_transport_error)?;
+                Ok(TransferReceipt {
+                    bytes: receipt.bytes_received,
+                })
+            };
+            match tokio::time::timeout(control.remaining(), transfer).await {
+                Ok(result) => result,
+                Err(_) => {
+                    control.check()?;
+                    Err(FetchError::TimedOut)
+                }
+            }
         })
     }
 }
@@ -44,6 +54,8 @@ impl FetchTransport for NetPort<'_> {
 /// # Errors
 /// Returns the typed request, cancellation, transport, storage, or byte-limit failure.
 pub fn fetch(request: &FetchRequest, cancel: &AtomicBool) -> Result<FetchResult, FetchError> {
+    request.validate()?;
+    fforager_net::validate_url(&request.url).map_err(map_transport_error)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -71,6 +83,7 @@ pub fn fetch(request: &FetchRequest, cancel: &AtomicBool) -> Result<FetchResult,
 fn map_transport_error(error: TransportError) -> FetchError {
     match error.kind {
         TransportErrorKind::Cancelled => FetchError::Cancelled,
+        TransportErrorKind::TimedOut => FetchError::TimedOut,
         TransportErrorKind::SizeLimit => FetchError::LimitExceeded,
         TransportErrorKind::InvalidInput => FetchError::InvalidRequest(error.to_string()),
         TransportErrorKind::Sink => FetchError::Storage(error.to_string()),

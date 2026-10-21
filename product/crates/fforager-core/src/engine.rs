@@ -5,6 +5,39 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+/// One invocation's cancellation and deadline, shared through every pre-commit effect.
+#[derive(Debug)]
+pub struct FetchControl<'a> {
+    cancel: &'a AtomicBool,
+    deadline: Instant,
+}
+
+impl FetchControl<'_> {
+    /// Checks cancellation before the deadline so an admitted cancel remains typed.
+    /// # Errors
+    /// Returns cancellation or deadline exhaustion before another effect starts.
+    pub fn check(&self) -> Result<(), FetchError> {
+        if self.cancel.load(Ordering::Acquire) {
+            Err(FetchError::Cancelled)
+        } else if Instant::now() >= self.deadline {
+            Err(FetchError::TimedOut)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[must_use]
+    pub fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    #[must_use]
+    pub const fn cancellation_flag(&self) -> &AtomicBool {
+        self.cancel
+    }
+}
 
 /// One bounded direct-media acquisition requested by a composition root.
 #[derive(Clone, Debug)]
@@ -75,6 +108,7 @@ pub struct TransferReceipt {
 pub enum FetchError {
     InvalidRequest(String),
     Cancelled,
+    TimedOut,
     Transport(String),
     Storage(String),
     LimitExceeded,
@@ -85,6 +119,7 @@ impl fmt::Display for FetchError {
         match self {
             Self::InvalidRequest(detail) => write!(f, "invalid_request: {detail}"),
             Self::Cancelled => f.write_str("cancelled"),
+            Self::TimedOut => f.write_str("timed_out"),
             Self::Transport(detail) => write!(f, "transport: {detail}"),
             Self::Storage(detail) => write!(f, "storage: {detail}"),
             Self::LimitExceeded => f.write_str("byte_limit_exceeded"),
@@ -100,7 +135,7 @@ pub trait FetchTransport {
         &mut self,
         request: &FetchRequest,
         sink: &mut dyn Write,
-        cancel: &AtomicBool,
+        control: &FetchControl<'_>,
     ) -> Result<TransferReceipt, FetchError>;
 }
 
@@ -108,10 +143,19 @@ pub trait FetchTransport {
 pub trait FetchStorage {
     type Writer: Write;
     /// Reconcile an already durable prefix before any network acquisition.
-    fn recover(&mut self, _request: &FetchRequest) -> Result<Option<FetchResult>, FetchError> {
+    fn recover(
+        &mut self,
+        _request: &FetchRequest,
+        control: &FetchControl<'_>,
+    ) -> Result<Option<FetchResult>, FetchError> {
+        control.check()?;
         Ok(None)
     }
-    fn prepare(&mut self, request: &FetchRequest) -> Result<Self::Writer, FetchError>;
+    fn prepare(
+        &mut self,
+        request: &FetchRequest,
+        control: &FetchControl<'_>,
+    ) -> Result<Self::Writer, FetchError>;
     /// Actual SHA-256 locator identity shared by graph and archive ownership.
     fn source_identity(&self, writer: &Self::Writer) -> Result<String, FetchError>;
     fn commit(
@@ -119,6 +163,7 @@ pub trait FetchStorage {
         request: &FetchRequest,
         writer: Self::Writer,
         receipt: TransferReceipt,
+        control: &FetchControl<'_>,
     ) -> Result<FetchResult, FetchError>;
     /// Preserve recoverable state while closing a failed or cancelled writer.
     fn abort(&mut self, writer: Self::Writer) -> Result<(), FetchError>;
@@ -150,48 +195,67 @@ impl<T: FetchTransport, S: FetchStorage> FetchEngine<T, S> {
         cancel: &AtomicBool,
     ) -> Result<FetchResult, FetchError> {
         request.validate()?;
-        if cancel.load(Ordering::Acquire) {
-            return Err(FetchError::Cancelled);
-        }
-        if let Some(recovered) = self.storage.recover(request)? {
+        let control = FetchControl {
+            cancel,
+            deadline: Instant::now() + Duration::from_millis(request.timeout_ms),
+        };
+        control.check()?;
+        if let Some(recovered) = self.storage.recover(request, &control)? {
             return Ok(recovered);
         }
-        let mut staged = self.storage.prepare(request)?;
-        let identity = self.storage.source_identity(&staged)?;
-        let plan = crate::direct::plan_direct(&request.url, &identity)
-            .map_err(|error| FetchError::InvalidRequest(error.to_string()))?;
-        let mut selected = request.clone();
-        selected.url = match plan.acquisition {
-            fforager_contracts::AcquisitionSource::DirectUrl { url } => url,
-            _ => {
-                return Err(FetchError::InvalidRequest(
-                    "direct acquisition plan required".into(),
-                ));
-            }
+        let mut staged = self.storage.prepare(request, &control)?;
+        let planning = (|| {
+            control.check()?;
+            let identity = self.storage.source_identity(&staged)?;
+            let plan = crate::direct::plan_direct(&request.url, &identity)
+                .map_err(|error| FetchError::InvalidRequest(error.to_string()))?;
+            let mut selected = request.clone();
+            selected.url = match plan.acquisition {
+                fforager_contracts::AcquisitionSource::DirectUrl { url } => url,
+                _ => {
+                    return Err(FetchError::InvalidRequest(
+                        "direct acquisition plan required".into(),
+                    ));
+                }
+            };
+            Ok(selected)
+        })();
+        let selected = match planning {
+            Ok(selected) => selected,
+            Err(primary) => return cleanup_result(primary, self.storage.abort(staged)),
         };
-        let transfer = self.transport.download(&selected, &mut staged, cancel);
+        let transfer = self.transport.download(&selected, &mut staged, &control);
         match transfer {
             Ok(receipt)
                 if receipt.bytes > 0
                     && receipt.bytes <= request.max_bytes
-                    && !cancel.load(Ordering::Acquire) =>
+                    && control.check().is_ok() =>
             {
-                self.storage.commit(request, staged, receipt)
+                self.storage.commit(request, staged, receipt, &control)
             }
             Ok(receipt) => {
-                self.storage.abort(staged)?;
-                if cancel.load(Ordering::Acquire) {
-                    Err(FetchError::Cancelled)
+                let primary = if let Err(error) = control.check() {
+                    error
                 } else if receipt.bytes == 0 {
-                    Err(FetchError::Transport("empty direct-media response".into()))
+                    FetchError::Transport("empty direct-media response".into())
                 } else {
-                    Err(FetchError::LimitExceeded)
-                }
+                    FetchError::LimitExceeded
+                };
+                cleanup_result(primary, self.storage.abort(staged))
             }
-            Err(error) => {
-                self.storage.abort(staged)?;
-                Err(error)
-            }
+            Err(primary) => cleanup_result(primary, self.storage.abort(staged)),
         }
+    }
+}
+
+fn cleanup_result<T>(
+    primary: FetchError,
+    cleanup: Result<(), FetchError>,
+) -> Result<T, FetchError> {
+    match cleanup {
+        Ok(()) => Err(primary),
+        Err(cleanup) => Err(FetchError::Storage(format!(
+            "primary={primary}; cleanup={cleanup}"
+        ))),
     }
 }

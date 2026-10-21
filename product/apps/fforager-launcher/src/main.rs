@@ -19,6 +19,15 @@ struct WatcherReady {
     ready: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatcherHeartbeat {
+    schema: String,
+    worker_pid: u32,
+    watcher_pid: u32,
+    sequence: u64,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
@@ -96,13 +105,56 @@ fn run() -> Result<ExitCode, String> {
     let mut watcher = diagnostic_root
         .as_ref()
         .and_then(|root| start_watcher(&directory, root, worker.id()));
+    let mut heartbeat_sequence = 0_u64;
+    let mut heartbeat_progress = Instant::now();
+    let mut heartbeat_degraded = false;
     let status = loop {
+        if let Some((child, stop)) = watcher.as_ref() {
+            let heartbeat = stop.parent().map(|parent| parent.join("heartbeat.json"));
+            if let Some(path) = heartbeat {
+                if let Ok(file) = fs::File::open(path) {
+                    let mut bytes = Vec::new();
+                    if file.take(4097).read_to_end(&mut bytes).is_ok() && bytes.len() <= 4096 {
+                        if let Ok(message) = serde_json::from_slice::<WatcherHeartbeat>(&bytes) {
+                            if message.schema == "ff.watcher-heartbeat@1"
+                                && message.worker_pid == worker.id()
+                                && message.watcher_pid == child.id()
+                                && message.sequence > heartbeat_sequence
+                            {
+                                heartbeat_sequence = message.sequence;
+                                heartbeat_progress = Instant::now();
+                            }
+                        }
+                    }
+                }
+            }
+            if !heartbeat_degraded && heartbeat_progress.elapsed() >= Duration::from_millis(500) {
+                degraded(
+                    "watcher_heartbeat_stale",
+                    "watcher has not published a valid advancing heartbeat within 500ms",
+                );
+                heartbeat_degraded = true;
+            }
+        }
+        let watcher_failure = match watcher.as_mut() {
+            Some((child, _)) => match child.try_wait() {
+                Ok(Some(status)) => Some(format!("watcher exited after readiness: {status}")),
+                Err(error) => Some(format!("watcher observation failed: {error}")),
+                Ok(None) => None,
+            },
+            None => None,
+        };
+        if let Some(detail) = watcher_failure {
+            degraded("watcher_failed_after_readiness", &detail);
+            if let Some((child, stop)) = watcher.take() {
+                stop_watcher(child, &stop);
+            }
+        }
         match worker.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                let _ = worker.kill();
-                let _ = worker.wait();
+                terminate_and_reap(&mut worker)?;
                 if let Some((child, stop)) = watcher.take() {
                     stop_watcher(child, &stop);
                 }
@@ -125,9 +177,13 @@ fn run() -> Result<ExitCode, String> {
                 .map_err(|error| error.to_string())?
                 .is_none()
             {
-                let _ = worker.kill();
+                worker
+                    .kill()
+                    .map_err(|error| format!("worker termination not acknowledged: {error}"))?;
             }
-            let _ = worker.wait();
+            worker
+                .wait()
+                .map_err(|error| format!("worker reap not acknowledged: {error}"))?;
             if let Some((child, stop)) = watcher.take() {
                 stop_watcher(child, &stop);
             }
@@ -137,7 +193,10 @@ fn run() -> Result<ExitCode, String> {
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    if status.success() || status.code() == Some(130) {
+    if status
+        .code()
+        .is_some_and(|code| matches!(code, 0 | 2 | 3 | 4 | 5 | 124 | 130))
+    {
         if let Some((child, stop)) = watcher.take() {
             stop_watcher(child, &stop);
         }
@@ -241,8 +300,25 @@ fn stop_watcher(mut child: Child, stop: &Path) {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Err(error) = terminate_and_reap(&mut child) {
+        degraded("watcher_cleanup_not_acknowledged", &error);
+    }
+}
+
+fn terminate_and_reap(child: &mut Child) -> Result<(), String> {
+    if child
+        .try_wait()
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        child
+            .kill()
+            .map_err(|error| format!("child termination not acknowledged: {error}"))?;
+    }
+    child
+        .wait()
+        .map_err(|error| format!("child reap not acknowledged: {error}"))?;
+    Ok(())
 }
 
 fn degraded(code: &str, detail: &str) {
