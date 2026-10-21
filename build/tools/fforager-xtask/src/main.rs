@@ -6229,6 +6229,16 @@ fn architecture_check(root: &Path) -> Result<ArchitectureResult, String> {
     validate_ordinary_profile_isolation(&ordinary_metadata, &native_exceptions, &mut checks)?;
     let canonical_rules = required_architecture_rules(&root.join(".GOV/rules/build-rules.yaml"))?;
     validate_rule_map(&rule_map, &canonical_rules, &mut checks)?;
+    let benchmark_contract = benchmark::contract_execution(root)?;
+    checks.push(Check {
+        id: "benchmark-admission-contract".to_owned(), status: "PASS", proof_class: "structural",
+        concrete_input: "existing bounded benchmark equality/statistics counterexample corpus".to_owned(),
+        executed_boundary: "benchmark admission and public benchmark-validate handler".to_owned(),
+        expected_result: "equal fixture admitted; unequal work and invalid statistics rejected".to_owned(),
+        observed_result: benchmark_contract,
+        skipped_semantic_dependencies: vec!["Synthetic contract fixtures do not establish native execution, product progress or performance.".to_owned()],
+        detail: "Canonical validation executes the benchmark contract with its structural proof ceiling.".to_owned(),
+    });
     let fixtures = validate_fixtures(root, &rule_map, &mut checks)?;
     let limitations = rule_map
         .rules

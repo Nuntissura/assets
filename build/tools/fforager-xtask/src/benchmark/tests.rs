@@ -1,4 +1,11 @@
-use super::*;
+#[cfg(test)]
+use super::contract_execution;
+use super::{
+    Artifact, BTreeMap, BuildIdentity, Bundle, Calibration, DIMENSIONS, Dimension, HostProfile,
+    METRICS, Manifest, Metric, NormalizedRecord, Observation, ObservationValue, Operation, Path,
+    ProcessCosts, ProcessRole, ProofClass, Random, Sample, SampleOrigin, Sampling, Side, Tool,
+    Topology, canonical_hash, evaluate, fs, native_noise_policy, run,
+};
 
 fn pin(root: &Path, name: &str, bytes: &[u8]) -> Artifact {
     fs::write(root.join(name), bytes).expect("fixture artifact");
@@ -194,9 +201,17 @@ fn fixture_samples(digest: &str) -> Vec<Sample> {
 #[test]
 fn public_admission_rejects_unequal_work_and_false_statistics() {
     let repo = super::super::repo_root().expect("repository");
-    let root = super::super::disposable_artifact_root(&repo)
-        .join(format!("benchmark-contract-{}", std::process::id()));
-    fs::create_dir_all(&root).expect("fixture directory");
+    contract_execution(&repo).expect("canonical contract execution");
+}
+
+pub(super) fn execute(repo: &Path) {
+    static INVOCATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let invocation = INVOCATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = super::super::disposable_artifact_root(repo).join(format!(
+        "benchmark-contract-{}-{invocation}",
+        std::process::id()
+    ));
+    fs::create_dir(&root).expect("fresh isolated fixture directory");
     let good = fixture(&root);
     let report = evaluate(&root, good.clone()).expect("admitted statistical fixture");
     assert_eq!(report.proof_class, ProofClass::Structural);
@@ -273,7 +288,8 @@ fn statistics_negatives(root: &Path, good: &Bundle) {
             .contains("MISSING-RAW")
     );
     let mut duplicate = good.clone();
-    duplicate.samples[1].id = duplicate.samples[0].id.clone();
+    let (first, remaining) = duplicate.samples.split_at_mut(1);
+    remaining[0].id.clone_from(&first[0].id);
     assert!(
         evaluate(root, duplicate)
             .expect_err("duplicate")

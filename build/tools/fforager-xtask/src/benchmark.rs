@@ -1371,5 +1371,16 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
 mod tests;
+
+pub(super) fn contract_execution(root: &Path) -> Result<String, String> {
+    std::panic::catch_unwind(|| tests::execute(root)).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string assertion payload");
+        error(&format!("CONTRACT-COUNTERFACTUAL:{detail}"))
+    })?;
+    Ok("Executed public admission, eleven unequal-work controls, raw-sample/provenance/order/cluster/noise/confidence/topology/schema/file-mutation controls; structural statistical fixtures only; native execution and performance claims excluded.".into())
+}
