@@ -40,21 +40,19 @@
     "worktree_id": null,
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "branch": "codex/predecessor-state-reconciliation",
+      "head_sha": "acfa3f7e31ed104010c580913a6cf1456bce9603",
+      "verified_at_utc": "2026-10-21T10:18:47Z"
     },
     "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
-    "main_containment_status": "NOT_STARTED",
-    "merged_main_commit": null
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "225e3b05d2aa7b6244f191df534396b780081de4"
   },
   "lifecycle": {
-    "status": "MERGE_PENDING",
+    "status": "VALIDATED",
     "risk": "MEDIUM",
-    "blockers": [
-      "Actual accepted corrective closure must be merged into canonical main and ancestry verified."
-    ],
-    "next_action": "Push the accepted common corrective closure, merge into canonical main, independently verify ancestry, then synchronize VALIDATED state without changing original bases or historical records.",
+    "blockers": [],
+    "next_action": "No corrective work remains; continue the separately authorized WP021 production acceptance with this prerequisite closure contained in canonical main.",
     "supersedes": [
       "WP-FF-022-prerequisite-classifier-remediation-v1"
     ],
@@ -146,9 +144,10 @@
       "requirement": "The accepted closure commit is merged into canonical main and git merge-base --is-ancestor proves containment; WP-020 remains a non-authorizing STUB and zero product/capability/runtime/packaging/release/phase progress is preserved.",
       "evidence": [
         "Preserved original requirement and actual proof history at .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/acceptance_matrix; final changed candidate remains subject to canonical gates.",
-        "Historical79392ff WP020STUB and later independent WP020promotion are explicitly reconciled without changing this requirement; common corrective closure containment remains pending."
+        "Historical79392ff WP020STUB and later independent WP020promotion are explicitly reconciled without changing this requirement; common corrective closure containment remains pending.",
+        "Actual common corrective closure 427240c07ea79c377bf607a73430c53666893a91 merged as canonical main 225e3b05d2aa7b6244f191df534396b780081de4; git merge-base --is-ancestor returned0. Original historical requirements/ceilings and later separately authorized WP020 promotion remain distinct."
       ],
-      "status": "PENDING",
+      "status": "PASS",
       "id": "WP-FF-022-prerequisite-classifier-remediation-v1-AC-005"
     },
     {
@@ -176,29 +175,22 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-10-21T06:42:27Z",
-      "branch": "codex/predecessor-state-reconciliation",
+      "recorded_at_utc": "2026-10-21T10:18:47Z",
+      "branch": "main",
+      "head_sha": "225e3b05d2aa7b6244f191df534396b780081de4",
       "base_sha": "10d16889dd4bf4b9d34f7043789d5ce4cdbfbe54",
-      "head_sha": "8a43243cc4ffcb9cc1ddeac4712fccd35f10b01d",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-022-prerequisite-classifier-remediation-v2/packet.json"
-      ],
       "checks_run": [
-        "Original frozen fields and prior failure/stop records reconciled before metadata correction.",
-        "Actual optimized corpus, current accepted source-bound prerequisite reports and canonical main ancestry independently reread; no implementation or acceptance requirement changed."
+        "Current prerequisite canonical PR70checks/55fixtures PASS at clean13b51f6; all earlier failures retained.",
+        "Actual closure 427240c07ea79c377bf607a73430c53666893a91 main ancestry0; accepted build/product equality0; product512 early ancestry1.",
+        "Remote backup branch independently verified at acfa3f7e31ed104010c580913a6cf1456bce9603 before merge."
       ],
-      "blockers": [
-        "Current technical evidence is accepted; common corrective closure containment remains unproven."
-      ],
-      "next_action": "Complete the metadata-only correction through WP-FF-024-predecessor-state-reconciliation-v1, preserving the historical records, then bind the actual merged common corrective closure and verify ancestry before VALIDATED."
+      "blockers": [],
+      "next_action": "No corrective work remains; continue the separately authorized WP021 production acceptance with this prerequisite closure contained in canonical main."
     }
   },
   "validation": {
     "not_proven": [
-      "FF-GATE-PR-001 acceptance blocked by dependency-policy findings; separate dependency-remediation authorization required.",
-      "Closure merge/main containment remain unproven.",
-      "Historical Windows scheduling and Git-child timeout causes remain unresolved; no causal repair claim is made.",
-      "Any product, capability, runtime, packaging, release or phase progress."
+      "No product/runtime/performance completion is asserted by this corrective prerequisite closure."
     ],
     "checks": [
       "Original classifier RED/GREEN, independent14-probe review, behavior-reversion proof and host restoration remain preserved in .GOV/archive/work_packets/WP-FF-022-prerequisite-classifier-remediation/WP-FF-022-prerequisite-classifier-remediation-v1/packet.json#/validation.",
@@ -548,6 +540,18 @@
         "testkit_passed": 17,
         "dependency_checks": "advisories, bans, licenses and sources accepted",
         "deep_surface": "Composed deep checks executed within verify-pr; no separate literal deep invocation claimed."
+      },
+      {
+        "proof": "Corrective closure main containment",
+        "result": "PASS",
+        "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
+        "merged_main_commit": "225e3b05d2aa7b6244f191df534396b780081de4",
+        "command": "git merge-base --is-ancestor 427240c07ea79c377bf607a73430c53666893a91 main",
+        "exit_code": 0,
+        "accepted_code_equality": "git diff --exit-code 13b51f6bcfdaa855e01434e42413af2ec942d801 main -- build product: exit0",
+        "product_early_containment": "git merge-base --is-ancestor 512868d main: exit1",
+        "backup_branch": "codex/predecessor-state-reconciliation",
+        "verified_remote_tip": "acfa3f7e31ed104010c580913a6cf1456bce9603"
       }
     ]
   },
@@ -1023,9 +1027,10 @@
         }
       ],
       "corrective_closure": {
-        "commit": null,
-        "main_containment_status": "NOT_STARTED",
-        "rule": "Only the actually merged common corrective closure may replace this null; original bases and requirements remain unchanged."
+        "commit": "427240c07ea79c377bf607a73430c53666893a91",
+        "main_containment_status": "VERIFIED",
+        "rule": "Only the actually merged common corrective closure may replace this null; original bases and requirements remain unchanged.",
+        "merged_main_commit": "225e3b05d2aa7b6244f191df534396b780081de4"
       },
       "evidence_ceiling": "Prerequisite and governance evidence only; no product, capability, runtime, performance, packaging, release or phase completion.",
       "historical_wp020_ceiling": {

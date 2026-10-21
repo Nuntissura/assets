@@ -33,21 +33,19 @@
     "worktree_id": "phase1-prerequisites",
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "branch": "codex/predecessor-state-reconciliation",
+      "head_sha": "acfa3f7e31ed104010c580913a6cf1456bce9603",
+      "verified_at_utc": "2026-10-21T10:18:47Z"
     },
     "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
-    "main_containment_status": "NOT_STARTED",
-    "merged_main_commit": null
+    "main_containment_status": "VERIFIED",
+    "merged_main_commit": "225e3b05d2aa7b6244f191df534396b780081de4"
   },
   "lifecycle": {
-    "status": "MERGE_PENDING",
+    "status": "VALIDATED",
     "risk": "MEDIUM",
-    "blockers": [
-      "Actual accepted corrective closure must be merged into canonical main and ancestry verified."
-    ],
-    "next_action": "Push the accepted common corrective closure, merge into canonical main, independently verify ancestry, then synchronize VALIDATED state without changing original bases or historical records.",
+    "blockers": [],
+    "next_action": "No corrective work remains; continue the separately authorized WP021 production acceptance with this prerequisite closure contained in canonical main.",
     "supersedes": [
       "WP-FF-024-predecessor-state-reconciliation-v1"
     ],
@@ -119,31 +117,25 @@
       "id": "WP-FF-024-predecessor-state-reconciliation-v2-AC-004",
       "requirement": "The common corrective closure is actually merged into canonical main and ancestry verified before this packet or any repaired target is marked VALIDATED; exact closure identities and active-focus projection are synchronized.",
       "proof_class": "governance",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Actual common corrective closure 427240c07ea79c377bf607a73430c53666893a91 merged as canonical main 225e3b05d2aa7b6244f191df534396b780081de4; git merge-base --is-ancestor returned0. Original historical requirements/ceilings and later separately authorized WP020 promotion remain distinct."
+      ]
     }
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-10-21T06:28:35Z",
-      "branch": "codex/predecessor-state-reconciliation",
+      "recorded_at_utc": "2026-10-21T10:18:47Z",
+      "branch": "main",
+      "head_sha": "225e3b05d2aa7b6244f191df534396b780081de4",
       "base_sha": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
-      "head_sha": "3ff0067ff0e81a76e5d78de0185a0d16edaa5bbc",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v2/packet.json",
-        ".GOV/work_packets/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
-        ".GOV/archive/work_packets/WP-FF-024-predecessor-state-reconciliation/WP-FF-024-predecessor-state-reconciliation-v1/packet.json",
-        ".GOV/id-registry.yaml",
-        ".GOV/taskboard/taskboard.yaml"
-      ],
       "checks_run": [
-        "Inspected existing WP018 TRACKED/NONE metadata-only pattern, current work-packet template/requirements, target proof history and actual canonical main activation base.",
-        "git branch --show-current: codex/predecessor-state-reconciliation; git rev-parse HEAD and git merge-base main HEAD: bde150fe8d39519a890b2be1c4ac9d44d47c18e4; initial git status --porcelain=v2 --branch contained branch identity only."
+        "Current prerequisite canonical PR70checks/55fixtures PASS at clean13b51f6; all earlier failures retained.",
+        "Actual closure 427240c07ea79c377bf607a73430c53666893a91 main ancestry0; accepted build/product equality0; product512 early ancestry1.",
+        "Remote backup branch independently verified at acfa3f7e31ed104010c580913a6cf1456bce9603 before merge."
       ],
-      "blockers": [
-        "First committed v2 prerequisite declaration, controlled failurebranch proof, current canonical gates and actual common corrective closure containment remain unproven."
-      ],
-      "next_action": "Commit this exact v2 activation before importing the authorized owning-test diagnostics, then execute the controlled unchanged-deadline failure proof and current canonical gates; retain all failures."
+      "blockers": [],
+      "next_action": "No corrective work remains; continue the separately authorized WP021 production acceptance with this prerequisite closure contained in canonical main."
     }
   },
   "validation": {
@@ -262,11 +254,22 @@
         "checks": 70,
         "fixtures": 55,
         "ceiling": "Prerequisite-only; no product/runtime/performance completion"
+      },
+      {
+        "proof": "Corrective closure main containment",
+        "result": "PASS",
+        "closure_commit": "427240c07ea79c377bf607a73430c53666893a91",
+        "merged_main_commit": "225e3b05d2aa7b6244f191df534396b780081de4",
+        "command": "git merge-base --is-ancestor 427240c07ea79c377bf607a73430c53666893a91 main",
+        "exit_code": 0,
+        "accepted_code_equality": "git diff --exit-code 13b51f6bcfdaa855e01434e42413af2ec942d801 main -- build product: exit0",
+        "product_early_containment": "git merge-base --is-ancestor 512868d main: exit1",
+        "backup_branch": "codex/predecessor-state-reconciliation",
+        "verified_remote_tip": "acfa3f7e31ed104010c580913a6cf1456bce9603"
       }
     ],
     "not_proven": [
-      "Actually merged common corrective closure containment.",
-      "Original Windows/startup timing causes remain unverified; no product/runtime/performance completion."
+      "Original Windows timing cause remains unverified; no product/runtime/performance completion is asserted."
     ]
   },
   "extensions": {
