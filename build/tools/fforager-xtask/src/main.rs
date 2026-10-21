@@ -10531,19 +10531,92 @@ fn proof_fixture(
     }
 }
 
+fn remaining_fixture_effective_inputs(
+    root: &Path,
+    label: &str,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    let identity = PathBuf::from("product/crates/fforager-contracts/src/identity.rs");
+    let public = PathBuf::from("build/crates/fforager-testkit/src/lib.rs");
+    let identity_marker = "fn typed_ids_reject_wrong_prefix_and_uppercase()";
+    let public_marker = "fn public_boundary_counterexamples_reject_audit_failures()";
+    let (relative, marker) =
+        if matches!(label, "proof-map-deleted-test" | "proof-map-behavior-stub") {
+            (identity, identity_marker)
+        } else {
+            (public, public_marker)
+        };
+    let canonical = fs::read_to_string(root.join(&relative)).map_err(|error| error.to_string())?;
+    let mut inputs = Vec::new();
+    let effective = match label {
+        "proof-map-deleted-test" => derive_text_mutation(
+            &canonical,
+            marker,
+            "fn deleted_typed_ids_reject_wrong_prefix_and_uppercase()",
+        )?,
+        "proof-map-behavior-stub" => {
+            let body = derive_named_test_body(canonical, marker, "{ assert!(true); }")?;
+            inputs.push((PathBuf::from("product/crates/fforager-contracts/tests/inventory_identity_behavior.rs"),
+                b"use fforager_contracts::ItemId;\n\n#[test]\nfn inventory_identity_behavior_rejects_wrong_prefix() {\n    assert!(ItemId::new(\"node_wrong\").is_err());\n}\n".to_vec()));
+            derive_text_mutation(
+                &body,
+                "    if !value.starts_with(prefix) || value.len() == prefix.len() {",
+                "    if false {",
+            )?
+        }
+        "public-counterexample-removed" => derive_text_mutation(
+            &canonical,
+            marker,
+            "fn removed_public_boundary_counterexamples_reject_audit_failures()",
+        )?,
+        "public-counterexample-ignored" => derive_text_mutation(
+            &canonical,
+            "#[test]\n    fn public_boundary_counterexamples_reject_audit_failures()",
+            "#[test]\n    #[ignore]\n    fn public_boundary_counterexamples_reject_audit_failures()",
+        )?,
+        "public-counterexample-empty" => derive_named_test_body(canonical, marker, "{}")?,
+        "public-counterexample-receipt-only" => {
+            let graph = PathBuf::from("product/crates/fforager-contracts/src/graph.rs");
+            let graph_source =
+                fs::read_to_string(root.join(&graph)).map_err(|error| error.to_string())?;
+            inputs.push((
+                graph,
+                derive_text_mutation(
+                    &graph_source,
+                    "        validate_relationship_cycles(self)",
+                    "        Ok(())",
+                )?
+                .into_bytes(),
+            ));
+            derive_named_test_body(
+                canonical,
+                marker,
+                &format!("{{ println!(\"{PUBLIC_BOUNDARY_COUNTEREXAMPLE_RECEIPT}\"); }}"),
+            )?
+        }
+        other => return Err(format!("unknown retained compiled fixture {other}")),
+    };
+    inputs.push((relative, effective.into_bytes()));
+    Ok(inputs)
+}
+
+fn with_remaining_mutant_fixture<T>(
+    root: &Path,
+    label: &str,
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let inputs = remaining_fixture_effective_inputs(root, label)?;
+    with_effective_warm_testkit_fixture(root, label, &inputs, |sandbox| {
+        prepare_effective_testkit_workspace(root, sandbox, &inputs)?;
+        action(sandbox)
+    })
+}
+
 fn proof_map_string_only_fixture_execution(root: &Path) -> Result<FixtureExecution, String> {
     const DELETED_PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let diagnostic = with_isolated_fixture_root(root, "proof-map-deleted-test", |sandbox| {
+    let diagnostic = with_remaining_mutant_fixture(root, "proof-map-deleted-test", |sandbox| {
         let target_dir = isolated_fixture_target_dir(sandbox, "contract-inventory-resolver")?;
         fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("product/crates/fforager-contracts/src/identity.rs");
-        replace_text_in_file(
-            &source,
-            "fn typed_ids_reject_wrong_prefix_and_uppercase()",
-            "fn deleted_typed_ids_reject_wrong_prefix_and_uppercase()",
-        )?;
         let error = resolve_and_execute_inventory_proofs_with_cargo_mode(
             sandbox,
             &[DELETED_PROOF_ID.to_owned()],
@@ -10569,21 +10642,9 @@ fn proof_map_behavior_stub_fixture_execution(root: &Path) -> Result<FixtureExecu
     const PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
     const SELECTOR: &str = "identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let diagnostic = with_isolated_fixture_root(root, "proof-map-behavior-stub", |sandbox| {
+    let diagnostic = with_remaining_mutant_fixture(root, "proof-map-behavior-stub", |sandbox| {
         let target_dir = isolated_fixture_target_dir(sandbox, "contract-inventory-behavior")?;
         fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let identity = sandbox.join("product/crates/fforager-contracts/src/identity.rs");
-        replace_named_test_body(
-            &identity,
-            "fn typed_ids_reject_wrong_prefix_and_uppercase()",
-            "{ assert!(true); }",
-        )?;
-        replace_text_in_file(
-            &identity,
-            "    if !value.starts_with(prefix) || value.len() == prefix.len() {",
-            "    if false {",
-        )?;
         let target_dir_text = target_dir
             .to_str()
             .ok_or("inventory behavior target directory is not valid UTF-8")?;
@@ -10611,13 +10672,6 @@ fn proof_map_behavior_stub_fixture_execution(root: &Path) -> Result<FixtureExecu
                 "behavior-stub counterfactual did not execute its mapped exact test".to_owned(),
             );
         }
-        let tests = sandbox.join("product/crates/fforager-contracts/tests");
-        fs::create_dir_all(&tests).map_err(|error| error.to_string())?;
-        fs::write(
-            tests.join("inventory_identity_behavior.rs"),
-            "use fforager_contracts::ItemId;\n\n#[test]\nfn inventory_identity_behavior_rejects_wrong_prefix() {\n    assert!(ItemId::new(\"node_wrong\").is_err());\n}\n",
-        )
-        .map_err(|error| error.to_string())?;
         let independent_failure = cargo_proof_output(
             sandbox,
             "cargo",
@@ -10773,13 +10827,13 @@ fn with_warm_testkit_fixture<T>(
     label: &str,
     action: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
-    with_effective_warm_testkit_fixture(root, label, None, action)
+    with_effective_warm_testkit_fixture(root, label, &[], action)
 }
 
 fn with_effective_warm_testkit_fixture<T>(
     root: &Path,
     label: &str,
-    effective_input: Option<(&Path, &[u8])>,
+    effective_inputs: &[(PathBuf, Vec<u8>)],
     action: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
     let parent = disposable_artifact_root(root).join("warm-proof-sources");
@@ -10800,12 +10854,13 @@ fn with_effective_warm_testkit_fixture<T>(
                 .strip_prefix(&sandbox)
                 .map_err(|error| error.to_string())?;
             let canonical = root.join(relative);
-            if canonical.is_file() {
-                if let Some((_, bytes)) = effective_input.filter(|(input, _)| *input == relative) {
-                    refresh_fixture_bytes(&path, bytes)?;
-                } else {
-                    copy_fixture_file(&canonical, &path)?;
-                }
+            if let Some((_, bytes)) = effective_inputs
+                .iter()
+                .find(|(input, _)| input.as_path() == relative)
+            {
+                refresh_fixture_bytes(&path, bytes)?;
+            } else if canonical.is_file() {
+                copy_fixture_file(&canonical, &path)?;
             } else {
                 fs::remove_file(&path).map_err(|error| error.to_string())?;
             }
@@ -10937,12 +10992,12 @@ fn public_invariant_mutation_fixture_execution(
     proof_class: &'static str,
 ) -> Result<FixtureExecution, String> {
     let (relative, bytes, failure_marker) = public_invariant_effective_input(root, mutation)?;
-    let effective_input = Some((relative.as_path(), bytes.as_slice()));
+    let effective_inputs = [(relative, bytes)];
     let observed =
-        with_effective_warm_testkit_fixture(root, mutation, effective_input, |sandbox| {
+        with_effective_warm_testkit_fixture(root, mutation, &effective_inputs, |sandbox| {
             let target_dir = isolated_fixture_target_dir(sandbox, "public-invariant-mutations")?;
             fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-            prepare_effective_testkit_workspace(root, sandbox, effective_input)?;
+            prepare_effective_testkit_workspace(root, sandbox, &effective_inputs)?;
             isolated_public_test_failure_diagnostic(
                 sandbox,
                 &target_dir,
@@ -11161,39 +11216,21 @@ fn proof_report_fixture_execution(mutation: &str) -> Result<FixtureExecution, St
 }
 
 fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecution, String> {
-    let missing = with_isolated_fixture_root(root, "public-counterexample-removed", |sandbox| {
+    let missing =
+        with_remaining_mutant_fixture(root, "public-counterexample-removed", |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+            isolated_public_test_diagnostic(sandbox, "removed", &target_dir)
+        })?;
+    let skipped =
+        with_remaining_mutant_fixture(root, "public-counterexample-ignored", |sandbox| {
+            let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
+            fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
+            isolated_public_test_diagnostic(sandbox, "ignored", &target_dir)
+        })?;
+    let empty = with_remaining_mutant_fixture(root, "public-counterexample-empty", |sandbox| {
         let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
         fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-        replace_text_in_file(
-            &source,
-            "fn public_boundary_counterexamples_reject_audit_failures()",
-            "fn removed_public_boundary_counterexamples_reject_audit_failures()",
-        )?;
-        isolated_public_test_diagnostic(sandbox, "removed", &target_dir)
-    })?;
-    let skipped = with_isolated_fixture_root(root, "public-counterexample-ignored", |sandbox| {
-        let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
-        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-        replace_text_in_file(
-            &source,
-            "#[test]\n    fn public_boundary_counterexamples_reject_audit_failures()",
-            "#[test]\n    #[ignore]\n    fn public_boundary_counterexamples_reject_audit_failures()",
-        )?;
-        isolated_public_test_diagnostic(sandbox, "ignored", &target_dir)
-    })?;
-    let empty = with_isolated_fixture_root(root, "public-counterexample-empty", |sandbox| {
-        let target_dir = isolated_fixture_target_dir(sandbox, "compiled-testkit")?;
-        fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-        prepare_isolated_testkit_workspace(root, sandbox)?;
-        let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-        empty_named_test_body(
-            &source,
-            "fn public_boundary_counterexamples_reject_audit_failures()",
-        )?;
         isolated_public_test_diagnostic(sandbox, "empty", &target_dir)
     })?;
     Ok(proof_fixture(
@@ -11208,24 +11245,12 @@ fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecut
 fn receipt_only_public_counterexample_fixture_execution(
     root: &Path,
 ) -> Result<FixtureExecution, String> {
-    let diagnostic = with_isolated_fixture_root(
+    let diagnostic = with_remaining_mutant_fixture(
         root,
         "public-counterexample-receipt-only",
         |sandbox| {
             let target_dir = isolated_fixture_target_dir(sandbox, "public-receipt-only")?;
             fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
-            prepare_isolated_testkit_workspace(root, sandbox)?;
-            let source = sandbox.join("build/crates/fforager-testkit/src/lib.rs");
-            replace_named_test_body(
-                &source,
-                "fn public_boundary_counterexamples_reject_audit_failures()",
-                &format!("{{ println!(\"{PUBLIC_BOUNDARY_COUNTEREXAMPLE_RECEIPT}\"); }}"),
-            )?;
-            replace_text_in_file(
-                &sandbox.join("product/crates/fforager-contracts/src/graph.rs"),
-                "        validate_relationship_cycles(self)",
-                "        Ok(())",
-            )?;
             let public_output = cargo_proof_output(
                 sandbox,
                 "cargo",
@@ -11299,15 +11324,18 @@ fn receipt_only_public_counterexample_fixture_execution(
 }
 
 fn prepare_isolated_testkit_workspace(source_root: &Path, sandbox: &Path) -> Result<(), String> {
-    prepare_effective_testkit_workspace(source_root, sandbox, None)
+    prepare_effective_testkit_workspace(source_root, sandbox, &[])
 }
 
 fn prepare_effective_testkit_workspace(
     source_root: &Path,
     sandbox: &Path,
-    effective_input: Option<(&Path, &[u8])>,
+    effective_inputs: &[(PathBuf, Vec<u8>)],
 ) -> Result<(), String> {
-    let effective_file = effective_input.map(|(relative, bytes)| (sandbox.join(relative), bytes));
+    let effective_files = effective_inputs
+        .iter()
+        .map(|(relative, bytes)| (sandbox.join(relative), bytes.as_slice()))
+        .collect::<Vec<_>>();
     for relative in [
         "build/crates/fforager-testkit",
         "build/fixtures/contracts",
@@ -11319,10 +11347,16 @@ fn prepare_effective_testkit_workspace(
         copy_effective_fixture_tree(
             &source_root.join(relative),
             &sandbox.join(relative),
-            effective_file
-                .as_ref()
-                .map(|(path, bytes)| (path.as_path(), *bytes)),
+            &effective_files,
         )?;
+    }
+    for (path, bytes) in &effective_files {
+        fs::create_dir_all(
+            path.parent()
+                .ok_or("effective fixture input has no parent")?,
+        )
+        .map_err(|error| error.to_string())?;
+        refresh_fixture_bytes(path, bytes)?;
     }
     let manifest = r#"[workspace]
 members = [
@@ -11439,13 +11473,13 @@ fn write_isolated_fixture_identity(
 
 #[cfg(test)]
 fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
-    copy_effective_fixture_tree(source, destination, None)
+    copy_effective_fixture_tree(source, destination, &[])
 }
 
 fn copy_effective_fixture_tree(
     source: &Path,
     destination: &Path,
-    effective_file: Option<(&Path, &[u8])>,
+    effective_files: &[(PathBuf, &[u8])],
 ) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for entry in
@@ -11458,8 +11492,8 @@ fn copy_effective_fixture_tree(
             .map_err(|error| error.to_string())?
             .is_dir()
         {
-            copy_effective_fixture_tree(&entry.path(), &target, effective_file)?;
-        } else if let Some((_, bytes)) = effective_file.filter(|(path, _)| *path == target) {
+            copy_effective_fixture_tree(&entry.path(), &target, effective_files)?;
+        } else if let Some((_, bytes)) = effective_files.iter().find(|(path, _)| path == &target) {
             refresh_fixture_bytes(&target, bytes)?;
         } else {
             copy_fixture_file(&entry.path(), &target)?;
@@ -11491,12 +11525,17 @@ fn derive_text_mutation(source: &str, before: &str, after: &str) -> Result<Strin
     Ok(output)
 }
 
-fn empty_named_test_body(path: &Path, marker: &str) -> Result<(), String> {
-    replace_named_test_body(path, marker, "{}")
+fn replace_named_test_body(path: &Path, marker: &str, replacement: &str) -> Result<(), String> {
+    let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    fs::write(path, derive_named_test_body(source, marker, replacement)?)
+        .map_err(|error| error.to_string())
 }
 
-fn replace_named_test_body(path: &Path, marker: &str, replacement: &str) -> Result<(), String> {
-    let mut source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+fn derive_named_test_body(
+    mut source: String,
+    marker: &str,
+    replacement: &str,
+) -> Result<String, String> {
     let start = source
         .find(marker)
         .ok_or_else(|| format!("isolated empty-body marker is absent: {marker}"))?;
@@ -11521,7 +11560,7 @@ fn replace_named_test_body(path: &Path, marker: &str, replacement: &str) -> Resu
     }
     let closing = closing.ok_or("isolated public test has unbalanced body braces")?;
     source.replace_range(opening..=closing, replacement);
-    fs::write(path, source).map_err(|error| error.to_string())
+    Ok(source)
 }
 
 fn isolated_public_test_diagnostic(
@@ -19215,6 +19254,7 @@ product_root = "product"
         })
         .unwrap();
         assert_effective_warm_refresh(&root);
+        assert_remaining_effective_warm_refresh(&root);
     }
 
     fn assert_effective_warm_refresh(repository: &Path) {
@@ -19243,13 +19283,13 @@ product_root = "product"
             let modified = with_effective_warm_testkit_fixture(
                 &source,
                 "warm-effective-input-proof",
-                Some((path.as_path(), bytes.as_slice())),
+                &[(path.clone(), bytes.clone())],
                 |sandbox| {
                     let effective = sandbox.join(&path);
                     copy_effective_fixture_tree(
                         &source,
                         sandbox,
-                        Some((effective.as_path(), bytes.as_slice())),
+                        &[(effective.clone(), bytes.as_slice())],
                     )?;
                     assert_eq!(fs::read(&effective).unwrap(), bytes);
                     assert_eq!(
@@ -19269,6 +19309,73 @@ product_root = "product"
             )
             .unwrap();
             previous_modified = Some(modified);
+        }
+        fs::remove_dir_all(source).unwrap();
+    }
+
+    fn assert_remaining_effective_warm_refresh(repository: &Path) {
+        let source = test_root("remaining-effective-inputs");
+        for relative in [
+            "build/crates/fforager-testkit",
+            "build/fixtures/contracts",
+            "product/crates/fforager-contracts",
+            "product/crates/fforager-diagnostics-contract",
+            "product/crates/fforager-core",
+            "product/crates/fforager-storage",
+        ] {
+            copy_effective_fixture_tree(&repository.join(relative), &source.join(relative), &[])
+                .unwrap();
+        }
+        for relative in ["build/Cargo.toml", "build/Cargo.lock"] {
+            copy_fixture_file(&repository.join(relative), &source.join(relative)).unwrap();
+        }
+        for label in [
+            "proof-map-behavior-stub",
+            "public-counterexample-receipt-only",
+        ] {
+            let mut previous = Vec::new();
+            for revision in 0..3 {
+                if revision == 2 {
+                    for relative in [
+                        "product/crates/fforager-contracts/src/identity.rs",
+                        "product/crates/fforager-contracts/src/graph.rs",
+                        "build/crates/fforager-testkit/src/lib.rs",
+                    ] {
+                        let path = source.join(relative);
+                        let mut text = fs::read_to_string(&path).unwrap();
+                        text.push_str("\n// updated canonical input\n");
+                        fs::write(path, text).unwrap();
+                    }
+                }
+                let inputs = remaining_fixture_effective_inputs(&source, label).unwrap();
+                let observed = with_effective_warm_testkit_fixture(
+                    &source,
+                    &format!("warm-refresh-{label}"),
+                    &inputs,
+                    |sandbox| {
+                        prepare_effective_testkit_workspace(&source, sandbox, &inputs)?;
+                        let observed = inputs
+                            .iter()
+                            .map(|(relative, bytes)| {
+                                let path = sandbox.join(relative);
+                                assert_eq!(fs::read(&path).unwrap(), *bytes);
+                                (
+                                    bytes.clone(),
+                                    fs::metadata(path).unwrap().modified().unwrap(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        if revision == 1 {
+                            assert_eq!(observed, previous);
+                        } else if revision == 2 {
+                            assert_ne!(observed, previous);
+                        }
+                        Ok(observed)
+                    },
+                )
+                .unwrap();
+                previous = observed;
+            }
         }
         fs::remove_dir_all(source).unwrap();
     }

@@ -254,6 +254,14 @@
   "validation": {
     "checks": [
         {
+          "kind": "six-helper-effective-input-refresh",
+          "retained_failure": "r11 ARCH architecture-check-1792612992572433700-473084 passed the reused payload boundary then timed out300seconds at JournalRecord. The authorized preparation-only batch completed all14 remaining owners in600.99seconds without acceptance claims. Subsequent warmed ARCH architecture-check-1792614838063034900-31056 still timed out300seconds at behavior-stub contracts lib after its helper reset and rewrote the same effective input; all original failure reports are retained.",
+          "implementation": "The existing effective-input refresh now covers the six remaining proof-map/public-test/receipt helpers, including their bounded multi-file and generated integration inputs. Current canonical-derived mutation bytes, source/target isolation, actual final-input identity, package profiles, positive then independent-negative ordering, markers and deadlines are preserved; no timestamp restoration or cached verdict substitution.",
+          "focused_results": "Canonical workspace/all-target/all-feature warnings-denied Clippy PASS0/23.09seconds, matching no-run setup PASS0/38.95seconds, and existing extended warm_fixture_reuses_unchanged_inputs_and_rejects_shared_mutation PASS1/1/14.40seconds. The owning test covers repeated effective bytes/mtime, changed canonical input, generated behavior input and two-input receipt reset. No full suite or runtime claim is inferred from setup or this component proof.",
+          "captures": ".fforager-artifacts/product-batch/phase1-six-helper-*; phase1-r11-arch-warmed.*; phase1-r11-remaining-setup.* and remaining-fixture-setup/",
+          "ceiling": "Final clean-candidate literal ARCH must execute every original oracle under unchanged limits, followed by independent canonical PR and same-run runtime/watcher before closure/main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
+        },
+        {
           "kind": "effective-mutant-warm-refresh",
           "retained_failure": "Literal r10 ARCH architecture-check-1792610284861311600-447868 failed incomplete when the exact payload public counterexample Cargo command exceeded unchanged300seconds before the required semantic marker. Owned tree termination and reap succeeded; no semantic acceptance was inferred.",
           "diagnosis_and_change": "The leased source refresh restored canonical bytes then reapplied the identical mutation, unnecessarily refreshing the effective input timestamp. The exact current canonical-derived mutation is now computed first and passed through both existing content-aware refresh stages; all other files reset normally. The same eight textual mutations, one JSON input, first-anchor/CRLF handling, markers, isolation and fixed deadlines remain unchanged.",
