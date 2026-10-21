@@ -781,8 +781,7 @@ fn read_entities(r: &mut Reader<'_, '_>, out: &mut Vec<Entity>) -> Result<()> {
             _ => false,
         };
         if gathers {
-            loop {
-                let Some(child) = read_raw(r)? else { break };
+            while let Some(child) = read_raw(r)? {
                 match (&mut e.kind, child.kind) {
                     (Kind::Polyline { vertices, .. }, Kind::Vertex(v)) => {
                         r.value()?;
