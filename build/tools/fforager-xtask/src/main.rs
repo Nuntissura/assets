@@ -9194,7 +9194,8 @@ fn read_native_dependency_exceptions(
         };
         let valid_scope = match status {
             "ACTIVE_NON_SHIPPED_ADJUDICATION_ONLY"
-            | "ACTIVE_NON_SHIPPED_FFMPEG_PREREQUISITE_ONLY" => {
+            | "ACTIVE_NON_SHIPPED_FFMPEG_PREREQUISITE_ONLY"
+            | "ACTIVE_NON_SHIPPED_VALIDATION_ONLY" => {
                 !allow_product_use
                     && !allow_packaging_or_release
                     && promotion_requires_new_operator_decision
@@ -9208,11 +9209,6 @@ fn read_native_dependency_exceptions(
                 allow_product_use
                     && !allow_packaging_or_release
                     && !promotion_requires_new_operator_decision
-            }
-            "ACTIVE_NON_SHIPPED_VALIDATION_ONLY" => {
-                !allow_product_use
-                    && !allow_packaging_or_release
-                    && promotion_requires_new_operator_decision
             }
             _ => false,
         };
@@ -11270,6 +11266,14 @@ pedantic = { level = "warn", priority = -1 }
         &source_root.join("build/Cargo.lock"),
         &sandbox.join("build/Cargo.lock"),
     )?;
+    write_isolated_fixture_identity(source_root, sandbox, &manifest)
+}
+
+fn write_isolated_fixture_identity(
+    source_root: &Path,
+    sandbox: &Path,
+    manifest: &str,
+) -> Result<(), String> {
     let mut files = walk_files(sandbox)?;
     files.sort();
     let mut inputs = Sha256::new();

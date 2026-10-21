@@ -1,6 +1,10 @@
 //! Source-backed incompatible watcher; the production source and binary stay intact.
 
-use super::*;
+use super::{
+    BTreeSet, File, Path, PathBuf, TOOL_COMMAND_TIMEOUT, command_output,
+    command_output_with_timeout, executable, failure, fs, sha256_bytes, sha256_file, slash,
+    validate_built_runtime_artifact,
+};
 
 const BINARY: &str = "fforager-watcher-incompatible";
 
@@ -270,7 +274,12 @@ fn prepare_sources(root: &Path, source: &Path, stage: &Path) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::{Invocation, bounded_capture};
+    use super::{File, build, fs};
+    use crate::{
+        Command, Duration, Instant, Stdio, SystemTime, UNIX_EPOCH, Value, configure_quiet_process,
+        repo_root, wait_for_child,
+    };
 
     #[test]
     fn source_variant_uses_approved_lock_and_emits_incompatible_wire() {

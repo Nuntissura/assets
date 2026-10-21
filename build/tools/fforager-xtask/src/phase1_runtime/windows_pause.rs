@@ -55,7 +55,9 @@ impl OwnedProcess {
         let mut buffer = vec![0_u16; 32768];
         let mut length = u32::try_from(buffer.len()).map_err(|error| error.to_string())?;
         // SAFETY: retained live process handle, sized writable UTF-16 buffer and length.
-        if unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length) } == 0 {
+        if unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &raw mut length) }
+            == 0
+        {
             return Err(std::io::Error::last_os_error().to_string());
         }
         buffer.truncate(length as usize);
@@ -104,10 +106,10 @@ impl OwnedProcess {
         if unsafe {
             GetProcessTimes(
                 self.handle,
-                &mut creation,
-                &mut exit,
-                &mut kernel,
-                &mut user,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
             )
         } == 0
         {

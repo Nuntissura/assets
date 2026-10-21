@@ -199,7 +199,7 @@ exception_authority:
       allow_packaging_or_release: false
       promotion_requires_new_operator_decision: true
       reason: Actual watcher-hang validation requires bounded watcher pause; crash/restart validation additionally retains a read-only handle for the independently identified launcher-owned worker through the existing owned actuator and exit acknowledgment. No new native API or dependency is authorized.
-      residual_uncertainty: Native calls remain confined to phase1_runtime/windows_pause.rs: only owned watchers can pause/resume; owned workers expose read-only identity and exit acknowledgment. Failed identity, parent, liveness or detach checks are explicit proof failures.
+      residual_uncertainty: "Native calls remain confined to phase1_runtime/windows_pause.rs: only owned watchers can pause/resume; owned workers expose read-only identity and exit acknowledgment. Failed identity, parent, liveness or detach checks are explicit proof failures."
       removal_trigger: Remove when an equally direct bounded owned-process fault mechanism replaces it or watcher hang validation is retired; broader APIs, consumers or product use require a new Operator decision.
   rule: build/architecture-policy.toml MUST reference a stable decision ID in this separate allowlist and MUST NOT authorize native runtimes, unsafe crates, forbidden edges, build-time downloads, prebuilt binaries, FFI, or other architecture exceptions by editing build policy alone.
 rules:

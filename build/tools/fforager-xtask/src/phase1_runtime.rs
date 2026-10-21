@@ -1,6 +1,15 @@
 //! Bounded Phase 1 staged-artifact proof. This is not a general scenario engine.
 
-use super::*;
+use super::{
+    ArchitecturePolicy, BTreeMap, BTreeSet, COMMAND_CAPTURE_SEQUENCE, Check, Child, Command,
+    Deserialize, Digest, Duration, File, Instant, Ordering, OsStr, Path, PathBuf, Read,
+    RuntimeTruthResult, Serialize, Sha256, SourceState, Stdio, SystemTime, TOOL_COMMAND_TIMEOUT,
+    UNIX_EPOCH, Value, Write, active_packet_id, cleanup_timed_out_child, command_output,
+    command_output_bytes_with_timeout, command_output_with_timeout, configure_quiet_process, env,
+    fs, io, read_toml, require_relative_contained, run_command_with_proof_class, safe_relative,
+    sha256_file, slash, source_state, terminate_child_process_tree, thread,
+    validate_built_runtime_artifact, wait_for_child, walk_files,
+};
 use fforager_contracts::{ArchiveLimits, ArchiveRecord};
 use redb::{
     ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
@@ -128,72 +137,8 @@ pub(super) fn validate_evidence(
     evidence: &RuntimeEvidence,
     root: Option<&Path>,
 ) -> Result<(), String> {
-    if let Some(root) = root {
-        if active_packet_id(root)?.as_deref() != Some(PACKET) {
-            return Err(failure("runtime evidence packet is not active"));
-        }
-        let packet: Value = serde_json::from_slice(
-            &fs::read(root.join(format!(".GOV/work_packets/{PACKET}/packet.json")))
-                .map_err(failure)?,
-        )
-        .map_err(failure)?;
-        if packet.pointer("/extensions/runtime_proof")
-            != Some(&serde_json::to_value(&evidence.proof).map_err(failure)?)
-        {
-            return Err(failure(
-                "runtime receipt differs from the actual frozen packet declaration",
-            ));
-        }
-    }
-    let cases = evidence
-        .cases
-        .iter()
-        .map(|case| case.name.as_str())
-        .collect::<BTreeSet<_>>();
-    if evidence.schema_id != "ff.staged-runtime-evidence@1"
-        || evidence.proof.schema_id != SCHEMA
-        || evidence.cases.len() != REQUIRED_CASES.len()
-        || cases != REQUIRED_CASES.iter().copied().collect()
-        || evidence.artifacts.len() != 3
-        || evidence.source.dirty
-    {
-        return Err(failure("incomplete staged runtime evidence"));
-    }
-    let invocation = evidence
-        .originating_gate_args
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    if ![
-        vec!["verify-pr", "--evidence-from-taskboard"],
-        vec!["runtime-truth-check", "--evidence-from-taskboard"],
-        vec!["watcher-check"],
-    ]
-    .contains(&invocation)
-    {
-        return Err(failure(
-            "runtime evidence omits the actual canonical batch invocation",
-        ));
-    }
-    let artifact_names = evidence
-        .artifacts
-        .iter()
-        .filter_map(|file| Path::new(&file.path).file_name().and_then(OsStr::to_str))
-        .collect::<BTreeSet<_>>();
-    let expected_names = [
-        executable("fforager"),
-        executable("fforager-worker"),
-        executable("fforager-watcher"),
-    ];
-    if artifact_names != expected_names.iter().map(String::as_str).collect()
-        || evidence.artifacts.iter().any(|file| {
-            !file
-                .path
-                .starts_with(".fforager-artifacts/cargo-target/release/")
-        })
-    {
-        return Err(failure("original release artifact identities missing"));
-    }
+    validate_evidence_packet(evidence, root)?;
+    validate_evidence_shape(evidence)?;
     for case in &evidence.cases {
         let marker = format!("/{}/", case.name);
         if case.files.iter().any(|file| {
@@ -283,6 +228,80 @@ pub(super) fn validate_evidence(
     Ok(())
 }
 
+fn validate_evidence_packet(evidence: &RuntimeEvidence, root: Option<&Path>) -> Result<(), String> {
+    if let Some(root) = root {
+        if active_packet_id(root)?.as_deref() != Some(PACKET) {
+            return Err(failure("runtime evidence packet is not active"));
+        }
+        let packet: Value = serde_json::from_slice(
+            &fs::read(root.join(format!(".GOV/work_packets/{PACKET}/packet.json")))
+                .map_err(failure)?,
+        )
+        .map_err(failure)?;
+        if packet.pointer("/extensions/runtime_proof")
+            != Some(&serde_json::to_value(&evidence.proof).map_err(failure)?)
+        {
+            return Err(failure(
+                "runtime receipt differs from the actual frozen packet declaration",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_evidence_shape(evidence: &RuntimeEvidence) -> Result<(), String> {
+    let cases = evidence
+        .cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if evidence.schema_id != "ff.staged-runtime-evidence@1"
+        || evidence.proof.schema_id != SCHEMA
+        || evidence.cases.len() != REQUIRED_CASES.len()
+        || cases != REQUIRED_CASES.iter().copied().collect()
+        || evidence.artifacts.len() != 3
+        || evidence.source.dirty
+    {
+        return Err(failure("incomplete staged runtime evidence"));
+    }
+    let invocation = evidence
+        .originating_gate_args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if ![
+        vec!["verify-pr", "--evidence-from-taskboard"],
+        vec!["runtime-truth-check", "--evidence-from-taskboard"],
+        vec!["watcher-check"],
+    ]
+    .contains(&invocation)
+    {
+        return Err(failure(
+            "runtime evidence omits the actual canonical batch invocation",
+        ));
+    }
+    let artifact_names = evidence
+        .artifacts
+        .iter()
+        .filter_map(|file| Path::new(&file.path).file_name().and_then(OsStr::to_str))
+        .collect::<BTreeSet<_>>();
+    let expected_names = [
+        executable("fforager"),
+        executable("fforager-worker"),
+        executable("fforager-watcher"),
+    ];
+    if artifact_names != expected_names.iter().map(String::as_str).collect()
+        || evidence.artifacts.iter().any(|file| {
+            !file
+                .path
+                .starts_with(".fforager-artifacts/cargo-target/release/")
+        })
+    {
+        return Err(failure("original release artifact identities missing"));
+    }
+    Ok(())
+}
+
 fn runtime_check(id: &str, class: &'static str, boundary: &str, detail: String) -> Check {
     Check {
         id: id.into(),
@@ -349,19 +368,57 @@ pub(super) fn execute(
         validate_built_runtime_artifact(root, &path)?;
         built.push((artifact.binary.clone(), path.clone(), sha256_file(&path)?));
     }
+    let case_evidence = execute_cases(root, &directory, &fixture, &proof, &built, &mut checks)?;
+    checks.push(runtime_check("phase1-watcher-boundaries", "runtime_fault",
+        "real staged watcher degradation and owned-process fault boundaries",
+        "all declared missing, corrupt, incompatible, crash, hung and storage-failure cases executed".into()));
+    let evidence = RuntimeEvidence {
+        schema_id: "ff.staged-runtime-evidence@1".into(),
+        source: source_state(root)?,
+        originating_gate_args: env::args().skip(1).collect(),
+        artifacts: built
+            .iter()
+            .map(|(_, path, _)| evidence_file(root, path))
+            .collect::<Result<Vec<_>, _>>()?,
+        cases: case_evidence,
+        proof,
+    };
+    validate_evidence(&evidence, Some(root))?;
+    let receipt = directory.join("runtime-evidence.json");
+    fs::write(
+        &receipt,
+        serde_json::to_vec_pretty(&evidence).map_err(failure)?,
+    )
+    .map_err(failure)?;
+    Ok(RuntimeTruthResult {
+        checks,
+        proof_classes: vec!["counterfactual".into(), "external_process".into(), "production_runtime".into(), "runtime_fault".into(), "state_effect".into()],
+        limitations: vec!["Only the frozen direct-HTTP Windows/NTFS slice and named fault cases are proven; no replacement parity or release claim.".into()],
+        artifacts: vec![slash(&directory), slash(receipt.strip_prefix(root).map_err(failure)?)],
+    })
+}
+
+fn execute_cases(
+    root: &Path,
+    directory: &Path,
+    fixture: &[u8],
+    proof: &Proof,
+    built: &[(String, PathBuf, String)],
+    checks: &mut Vec<Check>,
+) -> Result<Vec<CaseEvidence>, String> {
     let mut case_evidence = Vec::new();
     let mut case_failures = Vec::new();
     for case in &proof.scenarios {
         let stage = directory.join(case);
         fs::create_dir_all(&stage).map_err(failure)?;
-        for (name, path, digest) in &built {
+        for (name, path, digest) in built {
             let target = stage.join(executable(name));
             fs::copy(path, &target).map_err(failure)?;
             if sha256_file(&target)? != *digest {
                 return Err(failure("staged executable digest changed"));
             }
         }
-        if let Err(error) = execute_case(root, &stage, case, &fixture, &proof) {
+        if let Err(error) = execute_case(root, &stage, case, fixture, proof) {
             case_failures.push(format!("scenario={case}; stage={}; {error}", slash(&stage)));
             continue;
         }
@@ -403,33 +460,7 @@ pub(super) fn execute(
             case_failures.join(" | ")
         )));
     }
-    checks.push(runtime_check("phase1-watcher-boundaries", "runtime_fault",
-        "real staged watcher degradation and owned-process fault boundaries",
-        "all declared missing, corrupt, incompatible, crash, hung and storage-failure cases executed".into()));
-    let evidence = RuntimeEvidence {
-        schema_id: "ff.staged-runtime-evidence@1".into(),
-        source: source_state(root)?,
-        originating_gate_args: env::args().skip(1).collect(),
-        artifacts: built
-            .iter()
-            .map(|(_, path, _)| evidence_file(root, path))
-            .collect::<Result<Vec<_>, _>>()?,
-        cases: case_evidence,
-        proof,
-    };
-    validate_evidence(&evidence, Some(root))?;
-    let receipt = directory.join("runtime-evidence.json");
-    fs::write(
-        &receipt,
-        serde_json::to_vec_pretty(&evidence).map_err(failure)?,
-    )
-    .map_err(failure)?;
-    Ok(RuntimeTruthResult {
-        checks,
-        proof_classes: vec!["counterfactual".into(), "external_process".into(), "production_runtime".into(), "runtime_fault".into(), "state_effect".into()],
-        limitations: vec!["Only the frozen direct-HTTP Windows/NTFS slice and named fault cases are proven; no replacement parity or release claim.".into()],
-        artifacts: vec![slash(&directory), slash(receipt.strip_prefix(root).map_err(failure)?)],
-    })
+    Ok(case_evidence)
 }
 
 fn validate_contract(
@@ -518,6 +549,15 @@ fn validate_contract(
             "committed deterministic media fixture identity/bound mismatch",
         ));
     }
+    validate_contract_source(root, proof, value, id)
+}
+
+fn validate_contract_source(
+    root: &Path,
+    proof: &Proof,
+    value: &Value,
+    id: &str,
+) -> Result<(), String> {
     command_output(
         root,
         "git",
@@ -678,18 +718,17 @@ impl Origin {
                             &running,
                             &release,
                             timeout,
-                        ) {
-                            if failures < 32 {
-                                failures += 1;
-                                let event = serde_json::json!({"schema":"ff.origin-diagnostic@1", "sequence":failures, "kind":format!("{:?}",error.kind()), "os_error":error.raw_os_error(), "detail":error.to_string().chars().take(1024).collect::<String>()});
-                                if let Err(record_error) = writeln!(diagnostics, "{event}") {
-                                    eprintln!("origin diagnostic write failed: {record_error}");
-                                }
+                        ) && failures < 32
+                        {
+                            failures += 1;
+                            let event = serde_json::json!({"schema":"ff.origin-diagnostic@1", "sequence":failures, "kind":format!("{:?}",error.kind()), "os_error":error.raw_os_error(), "detail":error.to_string().chars().take(1024).collect::<String>()});
+                            if let Err(record_error) = writeln!(diagnostics, "{event}") {
+                                eprintln!("origin diagnostic write failed: {record_error}");
                             }
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2))
+                        thread::sleep(Duration::from_millis(2));
                     }
                     Err(error) => {
                         eprintln!("owned origin accept failed: {error}");
@@ -1023,36 +1062,7 @@ fn execute_case(
         ));
     }
     let watcher = stage.join(executable("fforager-watcher"));
-    match case {
-        "watcher-missing" => fs::remove_file(&watcher).map_err(failure)?,
-        "watcher-corrupt" => {
-            fs::write(&watcher, b"deliberately invalid executable image").map_err(failure)?
-        }
-        "watcher-incompatible" => {
-            let original = sha256_file(&watcher)?;
-            let variant = watcher_mutant::build(root, stage)?;
-            let variant_hash = sha256_file(&variant)?;
-            if variant_hash == original {
-                return Err(failure(
-                    "source-mutated watcher equals the original artifact",
-                ));
-            }
-            fs::copy(variant, &watcher).map_err(failure)?;
-            if sha256_file(&watcher)? != variant_hash {
-                return Err(failure("source-mutated watcher staging identity changed"));
-            }
-            fs::write(stage.join("watcher-original-artifact.sha256"), original).map_err(failure)?;
-        }
-        "watcher-storage-failure" => {
-            fs::create_dir_all(stage.join("state")).map_err(failure)?;
-            fs::write(
-                stage.join("state/diagnostics"),
-                b"diagnostic directory deliberately unavailable",
-            )
-            .map_err(failure)?;
-        }
-        _ => {}
-    }
+    prepare_watcher_fault(root, stage, case, &watcher)?;
     let slow = matches!(
         case,
         "external-cancellation" | "crash-restart" | "watcher-crash" | "watcher-hung"
@@ -1067,7 +1077,7 @@ fn execute_case(
         proof.timeout_seconds,
     )?;
     let launched = SystemTime::now();
-    let mut invocation = Invocation::start(stage, &origin, proof.timeout_seconds)?;
+    let invocation = Invocation::start(stage, &origin, proof.timeout_seconds)?;
     match case {
         "external-cancellation" => {
             wait_until(proof.timeout_seconds, || Ok(journal_path(stage).is_ok()))?;
@@ -1085,89 +1095,12 @@ fn execute_case(
             return Ok(());
         }
         "crash-restart" => {
-            let (ready, control) = ready_actor(stage, proof.timeout_seconds)?;
-            #[cfg(windows)]
-            let watcher_actor = {
-                let pid = ready
-                    .get("watcher_pid")
-                    .and_then(Value::as_u64)
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .ok_or_else(|| failure("missing watcher actor identity"))?;
-                let actor =
-                    windows_pause::OwnedWatcher::open(pid, &watcher, launched).map_err(failure)?;
-                verify_actor_parent(stage, actor.pid(), invocation.child.id(), &watcher)?;
-                actor
-            };
-            wait_until(proof.timeout_seconds, || Ok(journal_path(stage).is_ok()))?;
-            let worker = ready
-                .get("worker_pid")
-                .and_then(Value::as_u64)
-                .and_then(|pid| u32::try_from(pid).ok())
-                .ok_or_else(|| failure("missing worker actor identity"))?;
-            kill_worker(stage, &mut invocation, worker, launched)?;
-            let observation = invocation.finish(proof.timeout_seconds)?;
-            if observation.0 == 0 {
-                return Err(failure("uncommanded worker death was reported successful"));
-            }
-            wait_until(3, || {
-                watcher_log_contains(&control, "worker_exit_without_shutdown_receipt")
-            })?;
-            fs::write(control.join("stop"), b"stop\n").map_err(failure)?;
-            #[cfg(windows)]
-            watcher_actor
-                .wait_exit(Duration::from_secs(2))
-                .map_err(failure)?;
-            origin.release_body();
-            let first = Invocation::start(stage, &origin, proof.timeout_seconds)?
-                .finish(proof.timeout_seconds)?;
-            success(stage, &first, proof)?;
-            let record = archive_record(stage)?;
-            let second = Invocation::start(stage, &origin, proof.timeout_seconds)?
-                .finish(proof.timeout_seconds)?;
-            success(stage, &second, proof)?;
-            if archive_record(stage)? != record {
-                return Err(failure("second recovery altered the committed archive"));
-            }
-            return Ok(());
+            return execute_crash_restart(stage, &origin, invocation, launched, &watcher, proof);
         }
         "watcher-crash" | "watcher-hung" => {
-            let (ready, _) = ready_actor(stage, proof.timeout_seconds)?;
-            let pid = ready
-                .get("watcher_pid")
-                .and_then(Value::as_u64)
-                .and_then(|pid| u32::try_from(pid).ok())
-                .ok_or_else(|| failure("missing watcher actor identity"))?;
-            #[cfg(windows)]
-            {
-                let mut actor =
-                    windows_pause::OwnedWatcher::open(pid, &watcher, launched).map_err(failure)?;
-                verify_actor_parent(stage, actor.pid(), invocation.child.id(), &watcher)?;
-                if invocation.child.try_wait().map_err(failure)?.is_some() {
-                    return Err(failure(
-                        "owned launcher exited before watcher fault actuation",
-                    ));
-                }
-                if case == "watcher-hung" {
-                    actor.pause().map_err(failure)?;
-                    thread::sleep(Duration::from_secs(1));
-                    actor.resume().map_err(failure)?;
-                } else {
-                    taskkill(stage, actor.pid())?;
-                    actor.wait_exit(Duration::from_secs(2)).map_err(failure)?;
-                }
-            }
-            origin.release_body();
-            let observation = invocation.finish(proof.timeout_seconds)?;
-            success(stage, &observation, proof)?;
-            let expected = if case == "watcher-hung" {
-                "watcher_heartbeat_stale"
-            } else {
-                "watcher_failed_after_readiness"
-            };
-            if !observation.2.contains(expected) {
-                return Err(failure(format!("actual watcher fault omitted {expected}")));
-            }
-            return Ok(());
+            return execute_watcher_fault(
+                stage, case, &watcher, &origin, launched, invocation, proof,
+            );
         }
         _ => {}
     }
@@ -1185,6 +1118,39 @@ fn execute_case(
         return Ok(());
     }
     success(stage, &observation, proof)?;
+    verify_watcher_outcome(stage, case, &observation)?;
+    if case == "state-counterfactual" {
+        let record = archive_record(stage)?;
+        let output = stage.join("media.wav");
+        let mut corrupted = fs::read(&output).map_err(failure)?;
+        let first = corrupted
+            .first_mut()
+            .ok_or_else(|| failure("empty mutation target"))?;
+        *first ^= 1;
+        fs::write(&output, corrupted).map_err(failure)?;
+        let observation = Invocation::start(stage, &origin, proof.timeout_seconds)?
+            .finish(proof.timeout_seconds)?;
+        if observation.0 == 0
+            || success(stage, &observation, proof).is_ok()
+            || !observation.2.contains("RECOVERY-HASH")
+            || archive_record(stage)? != record
+        {
+            return Err(failure(
+                "declaration-preserving physical state corruption was not rejected by the actual restarted product and independent oracle",
+            ));
+        }
+    }
+    if case == "durable-prefixes" {
+        durable_prefixes(stage, &origin, proof)?;
+    }
+    Ok(())
+}
+
+fn verify_watcher_outcome(
+    stage: &Path,
+    case: &str,
+    observation: &(i32, String, String),
+) -> Result<(), String> {
     if case.starts_with("watcher-") && !observation.2.contains("diagnostics_degraded") {
         return Err(failure(
             "watcher fault did not expose independent diagnostic degradation",
@@ -1219,29 +1185,145 @@ fn execute_case(
             "watcher storage failure did not exercise diagnostic directory rejection",
         ));
     }
-    if case == "state-counterfactual" {
-        let record = archive_record(stage)?;
-        let output = stage.join("media.wav");
-        let mut corrupted = fs::read(&output).map_err(failure)?;
-        let first = corrupted
-            .first_mut()
-            .ok_or_else(|| failure("empty mutation target"))?;
-        *first ^= 1;
-        fs::write(&output, corrupted).map_err(failure)?;
-        let observation = Invocation::start(stage, &origin, proof.timeout_seconds)?
-            .finish(proof.timeout_seconds)?;
-        if observation.0 == 0
-            || success(stage, &observation, proof).is_ok()
-            || !observation.2.contains("RECOVERY-HASH")
-            || archive_record(stage)? != record
-        {
+    Ok(())
+}
+
+fn prepare_watcher_fault(
+    root: &Path,
+    stage: &Path,
+    case: &str,
+    watcher: &Path,
+) -> Result<(), String> {
+    match case {
+        "watcher-missing" => fs::remove_file(watcher).map_err(failure)?,
+        "watcher-corrupt" => {
+            fs::write(watcher, b"deliberately invalid executable image").map_err(failure)?;
+        }
+        "watcher-incompatible" => {
+            let original = sha256_file(watcher)?;
+            let variant = watcher_mutant::build(root, stage)?;
+            let variant_hash = sha256_file(&variant)?;
+            if variant_hash == original {
+                return Err(failure(
+                    "source-mutated watcher equals the original artifact",
+                ));
+            }
+            fs::copy(variant, watcher).map_err(failure)?;
+            if sha256_file(watcher)? != variant_hash {
+                return Err(failure("source-mutated watcher staging identity changed"));
+            }
+            fs::write(stage.join("watcher-original-artifact.sha256"), original).map_err(failure)?;
+        }
+        "watcher-storage-failure" => {
+            fs::create_dir_all(stage.join("state")).map_err(failure)?;
+            fs::write(
+                stage.join("state/diagnostics"),
+                b"diagnostic directory deliberately unavailable",
+            )
+            .map_err(failure)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn execute_crash_restart(
+    stage: &Path,
+    origin: &Origin,
+    mut invocation: Invocation,
+    launched: SystemTime,
+    watcher: &Path,
+    proof: &Proof,
+) -> Result<(), String> {
+    let (ready, control) = ready_actor(stage, proof.timeout_seconds)?;
+    #[cfg(windows)]
+    let watcher_actor = {
+        let pid = ready
+            .get("watcher_pid")
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .ok_or_else(|| failure("missing watcher actor identity"))?;
+        let actor = windows_pause::OwnedWatcher::open(pid, watcher, launched).map_err(failure)?;
+        verify_actor_parent(stage, actor.pid(), invocation.child.id(), watcher)?;
+        actor
+    };
+    wait_until(proof.timeout_seconds, || Ok(journal_path(stage).is_ok()))?;
+    let worker = ready
+        .get("worker_pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or_else(|| failure("missing worker actor identity"))?;
+    kill_worker(stage, &mut invocation, worker, launched)?;
+    let observation = invocation.finish(proof.timeout_seconds)?;
+    if observation.0 == 0 {
+        return Err(failure("uncommanded worker death was reported successful"));
+    }
+    wait_until(3, || {
+        watcher_log_contains(&control, "worker_exit_without_shutdown_receipt")
+    })?;
+    fs::write(control.join("stop"), b"stop\n").map_err(failure)?;
+    #[cfg(windows)]
+    watcher_actor
+        .wait_exit(Duration::from_secs(2))
+        .map_err(failure)?;
+    origin.release_body();
+    let first =
+        Invocation::start(stage, origin, proof.timeout_seconds)?.finish(proof.timeout_seconds)?;
+    success(stage, &first, proof)?;
+    let record = archive_record(stage)?;
+    let second =
+        Invocation::start(stage, origin, proof.timeout_seconds)?.finish(proof.timeout_seconds)?;
+    success(stage, &second, proof)?;
+    if archive_record(stage)? != record {
+        return Err(failure("second recovery altered the committed archive"));
+    }
+    Ok(())
+}
+
+fn execute_watcher_fault(
+    stage: &Path,
+    case: &str,
+    watcher: &Path,
+    origin: &Origin,
+    launched: SystemTime,
+    mut invocation: Invocation,
+    proof: &Proof,
+) -> Result<(), String> {
+    let (ready, _) = ready_actor(stage, proof.timeout_seconds)?;
+    let pid = ready
+        .get("watcher_pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or_else(|| failure("missing watcher actor identity"))?;
+    #[cfg(windows)]
+    {
+        let mut actor =
+            windows_pause::OwnedWatcher::open(pid, watcher, launched).map_err(failure)?;
+        verify_actor_parent(stage, actor.pid(), invocation.child.id(), watcher)?;
+        if invocation.child.try_wait().map_err(failure)?.is_some() {
             return Err(failure(
-                "declaration-preserving physical state corruption was not rejected by the actual restarted product and independent oracle",
+                "owned launcher exited before watcher fault actuation",
             ));
         }
+        if case == "watcher-hung" {
+            actor.pause().map_err(failure)?;
+            thread::sleep(Duration::from_secs(1));
+            actor.resume().map_err(failure)?;
+        } else {
+            taskkill(stage, actor.pid())?;
+            actor.wait_exit(Duration::from_secs(2)).map_err(failure)?;
+        }
     }
-    if case == "durable-prefixes" {
-        durable_prefixes(stage, &origin, proof)?;
+    origin.release_body();
+    let observation = invocation.finish(proof.timeout_seconds)?;
+    success(stage, &observation, proof)?;
+    let expected = if case == "watcher-hung" {
+        "watcher_heartbeat_stale"
+    } else {
+        "watcher_failed_after_readiness"
+    };
+    if !observation.2.contains(expected) {
+        return Err(failure(format!("actual watcher fault omitted {expected}")));
     }
     Ok(())
 }
@@ -1473,7 +1555,7 @@ fn durable_prefixes(stage: &Path, origin: &Origin, proof: &Proof) -> Result<(), 
                 "independent durable journal sequence/checksum reconciliation failed",
             ));
         }
-        previous = checksum.to_owned();
+        checksum.clone_into(&mut previous);
         let phase = body
             .get("phase")
             .and_then(Value::as_str)
@@ -1589,21 +1671,21 @@ fn snapshot(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
 }
 
 fn restore_snapshot(stage: &Path, files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<(), String> {
-    let state = stage.join("state");
-    let canonical_stage = stage.canonicalize().map_err(failure)?;
-    let canonical_state = state.canonicalize().map_err(failure)?;
-    if canonical_state.parent() != Some(canonical_stage.as_path())
-        || canonical_state.file_name() != Some(OsStr::new("state"))
+    let state_directory = stage.join("state");
+    let owned_root = stage.canonicalize().map_err(failure)?;
+    let restored_directory = state_directory.canonicalize().map_err(failure)?;
+    if restored_directory.parent() != Some(owned_root.as_path())
+        || restored_directory.file_name() != Some(OsStr::new("state"))
     {
         return Err(failure(
             "refusing state rollback outside the owned scenario directory",
         ));
     }
-    snapshot(&state)?; // Reject links/reparse points before a recursive removal.
-    fs::remove_dir_all(&state).map_err(failure)?;
-    fs::create_dir(&state).map_err(failure)?;
+    snapshot(&state_directory)?; // Reject links/reparse points before a recursive removal.
+    fs::remove_dir_all(&state_directory).map_err(failure)?;
+    fs::create_dir(&state_directory).map_err(failure)?;
     for (relative, bytes) in files {
-        let path = state.join(relative);
+        let path = state_directory.join(relative);
         fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| failure("snapshot parent absent"))?,
@@ -1690,6 +1772,24 @@ fn rollback_archive(path: &Path, commit: &Value) -> Result<(), String> {
         }
         records.remove(key.as_str()).map_err(failure)?;
     }
+    rollback_archive_sequence(&transaction)?;
+    {
+        let mut leases = transaction
+            .open_table(TableDefinition::<&str, &[u8]>::new("ff_archive_leases_v1"))
+            .map_err(failure)?;
+        if !leases.is_empty().map_err(failure)? {
+            return Err(failure(
+                "prefix baseline unexpectedly retains active leases",
+            ));
+        }
+        leases
+            .insert(key.as_str(), lease.as_slice())
+            .map_err(failure)?;
+    }
+    transaction.commit().map_err(failure)
+}
+
+fn rollback_archive_sequence(transaction: &redb::WriteTransaction) -> Result<(), String> {
     {
         let mut metadata = transaction
             .open_table(TableDefinition::<&str, u64>::new("ff_archive_meta_u64_v1"))
@@ -1706,20 +1806,7 @@ fn rollback_archive(path: &Path, commit: &Value) -> Result<(), String> {
         }
         metadata.insert("commit_sequence", 0).map_err(failure)?;
     }
-    {
-        let mut leases = transaction
-            .open_table(TableDefinition::<&str, &[u8]>::new("ff_archive_leases_v1"))
-            .map_err(failure)?;
-        if !leases.is_empty().map_err(failure)? {
-            return Err(failure(
-                "prefix baseline unexpectedly retains active leases",
-            ));
-        }
-        leases
-            .insert(key.as_str(), lease.as_slice())
-            .map_err(failure)?;
-    }
-    transaction.commit().map_err(failure)
+    Ok(())
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -1749,6 +1836,11 @@ fn journal_checksum(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        GateReport, GateReportArtifact, InputState, RUNTIME_GATE, aggregate_executed_proof_class,
+        executed_proof_classes, invocation, pass_with_class, repo_root,
+        validate_gate_report_artifact, with_isolated_fixture_root,
+    };
     use super::*;
 
     fn component_evidence() -> RuntimeEvidence {
@@ -1765,7 +1857,7 @@ mod tests {
             proof: Proof { schema_id: SCHEMA.into(), completion_claim: "operator_usable_runtime".into(), authorization_reference: "component-boundary-only".into(),
                 source_commit: "1".repeat(40), artifacts: [Artifact { package: "fforager-launcher".into(), binary: "fforager".into() },
                     Artifact { package: "fforager-worker".into(), binary: "fforager-worker".into() }, Artifact { package: "fforager-watcher".into(), binary: "fforager-watcher".into() }].into(),
-                fixture: Fixture { source: "build/fixtures/phase1-direct-http/media.wav".into(), sha256: "3".repeat(64), bytes: 524332 },
+                fixture: Fixture { source: "build/fixtures/phase1-direct-http/media.wav".into(), sha256: "3".repeat(64), bytes: 524_332 },
                 scenarios: REQUIRED_CASES.iter().map(|name| (*name).into()).collect(), timeout_seconds: 30 },
             artifacts: ["fforager", "fforager-worker", "fforager-watcher"].iter().map(|name| file(format!(".fforager-artifacts/cargo-target/release/{}", executable(name)))).collect(),
             cases: REQUIRED_CASES.iter().map(|name| CaseEvidence { name: (*name).into(), files: ["stdout", "stderr", "status.json"].iter()
@@ -1843,9 +1935,10 @@ mod tests {
             serde_json::from_value(valid.clone()).expect("strict component control");
         validate_gate_report_artifact(&decoded)
             .expect("valid component shape, not a production proof");
-        let rejects = |value: Value| match serde_json::from_value::<GateReportArtifact>(value) {
-            Ok(report) => assert!(validate_gate_report_artifact(&report).is_err()),
-            Err(_) => {}
+        let rejects = |value: Value| {
+            if let Ok(report) = serde_json::from_value::<GateReportArtifact>(value) {
+                assert!(validate_gate_report_artifact(&report).is_err());
+            }
         };
         let mut missing = valid.clone();
         missing
@@ -1874,7 +1967,7 @@ mod tests {
                 "unknown-proof" => changed["runtime_evidence"]["proof"]["unknown"] = true.into(),
                 "duplicate-case" => {
                     changed["runtime_evidence"]["cases"][1] =
-                        changed["runtime_evidence"]["cases"][0].clone()
+                        changed["runtime_evidence"]["cases"][0].clone();
                 }
                 "missing-case" => {
                     changed["runtime_evidence"]["cases"]
@@ -1890,7 +1983,7 @@ mod tests {
                 }
                 "duplicate-artifact" => {
                     changed["runtime_evidence"]["artifacts"][1] =
-                        changed["runtime_evidence"]["artifacts"][0].clone()
+                        changed["runtime_evidence"]["artifacts"][0].clone();
                 }
                 "missing-status" => {
                     changed["runtime_evidence"]["cases"][0]["files"]
@@ -1899,11 +1992,11 @@ mod tests {
                         .pop();
                 }
                 "source-mismatch" => {
-                    changed["runtime_evidence"]["source"]["git_commit"] = "4".repeat(40).into()
+                    changed["runtime_evidence"]["source"]["git_commit"] = "4".repeat(40).into();
                 }
                 "skipped-runtime" => {
                     changed["checks"][0]["skipped_semantic_dependencies"] =
-                        serde_json::json!(["production entrypoint skipped"])
+                        serde_json::json!(["production entrypoint skipped"]);
                 }
                 "wrong-class" => changed["checks"][0]["proof_class"] = "structural".into(),
                 "v1-promotion" => {
@@ -1944,10 +2037,16 @@ mod tests {
         next_value["source_commit"] = "6".repeat(40).into();
         let reused: Proof =
             serde_json::from_value(next_value.clone()).expect("reused reference shape");
-        assert!(validate_candidate_history(&reused, &next_value, &[first_value.clone()]).is_err());
+        assert!(
+            validate_candidate_history(&reused, &next_value, std::slice::from_ref(&first_value))
+                .is_err()
+        );
         next_value["authorization_reference"] = "component-source-candidate-2".into();
         let next: Proof = serde_json::from_value(next_value.clone()).expect("next candidate shape");
-        assert!(validate_candidate_history(&next, &next_value, &[first_value.clone()]).is_err());
+        assert!(
+            validate_candidate_history(&next, &next_value, std::slice::from_ref(&first_value))
+                .is_err()
+        );
         validate_candidate_history(
             &next,
             &next_value,
