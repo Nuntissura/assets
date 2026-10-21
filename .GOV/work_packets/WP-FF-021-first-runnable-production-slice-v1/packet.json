@@ -70,9 +70,9 @@
     "worktree_id": null,
     "remote_backup": {
       "required_for_handoff": true,
-      "branch": null,
-      "head_sha": null,
-      "verified_at_utc": null
+      "branch": "codex/wp020-prerequisite-classifier",
+      "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
+      "verified_at_utc": "2026-10-21T23:44:07.6947114Z"
     },
     "closure_commit": null,
     "main_containment_status": "NOT_STARTED",
@@ -82,10 +82,9 @@
     "status": "IN_PROGRESS",
     "risk": "HIGH",
     "blockers": [
-      "Final source-bound canonical runtime and watcher proof remain pending.",
-      "Final Phase1 canonical acceptance and main containment remain unproven."
+      "Technical acceptance passed; canonical-main closure containment remains unproven."
     ],
-    "next_action": "Apply the explicitly approved narrow FF-DEC-002 caller amendment, obtain focused checker proof and literal ARCH PASS at the next clean declaration, then hand the single canonical PR/runtime/watcher execution to the independent validator before closure and main containment.",
+    "next_action": "Record this technical closure commit as MERGE_PENDING, merge into canonical main, prove closure ancestry and unchanged accepted product/build inputs, then mark VALIDATED and clear active focus. WP011 remains STUB.",
     "supersedes": [],
     "superseded_by": null
   },
@@ -164,138 +163,177 @@
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-001",
       "requirement": "The exact staged release fforager launcher, worker, and watcher artifacts accept the committed representative direct HTTP/HTTPS fixture through the production entrypoint, launcher-owned sibling topology, worker engine, approved production transport, source graph, selection, storage, diagnostics, and operator-visible result; the launcher exits zero only after producing the expected hash-bound durable output and reconciled archive result within the declared timeout.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime report phase1-release-build and phase1-success PASS: exact staged release launcher/worker/watcher and hash-bound524332-byte output; independent archive-reader predicates accepted.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-002",
       "requirement": "Production-runtime cancellation and transport-failure scenarios exercise the shipped artifact and prove bounded cancellation progress, complete resource release, no corrupt final output, typed nonzero failure, retained diagnostics, and no success or archive insertion before required effects are acknowledged.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime phase1-transport-failure and phase1-external-cancellation PASS; independent actual DB readback both empty/sequence0/zero leases and no final output.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-003",
       "requirement": "Crash/restart runtime scenarios cover every implemented durable prefix, run reconciliation twice, reject inconsistent resume state, and produce the same correct output/archive verdict without advancing beyond durable bytes or deleting recoverable evidence early.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime phase1-crash-restart, phase1-durable-prefixes and phase1-state-counterfactual PASS; independent current durable-state readback accepted.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-004",
       "requirement": "The staged launcher starts an independent watcher with bounded readiness and shutdown; missing, corrupt, incompatible, hung, crashed, and storage-failed watcher scenarios expose diagnostics degradation while leaving the same Ferric bytes, archive decision, exit semantics, and bounded launcher completion, and an uncommanded Ferric crash leaves retrievable watcher evidence.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current runtime all six watcher-degraded scenarios and phase1-watcher-boundaries PASS; same-run watcher companion14/14 PASS with independent evidence readback.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-005",
       "requirement": "The product dependency and execution graph contains no Python, yt-dlp, yt-dlp companion asset, wreq product route, testkit normal/build edge, hidden governance/build runtime read, unapproved process, or undeclared native/runtime dependency; an indirect-wrapper negative fixture fails the canonical gate.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current canonical PR dependency/native/source boundary checks and55 architecture fixtures PASS, including indirect-wrapper rejection; exact approved dependency composition preserved.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-006",
       "requirement": "A backwards-compatible FF-GATE-RUNTIME-001 proof-contract extension builds once; hashes and stages every exact release artifact; supervises the deterministic HTTP origin, launcher, product process, and independent watcher; executes ordered success, transport-failure, external-cancellation, crash/restart/reconciliation, and watcher-degraded actions with real production adapters; semantically inspects output, archive, journal, and watcher evidence; and rejects a declaration-preserving mutation of product behavior or durable state. Prior ff.runtime-proof@1 fixtures continue to pass, and an independent validator that did not author the proof producer reruns the gate.",
       "proof_class": "production_runtime",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Independent validator_final authored no proof producer and executed current canonical PR with same-run runtime/watcher. Current runtime14/14 and all12 scenarios PASS; independently rehashed233 case pins and3 release artifacts and read all12 DBs.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-007",
       "requirement": "The no-context model manual names only runtime-proven commands and accurately documents purpose, startup, inputs, outputs, navigation, stable diagnostics, limits, common failures, recovery, watcher degradation, and artifact-proof reproduction; executing its canonical workflow reproduces the accepted result.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Actual model manual source review PASS and its canonical staged production workflow accepted through current independent runtime execution; no manual change after reviewed source.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-008",
       "requirement": "FF-GATE-ARCH-001, FF-GATE-PR-001, FF-GATE-RUNTIME-001, triggered deep/fault/platform gates, FF-GATE-WATCHER-001, secret scan, artifact hygiene, and independent HIGH-risk adversarial review pass for one source, lockfile, fixture, artifact, watcher, and runtime-proof manifest with no unresolved finding.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Literal ARCH8/8+55/55, canonical PR80/80+55/55, same-run runtime14/14 and watcher14/14 PASS at one clean candidate/fingerprint; independent HIGH-risk review PASS/no unresolved finding. Shared deep checks executed inside PR, no standalone DEEP claim. Existing selective cleanup/user override and retained proof pins/warm cache remain qualified, not empty-root VerifyOnly.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     },
     {
       "id": "WP-FF-021-first-runnable-production-slice-v1-AC-009",
       "requirement": "An executable packet-promotion check parses exact dependency IDs and independently verifies lifecycle VALIDATED, recorded closure commit, canonical-main ancestry, and non-supersession; negative fixtures for a range, alternative revision, missing packet, STUB status, absent closure, uncontained closure, superseded ID, and forged packet claim all fail. WP-FF-011 activation is rejected until its exact WP-FF-020 and WP-FF-021 bindings and every other named predecessor pass this check.",
       "proof_class": "integration",
-      "status": "PENDING",
-      "evidence": []
+      "status": "PASS",
+      "evidence": [
+        "Current canonical exact-dependency promotion owning negatives and actual prerequisite closure/main ancestry checks PASS; WP011 remains STUB and is not activated by this closure.",
+        "build/reports/verify-pr-1792626083248772700-472536.json; build/reports/runtime-truth-check-1792625981736118400-472536.json; build/reports/watcher-check-1792626031666888000-472536.json; build/reports/architecture-check-1792622187838028100-262192.json; .fforager-artifacts/product-batch/phase1-r14-archive-all-readback.stdout"
+      ]
     }
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-10-21T06:53:43Z",
+      "recorded_at_utc": "2026-10-21T23:44:07.6983028Z",
       "branch": "codex/wp020-prerequisite-classifier",
-      "head_sha": "dd6483ac5cef60793cebda71fe9e7c9e47ad246f",
+      "head_sha": "63a02773e8097b525381536311dfab36c91a9e33",
       "base_sha": "954a1763be80709b845fc2b787e173a80ba9579a",
-      "merge_base_main": "bde150fe8d39519a890b2be1c4ac9d44d47c18e4",
+      "merge_base_main": "c0bbd293c473b57de264efc2fcb8345b958e981d",
       "status_porcelain_v2": [
-        "# branch.oid dd6483ac5cef60793cebda71fe9e7c9e47ad246f",
+        "# branch.oid 63a02773e8097b525381536311dfab36c91a9e33",
         "# branch.head codex/wp020-prerequisite-classifier",
         "# branch.upstream origin/codex/wp020-prerequisite-classifier",
-        "# branch.ab +18 -0"
+        "# branch.ab +0 -0"
       ],
       "dirty_paths": [
         ".GOV/work_packets/WP-FF-021-first-runnable-production-slice-v1/packet.json"
       ],
       "checks_run": [
-        "Owning Clippy, two affected report/receipt guards and native exception authority parser accepted; exact captures retained."
+        "Independent canonical acceptance and nine-AC HIGH-risk review PASS; technical closure only, main containment pending."
       ],
       "blockers": [
-        "Current r5 twelve-case boundary has not executed for the final source.",
-        "WP024 predecessor-state correction is not yet contained; aggregate promotion remains blocked until actual canonical proof.",
-        "Final Phase1 canonical acceptance and main containment remain unproven."
+        "Technical acceptance passed; canonical-main closure containment remains unproven."
       ],
-      "next_action": "Run the existing twelve-case boundary at this clean source-bound candidate; report individual case guards separately from prerequisite promotion, then complete required canonical acceptance and main containment without weakening original requirements."
+      "next_action": "Record this technical closure commit as MERGE_PENDING, merge into canonical main, prove closure ancestry and unchanged accepted product/build inputs, then mark VALIDATED and clear active focus. WP011 remains STUB."
     }
   },
   "validation": {
     "checks": [
-    {
-      "kind": "r13-ffmpeg-context-diagnostics",
-      "retained_failure": "Independent r13 verify-pr-1792621105330203700-486780 failed workspace tests: FFmpeg59/6/3ignored; all other targets passed. Six original causes remain UNVERIFIED. Runtime, watcher and composed deep checks were not reached.",
-      "diagnostic_change": "Only the governed-progress-share assertion failure message now prints its actual typed Result; original predicate, transcript and limits are unchanged. No functional fix is claimed.",
-      "focused_results": "Canonical-compatible unified no-run setup PASS0/85.57seconds. Same emitted b65 binary SHA25626A5B1F02BE08F750F410084A17F0BD507007146025D82176DEAF99A422C2CF0 passed65/0/3ignored in4.61seconds direct nocapture,2.78seconds direct default capture, and4.84seconds through Cargo. The Cargo comparison retained workspace/all-target/all-feature/locked/no-fail-fast/canonical target selection and exact68 existing test-name filters; unrelated targets executed zero cases. Process-only jobs1/threads2 and original deadlines were retained. Capture and Cargo context did not reproduce the failures; this is diagnostic evidence, not canonical acceptance.",
-      "captures": ".fforager-artifacts/product-batch/phase1-r13-independent-pr.*; phase1-r13-ffmpeg-diagnostic-build.*; phase1-r13-ffmpeg-owner*; phase1-r13-ffmpeg-cargo-owner.*",
-      "ceiling": "Final declared literal ARCH, independent canonical PR, same-run runtime/watcher, nine acceptance criteria and main containment remain required. Frozen twelve scenarios and limits are unchanged."
-    },
-        {
-          "kind": "bounded-full-history-batches",
-          "retained_failure": "Independent r12 PR verify-pr-1792617752445027300-4536 failed during history preflight with actual primary FF-SECRET-E-GIT-TIMEOUT300seconds, acknowledged owned termination/reap, and secondary reader EOF. Workspace/runtime/watcher were not reached. This current timeout is proven; original r8 cause remains UNVERIFIED.",
-          "implementation": "Full sorted history objects are retained. Strict Git metadata and body agreement determine bounded multi-object chunks of8MiB/1024objects, retaining the existing allowed oversized singleton and one original global scan budget. Metadata60seconds and each body process300seconds, concurrent input/output, patterns, body checks, cleanup and fail-closed behavior are unchanged. No per-object spawn, skipped history or deadline increase.",
-          "focused_results": "Canonical unified warnings-denied Clippy PASS0/20.89seconds after equivalent borrowed-map correction; initial lint failure retained. Canonical workspace/all-target/all-feature no-run PASS0/39.97seconds, existing scanner owner20/20 PASS63.40seconds including count1025, allowed singleton and metadata/body mismatch controls. One existing FULL secret-scan --history command PASS0/findings0 in253.64seconds including30.00seconds toolbuild.",
-          "captures": ".fforager-artifacts/product-batch/phase1-history-chunks-*; phase1-r12-independent-pr.* and verify-pr-1792617752445027300-4536.json",
-          "ceiling": "Focused history success does not replace final clean-source literal ARCH, independent canonical PR, same-run runtime/watcher or main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
-        },
-        {
-          "kind": "six-helper-effective-input-refresh",
-          "retained_failure": "r11 ARCH architecture-check-1792612992572433700-473084 passed the reused payload boundary then timed out300seconds at JournalRecord. The authorized preparation-only batch completed all14 remaining owners in600.99seconds without acceptance claims. Subsequent warmed ARCH architecture-check-1792614838063034900-31056 still timed out300seconds at behavior-stub contracts lib after its helper reset and rewrote the same effective input; all original failure reports are retained.",
-          "implementation": "The existing effective-input refresh now covers the six remaining proof-map/public-test/receipt helpers, including their bounded multi-file and generated integration inputs. Current canonical-derived mutation bytes, source/target isolation, actual final-input identity, package profiles, positive then independent-negative ordering, markers and deadlines are preserved; no timestamp restoration or cached verdict substitution.",
-          "focused_results": "Canonical workspace/all-target/all-feature warnings-denied Clippy PASS0/23.09seconds, matching no-run setup PASS0/38.95seconds, and existing extended warm_fixture_reuses_unchanged_inputs_and_rejects_shared_mutation PASS1/1/14.40seconds. The owning test covers repeated effective bytes/mtime, changed canonical input, generated behavior input and two-input receipt reset. No full suite or runtime claim is inferred from setup or this component proof.",
-          "captures": ".fforager-artifacts/product-batch/phase1-six-helper-*; phase1-r11-arch-warmed.*; phase1-r11-remaining-setup.* and remaining-fixture-setup/",
-          "ceiling": "Final clean-candidate literal ARCH must execute every original oracle under unchanged limits, followed by independent canonical PR and same-run runtime/watcher before closure/main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
-        },
-        {
-          "kind": "effective-mutant-warm-refresh",
-          "retained_failure": "Literal r10 ARCH architecture-check-1792610284861311600-447868 failed incomplete when the exact payload public counterexample Cargo command exceeded unchanged300seconds before the required semantic marker. Owned tree termination and reap succeeded; no semantic acceptance was inferred.",
-          "diagnosis_and_change": "The leased source refresh restored canonical bytes then reapplied the identical mutation, unnecessarily refreshing the effective input timestamp. The exact current canonical-derived mutation is now computed first and passed through both existing content-aware refresh stages; all other files reset normally. The same eight textual mutations, one JSON input, first-anchor/CRLF handling, markers, isolation and fixed deadlines remain unchanged.",
-          "owning_results": "Unified warnings-denied Clippy PASS0/29.00seconds after retaining the test-only copy helper under cfg(test); prior dead-code/missing-wrapper feedback retained. Canonical workspace/all-target/all-feature no-run PASS0/202.88seconds. Existing extended warm refresh selector PASS1/1/1.62seconds checks unchanged effective-file mtime, changed canonical input and unrelated stale mutation reset.",
-          "actual_boundary": "All64 copied source/fixture inputs were compared: only exact canonical-derived JournalPayload mutation differs. Exact retained owner target3a350d9dd9b1813e1de6a7341260509a setup PASS0/249.48seconds, then unchanged public counterexample command exits101/2.95seconds with actual JournalPayload unknown body field must fail closed assertion. Setup alone is not acceptance.",
-          "captures": ".fforager-artifacts/product-batch/phase1-effective-*",
-          "ceiling": "Final clean-source literal ARCH must independently re-execute this boundary within unchanged300seconds; canonical PR, same-run runtime/watcher and main containment remain pending. No deadline or oracle relaxation."
-        },
-        {
-          "kind": "r9-incomplete-test-diagnostics-and-build-scheduling",
-          "retained_failure": "Independent r9 verify-pr-1792606637649702000-517432 failed incomplete at the unchanged1800-second workspace-test deadline after627seconds compilation. FFmpeg direct-exit precondition and storage preparatory expected-Transport assertion failed; the hardlink attack and final runtime/watcher proof were not reached. Original causes remain UNVERIFIED.",
-          "diagnostics": "Storage now prints the actual preparatory fetch result on the same assertion. FFmpeg retains the same10-second direct-exit assertion and success pipe lifetime, adding bounded failure captures and existing owned cleanup outcomes. Mechanical let-else conversion preserves the prior focused proof.",
-          "focused_results": "Canonical-compatible workspace/all-target/all-feature no-run setup passed; emitted storage hardlink selector PASS1/1 in0.09seconds and FFmpeg direct-exit selector PASS1/1 in3.00seconds. Neither diagnostic failure branch executed; these outcomes do not establish the original causes.",
-          "scheduling": "Actual queued HDD/concurrent linking observations motivated process-only CARGO_BUILD_JOBS=1, without changing dependency versions/features, compiler flags, test threads2, limits, config or gate argv. The strict environment guard and sanitizer admit only exact1 and retain compiler/lint/config poison rejection. Scheduling benefit is not claimed.",
-          "final_source_checks": "Unified workspace/all-target/all-feature warnings-denied Clippy PASS0 in12.94seconds. Final-source matching no-run setup PASS0 in197.30seconds with jobs1; existing extended cargo_verification_strips_lint_and_compiler_overrides PASS1/1. Initial missing OsString import and subsequent manual-let-else lint failures are retained in separate captures.",
-          "captures": ".fforager-artifacts/product-batch/phase1-r9-diagnostics-* and phase1-r10-{unified-*,scheduling-guard}*",
-          "ceiling": "Required final clean-candidate ARCH, independent canonical PR, same-run runtime/watcher and main containment remain pending. Frozen nine acceptance criteria and twelve scenarios are unchanged."
-        },
+      {
+        "kind": "final-phase1-independent-acceptance",
+        "candidate": "63a02773e8097b525381536311dfab36c91a9e33",
+        "source_commit": "6be53b5fd48f43c70af00b229a6557fff26cfe45",
+        "content_fingerprint": "910b5eaacdbb041edc30c8006507239882652c4ed66c64c21ecb9868bebdb686",
+        "result": "PASS",
+        "evidence": "Literal ARCH8/55; independent canonical PR80/55 with same-run runtime14/14 and watcher14/14, all12 cases; independent233pins/3releasehashes/12DBs and HIGH-risk nine-AC review PASS. Original r13 six causes remain UNVERIFIED and all earlier FAIL evidence retained.",
+        "reports": [
+          "build/reports/verify-pr-1792626083248772700-472536.json",
+          "build/reports/runtime-truth-check-1792625981736118400-472536.json",
+          "build/reports/watcher-check-1792626031666888000-472536.json",
+          "build/reports/architecture-check-1792622187838028100-262192.json"
+        ]
+      },
+      {
+        "kind": "r13-ffmpeg-context-diagnostics",
+        "retained_failure": "Independent r13 verify-pr-1792621105330203700-486780 failed workspace tests: FFmpeg59/6/3ignored; all other targets passed. Six original causes remain UNVERIFIED. Runtime, watcher and composed deep checks were not reached.",
+        "diagnostic_change": "Only the governed-progress-share assertion failure message now prints its actual typed Result; original predicate, transcript and limits are unchanged. No functional fix is claimed.",
+        "focused_results": "Canonical-compatible unified no-run setup PASS0/85.57seconds. Same emitted b65 binary SHA25626A5B1F02BE08F750F410084A17F0BD507007146025D82176DEAF99A422C2CF0 passed65/0/3ignored in4.61seconds direct nocapture,2.78seconds direct default capture, and4.84seconds through Cargo. The Cargo comparison retained workspace/all-target/all-feature/locked/no-fail-fast/canonical target selection and exact68 existing test-name filters; unrelated targets executed zero cases. Process-only jobs1/threads2 and original deadlines were retained. Capture and Cargo context did not reproduce the failures; this is diagnostic evidence, not canonical acceptance.",
+        "captures": ".fforager-artifacts/product-batch/phase1-r13-independent-pr.*; phase1-r13-ffmpeg-diagnostic-build.*; phase1-r13-ffmpeg-owner*; phase1-r13-ffmpeg-cargo-owner.*",
+        "ceiling": "Final declared literal ARCH, independent canonical PR, same-run runtime/watcher, nine acceptance criteria and main containment remain required. Frozen twelve scenarios and limits are unchanged."
+      },
+      {
+        "kind": "bounded-full-history-batches",
+        "retained_failure": "Independent r12 PR verify-pr-1792617752445027300-4536 failed during history preflight with actual primary FF-SECRET-E-GIT-TIMEOUT300seconds, acknowledged owned termination/reap, and secondary reader EOF. Workspace/runtime/watcher were not reached. This current timeout is proven; original r8 cause remains UNVERIFIED.",
+        "implementation": "Full sorted history objects are retained. Strict Git metadata and body agreement determine bounded multi-object chunks of8MiB/1024objects, retaining the existing allowed oversized singleton and one original global scan budget. Metadata60seconds and each body process300seconds, concurrent input/output, patterns, body checks, cleanup and fail-closed behavior are unchanged. No per-object spawn, skipped history or deadline increase.",
+        "focused_results": "Canonical unified warnings-denied Clippy PASS0/20.89seconds after equivalent borrowed-map correction; initial lint failure retained. Canonical workspace/all-target/all-feature no-run PASS0/39.97seconds, existing scanner owner20/20 PASS63.40seconds including count1025, allowed singleton and metadata/body mismatch controls. One existing FULL secret-scan --history command PASS0/findings0 in253.64seconds including30.00seconds toolbuild.",
+        "captures": ".fforager-artifacts/product-batch/phase1-history-chunks-*; phase1-r12-independent-pr.* and verify-pr-1792617752445027300-4536.json",
+        "ceiling": "Focused history success does not replace final clean-source literal ARCH, independent canonical PR, same-run runtime/watcher or main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
+      },
+      {
+        "kind": "six-helper-effective-input-refresh",
+        "retained_failure": "r11 ARCH architecture-check-1792612992572433700-473084 passed the reused payload boundary then timed out300seconds at JournalRecord. The authorized preparation-only batch completed all14 remaining owners in600.99seconds without acceptance claims. Subsequent warmed ARCH architecture-check-1792614838063034900-31056 still timed out300seconds at behavior-stub contracts lib after its helper reset and rewrote the same effective input; all original failure reports are retained.",
+        "implementation": "The existing effective-input refresh now covers the six remaining proof-map/public-test/receipt helpers, including their bounded multi-file and generated integration inputs. Current canonical-derived mutation bytes, source/target isolation, actual final-input identity, package profiles, positive then independent-negative ordering, markers and deadlines are preserved; no timestamp restoration or cached verdict substitution.",
+        "focused_results": "Canonical workspace/all-target/all-feature warnings-denied Clippy PASS0/23.09seconds, matching no-run setup PASS0/38.95seconds, and existing extended warm_fixture_reuses_unchanged_inputs_and_rejects_shared_mutation PASS1/1/14.40seconds. The owning test covers repeated effective bytes/mtime, changed canonical input, generated behavior input and two-input receipt reset. No full suite or runtime claim is inferred from setup or this component proof.",
+        "captures": ".fforager-artifacts/product-batch/phase1-six-helper-*; phase1-r11-arch-warmed.*; phase1-r11-remaining-setup.* and remaining-fixture-setup/",
+        "ceiling": "Final clean-candidate literal ARCH must execute every original oracle under unchanged limits, followed by independent canonical PR and same-run runtime/watcher before closure/main containment. Frozen twelve scenarios and nine acceptance criteria remain unchanged."
+      },
+      {
+        "kind": "effective-mutant-warm-refresh",
+        "retained_failure": "Literal r10 ARCH architecture-check-1792610284861311600-447868 failed incomplete when the exact payload public counterexample Cargo command exceeded unchanged300seconds before the required semantic marker. Owned tree termination and reap succeeded; no semantic acceptance was inferred.",
+        "diagnosis_and_change": "The leased source refresh restored canonical bytes then reapplied the identical mutation, unnecessarily refreshing the effective input timestamp. The exact current canonical-derived mutation is now computed first and passed through both existing content-aware refresh stages; all other files reset normally. The same eight textual mutations, one JSON input, first-anchor/CRLF handling, markers, isolation and fixed deadlines remain unchanged.",
+        "owning_results": "Unified warnings-denied Clippy PASS0/29.00seconds after retaining the test-only copy helper under cfg(test); prior dead-code/missing-wrapper feedback retained. Canonical workspace/all-target/all-feature no-run PASS0/202.88seconds. Existing extended warm refresh selector PASS1/1/1.62seconds checks unchanged effective-file mtime, changed canonical input and unrelated stale mutation reset.",
+        "actual_boundary": "All64 copied source/fixture inputs were compared: only exact canonical-derived JournalPayload mutation differs. Exact retained owner target3a350d9dd9b1813e1de6a7341260509a setup PASS0/249.48seconds, then unchanged public counterexample command exits101/2.95seconds with actual JournalPayload unknown body field must fail closed assertion. Setup alone is not acceptance.",
+        "captures": ".fforager-artifacts/product-batch/phase1-effective-*",
+        "ceiling": "Final clean-source literal ARCH must independently re-execute this boundary within unchanged300seconds; canonical PR, same-run runtime/watcher and main containment remain pending. No deadline or oracle relaxation."
+      },
+      {
+        "kind": "r9-incomplete-test-diagnostics-and-build-scheduling",
+        "retained_failure": "Independent r9 verify-pr-1792606637649702000-517432 failed incomplete at the unchanged1800-second workspace-test deadline after627seconds compilation. FFmpeg direct-exit precondition and storage preparatory expected-Transport assertion failed; the hardlink attack and final runtime/watcher proof were not reached. Original causes remain UNVERIFIED.",
+        "diagnostics": "Storage now prints the actual preparatory fetch result on the same assertion. FFmpeg retains the same10-second direct-exit assertion and success pipe lifetime, adding bounded failure captures and existing owned cleanup outcomes. Mechanical let-else conversion preserves the prior focused proof.",
+        "focused_results": "Canonical-compatible workspace/all-target/all-feature no-run setup passed; emitted storage hardlink selector PASS1/1 in0.09seconds and FFmpeg direct-exit selector PASS1/1 in3.00seconds. Neither diagnostic failure branch executed; these outcomes do not establish the original causes.",
+        "scheduling": "Actual queued HDD/concurrent linking observations motivated process-only CARGO_BUILD_JOBS=1, without changing dependency versions/features, compiler flags, test threads2, limits, config or gate argv. The strict environment guard and sanitizer admit only exact1 and retain compiler/lint/config poison rejection. Scheduling benefit is not claimed.",
+        "final_source_checks": "Unified workspace/all-target/all-feature warnings-denied Clippy PASS0 in12.94seconds. Final-source matching no-run setup PASS0 in197.30seconds with jobs1; existing extended cargo_verification_strips_lint_and_compiler_overrides PASS1/1. Initial missing OsString import and subsequent manual-let-else lint failures are retained in separate captures.",
+        "captures": ".fforager-artifacts/product-batch/phase1-r9-diagnostics-* and phase1-r10-{unified-*,scheduling-guard}*",
+        "ceiling": "Required final clean-candidate ARCH, independent canonical PR, same-run runtime/watcher and main containment remain pending. Frozen nine acceptance criteria and twelve scenarios are unchanged."
+      },
       {
         "kind": "bounded-secret-history-remediation",
         "retained_failure": "verify-pr-1792602396602690400-496872 at clean r8 stopped before tests/runtime with FF-SECRET-E-GIT read batch object failed to fill whole buffer. Original cause remains UNVERIFIED; masked wait status cannot retrospectively establish timeout.",
@@ -307,7 +345,10 @@
       },
       {
         "kind": "stable-owned-fixture-target-remediation",
-        "retained_pr_failures": ["verify-pr-1792596893603868800-506796: offline pinned cache missing objc2-core-foundation; cache-only locked fetch restored it without source/lock drift.", "verify-pr-1792599630727164700-462732: workspace test timed out1800seconds; incomplete evidence, owned tree termination and bounded reap acknowledged; runtime/watcher not reached."],
+        "retained_pr_failures": [
+          "verify-pr-1792596893603868800-506796: offline pinned cache missing objc2-core-foundation; cache-only locked fetch restored it without source/lock drift.",
+          "verify-pr-1792599630727164700-462732: workspace test timed out1800seconds; incomplete evidence, owned tree termination and bounded reap acknowledged; runtime/watcher not reached."
+        ],
         "source_reconciliation": "Actual depfiles showed one leased stable receipt-only source compiled into three caller-root-derived PIF targets. Target derivation now occurs inside the existing exclusive callback using the actual sandbox and unchanged distinct labels; mutation, independent graph rejection and all deadlines remain unchanged.",
         "focused_results": "Owning compile PASS72seconds; existing source-key isolation and warm reset/mutation controls each1/1 PASS; receipt-only public plus independent graph counterexample PASS1/1 in252.86seconds and119.46seconds using the same observed target747cb1d6a94f99b33f5955352783fa3c.",
         "captures": ".fforager-artifacts/product-batch/phase1-stable-pif-*",
@@ -338,6 +379,9 @@
       }
     ],
     "not_proven": [
+      "Canonical-main containment of the technical closure commit remains unproven."
+    ],
+    "historical_not_proven": [
       "Any shipped Ferric product artifact or command",
       "Any direct HTTP/HTTPS acquisition",
       "Any durable output, resume, archive, or recovery behavior",
